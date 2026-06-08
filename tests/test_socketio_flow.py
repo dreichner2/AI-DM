@@ -1608,6 +1608,191 @@ def test_inventory_realtime_stress_add_remove_buy_sell_use_and_explicit_state(
     assert player_gold() == 8
 
 
+def test_real_campaign_state_pipeline_stress_transfers_hp_xp_and_currency(
+    app,
+    socketio,
+    app_runtime,
+    monkeypatch,
+):
+    socketio_module = app_runtime['modules']['socketio_events']
+    ids = seed_world_campaign_player_session(app)
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del context, speaking_player, rules_hint
+        normalized = (user_input or '').lower()
+        if 'give the iron sword to borin' in normalized:
+            yield 'You give the Iron Sword to Borin.'
+        elif 'give 10 copper to borin' in normalized:
+            yield 'You give 10 copper to Borin.'
+        elif 'buy an iron shield' in normalized:
+            yield 'You spend 5 gold and add Iron Shield to your inventory.'
+        elif 'sell the gem' in normalized:
+            yield 'You sell the Gem and gain 3 gold.'
+        elif 'accept the wound' in normalized:
+            yield 'You take 4 damage.'
+        elif 'drink potion' in normalized:
+            yield 'You drink the Potion. Restore 5 HP.'
+        elif 'claim the bounty' in normalized:
+            yield 'The bounty is accepted. You gain 75 XP.'
+        elif 'give 99 copper to borin' in normalized:
+            yield 'You cannot give 99 copper to Borin because you do not have enough.'
+        elif 'give the crown to borin' in normalized:
+            yield 'You do not have the Crown to give.'
+        else:
+            yield 'Nothing changes.'
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+
+    with app.app_context():
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        player = db.session.get(Player, ids['player_id'])
+        assert campaign is not None
+        assert player is not None
+        borin = Player(
+            campaign_id=campaign.campaign_id,
+            workspace_id=campaign.workspace_id,
+            name='Borin Player',
+            character_name='Borin',
+            race='Dwarf',
+            class_='Fighter',
+            level=3,
+            inventory=safe_json_dumps([], []),
+            stats=safe_json_dumps(
+                {'gold': 0, 'copper': 0, 'current_hp': 18, 'hp_current': 18, 'max_hp': 18, 'hp_max': 18, 'xp': 0, 'experience': 0},
+                {},
+            ),
+        )
+        db.session.add(borin)
+        player.inventory = safe_json_dumps(
+            [
+                {'id': 'iron_sword', 'name': 'Iron Sword', 'quantity': 2, 'type': 'weapon', 'subtype': 'sword'},
+                {'id': 'potion', 'name': 'Potion', 'quantity': 2, 'type': 'consumable', 'subtype': 'potion'},
+                {'id': 'gem', 'name': 'Gem', 'quantity': 1, 'type': 'misc'},
+            ],
+            [],
+        )
+        player.stats = safe_json_dumps(
+            {
+                'gold': 20,
+                'copper': 30,
+                'current_hp': 14,
+                'hp_current': 14,
+                'max_hp': 20,
+                'hp_max': 20,
+                'temp_hp': 2,
+                'xp': 100,
+                'experience': 100,
+            },
+            {},
+        )
+        db.session.commit()
+        borin_id = borin.player_id
+
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    assert client.is_connected()
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+
+    def send(message):
+        client.emit(
+            'send_message',
+            {
+                'session_id': ids['session_id'],
+                'campaign_id': ids['campaign_id'],
+                'world_id': ids['world_id'],
+                'player_id': ids['player_id'],
+                'message': message,
+            },
+        )
+        return client.get_received()
+
+    def player_inventory_by_name(player_id):
+        with app.app_context():
+            player_obj = db.session.get(Player, player_id)
+            assert player_obj is not None
+            return {
+                item['name'].lower(): item
+                for item in safe_json_loads(player_obj.inventory, [])
+            }
+
+    def player_stats(player_id):
+        with app.app_context():
+            player_obj = db.session.get(Player, player_id)
+            assert player_obj is not None
+            return safe_json_loads(player_obj.stats, {})
+
+    received = send('I give the Iron Sword to Borin.')
+    _assert_realtime_state_applied(received, item_name='Iron Sword', action='lose')
+    assert player_inventory_by_name(ids['player_id'])['iron sword']['quantity'] == 1
+    assert player_inventory_by_name(borin_id)['iron sword']['quantity'] == 1
+
+    received = send('I give 10 copper to Borin.')
+    transfer_state = _assert_realtime_state_applied(received)
+    transfer_changes = transfer_state['details']['character_state_changes_applied']
+    assert any(change.get('currency_delta') == {'copper': -10} for change in transfer_changes)
+    assert any(change.get('currency_delta') == {'copper': 10} for change in transfer_changes)
+    assert player_stats(ids['player_id'])['copper'] == 20
+    assert player_stats(borin_id)['copper'] == 10
+
+    received = send('I buy an Iron Shield.')
+    _assert_realtime_state_applied(received, item_name='Iron Shield', action='acquire')
+    assert player_inventory_by_name(ids['player_id'])['iron shield']['quantity'] == 1
+    assert player_stats(ids['player_id'])['gold'] == 15
+
+    received = send('I sell the Gem.')
+    _assert_realtime_state_applied(received, item_name='Gem', action='lose')
+    assert 'gem' not in player_inventory_by_name(ids['player_id'])
+    assert player_stats(ids['player_id'])['gold'] == 18
+
+    received = send('I accept the wound.')
+    damage_state = _assert_realtime_state_applied(received)
+    assert any(change.get('hp_delta') == -4 for change in damage_state['details']['character_state_changes_applied'])
+    stats_after_damage = player_stats(ids['player_id'])
+    assert stats_after_damage['temp_hp'] == 0
+    assert stats_after_damage['current_hp'] == 12
+
+    received = send('I drink Potion.')
+    heal_state = _assert_realtime_state_applied(received, item_name='Potion', action='lose')
+    assert any(change.get('hp_delta') == 5 for change in heal_state['details']['character_state_changes_applied'])
+    assert player_inventory_by_name(ids['player_id'])['potion']['quantity'] == 1
+    assert player_stats(ids['player_id'])['current_hp'] == 17
+
+    received = send('I claim the bounty.')
+    xp_state = _assert_realtime_state_applied(received)
+    assert any(change.get('xp_delta') == 75 for change in xp_state['details']['character_state_changes_applied'])
+    assert player_stats(ids['player_id'])['xp'] == 175
+
+    received = send('I give 99 copper to Borin.')
+    overpay_statuses = [event['args'][0]['status'] for event in received if event['name'] == 'turn_status']
+    if 'state_applied' in overpay_statuses:
+        overpay_state = _turn_status_payloads(received, 'state_applied')[0]
+        assert overpay_state['details']['inventory_changes_applied'] == []
+        assert overpay_state['details']['character_state_changes_applied'] == []
+        assert any(line.get('status') == 'rejected' for line in overpay_state['details']['state_log']['lines'])
+    assert player_stats(ids['player_id'])['copper'] == 20
+    assert player_stats(borin_id)['copper'] == 10
+
+    received = send('I give the Crown to Borin.')
+    statuses = [event['args'][0]['status'] for event in received if event['name'] == 'turn_status']
+    if 'state_applied' in statuses:
+        crown_state = _turn_status_payloads(received, 'state_applied')[0]
+        assert crown_state['details']['inventory_changes_applied'] == []
+        assert crown_state['details']['character_state_changes_applied'] == []
+        assert any(line.get('status') == 'rejected' for line in crown_state['details']['state_log']['lines'])
+    assert 'crown' not in player_inventory_by_name(borin_id)
+
+    with app.app_context():
+        session_obj = db.session.get(Session, ids['session_id'])
+        snapshot = safe_json_loads(session_obj.state_snapshot, {})
+        actors = {actor['name']: actor for actor in snapshot['playerCharacters']}
+        assert actors['Seraphina']['inventory']['currency']['cp'] == 20
+        assert actors['Borin']['inventory']['currency']['cp'] == 10
+        assert actors['Seraphina']['health']['currentHp'] == 17
+        assert actors['Seraphina']['xp']['current'] == 175
+        assert TurnCanonUpdate.query.count() >= 7
+        assert TurnEvent.query.filter_by(session_id=ids['session_id'], event_type='state_update').count() >= 7
+
+
 def test_canon_job_failure_keeps_dm_response_saved(app, socketio, app_runtime, monkeypatch):
     socketio_module = app_runtime['modules']['socketio_events']
     import aidm_server.canon_jobs as canon_jobs_module

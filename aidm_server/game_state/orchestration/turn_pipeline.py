@@ -301,6 +301,73 @@ def _merge_state_changes(
     return merged
 
 
+def _change_actor_id(change: dict[str, Any]) -> str:
+    return str(change.get('actorId') or change.get('actor_id') or '').strip()
+
+
+def _transfer_source_actor_id(change: dict[str, Any]) -> str:
+    return str(change.get('fromActorId') or change.get('from_actor_id') or change.get('actorId') or change.get('actor_id') or '').strip()
+
+
+def _transfer_target_actor_id(change: dict[str, Any]) -> str:
+    return str(change.get('toActorId') or change.get('to_actor_id') or '').strip()
+
+
+def _item_reference_matches(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_item = left.get('item') if isinstance(left.get('item'), dict) else {}
+    right_item = right.get('item') if isinstance(right.get('item'), dict) else {}
+    left_id = str(left.get('itemId') or left.get('item_id') or left_item.get('id') or left_item.get('itemId') or '').strip()
+    right_id = str(right.get('itemId') or right.get('item_id') or right_item.get('id') or right_item.get('itemId') or '').strip()
+    if left_id and right_id:
+        return left_id == right_id
+    left_name = normalize_item_name(left.get('itemName') or left.get('item_name') or left_item.get('name'))
+    right_name = normalize_item_name(right.get('itemName') or right.get('item_name') or right_item.get('name'))
+    return bool(left_name and right_name and left_name == right_name)
+
+
+def _same_positive_amount(left: dict[str, Any], right: dict[str, Any], key: str) -> bool:
+    return int_or_default(left.get(key), default=0) > 0 and int_or_default(left.get(key), default=0) == int_or_default(right.get(key), default=0)
+
+
+def _change_overlaps_confirmed_transfer(change: dict[str, Any], confirmed_transfers: list[dict[str, Any]]) -> bool:
+    change_type = str(change.get('type') or '').strip()
+    actor_id = _change_actor_id(change)
+    for transfer in confirmed_transfers:
+        transfer_type = str(transfer.get('type') or '').strip()
+        if transfer_type == 'inventory.transfer':
+            if change_type == 'inventory.remove' and actor_id == _transfer_source_actor_id(transfer):
+                if _same_positive_amount(change, transfer, 'quantity') and _item_reference_matches(change, transfer):
+                    return True
+            if change_type == 'inventory.add' and actor_id == _transfer_target_actor_id(transfer):
+                if _same_positive_amount(change, transfer, 'quantity') and _item_reference_matches(change, transfer):
+                    return True
+        elif transfer_type == 'currency.transfer':
+            currency = str(change.get('currency') or '').strip().lower()
+            transfer_currency = str(transfer.get('currency') or '').strip().lower()
+            if currency != transfer_currency:
+                continue
+            if change_type == 'currency.remove' and actor_id == _transfer_source_actor_id(transfer):
+                if _same_positive_amount(change, transfer, 'amount'):
+                    return True
+            if change_type == 'currency.add' and actor_id == _transfer_target_actor_id(transfer):
+                if _same_positive_amount(change, transfer, 'amount'):
+                    return True
+    return False
+
+
+def _without_confirmed_transfer_overlaps(
+    changes: list[dict[str, Any]],
+    confirmed_transfers: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not confirmed_transfers:
+        return changes
+    return [
+        change
+        for change in changes or []
+        if isinstance(change, dict) and not _change_overlaps_confirmed_transfer(change, confirmed_transfers)
+    ]
+
+
 def _intent_confirmed_post_changes(
     *,
     turn: DmTurn,
@@ -639,9 +706,14 @@ def post_dm_pipeline(
         )
         if intent_changes or confirmed_pre_dm_changes:
             post_extraction = deepcopy(post_extraction)
+            confirmed_transfers = [
+                change
+                for change in confirmed_pre_dm_changes
+                if isinstance(change, dict) and str(change.get('type') or '').strip() in {'inventory.transfer', 'currency.transfer'}
+            ]
             post_extraction['proposedChanges'] = _merge_state_changes(
-                post_extraction.get('proposedChanges') or [],
-                intent_changes,
+                _without_confirmed_transfer_overlaps(post_extraction.get('proposedChanges') or [], confirmed_transfers),
+                _without_confirmed_transfer_overlaps(intent_changes, confirmed_transfers),
                 confirmed_pre_dm_changes,
                 seed_changes=already_applied,
             )
