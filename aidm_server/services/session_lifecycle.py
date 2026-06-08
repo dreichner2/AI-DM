@@ -79,7 +79,21 @@ def hard_delete_session_record(session_obj: Session) -> dict:
     ]
 
     with db.session.no_autoflush:
+        entity_filters = [StoryEntity.session_id == session_id]
         if turn_ids:
+            entity_filters.append(StoryEntity.first_seen_turn_id.in_(turn_ids))
+        session_entity_ids = [
+            row[0]
+            for row in db.session.query(StoryEntity.entity_id)
+            .filter(or_(*entity_filters))
+            .all()
+        ]
+
+        fact_delete_filters = []
+        thread_delete_filters = []
+        if turn_ids:
+            fact_delete_filters.append(StoryFact.source_turn_id.in_(turn_ids))
+            thread_delete_filters.append(StoryThread.origin_turn_id.in_(turn_ids))
             TurnCanonUpdate.query.filter(TurnCanonUpdate.turn_id.in_(turn_ids)).delete(
                 synchronize_session=False,
             )
@@ -95,20 +109,8 @@ def hard_delete_session_record(session_obj: Session) -> dict:
             TurnEvent.query.filter(
                 or_(TurnEvent.session_id == session_id, TurnEvent.turn_id.in_(turn_ids)),
             ).delete(synchronize_session=False)
-            StoryEntity.query.filter(StoryEntity.first_seen_turn_id.in_(turn_ids)).update(
-                {StoryEntity.first_seen_turn_id: None},
-                synchronize_session=False,
-            )
             StoryEntity.query.filter(StoryEntity.last_seen_turn_id.in_(turn_ids)).update(
                 {StoryEntity.last_seen_turn_id: None},
-                synchronize_session=False,
-            )
-            StoryFact.query.filter(StoryFact.source_turn_id.in_(turn_ids)).update(
-                {StoryFact.source_turn_id: None},
-                synchronize_session=False,
-            )
-            StoryThread.query.filter(StoryThread.origin_turn_id.in_(turn_ids)).update(
-                {StoryThread.origin_turn_id: None},
                 synchronize_session=False,
             )
             StoryThread.query.filter(StoryThread.last_touched_turn_id.in_(turn_ids)).update(
@@ -124,14 +126,20 @@ def hard_delete_session_record(session_obj: Session) -> dict:
             DmCoherenceFeedback.query.filter_by(session_id=session_id).delete(synchronize_session=False)
             TurnEvent.query.filter_by(session_id=session_id).delete(synchronize_session=False)
 
+        if session_entity_ids:
+            fact_delete_filters.append(StoryFact.subject_entity_id.in_(session_entity_ids))
+            fact_delete_filters.append(StoryFact.object_entity_id.in_(session_entity_ids))
+        if fact_delete_filters:
+            StoryFact.query.filter(or_(*fact_delete_filters)).delete(synchronize_session=False)
+        if thread_delete_filters:
+            StoryThread.query.filter(or_(*thread_delete_filters)).delete(synchronize_session=False)
+        if session_entity_ids:
+            StoryEntity.query.filter(StoryEntity.entity_id.in_(session_entity_ids)).delete(synchronize_session=False)
+
         PlayerAction.query.filter_by(session_id=session_id).delete(synchronize_session=False)
         SessionLogEntry.query.filter_by(session_id=session_id).delete(synchronize_session=False)
         SessionState.query.filter_by(session_id=session_id).delete(synchronize_session=False)
         SessionTurnLock.query.filter_by(session_id=session_id).delete(synchronize_session=False)
-        StoryEntity.query.filter_by(session_id=session_id).update(
-            {StoryEntity.session_id: None},
-            synchronize_session=False,
-        )
         if turn_ids:
             DmTurn.query.filter(DmTurn.turn_id.in_(turn_ids)).delete(synchronize_session=False)
 

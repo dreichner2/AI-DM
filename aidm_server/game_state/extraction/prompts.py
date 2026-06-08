@@ -22,6 +22,8 @@ def build_pre_dm_prompt(*, current_state: dict[str, Any], player_message: str, r
         'Return JSON with key declaredActions, where each action has id, type, actorId, confidence, '
         'sourceText, requiresDMResolution, and type-specific fields.\n'
         'Allowed types: inventory.consume, inventory.use, inventory.transfer, currency.transfer, combat.attack, generic.intent.\n\n'
+        'For generic.intent, include summary with the concrete object/action the player described. '
+        'If the player tries to pick up, grab, take, or collect something, preserve the object description in summary.\n\n'
         f'Current state:\n{json.dumps(current_state, separators=(",", ":"))}\n\n'
         f'Recent timeline:\n{json.dumps(recent_timeline[-5:], separators=(",", ":"))}\n\n'
         f'Player message:\n{player_message}\n\n'
@@ -41,6 +43,7 @@ def build_post_dm_prompt(
     return (
         'Return JSON with keys proposedChanges, uncertainChanges, notes. '
         'Allowed proposedChanges types: inventory.add, inventory.remove, currency.add, currency.remove, health.heal, health.damage.\n\n'
+        'For inventory.add, provide item as an object with name and quantity, or provide itemName. Do not return item as a bare string.\n\n'
         f'State before DM:\n{json.dumps(state_before_dm, separators=(",", ":"))}\n\n'
         f'Player message:\n{player_message}\n\n'
         f'Validated pre-DM actions:\n{json.dumps(validated_actions, separators=(",", ":"))}\n\n'
@@ -49,4 +52,3 @@ def build_post_dm_prompt(
         f'DM response:\n{dm_response}\n\n'
         'Extract proposed state changes.'
     )
-

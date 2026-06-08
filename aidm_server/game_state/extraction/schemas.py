@@ -82,6 +82,15 @@ def normalize_declared_action(raw_action: Any, *, fallback_actor_id: str, fallba
             action['amount'] = max(1, int(raw_action.get('amount') or 1))
         except (TypeError, ValueError):
             action['amount'] = 1
+    if not action.get('summary'):
+        summary = (
+            raw_action.get('summary')
+            or raw_action.get('intentDescription')
+            or raw_action.get('intent_description')
+            or raw_action.get('description')
+        )
+        if summary:
+            action['summary'] = str(summary)
     return action
 
 
@@ -120,7 +129,13 @@ def normalize_state_change(raw_change: Any, *, fallback_actor_id: str, fallback_
     change['id'] = str(raw_change.get('id') or fallback_id)
     change['type'] = change_type
     change['source'] = str(raw_change.get('source') or source)
-    change['actorId'] = str(_value(raw_change, 'actorId', 'actor_id', fallback_actor_id) or fallback_actor_id)
+    change['actorId'] = str(
+        _value(raw_change, 'actorId', 'actor_id', None)
+        or raw_change.get('target')
+        or raw_change.get('targetId')
+        or raw_change.get('target_id')
+        or fallback_actor_id
+    )
     change['visible'] = bool(raw_change.get('visible', True))
     change['reason'] = str(raw_change.get('reason') or 'Extracted from DM response.')
     if 'item_name' in change and 'itemName' not in change:
@@ -138,10 +153,18 @@ def normalize_state_change(raw_change: Any, *, fallback_actor_id: str, fallback_
         except (TypeError, ValueError):
             change['quantity'] = 1
     if change_type == 'inventory.add':
-        item = change.get('item') if isinstance(change.get('item'), dict) else {}
+        raw_item = change.get('item')
+        if isinstance(raw_item, dict):
+            item = raw_item
+        elif isinstance(raw_item, str) and raw_item.strip():
+            item = {'name': raw_item.strip(), 'quantity': change.get('quantity', 1)}
+        else:
+            item = {}
         if not item and change.get('itemName'):
             item = {'name': change.get('itemName'), 'quantity': change.get('quantity', 1)}
         change['item'] = item
+        if item.get('name') and not change.get('itemName'):
+            change['itemName'] = item.get('name')
         if 'quantity' not in change:
             try:
                 change['quantity'] = max(1, int(item.get('quantity') or 1))

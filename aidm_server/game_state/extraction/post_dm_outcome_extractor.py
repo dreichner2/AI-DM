@@ -110,6 +110,38 @@ def _attach_debug(payload: dict[str, Any], debug: dict[str, Any]) -> dict[str, A
     return payload
 
 
+def _change_identity_value(change: dict[str, Any]) -> Any:
+    item = change.get('item') if isinstance(change.get('item'), dict) else {}
+    return (
+        change.get('itemId')
+        or change.get('itemName')
+        or item.get('id')
+        or item.get('name')
+        or change.get('currency')
+        or change.get('amount')
+        or change.get('quantity')
+    )
+
+
+def _assign_turn_scoped_change_ids(changes: list[dict[str, Any]], *, turn_id: int) -> None:
+    for index, change in enumerate(changes, start=1):
+        if not isinstance(change, dict):
+            continue
+        change_id = str(change.get('id') or '').strip()
+        if not change_id or change_id.startswith('post_chg_'):
+            change['id'] = stable_change_id(
+                turn_id,
+                'post_dm',
+                index,
+                change.get('type'),
+                change.get('actorId') or change.get('actor_id'),
+                _change_identity_value(change),
+                change.get('quantity'),
+                change.get('amount'),
+            )
+        change['turnId'] = turn_id
+
+
 def _already_applied_signature(change: dict[str, Any]) -> tuple[Any, ...] | None:
     change_type = str(change.get('type') or '').strip()
     if change_type in {'inventory.add', 'inventory.remove'}:
@@ -397,9 +429,7 @@ def extract_post_dm_outcomes(
 
     if helper_schema_valid:
         normalized = normalize_post_extraction(helper_payload, fallback_actor_id=actor_id)
-        for index, change in enumerate(normalized['proposedChanges'], start=1):
-            change['id'] = change.get('id') or stable_change_id(turn_id, 'post_dm', index, change.get('type'))
-            change['turnId'] = turn_id
+        _assign_turn_scoped_change_ids(normalized['proposedChanges'], turn_id=turn_id)
         notes = list(normalized.get('notes') or [])
         if 'helper_post_dm' not in notes:
             notes.append('helper_post_dm')

@@ -58,7 +58,7 @@ def test_campaign_workspace_service_matches_workspace_endpoint(client, app):
     assert service_payload['summary']['segment_count'] == 1
 
 
-def test_session_lifecycle_service_hard_delete_clears_owned_rows_and_canon_refs(app):
+def test_session_lifecycle_service_hard_delete_removes_session_origin_canon(app):
     ids = seed_world_campaign_player_session(app)
 
     with app.app_context():
@@ -113,16 +113,9 @@ def test_session_lifecycle_service_hard_delete_clears_owned_rows_and_canon_refs(
         assert SessionState.query.filter_by(session_id=ids['session_id']).count() == 0
         assert DmTurn.query.filter_by(session_id=ids['session_id']).count() == 0
 
-        entity = db.session.get(StoryEntity, entity_id)
-        fact = db.session.get(StoryFact, fact_id)
-        thread = db.session.get(StoryThread, thread_id)
-        assert entity.session_id is None
-        assert entity.first_seen_turn_id is None
-        assert entity.last_seen_turn_id is None
-        assert fact.source_turn_id is None
-        assert thread.origin_turn_id is None
-        assert thread.last_touched_turn_id is None
-        assert thread.resolved_turn_id is None
+        assert db.session.get(StoryEntity, entity_id) is None
+        assert db.session.get(StoryFact, fact_id) is None
+        assert db.session.get(StoryThread, thread_id) is None
 
 
 def test_database_session_delete_cascades_owned_rows_and_nulls_canon_refs(app):

@@ -342,7 +342,7 @@ def validate_declared_actions(
         status = result.get('status')
         reason = result.get('reason')
         original = result.get('originalAction') if isinstance(result.get('originalAction'), dict) else {}
-        label = original.get('sourceText') or original.get('summary') or original.get('type')
+        label = original.get('summary') or original.get('sourceText') or original.get('type')
         if status in {'valid', 'pending'}:
             valid_summaries.append(f"{label}: {reason}")
         elif status == 'invalid':
@@ -499,4 +499,3 @@ def validated_changes_for_application(validation_result: dict[str, Any]) -> list
         if isinstance(entry, dict) and isinstance(entry.get('modifiedChange'), dict):
             changes.append(entry['modifiedChange'])
     return changes
-

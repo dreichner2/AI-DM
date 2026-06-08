@@ -193,14 +193,19 @@ def _dm_context_packet(
     for result in pre_validation.get('validatedActions') or []:
         if not isinstance(result, dict):
             continue
+        original = result.get('originalAction') if isinstance(result.get('originalAction'), dict) else {}
         normalized = result.get('normalizedAction') if isinstance(result.get('normalizedAction'), dict) else {}
         resolution = normalized.get('resolution') if isinstance(normalized.get('resolution'), dict) else None
-        summary = result.get('reason') or result.get('status')
+        action_label = normalized.get('summary') or original.get('summary') or original.get('sourceText')
+        reason = result.get('reason') or result.get('status')
+        summary = action_label if action_label else reason
+        if action_label and reason and reason != action_label:
+            summary = f"{action_label} ({reason})"
         validated_actions.append(
             {
                 'status': result.get('status'),
                 'summary': summary,
-                'type': (result.get('originalAction') or {}).get('type') if isinstance(result.get('originalAction'), dict) else None,
+                'type': original.get('type'),
                 'resolvedItem': (
                     {
                         'itemId': resolution.get('itemId'),
@@ -229,6 +234,8 @@ def _dm_context_packet(
         ],
         'dmInstructions': [
             'Narrate valid actions as possible.',
+            'Anchor narration to the latest playerMessage and validatedActions.',
+            'Do not substitute a different known object for the object named or described in the latest playerMessage.',
             'Do not narrate invalid actions as successful.',
             'If an action is invalid, explain it naturally in-world.',
             'Do not output JSON.',

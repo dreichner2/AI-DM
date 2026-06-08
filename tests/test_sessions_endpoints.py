@@ -537,7 +537,7 @@ def test_delete_session_removes_session_owned_rows(client, app):
         assert TurnCanonUpdate.query.filter_by(turn_id=turn_id).count() == 0
 
 
-def test_delete_session_clears_canon_turn_references(client, app):
+def test_hard_delete_session_removes_session_origin_canon(client, app):
     ids = seed_world_campaign_player_session(app)
 
     with app.app_context():
@@ -586,19 +586,9 @@ def test_delete_session_clears_canon_turn_references(client, app):
     assert response.status_code == 200
 
     with app.app_context():
-        entity = db.session.get(StoryEntity, entity_id)
-        fact = db.session.get(StoryFact, fact_id)
-        thread = db.session.get(StoryThread, thread_id)
-        assert entity is not None
-        assert entity.session_id is None
-        assert entity.first_seen_turn_id is None
-        assert entity.last_seen_turn_id is None
-        assert fact is not None
-        assert fact.source_turn_id is None
-        assert thread is not None
-        assert thread.origin_turn_id is None
-        assert thread.last_touched_turn_id is None
-        assert thread.resolved_turn_id is None
+        assert db.session.get(StoryEntity, entity_id) is None
+        assert db.session.get(StoryFact, fact_id) is None
+        assert db.session.get(StoryThread, thread_id) is None
 
 
 def test_delete_session_archives_and_restore_resurfaces_in_lists(client, app):

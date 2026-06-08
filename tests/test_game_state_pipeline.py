@@ -116,6 +116,36 @@ def test_pre_dm_helper_debug_captures_raw_response(app, monkeypatch):
     assert result['debug']['fallbackRan'] is False
 
 
+def test_pre_dm_helper_intent_description_becomes_summary(app, monkeypatch):
+    class FakeProvider:
+        def generate(self, _request):
+            return ProviderResponse(
+                text=(
+                    '{"declaredActions":[{"id":"act_001","type":"generic.intent","actorId":"player_1",'
+                    '"confidence":0.9,"sourceText":"I pick this random thing up. Looks like 50 Shades of Grey",'
+                    '"requiresDMResolution":true,'
+                    '"intentDescription":"Player wants to pick up an object from the floor described as 50 Shades of Grey."}]}'
+                ),
+                provider='fake',
+                model='fake-pre-helper',
+            )
+
+    monkeypatch.setattr(pre_extractor_module, 'get_helper_provider', lambda: FakeProvider())
+
+    with app.app_context():
+        app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
+        result = extract_pre_dm_actions(
+            current_state={},
+            player_message='I pick this random thing up. Looks like 50 Shades of Grey',
+            recent_timeline=[],
+            actor_id='player_1',
+        )
+
+    assert result['declaredActions'][0]['summary'] == (
+        'Player wants to pick up an object from the floor described as 50 Shades of Grey.'
+    )
+
+
 def test_pre_dm_helper_debug_records_fallback_reason(app, monkeypatch):
     class FakeProvider:
         def generate(self, _request):
@@ -179,6 +209,26 @@ def test_reject_consume_missing_item():
 
     assert result['validatedActions'][0]['status'] == 'invalid'
     assert 'does not have' in result['validatedActions'][0]['reason']
+
+
+def test_generic_intent_summary_anchors_dm_context():
+    result = validate_declared_actions(
+        state=_state(),
+        declared_actions=[
+            {
+                'id': 'act_001',
+                'type': 'generic.intent',
+                'actorId': 'player_1',
+                'confidence': 0.9,
+                'sourceText': 'I pick this random thing up. Looks like 50 Shades of Grey',
+                'requiresDMResolution': True,
+                'summary': 'Player wants to pick up an object described as 50 Shades of Grey.',
+            }
+        ],
+        current_turn=12,
+    )
+
+    assert 'Player wants to pick up an object described as 50 Shades of Grey.' in result['dmContextSummary']
 
 
 def test_apply_inventory_remove_quantity_and_delete_zero():
@@ -340,6 +390,43 @@ def test_valid_empty_post_dm_helper_response_prevents_fallback(app, monkeypatch)
     assert result['debug']['helperParsed']['proposedChanges'] == []
 
 
+def test_post_dm_helper_string_item_is_normalized_and_gets_turn_scoped_id(app, monkeypatch):
+    class FakeProvider:
+        def generate(self, _request):
+            return ProviderResponse(
+                text=(
+                    '{"proposedChanges":[{"type":"inventory.add","target":"player_1",'
+                    '"item":"Wedged Stick (tripwire remnants attached, inert)","quantity":1}],'
+                    '"uncertainChanges":[],"notes":"The DM explicitly says the item is gained."}'
+                ),
+                provider='fake',
+                model='fake-helper',
+            )
+
+    monkeypatch.setattr(post_extractor_module, 'get_helper_provider', lambda: FakeProvider())
+
+    with app.app_context():
+        app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
+        result = extract_post_dm_outcomes(
+            state_before_dm={},
+            player_message='I roll a d20: 20',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='Danny gains: Wedged Stick (tripwire remnants attached, inert).',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=222,
+        )
+
+    change = result['proposedChanges'][0]
+    assert change['actorId'] == 'player_1'
+    assert change['itemName'] == 'Wedged Stick (tripwire remnants attached, inert)'
+    assert change['item']['name'] == 'Wedged Stick (tripwire remnants attached, inert)'
+    assert change['id'].startswith('chg_')
+    assert change['id'] != 'post_chg_001'
+    assert change['turnId'] == 222
+
+
 def test_valid_empty_post_dm_helper_response_with_string_notes_prevents_fallback(app, monkeypatch):
     class FakeProvider:
         def generate(self, _request):
@@ -480,6 +567,30 @@ def test_post_dm_pipeline_skips_extraction_for_pending_roll_turn(app):
         assert result['postAppliedChanges'] == []
         assert item_names == ['Smooth Stone']
         assert TurnEvent.query.filter_by(turn_id=turn.turn_id, event_type='state_update').count() == 0
+
+
+def test_validate_state_changes_does_not_treat_new_turn_fallback_id_as_duplicate():
+    state = _state(items=[])
+    state['stateChangeLedger'] = [{'id': 'post_chg_001', 'type': 'inventory.remove', 'source': 'post_dm'}]
+
+    normalized = normalize_post_extraction(
+        {
+            'proposedChanges': [
+                {
+                    'id': 'chg_new_turn_add',
+                    'type': 'inventory.add',
+                    'actorId': 'player_1',
+                    'item': 'Wedged Stick',
+                    'quantity': 1,
+                }
+            ]
+        },
+        fallback_actor_id='player_1',
+    )
+    validation = validate_state_changes(state=state, changes=normalized['proposedChanges'])
+
+    assert validation['accepted'][0]['change']['itemName'] == 'Wedged Stick'
+    assert validation['rejected'] == []
 
 
 def test_validate_inventory_add_accepts_nested_item_quantity():
