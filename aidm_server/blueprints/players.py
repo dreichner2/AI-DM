@@ -5,6 +5,7 @@ import logging
 from flask import Blueprint, jsonify, request
 
 from aidm_server.canon_inventory import inventory_payload
+from aidm_server.character_state import serialize_stats_payload
 from aidm_server.database import db
 from aidm_server.errors import error_response
 from aidm_server.models import DmTurn, Player, PlayerAction, TurnEvent, safe_json_dumps
@@ -69,6 +70,10 @@ def add_player(campaign_id):
     race, race_error = _optional_text(payload.get('race', ''), max_length=80, field='race')
     if race_error:
         return error_response('validation_error', race_error, 400)
+    sex, sex_error = _optional_text(payload.get('sex', ''), max_length=40, field='sex')
+    if sex_error:
+        return error_response('validation_error', sex_error, 400)
+    sex = sex or 'male'
     class_name, class_error = _optional_text(
         payload.get('char_class', payload.get('class_', '')),
         max_length=80,
@@ -81,6 +86,10 @@ def add_player(campaign_id):
         return error_response('validation_error', 'level must be an integer from 1 to 20.', 400)
 
     try:
+        stats_payload, stats_error = serialize_stats_payload(payload.get('stats'), level=level)
+        if stats_error:
+            return error_response('validation_error', stats_error, 400)
+
         raw_inventory = payload.get('inventory')
         new_player = Player(
             workspace_id=current_workspace_id(),
@@ -88,9 +97,10 @@ def add_player(campaign_id):
             name=name,
             character_name=character_name,
             race=race,
+            sex=sex,
             class_=class_name,
             level=level,
-            stats=_structured_text(payload.get('stats')),
+            stats=stats_payload,
             inventory=(safe_json_dumps(inventory_payload(raw_inventory), []) if raw_inventory is not None else None),
             character_sheet=_structured_text(payload.get('character_sheet')),
         )
@@ -141,6 +151,7 @@ def update_player(player_id):
         'name': (80, True),
         'character_name': (80, True),
         'race': (80, False),
+        'sex': (40, False),
     }
     try:
         for field, (max_length, required) in text_fields.items():
@@ -152,6 +163,8 @@ def update_player(player_id):
                 value, error = _optional_text(payload.get(field), max_length=max_length, field=field)
             if error:
                 return error_response('validation_error', error, 400)
+            if field == 'sex' and not value:
+                value = 'male'
             setattr(player, field, value)
 
         if 'class_' in payload or 'char_class' in payload:
@@ -171,7 +184,10 @@ def update_player(player_id):
             player.level = level
 
         if 'stats' in payload:
-            player.stats = _structured_text(payload.get('stats'))
+            stats_payload, stats_error = serialize_stats_payload(payload.get('stats'), level=player.level or 1)
+            if stats_error:
+                return error_response('validation_error', stats_error, 400)
+            player.stats = stats_payload
         if 'character_sheet' in payload:
             player.character_sheet = _structured_text(payload.get('character_sheet'))
         if 'inventory' in payload:

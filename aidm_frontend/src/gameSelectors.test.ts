@@ -5,6 +5,7 @@ import {
   buildTimeline,
   canonFactsFromMemorySnippets,
   inventoryCapacity,
+  inventoryGoldLabel,
   inventoryWeightLabel,
   itemOptionsFromInventory,
   memorySnippetRecords,
@@ -41,6 +42,9 @@ describe('game selector helpers', () => {
     ])
     expect(inventoryCapacity({ carrying_capacity: 120 })).toBe(120)
     expect(inventoryWeightLabel(inventory, 120)).toBe('Weight 56 / 120 lb')
+    expect(inventoryGoldLabel({ gold: 12 })).toBe('12 gp')
+    expect(inventoryGoldLabel({ stats: { gold_pieces: 1250 } })).toBe('1.3K gp')
+    expect(inventoryGoldLabel({ gold: 0, copper: 10 })).toBe('0 gp · 10 cp')
 
     const statBlock = normalizeStats(
       { strength: 16, dexterity: 12, constitution: 9 },
@@ -70,14 +74,14 @@ describe('game selector helpers', () => {
         entry_type: 'player',
         message: 'Ember: I inspect the gate.',
         timestamp: '2026-06-06T01:00:00Z',
-        metadata: { turn_id: 11 },
+        metadata: { turn_id: 11, turn_number: 1 },
       },
       {
         id: 2,
         entry_type: 'dm',
         message: 'DM: The gate hums.',
         timestamp: '2026-06-06T01:00:02Z',
-        metadata: { turn_id: 11 },
+        metadata: { turn_id: 11, turn_number: 1 },
       },
       {
         id: 3,
@@ -103,6 +107,7 @@ describe('game selector helpers', () => {
       optimisticEntries,
       streamingTurn: {
         turnId: 12,
+        turnNumber: 2,
         text: 'A whisper answers.',
         requiresRoll: true,
         rulesHint: { roll_type: 'perception' },
@@ -121,10 +126,10 @@ describe('game selector helpers', () => {
       role: 'player',
       speaker: 'Ember',
       text: 'I inspect the gate.',
-      metadata: { turn_id: 11, persistence_status: 'persisted' },
+      metadata: { turn_id: 11, turn_number: 1, persistence_status: 'persisted' },
     })
     expect(timeline[2]).toMatchObject({ role: 'system', speaker: 'System', text: 'Welcome to the table.' })
-    expect(turnNumber(timeline[0], 0)).toBe(11)
+    expect(turnNumber(timeline[0], 0)).toBe(1)
     expect(turnPersistenceLabel(timeline.at(-1) as TimelineEntry)).toBe('streaming')
   })
 
@@ -138,6 +143,7 @@ describe('game selector helpers', () => {
         timestamp: null,
         metadata: {
           turn_id: 10,
+          turn_number: 1,
           requires_roll: true,
           outcome_status: 'deferred',
           rule_type: 'thieves_tools',
@@ -169,7 +175,7 @@ describe('game selector helpers', () => {
     expect(pendingRollOptionsFromTimeline(timeline)).toEqual([
       {
         turnId: 10,
-        label: 'Turn 10: thieves tools',
+        label: 'Turn 1: thieves tools',
         detail: 'The lock resists your tools.',
       },
     ])
@@ -183,6 +189,8 @@ describe('game selector helpers', () => {
       name: 'Danny',
       character_name: 'Ember',
       race: 'Elf',
+      sex: 'female',
+      profile_image: '/profile-icons/elf_female.png',
       class_: 'Wizard',
       char_class: 'Wizard',
       level: 2,

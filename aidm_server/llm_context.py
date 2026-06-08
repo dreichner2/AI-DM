@@ -7,6 +7,7 @@ import json
 from sqlalchemy import func
 
 from aidm_server.canon_inventory import inventory_payload
+from aidm_server.character_state import character_state_for_player
 from aidm_server.database import db
 from aidm_server.emergent_memory import build_emergent_context
 from aidm_server.models import (
@@ -94,6 +95,7 @@ def build_dm_context(world_id, campaign_id, session_id=None, max_turns: int = 8,
                 'race': player.race,
                 'class': player.class_,
                 'level': player.level,
+                'state': character_state_for_player(player),
                 'inventory': inventory_payload(player.inventory),
                 'recent_actions': recent_actions_map.get(player.player_id, []),
             }
@@ -142,12 +144,16 @@ def build_dm_context(world_id, campaign_id, session_id=None, max_turns: int = 8,
         )
         for turn in pending_turns:
             turn_hint = safe_json_loads(turn.rules_hint, {})
+            turn_metadata = safe_json_loads(turn.metadata_json, {})
+            turn_metadata = turn_metadata if isinstance(turn_metadata, dict) else {}
             pending_checks.append(
                 {
                     'turn_id': turn.turn_id,
                     'player_input': turn.player_input,
                     'rule_type': turn.rule_type,
                     'dc_hint': turn_hint.get('dc_hint') if isinstance(turn_hint, dict) else None,
+                    'turn_number': turn_hint.get('turn_number') if isinstance(turn_hint, dict) else None,
+                    'roll_gate': turn_metadata.get('roll_gate'),
                 }
             )
 

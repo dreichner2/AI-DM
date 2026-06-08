@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from aidm_server.action_intent import apply_action_intent_to_rule_hint, validate_action_intent
+from aidm_server.action_intent import (
+    apply_action_intent_to_rule_hint,
+    has_reserved_admin_prefix,
+    strip_reserved_admin_prefix,
+    validate_action_intent,
+)
 from aidm_server.rules import RuleHint
 
 
@@ -11,6 +16,7 @@ def test_validate_roll_action_intent_normalizes_roll_metadata():
             'source': 'dice_roller',
             'text': 'I roll a d20+2: 18 = 20',
             'client_message_id': 'local-test-1',
+            'ability': {'key': 'dexterity', 'label': 'DEX', 'modifier': 2},
             'roll': {
                 'die': 'D20',
                 'mode': 'advantage',
@@ -32,6 +38,7 @@ def test_validate_roll_action_intent_normalizes_roll_metadata():
     assert intent['roll']['die'] == 'd20'
     assert intent['roll']['total'] == 20
     assert intent['roll']['target_pending_turn_id'] == 42
+    assert intent['ability'] == {'key': 'dexterity', 'label': 'DEX', 'modifier': 2}
 
 
 def test_validate_roll_action_rejects_inconsistent_total():
@@ -83,6 +90,7 @@ def test_apply_roll_intent_overrides_natural_language_rule_hint():
     intent, error = validate_action_intent(
         {
             'kind': 'roll',
+            'ability': {'key': 'strength', 'label': 'STR', 'modifier': 3},
             'roll': {
                 'die': 'd20',
                 'mode': 'normal',
@@ -99,7 +107,7 @@ def test_apply_roll_intent_overrides_natural_language_rule_hint():
     updated = apply_action_intent_to_rule_hint(intent, hint)
 
     assert updated.requires_roll is True
-    assert updated.roll_type == 'check'
+    assert updated.roll_type == 'strength'
     assert updated.roll_value == 20
     assert updated.outcome_deferred is False
     assert updated.confidence == 0.99
@@ -115,7 +123,9 @@ def test_validate_ability_and_item_intents():
     item, item_error = validate_action_intent(
         {
             'kind': 'item',
+            'inventory_action': 'buy',
             'item': {'name': 'Healing Potion', 'quantity': 2},
+            'cost_gold': '5',
         }
     )
 
@@ -123,6 +133,22 @@ def test_validate_ability_and_item_intents():
     assert item_error is None
     assert ability['ability']['key'] == 'strength'
     assert item['item']['name'] == 'Healing Potion'
+    assert item['inventory_action'] == 'buy'
+    assert item['cost_gold'] == 5
+
+
+def test_validate_item_intent_rejects_non_items():
+    intent, error = validate_action_intent(
+        {
+            'kind': 'item',
+            'inventory_action': 'pick_up',
+            'item': {'name': 'hope', 'quantity': 1},
+            'cost_gold': 0,
+        }
+    )
+
+    assert intent is None
+    assert error == 'item.name must be a tangible inventory item.'
 
 
 def test_validate_interaction_intent_normalizes_target_metadata():
@@ -170,3 +196,19 @@ def test_validate_admin_action_intent_normalizes_without_passcode():
         'source': 'composer',
         'client_message_id': 'admin-1',
     }
+
+
+def test_reserved_admin_prefix_detection_matches_auth_only_markers():
+    assert has_reserved_admin_prefix('[ADMIN] open the door')
+    assert has_reserved_admin_prefix('(ADMIN) open the door')
+    assert has_reserved_admin_prefix('/ADMIN/ open the door')
+    assert has_reserved_admin_prefix('/ADMIN open the door')
+    assert not has_reserved_admin_prefix('I ask the admin for help')
+    assert not has_reserved_admin_prefix('/administer the potion')
+
+
+def test_reserved_admin_prefix_strip_removes_one_authenticated_marker():
+    assert strip_reserved_admin_prefix('[ADMIN] open the door') == 'open the door'
+    assert strip_reserved_admin_prefix('(ADMIN) open the door') == 'open the door'
+    assert strip_reserved_admin_prefix('/ADMIN/ open the door') == 'open the door'
+    assert strip_reserved_admin_prefix('/ADMIN open the door') == 'open the door'

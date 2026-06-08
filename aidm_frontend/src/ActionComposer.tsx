@@ -3,8 +3,9 @@ import { MessagesSquare, Volume2, VolumeX, X } from 'lucide-react'
 import { ThinIcon } from './AppChrome'
 import {
   DICE_OPTIONS,
+  INVENTORY_ACTION_OPTIONS,
   INTERACTION_TYPE_OPTIONS,
-  abilityActionText,
+  PLAIN_ROLL_ABILITY_KEY,
   composerModeLabel,
   interactionActionText,
   itemActionText,
@@ -12,6 +13,7 @@ import {
   type ComposerMode,
   type InteractionTarget,
   type InteractionType,
+  type InventoryAction,
   type ItemOption,
   type RollMode,
 } from './gameActions'
@@ -50,17 +52,26 @@ export type ActionComposerProps = {
   rollTargetPendingTurnId: string
   setRollTargetPendingTurnId: Dispatch<SetStateAction<string>>
   selectedAbility: AbilityOption | null
+  selectedAbilityKey: string
   abilityOptions: AbilityOption[]
-  setSelectedAbilityKey: Dispatch<SetStateAction<string>>
+  updateRollAbilityKey: (key: string) => void
   interactionTargets: InteractionTarget[]
   selectedInteractionTarget: InteractionTarget | null
   selectedInteractionTargetId: string
   selectedInteractionType: InteractionType
   setSelectedInteractionTargetId: Dispatch<SetStateAction<string>>
   setSelectedInteractionType: Dispatch<SetStateAction<InteractionType>>
+  selectedInventoryAction: InventoryAction
   selectedItem: ItemOption | null
+  itemDraftName: string
+  itemQuantity: string
+  itemCostGold: string
   itemOptions: ItemOption[]
   setSelectedItemName: Dispatch<SetStateAction<string>>
+  setItemQuantity: Dispatch<SetStateAction<string>>
+  updateSelectedInventoryAction: (action: InventoryAction) => void
+  updateItemDraftName: (name: string) => void
+  updateItemCostGold: (cost: string) => void
 }
 
 export function ActionComposer({
@@ -96,20 +107,31 @@ export function ActionComposer({
   rollTargetPendingTurnId,
   setRollTargetPendingTurnId,
   selectedAbility,
+  selectedAbilityKey,
   abilityOptions,
-  setSelectedAbilityKey,
+  updateRollAbilityKey,
   interactionTargets,
   selectedInteractionTarget,
   selectedInteractionTargetId,
   selectedInteractionType,
   setSelectedInteractionTargetId,
   setSelectedInteractionType,
+  selectedInventoryAction,
   selectedItem,
+  itemDraftName,
+  itemQuantity,
+  itemCostGold,
   itemOptions,
   setSelectedItemName,
+  setItemQuantity,
+  updateSelectedInventoryAction,
+  updateItemDraftName,
+  updateItemCostGold,
 }: ActionComposerProps) {
   const characterName = selectedCharacterName ?? 'I'
   const adminUnlockRef = useRef({ count: 0, startedAt: 0 })
+  const inventoryActionUsesOwnedItem = ['use', 'drop', 'give', 'sell'].includes(selectedInventoryAction)
+  const currentItemName = inventoryActionUsesOwnedItem ? selectedItem?.name ?? itemDraftName : itemDraftName
 
   const handleActionLabelClick = () => {
     const now = Date.now()
@@ -160,7 +182,7 @@ export function ActionComposer({
               aria-label="Dice mode"
               aria-pressed={composerMode === 'roll'}
               className={composerMode === 'roll' ? 'selected' : ''}
-              onClick={() => startDiceRoll()}
+              onClick={() => applyComposerMode('roll')}
               onFocus={preloadDiceRollDialog}
               onMouseEnter={preloadDiceRollDialog}
               disabled={sendPending}
@@ -220,6 +242,18 @@ export function ActionComposer({
       {composerMode === 'roll' ? (
         <div className="action-intent-panel" aria-label="Roll options">
           <select
+            value={selectedAbilityKey}
+            aria-label="Roll ability"
+            onChange={(event) => updateRollAbilityKey(event.target.value)}
+          >
+            <option value={PLAIN_ROLL_ABILITY_KEY}>Plain roll</option>
+            {abilityOptions.map((ability) => (
+              <option key={ability.key} value={ability.key}>
+                {ability.label} {ability.modifier}
+              </option>
+            ))}
+          </select>
+          <select
             value={rollMode}
             aria-label="Roll mode"
             onChange={(event) => setRollMode(event.target.value as RollMode)}
@@ -259,41 +293,36 @@ export function ActionComposer({
               ))}
             </select>
           ) : null}
-          <span>Hidden until landed</span>
-        </div>
-      ) : null}
-      {composerMode === 'ability' ? (
-        <div className="action-intent-panel" aria-label="Ability options">
-          <select
-            value={selectedAbility?.key ?? ''}
-            aria-label="Select ability"
-            onChange={(event) => {
-              const nextAbility =
-                abilityOptions.find((ability) => ability.key === event.target.value) ?? null
-              setSelectedAbilityKey(event.target.value)
-              setActionText((current) => abilityActionText(characterName, nextAbility, current))
-            }}
-          >
-            {abilityOptions.map((ability) => (
-              <option key={ability.key} value={ability.key}>
-                {ability.label} {ability.modifier}
-              </option>
-            ))}
-          </select>
-          <span>{selectedAbility ? `${selectedAbility.score} score` : 'No stats'}</span>
+          <span>{selectedAbility ? `${selectedAbility.score} score` : 'No ability check'}</span>
+          <button type="button" aria-label="Roll dice" onClick={() => startDiceRoll()} disabled={sendPending}>
+            <ThinIcon name="dice" size={15} /> Roll
+          </button>
         </div>
       ) : null}
       {composerMode === 'item' ? (
-        <div className="action-intent-panel" aria-label="Item options">
+        <div className="action-intent-panel item-intent-panel" aria-label="Item options">
+          <select
+            value={selectedInventoryAction}
+            aria-label="Inventory action"
+            onChange={(event) => updateSelectedInventoryAction(event.target.value as InventoryAction)}
+          >
+            {INVENTORY_ACTION_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
           <select
             value={selectedItem?.name ?? ''}
-            aria-label="Select item"
+            aria-label="Inventory item"
             onChange={(event) => {
               const nextItem = itemOptions.find((item) => item.name === event.target.value) ?? null
               setSelectedItemName(event.target.value)
-              setActionText((current) => itemActionText(characterName, nextItem, current))
+              setActionText((current) =>
+                itemActionText(characterName, selectedInventoryAction, nextItem?.name ?? itemDraftName, current, itemCostGold),
+              )
             }}
-            disabled={!itemOptions.length}
+            disabled={!inventoryActionUsesOwnedItem || !itemOptions.length}
           >
             {itemOptions.length ? (
               itemOptions.map((item) => (
@@ -305,6 +334,34 @@ export function ActionComposer({
               <option value="">No inventory</option>
             )}
           </select>
+          <input
+            type="text"
+            value={inventoryActionUsesOwnedItem ? currentItemName : itemDraftName}
+            aria-label="Item name"
+            maxLength={80}
+            placeholder={inventoryActionUsesOwnedItem ? 'Inventory item' : 'Item name'}
+            onChange={(event) => updateItemDraftName(event.target.value)}
+            disabled={inventoryActionUsesOwnedItem}
+          />
+          <input
+            type="number"
+            value={itemQuantity}
+            aria-label="Item quantity"
+            min={1}
+            max={999}
+            onChange={(event) => setItemQuantity(event.target.value)}
+          />
+          {selectedInventoryAction === 'buy' || selectedInventoryAction === 'sell' ? (
+            <input
+              type="number"
+              value={itemCostGold}
+              aria-label="Gold cost"
+              min={0}
+              max={99999}
+              onChange={(event) => updateItemCostGold(event.target.value)}
+            />
+          ) : null}
+          <span>{inventoryActionUsesOwnedItem ? 'Held item' : 'Attempt'}</span>
         </div>
       ) : null}
       {composerMode === 'interact' ? (
@@ -370,7 +427,7 @@ export function ActionComposer({
           type="button"
           className={composerMode === 'roll' ? 'selected' : ''}
           aria-pressed={composerMode === 'roll'}
-          onClick={() => startDiceRoll()}
+          onClick={() => applyComposerMode('roll')}
           onFocus={preloadDiceRollDialog}
           onMouseEnter={preloadDiceRollDialog}
           disabled={sendPending}
@@ -389,14 +446,6 @@ export function ActionComposer({
             </option>
           ))}
         </select>
-        <button
-          type="button"
-          className={composerMode === 'ability' ? 'selected' : ''}
-          aria-pressed={composerMode === 'ability'}
-          onClick={() => applyComposerMode('ability')}
-        >
-          <ThinIcon name="bolt" size={16} /> Ability
-        </button>
         <button
           type="button"
           className={composerMode === 'item' ? 'selected' : ''}

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from aidm_server.action_intent import ACTION_ID_RE, validate_action_intent
+from aidm_server.action_intent import ACTION_ID_RE, has_reserved_admin_prefix, validate_action_intent
 from aidm_server.errors import build_error
 from aidm_server.validation import coerce_int
 
@@ -77,8 +77,9 @@ def new_message_payload(
     context_version: str,
     action_intent: dict[str, Any] | None,
     client_message_id: str | None,
+    turn_number: int | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         'message': message,
         'speaker': speaker,
         'turn_id': turn_id,
@@ -88,6 +89,9 @@ def new_message_payload(
         'action_intent': action_intent,
         'client_message_id': client_message_id,
     }
+    if turn_number is not None:
+        payload['turn_number'] = turn_number
+    return payload
 
 
 def roll_required_payload(
@@ -97,14 +101,18 @@ def roll_required_payload(
     rule_type: str,
     dc_hint: str | None,
     prompt: str,
+    remaining_player_ids: list[int] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         'session_id': session_id,
         'pending_turn_id': pending_turn_id,
         'rule_type': rule_type,
         'dc_hint': dc_hint,
         'prompt': prompt,
     }
+    if remaining_player_ids is not None:
+        payload['remaining_player_ids'] = remaining_player_ids
+    return payload
 
 
 def dm_response_start_payload(
@@ -114,14 +122,18 @@ def dm_response_start_payload(
     requires_roll: bool,
     rules_hint: dict[str, Any],
     context_version: str,
+    turn_number: int | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         'session_id': session_id,
         'turn_id': turn_id,
         'requires_roll': requires_roll,
         'rules_hint': rules_hint,
         'context_version': context_version,
     }
+    if turn_number is not None:
+        payload['turn_number'] = turn_number
+    return payload
 
 
 def dm_chunk_payload(
@@ -132,6 +144,7 @@ def dm_chunk_payload(
     requires_roll: bool,
     rules_hint: dict[str, Any],
     context_version: str,
+    turn_number: int | None = None,
 ) -> dict[str, Any]:
     payload = dm_response_start_payload(
         session_id=session_id,
@@ -139,6 +152,7 @@ def dm_chunk_payload(
         requires_roll=requires_roll,
         rules_hint=rules_hint,
         context_version=context_version,
+        turn_number=turn_number,
     )
     payload['chunk'] = chunk
     return payload
@@ -153,6 +167,7 @@ def dm_response_end_payload(
     context_version: str,
     ok: bool,
     error: str | None = None,
+    turn_number: int | None = None,
 ) -> dict[str, Any]:
     payload = dm_response_start_payload(
         session_id=session_id,
@@ -160,6 +175,7 @@ def dm_response_end_payload(
         requires_roll=requires_roll,
         rules_hint=rules_hint,
         context_version=context_version,
+        turn_number=turn_number,
     )
     payload['ok'] = ok
     if error:
@@ -252,6 +268,14 @@ def validate_send_message_payload(data: Any) -> tuple[SendMessagePayload | None,
 
     if not session_id or not campaign_id or not player_id or not user_input:
         return None, _validation_error('Invalid message payload types.')
+
+    if (not action_intent or action_intent.get('kind') != 'admin') and has_reserved_admin_prefix(user_input):
+        return None, SocketContractError(
+            error_code='admin_prefix_reserved',
+            message='Admin-prefixed messages require authenticated Admin mode.',
+            telemetry_suffix='admin_prefix_reserved',
+            telemetry_payload={'session_id': session_id, 'player_id': player_id},
+        )
 
     if manual_segment_ids:
         return None, SocketContractError(

@@ -10,7 +10,17 @@ from aidm_server.emergent_memory import (
     refresh_session_projection,
     validate_canon_patch,
 )
-from aidm_server.models import DmTurn, Player, SessionState, StoryEntity, StoryFact, StoryThread, TurnCanonUpdate, safe_json_loads
+from aidm_server.models import (
+    DmTurn,
+    Player,
+    SessionState,
+    StoryEntity,
+    StoryFact,
+    StoryThread,
+    TurnCanonUpdate,
+    safe_json_dumps,
+    safe_json_loads,
+)
 from tests.helpers import seed_world_campaign_player_session
 
 
@@ -327,6 +337,466 @@ def test_inventory_validation_rejects_abstract_or_directional_phrases(app):
         }
 
 
+def test_inventory_validation_accepts_improvised_physical_objects(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        turn = _create_turn(
+            app,
+            ids,
+            player_input='I gather whatever is useful.',
+            dm_output='You pick up a stick, a rock, a rag, and a cup.',
+        )
+
+        patch = {
+            'inventory_changes': [
+                {'action': 'acquire', 'item_name': 'stick'},
+                {'action': 'acquire', 'item_name': 'rock'},
+                {'action': 'acquire', 'item_name': 'rag'},
+                {'action': 'acquire', 'item_name': 'cup'},
+                {'action': 'acquire', 'item_name': 'hope'},
+                {'action': 'acquire', 'item_name': 'permission'},
+                {'action': 'acquire', 'item_name': 'a look'},
+            ]
+        }
+        validated_patch, rejections = validate_canon_patch(turn, turn.campaign, patch)
+
+        assert validated_patch['inventory_changes'] == [
+            {'action': 'acquire', 'item_name': 'stick', 'quantity': 1},
+            {'action': 'acquire', 'item_name': 'rock', 'quantity': 1},
+            {'action': 'acquire', 'item_name': 'rag', 'quantity': 1},
+            {'action': 'acquire', 'item_name': 'cup', 'quantity': 1},
+        ]
+        assert {rejection['item_name'] for rejection in rejections} == {'hope', 'permission', 'look'}
+
+
+def test_extract_canon_patch_applies_explicit_inventory_state_change(app, monkeypatch):
+    ids = seed_world_campaign_player_session(app)
+    monkeypatch.setattr('aidm_server.emergent_memory._extract_with_provider', lambda *args, **kwargs: (None, None))
+
+    with app.app_context():
+        turn = _create_turn(
+            app,
+            ids,
+            player_input='I roll a d20:16',
+            dm_output=(
+                'You now hold a sturdy, palm-worn stick in your hand.\n\n'
+                '*(State change: Player 16 **gains** 1 Stick to inventory.)*'
+            ),
+        )
+
+        patch, extractor_model = extract_canon_patch(
+            turn=turn,
+            campaign=turn.campaign,
+            dm_output=turn.dm_output,
+            speaking_player_name='test',
+            triggered_segments=[],
+        )
+
+        assert extractor_model in {'heuristic-v1', 'provider', 'fallback'}
+        assert patch['inventory_changes'] == [
+            {'action': 'acquire', 'item_name': 'Stick', 'quantity': 1}
+        ]
+
+        validated_patch, rejections = validate_canon_patch(turn, turn.campaign, patch)
+        assert rejections == []
+        apply_canon_patch(turn, turn.campaign, validated_patch, 'test-extractor', rejections)
+        db.session.commit()
+
+        player = db.session.get(Player, ids['player_id'])
+        assert safe_json_loads(player.inventory, []) == [{'name': 'Stick', 'quantity': 1, 'weight': 0.5}]
+
+
+def test_explicit_currency_state_change_adds_weighted_coin_item_and_copper(app, monkeypatch):
+    ids = seed_world_campaign_player_session(app)
+    monkeypatch.setattr('aidm_server.emergent_memory._extract_with_provider', lambda *args, **kwargs: (None, None))
+
+    with app.app_context():
+        turn = _create_turn(
+            app,
+            ids,
+            player_input='I roll a d20:18',
+            dm_output=(
+                'With a careful, practiced motion, you sweep them into a neat palmful. '
+                'Ten cold, weighty disks clink gently as they settle in your grip.\n\n'
+                f'*(State change: Player {ids["player_id"]} **gains** 10 copper pieces (Ancient Copper Coins).)*'
+            ),
+        )
+
+        patch, _extractor_model = extract_canon_patch(
+            turn=turn,
+            campaign=turn.campaign,
+            dm_output=turn.dm_output,
+            speaking_player_name='test',
+            triggered_segments=[],
+        )
+
+        assert patch['inventory_changes'] == [
+            {'action': 'acquire', 'item_name': 'Ancient Copper Coins', 'quantity': 10}
+        ]
+
+        validated_patch, rejections = validate_canon_patch(turn, turn.campaign, patch)
+        assert rejections == []
+        applied_summary = apply_canon_patch(turn, turn.campaign, validated_patch, 'test-extractor', rejections)
+        db.session.commit()
+
+        player = db.session.get(Player, ids['player_id'])
+        assert safe_json_loads(player.inventory, []) == [
+            {'name': 'Ancient Copper Coins', 'quantity': 10, 'weight': 0.02}
+        ]
+        stats = safe_json_loads(player.stats, {})
+        assert stats['copper'] == 10
+        assert applied_summary['character_state_changes_applied'][0]['currency_delta'] == {'copper': 10}
+
+
+def test_provider_inventory_fact_can_verify_missed_inventory_change(app, monkeypatch):
+    ids = seed_world_campaign_player_session(app)
+
+    def fake_provider_patch(*args, **kwargs):
+        return (
+            {
+                'facts': [
+                    {
+                        'predicate': 'inventory_status',
+                        'value_text': 'The character now carries 10 ancient copper coins.',
+                    }
+                ],
+                'inventory_changes': [],
+            },
+            'inventory-verifier-test',
+        )
+
+    monkeypatch.setattr('aidm_server.emergent_memory._extract_with_provider', fake_provider_patch)
+
+    with app.app_context():
+        turn = _create_turn(
+            app,
+            ids,
+            player_input='I collect the coins.',
+            dm_output='You collect ten ancient copper coins and close your fist around them.',
+        )
+
+        patch, extractor_model = extract_canon_patch(
+            turn=turn,
+            campaign=turn.campaign,
+            dm_output=turn.dm_output,
+            speaking_player_name='test',
+            triggered_segments=[],
+        )
+
+        assert extractor_model == 'inventory-verifier-test'
+        assert patch['inventory_changes'] == [
+            {'action': 'acquire', 'item_name': 'ancient copper coins', 'quantity': 10}
+        ]
+
+
+def test_provider_inventory_fact_without_text_evidence_is_ignored(app, monkeypatch):
+    ids = seed_world_campaign_player_session(app)
+
+    def fake_provider_patch(*args, **kwargs):
+        return (
+            {
+                'facts': [
+                    {
+                        'predicate': 'inventory_status',
+                        'value_text': 'The character now carries 1 flawless diamond.',
+                    }
+                ],
+                'inventory_changes': [{'action': 'acquire', 'item_name': 'flawless diamond', 'quantity': 1}],
+            },
+            'inventory-verifier-test',
+        )
+
+    monkeypatch.setattr('aidm_server.emergent_memory._extract_with_provider', fake_provider_patch)
+
+    with app.app_context():
+        turn = _create_turn(
+            app,
+            ids,
+            player_input='I check the empty hollow.',
+            dm_output='You find nothing new in the hollow.',
+        )
+
+        patch, _extractor_model = extract_canon_patch(
+            turn=turn,
+            campaign=turn.campaign,
+            dm_output=turn.dm_output,
+            speaking_player_name='test',
+            triggered_segments=[],
+        )
+
+        assert patch['inventory_changes'] == []
+
+
+def test_extract_canon_patch_uses_resolved_pending_item_intent(app, monkeypatch):
+    ids = seed_world_campaign_player_session(app)
+    monkeypatch.setattr('aidm_server.emergent_memory._extract_with_provider', lambda *args, **kwargs: (None, None))
+
+    with app.app_context():
+        pending_turn = _create_turn(
+            app,
+            ids,
+            player_input='test tries to pick up stick',
+            dm_output='The stick is wedged tight. Roll to work it free.',
+        )
+        pending_turn.metadata_json = safe_json_dumps(
+            {
+                'action_intent': {
+                    'kind': 'item',
+                    'inventory_action': 'pick_up',
+                    'item': {'name': 'stick', 'quantity': 1},
+                    'cost_gold': 0,
+                }
+            },
+            {},
+        )
+        db.session.commit()
+
+        roll_turn = _create_turn(
+            app,
+            ids,
+            player_input='I roll a d20:16',
+            dm_output='You now hold a sturdy stick in your hand.',
+        )
+        roll_turn.metadata_json = safe_json_dumps(
+            {
+                'resolved_turn_id': pending_turn.turn_id,
+                'action_intent': {'kind': 'roll'},
+            },
+            {},
+        )
+        db.session.commit()
+
+        patch, _extractor_model = extract_canon_patch(
+            turn=roll_turn,
+            campaign=roll_turn.campaign,
+            dm_output=roll_turn.dm_output,
+            speaking_player_name='test',
+            triggered_segments=[],
+        )
+
+        assert patch['inventory_changes'] == [
+            {'action': 'acquire', 'item_name': 'stick', 'quantity': 1}
+        ]
+
+
+def test_item_intent_success_allows_before_phrasing(app, monkeypatch):
+    ids = seed_world_campaign_player_session(app)
+    monkeypatch.setattr('aidm_server.emergent_memory._extract_with_provider', lambda *args, **kwargs: (None, None))
+
+    with app.app_context():
+        turn = _create_turn(
+            app,
+            ids,
+            player_input='I pick up a feather before leaving.',
+            dm_output='You pick up the feather before leaving the room.',
+        )
+        turn.metadata_json = safe_json_dumps(
+            {
+                'action_intent': {
+                    'kind': 'item',
+                    'inventory_action': 'pick_up',
+                    'item': {'name': 'feather', 'quantity': 1},
+                    'cost_gold': 0,
+                }
+            },
+            {},
+        )
+        db.session.commit()
+
+        patch, _extractor_model = extract_canon_patch(
+            turn=turn,
+            campaign=turn.campaign,
+            dm_output=turn.dm_output,
+            speaking_player_name='test',
+            triggered_segments=[],
+        )
+
+        assert patch['inventory_changes'] == [
+            {'action': 'acquire', 'item_name': 'feather', 'quantity': 1}
+        ]
+
+
+def test_explicit_inventory_gain_loss_variants_update_quantities(app, monkeypatch):
+    ids = seed_world_campaign_player_session(app)
+    monkeypatch.setattr('aidm_server.emergent_memory._extract_with_provider', lambda *args, **kwargs: (None, None))
+
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        player.inventory = safe_json_dumps(
+            [{'name': 'Bone Shard', 'quantity': 2}, {'name': 'Torch', 'quantity': 1}],
+            [],
+        )
+        db.session.commit()
+
+        turn = _create_turn(
+            app,
+            ids,
+            player_input='Apply the inventory state changes.',
+            dm_output=(
+                f'*(State change: Player {ids["player_id"]} **gains** 3 Bone Shard to inventory.)*\n'
+                f'*(State change: Player {ids["player_id"]} **loses** 1 Torch from inventory.)*'
+            ),
+        )
+
+        patch, _extractor_model = extract_canon_patch(
+            turn=turn,
+            campaign=turn.campaign,
+            dm_output=turn.dm_output,
+            speaking_player_name='test',
+            triggered_segments=[],
+        )
+
+        assert patch['inventory_changes'] == [
+            {'action': 'acquire', 'item_name': 'Bone Shard', 'quantity': 3},
+            {'action': 'lose', 'item_name': 'Torch', 'quantity': 1},
+        ]
+
+        validated_patch, rejections = validate_canon_patch(turn, turn.campaign, patch)
+        assert rejections == []
+        apply_canon_patch(turn, turn.campaign, validated_patch, 'test-extractor', rejections)
+        db.session.commit()
+        db.session.refresh(player)
+
+        assert safe_json_loads(player.inventory, []) == [{'name': 'Bone Shard', 'quantity': 5, 'weight': 0.1}]
+
+
+def test_drop_everything_expands_to_current_inventory(app, monkeypatch):
+    ids = seed_world_campaign_player_session(app)
+    monkeypatch.setattr('aidm_server.emergent_memory._extract_with_provider', lambda *args, **kwargs: (None, None))
+
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        player.inventory = safe_json_dumps(
+            [
+                {'name': 'Wedged Stone', 'quantity': 1},
+                {'name': 'Sword', 'quantity': 1},
+                {'name': 'Book', 'quantity': 1},
+            ],
+            [],
+        )
+        db.session.commit()
+
+        turn = _create_turn(
+            app,
+            ids,
+            player_input='I drop all my items.',
+            dm_output='You open your hands and let everything fall at once.',
+        )
+
+        patch, _extractor_model = extract_canon_patch(
+            turn=turn,
+            campaign=turn.campaign,
+            dm_output=turn.dm_output,
+            speaking_player_name='test',
+            triggered_segments=[],
+        )
+
+        assert patch['inventory_changes'] == [
+            {'action': 'lose', 'item_name': 'Wedged Stone', 'quantity': 1},
+            {'action': 'lose', 'item_name': 'Sword', 'quantity': 1},
+            {'action': 'lose', 'item_name': 'Book', 'quantity': 1},
+        ]
+
+        validated_patch, rejections = validate_canon_patch(turn, turn.campaign, patch)
+        assert rejections == []
+        apply_canon_patch(turn, turn.campaign, validated_patch, 'test-extractor', rejections)
+        db.session.commit()
+        db.session.refresh(player)
+
+        assert safe_json_loads(player.inventory, []) == []
+
+
+def test_narrative_drop_maps_described_item_to_current_inventory(app, monkeypatch):
+    ids = seed_world_campaign_player_session(app)
+    monkeypatch.setattr('aidm_server.emergent_memory._extract_with_provider', lambda *args, **kwargs: (None, None))
+
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        player.inventory = safe_json_dumps([{'name': 'Book', 'quantity': 1}], [])
+        db.session.commit()
+
+        turn = _create_turn(
+            app,
+            ids,
+            player_input='i drop the bookx',
+            dm_output=(
+                'With a casual flick of your fingers, you release the small leather-bound book. '
+                'It flops spine-up onto the cold flagstones.\n\n'
+                f'*(State change: Player {ids["player_id"]} **drops** 1 Book. Inventory is now empty.)*'
+            ),
+        )
+
+        patch, _extractor_model = extract_canon_patch(
+            turn=turn,
+            campaign=turn.campaign,
+            dm_output=turn.dm_output,
+            speaking_player_name='test',
+            triggered_segments=[],
+        )
+
+        validated_patch, rejections = validate_canon_patch(turn, turn.campaign, patch)
+        assert rejections == []
+        applied_summary = apply_canon_patch(turn, turn.campaign, validated_patch, 'test-extractor', rejections)
+        db.session.commit()
+        db.session.refresh(player)
+
+        assert applied_summary['inventory_changes_applied'] == [
+            {'action': 'lose', 'item_name': 'Book', 'quantity': 1}
+        ]
+        assert safe_json_loads(player.inventory, []) == []
+
+
+def test_denied_item_drop_intent_does_not_remove_inventory(app, monkeypatch):
+    ids = seed_world_campaign_player_session(app)
+    monkeypatch.setattr('aidm_server.emergent_memory._extract_with_provider', lambda *args, **kwargs: (None, None))
+
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        player.inventory = safe_json_dumps([{'name': 'Book', 'quantity': 1}], [])
+        db.session.commit()
+
+        turn = _create_turn(
+            app,
+            ids,
+            player_input='test drops Book: Book',
+            dm_output=(
+                'You reach to let the book fall, but your fingers close on nothing but air. '
+                "The book is already on the floor; there's nothing to drop.\n\n"
+                '*(No inventory change. The book remains on the ground.)*'
+            ),
+        )
+        turn.metadata_json = safe_json_dumps(
+            {
+                'action_intent': {
+                    'kind': 'item',
+                    'inventory_action': 'drop',
+                    'item': {'name': 'Book', 'quantity': 1},
+                    'cost_gold': 0,
+                }
+            },
+            {},
+        )
+        db.session.commit()
+
+        patch, _extractor_model = extract_canon_patch(
+            turn=turn,
+            campaign=turn.campaign,
+            dm_output=turn.dm_output,
+            speaking_player_name='test',
+            triggered_segments=[],
+        )
+
+        validated_patch, rejections = validate_canon_patch(turn, turn.campaign, patch)
+        assert rejections == []
+        applied_summary = apply_canon_patch(turn, turn.campaign, validated_patch, 'test-extractor', rejections)
+        db.session.commit()
+        db.session.refresh(player)
+
+        assert applied_summary['inventory_changes_applied'] == []
+        assert safe_json_loads(player.inventory, []) == [{'name': 'Book', 'quantity': 1}]
+
+
 def test_canon_patch_coerces_malformed_model_numbers(app):
     ids = seed_world_campaign_player_session(app)
 
@@ -377,7 +847,7 @@ def test_canon_patch_coerces_malformed_model_numbers(app):
 
         assert fact.confidence is None
         assert thread.priority == 1
-        assert safe_json_loads(player.inventory, []) == [{'name': 'silver key', 'quantity': 1}]
+        assert safe_json_loads(player.inventory, []) == [{'name': 'silver key', 'quantity': 1, 'weight': 0.1}]
 
 
 def test_extract_canon_patch_ignores_movement_and_warning_phrases(app, monkeypatch):
@@ -534,7 +1004,7 @@ def test_inventory_loss_and_quantity_merging_are_deterministic(app, monkeypatch)
         db.session.commit()
         db.session.refresh(player)
 
-        assert safe_json_loads(player.inventory, []) == [{'name': 'silver key', 'quantity': 3}]
+        assert safe_json_loads(player.inventory, []) == [{'name': 'silver key', 'quantity': 3, 'weight': 0.1}]
 
 
 def test_build_emergent_context_prioritizes_relevant_older_canon(app):

@@ -2,13 +2,23 @@ export type ComposerMode = 'action' | 'roll' | 'ability' | 'item' | 'interact' |
 export type RollMode = 'normal' | 'advantage' | 'disadvantage'
 export type ResultVisibility = 'hidden_until_landed' | 'visible'
 export type InteractionType = 'speak_to' | 'act_on' | 'give_to' | 'take_from'
+export type InventoryAction = 'pick_up' | 'buy' | 'use' | 'drop' | 'give' | 'sell'
 
 export const DICE_OPTIONS = ['d4', 'd6', 'd8', 'd10', 'd12', 'd20', 'd100'] as const
+export const PLAIN_ROLL_ABILITY_KEY = 'plain_roll'
 export const INTERACTION_TYPE_OPTIONS: Array<{ value: InteractionType; label: string }> = [
   { value: 'speak_to', label: 'Speak to' },
   { value: 'act_on', label: 'Act on' },
   { value: 'give_to', label: 'Give to' },
   { value: 'take_from', label: 'Take from' },
+]
+export const INVENTORY_ACTION_OPTIONS: Array<{ value: InventoryAction; label: string }> = [
+  { value: 'pick_up', label: 'Pick up' },
+  { value: 'buy', label: 'Buy' },
+  { value: 'use', label: 'Use' },
+  { value: 'drop', label: 'Drop' },
+  { value: 'give', label: 'Give' },
+  { value: 'sell', label: 'Sell' },
 ]
 
 export type AbilityOption = {
@@ -70,6 +80,8 @@ export type ActionIntent = {
     name: string
     quantity: number
   }
+  inventory_action?: InventoryAction
+  cost_gold?: number
   interaction?: {
     type: InteractionType
     label: string
@@ -84,19 +96,37 @@ export type ActionIntent = {
 const COMPOSER_PREFIX_PATTERNS = [
   /^\[OOC\]\s*/i,
   /^\[ADMIN\]\s*/i,
+  /^\(\s*ADMIN\s*\)\s*/i,
+  /^\/\s*ADMIN\s*\/\s*/i,
   /^\/ooc\s+/i,
   /^\/admin\s+/i,
   /^\/emote\s+/i,
-  /^I roll a d\d{1,3}(?:\s*[+-]\s*\d+)?(?:\s*\([^)]*\))?\s*:\s*/i,
+  /^I roll a d\d{1,3}(?:\s*[+-]\s*\d+)?(?:\s+for\s+[^:\n]{1,120})?(?:\s*\([^)]*\))?\s*:\s*/i,
   /^[^:\n]{1,80}\s+attempts an ability check(?:\s*\([^)]*\))?:\s*/i,
   /^[^:\n]{1,80}\s+attempts a [^:\n]{1,40} check(?:\s*\([^)]*\))?:\s*/i,
-  /^[^:\n]{1,80}\s+uses\s+[^:\n]{1,80}:\s*/i,
-  /^[^:\n]{1,80}\s+uses\s+/i,
+  /^[^:\n]{1,80}\s+tr(?:y|ies) to pick up\s+[^:\n]{1,80}:\s*/i,
+  /^[^:\n]{1,80}\s+tr(?:y|ies) to pick up\s+/i,
+  /^[^:\n]{1,80}\s+tr(?:y|ies) to buy\s+[^:\n]{1,80}(?:\s+for\s+\d+\s+gold)?:\s*/i,
+  /^[^:\n]{1,80}\s+tr(?:y|ies) to buy\s+/i,
+  /^[^:\n]{1,80}\s+use(?:s)?\s+[^:\n]{1,80}:\s*/i,
+  /^[^:\n]{1,80}\s+use(?:s)?\s+/i,
+  /^[^:\n]{1,80}\s+drop(?:s)?\s+[^:\n]{1,80}:\s*/i,
+  /^[^:\n]{1,80}\s+drop(?:s)?\s+/i,
+  /^[^:\n]{1,80}\s+give(?:s)?\s+[^:\n]{1,80}:\s*/i,
+  /^[^:\n]{1,80}\s+give(?:s)?\s+/i,
+  /^[^:\n]{1,80}\s+tr(?:y|ies) to sell\s+[^:\n]{1,80}(?:\s+for\s+\d+\s+gold)?:\s*/i,
+  /^[^:\n]{1,80}\s+tr(?:y|ies) to sell\s+/i,
   /^[^:\n]{1,80}\s+says to\s+[^:\n]{1,80}:\s*/i,
   /^[^:\n]{1,80}\s+directs an action at\s+[^:\n]{1,80}:\s*/i,
   /^[^:\n]{1,80}\s+gives something to\s+[^:\n]{1,80}:\s*/i,
   /^[^:\n]{1,80}\s+tries to take something from\s+[^:\n]{1,80}:\s*/i,
 ]
+
+const RESERVED_ADMIN_PREFIX_PATTERN = /^\s*(?:\[\s*admin\s*\]|\(\s*admin\s*\)|\/\s*admin\s*\/|\/admin(?:\s+|$))/i
+
+export function hasReservedAdminPrefix(value: string) {
+  return RESERVED_ADMIN_PREFIX_PATTERN.test(value)
+}
 
 export function stripComposerCommand(value: string) {
   let next = value.trimStart()
@@ -111,7 +141,7 @@ export function composerModeLabel(mode: ComposerMode, die: string) {
   if (mode === 'ooc') return 'Out of Character'
   if (mode === 'roll') return `Roll ${die.toUpperCase()}`
   if (mode === 'ability') return 'Ability Check'
-  if (mode === 'item') return 'Item Use'
+  if (mode === 'item') return 'Item'
   if (mode === 'interact') return 'Player Interaction'
   if (mode === 'emote') return 'Emote'
   return 'In Character'
@@ -119,6 +149,10 @@ export function composerModeLabel(mode: ComposerMode, die: string) {
 
 export function interactionTypeLabel(type: InteractionType) {
   return INTERACTION_TYPE_OPTIONS.find((option) => option.value === type)?.label ?? 'Interact with'
+}
+
+export function inventoryActionLabel(type: InventoryAction) {
+  return INVENTORY_ACTION_OPTIONS.find((option) => option.value === type)?.label ?? 'Use'
 }
 
 export function normalizeDie(die: string) {
@@ -140,6 +174,23 @@ export function parseRollModifier(value: string) {
   const parsed = Number(value.replace(/\s+/g, ''))
   if (!Number.isFinite(parsed)) return 0
   return Math.max(-99, Math.min(99, Math.trunc(parsed)))
+}
+
+export function abilityModifierValue(ability: AbilityOption | null) {
+  if (!ability || ability.modifier === '—') return 0
+  return parseRollModifier(ability.modifier)
+}
+
+export function parsePositiveInteger(value: string, fallback = 1) {
+  const parsed = Number(value.replace(/\s+/g, ''))
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(1, Math.min(999, Math.trunc(parsed)))
+}
+
+export function parseGoldCost(value: string) {
+  const parsed = Number(value.replace(/\s+/g, ''))
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, Math.min(99999, Math.trunc(parsed)))
 }
 
 export function createClientMessageId() {
@@ -205,10 +256,39 @@ export function abilityActionText(characterName: string, ability: AbilityOption 
   return `${characterName} attempts a ${label} check${modifier}: ${body}`.trim()
 }
 
-export function itemActionText(characterName: string, item: ItemOption | null, current: string) {
+export function rollActionText(die: string, ability: AbilityOption | null, current: string) {
   const body = stripComposerCommand(current)
-  const itemName = item?.name ?? 'item'
-  return `${characterName} uses ${itemName}${body ? `: ${body}` : ''}`.trim()
+  const modifier = ability ? formatModifier(abilityModifierValue(ability)) : ''
+  const reason = ability ? ` for ${ability.label} check` : ''
+  return `I roll a ${normalizeDie(die)}${modifier}${reason}: ${body}`.trim()
+}
+
+export function itemActionText(
+  characterName: string,
+  inventoryAction: InventoryAction,
+  itemName: string,
+  current: string,
+  costGold = '',
+) {
+  const body = stripComposerCommand(current)
+  const cleanItemName = itemName.trim() || 'item'
+  const cost = parseGoldCost(costGold)
+  const suffix = body ? `: ${body}` : ''
+  const firstPerson = characterName.trim().toLowerCase() === 'i'
+  const tries = firstPerson ? 'try' : 'tries'
+  const uses = firstPerson ? 'use' : 'uses'
+  const drops = firstPerson ? 'drop' : 'drops'
+  const gives = firstPerson ? 'give' : 'gives'
+  if (inventoryAction === 'pick_up') return `${characterName} ${tries} to pick up ${cleanItemName}${suffix}`.trim()
+  if (inventoryAction === 'buy') {
+    return `${characterName} ${tries} to buy ${cleanItemName}${cost ? ` for ${cost} gold` : ''}${suffix}`.trim()
+  }
+  if (inventoryAction === 'drop') return `${characterName} ${drops} ${cleanItemName}${suffix}`.trim()
+  if (inventoryAction === 'give') return `${characterName} ${gives} ${cleanItemName}${suffix}`.trim()
+  if (inventoryAction === 'sell') {
+    return `${characterName} ${tries} to sell ${cleanItemName}${cost ? ` for ${cost} gold` : ''}${suffix}`.trim()
+  }
+  return `${characterName} ${uses} ${cleanItemName}${suffix}`.trim()
 }
 
 export function interactionActionText(
@@ -240,13 +320,22 @@ export function composerTextForMode(
   item: ItemOption | null = null,
   interactionTarget: InteractionTarget | null = null,
   interactionType: InteractionType = 'speak_to',
+  inventoryAction: InventoryAction = 'use',
+  itemName = item?.name ?? '',
+  costGold = '',
 ) {
   const body = stripComposerCommand(current)
-  if (mode === 'roll') return `I roll a ${normalizeDie(die)}: ${body}`
+  if (mode === 'roll') return rollActionText(die, ability, current)
   if (mode === 'admin') return `[ADMIN] ${body}`
   if (mode === 'ooc') return `[OOC] ${body}`
   if (mode === 'ability') return abilityActionText(characterName, ability, current)
-  if (mode === 'item') return itemActionText(characterName, item, current)
+  if (mode === 'item') {
+    const resolvedItemName =
+      inventoryAction === 'pick_up' || inventoryAction === 'buy'
+        ? itemName || 'item'
+        : itemName || item?.name || 'item'
+    return itemActionText(characterName, inventoryAction, resolvedItemName, current, costGold)
+  }
   if (mode === 'interact') {
     return interactionActionText(characterName, interactionTarget, interactionType, current)
   }
@@ -262,6 +351,10 @@ export function buildActionIntent({
   roll,
   ability,
   item,
+  inventoryAction = 'use',
+  itemName,
+  itemQuantity = '1',
+  costGold = '0',
   interactionType,
   interactionTarget,
 }: {
@@ -272,6 +365,10 @@ export function buildActionIntent({
   roll?: RollResult | null
   ability?: AbilityOption | null
   item?: ItemOption | null
+  inventoryAction?: InventoryAction
+  itemName?: string
+  itemQuantity?: string
+  costGold?: string
   interactionType?: InteractionType
   interactionTarget?: InteractionTarget | null
 }): ActionIntent {
@@ -297,18 +394,21 @@ export function buildActionIntent({
       intent.roll.target_pending_turn_id = roll.targetPendingTurnId
     }
   }
-  if (mode === 'ability' && ability) {
+  if ((mode === 'roll' || mode === 'ability') && ability) {
     intent.ability = {
       key: ability.key,
       label: ability.label,
-      modifier: Number(ability.modifier.replace(/[^0-9-]/g, '')) || 0,
+      modifier: abilityModifierValue(ability),
     }
   }
-  if (mode === 'item' && item) {
+  if (mode === 'item') {
+    const resolvedItemName = (itemName || item?.name || '').trim()
     intent.item = {
-      name: item.name,
-      quantity: Number(item.quantity.replace(/[^0-9-]/g, '')) || 1,
+      name: resolvedItemName,
+      quantity: parsePositiveInteger(itemQuantity || item?.quantity || '1'),
     }
+    intent.inventory_action = inventoryAction
+    intent.cost_gold = parseGoldCost(costGold)
   }
   if (mode === 'interact' && interactionTarget) {
     const normalizedInteractionType = interactionType ?? 'speak_to'

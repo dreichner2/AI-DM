@@ -658,7 +658,8 @@
 }
 
 .action-intent-panel select,
-.action-intent-panel input {
+.action-intent-panel input,
+.action-intent-panel button {
   height: 30px;
   min-width: 0;
   border: 1px solid rgba(144, 164, 159, 0.22);
@@ -667,6 +668,18 @@
   background: rgba(255, 255, 255, 0.035);
   font: inherit;
   outline: none;
+}
+
+.action-intent-panel button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  font-weight: 600;
+  color: var(--orange);
+  background: rgba(255, 107, 44, 0.11);
+  cursor: pointer;
 }
 
 .action-intent-panel select {
@@ -692,9 +705,20 @@
 }
 
 .action-intent-panel select:focus,
-.action-intent-panel input:focus {
+.action-intent-panel input:focus,
+.action-intent-panel button:focus {
   border-color: rgba(255, 176, 103, 0.64);
   box-shadow: 0 0 0 2px rgba(255, 107, 44, 0.12);
+}
+
+.action-intent-panel button:hover:not(:disabled) {
+  border-color: rgba(255, 176, 103, 0.46);
+  background: rgba(255, 107, 44, 0.16);
+}
+
+.action-intent-panel button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .action-intent-panel span {

@@ -4,6 +4,7 @@ import {
   buildActionIntent,
   composerTextForMode,
   diceRollMessage,
+  hasReservedAdminPrefix,
   itemActionText,
   parseRollModifier,
   resolveRoll,
@@ -27,23 +28,43 @@ const potion: ItemOption = {
 describe('game action helpers', () => {
   it('rewrites composer prefixes without stacking old modes', () => {
     expect(composerTextForMode('ooc', 'I roll a d20: test', 'Ember', 'd20')).toBe('[OOC] test')
+    expect(composerTextForMode('ooc', 'I roll a d20+3 for STR check: test', 'Ember', 'd20')).toBe(
+      '[OOC] test',
+    )
     expect(composerTextForMode('admin', '[OOC] force the door open', 'Ember', 'd20')).toBe(
       '[ADMIN] force the door open',
+    )
+    expect(composerTextForMode('roll', '[OOC] lift the gate', 'Ember', 'd20', strength)).toBe(
+      'I roll a d20+3 for STR check: lift the gate',
     )
     expect(composerTextForMode('ability', '[OOC] lift the gate', 'Ember', 'd20', strength)).toBe(
       'Ember attempts a STR check (+3): lift the gate',
     )
     expect(stripComposerCommand('/admin force the door open')).toBe('force the door open')
+    expect(stripComposerCommand('(ADMIN) force the door open')).toBe('force the door open')
+    expect(stripComposerCommand('/ADMIN/ force the door open')).toBe('force the door open')
     expect(stripComposerCommand('/emote waves')).toBe('waves')
     expect(stripComposerCommand('Ember uses Healing Potion: test the sigil')).toBe('test the sigil')
+  })
+
+  it('detects reserved admin-looking prefixes without matching ordinary admin words', () => {
+    expect(hasReservedAdminPrefix('[ADMIN] open the vault')).toBe(true)
+    expect(hasReservedAdminPrefix('(ADMIN) open the vault')).toBe(true)
+    expect(hasReservedAdminPrefix('/ADMIN/ open the vault')).toBe(true)
+    expect(hasReservedAdminPrefix('/ADMIN open the vault')).toBe(true)
+    expect(hasReservedAdminPrefix('I ask the admin for help')).toBe(false)
+    expect(hasReservedAdminPrefix('/administer the potion')).toBe(false)
   })
 
   it('builds ability and item text from selected character data', () => {
     expect(abilityActionText('Ember', strength, 'force the latch')).toBe(
       'Ember attempts a STR check (+3): force the latch',
     )
-    expect(itemActionText('Ember', potion, 'before opening the door')).toBe(
+    expect(itemActionText('Ember', 'use', potion.name, 'before opening the door')).toBe(
       'Ember uses Healing Potion: before opening the door',
+    )
+    expect(itemActionText('Ember', 'buy', 'rope', 'before leaving', '5')).toBe(
+      'Ember tries to buy rope for 5 gold: before leaving',
     )
   })
 
@@ -85,6 +106,7 @@ describe('game action helpers', () => {
       clientMessageId: 'local-test',
       source: 'dice_roller',
       roll,
+      ability: strength,
     })
 
     expect(intent.kind).toBe('roll')
@@ -96,6 +118,28 @@ describe('game action helpers', () => {
       total: 13,
       result_visibility: 'hidden_until_landed',
       target_pending_turn_id: 42,
+    })
+    expect(intent.ability).toEqual({
+      key: 'strength',
+      label: 'STR',
+      modifier: 3,
+    })
+
+    const itemIntent = buildActionIntent({
+      mode: 'item',
+      message: 'I buy rope for 5 gold.',
+      clientMessageId: 'buy-rope',
+      inventoryAction: 'buy',
+      itemName: 'rope',
+      itemQuantity: '1',
+      costGold: '5',
+    })
+
+    expect(itemIntent).toMatchObject({
+      kind: 'item',
+      inventory_action: 'buy',
+      cost_gold: 5,
+      item: { name: 'rope', quantity: 1 },
     })
   })
 })

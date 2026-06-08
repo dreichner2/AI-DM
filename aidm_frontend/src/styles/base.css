@@ -594,6 +594,16 @@ select:focus-visible {
   background: rgba(255, 107, 44, 0.08);
 }
 
+.character-choice-portrait {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.22);
+  object-fit: cover;
+}
+
 .character-choice-card span {
   min-width: 0;
 }
@@ -628,6 +638,62 @@ select:focus-visible {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.point-buy-panel {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.point-buy-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--heading);
+  font-size: 0.82rem;
+}
+
+.point-buy-summary span {
+  color: var(--muted);
+  font-weight: 720;
+}
+
+.point-buy-summary span.over-budget {
+  color: #ff9d81;
+}
+
+.point-buy-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.point-buy-grid label {
+  gap: 5px;
+}
+
+.point-buy-grid label > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 0.74rem;
+}
+
+.point-buy-grid small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 740;
+}
+
+.point-buy-grid input {
+  height: 36px;
+  padding: 0 8px;
 }
 
 .campaign-dialog label {

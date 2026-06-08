@@ -14,7 +14,11 @@ from aidm_server.canon_inventory import (
     INVENTORY_GAIN_PATTERNS as _INVENTORY_GAIN_PATTERNS,
     INVENTORY_LOSS_PATTERNS as _INVENTORY_LOSS_PATTERNS,
     apply_inventory_changes as _apply_inventory_changes,
+    append_drop_all_inventory_changes_from_text as _append_drop_all_inventory_changes_from_text,
+    append_inventory_change_from_intent_outcome as _append_inventory_change_from_intent_outcome,
+    append_verified_provider_inventory_changes as _append_verified_provider_inventory_changes,
     clean_inventory_item_name as _clean_inventory_item_name,
+    extract_explicit_inventory_state_changes_from_text as _extract_explicit_inventory_state_changes_from_text,
     extract_inventory_changes_from_text as _extract_inventory_changes_from_text,
     inventory_payload,
     looks_like_inventory_item as _looks_like_inventory_item,
@@ -26,6 +30,7 @@ from aidm_server.canon_text import (
     optional_float as _optional_float,
     positive_int as _positive_int,
 )
+from aidm_server.character_state import apply_character_state_changes as _apply_character_state_changes
 from aidm_server.database import db
 from aidm_server.models import (
     Campaign,
@@ -39,9 +44,11 @@ from aidm_server.models import (
 )
 from aidm_server.prompt_templates import build_canon_extraction_request
 from aidm_server.telemetry import telemetry_event, telemetry_metric
+from aidm_server.time_utils import utc_now
 
 
 _ENTITY_RE = re.compile(r'\b[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?\b')
+IMMEDIATE_STATE_METADATA_KEY = 'immediate_state_changes_applied'
 EMERGENT_ENTITY_CANDIDATE_LIMIT = _canon_retrieval.EMERGENT_ENTITY_CANDIDATE_LIMIT
 EMERGENT_FACT_CANDIDATE_LIMIT = _canon_retrieval.EMERGENT_FACT_CANDIDATE_LIMIT
 EMERGENT_THREAD_CANDIDATE_LIMIT = _canon_retrieval.EMERGENT_THREAD_CANDIDATE_LIMIT
@@ -293,6 +300,9 @@ def _heuristic_patch(
 
     _extract_inventory_changes_from_text(dm_output or '', _INVENTORY_GAIN_PATTERNS, 'acquire', patch)
     _extract_inventory_changes_from_text(dm_output or '', _INVENTORY_LOSS_PATTERNS, 'lose', patch)
+    _extract_explicit_inventory_state_changes_from_text(dm_output or '', patch)
+    _append_drop_all_inventory_changes_from_text(turn, dm_output or '', patch)
+    _append_inventory_change_from_intent_outcome(turn, dm_output or '', patch)
 
     return patch
 
@@ -350,11 +360,19 @@ def extract_canon_patch(
         triggered_segments=triggered_segments,
     )
     if provider_patch is not None:
-        # Inventory consequences are deterministic fairness state; never trust
-        # the model to invent them without explicit textual evidence.
+        provider_inventory_patch = _empty_patch()
+        _append_verified_provider_inventory_changes(provider_patch, dm_output or '', provider_inventory_patch)
+
+        # Inventory consequences are fairness state. A provider can point out a
+        # missed item, but the mutation layer accepts it only with textual proof.
         provider_patch['inventory_changes'] = []
+        for change in provider_inventory_patch['inventory_changes']:
+            provider_patch['inventory_changes'].append(change)
         _extract_inventory_changes_from_text(dm_output or '', _INVENTORY_GAIN_PATTERNS, 'acquire', provider_patch)
         _extract_inventory_changes_from_text(dm_output or '', _INVENTORY_LOSS_PATTERNS, 'lose', provider_patch)
+        _extract_explicit_inventory_state_changes_from_text(dm_output or '', provider_patch)
+        _append_drop_all_inventory_changes_from_text(turn, dm_output or '', provider_patch)
+        _append_inventory_change_from_intent_outcome(turn, dm_output or '', provider_patch)
         telemetry_metric('memory.extract.provider_success_total', 1)
         return provider_patch, extractor_model or 'provider'
 
@@ -369,6 +387,41 @@ def extract_canon_patch(
         ),
         'heuristic-v1',
     )
+
+
+def extract_deterministic_state_patch(turn: DmTurn, dm_output: str) -> dict:
+    patch = _normalize_patch({})
+    _extract_inventory_changes_from_text(dm_output or '', _INVENTORY_GAIN_PATTERNS, 'acquire', patch)
+    _extract_inventory_changes_from_text(dm_output or '', _INVENTORY_LOSS_PATTERNS, 'lose', patch)
+    _extract_explicit_inventory_state_changes_from_text(dm_output or '', patch)
+    _append_drop_all_inventory_changes_from_text(turn, dm_output or '', patch)
+    _append_inventory_change_from_intent_outcome(turn, dm_output or '', patch)
+    return patch
+
+
+def apply_immediate_state_changes(turn: DmTurn, campaign: Campaign, dm_output: str) -> dict:
+    metadata = safe_json_loads(turn.metadata_json, {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    existing_summary = metadata.get(IMMEDIATE_STATE_METADATA_KEY)
+    if isinstance(existing_summary, dict):
+        return existing_summary
+
+    patch = extract_deterministic_state_patch(turn, dm_output)
+    validated_patch, rejections = validate_canon_patch(turn=turn, campaign=campaign, patch=patch)
+    inventory_changes = _apply_inventory_changes(turn, validated_patch['inventory_changes'])
+    character_state_changes = _apply_character_state_changes(turn, dm_output or '')
+    summary = {
+        'inventory_changes_applied': inventory_changes,
+        'character_state_changes_applied': character_state_changes,
+        'rejections': rejections,
+    }
+    if not inventory_changes and not character_state_changes:
+        return summary
+
+    metadata[IMMEDIATE_STATE_METADATA_KEY] = summary
+    metadata['immediate_state_changes_applied_at'] = utc_now().isoformat()
+    turn.metadata_json = safe_json_dumps(metadata, {})
+    return summary
 
 
 def _merge_aliases(existing_raw: str | None, incoming: list[str] | None) -> str:
@@ -686,6 +739,61 @@ def validate_canon_patch(turn: DmTurn, campaign: Campaign, patch: dict) -> tuple
     return patch, rejections
 
 
+def _inventory_change_signature(change: dict) -> tuple[str, str] | None:
+    action = str(change.get('action') or '').strip().lower()
+    item_name = _clean_inventory_item_name(change.get('item_name'))
+    if action not in {'acquire', 'lose'} or not item_name:
+        return None
+    return action, _normalized_name(item_name)
+
+
+def _immediate_state_summary(turn: DmTurn) -> dict:
+    metadata = safe_json_loads(turn.metadata_json, {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    summary = metadata.get(IMMEDIATE_STATE_METADATA_KEY)
+    return summary if isinstance(summary, dict) else {}
+
+
+def _inventory_changes_after_immediate_state(changes: list[dict], immediate_summary: dict) -> tuple[list[dict], list[dict]]:
+    already_applied = Counter()
+    for change in immediate_summary.get('inventory_changes_applied') or []:
+        if not isinstance(change, dict):
+            continue
+        signature = _inventory_change_signature(change)
+        if signature:
+            already_applied[signature] += _positive_int(change.get('quantity', 1))
+
+    if not already_applied:
+        return changes, []
+
+    remaining_changes: list[dict] = []
+    credited_changes: list[dict] = []
+    for change in changes:
+        signature = _inventory_change_signature(change)
+        quantity = _positive_int(change.get('quantity', 1))
+        if not signature or already_applied[signature] <= 0:
+            remaining_changes.append(change)
+            continue
+
+        credited_quantity = min(quantity, already_applied[signature])
+        credited_changes.append(
+            {
+                'action': change.get('action'),
+                'item_name': change.get('item_name'),
+                'quantity': credited_quantity,
+                'already_applied': True,
+            }
+        )
+        already_applied[signature] -= credited_quantity
+        remaining_quantity = quantity - credited_quantity
+        if remaining_quantity > 0:
+            remaining_change = dict(change)
+            remaining_change['quantity'] = remaining_quantity
+            remaining_changes.append(remaining_change)
+
+    return remaining_changes, credited_changes
+
+
 def apply_canon_patch(
     turn: DmTurn,
     campaign: Campaign,
@@ -711,6 +819,7 @@ def apply_canon_patch(
         'facts_created': 0,
         'threads_created_or_updated': [],
         'inventory_changes_applied': [],
+        'character_state_changes_applied': [],
         'rejections': rejections,
     }
     lookup_index = _EntityLookupIndex(campaign.campaign_id)
@@ -841,7 +950,24 @@ def apply_canon_patch(
             }
         )
 
-    applied_summary['inventory_changes_applied'] = _apply_inventory_changes(turn, patch['inventory_changes'])
+    immediate_summary = _immediate_state_summary(turn)
+    remaining_inventory_changes, credited_inventory_changes = _inventory_changes_after_immediate_state(
+        patch['inventory_changes'],
+        immediate_summary,
+    )
+    applied_summary['inventory_changes_applied'] = credited_inventory_changes + _apply_inventory_changes(
+        turn,
+        remaining_inventory_changes,
+    )
+    immediate_character_changes = [
+        {**change, 'already_applied': True}
+        for change in (immediate_summary.get('character_state_changes_applied') or [])
+        if isinstance(change, dict)
+    ]
+    applied_summary['character_state_changes_applied'] = immediate_character_changes or _apply_character_state_changes(
+        turn,
+        turn.dm_output or '',
+    )
 
     update_record.applied_patch_json = safe_json_dumps(applied_summary, {})
     return applied_summary

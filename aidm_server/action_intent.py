@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from aidm_server.canon_inventory import INVENTORY_ACTIONS, clean_inventory_item_name, looks_like_inventory_item
 from aidm_server.rules import DC_HINTS, RuleHint
 
 
@@ -20,6 +21,23 @@ ACTION_ITEM_MAX_LENGTH = 120
 ACTION_ID_MAX_LENGTH = 80
 ACTION_NAME_MAX_LENGTH = 120
 ACTION_ID_RE = re.compile(r'^[A-Za-z0-9._:-]+$')
+RESERVED_ADMIN_PREFIX_RE = re.compile(
+    r'^\s*(?:\[\s*admin\s*\]|\(\s*admin\s*\)|/\s*admin\s*/|/admin(?:\s+|$))',
+    re.IGNORECASE,
+)
+
+
+def has_reserved_admin_prefix(value: Any) -> bool:
+    """Return True when player text starts with an admin-only command marker."""
+
+    return bool(RESERVED_ADMIN_PREFIX_RE.match(str(value or '')))
+
+
+def strip_reserved_admin_prefix(value: Any) -> str:
+    """Remove one reserved admin marker after admin auth has already succeeded."""
+
+    text = str(value or '').strip()
+    return RESERVED_ADMIN_PREFIX_RE.sub('', text, count=1).strip()
 
 
 def _clean_text(value: Any, *, max_length: int) -> str:
@@ -113,6 +131,27 @@ def _validate_roll(raw_roll: Any) -> tuple[dict[str, Any] | None, str | None]:
     return normalized, None
 
 
+def _validate_ability_payload(raw_ability: Any) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(raw_ability, dict):
+        return None, 'ability action metadata must include an ability object.'
+    key = _clean_text(raw_ability.get('key'), max_length=32).lower()
+    if key not in VALID_ABILITIES:
+        return None, f'ability.key must be one of {sorted(VALID_ABILITIES)}.'
+    modifier = _coerce_int(raw_ability.get('modifier'))
+    return {
+        'key': key,
+        'label': _clean_text(raw_ability.get('label'), max_length=40) or key.title(),
+        'modifier': modifier if modifier is not None else 0,
+    }, None
+
+
+def _coerce_non_negative_int(value: Any) -> int:
+    parsed = _coerce_int(value)
+    if parsed is None:
+        return 0
+    return max(0, parsed)
+
+
 def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | None]:
     """Return normalized action intent or a validation error message."""
 
@@ -142,33 +181,39 @@ def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | Non
         if error:
             return None, error
         normalized['roll'] = roll
+        if value.get('ability') not in (None, ''):
+            ability, ability_error = _validate_ability_payload(value.get('ability'))
+            if ability_error:
+                return None, ability_error
+            normalized['ability'] = ability
 
     if kind == 'ability':
-        ability = value.get('ability')
-        if not isinstance(ability, dict):
-            return None, 'ability action metadata must include an ability object.'
-        key = _clean_text(ability.get('key'), max_length=32).lower()
-        if key not in VALID_ABILITIES:
-            return None, f'ability.key must be one of {sorted(VALID_ABILITIES)}.'
-        modifier = _coerce_int(ability.get('modifier'))
-        normalized['ability'] = {
-            'key': key,
-            'label': _clean_text(ability.get('label'), max_length=40) or key.title(),
-            'modifier': modifier if modifier is not None else 0,
-        }
+        ability, ability_error = _validate_ability_payload(value.get('ability'))
+        if ability_error:
+            return None, ability_error
+        normalized['ability'] = ability
 
     if kind == 'item':
+        inventory_action = _clean_text(value.get('inventory_action'), max_length=32).lower() or 'use'
+        if inventory_action not in INVENTORY_ACTIONS:
+            return None, f'inventory_action must be one of {sorted(INVENTORY_ACTIONS)}.'
+
         item = value.get('item')
         if not isinstance(item, dict):
             return None, 'item action metadata must include an item object.'
-        name = _clean_text(item.get('name'), max_length=ACTION_ITEM_MAX_LENGTH)
+        name = clean_inventory_item_name(_clean_text(item.get('name'), max_length=ACTION_ITEM_MAX_LENGTH))
         if not name:
             return None, 'item.name is required.'
+        if not looks_like_inventory_item(name):
+            return None, 'item.name must be a tangible inventory item.'
         quantity = _coerce_int(item.get('quantity'))
+        cost_gold = _coerce_non_negative_int(value.get('cost_gold', value.get('price_gold')))
         normalized['item'] = {
             'name': name,
             'quantity': quantity if quantity is not None and quantity > 0 else 1,
         }
+        normalized['inventory_action'] = inventory_action
+        normalized['cost_gold'] = cost_gold
 
     if kind == 'interact':
         interaction = value.get('interaction')
@@ -213,12 +258,14 @@ def apply_action_intent_to_rule_hint(intent: dict[str, Any] | None, hint: RuleHi
     kind = intent.get('kind')
     if kind == 'roll':
         roll = intent.get('roll') if isinstance(intent.get('roll'), dict) else {}
+        ability = intent.get('ability') if isinstance(intent.get('ability'), dict) else {}
+        ability_key = _clean_text(ability.get('key'), max_length=32).lower()
         total = _coerce_int(roll.get('total'))
         reason = _clean_text(roll.get('reason'), max_length=ACTION_REASON_MAX_LENGTH)
         hint.requires_roll = True
-        hint.roll_type = hint.roll_type or 'check'
+        hint.roll_type = hint.roll_type or ability_key or 'check'
         hint.dc_hint = hint.dc_hint or DC_HINTS['check']
-        hint.reason = reason or 'Typed roll action'
+        hint.reason = reason or (f'Typed {ability_key} ability check' if ability_key else 'Typed roll action')
         hint.confidence = max(hint.confidence or 0.0, 0.99)
         hint.roll_value = total
         hint.outcome_deferred = False

@@ -397,7 +397,7 @@ def process_canon_job(
             )
 
         canon_apply_started = time.perf_counter()
-        apply_canon_patch(
+        applied_summary = apply_canon_patch(
             turn=turn,
             campaign=campaign,
             patch=validated_patch,
@@ -436,6 +436,9 @@ def process_canon_job(
                 'extractor_model': extractor_model,
                 'rejection_count': len(rejections),
                 'job_id': job.job_id,
+                'player_id': turn.player_id,
+                'inventory_changes_applied': applied_summary.get('inventory_changes_applied', []),
+                'character_state_changes_applied': applied_summary.get('character_state_changes_applied', []),
             },
         )
 

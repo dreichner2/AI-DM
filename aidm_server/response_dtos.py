@@ -23,6 +23,7 @@ from aidm_server.models import (
     World,
     safe_json_loads,
 )
+from aidm_server.profile_icons import profile_icon_src_for_character
 
 ACTIVE_STATUS = 'active'
 ARCHIVED_STATUS = 'archived'
@@ -361,6 +362,8 @@ def player_summary_payload(player: Player) -> dict:
         'name': player.name,
         'character_name': player.character_name,
         'race': player.race,
+        'sex': player.sex,
+        'profile_image': profile_icon_src_for_character(player.race, player.sex),
         'class_': player.class_,
         'char_class': player.class_,
         'level': player.level,

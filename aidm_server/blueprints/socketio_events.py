@@ -392,6 +392,9 @@ def register_socketio_events(socketio):
                 socketio=socketio,
                 emit_fn=emit,
                 stream_fn=query_dm_function_stream,
+                active_player_ids_fn=lambda session_id: [
+                    int(player['id']) for player in _active_player_payloads(session_id) if player.get('id')
+                ],
             )
             engine.process(
                 TurnCommand(

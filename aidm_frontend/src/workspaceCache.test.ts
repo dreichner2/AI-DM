@@ -60,6 +60,8 @@ function player(id: number, campaignId: number): Player {
     name: `Player ${id}`,
     character_name: `Hero ${id}`,
     race: '',
+    sex: '',
+    profile_image: '/profile-icons/human_male.png',
     class_: '',
     char_class: '',
     level: 1,

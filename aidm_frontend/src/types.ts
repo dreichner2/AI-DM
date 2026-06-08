@@ -138,6 +138,7 @@ export type TimelineEntry = {
 
 export type StreamingTurn = {
   turnId: number
+  turnNumber?: number | null
   text: string
   requiresRoll: boolean
   rulesHint: RulesHint

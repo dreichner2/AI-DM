@@ -74,6 +74,32 @@ port_open() {
   /usr/sbin/lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
 }
 
+stop_backend_port_listeners() {
+  local pids
+  pids="$(/usr/sbin/lsof -tiTCP:"${BACKEND_PORT}" -sTCP:LISTEN 2>/dev/null || true)"
+  [[ -n "${pids}" ]] || return 0
+
+  log "Stopping stale listener(s) on ${BACKEND_PORT}: ${pids//$'\n'/ }"
+  # shellcheck disable=SC2086
+  /bin/kill ${pids} >/dev/null 2>&1 || true
+
+  local start
+  local now
+  start="$(date +%s)"
+  while port_open "${BACKEND_PORT}"; do
+    now="$(date +%s)"
+    if (( now - start >= 10 )); then
+      pids="$(/usr/sbin/lsof -tiTCP:"${BACKEND_PORT}" -sTCP:LISTEN 2>/dev/null || true)"
+      if [[ -n "${pids}" ]]; then
+        # shellcheck disable=SC2086
+        /bin/kill -9 ${pids} >/dev/null 2>&1 || true
+      fi
+      break
+    fi
+    sleep 1
+  done
+}
+
 wait_for_http() {
   local url="$1"
   local label="$2"
@@ -175,16 +201,18 @@ start_tailscale_funnel() {
 start_backend() {
   install_launch_agent "local.aidm.backend"
 
-  if wait_for_http "${BACKEND_HEALTH_URL}" "Backend" 2 && wait_for_unified_app 2; then
-    return 0
+  if wait_for_http "${BACKEND_HEALTH_URL}" "Backend" 2; then
+    if wait_for_unified_app 2; then
+      log "Existing unified AI-DM is healthy; restarting backend to reload local configuration."
+    else
+      log "Backend health is up, but unified frontend is not being served; clearing stale API-only process."
+      stop_backend_port_listeners
+    fi
+  else
+    log "Starting unified AI-DM LaunchAgent on ${BACKEND_PORT}"
   fi
 
-  log "Starting unified AI-DM LaunchAgent on ${BACKEND_PORT}"
-  if port_open "${BACKEND_PORT}"; then
-    restart_launch_agent "local.aidm.backend"
-  else
-    kickstart_launch_agent "local.aidm.backend"
-  fi
+  restart_launch_agent "local.aidm.backend"
 }
 
 {

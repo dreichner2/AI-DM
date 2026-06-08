@@ -200,6 +200,8 @@ function resetApiData() {
     name: 'Danny',
     character_name: 'Ember',
     race: 'Human',
+    sex: 'female',
+    profile_image: '/profile-icons/human_female.png',
     class_: 'Wizard',
     char_class: 'Wizard',
     level: 2,
@@ -450,6 +452,8 @@ function installFetchMock() {
           name: body.name ?? current.name,
           character_name: body.character_name ?? current.character_name,
           race: body.race ?? current.race,
+          sex: body.sex ?? current.sex,
+          profile_image: body.profile_image ?? current.profile_image,
           class_: body.char_class ?? body.class_ ?? current.class_,
           char_class: body.char_class ?? current.char_class,
           level: body.level ?? current.level,
@@ -474,6 +478,8 @@ function installFetchMock() {
           name: body.name,
           character_name: body.character_name,
           race: body.race ?? '',
+          sex: body.sex ?? '',
+          profile_image: body.profile_image ?? '/profile-icons/human_male.png',
           class_: body.char_class ?? '',
           char_class: body.char_class ?? '',
           level: body.level ?? 1,
@@ -816,9 +822,15 @@ describe('App user workflow regressions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'OOC' }))
     expect(actionInput).toHaveValue('[OOC] test the sigil')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Ability' }))
-    expect(actionInput).toHaveValue('Ember attempts a STR check (+3): test the sigil')
-    expect(screen.getByLabelText('Ability options')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
+    expect(actionInput).toHaveValue('I roll a d20: test the sigil')
+    expect(screen.getByLabelText('Roll options')).toBeInTheDocument()
+    expect(screen.getByLabelText('Roll ability')).toHaveValue('plain_roll')
+
+    fireEvent.change(screen.getByLabelText('Roll ability'), { target: { value: 'strength' } })
+    expect(actionInput).toHaveValue('I roll a d20+3 for STR check: test the sigil')
+    expect(screen.getByLabelText('Roll modifier')).toHaveValue(3)
+    expect(screen.getByLabelText('Roll reason')).toHaveValue('STR check')
 
     fireEvent.click(screen.getByRole('button', { name: 'Item' }))
     expect(actionInput).toHaveValue('Ember uses Healing Potion: test the sigil')
@@ -829,6 +841,38 @@ describe('App user workflow regressions', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Action mode' }))
     expect(actionInput).toHaveValue('test the sigil')
+  })
+
+  it('sends structured item composer metadata for buying arbitrary items', async () => {
+    await renderLoadedApp()
+
+    const actionInput = screen.getByLabelText(/Your Action/i)
+    fireEvent.change(actionInput, { target: { value: 'before leaving town' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Item' }))
+    fireEvent.change(screen.getByLabelText('Inventory action'), { target: { value: 'buy' } })
+    fireEvent.change(screen.getByLabelText('Item name'), { target: { value: 'rope' } })
+    fireEvent.change(screen.getByLabelText('Gold cost'), { target: { value: '5' } })
+
+    expect(actionInput).toHaveValue('Ember tries to buy rope for 5 gold: before leaving town')
+    fireEvent.click(screen.getByRole('button', { name: /Send/i }))
+
+    await waitFor(() =>
+      expect(socketMock.socket.emit).toHaveBeenCalledWith(
+        'send_message',
+        expect.objectContaining({
+          message: 'Ember tries to buy rope for 5 gold: before leaving town',
+          action_intent: expect.objectContaining({
+            kind: 'item',
+            inventory_action: 'buy',
+            cost_gold: 5,
+            item: {
+              name: 'rope',
+              quantity: 1,
+            },
+          }),
+        }),
+      ),
+    )
   })
 
   it('keeps admin mode hidden until the composer label gesture unlocks it', async () => {
@@ -858,6 +902,8 @@ describe('App user workflow regressions', () => {
         name: 'Maya',
         character_name: 'Borin',
         race: 'Dwarf',
+        sex: 'male',
+        profile_image: '/profile-icons/dwarf_male.png',
         class_: 'Fighter',
         char_class: 'Fighter',
         level: 2,
@@ -929,10 +975,14 @@ describe('App user workflow regressions', () => {
     )
   })
 
-  it('opens the dice roller from the Roll button and sends the completed roll', async () => {
+  it('opens the dice roller from Roll options and sends the completed roll', async () => {
     await renderLoadedApp()
 
     fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
+    expect(screen.getByLabelText('Roll options')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Dice Roller' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Roll dice' }))
 
     const dialog = await screen.findByRole('dialog', { name: 'Dice Roller' })
     expect(within(dialog).getByText('D20')).toBeInTheDocument()
@@ -953,6 +1003,42 @@ describe('App user workflow regressions', () => {
             roll: expect.objectContaining({
               die: 'd20',
               result_visibility: 'hidden_until_landed',
+            }),
+          }),
+        }),
+      ),
+    )
+  })
+
+  it('rolls selected ability checks from the Roll selector', async () => {
+    await renderLoadedApp()
+
+    const actionInput = screen.getByLabelText(/Your Action/i)
+    fireEvent.change(actionInput, { target: { value: 'kick the door' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
+    fireEvent.change(screen.getByLabelText('Roll ability'), { target: { value: 'strength' } })
+
+    expect(actionInput).toHaveValue('I roll a d20+3 for STR check: kick the door')
+    expect(screen.getByLabelText('Roll modifier')).toHaveValue(3)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Roll dice' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Dice Roller' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Complete roll' }))
+
+    await waitFor(() =>
+      expect(socketMock.socket.emit).toHaveBeenCalledWith(
+        'send_message',
+        expect.objectContaining({
+          action_intent: expect.objectContaining({
+            kind: 'roll',
+            ability: {
+              key: 'strength',
+              label: 'STR',
+              modifier: 3,
+            },
+            roll: expect.objectContaining({
+              modifier: 3,
+              reason: 'STR check',
             }),
           }),
         }),
@@ -1224,6 +1310,89 @@ describe('App user workflow regressions', () => {
     )
   })
 
+  it('refreshes the selected player when inventory state is applied before canon finishes', async () => {
+    await renderLoadedApp()
+
+    playerDetails[30] = {
+      ...playerDetails[30],
+      inventory: [
+        { name: 'Healing Potion', quantity: 2, weight: 0.5 },
+        { name: 'Stick', quantity: 1 },
+      ],
+    }
+
+    await act(async () => {
+      socketHandler<{
+        session_id: number
+        turn_id: number
+        status: string
+        details: { player_id: number; inventory_changes_applied: Array<{ item_name: string; quantity: number }> }
+      }>('turn_status')({
+        session_id: 20,
+        turn_id: 4,
+        status: 'state_applied',
+        details: {
+          player_id: 30,
+          inventory_changes_applied: [{ item_name: 'Stick', quantity: 1 }],
+        },
+      })
+    })
+
+    await screen.findByText('Stick')
+    expect(fetchCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: 'GET',
+          path: '/api/players/30',
+        }),
+      ]),
+    )
+  })
+
+  it('refreshes the selected player when immediate inventory state arrives as canon_applied', async () => {
+    await renderLoadedApp()
+
+    playerDetails[30] = {
+      ...playerDetails[30],
+      inventory: [
+        { name: 'Healing Potion', quantity: 2, weight: 0.5 },
+        { name: 'Rope', quantity: 1 },
+      ],
+    }
+
+    await act(async () => {
+      socketHandler<{
+        session_id: number
+        turn_id: number
+        status: string
+        details: {
+          player_id: number
+          state_applied: boolean
+          inventory_changes_applied: Array<{ item_name: string; quantity: number; already_applied: boolean }>
+        }
+      }>('turn_status')({
+        session_id: 20,
+        turn_id: 5,
+        status: 'canon_applied',
+        details: {
+          player_id: 30,
+          state_applied: true,
+          inventory_changes_applied: [{ item_name: 'Rope', quantity: 1, already_applied: true }],
+        },
+      })
+    })
+
+    await screen.findByText('Rope')
+    expect(fetchCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: 'GET',
+          path: '/api/players/30',
+        }),
+      ]),
+    )
+  })
+
   it('lets first-time campaign visitors create a character before joining as a player', async () => {
     localStorage.removeItem('aidm:selectedPlayerId')
 
@@ -1242,6 +1411,9 @@ describe('App user workflow regressions', () => {
     fireEvent.change(within(creator).getByLabelText('Race'), {
       target: { value: 'Dwarf' },
     })
+    fireEvent.change(within(creator).getByLabelText('Sex'), {
+      target: { value: 'male' },
+    })
     fireEvent.change(within(creator).getByLabelText('Class'), {
       target: { value: 'Cleric' },
     })
@@ -1257,6 +1429,7 @@ describe('App user workflow regressions', () => {
             name: 'Maya',
             character_name: 'Borin',
             race: 'Dwarf',
+            sex: 'male',
             char_class: 'Cleric',
           }),
         }),

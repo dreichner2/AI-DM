@@ -112,6 +112,7 @@ function collectRecords(value: unknown): JsonRecord[] {
     'derived',
     'health',
     'character',
+    'currency',
   ].forEach((key) => {
     if (isRecord(value[key])) records.push(value[key] as JsonRecord)
   })
@@ -263,6 +264,26 @@ export function inventoryWeightLabel(inventoryRows: InventoryRow[], capacity: nu
   return `Weight ${carriedWeight.toFixed(carriedWeight % 1 ? 1 : 0)} / ${capacity} lb`
 }
 
+export function inventoryGoldLabel(...values: unknown[]) {
+  const records = values.flatMap((value) => collectRecords(value))
+  const gold = Math.max(
+    0,
+    Math.floor(numberValue(findValue(records, ['gold', 'gp', 'gold_pieces', 'goldPieces'])) ?? 0),
+  )
+  const extraCoins = [
+    ['platinum', 'pp'],
+    ['electrum', 'ep'],
+    ['silver', 'sp'],
+    ['copper', 'cp'],
+  ]
+    .map(([key, label]) => {
+      const amount = Math.max(0, Math.floor(numberValue(findValue(records, [key])) ?? 0))
+      return amount ? `${formatCompactNumber(amount)} ${label}` : ''
+    })
+    .filter(Boolean)
+  return [`${formatCompactNumber(gold)} gp`, ...extraCoins].join(' · ')
+}
+
 export function buildMapMeta(map: MapItem | undefined, segment: CampaignSegment | null): MapPanelMeta {
   const data = map?.map_data ?? {}
   const exploredNumber =
@@ -289,8 +310,12 @@ export function buildMapMeta(map: MapItem | undefined, segment: CampaignSegment 
 }
 
 export function turnNumber(entry: TimelineEntry, fallbackIndex: number) {
+  const localTurn = entry.metadata.turn_number
+  if (typeof localTurn === 'number') return localTurn
   const metadataTurn = entry.metadata.turn_id
-  return typeof metadataTurn === 'number' ? metadataTurn : fallbackIndex + 1
+  return typeof metadataTurn === 'number' && metadataTurn <= fallbackIndex + 1
+    ? metadataTurn
+    : fallbackIndex + 1
 }
 
 export function speakerDetail(entry: TimelineEntry, selectedPlayer: Player | null) {
@@ -369,6 +394,7 @@ export function buildTimeline({
       timestamp: null,
       metadata: {
         turn_id: streamingTurn.turnId,
+        turn_number: streamingTurn.turnNumber ?? null,
         requires_roll: streamingTurn.requiresRoll,
         persistence_status: turnStatuses[streamingTurn.turnId] ?? 'streaming',
         ...streamingTurn.rulesHint,
@@ -398,13 +424,13 @@ export function pendingRollOptionsFromTimeline(timeline: TimelineEntry[]): Pendi
         stringValue(entry.metadata.outcome_status).toLowerCase() === 'deferred'
       )
     })
-    .map((entry) => {
+    .map((entry, index) => {
       const turnId = metadataTurnId(entry.metadata) as number
       const ruleType = stringValue(entry.metadata.rule_type, 'check').replace(/_/g, ' ')
       const detail = truncateText(entry.text || 'Pending check', 72)
       return {
         turnId,
-        label: `Turn ${turnId}: ${ruleType}`,
+        label: `Turn ${turnNumber(entry, index)}: ${ruleType}`,
         detail,
       }
     })

@@ -115,6 +115,8 @@ export type Player = {
   name: string
   character_name: string
   race: string | null
+  sex: string | null
+  profile_image: string
   class_: string | null
   char_class: string | null
   level: number
@@ -129,6 +131,8 @@ export type PlayerDetail = {
   name: string
   character_name: string
   race: string | null
+  sex: string | null
+  profile_image: string
   class_: string | null
   char_class: string | null
   level: number

@@ -1,5 +1,5 @@
 import type { Dispatch, FormEvent, SetStateAction } from 'react'
-import { ChevronDown, ExternalLink } from 'lucide-react'
+import { ChevronDown, Coins, ExternalLink } from 'lucide-react'
 import { ThinIcon } from './AppChrome'
 import {
   truncateText,
@@ -54,6 +54,7 @@ type InspectorPanelProps = {
   statBlock: StatBlock
   inventoryRows: InventoryRow[]
   inventoryWeightLabel: string
+  inventoryGoldLabel: string
   memorySnippetCount: number
   visibleCanonFacts: CanonFact[]
   mapPanelTitle: string
@@ -109,6 +110,7 @@ export function InspectorPanel({
   statBlock,
   inventoryRows,
   inventoryWeightLabel,
+  inventoryGoldLabel,
   memorySnippetCount,
   visibleCanonFacts,
   mapPanelTitle,
@@ -296,7 +298,13 @@ export function InspectorPanel({
         <section className="inspector-box">
           <div className="box-title">
             <h3>Inventory ({inventoryRows.length})</h3>
-            <span>{inventoryWeightLabel}</span>
+            <div className="inventory-metrics">
+              <span className="gold-count" aria-label={`Gold ${inventoryGoldLabel}`}>
+                <Coins size={13} />
+                {inventoryGoldLabel}
+              </span>
+              <span>{inventoryWeightLabel}</span>
+            </div>
           </div>
           <div className="inventory-table">
             {inventoryRows.length ? (

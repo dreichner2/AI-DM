@@ -13,6 +13,7 @@ def test_create_player_accepts_structured_inventory_and_get_returns_parsed_inven
         json={
             'name': 'Borin',
             'character_name': 'Borin Stoneshield',
+            'sex': 'male',
             'inventory': [
                 {'name': 'Rope', 'quantity': 2},
                 'Torch',
@@ -26,10 +27,57 @@ def test_create_player_accepts_structured_inventory_and_get_returns_parsed_inven
     assert player_response.status_code == 200
     payload = player_response.get_json()
 
+    assert payload['sex'] == 'male'
+    assert payload['profile_image'] == '/profile-icons/human_male.png'
     assert payload['inventory'] == [
-        {'name': 'Rope', 'quantity': 2},
-        {'name': 'Torch', 'quantity': 1},
+        {'name': 'Rope', 'quantity': 2, 'weight': 10},
+        {'name': 'Torch', 'quantity': 1, 'weight': 1},
     ]
+
+
+def test_create_player_validates_point_buy_stats(client, app):
+    ids = seed_world_campaign_player_session(app)
+
+    valid_response = client.post(
+        f"/api/players/campaigns/{ids['campaign_id']}/players",
+        json={
+            'name': 'Borin',
+            'character_name': 'Borin Stoneshield',
+            'stats': {
+                'ability_scores': {
+                    'strength': 15,
+                    'dexterity': 14,
+                    'constitution': 13,
+                    'intelligence': 12,
+                    'wisdom': 8,
+                    'charisma': 8,
+                },
+                'point_buy': {'budget': 27},
+            },
+        },
+    )
+    assert valid_response.status_code == 201
+
+    invalid_response = client.post(
+        f"/api/players/campaigns/{ids['campaign_id']}/players",
+        json={
+            'name': 'Mira',
+            'character_name': 'Mira Bright',
+            'stats': {
+                'ability_scores': {
+                    'strength': 15,
+                    'dexterity': 15,
+                    'constitution': 15,
+                    'intelligence': 15,
+                    'wisdom': 15,
+                    'charisma': 15,
+                },
+                'point_buy': {'budget': 27},
+            },
+        },
+    )
+    assert invalid_response.status_code == 400
+    assert invalid_response.get_json()['error_code'] == 'validation_error'
 
 
 def test_update_player_persists_profile_sheet_stats_and_inventory(client, app):
@@ -41,6 +89,7 @@ def test_update_player_persists_profile_sheet_stats_and_inventory(client, app):
             'name': 'Alice Updated',
             'character_name': 'Seraphina Vale',
             'race': 'Half-Elf',
+            'sex': 'female',
             'char_class': 'Rogue',
             'level': '4',
             'stats': {'strength': 10, 'dexterity': 18},
@@ -54,14 +103,16 @@ def test_update_player_persists_profile_sheet_stats_and_inventory(client, app):
     assert payload['name'] == 'Alice Updated'
     assert payload['character_name'] == 'Seraphina Vale'
     assert payload['race'] == 'Half-Elf'
+    assert payload['sex'] == 'female'
+    assert payload['profile_image'] == '/profile-icons/elf_female.png'
     assert payload['class_'] == 'Rogue'
     assert payload['char_class'] == 'Rogue'
     assert payload['level'] == 4
     assert payload['stats'] == {'strength': 10, 'dexterity': 18}
     assert payload['character_sheet'] == {'current_hp': 22, 'max_hp': 28}
     assert payload['inventory'] == [
-        {'name': 'Silver Key', 'quantity': 1},
-        {'name': 'Torch', 'quantity': 1},
+        {'name': 'Silver Key', 'quantity': 1, 'weight': 0.1},
+        {'name': 'Torch', 'quantity': 1, 'weight': 1},
     ]
 
     detail_response = client.get(f"/api/players/{ids['player_id']}")

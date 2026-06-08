@@ -6,7 +6,7 @@ import pathlib
 import stat
 
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import MetaData, event
+from sqlalchemy import MetaData, event, inspect, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.pool import NullPool
 
@@ -152,7 +152,21 @@ def init_db(app):
 def ensure_schema(app):
     with app.app_context():
         db.create_all()
+        _ensure_legacy_sqlite_columns()
         harden_sqlite_permissions(app.config.get('SQLALCHEMY_DATABASE_URI', ''), app.root_path)
+
+
+def _ensure_legacy_sqlite_columns():
+    if db.engine.dialect.name != 'sqlite':
+        return
+    inspector = inspect(db.engine)
+    if 'players' not in inspector.get_table_names():
+        return
+    player_columns = {column['name'] for column in inspector.get_columns('players')}
+    with db.engine.begin() as connection:
+        if 'sex' not in player_columns:
+            connection.execute(text('ALTER TABLE players ADD COLUMN sex VARCHAR'))
+        connection.execute(text("UPDATE players SET sex = 'male' WHERE sex IS NULL OR TRIM(sex) = ''"))
 
 
 def get_engine():

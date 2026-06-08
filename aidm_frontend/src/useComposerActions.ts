@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react'
 import type { Socket } from 'socket.io-client'
 import {
+  PLAIN_ROLL_ABILITY_KEY,
+  abilityModifierValue,
   buildActionIntent,
   composerTextForMode,
   createClientMessageId,
   diceRollMessage,
+  hasReservedAdminPrefix,
   normalizeDie,
   parseRollModifier,
   resolveRoll,
@@ -14,6 +17,7 @@ import {
   type ComposerMode,
   type InteractionTarget,
   type InteractionType,
+  type InventoryAction,
   type ItemOption,
   type RollMode,
   type RollResult,
@@ -78,8 +82,12 @@ export function useComposerActions({
   const [rollMode, setRollMode] = useState<RollMode>('normal')
   const [rollReason, setRollReason] = useState('')
   const [rawRollTargetPendingTurnId, setRollTargetPendingTurnId] = useState('')
-  const [selectedAbilityKey, setSelectedAbilityKey] = useState('strength')
+  const [selectedAbilityKey, setSelectedAbilityKey] = useState(PLAIN_ROLL_ABILITY_KEY)
+  const [selectedInventoryAction, setSelectedInventoryAction] = useState<InventoryAction>('use')
   const [selectedItemName, setSelectedItemName] = useState('')
+  const [itemDraftName, setItemDraftName] = useState('')
+  const [itemQuantity, setItemQuantity] = useState('1')
+  const [itemCostGold, setItemCostGold] = useState('0')
   const [selectedInteractionType, setSelectedInteractionType] = useState<InteractionType>('speak_to')
   const [rawSelectedInteractionTargetId, setSelectedInteractionTargetId] = useState('')
   const [adminPasscode, setAdminPasscode] = useState(() => sessionStorage.getItem('aidm:adminPasscode') ?? '')
@@ -97,9 +105,15 @@ export function useComposerActions({
   }, [adminPasscode])
 
   const selectedAbility =
-    abilityOptions.find((ability) => ability.key === selectedAbilityKey) ?? abilityOptions[0] ?? null
+    selectedAbilityKey === PLAIN_ROLL_ABILITY_KEY
+      ? null
+      : abilityOptions.find((ability) => ability.key === selectedAbilityKey) ?? null
   const selectedItem =
     itemOptions.find((item) => item.name === selectedItemName) ?? itemOptions[0] ?? null
+  const selectedInventoryActionRequiresItem = ['use', 'drop', 'give', 'sell'].includes(selectedInventoryAction)
+  const itemIntentName = selectedInventoryActionRequiresItem
+    ? selectedItem?.name ?? itemDraftName
+    : itemDraftName
   const activePlayerIds = useMemo(
     () => new Set(activePlayers.map((player) => player.id)),
     [activePlayers],
@@ -148,12 +162,17 @@ export function useComposerActions({
     }
     if (
       !socketRef.current ||
+      socketRef.current.connected === false ||
       !selectedSessionId ||
       !selectedCampaignId ||
       !campaign ||
       !selectedPlayerId
     ) {
-      pushError('validation', 'Choose a campaign, session, and player before sending.')
+      if (socketRef.current?.connected === false) {
+        pushError('validation', 'Realtime is reconnecting. Try again in a moment.')
+      } else {
+        pushError('validation', 'Choose a campaign, session, and player before sending.')
+      }
       return
     }
     const message = (overrideMessage ?? actionText).trim()
@@ -167,6 +186,16 @@ export function useComposerActions({
       pushError('validation', 'Choose another player before sending an interaction.')
       return
     }
+    if (!overrideIntent && composerMode === 'item') {
+      if (selectedInventoryActionRequiresItem && !selectedItem) {
+        pushError('validation', 'Choose an item already in your inventory for that action.')
+        return
+      }
+      if (!itemIntentName.trim()) {
+        pushError('validation', 'Name an item before sending an inventory action.')
+        return
+      }
+    }
     const clientMessageId = overrideIntent?.client_message_id ?? createClientMessageId()
     const actionIntent =
       overrideIntent ??
@@ -176,9 +205,17 @@ export function useComposerActions({
         clientMessageId,
         ability: selectedAbility,
         item: selectedItem,
+        inventoryAction: selectedInventoryAction,
+        itemName: itemIntentName,
+        itemQuantity,
+        costGold: itemCostGold,
         interactionType: selectedInteractionType,
         interactionTarget: selectedInteractionTarget,
       })
+    if (actionIntent.kind !== 'admin' && hasReservedAdminPrefix(message)) {
+      pushError('validation', 'Admin-prefixed messages require authenticated Admin mode.')
+      return
+    }
 
     stopTtsAudio()
     setSendPending(true)
@@ -223,8 +260,38 @@ export function useComposerActions({
         selectedItem,
         selectedInteractionTarget,
         selectedInteractionType,
+        selectedInventoryAction,
+        itemIntentName,
+        itemCostGold,
       ),
     )
+  }
+
+  const updateRollAbilityKey = (nextKey: string) => {
+    const nextAbility =
+      nextKey === PLAIN_ROLL_ABILITY_KEY
+        ? null
+        : abilityOptions.find((ability) => ability.key === nextKey) ?? null
+    setSelectedAbilityKey(nextAbility?.key ?? PLAIN_ROLL_ABILITY_KEY)
+    setRollModifier(String(abilityModifierValue(nextAbility)))
+    setRollReason(nextAbility ? `${nextAbility.label} check` : '')
+    if (composerMode === 'roll') {
+      setActionText((current) =>
+        composerTextForMode(
+          'roll',
+          current,
+          selectedPlayer?.character_name ?? 'I',
+          selectedDie,
+          nextAbility,
+          selectedItem,
+          selectedInteractionTarget,
+          selectedInteractionType,
+          selectedInventoryAction,
+          itemIntentName,
+          itemCostGold,
+        ),
+      )
+    }
   }
 
   const updateSelectedDie = (die: string) => {
@@ -233,6 +300,67 @@ export function useComposerActions({
     if (composerMode === 'roll') {
       setActionText((current) =>
         composerTextForMode('roll', current, selectedPlayer?.character_name ?? 'I', normalizedDie, selectedAbility, selectedItem),
+      )
+    }
+  }
+
+  const updateSelectedInventoryAction = (nextAction: InventoryAction) => {
+    setSelectedInventoryAction(nextAction)
+    setActionText((current) =>
+      composerTextForMode(
+        'item',
+        current,
+        selectedPlayer?.character_name ?? 'I',
+        selectedDie,
+        selectedAbility,
+        selectedItem,
+        selectedInteractionTarget,
+        selectedInteractionType,
+        nextAction,
+        nextAction === 'pick_up' || nextAction === 'buy' ? itemDraftName : selectedItem?.name ?? itemDraftName,
+        itemCostGold,
+      ),
+    )
+  }
+
+  const updateItemDraftName = (nextName: string) => {
+    setItemDraftName(nextName)
+    if (composerMode === 'item' && (selectedInventoryAction === 'pick_up' || selectedInventoryAction === 'buy')) {
+      setActionText((current) =>
+        composerTextForMode(
+          'item',
+          current,
+          selectedPlayer?.character_name ?? 'I',
+          selectedDie,
+          selectedAbility,
+          selectedItem,
+          selectedInteractionTarget,
+          selectedInteractionType,
+          selectedInventoryAction,
+          nextName,
+          itemCostGold,
+        ),
+      )
+    }
+  }
+
+  const updateItemCostGold = (nextCost: string) => {
+    setItemCostGold(nextCost)
+    if (composerMode === 'item' && (selectedInventoryAction === 'buy' || selectedInventoryAction === 'sell')) {
+      setActionText((current) =>
+        composerTextForMode(
+          'item',
+          current,
+          selectedPlayer?.character_name ?? 'I',
+          selectedDie,
+          selectedAbility,
+          selectedItem,
+          selectedInteractionTarget,
+          selectedInteractionType,
+          selectedInventoryAction,
+          itemIntentName,
+          nextCost,
+        ),
       )
     }
   }
@@ -260,11 +388,13 @@ export function useComposerActions({
       die: normalizedDie,
       modifier: parseRollModifier(rollModifier),
       mode: rollMode,
-      reason: rollReason,
+      reason: rollReason || (selectedAbility ? `${selectedAbility.label} check` : ''),
       resultVisibility: 'hidden_until_landed',
       targetPendingTurnId,
     })
-    const message = diceRollMessage(roll)
+    const actionDescription = stripComposerCommand(actionText)
+    const rollMessage = diceRollMessage(roll)
+    const message = actionDescription ? `${actionDescription}\n${rollMessage}` : rollMessage
     const clientMessageId = createClientMessageId()
     const actionIntent = buildActionIntent({
       mode: 'roll',
@@ -272,6 +402,7 @@ export function useComposerActions({
       clientMessageId,
       source: 'dice_roller',
       roll,
+      ability: selectedAbility,
     })
     setSelectedDie(normalizedDie)
     setComposerMode('roll')
@@ -319,21 +450,30 @@ export function useComposerActions({
     rollReason,
     rollTargetPendingTurnId,
     selectedAbility,
+    selectedAbilityKey,
     selectedDie,
     selectedInteractionTarget,
     selectedInteractionTargetId,
     selectedInteractionType,
+    selectedInventoryAction,
     selectedItem,
+    itemDraftName,
+    itemQuantity,
+    itemCostGold,
     setActionText,
     setAdminPasscode,
     setSelectedInteractionTargetId,
     setSelectedInteractionType,
+    setItemQuantity,
     setRollMode,
     setRollModifier,
     setRollReason,
     setRollTargetPendingTurnId,
-    setSelectedAbilityKey,
+    updateRollAbilityKey,
     setSelectedItemName,
+    updateSelectedInventoryAction,
+    updateItemDraftName,
+    updateItemCostGold,
     startDiceRoll,
     submitAction,
     toggleAdminTools,

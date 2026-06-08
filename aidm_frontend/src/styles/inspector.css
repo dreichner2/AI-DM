@@ -301,6 +301,30 @@
   gap: 5px;
 }
 
+.inventory-metrics {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.inventory-metrics span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.inventory-metrics .gold-count {
+  color: #ffd27a;
+}
+
+.inventory-metrics svg {
+  flex: none;
+}
+
 .box-title button {
   height: 24px;
   padding: 0 8px;

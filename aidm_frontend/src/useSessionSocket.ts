@@ -26,6 +26,7 @@ type TurnStatusPayload = {
 type DmResponseEndPayload = {
   session_id?: number
   turn_id?: number
+  turn_number?: number | null
   requires_roll?: boolean
   rules_hint?: RulesHint
   ok?: boolean
@@ -36,6 +37,7 @@ type NewMessagePayload = {
   message?: string
   speaker?: string
   turn_id?: number
+  turn_number?: number | null
   requires_roll?: boolean
   rules_hint?: RulesHint
   context_version?: string
@@ -54,6 +56,7 @@ type UseSessionSocketOptions = {
   socketReconnectKey: number
   socketRef: MutableRefObject<Socket | null>
   loadSessionData: (sessionId: number) => Promise<void>
+  refreshPlayerDetail: (playerId: number) => Promise<void>
   pushError: (category: SocketErrorCategory, message: string) => void
   rememberStreamedTtsTurn: (turnId: number, text: string) => void
   resetTtsFailureForNextResponse: () => void
@@ -113,6 +116,7 @@ function timelineEntryFromNewMessage(payload: NewMessagePayload): TimelineEntry 
     timestamp: null,
     metadata: {
       turn_id: turnId,
+      turn_number: typeof payload.turn_number === 'number' ? payload.turn_number : null,
       requires_roll: Boolean(payload.requires_roll),
       rules_hint: payload.rules_hint ?? {},
       context_version: stringValue(payload.context_version) || null,
@@ -132,6 +136,7 @@ export function useSessionSocket({
   socketReconnectKey,
   socketRef,
   loadSessionData,
+  refreshPlayerDetail,
   pushError,
   rememberStreamedTtsTurn,
   resetTtsFailureForNextResponse,
@@ -186,6 +191,7 @@ export function useSessionSocket({
     setSocketStatus('connecting')
 
     socket.on('connect', () => {
+      setSendPending(false)
       setSocketStatus('joining')
       socket.emit('join_session', {
         session_id: selectedSessionId,
@@ -194,6 +200,7 @@ export function useSessionSocket({
     })
 
     socket.on('connect_error', (error) => {
+      setSendPending(false)
       setSocketStatus('error')
       pushError('connection', `Socket connection failed: ${error.message}`)
     })
@@ -226,6 +233,7 @@ export function useSessionSocket({
       'dm_response_start',
       (payload: {
         turn_id: number
+        turn_number?: number | null
         requires_roll?: boolean
         rules_hint?: RulesHint
       }) => {
@@ -235,6 +243,7 @@ export function useSessionSocket({
         spokenTextLengthRef.current = 0
         setStreamingTurn({
           turnId: payload.turn_id,
+          turnNumber: typeof payload.turn_number === 'number' ? payload.turn_number : null,
           text: '',
           requiresRoll: Boolean(payload.requires_roll),
           rulesHint: payload.rules_hint ?? {},
@@ -246,6 +255,7 @@ export function useSessionSocket({
       'dm_chunk',
       (payload: {
         turn_id: number
+        turn_number?: number | null
         chunk?: string
         requires_roll?: boolean
         rules_hint?: RulesHint
@@ -254,6 +264,7 @@ export function useSessionSocket({
           if (!current || current.turnId !== payload.turn_id) {
             return {
               turnId: payload.turn_id,
+              turnNumber: typeof payload.turn_number === 'number' ? payload.turn_number : null,
               text: payload.chunk ?? '',
               requiresRoll: Boolean(payload.requires_roll),
               rulesHint: payload.rules_hint ?? {},
@@ -261,6 +272,7 @@ export function useSessionSocket({
           }
           return {
             ...current,
+            turnNumber: current.turnNumber ?? (typeof payload.turn_number === 'number' ? payload.turn_number : null),
             text: `${current.text}${payload.chunk ?? ''}`,
             requiresRoll: Boolean(payload.requires_roll),
             rulesHint: payload.rules_hint ?? current.rulesHint,
@@ -283,6 +295,7 @@ export function useSessionSocket({
               timestamp: null,
               metadata: {
                 turn_id: current.turnId,
+                turn_number: current.turnNumber ?? null,
                 requires_roll: current.requiresRoll,
                 stream_status: 'failed',
                 error: payload.error ?? null,
@@ -313,6 +326,7 @@ export function useSessionSocket({
             timestamp: null,
             metadata: {
               turn_id: current.turnId,
+              turn_number: current.turnNumber ?? null,
               requires_roll: current.requiresRoll,
               ...current.rulesHint,
             },
@@ -367,6 +381,14 @@ export function useSessionSocket({
       if (status === 'saved' || status === 'failed') {
         setSendPending(false)
       }
+      if (status === 'canon_applied' || status === 'state_applied') {
+        const playerId = Number(payload.details?.player_id)
+        if (Number.isInteger(playerId) && playerId > 0 && playerId === selectedPlayerId) {
+          refreshPlayerDetail(playerId).catch((error: unknown) => {
+            pushError('workspace', `Player refresh failed: ${error instanceof Error ? error.message : String(error)}`)
+          })
+        }
+      }
       setTurnStatuses((current) => ({
         ...current,
         [payload.turn_id as number]: status,
@@ -379,6 +401,8 @@ export function useSessionSocket({
     })
 
     socket.on('disconnect', () => {
+      setSendPending(false)
+      setStreamingTurn(null)
       setActivePlayers([])
       setSocketStatus('offline')
     })
@@ -398,6 +422,7 @@ export function useSessionSocket({
     auth,
     baseUrl,
     loadSessionData,
+    refreshPlayerDetail,
     lastSpokenDmEntryRef,
     lastSpokenTextRef,
     lastSpokenTurnIdRef,

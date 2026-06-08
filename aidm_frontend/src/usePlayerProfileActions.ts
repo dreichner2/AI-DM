@@ -1,5 +1,12 @@
 import { useCallback, useState, type Dispatch, type FormEvent, type SetStateAction } from 'react'
 import { apiFetch } from './api'
+import {
+  DEFAULT_POINT_BUY_SCORES,
+  POINT_BUY_BUDGET,
+  pointBuySpent,
+  pointBuyStatsPayload,
+  type PointBuyScores,
+} from './characterStats'
 import type { Player, PlayerDetail } from './types'
 
 type ValueUpdater<T> = T | ((current: T) => T)
@@ -11,8 +18,10 @@ export type PlayerEditDialogState = {
   name: string
   characterName: string
   race: string
+  sex: string
   charClass: string
   level: string
+  abilityScores: PointBuyScores
   error: string
   pending: boolean
 } | null
@@ -45,8 +54,10 @@ function playerDialogStateFromPlayer(player: Player): NonNullable<PlayerEditDial
     name: player.name ?? '',
     characterName: player.character_name ?? '',
     race: player.race ?? '',
+    sex: player.sex ?? 'male',
     charClass: player.char_class || player.class_ || '',
     level: String(player.level ?? 1),
+    abilityScores: { ...DEFAULT_POINT_BUY_SCORES },
     error: '',
     pending: false,
   }
@@ -86,8 +97,10 @@ export function usePlayerProfileActions({
       name: '',
       characterName: '',
       race: '',
+      sex: 'male',
       charClass: '',
       level: '1',
+      abilityScores: { ...DEFAULT_POINT_BUY_SCORES },
       error: '',
       pending: false,
     })
@@ -132,6 +145,13 @@ export function usePlayerProfileActions({
       )
       return
     }
+    const pointBuyTotal = pointBuySpent(playerEditDialog.abilityScores)
+    if (playerEditDialog.mode === 'create' && pointBuyTotal > POINT_BUY_BUDGET) {
+      setPlayerEditDialog((current) =>
+        current ? { ...current, error: `Ability scores exceed ${POINT_BUY_BUDGET} point buy points.` } : current,
+      )
+      return
+    }
 
     const dialogMode = playerEditDialog.mode
     const campaignId = playerEditDialog.campaignId
@@ -139,13 +159,18 @@ export function usePlayerProfileActions({
     setPlayerEditDialog((current) => (current ? { ...current, pending: true, error: '' } : current))
     try {
       let updated: PlayerDetail
-      const body = JSON.stringify({
+      const payload: Record<string, unknown> = {
         name,
         character_name: characterName,
         race: playerEditDialog.race.trim(),
+        sex: playerEditDialog.sex.trim() || 'male',
         char_class: playerEditDialog.charClass.trim(),
         level,
-      })
+      }
+      if (dialogMode === 'create') {
+        payload.stats = pointBuyStatsPayload(playerEditDialog.abilityScores, level)
+      }
+      const body = JSON.stringify(payload)
       if (dialogMode === 'create') {
         if (!campaignId) throw new Error('Choose a campaign before creating a character.')
         const created = await apiFetch<{ player_id: number }>(

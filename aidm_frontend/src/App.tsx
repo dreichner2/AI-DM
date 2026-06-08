@@ -32,6 +32,13 @@ import {
   type InspectorTab,
 } from './InspectorPanel'
 import { ApiClientError, apiFetch } from './api'
+import {
+  POINT_BUY_ABILITIES,
+  POINT_BUY_BUDGET,
+  abilityModifier,
+  clampPointBuyScore,
+  pointBuySpent,
+} from './characterStats'
 import { SessionBoard, type MainTab } from './SessionBoard'
 import {
   abilityOptionsFromStatBlock,
@@ -40,6 +47,7 @@ import {
   canonFactsFromMemorySnippets,
   formatCompactNumber,
   inventoryCapacity,
+  inventoryGoldLabel as buildInventoryGoldLabel,
   inventoryWeightLabel as buildInventoryWeightLabel,
   isRecord,
   itemOptionsFromInventory,
@@ -51,6 +59,7 @@ import {
   stringValue,
   truncateText,
 } from './gameSelectors'
+import { profileIconSrcForCharacter } from './profileIcons'
 import './App.css'
 import type {
   ActivePlayer,
@@ -637,21 +646,30 @@ function App() {
     rollReason,
     rollTargetPendingTurnId,
     selectedAbility,
+    selectedAbilityKey,
     selectedDie,
     selectedInteractionTarget,
     selectedInteractionTargetId,
     selectedInteractionType,
+    selectedInventoryAction,
     selectedItem,
+    itemDraftName,
+    itemQuantity,
+    itemCostGold,
     setActionText,
     setAdminPasscode,
     setSelectedInteractionTargetId,
     setSelectedInteractionType,
+    setItemQuantity,
     setRollMode,
     setRollModifier,
     setRollReason,
     setRollTargetPendingTurnId,
-    setSelectedAbilityKey,
     setSelectedItemName,
+    updateRollAbilityKey,
+    updateSelectedInventoryAction,
+    updateItemDraftName,
+    updateItemCostGold,
     startDiceRoll,
     submitAction,
     toggleAdminTools,
@@ -1891,14 +1909,9 @@ function App() {
     setSessionLogHasMore,
   ])
 
-  useEffect(() => {
-    if (!selectedPlayerId) {
-      playerRequestRef.current += 1
-      setPlayerDetail(null)
-      return
-    }
+  const loadPlayerDetail = useCallback(async (playerId: number) => {
     const requestId = ++playerRequestRef.current
-    apiFetch<PlayerDetail>(baseUrl, `/api/players/${selectedPlayerId}`, auth)
+    await apiFetch<PlayerDetail>(baseUrl, `/api/players/${playerId}`, auth)
       .then((detail) => {
         if (playerRequestRef.current === requestId) {
           setPlayerDetail(detail)
@@ -1914,7 +1927,7 @@ function App() {
             return
           }
           if (isNotFoundError(error)) {
-            setSelectedPlayerId((current) => (current === selectedPlayerId ? null : current))
+            setSelectedPlayerId((current) => (current === playerId ? null : current))
             return
           }
           pushError('workspace', `Player load failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -1926,9 +1939,21 @@ function App() {
     clearAuthTokenErrors,
     openAuthTokenPrompt,
     pushError,
-    selectedPlayerId,
     setPlayerDetail,
     setSelectedPlayerId,
+  ])
+
+  useEffect(() => {
+    if (!selectedPlayerId) {
+      playerRequestRef.current += 1
+      setPlayerDetail(null)
+      return
+    }
+    void loadPlayerDetail(selectedPlayerId)
+  }, [
+    loadPlayerDetail,
+    selectedPlayerId,
+    setPlayerDetail,
   ])
 
   useSessionSocket({
@@ -1940,6 +1965,7 @@ function App() {
     socketReconnectKey,
     socketRef,
     loadSessionData,
+    refreshPlayerDetail: loadPlayerDetail,
     pushError,
     rememberStreamedTtsTurn,
     resetTtsFailureForNextResponse,
@@ -1980,9 +2006,18 @@ function App() {
     level: selectedPlayer?.level ?? '—',
     detailId: selectedPlayer?.player_id ? `Player #${selectedPlayer.player_id}` : 'No player',
   }
-  const xpProgress = normalizeXp(playerDetail?.character_sheet, displayCharacter.level)
-  const capacity = inventoryCapacity(playerDetail?.character_sheet)
+  const xpProgress = normalizeXp(playerDetail?.stats ?? playerDetail?.character_sheet, displayCharacter.level)
+  const capacity = inventoryCapacity(playerDetail?.stats ?? playerDetail?.character_sheet)
   const inventoryWeightLabel = buildInventoryWeightLabel(inventoryRows, capacity)
+  const inventoryGoldLabel = buildInventoryGoldLabel(playerDetail?.stats, playerDetail?.character_sheet)
+  const characterAvatarSrc =
+    selectedPlayer?.profile_image ||
+    profileIconSrcForCharacter({
+      race: selectedPlayer?.race,
+      sex: selectedPlayer?.sex,
+      seed: displayCharacter.name,
+    }) ||
+    avatarDataUri(displayCharacter.name, 'character')
   const memorySnippets = memorySnippetRecords(sessionState?.memory_snippets)
   const canonFacts = canonFactsFromMemorySnippets(memorySnippets, selectedSessionId)
   const visibleCanonFacts = inspectorTab === 'canon' ? canonFacts : canonFacts.slice(0, 3)
@@ -2099,6 +2134,8 @@ function App() {
     temperature: '0.7',
   }
   const fullscreenActive = isFullscreen || fullscreenFallback
+  const playerDialogPointBuySpent = playerEditDialog ? pointBuySpent(playerEditDialog.abilityScores) : 0
+  const playerDialogPointBuyRemaining = POINT_BUY_BUDGET - playerDialogPointBuySpent
 
   return (
     <div
@@ -2444,17 +2481,26 @@ function App() {
           rollTargetPendingTurnId,
           setRollTargetPendingTurnId,
           selectedAbility,
+          selectedAbilityKey,
           abilityOptions,
-          setSelectedAbilityKey,
+          updateRollAbilityKey,
           interactionTargets,
           selectedInteractionTarget,
           selectedInteractionTargetId,
           selectedInteractionType,
           setSelectedInteractionTargetId,
           setSelectedInteractionType,
+          selectedInventoryAction,
           selectedItem,
+          itemDraftName,
+          itemQuantity,
+          itemCostGold,
           itemOptions,
           setSelectedItemName,
+          setItemQuantity,
+          updateSelectedInventoryAction,
+          updateItemDraftName,
+          updateItemCostGold,
         }}
       />
 
@@ -2463,7 +2509,7 @@ function App() {
         setInspectorTab={setInspectorTab}
         setMainTab={setMainTab}
         displayCharacter={displayCharacter}
-        characterAvatarSrc={avatarDataUri(displayCharacter.name, 'character')}
+        characterAvatarSrc={characterAvatarSrc}
         xpProgress={xpProgress}
         playersCount={players.length}
         activePlayers={activePlayers}
@@ -2477,6 +2523,7 @@ function App() {
         statBlock={statBlock}
         inventoryRows={inventoryRows}
         inventoryWeightLabel={inventoryWeightLabel}
+        inventoryGoldLabel={inventoryGoldLabel}
         memorySnippetCount={memorySnippets.length}
         visibleCanonFacts={visibleCanonFacts}
         mapPanelTitle={mapPanelTitle}
@@ -2822,6 +2869,14 @@ function App() {
                     const characterName = player.character_name || player.name || `Player ${player.player_id}`
                     const playerName = player.name || 'Unknown player'
                     const characterClass = player.char_class || player.class_ || 'Adventurer'
+                    const characterPortraitSrc =
+                      player.profile_image ||
+                      profileIconSrcForCharacter({
+                        race: player.race,
+                        sex: player.sex,
+                        seed: characterName,
+                      }) ||
+                      avatarDataUri(characterName, 'character')
                     return (
                       <button
                         key={player.player_id}
@@ -2830,6 +2885,12 @@ function App() {
                         aria-label={`Join as ${characterName}`}
                         onClick={() => joinAsExistingPlayer(player)}
                       >
+                        <img
+                          className="character-choice-portrait"
+                          src={characterPortraitSrc}
+                          alt=""
+                          aria-hidden="true"
+                        />
                         <span>
                           <strong>{characterName}</strong>
                           <small>
@@ -3208,6 +3269,24 @@ function App() {
                   />
                 </label>
                 <label>
+                  Sex
+                  <select
+                    value={playerEditDialog.sex}
+                    onChange={(event) =>
+                      setPlayerEditDialog((current) =>
+                        current ? { ...current, sex: event.target.value } : current,
+                      )
+                    }
+                  >
+                    <option value="">Not set</option>
+                    <option value="female">Female</option>
+                    <option value="male">Male</option>
+                    <option value="other">Other</option>
+                  </select>
+                </label>
+              </div>
+              <div className="dialog-grid two">
+                <label>
                   Class
                   <input
                     value={playerEditDialog.charClass}
@@ -3218,21 +3297,64 @@ function App() {
                     }
                   />
                 </label>
+                <label>
+                  Level
+                  <input
+                    type="number"
+                    min={1}
+                    max={20}
+                    value={playerEditDialog.level}
+                    onChange={(event) =>
+                      setPlayerEditDialog((current) =>
+                        current ? { ...current, level: event.target.value } : current,
+                      )
+                    }
+                  />
+                </label>
               </div>
-              <label>
-                Level
-                <input
-                  type="number"
-                  min={1}
-                  max={20}
-                  value={playerEditDialog.level}
-                  onChange={(event) =>
-                    setPlayerEditDialog((current) =>
-                      current ? { ...current, level: event.target.value } : current,
-                    )
-                  }
-                />
-              </label>
+              {playerEditDialog.mode === 'create' ? (
+                <section className="point-buy-panel" aria-label="Ability score point buy">
+                  <div className="point-buy-summary">
+                    <strong>Ability Scores</strong>
+                    <span className={playerDialogPointBuyRemaining < 0 ? 'over-budget' : ''}>
+                      {playerDialogPointBuyRemaining} / {POINT_BUY_BUDGET} left
+                    </span>
+                  </div>
+                  <div className="point-buy-grid">
+                    {POINT_BUY_ABILITIES.map((ability) => {
+                      const score = playerEditDialog.abilityScores[ability.key]
+                      return (
+                        <label key={ability.key}>
+                          <span>
+                            {ability.label}
+                            <small>{abilityModifier(score)}</small>
+                          </span>
+                          <input
+                            type="number"
+                            min={8}
+                            max={15}
+                            value={score}
+                            aria-label={ability.name}
+                            onChange={(event) =>
+                              setPlayerEditDialog((current) =>
+                                current
+                                  ? {
+                                      ...current,
+                                      abilityScores: {
+                                        ...current.abilityScores,
+                                        [ability.key]: clampPointBuyScore(Number(event.target.value)),
+                                      },
+                                    }
+                                  : current,
+                              )
+                            }
+                          />
+                        </label>
+                      )
+                    })}
+                  </div>
+                </section>
+              ) : null}
               {playerEditDialog.error ? (
                 <div className="dialog-error">{playerEditDialog.error}</div>
               ) : null}

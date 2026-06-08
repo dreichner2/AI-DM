@@ -29,22 +29,77 @@ ROLL_REQUEST_PATTERNS = [
 ]
 
 
+def _metadata(turn: DmTurn | None) -> dict:
+    if not turn:
+        return {}
+    metadata = safe_json_loads(turn.metadata_json, {})
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def roll_gate(turn: DmTurn | None) -> dict:
+    gate = _metadata(turn).get('roll_gate')
+    return gate if isinstance(gate, dict) else {}
+
+
+def _int_ids(value) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    ids: list[int] = []
+    for item in value:
+        try:
+            parsed = int(item)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0 and parsed not in ids:
+            ids.append(parsed)
+    return ids
+
+
+def pending_turn_required_player_ids(turn: DmTurn | None) -> list[int]:
+    if not turn:
+        return []
+    gate_ids = _int_ids(roll_gate(turn).get('required_player_ids'))
+    if gate_ids:
+        return gate_ids
+    return [turn.player_id] if turn.player_id else []
+
+
+def pending_turn_resolved_player_ids(turn: DmTurn | None) -> list[int]:
+    return _int_ids(roll_gate(turn).get('resolved_player_ids'))
+
+
+def pending_turn_remaining_player_ids(turn: DmTurn | None) -> list[int]:
+    resolved = set(pending_turn_resolved_player_ids(turn))
+    return [player_id for player_id in pending_turn_required_player_ids(turn) if player_id not in resolved]
+
+
+def pending_turn_waits_for_player(turn: DmTurn | None, player_id: int | None) -> bool:
+    if not turn or player_id is None or turn.outcome_status != 'deferred':
+        return False
+    return int(player_id) in pending_turn_remaining_player_ids(turn)
+
+
 def latest_pending_turn(session_id: int, player_id: int | None = None) -> DmTurn | None:
-    query = DmTurn.query.filter_by(session_id=session_id, outcome_status='deferred')
-    if player_id is not None:
-        query = query.filter_by(player_id=player_id)
-    return query.order_by(DmTurn.turn_id.desc()).first()
+    query = DmTurn.query.filter_by(session_id=session_id, outcome_status='deferred').order_by(DmTurn.turn_id.desc())
+    if player_id is None:
+        return query.first()
+    for turn in query.limit(20).all():
+        if pending_turn_waits_for_player(turn, player_id):
+            return turn
+    return None
 
 
 def pending_turn_by_id(session_id: int, player_id: int, pending_turn_id: int | None) -> DmTurn | None:
     if pending_turn_id is None:
         return None
-    return DmTurn.query.filter_by(
+    turn = DmTurn.query.filter_by(
         session_id=session_id,
-        player_id=player_id,
         turn_id=pending_turn_id,
         outcome_status='deferred',
     ).first()
+    if not pending_turn_waits_for_player(turn, player_id):
+        return None
+    return turn
 
 
 def dc_hint_from_turn(turn: DmTurn | None) -> str | None:

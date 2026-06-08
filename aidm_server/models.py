@@ -74,6 +74,7 @@ class Player(db.Model):
     name = db.Column(db.String, nullable=False)
     character_name = db.Column(db.String, nullable=False)
     race = db.Column(db.String)
+    sex = db.Column(db.String)
     class_ = db.Column(db.String)
     level = db.Column(db.Integer, default=1)
     stats = db.Column(db.Text)
