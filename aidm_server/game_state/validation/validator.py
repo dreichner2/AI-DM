@@ -548,6 +548,25 @@ def _validate_health_change(state: dict[str, Any], change: dict[str, Any]) -> tu
     return 'accepted', 'Health change is valid.', None
 
 
+def _validate_xp_change(state: dict[str, Any], change: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None]:
+    actor = find_actor(state, _action_value(change, 'actorId', 'actor_id'))
+    if not actor:
+        return 'rejected', 'Actor not found.', None
+    amount = max(0, int_or_default(change.get('amount'), default=0))
+    if amount <= 0:
+        return 'rejected', 'XP change amount must be positive.', None
+    if change.get('type') == 'xp.remove':
+        xp = actor.get('xp') if isinstance(actor.get('xp'), dict) else {}
+        current_xp = max(0, int_or_default(xp.get('current'), default=0))
+        if amount > current_xp:
+            modified = deepcopy(change)
+            modified['amount'] = current_xp
+            if modified['amount'] <= 0:
+                return 'rejected', 'XP loss has no effect because XP is already zero.', None
+            return 'modified', 'XP loss capped at current XP.', modified
+    return 'accepted', 'XP change is valid.', None
+
+
 def _atomic_change_id(parent_id: str, suffix: str, *parts: Any) -> str:
     if parent_id:
         return f'{parent_id}:{suffix}'
@@ -753,6 +772,8 @@ def validate_state_changes(*, state: dict[str, Any], changes: list[dict[str, Any
             status, reason, normalized = _validate_currency_change(state, change)
         elif change_type in {'health.heal', 'health.damage'}:
             status, reason, normalized = _validate_health_change(state, change)
+        elif change_type in {'xp.add', 'xp.remove'}:
+            status, reason, normalized = _validate_xp_change(state, change)
         elif change_type == 'inventory.mark_used':
             status, reason, normalized = 'accepted', 'Inventory use marker is valid.', None
         else:

@@ -45,12 +45,13 @@ def build_post_dm_prompt(
 ) -> str:
     return (
         'Return JSON with keys proposedChanges, uncertainChanges, notes. '
-        'Allowed proposedChanges types: inventory.add, inventory.remove, inventory.transfer, currency.add, currency.remove, currency.transfer, health.heal, health.damage.\n\n'
+        'Allowed proposedChanges types: inventory.add, inventory.remove, inventory.transfer, currency.add, currency.remove, currency.transfer, health.heal, health.damage, xp.add, xp.remove.\n\n'
         'For every inventory.add, inventory.remove, and inventory.transfer, include quantity; use 1 when exactly one item is indicated by context. '
         'For inventory.add, provide item as an object with name, quantity, and numeric weight in pounds when the item is physical. Do not return item as a bare string. '
         'If exact weight is not stated, infer a reasonable game weight from the item and context.\n\n'
         'For inventory.remove and inventory.transfer, include itemName or itemId.\n\n'
         'For transfer changes, include the source actor as actorId/fromActorId and the recipient as toActorId or toActorName.\n\n'
+        'For XP changes, use xp.add or xp.remove with positive integer amount.\n\n'
         f'State before DM:\n{json.dumps(state_before_dm, separators=(",", ":"))}\n\n'
         f'Player message:\n{player_message}\n\n'
         f'Validated pre-DM actions:\n{json.dumps(validated_actions, separators=(",", ":"))}\n\n'

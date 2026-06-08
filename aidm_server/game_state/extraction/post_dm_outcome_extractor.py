@@ -24,6 +24,16 @@ DAMAGE_PATTERN = re.compile(
     r'(?P<amount>\d{1,4})\s*(?:points?\s+of\s+)?(?:damage|hp)\b',
     re.IGNORECASE,
 )
+XP_GAIN_PATTERN = re.compile(
+    r'\b(?:gain|gains|gained|earn|earns|earned|award(?:ed)?|receive|receives|received)\s+'
+    r'(?P<amount>\d{1,6})\s*(?:xp|experience)\b',
+    re.IGNORECASE,
+)
+XP_LOSS_PATTERN = re.compile(
+    r'\b(?:lose|loses|lost|spend|spends|spent)\s+'
+    r'(?P<amount>\d{1,6})\s*(?:xp|experience)\b',
+    re.IGNORECASE,
+)
 CURRENCY_PATTERN = re.compile(
     r'\b(?:gain|gains|gained|receive|receives|received|loot|loots|looted|find|finds|found|take|takes|took|collect|collects|collected)\b'
     r'[^.!?\n]{0,80}?\b(?P<amount>\d{1,5})\s+'
@@ -161,6 +171,8 @@ def _already_applied_signature(change: dict[str, Any]) -> tuple[Any, ...] | None
     if change_type in {'currency.add', 'currency.remove'}:
         return (change_type, str(change.get('actorId') or ''), str(change.get('currency') or '').lower(), int(change.get('amount') or 0))
     if change_type in {'health.heal', 'health.damage'}:
+        return (change_type, str(change.get('actorId') or ''), int(change.get('amount') or 0))
+    if change_type in {'xp.add', 'xp.remove'}:
         return (change_type, str(change.get('actorId') or ''), int(change.get('amount') or 0))
     return None
 
@@ -303,6 +315,18 @@ def _heuristic_extract(
             reason=f'DM stated damage of {amount}.',
             already=already,
         )
+    for pattern, change_type in ((XP_GAIN_PATTERN, 'xp.add'), (XP_LOSS_PATTERN, 'xp.remove')):
+        for match in pattern.finditer(text):
+            amount = int(match.group('amount'))
+            _add_change(
+                changes,
+                turn_id=turn_id,
+                actor_id=actor_id,
+                change_type=change_type,
+                amount=amount,
+                reason=f'DM stated XP change of {amount}.',
+                already=already,
+            )
     for pattern, change_type in ((CURRENCY_PATTERN, 'currency.add'), (CURRENCY_LOSS_PATTERN, 'currency.remove')):
         for match in pattern.finditer(text):
             currency = match.group('currency').lower()

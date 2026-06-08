@@ -34,7 +34,7 @@ from aidm_server.turn_events import record_turn_event
 
 
 STATE_UPDATE_EVENT = 'state_update'
-MANAGED_STATE_DOMAINS = ['inventory', 'currency', 'health']
+MANAGED_STATE_DOMAINS = ['inventory', 'currency', 'health', 'xp']
 SAFE_PRE_DM_IMMEDIATE_CHANGE_TYPES = {'inventory.mark_used'}
 CONFIRMATION_DENIAL_PATTERN = re.compile(
     r"\b(?:do not|don't|does not|doesn't|did not|cannot|can't|fail|fails|failed|before you can|instead)\b",
@@ -272,6 +272,8 @@ def _state_change_signature(change: dict[str, Any]) -> tuple[Any, ...] | None:
         )
     if change_type in {'health.heal', 'health.damage'}:
         return (change_type, actor_id, int_or_default(change.get('amount'), default=0))
+    if change_type in {'xp.add', 'xp.remove'}:
+        return (change_type, actor_id, int_or_default(change.get('amount'), default=0))
     return None
 
 
@@ -442,6 +444,7 @@ def _dm_context_packet(
                 'itemName': change.get('itemName'),
                 'amount': change.get('actualAmount', change.get('amount')),
                 'currency': change.get('currency'),
+                'xp': change.get('actualAmount', change.get('amount')) if str(change.get('type') or '').startswith('xp.') else None,
             }
             for change in applied_changes
             if isinstance(change, dict) and change.get('visible', True)

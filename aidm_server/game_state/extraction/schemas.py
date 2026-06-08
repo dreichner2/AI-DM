@@ -289,6 +289,8 @@ def _state_change_has_required_fields(change: dict[str, Any]) -> bool:
         )
     if change_type in {'health.heal', 'health.damage'}:
         return 'amount' in change
+    if change_type in {'xp.add', 'xp.remove'}:
+        return 'amount' in change
     if change_type == 'inventory.mark_used':
         return bool(str(change.get('itemId') or '').strip())
     return False

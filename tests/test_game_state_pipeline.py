@@ -22,7 +22,7 @@ from aidm_server.models import Campaign, DmTurn, Player, Session, SessionLogEntr
 from tests.helpers import seed_world_campaign_player_session
 
 
-def _state(*, items=None, currency=None, hp_current=10, hp_max=20, temp_hp=0):
+def _state(*, items=None, currency=None, hp_current=10, hp_max=20, temp_hp=0, xp_current=0):
     return {
         'sessionId': 1,
         'campaignId': 1,
@@ -36,6 +36,7 @@ def _state(*, items=None, currency=None, hp_current=10, hp_max=20, temp_hp=0):
                     'items': items or [],
                     'currency': currency or {'pp': 0, 'gp': 0, 'ep': 0, 'sp': 0, 'cp': 0},
                 },
+                'xp': {'current': xp_current, 'nextLevelAt': 300},
                 'metadata': {},
             }
         ],
@@ -73,6 +74,7 @@ def _two_player_state():
                 'items': [],
                 'currency': {'pp': 0, 'gp': 1, 'ep': 0, 'sp': 0, 'cp': 0},
             },
+            'xp': {'current': 0, 'nextLevelAt': 300},
             'metadata': {},
         }
     )
@@ -320,6 +322,49 @@ def test_apply_health_damage_uses_temp_hp_first():
     assert health['currentHp'] == 8
 
 
+def test_apply_xp_gain_and_capped_loss():
+    state = _state(xp_current=25)
+    gain_validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'xp_gain',
+                'type': 'xp.add',
+                'actorId': 'player_1',
+                'amount': 75,
+                'source': 'post_dm',
+                'reason': 'Quest reward.',
+                'visible': True,
+            }
+        ],
+    )
+    gained = apply_state_changes(state, validated_changes_for_application(gain_validation))
+
+    assert gain_validation['rejected'] == []
+    assert gained['nextState']['playerCharacters'][0]['xp']['current'] == 100
+
+    loss_validation = validate_state_changes(
+        state=gained['nextState'],
+        changes=[
+            {
+                'id': 'xp_loss',
+                'type': 'xp.remove',
+                'actorId': 'player_1',
+                'amount': 150,
+                'source': 'post_dm',
+                'reason': 'XP penalty.',
+                'visible': True,
+            }
+        ],
+    )
+    result = apply_state_changes(gained['nextState'], validated_changes_for_application(loss_validation))
+    state_log = build_state_log(turn_id=1, post_validation=loss_validation)
+
+    assert loss_validation['modified'][0]['modifiedChange']['amount'] == 100
+    assert result['nextState']['playerCharacters'][0]['xp']['current'] == 0
+    assert state_log['lines'][0]['message'] == 'Removed 100 XP (capped at current XP).'
+
+
 def test_inventory_transfer_expands_to_atomic_remove_and_add():
     state = _two_player_state()
     validation = validate_state_changes(
@@ -429,6 +474,150 @@ def test_currency_transfer_insufficient_funds_rejects_without_partial_add():
     assert result['nextState']['playerCharacters'][1]['inventory']['currency']['gp'] == 1
 
 
+def test_mixed_state_change_stress_batch_is_atomic_non_negative_and_idempotent():
+    state = _two_player_state()
+    actor = state['playerCharacters'][0]
+    actor['health'] = {'currentHp': 12, 'maxHp': 20, 'tempHp': 3, 'conditions': []}
+    actor['xp'] = {'current': 100, 'nextLevelAt': 300}
+    actor['inventory']['items'] = [
+        _item('Minor Healing Potion', item_id='potion_1', quantity=2, item_type='consumable', subtype='potion'),
+        _item('Iron Sword', item_id='sword_1', quantity=1, item_type='weapon', subtype='sword'),
+        _item('Trail Ration', item_id='ration_1', quantity=5, item_type='consumable', subtype='food'),
+    ]
+    actor['inventory']['currency'] = {'pp': 0, 'gp': 20, 'ep': 0, 'sp': 10, 'cp': 25}
+
+    changes = [
+        {
+            'id': 'loot_herbs',
+            'type': 'inventory.add',
+            'actorId': 'player_1',
+            'item': {'name': 'Moonlit Herb', 'quantity': 3, 'weight': 0.1, 'type': 'misc'},
+            'quantity': 3,
+            'visible': True,
+        },
+        {'id': 'drink_potion', 'type': 'inventory.remove', 'actorId': 'player_1', 'itemId': 'potion_1', 'quantity': 1, 'visible': True},
+        {'id': 'buy_shield_gold', 'type': 'currency.remove', 'actorId': 'player_1', 'currency': 'gp', 'amount': 5, 'visible': True},
+        {
+            'id': 'buy_shield_item',
+            'type': 'inventory.add',
+            'actorId': 'player_1',
+            'item': {'name': 'Iron Shield', 'quantity': 1, 'weight': 6, 'type': 'armor', 'subtype': 'shield'},
+            'quantity': 1,
+            'visible': True,
+        },
+        {'id': 'sell_rations_item', 'type': 'inventory.remove', 'actorId': 'player_1', 'itemId': 'ration_1', 'quantity': 2, 'visible': True},
+        {'id': 'sell_rations_silver', 'type': 'currency.add', 'actorId': 'player_1', 'currency': 'sp', 'amount': 4, 'visible': True},
+        {
+            'id': 'give_sword',
+            'type': 'inventory.transfer',
+            'actorId': 'player_1',
+            'fromActorId': 'player_1',
+            'toActorId': 'player_2',
+            'itemId': 'sword_1',
+            'quantity': 1,
+            'visible': True,
+        },
+        {
+            'id': 'give_copper',
+            'type': 'currency.transfer',
+            'actorId': 'player_1',
+            'fromActorId': 'player_1',
+            'toActorId': 'player_2',
+            'currency': 'cp',
+            'amount': 10,
+            'visible': True,
+        },
+        {'id': 'trap_damage', 'type': 'health.damage', 'actorId': 'player_1', 'amount': 7, 'visible': True},
+        {'id': 'healing_light', 'type': 'health.heal', 'actorId': 'player_1', 'amount': 5, 'visible': True},
+        {'id': 'quest_xp', 'type': 'xp.add', 'actorId': 'player_1', 'amount': 75, 'visible': True},
+    ]
+
+    validation = validate_state_changes(state=state, changes=changes)
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    next_state = result['nextState']
+    retry = apply_state_changes(next_state, validated_changes_for_application(validation))
+    source = next_state['playerCharacters'][0]
+    target = next_state['playerCharacters'][1]
+    source_items = {item['id']: item for item in source['inventory']['items']}
+    source_items_by_name = {item['name']: item for item in source['inventory']['items']}
+    target_items = {item['name']: item for item in target['inventory']['items']}
+    state_log = build_state_log(turn_id=99, post_validation=validation)
+
+    assert validation['rejected'] == []
+    assert source_items['potion_1']['quantity'] == 1
+    assert source_items['ration_1']['quantity'] == 3
+    assert source_items_by_name['Moonlit Herb']['quantity'] == 3
+    assert source_items_by_name['Moonlit Herb']['weight'] == 0.1
+    assert source_items_by_name['Iron Shield']['weight'] == 6
+    assert 'sword_1' not in source_items
+    assert target_items['Iron Sword']['quantity'] == 1
+    assert source['inventory']['currency'] == {'pp': 0, 'gp': 15, 'ep': 0, 'sp': 14, 'cp': 15}
+    assert target['inventory']['currency']['cp'] == 10
+    assert source['health']['tempHp'] == 0
+    assert source['health']['currentHp'] == 13
+    assert source['xp']['current'] == 175
+    assert retry['appliedChanges'] == []
+    assert len(retry['skippedChanges']) == len(result['appliedChanges'])
+    assert all(item.get('quantity', 0) > 0 for actor_state in next_state['playerCharacters'] for item in actor_state['inventory']['items'])
+    assert all(amount >= 0 for actor_state in next_state['playerCharacters'] for amount in actor_state['inventory']['currency'].values())
+    assert source['health']['currentHp'] >= 0
+    assert source['xp']['current'] >= 0
+    assert len([line for line in state_log['lines'] if line['changeType'] in {'inventory.remove', 'inventory.add'} and 'Sword' in line['message']]) == 1
+    assert any(line['message'] == 'Added 75 XP.' for line in state_log['lines'])
+
+
+def test_invalid_state_change_stress_rejects_without_partial_mutation():
+    state = _two_player_state()
+    state['playerCharacters'][0]['xp'] = {'current': 0, 'nextLevelAt': 300}
+    before_source_items = list(state['playerCharacters'][0]['inventory']['items'])
+    before_source_currency = dict(state['playerCharacters'][0]['inventory']['currency'])
+    before_target_items = list(state['playerCharacters'][1]['inventory']['items'])
+    before_target_currency = dict(state['playerCharacters'][1]['inventory']['currency'])
+
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {'id': 'bad_remove_too_many', 'type': 'inventory.remove', 'actorId': 'player_1', 'itemId': 'rope_1', 'quantity': 3},
+            {'id': 'bad_overspend', 'type': 'currency.remove', 'actorId': 'player_1', 'currency': 'gp', 'amount': 99},
+            {
+                'id': 'bad_self_item_transfer',
+                'type': 'inventory.transfer',
+                'actorId': 'player_1',
+                'fromActorId': 'player_1',
+                'toActorId': 'player_1',
+                'itemId': 'rope_1',
+                'quantity': 1,
+            },
+            {
+                'id': 'bad_missing_target_currency_transfer',
+                'type': 'currency.transfer',
+                'actorId': 'player_1',
+                'fromActorId': 'player_1',
+                'toActorId': 'player_missing',
+                'currency': 'cp',
+                'amount': 1,
+            },
+            {'id': 'bad_zero_xp', 'type': 'xp.add', 'actorId': 'player_1', 'amount': 0},
+            {'id': 'bad_xp_loss_at_zero', 'type': 'xp.remove', 'actorId': 'player_1', 'amount': 5},
+            {'id': 'bad_zero_heal', 'type': 'health.heal', 'actorId': 'player_1', 'amount': 0},
+            {'id': 'bad_add_missing_quantity', 'type': 'inventory.add', 'actorId': 'player_1', 'item': {'name': 'Lantern'}},
+            {'id': 'bad_unknown_type', 'type': 'quest.add', 'actorId': 'player_1', 'amount': 1},
+            {'id': 'bad_missing_actor', 'type': 'health.damage', 'actorId': 'player_missing', 'amount': 1},
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    assert validation['accepted'] == []
+    assert validation['modified'] == []
+    assert len(validation['rejected']) == 10
+    assert result['appliedChanges'] == []
+    assert result['nextState']['playerCharacters'][0]['inventory']['items'] == before_source_items
+    assert result['nextState']['playerCharacters'][0]['inventory']['currency'] == before_source_currency
+    assert result['nextState']['playerCharacters'][1]['inventory']['items'] == before_target_items
+    assert result['nextState']['playerCharacters'][1]['inventory']['currency'] == before_target_currency
+    assert result['nextState']['playerCharacters'][0]['xp']['current'] == 0
+
+
 def test_post_dm_extract_loot(app):
     with app.app_context():
         result = extract_post_dm_outcomes(
@@ -446,6 +635,22 @@ def test_post_dm_extract_loot(app):
     assert 'inventory.add' in change_types
     assert 'currency.add' in change_types
     assert any(change.get('currency') == 'cp' and change.get('amount') == 12 for change in result['proposedChanges'])
+
+
+def test_post_dm_extracts_explicit_xp_gain(app):
+    with app.app_context():
+        result = extract_post_dm_outcomes(
+            state_before_dm={},
+            player_message='I claim the bounty.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The bounty is accepted. You gain 75 XP.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=10,
+        )
+
+    assert any(change['type'] == 'xp.add' and change.get('amount') == 75 for change in result['proposedChanges'])
 
 
 def test_post_dm_does_not_extract_pending_roll_prompt_as_loot(app):
@@ -833,6 +1038,8 @@ def test_canon_patch_credits_state_pipeline_character_changes_without_double_app
                 'max_hp': 20,
                 'hp_max': 20,
                 'copper': 12,
+                'xp': 50,
+                'experience': 50,
             },
             {},
         )
@@ -854,6 +1061,7 @@ def test_canon_patch_credits_state_pipeline_character_changes_without_double_app
                                 'change_type': 'currency.add',
                                 'currency_delta': {'copper': 12},
                             },
+                            {'player_id': player.player_id, 'change_type': 'xp.add', 'xp_delta': 50},
                         ],
                     }
                 },
@@ -875,6 +1083,7 @@ def test_canon_patch_credits_state_pipeline_character_changes_without_double_app
         stats = safe_json_loads(refreshed.stats, {})
         assert stats['current_hp'] == 17
         assert stats['copper'] == 12
+        assert stats['xp'] == 50
         assert all(change.get('already_applied') for change in applied['character_state_changes_applied'])
 
 
@@ -896,6 +1105,8 @@ def test_canon_patch_skips_state_pipeline_managed_state_domains(app):
                 'max_hp': 10,
                 'hp_max': 10,
                 'copper': 0,
+                'xp': 0,
+                'experience': 0,
             },
             {},
         )
@@ -904,12 +1115,12 @@ def test_canon_patch_skips_state_pipeline_managed_state_domains(app):
             campaign_id=campaign.campaign_id,
             player_id=player.player_id,
             player_input='I grab it.',
-            dm_output='You grab it. Restore 3 HP. You gain 10 copper pieces.',
+            dm_output='You grab it. Restore 3 HP. You gain 10 copper pieces. You gain 50 XP.',
             status='completed',
             metadata_json=safe_json_dumps(
                 {
                     'state_pipeline': {
-                        'managedDomains': ['inventory', 'currency', 'health'],
+                        'managedDomains': ['inventory', 'currency', 'health', 'xp'],
                     },
                     'immediate_state_changes_applied': {
                         'inventory_changes_applied': [],
@@ -941,11 +1152,12 @@ def test_canon_patch_skips_state_pipeline_managed_state_domains(app):
         assert safe_json_loads(refreshed.inventory, []) == []
         assert stats['current_hp'] == 5
         assert stats['copper'] == 0
+        assert stats['xp'] == 0
         assert applied['inventory_changes_applied'] == []
         assert applied['character_state_changes_applied'] == []
 
 
-def test_post_dm_pipeline_retry_does_not_duplicate_item_hp_or_currency(app):
+def test_post_dm_pipeline_retry_does_not_duplicate_item_hp_currency_or_xp(app):
     ids = seed_world_campaign_player_session(app)
 
     with app.app_context():
@@ -956,18 +1168,21 @@ def test_post_dm_pipeline_retry_does_not_duplicate_item_hp_or_currency(app):
         assert player is not None
         assert session_obj is not None
         actor_id = f'player_{player.player_id}'
-        state = _state(items=[], currency={'pp': 0, 'gp': 0, 'ep': 0, 'sp': 0, 'cp': 0}, hp_current=10, hp_max=20)
+        state = _state(items=[], currency={'pp': 0, 'gp': 0, 'ep': 0, 'sp': 0, 'cp': 0}, hp_current=10, hp_max=20, xp_current=0)
         state['playerCharacters'][0]['id'] = actor_id
         state['playerCharacters'][0]['playerId'] = player.player_id
         session_obj.state_snapshot = safe_json_dumps(state, {})
         player.inventory = safe_json_dumps([], [])
-        player.stats = safe_json_dumps({'current_hp': 10, 'hp_current': 10, 'max_hp': 20, 'hp_max': 20}, {})
+        player.stats = safe_json_dumps(
+            {'current_hp': 10, 'hp_current': 10, 'max_hp': 20, 'hp_max': 20, 'xp': 0, 'experience': 0},
+            {},
+        )
         turn = DmTurn(
             session_id=session_obj.session_id,
             campaign_id=campaign.campaign_id,
             player_id=player.player_id,
             player_input='I search the goblin.',
-            dm_output='You find a rusted key and 12 copper pieces. Restore 3 HP.',
+            dm_output='You find a rusted key and 12 copper pieces. Restore 3 HP. You gain 8 XP.',
             status='completed',
             metadata_json=safe_json_dumps(
                 {
@@ -1009,6 +1224,7 @@ def test_post_dm_pipeline_retry_does_not_duplicate_item_hp_or_currency(app):
         assert len([item for item in inventory if item.get('name') == 'rusted key']) == 1
         assert stats['copper'] == 12
         assert stats['current_hp'] == 13
+        assert stats['xp'] == 8
         assert len(first['postAppliedChanges']) == len(second['postAppliedChanges'])
 
 

@@ -354,6 +354,7 @@ def compact_state_for_extraction(state: dict[str, Any]) -> dict[str, Any]:
                     'maxHp': health.get('maxHp'),
                     'tempHp': health.get('tempHp'),
                 },
+                'xp': actor.get('xp') if isinstance(actor.get('xp'), dict) else {},
                 'inventory': [
                     {
                         'id': item.get('id'),

@@ -985,7 +985,7 @@ def apply_canon_patch(
         for change in (immediate_summary.get('character_state_changes_applied') or [])
         if isinstance(change, dict)
     ]
-    if {'currency', 'health'} & managed_domains:
+    if {'currency', 'health', 'xp'} & managed_domains:
         applied_summary['character_state_changes_applied'] = immediate_character_changes
     else:
         applied_summary['character_state_changes_applied'] = immediate_character_changes or _apply_character_state_changes(

@@ -127,6 +127,18 @@ def _apply_health_damage(actor: dict[str, Any], change: dict[str, Any]) -> dict[
     return {'amount': temp_damage + hp_damage, 'tempHpDamage': temp_damage, 'hpDamage': hp_damage}
 
 
+def _apply_xp(actor: dict[str, Any], change: dict[str, Any], direction: int) -> int:
+    amount = max(0, int_or_default(change.get('amount'), default=0))
+    xp = actor.setdefault('xp', {})
+    current = max(0, int_or_default(xp.get('current'), default=0))
+    if direction < 0:
+        actual = min(current, amount)
+        xp['current'] = current - actual
+        return actual
+    xp['current'] = current + amount
+    return amount
+
+
 def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, Any]]) -> dict[str, Any]:
     next_state = deepcopy(previous_state)
     applied: list[dict[str, Any]] = []
@@ -183,6 +195,10 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             result = _apply_health_damage(actor, change)
             applied_change.update(result)
             applied_change['actualAmount'] = result['amount']
+        elif change_type == 'xp.add' and actor:
+            applied_change['actualAmount'] = _apply_xp(actor, change, 1)
+        elif change_type == 'xp.remove' and actor:
+            applied_change['actualAmount'] = _apply_xp(actor, change, -1)
         else:
             skipped.append({'change': change, 'reason': 'Unsupported change or actor missing during application.'})
             continue
@@ -261,9 +277,9 @@ def legacy_immediate_summary_from_applied(applied_changes: list[dict[str, Any]],
                     'state_change_id': change.get('id'),
                 }
             )
-        elif change_type in {'health.heal', 'health.damage', 'currency.add', 'currency.remove'}:
+        elif change_type in {'health.heal', 'health.damage', 'currency.add', 'currency.remove', 'xp.add', 'xp.remove'}:
             amount = int_or_default(change.get('actualAmount', change.get('amount')), default=0)
-            signed_amount = -amount if change_type in {'health.damage', 'currency.remove'} else amount
+            signed_amount = -amount if change_type in {'health.damage', 'currency.remove', 'xp.remove'} else amount
             character_change = {
                 'player_id': parse_actor_player_id(change.get('actorId') or change.get('actor_id')),
                 'change_type': change_type,
@@ -274,6 +290,8 @@ def legacy_immediate_summary_from_applied(applied_changes: list[dict[str, Any]],
             }
             if change_type in {'health.heal', 'health.damage'}:
                 character_change['hp_delta'] = signed_amount
+            if change_type in {'xp.add', 'xp.remove'}:
+                character_change['xp_delta'] = signed_amount
             if change_type in {'currency.add', 'currency.remove'}:
                 currency_code = str(change.get('currency') or '').lower()
                 if currency_code == 'gp':

@@ -11,7 +11,8 @@ PHASE_1_STATE_CHANGE_TYPES = {
     'currency.transfer',
     'health.heal',
     'health.damage',
+    'xp.add',
+    'xp.remove',
 }
 
 CURRENCY_TYPES = {'pp', 'gp', 'ep', 'sp', 'cp'}
-

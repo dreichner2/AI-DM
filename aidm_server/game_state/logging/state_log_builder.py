@@ -36,6 +36,11 @@ def _change_message(change: dict[str, Any], *, status: str, reason: str | None =
         return f"Restored {_amount(change)} HP{suffix}"
     if change_type == 'health.damage':
         return f"Took {_amount(change)} damage."
+    if change_type == 'xp.add':
+        return f"Added {_amount(change)} XP."
+    if change_type == 'xp.remove':
+        suffix = ' (capped at current XP).' if status == 'modified' else '.'
+        return f"Removed {_amount(change)} XP{suffix}"
     if change_type == 'inventory.mark_used':
         return f"Marked {_item_name(change)} as recently used."
     if reason:
