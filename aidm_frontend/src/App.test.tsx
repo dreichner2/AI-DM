@@ -11,6 +11,7 @@ import type {
   Campaign,
   CampaignSegment,
   CampaignWorkspace,
+  ClarificationRequest,
   Health,
   LlmRuntimeConfig,
   MapItem,
@@ -1068,6 +1069,54 @@ describe('App user workflow regressions', () => {
 
     expect(screen.getByText('Active Players (0)')).toBeInTheDocument()
     expect(screen.getByText('No active players connected.')).toBeInTheDocument()
+  })
+
+  it('keeps item clarification choices visible through log refresh and resolves by socket', async () => {
+    await renderLoadedApp()
+
+    const clarification: ClarificationRequest = {
+      id: 'clarify_77_001',
+      turnId: 77,
+      sessionId: 20,
+      playerId: 30,
+      type: 'item_resolution',
+      prompt: 'Which sword do you use?',
+      originalPlayerMessage: 'I swing my sword at the goblin.',
+      originalAction: {
+        id: 'act_001',
+        type: 'combat.attack',
+        actorId: 'player_30',
+        weaponName: 'sword',
+        sourceText: 'I swing my sword at the goblin.',
+        requiresDMResolution: true,
+      },
+      options: [
+        { itemId: 'great', label: 'Greatsword', description: 'weapon' },
+        { itemId: 'long', label: 'Longsword', description: 'weapon' },
+      ],
+    }
+
+    await act(async () => {
+      socketHandler<ClarificationRequest>('clarification_required')(clarification)
+    })
+    expect(screen.getByText('Which sword do you use?')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Greatsword/ })).toBeInTheDocument()
+
+    await act(async () => {
+      socketHandler<{ session_id?: number }>('session_log_update')({ session_id: 20 })
+    })
+    expect(screen.getByRole('button', { name: /Greatsword/ })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Greatsword/ }))
+    expect(socketMock.socket.emit).toHaveBeenCalledWith(
+      'resolve_clarification',
+      expect.objectContaining({
+        session_id: 20,
+        player_id: 30,
+        turn_id: 77,
+        selected_item_id: 'great',
+      }),
+    )
   })
 
   it('shows another player socket message in the turn feed immediately', async () => {

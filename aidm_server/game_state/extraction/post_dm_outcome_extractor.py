@@ -39,7 +39,7 @@ CURRENCY_LOSS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ITEM_GAIN_PATTERN = re.compile(
-    r'\b(?:you\s+)?(?:find|finds|found|take|takes|took|pick up|picks up|picked up|receive|receives|received|loot|loots|looted|gain|gains|gained|buy|buys|bought|purchase|purchases|purchased|add|adds|added)\s+'
+    r'\b(?:you\s+)?(?:find|finds|found|take|takes|took|pick up|picks up|picked up|receive|receives|received|loot|loots|looted|buy|buys|bought|purchase|purchases|purchased|add|adds|added)\s+'
     r'(?:the|a|an|some)?\s*(?P<item>[a-z][a-z0-9\' -]{1,60}?)(?=\s+(?:and|from|to|into|under|onto|on|beside|before|after|with|without)\b|[.!?,;]|$)',
     re.IGNORECASE,
 )
@@ -67,12 +67,19 @@ CURRENCY_WORDS = {
     'copper': 'cp',
 }
 NON_ITEM_PHRASES = {
+    'breath',
+    'confidence',
+    'courage',
+    'cover',
+    'focus',
+    'guard',
     'hp',
     'hit points',
     'damage',
     'pieces',
     'coins',
     'it',
+    'moment',
     'them',
 }
 CURRENCY_ONLY_ITEM_PHRASES = {'gold', 'silver', 'copper', 'platinum', 'electrum'}

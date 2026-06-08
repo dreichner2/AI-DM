@@ -49,6 +49,7 @@ from aidm_server.time_utils import utc_now
 
 _ENTITY_RE = re.compile(r'\b[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?\b')
 IMMEDIATE_STATE_METADATA_KEY = 'immediate_state_changes_applied'
+STATE_PIPELINE_METADATA_KEY = 'state_pipeline'
 EMERGENT_ENTITY_CANDIDATE_LIMIT = _canon_retrieval.EMERGENT_ENTITY_CANDIDATE_LIMIT
 EMERGENT_FACT_CANDIDATE_LIMIT = _canon_retrieval.EMERGENT_FACT_CANDIDATE_LIMIT
 EMERGENT_THREAD_CANDIDATE_LIMIT = _canon_retrieval.EMERGENT_THREAD_CANDIDATE_LIMIT
@@ -754,6 +755,22 @@ def _immediate_state_summary(turn: DmTurn) -> dict:
     return summary if isinstance(summary, dict) else {}
 
 
+def _state_pipeline_managed_domains(turn: DmTurn) -> set[str]:
+    metadata = safe_json_loads(turn.metadata_json, {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    pipeline = metadata.get(STATE_PIPELINE_METADATA_KEY)
+    if not isinstance(pipeline, dict):
+        return set()
+    domains = pipeline.get('managedDomains')
+    if not isinstance(domains, list):
+        return set()
+    return {
+        str(domain).strip().lower()
+        for domain in domains
+        if str(domain or '').strip()
+    }
+
+
 def _inventory_changes_after_immediate_state(changes: list[dict], immediate_summary: dict) -> tuple[list[dict], list[dict]]:
     already_applied = Counter()
     for change in immediate_summary.get('inventory_changes_applied') or []:
@@ -951,23 +968,30 @@ def apply_canon_patch(
         )
 
     immediate_summary = _immediate_state_summary(turn)
+    managed_domains = _state_pipeline_managed_domains(turn)
     remaining_inventory_changes, credited_inventory_changes = _inventory_changes_after_immediate_state(
         patch['inventory_changes'],
         immediate_summary,
     )
-    applied_summary['inventory_changes_applied'] = credited_inventory_changes + _apply_inventory_changes(
-        turn,
-        remaining_inventory_changes,
-    )
+    if 'inventory' in managed_domains:
+        applied_summary['inventory_changes_applied'] = credited_inventory_changes
+    else:
+        applied_summary['inventory_changes_applied'] = credited_inventory_changes + _apply_inventory_changes(
+            turn,
+            remaining_inventory_changes,
+        )
     immediate_character_changes = [
         {**change, 'already_applied': True}
         for change in (immediate_summary.get('character_state_changes_applied') or [])
         if isinstance(change, dict)
     ]
-    applied_summary['character_state_changes_applied'] = immediate_character_changes or _apply_character_state_changes(
-        turn,
-        turn.dm_output or '',
-    )
+    if {'currency', 'health'} & managed_domains:
+        applied_summary['character_state_changes_applied'] = immediate_character_changes
+    else:
+        applied_summary['character_state_changes_applied'] = immediate_character_changes or _apply_character_state_changes(
+            turn,
+            turn.dm_output or '',
+        )
 
     update_record.applied_patch_json = safe_json_dumps(applied_summary, {})
     return applied_summary

@@ -347,6 +347,64 @@ def test_turn_pipeline_consumes_potion_and_applies_healing(app, socketio, app_ru
         assert 'Restored 7 HP' in state_log_entry.message
 
 
+def test_turn_pipeline_does_not_consume_potion_when_dm_generation_fails(app, socketio, app_runtime, monkeypatch):
+    socketio_module = app_runtime['modules']['socketio_events']
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player, rules_hint
+        raise RuntimeError('provider unavailable')
+        yield ''
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        player.inventory = safe_json_dumps(
+            [
+                {
+                    'id': 'potion_1',
+                    'name': 'Minor Healing Potion',
+                    'quantity': 1,
+                    'type': 'consumable',
+                    'subtype': 'potion',
+                }
+            ],
+            [],
+        )
+        player.stats = safe_json_dumps({'current_hp': 10, 'hp_current': 10, 'max_hp': 20, 'hp_max': 20}, {})
+        db.session.commit()
+
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I drink my healing potion.',
+        },
+    )
+    received = client.get_received()
+
+    statuses = [event['args'][0]['status'] for event in received if event['name'] == 'turn_status']
+    assert 'state_applied' not in statuses
+    assert 'canon_pending' not in statuses
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        assert safe_json_loads(player.inventory, [])[0]['name'] == 'Minor Healing Potion'
+        stats = safe_json_loads(player.stats, {})
+        assert stats['current_hp'] == 10
+        turn = DmTurn.query.order_by(DmTurn.turn_id.desc()).first()
+        metadata = safe_json_loads(turn.metadata_json, {})
+        pipeline = metadata['state_pipeline']
+        assert pipeline['immediateAppliedChanges'] == []
+        assert pipeline['pendingImmediateChanges'][0]['type'] == 'inventory.remove'
+
+
 def test_attack_pipeline_pauses_and_resumes_for_item_clarification(app, socketio, app_runtime, monkeypatch):
     socketio_module = app_runtime['modules']['socketio_events']
     calls = []

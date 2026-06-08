@@ -157,6 +157,9 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             applied_change['actualAmount'] = max(1, int_or_default(change.get('quantity', item.get('quantity')), default=1))
         elif change_type == 'inventory.remove' and actor:
             removed = _remove_item(actor_items(actor), change)
+            if not removed:
+                skipped.append({'change': change, 'reason': 'Item missing during inventory removal.'})
+                continue
             applied_change['itemId'] = _change_value(change, 'itemId', 'item_id') or (removed or {}).get('id')
             applied_change['itemName'] = _change_value(change, 'itemName', 'item_name') or (removed or {}).get('name')
             applied_change['actualAmount'] = max(1, int_or_default(change.get('quantity'), default=1))
@@ -168,6 +171,11 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
         elif change_type == 'currency.add' and actor:
             applied_change['actualAmount'] = _apply_currency(actor, change, 1)
         elif change_type == 'currency.remove' and actor:
+            currency_code = str(change.get('currency') or '').strip().lower()
+            requested_amount = max(0, int_or_default(change.get('amount'), default=0))
+            if actor_currency(actor).get(currency_code, 0) < requested_amount:
+                skipped.append({'change': change, 'reason': 'Insufficient currency during removal.'})
+                continue
             applied_change['actualAmount'] = abs(_apply_currency(actor, change, -1))
         elif change_type == 'health.heal' and actor:
             applied_change['actualAmount'] = _apply_health_heal(actor, change)

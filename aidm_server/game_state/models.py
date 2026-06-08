@@ -384,18 +384,46 @@ def compact_state_for_extraction(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+ACTOR_COLLECTION_KEYS = ('playerCharacters', 'partyNpcs', 'knownNpcs')
+
+
+def iter_state_actors(state: dict[str, Any]) -> Iterable[dict[str, Any]]:
+    for collection_key in ACTOR_COLLECTION_KEYS:
+        for actor in state.get(collection_key) or []:
+            if isinstance(actor, dict):
+                yield actor
+
+
 def find_actor(state: dict[str, Any], actor_id: Any) -> dict[str, Any] | None:
     requested_id = str(actor_id or '').strip()
     if not requested_id:
         return None
-    for actor in state.get('playerCharacters') or []:
-        if not isinstance(actor, dict):
-            continue
+    for actor in iter_state_actors(state):
         if str(actor.get('id')) == requested_id:
             return actor
-        if parse_actor_player_id(requested_id) == actor.get('playerId'):
+        if actor.get('playerId') is not None and parse_actor_player_id(requested_id) == actor.get('playerId'):
             return actor
     return None
+
+
+def find_actor_by_name(state: dict[str, Any], actor_name_value: Any) -> dict[str, Any] | None:
+    requested_name = normalize_item_name(actor_name_value)
+    if not requested_name:
+        return None
+    exact_matches = [
+        actor
+        for actor in iter_state_actors(state)
+        if normalize_item_name(actor.get('name') or actor.get('characterName') or actor.get('displayName')) == requested_name
+    ]
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+    partial_matches = [
+        actor
+        for actor in iter_state_actors(state)
+        if requested_name
+        in normalize_item_name(actor.get('name') or actor.get('characterName') or actor.get('displayName'))
+    ]
+    return partial_matches[0] if len(partial_matches) == 1 else None
 
 
 def actor_inventory(actor: dict[str, Any] | None) -> dict[str, Any]:

@@ -242,6 +242,7 @@ export function useSessionSocket({
       }) => {
         resetTtsFailureForNextResponse()
         stopTtsAudio({ suppressQueue: false })
+        setClarificationRequest(null)
         setSendPending(true)
         spokenTextLengthRef.current = 0
         setStreamingTurn({
@@ -370,7 +371,6 @@ export function useSessionSocket({
           .then(() => {
             setOptimisticEntries([])
             setStreamingTurn(null)
-            setClarificationRequest(null)
           })
           .catch((error: unknown) => {
             pushError('workspace', `Log refresh failed: ${error instanceof Error ? error.message : String(error)}`)

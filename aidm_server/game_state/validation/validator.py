@@ -11,6 +11,7 @@ from aidm_server.game_state.models import (
     actor_items,
     actor_name,
     find_actor,
+    find_actor_by_name,
     normalize_item_name,
     stable_change_id,
     state_applied_change_ids,
@@ -19,6 +20,7 @@ from aidm_server.game_state.validation.inventory_validator import resolve_invent
 
 
 CONSUMABLE_TYPES = {'consumable', 'potion', 'food'}
+UNRESOLVED_TARGET_LABELS = {'', 'target', 'someone', 'somebody', 'an npc', 'a npc', 'npc'}
 
 
 def _action_value(action: dict[str, Any], camel_key: str, snake_key: str | None = None, default=None):
@@ -27,6 +29,32 @@ def _action_value(action: dict[str, Any], camel_key: str, snake_key: str | None 
     if snake_key and snake_key in action:
         return action.get(snake_key)
     return default
+
+
+def _target_actor_from_payload(state: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    target_id = (
+        _action_value(payload, 'toActorId', 'to_actor_id')
+        or _action_value(payload, 'targetActorId', 'target_actor_id')
+        or _action_value(payload, 'targetId', 'target_id')
+    )
+    if target_id:
+        target = find_actor(state, target_id)
+        if target:
+            return target, ''
+        return None, f"Target actor '{target_id}' was not found."
+
+    target_name = (
+        _action_value(payload, 'toActorName', 'to_actor_name')
+        or _action_value(payload, 'targetActorName', 'target_actor_name')
+        or _action_value(payload, 'targetName', 'target_name')
+    )
+    normalized_target_name = normalize_item_name(target_name)
+    if normalized_target_name in UNRESOLVED_TARGET_LABELS:
+        return None, 'Transfer target is missing.'
+    target = find_actor_by_name(state, target_name)
+    if target:
+        return target, ''
+    return None, f"Target actor '{target_name}' was not found."
 
 
 def _invalid(action: dict[str, Any], reason: str) -> dict[str, Any]:
@@ -213,8 +241,57 @@ def _validate_use_or_transfer_item(
     )
 
 
+def _validate_inventory_transfer(
+    action: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    current_turn: int,
+    recent_context: list[str],
+    selected_item_id: str | None,
+) -> dict[str, Any]:
+    item_name = str(_action_value(action, 'itemName', 'item_name') or '').strip()
+    quantity = max(1, int_or_default(action.get('quantity'), default=1))
+    actor, item, resolution = _resolve_action_item(
+        action=action,
+        state=state,
+        item_name=item_name,
+        current_turn=current_turn,
+        recent_context=recent_context,
+        selected_item_id=selected_item_id,
+    )
+    if not actor:
+        return _invalid(action, resolution.get('reason') or 'Actor not found.')
+    if resolution.get('status') == 'needs_clarification':
+        return _clarification(action, resolution)
+    if resolution.get('status') == 'missing' or not item:
+        return _invalid(action, f"{actor_name(actor)} does not have {item_name or 'that item'}.")
+    if int_or_default(item.get('quantity'), default=1) < quantity:
+        return _invalid(action, f"Not enough {item.get('name')}. Available: {item.get('quantity')}.")
+
+    target, target_error = _target_actor_from_payload(state, action)
+    if not target:
+        return _invalid(action, target_error or 'Transfer target was not found.')
+    if str(target.get('id')) == str(actor.get('id')):
+        return _invalid(action, 'Transfer target must be different from the source actor.')
+
+    return _pending(
+        action,
+        f"{actor_name(actor)} can give {item.get('name')} x{quantity} to {actor_name(target)}.",
+        normalized_action={
+            **action,
+            'fromActorId': actor.get('id'),
+            'toActorId': target.get('id'),
+            'toActorName': actor_name(target),
+            'itemId': item.get('id'),
+            'itemName': item.get('name'),
+            'quantity': quantity,
+            'resolution': resolution,
+        },
+    )
+
+
 def _validate_currency_transfer(action: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
-    actor = find_actor(state, _action_value(action, 'actorId', 'actor_id') or _action_value(action, 'fromActorId', 'from_actor_id'))
+    actor = find_actor(state, _action_value(action, 'fromActorId', 'from_actor_id') or _action_value(action, 'actorId', 'actor_id'))
     if not actor:
         return _invalid(action, 'Actor not found.')
     currency = str(action.get('currency') or '').strip().lower()
@@ -224,7 +301,23 @@ def _validate_currency_transfer(action: dict[str, Any], state: dict[str, Any]) -
     available = actor_currency(actor).get(currency, 0)
     if amount > available:
         return _invalid(action, f"{actor_name(actor)} has {available} {currency} and cannot transfer {amount}.")
-    return _pending(action, f"{actor_name(actor)} has {available} {currency}.")
+    target, target_error = _target_actor_from_payload(state, action)
+    if not target:
+        return _invalid(action, target_error or 'Transfer target was not found.')
+    if str(target.get('id')) == str(actor.get('id')):
+        return _invalid(action, 'Transfer target must be different from the source actor.')
+    return _pending(
+        action,
+        f"{actor_name(actor)} can give {amount} {currency} to {actor_name(target)}.",
+        normalized_action={
+            **action,
+            'fromActorId': actor.get('id'),
+            'toActorId': target.get('id'),
+            'toActorName': actor_name(target),
+            'amount': amount,
+            'currency': currency,
+        },
+    )
 
 
 def _validate_attack(
@@ -310,8 +403,16 @@ def validate_declared_actions(
                 recent_context=recent_context or [],
                 selected_item_id=selected_item_id,
             )
-        elif action_type in {'inventory.use', 'inventory.transfer'}:
+        elif action_type == 'inventory.use':
             result = _validate_use_or_transfer_item(
+                action,
+                state,
+                current_turn=current_turn,
+                recent_context=recent_context or [],
+                selected_item_id=selected_item_id,
+            )
+        elif action_type == 'inventory.transfer':
+            result = _validate_inventory_transfer(
                 action,
                 state,
                 current_turn=current_turn,
@@ -447,6 +548,163 @@ def _validate_health_change(state: dict[str, Any], change: dict[str, Any]) -> tu
     return 'accepted', 'Health change is valid.', None
 
 
+def _atomic_change_id(parent_id: str, suffix: str, *parts: Any) -> str:
+    if parent_id:
+        return f'{parent_id}:{suffix}'
+    return stable_change_id('transfer', suffix, *parts)
+
+
+def _transfer_source_actor(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] | None:
+    return find_actor(state, _action_value(change, 'fromActorId', 'from_actor_id') or _action_value(change, 'actorId', 'actor_id'))
+
+
+def _change_id_already_seen(change: dict[str, Any], applied_ids: set[str], seen_ids: set[str]) -> bool:
+    change_id = str(change.get('id') or '').strip()
+    return bool(change_id and (change_id in applied_ids or change_id in seen_ids))
+
+
+def _validate_inventory_transfer_change(
+    state: dict[str, Any],
+    change: dict[str, Any],
+    *,
+    applied_ids: set[str],
+    seen_ids: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    source = _transfer_source_actor(state, change)
+    if not source:
+        return [], [_rejected(change, 'Transfer source actor not found.')]
+    target, target_error = _target_actor_from_payload(state, change)
+    if not target:
+        return [], [_rejected(change, target_error or 'Transfer target actor not found.')]
+    if str(source.get('id')) == str(target.get('id')):
+        return [], [_rejected(change, 'Transfer target must be different from the source actor.')]
+
+    item_id = _action_value(change, 'itemId', 'item_id')
+    item_name = _action_value(change, 'itemName', 'item_name')
+    source_item = None
+    for candidate in actor_items(source):
+        if item_id and str(candidate.get('id')) == str(item_id):
+            source_item = candidate
+            break
+        if item_name and normalize_item_name(candidate.get('name')) == normalize_item_name(item_name):
+            source_item = candidate
+            break
+    if not source_item:
+        return [], [_rejected(change, 'Item not found in source inventory.')]
+
+    quantity = max(0, int_or_default(change.get('quantity'), default=0))
+    if quantity <= 0:
+        return [], [_rejected(change, 'Inventory transfer quantity must be positive.')]
+
+    parent_id = str(change.get('id') or '').strip()
+    remove_change = {
+        **change,
+        'id': _atomic_change_id(parent_id, 'remove', source.get('id'), source_item.get('id'), quantity),
+        'type': 'inventory.remove',
+        'actorId': source.get('id'),
+        'itemId': source_item.get('id'),
+        'itemName': source_item.get('name'),
+        'quantity': quantity,
+        'reason': change.get('reason') or f"{actor_name(source)} gave {source_item.get('name')} to {actor_name(target)}.",
+        'transferId': parent_id or None,
+        'transferDirection': 'source',
+    }
+    item_payload = deepcopy(source_item)
+    item_payload['quantity'] = quantity
+    add_change = {
+        **change,
+        'id': _atomic_change_id(parent_id, 'add', target.get('id'), source_item.get('id'), quantity),
+        'type': 'inventory.add',
+        'actorId': target.get('id'),
+        'itemId': source_item.get('id'),
+        'itemName': source_item.get('name'),
+        'quantity': quantity,
+        'item': item_payload,
+        'reason': change.get('reason') or f"{actor_name(target)} received {source_item.get('name')} from {actor_name(source)}.",
+        'transferId': parent_id or None,
+        'transferDirection': 'target',
+    }
+    if _change_id_already_seen(remove_change, applied_ids, seen_ids) or _change_id_already_seen(add_change, applied_ids, seen_ids):
+        return [], [_rejected(change, 'State transfer was already applied.')]
+
+    remove_status, remove_reason, normalized_remove = _validate_inventory_change(state, remove_change)
+    add_status, add_reason, normalized_add = _validate_inventory_change(state, add_change)
+    if remove_status != 'accepted' or add_status != 'accepted':
+        reasons = [reason for status, reason in ((remove_status, remove_reason), (add_status, add_reason)) if status != 'accepted']
+        return [], [_rejected(change, '; '.join(reasons) or 'Inventory transfer validation failed.')]
+
+    accepted = [
+        _accepted(normalized_remove or remove_change, 'Inventory transfer source removal is valid.'),
+        _accepted(normalized_add or add_change, 'Inventory transfer target add is valid.'),
+    ]
+    for entry in accepted:
+        atomic_id = str(entry['change'].get('id') or '').strip()
+        if atomic_id:
+            seen_ids.add(atomic_id)
+    return accepted, []
+
+
+def _validate_currency_transfer_change(
+    state: dict[str, Any],
+    change: dict[str, Any],
+    *,
+    applied_ids: set[str],
+    seen_ids: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    source = _transfer_source_actor(state, change)
+    if not source:
+        return [], [_rejected(change, 'Transfer source actor not found.')]
+    target, target_error = _target_actor_from_payload(state, change)
+    if not target:
+        return [], [_rejected(change, target_error or 'Transfer target actor not found.')]
+    if str(source.get('id')) == str(target.get('id')):
+        return [], [_rejected(change, 'Transfer target must be different from the source actor.')]
+
+    currency = str(change.get('currency') or '').strip().lower()
+    amount = max(0, int_or_default(change.get('amount'), default=0))
+    parent_id = str(change.get('id') or '').strip()
+    remove_change = {
+        **change,
+        'id': _atomic_change_id(parent_id, 'remove', source.get('id'), currency, amount),
+        'type': 'currency.remove',
+        'actorId': source.get('id'),
+        'currency': currency,
+        'amount': amount,
+        'reason': change.get('reason') or f"{actor_name(source)} gave {amount} {currency} to {actor_name(target)}.",
+        'transferId': parent_id or None,
+        'transferDirection': 'source',
+    }
+    add_change = {
+        **change,
+        'id': _atomic_change_id(parent_id, 'add', target.get('id'), currency, amount),
+        'type': 'currency.add',
+        'actorId': target.get('id'),
+        'currency': currency,
+        'amount': amount,
+        'reason': change.get('reason') or f"{actor_name(target)} received {amount} {currency} from {actor_name(source)}.",
+        'transferId': parent_id or None,
+        'transferDirection': 'target',
+    }
+    if _change_id_already_seen(remove_change, applied_ids, seen_ids) or _change_id_already_seen(add_change, applied_ids, seen_ids):
+        return [], [_rejected(change, 'State transfer was already applied.')]
+
+    remove_status, remove_reason, normalized_remove = _validate_currency_change(state, remove_change)
+    add_status, add_reason, normalized_add = _validate_currency_change(state, add_change)
+    if remove_status != 'accepted' or add_status != 'accepted':
+        reasons = [reason for status, reason in ((remove_status, remove_reason), (add_status, add_reason)) if status != 'accepted']
+        return [], [_rejected(change, '; '.join(reasons) or 'Currency transfer validation failed.')]
+
+    accepted = [
+        _accepted(normalized_remove or remove_change, 'Currency transfer source removal is valid.'),
+        _accepted(normalized_add or add_change, 'Currency transfer target add is valid.'),
+    ]
+    for entry in accepted:
+        atomic_id = str(entry['change'].get('id') or '').strip()
+        if atomic_id:
+            seen_ids.add(atomic_id)
+    return accepted, []
+
+
 def validate_state_changes(*, state: dict[str, Any], changes: list[dict[str, Any]]) -> dict[str, Any]:
     accepted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
@@ -462,6 +720,26 @@ def validate_state_changes(*, state: dict[str, Any], changes: list[dict[str, Any
         change_id = str(change.get('id') or '').strip()
         if change_type not in PHASE_1_STATE_CHANGE_TYPES:
             rejected.append(_rejected(change, f"Unsupported state change type '{change_type}'."))
+            continue
+        if change_type == 'inventory.transfer':
+            transfer_accepted, transfer_rejected = _validate_inventory_transfer_change(
+                state,
+                change,
+                applied_ids=applied_ids,
+                seen_ids=seen_ids,
+            )
+            accepted.extend(transfer_accepted)
+            rejected.extend(transfer_rejected)
+            continue
+        if change_type == 'currency.transfer':
+            transfer_accepted, transfer_rejected = _validate_currency_transfer_change(
+                state,
+                change,
+                applied_ids=applied_ids,
+                seen_ids=seen_ids,
+            )
+            accepted.extend(transfer_accepted)
+            rejected.extend(transfer_rejected)
             continue
         if change_id and (change_id in applied_ids or change_id in seen_ids):
             rejected.append(_rejected(change, 'State change was already applied.'))

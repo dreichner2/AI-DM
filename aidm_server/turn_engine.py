@@ -1373,6 +1373,7 @@ class TurnEngine:
         try:
             db_save_started = time.perf_counter()
             dm_response_text = strip_reasoning_blocks(dm_response_text).strip()
+            dm_succeeded = bool(dm_response_text) and stream_error is None
             turn_obj = db.session.get(DmTurn, turn.turn_id)
             if turn_obj:
                 turn_obj.completed_at = utc_now()
@@ -1383,7 +1384,7 @@ class TurnEngine:
 
                 if dm_response_text:
                     turn_obj.dm_output = dm_response_text
-                    turn_obj.status = 'completed'
+                    turn_obj.status = 'failed' if stream_error else 'completed'
                 else:
                     turn_obj.status = 'failed' if stream_error else 'completed'
                     metadata_payload = safe_json_loads(turn_obj.metadata_json, {})
@@ -1445,7 +1446,7 @@ class TurnEngine:
 
             immediate_state_summary: dict = {}
             state_log: dict = {}
-            if turn_obj and dm_response_text:
+            if turn_obj and dm_succeeded:
                 try:
                     player_obj = db.session.get(Player, turn.player_id) if turn.player_id else None
                     if not player_obj:
@@ -1525,7 +1526,7 @@ class TurnEngine:
                         },
                     )
 
-            if turn_obj and (dm_response_text or triggered_segments):
+            if turn_obj and dm_succeeded:
                 canon_job = enqueue_canon_job(
                     turn=turn_obj,
                     campaign=campaign,

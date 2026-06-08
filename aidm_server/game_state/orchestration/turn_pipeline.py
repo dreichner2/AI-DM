@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 from typing import Any
 
 from aidm_server.canon_inventory import append_drop_all_inventory_changes_from_text, inventory_change_from_intent_outcome
@@ -33,6 +34,30 @@ from aidm_server.turn_events import record_turn_event
 
 
 STATE_UPDATE_EVENT = 'state_update'
+MANAGED_STATE_DOMAINS = ['inventory', 'currency', 'health']
+SAFE_PRE_DM_IMMEDIATE_CHANGE_TYPES = {'inventory.mark_used'}
+CONFIRMATION_DENIAL_PATTERN = re.compile(
+    r"\b(?:do not|don't|does not|doesn't|did not|cannot|can't|fail|fails|failed|before you can|instead)\b",
+    re.IGNORECASE,
+)
+INVENTORY_REMOVE_CONFIRMATION_PATTERN = re.compile(
+    r'\b(?:drink|drinks|drank|consume|consumes|consumed|quaff|quaffs|quaffed|swallow|swallows|swallowed|'
+    r'eat|eats|ate|use up|uses up|used up|drop|drops|dropped|give|gives|gave|hand over|hands over|'
+    r'sell|sells|sold|remove|removes|removed)\b',
+    re.IGNORECASE,
+)
+INVENTORY_TRANSFER_CONFIRMATION_PATTERN = re.compile(
+    r'\b(?:give|gives|gave|hand|hands|handed|pass|passes|passed|offer|offers|offered)\b',
+    re.IGNORECASE,
+)
+CURRENCY_TRANSFER_CONFIRMATION_PATTERN = re.compile(
+    r'\b(?:give|gives|gave|pay|pays|paid|hand over|hands over|handed over)\b',
+    re.IGNORECASE,
+)
+
+
+def _sentences(text: str) -> list[str]:
+    return [sentence.strip() for sentence in re.split(r'(?<=[.!?])\s+|\n+', text or '') if sentence.strip()]
 
 
 def _players_for_campaign(campaign: Campaign, fallback_player: Player) -> list[Player]:
@@ -68,6 +93,155 @@ def _recent_context_strings(recent_timeline: list[dict[str, Any]]) -> list[str]:
     return values
 
 
+def _safe_pre_dm_immediate_change(change: dict[str, Any]) -> bool:
+    change_type = str(change.get('type') or '').strip()
+    return change_type in SAFE_PRE_DM_IMMEDIATE_CHANGE_TYPES and not bool(change.get('visible', True))
+
+
+def _item_reference_terms(item_name: Any) -> set[str]:
+    normalized = normalize_item_name(item_name)
+    terms = {normalized} if normalized else set()
+    tokens = {token for token in normalized.split() if len(token) > 2}
+    if tokens:
+        terms.add(normalized.split()[-1])
+        terms.update(token for token in tokens if token in {'potion', 'ration', 'food', 'elixir', 'vial', 'flask'})
+    return {term for term in terms if term}
+
+
+def _sentence_mentions_item(sentence: str, item_name: Any) -> bool:
+    normalized_sentence = normalize_item_name(sentence)
+    if not normalized_sentence:
+        return False
+    for term in _item_reference_terms(item_name):
+        if ' ' in term and term in normalized_sentence:
+            return True
+        if re.search(rf'\b{re.escape(term)}\b', normalized_sentence):
+            return True
+    return False
+
+
+def _dm_confirms_inventory_remove(change: dict[str, Any], dm_response_text: str) -> bool:
+    item = change.get('item') if isinstance(change.get('item'), dict) else {}
+    item_name = change.get('itemName') or change.get('item_name') or item.get('name')
+    if not item_name:
+        return False
+    for sentence in _sentences(dm_response_text):
+        if CONFIRMATION_DENIAL_PATTERN.search(sentence):
+            continue
+        if INVENTORY_REMOVE_CONFIRMATION_PATTERN.search(sentence) and _sentence_mentions_item(sentence, item_name):
+            return True
+    return False
+
+
+def _dm_confirms_inventory_transfer(action: dict[str, Any], dm_response_text: str) -> bool:
+    item_name = action.get('itemName') or action.get('item_name')
+    target_name = action.get('toActorName') or action.get('to_actor_name')
+    for sentence in _sentences(dm_response_text):
+        if CONFIRMATION_DENIAL_PATTERN.search(sentence):
+            continue
+        if not INVENTORY_TRANSFER_CONFIRMATION_PATTERN.search(sentence):
+            continue
+        if item_name and not _sentence_mentions_item(sentence, item_name):
+            continue
+        if target_name and normalize_item_name(target_name) not in normalize_item_name(sentence):
+            continue
+        return True
+    return False
+
+
+def _dm_confirms_currency_transfer(action: dict[str, Any], dm_response_text: str) -> bool:
+    amount = int_or_default(action.get('amount'), default=0)
+    currency = str(action.get('currency') or '').strip().lower()
+    target_name = action.get('toActorName') or action.get('to_actor_name')
+    if amount <= 0 or not currency:
+        return False
+    for sentence in _sentences(dm_response_text):
+        normalized = normalize_item_name(sentence)
+        if CONFIRMATION_DENIAL_PATTERN.search(sentence):
+            continue
+        if not CURRENCY_TRANSFER_CONFIRMATION_PATTERN.search(sentence):
+            continue
+        if str(amount) not in normalized:
+            continue
+        if currency not in normalized and {
+            'pp': 'platinum',
+            'gp': 'gold',
+            'ep': 'electrum',
+            'sp': 'silver',
+            'cp': 'copper',
+        }.get(currency, currency) not in normalized:
+            continue
+        if target_name and normalize_item_name(target_name) not in normalized:
+            continue
+        return True
+    return False
+
+
+def _confirmed_pre_dm_changes(
+    *,
+    turn: DmTurn,
+    pre_validation: dict[str, Any],
+    pending_immediate_changes: list[dict[str, Any]],
+    dm_response_text: str,
+) -> list[dict[str, Any]]:
+    confirmed: list[dict[str, Any]] = []
+    for change in pending_immediate_changes:
+        if not isinstance(change, dict):
+            continue
+        if str(change.get('type') or '') == 'inventory.remove' and _dm_confirms_inventory_remove(change, dm_response_text):
+            next_change = deepcopy(change)
+            next_change['source'] = 'post_dm_confirmed'
+            next_change['reason'] = next_change.get('reason') or 'DM confirmed the pre-validated inventory removal.'
+            confirmed.append(next_change)
+
+    for result in pre_validation.get('validatedActions') or []:
+        if not isinstance(result, dict) or result.get('status') not in {'valid', 'pending'}:
+            continue
+        original = result.get('originalAction') if isinstance(result.get('originalAction'), dict) else {}
+        normalized = result.get('normalizedAction') if isinstance(result.get('normalizedAction'), dict) else {}
+        action = {**original, **normalized}
+        action_type = str(original.get('type') or normalized.get('type') or '').strip()
+        action_id = str(original.get('id') or normalized.get('id') or result.get('actionId') or '').strip()
+        actor_id = str(action.get('fromActorId') or action.get('actorId') or '').strip()
+
+        if action_type == 'inventory.transfer' and _dm_confirms_inventory_transfer(action, dm_response_text):
+            confirmed.append(
+                {
+                    'id': stable_change_id(turn.turn_id, 'post_dm_confirmed', action_id, 'inventory.transfer'),
+                    'turnId': turn.turn_id,
+                    'type': 'inventory.transfer',
+                    'source': 'post_dm_confirmed',
+                    'actorId': actor_id,
+                    'fromActorId': actor_id,
+                    'toActorId': action.get('toActorId'),
+                    'toActorName': action.get('toActorName'),
+                    'itemId': action.get('itemId'),
+                    'itemName': action.get('itemName'),
+                    'quantity': max(1, int_or_default(action.get('quantity'), default=1)),
+                    'reason': f"DM confirmed transfer of {action.get('itemName') or 'item'}.",
+                    'visible': True,
+                }
+            )
+        elif action_type == 'currency.transfer' and _dm_confirms_currency_transfer(action, dm_response_text):
+            confirmed.append(
+                {
+                    'id': stable_change_id(turn.turn_id, 'post_dm_confirmed', action_id, 'currency.transfer'),
+                    'turnId': turn.turn_id,
+                    'type': 'currency.transfer',
+                    'source': 'post_dm_confirmed',
+                    'actorId': actor_id,
+                    'fromActorId': actor_id,
+                    'toActorId': action.get('toActorId'),
+                    'toActorName': action.get('toActorName'),
+                    'amount': max(1, int_or_default(action.get('amount'), default=1)),
+                    'currency': str(action.get('currency') or '').lower(),
+                    'reason': f"DM confirmed transfer of {action.get('amount')} {action.get('currency')}.",
+                    'visible': True,
+                }
+            )
+    return _merge_state_changes(confirmed)
+
+
 def _state_change_signature(change: dict[str, Any]) -> tuple[Any, ...] | None:
     change_type = str(change.get('type') or '').strip()
     actor_id = str(change.get('actorId') or change.get('actor_id') or '')
@@ -75,8 +249,27 @@ def _state_change_signature(change: dict[str, Any]) -> tuple[Any, ...] | None:
         item = change.get('item') if isinstance(change.get('item'), dict) else {}
         item_name = change.get('itemName') or change.get('item_name') or item.get('name')
         return (change_type, actor_id, normalize_item_name(item_name))
+    if change_type == 'inventory.transfer':
+        item_name = change.get('itemName') or change.get('item_name')
+        to_actor = str(change.get('toActorId') or change.get('to_actor_id') or change.get('toActorName') or change.get('to_actor_name') or '')
+        return (
+            change_type,
+            actor_id,
+            to_actor.lower(),
+            normalize_item_name(item_name),
+            int_or_default(change.get('quantity'), default=1),
+        )
     if change_type in {'currency.add', 'currency.remove'}:
         return (change_type, actor_id, str(change.get('currency') or '').lower(), int_or_default(change.get('amount'), default=0))
+    if change_type == 'currency.transfer':
+        to_actor = str(change.get('toActorId') or change.get('to_actor_id') or change.get('toActorName') or change.get('to_actor_name') or '')
+        return (
+            change_type,
+            actor_id,
+            to_actor.lower(),
+            str(change.get('currency') or '').lower(),
+            int_or_default(change.get('amount'), default=0),
+        )
     if change_type in {'health.heal', 'health.damage'}:
         return (change_type, actor_id, int_or_default(change.get('amount'), default=0))
     return None
@@ -190,6 +383,10 @@ def _dm_context_packet(
 ) -> dict[str, Any]:
     compact = compact_state_for_extraction(state)
     validated_actions = []
+    valid_actions = []
+    invalid_actions = []
+    pending_actions = []
+    needs_clarification = []
     for result in pre_validation.get('validatedActions') or []:
         if not isinstance(result, dict):
             continue
@@ -201,26 +398,43 @@ def _dm_context_packet(
         summary = action_label if action_label else reason
         if action_label and reason and reason != action_label:
             summary = f"{action_label} ({reason})"
-        validated_actions.append(
-            {
-                'status': result.get('status'),
-                'summary': summary,
-                'type': original.get('type'),
-                'resolvedItem': (
-                    {
-                        'itemId': resolution.get('itemId'),
-                        'itemName': resolution.get('itemName'),
-                        'resolutionMethod': resolution.get('resolutionMethod'),
-                    }
-                    if resolution and resolution.get('status') == 'resolved'
-                    else None
-                ),
-            }
-        )
+        action_entry = {
+            'status': result.get('status'),
+            'summary': summary,
+            'type': original.get('type'),
+            'resolvedItem': (
+                {
+                    'itemId': resolution.get('itemId'),
+                    'itemName': resolution.get('itemName'),
+                    'resolutionMethod': resolution.get('resolutionMethod'),
+                }
+                if resolution and resolution.get('status') == 'resolved'
+                else None
+            ),
+            'reason': result.get('reason'),
+        }
+        validated_actions.append(action_entry)
+        if result.get('status') == 'valid':
+            valid_actions.append(action_entry)
+        elif result.get('status') == 'pending':
+            pending_actions.append(action_entry)
+        elif result.get('status') == 'invalid':
+            invalid_actions.append(action_entry)
+        elif result.get('status') == 'needs_clarification':
+            needs_clarification.append(
+                {
+                    **action_entry,
+                    'clarificationRequest': result.get('clarificationRequest'),
+                }
+            )
     return {
         'currentStateSummary': compact,
         'playerMessage': player_message,
         'validatedActions': validated_actions,
+        'validActions': valid_actions,
+        'invalidActions': invalid_actions,
+        'pendingActions': pending_actions,
+        'needsClarification': needs_clarification,
         'pendingRolls': pre_validation.get('pendingRolls') or [],
         'stateChangesAlreadyApplied': [
             {
@@ -287,7 +501,15 @@ def pre_dm_pipeline(
         recent_context=_recent_context_strings(recent_timeline),
         selected_item_ids=selected_item_ids,
     )
-    immediate_validation = validate_state_changes(state=state, changes=pre_validation.get('immediateChanges') or [])
+    pre_immediate_changes = [
+        change
+        for change in (pre_validation.get('immediateChanges') or [])
+        if isinstance(change, dict)
+    ]
+    safe_immediate_changes = [change for change in pre_immediate_changes if _safe_pre_dm_immediate_change(change)]
+    pending_immediate_changes = [change for change in pre_immediate_changes if not _safe_pre_dm_immediate_change(change)]
+    immediate_validation = validate_state_changes(state=state, changes=safe_immediate_changes)
+    pending_immediate_validation = validate_state_changes(state=state, changes=pending_immediate_changes)
     immediate_changes = validated_changes_for_application(immediate_validation)
     apply_result = apply_state_changes(state, immediate_changes)
     state_after_immediate = apply_result['nextState']
@@ -317,9 +539,12 @@ def pre_dm_pipeline(
         'preDmExtraction': pre_extraction,
         'preDmValidation': pre_validation,
         'immediateValidation': immediate_validation,
+        'pendingImmediateChanges': validated_changes_for_application(pending_immediate_validation),
+        'pendingImmediateValidation': pending_immediate_validation,
         'immediateAppliedChanges': applied_immediate,
         'dmContextPacket': dm_context,
         'stateLog': state_log,
+        'managedDomains': MANAGED_STATE_DOMAINS,
     }
     _set_metadata(turn, metadata)
     db.session.flush()
@@ -330,6 +555,8 @@ def pre_dm_pipeline(
         'preExtraction': pre_extraction,
         'preValidation': pre_validation,
         'immediateValidation': immediate_validation,
+        'pendingImmediateValidation': pending_immediate_validation,
+        'pendingImmediateChanges': validated_changes_for_application(pending_immediate_validation),
         'immediateAppliedChanges': applied_immediate,
         'dmContextPacket': dm_context,
         'stateLog': state_log,
@@ -356,6 +583,11 @@ def post_dm_pipeline(
     actor_id = str(pipeline.get('actorId') or display_actor_id(player.player_id))
     recent_timeline = recent_timeline_for_session(session_obj.session_id, limit=5)
     already_applied = list(pipeline.get('immediateAppliedChanges') or [])
+    pending_immediate_changes = [
+        change
+        for change in (pipeline.get('pendingImmediateChanges') or [])
+        if isinstance(change, dict)
+    ]
     skip_post_extraction = bool(turn.requires_roll and turn.roll_value is None and str(turn.outcome_status or '').lower() == 'deferred')
     if skip_post_extraction:
         post_extraction = {
@@ -396,16 +628,25 @@ def post_dm_pipeline(
             dm_response_text=dm_response_text,
             actor_id=actor_id,
         )
-        if intent_changes:
+        confirmed_pre_dm_changes = _confirmed_pre_dm_changes(
+            turn=turn,
+            pre_validation=pipeline.get('preDmValidation') if isinstance(pipeline.get('preDmValidation'), dict) else {},
+            pending_immediate_changes=pending_immediate_changes,
+            dm_response_text=dm_response_text,
+        )
+        if intent_changes or confirmed_pre_dm_changes:
             post_extraction = deepcopy(post_extraction)
             post_extraction['proposedChanges'] = _merge_state_changes(
                 post_extraction.get('proposedChanges') or [],
                 intent_changes,
+                confirmed_pre_dm_changes,
                 seed_changes=already_applied,
             )
             notes = list(post_extraction.get('notes') or [])
-            if 'intent_confirmed_post_dm' not in notes:
+            if intent_changes and 'intent_confirmed_post_dm' not in notes:
                 notes.append('intent_confirmed_post_dm')
+            if confirmed_pre_dm_changes and 'pre_dm_confirmed_post_dm' not in notes:
+                notes.append('pre_dm_confirmed_post_dm')
             post_extraction['notes'] = notes
         post_validation = validate_state_changes(state=state_before_dm, changes=post_extraction.get('proposedChanges') or [])
         post_changes = validated_changes_for_application(post_validation)
@@ -440,6 +681,7 @@ def post_dm_pipeline(
             'postAppliedChanges': applied_post,
             'finalStateSummary': compact_state_for_extraction(final_state),
             'stateLog': state_log,
+            'managedDomains': MANAGED_STATE_DOMAINS,
         }
     )
     metadata[STATE_PIPELINE_METADATA_KEY] = pipeline

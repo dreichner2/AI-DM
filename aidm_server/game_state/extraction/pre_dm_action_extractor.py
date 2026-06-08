@@ -34,9 +34,9 @@ USE_WEAPON_PATTERN = re.compile(
     re.IGNORECASE,
 )
 CURRENCY_TRANSFER_PATTERN = re.compile(
-    r'\b(?:give|pay|spend|hand over)\s+(?P<amount>\d{1,5})\s+'
+    r'\b(?:give|pay|hand over)\s+(?P<amount>\d{1,5})\s+'
     r'(?P<currency>pp|gp|ep|sp|cp|platinum|gold|electrum|silver|copper)\b'
-    r'(?:\s+(?:pieces?|coins?))?(?:\s+to\s+(?P<target>[A-Z][a-zA-Z0-9 _-]{1,40}))?',
+    r'(?:\s+(?:pieces?|coins?))?\s+to\s+(?P<target>[A-Z][a-zA-Z0-9 _-]{1,40})',
     re.IGNORECASE,
 )
 ITEM_TRANSFER_PATTERN = re.compile(

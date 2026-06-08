@@ -17,7 +17,8 @@ from aidm_server.game_state.validation.validator import (
     validate_state_changes,
     validated_changes_for_application,
 )
-from aidm_server.models import Campaign, DmTurn, Player, Session, TurnEvent, safe_json_dumps, safe_json_loads
+from aidm_server.emergent_memory import apply_canon_patch
+from aidm_server.models import Campaign, DmTurn, Player, Session, SessionLogEntry, TurnEvent, safe_json_dumps, safe_json_loads
 from tests.helpers import seed_world_campaign_player_session
 
 
@@ -55,6 +56,27 @@ def _item(name, *, item_id=None, quantity=1, item_type='misc', subtype=None, equ
         'lastUsedAtTurn': last_used,
         'favorite': favorite,
     }
+
+
+def _two_player_state():
+    state = _state(
+        items=[_item('Rope', item_id='rope_1', quantity=1)],
+        currency={'pp': 0, 'gp': 5, 'ep': 0, 'sp': 0, 'cp': 12},
+    )
+    state['playerCharacters'].append(
+        {
+            'id': 'player_2',
+            'playerId': 2,
+            'name': 'Borin',
+            'health': {'currentHp': 12, 'maxHp': 12, 'tempHp': 0, 'conditions': []},
+            'inventory': {
+                'items': [],
+                'currency': {'pp': 0, 'gp': 1, 'ep': 0, 'sp': 0, 'cp': 0},
+            },
+            'metadata': {},
+        }
+    )
+    return state
 
 
 def test_extract_consume_item_from_player_message(app):
@@ -298,6 +320,111 @@ def test_apply_health_damage_uses_temp_hp_first():
     assert health['currentHp'] == 8
 
 
+def test_inventory_transfer_expands_to_atomic_remove_and_add():
+    state = _two_player_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'transfer_rope',
+                'type': 'inventory.transfer',
+                'actorId': 'player_1',
+                'fromActorId': 'player_1',
+                'toActorId': 'player_2',
+                'itemId': 'rope_1',
+                'itemName': 'Rope',
+                'quantity': 1,
+                'visible': True,
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    assert validation['rejected'] == []
+    assert [entry['change']['type'] for entry in validation['accepted']] == ['inventory.remove', 'inventory.add']
+    assert result['nextState']['playerCharacters'][0]['inventory']['items'] == []
+    target_items = result['nextState']['playerCharacters'][1]['inventory']['items']
+    assert target_items[0]['name'] == 'Rope'
+    state_log = build_state_log(turn_id=1, post_validation=validation)
+    assert any('Rope' in line['message'] for line in state_log['lines'])
+
+
+def test_inventory_transfer_missing_item_rejects_without_partial_add():
+    state = _two_player_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'transfer_missing',
+                'type': 'inventory.transfer',
+                'actorId': 'player_1',
+                'fromActorId': 'player_1',
+                'toActorId': 'player_2',
+                'itemName': 'Lantern',
+                'quantity': 1,
+                'visible': True,
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    assert validation['accepted'] == []
+    assert validation['rejected'][0]['reason'] == 'Item not found in source inventory.'
+    assert result['appliedChanges'] == []
+    assert result['nextState']['playerCharacters'][1]['inventory']['items'] == []
+
+
+def test_currency_transfer_expands_to_atomic_remove_and_add():
+    state = _two_player_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'transfer_gold',
+                'type': 'currency.transfer',
+                'actorId': 'player_1',
+                'fromActorId': 'player_1',
+                'toActorId': 'player_2',
+                'currency': 'gp',
+                'amount': 3,
+                'visible': True,
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    assert validation['rejected'] == []
+    assert [entry['change']['type'] for entry in validation['accepted']] == ['currency.remove', 'currency.add']
+    assert result['nextState']['playerCharacters'][0]['inventory']['currency']['gp'] == 2
+    assert result['nextState']['playerCharacters'][1]['inventory']['currency']['gp'] == 4
+
+
+def test_currency_transfer_insufficient_funds_rejects_without_partial_add():
+    state = _two_player_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'transfer_too_much',
+                'type': 'currency.transfer',
+                'actorId': 'player_1',
+                'fromActorId': 'player_1',
+                'toActorId': 'player_2',
+                'currency': 'gp',
+                'amount': 10,
+                'visible': True,
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    assert validation['accepted'] == []
+    assert 'Insufficient gp' in validation['rejected'][0]['reason']
+    assert result['appliedChanges'] == []
+    assert result['nextState']['playerCharacters'][0]['inventory']['currency']['gp'] == 5
+    assert result['nextState']['playerCharacters'][1]['inventory']['currency']['gp'] == 1
+
+
 def test_post_dm_extract_loot(app):
     with app.app_context():
         result = extract_post_dm_outcomes(
@@ -337,6 +464,32 @@ def test_post_dm_does_not_extract_pending_roll_prompt_as_loot(app):
         )
 
     assert result['proposedChanges'] == []
+
+
+def test_post_dm_heuristic_ignores_metaphorical_non_mechanical_phrases(app):
+    phrases = [
+        'You find your courage.',
+        'You take a breath.',
+        'You drop your guard.',
+        'You gain confidence.',
+        'You take cover.',
+        'You lose focus.',
+        'You spend a moment looking around.',
+    ]
+
+    with app.app_context():
+        for phrase in phrases:
+            result = extract_post_dm_outcomes(
+                state_before_dm={},
+                player_message='I steady myself.',
+                validated_actions={},
+                already_applied_changes=[],
+                dm_response=phrase,
+                recent_timeline=[],
+                actor_id='player_1',
+                turn_id=111,
+            )
+            assert result['proposedChanges'] == [], phrase
 
 
 def test_post_dm_extracts_confirmed_pickup_as_loot(app):
@@ -493,6 +646,96 @@ def test_invalid_post_dm_helper_response_uses_fallback(app, monkeypatch):
     assert result['debug']['fallbackReason'] == 'helper_json_invalid'
 
 
+def test_post_dm_helper_unsupported_change_type_does_not_apply_or_fallback(app, monkeypatch):
+    class FakeProvider:
+        def generate(self, _request):
+            return ProviderResponse(
+                text='{"proposedChanges":[{"type":"quest.add","actorId":"player_1","name":"Find the moon"}],"uncertainChanges":[]}',
+                provider='fake',
+                model='fake-helper',
+            )
+
+    monkeypatch.setattr(post_extractor_module, 'get_helper_provider', lambda: FakeProvider())
+
+    with app.app_context():
+        app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
+        result = extract_post_dm_outcomes(
+            state_before_dm={},
+            player_message='I pick up the stick',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='You pick up the stick.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=31,
+        )
+
+    assert result['proposedChanges'] == []
+    assert result['debug']['source'] == 'helper'
+    assert result['debug']['fallbackRan'] is False
+
+
+def test_post_dm_helper_missing_required_fields_does_not_apply_or_fallback(app, monkeypatch):
+    class FakeProvider:
+        def generate(self, _request):
+            return ProviderResponse(
+                text='{"proposedChanges":[{"type":"currency.add","actorId":"player_1","currency":"gp"}],"uncertainChanges":[]}',
+                provider='fake',
+                model='fake-helper',
+            )
+
+    monkeypatch.setattr(post_extractor_module, 'get_helper_provider', lambda: FakeProvider())
+
+    with app.app_context():
+        app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
+        result = extract_post_dm_outcomes(
+            state_before_dm={},
+            player_message='I search the pouch',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='You find 5 gold.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=32,
+        )
+
+    assert result['proposedChanges'] == []
+    assert result['debug']['source'] == 'helper'
+    assert result['debug']['fallbackRan'] is False
+
+
+def test_post_dm_helper_inventory_remove_missing_quantity_does_not_apply_or_fallback(app, monkeypatch):
+    class FakeProvider:
+        def generate(self, _request):
+            return ProviderResponse(
+                text=(
+                    '{"proposedChanges":[{"type":"inventory.remove","actorId":"player_1",'
+                    '"itemName":"Wedged Stick"}],"uncertainChanges":[]}'
+                ),
+                provider='fake',
+                model='fake-helper',
+            )
+
+    monkeypatch.setattr(post_extractor_module, 'get_helper_provider', lambda: FakeProvider())
+
+    with app.app_context():
+        app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
+        result = extract_post_dm_outcomes(
+            state_before_dm={},
+            player_message='I drop the stick',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='You drop the Wedged Stick.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=33,
+        )
+
+    assert result['proposedChanges'] == []
+    assert result['debug']['source'] == 'helper'
+    assert result['debug']['fallbackRan'] is False
+
+
 def test_post_dm_pipeline_skips_extraction_for_pending_roll_turn(app):
     ids = seed_world_campaign_player_session(app)
     dm_response = (
@@ -569,6 +812,202 @@ def test_post_dm_pipeline_skips_extraction_for_pending_roll_turn(app):
         assert TurnEvent.query.filter_by(turn_id=turn.turn_id, event_type='state_update').count() == 0
 
 
+def test_canon_patch_credits_state_pipeline_character_changes_without_double_apply(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        player = db.session.get(Player, ids['player_id'])
+        session_obj = db.session.get(Session, ids['session_id'])
+        assert campaign is not None
+        assert player is not None
+        assert session_obj is not None
+        player.stats = safe_json_dumps(
+            {
+                'current_hp': 17,
+                'hp_current': 17,
+                'max_hp': 20,
+                'hp_max': 20,
+                'copper': 12,
+            },
+            {},
+        )
+        turn = DmTurn(
+            session_id=session_obj.session_id,
+            campaign_id=campaign.campaign_id,
+            player_id=player.player_id,
+            player_input='I drink my potion and search the pouch.',
+            dm_output='You drink the potion. Restore 7 HP. You gain 12 copper pieces.',
+            status='completed',
+            metadata_json=safe_json_dumps(
+                {
+                    'immediate_state_changes_applied': {
+                        'inventory_changes_applied': [],
+                        'character_state_changes_applied': [
+                            {'player_id': player.player_id, 'change_type': 'health.heal', 'hp_delta': 7},
+                            {
+                                'player_id': player.player_id,
+                                'change_type': 'currency.add',
+                                'currency_delta': {'copper': 12},
+                            },
+                        ],
+                    }
+                },
+                {},
+            ),
+        )
+        db.session.add(turn)
+        db.session.commit()
+
+        applied = apply_canon_patch(
+            turn=turn,
+            campaign=campaign,
+            patch={'entities': [], 'facts': [], 'threads': [], 'inventory_changes': [], 'projection': {}},
+            extractor_model='test',
+        )
+        db.session.commit()
+
+        refreshed = db.session.get(Player, ids['player_id'])
+        stats = safe_json_loads(refreshed.stats, {})
+        assert stats['current_hp'] == 17
+        assert stats['copper'] == 12
+        assert all(change.get('already_applied') for change in applied['character_state_changes_applied'])
+
+
+def test_canon_patch_skips_state_pipeline_managed_state_domains(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        player = db.session.get(Player, ids['player_id'])
+        session_obj = db.session.get(Session, ids['session_id'])
+        assert campaign is not None
+        assert player is not None
+        assert session_obj is not None
+        player.inventory = safe_json_dumps([], [])
+        player.stats = safe_json_dumps(
+            {
+                'current_hp': 5,
+                'hp_current': 5,
+                'max_hp': 10,
+                'hp_max': 10,
+                'copper': 0,
+            },
+            {},
+        )
+        turn = DmTurn(
+            session_id=session_obj.session_id,
+            campaign_id=campaign.campaign_id,
+            player_id=player.player_id,
+            player_input='I grab it.',
+            dm_output='You grab it. Restore 3 HP. You gain 10 copper pieces.',
+            status='completed',
+            metadata_json=safe_json_dumps(
+                {
+                    'state_pipeline': {
+                        'managedDomains': ['inventory', 'currency', 'health'],
+                    },
+                    'immediate_state_changes_applied': {
+                        'inventory_changes_applied': [],
+                        'character_state_changes_applied': [],
+                    },
+                },
+                {},
+            ),
+        )
+        db.session.add(turn)
+        db.session.commit()
+
+        applied = apply_canon_patch(
+            turn=turn,
+            campaign=campaign,
+            patch={
+                'entities': [],
+                'facts': [],
+                'threads': [],
+                'inventory_changes': [{'action': 'acquire', 'item_name': 'it', 'quantity': 1}],
+                'projection': {},
+            },
+            extractor_model='test',
+        )
+        db.session.commit()
+
+        refreshed = db.session.get(Player, ids['player_id'])
+        stats = safe_json_loads(refreshed.stats, {})
+        assert safe_json_loads(refreshed.inventory, []) == []
+        assert stats['current_hp'] == 5
+        assert stats['copper'] == 0
+        assert applied['inventory_changes_applied'] == []
+        assert applied['character_state_changes_applied'] == []
+
+
+def test_post_dm_pipeline_retry_does_not_duplicate_item_hp_or_currency(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        player = db.session.get(Player, ids['player_id'])
+        session_obj = db.session.get(Session, ids['session_id'])
+        assert campaign is not None
+        assert player is not None
+        assert session_obj is not None
+        actor_id = f'player_{player.player_id}'
+        state = _state(items=[], currency={'pp': 0, 'gp': 0, 'ep': 0, 'sp': 0, 'cp': 0}, hp_current=10, hp_max=20)
+        state['playerCharacters'][0]['id'] = actor_id
+        state['playerCharacters'][0]['playerId'] = player.player_id
+        session_obj.state_snapshot = safe_json_dumps(state, {})
+        player.inventory = safe_json_dumps([], [])
+        player.stats = safe_json_dumps({'current_hp': 10, 'hp_current': 10, 'max_hp': 20, 'hp_max': 20}, {})
+        turn = DmTurn(
+            session_id=session_obj.session_id,
+            campaign_id=campaign.campaign_id,
+            player_id=player.player_id,
+            player_input='I search the goblin.',
+            dm_output='You find a rusted key and 12 copper pieces. Restore 3 HP.',
+            status='completed',
+            metadata_json=safe_json_dumps(
+                {
+                    STATE_PIPELINE_METADATA_KEY: {
+                        'version': STATE_PIPELINE_VERSION,
+                        'actorId': actor_id,
+                        'stateBeforeDm': state,
+                        'preDmValidation': {'validatedActions': [], 'immediateChanges': []},
+                        'immediateValidation': {'accepted': [], 'rejected': [], 'modified': []},
+                        'immediateAppliedChanges': [],
+                    }
+                },
+                {},
+            ),
+        )
+        db.session.add(turn)
+        db.session.commit()
+
+        first = post_dm_pipeline(
+            turn=turn,
+            session_obj=session_obj,
+            campaign=campaign,
+            player=player,
+            dm_response_text=turn.dm_output,
+        )
+        db.session.commit()
+        second = post_dm_pipeline(
+            turn=turn,
+            session_obj=session_obj,
+            campaign=campaign,
+            player=player,
+            dm_response_text=turn.dm_output,
+        )
+        db.session.commit()
+
+        refreshed_player = db.session.get(Player, ids['player_id'])
+        inventory = safe_json_loads(refreshed_player.inventory, [])
+        stats = safe_json_loads(refreshed_player.stats, {})
+        assert len([item for item in inventory if item.get('name') == 'rusted key']) == 1
+        assert stats['copper'] == 12
+        assert stats['current_hp'] == 13
+        assert len(first['postAppliedChanges']) == len(second['postAppliedChanges'])
+
+
 def test_validate_state_changes_does_not_treat_new_turn_fallback_id_as_duplicate():
     state = _state(items=[])
     state['stateChangeLedger'] = [{'id': 'post_chg_001', 'type': 'inventory.remove', 'source': 'post_dm'}]
@@ -601,7 +1040,7 @@ def test_validate_inventory_add_accepts_nested_item_quantity():
                 {
                     'type': 'inventory.add',
                     'actorId': 'player_1',
-                    'item': {'name': 'Stick', 'quantity': 1, 'type': 'misc'},
+                    'item': {'name': 'Stick', 'quantity': 1, 'weight': 0.5, 'type': 'misc'},
                 }
             ]
         },
@@ -612,7 +1051,76 @@ def test_validate_inventory_add_accepts_nested_item_quantity():
     result = apply_state_changes(state, validated_changes_for_application(validation))
 
     assert validation['accepted'][0]['change']['quantity'] == 1
-    assert result['nextState']['playerCharacters'][0]['inventory']['items'][0]['name'] == 'Stick'
+    item = result['nextState']['playerCharacters'][0]['inventory']['items'][0]
+    assert item['name'] == 'Stick'
+    assert item['weight'] == 0.5
+
+
+def test_post_dm_inventory_remove_requires_helper_quantity():
+    normalized = normalize_post_extraction(
+        {
+            'proposedChanges': [
+                {
+                    'type': 'inventory.remove',
+                    'actorId': 'player_1',
+                    'itemName': 'Wedged Stick',
+                }
+            ]
+        },
+        fallback_actor_id='player_1',
+    )
+
+    assert normalized['proposedChanges'] == []
+
+
+def test_post_dm_inventory_remove_with_explicit_quantity_applies():
+    state = _state(items=[_item('Wedged Stick', item_id='stick_1', quantity=1)])
+    normalized = normalize_post_extraction(
+        {
+            'proposedChanges': [
+                {
+                    'type': 'inventory.remove',
+                    'actorId': 'player_1',
+                    'itemName': 'Wedged Stick',
+                    'quantity': 1,
+                }
+            ]
+        },
+        fallback_actor_id='player_1',
+    )
+
+    validation = validate_state_changes(state=state, changes=normalized['proposedChanges'])
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    assert normalized['proposedChanges'][0]['quantity'] == 1
+    assert validation['rejected'] == []
+    assert validation['accepted'][0]['change']['itemId'] == 'stick_1'
+    assert result['nextState']['playerCharacters'][0]['inventory']['items'] == []
+
+
+def test_inventory_add_accepts_helper_weight_alias():
+    state = _state()
+    normalized = normalize_post_extraction(
+        {
+            'proposedChanges': [
+                {
+                    'type': 'inventory.add',
+                    'actorId': 'player_1',
+                    'item': {'name': 'Sandstone Chunk', 'quantity': 1, 'weightLbs': '4 lbs'},
+                }
+            ]
+        },
+        fallback_actor_id='player_1',
+    )
+
+    validation = validate_state_changes(state=state, changes=normalized['proposedChanges'])
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    item = result['nextState']['playerCharacters'][0]['inventory']['items'][0]
+    assert validation['rejected'] == []
+    assert normalized['proposedChanges'][0]['item']['weight'] == 4
+    assert item['name'] == 'Sandstone Chunk'
+    assert item['weight'] == 4
 
 
 def test_reject_duplicate_state_change_id():

@@ -21,6 +21,8 @@ def _amount(change: dict[str, Any], key: str = 'amount') -> int:
 def _change_message(change: dict[str, Any], *, status: str, reason: str | None = None) -> str:
     change_type = _change_type(change)
     quantity = max(1, int_or_default(change.get('quantity'), default=1))
+    if change.get('transferId') and str(change.get('reason') or '').strip():
+        return str(change.get('reason')).strip()
     if change_type == 'inventory.add':
         return f"Added {_item_name(change)} x{quantity}."
     if change_type == 'inventory.remove':
@@ -134,4 +136,3 @@ def state_log_message(state_log: dict[str, Any]) -> str:
     if not lines:
         return ''
     return 'State updated:\n' + '\n'.join(f'- {line}' for line in lines)
-
