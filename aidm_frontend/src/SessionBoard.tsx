@@ -16,7 +16,7 @@ import {
   turnNumber,
   turnPersistenceLabel,
 } from './gameSelectors'
-import type { Campaign, Player, SessionState, SessionSummary, TimelineEntry } from './types'
+import type { Campaign, ClarificationRequest, Player, SessionState, SessionSummary, TimelineEntry } from './types'
 
 export type MainTab = 'turns' | 'dm' | 'notes'
 
@@ -70,6 +70,8 @@ type SessionBoardProps = {
   sessionState: SessionState | null
   campaign: Campaign | null
   canonFacts: CanonFact[]
+  clarificationRequest: ClarificationRequest | null
+  resolveClarification: (selectedItemId: string) => void
   actionComposerProps: ActionComposerProps
 }
 
@@ -133,6 +135,8 @@ export function SessionBoard({
   sessionState,
   campaign,
   canonFacts,
+  clarificationRequest,
+  resolveClarification,
   actionComposerProps,
 }: SessionBoardProps) {
   const loading = workspaceLoading || sessionLoading
@@ -417,6 +421,27 @@ export function SessionBoard({
             ) : (
               <p>No memory snippets recorded yet.</p>
             )}
+          </div>
+        </section>
+      ) : null}
+
+      {clarificationRequest ? (
+        <section className="clarification-panel" aria-live="polite">
+          <div>
+            <strong>{clarificationRequest.prompt}</strong>
+            <span>{clarificationRequest.originalPlayerMessage}</span>
+          </div>
+          <div className="clarification-options">
+            {clarificationRequest.options.map((option) => (
+              <button
+                type="button"
+                key={option.itemId}
+                onClick={() => resolveClarification(option.itemId)}
+              >
+                <span>{option.label}</span>
+                {option.description ? <small>{option.description}</small> : null}
+              </button>
+            ))}
           </div>
         </section>
       ) : null}

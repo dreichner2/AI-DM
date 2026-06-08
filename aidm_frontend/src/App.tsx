@@ -65,6 +65,7 @@ import type {
   ActivePlayer,
   BetaSummary,
   Campaign,
+  ClarificationRequest,
   Health,
   LlmRuntimeConfig,
   Player,
@@ -351,6 +352,7 @@ function App() {
   const [optimisticEntries, setOptimisticEntries] = useState<TimelineEntry[]>([])
   const [streamingTurn, setStreamingTurn] = useState<StreamingTurn | null>(null)
   const [turnStatuses, setTurnStatuses] = useState<Record<number, string>>({})
+  const [clarificationRequest, setClarificationRequest] = useState<ClarificationRequest | null>(null)
   const [mainTab, setMainTab] = useState<MainTab>('turns')
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('party')
   const [campaignFilter, setCampaignFilter] = useState('')
@@ -1885,11 +1887,13 @@ function App() {
     if (!selectedSessionId) {
       clearSessionData()
       setTurnStatuses({})
+      setClarificationRequest(null)
       return
     }
     setSessionLogCursor(null)
     setSessionLogHasMore(false)
     setTurnStatuses({})
+    setClarificationRequest(null)
     loadSessionData(selectedSessionId).then(clearAuthTokenErrors).catch((error: unknown) => {
       if (isUnauthorizedError(error)) {
         openAuthTokenPrompt()
@@ -1976,6 +1980,7 @@ function App() {
     setOptimisticEntries,
     setStreamingTurn,
     setTurnStatuses,
+    setClarificationRequest,
     spokenTextLengthRef,
     speakableStreamingTextRef,
     queueTtsNarrationRef,
@@ -1987,6 +1992,26 @@ function App() {
     lastSpokenTurnIdRef,
     lastSpokenTextRef,
   })
+
+  const resolveClarification = useCallback(
+    (selectedItemId: string) => {
+      if (!clarificationRequest || !selectedSessionId || !selectedPlayerId) return
+      const socket = socketRef.current
+      if (!socket) {
+        pushError('connection', 'Socket is not connected; reconnect before choosing an item.')
+        return
+      }
+      setSendPending(true)
+      socket.emit('resolve_clarification', {
+        session_id: selectedSessionId,
+        player_id: selectedPlayerId,
+        turn_id: clarificationRequest.turnId,
+        selected_item_id: selectedItemId,
+      })
+      setClarificationRequest(null)
+    },
+    [clarificationRequest, pushError, selectedPlayerId, selectedSessionId, socketRef],
+  )
 
   useEffect(() => {
     if (health?.status !== 'ok' || workspaceLoading || sessionLoading) return
@@ -2448,6 +2473,8 @@ function App() {
         sessionState={sessionState}
         campaign={campaign}
         canonFacts={canonFacts}
+        clarificationRequest={clarificationRequest}
+        resolveClarification={resolveClarification}
         actionComposerProps={{
           actionInputRef,
           actionText,

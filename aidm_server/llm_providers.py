@@ -831,3 +831,60 @@ def get_provider() -> BaseLLMProvider:
         )
 
     return DeterministicFallbackProvider()
+
+
+def get_helper_provider() -> BaseLLMProvider:
+    provider_name = str(_cfg('AIDM_HELPER_LLM_PROVIDER', 'deepseek')).strip().lower()
+    model_name = str(_cfg('AIDM_HELPER_LLM_MODEL', 'deepseek-v4-flash')).strip()
+    fallback_models = _cfg_list('AIDM_HELPER_LLM_FALLBACK_MODELS')
+    max_tokens = _int_env('AIDM_HELPER_LLM_MAX_TOKENS', 2048)
+    temperature = _float_env('AIDM_HELPER_LLM_TEMPERATURE', 0.1)
+    top_p = _float_env('AIDM_HELPER_LLM_TOP_P', 0.9)
+
+    if provider_name == 'deepseek':
+        default_read_timeout = _int_env('AIDM_HELPER_DEEPSEEK_TIMEOUT_SECONDS', 30)
+        connect_timeout, read_timeout = timeout_from_config(
+            'AIDM_HELPER_DEEPSEEK',
+            default_connect=5.0,
+            default_read=default_read_timeout,
+        )
+        return DeepSeekChatProvider(
+            model_name=model_name or 'deepseek-v4-flash',
+            api_key=_cfg(
+                'AIDM_HELPER_DEEPSEEK_API_KEY',
+                _cfg('AIDM_DEEPSEEK_API_KEY', os.getenv('DEEPSEEK_API_KEY')),
+            ),
+            base_url=str(_cfg('AIDM_HELPER_DEEPSEEK_BASE_URL', _cfg('AIDM_DEEPSEEK_BASE_URL', 'https://api.deepseek.com'))),
+            fallback_models=fallback_models,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            thinking_enabled=str(_cfg('AIDM_HELPER_DEEPSEEK_THINKING', 'false')).strip().lower() in {'1', 'true', 'yes', 'on'},
+            reasoning_effort=str(_cfg('AIDM_HELPER_DEEPSEEK_REASONING_EFFORT', 'low')),
+            timeout_seconds=int(read_timeout),
+            connect_timeout_seconds=connect_timeout,
+            read_timeout_seconds=read_timeout,
+        )
+
+    if provider_name in {'nvidia', 'kimi'}:
+        default_read_timeout = _int_env('AIDM_HELPER_NVIDIA_TIMEOUT_SECONDS', 30)
+        connect_timeout, read_timeout = timeout_from_config(
+            'AIDM_HELPER_NVIDIA',
+            default_connect=5.0,
+            default_read=default_read_timeout,
+        )
+        return NvidiaChatProvider(
+            model_name=model_name or DEFAULT_NVIDIA_MODEL,
+            api_key=_cfg('AIDM_HELPER_NVIDIA_API_KEY', _cfg('AIDM_NVIDIA_API_KEY', os.getenv('NVIDIA_API_KEY'))),
+            invoke_url=str(_cfg('AIDM_HELPER_NVIDIA_INVOKE_URL', _cfg('AIDM_NVIDIA_INVOKE_URL', 'https://integrate.api.nvidia.com/v1'))),
+            fallback_models=fallback_models,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            thinking_enabled=str(_cfg('AIDM_HELPER_NVIDIA_THINKING', 'false')).strip().lower() in {'1', 'true', 'yes', 'on'},
+            timeout_seconds=int(read_timeout),
+            connect_timeout_seconds=connect_timeout,
+            read_timeout_seconds=read_timeout,
+        )
+
+    return DeterministicFallbackProvider(model_name='state-helper-fallback-v1')

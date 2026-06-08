@@ -18,6 +18,11 @@ from aidm_server.character_state import (
 from aidm_server.canon_inventory import OWNED_ITEM_ACTIONS
 from aidm_server.database import db
 from aidm_server.emergent_memory import apply_immediate_state_changes, refresh_session_projection
+from aidm_server.game_state.orchestration.turn_pipeline import (
+    augment_rules_hint_with_state_packet,
+    post_dm_pipeline,
+    pre_dm_pipeline,
+)
 from aidm_server.llm import CONTEXT_VERSION, build_dm_context
 from aidm_server.logging_context import set_logging_context
 from aidm_server.models import Campaign, CampaignSegment, DmTurn, Player, Session, safe_json_dumps, safe_json_loads
@@ -73,6 +78,7 @@ class TurnCommand:
     manual_segment_ids: set[int]
     action_intent: dict | None = None
     client_message_id: str | None = None
+    state_pipeline_override: dict | None = None
 
 
 class TurnEngine:
@@ -699,6 +705,61 @@ class TurnEngine:
             )
             return
 
+        pre_pipeline_result: dict = {}
+        state_pipeline_started = time.perf_counter()
+        try:
+            pre_pipeline_result = pre_dm_pipeline(
+                turn=turn,
+                session_obj=session_obj,
+                campaign=campaign,
+                player=player,
+                player_message=command.user_input,
+                action_intent=command.action_intent,
+                selected_item_ids=(
+                    command.state_pipeline_override.get('selectedItemIds')
+                    if isinstance(command.state_pipeline_override, dict)
+                    else None
+                ),
+                declared_actions_override=(
+                    command.state_pipeline_override.get('declaredActions')
+                    if isinstance(command.state_pipeline_override, dict)
+                    else None
+                ),
+            )
+            db.session.commit()
+            self._record_phase_timing(
+                'state_pre_dm',
+                state_pipeline_started,
+                campaign_id=command.campaign_id,
+                session_id=command.session_id,
+            )
+        except Exception as exc:
+            db.session.rollback()
+            logger.warning('Pre-DM state pipeline failed: %s', str(exc))
+            telemetry_event(
+                'socket.state_pipeline.pre_dm_failed',
+                payload={'session_id': command.session_id, 'turn_id': turn.turn_id, 'error': str(exc)},
+                severity='warning',
+            )
+            rules_hint_payload['state_pipeline_warning'] = 'State validation failed; avoid committing inventory/HP/currency changes.'
+        else:
+            clarification_requests = pre_pipeline_result.get('clarificationRequests') or []
+            if clarification_requests:
+                self._emit_clarification_request(
+                    session_id=command.session_id,
+                    turn_id=turn.turn_id,
+                    player_id=command.player_id,
+                    player_message=command.user_input,
+                    clarification_requests=clarification_requests,
+                )
+                return
+            rules_hint_payload = augment_rules_hint_with_state_packet(
+                rules_hint_payload,
+                pre_pipeline_result.get('dmContextPacket') or {},
+            )
+            turn.rules_hint = safe_json_dumps(rules_hint_payload, {})
+            db.session.flush()
+
         triggered_segments = self._evaluate_segments(
             turn=turn,
             campaign=campaign,
@@ -786,6 +847,41 @@ class TurnEngine:
 
     def _emit_turn_status(self, session_id: int, turn_id: int | None, status: str, details: dict | None = None):
         self.socketio.emit('turn_status', turn_status_payload(session_id, turn_id, status, details), room=str(session_id))
+
+    def _emit_clarification_request(
+        self,
+        *,
+        session_id: int,
+        turn_id: int,
+        player_id: int,
+        player_message: str,
+        clarification_requests: list[dict],
+    ) -> None:
+        request_payload = {
+            'id': f'clarify_{turn_id}_001',
+            'turnId': turn_id,
+            'sessionId': session_id,
+            'playerId': player_id,
+            'type': 'item_resolution',
+            'prompt': clarification_requests[0].get('prompt') if clarification_requests else 'Which item do you use?',
+            'originalPlayerMessage': player_message,
+            'originalAction': clarification_requests[0].get('originalAction') if clarification_requests else {},
+            'options': clarification_requests[0].get('options') if clarification_requests else [],
+        }
+        turn_obj = db.session.get(DmTurn, turn_id)
+        if turn_obj:
+            metadata = safe_json_loads(turn_obj.metadata_json, {})
+            metadata = metadata if isinstance(metadata, dict) else {}
+            pipeline = metadata.get('state_pipeline') if isinstance(metadata.get('state_pipeline'), dict) else {}
+            pipeline['clarificationRequest'] = request_payload
+            metadata['state_pipeline'] = pipeline
+            turn_obj.metadata_json = safe_json_dumps(metadata, {})
+            turn_obj.status = 'awaiting_clarification'
+            turn_obj.outcome_status = 'resolved'
+            db.session.commit()
+        self.socketio.emit('clarification_required', request_payload, room=str(session_id))
+        self._emit_turn_status(session_id, turn_id, 'clarification_required', request_payload)
+        self.socketio.emit('session_log_update', session_log_update_payload(session_id, turn_id), room=str(session_id))
 
     @staticmethod
     def _record_phase_timing(
@@ -1348,55 +1444,86 @@ class TurnEngine:
             self._emit_turn_status(turn.session_id, turn.turn_id, 'saved', {'stage': 'dm_response'})
 
             immediate_state_summary: dict = {}
+            state_log: dict = {}
             if turn_obj and dm_response_text:
                 try:
-                    immediate_state_summary = apply_immediate_state_changes(turn_obj, campaign, dm_response_text)
+                    player_obj = db.session.get(Player, turn.player_id) if turn.player_id else None
+                    if not player_obj:
+                        raise RuntimeError('Turn player not found for state pipeline.')
+                    session_for_pipeline = db.session.get(Session, turn.session_id)
+                    if session_for_pipeline is None:
+                        raise RuntimeError('Turn session not found for state pipeline.')
+                    post_pipeline_result = post_dm_pipeline(
+                        turn=turn_obj,
+                        session_obj=session_for_pipeline,
+                        campaign=campaign,
+                        player=player_obj,
+                        dm_response_text=dm_response_text,
+                    )
+                    immediate_state_summary = post_pipeline_result.get('legacyImmediateSummary') or {}
+                    state_log = post_pipeline_result.get('stateLog') or {}
                     db.session.commit()
                 except Exception as exc:
                     db.session.rollback()
-                    logger.warning('Immediate character state application failed: %s', str(exc))
+                    logger.warning('State pipeline post-DM application failed: %s', str(exc))
                     telemetry_event(
-                        'socket.immediate_state_apply_failed',
+                        'socket.state_pipeline.post_dm_failed',
                         payload={'session_id': turn.session_id, 'turn_id': turn.turn_id, 'error': str(exc)},
                         severity='warning',
                     )
-                else:
-                    inventory_changes = immediate_state_summary.get('inventory_changes_applied') or []
-                    character_state_changes = immediate_state_summary.get('character_state_changes_applied') or []
-                    if inventory_changes or character_state_changes:
-                        already_applied_inventory = [
-                            {**change, 'already_applied': True}
-                            for change in inventory_changes
-                            if isinstance(change, dict)
-                        ]
-                        already_applied_character_state = [
-                            {**change, 'already_applied': True}
-                            for change in character_state_changes
-                            if isinstance(change, dict)
-                        ]
-                        self._emit_turn_status(
-                            turn.session_id,
-                            turn.turn_id,
-                            'state_applied',
-                            {
-                                'stage': 'dm_response',
-                                'player_id': turn.player_id,
-                                'inventory_changes_applied': inventory_changes,
-                                'character_state_changes_applied': character_state_changes,
-                            },
+                    try:
+                        turn_obj = db.session.get(DmTurn, turn.turn_id)
+                        if turn_obj:
+                            immediate_state_summary = apply_immediate_state_changes(turn_obj, campaign, dm_response_text)
+                            db.session.commit()
+                    except Exception as fallback_exc:
+                        db.session.rollback()
+                        logger.warning('Immediate character state application failed: %s', str(fallback_exc))
+                        telemetry_event(
+                            'socket.immediate_state_apply_failed',
+                            payload={'session_id': turn.session_id, 'turn_id': turn.turn_id, 'error': str(fallback_exc)},
+                            severity='warning',
                         )
-                        self._emit_turn_status(
-                            turn.session_id,
-                            turn.turn_id,
-                            'canon_applied',
-                            {
-                                'stage': 'state_applied',
-                                'player_id': turn.player_id,
-                                'state_applied': True,
-                                'inventory_changes_applied': already_applied_inventory,
-                                'character_state_changes_applied': already_applied_character_state,
-                            },
-                        )
+
+                inventory_changes = immediate_state_summary.get('inventory_changes_applied') or []
+                character_state_changes = immediate_state_summary.get('character_state_changes_applied') or []
+                state_log_lines = state_log.get('lines') if isinstance(state_log, dict) else []
+                if inventory_changes or character_state_changes or state_log_lines:
+                    already_applied_inventory = [
+                        {**change, 'already_applied': True}
+                        for change in inventory_changes
+                        if isinstance(change, dict)
+                    ]
+                    already_applied_character_state = [
+                        {**change, 'already_applied': True}
+                        for change in character_state_changes
+                        if isinstance(change, dict)
+                    ]
+                    self._emit_turn_status(
+                        turn.session_id,
+                        turn.turn_id,
+                        'state_applied',
+                        {
+                            'stage': 'dm_response',
+                            'player_id': turn.player_id,
+                            'inventory_changes_applied': inventory_changes,
+                            'character_state_changes_applied': character_state_changes,
+                            'state_log': state_log,
+                        },
+                    )
+                    self._emit_turn_status(
+                        turn.session_id,
+                        turn.turn_id,
+                        'canon_applied',
+                        {
+                            'stage': 'state_applied',
+                            'player_id': turn.player_id,
+                            'state_applied': True,
+                            'inventory_changes_applied': already_applied_inventory,
+                            'character_state_changes_applied': already_applied_character_state,
+                            'state_log': state_log,
+                        },
+                    )
 
             if turn_obj and (dm_response_text or triggered_segments):
                 canon_job = enqueue_canon_job(

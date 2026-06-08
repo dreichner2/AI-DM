@@ -143,3 +143,19 @@ export type StreamingTurn = {
   requiresRoll: boolean
   rulesHint: RulesHint
 }
+
+export type ClarificationRequest = {
+  id: string
+  turnId: number
+  sessionId: number
+  playerId: number
+  type: 'item_resolution'
+  prompt: string
+  originalPlayerMessage: string
+  originalAction: JsonRecord
+  options: Array<{
+    itemId: string
+    label: string
+    description?: string
+  }>
+}

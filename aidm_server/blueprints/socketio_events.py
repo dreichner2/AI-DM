@@ -8,6 +8,8 @@ from flask_socketio import emit, join_room, leave_room
 
 from aidm_server.llm import CONTEXT_VERSION, query_dm_function_stream
 from aidm_server.logging_context import clear_logging_context, set_logging_context
+from aidm_server.database import db
+from aidm_server.models import DmTurn, safe_json_loads
 from aidm_server.socket_contracts import socket_error_payload as socket_error, validate_send_message_payload
 from aidm_server.socket_runtime import SocketRuntime
 from aidm_server.socket_state import SocketState
@@ -407,6 +409,98 @@ def register_socketio_events(socketio):
                     manual_segment_ids=message_payload.manual_segment_ids,
                     action_intent=message_payload.action_intent,
                     client_message_id=message_payload.client_message_id,
+                )
+            )
+        finally:
+            clear_logging_context()
+
+    @socketio.on('resolve_clarification')
+    def handle_resolve_clarification(data):
+        _set_socket_context('resolve_clarification', data if isinstance(data, dict) else None)
+        try:
+            workspace_id = _socket_workspace_id(data_payload=data)
+            if not workspace_id:
+                emit('error', socket_error('unauthorized', 'Missing or invalid auth token.'))
+                telemetry_event('socket.resolve_clarification.unauthorized', payload={'sid': request.sid}, severity='warning')
+                return
+            if not isinstance(data, dict):
+                emit('error', socket_error('validation_error', 'Expected object payload for resolve_clarification.'))
+                return
+
+            session_id = coerce_int(data.get('session_id') or data.get('sessionId'))
+            player_id = coerce_int(data.get('player_id') or data.get('playerId'))
+            turn_id = coerce_int(data.get('turn_id') or data.get('turnId'))
+            selected_item_id = str(data.get('selected_item_id') or data.get('selectedItemId') or '').strip()
+            if not session_id or not player_id or not turn_id or not selected_item_id:
+                emit(
+                    'error',
+                    socket_error(
+                        'validation_error',
+                        'session_id, player_id, turn_id, and selected_item_id are required.',
+                    ),
+                )
+                return
+
+            connection_record = socket_state.connection(request.sid)
+            bound_session_id = coerce_int(connection_record.get('session_id')) if connection_record else None
+            bound_player_id = coerce_int(connection_record.get('player_id')) if connection_record else None
+            if bound_session_id != session_id or bound_player_id != player_id:
+                emit(
+                    'error',
+                    socket_error(
+                        'player_identity_mismatch',
+                        'This socket can only resolve clarification for the player and session it joined with.',
+                    ),
+                )
+                return
+
+            session_obj = workspace_session(session_id, workspace_id)
+            player = workspace_player(player_id, workspace_id)
+            turn = db.session.get(DmTurn, turn_id)
+            if not session_obj or not player or not turn or turn.session_id != session_id or turn.player_id != player_id:
+                emit('error', socket_error('clarification_not_found', 'Clarification turn not found.'))
+                return
+
+            metadata = safe_json_loads(turn.metadata_json, {})
+            pipeline = metadata.get('state_pipeline') if isinstance(metadata, dict) and isinstance(metadata.get('state_pipeline'), dict) else {}
+            request_payload = pipeline.get('clarificationRequest') if isinstance(pipeline.get('clarificationRequest'), dict) else {}
+            original_action = request_payload.get('originalAction') if isinstance(request_payload.get('originalAction'), dict) else None
+            if not original_action:
+                emit('error', socket_error('clarification_not_found', 'Clarification request metadata is missing.'))
+                return
+            valid_option_ids = {
+                str(option.get('itemId'))
+                for option in request_payload.get('options') or []
+                if isinstance(option, dict) and option.get('itemId')
+            }
+            if selected_item_id not in valid_option_ids:
+                emit('error', socket_error('clarification_invalid_selection', 'Selected item is not one of the clarification options.'))
+                return
+
+            engine = TurnEngine(
+                socketio=socketio,
+                emit_fn=emit,
+                stream_fn=query_dm_function_stream,
+                active_player_ids_fn=lambda session_id: [
+                    int(player['id']) for player in _active_player_payloads(session_id) if player.get('id')
+                ],
+            )
+            engine.process(
+                TurnCommand(
+                    sid=request.sid,
+                    session_id=session_id,
+                    campaign_id=session_obj.campaign_id,
+                    world_id=session_obj.campaign.world_id if session_obj.campaign else 0,
+                    player_id=player_id,
+                    user_input=turn.player_input,
+                    manual_segment_ids=set(),
+                    action_intent=metadata.get('action_intent') if isinstance(metadata, dict) else None,
+                    client_message_id=f'clarification-{turn_id}-{selected_item_id}',
+                    state_pipeline_override={
+                        'declaredActions': [original_action],
+                        'selectedItemIds': {str(original_action.get('id')): selected_item_id},
+                        'resolvedClarificationTurnId': turn_id,
+                    },
                 )
             )
         finally:

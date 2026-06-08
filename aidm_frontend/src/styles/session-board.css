@@ -467,6 +467,64 @@
   color: var(--orange);
 }
 
+.clarification-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px 18px;
+  border-top: 1px solid rgba(255, 176, 103, 0.24);
+  background: rgba(255, 176, 103, 0.07);
+}
+
+.clarification-panel strong,
+.clarification-panel span,
+.clarification-panel small {
+  display: block;
+}
+
+.clarification-panel strong {
+  color: var(--heading);
+  font-size: 0.88rem;
+}
+
+.clarification-panel > div > span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.clarification-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.clarification-options button {
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 176, 103, 0.32);
+  border-radius: 6px;
+  color: var(--heading);
+  background: rgba(255, 255, 255, 0.045);
+  text-align: left;
+  cursor: pointer;
+}
+
+.clarification-options button:hover {
+  border-color: rgba(255, 176, 103, 0.58);
+  background: rgba(255, 176, 103, 0.12);
+}
+
+.clarification-options button span {
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
+.clarification-options button small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
 .action-composer {
   padding: 12px 18px 28px;
   border-top: 1px solid var(--line);

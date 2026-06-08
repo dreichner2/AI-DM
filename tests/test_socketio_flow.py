@@ -10,6 +10,7 @@ from aidm_server.models import (
     Player,
     PlayerAction,
     Session,
+    SessionLogEntry,
     SessionState,
     StoryEntity,
     StoryThread,
@@ -244,6 +245,169 @@ def test_send_message_rejects_invalid_action_intent(app, socketio):
     error_payload = _event_payload(client.get_received(), 'error')
     assert error_payload['error_code'] == 'validation_error'
     assert 'roll.total' in error_payload['error']
+
+
+def test_turn_pipeline_missing_item_does_not_reach_dm_as_valid(app, socketio, app_runtime, monkeypatch):
+    socketio_module = app_runtime['modules']['socketio_events']
+    captured = {}
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player
+        captured['rules_hint'] = rules_hint
+        yield 'You reach for a longbow, but no longbow is in your gear.'
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        player.inventory = safe_json_dumps([], [])
+        db.session.commit()
+
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I shoot the goblin with my longbow.',
+        },
+    )
+    received = client.get_received()
+
+    assert _event_payload(received, 'dm_response_start') is not None
+    state_packet = captured['rules_hint']['state_pipeline']
+    assert state_packet['validatedActions'][0]['status'] == 'invalid'
+    assert 'longbow' in state_packet['validatedActions'][0]['summary'].lower()
+
+    with app.app_context():
+        turn = DmTurn.query.order_by(DmTurn.turn_id.desc()).first()
+        metadata = safe_json_loads(turn.metadata_json, {})
+        validation = metadata['state_pipeline']['preDmValidation']
+        assert validation['validatedActions'][0]['status'] == 'invalid'
+
+
+def test_turn_pipeline_consumes_potion_and_applies_healing(app, socketio, app_runtime, monkeypatch):
+    socketio_module = app_runtime['modules']['socketio_events']
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player, rules_hint
+        yield 'You drink the potion. Restore 7 HP.'
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        player.inventory = safe_json_dumps(
+            [
+                {
+                    'id': 'potion_1',
+                    'name': 'Minor Healing Potion',
+                    'quantity': 1,
+                    'type': 'consumable',
+                    'subtype': 'potion',
+                }
+            ],
+            [],
+        )
+        player.stats = safe_json_dumps({'current_hp': 10, 'hp_current': 10, 'max_hp': 20, 'hp_max': 20}, {})
+        db.session.commit()
+
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I drink my healing potion.',
+        },
+    )
+    received = client.get_received()
+
+    statuses = [event['args'][0]['status'] for event in received if event['name'] == 'turn_status']
+    assert 'state_applied' in statuses
+
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        assert safe_json_loads(player.inventory, []) == []
+        stats = safe_json_loads(player.stats, {})
+        assert stats['current_hp'] == 17
+        state_log_entry = SessionLogEntry.query.filter_by(session_id=ids['session_id'], entry_type='system').order_by(SessionLogEntry.id.desc()).first()
+        assert state_log_entry is not None
+        assert 'Minor Healing Potion' in state_log_entry.message
+        assert 'Restored 7 HP' in state_log_entry.message
+
+
+def test_attack_pipeline_pauses_and_resumes_for_item_clarification(app, socketio, app_runtime, monkeypatch):
+    socketio_module = app_runtime['modules']['socketio_events']
+    calls = []
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player
+        calls.append(rules_hint)
+        yield 'You swing the Greatsword in a heavy arc.'
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        player.inventory = safe_json_dumps(
+            [
+                {'id': 'great', 'name': 'Greatsword', 'quantity': 1, 'type': 'weapon', 'subtype': 'sword'},
+                {'id': 'long', 'name': 'Longsword', 'quantity': 1, 'type': 'weapon', 'subtype': 'sword'},
+            ],
+            [],
+        )
+        db.session.commit()
+
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I use my sword to swing at the enemy.',
+        },
+    )
+    first_received = client.get_received()
+    clarification = _event_payload(first_received, 'clarification_required')
+
+    assert clarification is not None
+    assert calls == []
+    assert [option['label'] for option in clarification['options']] == ['Greatsword', 'Longsword']
+
+    client.emit(
+        'resolve_clarification',
+        {
+            'session_id': ids['session_id'],
+            'player_id': ids['player_id'],
+            'turn_id': clarification['turnId'],
+            'selected_item_id': 'great',
+        },
+    )
+    second_received = client.get_received()
+
+    assert _event_payload(second_received, 'dm_response_start') is not None
+    assert calls[0]['state_pipeline']['validatedActions'][0]['resolvedItem']['itemName'] == 'Greatsword'
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        inventory = safe_json_loads(player.inventory, [])
+        greatsword = next(item for item in inventory if item['id'] == 'great')
+        assert greatsword['lastUsedAtTurn'] is not None
 
 
 def test_admin_message_requires_configured_admin_passcode(app, socketio):

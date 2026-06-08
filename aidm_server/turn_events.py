@@ -11,6 +11,7 @@ ROLL_RESOLVED_EVENT = 'roll_resolved'
 DM_RESPONSE_EVENT = 'dm_response'
 SEGMENT_TRIGGERED_EVENT = 'segment_triggered'
 CANON_APPLIED_EVENT = 'canon_applied'
+STATE_UPDATE_EVENT = 'state_update'
 SESSION_STARTED_EVENT = 'session_started'
 SESSION_ENDED_EVENT = 'session_ended'
 SESSION_RECAP_EVENT = 'session_recap'
@@ -133,6 +134,22 @@ def _project_turn_event(event: TurnEvent, payload: dict[str, Any], *, timestamp=
                 event,
                 f'**Segment Triggered**: {title}',
                 'dm',
+                payload.get('metadata', {}),
+                timestamp=timestamp,
+            )
+        )
+        counts['session_log_entries'] += 1
+        return counts
+
+    if event.event_type == STATE_UPDATE_EVENT:
+        message = str(payload.get('message') or '').strip()
+        if not message:
+            return counts
+        db.session.add(
+            _log_entry(
+                event,
+                message,
+                'system',
                 payload.get('metadata', {}),
                 timestamp=timestamp,
             )

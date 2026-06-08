@@ -333,7 +333,8 @@ function stripSpeakerPrefix(message: string, speaker: string) {
 }
 
 export function timelineFromLog(entry: SessionLogEntry): TimelineEntry {
-  let role: TimelineRole = entry.entry_type === 'player' ? 'player' : 'dm'
+  let role: TimelineRole =
+    entry.entry_type === 'player' ? 'player' : entry.entry_type === 'system' ? 'system' : 'dm'
   let speaker = role === 'player' ? 'Player' : 'DM'
   let text = entry.message
 

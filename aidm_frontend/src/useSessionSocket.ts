@@ -9,6 +9,7 @@ import { ngrokBrowserWarningBypassHeaders, normalizeBaseUrl } from './api'
 import { stringValue } from './gameSelectors'
 import type {
   ActivePlayer,
+  ClarificationRequest,
   JsonRecord,
   RulesHint,
   SocketErrorPayload,
@@ -67,6 +68,7 @@ type UseSessionSocketOptions = {
   setOptimisticEntries: Dispatch<SetStateAction<TimelineEntry[]>>
   setStreamingTurn: Dispatch<SetStateAction<StreamingTurn | null>>
   setTurnStatuses: Dispatch<SetStateAction<Record<number, string>>>
+  setClarificationRequest: Dispatch<SetStateAction<ClarificationRequest | null>>
   spokenTextLengthRef: MutableRefObject<number>
   speakableStreamingTextRef: MutableRefObject<string>
   queueTtsNarrationRef: MutableRefObject<((text: string) => void) | null>
@@ -147,6 +149,7 @@ export function useSessionSocket({
   setOptimisticEntries,
   setStreamingTurn,
   setTurnStatuses,
+  setClarificationRequest,
   spokenTextLengthRef,
   speakableStreamingTextRef,
   queueTtsNarrationRef,
@@ -367,6 +370,7 @@ export function useSessionSocket({
           .then(() => {
             setOptimisticEntries([])
             setStreamingTurn(null)
+            setClarificationRequest(null)
           })
           .catch((error: unknown) => {
             pushError('workspace', `Log refresh failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -395,8 +399,16 @@ export function useSessionSocket({
       }))
     })
 
+    socket.on('clarification_required', (payload: ClarificationRequest) => {
+      if (payload.sessionId !== selectedSessionId || payload.playerId !== selectedPlayerId) return
+      setSendPending(false)
+      setStreamingTurn(null)
+      setClarificationRequest(payload)
+    })
+
     socket.on('error', (payload: SocketErrorPayload) => {
       setSendPending(false)
+      setClarificationRequest(null)
       pushError('connection', socketMessage(payload))
     })
 
@@ -435,6 +447,7 @@ export function useSessionSocket({
     selectedSessionId,
     setActivePlayers,
     setOptimisticEntries,
+    setClarificationRequest,
     setSendPending,
     setSocketStatus,
     setStreamingTurn,
