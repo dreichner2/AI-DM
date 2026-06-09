@@ -454,6 +454,22 @@
     grid-template-columns: 1fr;
   }
 
+  .turn-control-strip,
+  .queued-action-strip {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 7px 9px;
+  }
+
+  .turn-control-actions {
+    flex-wrap: wrap;
+  }
+
+  .turn-control-actions select {
+    flex: 1 1 140px;
+    max-width: none;
+  }
+
   .input-action-row {
     align-self: auto;
     justify-content: flex-end;
@@ -469,6 +485,33 @@
   }
 
   .dialog-grid.two {
+    grid-template-columns: 1fr;
+  }
+
+  .race-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .class-quick-grid,
+  .class-card-grid,
+  .class-subclass-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .gender-portrait-picker,
+  .race-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .custom-class-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .custom-race-review-head {
+    display: grid;
+  }
+
+  .custom-race-edit-grid {
     grid-template-columns: 1fr;
   }
 
@@ -493,5 +536,31 @@
     right: 10px;
     bottom: 10px;
     min-width: 118px;
+  }
+}
+
+@media (max-width: 560px) {
+  .modal-backdrop,
+  .race-details-backdrop {
+    padding: 12px;
+  }
+
+  .race-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .class-quick-grid,
+  .class-card-grid,
+  .class-subclass-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .class-selector-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .class-selector-heading strong {
+    max-width: 100%;
   }
 }

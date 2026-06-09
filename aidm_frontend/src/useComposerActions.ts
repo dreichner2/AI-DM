@@ -8,6 +8,7 @@ import {
   createClientMessageId,
   diceRollMessage,
   hasReservedAdminPrefix,
+  interactionTargetId,
   normalizeDie,
   parseRollModifier,
   resolveRoll,
@@ -23,7 +24,70 @@ import {
   type RollResult,
 } from './gameActions'
 import type { PendingRollOption } from './gameSelectors'
-import type { ActivePlayer, Campaign, Player, StreamingTurn, TimelineEntry } from './types'
+import {
+  canSubmitWithTurnControl,
+  playerHasTurn,
+  turnControlBlockMessage,
+  turnControlStatusLabel,
+} from './turnControl'
+import type { ActivePlayer, Campaign, Player, SessionState, StreamingTurn, TimelineEntry, TurnControl } from './types'
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function cleanString(value: unknown, fallback = '') {
+  if (typeof value === 'string' && value.trim()) return value.trim()
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  return fallback
+}
+
+type SceneNpcTargetEntry = {
+  target: InteractionTarget
+  index: number
+  activeIndex: number
+  lastSeenTurn: number
+}
+
+function sceneNpcTargets(sessionState: SessionState | null): InteractionTarget[] {
+  const snapshot = isRecord(sessionState?.state_snapshot) ? sessionState.state_snapshot : {}
+  const scene = isRecord(snapshot.currentScene) ? snapshot.currentScene : {}
+  const sceneLocationId = cleanString(scene.locationId)
+  const activeNpcIds = Array.isArray(scene.activeNpcIds)
+    ? scene.activeNpcIds.map((value) => cleanString(value)).filter(Boolean)
+    : []
+  const records = [
+    ...(Array.isArray(snapshot.knownNpcs) ? snapshot.knownNpcs : []),
+    ...(Array.isArray(snapshot.partyNpcs) ? snapshot.partyNpcs : []),
+  ].filter(isRecord)
+
+  return records
+    .map<SceneNpcTargetEntry | null>((npc, index) => {
+      const npcId = cleanString(npc.id ?? npc.npcId)
+      const npcName = cleanString(npc.name)
+      const locationId = cleanString(npc.locationId)
+      const activeIndex = activeNpcIds.indexOf(npcId)
+      const isActive = activeIndex >= 0
+      if (!npcId || !npcName) return null
+      if (activeNpcIds.length && !isActive) return null
+      if (!activeNpcIds.length && locationId && sceneLocationId && locationId !== sceneLocationId) return null
+      return {
+        target: {
+          kind: 'npc' as const,
+          npc_id: npcId,
+          character_name: npcName,
+          player_name: cleanString(npc.role) || cleanString(npc.disposition, 'Scene NPC'),
+          active: true,
+        },
+        index,
+        activeIndex: isActive ? activeIndex : Number.MAX_SAFE_INTEGER,
+        lastSeenTurn: Number(cleanString(npc.lastSeenTurn, '0')) || 0,
+      }
+    })
+    .filter((entry): entry is SceneNpcTargetEntry => Boolean(entry))
+    .sort((left, right) => left.activeIndex - right.activeIndex || right.lastSeenTurn - left.lastSeenTurn || left.index - right.index)
+    .map((entry) => entry.target)
+}
 
 type DiceRollState = {
   die: string
@@ -42,7 +106,7 @@ type UseComposerActionsOptions = {
   campaign: Campaign | null
   itemOptions: ItemOption[]
   pendingRollOptions: PendingRollOption[]
-  players: Player[]
+  sessionState: SessionState | null
   selectedCampaignId: number | null
   selectedPlayer: Player | null
   selectedPlayerId: number | null
@@ -53,6 +117,7 @@ type UseComposerActionsOptions = {
   socketRef: RefObject<Socket | null>
   stopTtsAudio: () => void
   streamingTurn: StreamingTurn | null
+  turnControl: TurnControl
   pushError: (category: 'validation', message: string) => void
 }
 
@@ -62,7 +127,7 @@ export function useComposerActions({
   campaign,
   itemOptions,
   pendingRollOptions,
-  players,
+  sessionState,
   selectedCampaignId,
   selectedPlayer,
   selectedPlayerId,
@@ -73,6 +138,7 @@ export function useComposerActions({
   socketRef,
   stopTtsAudio,
   streamingTurn,
+  turnControl,
   pushError,
 }: UseComposerActionsOptions) {
   const [actionText, setActionText] = useState('')
@@ -92,6 +158,7 @@ export function useComposerActions({
   const [rawSelectedInteractionTargetId, setSelectedInteractionTargetId] = useState('')
   const [adminPasscode, setAdminPasscode] = useState(() => sessionStorage.getItem('aidm:adminPasscode') ?? '')
   const [adminToolsUnlocked, setAdminToolsUnlocked] = useState(false)
+  const [queuedActionText, setQueuedActionText] = useState('')
   const [diceRoll, setDiceRoll] = useState<DiceRollState | null>(null)
   const diceRollKeyRef = useRef(0)
   const typingStatusRef = useRef(false)
@@ -167,6 +234,7 @@ export function useComposerActions({
 
   const updateActionText = (nextText: string) => {
     setActionText(nextText)
+    setQueuedActionText((current) => (current && current !== nextText ? '' : current))
     if (nextText.trim()) {
       emitTypingStatus(true)
       scheduleTypingIdle()
@@ -185,31 +253,27 @@ export function useComposerActions({
   const itemIntentName = selectedInventoryActionRequiresItem
     ? selectedItem?.name ?? itemDraftName
     : itemDraftName
-  const activePlayerIds = useMemo(
-    () => new Set(activePlayers.map((player) => player.id)),
-    [activePlayers],
-  )
-  const interactionTargets = useMemo<InteractionTarget[]>(
-    () =>
-      players
-        .filter((player) => player.player_id !== selectedPlayerId)
-        .map((player) => ({
-          player_id: player.player_id,
-          character_name: player.character_name || player.name || `Player ${player.player_id}`,
-          player_name: player.name || 'Campaign player',
-          active: activePlayerIds.has(player.player_id),
-        })),
-    [activePlayerIds, players, selectedPlayerId],
-  )
+  const interactionTargets = useMemo<InteractionTarget[]>(() => {
+    const playerTargets = activePlayers
+      .filter((player) => player.id !== selectedPlayerId)
+      .map((player) => ({
+        kind: 'player' as const,
+        player_id: player.id,
+        character_name: player.character_name || player.name || `Player ${player.id}`,
+        player_name: player.name || 'Active player',
+        active: true,
+      }))
+    return [...playerTargets, ...sceneNpcTargets(sessionState)]
+  }, [activePlayers, selectedPlayerId, sessionState])
   const selectedInteractionTargetId =
     rawSelectedInteractionTargetId &&
-    interactionTargets.some((target) => String(target.player_id) === rawSelectedInteractionTargetId)
+    interactionTargets.some((target) => interactionTargetId(target) === rawSelectedInteractionTargetId)
       ? rawSelectedInteractionTargetId
-      : interactionTargets[0]?.player_id
-        ? String(interactionTargets[0].player_id)
+      : interactionTargets[0]
+        ? interactionTargetId(interactionTargets[0])
         : ''
   const selectedInteractionTarget =
-    interactionTargets.find((target) => String(target.player_id) === selectedInteractionTargetId) ?? null
+    interactionTargets.find((target) => interactionTargetId(target) === selectedInteractionTargetId) ?? null
   const rollTargetPendingTurnId =
     rawRollTargetPendingTurnId &&
     pendingRollOptions.some((option) => String(option.turnId) === rawRollTargetPendingTurnId)
@@ -287,6 +351,14 @@ export function useComposerActions({
       pushError('validation', 'Admin-prefixed messages require authenticated Admin mode.')
       return
     }
+    const hasPendingRoll =
+      actionIntent.kind === 'roll' &&
+      (pendingRollOptions.length > 0 || Boolean(actionIntent.roll?.target_pending_turn_id))
+    if (!canSubmitWithTurnControl(turnControl, selectedPlayerId, actionIntent.kind, hasPendingRoll)) {
+      setQueuedActionText(message)
+      pushError('validation', turnControlBlockMessage(turnControl))
+      return
+    }
 
     stopTtsAudio()
     setSendPending(true)
@@ -316,6 +388,7 @@ export function useComposerActions({
       ...(actionIntent.kind === 'admin' ? { admin_passcode: trimmedAdminPasscode } : {}),
     })
     setActionText('')
+    setQueuedActionText((current) => (current === message ? '' : current))
     emitTypingStatus(false)
   }
 
@@ -550,6 +623,10 @@ export function useComposerActions({
     startDiceRoll,
     submitAction,
     toggleAdminTools,
+    queuedActionText,
+    clearQueuedAction: () => setQueuedActionText(''),
+    selectedPlayerHasTurn: playerHasTurn(turnControl, selectedPlayerId),
+    turnControlStatusLabel: turnControlStatusLabel(turnControl),
     updateSelectedDie,
   }
 }

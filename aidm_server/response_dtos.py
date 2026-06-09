@@ -10,6 +10,7 @@ from sqlalchemy import func, or_
 
 from aidm_server.canon_inventory import inventory_payload
 from aidm_server.database import db
+from aidm_server.auth import account_display_name
 from aidm_server.models import (
     Campaign,
     CampaignSegment,
@@ -24,6 +25,7 @@ from aidm_server.models import (
     safe_json_loads,
 )
 from aidm_server.profile_icons import profile_icon_src_for_character
+from aidm_server.race_system import profile_race_from_selection, race_selection_from_json
 
 ACTIVE_STATUS = 'active'
 ARCHIVED_STATUS = 'archived'
@@ -357,15 +359,22 @@ def structured_payload(raw_value):
 
 
 def player_summary_payload(player: Player) -> dict:
+    race_selection = race_selection_from_json(player.race_selection, player.race)
+    profile_race = profile_race_from_selection(race_selection, player.race)
+    account = player.account
+    player_name = account_display_name(account) if account else player.name
     return {
         'player_id': player.player_id,
         'workspace_id': player.workspace_id,
+        'account_id': player.account_id,
+        'username': account.username if account else None,
         'campaign_id': player.campaign_id,
-        'name': player.name,
+        'name': player_name,
         'character_name': player.character_name,
         'race': player.race,
+        'race_selection': race_selection,
         'sex': player.sex,
-        'profile_image': profile_icon_src_for_character(player.race, player.sex),
+        'profile_image': profile_icon_src_for_character(profile_race, player.sex),
         'class_': player.class_,
         'char_class': player.class_,
         'level': player.level,

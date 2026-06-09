@@ -11,6 +11,8 @@ PHASE_1_STATE_CHANGE_TYPES = {
     'currency.transfer',
     'health.heal',
     'health.damage',
+    'race_ability.mark_used',
+    'race_ability.refresh',
     'xp.add',
     'xp.remove',
 }

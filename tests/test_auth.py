@@ -65,6 +65,28 @@ def test_rest_auth_required(tmp_path, monkeypatch):
     assert authorized.status_code == 201
 
 
+def test_auth_required_allows_cors_preflight_without_token(tmp_path, monkeypatch):
+    origin = 'http://127.0.0.1:5173'
+    app, _socketio = _build_auth_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={'AIDM_CORS_ALLOWLIST': origin},
+    )
+    client = app.test_client()
+
+    response = client.options(
+        '/api/campaigns',
+        headers={
+            'Origin': origin,
+            'Access-Control-Request-Method': 'GET',
+            'Access-Control-Request-Headers': 'Authorization, X-AIDM-Workspace-Id',
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers.get('Access-Control-Allow-Origin') == origin
+
+
 def test_auth_required_for_mutating_api_endpoints_and_tts(tmp_path, monkeypatch):
     app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
     client = app.test_client()

@@ -6,7 +6,19 @@ from typing import Any, Callable
 
 from flask import current_app, request
 
-from aidm_server.auth import DEFAULT_WORKSPACE_ID, extract_socket_token, is_token_authorized, workspace_id_for_token
+from aidm_server.auth import (
+    DEFAULT_WORKSPACE_ID,
+    account_for_token,
+    account_workspace_membership,
+    ensure_account_workspace_membership,
+    extract_socket_account_token,
+    extract_socket_token,
+    extract_socket_workspace_id,
+    extract_socket_workspace_token,
+    is_token_authorized,
+    workspace_id_for_workspace_token,
+    workspace_role_is_admin,
+)
 from aidm_server.logging_context import new_correlation_id, set_logging_context
 from aidm_server.rate_limiter import FixedWindowRateLimiter, build_rate_limiter
 from aidm_server.socket_state import SocketState
@@ -65,18 +77,51 @@ class SocketRuntime:
         existing = self.state.connection(sid)
         if existing and existing.get('authorized'):
             return True
+        if self.workspace_id_for_auth(auth_payload=auth_payload, data_payload=data_payload):
+            return True
         token = extract_socket_token(auth_payload=auth_payload, data_payload=data_payload)
         return is_token_authorized(token)
 
     def workspace_id_for_auth(self, auth_payload: dict | None = None, data_payload: dict | None = None) -> str | None:
         if not self.auth_required():
-            return DEFAULT_WORKSPACE_ID
+            workspace_token = extract_socket_workspace_token(auth_payload=auth_payload, data_payload=data_payload)
+            return workspace_id_for_workspace_token(workspace_token) or DEFAULT_WORKSPACE_ID
         sid = getattr(request, 'sid', None)
         existing = self.state.connection(sid)
         if existing and existing.get('authorized'):
             return str(existing.get('workspace_id') or DEFAULT_WORKSPACE_ID)
-        token = extract_socket_token(auth_payload=auth_payload, data_payload=data_payload)
-        return workspace_id_for_token(token)
+        workspace_token = extract_socket_workspace_token(auth_payload=auth_payload, data_payload=data_payload)
+        if workspace_token:
+            return workspace_id_for_workspace_token(workspace_token)
+        selected_workspace_id = extract_socket_workspace_id(auth_payload=auth_payload, data_payload=data_payload)
+        if selected_workspace_id:
+            account = self.account_for_auth(auth_payload=auth_payload)
+            if account_workspace_membership(account, selected_workspace_id):
+                return selected_workspace_id
+            return None
+        return None
+
+    def account_for_auth(self, auth_payload: dict | None = None):
+        sid = getattr(request, 'sid', None)
+        existing = self.state.connection(sid)
+        if existing and existing.get('account_id'):
+            from aidm_server.database import db
+            from aidm_server.models import Account
+
+            return db.session.get(Account, int(existing['account_id']))
+        account_token = extract_socket_account_token(auth_payload=auth_payload)
+        return account_for_token(account_token)
+
+    def membership_for_auth(self, auth_payload: dict | None = None, workspace_id: str | None = None):
+        account = self.account_for_auth(auth_payload=auth_payload)
+        if account is None or not workspace_id:
+            return None
+        return ensure_account_workspace_membership(account, workspace_id)
+
+    def connection_account_context(self, sid: str) -> tuple[int | None, bool]:
+        existing = self.state.connection(sid) or {}
+        account_id = coerce_int(existing.get('account_id'))
+        return account_id, workspace_role_is_admin(str(existing.get('workspace_role') or ''))
 
     def active_player_payloads(self, session_id: int) -> list[dict]:
         return self.state.active_player_payloads(session_id)

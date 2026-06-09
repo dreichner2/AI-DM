@@ -49,7 +49,7 @@ CURRENCY_LOSS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ITEM_GAIN_PATTERN = re.compile(
-    r'\b(?:you\s+)?(?:find|finds|found|take|takes|took|pick up|picks up|picked up|receive|receives|received|loot|loots|looted|buy|buys|bought|purchase|purchases|purchased|add|adds|added)\s+'
+    r'\b(?:you\s+)?(?P<verb>find|finds|found|take|takes|took|pick up|picks up|picked up|receive|receives|received|loot|loots|looted|buy|buys|bought|purchase|purchases|purchased|add|adds|added)\s+'
     r'(?:the|a|an|some)?\s*(?P<item>[a-z][a-z0-9\' -]{1,60}?)(?=\s+(?:and|from|to|into|under|onto|on|beside|before|after|with|without)\b|[.!?,;]|$)',
     re.IGNORECASE,
 )
@@ -96,6 +96,52 @@ CURRENCY_ONLY_ITEM_PHRASES = {'gold', 'silver', 'copper', 'platinum', 'electrum'
 CONDITIONAL_ITEM_CONTEXT_PATTERN = re.compile(
     r'\b(?:would|could|might|may|needs?|needed|requires?|represents|attempt|trying|try|precision)\b|'
     r'\b(?:please\s+roll|make\s+a\s+[^.!?\n]{0,80}?\bcheck|dc\s+of\s+\d+|against\s+a\s+dc)\b',
+    re.IGNORECASE,
+)
+OBSERVED_ONLY_ITEM_CONTEXT_PATTERN = re.compile(
+    r'\b(?:see|sees|saw|spot|spots|spotted|notice|notices|noticed|glimpse|glimpses|glimpsed|visible|'
+    r'lying|lies|resting|rests|sitting|sits|on display|before you|from the doorway|'
+    r'on the altar|on the table|on the floor|on a shelf|on the shelf|on the pedestal|in the room)\b',
+    re.IGNORECASE,
+)
+ACQUIRED_ITEM_VERB_PATTERN = re.compile(
+    r'\b(?:take|takes|took|pick up|picks up|picked up|receive|receives|received|loot|loots|looted|'
+    r'buy|buys|bought|purchase|purchases|purchased|pocket|pockets|pocketed|claim|claims|claimed|'
+    r'collect|collects|collected|add|adds|added)\b',
+    re.IGNORECASE,
+)
+ROLL_PROMPT_PATTERN = re.compile(
+    r'\b(?:make|roll)\s+(?:a|an)?\s*[^.!?\n]{0,80}?\bcheck\b|'
+    r'\bdc\s*(?:of\s*)?\d{1,2}\b',
+    re.IGNORECASE,
+)
+EXPLICIT_DANGER_LEVEL_PATTERN = re.compile(
+    r'\bdanger(?:\s+level)?\s*(?:is|=|:|to|rises?\s+to|climbs?\s+to|jumps?\s+to|'
+    r'drops?\s+to|falls?\s+to|decreases?\s+to|increases?\s+to)\s*(?P<level>10|[0-9])\b',
+    re.IGNORECASE,
+)
+COMBAT_DANGER_PATTERN = re.compile(
+    r'\b(?:roll initiative|initiative|combat begins|battle begins|fight begins|ambush(?:es|ed)?|'
+    r'attacks?|charges?|lunges?|strikes?|arrows?\s+fly|blades?\s+drawn|weapons?\s+drawn|'
+    r'hostile|surround(?:s|ed)?|enemy|enemies)\b',
+    re.IGNORECASE,
+)
+HIGH_DANGER_PATTERN = re.compile(
+    r'\b(?:trap\s+(?:springs?|triggers?|erupts?)|alarm\s+(?:sounds?|rings?)|collaps(?:e|es|ing)|'
+    r'poison(?:ed|ous)?|toxic|fire\s+spreads?|flames?\s+spread|lethal|deadly|'
+    r'about\s+to\s+collapse|floor\s+gives\s+way)\b',
+    re.IGNORECASE,
+)
+MODERATE_DANGER_PATTERN = re.compile(
+    r'\b(?:dangerous|threat(?:en(?:s|ed|ing)?)?|hazard(?:ous)?|trap|stalk(?:s|ed|ing)?|'
+    r'watch(?:es|ing)\s+you|growl(?:s|ing)?|snarl(?:s|ing)?|unstable|narrow\s+ledge|'
+    r'fresh\s+blood|ominous|peril(?:ous)?)\b',
+    re.IGNORECASE,
+)
+LOWER_DANGER_PATTERN = re.compile(
+    r'\b(?:danger\s+(?:passes|fades|recedes)|no\s+immediate\s+threat|safe\s+for\s+now|'
+    r'fight\s+is\s+over|combat\s+ends?|battle\s+ends?|enemy\s+(?:falls|flees)|enemies\s+(?:fall|flee)|'
+    r'defeated|surrenders?|calm(?:s|ed)?|quiet(?:s|ed)?|secure|harmless|inert|disabled)\b',
     re.IGNORECASE,
 )
 
@@ -190,6 +236,7 @@ def _already_applied_signature(change: dict[str, Any]) -> tuple[Any, ...] | None
             change_type,
             normalize_item_name(change.get('locationId') or change.get('name')),
             normalize_item_name(change.get('sceneType') or change.get('mood') or change.get('combatState')),
+            str(change.get('dangerLevel')) if change.get('dangerLevel') is not None else '',
         )
     if change_type.startswith('location.'):
         return (
@@ -285,6 +332,16 @@ def _is_conditional_item_context(sentence: str) -> bool:
     return False
 
 
+def _is_observed_only_item_context(sentence: str, verb: str) -> bool:
+    normalized_verb = normalize_item_name(verb)
+    if normalized_verb not in {'find', 'finds', 'found'}:
+        return False
+    return bool(
+        OBSERVED_ONLY_ITEM_CONTEXT_PATTERN.search(sentence)
+        and not ACQUIRED_ITEM_VERB_PATTERN.search(sentence)
+    )
+
+
 def _add_change(
     changes: list[dict[str, Any]],
     *,
@@ -319,8 +376,148 @@ def _add_change(
     changes.append(change)
 
 
+def _current_scene(state_before_dm: dict[str, Any]) -> dict[str, Any]:
+    scene = state_before_dm.get('currentScene') if isinstance(state_before_dm, dict) else None
+    return scene if isinstance(scene, dict) else {}
+
+
+def _scene_danger_level(scene: dict[str, Any]) -> int:
+    try:
+        return max(0, min(10, int(scene.get('dangerLevel') or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _scene_update_signature(change: dict[str, Any]) -> tuple[Any, ...] | None:
+    signature = _already_applied_signature(change)
+    return signature if signature else None
+
+
+def _add_scene_danger_change(
+    changes: list[dict[str, Any]],
+    *,
+    turn_id: int,
+    scene: dict[str, Any],
+    danger_level: int,
+    reason: str,
+    already: set[tuple[Any, ...]],
+    scene_type: str | None = None,
+    mood: str | None = None,
+    combat_state: str | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        'id': stable_change_id(turn_id, 'post_dm', 'scene.update', 'current_scene', danger_level, scene_type, mood, combat_state),
+        'turnId': turn_id,
+        'type': 'scene.update',
+        'source': 'post_dm',
+        'reason': reason,
+        'visible': True,
+        'dangerLevel': max(0, min(10, danger_level)),
+    }
+    if scene_type and scene.get('sceneType') != scene_type:
+        payload['sceneType'] = scene_type
+    if mood and scene.get('mood') != mood:
+        payload['mood'] = mood
+    if combat_state and scene.get('combatState') != combat_state:
+        payload['combatState'] = combat_state
+
+    current_danger = _scene_danger_level(scene)
+    if payload['dangerLevel'] == current_danger and not any(key in payload for key in ('sceneType', 'mood', 'combatState')):
+        return
+    signature = _scene_update_signature(payload)
+    if signature and signature in already:
+        return
+    if signature and any(_scene_update_signature(existing) == signature for existing in changes):
+        return
+    changes.append(payload)
+
+
+def _heuristic_scene_danger_changes(
+    *,
+    state_before_dm: dict[str, Any],
+    dm_response: str,
+    turn_id: int,
+    already_applied_changes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    text = re.sub(r'\*+', '', dm_response or '')
+    if not text.strip():
+        return []
+    if ROLL_PROMPT_PATTERN.search(text) and not COMBAT_DANGER_PATTERN.search(text) and not HIGH_DANGER_PATTERN.search(text):
+        return []
+
+    scene = _current_scene(state_before_dm)
+    current_danger = _scene_danger_level(scene)
+    changes: list[dict[str, Any]] = []
+    already = _already_applied(already_applied_changes)
+
+    explicit_match = EXPLICIT_DANGER_LEVEL_PATTERN.search(text)
+    if explicit_match:
+        _add_scene_danger_change(
+            changes,
+            turn_id=turn_id,
+            scene=scene,
+            danger_level=int(explicit_match.group('level')),
+            reason='DM explicitly changed the scene danger level.',
+            already=already,
+        )
+        return changes
+
+    if LOWER_DANGER_PATTERN.search(text):
+        next_combat_state = 'resolved' if scene.get('combatState') == 'active' else 'none'
+        _add_scene_danger_change(
+            changes,
+            turn_id=turn_id,
+            scene=scene,
+            danger_level=0 if current_danger <= 3 else 1,
+            mood='calm',
+            combat_state=next_combat_state,
+            reason='DM indicated the immediate scene danger has passed.',
+            already=already,
+        )
+        return changes
+
+    if COMBAT_DANGER_PATTERN.search(text):
+        _add_scene_danger_change(
+            changes,
+            turn_id=turn_id,
+            scene=scene,
+            danger_level=max(current_danger, 8),
+            scene_type='combat',
+            mood='dangerous',
+            combat_state='active',
+            reason='DM indicated active combat or immediate hostile danger.',
+            already=already,
+        )
+        return changes
+
+    if HIGH_DANGER_PATTERN.search(text):
+        _add_scene_danger_change(
+            changes,
+            turn_id=turn_id,
+            scene=scene,
+            danger_level=max(current_danger, 7),
+            mood='dangerous',
+            reason='DM indicated a severe scene hazard.',
+            already=already,
+        )
+        return changes
+
+    if MODERATE_DANGER_PATTERN.search(text):
+        _add_scene_danger_change(
+            changes,
+            turn_id=turn_id,
+            scene=scene,
+            danger_level=max(current_danger, 5),
+            mood='tense',
+            reason='DM indicated a meaningful scene threat.',
+            already=already,
+        )
+    return changes
+
+
 def _heuristic_extract(
     *,
+    state_before_dm: dict[str, Any],
     dm_response: str,
     actor_id: str,
     turn_id: int,
@@ -399,6 +596,8 @@ def _heuristic_extract(
             continue
         for pattern, change_type in ((ITEM_GAIN_PATTERN, 'inventory.add'), (ITEM_LOSS_PATTERN, 'inventory.remove')):
             for match in pattern.finditer(sentence):
+                if change_type == 'inventory.add' and _is_observed_only_item_context(sentence, match.group('verb')):
+                    continue
                 item_name = _clean_item(match.group('item'))
                 if not _looks_like_item(item_name):
                     continue
@@ -420,6 +619,13 @@ def _heuristic_extract(
                     already=already,
                 )
 
+    scene_changes = _heuristic_scene_danger_changes(
+        state_before_dm=state_before_dm,
+        dm_response=dm_response,
+        turn_id=turn_id,
+        already_applied_changes=[*already_applied_changes, *changes],
+    )
+    changes.extend(scene_changes)
     return {'proposedChanges': changes, 'uncertainChanges': [], 'notes': ['heuristic_post_dm'] if changes else []}
 
 
@@ -498,13 +704,24 @@ def extract_post_dm_outcomes(
     if helper_schema_valid:
         normalized = normalize_post_extraction(helper_payload, fallback_actor_id=actor_id)
         _assign_turn_scoped_change_ids(normalized['proposedChanges'], turn_id=turn_id)
+        scene_changes = _heuristic_scene_danger_changes(
+            state_before_dm=state_before_dm,
+            dm_response=dm_response,
+            turn_id=turn_id,
+            already_applied_changes=[*already_applied_changes, *(normalized.get('proposedChanges') or [])],
+        )
+        if scene_changes:
+            normalized['proposedChanges'] = [*(normalized.get('proposedChanges') or []), *scene_changes]
         notes = list(normalized.get('notes') or [])
         if 'helper_post_dm' not in notes:
             notes.append('helper_post_dm')
+        if scene_changes and 'heuristic_scene_danger' not in notes:
+            notes.append('heuristic_scene_danger')
         normalized['notes'] = notes
         return _attach_debug(normalized, helper_debug)
 
     fallback = _heuristic_extract(
+        state_before_dm=state_before_dm,
         dm_response=dm_response,
         actor_id=actor_id,
         turn_id=turn_id,

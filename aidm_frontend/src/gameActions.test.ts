@@ -141,5 +141,33 @@ describe('game action helpers', () => {
       cost_gold: 5,
       item: { name: 'rope', quantity: 1 },
     })
+
+    const npcInteractionIntent = buildActionIntent({
+      mode: 'interact',
+      message: 'Ember says to Captain Velra: hello',
+      clientMessageId: 'talk-velra',
+      interactionType: 'speak_to',
+      interactionTarget: {
+        kind: 'npc',
+        npc_id: 'captain_velra',
+        character_name: 'Captain Velra',
+        player_name: 'dock captain',
+        active: true,
+      },
+    })
+
+    expect(npcInteractionIntent).toMatchObject({
+      kind: 'interact',
+      interaction: {
+        type: 'speak_to',
+        label: 'Speak to',
+      },
+      target: {
+        kind: 'npc',
+        npc_id: 'captain_velra',
+        character_name: 'Captain Velra',
+        player_name: 'dock captain',
+      },
+    })
   })
 })

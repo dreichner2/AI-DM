@@ -30,6 +30,21 @@ def _event_payload(received, name):
     return None
 
 
+def _seed_second_player(app, campaign_id: int) -> int:
+    with app.app_context():
+        player = Player(
+            campaign_id=campaign_id,
+            name='Bob',
+            character_name='Borin',
+            race='Dwarf',
+            class_='Fighter',
+            level=3,
+        )
+        db.session.add(player)
+        db.session.commit()
+        return player.player_id
+
+
 def _turn_status_payloads(received, status):
     return [
         event['args'][0]
@@ -245,6 +260,207 @@ def test_send_message_rejects_invalid_action_intent(app, socketio):
     error_payload = _event_payload(client.get_received(), 'error')
     assert error_payload['error_code'] == 'validation_error'
     assert 'roll.total' in error_payload['error']
+
+
+def test_turn_control_blocks_out_of_turn_player(app, socketio):
+    ids = seed_world_campaign_player_session(app)
+    second_player_id = _seed_second_player(app, ids['campaign_id'])
+
+    first_client = socketio.test_client(app, flask_test_client=app.test_client())
+    second_client = socketio.test_client(app, flask_test_client=app.test_client())
+    first_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    second_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': second_player_id})
+    first_client.get_received()
+    second_client.get_received()
+
+    first_client.emit(
+        'set_turn_control',
+        {
+            'session_id': ids['session_id'],
+            'player_id': ids['player_id'],
+            'mode': 'structured',
+            'active_player_id': ids['player_id'],
+        },
+    )
+    updated_payload = _event_payload(first_client.get_received(), 'turn_control_updated')
+    assert updated_payload['turn_control']['mode'] == 'structured'
+    assert updated_payload['turn_control']['activePlayerId'] == ids['player_id']
+    second_client.get_received()
+
+    second_client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': second_player_id,
+            'message': 'I interrupt and run ahead.',
+        },
+    )
+    error_payload = _event_payload(second_client.get_received(), 'error')
+
+    assert error_payload['error_code'] == 'turn_out_of_order'
+    assert error_payload['details']['turn_control']['activePlayerId'] == ids['player_id']
+    with app.app_context():
+        assert DmTurn.query.filter_by(session_id=ids['session_id'], player_id=second_player_id).count() == 0
+
+
+def test_structured_turn_control_advances_after_completed_turn(app, socketio, app_runtime, monkeypatch):
+    from aidm_server.rules import RuleHint
+
+    socketio_module = app_runtime['modules']['socketio_events']
+    turn_engine_module = app_runtime['modules']['turn_engine']
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        yield 'The group settles into the plan.'
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    monkeypatch.setattr(
+        turn_engine_module,
+        'classify_player_action',
+        lambda *args, **kwargs: RuleHint(False, None, None, 'No check needed.', 0.2),
+    )
+
+    ids = seed_world_campaign_player_session(app)
+    second_player_id = _seed_second_player(app, ids['campaign_id'])
+
+    first_client = socketio.test_client(app, flask_test_client=app.test_client())
+    second_client = socketio.test_client(app, flask_test_client=app.test_client())
+    first_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    second_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': second_player_id})
+    first_client.get_received()
+    second_client.get_received()
+
+    first_client.emit(
+        'set_turn_control',
+        {
+            'session_id': ids['session_id'],
+            'player_id': ids['player_id'],
+            'mode': 'structured',
+            'active_player_id': ids['player_id'],
+        },
+    )
+    first_client.get_received()
+    second_client.get_received()
+
+    first_client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I ask Borin what he thinks of the trail.',
+        },
+    )
+    received = first_client.get_received()
+    advanced_payload = _event_payload(received, 'turn_control_updated')
+
+    assert advanced_payload is not None
+    assert advanced_payload['turn_control']['mode'] == 'structured'
+    assert advanced_payload['turn_control']['activePlayerId'] == second_player_id
+
+    with app.app_context():
+        session = db.session.get(Session, ids['session_id'])
+        snapshot = safe_json_loads(session.state_snapshot, {})
+        assert snapshot['turnControl']['activePlayerId'] == second_player_id
+
+
+def test_join_session_rejects_same_workspace_player_from_other_campaign(app, socketio):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        current_campaign = db.session.get(Campaign, ids['campaign_id'])
+        assert current_campaign is not None
+        other_campaign = Campaign(
+            title='Other Campaign',
+            world_id=ids['world_id'],
+            workspace_id=current_campaign.workspace_id,
+        )
+        db.session.add(other_campaign)
+        db.session.flush()
+        other_player = Player(
+            workspace_id=current_campaign.workspace_id,
+            campaign_id=other_campaign.campaign_id,
+            name='Friend',
+            character_name='Oden',
+        )
+        db.session.add(other_player)
+        db.session.commit()
+        other_player_id = other_player.player_id
+
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    assert client.is_connected()
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': other_player_id})
+
+    error_payload = _event_payload(client.get_received(), 'error')
+    assert error_payload['error_code'] == 'campaign_mismatch'
+
+
+def test_harmful_player_targeting_creates_pvp_roll_gate(app, socketio, app_runtime, monkeypatch):
+    socketio_module = app_runtime['modules']['socketio_events']
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        assert rules_hint['pvp']['allowed'] is True
+        assert rules_hint['pvp']['requires_contested_resolution'] is True
+        assert 'PLAYER-VS-PLAYER ACTION (ALLOWED)' in user_input
+        yield 'Ezekiel lunges at Kozuki. Kozuki, roll a contested defense before the strike resolves.'
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        actor = db.session.get(Player, ids['player_id'])
+        assert campaign is not None
+        assert actor is not None
+        actor.character_name = 'Ezekiel'
+        actor.race = 'Human'
+        target = Player(
+            workspace_id=campaign.workspace_id,
+            campaign_id=campaign.campaign_id,
+            name='Danny',
+            character_name='Kozuki',
+            race='Orc',
+            class_='Barbarian',
+        )
+        db.session.add(target)
+        db.session.commit()
+        target_player_id = target.player_id
+
+    actor_client = socketio.test_client(app, flask_test_client=app.test_client())
+    target_client = socketio.test_client(app, flask_test_client=app.test_client())
+    assert actor_client.is_connected()
+    assert target_client.is_connected()
+    actor_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    actor_client.get_received()
+    target_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': target_player_id})
+    target_client.get_received()
+
+    actor_client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': "I slice the orc's head off.",
+        },
+    )
+    received = actor_client.get_received()
+    start_payload = _event_payload(received, 'dm_response_start')
+    end_payload = _event_payload(received, 'dm_response_end')
+
+    assert start_payload['rules_hint']['pvp']['target_player_id'] == target_player_id
+    assert end_payload is not None
+    with app.app_context():
+        turn = DmTurn.query.order_by(DmTurn.turn_id.desc()).first()
+        assert turn is not None
+        metadata = safe_json_loads(turn.metadata_json, {})
+        gate = metadata['roll_gate']
+        assert gate['scope'] == 'pvp_contest'
+        assert gate['required_player_ids'] == [ids['player_id'], target_player_id]
+        assert gate['remaining_player_ids'] == [ids['player_id'], target_player_id]
+        assert turn.outcome_status == 'deferred'
 
 
 def test_turn_pipeline_missing_item_does_not_reach_dm_as_valid(app, socketio, app_runtime, monkeypatch):
@@ -678,10 +894,14 @@ def test_player_interaction_intent_clarifies_target_for_dm(
         target_player_id = target_player.player_id
 
     client = socketio.test_client(app, flask_test_client=app.test_client())
+    target_client = socketio.test_client(app, flask_test_client=app.test_client())
     assert client.is_connected()
+    assert target_client.is_connected()
 
     client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
     client.get_received()
+    target_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': target_player_id})
+    target_client.get_received()
     client.emit(
         'send_message',
         {
@@ -719,6 +939,7 @@ def test_player_interaction_intent_clarifies_target_for_dm(
         metadata = safe_json_loads(turn.metadata_json, {})
         assert metadata['action_intent']['kind'] == 'interact'
         assert metadata['action_intent']['target'] == {
+            'kind': 'player',
             'player_id': target_player_id,
             'character_name': 'Borin',
             'player_name': 'Maya',

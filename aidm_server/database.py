@@ -160,12 +160,25 @@ def _ensure_legacy_sqlite_columns():
     if db.engine.dialect.name != 'sqlite':
         return
     inspector = inspect(db.engine)
-    if 'players' not in inspector.get_table_names():
+    table_names = set(inspector.get_table_names())
+    if 'accounts' not in table_names:
+        from aidm_server.models import Account
+
+        Account.__table__.create(db.engine, checkfirst=True)
+    if 'account_workspace_memberships' not in table_names:
+        from aidm_server.models import AccountWorkspaceMembership
+
+        AccountWorkspaceMembership.__table__.create(db.engine, checkfirst=True)
+    if 'players' not in table_names:
         return
     player_columns = {column['name'] for column in inspector.get_columns('players')}
     with db.engine.begin() as connection:
+        if 'account_id' not in player_columns:
+            connection.execute(text('ALTER TABLE players ADD COLUMN account_id INTEGER'))
         if 'sex' not in player_columns:
             connection.execute(text('ALTER TABLE players ADD COLUMN sex VARCHAR'))
+        if 'race_selection' not in player_columns:
+            connection.execute(text('ALTER TABLE players ADD COLUMN race_selection TEXT'))
         connection.execute(text("UPDATE players SET sex = 'male' WHERE sex IS NULL OR TRIM(sex) = ''"))
 
 

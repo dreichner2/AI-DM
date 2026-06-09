@@ -11,6 +11,7 @@ from aidm_server.response_dtos import (
     segment_payload,
     session_payloads,
 )
+from aidm_server.workspace_access import visible_players_query
 
 
 def _limit_query(query, limit: int | None):
@@ -62,7 +63,7 @@ def campaign_workspace_payload(
     )
     session_items = session_payloads(session_rows)
     session_items.sort(key=lambda item: item.get('latest_activity_at') or '', reverse=True)
-    players_query = Player.query.filter_by(workspace_id=campaign.workspace_id)
+    players_query = visible_players_query(campaign.workspace_id, campaign_id=campaign_id)
     player_count = players_query.count()
     players = limited_page(
         players_query.order_by(Player.created_at.asc(), Player.player_id.asc()),

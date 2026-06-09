@@ -6,6 +6,7 @@ PRE_DM_ACTION_TYPES = {
     'inventory.use',
     'inventory.transfer',
     'currency.transfer',
+    'race_ability.use',
     'combat.attack',
     'generic.intent',
 }
@@ -16,4 +17,3 @@ OWNED_ITEM_ACTION_TYPES = {
     'inventory.transfer',
     'combat.attack',
 }
-

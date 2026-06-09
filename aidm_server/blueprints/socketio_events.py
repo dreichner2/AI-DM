@@ -15,7 +15,14 @@ from aidm_server.socket_contracts import socket_error_payload as socket_error, v
 from aidm_server.socket_runtime import SocketRuntime
 from aidm_server.socket_state import SocketState
 from aidm_server.telemetry import telemetry_event, telemetry_metric
+from aidm_server.turn_control import (
+    set_session_turn_control,
+    turn_control_from_session,
+    turn_control_update_payload,
+    turn_submission_result,
+)
 from aidm_server.turn_engine import TurnCommand, TurnEngine
+from aidm_server.turn_rules import latest_pending_turn
 from aidm_server.validation import coerce_int
 from aidm_server.workspace_access import get_player as workspace_player, get_session as workspace_session
 
@@ -69,6 +76,15 @@ def _set_player_typing(session_id: int, player_id: int, sid: str, is_typing: boo
     return socket_runtime.set_player_typing(session_id, player_id, sid, is_typing)
 
 
+def _socket_account_context() -> tuple[int | None, bool]:
+    return socket_runtime.connection_account_context(request.sid)
+
+
+def _workspace_player_for_socket(player_id: int, workspace_id: str):
+    account_id, is_admin = _socket_account_context()
+    return workspace_player(player_id, workspace_id, account_id=account_id, is_admin=is_admin)
+
+
 def _admin_passcode_is_valid(data: dict | None) -> bool:
     configured = str(current_app.config.get('AIDM_ADMIN_PASSCODE') or '').strip()
     supplied = str((data or {}).get('admin_passcode') or '').strip()
@@ -105,10 +121,17 @@ def register_socketio_events(socketio):
                     )
                     return False
 
+                account = socket_runtime.account_for_auth(auth_payload=auth)
+                membership = socket_runtime.membership_for_auth(auth_payload=auth, workspace_id=workspace_id) if account else None
+                if membership:
+                    db.session.commit()
+
                 if sid:
                     socket_state.set_connection(sid, {
                         'authorized': True,
                         'workspace_id': workspace_id,
+                        'account_id': account.account_id if account else None,
+                        'workspace_role': membership.role if membership else None,
                         'session_id': None,
                         'player_id': None,
                         'correlation_id': (socket_state.connection(sid) or {}).get('correlation_id'),
@@ -137,7 +160,7 @@ def register_socketio_events(socketio):
 
             workspace_id = _socket_workspace_id(data_payload=data)
             if not workspace_id:
-                emit('error', socket_error('unauthorized', 'Missing or invalid auth token.'))
+                emit('error', socket_error('unauthorized', 'Missing or invalid workspace token.'))
                 telemetry_event('socket.join.unauthorized', payload={'sid': request.sid}, severity='warning')
                 return
 
@@ -162,12 +185,25 @@ def register_socketio_events(socketio):
 
             player_data = None
             if player_id:
-                player = workspace_player(player_id, workspace_id)
+                player = _workspace_player_for_socket(player_id, workspace_id)
                 if not player:
                     emit('error', socket_error('invalid_player', 'Invalid player ID.'))
                     telemetry_event(
                         'socket.join.invalid_player',
                         payload={'sid': request.sid, 'session_id': session_id, 'player_id': player_id},
+                        severity='warning',
+                    )
+                    return
+                if player.campaign_id != session_obj.campaign_id:
+                    emit('error', socket_error('campaign_mismatch', 'Player does not belong to this session campaign.'))
+                    telemetry_event(
+                        'socket.join.campaign_mismatch',
+                        payload={
+                            'sid': request.sid,
+                            'session_id': session_id,
+                            'player_id': player_id,
+                            'campaign_id': session_obj.campaign_id,
+                        },
                         severity='warning',
                     )
                     return
@@ -204,6 +240,7 @@ def register_socketio_events(socketio):
                     if joined_fresh:
                         emit('player_joined', player_data, room=str(session_id))
             emit('active_players', _active_player_payloads(session_id), room=str(session_id))
+            emit('turn_control_updated', turn_control_update_payload(session_id, turn_control_from_session(session_obj)))
             emit(
                 'new_message',
                 {
@@ -213,6 +250,117 @@ def register_socketio_events(socketio):
                 room=str(session_id),
             )
             telemetry_metric('socket.join.success_total', 1)
+        finally:
+            clear_logging_context()
+
+    @socketio.on('set_turn_control')
+    def handle_set_turn_control(data):
+        _set_socket_context('set_turn_control', data if isinstance(data, dict) else None)
+        try:
+            workspace_id = _socket_workspace_id(data_payload=data)
+            if not workspace_id:
+                emit('error', socket_error('unauthorized', 'Missing or invalid workspace token.'))
+                telemetry_event('socket.turn_control.unauthorized', payload={'sid': request.sid}, severity='warning')
+                return
+            if not isinstance(data, dict):
+                emit('error', socket_error('validation_error', 'Expected object payload for set_turn_control.'))
+                telemetry_event('socket.turn_control.validation_error', payload={'sid': request.sid}, severity='warning')
+                return
+
+            session_id = coerce_int(data.get('session_id') or data.get('sessionId'))
+            player_id = coerce_int(data.get('player_id') or data.get('playerId'))
+            mode = str(data.get('mode') or 'free').strip().lower()
+            active_player_id = coerce_int(data.get('active_player_id') or data.get('activePlayerId'))
+            set_logging_context(session_id=session_id)
+
+            if not session_id or not player_id:
+                emit('error', socket_error('validation_error', 'session_id and player_id are required.'))
+                telemetry_event('socket.turn_control.validation_error', payload={'sid': request.sid}, severity='warning')
+                return
+
+            connection_record = socket_state.connection(request.sid)
+            bound_session_id = coerce_int(connection_record.get('session_id')) if connection_record else None
+            bound_player_id = coerce_int(connection_record.get('player_id')) if connection_record else None
+            if bound_session_id != session_id or bound_player_id != player_id:
+                emit(
+                    'error',
+                    socket_error(
+                        'player_identity_mismatch',
+                        'This socket can only change turn control for the player and session it joined with.',
+                    ),
+                )
+                telemetry_event(
+                    'socket.turn_control.player_identity_mismatch',
+                    payload={
+                        'sid': request.sid,
+                        'session_id': session_id,
+                        'player_id': player_id,
+                        'bound_session_id': bound_session_id,
+                        'bound_player_id': bound_player_id,
+                    },
+                    severity='warning',
+                )
+                return
+
+            session_obj = workspace_session(session_id, workspace_id)
+            if not session_obj:
+                emit('error', socket_error('session_not_found', 'Session not found.'))
+                telemetry_event(
+                    'socket.turn_control.session_not_found',
+                    payload={'sid': request.sid, 'session_id': session_id},
+                    severity='warning',
+                )
+                return
+
+            player = _workspace_player_for_socket(player_id, workspace_id)
+            if not player or player.campaign_id != session_obj.campaign_id:
+                emit('error', socket_error('invalid_player', 'Invalid player ID.'))
+                telemetry_event(
+                    'socket.turn_control.invalid_player',
+                    payload={'sid': request.sid, 'session_id': session_id, 'player_id': player_id},
+                    severity='warning',
+                )
+                return
+
+            if mode not in {'free', 'spotlight', 'structured'}:
+                emit('error', socket_error('validation_error', 'Turn mode must be free, spotlight, or structured.'))
+                telemetry_event(
+                    'socket.turn_control.invalid_mode',
+                    payload={'sid': request.sid, 'session_id': session_id, 'mode': mode},
+                    severity='warning',
+                )
+                return
+
+            if mode != 'free':
+                active_player_id = active_player_id or player_id
+                active_player = _workspace_player_for_socket(active_player_id, workspace_id)
+                if not active_player or active_player.campaign_id != session_obj.campaign_id:
+                    emit('error', socket_error('invalid_player', 'Active turn player does not belong to this campaign.'))
+                    telemetry_event(
+                        'socket.turn_control.invalid_active_player',
+                        payload={
+                            'sid': request.sid,
+                            'session_id': session_id,
+                            'active_player_id': active_player_id,
+                        },
+                        severity='warning',
+                    )
+                    return
+
+            turn_control = set_session_turn_control(
+                session_obj,
+                mode=mode,
+                active_player_id=active_player_id,
+                updated_by_player_id=player_id,
+            )
+            db.session.commit()
+            emit('turn_control_updated', turn_control_update_payload(session_id, turn_control), room=str(session_id))
+            telemetry_metric('socket.turn_control.updated_total', 1)
+        except Exception as exc:
+            db.session.rollback()
+            logger.exception('Turn control update failed: %s', str(exc))
+            emit('error', socket_error('server_error', 'Failed to update turn control.'))
+            telemetry_event('socket.turn_control.error', payload={'sid': request.sid, 'error': str(exc)}, severity='error')
         finally:
             clear_logging_context()
 
@@ -286,7 +434,7 @@ def register_socketio_events(socketio):
 
             workspace_id = _socket_workspace_id(data_payload=data)
             if not workspace_id:
-                emit('error', socket_error('unauthorized', 'Missing or invalid auth token.'))
+                emit('error', socket_error('unauthorized', 'Missing or invalid workspace token.'))
                 telemetry_event('socket.typing.unauthorized', payload={'sid': request.sid}, severity='warning')
                 return
 
@@ -347,7 +495,7 @@ def register_socketio_events(socketio):
             telemetry_metric('socket.messages_total', 1)
             workspace_id = _socket_workspace_id(data_payload=data)
             if not workspace_id:
-                emit('error', socket_error('unauthorized', 'Missing or invalid auth token.'))
+                emit('error', socket_error('unauthorized', 'Missing or invalid workspace token.'))
                 telemetry_event('socket.send_message.unauthorized', payload={'sid': request.sid}, severity='warning')
                 return
 
@@ -436,12 +584,53 @@ def register_socketio_events(socketio):
                 )
                 return
 
-            player = workspace_player(player_id, workspace_id)
+            player = _workspace_player_for_socket(player_id, workspace_id)
             if not player:
                 emit('error', socket_error('invalid_player', 'Invalid player ID'))
                 telemetry_event(
                     'socket.send_message.invalid_player',
                     payload={'sid': request.sid, 'player_id': player_id, 'campaign_id': campaign_id},
+                    severity='warning',
+                )
+                return
+            if player.campaign_id != campaign_id:
+                emit('error', socket_error('campaign_mismatch', 'Player does not belong to this campaign.'))
+                telemetry_event(
+                    'socket.send_message.campaign_mismatch',
+                    payload={'sid': request.sid, 'player_id': player_id, 'campaign_id': campaign_id},
+                    severity='warning',
+                )
+                return
+
+            action_kind = (
+                str(message_payload.action_intent.get('kind')).strip()
+                if isinstance(message_payload.action_intent, dict) and message_payload.action_intent.get('kind') is not None
+                else ''
+            )
+            has_pending_roll = action_kind == 'roll' and latest_pending_turn(session_id, player_id) is not None
+            turn_allowed, turn_block_reason, turn_control = turn_submission_result(
+                session_obj,
+                player_id=player_id,
+                action_intent=message_payload.action_intent,
+                has_pending_roll=has_pending_roll,
+            )
+            if not turn_allowed:
+                emit(
+                    'error',
+                    socket_error(
+                        'turn_out_of_order',
+                        turn_block_reason or 'It is not your turn to act.',
+                        {'turn_control': turn_control},
+                    ),
+                )
+                telemetry_event(
+                    'socket.send_message.turn_out_of_order',
+                    payload={
+                        'sid': request.sid,
+                        'session_id': session_id,
+                        'player_id': player_id,
+                        'turn_control': turn_control,
+                    },
                     severity='warning',
                 )
                 return
@@ -494,7 +683,7 @@ def register_socketio_events(socketio):
         try:
             workspace_id = _socket_workspace_id(data_payload=data)
             if not workspace_id:
-                emit('error', socket_error('unauthorized', 'Missing or invalid auth token.'))
+                emit('error', socket_error('unauthorized', 'Missing or invalid workspace token.'))
                 telemetry_event('socket.resolve_clarification.unauthorized', payload={'sid': request.sid}, severity='warning')
                 return
             if not isinstance(data, dict):
@@ -529,7 +718,7 @@ def register_socketio_events(socketio):
                 return
 
             session_obj = workspace_session(session_id, workspace_id)
-            player = workspace_player(player_id, workspace_id)
+            player = _workspace_player_for_socket(player_id, workspace_id)
             turn = db.session.get(DmTurn, turn_id)
             if not session_obj or not player or not turn or turn.session_id != session_id or turn.player_id != player_id:
                 emit('error', socket_error('clarification_not_found', 'Clarification turn not found.'))

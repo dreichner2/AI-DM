@@ -34,7 +34,9 @@ export type ItemOption = {
 }
 
 export type InteractionTarget = {
-  player_id: number
+  kind: 'player' | 'npc'
+  player_id?: number
+  npc_id?: string
   character_name: string
   player_name: string
   active: boolean
@@ -87,7 +89,9 @@ export type ActionIntent = {
     label: string
   }
   target?: {
-    player_id: number
+    kind?: 'player' | 'npc'
+    player_id?: number
+    npc_id?: string
     character_name: string
     player_name: string
   }
@@ -149,6 +153,11 @@ export function composerModeLabel(mode: ComposerMode, die: string) {
 
 export function interactionTypeLabel(type: InteractionType) {
   return INTERACTION_TYPE_OPTIONS.find((option) => option.value === type)?.label ?? 'Interact with'
+}
+
+export function interactionTargetId(target: InteractionTarget) {
+  if (target.kind === 'npc') return `npc:${target.npc_id ?? target.character_name}`
+  return `player:${target.player_id ?? target.character_name}`
 }
 
 export function inventoryActionLabel(type: InventoryAction) {
@@ -417,9 +426,14 @@ export function buildActionIntent({
       label: interactionTypeLabel(normalizedInteractionType),
     }
     intent.target = {
-      player_id: interactionTarget.player_id,
+      kind: interactionTarget.kind,
       character_name: interactionTarget.character_name,
       player_name: interactionTarget.player_name,
+    }
+    if (interactionTarget.kind === 'npc') {
+      intent.target.npc_id = interactionTarget.npc_id
+    } else {
+      intent.target.player_id = interactionTarget.player_id
     }
   }
   return intent

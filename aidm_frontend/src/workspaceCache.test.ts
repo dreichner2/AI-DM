@@ -56,6 +56,8 @@ function player(id: number, campaignId: number): Player {
   return {
     player_id: id,
     workspace_id: 'owner',
+    account_id: null,
+    username: null,
     campaign_id: campaignId,
     name: `Player ${id}`,
     character_name: `Hero ${id}`,

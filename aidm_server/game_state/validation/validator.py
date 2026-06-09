@@ -676,6 +676,25 @@ def _find_npc(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] |
     )
 
 
+def _player_character_collision_label(state: dict[str, Any], change: dict[str, Any]) -> str | None:
+    requested_id = _text(change.get('npcId') or change.get('id'))
+    requested_name = normalize_item_name(change.get('name') or change.get('npcName'))
+    for actor in _records(state, 'playerCharacters'):
+        actor_name = _text(actor.get('name') or actor.get('characterName'))
+        actor_player_id = _text(actor.get('playerId') or actor.get('player_id'))
+        actor_ids = {
+            _text(actor.get('id')),
+            actor_player_id,
+            f'player_{actor_player_id}' if actor_player_id else '',
+            stable_slug(actor_name) if actor_name else '',
+        }
+        if requested_id and requested_id in {value for value in actor_ids if value}:
+            return actor_name or requested_id
+        if requested_name and actor_name and requested_name == normalize_item_name(actor_name):
+            return actor_name
+    return None
+
+
 def _string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [_text(item) for item in value if _text(item)]
@@ -820,6 +839,9 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
         normalized['npcId'] = _stable_id(normalized.get('npcId'), normalized.get('name') or normalized.get('npcName'))
         if not normalized['npcId']:
             return 'rejected', 'NPC change requires an npc id or name.', None
+        player_collision = _player_character_collision_label(state, normalized)
+        if player_collision:
+            return 'rejected', f"NPC change targets player character '{player_collision}'.", None
         disposition = _text(normalized.get('disposition'))
         status = _text(normalized.get('status'))
         if disposition and disposition not in NPC_DISPOSITIONS:
@@ -1095,6 +1117,25 @@ def validate_state_changes(*, state: dict[str, Any], changes: list[dict[str, Any
             status, reason, normalized = _validate_xp_change(state, change)
         elif change_type == 'inventory.mark_used':
             status, reason, normalized = 'accepted', 'Inventory use marker is valid.', None
+        elif change_type == 'race_ability.mark_used':
+            ability_id = str(change.get('abilityId') or change.get('ability_id') or '').strip()
+            refreshes_on = str(change.get('refreshesOn') or change.get('refreshes_on') or '').strip()
+            if not change.get('actorId') and not change.get('actor_id'):
+                status, reason, normalized = 'rejected', 'Race ability use requires actorId.'
+            elif not ability_id:
+                status, reason, normalized = 'rejected', 'Race ability use requires abilityId.'
+            elif refreshes_on not in {'short_rest', 'long_rest', 'session'}:
+                status, reason, normalized = 'rejected', 'Race ability use requires a supported refreshesOn value.'
+            else:
+                status, reason, normalized = 'accepted', 'Race ability use marker is valid.', None
+        elif change_type == 'race_ability.refresh':
+            ability_id = str(change.get('abilityId') or change.get('ability_id') or '').strip()
+            if not change.get('actorId') and not change.get('actor_id'):
+                status, reason, normalized = 'rejected', 'Race ability refresh requires actorId.'
+            elif not ability_id:
+                status, reason, normalized = 'rejected', 'Race ability refresh requires abilityId.'
+            else:
+                status, reason, normalized = 'accepted', 'Race ability refresh marker is valid.', None
         elif change_type in WORLD_STATE_CHANGE_TYPES:
             status, reason, normalized = _normalize_world_change(change, state)
         else:

@@ -59,6 +59,7 @@ export type WorldLocationSummary = {
 export type WorldNpcSummary = {
   id: string
   name: string
+  race: string
   role: string
   disposition: string
   status: string
@@ -345,17 +346,42 @@ function recordArray(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? value.filter(isRecord) : []
 }
 
+function normalizedLookup(value: unknown) {
+  return stringValue(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+function recordTurnValue(record: JsonRecord, keys: string[]) {
+  for (const key of keys) {
+    const value = numberValue(record[key])
+    if (value !== null) return value
+  }
+  return 0
+}
+
 export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
   const root = isRecord(snapshot) ? snapshot : {}
   const scene = isRecord(root.currentScene) ? root.currentScene : {}
   const quests = recordArray(root.quests)
   const locations = recordArray(root.locations)
   const npcs = [...recordArray(root.knownNpcs), ...recordArray(root.partyNpcs)]
+  const playerRecords = recordArray(root.playerCharacters)
+  const playerNames = new Set(playerRecords.map((player) => normalizedLookup(player.name)).filter(Boolean))
+  const playerIds = new Set(
+    playerRecords
+      .flatMap((player) => [stringValue(player.id), stringValue(player.playerId), stringValue(player.player_id)])
+      .filter(Boolean),
+  )
+  const activeNpcIds = Array.isArray(scene.activeNpcIds)
+    ? scene.activeNpcIds.map((value) => stringValue(value)).filter(Boolean)
+    : []
+  const activeNpcIdSet = new Set(activeNpcIds)
   const activeQuestIds = new Set(
     Array.isArray(scene.activeQuestIds)
       ? scene.activeQuestIds.map((value) => stringValue(value)).filter(Boolean)
       : [],
   )
+  const currentLocationId = stringValue(scene.locationId)
+  const currentLocationName = normalizedLookup(scene.name)
   const activeQuests = quests
     .filter((quest) => {
       const id = stringValue(quest.id)
@@ -379,19 +405,79 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
         ? '0'
         : stringValue(scene.dangerLevel, '0'),
     activeQuests,
-    knownLocations: locations.slice(0, 5).map((location) => ({
-      id: stringValue(location.id),
-      name: stringValue(location.name, 'Unknown location'),
-      status: stringValue(location.status, 'unknown'),
-      type: stringValue(location.type, 'other'),
-    })),
-    knownNpcs: npcs.slice(0, 5).map((npc) => ({
-      id: stringValue(npc.id),
-      name: stringValue(npc.name, 'Unknown NPC'),
-      role: stringValue(npc.role, 'Role unknown'),
-      disposition: stringValue(npc.disposition, 'unknown'),
-      status: stringValue(npc.status, 'unknown'),
-    })),
+    knownLocations: locations
+      .map((location, index) => {
+        const id = stringValue(location.id)
+        const rawName = stringValue(location.name)
+        const name = rawName || 'Unknown location'
+        const status = stringValue(location.status).toLowerCase()
+        const current =
+          Boolean(currentLocationId && id === currentLocationId) ||
+          Boolean(currentLocationName && normalizedLookup(name) === currentLocationName)
+        const visited = status === 'visited' || current
+        return {
+          location,
+          index,
+          id,
+          rawName,
+          name,
+          status,
+          current,
+          visited,
+          lastVisitedTurn: recordTurnValue(location, ['lastVisitedTurn']),
+          recencyTurn: recordTurnValue(location, [
+            'lastVisitedTurn',
+            'updatedAtTurn',
+            'firstDiscoveredTurn',
+            'createdAtTurn',
+          ]),
+        }
+      })
+      .filter(({ id, rawName, status, current }) => {
+        if (!id && !rawName) return false
+        return current || !['hidden', 'inaccessible'].includes(status)
+      })
+      .sort((left, right) => {
+        if (left.current !== right.current) return left.current ? -1 : 1
+        if (left.visited !== right.visited) return left.visited ? -1 : 1
+        if (left.visited && right.visited) {
+          return right.lastVisitedTurn - left.lastVisitedTurn || left.index - right.index
+        }
+        return right.recencyTurn - left.recencyTurn || left.index - right.index
+      })
+      .map(({ location }) => ({
+        id: stringValue(location.id),
+        name: stringValue(location.name, 'Unknown location'),
+        status: stringValue(location.status, 'unknown'),
+        type: stringValue(location.type, 'other'),
+      })),
+    knownNpcs: npcs
+      .map((npc, index) => ({
+        npc,
+        index,
+        activeIndex: activeNpcIds.indexOf(stringValue(npc.id)),
+        lastSeenTurn: numberValue(npc.lastSeenTurn) ?? numberValue(npc.updatedAtTurn) ?? 0,
+      }))
+      .filter(({ npc }) => {
+        const id = stringValue(npc.id)
+        const name = normalizedLookup(npc.name)
+        return Boolean(id || name) && !playerIds.has(id) && !playerNames.has(name)
+      })
+      .sort((left, right) => {
+        const leftActive = activeNpcIdSet.has(stringValue(left.npc.id))
+        const rightActive = activeNpcIdSet.has(stringValue(right.npc.id))
+        if (leftActive !== rightActive) return leftActive ? -1 : 1
+        if (leftActive && rightActive) return left.activeIndex - right.activeIndex
+        return right.lastSeenTurn - left.lastSeenTurn || left.index - right.index
+      })
+      .map(({ npc }) => ({
+        id: stringValue(npc.id),
+        name: stringValue(npc.name, 'Unknown NPC'),
+        race: stringValue(npc.race) || stringValue(npc.species) || stringValue(npc.ancestry),
+        role: stringValue(npc.role, 'Role unknown'),
+        disposition: stringValue(npc.disposition, 'unknown'),
+        status: stringValue(npc.status, 'unknown'),
+      })),
   }
 }
 

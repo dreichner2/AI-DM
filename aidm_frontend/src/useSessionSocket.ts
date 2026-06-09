@@ -5,13 +5,15 @@ import {
   type SetStateAction,
 } from 'react'
 import { io, type Socket } from 'socket.io-client'
-import { ngrokBrowserWarningBypassHeaders, normalizeBaseUrl } from './api'
+import { ngrokBrowserWarningBypassHeaders, normalizeBaseUrl, storedWorkspaceId, storedWorkspaceToken } from './api'
 import { stringValue } from './gameSelectors'
+import { normalizeTurnControl } from './turnControl'
 import type {
   ActivePlayer,
   ClarificationRequest,
   JsonRecord,
   RulesHint,
+  SessionState,
   SocketErrorPayload,
   StreamingTurn,
   TimelineEntry,
@@ -63,6 +65,7 @@ type UseSessionSocketOptions = {
   resetTtsFailureForNextResponse: () => void
   stopTtsAudio: (options?: { suppressQueue?: boolean }) => void
   setActivePlayers: Dispatch<SetStateAction<ActivePlayer[]>>
+  setSessionState: Dispatch<SetStateAction<SessionState | null>>
   setSocketStatus: Dispatch<SetStateAction<string>>
   setSendPending: Dispatch<SetStateAction<boolean>>
   setOptimisticEntries: Dispatch<SetStateAction<TimelineEntry[]>>
@@ -157,6 +160,7 @@ export function useSessionSocket({
   resetTtsFailureForNextResponse,
   stopTtsAudio,
   setActivePlayers,
+  setSessionState,
   setSocketStatus,
   setSendPending,
   setOptimisticEntries,
@@ -185,8 +189,19 @@ export function useSessionSocket({
 
     const socketBaseUrl = normalizeBaseUrl(baseUrl)
     const ngrokBypassHeaders = socketBaseUrl ? ngrokBrowserWarningBypassHeaders(socketBaseUrl) : undefined
+    const workspaceToken = storedWorkspaceToken().trim()
+    const workspaceId = storedWorkspaceId().trim()
+    const socketAuth =
+      auth || workspaceToken || workspaceId
+        ? {
+            ...(auth ? { account_token: auth } : {}),
+            ...(workspaceToken ? { workspace_token: workspaceToken } : {}),
+            ...(!workspaceToken && workspaceId ? { workspace_id: workspaceId } : {}),
+            ...(!auth && workspaceToken ? { token: workspaceToken } : {}),
+          }
+        : undefined
     const socketOptions = {
-      auth: auth ? { token: auth } : undefined,
+      auth: socketAuth,
       transports: ['websocket', 'polling'],
       ...(ngrokBypassHeaders
         ? {
@@ -224,6 +239,27 @@ export function useSessionSocket({
     socket.on('active_players', (payload: unknown) => {
       setActivePlayers(normalizeActivePlayers(payload))
       setSocketStatus('joined')
+    })
+
+    socket.on('turn_control_updated', (payload: unknown) => {
+      if (!payload || typeof payload !== 'object') return
+      const value = payload as Record<string, unknown>
+      const sessionId = Number(value.session_id ?? value.sessionId)
+      if (Number.isInteger(sessionId) && sessionId > 0 && sessionId !== selectedSessionId) return
+      const turnControl = normalizeTurnControl(value)
+      setSessionState((current) => {
+        if (!current) return current
+        const currentSnapshot = current.state_snapshot && typeof current.state_snapshot === 'object'
+          ? current.state_snapshot
+          : {}
+        return {
+          ...current,
+          state_snapshot: {
+            ...currentSnapshot,
+            turnControl,
+          },
+        }
+      })
     })
 
     socket.on('new_message', (payload: NewMessagePayload) => {
@@ -468,6 +504,7 @@ export function useSessionSocket({
     setOptimisticEntries,
     setClarificationRequest,
     setSendPending,
+    setSessionState,
     setSocketStatus,
     setStreamingTurn,
     setTurnStatuses,

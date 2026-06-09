@@ -1,5 +1,5 @@
-type SexKey = 'female' | 'male'
-type RaceKey =
+export type SexKey = 'female' | 'male'
+export type RaceKey =
   | 'aarakocra'
   | 'aasimar'
   | 'bugbear'
@@ -39,7 +39,7 @@ export type CharacterProfileIconInput = {
   seed?: string | null
 }
 
-const PROFILE_ICON_FILES: Record<RaceKey, SexedIcons> = {
+export const PROFILE_ICON_FILES: Record<RaceKey, SexedIcons> = {
   aarakocra: {
     male: '19_Aarakocra_male.png',
     female: '20_Aarakocra_female.png',
@@ -162,7 +162,7 @@ const PROFILE_ICON_FILES: Record<RaceKey, SexedIcons> = {
   },
 }
 
-const RACE_ALIASES: Record<RaceKey, string[]> = {
+export const RACE_ALIASES: Record<RaceKey, string[]> = {
   aarakocra: ['aarakocra', 'bird', 'birdfolk', 'bird person', 'eagle', 'hawk', 'avian'],
   aasimar: ['aasimar', 'angel', 'angelic', 'celestial', 'divine', 'heavenborn'],
   bugbear: ['bugbear', 'hairy goblin', 'large goblin'],

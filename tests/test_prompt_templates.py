@@ -19,8 +19,11 @@ def test_dm_stream_request_snapshot():
         rules_hint={'requires_roll': False},
     )
 
-    assert PROMPT_TEMPLATE_VERSION == 'v1'
+    assert PROMPT_TEMPLATE_VERSION == 'v2'
     assert request.system_message == DM_SYSTEM_MESSAGE
+    assert 'brief character color' in request.system_message
+    assert 'Do not decide new player goals' in request.system_message
+    assert 'exact d20 modifier' in request.system_message
     assert request.prompt == (
         '\nCurrent speaker: Ember (ID: 7).\n'
         'CONTEXT:\n{"campaign":"Smoke"}\n\n\n'

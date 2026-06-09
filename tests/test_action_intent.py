@@ -172,9 +172,37 @@ def test_validate_interaction_intent_normalizes_target_metadata():
     assert intent['kind'] == 'interact'
     assert intent['interaction'] == {'type': 'speak_to', 'label': 'Speak to'}
     assert intent['target'] == {
+        'kind': 'player',
         'player_id': 42,
         'character_name': 'Borin',
         'player_name': 'Maya',
+    }
+
+
+def test_validate_interaction_intent_accepts_npc_target_metadata():
+    intent, error = validate_action_intent(
+        {
+            'kind': 'interact',
+            'source': 'composer',
+            'text': 'Seraphina says to Captain Velra: hold the bridge',
+            'client_message_id': 'interact-npc-1',
+            'interaction': {'type': 'speak_to', 'label': 'Speak to'},
+            'target': {
+                'kind': 'npc',
+                'npc_id': 'captain_velra',
+                'character_name': 'Captain Velra',
+                'player_name': 'dock captain',
+            },
+        }
+    )
+
+    assert error is None
+    assert intent is not None
+    assert intent['target'] == {
+        'kind': 'npc',
+        'npc_id': 'captain_velra',
+        'character_name': 'Captain Velra',
+        'player_name': 'dock captain',
     }
 
 

@@ -21,6 +21,7 @@ from aidm_server.models import (
     World,
     safe_json_loads,
 )
+from aidm_server.race_system import build_race_context_summary
 from aidm_server.time_utils import utc_now
 
 
@@ -84,7 +85,13 @@ def build_dm_context(world_id, campaign_id, session_id=None, max_turns: int = 8,
         'location': (campaign.location if campaign else None) or 'Unknown',
     }
 
-    players = Player.query.filter_by(workspace_id=campaign.workspace_id).all() if campaign else []
+    players = (
+        Player.query.filter_by(workspace_id=campaign.workspace_id, campaign_id=campaign.campaign_id)
+        .order_by(Player.player_id.asc())
+        .all()
+        if campaign
+        else []
+    )
     recent_actions_map = _recent_actions_by_player([player.player_id for player in players])
     active_players = []
     for player in players:
@@ -93,6 +100,7 @@ def build_dm_context(world_id, campaign_id, session_id=None, max_turns: int = 8,
                 'player_id': player.player_id,
                 'character_name': player.character_name,
                 'race': player.race,
+                'race_summary': build_race_context_summary(player.race_selection, player.race),
                 'class': player.class_,
                 'level': player.level,
                 'state': character_state_for_player(player),

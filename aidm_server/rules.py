@@ -17,7 +17,46 @@ class RuleHint:
     outcome_deferred: bool = False
 
 
-_ATTACK_KEYWORDS = {"attack", "shoot", "slash", "stab", "hit", "smite"}
+_ATTACK_KEYWORDS = {
+    "attack",
+    "attacks",
+    "attacked",
+    "behead",
+    "beheads",
+    "beheaded",
+    "cut",
+    "cuts",
+    "decapitate",
+    "decapitates",
+    "decapitated",
+    "execute",
+    "executes",
+    "executed",
+    "hit",
+    "hits",
+    "kill",
+    "kills",
+    "killed",
+    "maim",
+    "maims",
+    "maimed",
+    "shoot",
+    "shoots",
+    "shot",
+    "slash",
+    "slashes",
+    "slashed",
+    "slice",
+    "slices",
+    "sliced",
+    "smite",
+    "stab",
+    "stabs",
+    "stabbed",
+    "strike",
+    "strikes",
+    "struck",
+}
 _STEALTH_KEYWORDS = {"sneak", "stealth", "hide", "silently"}
 _SOCIAL_KEYWORDS = {
     "persuade",

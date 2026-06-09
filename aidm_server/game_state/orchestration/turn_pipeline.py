@@ -61,11 +61,15 @@ def _sentences(text: str) -> list[str]:
 
 
 def _players_for_campaign(campaign: Campaign, fallback_player: Player) -> list[Player]:
-    players = Player.query.filter_by(workspace_id=campaign.workspace_id).order_by(Player.player_id.asc()).all()
+    players = (
+        Player.query.filter_by(workspace_id=campaign.workspace_id, campaign_id=campaign.campaign_id)
+        .order_by(Player.player_id.asc())
+        .all()
+    )
     available = [
         player
         for player in players
-        if player.workspace_id == campaign.workspace_id and (player.campaign_id in {None, campaign.campaign_id})
+        if player.workspace_id == campaign.workspace_id and player.campaign_id == campaign.campaign_id
     ]
     if not any(player.player_id == fallback_player.player_id for player in available):
         available.append(fallback_player)

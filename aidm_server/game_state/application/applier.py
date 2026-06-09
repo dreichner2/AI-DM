@@ -222,6 +222,9 @@ def _turn_id(change: dict[str, Any]) -> int | None:
 
 
 def _merge_rich_text(record: dict[str, Any], key: str, value: Any) -> None:
+    if value == '':
+        record[key] = ''
+        return
     incoming = _text(value)
     if not incoming:
         return
@@ -265,9 +268,10 @@ def _apply_scene_fields(scene: dict[str, Any], change: dict[str, Any]) -> None:
         _set_if_present(scene, key, change.get(key))
     if 'dangerLevel' in change:
         scene['dangerLevel'] = max(0, min(10, int_or_default(change.get('dangerLevel'), default=0)))
-    _merge_rich_text(scene, 'description', change.get('description'))
+    if 'description' in change:
+        _merge_rich_text(scene, 'description', change.get('description'))
     if 'activeNpcIds' in change:
-        scene['activeNpcIds'] = _merge_unique(scene.get('activeNpcIds'), change.get('activeNpcIds'))
+        scene['activeNpcIds'] = _string_list(change.get('activeNpcIds'))
     if 'activeQuestIds' in change:
         scene['activeQuestIds'] = _merge_unique(scene.get('activeQuestIds'), change.get('activeQuestIds'))
     turn_id = _turn_id(change)
@@ -351,8 +355,21 @@ def _apply_scene_move(state: dict[str, Any], change: dict[str, Any]) -> dict[str
     scene = _ensure_scene(state)
     location_payload = _location_payload(change, status='visited')
     location = _merge_location(state, location_payload)
-    change = {**change, 'locationId': location.get('id'), 'name': location.get('name')}
-    _apply_scene_fields(scene, change)
+    move_change = {
+        'sceneType': 'exploration',
+        'dangerLevel': 0,
+        'combatState': 'none',
+        'description': '',
+        'activeNpcIds': [],
+        **change,
+        'locationId': location.get('id'),
+        'name': location.get('name'),
+    }
+    if 'mood' not in change:
+        scene.pop('mood', None)
+    if 'musicTag' not in change:
+        scene.pop('musicTag', None)
+    _apply_scene_fields(scene, move_change)
     return location
 
 
@@ -472,10 +489,19 @@ def _npc_payload(change: dict[str, Any]) -> dict[str, Any]:
     name = _text(change.get('name') or change.get('npcName') or npc.get('name'))
     npc_id = _world_id(change.get('npcId'), npc.get('id'), npc.get('npcId'), name)
     turn_id = _turn_id(change)
+    race = (
+        change.get('race')
+        or change.get('species')
+        or change.get('ancestry')
+        or npc.get('race')
+        or npc.get('species')
+        or npc.get('ancestry')
+    )
     payload: dict[str, Any] = {
         **npc,
         'id': npc_id,
         'name': name or npc_id,
+        'race': race,
         'role': change.get('role') or npc.get('role'),
         'description': change.get('description') or npc.get('description'),
         'disposition': change.get('disposition') or npc.get('disposition') or 'unknown',
@@ -506,6 +532,7 @@ def _merge_npc(state: dict[str, Any], payload: dict[str, Any], *, party: bool = 
         record = {
             'id': payload.get('id'),
             'name': payload.get('name'),
+            'race': payload.get('race'),
             'role': payload.get('role'),
             'description': _text(payload.get('description')),
             'disposition': payload.get('disposition') or 'unknown',
@@ -521,7 +548,7 @@ def _merge_npc(state: dict[str, Any], payload: dict[str, Any], *, party: bool = 
         }
         collection.append(record)
         return record
-    for key in ('name', 'role', 'disposition', 'locationId', 'status', 'faction', 'firstMetTurn', 'lastSeenTurn'):
+    for key in ('name', 'race', 'role', 'disposition', 'locationId', 'status', 'faction', 'firstMetTurn', 'lastSeenTurn'):
         if key == 'firstMetTurn' and record.get(key):
             continue
         _set_if_present(record, key, payload.get(key))
@@ -618,6 +645,28 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             if item:
                 item['lastUsedAtTurn'] = change.get('turnId') or change.get('turn_id') or item.get('lastUsedAtTurn')
                 applied_change['itemName'] = item.get('name')
+        elif change_type == 'race_ability.mark_used' and actor:
+            ability_id = _text(_change_value(change, 'abilityId', 'ability_id'))
+            if not ability_id:
+                skipped.append({'change': change, 'reason': 'Race ability id missing during mark used.'})
+                continue
+            ability_state = actor.setdefault('raceAbilityState', {})
+            ability_state[ability_id] = {
+                'available': False,
+                'usedAtTurn': change.get('turnId') or change.get('turn_id'),
+                'refreshesOn': _text(_change_value(change, 'refreshesOn', 'refreshes_on')) or 'short_rest',
+            }
+            applied_change['abilityId'] = ability_id
+        elif change_type == 'race_ability.refresh' and actor:
+            ability_id = _text(_change_value(change, 'abilityId', 'ability_id'))
+            if not ability_id:
+                skipped.append({'change': change, 'reason': 'Race ability id missing during refresh.'})
+                continue
+            ability_state = actor.setdefault('raceAbilityState', {})
+            current = ability_state.setdefault(ability_id, {})
+            current['available'] = True
+            current.pop('usedAtTurn', None)
+            applied_change['abilityId'] = ability_id
         elif change_type == 'currency.add' and actor:
             applied_change['actualAmount'] = _apply_currency(actor, change, 1)
         elif change_type == 'currency.remove' and actor:

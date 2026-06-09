@@ -102,7 +102,13 @@ def test_update_player_persists_profile_sheet_stats_and_inventory(client, app):
     payload = response.get_json()
     assert payload['name'] == 'Alice Updated'
     assert payload['character_name'] == 'Seraphina Vale'
-    assert payload['race'] == 'Half-Elf'
+    assert payload['race'] == 'Elf'
+    assert payload['race_selection'] == {
+        'raceId': 'elf',
+        'raceName': 'Elf',
+        'source': 'curated',
+        'selectedOptions': {},
+    }
     assert payload['sex'] == 'female'
     assert payload['profile_image'] == '/profile-icons/elf_female.png'
     assert payload['class_'] == 'Rogue'

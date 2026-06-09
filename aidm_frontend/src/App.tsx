@@ -27,11 +27,12 @@ import {
 } from 'lucide-react'
 import { StatusDot, ThinIcon } from './AppChrome'
 import { CampaignRail, type CampaignCard, type SessionCard } from './CampaignRail'
+import { ClassSelector } from './ClassSelector'
 import {
   InspectorPanel,
   type InspectorTab,
 } from './InspectorPanel'
-import { ApiClientError, apiFetch } from './api'
+import { ApiClientError, apiFetch, storedRuntimeAccessSnapshot } from './api'
 import {
   POINT_BUY_ABILITIES,
   POINT_BUY_BUDGET,
@@ -61,8 +62,11 @@ import {
   worldStateFromSnapshot,
 } from './gameSelectors'
 import { profileIconSrcForCharacter } from './profileIcons'
+import { RaceSelector } from './RaceSelector'
+import { turnControlFromSnapshot, turnControlWithActiveName } from './turnControl'
 import './App.css'
 import type {
+  AccountWorkspace,
   ActivePlayer,
   BetaSummary,
   Campaign,
@@ -74,6 +78,7 @@ import type {
   SessionSummary,
   StreamingTurn,
   TimelineEntry,
+  TurnControlMode,
   TtsRuntimeConfig,
   World,
 } from './types'
@@ -178,7 +183,7 @@ function isNotFoundError(error: unknown) {
 }
 
 function isAuthTokenWorkspaceError(error: UiError) {
-  return error.category === 'workspace' && error.message.includes('Missing or invalid bearer token')
+  return error.category === 'workspace' && error.message.includes('Missing or invalid workspace token')
 }
 
 function formatShortAge(value: string | null) {
@@ -198,6 +203,13 @@ function formatShortAge(value: string | null) {
   if (weeks < 5) return `${weeks}w ago`
   const months = Math.floor(days / 30)
   return `${Math.max(1, months)}mo ago`
+}
+
+function savedWorkspaceRoleLabel(workspace: AccountWorkspace) {
+  if (workspace.is_workspace_admin && workspace.workspace_role !== 'admin') {
+    return `${workspace.workspace_role} / admin`
+  }
+  return workspace.workspace_role
 }
 
 function formatDurationFrom(value: string | null, nowMs: number) {
@@ -398,12 +410,21 @@ function App() {
     closeRuntimeSettings,
     openAuthTokenPrompt,
     openRuntimeSettings,
+    runtimeAuthIntent,
+    runtimeAuthStep,
+    runtimeAccount,
     runtimeSettingsError,
     runtimeSettingsForm,
     runtimeSettingsMode,
     runtimeSettingsOpen,
+    setRuntimeAuthIntent,
+    setRuntimeAuthStep,
+    setRuntimeSettingsError,
     setRuntimeSettingsForm,
+    selectSavedWorkspace,
     submitRuntimeSettings,
+    workspaceId,
+    workspaceToken,
   } = useRuntimeSettings({
     defaultBaseUrl: DEFAULT_BASE_URL,
     reconnectSocket,
@@ -522,8 +543,13 @@ function App() {
     clearAuthTokenErrors()
   }, [clearAuthTokenErrors, health?.status])
   const selectedPlayer = useMemo(
-    () => players.find((player) => player.player_id === selectedPlayerId) ?? null,
-    [players, selectedPlayerId],
+    () =>
+      players.find(
+        (player) =>
+          player.player_id === selectedPlayerId &&
+          player.campaign_id === selectedCampaignId,
+      ) ?? null,
+    [players, selectedCampaignId, selectedPlayerId],
   )
   useEffect(() => {
     if (lastSelectedCampaignIdRef.current !== selectedCampaignId) {
@@ -578,9 +604,21 @@ function App() {
     [logEntries, optimisticEntries, streamingTurn, turnStatuses],
   )
   const pendingRollOptions = useMemo(() => pendingRollOptionsFromTimeline(timeline), [timeline])
+  const turnControlSnapshot = isRecord(sessionState?.state_snapshot) ? sessionState.state_snapshot : null
+  const turnControl = useMemo(
+    () => turnControlWithActiveName(turnControlFromSnapshot(turnControlSnapshot), activePlayers),
+    [activePlayers, turnControlSnapshot],
+  )
 
   const activeSession =
-    sessions.find((session) => session.session_id === selectedSessionId) ?? null
+    sessions.find(
+      (session) =>
+        session.session_id === selectedSessionId &&
+        session.campaign_id === selectedCampaignId,
+    ) ?? null
+  const activeSessionId = activeSession?.session_id ?? null
+  const selectedPlayerDetailId = selectedPlayer?.player_id ?? null
+  const socketCampaignId = activeSessionId && selectedPlayerDetailId ? selectedCampaignId : null
   const activeSessionName = activeSession
     ? sessionDisplayName(activeSession, campaign?.world_id ?? selectedCampaignId)
     : 'No session selected'
@@ -659,6 +697,7 @@ function App() {
     itemDraftName,
     itemQuantity,
     itemCostGold,
+    queuedActionText,
     setActionText,
     updateActionText,
     setAdminPasscode,
@@ -677,6 +716,9 @@ function App() {
     startDiceRoll,
     submitAction,
     toggleAdminTools,
+    clearQueuedAction,
+    selectedPlayerHasTurn,
+    turnControlStatusLabel,
     updateSelectedDie,
   } = useComposerActions({
     activePlayers,
@@ -684,19 +726,42 @@ function App() {
     campaign,
     itemOptions,
     pendingRollOptions,
-    players,
+    sessionState,
     selectedCampaignId,
     selectedPlayer,
-    selectedPlayerId,
-    selectedSessionId,
+    selectedPlayerId: selectedPlayerDetailId,
+    selectedSessionId: activeSessionId,
     sendPending,
     setOptimisticEntries,
     setSendPending,
     socketRef,
     stopTtsAudio,
     streamingTurn,
+    turnControl,
     pushError,
   })
+
+  const updateTurnControl = useCallback(
+    (mode: TurnControlMode, activePlayerId?: number | null) => {
+      if (!activeSessionId || !selectedPlayerDetailId) {
+        pushError('validation', 'Choose a session and player before changing turn mode.')
+        return
+      }
+      const socket = socketRef.current
+      if (!socket || socket.connected === false) {
+        pushError('connection', 'Realtime is reconnecting. Try again in a moment.')
+        return
+      }
+      const nextActivePlayerId = mode === 'free' ? null : activePlayerId ?? turnControl.activePlayerId ?? selectedPlayerDetailId
+      socket.emit('set_turn_control', {
+        session_id: activeSessionId,
+        player_id: selectedPlayerDetailId,
+        mode,
+        active_player_id: nextActivePlayerId,
+      })
+    },
+    [activeSessionId, pushError, selectedPlayerDetailId, socketRef, turnControl.activePlayerId],
+  )
 
   const campaignTitle = campaign?.title ?? 'No campaign selected'
   const activeSessionTitle = activeSession
@@ -1323,6 +1388,12 @@ function App() {
     openRuntimeSettings()
   }
 
+  const openWorkspaceAuthDialog = () => {
+    rememberDialogTrigger()
+    setAccountMenuOpen(false)
+    openRuntimeSettings('auth')
+  }
+
   const closeRuntimeSettingsDialog = useCallback(() => {
     closeRuntimeSettings()
   }, [closeRuntimeSettings])
@@ -1617,16 +1688,24 @@ function App() {
                             : null
   const modalOpen = Boolean(activeModalKey)
   const runtimeSettingsIsAuthPrompt = runtimeSettingsMode === 'auth'
+  const runtimeSettingsIsAccountStep = runtimeSettingsIsAuthPrompt && runtimeAuthStep === 'account'
+  const runtimeSettingsIsWorkspaceStep = runtimeSettingsIsAuthPrompt && runtimeAuthStep === 'workspace'
   const runtimeSettingsEyebrow = runtimeSettingsIsAuthPrompt ? 'Access' : 'Runtime'
-  const runtimeSettingsTitle = runtimeSettingsIsAuthPrompt
-    ? 'Auth Token Required'
-    : 'Backend Settings'
+  const runtimeSettingsTitle = runtimeSettingsIsWorkspaceStep
+    ? 'Join Workspace'
+    : runtimeSettingsIsAccountStep
+      ? runtimeAuthIntent === 'signup' ? 'Sign Up' : 'Log In'
+      : 'Backend Settings'
   const runtimeSettingsCloseLabel = runtimeSettingsIsAuthPrompt
-    ? 'Close auth token prompt'
+    ? 'Close account prompt'
     : 'Close backend settings'
-  const runtimeSettingsHelpText = runtimeSettingsIsAuthPrompt
-    ? 'Paste the shared token for this AIDM session.'
-    : 'Leave Backend URL blank when the frontend and backend share one origin. Auth tokens are kept for this tab session and used for API, Socket.IO, and TTS requests.'
+  const runtimeSettingsHelpText = runtimeSettingsIsWorkspaceStep
+    ? 'Enter the workspace token for the table you want to join.'
+    : runtimeSettingsIsAccountStep
+      ? runtimeAuthIntent === 'signup'
+        ? 'Create your player account first. Password is optional for now.'
+        : 'Log in with your username. Use your password if one is set.'
+      : 'Leave Backend URL blank when the frontend and backend share one origin.'
 
   useEffect(() => {
     if (
@@ -1886,7 +1965,7 @@ function App() {
   }, [refreshCampaignWorkspace, selectedCampaignId])
 
   useEffect(() => {
-    if (!selectedSessionId) {
+    if (!activeSessionId) {
       clearSessionData()
       setTurnStatuses({})
       setClarificationRequest(null)
@@ -1896,7 +1975,7 @@ function App() {
     setSessionLogHasMore(false)
     setTurnStatuses({})
     setClarificationRequest(null)
-    loadSessionData(selectedSessionId).then(clearAuthTokenErrors).catch((error: unknown) => {
+    loadSessionData(activeSessionId).then(clearAuthTokenErrors).catch((error: unknown) => {
       if (isUnauthorizedError(error)) {
         openAuthTokenPrompt()
         clearAuthTokenErrors()
@@ -1910,14 +1989,16 @@ function App() {
     loadSessionData,
     openAuthTokenPrompt,
     pushError,
-    selectedSessionId,
+    activeSessionId,
     setSessionLogCursor,
     setSessionLogHasMore,
   ])
 
   const loadPlayerDetail = useCallback(async (playerId: number) => {
     const requestId = ++playerRequestRef.current
-    await apiFetch<PlayerDetail>(baseUrl, `/api/players/${playerId}`, auth)
+    const requestAuth = auth
+    const requestAccessSnapshot = storedRuntimeAccessSnapshot(requestAuth)
+    await apiFetch<PlayerDetail>(baseUrl, `/api/players/${playerId}`, requestAuth)
       .then((detail) => {
         if (playerRequestRef.current === requestId) {
           setPlayerDetail(detail)
@@ -1928,6 +2009,7 @@ function App() {
         if (playerRequestRef.current === requestId) {
           setPlayerDetail(null)
           if (isUnauthorizedError(error)) {
+            if (requestAccessSnapshot !== storedRuntimeAccessSnapshot()) return
             openAuthTokenPrompt()
             clearAuthTokenErrors()
             return
@@ -1950,24 +2032,24 @@ function App() {
   ])
 
   useEffect(() => {
-    if (!selectedPlayerId) {
+    if (!selectedPlayerDetailId) {
       playerRequestRef.current += 1
       setPlayerDetail(null)
       return
     }
-    void loadPlayerDetail(selectedPlayerId)
+    void loadPlayerDetail(selectedPlayerDetailId)
   }, [
     loadPlayerDetail,
-    selectedPlayerId,
+    selectedPlayerDetailId,
     setPlayerDetail,
   ])
 
   useSessionSocket({
     auth,
     baseUrl,
-    selectedSessionId,
-    selectedPlayerId,
-    selectedCampaignId,
+    selectedSessionId: activeSessionId,
+    selectedPlayerId: selectedPlayerDetailId,
+    selectedCampaignId: socketCampaignId,
     socketReconnectKey,
     socketRef,
     loadSessionData,
@@ -1977,6 +2059,7 @@ function App() {
     resetTtsFailureForNextResponse,
     stopTtsAudio,
     setActivePlayers,
+    setSessionState,
     setSocketStatus,
     setSendPending,
     setOptimisticEntries,
@@ -1997,7 +2080,7 @@ function App() {
 
   const resolveClarification = useCallback(
     (selectedItemId: string) => {
-      if (!clarificationRequest || !selectedSessionId || !selectedPlayerId) return
+      if (!clarificationRequest || !activeSessionId || !selectedPlayerDetailId) return
       const socket = socketRef.current
       if (!socket) {
         pushError('connection', 'Socket is not connected; reconnect before choosing an item.')
@@ -2005,14 +2088,14 @@ function App() {
       }
       setSendPending(true)
       socket.emit('resolve_clarification', {
-        session_id: selectedSessionId,
-        player_id: selectedPlayerId,
+        session_id: activeSessionId,
+        player_id: selectedPlayerDetailId,
         turn_id: clarificationRequest.turnId,
         selected_item_id: selectedItemId,
       })
       setClarificationRequest(null)
     },
-    [clarificationRequest, pushError, selectedPlayerId, selectedSessionId, socketRef],
+    [activeSessionId, clarificationRequest, pushError, selectedPlayerDetailId, socketRef],
   )
 
   useEffect(() => {
@@ -2196,9 +2279,9 @@ function App() {
           <ExternalLink size={15} />
           <button
             type="button"
-            aria-label="Edit backend settings"
-            title="Edit backend settings"
-            onClick={openRuntimeSettingsDialog}
+            aria-label="Change workspace access"
+            title="Change workspace access"
+            onClick={openWorkspaceAuthDialog}
           >
             <Settings size={16} />
           </button>
@@ -2357,8 +2440,12 @@ function App() {
                 role="menu"
                 aria-label="Account options"
               >
-                <strong role="presentation">{selectedPlayer?.character_name ?? 'No player selected'}</strong>
-                <span role="presentation">{selectedPlayer?.name ?? 'Local profile'}</span>
+                <strong role="presentation">{runtimeAccount?.displayName ?? 'No account connected'}</strong>
+                <span role="presentation">
+                  {runtimeAccount?.workspaceRole
+                    ? `${runtimeAccount.workspaceRole} / ${runtimeAccount.workspaceId ?? 'workspace'}`
+                    : selectedPlayer?.character_name ?? 'Choose account'}
+                </span>
                 <button type="button" role="menuitem" onClick={() => void refreshCurrentWorkspace()}>
                   Refresh workspace
                 </button>
@@ -2380,7 +2467,7 @@ function App() {
                 </button>
                 {authToken ? (
                   <button type="button" role="menuitem" onClick={clearAuthToken}>
-                    Clear auth token
+                    Sign out
                   </button>
                 ) : null}
               </div>
@@ -2489,9 +2576,17 @@ function App() {
           setActionText,
           setAdminPasscode,
           selectedCharacterName: selectedPlayer?.character_name ?? null,
+          selectedPlayerId,
+          activePlayers,
           composerMode,
           selectedDie,
           sendPending,
+          turnControl,
+          turnControlStatusLabel,
+          selectedPlayerHasTurn,
+          queuedActionText,
+          clearQueuedAction,
+          updateTurnControl,
           ttsEnabled,
           ttsStatusClassName: effectiveTtsStatus,
           ttsStatusLabel,
@@ -2669,23 +2764,134 @@ function App() {
                   />
                 </label>
               )}
-              <label>
-                Auth Token
-                <input
-                  autoFocus={runtimeSettingsIsAuthPrompt}
-                  data-autofocus={runtimeSettingsIsAuthPrompt ? true : undefined}
-                  value={runtimeSettingsForm.authToken}
-                  onChange={(event) =>
-                    setRuntimeSettingsForm((current) => ({
-                      ...current,
-                      authToken: event.target.value,
-                    }))
-                  }
-                  placeholder="Optional bearer token"
-                  type="password"
-                  autoComplete="off"
-                />
-              </label>
+              {runtimeSettingsIsAccountStep ? (
+                <>
+                  <div className="runtime-auth-choice" role="group" aria-label="Account action">
+                    <button
+                      type="button"
+                      aria-pressed={runtimeAuthIntent === 'login'}
+                      onClick={() => {
+                        setRuntimeAuthIntent('login')
+                        setRuntimeSettingsError('')
+                      }}
+                    >
+                      Log In
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={runtimeAuthIntent === 'signup'}
+                      onClick={() => {
+                        setRuntimeAuthIntent('signup')
+                        setRuntimeSettingsError('')
+                      }}
+                    >
+                      Sign Up
+                    </button>
+                  </div>
+                  <div className="dialog-grid two">
+                    <label>
+                      Username
+                      <input
+                        autoFocus
+                        data-autofocus
+                        value={runtimeSettingsForm.username}
+                        onChange={(event) =>
+                          setRuntimeSettingsForm((current) => ({
+                            ...current,
+                            username: event.target.value,
+                          }))
+                        }
+                        placeholder="danny"
+                        autoComplete="username"
+                      />
+                    </label>
+                    <label>
+                      Password
+                      <input
+                        value={runtimeSettingsForm.password}
+                        onChange={(event) =>
+                          setRuntimeSettingsForm((current) => ({
+                            ...current,
+                            password: event.target.value,
+                          }))
+                        }
+                        placeholder="Optional for now"
+                        type="password"
+                        autoComplete={runtimeAuthIntent === 'signup' ? 'new-password' : 'current-password'}
+                      />
+                    </label>
+                  </div>
+                  {runtimeAuthIntent === 'signup' ? (
+                    <div className="dialog-grid two">
+                      <label>
+                        First Name
+                        <input
+                          value={runtimeSettingsForm.firstName}
+                          onChange={(event) =>
+                            setRuntimeSettingsForm((current) => ({
+                              ...current,
+                              firstName: event.target.value,
+                            }))
+                          }
+                          autoComplete="given-name"
+                        />
+                      </label>
+                      <label>
+                        Last Name
+                        <input
+                          value={runtimeSettingsForm.lastName}
+                          onChange={(event) =>
+                            setRuntimeSettingsForm((current) => ({
+                              ...current,
+                              lastName: event.target.value,
+                            }))
+                          }
+                          autoComplete="family-name"
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+              {runtimeSettingsIsWorkspaceStep ? (
+                <>
+                  {runtimeAccount?.workspaces.length ? (
+                    <div className="saved-workspace-list" role="group" aria-label="Saved workspaces">
+                      <span>Saved Workspaces</span>
+                      {runtimeAccount.workspaces.map((workspace) => (
+                        <button
+                          type="button"
+                          className="saved-workspace-option"
+                          key={workspace.workspace_id}
+                          aria-label={`${workspace.workspace_id} ${savedWorkspaceRoleLabel(workspace)}`}
+                          aria-pressed={workspace.workspace_id === workspaceId}
+                          onClick={() => void selectSavedWorkspace(workspace.workspace_id)}
+                        >
+                          <strong>{workspace.workspace_id}</strong>
+                          <span>{savedWorkspaceRoleLabel(workspace)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  <label>
+                    Workspace Token
+                    <input
+                      autoFocus={!runtimeAccount?.workspaces.length}
+                      data-autofocus={!runtimeAccount?.workspaces.length ? true : undefined}
+                      value={runtimeSettingsForm.workspaceToken}
+                      onChange={(event) =>
+                        setRuntimeSettingsForm((current) => ({
+                          ...current,
+                          workspaceToken: event.target.value,
+                        }))
+                      }
+                      placeholder="Token for a new workspace"
+                      type="password"
+                      autoComplete="off"
+                    />
+                  </label>
+                </>
+              ) : null}
               <p>{runtimeSettingsHelpText}</p>
               {runtimeSettingsError ? (
                 <div className="dialog-error">{runtimeSettingsError}</div>
@@ -2696,17 +2902,40 @@ function App() {
                     type="button"
                     className="secondary"
                     onClick={() =>
-                      setRuntimeSettingsForm({ baseUrl: DEFAULT_BASE_URL, authToken: '' })
+                      setRuntimeSettingsForm({
+                        baseUrl: DEFAULT_BASE_URL,
+                        workspaceToken: '',
+                        username: '',
+                        firstName: '',
+                        lastName: '',
+                        password: '',
+                      })
                     }
                   >
                     Reset
                   </button>
                 )}
+                {runtimeSettingsIsWorkspaceStep ? (
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => {
+                      setRuntimeAuthStep('account')
+                      setRuntimeSettingsError('')
+                    }}
+                  >
+                    Back
+                  </button>
+                ) : null}
                 <button type="button" className="secondary" onClick={closeRuntimeSettingsDialog}>
                   Cancel
                 </button>
                 <button type="submit">
-                  {runtimeSettingsIsAuthPrompt ? 'Connect' : 'Save Settings'}
+                  {runtimeSettingsIsWorkspaceStep
+                    ? 'Join Workspace'
+                    : runtimeSettingsIsAccountStep
+                      ? 'Continue'
+                      : 'Save Settings'}
                 </button>
               </footer>
             </form>
@@ -2803,8 +3032,20 @@ function App() {
             <div className="profile-dialog-body">
               <dl className="profile-summary-grid">
                 <div>
-                  <dt>Player</dt>
-                  <dd>{selectedPlayer?.name ?? 'Local profile'}</dd>
+                  <dt>Account</dt>
+                  <dd>{runtimeAccount?.displayName ?? selectedPlayer?.name ?? 'No account connected'}</dd>
+                </div>
+                <div>
+                  <dt>Workspace</dt>
+                  <dd>
+                    {runtimeAccount?.workspaceId
+                      ? `${runtimeAccount.workspaceId}${runtimeAccount.workspaceRole ? ` / ${runtimeAccount.workspaceRole}` : ''}`
+                      : workspaceId
+                        ? workspaceId
+                      : workspaceToken
+                        ? 'Token set'
+                        : 'No workspace token'}
+                  </dd>
                 </div>
                 <div>
                   <dt>Character</dt>
@@ -2857,7 +3098,7 @@ function App() {
                 </button>
                 {authToken ? (
                   <button type="button" onClick={clearAuthToken}>
-                    Clear auth token
+                    Sign out
                   </button>
                 ) : null}
               </div>
@@ -3268,21 +3509,10 @@ function App() {
             </header>
             <form onSubmit={(event) => void submitPlayerEditDialog(event)}>
               <label>
-                Player Name
+                Character Name
                 <input
                   autoFocus
                   data-autofocus
-                  value={playerEditDialog.name}
-                  onChange={(event) =>
-                    setPlayerEditDialog((current) =>
-                      current ? { ...current, name: event.target.value } : current,
-                    )
-                  }
-                />
-              </label>
-              <label>
-                Character Name
-                <input
                   value={playerEditDialog.characterName}
                   onChange={(event) =>
                     setPlayerEditDialog((current) =>
@@ -3291,47 +3521,39 @@ function App() {
                   }
                 />
               </label>
-              <div className="dialog-grid two">
-                <label>
-                  Race
-                  <input
-                    value={playerEditDialog.race}
-                    onChange={(event) =>
-                      setPlayerEditDialog((current) =>
-                        current ? { ...current, race: event.target.value } : current,
-                      )
-                    }
-                  />
-                </label>
-                <label>
-                  Sex
-                  <select
-                    value={playerEditDialog.sex}
-                    onChange={(event) =>
-                      setPlayerEditDialog((current) =>
-                        current ? { ...current, sex: event.target.value } : current,
-                      )
-                    }
-                  >
-                    <option value="">Not set</option>
-                    <option value="female">Female</option>
-                    <option value="male">Male</option>
-                    <option value="other">Other</option>
-                  </select>
-                </label>
-              </div>
-              <div className="dialog-grid two">
-                <label>
-                  Class
-                  <input
-                    value={playerEditDialog.charClass}
-                    onChange={(event) =>
-                      setPlayerEditDialog((current) =>
-                        current ? { ...current, charClass: event.target.value } : current,
-                      )
-                    }
-                  />
-                </label>
+              <RaceSelector
+                auth={auth}
+                baseUrl={baseUrl}
+                selectedRace={playerEditDialog.race}
+                selectedRaceSelection={playerEditDialog.raceSelection}
+                selectedSex={playerEditDialog.sex}
+                pending={playerEditDialog.pending}
+                onRaceChange={(race) =>
+                  setPlayerEditDialog((current) =>
+                    current ? { ...current, race } : current,
+                  )
+                }
+                onRaceSelectionChange={(raceSelection) =>
+                  setPlayerEditDialog((current) =>
+                    current ? { ...current, raceSelection } : current,
+                  )
+                }
+                onSexChange={(sex) =>
+                  setPlayerEditDialog((current) =>
+                    current ? { ...current, sex } : current,
+                  )
+                }
+              />
+              <ClassSelector
+                selectedClass={playerEditDialog.charClass}
+                pending={playerEditDialog.pending}
+                onClassChange={(charClass) =>
+                  setPlayerEditDialog((current) =>
+                    current ? { ...current, charClass } : current,
+                  )
+                }
+              />
+              <div className="dialog-grid two character-level-grid">
                 <label>
                   Level
                   <input

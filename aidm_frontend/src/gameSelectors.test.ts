@@ -186,6 +186,8 @@ describe('game selector helpers', () => {
     const player: Player = {
       player_id: 1,
       workspace_id: 'owner',
+      account_id: null,
+      username: null,
       campaign_id: 1,
       name: 'Danny',
       character_name: 'Ember',
@@ -275,6 +277,7 @@ describe('game selector helpers', () => {
           {
             id: 'captain_velra',
             name: 'Captain Velra',
+            race: 'Human',
             role: 'dock captain',
             disposition: 'friendly',
             status: 'met',
@@ -306,11 +309,88 @@ describe('game selector helpers', () => {
         {
           id: 'captain_velra',
           name: 'Captain Velra',
+          race: 'Human',
           role: 'dock captain',
           disposition: 'friendly',
           status: 'met',
         },
       ],
     })
+  })
+
+  it('prioritizes active and recent NPCs while hiding player-character duplicates', () => {
+    const panel = worldStateFromSnapshot({
+      currentScene: {
+        name: 'Blackwake Tavern',
+        activeNpcIds: ['marta_fenwick', 'captain_velra'],
+      },
+      playerCharacters: [{ id: 'player_1', playerId: 1, name: 'Kozuki' }],
+      knownNpcs: [
+        { id: 'oden', name: 'Oden', role: 'old leak', lastSeenTurn: 270 },
+        { id: 'kozuki', name: 'Kozuki', role: 'mistaken PC', lastSeenTurn: 999 },
+        { id: 'captain_velra', name: 'Captain Velra', role: 'dock captain', lastSeenTurn: 12 },
+        { id: 'marta_fenwick', name: 'Marta Fenwick', role: 'shopkeeper', lastSeenTurn: 8 },
+        { id: 'new_sentry', name: 'New Sentry', role: 'guard', lastSeenTurn: 300 },
+      ],
+    })
+
+    expect(panel.knownNpcs.map((npc) => npc.id)).toEqual([
+      'marta_fenwick',
+      'captain_velra',
+      'new_sentry',
+      'oden',
+    ])
+  })
+
+  it('shows every known NPC after active and recent entries', () => {
+    const panel = worldStateFromSnapshot({
+      knownNpcs: Array.from({ length: 10 }, (_, index) => ({
+        id: `npc_${index}`,
+        name: `NPC ${index}`,
+        role: 'traveler',
+        lastSeenTurn: index,
+      })),
+    })
+
+    expect(panel.knownNpcs).toHaveLength(10)
+    expect(panel.knownNpcs.map((npc) => npc.id)).toEqual([
+      'npc_9',
+      'npc_8',
+      'npc_7',
+      'npc_6',
+      'npc_5',
+      'npc_4',
+      'npc_3',
+      'npc_2',
+      'npc_1',
+      'npc_0',
+    ])
+  })
+
+  it('shows every known place with the current and newest visited locations first', () => {
+    const panel = worldStateFromSnapshot({
+      currentScene: {
+        locationId: 'moon_market',
+        name: 'Moon Market',
+      },
+      locations: [
+        { id: 'old_ruins', name: 'Old Ruins', status: 'visited', type: 'ruins', lastVisitedTurn: 3 },
+        { id: 'moon_market', name: 'Moon Market', status: 'visited', type: 'town', lastVisitedTurn: 4 },
+        { id: 'new_docks', name: 'New Docks', status: 'visited', type: 'road', lastVisitedTurn: 8 },
+        { id: 'watchtower', name: 'Watchtower', status: 'discovered', type: 'castle', firstDiscoveredTurn: 9 },
+        { id: 'ash_gate', name: 'Ash Gate', status: 'visited', type: 'ruins', lastVisitedTurn: 6 },
+        { id: 'far_road', name: 'Far Road', status: 'known', type: 'road', updatedAtTurn: 2 },
+        { id: 'sealed_vault', name: 'Sealed Vault', status: 'hidden', type: 'dungeon', lastVisitedTurn: 10 },
+      ],
+    })
+
+    expect(panel.knownLocations.map((location) => location.id)).toEqual([
+      'moon_market',
+      'new_docks',
+      'ash_gate',
+      'old_ruins',
+      'watchtower',
+      'far_road',
+    ])
   })
 })

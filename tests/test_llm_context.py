@@ -46,6 +46,53 @@ def test_build_dm_context_collects_recent_actions_for_multiple_players(app):
     assert players['Borin']['recent_actions'] == ['chant', 'guard']
 
 
+def test_build_dm_context_scopes_players_to_current_campaign(app):
+    with app.app_context():
+        world = World(name='Shared World', description='world')
+        db.session.add(world)
+        db.session.flush()
+
+        old_campaign = Campaign(title='Old Campaign', world_id=world.world_id, workspace_id='owner')
+        current_campaign = Campaign(title='Current Campaign', world_id=world.world_id, workspace_id='owner')
+        db.session.add_all([old_campaign, current_campaign])
+        db.session.flush()
+
+        old_player = Player(
+            workspace_id='owner',
+            campaign_id=old_campaign.campaign_id,
+            name='Friend',
+            character_name='Oden',
+        )
+        current_player = Player(
+            workspace_id='owner',
+            campaign_id=current_campaign.campaign_id,
+            name='Danny',
+            character_name='Kozuki',
+        )
+        db.session.add_all([old_player, current_player])
+        db.session.flush()
+
+        session = Session(campaign_id=current_campaign.campaign_id)
+        db.session.add(session)
+        db.session.flush()
+
+        db.session.add_all(
+            [
+                PlayerAction(player_id=old_player.player_id, session_id=session.session_id, action_text='mentions A'),
+                PlayerAction(player_id=current_player.player_id, session_id=session.session_id, action_text='wakes in town'),
+            ]
+        )
+        db.session.commit()
+
+        payload = json.loads(build_dm_context(world.world_id, current_campaign.campaign_id, session.session_id))
+
+    players = {entry['character_name']: entry for entry in payload['active_players']}
+    assert list(players) == ['Kozuki']
+    assert players['Kozuki']['recent_actions'] == ['wakes in town']
+    assert 'Oden' not in json.dumps(payload)
+    assert 'mentions A' not in json.dumps(payload)
+
+
 def test_build_dm_context_truncates_large_session_payloads(app):
     with app.app_context():
         world = World(name='Compact World', description='world')
@@ -142,11 +189,31 @@ def test_build_dm_context_shape_snapshot(app):
             'memory_snippets': [],
         },
         'active_players': [
-            {
-                'player_id': '<player-id>',
-                'character_name': 'Seraphina',
-                'race': 'Elf',
-                'class': 'Ranger',
+                {
+                    'player_id': '<player-id>',
+                    'character_name': 'Seraphina',
+                    'race': 'Elf',
+                    'race_summary': {
+                        'name': 'Elf',
+                        'source': 'curated',
+                        'summary': 'Long-lived, perceptive people shaped by magic, memory, beauty, and old grief.',
+                        'traits': ['Darkvision', 'Keen Senses', 'Fey Ancestry', 'Trance'],
+                        'aiNarrationHints': [
+                            'Describe precise movement, old references, watchful stillness, and beauty that feels slightly unreal.'
+                        ],
+                        'originStory': (
+                            'An Elf may remember a border before it was a kingdom, a tree before it was sacred, '
+                            'or a lover whose grandchildren are now old. That long memory can be a gift, but it '
+                            'can also make the present feel fragile and brief. An Elf adventurer often leaves home '
+                            'when beauty becomes stillness, when grief becomes too familiar, or when the younger '
+                            'world does something surprising enough to deserve attention.'
+                        ),
+                        'physical': {'averageHeight': '5 to 6.5 feet', 'averageWeight': '90 to 170 lb'},
+                        'languages': ['Common', 'Elvish'],
+                        'commonProficiencies': ['Perception', 'Arcana', 'Stealth'],
+                        'balanceTier': 'standard',
+                    },
+                    'class': 'Ranger',
                 'level': 3,
                 'state': {
                     'ability_scores': {},

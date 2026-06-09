@@ -18,6 +18,24 @@ export function normalizeBaseUrl(value: string) {
 }
 
 const NGROK_BROWSER_WARNING_HEADER = 'ngrok-skip-browser-warning'
+const WORKSPACE_TOKEN_HEADER = 'X-AIDM-Workspace-Token'
+const WORKSPACE_ID_HEADER = 'X-AIDM-Workspace-Id'
+
+export function storedWorkspaceToken() {
+  return sessionStorage.getItem('aidm:workspaceToken') ?? ''
+}
+
+export function storedAuthToken() {
+  return sessionStorage.getItem('aidm:authToken') ?? ''
+}
+
+export function storedWorkspaceId() {
+  return localStorage.getItem('aidm:workspaceId') ?? sessionStorage.getItem('aidm:workspaceId') ?? ''
+}
+
+export function storedRuntimeAccessSnapshot(authToken = storedAuthToken()) {
+  return JSON.stringify([authToken.trim(), storedWorkspaceToken().trim(), storedWorkspaceId().trim()])
+}
 
 function shouldBypassNgrokBrowserWarning(baseUrl: string) {
   try {
@@ -38,6 +56,18 @@ export function addNgrokBrowserWarningBypassHeader(headers: Headers, baseUrl: st
   if (!bypassHeaders) return
   for (const [name, value] of Object.entries(bypassHeaders)) {
     headers.set(name, value)
+  }
+}
+
+export function addWorkspaceTokenHeader(headers: Headers, workspaceToken = storedWorkspaceToken()) {
+  const token = workspaceToken.trim()
+  if (token) {
+    headers.set(WORKSPACE_TOKEN_HEADER, token)
+    return
+  }
+  const workspaceId = storedWorkspaceId().trim()
+  if (workspaceId) {
+    headers.set(WORKSPACE_ID_HEADER, workspaceId)
   }
 }
 
@@ -78,6 +108,7 @@ export async function apiFetch<T>(
   if (token.trim()) {
     headers.set('Authorization', `Bearer ${token.trim()}`)
   }
+  addWorkspaceTokenHeader(headers)
   if (options.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }

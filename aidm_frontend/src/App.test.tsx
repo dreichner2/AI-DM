@@ -197,6 +197,8 @@ function resetApiData() {
   const player: Player = {
     player_id: 30,
     workspace_id: 'owner',
+    account_id: null,
+    username: null,
     campaign_id: 10,
     name: 'Danny',
     character_name: 'Ember',
@@ -370,15 +372,153 @@ function installFetchMock() {
 
       if (method === 'GET' && path === '/api/health') return jsonResponse(health)
       const authorization = new Headers(init?.headers).get('Authorization')
+      const workspaceToken = new Headers(init?.headers).get('X-AIDM-Workspace-Token')
+      const workspaceIdHeader = new Headers(init?.headers).get('X-AIDM-Workspace-Id')
+      if (method === 'GET' && path === '/api/accounts/me') {
+        const accountToken = authorization?.replace(/^Bearer\s+/i, '') ?? ''
+        if (!accountToken) {
+          return jsonResponse({ error: 'Missing or invalid account session.', error_code: 'unauthorized' }, { status: 401 })
+        }
+        const selectedWorkspaceId = workspaceToken
+          ? workspaceToken === 'aidan_test'
+            ? 'aidan_test'
+            : 'owner'
+          : workspaceIdHeader === 'owner'
+            ? 'owner'
+            : null
+        const workspaces = selectedWorkspaceId === 'aidan_test'
+          ? [
+              {
+                workspace_id: 'aidan_test',
+                workspace_role: 'admin',
+                is_workspace_admin: true,
+                created_at: null,
+                updated_at: null,
+              },
+            ]
+          : [
+              {
+                workspace_id: 'owner',
+                workspace_role: 'admin',
+                is_workspace_admin: true,
+                created_at: null,
+                updated_at: null,
+              },
+              {
+                workspace_id: 'friend',
+                workspace_role: 'player',
+                is_workspace_admin: false,
+                created_at: null,
+                updated_at: null,
+              },
+            ]
+        const selectedWorkspace = workspaces.find((workspace) => workspace.workspace_id === selectedWorkspaceId)
+        return jsonResponse({
+          account_id: 1,
+          username: 'danny',
+          first_name: 'Danny',
+          last_name: 'Reichner',
+          display_name: 'Danny Reichner',
+          workspace_id: selectedWorkspace?.workspace_id ?? null,
+          workspace_role: selectedWorkspace?.workspace_role ?? null,
+          is_workspace_admin: selectedWorkspace?.is_workspace_admin ?? false,
+          workspaces,
+        })
+      }
+      if (method === 'POST' && path === '/api/accounts/login') {
+        return jsonResponse({
+          account: {
+            account_id: 1,
+            username: body.username?.toLowerCase?.() ?? 'danny',
+            first_name: body.first_name ?? 'Danny',
+            last_name: body.last_name ?? 'Reichner',
+            display_name: `${body.first_name ?? 'Danny'} ${body.last_name ?? 'Reichner'}`.trim(),
+            workspace_id: null,
+            workspace_role: null,
+            is_workspace_admin: false,
+            workspaces: [],
+          },
+          account_token: 'account-token',
+          workspace_id: null,
+          workspace_role: null,
+          is_workspace_admin: false,
+          claimed_player_ids: [],
+          workspaces: [],
+        })
+      }
+      if (method === 'POST' && path === '/api/accounts/workspace') {
+        const workspaceId = body.workspace_token === 'aidan_test' ? 'aidan_test' : 'owner'
+        const workspaces = [
+          {
+            workspace_id: workspaceId,
+            workspace_role: 'admin',
+            is_workspace_admin: true,
+            created_at: null,
+            updated_at: null,
+          },
+        ]
+        return jsonResponse({
+          account: {
+            account_id: 1,
+            username: 'danny',
+            first_name: 'Danny',
+            last_name: 'Reichner',
+            display_name: 'Danny Reichner',
+            workspace_id: workspaceId,
+            workspace_role: 'admin',
+            is_workspace_admin: true,
+            workspaces,
+          },
+          account_token: authorization?.replace(/^Bearer\s+/i, '') || 'account-token',
+          workspace_id: workspaceId,
+          workspace_role: 'admin',
+          is_workspace_admin: true,
+          claimed_player_ids: [],
+          workspaces,
+        })
+      }
+      if (method === 'POST' && path === '/api/accounts/workspace/select') {
+        const workspaceId = body.workspace_id ?? 'owner'
+        const workspaces = [
+          {
+            workspace_id: workspaceId,
+            workspace_role: 'admin',
+            is_workspace_admin: true,
+            created_at: null,
+            updated_at: null,
+          },
+        ]
+        return jsonResponse({
+          account: {
+            account_id: 1,
+            username: 'danny',
+            first_name: 'Danny',
+            last_name: 'Reichner',
+            display_name: 'Danny Reichner',
+            workspace_id: workspaceId,
+            workspace_role: 'admin',
+            is_workspace_admin: true,
+            workspaces,
+          },
+          account_token: authorization?.replace(/^Bearer\s+/i, '') || 'account-token',
+          workspace_id: workspaceId,
+          workspace_role: 'admin',
+          is_workspace_admin: true,
+          claimed_player_ids: [],
+          workspaces,
+        })
+      }
       if (
         requiredAuthToken &&
         path.startsWith('/api/') &&
-        authorization !== `Bearer ${requiredAuthToken}`
+        authorization !== `Bearer ${requiredAuthToken}` &&
+        workspaceToken !== requiredAuthToken &&
+        workspaceIdHeader !== 'owner'
       ) {
         return jsonResponse(
           {
             details: {},
-            error: 'Missing or invalid bearer token.',
+            error: 'Missing or invalid workspace token.',
             error_code: 'unauthorized',
           },
           { status: 401 },
@@ -477,8 +617,10 @@ function installFetchMock() {
         const player: PlayerDetail = {
           player_id: playerId,
           workspace_id: 'owner',
+          account_id: null,
+          username: null,
           campaign_id: campaignId,
-          name: body.name,
+          name: body.name ?? 'Local Player',
           character_name: body.character_name,
           race: body.race ?? '',
           sex: body.sex ?? '',
@@ -802,6 +944,7 @@ describe('App user workflow regressions', () => {
     })
     localStorage.clear()
     sessionStorage.clear()
+    document.cookie = 'aidm_account_token=; Max-Age=0; Path=/; SameSite=Lax'
     localStorage.setItem('aidm:selectedCampaignId', '10')
     localStorage.setItem('aidm:selectedSessionId', '20')
     localStorage.setItem('aidm:selectedPlayerId', '30')
@@ -903,6 +1046,8 @@ describe('App user workflow regressions', () => {
       {
         player_id: 31,
         workspace_id: 'owner',
+        account_id: null,
+        username: null,
         campaign_id: 10,
         name: 'Maya',
         character_name: 'Borin',
@@ -917,13 +1062,48 @@ describe('App user workflow regressions', () => {
       },
     ]
     await renderLoadedApp()
+    await act(async () => {
+      socketHandler<
+        Array<{
+          id: number
+          character_name: string
+          name: string
+          race?: string
+          sex?: string
+          profile_image?: string
+          class_?: string
+          char_class?: string
+        }>
+      >('active_players')([
+        {
+          id: 30,
+          character_name: 'Ember',
+          name: 'Danny',
+          race: 'Human',
+          sex: 'female',
+          profile_image: '/profile-icons/human_female.png',
+          class_: 'Wizard',
+          char_class: 'Wizard',
+        },
+        {
+          id: 31,
+          character_name: 'Borin',
+          name: 'Maya',
+          race: 'Dwarf',
+          sex: 'male',
+          profile_image: '/profile-icons/dwarf_male.png',
+          class_: 'Fighter',
+          char_class: 'Fighter',
+        },
+      ])
+    })
 
     const actionInput = screen.getByLabelText(/Your Action/i)
     fireEvent.change(actionInput, { target: { value: 'the silver key' } })
     fireEvent.click(screen.getByRole('button', { name: 'Interact' }))
 
     expect(screen.getByLabelText('Interaction options')).toBeInTheDocument()
-    expect(screen.getByLabelText('Interaction target')).toHaveValue('31')
+    expect(screen.getByLabelText('Interaction target')).toHaveValue('player:31')
     expect(actionInput).toHaveValue('Ember says to Borin: the silver key')
 
     fireEvent.change(screen.getByLabelText('Interaction type'), { target: { value: 'take_from' } })
@@ -1110,6 +1290,49 @@ describe('App user workflow regressions', () => {
     expect(screen.getByText('No active players connected.')).toBeInTheDocument()
   })
 
+  it('emits turn control mode changes through the session socket', async () => {
+    await renderLoadedApp()
+    socketMock.socket.emit.mockClear()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Structured' }))
+
+    expect(socketMock.socket.emit).toHaveBeenCalledWith(
+      'set_turn_control',
+      expect.objectContaining({
+        session_id: 20,
+        player_id: 30,
+        mode: 'structured',
+        active_player_id: 30,
+      }),
+    )
+  })
+
+  it('keeps out-of-turn actions as queued drafts instead of sending them', async () => {
+    sessionStates[20] = {
+      ...sessionStates[20],
+      state_snapshot: {
+        turnControl: {
+          mode: 'spotlight',
+          activePlayerId: 31,
+          activePlayerName: 'Borin',
+        },
+      },
+    }
+    await renderLoadedApp()
+
+    expect(screen.getByText('Spotlight: Borin')).toBeInTheDocument()
+    const actionInput = screen.getByLabelText(/Your Action/i)
+    fireEvent.change(actionInput, { target: { value: 'I kick open the side door.' } })
+    socketMock.socket.emit.mockClear()
+
+    fireEvent.click(screen.getByRole('button', { name: /Send/i }))
+
+    expect(socketMock.socket.emit).not.toHaveBeenCalledWith('send_message', expect.anything())
+    expect(actionInput).toHaveValue('I kick open the side door.')
+    expect(screen.getByText('Queued draft')).toBeInTheDocument()
+    expect(screen.getAllByText('I kick open the side door.').length).toBeGreaterThan(0)
+  })
+
   it('renders Scene State from the live session state snapshot without a workspace reload', async () => {
     sessionsByCampaign[10] = [
       {
@@ -1122,6 +1345,7 @@ describe('App user workflow regressions', () => {
       state_snapshot: {
         currentScene: {
           name: 'Blackwake Tavern',
+          locationId: 'blackwake_tavern',
           sceneType: 'social',
           mood: 'tense',
           dangerLevel: 2,
@@ -1136,15 +1360,103 @@ describe('App user workflow regressions', () => {
           },
         ],
         locations: [
-          { id: 'blackwake_tavern', name: 'Blackwake Tavern', status: 'visited', type: 'tavern' },
+          {
+            id: 'blackwake_tavern',
+            name: 'Blackwake Tavern',
+            status: 'visited',
+            type: 'tavern',
+            lastVisitedTurn: 12,
+          },
+          {
+            id: 'north_docks',
+            name: 'North Docks',
+            status: 'visited',
+            type: 'road',
+            lastVisitedTurn: 11,
+          },
+          {
+            id: 'ash_gate',
+            name: 'Ash Gate',
+            status: 'visited',
+            type: 'ruins',
+            lastVisitedTurn: 10,
+          },
+          {
+            id: 'lantern_bridge',
+            name: 'Lantern Bridge',
+            status: 'visited',
+            type: 'road',
+            lastVisitedTurn: 9,
+          },
+          {
+            id: 'saltmarket',
+            name: 'Saltmarket',
+            status: 'visited',
+            type: 'town',
+            lastVisitedTurn: 8,
+          },
+          {
+            id: 'old_lighthouse',
+            name: 'Old Lighthouse',
+            status: 'visited',
+            type: 'ruins',
+            lastVisitedTurn: 7,
+          },
         ],
         knownNpcs: [
           {
             id: 'captain_velra',
             name: 'Captain Velra',
+            race: 'Human',
             role: 'dock captain',
             disposition: 'friendly',
             status: 'met',
+            lastSeenTurn: 12,
+          },
+          {
+            id: 'marta_fenwick',
+            name: 'Marta Fenwick',
+            race: 'Halfling',
+            role: 'shopkeeper',
+            disposition: 'friendly',
+            status: 'met',
+            lastSeenTurn: 11,
+          },
+          {
+            id: 'new_sentry',
+            name: 'New Sentry',
+            race: 'Elf',
+            role: 'guard',
+            disposition: 'neutral',
+            status: 'known',
+            lastSeenTurn: 10,
+          },
+          {
+            id: 'dock_mage',
+            name: 'Dock Mage',
+            race: 'Tiefling',
+            role: 'mage',
+            disposition: 'suspicious',
+            status: 'known',
+            lastSeenTurn: 9,
+          },
+          {
+            id: 'harbor_clerk',
+            name: 'Harbor Clerk',
+            race: 'Dwarf',
+            role: 'clerk',
+            disposition: 'neutral',
+            status: 'known',
+            lastSeenTurn: 8,
+          },
+          {
+            id: 'old_hermit',
+            name: 'Old Hermit',
+            race: 'Gnome',
+            role: 'witness',
+            disposition: 'unknown',
+            status: 'known',
+            lastSeenTurn: 7,
           },
         ],
       },
@@ -1155,7 +1467,15 @@ describe('App user workflow regressions', () => {
     expect(screen.getByText('Scene State')).toBeInTheDocument()
     expect(screen.getAllByText('Blackwake Tavern').length).toBeGreaterThan(0)
     expect(screen.getByText('Find the Missing Sailor')).toBeInTheDocument()
-    expect(screen.getByText('Captain Velra')).toBeInTheDocument()
+    expect(screen.getByText('Captain Velra (Human)')).toBeInTheDocument()
+    expect(screen.queryByText('Old Hermit (Gnome)')).not.toBeInTheDocument()
+    expect(screen.queryByText('Old Lighthouse')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Show 1 older NPC/i }))
+    expect(screen.getByText('Old Hermit (Gnome)')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Show 1 older place/i }))
+    expect(screen.getByText('Old Lighthouse')).toBeInTheDocument()
   })
 
   it('emits typing presence while the composer text changes', async () => {
@@ -1334,28 +1654,37 @@ describe('App user workflow regressions', () => {
     )
   })
 
-  it('prompts for an auth token when the public app requires one', async () => {
+  it('prompts for an account when the public app requires a workspace token', async () => {
     requiredAuthToken = 'shared-token'
     localStorage.setItem('aidm:selectedPlayerId', '30')
 
     render(<App />)
 
-    const dialog = await screen.findByRole('dialog', { name: 'Auth Token Required' })
+    let dialog = await screen.findByRole('dialog', { name: 'Log In' })
     expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
-    expect(within(dialog).getByText('Paste the shared token for this AIDM session.')).toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Workspace Token')).not.toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Sign Up' }))
 
-    const tokenInput = within(dialog).getByLabelText('Auth Token')
-    await waitFor(() => expect(tokenInput).toHaveFocus())
-    fireEvent.change(tokenInput, { target: { value: 'shared-token' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }))
+    const usernameInput = within(dialog).getByLabelText('Username')
+    await waitFor(() => expect(usernameInput).toHaveFocus())
+    fireEvent.change(usernameInput, { target: { value: 'Danny' } })
+    fireEvent.change(within(dialog).getByLabelText('First Name'), { target: { value: 'Danny' } })
+    fireEvent.change(within(dialog).getByLabelText('Last Name'), { target: { value: 'Reichner' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
+
+    dialog = await screen.findByRole('dialog', { name: 'Join Workspace' })
+    expect(within(dialog).queryByLabelText('Username')).not.toBeInTheDocument()
+    fireEvent.change(within(dialog).getByLabelText('Workspace Token'), { target: { value: 'shared-token' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Join Workspace' }))
 
     await screen.findByRole('heading', { name: /Session Alpha/i })
-    expect(sessionStorage.getItem('aidm:authToken')).toBe('shared-token')
-    expect(screen.queryByRole('dialog', { name: 'Auth Token Required' })).not.toBeInTheDocument()
+    expect(sessionStorage.getItem('aidm:authToken')).toBe('account-token')
+    expect(sessionStorage.getItem('aidm:workspaceToken')).toBe('shared-token')
+    expect(screen.queryByRole('dialog', { name: 'Join Workspace' })).not.toBeInTheDocument()
     await waitFor(() =>
-      expect(screen.queryByText('Auth token required. Paste the shared token to connect.')).not.toBeInTheDocument(),
+      expect(screen.queryByText('Workspace token required. Enter the workspace token to connect.')).not.toBeInTheDocument(),
     )
-    expect(screen.queryByText('Player load failed: Missing or invalid bearer token.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Player load failed: Missing or invalid workspace token.')).not.toBeInTheDocument()
     expect(fetchCalls).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1374,6 +1703,67 @@ describe('App user workflow regressions', () => {
     )
   })
 
+  it('opens account auth from the backend gear when no account is active', async () => {
+    await renderLoadedApp()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change workspace access' }))
+
+    const dialog = await screen.findByRole('dialog', { name: 'Log In' })
+    expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Workspace Token')).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Sign Up' })).toBeInTheDocument()
+  })
+
+  it('opens workspace auth from the backend gear when an account is active', async () => {
+    sessionStorage.setItem('aidm:authToken', 'account-token')
+    sessionStorage.setItem('aidm:workspaceToken', 'old-workspace')
+    sessionStorage.setItem(
+      'aidm:account',
+      JSON.stringify({
+        accountId: 1,
+        username: 'danny',
+        displayName: 'Danny Reichner',
+        workspaceId: 'owner',
+        workspaceRole: 'admin',
+        isWorkspaceAdmin: true,
+        workspaces: [
+          {
+            workspace_id: 'owner',
+            workspace_role: 'admin',
+            is_workspace_admin: true,
+            created_at: null,
+            updated_at: null,
+          },
+        ],
+      }),
+    )
+    localStorage.setItem('aidm:workspaceId', 'owner')
+    window.history.replaceState(null, '', '/?campaign=10&session=20')
+
+    await renderLoadedApp()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change workspace access' }))
+
+    const dialog = await screen.findByRole('dialog', { name: 'Join Workspace' })
+    expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('group', { name: 'Saved workspaces' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'owner admin' })).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('Workspace Token')).toHaveValue('old-workspace')
+  })
+
+  it('does not join a session socket with a stale selected player', async () => {
+    localStorage.setItem('aidm:selectedPlayerId', '999')
+
+    await renderLoadedApp()
+
+    await screen.findByRole('dialog', { name: 'Join Campaign' })
+    await waitFor(() => expect(localStorage.getItem('aidm:selectedPlayerId')).toBeNull())
+    expect(socketMock.socket.emit).not.toHaveBeenCalledWith(
+      'join_session',
+      expect.objectContaining({ player_id: 999 }),
+    )
+  })
+
   it('clears stale owner selections after connecting to an empty auth workspace', async () => {
     requiredAuthToken = 'aidan_test'
     campaigns = []
@@ -1388,9 +1778,13 @@ describe('App user workflow regressions', () => {
 
     render(<App />)
 
-    const dialog = await screen.findByRole('dialog', { name: 'Auth Token Required' })
-    fireEvent.change(within(dialog).getByLabelText('Auth Token'), { target: { value: 'aidan_test' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }))
+    let dialog = await screen.findByRole('dialog', { name: 'Log In' })
+    fireEvent.change(within(dialog).getByLabelText('Username'), { target: { value: 'Aidan' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
+
+    dialog = await screen.findByRole('dialog', { name: 'Join Workspace' })
+    fireEvent.change(within(dialog).getByLabelText('Workspace Token'), { target: { value: 'aidan_test' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Join Workspace' }))
 
     await screen.findByText('No campaigns match.')
     await waitFor(() => {
@@ -1621,21 +2015,21 @@ describe('App user workflow regressions', () => {
     fireEvent.click(within(chooser).getByRole('button', { name: 'Create Character' }))
 
     const creator = await screen.findByRole('dialog', { name: 'Create Character' })
-    fireEvent.change(within(creator).getByLabelText('Player Name'), {
-      target: { value: 'Maya' },
-    })
     fireEvent.change(within(creator).getByLabelText('Character Name'), {
       target: { value: 'Borin' },
     })
-    fireEvent.change(within(creator).getByLabelText('Race'), {
-      target: { value: 'Dwarf' },
-    })
-    fireEvent.change(within(creator).getByLabelText('Sex'), {
-      target: { value: 'male' },
-    })
-    fireEvent.change(within(creator).getByLabelText('Class'), {
-      target: { value: 'Cleric' },
-    })
+    fireEvent.click(within(creator).getByRole('button', { name: 'View Dwarf details' }))
+    const dwarfDetails = await screen.findByRole('dialog', { name: 'Dwarf' })
+    expect(within(dwarfDetails).getByText(/Dwarves are stone-wise, craft-proud/)).toBeInTheDocument()
+    expect(within(dwarfDetails).getByText('Common, Dwarvish')).toBeInTheDocument()
+    expect(within(dwarfDetails).getByText(/Average height:/)).toBeInTheDocument()
+    fireEvent.click(within(dwarfDetails).getByRole('button', { name: 'Select Dwarf' }))
+    fireEvent.click(within(creator).getByRole('button', { name: 'Male Dwarf' }))
+    fireEvent.click(within(creator).getByRole('button', { name: 'Preview Cleric class' }))
+    const clericDetails = await screen.findByRole('dialog', { name: 'Cleric' })
+    expect(within(clericDetails).getByText(/Clerics heal, protect/)).toBeInTheDocument()
+    expect(within(clericDetails).getByText('Life')).toBeInTheDocument()
+    fireEvent.click(within(clericDetails).getByRole('button', { name: 'Select Cleric - Life' }))
     fireEvent.click(within(creator).getByRole('button', { name: 'Create Character' }))
 
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Create Character' })).not.toBeInTheDocument())
@@ -1645,15 +2039,18 @@ describe('App user workflow regressions', () => {
           method: 'POST',
           path: '/api/players/campaigns/10/players',
           body: expect.objectContaining({
-            name: 'Maya',
             character_name: 'Borin',
             race: 'Dwarf',
             sex: 'male',
-            char_class: 'Cleric',
+            char_class: 'Cleric - Life',
           }),
         }),
       ]),
     )
+    const createCall = fetchCalls.find(
+      (call) => call.method === 'POST' && call.path === '/api/players/campaigns/10/players',
+    )
+    expect(createCall?.body).not.toHaveProperty('name')
     expect(await screen.findByText('Borin')).toBeInTheDocument()
   })
 
@@ -1667,7 +2064,7 @@ describe('App user workflow regressions', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Edit character' }))
 
     const dialog = await screen.findByRole('dialog', { name: 'Edit Character' })
-    const raceInput = within(dialog).getByLabelText('Race')
+    const raceInput = within(dialog).getByLabelText('Search races')
     raceInput.focus()
     fireEvent.change(raceInput, { target: { value: 'Elf' } })
 

@@ -130,7 +130,9 @@ async function waitForRouteIds(page) {
     const url = new URL(lastUrl)
     const campaignId = Number(url.searchParams.get('campaign'))
     const sessionId = Number(url.searchParams.get('session'))
-    lastPlayerId = await page.evaluate(() => localStorage.getItem('aidm:selectedPlayerId') || '')
+    lastPlayerId = await page.evaluate(
+      () => localStorage.getItem('aidm:open:selectedPlayerId') || localStorage.getItem('aidm:selectedPlayerId') || '',
+    )
     const playerId = Number(url.searchParams.get('player') || lastPlayerId)
     if (campaignId > 0 && sessionId > 0 && playerId > 0) {
       return { campaignId, sessionId, playerId }
@@ -146,7 +148,13 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
   const consoleErrors = []
 
   page.on('console', (message) => {
-    if (message.type() === 'error') consoleErrors.push(message.text())
+    if (message.type() !== 'error') return
+    const text = message.text()
+    const isWerkzeugSocketUpgradeNoise =
+      text.includes('/socket.io/') &&
+      text.includes('WebSocket connection') &&
+      (text.includes('Invalid frame header') || text.includes('Data frame received after close'))
+    if (!isWerkzeugSocketUpgradeNoise) consoleErrors.push(text)
   })
   page.on('pageerror', (error) => {
     consoleErrors.push(error.message)
@@ -183,10 +191,17 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
     .then(() => true)
     .catch(() => false)
   if (createCharacterDialogVisible) {
-    await createCharacterDialog.getByLabel('Player Name').fill('Browser Smoke Player')
     await createCharacterDialog.getByLabel('Character Name').fill('Browser Smoke Hero')
-    await createCharacterDialog.getByLabel('Race').fill('Human')
-    await createCharacterDialog.getByLabel('Class').fill('Wizard')
+    const raceSelector = createCharacterDialog.locator('.race-selector')
+    await raceSelector.getByLabel('Search races').fill('Human')
+    await raceSelector.getByRole('button', { name: 'View Human details' }).click()
+    const humanDetailsDialog = page.getByRole('dialog', { name: 'Human' })
+    await expect(humanDetailsDialog).toBeVisible()
+    await humanDetailsDialog.getByRole('button', { name: 'Select Human' }).click()
+    await createCharacterDialog.getByRole('button', { name: 'Preview Wizard class' }).click()
+    const wizardDetailsDialog = page.getByRole('dialog', { name: 'Wizard' })
+    await expect(wizardDetailsDialog).toBeVisible()
+    await wizardDetailsDialog.getByRole('button', { name: 'Select Wizard - Evoker' }).click()
     await createCharacterDialog.getByRole('button', { name: 'Create Character' }).click()
     await expect(createCharacterDialog).toBeHidden({ timeout: 15_000 })
     await expect(page.locator('.right-inspector').getByRole('heading', { name: 'Browser Smoke Hero' })).toBeVisible({ timeout: 15_000 })
@@ -203,6 +218,8 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
   const selectedIds = await waitForRouteIds(page)
 
   await page.locator('.composer-tools').getByRole('button', { name: /Roll/i }).click()
+  await expect(page.getByLabel('Roll options')).toBeVisible()
+  await page.getByLabel('Roll options').getByRole('button', { name: 'Roll dice' }).click()
   const diceDialog = page.getByRole('dialog', { name: /Rolling dice|Landed|Sending roll/i })
   await expect(diceDialog).toBeVisible({ timeout: 15_000 })
   await expect(diceDialog).toContainText('D20')

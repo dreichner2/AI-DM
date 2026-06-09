@@ -1,4 +1,4 @@
-import type { Dispatch, FormEvent, SetStateAction } from 'react'
+import { useState, type Dispatch, type FormEvent, type SetStateAction } from 'react'
 import { ChevronDown, Coins, ExternalLink } from 'lucide-react'
 import { ThinIcon } from './AppChrome'
 import {
@@ -23,6 +23,8 @@ type DisplayCharacter = {
 }
 
 type CanonFact = [fact: string, source: string]
+
+const VISIBLE_WORLD_STATE_ITEMS = 5
 
 export type MapManagementForm = {
   title: string
@@ -152,6 +154,17 @@ export function InspectorPanel({
   setSegmentManagementForm,
   createSegment,
 }: InspectorPanelProps) {
+  const [showAllKnownNpcs, setShowAllKnownNpcs] = useState(false)
+  const [showAllKnownLocations, setShowAllKnownLocations] = useState(false)
+  const visibleKnownNpcs = showAllKnownNpcs
+    ? worldStatePanel.knownNpcs
+    : worldStatePanel.knownNpcs.slice(0, VISIBLE_WORLD_STATE_ITEMS)
+  const visibleKnownLocations = showAllKnownLocations
+    ? worldStatePanel.knownLocations
+    : worldStatePanel.knownLocations.slice(0, VISIBLE_WORLD_STATE_ITEMS)
+  const olderNpcCount = Math.max(0, worldStatePanel.knownNpcs.length - VISIBLE_WORLD_STATE_ITEMS)
+  const olderLocationCount = Math.max(0, worldStatePanel.knownLocations.length - VISIBLE_WORLD_STATE_ITEMS)
+
   return (
     <aside className="right-inspector">
       <div className="inspector-tabs" role="tablist" aria-label="Inspector panels">
@@ -430,25 +443,55 @@ export function InspectorPanel({
             <div>
               <strong>Known NPCs</strong>
               {worldStatePanel.knownNpcs.length ? (
-                worldStatePanel.knownNpcs.map((npc) => (
-                  <span key={npc.id || npc.name}>
-                    {npc.name}
-                    <small>{npc.role} / {npc.disposition}</small>
-                  </span>
-                ))
+                <>
+                  {visibleKnownNpcs.map((npc) => (
+                    <span key={npc.id || npc.name}>
+                      {npc.name}{npc.race ? ` (${npc.race})` : ''}
+                      <small>{npc.role} / {npc.disposition}</small>
+                    </span>
+                  ))}
+                  {olderNpcCount ? (
+                    <button
+                      type="button"
+                      className={`world-state-toggle ${showAllKnownNpcs ? 'expanded' : ''}`}
+                      aria-expanded={showAllKnownNpcs}
+                      onClick={() => setShowAllKnownNpcs((value) => !value)}
+                    >
+                      <ChevronDown size={12} aria-hidden="true" />
+                      {showAllKnownNpcs
+                        ? 'Show recent NPCs'
+                        : `Show ${olderNpcCount} older NPC${olderNpcCount === 1 ? '' : 's'}`}
+                    </button>
+                  ) : null}
+                </>
               ) : (
                 <span className="empty-row">No known NPCs.</span>
               )}
             </div>
             <div>
-              <strong>Known Locations</strong>
+              <strong>Known Places</strong>
               {worldStatePanel.knownLocations.length ? (
-                worldStatePanel.knownLocations.map((location) => (
-                  <span key={location.id || location.name}>
-                    {location.name}
-                    <small>{location.status} / {location.type}</small>
-                  </span>
-                ))
+                <>
+                  {visibleKnownLocations.map((location) => (
+                    <span key={location.id || location.name}>
+                      {location.name}
+                      <small>{location.status} / {location.type}</small>
+                    </span>
+                  ))}
+                  {olderLocationCount ? (
+                    <button
+                      type="button"
+                      className={`world-state-toggle ${showAllKnownLocations ? 'expanded' : ''}`}
+                      aria-expanded={showAllKnownLocations}
+                      onClick={() => setShowAllKnownLocations((value) => !value)}
+                    >
+                      <ChevronDown size={12} aria-hidden="true" />
+                      {showAllKnownLocations
+                        ? 'Show recent places'
+                        : `Show ${olderLocationCount} older place${olderLocationCount === 1 ? '' : 's'}`}
+                    </button>
+                  ) : null}
+                </>
               ) : (
                 <span className="empty-row">No known locations.</span>
               )}

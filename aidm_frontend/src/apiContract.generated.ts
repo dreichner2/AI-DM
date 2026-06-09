@@ -4,6 +4,55 @@
 
 export type JsonRecord = Record<string, unknown>
 
+export type RaceSource = 'curated' | 'custom' | 'template' | 'imported'
+
+export type RaceBalanceMetadata = { budget: number; spent: number; tier: 'weak' | 'standard' | 'strong' | 'overpowered'; warnings?: string[] }
+
+export type RaceVisualMetadata = JsonRecord
+
+export type RacePhysicalMetadata = { averageHeight: string; averageWeight: string }
+
+export type RaceDefinition = JsonRecord & { id: string; version: number; name: string; source: RaceSource; descriptionShort: string; descriptionLong: string; aliases: string[]; tags: string[]; size: string; baseSpeed: number; visual: RaceVisualMetadata; originStory: string; physical: RacePhysicalMetadata; languages: string[]; commonProficiencies: string[]; friendlyWith: string[]; waryOf: string[]; traits: JsonRecord[]; aiNarrationHints: string[]; roleplayHooks: string[]; recommendedClasses: string[]; difficulty: string; balance: RaceBalanceMetadata; approvalStatus?: string; parentRaceId?: string | null }
+
+export type RaceSummary = {
+  id: string
+  version: number
+  name: string
+  source: RaceSource
+  descriptionShort: string
+  aliases: string[]
+  tags: string[]
+  size: string
+  baseSpeed: number
+  visual: RaceVisualMetadata
+  originStory: string
+  physical: RacePhysicalMetadata
+  languages: string[]
+  commonProficiencies: string[]
+  friendlyWith: string[]
+  waryOf: string[]
+  traits: string[]
+  recommendedClasses: string[]
+  difficulty: string
+  balance: RaceBalanceMetadata
+  approvalStatus?: string
+  parentRaceId?: string | null
+}
+
+export type CharacterRaceSelection = {
+  raceId: string
+  raceName: string
+  source: RaceSource
+  customRaceDefinition?: RaceDefinition
+  selectedOptions?: JsonRecord
+}
+
+export type RaceListResponse = { races: RaceSummary[] }
+
+export type CustomRaceGenerateResponse = { draftRace: RaceDefinition; balanceAnalysis: RaceBalanceMetadata; warnings: string[]; generationSource: string }
+
+export type CustomRaceSaveResponse = { race: RaceDefinition; summary: RaceSummary }
+
 export type World = {
   world_id: number
   name: string
@@ -62,6 +111,36 @@ export type CampaignWorkspace = {
   limits: { sessions: number | null; players: number | null; maps: number | null; segments: number | null }
 }
 
+export type AccountWorkspace = {
+  workspace_id: string
+  workspace_role: string
+  is_workspace_admin: boolean
+  created_at: string | null
+  updated_at: string | null
+}
+
+export type Account = {
+  account_id: number
+  username: string
+  first_name: string
+  last_name: string
+  display_name: string
+  workspace_id: string | null
+  workspace_role: string | null
+  is_workspace_admin: boolean
+  workspaces: AccountWorkspace[]
+}
+
+export type AccountSession = {
+  account: Account
+  account_token: string
+  workspace_id: string | null
+  workspace_role: string | null
+  is_workspace_admin: boolean
+  claimed_player_ids: number[]
+  workspaces: AccountWorkspace[]
+}
+
 export type SessionLogEntry = {
   id: number
   message: string
@@ -112,10 +191,13 @@ export type SessionState = {
 export type Player = {
   player_id: number
   workspace_id: string
+  account_id: number | null
+  username: string | null
   campaign_id: number | null
   name: string
   character_name: string
   race: string | null
+  race_selection?: CharacterRaceSelection | null
   sex: string | null
   profile_image: string
   class_: string | null
@@ -128,10 +210,13 @@ export type Player = {
 export type PlayerDetail = {
   player_id: number
   workspace_id: string
+  account_id: number | null
+  username: string | null
   campaign_id: number | null
   name: string
   character_name: string
   race: string | null
+  race_selection?: CharacterRaceSelection | null
   sex: string | null
   profile_image: string
   class_: string | null

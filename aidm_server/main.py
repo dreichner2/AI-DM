@@ -10,7 +10,15 @@ from flask_cors import CORS
 from flask_socketio import SocketIO
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from aidm_server.auth import request_auth_token, request_workspace_id
+from aidm_server.auth import (
+    DEFAULT_WORKSPACE_ID,
+    claim_legacy_players_for_account,
+    ensure_account_workspace_membership,
+    request_account,
+    request_account_token,
+    request_workspace_id,
+    workspace_role_is_admin,
+)
 from aidm_server.canon_jobs import start_canon_job_worker
 from aidm_server.config import load_config
 from aidm_server.database import db, ensure_schema, init_db
@@ -23,9 +31,11 @@ from aidm_server.logging_context import (
 )
 from aidm_server.rate_limiter import FixedWindowRateLimiter, build_rate_limiter
 from aidm_server.telemetry import init_telemetry, telemetry_event, telemetry_metric
+from aidm_server.blueprints.accounts import accounts_bp
 from aidm_server.blueprints.campaigns import campaigns_bp
 from aidm_server.blueprints.maps import maps_bp
 from aidm_server.blueprints.players import players_bp
+from aidm_server.blueprints.races import races_bp
 from aidm_server.blueprints.runtime_config import runtime_config_bp
 from aidm_server.blueprints.segments import segments_bp
 from aidm_server.blueprints.sessions import sessions_bp
@@ -187,7 +197,14 @@ def create_app() -> Flask:
         if request.path == '/api/health':
             return None
 
-        auth_token = request_auth_token()
+        if request.method == 'OPTIONS':
+            return None
+
+        if request.path.startswith('/api/accounts'):
+            return None
+
+        account_token = request_account_token()
+        account = request_account()
         workspace_id = request_workspace_id()
         if app.config.get('AIDM_AUTH_REQUIRED') and not workspace_id:
             telemetry_event(
@@ -197,11 +214,19 @@ def create_app() -> Flask:
             )
             return error_response(
                 code='unauthorized',
-                message='Missing or invalid bearer token.',
+                message='Missing or invalid workspace token.',
                 status=401,
             )
-        g.aidm_auth_token_present = bool(auth_token)
-        g.aidm_workspace_id = workspace_id or 'owner'
+        membership = ensure_account_workspace_membership(account, workspace_id) if account and workspace_id else None
+        if membership:
+            claim_legacy_players_for_account(account, workspace_id)
+            db.session.commit()
+        g.aidm_account = account
+        g.aidm_account_id = account.account_id if account else None
+        g.aidm_auth_token_present = bool(account_token)
+        g.aidm_workspace_id = workspace_id or DEFAULT_WORKSPACE_ID
+        g.aidm_workspace_role = membership.role if membership else None
+        g.aidm_workspace_admin = workspace_role_is_admin(membership.role if membership else None)
 
         limiter: FixedWindowRateLimiter = app.extensions['aidm_api_limiter']
         client_ip = request.remote_addr or 'unknown'
@@ -238,8 +263,10 @@ def create_app() -> Flask:
         clear_logging_context()
 
     app.register_blueprint(campaigns_bp, url_prefix='/api/campaigns')
+    app.register_blueprint(accounts_bp, url_prefix='/api/accounts')
     app.register_blueprint(worlds_bp, url_prefix='/api/worlds')
     app.register_blueprint(players_bp, url_prefix='/api/players')
+    app.register_blueprint(races_bp, url_prefix='/api')
     app.register_blueprint(sessions_bp, url_prefix='/api/sessions')
     app.register_blueprint(maps_bp, url_prefix='/api/maps')
     app.register_blueprint(segments_bp, url_prefix='/api/segments')

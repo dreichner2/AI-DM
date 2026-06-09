@@ -749,6 +749,44 @@ def test_scene_move_location_updates_scene_and_marks_location_visited():
     assert location['lastVisitedTurn'] == 22
 
 
+def test_scene_move_location_resets_stale_scene_local_fields():
+    state = _state()
+    state['currentScene'] = {
+        'locationId': 'blackwake_tavern',
+        'name': 'Blackwake Tavern',
+        'sceneType': 'combat',
+        'mood': 'dangerous',
+        'dangerLevel': 8,
+        'combatState': 'active',
+        'description': 'Kozuki is down while stale NPCs crowd the room.',
+        'activeNpcIds': ['captain_velra', 'stale_orc'],
+    }
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'move_old_harbor_clean',
+                'type': 'scene.move_location',
+                'source': 'post_dm',
+                'reason': 'The party leaves for the harbor.',
+                'turnId': 23,
+                'locationId': 'old_harbor',
+                'name': 'Old Harbor',
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    scene = result['nextState']['currentScene']
+
+    assert validation['rejected'] == []
+    assert scene['locationId'] == 'old_harbor'
+    assert scene['dangerLevel'] == 0
+    assert scene['combatState'] == 'none'
+    assert scene['description'] == ''
+    assert scene['activeNpcIds'] == []
+    assert 'mood' not in scene
+
+
 def test_location_discover_adds_location_and_does_not_duplicate_on_retry():
     state = _state()
     validation = validate_state_changes(
@@ -902,6 +940,7 @@ def test_npc_discover_adds_npc_and_links_location_and_quest():
                 'turnId': 27,
                 'npcId': 'captain_velra',
                 'name': 'Captain Velra',
+                'race': 'Human',
                 'role': 'dock captain',
                 'disposition': 'neutral',
                 'locationId': 'old_harbor',
@@ -913,8 +952,35 @@ def test_npc_discover_adds_npc_and_links_location_and_quest():
 
     assert validation['rejected'] == []
     assert result['nextState']['knownNpcs'][0]['id'] == 'captain_velra'
+    assert result['nextState']['knownNpcs'][0]['race'] == 'Human'
     assert result['nextState']['locations'][0]['npcIds'] == ['captain_velra']
     assert result['nextState']['quests'][0]['relatedNpcIds'] == ['captain_velra']
+
+
+def test_npc_change_targeting_player_character_is_rejected():
+    state = _state()
+    state['playerCharacters'][0]['name'] = 'Kozuki'
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'discover_kozuki_as_npc',
+                'type': 'npc.discover',
+                'source': 'post_dm',
+                'reason': 'The extractor mistook a player for an NPC.',
+                'turnId': 27,
+                'npcId': 'kozuki',
+                'name': 'Kozuki',
+                'role': 'orc adventurer',
+                'status': 'dead',
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    assert validation['accepted'] == []
+    assert validation['rejected'][0]['reason'] == "NPC change targets player character 'Kozuki'."
+    assert result['nextState'].get('knownNpcs') in (None, [])
 
 
 def test_npc_update_merges_memory_disposition_and_location_without_wiping_description():
@@ -941,6 +1007,7 @@ def test_npc_update_merges_memory_disposition_and_location_without_wiping_descri
                 'reason': 'Velra shares more context.',
                 'turnId': 28,
                 'npcId': 'captain_velra',
+                'species': 'Elf',
                 'disposition': 'friendly',
                 'locationId': 'old_harbor',
                 'memory': ['Promised to help the party find the missing sailor.'],
@@ -952,6 +1019,7 @@ def test_npc_update_merges_memory_disposition_and_location_without_wiping_descri
 
     assert validation['rejected'] == []
     assert npc['description'] == 'A stern harbor watch captain with a scarred blue coat.'
+    assert npc['race'] == 'Elf'
     assert npc['disposition'] == 'friendly'
     assert npc['locationId'] == 'old_harbor'
     assert npc['memory'] == [
@@ -1087,6 +1155,22 @@ def test_post_dm_does_not_extract_pending_roll_prompt_as_loot(app):
     assert result['proposedChanges'] == []
 
 
+def test_post_dm_does_not_extract_visible_unclaimed_item_as_loot(app):
+    with app.app_context():
+        result = extract_post_dm_outcomes(
+            state_before_dm={},
+            player_message='I look around the chapel.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='You find a silver key resting on the altar, visible in the candlelight.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=112,
+        )
+
+    assert result['proposedChanges'] == []
+
+
 def test_post_dm_heuristic_ignores_metaphorical_non_mechanical_phrases(app):
     phrases = [
         'You find your courage.',
@@ -1130,6 +1214,96 @@ def test_post_dm_extracts_confirmed_pickup_as_loot(app):
         change['type'] == 'inventory.add' and change.get('itemName') == 'stick'
         for change in result['proposedChanges']
     )
+
+
+def test_post_dm_extracts_scene_danger_increase(app):
+    state = _state()
+    state['currentScene'] = {
+        'locationId': 'old_road',
+        'name': 'Old Road',
+        'sceneType': 'travel',
+        'dangerLevel': 1,
+        'combatState': 'none',
+    }
+    with app.app_context():
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I keep walking down the road.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='Bandits spring from the pines, blades drawn. Roll initiative as arrows fly.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=13,
+        )
+
+    scene_change = next(change for change in result['proposedChanges'] if change['type'] == 'scene.update')
+    assert scene_change['dangerLevel'] == 8
+    assert scene_change['sceneType'] == 'combat'
+    assert scene_change['combatState'] == 'active'
+    assert scene_change['mood'] == 'dangerous'
+
+
+def test_valid_empty_post_dm_helper_response_still_updates_scene_danger(app, monkeypatch):
+    class FakeProvider:
+        def generate(self, _request):
+            return ProviderResponse(
+                text='{"proposedChanges":[],"uncertainChanges":[],"notes":["no_concrete_inventory_change"]}',
+                provider='fake',
+                model='fake-helper',
+            )
+
+    monkeypatch.setattr(post_extractor_module, 'get_helper_provider', lambda: FakeProvider())
+    state = _state()
+    state['currentScene'] = {'locationId': 'ravine_bridge', 'name': 'Ravine Bridge', 'dangerLevel': 1}
+
+    with app.app_context():
+        app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I step onto the bridge.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The unstable bridge groans underfoot, a dangerous drop yawning through the broken planks.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=14,
+        )
+
+    scene_change = next(change for change in result['proposedChanges'] if change['type'] == 'scene.update')
+    assert scene_change['dangerLevel'] == 5
+    assert scene_change['mood'] == 'tense'
+    assert 'helper_post_dm' in result['notes']
+    assert 'heuristic_scene_danger' in result['notes']
+    assert result['debug']['source'] == 'helper'
+
+
+def test_post_dm_extracts_scene_danger_decrease(app):
+    state = _state()
+    state['currentScene'] = {
+        'locationId': 'old_road',
+        'name': 'Old Road',
+        'sceneType': 'combat',
+        'dangerLevel': 8,
+        'mood': 'dangerous',
+        'combatState': 'active',
+    }
+    with app.app_context():
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I finish the fight.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The last enemy falls. The fight is over, and there is no immediate threat.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=15,
+        )
+
+    scene_change = next(change for change in result['proposedChanges'] if change['type'] == 'scene.update')
+    assert scene_change['dangerLevel'] == 1
+    assert scene_change['combatState'] == 'resolved'
+    assert scene_change['mood'] == 'calm'
 
 
 def test_valid_empty_post_dm_helper_response_prevents_fallback(app, monkeypatch):

@@ -15,6 +15,13 @@ def test_rules_classifier_detects_roll_requirement():
     assert hint.confidence > 0.8
 
 
+def test_rules_classifier_detects_decisive_attack_wording():
+    hint = classify_player_action("I slice the orc's head off")
+    assert hint.requires_roll is True
+    assert hint.roll_type == 'attack'
+    assert hint.outcome_deferred is True
+
+
 def test_rules_classifier_marks_resolved_when_roll_is_provided():
     hint = classify_player_action('I attack and rolled a d20: 17')
     assert hint.requires_roll is True

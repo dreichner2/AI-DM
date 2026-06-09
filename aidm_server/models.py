@@ -43,6 +43,43 @@ class Campaign(db.Model):
     world = db.relationship('World', backref='campaigns')
 
 
+class Account(db.Model):
+    __tablename__ = 'accounts'
+    __table_args__ = (
+        db.Index('ix_accounts_username', 'username', unique=True),
+        db.Index('ix_accounts_account_token_hash', 'account_token_hash', unique=True),
+    )
+
+    account_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    username = db.Column(db.String(80), nullable=False)
+    first_name = db.Column(db.String(80), nullable=False)
+    last_name = db.Column(db.String(80), nullable=False)
+    password_hash = db.Column(db.String(255), nullable=True)
+    account_token_hash = db.Column(db.String(64), nullable=True)
+    created_at = db.Column(db.DateTime, default=utc_now)
+    updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
+
+
+class AccountWorkspaceMembership(db.Model):
+    __tablename__ = 'account_workspace_memberships'
+    __table_args__ = (
+        db.UniqueConstraint('account_id', 'workspace_id', name='uq_account_workspace_membership'),
+        db.Index('ix_account_workspace_memberships_workspace_role', 'workspace_id', 'role'),
+    )
+
+    membership_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    account_id = db.Column(db.Integer, db.ForeignKey('accounts.account_id', ondelete='CASCADE'), nullable=False)
+    workspace_id = db.Column(db.String(80), nullable=False, default='owner', server_default='owner', index=True)
+    role = db.Column(db.String(32), nullable=False, default='player')
+    created_at = db.Column(db.DateTime, default=utc_now)
+    updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
+
+    account = db.relationship(
+        'Account',
+        backref=db.backref('workspace_memberships', cascade='all, delete-orphan', passive_deletes=True),
+    )
+
+
 class Map(db.Model):
     __tablename__ = 'maps'
     __table_args__ = (
@@ -66,14 +103,17 @@ class Player(db.Model):
     __tablename__ = 'players'
     __table_args__ = (
         db.Index('ix_players_workspace_created_at', 'workspace_id', 'created_at'),
+        db.Index('ix_players_workspace_account_created_at', 'workspace_id', 'account_id', 'created_at'),
     )
 
     player_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     workspace_id = db.Column(db.String(80), nullable=False, default='owner', server_default='owner', index=True)
+    account_id = db.Column(db.Integer, db.ForeignKey('accounts.account_id', ondelete='SET NULL'), nullable=True, index=True)
     campaign_id = db.Column(db.Integer, db.ForeignKey('campaigns.campaign_id'), nullable=True)
     name = db.Column(db.String, nullable=False)
     character_name = db.Column(db.String, nullable=False)
     race = db.Column(db.String)
+    race_selection = db.Column(db.Text)
     sex = db.Column(db.String)
     class_ = db.Column(db.String)
     level = db.Column(db.Integer, default=1)
@@ -84,6 +124,25 @@ class Player(db.Model):
     updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
 
     campaign = db.relationship('Campaign', backref='players')
+    account = db.relationship('Account', backref='players')
+
+
+class CustomRace(db.Model):
+    __tablename__ = 'custom_races'
+    __table_args__ = (
+        db.Index('ix_custom_races_workspace_race', 'workspace_id', 'race_id'),
+        db.UniqueConstraint('workspace_id', 'race_id', 'version', name='uq_custom_races_workspace_race_version'),
+    )
+
+    custom_race_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    workspace_id = db.Column(db.String(80), nullable=False, default='owner', server_default='owner', index=True)
+    race_id = db.Column(db.String(120), nullable=False)
+    version = db.Column(db.Integer, nullable=False, default=1)
+    name = db.Column(db.String(80), nullable=False)
+    approval_status = db.Column(db.String(40), nullable=False, default='draft')
+    race_definition = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=utc_now)
+    updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
 
 
 class Session(db.Model):

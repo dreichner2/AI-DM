@@ -1,13 +1,25 @@
 import type { JsonRecord } from './apiContract.generated'
 
 export type {
+  Account,
+  AccountSession,
+  AccountWorkspace,
   Campaign,
   CampaignSegment,
   CampaignWorkspace,
+  CharacterRaceSelection,
+  CustomRaceGenerateResponse,
+  CustomRaceSaveResponse,
   JsonRecord,
   MapItem,
   Player,
   PlayerDetail,
+  RaceBalanceMetadata,
+  RaceDefinition,
+  RaceListResponse,
+  RaceSource,
+  RaceSummary,
+  RaceVisualMetadata,
   SessionImportResponse,
   SessionEventsResponse,
   SessionLogEntry,
@@ -112,6 +124,16 @@ export type ActivePlayer = {
   class_?: string | null
   char_class?: string | null
   is_typing?: boolean
+}
+
+export type TurnControlMode = 'free' | 'spotlight' | 'structured'
+
+export type TurnControl = {
+  mode: TurnControlMode
+  activePlayerId: number | null
+  activePlayerName: string | null
+  updatedByPlayerId?: number | null
+  updatedAt?: string | null
 }
 
 export type RulesHint = {

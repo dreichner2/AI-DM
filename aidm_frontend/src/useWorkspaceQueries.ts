@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { ApiClientError, apiFetch } from './api'
+import { ApiClientError, apiFetch, storedRuntimeAccessSnapshot } from './api'
 import type {
   BetaSummary,
   Campaign,
@@ -143,15 +143,17 @@ export function useWorkspaceQueries({
   const loadSessionData = useCallback(
     async (sessionId: number) => {
       const requestId = ++sessionRequestRef.current
+      const requestAuth = auth
+      const requestAccessSnapshot = storedRuntimeAccessSnapshot(requestAuth)
       setSessionLoading(true)
       try {
         const [logData, stateData] = await Promise.all([
           apiFetch<SessionLogResponse>(
             baseUrl,
             `/api/sessions/${sessionId}/log?limit=200`,
-            auth,
+            requestAuth,
           ),
-          apiFetch<SessionState>(baseUrl, `/api/sessions/${sessionId}/state`, auth),
+          apiFetch<SessionState>(baseUrl, `/api/sessions/${sessionId}/state`, requestAuth),
         ])
         if (sessionRequestRef.current !== requestId) return
         setLogEntries(logData.entries)
@@ -175,6 +177,7 @@ export function useWorkspaceQueries({
         })
       } catch (error) {
         if (isUnauthorizedError(error)) {
+          if (requestAccessSnapshot !== storedRuntimeAccessSnapshot()) return
           onUnauthorized()
         } else if (isNotFoundError(error) && sessionRequestRef.current === requestId) {
           setSelectedSessionId((current) => (current === sessionId ? null : current))
@@ -208,18 +211,21 @@ export function useWorkspaceQueries({
 
   const loadOlderSessionLog = useCallback(async () => {
     if (!selectedSessionId || !sessionLogHasMore || olderLogLoading || sessionLogCursor === null) return
+    const requestAuth = auth
+    const requestAccessSnapshot = storedRuntimeAccessSnapshot(requestAuth)
     setOlderLogLoading(true)
     try {
       const data = await apiFetch<SessionLogResponse>(
         baseUrl,
         `/api/sessions/${selectedSessionId}/log?limit=200&before_id=${sessionLogCursor}`,
-        auth,
+        requestAuth,
       )
       setLogEntries((current) => [...data.entries, ...current])
       setSessionLogCursor(data.next_cursor ?? null)
       setSessionLogHasMore(Boolean(data.has_more))
     } catch (error) {
       if (isUnauthorizedError(error)) {
+        if (requestAccessSnapshot !== storedRuntimeAccessSnapshot()) return
         onUnauthorized()
       }
       pushError('workspace', `Older history load failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -241,13 +247,15 @@ export function useWorkspaceQueries({
   ])
 
   const refreshRoot = useCallback(async () => {
+    const requestAuth = auth
+    const requestAccessSnapshot = storedRuntimeAccessSnapshot(requestAuth)
     try {
       const [healthData, campaignData, metricData, llmData, worldData] = await Promise.all([
-        apiFetch<Health>(baseUrl, '/api/health', auth),
-        apiFetch<Campaign[]>(baseUrl, '/api/campaigns', auth),
-        apiFetch<BetaSummary>(baseUrl, '/api/beta/summary', auth),
-        apiFetch<LlmRuntimeConfig>(baseUrl, '/api/llm/config', auth),
-        apiFetch<World[]>(baseUrl, '/api/worlds?limit=200', auth),
+        apiFetch<Health>(baseUrl, '/api/health', requestAuth),
+        apiFetch<Campaign[]>(baseUrl, '/api/campaigns', requestAuth),
+        apiFetch<BetaSummary>(baseUrl, '/api/beta/summary', requestAuth),
+        apiFetch<LlmRuntimeConfig>(baseUrl, '/api/llm/config', requestAuth),
+        apiFetch<World[]>(baseUrl, '/api/worlds?limit=200', requestAuth),
       ])
       setHealth(healthData)
       rootCampaignsLoaded(campaignData)
@@ -259,7 +267,7 @@ export function useWorkspaceQueries({
           campaignData.map((item) => [item.campaign_id, sessionMetaFromCampaign(item)]),
         ),
       )
-      void apiFetch<TtsRuntimeConfig>(baseUrl, '/api/tts/config', auth)
+      void apiFetch<TtsRuntimeConfig>(baseUrl, '/api/tts/config', requestAuth)
         .then(setTtsConfig)
         .catch(() => {
           setTtsConfig({ provider: 'deepgram', configured: false, model: 'aura-2-draco-en' })
@@ -276,8 +284,9 @@ export function useWorkspaceQueries({
     } catch (error) {
       setHealth(null)
       if (isUnauthorizedError(error)) {
+        if (requestAccessSnapshot !== storedRuntimeAccessSnapshot()) return
         onUnauthorized()
-        pushError('connection', 'Auth token required. Paste the shared token to connect.')
+        pushError('connection', 'Workspace token required. Enter the workspace token to connect.')
         return
       }
       pushError('connection', `Connection failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -301,13 +310,15 @@ export function useWorkspaceQueries({
   const refreshCampaignWorkspace = useCallback(
     async (campaignId: number) => {
       const requestId = ++workspaceRequestRef.current
+      const requestAuth = auth
+      const requestAccessSnapshot = storedRuntimeAccessSnapshot(requestAuth)
       setWorkspaceLoading(true)
       setLoadingCampaignId(campaignId)
       try {
         const workspace = await apiFetch<CampaignWorkspace>(
           baseUrl,
           `/api/campaigns/${campaignId}/workspace`,
-          auth,
+          requestAuth,
         )
         if (workspaceRequestRef.current !== requestId) return
         const campaignData = workspace.campaign
@@ -340,6 +351,7 @@ export function useWorkspaceQueries({
       } catch (error) {
         if (workspaceRequestRef.current === requestId) {
           if (isUnauthorizedError(error)) {
+            if (requestAccessSnapshot !== storedRuntimeAccessSnapshot()) return
             onUnauthorized()
           } else if (isNotFoundError(error)) {
             setSelectedCampaignId((current) => (current === campaignId ? null : current))

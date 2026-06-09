@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Callable
@@ -43,6 +44,7 @@ from aidm_server.socket_contracts import (
 from aidm_server.telemetry import telemetry_event, telemetry_metric, telemetry_timing
 from aidm_server.text_sanitization import ReasoningBlockFilter, strip_reasoning_blocks
 from aidm_server.time_utils import utc_now
+from aidm_server.turn_control import advance_structured_turn, turn_control_update_payload
 from aidm_server.turn_coordinator import session_turn_coordinator
 from aidm_server.turn_events import (
     DM_RESPONSE_EVENT,
@@ -65,6 +67,14 @@ from aidm_server.turn_rules import (
 
 
 logger = logging.getLogger(__name__)
+
+_HARMFUL_PVP_RE = re.compile(
+    r'\b(?:attack|attacks|attacked|behead\w*|choke\w*|cut|cuts|decapitat\w*|execute\w*|'
+    r'hit|hits|kick\w*|kill\w*|maim\w*|murder\w*|punch\w*|shoot\w*|slash\w*|slice\w*|'
+    r'slit|smite\w*|stab\w*|strike\w*)\b|\bhead\s+off\b',
+    re.IGNORECASE,
+)
+_GENERIC_PLAYER_RACE_LABELS = {'human', 'elf', 'dwarf', 'gnome', 'halfling'}
 
 
 def _coerce_player_id(value) -> int | None:
@@ -158,6 +168,7 @@ class TurnEngine:
         target = action_intent.get('target') if isinstance(action_intent.get('target'), dict) else {}
         target_character = str(target.get('character_name') or 'another player character').strip()
         target_player = str(target.get('player_name') or '').strip()
+        target_kind = str(target.get('kind') or 'player').strip().lower()
         interaction_type = str(interaction.get('type') or 'act_on').strip()
         interaction_labels = {
             'speak_to': 'speak to the target',
@@ -167,6 +178,18 @@ class TurnEngine:
         }
         clean_input = str(user_input or '').strip()
         target_player_line = f'\nTarget player profile: {target_player}' if target_player else ''
+        if target_kind == 'npc':
+            return (
+                'PLAYER-TO-NPC INTERACTION:\n'
+                f'Acting character: {actor_label}\n'
+                f'Target NPC: {target_character}'
+                f'{target_player_line}\n'
+                f'Interaction intent: {interaction_labels.get(interaction_type, "interact with the target")}\n\n'
+                'Player message:\n'
+                f'{clean_input}\n\n'
+                'DM handling: Resolve this as an interaction with a current-scene NPC. Ask for a roll when the '
+                'action needs one, and only apply inventory, relationship, health, or scene changes when the outcome is clear.'
+            )
         return (
             'PLAYER-TO-PLAYER INTERACTION:\n'
             f'Acting character: {actor_label}\n'
@@ -213,8 +236,31 @@ class TurnEngine:
             'If it fails, explicitly say why it fails.'
         )
 
+    @staticmethod
+    def _pvp_model_input(user_input: str, actor_label: str, target_player: Player) -> str:
+        target_label = target_player.character_name or target_player.name or f'Player {target_player.player_id}'
+        return (
+            'PLAYER-VS-PLAYER ACTION (ALLOWED):\n'
+            f'Acting character: {actor_label}\n'
+            f'Target player character: {target_label}\n\n'
+            'Player message:\n'
+            f'{str(user_input or "").strip()}\n\n'
+            'DM handling: Allow PvP as an attempted action. Do not reject the attempt just because it targets '
+            'another player character. Do not narrate final injury, death, incapacitation, theft, forced movement, '
+            'or loss of agency yet. Ask for the appropriate attack roll, opposed check, saving throw, or contested '
+            'rolls from the involved players, then defer the final outcome until the required rolls are recorded.'
+        )
+
     @classmethod
-    def _model_input_for_action(cls, user_input: str, action_intent: dict | None, actor_label: str) -> str:
+    def _model_input_for_action(
+        cls,
+        user_input: str,
+        action_intent: dict | None,
+        actor_label: str,
+        pvp_target: Player | None = None,
+    ) -> str:
+        if pvp_target:
+            return cls._pvp_model_input(user_input, actor_label, pvp_target)
         if cls._is_admin_override(action_intent):
             return cls._admin_model_input(user_input)
         if isinstance(action_intent, dict) and action_intent.get('kind') == 'item':
@@ -225,11 +271,65 @@ class TurnEngine:
 
     @staticmethod
     def _player_is_available_for_campaign(player: Player | None, campaign: Campaign) -> bool:
-        if not player:
+        return bool(
+            player
+            and player.workspace_id == campaign.workspace_id
+            and player.campaign_id == campaign.campaign_id
+        )
+
+    @staticmethod
+    def _target_label_regex(label: str) -> str:
+        words = [re.escape(part) for part in re.findall(r'[a-z0-9]+', str(label or '').lower())]
+        if not words:
+            return ''
+        return r'\b' + r'[\W_]+'.join(words) + r"(?:'s|s)?\b"
+
+    @classmethod
+    def _player_target_labels(cls, player: Player) -> list[str]:
+        labels: list[str] = []
+        for value in (player.character_name, player.name):
+            text = str(value or '').strip()
+            if text and text.lower() not in {label.lower() for label in labels}:
+                labels.append(text)
+        race = str(player.race or '').strip().lower()
+        if race and (race not in _GENERIC_PLAYER_RACE_LABELS or race == 'orc'):
+            labels.extend([race, f'the {race}'])
+        return labels
+
+    @classmethod
+    def _harmful_text_targets_player(cls, text: str, player: Player) -> bool:
+        if not _HARMFUL_PVP_RE.search(text or ''):
             return False
-        if player.workspace_id:
-            return player.workspace_id == campaign.workspace_id
-        return player.campaign_id == campaign.campaign_id
+        normalized = str(text or '').lower()
+        harmful_pattern = f'(?:{_HARMFUL_PVP_RE.pattern})'
+        for label in cls._player_target_labels(player):
+            label_pattern = cls._target_label_regex(label)
+            if not label_pattern:
+                continue
+            harm_then_label = re.compile(
+                rf'{harmful_pattern}(?:\W+\w+){{0,8}}\W+{label_pattern}',
+                re.IGNORECASE,
+            )
+            label_then_harm = re.compile(
+                rf'{label_pattern}(?:\W+\w+){{0,8}}\W+{harmful_pattern}',
+                re.IGNORECASE,
+            )
+            if harm_then_label.search(normalized) or label_then_harm.search(normalized):
+                return True
+        return False
+
+    def _active_player_ids_for_session(self, session_id: int) -> set[int]:
+        if not self.active_player_ids:
+            return set()
+        active_ids: set[int] = set()
+        for player_id in self.active_player_ids(session_id):
+            try:
+                parsed = int(player_id)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                active_ids.add(parsed)
+        return active_ids
 
     @staticmethod
     def _session_turn_number(session_id: int) -> int:
@@ -282,7 +382,24 @@ class TurnEngine:
         return [fallback_player_id] if fallback_player_id else []
 
     def _roll_gate_for_turn(self, turn: DmTurn, campaign: Campaign, dm_response_text: str) -> dict | None:
-        if not turn.requires_roll or turn.roll_value is not None or turn.outcome_status != 'deferred':
+        if not turn.requires_roll or turn.outcome_status != 'deferred':
+            return None
+        rules_hint = safe_json_loads(turn.rules_hint, {})
+        rules_hint = rules_hint if isinstance(rules_hint, dict) else {}
+        pvp_payload = rules_hint.get('pvp') if isinstance(rules_hint.get('pvp'), dict) else {}
+        pvp_target_player_id = _coerce_player_id(pvp_payload.get('target_player_id')) if pvp_payload else None
+        if pvp_target_player_id:
+            required_player_ids = list(dict.fromkeys([player_id for player_id in [turn.player_id, pvp_target_player_id] if player_id]))
+            resolved_player_ids = [turn.player_id] if turn.roll_value is not None and turn.player_id else []
+            remaining_player_ids = [player_id for player_id in required_player_ids if player_id not in set(resolved_player_ids)]
+            return {
+                'scope': 'pvp_contest',
+                'required_player_ids': required_player_ids,
+                'resolved_player_ids': resolved_player_ids,
+                'remaining_player_ids': remaining_player_ids,
+                'target_player_id': pvp_target_player_id,
+            }
+        if turn.roll_value is not None:
             return None
         required_player_ids = [turn.player_id] if turn.player_id else []
         scope = 'single_player'
@@ -307,11 +424,85 @@ class TurnEngine:
         players = Player.query.filter(Player.player_id.in_(player_ids)).all()
         return {player.player_id: player.character_name or player.name or f'Player {player.player_id}' for player in players}
 
-    def _prepare_interaction_target(self, command: TurnCommand, campaign: Campaign) -> bool:
+    @staticmethod
+    def _current_scene_npc_target(session_obj: Session, target: dict) -> dict | None:
+        snapshot = safe_json_loads(session_obj.state_snapshot, {})
+        if not isinstance(snapshot, dict):
+            return None
+        scene = snapshot.get('currentScene') if isinstance(snapshot.get('currentScene'), dict) else {}
+        active_npc_ids = {
+            str(value).strip()
+            for value in scene.get('activeNpcIds', [])
+            if str(value or '').strip()
+        } if isinstance(scene.get('activeNpcIds'), list) else set()
+        scene_location_id = str(scene.get('locationId') or '').strip()
+        target_npc_id = str(target.get('npc_id') or target.get('npcId') or '').strip()
+        target_name = str(target.get('character_name') or target.get('name') or '').strip().lower()
+        npc_records = []
+        for key in ('knownNpcs', 'partyNpcs'):
+            value = snapshot.get(key)
+            if isinstance(value, list):
+                npc_records.extend([record for record in value if isinstance(record, dict)])
+        for npc in npc_records:
+            npc_id = str(npc.get('id') or npc.get('npcId') or '').strip()
+            npc_name = str(npc.get('name') or '').strip()
+            if target_npc_id and npc_id != target_npc_id:
+                continue
+            if not target_npc_id and target_name and npc_name.lower() != target_name:
+                continue
+            if not npc_id and not npc_name:
+                continue
+            if active_npc_ids and npc_id not in active_npc_ids:
+                continue
+            npc_location_id = str(npc.get('locationId') or '').strip()
+            if not active_npc_ids and npc_location_id and scene_location_id and npc_location_id != scene_location_id:
+                continue
+            return {
+                'npc_id': npc_id or target_npc_id,
+                'character_name': npc_name or target.get('character_name') or 'Scene NPC',
+                'player_name': str(npc.get('role') or npc.get('disposition') or 'Current scene NPC').strip(),
+            }
+        return None
+
+    def _prepare_interaction_target(self, command: TurnCommand, campaign: Campaign, session_obj: Session) -> bool:
         action_intent = command.action_intent
         if not isinstance(action_intent, dict) or action_intent.get('kind') != 'interact':
             return True
         target = action_intent.get('target')
+        if not isinstance(target, dict):
+            return True
+        target_kind = str(target.get('kind') or '').strip().lower()
+        target_npc_id = str(target.get('npc_id') or target.get('npcId') or '').strip()
+        if target_kind == 'npc' or target_npc_id:
+            npc_target = self._current_scene_npc_target(session_obj, target)
+            if not npc_target:
+                self.emit(
+                    'error',
+                    socket_error(
+                        'interaction_target_invalid',
+                        'Target NPC is not active in the current scene.',
+                        {'target_npc_id': target_npc_id},
+                    ),
+                )
+                telemetry_event(
+                    'socket.send_message.interaction_target_invalid',
+                    payload={
+                        'sid': command.sid,
+                        'session_id': command.session_id,
+                        'player_id': command.player_id,
+                        'target_npc_id': target_npc_id,
+                        'campaign_id': campaign.campaign_id,
+                    },
+                    severity='warning',
+                )
+                return False
+            target['kind'] = 'npc'
+            target['npc_id'] = npc_target['npc_id']
+            target['character_name'] = npc_target['character_name']
+            target['player_name'] = npc_target['player_name']
+            target.pop('player_id', None)
+            return True
+
         target_player_id = target.get('player_id') if isinstance(target, dict) else None
         target_player = db.session.get(Player, target_player_id) if isinstance(target_player_id, int) else None
         if not self._player_is_available_for_campaign(target_player, campaign):
@@ -335,6 +526,29 @@ class TurnEngine:
                 severity='warning',
             )
             return False
+        active_ids = self._active_player_ids_for_session(command.session_id)
+        if active_ids and target_player.player_id not in active_ids:
+            self.emit(
+                'error',
+                socket_error(
+                    'interaction_target_invalid',
+                    'Target player is not active in this session.',
+                    {'target_player_id': target_player_id},
+                ),
+            )
+            telemetry_event(
+                'socket.send_message.interaction_target_inactive',
+                payload={
+                    'sid': command.sid,
+                    'session_id': command.session_id,
+                    'player_id': command.player_id,
+                    'target_player_id': target_player_id,
+                    'campaign_id': campaign.campaign_id,
+                },
+                severity='warning',
+            )
+            return False
+        target['kind'] = 'player'
         target['character_name'] = target_player.character_name
         target['player_name'] = target_player.name
         return True
@@ -396,6 +610,55 @@ class TurnEngine:
                 return False
         return True
 
+    def _harmful_pvp_target(self, command: TurnCommand, campaign: Campaign) -> Player | None:
+        if self._is_admin_override(command.action_intent):
+            return None
+        text = str(command.user_input or '')
+        if not _HARMFUL_PVP_RE.search(text):
+            return None
+        active_ids = self._active_player_ids_for_session(command.session_id)
+        query = Player.query.filter_by(workspace_id=campaign.workspace_id, campaign_id=campaign.campaign_id)
+        candidates = [
+            player
+            for player in query.order_by(Player.player_id.asc()).all()
+            if player.player_id != command.player_id and (not active_ids or player.player_id in active_ids)
+        ]
+        action_intent = command.action_intent if isinstance(command.action_intent, dict) else {}
+        target = action_intent.get('target') if isinstance(action_intent.get('target'), dict) else {}
+        target_player_id = _coerce_player_id(target.get('player_id')) if isinstance(target, dict) else None
+        if action_intent.get('kind') == 'interact' and target_player_id:
+            target_player = next((player for player in candidates if player.player_id == target_player_id), None)
+            if target_player:
+                return target_player
+        for player in candidates:
+            if self._harmful_text_targets_player(text, player):
+                return player
+        return None
+
+    @staticmethod
+    def _pvp_rules_payload(target_player: Player | None) -> dict | None:
+        if not target_player:
+            return None
+        return {
+            'allowed': True,
+            'requires_contested_resolution': True,
+            'target_player_id': target_player.player_id,
+            'target_character_name': target_player.character_name or target_player.name or f'Player {target_player.player_id}',
+        }
+
+    @staticmethod
+    def _apply_pvp_rule_hint(rule_hint: RuleHint, pvp_payload: dict | None) -> RuleHint:
+        if not pvp_payload:
+            return rule_hint
+        rule_hint.requires_roll = True
+        if not rule_hint.roll_type or rule_hint.roll_type == 'check':
+            rule_hint.roll_type = 'attack'
+        rule_hint.dc_hint = rule_hint.dc_hint or 'contested by target player or DM-set defense'
+        rule_hint.reason = f"Harmful PvP action targeting {pvp_payload['target_character_name']}; contested resolution required"
+        rule_hint.confidence = max(rule_hint.confidence or 0.0, 0.97)
+        rule_hint.outcome_deferred = True
+        return rule_hint
+
     def process(self, command: TurnCommand):
         with session_turn_coordinator.serialized(command.session_id) as wait_ms:
             if wait_ms >= 1.0:
@@ -447,7 +710,7 @@ class TurnEngine:
             return
 
         if not self._player_is_available_for_campaign(player, campaign):
-            self.emit('error', socket_error('campaign_mismatch', 'Player is not available in this workspace'))
+            self.emit('error', socket_error('campaign_mismatch', 'Player is not available in this campaign'))
             telemetry_event(
                 'socket.send_message.campaign_mismatch',
                 payload={'sid': command.sid, 'player_id': command.player_id, 'campaign_id': command.campaign_id},
@@ -455,10 +718,12 @@ class TurnEngine:
             )
             return
 
-        if not self._prepare_interaction_target(command, campaign):
+        if not self._prepare_interaction_target(command, campaign, session_obj):
             return
         if not self._validate_character_limits(command, player):
             return
+        pvp_target = self._harmful_pvp_target(command, campaign)
+        pvp_payload = self._pvp_rules_payload(pvp_target)
 
         player_label = player.character_name
         is_admin_override = self._is_admin_override(command.action_intent)
@@ -478,6 +743,7 @@ class TurnEngine:
         )
         rule_hint = apply_action_intent_to_rule_hint(command.action_intent, rule_hint)
         rule_hint = apply_character_dc_adjustment(rule_hint, player)
+        rule_hint = self._apply_pvp_rule_hint(rule_hint, pvp_payload)
 
         if command.client_message_id:
             duplicate_turn = (
@@ -670,6 +936,8 @@ class TurnEngine:
             'resolved_clarification_turn_id': resolved_clarification_turn_id,
             'turn_number': session_turn_number,
         }
+        if pvp_payload:
+            rules_hint_payload['pvp'] = pvp_payload
         if resolved_clarification_turn_id:
             rules_hint_payload['clarification_resume'] = {
                 'resolved_turn_id': resolved_clarification_turn_id,
@@ -696,6 +964,7 @@ class TurnEngine:
                     'turn_number': session_turn_number,
                     'action_intent': command.action_intent,
                     'client_message_id': command.client_message_id,
+                    'pvp': pvp_payload,
                     'resolved_clarification_turn_id': resolved_clarification_turn_id,
                     'clarification_resume': (
                         {
@@ -835,7 +1104,7 @@ class TurnEngine:
             player_label=player_label,
             world_id=campaign.world_id,
             user_input=command.user_input,
-            model_user_input=self._model_input_for_action(command.user_input, command.action_intent, player_label),
+            model_user_input=self._model_input_for_action(command.user_input, command.action_intent, player_label, pvp_target),
             rules_hint_payload=rules_hint_payload,
             resolved_turn_id=resolved_turn_id,
         )
@@ -1450,6 +1719,41 @@ class TurnEngine:
                 record_phase_timing=self._record_phase_timing,
             )
 
+    def _advance_structured_turn_if_ready(self, *, turn_obj: DmTurn, action_intent: dict | None) -> None:
+        if self._is_admin_override(action_intent):
+            return
+        if turn_obj.outcome_status == 'deferred':
+            return
+        if not self.active_player_ids:
+            return
+
+        try:
+            session_obj = db.session.get(Session, turn_obj.session_id)
+            if not session_obj:
+                return
+            active_ids = [player_id for player_id in self.active_player_ids(turn_obj.session_id) if player_id]
+            turn_control = advance_structured_turn(
+                session_obj,
+                current_player_id=turn_obj.player_id,
+                active_player_ids=active_ids,
+            )
+            if not turn_control:
+                return
+            db.session.commit()
+            self.socketio.emit(
+                'turn_control_updated',
+                turn_control_update_payload(turn_obj.session_id, turn_control),
+                room=str(turn_obj.session_id),
+            )
+        except Exception as exc:
+            db.session.rollback()
+            logger.warning('Structured turn advance failed: %s', str(exc))
+            telemetry_event(
+                'socket.turn_control.advance_failed',
+                payload={'session_id': turn_obj.session_id, 'turn_id': turn_obj.turn_id, 'error': str(exc)},
+                severity='warning',
+            )
+
     def _persist_turn_outcome(
         self,
         *,
@@ -1626,6 +1930,9 @@ class TurnEngine:
                             'state_log': state_log,
                         },
                     )
+
+            if turn_obj and dm_succeeded:
+                self._advance_structured_turn_if_ready(turn_obj=turn_obj, action_intent=command.action_intent)
 
             if turn_obj and dm_succeeded:
                 self._mark_clarification_resume_completed(command=command, resumed_turn=turn_obj)

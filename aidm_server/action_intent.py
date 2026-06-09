@@ -15,6 +15,7 @@ VALID_ROLL_MODES = {'normal', 'advantage', 'disadvantage'}
 VALID_RESULT_VISIBILITY = {'hidden_until_landed', 'visible'}
 VALID_ABILITIES = {'strength', 'dexterity', 'constitution', 'intelligence', 'wisdom', 'charisma'}
 VALID_INTERACTION_TYPES = {'speak_to', 'act_on', 'give_to', 'take_from'}
+VALID_TARGET_KINDS = {'player', 'npc'}
 ACTION_TEXT_MAX_LENGTH = 2000
 ACTION_REASON_MAX_LENGTH = 240
 ACTION_ITEM_MAX_LENGTH = 120
@@ -226,9 +227,17 @@ def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | Non
         target = value.get('target')
         if not isinstance(target, dict):
             return None, 'interact action metadata must include a target object.'
+        target_kind = _clean_text(target.get('kind'), max_length=16).lower()
+        target_npc_id = _clean_text(target.get('npc_id') or target.get('npcId'), max_length=ACTION_ID_MAX_LENGTH)
+        if not target_kind:
+            target_kind = 'npc' if target_npc_id else 'player'
+        if target_kind not in VALID_TARGET_KINDS:
+            return None, f'target.kind must be one of {sorted(VALID_TARGET_KINDS)}.'
         target_player_id = _coerce_int(target.get('player_id'))
-        if target_player_id is None or target_player_id < 1:
+        if target_kind == 'player' and (target_player_id is None or target_player_id < 1):
             return None, 'target.player_id must be a positive integer.'
+        if target_kind == 'npc' and not target_npc_id:
+            return None, 'target.npc_id is required for NPC interactions.'
         target_character_name = _clean_text(target.get('character_name'), max_length=ACTION_NAME_MAX_LENGTH)
         if not target_character_name:
             return None, 'target.character_name is required.'
@@ -237,14 +246,19 @@ def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | Non
             'type': interaction_type,
             'label': _clean_text(interaction.get('label'), max_length=40) or interaction_type.replace('_', ' ').title(),
         }
-        normalized['target'] = {
-            'player_id': target_player_id,
+        normalized_target = {
+            'kind': target_kind,
             'character_name': target_character_name,
             'player_name': _clean_text(
                 target.get('player_name') or target.get('name'),
                 max_length=ACTION_NAME_MAX_LENGTH,
             ),
         }
+        if target_kind == 'player':
+            normalized_target['player_id'] = target_player_id
+        else:
+            normalized_target['npc_id'] = target_npc_id
+        normalized['target'] = normalized_target
 
     return normalized, None
 

@@ -7,7 +7,8 @@ import {
   pointBuyStatsPayload,
   type PointBuyScores,
 } from './characterStats'
-import type { Player, PlayerDetail } from './types'
+import { playableRaceFromValue } from './raceCatalog'
+import type { CharacterRaceSelection, Player, PlayerDetail } from './types'
 
 type ValueUpdater<T> = T | ((current: T) => T)
 
@@ -15,9 +16,9 @@ export type PlayerEditDialogState = {
   mode: 'create' | 'edit'
   campaignId: number | null
   player: Player | null
-  name: string
   characterName: string
   race: string
+  raceSelection: CharacterRaceSelection | null
   sex: string
   charClass: string
   level: string
@@ -51,9 +52,9 @@ function playerDialogStateFromPlayer(player: Player): NonNullable<PlayerEditDial
     mode: 'edit',
     campaignId: player.campaign_id,
     player,
-    name: player.name ?? '',
     characterName: player.character_name ?? '',
     race: player.race ?? '',
+    raceSelection: player.race_selection ?? null,
     sex: player.sex ?? 'male',
     charClass: player.char_class || player.class_ || '',
     level: String(player.level ?? 1),
@@ -94,9 +95,9 @@ export function usePlayerProfileActions({
       mode: 'create',
       campaignId,
       player: null,
-      name: '',
       characterName: '',
       race: '',
+      raceSelection: null,
       sex: 'male',
       charClass: '',
       level: '1',
@@ -130,18 +131,34 @@ export function usePlayerProfileActions({
   const submitPlayerEditDialog = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!playerEditDialog) return
-    const name = playerEditDialog.name.trim()
     const characterName = playerEditDialog.characterName.trim()
     const level = Number(playerEditDialog.level)
-    if (!name || !characterName) {
+    if (!characterName) {
       setPlayerEditDialog((current) =>
-        current ? { ...current, error: 'Player and character names are required.' } : current,
+        current ? { ...current, error: 'Character name is required.' } : current,
       )
       return
     }
     if (!Number.isInteger(level) || level < 1 || level > 20) {
       setPlayerEditDialog((current) =>
         current ? { ...current, error: 'Level must be 1 through 20.' } : current,
+      )
+      return
+    }
+    const playableRace = playableRaceFromValue(playerEditDialog.race)
+    const raceSelection =
+      playerEditDialog.raceSelection ??
+      (playableRace
+        ? {
+            raceId: playableRace.key,
+            raceName: playableRace.name,
+            source: 'curated' as const,
+            selectedOptions: {},
+          }
+        : null)
+    if (!raceSelection) {
+      setPlayerEditDialog((current) =>
+        current ? { ...current, error: 'Choose a playable race.' } : current,
       )
       return
     }
@@ -160,10 +177,10 @@ export function usePlayerProfileActions({
     try {
       let updated: PlayerDetail
       const payload: Record<string, unknown> = {
-        name,
         character_name: characterName,
-        race: playerEditDialog.race.trim(),
-        sex: playerEditDialog.sex.trim() || 'male',
+        race: raceSelection.raceName,
+        race_selection: raceSelection,
+        sex: playerEditDialog.sex === 'female' ? 'female' : 'male',
         char_class: playerEditDialog.charClass.trim(),
         level,
       }

@@ -8,6 +8,7 @@ import {
   PLAIN_ROLL_ABILITY_KEY,
   composerModeLabel,
   interactionActionText,
+  interactionTargetId,
   itemActionText,
   type AbilityOption,
   type ComposerMode,
@@ -18,6 +19,7 @@ import {
   type RollMode,
 } from './gameActions'
 import type { PendingRollOption } from './gameSelectors'
+import type { ActivePlayer, TurnControl, TurnControlMode } from './types'
 
 export type ActionComposerProps = {
   actionInputRef: RefObject<HTMLTextAreaElement | null>
@@ -28,9 +30,17 @@ export type ActionComposerProps = {
   updateActionText: (nextText: string) => void
   setAdminPasscode: Dispatch<SetStateAction<string>>
   selectedCharacterName: string | null
+  selectedPlayerId: number | null
+  activePlayers: ActivePlayer[]
   composerMode: ComposerMode
   selectedDie: string
   sendPending: boolean
+  turnControl: TurnControl
+  turnControlStatusLabel: string
+  selectedPlayerHasTurn: boolean
+  queuedActionText: string
+  clearQueuedAction: () => void
+  updateTurnControl: (mode: TurnControlMode, activePlayerId?: number | null) => void
   ttsEnabled: boolean
   ttsStatusClassName: string
   ttsStatusLabel: string
@@ -84,9 +94,17 @@ export function ActionComposer({
   updateActionText,
   setAdminPasscode,
   selectedCharacterName,
+  selectedPlayerId,
+  activePlayers,
   composerMode,
   selectedDie,
   sendPending,
+  turnControl,
+  turnControlStatusLabel,
+  selectedPlayerHasTurn,
+  queuedActionText,
+  clearQueuedAction,
+  updateTurnControl,
   ttsEnabled,
   ttsStatusClassName,
   ttsStatusLabel,
@@ -134,6 +152,19 @@ export function ActionComposer({
   const adminUnlockRef = useRef({ count: 0, startedAt: 0 })
   const inventoryActionUsesOwnedItem = ['use', 'drop', 'give', 'sell'].includes(selectedInventoryAction)
   const currentItemName = inventoryActionUsesOwnedItem ? selectedItem?.name ?? itemDraftName : itemDraftName
+  const activeTurnPlayerId = turnControl.activePlayerId ?? selectedPlayerId ?? activePlayers[0]?.id ?? null
+  const turnModeButton = (mode: TurnControlMode, label: string) => (
+    <button
+      key={mode}
+      type="button"
+      aria-pressed={turnControl.mode === mode}
+      className={turnControl.mode === mode ? 'selected' : ''}
+      onClick={() => updateTurnControl(mode, mode === 'free' ? null : activeTurnPlayerId)}
+      disabled={!selectedPlayerId}
+    >
+      {label}
+    </button>
+  )
 
   const handleActionLabelClick = () => {
     const now = Date.now()
@@ -155,6 +186,44 @@ export function ActionComposer({
       <label htmlFor="action-input" onClick={handleActionLabelClick}>
         Your Action <span>({composerModeLabel(composerMode, selectedDie)})</span>
       </label>
+      <div className={`turn-control-strip ${selectedPlayerHasTurn ? 'open' : 'locked'}`} aria-live="polite">
+        <div className="turn-control-summary">
+          <span>Turn mode</span>
+          <strong>{turnControlStatusLabel}</strong>
+        </div>
+        <div className="turn-control-actions" role="group" aria-label="Turn mode">
+          {turnModeButton('free', 'Free')}
+          {turnModeButton('spotlight', 'Spotlight')}
+          {turnModeButton('structured', 'Structured')}
+          {turnControl.mode !== 'free' ? (
+            <select
+              aria-label="Active turn player"
+              value={activeTurnPlayerId ?? ''}
+              onChange={(event) => updateTurnControl(turnControl.mode, Number(event.target.value) || selectedPlayerId)}
+              disabled={!activePlayers.length || !selectedPlayerId}
+            >
+              {activePlayers.length ? (
+                activePlayers.map((player) => (
+                  <option key={player.id} value={player.id}>
+                    {player.character_name || player.name}
+                  </option>
+                ))
+              ) : (
+                <option value={selectedPlayerId ?? ''}>{selectedCharacterName ?? 'Current player'}</option>
+              )}
+            </select>
+          ) : null}
+        </div>
+      </div>
+      {queuedActionText ? (
+        <div className="queued-action-strip">
+          <span>Queued draft</span>
+          <strong>{queuedActionText}</strong>
+          <button type="button" onClick={clearQueuedAction}>
+            Clear
+          </button>
+        </div>
+      ) : null}
       <div className={`tts-status-strip ${ttsStatusClassName}`} role="status" aria-live="polite">
         <span>
           {ttsEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
@@ -391,7 +460,7 @@ export function ActionComposer({
             disabled={!interactionTargets.length}
             onChange={(event) => {
               const nextTarget =
-                interactionTargets.find((target) => String(target.player_id) === event.target.value) ?? null
+                interactionTargets.find((target) => interactionTargetId(target) === event.target.value) ?? null
               setSelectedInteractionTargetId(event.target.value)
               setActionText((current) =>
                 interactionActionText(characterName, nextTarget, selectedInteractionType, current),
@@ -400,15 +469,21 @@ export function ActionComposer({
           >
             {interactionTargets.length ? (
               interactionTargets.map((target) => (
-                <option key={target.player_id} value={String(target.player_id)}>
+                <option key={interactionTargetId(target)} value={interactionTargetId(target)}>
                   {target.character_name} ({target.player_name})
                 </option>
               ))
             ) : (
-              <option value="">No other players</option>
+              <option value="">No current targets</option>
             )}
           </select>
-          <span>{selectedInteractionTarget?.active ? 'Active now' : selectedInteractionTarget ? 'Campaign player' : 'No target'}</span>
+          <span>
+            {selectedInteractionTarget?.kind === 'npc'
+              ? 'Scene NPC'
+              : selectedInteractionTarget?.active
+                ? 'Active now'
+                : 'No target'}
+          </span>
         </div>
       ) : null}
       {adminToolsUnlocked && composerMode === 'admin' ? (

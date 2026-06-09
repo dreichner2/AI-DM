@@ -397,6 +397,35 @@
   white-space: nowrap;
 }
 
+.world-state-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 20px;
+  padding: 0;
+  border: 0;
+  color: var(--muted);
+  background: transparent;
+  font-size: 0.68rem;
+  font-weight: 520;
+}
+
+.world-state-toggle:hover {
+  color: var(--heading);
+}
+
+.world-state-toggle svg {
+  flex: 0 0 auto;
+  transition: transform 140ms ease;
+}
+
+.world-state-toggle.expanded svg {
+  transform: rotate(180deg);
+}
+
 .active-player-list {
   display: grid;
   gap: 7px;

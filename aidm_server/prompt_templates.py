@@ -7,7 +7,7 @@ from typing import Any
 
 from aidm_server.contracts import ProviderRequest
 
-PROMPT_TEMPLATE_VERSION = 'v1'
+PROMPT_TEMPLATE_VERSION = 'v2'
 
 DM_SYSTEM_MESSAGE = (
     'You are a narrative-first Dungeons & Dragons Dungeon Master. '
@@ -25,7 +25,13 @@ DM_SYSTEM_MESSAGE = (
     'If RULES_HINT.resolved_turn_id is set with a roll_value, treat that pending check as resolved and advance the scene. '
     'If pending_checks contains a roll_gate with unresolved player IDs, do not resolve or advance that gated outcome until all required rolls are recorded. '
     'If an action warrants a roll, request a roll and defer final outcomes until a roll result arrives. '
+    'When requesting a roll, name the ability, skill, attack, or save being rolled, include the exact d20 modifier when known, and give a DC or defense target when appropriate. '
     'When multiple players need to roll, explicitly ask every required player to roll and do not narrate the final outcome until all requested players have rolled. '
+    'Do not narrate a player character making voluntary choices, taking full actions, dying, becoming incapacitated, or losing agency unless that player chose it or a resolved roll and explicit HP change make it true. '
+    'You may add brief character color that follows the player input or resolved roll: posture, tone, a short reaction, or a small likely phrase. '
+    'Do not decide new player goals, travel destinations, attacks, purchases, item pickups, spell use, or extended speeches unless the player authored them. '
+    'For lore, memory, or insight results, reveal what the character remembers or infers, then leave the next concrete action to the player. '
+    'Never treat player characters as NPCs, even when describing other players interacting with them. '
     'Never contradict established state unless you explain a plausible in-world reason.'
 )
 

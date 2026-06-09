@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
 
+from aidm_server.auth import account_display_name
 from aidm_server.canon_inventory import inventory_payload
 from aidm_server.character_state import serialize_stats_payload
 from aidm_server.database import db
@@ -11,6 +12,10 @@ from aidm_server.errors import error_response
 from aidm_server.models import DmTurn, Player, PlayerAction, TurnEvent, safe_json_dumps
 from aidm_server.pagination import jsonify_page, limited_page
 from aidm_server.response_dtos import player_detail_payload, player_summary_payload
+from aidm_server.race_system import (
+    normalize_character_race_selection,
+    race_selection_to_json,
+)
 from aidm_server.validation import (
     coerce_int,
     missing_fields,
@@ -19,9 +24,11 @@ from aidm_server.validation import (
     required_text as _required_text,
 )
 from aidm_server.workspace_access import (
+    current_account_id,
     current_workspace_id,
     get_campaign as workspace_campaign,
     get_player as workspace_player,
+    visible_players_query,
 )
 
 
@@ -37,6 +44,16 @@ def _structured_text(value):
     return safe_json_dumps(value, {})
 
 
+def _race_selection_payload(payload: dict, fallback_race: str | None):
+    if 'race_selection' not in payload and 'race' not in payload:
+        return None, None
+    try:
+        selection = normalize_character_race_selection(payload.get('race_selection'), fallback_race=fallback_race)
+    except ValueError as exc:
+        return None, str(exc)
+    return selection, None
+
+
 @players_bp.route('/campaigns/<int:campaign_id>/players', methods=['GET', 'POST'])
 def handle_players(campaign_id):
     if request.method == 'POST':
@@ -49,7 +66,7 @@ def add_player(campaign_id):
     if payload is None:
         return error_response('validation_error', 'Expected JSON request body.', 400)
 
-    required = missing_fields(payload, ['name', 'character_name'])
+    required = missing_fields(payload, ['character_name'])
     if required:
         return error_response('validation_error', 'Missing required fields.', 400, {'missing_fields': required})
 
@@ -57,9 +74,13 @@ def add_player(campaign_id):
     if not campaign:
         return error_response('campaign_not_found', 'Campaign not found.', 404)
 
-    name, name_error = _required_text(payload.get('name'), max_length=80, field='name')
-    if name_error:
-        return error_response('validation_error', name_error, 400)
+    account = getattr(g, 'aidm_account', None)
+    name = account_display_name(account) if account else None
+    if not name:
+        name, name_error = _optional_text(payload.get('name'), max_length=80, field='name')
+        if name_error:
+            return error_response('validation_error', name_error, 400)
+        name = name or 'Local Player'
     character_name, character_name_error = _required_text(
         payload.get('character_name'),
         max_length=80,
@@ -90,13 +111,21 @@ def add_player(campaign_id):
         if stats_error:
             return error_response('validation_error', stats_error, 400)
 
+        race_selection, race_selection_error = _race_selection_payload(payload, race)
+        if race_selection_error:
+            return error_response('validation_error', race_selection_error, 400)
+        if race_selection:
+            race = race_selection['raceName']
+
         raw_inventory = payload.get('inventory')
         new_player = Player(
             workspace_id=current_workspace_id(),
+            account_id=current_account_id(),
             campaign_id=campaign_id,
             name=name,
             character_name=character_name,
             race=race,
+            race_selection=race_selection_to_json(race_selection),
             sex=sex,
             class_=class_name,
             level=level,
@@ -120,7 +149,7 @@ def get_players(campaign_id):
 
     before_id = coerce_int(request.args.get('before_id'))
     limit = coerce_int(request.args.get('limit'))
-    query = Player.query.filter_by(workspace_id=current_workspace_id())
+    query = visible_players_query(current_workspace_id(), campaign_id=campaign_id)
     if before_id is not None:
         query = query.filter(Player.player_id < before_id)
     query = query.order_by(Player.created_at.asc(), Player.player_id.asc())
@@ -148,12 +177,17 @@ def update_player(player_id):
         return error_response('player_not_found', 'Player not found.', 404)
 
     text_fields = {
-        'name': (80, True),
         'character_name': (80, True),
         'race': (80, False),
         'sex': (40, False),
     }
     try:
+        if 'name' in payload and player.account_id is None:
+            value, error = _required_text(payload.get('name'), max_length=80, field='name')
+            if error:
+                return error_response('validation_error', error, 400)
+            player.name = value
+
         for field, (max_length, required) in text_fields.items():
             if field not in payload:
                 continue
@@ -166,6 +200,19 @@ def update_player(player_id):
             if field == 'sex' and not value:
                 value = 'male'
             setattr(player, field, value)
+
+        if player.account_id and player.account:
+            player.name = account_display_name(player.account)
+
+        if 'race_selection' in payload or 'race' in payload:
+            race_selection, race_selection_error = _race_selection_payload(payload, player.race)
+            if race_selection_error:
+                return error_response('validation_error', race_selection_error, 400)
+            if race_selection:
+                player.race = race_selection['raceName']
+                player.race_selection = race_selection_to_json(race_selection)
+            else:
+                player.race_selection = None
 
         if 'class_' in payload or 'char_class' in payload:
             value, error = _optional_text(
