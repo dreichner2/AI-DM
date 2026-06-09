@@ -270,6 +270,7 @@ def legacy_immediate_summary_from_applied(applied_changes: list[dict[str, Any]],
         if change_type in {'inventory.add', 'inventory.remove'}:
             inventory_changes.append(
                 {
+                    'player_id': parse_actor_player_id(change.get('actorId') or change.get('actor_id')),
                     'action': 'acquire' if change_type == 'inventory.add' else 'lose',
                     'item_name': change.get('itemName') or change.get('item_name') or change.get('item', {}).get('name'),
                     'quantity': max(1, int_or_default(change.get('quantity'), default=1)),

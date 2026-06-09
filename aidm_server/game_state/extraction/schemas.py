@@ -10,6 +10,35 @@ from aidm_server.game_state.change_types import PHASE_1_STATE_CHANGE_TYPES
 GENERIC_INTENT_SAFE_FIELDS = {'summary', 'intentDescription', 'intent_description', 'description', 'sourceText', 'source_text'}
 POSITIVE_INT_FIELDS = {'quantity', 'amount'}
 WEIGHT_FIELDS = ('weight', 'itemWeight', 'item_weight', 'weightLbs', 'weight_lbs')
+CURRENCY_FIELDS = ('currency', 'currencyType', 'currency_type', 'currencyName', 'currency_name', 'coinType', 'coin_type')
+CURRENCY_ALIASES = {
+    'pp': 'pp',
+    'platinum': 'pp',
+    'platinum piece': 'pp',
+    'platinum pieces': 'pp',
+    'gp': 'gp',
+    'gold': 'gp',
+    'gold coin': 'gp',
+    'gold coins': 'gp',
+    'gold piece': 'gp',
+    'gold pieces': 'gp',
+    'ep': 'ep',
+    'electrum': 'ep',
+    'electrum piece': 'ep',
+    'electrum pieces': 'ep',
+    'sp': 'sp',
+    'silver': 'sp',
+    'silver coin': 'sp',
+    'silver coins': 'sp',
+    'silver piece': 'sp',
+    'silver pieces': 'sp',
+    'cp': 'cp',
+    'copper': 'cp',
+    'copper coin': 'cp',
+    'copper coins': 'cp',
+    'copper piece': 'cp',
+    'copper pieces': 'cp',
+}
 _MISSING = object()
 
 
@@ -62,6 +91,14 @@ def _positive_number(value: Any) -> float | int | None:
     return int(number) if number.is_integer() else number
 
 
+def _currency_code(payload: dict[str, Any]) -> str:
+    raw_value = _first_present(payload, CURRENCY_FIELDS)
+    if raw_value is _MISSING:
+        return ''
+    normalized = re.sub(r'\s+', ' ', str(raw_value or '').strip().lower())
+    return CURRENCY_ALIASES.get(normalized, normalized)
+
+
 def normalize_declared_action(raw_action: Any, *, fallback_actor_id: str, fallback_id: str) -> dict[str, Any] | None:
     if not isinstance(raw_action, dict):
         return None
@@ -105,11 +142,13 @@ def normalize_declared_action(raw_action: Any, *, fallback_actor_id: str, fallba
         'toActorName',
         'to_actor_name',
         'summary',
-        'currency',
     ):
         if key in raw_action:
             camel = ''.join([key.split('_')[0], *[part[:1].upper() + part[1:] for part in key.split('_')[1:]]])
             action[camel] = raw_action[key]
+    currency = _currency_code(raw_action)
+    if currency:
+        action['currency'] = currency
     if 'quantity' in raw_action:
         try:
             action['quantity'] = max(1, int(raw_action.get('quantity') or 1))
@@ -200,6 +239,9 @@ def normalize_state_change(raw_change: Any, *, fallback_actor_id: str, fallback_
     )
     change['visible'] = bool(raw_change.get('visible', True))
     change['reason'] = str(raw_change.get('reason') or 'Extracted from DM response.')
+    currency = _currency_code(raw_change)
+    if currency:
+        change['currency'] = currency
     if 'item_name' in change and 'itemName' not in change:
         change['itemName'] = change.pop('item_name')
     if 'item_id' in change and 'itemId' not in change:

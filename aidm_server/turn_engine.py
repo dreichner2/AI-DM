@@ -67,6 +67,34 @@ from aidm_server.turn_rules import (
 logger = logging.getLogger(__name__)
 
 
+def _coerce_player_id(value) -> int | None:
+    try:
+        player_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    return player_id if player_id > 0 else None
+
+
+def _affected_player_ids_from_state_summary(
+    inventory_changes: list[dict],
+    character_state_changes: list[dict],
+    *,
+    fallback_player_id: int | None,
+) -> list[int]:
+    affected: set[int] = set()
+    for change in [*inventory_changes, *character_state_changes]:
+        if not isinstance(change, dict):
+            continue
+        player_id = _coerce_player_id(change.get('player_id') or change.get('playerId'))
+        if player_id:
+            affected.add(player_id)
+    if not affected and (inventory_changes or character_state_changes):
+        fallback = _coerce_player_id(fallback_player_id)
+        if fallback:
+            affected.add(fallback)
+    return sorted(affected)
+
+
 @dataclass
 class TurnCommand:
     sid: str
@@ -1556,6 +1584,11 @@ class TurnEngine:
                 character_state_changes = immediate_state_summary.get('character_state_changes_applied') or []
                 state_log_lines = state_log.get('lines') if isinstance(state_log, dict) else []
                 if inventory_changes or character_state_changes or state_log_lines:
+                    affected_player_ids = _affected_player_ids_from_state_summary(
+                        inventory_changes,
+                        character_state_changes,
+                        fallback_player_id=turn.player_id,
+                    )
                     already_applied_inventory = [
                         {**change, 'already_applied': True}
                         for change in inventory_changes
@@ -1573,6 +1606,7 @@ class TurnEngine:
                         {
                             'stage': 'dm_response',
                             'player_id': turn.player_id,
+                            'affected_player_ids': affected_player_ids,
                             'inventory_changes_applied': inventory_changes,
                             'character_state_changes_applied': character_state_changes,
                             'state_log': state_log,
@@ -1585,6 +1619,7 @@ class TurnEngine:
                         {
                             'stage': 'state_applied',
                             'player_id': turn.player_id,
+                            'affected_player_ids': affected_player_ids,
                             'state_applied': True,
                             'inventory_changes_applied': already_applied_inventory,
                             'character_state_changes_applied': already_applied_character_state,

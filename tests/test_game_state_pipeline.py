@@ -6,6 +6,7 @@ from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY, STATE_PIPELINE_V
 from aidm_server.game_state.application.applier import apply_state_changes
 import aidm_server.game_state.extraction.post_dm_outcome_extractor as post_extractor_module
 import aidm_server.game_state.extraction.pre_dm_action_extractor as pre_extractor_module
+import aidm_server.game_state.orchestration.turn_pipeline as turn_pipeline_module
 from aidm_server.game_state.extraction.post_dm_outcome_extractor import extract_post_dm_outcomes
 from aidm_server.game_state.extraction.pre_dm_action_extractor import extract_pre_dm_actions
 from aidm_server.game_state.extraction.schemas import normalize_post_extraction
@@ -445,7 +446,33 @@ def test_currency_transfer_expands_to_atomic_remove_and_add():
     assert result['nextState']['playerCharacters'][1]['inventory']['currency']['gp'] == 4
     state_log = build_state_log(turn_id=1, post_validation=validation)
     assert len(state_log['lines']) == 1
-    assert '3 gp' in state_log['lines'][0]['message']
+    assert state_log['lines'][0]['message'] == 'Transferred 3 gp from Kael to Borin.'
+
+
+def test_inventory_transfer_log_uses_structured_transfer_message_for_helper_reason():
+    state = _two_player_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'transfer_rope',
+                'type': 'inventory.transfer',
+                'actorId': 'player_1',
+                'fromActorId': 'player_1',
+                'toActorId': 'player_2',
+                'itemName': 'Rope',
+                'quantity': 1,
+                'visible': True,
+                'reason': 'Extracted from DM response.',
+            }
+        ],
+    )
+
+    state_log = build_state_log(turn_id=1, post_validation=validation)
+
+    assert validation['rejected'] == []
+    assert len(state_log['lines']) == 1
+    assert state_log['lines'][0]['message'] == 'Transferred Rope x1 from Kael to Borin.'
 
 
 def test_currency_transfer_insufficient_funds_rejects_without_partial_add():
@@ -472,6 +499,39 @@ def test_currency_transfer_insufficient_funds_rejects_without_partial_add():
     assert result['appliedChanges'] == []
     assert result['nextState']['playerCharacters'][0]['inventory']['currency']['gp'] == 5
     assert result['nextState']['playerCharacters'][1]['inventory']['currency']['gp'] == 1
+
+
+def test_currency_offer_to_untracked_npc_is_pending_not_rejected():
+    state = _two_player_state()
+    validation = validate_declared_actions(
+        state=state,
+        declared_actions=[
+            {
+                'id': 'act_trade_old_woman',
+                'type': 'currency.transfer',
+                'actorId': 'player_1',
+                'fromActorId': 'player_1',
+                'toActorName': 'the old woman',
+                'currency': 'gp',
+                'amount': 1,
+                'sourceText': 'I give the old woman one gold coin for bread.',
+            }
+        ],
+        current_turn=1,
+    )
+    state_log = build_state_log(turn_id=1, pre_validation=validation)
+    confirmed = turn_pipeline_module._confirmed_pre_dm_changes(
+        turn=DmTurn(turn_id=1),
+        pre_validation=validation,
+        pending_immediate_changes=[],
+        dm_response_text='You give the old woman 1 gold and she hands you bread.',
+    )
+
+    assert validation['validatedActions'][0]['status'] == 'pending'
+    assert validation['validatedActions'][0]['normalizedAction']['untrackedTarget'] is True
+    assert not any(result['status'] == 'invalid' for result in validation['validatedActions'])
+    assert state_log['lines'] == []
+    assert confirmed == []
 
 
 def test_mixed_state_change_stress_batch_is_atomic_non_negative_and_idempotent():
@@ -911,6 +971,42 @@ def test_post_dm_helper_missing_required_fields_does_not_apply_or_fallback(app, 
     assert result['proposedChanges'] == []
     assert result['debug']['source'] == 'helper'
     assert result['debug']['fallbackRan'] is False
+
+
+def test_post_dm_helper_currency_type_alias_normalizes_to_currency(app, monkeypatch):
+    class FakeProvider:
+        def generate(self, _request):
+            return ProviderResponse(
+                text=(
+                    '{"proposedChanges":[{"type":"currency.transfer","actorId":"player_1",'
+                    '"fromActorId":"player_1","toActorId":"player_2","currencyType":"gp","amount":1}],'
+                    '"uncertainChanges":[]}'
+                ),
+                provider='fake',
+                model='fake-helper',
+            )
+
+    monkeypatch.setattr(post_extractor_module, 'get_helper_provider', lambda: FakeProvider())
+
+    with app.app_context():
+        app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
+        result = extract_post_dm_outcomes(
+            state_before_dm=_two_player_state(),
+            player_message='I give Borin one gold.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='Kael gives 1 gold to Borin.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=33,
+        )
+
+    validation = validate_state_changes(state=_two_player_state(), changes=result['proposedChanges'])
+    applied = validated_changes_for_application(validation)
+
+    assert result['proposedChanges'][0]['currency'] == 'gp'
+    assert validation['rejected'] == []
+    assert [change['type'] for change in applied] == ['currency.remove', 'currency.add']
 
 
 def test_post_dm_helper_inventory_remove_missing_quantity_does_not_apply_or_fallback(app, monkeypatch):

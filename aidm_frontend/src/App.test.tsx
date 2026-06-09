@@ -1398,6 +1398,50 @@ describe('App user workflow regressions', () => {
     )
   })
 
+  it('refreshes the selected player when a transfer affects them from another player turn', async () => {
+    await renderLoadedApp()
+
+    playerDetails[30] = {
+      ...playerDetails[30],
+      inventory: [
+        { name: 'Healing Potion', quantity: 2, weight: 0.5 },
+        { name: 'Small Roll', quantity: 1 },
+      ],
+    }
+
+    await act(async () => {
+      socketHandler<{
+        session_id: number
+        turn_id: number
+        status: string
+        details: {
+          player_id: number
+          affected_player_ids: number[]
+          inventory_changes_applied: Array<{ player_id: number; item_name: string; quantity: number }>
+        }
+      }>('turn_status')({
+        session_id: 20,
+        turn_id: 6,
+        status: 'state_applied',
+        details: {
+          player_id: 31,
+          affected_player_ids: [31, 30],
+          inventory_changes_applied: [{ player_id: 30, item_name: 'Small Roll', quantity: 1 }],
+        },
+      })
+    })
+
+    await screen.findByText('Small Roll')
+    expect(fetchCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: 'GET',
+          path: '/api/players/30',
+        }),
+      ]),
+    )
+  })
+
   it('refreshes the selected player when immediate inventory state arrives as canon_applied', async () => {
     await renderLoadedApp()
 

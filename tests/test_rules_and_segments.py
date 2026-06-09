@@ -22,6 +22,20 @@ def test_rules_classifier_marks_resolved_when_roll_is_provided():
     assert hint.outcome_deferred is False
 
 
+def test_rules_classifier_does_not_treat_food_roll_as_dice_check():
+    hint = classify_player_action('I give Danny one roll and one gold')
+    assert hint.requires_roll is False
+    assert hint.roll_type is None
+
+
+def test_rules_classifier_still_detects_explicit_generic_roll():
+    hint = classify_player_action('I roll a d20: 19')
+    assert hint.requires_roll is True
+    assert hint.roll_type == 'check'
+    assert hint.roll_value == 19
+    assert hint.outcome_deferred is False
+
+
 def test_rules_classifier_detects_thieves_tools_context():
     hint = classify_player_action("I use thieves' tools to disable the ward sigil quietly.")
     assert hint.requires_roll is True

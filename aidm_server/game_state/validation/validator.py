@@ -21,6 +21,7 @@ from aidm_server.game_state.validation.inventory_validator import resolve_invent
 
 CONSUMABLE_TYPES = {'consumable', 'potion', 'food'}
 UNRESOLVED_TARGET_LABELS = {'', 'target', 'someone', 'somebody', 'an npc', 'a npc', 'npc'}
+GENERIC_EXTRACTED_REASON = 'Extracted from DM response.'
 
 
 def _action_value(action: dict[str, Any], camel_key: str, snake_key: str | None = None, default=None):
@@ -55,6 +56,20 @@ def _target_actor_from_payload(state: dict[str, Any], payload: dict[str, Any]) -
     if target:
         return target, ''
     return None, f"Target actor '{target_name}' was not found."
+
+
+def _target_actor_name_from_payload(payload: dict[str, Any]) -> str:
+    target_name = (
+        _action_value(payload, 'toActorName', 'to_actor_name')
+        or _action_value(payload, 'targetActorName', 'target_actor_name')
+        or _action_value(payload, 'targetName', 'target_name')
+    )
+    return str(target_name or '').strip()
+
+
+def _has_named_untracked_target(payload: dict[str, Any]) -> bool:
+    target_name = _target_actor_name_from_payload(payload)
+    return bool(target_name and normalize_item_name(target_name) not in UNRESOLVED_TARGET_LABELS)
 
 
 def _invalid(action: dict[str, Any], reason: str) -> dict[str, Any]:
@@ -270,6 +285,22 @@ def _validate_inventory_transfer(
 
     target, target_error = _target_actor_from_payload(state, action)
     if not target:
+        if _has_named_untracked_target(action):
+            target_name = _target_actor_name_from_payload(action)
+            return _pending(
+                action,
+                f"{actor_name(actor)} can offer {item.get('name')} x{quantity} to {target_name}; target is not tracked, so DM must resolve the exchange.",
+                normalized_action={
+                    **action,
+                    'fromActorId': actor.get('id'),
+                    'toActorName': target_name,
+                    'itemId': item.get('id'),
+                    'itemName': item.get('name'),
+                    'quantity': quantity,
+                    'resolution': resolution,
+                    'untrackedTarget': True,
+                },
+            )
         return _invalid(action, target_error or 'Transfer target was not found.')
     if str(target.get('id')) == str(actor.get('id')):
         return _invalid(action, 'Transfer target must be different from the source actor.')
@@ -303,6 +334,20 @@ def _validate_currency_transfer(action: dict[str, Any], state: dict[str, Any]) -
         return _invalid(action, f"{actor_name(actor)} has {available} {currency} and cannot transfer {amount}.")
     target, target_error = _target_actor_from_payload(state, action)
     if not target:
+        if _has_named_untracked_target(action):
+            target_name = _target_actor_name_from_payload(action)
+            return _pending(
+                action,
+                f"{actor_name(actor)} can offer {amount} {currency} to {target_name}; target is not tracked, so DM must resolve the exchange.",
+                normalized_action={
+                    **action,
+                    'fromActorId': actor.get('id'),
+                    'toActorName': target_name,
+                    'amount': amount,
+                    'currency': currency,
+                    'untrackedTarget': True,
+                },
+            )
         return _invalid(action, target_error or 'Transfer target was not found.')
     if str(target.get('id')) == str(actor.get('id')):
         return _invalid(action, 'Transfer target must be different from the source actor.')
@@ -582,6 +627,13 @@ def _change_id_already_seen(change: dict[str, Any], applied_ids: set[str], seen_
     return bool(change_id and (change_id in applied_ids or change_id in seen_ids))
 
 
+def _transfer_reason(change: dict[str, Any], fallback: str) -> str:
+    reason = str(change.get('reason') or '').strip()
+    if not reason or reason == GENERIC_EXTRACTED_REASON:
+        return fallback
+    return reason
+
+
 def _validate_inventory_transfer_change(
     state: dict[str, Any],
     change: dict[str, Any],
@@ -616,15 +668,19 @@ def _validate_inventory_transfer_change(
         return [], [_rejected(change, 'Inventory transfer quantity must be positive.')]
 
     parent_id = str(change.get('id') or '').strip()
+    source_name = actor_name(source)
+    target_name = actor_name(target)
     remove_change = {
         **change,
         'id': _atomic_change_id(parent_id, 'remove', source.get('id'), source_item.get('id'), quantity),
         'type': 'inventory.remove',
         'actorId': source.get('id'),
+        'fromActorName': source_name,
+        'toActorName': target_name,
         'itemId': source_item.get('id'),
         'itemName': source_item.get('name'),
         'quantity': quantity,
-        'reason': change.get('reason') or f"{actor_name(source)} gave {source_item.get('name')} to {actor_name(target)}.",
+        'reason': _transfer_reason(change, f"{source_name} gave {source_item.get('name')} x{quantity} to {target_name}."),
         'transferId': parent_id or None,
         'transferDirection': 'source',
     }
@@ -635,11 +691,13 @@ def _validate_inventory_transfer_change(
         'id': _atomic_change_id(parent_id, 'add', target.get('id'), source_item.get('id'), quantity),
         'type': 'inventory.add',
         'actorId': target.get('id'),
+        'fromActorName': source_name,
+        'toActorName': target_name,
         'itemId': source_item.get('id'),
         'itemName': source_item.get('name'),
         'quantity': quantity,
         'item': item_payload,
-        'reason': change.get('reason') or f"{actor_name(target)} received {source_item.get('name')} from {actor_name(source)}.",
+        'reason': _transfer_reason(change, f"{target_name} received {source_item.get('name')} x{quantity} from {source_name}."),
         'transferId': parent_id or None,
         'transferDirection': 'target',
     }
@@ -682,14 +740,18 @@ def _validate_currency_transfer_change(
     currency = str(change.get('currency') or '').strip().lower()
     amount = max(0, int_or_default(change.get('amount'), default=0))
     parent_id = str(change.get('id') or '').strip()
+    source_name = actor_name(source)
+    target_name = actor_name(target)
     remove_change = {
         **change,
         'id': _atomic_change_id(parent_id, 'remove', source.get('id'), currency, amount),
         'type': 'currency.remove',
         'actorId': source.get('id'),
+        'fromActorName': source_name,
+        'toActorName': target_name,
         'currency': currency,
         'amount': amount,
-        'reason': change.get('reason') or f"{actor_name(source)} gave {amount} {currency} to {actor_name(target)}.",
+        'reason': _transfer_reason(change, f"{source_name} gave {amount} {currency} to {target_name}."),
         'transferId': parent_id or None,
         'transferDirection': 'source',
     }
@@ -698,9 +760,11 @@ def _validate_currency_transfer_change(
         'id': _atomic_change_id(parent_id, 'add', target.get('id'), currency, amount),
         'type': 'currency.add',
         'actorId': target.get('id'),
+        'fromActorName': source_name,
+        'toActorName': target_name,
         'currency': currency,
         'amount': amount,
-        'reason': change.get('reason') or f"{actor_name(target)} received {amount} {currency} from {actor_name(source)}.",
+        'reason': _transfer_reason(change, f"{target_name} received {amount} {currency} from {source_name}."),
         'transferId': parent_id or None,
         'transferDirection': 'target',
     }

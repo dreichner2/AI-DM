@@ -203,6 +203,8 @@ def _confirmed_pre_dm_changes(
         action_type = str(original.get('type') or normalized.get('type') or '').strip()
         action_id = str(original.get('id') or normalized.get('id') or result.get('actionId') or '').strip()
         actor_id = str(action.get('fromActorId') or action.get('actorId') or '').strip()
+        if action.get('untrackedTarget') and not action.get('toActorId'):
+            continue
 
         if action_type == 'inventory.transfer' and _dm_confirms_inventory_transfer(action, dm_response_text):
             confirmed.append(

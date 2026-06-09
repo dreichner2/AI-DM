@@ -85,6 +85,13 @@ function socketMessage(payload: SocketErrorPayload) {
   return payload.error ?? payload.message ?? payload.error_code ?? 'Socket error'
 }
 
+function numericArray(value: unknown): number[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((entry) => Number(entry))
+    .filter((entry) => Number.isInteger(entry) && entry > 0)
+}
+
 function normalizeActivePlayers(payload: unknown): ActivePlayer[] {
   if (!Array.isArray(payload)) return []
   return payload
@@ -387,8 +394,14 @@ export function useSessionSocket({
       }
       if (status === 'canon_applied' || status === 'state_applied') {
         const playerId = Number(payload.details?.player_id)
-        if (Number.isInteger(playerId) && playerId > 0 && playerId === selectedPlayerId) {
-          refreshPlayerDetail(playerId).catch((error: unknown) => {
+        const affectedPlayerIds = numericArray(payload.details?.affected_player_ids)
+        const selectedPlayer = Number(selectedPlayerId)
+        const shouldRefreshSelectedPlayer =
+          Number.isInteger(selectedPlayer) &&
+          selectedPlayer > 0 &&
+          (playerId === selectedPlayer || affectedPlayerIds.includes(selectedPlayer))
+        if (shouldRefreshSelectedPlayer) {
+          refreshPlayerDetail(selectedPlayer).catch((error: unknown) => {
             pushError('workspace', `Player refresh failed: ${error instanceof Error ? error.message : String(error)}`)
           })
         }

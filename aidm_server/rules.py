@@ -57,6 +57,49 @@ _MOBILITY_KEYWORDS = {
     "roof",
     "chase",
 }
+_ROLL_SKILL_WORDS = {
+    "acrobatics",
+    "animal",
+    "arcana",
+    "athletics",
+    "cha",
+    "charisma",
+    "check",
+    "con",
+    "constitution",
+    "deception",
+    "dex",
+    "dexterity",
+    "d20",
+    "history",
+    "initiative",
+    "insight",
+    "int",
+    "intelligence",
+    "intimidation",
+    "investigation",
+    "medicine",
+    "nature",
+    "perception",
+    "performance",
+    "persuasion",
+    "religion",
+    "save",
+    "sleight",
+    "stealth",
+    "str",
+    "strength",
+    "survival",
+    "thieves",
+    "wis",
+    "wisdom",
+}
+_GENERIC_ROLL_REQUEST_PATTERNS = [
+    re.compile(r'\b(?:i\s+)?roll(?:ed|ing)?\s*$', re.IGNORECASE),
+    re.compile(r'\b(?:i\s+)?roll(?:ed|ing)?\s*(?:a\s*)?d20\b', re.IGNORECASE),
+    re.compile(r'\b(?:i\s+)?roll(?:ed|ing)?\s+(?:for|to)\b', re.IGNORECASE),
+    re.compile(r'\b(?:please\s+)?(?:make|give)\s+(?:me\s+)?(?:a\s+)?(?:roll|check)\b', re.IGNORECASE),
+]
 
 
 DC_HINTS = {
@@ -91,6 +134,12 @@ def _extract_roll_value(text: str) -> int | None:
         if 1 <= value <= 20:
             return value
     return None
+
+
+def _explicit_generic_roll_request(text: str, tokens: set[str]) -> bool:
+    if any(pattern.search(text) for pattern in _GENERIC_ROLL_REQUEST_PATTERNS):
+        return True
+    return bool('roll' in tokens and tokens & _ROLL_SKILL_WORDS)
 
 
 def _with_resolution(hint: RuleHint) -> RuleHint:
@@ -185,7 +234,7 @@ def classify_player_action(message: str) -> RuleHint:
             )
         )
 
-    if roll_value is not None or 'roll' in text or 'check' in text:
+    if roll_value is not None or 'check' in tokens or _explicit_generic_roll_request(text, tokens):
         return _with_resolution(
             RuleHint(
                 True,

@@ -4,6 +4,8 @@ from typing import Any
 
 from aidm_server.canon_text import int_or_default
 
+GENERIC_EXTRACTED_REASON = 'Extracted from DM response.'
+
 
 def _change_type(change: dict[str, Any]) -> str:
     return str(change.get('type') or '').strip()
@@ -18,11 +20,29 @@ def _amount(change: dict[str, Any], key: str = 'amount') -> int:
     return max(0, int_or_default(change.get('actualAmount', change.get(key)), default=0))
 
 
+def _transfer_message(change: dict[str, Any], *, quantity: int) -> str:
+    from_name = str(change.get('fromActorName') or change.get('from_actor_name') or '').strip()
+    to_name = str(change.get('toActorName') or change.get('to_actor_name') or '').strip()
+    if not from_name or not to_name:
+        return ''
+    change_type = _change_type(change)
+    if change_type in {'inventory.add', 'inventory.remove'}:
+        return f"Transferred {_item_name(change)} x{quantity} from {from_name} to {to_name}."
+    if change_type in {'currency.add', 'currency.remove'}:
+        return f"Transferred {_amount(change)} {str(change.get('currency') or '').lower()} from {from_name} to {to_name}."
+    return ''
+
+
 def _change_message(change: dict[str, Any], *, status: str, reason: str | None = None) -> str:
     change_type = _change_type(change)
     quantity = max(1, int_or_default(change.get('quantity'), default=1))
-    if change.get('transferId') and str(change.get('reason') or '').strip():
-        return str(change.get('reason')).strip()
+    if change.get('transferId'):
+        transfer_message = _transfer_message(change, quantity=quantity)
+        if transfer_message:
+            return transfer_message
+        change_reason = str(change.get('reason') or '').strip()
+        if change_reason and change_reason != GENERIC_EXTRACTED_REASON:
+            return change_reason
     if change_type == 'inventory.add':
         return f"Added {_item_name(change)} x{quantity}."
     if change_type == 'inventory.remove':

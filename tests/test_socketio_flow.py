@@ -1722,12 +1722,14 @@ def test_real_campaign_state_pipeline_stress_transfers_hp_xp_and_currency(
             return safe_json_loads(player_obj.stats, {})
 
     received = send('I give the Iron Sword to Borin.')
-    _assert_realtime_state_applied(received, item_name='Iron Sword', action='lose')
+    transfer_item_state = _assert_realtime_state_applied(received, item_name='Iron Sword', action='lose')
+    assert set(transfer_item_state['details']['affected_player_ids']) == {ids['player_id'], borin_id}
     assert player_inventory_by_name(ids['player_id'])['iron sword']['quantity'] == 1
     assert player_inventory_by_name(borin_id)['iron sword']['quantity'] == 1
 
     received = send('I give 10 copper to Borin.')
     transfer_state = _assert_realtime_state_applied(received)
+    assert set(transfer_state['details']['affected_player_ids']) == {ids['player_id'], borin_id}
     transfer_changes = transfer_state['details']['character_state_changes_applied']
     assert any(change.get('currency_delta') == {'copper': -10} for change in transfer_changes)
     assert any(change.get('currency_delta') == {'copper': 10} for change in transfer_changes)
