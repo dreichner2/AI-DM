@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="${AIDM_LAUNCHER_LOG_DIR:-${REPO_ROOT}/tmp/launcher_logs}"
+LOCK_DIR="${LOG_DIR}/launcher.lock"
 BACKEND_PORT="${AIDM_BACKEND_PORT:-5050}"
 BACKEND_HEALTH_URL="http://127.0.0.1:${BACKEND_PORT}/api/health"
 APP_URL="${AIDM_APP_URL:-http://127.0.0.1:${BACKEND_PORT}/}"
@@ -43,6 +44,29 @@ on run argv
 end run
 APPLESCRIPT
   exit 1
+}
+
+acquire_launcher_lock() {
+  if /bin/mkdir "${LOCK_DIR}" 2>/dev/null; then
+    trap '/bin/rmdir "${LOCK_DIR}" >/dev/null 2>&1 || true' EXIT
+    return 0
+  fi
+
+  log "Another launcher run is active; waiting briefly."
+
+  local attempt
+  for attempt in {1..25}; do
+    sleep 0.2
+    if /bin/mkdir "${LOCK_DIR}" 2>/dev/null; then
+      trap '/bin/rmdir "${LOCK_DIR}" >/dev/null 2>&1 || true' EXIT
+      return 0
+    fi
+  done
+
+  log "Removing stale launcher lock."
+  /bin/rm -rf "${LOCK_DIR}"
+  /bin/mkdir "${LOCK_DIR}" || fail "Could not acquire launcher lock at ${LOCK_DIR}."
+  trap '/bin/rmdir "${LOCK_DIR}" >/dev/null 2>&1 || true' EXIT
 }
 
 xml_escape() {
@@ -90,6 +114,37 @@ backend_launch_agent_pid() {
   /bin/launchctl print "${LAUNCH_DOMAIN}/local.aidm.backend" 2>/dev/null \
     | /usr/bin/awk -F'= ' '/pid =/ { print $2; exit }' \
     | /usr/bin/tr -d ' '
+}
+
+launch_agent_loaded() {
+  local label="$1"
+  /bin/launchctl print "${LAUNCH_DOMAIN}/${label}" >/dev/null 2>&1
+}
+
+bootstrap_launch_agent() {
+  local label="$1"
+  local plist="$2"
+
+  if launch_agent_loaded "${label}"; then
+    return 0
+  fi
+
+  if /bin/launchctl bootstrap "${LAUNCH_DOMAIN}" "${plist}"; then
+    return 0
+  fi
+
+  # launchctl may report an error if the service was loaded by a racing double-click.
+  launch_agent_loaded "${label}"
+}
+
+enable_launch_agent() {
+  local label="$1"
+  /bin/launchctl enable "${LAUNCH_DOMAIN}/${label}"
+}
+
+restart_launch_agent_fast() {
+  local label="$1"
+  /bin/launchctl kickstart -k "${LAUNCH_DOMAIN}/${label}"
 }
 
 stop_non_backend_port_listeners() {
@@ -424,17 +479,10 @@ PLIST
 
 start_backend_launch_agent() {
   write_backend_launch_agent
-  /bin/launchctl bootstrap "${LAUNCH_DOMAIN}" "${BACKEND_PLIST}" >/dev/null 2>&1 || true
-  /bin/launchctl enable "${LAUNCH_DOMAIN}/local.aidm.backend" >/dev/null 2>&1 || true
   stop_non_backend_port_listeners
-  /bin/launchctl kickstart -k "${LAUNCH_DOMAIN}/local.aidm.backend" >/dev/null 2>&1 || return 1
-}
-
-start_direct_background_backend() {
-  write_backend_launch_agent
-  stop_non_backend_port_listeners
-  log "LaunchAgent did not start; starting direct background backend."
-  /usr/bin/nohup "${BACKEND_HELPER}" >>"${LOG_DIR}/backend.log" 2>&1 &
+  bootstrap_launch_agent "local.aidm.backend" "${BACKEND_PLIST}" || return 1
+  enable_launch_agent "local.aidm.backend" || return 1
+  restart_launch_agent_fast "local.aidm.backend" || return 1
 }
 
 write_tailscale_launch_agent() {
@@ -489,8 +537,8 @@ ensure_tailscale_daemon() {
   [[ -x "${TAILSCALE_BIN}" && -x "${TAILSCALED_BIN}" ]] || return 1
   write_tailscale_launch_agent || return 1
 
-  /bin/launchctl bootstrap "${LAUNCH_DOMAIN}" "${TAILSCALE_PLIST}" >/dev/null 2>&1 || true
-  /bin/launchctl enable "${LAUNCH_DOMAIN}/local.aidm.tailscaled" >/dev/null 2>&1 || true
+  bootstrap_launch_agent "local.aidm.tailscaled" "${TAILSCALE_PLIST}" || return 1
+  enable_launch_agent "local.aidm.tailscaled" || return 1
 
   if tailscale_running; then
     return 0
@@ -500,7 +548,7 @@ ensure_tailscale_daemon() {
     /bin/rm -f "${TAILSCALE_SOCKET_PATH}" >/dev/null 2>&1 || true
   fi
 
-  /bin/launchctl kickstart -k "${LAUNCH_DOMAIN}/local.aidm.tailscaled" >/dev/null 2>&1 || true
+  restart_launch_agent_fast "local.aidm.tailscaled" || return 1
 
   local attempt
   for attempt in {1..20}; do
@@ -515,16 +563,13 @@ ensure_tailscale_daemon() {
 
 start_tailscale_funnel() {
   if ensure_tailscale_daemon; then
-    if "${TAILSCALE_BIN}" --socket="${TAILSCALE_SOCKET_PATH}" funnel status 2>/dev/null \
-      | /usr/bin/grep -q 'proxy http://127.0.0.1:'"${BACKEND_PORT}"; then
-      log "Tailscale Funnel already running."
-    elif "${TAILSCALE_BIN}" --socket="${TAILSCALE_SOCKET_PATH}" funnel --bg --yes "${BACKEND_PORT}" >/dev/null 2>&1; then
-      log "Tailscale Funnel started."
+    if "${TAILSCALE_BIN}" --socket="${TAILSCALE_SOCKET_PATH}" funnel --bg --yes "${BACKEND_PORT}" >/dev/null 2>&1; then
+      log "Tailscale Funnel ensured on ${BACKEND_PORT}."
     else
       log "Tailscale is running, but Funnel was not started automatically."
     fi
   else
-    log "Tailscale is not logged in; public Funnel URL not started."
+    log "Tailscale daemon did not become ready; public Funnel URL not started."
   fi
 }
 
@@ -536,19 +581,21 @@ start_backend() {
   fi
   ensure_backend_dependencies
   ensure_frontend_build
-  start_backend_launch_agent || start_direct_background_backend
+  start_backend_launch_agent || fail "Could not start backend LaunchAgent."
   wait_for_http "${BACKEND_HEALTH_URL}" "Backend" 5 || fail "Backend did not become ready at ${BACKEND_HEALTH_URL}."
 }
 
 {
   log "Launch requested at $(date)"
+  acquire_launcher_lock
   stop_legacy_frontend
   start_backend
   wait_for_http "${BACKEND_HEALTH_URL}" "Backend" 120 || fail "Backend did not become ready at ${BACKEND_HEALTH_URL}."
   wait_for_unified_app 120 || fail "Unified app did not become ready at ${APP_URL}."
-  start_tailscale_funnel
 
   /usr/bin/open "${APP_URL}"
-  /usr/bin/osascript -e 'display notification "Unified AI-DM is running." with title "AI-DM Launcher"' >/dev/null 2>&1 || true
   log "Opened ${APP_URL}"
+
+  start_tailscale_funnel
+  /usr/bin/osascript -e 'display notification "Unified AI-DM is running." with title "AI-DM Launcher"' >/dev/null 2>&1 || true
 } >>"${LOG_DIR}/launcher.log" 2>&1
