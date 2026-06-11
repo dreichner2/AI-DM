@@ -12,6 +12,8 @@ function submitEvent() {
 
 const emptyAccountFields = {
   workspaceToken: '',
+  workspaceName: '',
+  workspacePassword: '',
   username: '',
   firstName: '',
   lastName: '',
@@ -216,6 +218,8 @@ describe('useRuntimeSettings', () => {
       result.current.setRuntimeSettingsForm({
         baseUrl: '',
         workspaceToken: '',
+        workspaceName: '',
+        workspacePassword: '',
         username: 'Danny',
         firstName: 'Danny',
         lastName: 'Reichner',
@@ -302,6 +306,8 @@ describe('useRuntimeSettings', () => {
       result.current.setRuntimeSettingsForm({
         baseUrl: '',
         workspaceToken: '',
+        workspaceName: '',
+        workspacePassword: '',
         username: 'Missing',
         firstName: '',
         lastName: '',
@@ -323,6 +329,8 @@ describe('useRuntimeSettings', () => {
       result.current.setRuntimeSettingsForm({
         baseUrl: '',
         workspaceToken: '',
+        workspaceName: '',
+        workspacePassword: '',
         username: 'Danny',
         firstName: 'Danny',
         lastName: 'Reichner',
@@ -395,6 +403,8 @@ describe('useRuntimeSettings', () => {
       result.current.setRuntimeSettingsForm({
         baseUrl: '',
         workspaceToken: '',
+        workspaceName: '',
+        workspacePassword: '',
         username: 'Danny',
         firstName: '',
         lastName: '',
@@ -490,14 +500,83 @@ describe('useRuntimeSettings', () => {
     expect(localStorage.getItem('aidm:workspaceId')).toBeNull()
   })
 
+  it('does not reset an already-open auth dialog back to join table', async () => {
+    sessionStorage.setItem('aidm:authToken', 'account-token')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            account_id: 1,
+            username: 'danny',
+            first_name: 'Danny',
+            last_name: 'Reichner',
+            display_name: 'Danny Reichner',
+            workspace_id: null,
+            workspace_role: null,
+            is_workspace_admin: false,
+            requires_password_setup: false,
+            workspaces: [],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+
+    const { result } = renderHook(() =>
+      useRuntimeSettings({
+        defaultBaseUrl: '',
+        resetRuntimeState: vi.fn(),
+        reconnectSocket: vi.fn(),
+      }),
+    )
+
+    await waitFor(() => expect(result.current.runtimeAccount?.username).toBe('danny'))
+
+    act(() => {
+      result.current.openAuthTokenPrompt()
+    })
+    expect(result.current.runtimeAuthStep).toBe('workspace')
+
+    act(() => {
+      result.current.setRuntimeWorkspaceAction('create')
+      result.current.setRuntimeSettingsForm((current) => ({
+        ...current,
+        workspaceName: 'Draft Table',
+        workspacePassword: 'draft-table-secret',
+      }))
+      result.current.openAuthTokenPrompt()
+    })
+    expect(result.current.runtimeAuthStep).toBe('workspace')
+    expect(result.current.runtimeWorkspaceAction).toBe('create')
+    expect(result.current.runtimeSettingsForm.workspaceName).toBe('Draft Table')
+    expect(result.current.runtimeSettingsForm.workspacePassword).toBe('draft-table-secret')
+
+    act(() => {
+      result.current.setRuntimeAuthStep('account')
+      result.current.setRuntimeSettingsForm((current) => ({
+        ...current,
+        username: 'other-user',
+        password: 'draft-password',
+      }))
+      result.current.openAuthTokenPrompt()
+    })
+    expect(result.current.runtimeAuthStep).toBe('account')
+    expect(result.current.runtimeWorkspaceAction).toBe('create')
+    expect(result.current.runtimeSettingsForm.username).toBe('other-user')
+    expect(result.current.runtimeSettingsForm.password).toBe('draft-password')
+  })
+
   it('selects a saved account workspace without re-entering its token', async () => {
-    const fetchCalls: Array<{ path: string; body: unknown }> = []
+    const fetchCalls: Array<{ method: string; path: string; body: unknown }> = []
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const path = new URL(String(input), 'http://localhost').pathname
+        const method = init?.method ?? 'GET'
         const body = init?.body ? JSON.parse(String(init.body)) : null
-        fetchCalls.push({ path, body })
+        fetchCalls.push({ method, path, body })
         const workspacePayload = path === '/api/accounts/workspace/select'
         const workspaces = [
           {
@@ -515,6 +594,33 @@ describe('useRuntimeSettings', () => {
             updated_at: null,
           },
         ]
+        if (method === 'DELETE' && path === '/api/accounts/workspaces/friend') {
+          const remainingWorkspaces = workspaces.filter((workspace) => workspace.workspace_id !== 'friend')
+          return new Response(
+            JSON.stringify({
+              account: {
+                account_id: 1,
+                username: 'danny',
+                first_name: 'Danny',
+                last_name: 'Reichner',
+                display_name: 'Danny Reichner',
+                workspace_id: null,
+                workspace_role: null,
+                is_workspace_admin: false,
+                workspaces: remainingWorkspaces,
+              },
+              account_token: 'account-token',
+              workspace_id: null,
+              workspace_role: null,
+              is_workspace_admin: false,
+              claimed_player_ids: [],
+              workspaces: remainingWorkspaces,
+              workspace_action: 'removed',
+              workspace_id_removed: 'friend',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
         if (path === '/api/accounts/me') {
           return new Response(
             JSON.stringify({
@@ -570,6 +676,8 @@ describe('useRuntimeSettings', () => {
       result.current.setRuntimeSettingsForm({
         baseUrl: '',
         workspaceToken: '',
+        workspaceName: '',
+        workspacePassword: '',
         username: 'Danny',
         firstName: '',
         lastName: '',
@@ -590,6 +698,7 @@ describe('useRuntimeSettings', () => {
     expect(fetchCalls).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+          method: 'POST',
           path: '/api/accounts/workspace/select',
           body: { workspace_id: 'owner' },
         }),
@@ -602,6 +711,295 @@ describe('useRuntimeSettings', () => {
     expect(result.current.runtimeSettingsOpen).toBe(false)
     expect(resetRuntimeState).toHaveBeenCalledOnce()
     expect(reconnectSocket).toHaveBeenCalledOnce()
+
+    await act(async () => {
+      await result.current.deleteSavedWorkspace('friend')
+    })
+
+    expect(fetchCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: 'DELETE',
+          path: '/api/accounts/workspaces/friend',
+        }),
+      ]),
+    )
+    expect(result.current.workspaceId).toBe('owner')
+    expect(result.current.runtimeAccount?.workspaces.map((workspace) => workspace.workspace_id)).toEqual(['owner'])
+  })
+
+  it('shows a request-status error when saved table delete returns non-json HTML', async () => {
+    sessionStorage.setItem('aidm:authToken', 'account-token')
+    const fetchCalls: Array<{ method: string; path: string }> = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input), 'http://localhost').pathname
+        const method = init?.method ?? 'GET'
+        fetchCalls.push({ method, path })
+        if (method === 'DELETE' && path === '/api/accounts/workspaces/owner') {
+          return new Response('<!doctype html><title>405 Method Not Allowed</title>', {
+            status: 405,
+            headers: { 'Content-Type': 'text/html' },
+          })
+        }
+        return new Response(
+          JSON.stringify({
+            account_id: 1,
+            username: 'danny',
+            first_name: 'Danny',
+            last_name: 'Reichner',
+            display_name: 'Danny Reichner',
+            workspace_id: 'owner',
+            workspace_role: 'admin',
+            is_workspace_admin: true,
+            workspaces: [
+              {
+                workspace_id: 'owner',
+                table_name: 'Test',
+                access_mode: 'token',
+                workspace_role: 'admin',
+                is_workspace_admin: true,
+                created_at: null,
+                updated_at: null,
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }),
+    )
+    const { result } = renderHook(() =>
+      useRuntimeSettings({
+        defaultBaseUrl: '',
+        resetRuntimeState: vi.fn(),
+        reconnectSocket: vi.fn(),
+      }),
+    )
+
+    await waitFor(() => expect(result.current.runtimeAccount?.username).toBe('danny'))
+
+    let deleteResult: Awaited<ReturnType<typeof result.current.deleteSavedWorkspace>> | undefined
+    await act(async () => {
+      deleteResult = await result.current.deleteSavedWorkspace('owner')
+    })
+
+    expect(deleteResult).toEqual({ ok: false, error: 'Table delete request failed with status 405' })
+    expect(result.current.runtimeSettingsError).toBe('Table delete request failed with status 405')
+    expect(fetchCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ method: 'DELETE', path: '/api/accounts/workspaces/owner' }),
+      ]),
+    )
+  })
+
+  it('joins a table with its name and password without storing a table token', async () => {
+    sessionStorage.setItem('aidm:authToken', 'account-token')
+    const fetchCalls: Array<{ path: string; body: unknown }> = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input), 'http://localhost').pathname
+        const body = init?.body ? JSON.parse(String(init.body)) : null
+        fetchCalls.push({ path, body })
+        if (path === '/api/accounts/me') {
+          return new Response(
+            JSON.stringify({
+              account_id: 1,
+              username: 'danny',
+              first_name: 'Danny',
+              last_name: 'Reichner',
+              display_name: 'Danny Reichner',
+              workspace_id: null,
+              workspace_role: null,
+              is_workspace_admin: false,
+              requires_password_setup: false,
+              workspaces: [],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        return new Response(
+          JSON.stringify({
+            account: {
+              account_id: 1,
+              username: 'danny',
+              first_name: 'Danny',
+              last_name: 'Reichner',
+              display_name: 'Danny Reichner',
+              workspace_id: 'Friday_Night',
+              workspace_role: 'player',
+              is_workspace_admin: false,
+              requires_password_setup: false,
+              workspaces: [
+                {
+                  workspace_id: 'Friday_Night',
+                  workspace_name: 'Friday Night',
+                  table_name: 'Friday Night',
+                  access_mode: 'password',
+                  workspace_role: 'player',
+                  is_workspace_admin: false,
+                  created_at: null,
+                  updated_at: null,
+                },
+              ],
+            },
+            account_token: 'account-token',
+            workspace_id: 'Friday_Night',
+            workspace_role: 'player',
+            is_workspace_admin: false,
+            claimed_player_ids: [],
+            workspaces: [],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }),
+    )
+    const resetRuntimeState = vi.fn()
+    const reconnectSocket = vi.fn()
+    const { result } = renderHook(() =>
+      useRuntimeSettings({
+        defaultBaseUrl: '',
+        resetRuntimeState,
+        reconnectSocket,
+      }),
+    )
+
+    await waitFor(() => expect(result.current.runtimeAccount?.username).toBe('danny'))
+
+    act(() => {
+      result.current.openAuthTokenPrompt()
+      result.current.setRuntimeWorkspaceJoinMethod('password')
+      result.current.setRuntimeSettingsForm((current) => ({
+        ...current,
+        workspaceName: 'Friday Night',
+        workspacePassword: 'table-secret',
+      }))
+    })
+    await act(async () => {
+      await result.current.submitRuntimeSettings(submitEvent())
+    })
+
+    expect(fetchCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: '/api/accounts/workspace',
+          body: { table_name: 'Friday Night', table_password: 'table-secret' },
+        }),
+      ]),
+    )
+    expect(result.current.workspaceId).toBe('Friday_Night')
+    expect(sessionStorage.getItem('aidm:workspaceToken')).toBeNull()
+    expect(localStorage.getItem('aidm:workspaceId')).toBe('Friday_Night')
+    expect(resetRuntimeState).toHaveBeenCalledOnce()
+    expect(reconnectSocket).toHaveBeenCalledOnce()
+  })
+
+  it('creates a generated-token table and keeps the raw token only in dialog state', async () => {
+    sessionStorage.setItem('aidm:authToken', 'account-token')
+    const fetchCalls: Array<{ path: string; body: unknown }> = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input), 'http://localhost').pathname
+        const body = init?.body ? JSON.parse(String(init.body)) : null
+        fetchCalls.push({ path, body })
+        if (path === '/api/accounts/me') {
+          return new Response(
+            JSON.stringify({
+              account_id: 1,
+              username: 'danny',
+              first_name: 'Danny',
+              last_name: 'Reichner',
+              display_name: 'Danny Reichner',
+              workspace_id: null,
+              workspace_role: null,
+              is_workspace_admin: false,
+              requires_password_setup: false,
+              workspaces: [],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        return new Response(
+          JSON.stringify({
+            account: {
+              account_id: 1,
+              username: 'danny',
+              first_name: 'Danny',
+              last_name: 'Reichner',
+              display_name: 'Danny Reichner',
+              workspace_id: 'Token_Table',
+              workspace_role: 'admin',
+              is_workspace_admin: true,
+              requires_password_setup: false,
+              workspaces: [
+                {
+                  workspace_id: 'Token_Table',
+                  workspace_name: 'Token Table',
+                  table_name: 'Token Table',
+                  access_mode: 'token',
+                  workspace_role: 'admin',
+                  is_workspace_admin: true,
+                  created_at: null,
+                  updated_at: null,
+                },
+              ],
+            },
+            account_token: 'account-token',
+            workspace_id: 'Token_Table',
+            workspace_role: 'admin',
+            is_workspace_admin: true,
+            claimed_player_ids: [],
+            workspaces: [],
+            workspace_token: 'new-table-token',
+          }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } },
+        )
+      }),
+    )
+    const { result } = renderHook(() =>
+      useRuntimeSettings({
+        defaultBaseUrl: '',
+        resetRuntimeState: vi.fn(),
+        reconnectSocket: vi.fn(),
+      }),
+    )
+
+    await waitFor(() => expect(result.current.runtimeAccount?.username).toBe('danny'))
+
+    act(() => {
+      result.current.openAuthTokenPrompt()
+      result.current.setRuntimeWorkspaceAction('create')
+      result.current.setRuntimeWorkspaceCreateAccessMode('token')
+      result.current.setRuntimeSettingsForm((current) => ({
+        ...current,
+        workspaceName: 'Token Table',
+      }))
+    })
+    await act(async () => {
+      await result.current.submitRuntimeSettings(submitEvent())
+    })
+
+    expect(fetchCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: '/api/accounts/workspaces',
+          body: { table_name: 'Token Table', access_mode: 'token' },
+        }),
+      ]),
+    )
+    expect(result.current.runtimeSettingsOpen).toBe(true)
+    expect(result.current.runtimeCreatedWorkspaceToken).toBe('new-table-token')
+    expect(result.current.workspaceId).toBe('Token_Table')
+    expect(sessionStorage.getItem('aidm:workspaceToken')).toBeNull()
+
+    await act(async () => {
+      await result.current.submitRuntimeSettings(submitEvent())
+    })
+
+    expect(result.current.runtimeSettingsOpen).toBe(false)
+    expect(result.current.runtimeCreatedWorkspaceToken).toBe('')
   })
 
   it('refreshes saved workspaces for a remembered account session', async () => {

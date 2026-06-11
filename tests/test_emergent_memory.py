@@ -189,17 +189,17 @@ def test_subject_singleton_fact_replacement_only_supersedes_matching_subject(app
             app,
             ids,
             player_input='I study both survivors.',
-            dm_output='Alice and Bob both survive the first ordeal.',
+            dm_output='Mira and Bob both survive the first ordeal.',
         )
         campaign = first_turn.campaign
 
         setup_patch = {
             'entities': [
-                {'entity_type': 'npc', 'name': 'Alice'},
+                {'entity_type': 'npc', 'name': 'Mira'},
                 {'entity_type': 'npc', 'name': 'Bob'},
             ],
             'facts': [
-                {'subject': 'Alice', 'predicate': 'status', 'value_text': 'alive'},
+                {'subject': 'Mira', 'predicate': 'status', 'value_text': 'alive'},
                 {'subject': 'Bob', 'predicate': 'status', 'value_text': 'wounded'},
             ],
         }
@@ -211,13 +211,13 @@ def test_subject_singleton_fact_replacement_only_supersedes_matching_subject(app
         second_turn = _create_turn(
             app,
             ids,
-            player_input='I check Alice again.',
-            dm_output='Alice does not rise.',
+            player_input='I check Mira again.',
+            dm_output='Mira does not rise.',
         )
         replacement_patch = {
             'facts': [
                 {
-                    'subject': 'Alice',
+                    'subject': 'Mira',
                     'predicate': 'status',
                     'value_text': 'dead',
                     'replace_existing': True,
@@ -229,10 +229,10 @@ def test_subject_singleton_fact_replacement_only_supersedes_matching_subject(app
         apply_canon_patch(second_turn, campaign, validated_replacement, 'test-extractor', replacement_rejections)
         db.session.commit()
 
-        alice_facts = (
+        mira_facts = (
             StoryFact.query.filter_by(campaign_id=ids['campaign_id'], predicate='status')
             .join(StoryEntity, StoryEntity.entity_id == StoryFact.subject_entity_id)
-            .filter(StoryEntity.name == 'Alice')
+            .filter(StoryEntity.name == 'Mira')
             .order_by(StoryFact.fact_id.asc())
             .all()
         )
@@ -244,11 +244,11 @@ def test_subject_singleton_fact_replacement_only_supersedes_matching_subject(app
             .all()
         )
 
-        assert [fact.fact_status for fact in alice_facts] == ['superseded', 'accepted']
-        assert [fact.value_text for fact in alice_facts] == ['alive', 'dead']
+        assert [fact.fact_status for fact in mira_facts] == ['superseded', 'accepted']
+        assert [fact.value_text for fact in mira_facts] == ['alive', 'dead']
         assert [fact.fact_status for fact in bob_facts] == ['accepted']
         assert bob_facts[0].value_text == 'wounded'
-        assert alice_facts[1].supersedes_fact_id == alice_facts[0].fact_id
+        assert mira_facts[1].supersedes_fact_id == mira_facts[0].fact_id
 
 
 def test_validate_canon_patch_batches_existing_fact_lookup(app):
@@ -259,13 +259,13 @@ def test_validate_canon_patch_batches_existing_fact_lookup(app):
             app,
             ids,
             player_input='I study the witnesses.',
-            dm_output='Alice is alive and the party is in the chapel.',
+            dm_output='Mira is alive and the party is in the chapel.',
         )
         campaign = first_turn.campaign
         setup_patch = {
-            'entities': [{'entity_type': 'npc', 'name': 'Alice'}],
+            'entities': [{'entity_type': 'npc', 'name': 'Mira'}],
             'facts': [
-                {'subject': 'Alice', 'predicate': 'status', 'value_text': 'alive'},
+                {'subject': 'Mira', 'predicate': 'status', 'value_text': 'alive'},
                 {'predicate': 'current_location', 'value_text': 'Chapel'},
             ],
         }
@@ -278,11 +278,11 @@ def test_validate_canon_patch_batches_existing_fact_lookup(app):
             app,
             ids,
             player_input='I check the witnesses again.',
-            dm_output='Alice is wounded and the party reaches the harbor.',
+            dm_output='Mira is wounded and the party reaches the harbor.',
         )
         replacement_patch = {
             'facts': [
-                {'subject': 'Alice', 'predicate': 'status', 'value_text': 'wounded', 'replace_existing': True},
+                {'subject': 'Mira', 'predicate': 'status', 'value_text': 'wounded', 'replace_existing': True},
                 {'predicate': 'current_location', 'value_text': 'Harbor', 'replace_existing': True},
             ],
         }

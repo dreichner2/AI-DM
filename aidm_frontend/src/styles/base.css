@@ -1973,11 +1973,19 @@ select:focus-visible {
   font-weight: 620;
 }
 
+.saved-workspace-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: stretch;
+}
+
 .saved-workspace-option {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  width: 100%;
   min-height: 42px;
   padding: 8px 10px;
   border: 1px solid var(--line-strong);
@@ -2004,6 +2012,21 @@ select:focus-visible {
 .saved-workspace-option span {
   color: var(--muted);
   font-size: 0.75rem;
+}
+
+.saved-workspace-delete {
+  min-height: 42px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 107, 44, 0.44);
+  border-radius: 4px;
+  color: #fff6ed;
+  font-weight: 680;
+  background: linear-gradient(180deg, #e85d32, #b9361e);
+}
+
+.saved-workspace-delete:hover {
+  border-color: rgba(255, 192, 152, 0.68);
+  background: linear-gradient(180deg, #f06a3d, #c73d22);
 }
 
 .dialog-error {

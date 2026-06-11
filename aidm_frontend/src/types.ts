@@ -27,6 +27,7 @@ export type {
   MapItem,
   Player,
   PlayerDetail,
+  PlayerEquipmentUpdateResponse,
   RaceBalanceMetadata,
   RaceDefinition,
   RaceListResponse,

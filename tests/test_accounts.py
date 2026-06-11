@@ -4,7 +4,7 @@ import importlib
 
 from aidm_server.auth import generate_account_token, hash_secret, normalize_username
 from aidm_server.database import db
-from aidm_server.models import Account, AccountWorkspaceMembership, Campaign, Player, World
+from aidm_server.models import Account, AccountWorkspaceMembership, Campaign, Player, Workspace, World
 
 
 def _build_account_runtime(tmp_path, monkeypatch):
@@ -160,6 +160,211 @@ def test_account_login_issues_session_token_and_uses_password_plus_workspace_tok
     assert missing_workspace.status_code == 403
 
 
+def test_account_can_create_password_table_and_join_by_name_password(tmp_path, monkeypatch):
+    app = _build_account_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    owner_login = _login(
+        client,
+        username='Danny',
+        first_name='Danny',
+        last_name='Reichner',
+        password='secret',
+        intent='signup',
+    )
+    assert owner_login.status_code == 201
+    owner_token = owner_login.get_json()['account_token']
+
+    create_table = client.post(
+        '/api/accounts/workspaces',
+        headers={'Authorization': f'Bearer {owner_token}'},
+        json={
+            'table_name': 'Friday Night',
+            'access_mode': 'password',
+            'table_password': 'table-secret',
+        },
+    )
+    assert create_table.status_code == 201
+    create_payload = create_table.get_json()
+    assert create_payload['workspace_id'] == 'Friday_Night'
+    assert create_payload['workspace_role'] == 'admin'
+    assert create_payload['is_workspace_admin'] is True
+    assert 'workspace_token' not in create_payload
+    assert create_payload['workspaces'][0]['workspace_name'] == 'Friday Night'
+    assert create_payload['workspaces'][0]['table_name'] == 'Friday Night'
+    assert create_payload['workspaces'][0]['access_mode'] == 'password'
+
+    duplicate = client.post(
+        '/api/accounts/workspaces',
+        headers={'Authorization': f'Bearer {owner_token}'},
+        json={
+            'table_name': 'friday night',
+            'access_mode': 'password',
+            'table_password': 'different-secret',
+        },
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.get_json()['error'] == 'table/ workspace name already in use'
+
+    joiner_login = _login(
+        client,
+        username='Maya',
+        first_name='Maya',
+        last_name='Stone',
+        password='maya-secret',
+        intent='signup',
+    )
+    assert joiner_login.status_code == 201
+    joiner_token = joiner_login.get_json()['account_token']
+
+    wrong_password = client.post(
+        '/api/accounts/workspace',
+        headers={'Authorization': f'Bearer {joiner_token}'},
+        json={
+            'table_name': 'Friday Night',
+            'table_password': 'wrong-secret',
+        },
+    )
+    assert wrong_password.status_code == 401
+
+    join_table = client.post(
+        '/api/accounts/workspace',
+        headers={'Authorization': f'Bearer {joiner_token}'},
+        json={
+            'table_name': 'Friday Night',
+            'table_password': 'table-secret',
+        },
+    )
+    assert join_table.status_code == 200
+    join_payload = join_table.get_json()
+    assert join_payload['workspace_id'] == 'Friday_Night'
+    assert join_payload['workspace_role'] == 'player'
+    assert join_payload['workspaces'][0]['workspace_name'] == 'Friday Night'
+
+    saved_workspace_headers = {
+        'Authorization': f'Bearer {joiner_token}',
+        'X-AIDM-Workspace-Id': 'Friday_Night',
+    }
+    assert client.get('/api/campaigns', headers=saved_workspace_headers).status_code == 200
+
+    with app.app_context():
+        table_world = World(name='Friday World', workspace_id='Friday_Night')
+        db.session.add(table_world)
+        db.session.flush()
+        table_campaign = Campaign(
+            title='Friday Campaign',
+            world_id=table_world.world_id,
+            workspace_id='Friday_Night',
+        )
+        db.session.add(table_campaign)
+        db.session.flush()
+        table_player = Player(
+            workspace_id='Friday_Night',
+            campaign_id=table_campaign.campaign_id,
+            name='Maya Stone',
+            character_name='Maya',
+        )
+        db.session.add(table_player)
+        db.session.commit()
+
+    remove_saved_table = client.delete(
+        '/api/accounts/workspaces/Friday_Night',
+        headers={'Authorization': f'Bearer {joiner_token}'},
+    )
+    assert remove_saved_table.status_code == 200
+    assert remove_saved_table.get_json()['workspace_action'] == 'removed'
+    with app.app_context():
+        assert Workspace.query.filter_by(workspace_id='Friday_Night').one()
+        joiner = Account.query.filter_by(username='maya').one()
+        assert AccountWorkspaceMembership.query.filter_by(
+            account_id=joiner.account_id,
+            workspace_id='Friday_Night',
+        ).first() is None
+        assert Campaign.query.filter_by(workspace_id='Friday_Night').count() == 1
+
+    delete_table = client.delete(
+        '/api/accounts/workspaces/Friday_Night',
+        headers={'Authorization': f'Bearer {owner_token}'},
+    )
+    assert delete_table.status_code == 200
+    assert delete_table.get_json()['workspace_action'] == 'deleted'
+    with app.app_context():
+        assert Workspace.query.filter_by(workspace_id='Friday_Night').first() is None
+        assert AccountWorkspaceMembership.query.filter_by(workspace_id='Friday_Night').count() == 0
+        assert World.query.filter_by(workspace_id='Friday_Night').count() == 0
+        assert Campaign.query.filter_by(workspace_id='Friday_Night').count() == 0
+        assert Player.query.filter_by(workspace_id='Friday_Night').count() == 0
+
+
+def test_account_can_create_generated_token_table_and_token_is_one_time(tmp_path, monkeypatch):
+    app = _build_account_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    owner_login = _login(
+        client,
+        username='Danny',
+        first_name='Danny',
+        last_name='Reichner',
+        password='secret',
+        intent='signup',
+    )
+    assert owner_login.status_code == 201
+    owner_token = owner_login.get_json()['account_token']
+
+    create_table = client.post(
+        '/api/accounts/workspaces',
+        headers={'Authorization': f'Bearer {owner_token}'},
+        json={
+            'table_name': 'Token Table',
+            'access_mode': 'token',
+        },
+    )
+    assert create_table.status_code == 201
+    create_payload = create_table.get_json()
+    table_token = create_payload['workspace_token']
+    assert table_token
+    assert create_payload['workspace_id'] == 'Token_Table'
+    assert create_payload['workspaces'][0]['access_mode'] == 'token'
+
+    with app.app_context():
+        workspace = Workspace.query.filter_by(workspace_id='Token_Table').one()
+        assert workspace.token_hash == hash_secret(table_token)
+        assert workspace.password_hash is None
+        assert workspace.token_hash != table_token
+
+    account_snapshot = client.get(
+        '/api/accounts/me',
+        headers={'Authorization': f'Bearer {owner_token}'},
+    )
+    assert account_snapshot.status_code == 200
+    assert 'workspace_token' not in account_snapshot.get_data(as_text=True)
+
+    joiner_login = _login(
+        client,
+        username='Aidan',
+        first_name='Aidan',
+        last_name='Fernandez',
+        password='aidan-secret',
+        intent='signup',
+    )
+    assert joiner_login.status_code == 201
+    joiner_token = joiner_login.get_json()['account_token']
+
+    join_table = client.post(
+        '/api/accounts/workspace',
+        headers={'Authorization': f'Bearer {joiner_token}'},
+        json={'workspace_token': table_token},
+    )
+    assert join_table.status_code == 200
+    assert join_table.get_json()['workspace_id'] == 'Token_Table'
+
+    token_headers = {
+        'Authorization': f'Bearer {joiner_token}',
+        'X-AIDM-Workspace-Token': table_token,
+    }
+    assert client.get('/api/campaigns', headers=token_headers).status_code == 200
+
+
 def test_login_and_signup_intents_return_specific_username_errors(tmp_path, monkeypatch):
     app = _build_account_runtime(tmp_path, monkeypatch)
     client = app.test_client()
@@ -219,6 +424,51 @@ def test_login_and_signup_intents_return_specific_username_errors(tmp_path, monk
         intent='login',
     )
     assert existing_login.status_code == 200
+
+
+def test_existing_password_account_requires_password_even_with_saved_session(tmp_path, monkeypatch):
+    app = _build_account_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    signup = _login(
+        client,
+        username='Danny',
+        first_name='Danny',
+        last_name='Reichner',
+        password='secret',
+        intent='signup',
+    )
+    assert signup.status_code == 201
+    session_token = signup.get_json()['account_token']
+
+    saved_token_without_password = client.post(
+        '/api/accounts/login',
+        headers={'Authorization': f'Bearer {session_token}'},
+        json={
+            'username': 'Danny',
+            'first_name': '',
+            'last_name': '',
+            'password': '',
+            'intent': 'login',
+        },
+    )
+    assert saved_token_without_password.status_code == 401
+    assert saved_token_without_password.get_json()['error_code'] == 'unauthorized'
+    assert saved_token_without_password.get_json()['error'] == 'Invalid account password.'
+
+    saved_token_with_password = client.post(
+        '/api/accounts/login',
+        headers={'Authorization': f'Bearer {session_token}'},
+        json={
+            'username': 'Danny',
+            'first_name': '',
+            'last_name': '',
+            'password': 'secret',
+            'intent': 'login',
+        },
+    )
+    assert saved_token_with_password.status_code == 200
+    assert saved_token_with_password.get_json()['account_token'] == session_token
 
 
 def test_passwordless_account_requires_saved_session_or_explicit_password_setup(tmp_path, monkeypatch):
@@ -325,6 +575,13 @@ def test_passwordless_saved_account_cannot_join_workspace_or_use_api(tmp_path, m
     account_snapshot = client.get('/api/accounts/me', headers=account_headers)
     assert account_snapshot.status_code == 200
     assert account_snapshot.get_json()['requires_password_setup'] is True
+
+    saved_workspaces = client.get(
+        '/api/accounts/workspaces',
+        headers={'Authorization': f'Bearer {session_token}'},
+    )
+    assert saved_workspaces.status_code == 401
+    assert saved_workspaces.get_json()['error_code'] == 'legacy_password_setup_required'
 
     join_owner = client.post(
         '/api/accounts/workspace',

@@ -391,6 +391,9 @@ function installFetchMock() {
           ? [
               {
                 workspace_id: 'aidan_test',
+                workspace_name: 'Aidan Test',
+                table_name: 'Aidan Test',
+                access_mode: 'token',
                 workspace_role: 'admin',
                 is_workspace_admin: true,
                 created_at: null,
@@ -400,6 +403,9 @@ function installFetchMock() {
           : [
               {
                 workspace_id: 'owner',
+                workspace_name: 'Test',
+                table_name: 'Test',
+                access_mode: 'token',
                 workspace_role: 'admin',
                 is_workspace_admin: true,
                 created_at: null,
@@ -407,6 +413,9 @@ function installFetchMock() {
               },
               {
                 workspace_id: 'friend',
+                workspace_name: 'Friend Table',
+                table_name: 'Friend Table',
+                access_mode: 'password',
                 workspace_role: 'player',
                 is_workspace_admin: false,
                 created_at: null,
@@ -414,6 +423,7 @@ function installFetchMock() {
               },
             ]
         const selectedWorkspace = workspaces.find((workspace) => workspace.workspace_id === selectedWorkspaceId)
+        const requiresPasswordSetup = accountToken === 'legacy-account-token'
         return jsonResponse({
           account_id: 1,
           username: 'danny',
@@ -423,6 +433,7 @@ function installFetchMock() {
           workspace_id: selectedWorkspace?.workspace_id ?? null,
           workspace_role: selectedWorkspace?.workspace_role ?? null,
           is_workspace_admin: selectedWorkspace?.is_workspace_admin ?? false,
+          requires_password_setup: requiresPasswordSetup,
           workspaces,
         })
       }
@@ -448,10 +459,17 @@ function installFetchMock() {
         })
       }
       if (method === 'POST' && path === '/api/accounts/workspace') {
-        const workspaceId = body.workspace_token === 'aidan_test' ? 'aidan_test' : 'owner'
+        const workspaceId = body.table_name === 'Friday Night'
+          ? 'Friday_Night'
+          : body.workspace_token === 'aidan_test'
+            ? 'aidan_test'
+            : 'owner'
         const workspaces = [
           {
             workspace_id: workspaceId,
+            workspace_name: body.table_name ?? workspaceId,
+            table_name: body.table_name ?? workspaceId,
+            access_mode: body.table_password ? 'password' : 'token',
             workspace_role: 'admin',
             is_workspace_admin: true,
             created_at: null,
@@ -477,6 +495,44 @@ function installFetchMock() {
           claimed_player_ids: [],
           workspaces,
         })
+      }
+      if (method === 'POST' && path === '/api/accounts/workspaces') {
+        const workspaceId = String(body.table_name ?? 'New Table').replace(/[^A-Za-z0-9_-]+/g, '_')
+        const workspaces = [
+          {
+            workspace_id: workspaceId,
+            workspace_name: body.table_name,
+            table_name: body.table_name,
+            access_mode: body.access_mode,
+            workspace_role: 'admin',
+            is_workspace_admin: true,
+            created_at: null,
+            updated_at: null,
+          },
+        ]
+        return jsonResponse(
+          {
+            account: {
+              account_id: 1,
+              username: 'danny',
+              first_name: 'Danny',
+              last_name: 'Reichner',
+              display_name: 'Danny Reichner',
+              workspace_id: workspaceId,
+              workspace_role: 'admin',
+              is_workspace_admin: true,
+              workspaces,
+            },
+            account_token: authorization?.replace(/^Bearer\s+/i, '') || 'account-token',
+            workspace_id: workspaceId,
+            workspace_role: 'admin',
+            is_workspace_admin: true,
+            claimed_player_ids: [],
+            workspaces,
+            ...(body.access_mode === 'token' ? { workspace_token: `generated-token-for-${workspaceId}` } : {}),
+          },
+          { status: 201 },
+        )
       }
       if (method === 'POST' && path === '/api/accounts/workspace/select') {
         const workspaceId = body.workspace_id ?? 'owner'
@@ -507,6 +563,45 @@ function installFetchMock() {
           is_workspace_admin: true,
           claimed_player_ids: [],
           workspaces,
+        })
+      }
+      if (method === 'DELETE' && path.startsWith('/api/accounts/workspaces/')) {
+        const removedWorkspaceId = decodeURIComponent(path.slice('/api/accounts/workspaces/'.length))
+        const deletingTable = removedWorkspaceId === 'owner'
+        const workspaces = deletingTable
+          ? []
+          : [
+              {
+                workspace_id: 'owner',
+                workspace_name: 'Test',
+                table_name: 'Test',
+                access_mode: 'token',
+                workspace_role: 'admin',
+                is_workspace_admin: true,
+                created_at: null,
+                updated_at: null,
+              },
+            ]
+        return jsonResponse({
+          account: {
+            account_id: 1,
+            username: 'danny',
+            first_name: 'Danny',
+            last_name: 'Reichner',
+            display_name: 'Danny Reichner',
+            workspace_id: deletingTable ? null : 'owner',
+            workspace_role: deletingTable ? null : 'admin',
+            is_workspace_admin: !deletingTable,
+            workspaces,
+          },
+          account_token: authorization?.replace(/^Bearer\s+/i, '') || 'account-token',
+          workspace_id: deletingTable ? null : 'owner',
+          workspace_role: deletingTable ? null : 'admin',
+          is_workspace_admin: !deletingTable,
+          claimed_player_ids: [],
+          workspaces,
+          workspace_action: deletingTable ? 'deleted' : 'removed',
+          workspace_id_removed: removedWorkspaceId,
         })
       }
       if (
@@ -603,7 +698,16 @@ function installFetchMock() {
             ? target.slot ?? (/greataxe|great axe|greatsword|great sword|maul|two.?hand/.test(targetName) ? 'two_hands' : 'main_hand')
             : target.slot
         }
-        const updated = { ...current, inventory }
+        const updated = {
+          ...current,
+          inventory,
+          snapshot_changed: Boolean(body.session_id ?? body.sessionId),
+          equipment_update: {
+            action,
+            session_id: body.session_id ?? body.sessionId ?? null,
+            snapshot_changed: Boolean(body.session_id ?? body.sessionId),
+          },
+        }
         playerDetails[playerId] = updated as PlayerDetail
         return jsonResponse(updated)
       }
@@ -1567,6 +1671,15 @@ describe('App user workflow regressions', () => {
     await waitFor(() =>
       expect(fetchCalls.some((call) => call.method === 'PATCH' && call.path === '/api/players/30/inventory/equipment')).toBe(true),
     )
+    expect(fetchCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: 'PATCH',
+          path: '/api/players/30/inventory/equipment',
+          body: expect.objectContaining({ session_id: 20 }),
+        }),
+      ]),
+    )
     expect(await screen.findByText(/Equipped - two hands/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Unequip Greataxe' })).toBeInTheDocument()
   })
@@ -2107,7 +2220,7 @@ describe('App user workflow regressions', () => {
     )
   })
 
-  it('prompts for an account when the public app requires a workspace token', async () => {
+  it('prompts for an account when the public app requires a table token', async () => {
     requiredAuthToken = 'shared-token'
     localStorage.setItem('aidm:selectedPlayerId', '30')
 
@@ -2116,7 +2229,7 @@ describe('App user workflow regressions', () => {
     let dialog = await screen.findByRole('dialog', { name: 'Log In' })
     expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
-    expect(within(dialog).queryByLabelText('Workspace Token')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Table Token')).not.toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Sign Up' }))
 
     const usernameInput = within(dialog).getByLabelText('Username')
@@ -2127,19 +2240,19 @@ describe('App user workflow regressions', () => {
     fireEvent.change(within(dialog).getByLabelText('Password'), { target: { value: 'secret' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
 
-    dialog = await screen.findByRole('dialog', { name: 'Join Workspace' })
+    dialog = await screen.findByRole('dialog', { name: 'Join Table' })
     expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Username')).not.toBeInTheDocument()
-    fireEvent.change(within(dialog).getByLabelText('Workspace Token'), { target: { value: 'shared-token' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Join Workspace' }))
+    fireEvent.change(within(dialog).getByLabelText('Table Token'), { target: { value: 'shared-token' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Join Table' }))
 
     await screen.findByRole('heading', { name: /Session Alpha/i })
     expect(screen.getByLabelText('Scene music player')).toBeInTheDocument()
     expect(sessionStorage.getItem('aidm:authToken')).toBe('account-token')
     expect(sessionStorage.getItem('aidm:workspaceToken')).toBe('shared-token')
-    expect(screen.queryByRole('dialog', { name: 'Join Workspace' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Join Table' })).not.toBeInTheDocument()
     await waitFor(() =>
-      expect(screen.queryByText('Workspace token required. Enter the workspace token to connect.')).not.toBeInTheDocument(),
+      expect(screen.queryByText('Table token required. Enter the table token to connect.')).not.toBeInTheDocument(),
     )
     expect(screen.queryByText('Player load failed: Missing or invalid workspace token.')).not.toBeInTheDocument()
     expect(fetchCalls).toEqual(
@@ -2160,20 +2273,36 @@ describe('App user workflow regressions', () => {
     )
   })
 
+  it('keeps restored legacy passwordless sessions in password setup', async () => {
+    requiredAuthToken = 'owner-token'
+    sessionStorage.setItem('aidm:authToken', 'legacy-account-token')
+    sessionStorage.setItem('aidm:workspaceToken', 'owner-token')
+    localStorage.setItem('aidm:workspaceId', 'owner')
+
+    render(<App />)
+
+    const dialog = await screen.findByRole('dialog', { name: 'Log In' })
+    expect(within(dialog).getAllByText('Passwords are required now. Please set one now.')).not.toHaveLength(0)
+    expect(within(dialog).getByLabelText('New Password')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
+    await waitFor(() => expect(sessionStorage.getItem('aidm:workspaceToken')).toBeNull())
+    expect(localStorage.getItem('aidm:workspaceId')).toBeNull()
+  })
+
   it('opens account auth from the backend gear when no account is active', async () => {
     await renderLoadedApp()
     expect(screen.getByLabelText('Scene music player')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Change workspace access' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Change table access' }))
 
     const dialog = await screen.findByRole('dialog', { name: 'Log In' })
     expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
-    expect(within(dialog).queryByLabelText('Workspace Token')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Table Token')).not.toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Sign Up' })).toBeInTheDocument()
   })
 
-  it('opens workspace auth from the backend gear when an account is active', async () => {
+  it('opens table auth from the backend gear when an account is active', async () => {
     sessionStorage.setItem('aidm:authToken', 'account-token')
     sessionStorage.setItem('aidm:workspaceToken', 'old-workspace')
     sessionStorage.setItem(
@@ -2199,15 +2328,102 @@ describe('App user workflow regressions', () => {
     localStorage.setItem('aidm:workspaceId', 'owner')
     window.history.replaceState(null, '', '/?campaign=10&session=20')
 
-    await renderLoadedApp()
+    render(<App />)
+    await screen.findByRole('button', { name: 'Change table access' })
+    await screen.findByText('Test')
+    expect(screen.getByText('Table')).toBeInTheDocument()
+    expect(screen.queryByText('Same origin')).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Change workspace access' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Change table access' }))
 
-    const dialog = await screen.findByRole('dialog', { name: 'Join Workspace' })
+    const dialog = await screen.findByRole('dialog', { name: 'Join Table' })
     expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
-    expect(within(dialog).getByRole('group', { name: 'Saved workspaces' })).toBeInTheDocument()
-    expect(within(dialog).getByRole('button', { name: 'owner admin' })).toBeInTheDocument()
-    expect(within(dialog).getByLabelText('Workspace Token')).toHaveValue('old-workspace')
+    expect(within(dialog).getByRole('group', { name: 'Saved tables' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Test admin' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Delete Test' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Remove Friend Table' })).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('Table Token')).toHaveValue('old-workspace')
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove Friend Table' }))
+    let confirmDialog = await screen.findByRole('dialog', { name: 'Remove Saved Table' })
+    expect(within(confirmDialog).getByText('Friend Table')).toBeInTheDocument()
+    expect(within(confirmDialog).getByText('This removes the table from your saved tables only.')).toBeInTheDocument()
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Remove' }))
+    await waitFor(() =>
+      expect(fetchCalls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            method: 'DELETE',
+            path: '/api/accounts/workspaces/friend',
+          }),
+        ]),
+      ),
+    )
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove Saved Table' })).not.toBeInTheDocument())
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete Test' }))
+    confirmDialog = await screen.findByRole('dialog', { name: 'Delete Table' })
+    expect(within(confirmDialog).getByText('Test')).toBeInTheDocument()
+    expect(
+      within(confirmDialog).getByText('This permanently deletes the table for everyone. This cannot be undone.'),
+    ).toBeInTheDocument()
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Delete Table' }))
+    await waitFor(() =>
+      expect(fetchCalls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            method: 'DELETE',
+            path: '/api/accounts/workspaces/owner',
+          }),
+        ]),
+      ),
+    )
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete Table' })).not.toBeInTheDocument())
+  })
+
+  it('creates a token table and warns that the generated token is only shown once', async () => {
+    sessionStorage.setItem('aidm:authToken', 'account-token')
+    sessionStorage.setItem(
+      'aidm:account',
+      JSON.stringify({
+        accountId: 1,
+        username: 'danny',
+        displayName: 'Danny Reichner',
+        workspaceId: 'owner',
+        workspaceRole: 'admin',
+        isWorkspaceAdmin: true,
+        workspaces: [
+          {
+            workspace_id: 'owner',
+            workspace_role: 'admin',
+            is_workspace_admin: true,
+            created_at: null,
+            updated_at: null,
+          },
+        ],
+      }),
+    )
+    localStorage.setItem('aidm:workspaceId', 'owner')
+
+    render(<App />)
+    await screen.findByRole('button', { name: 'Change table access' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change table access' }))
+    let dialog = await screen.findByRole('dialog', { name: 'Join Table' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+
+    dialog = await screen.findByRole('dialog', { name: 'Create Table' })
+    fireEvent.change(within(dialog).getByLabelText('Table Name'), { target: { value: 'Token Table' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Token' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create Table' }))
+
+    dialog = await screen.findByRole('dialog', { name: 'Save Table Token' })
+    expect(within(dialog).getByLabelText('Generated table token')).toHaveValue('generated-token-for-Token_Table')
+    expect(within(dialog).getByText('You will not be able to view it after you leave this page.')).toBeInTheDocument()
+    expect(sessionStorage.getItem('aidm:workspaceToken')).toBeNull()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Save Table Token' })).not.toBeInTheDocument())
   })
 
   it('does not join a session socket with a stale selected player', async () => {
@@ -2241,9 +2457,9 @@ describe('App user workflow regressions', () => {
     fireEvent.change(within(dialog).getByLabelText('Username'), { target: { value: 'Aidan' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
 
-    dialog = await screen.findByRole('dialog', { name: 'Join Workspace' })
-    fireEvent.change(within(dialog).getByLabelText('Workspace Token'), { target: { value: 'aidan_test' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Join Workspace' }))
+    dialog = await screen.findByRole('dialog', { name: 'Join Table' })
+    fireEvent.change(within(dialog).getByLabelText('Table Token'), { target: { value: 'aidan_test' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Join Table' }))
 
     await screen.findByText('No campaigns match.')
     await waitFor(() => {

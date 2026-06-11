@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from aidm_server.database import db
-from aidm_server.models import DmTurn, Player, PlayerAction, TurnEvent, safe_json_dumps
+from aidm_server.models import DmTurn, Player, PlayerAction, Session, TurnEvent, safe_json_dumps, safe_json_loads
 from tests.helpers import seed_world_campaign_player_session
 
 
@@ -354,15 +354,42 @@ def test_manual_equipment_endpoint_enforces_slots_and_preserves_inventory_payloa
             ],
             [],
         )
+        session = db.session.get(Session, ids['session_id'])
+        assert session is not None
+        session.state_snapshot = safe_json_dumps(
+            {
+                'currentScene': {'name': 'Old Ruins'},
+                'playerCharacters': [
+                    {
+                        'id': f"player_{ids['player_id']}",
+                        'playerId': ids['player_id'],
+                        'name': player.character_name,
+                        'inventory': {
+                            'items': [
+                                {'id': 'long', 'name': 'Longsword', 'quantity': 1, 'type': 'weapon', 'subtype': 'sword', 'equipped': True, 'slot': 'main_hand'},
+                            ],
+                            'currency': {},
+                        },
+                        'metadata': {},
+                    }
+                ],
+                'stateChangeLedger': [],
+            },
+            {},
+        )
         db.session.commit()
 
     response = client.patch(
         f"/api/players/{ids['player_id']}/inventory/equipment",
-        json={'action': 'equip', 'item_id': 'great'},
+        json={'action': 'equip', 'item_id': 'great', 'session_id': ids['session_id']},
     )
 
     assert response.status_code == 200
-    inventory = {item['id']: item for item in response.get_json()['inventory']}
+    payload = response.get_json()
+    assert payload['snapshot_changed'] is True
+    assert payload['equipment_update']['session_id'] == ids['session_id']
+    assert payload['equipment_update']['snapshot_changed'] is True
+    inventory = {item['id']: item for item in payload['inventory']}
     assert inventory['great']['equipped'] is True
     assert inventory['great']['slot'] == 'two_hands'
     assert inventory['long'].get('equipped', False) is False
@@ -370,12 +397,29 @@ def test_manual_equipment_endpoint_enforces_slots_and_preserves_inventory_payloa
     assert inventory['hood']['equipped'] is True
     assert inventory['helmet']['equipped'] is True
 
+    with app.app_context():
+        session = db.session.get(Session, ids['session_id'])
+        snapshot = safe_json_loads(session.state_snapshot, {})
+        actor = next(actor for actor in snapshot['playerCharacters'] if actor['playerId'] == ids['player_id'])
+        snapshot_inventory = {item['id']: item for item in actor['inventory']['items']}
+        assert snapshot_inventory['great']['equipped'] is True
+        assert snapshot_inventory['great']['slot'] == 'two_hands'
+        assert snapshot_inventory['long'].get('equipped', False) is False
+        assert snapshot_inventory['dagger'].get('equipped', False) is False
+
     unequip_response = client.patch(
         f"/api/players/{ids['player_id']}/inventory/equipment",
-        json={'action': 'unequip', 'item_id': 'great'},
+        json={'action': 'unequip', 'item_id': 'great', 'session_id': ids['session_id']},
     )
     assert unequip_response.status_code == 200
+    assert unequip_response.get_json()['snapshot_changed'] is True
     assert {item['id']: item for item in unequip_response.get_json()['inventory']}['great'].get('equipped', False) is False
+    with app.app_context():
+        session = db.session.get(Session, ids['session_id'])
+        snapshot = safe_json_loads(session.state_snapshot, {})
+        actor = next(actor for actor in snapshot['playerCharacters'] if actor['playerId'] == ids['player_id'])
+        snapshot_inventory = {item['id']: item for item in actor['inventory']['items']}
+        assert snapshot_inventory['great'].get('equipped', False) is False
 
 
 def test_manual_equipment_endpoint_infers_sparse_axe_items(client, app):
@@ -415,6 +459,29 @@ def test_manual_equipment_endpoint_infers_sparse_axe_items(client, app):
     assert inventory['handaxe']['subtype'] == 'handaxe'
     assert inventory['handaxe']['equipped'] is True
     assert inventory['handaxe']['slot'] == 'main_hand'
+
+
+def test_manual_equipment_endpoint_rejects_session_from_another_campaign(client, app):
+    ids = seed_world_campaign_player_session(app)
+    other_ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        assert player is not None
+        player.inventory = safe_json_dumps(
+            [{'id': 'long', 'name': 'Longsword', 'quantity': 1, 'type': 'weapon', 'subtype': 'sword'}],
+            [],
+        )
+        db.session.commit()
+
+    response = client.patch(
+        f"/api/players/{ids['player_id']}/inventory/equipment",
+        json={'action': 'equip', 'item_id': 'long', 'session_id': other_ids['session_id']},
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload['error_code'] == 'validation_error'
+    assert 'player campaign' in payload['error']
 
 
 def test_manual_equipment_endpoint_rolls_back_on_apply_error(client, app, monkeypatch):

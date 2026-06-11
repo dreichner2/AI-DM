@@ -20,7 +20,12 @@ from aidm_server.canon_inventory import OWNED_ITEM_ACTIONS
 from aidm_server.database import db
 from aidm_server.emergent_memory import apply_immediate_state_changes
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY
-from aidm_server.game_state.change_types import WORLD_STATE_CHANGE_TYPES
+from aidm_server.game_state.change_types import (
+    COMBAT_STATE_CHANGE_TYPES,
+    PLAYER_SNAPSHOT_CHANGE_TYPES,
+    SNAPSHOT_REFRESH_CHANGE_TYPES,
+    WORLD_STATE_CHANGE_TYPES,
+)
 from aidm_server.game_state.orchestration.turn_pipeline import (
     augment_rules_hint_with_state_packet,
     post_dm_pipeline,
@@ -112,11 +117,26 @@ def _affected_player_ids_from_state_summary(
     return sorted(affected)
 
 
-def _world_state_changed_from_applied_changes(applied_changes: list[dict]) -> bool:
-    return any(
-        isinstance(change, dict) and str(change.get('type') or '').strip() in WORLD_STATE_CHANGE_TYPES
+def _snapshot_refresh_flags_from_applied_changes(applied_changes: list[dict]) -> dict:
+    change_types = {
+        str(change.get('type') or '').strip()
         for change in applied_changes
-    )
+        if isinstance(change, dict)
+    }
+    flags: dict[str, bool] = {}
+    if change_types & WORLD_STATE_CHANGE_TYPES:
+        flags['world_state_changed'] = True
+    if change_types & COMBAT_STATE_CHANGE_TYPES:
+        flags['combat_state_changed'] = True
+    if change_types & PLAYER_SNAPSHOT_CHANGE_TYPES:
+        flags['player_state_changed'] = True
+    if change_types & SNAPSHOT_REFRESH_CHANGE_TYPES:
+        flags['snapshot_changed'] = True
+    return flags
+
+
+def _snapshot_refresh_needed_from_applied_changes(applied_changes: list[dict]) -> bool:
+    return bool(_snapshot_refresh_flags_from_applied_changes(applied_changes).get('snapshot_changed'))
 
 
 def _state_application_event_details(
@@ -140,9 +160,7 @@ def _state_application_event_details(
     }
     if state_applied is not None:
         details['state_applied'] = state_applied
-    if _world_state_changed_from_applied_changes(applied_changes):
-        details['world_state_changed'] = True
-        details['snapshot_changed'] = True
+    details.update(_snapshot_refresh_flags_from_applied_changes(applied_changes))
     return details
 
 
@@ -2139,7 +2157,7 @@ class TurnEngine:
                     inventory_changes
                     or character_state_changes
                     or state_log_lines
-                    or _world_state_changed_from_applied_changes(applied_changes_for_status)
+                    or _snapshot_refresh_needed_from_applied_changes(applied_changes_for_status)
                 ):
                     affected_player_ids = _affected_player_ids_from_state_summary(
                         inventory_changes,

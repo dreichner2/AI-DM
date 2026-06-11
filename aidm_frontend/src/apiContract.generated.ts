@@ -171,6 +171,9 @@ export type CampaignWorkspace = {
 
 export type AccountWorkspace = {
   workspace_id: string
+  workspace_name?: string
+  table_name?: string
+  access_mode?: 'password' | 'token' | 'configured' | 'unknown'
   workspace_role: string
   is_workspace_admin: boolean
   created_at: string | null
@@ -198,6 +201,7 @@ export type AccountSession = {
   is_workspace_admin: boolean
   claimed_player_ids: number[]
   workspaces: AccountWorkspace[]
+  workspace_token?: string | null
 }
 
 export type SessionLogEntry = {
@@ -287,6 +291,8 @@ export type PlayerDetail = {
   inventory: unknown
   character_sheet: unknown
 }
+
+export type PlayerEquipmentUpdateResponse = PlayerDetail & { snapshot_changed: boolean; equipment_update: JsonRecord }
 
 export type MapItem = {
   map_id: number

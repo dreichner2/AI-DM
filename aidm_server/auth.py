@@ -16,11 +16,25 @@ WORKSPACE_ID_HEADER = "X-AIDM-Workspace-Id"
 ACCOUNT_TOKEN_BYTES = 32
 _WORKSPACE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
 _USERNAME_RE = re.compile(r"[^a-z0-9_.-]+")
+_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def normalize_workspace_id(value: str | None) -> str:
     workspace_id = _WORKSPACE_ID_RE.sub("_", str(value or "").strip()).strip("_")
     return (workspace_id or DEFAULT_WORKSPACE_ID)[:80]
+
+
+def workspace_id_from_name(value: str | None) -> str:
+    workspace_id = _WORKSPACE_ID_RE.sub("_", str(value or "").strip()).strip("_")
+    return workspace_id[:80]
+
+
+def normalize_workspace_name(value: str | None) -> str:
+    return _WHITESPACE_RE.sub(" ", str(value or "").strip())[:120]
+
+
+def normalize_workspace_name_key(value: str | None) -> str:
+    return normalize_workspace_name(value).casefold()
 
 
 def normalize_username(value: str | None) -> str:
@@ -43,17 +57,25 @@ def generate_account_token() -> str:
     return secrets.token_urlsafe(ACCOUNT_TOKEN_BYTES)
 
 
+def generate_workspace_token() -> str:
+    return secrets.token_urlsafe(ACCOUNT_TOKEN_BYTES)
+
+
 def password_hash_for(value: str | None) -> str | None:
     password = str(value or "").strip()
     return generate_password_hash(password) if password else None
 
 
-def password_matches(account, password: str | None) -> bool:
-    password_hash = str(getattr(account, "password_hash", "") or "")
-    if not password_hash:
+def password_hash_matches(password_hash: str | None, password: str | None) -> bool:
+    stored_hash = str(password_hash or "")
+    if not stored_hash:
         return False
     supplied = str(password or "")
-    return bool(supplied) and check_password_hash(password_hash, supplied)
+    return bool(supplied) and check_password_hash(stored_hash, supplied)
+
+
+def password_matches(account, password: str | None) -> bool:
+    return password_hash_matches(str(getattr(account, "password_hash", "") or ""), password)
 
 
 def account_requires_password_setup(account) -> bool:
@@ -118,6 +140,12 @@ def workspace_id_for_workspace_token(token: str | None) -> str | None:
     valid_tokens = _configured_tokens()
     if raw_token and raw_token in valid_tokens:
         return DEFAULT_WORKSPACE_ID
+    if raw_token:
+        from aidm_server.models import Workspace
+
+        workspace = Workspace.query.filter_by(token_hash=hash_secret(raw_token)).first()
+        if workspace:
+            return workspace.workspace_id
     if auth_required():
         return None
     return DEFAULT_WORKSPACE_ID

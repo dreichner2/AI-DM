@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import aidm_server.game_state.extraction.post_dm_outcome_extractor as post_extractor_module
+import aidm_server.segment_state as segment_state_module
 from aidm_server.canon_jobs import _evaluate_state_segments_after_turn
 from aidm_server.contracts import ProviderResponse
 from aidm_server.database import db
@@ -80,6 +81,32 @@ def test_state_trigger_uses_live_current_scene_over_stale_projection_and_campaig
 
     assert matched is True
     assert reason == 'state:location=chapel;quest=*'
+    assert session_state_payload['current_location'] == 'Soot-Stained Chapel'
+    assert session_state_payload['current_location_id'] == 'soot_stained_chapel'
+
+
+def test_segment_state_payload_skips_projection_refresh_when_snapshot_is_usable(app, monkeypatch):
+    ids = seed_world_campaign_player_session(app)
+
+    def fail_refresh(*_args, **_kwargs):
+        raise AssertionError('projection refresh should not run for a usable live snapshot')
+
+    monkeypatch.setattr(segment_state_module, 'refresh_session_projection', fail_refresh)
+
+    with app.app_context():
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        session = db.session.get(Session, ids['session_id'])
+        assert campaign is not None
+        assert session is not None
+        _set_stale_projection(ids['session_id'], location='Old Road', quest='Old Quest')
+        session.state_snapshot = safe_json_dumps(
+            _base_snapshot(scene_name='Soot-Stained Chapel', scene_id='soot_stained_chapel'),
+            {},
+        )
+        db.session.commit()
+
+        session_state_payload, _campaign_state = build_segment_state_payload(ids['session_id'], campaign)
+
     assert session_state_payload['current_location'] == 'Soot-Stained Chapel'
     assert session_state_payload['current_location_id'] == 'soot_stained_chapel'
 

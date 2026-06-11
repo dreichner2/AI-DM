@@ -56,6 +56,16 @@ COMBAT_STATE_CHANGE_TYPES = {
     'combat.end',
 }
 
+PLAYER_SNAPSHOT_CHANGE_TYPES = {
+    'spell.learn',
+    'inventory.equip',
+    'inventory.unequip',
+    'race_ability.mark_used',
+    'race_ability.refresh',
+}
+
+SNAPSHOT_REFRESH_CHANGE_TYPES = WORLD_STATE_CHANGE_TYPES | COMBAT_STATE_CHANGE_TYPES | PLAYER_SNAPSHOT_CHANGE_TYPES
+
 STATE_CHANGE_TYPES = PHASE_1_STATE_CHANGE_TYPES | WORLD_STATE_CHANGE_TYPES | COMBAT_STATE_CHANGE_TYPES
 
 CURRENCY_TYPES = {'pp', 'gp', 'ep', 'sp', 'cp'}

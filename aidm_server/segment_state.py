@@ -71,6 +71,29 @@ def _quest_search_text(quest: dict) -> list[str]:
     return _unique(values)
 
 
+def _projection_payload(session_id: int, campaign: Campaign) -> dict:
+    session_state = refresh_session_projection(session_id, campaign)
+    return {
+        'current_location': session_state.current_location or campaign.location,
+        'current_quest': session_state.current_quest or campaign.current_quest,
+    }
+
+
+def _snapshot_has_usable_state(snapshot: Any) -> bool:
+    if not isinstance(snapshot, dict):
+        return False
+    return any(
+        [
+            isinstance(snapshot.get('currentScene'), dict),
+            isinstance(snapshot.get('quests'), list),
+            isinstance(snapshot.get('locations'), list),
+            isinstance(snapshot.get('knownNpcs'), list),
+            isinstance(snapshot.get('partyNpcs'), list),
+            isinstance(snapshot.get('flags'), dict),
+        ]
+    )
+
+
 def build_segment_state_payload(session_id: int, campaign: Campaign) -> tuple[dict, dict]:
     """Build the compact state payload consumed by segment trigger evaluation.
 
@@ -78,20 +101,19 @@ def build_segment_state_payload(session_id: int, campaign: Campaign) -> tuple[di
     are retained only as fallback for older sessions without live snapshots.
     """
 
-    session_state = refresh_session_projection(session_id, campaign)
     campaign_state = {
         'location': campaign.location,
         'current_quest': campaign.current_quest,
     }
     payload: dict[str, Any] = {
-        'current_location': session_state.current_location or campaign.location,
-        'current_quest': session_state.current_quest or campaign.current_quest,
+        'current_location': campaign.location,
+        'current_quest': campaign.current_quest,
     }
 
     session_obj = db.session.get(Session, session_id)
     snapshot = safe_json_loads(session_obj.state_snapshot if session_obj else None, {})
-    if not isinstance(snapshot, dict):
-        return payload, campaign_state
+    if not _snapshot_has_usable_state(snapshot):
+        return _projection_payload(session_id, campaign), campaign_state
 
     scene = snapshot.get('currentScene') if isinstance(snapshot.get('currentScene'), dict) else {}
     live_location = _text(scene.get('name'))

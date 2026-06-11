@@ -5,6 +5,8 @@ import type { Account, AccountSession, AccountWorkspace } from './types'
 export type RuntimeSettingsForm = {
   baseUrl: string
   workspaceToken: string
+  workspaceName: string
+  workspacePassword: string
   username: string
   firstName: string
   lastName: string
@@ -14,6 +16,10 @@ export type RuntimeSettingsForm = {
 export type RuntimeSettingsMode = 'settings' | 'auth'
 export type RuntimeAuthIntent = 'login' | 'signup'
 export type RuntimeAuthStep = 'account' | 'workspace'
+export type RuntimeWorkspaceAction = 'join' | 'create'
+export type RuntimeWorkspaceJoinMethod = 'token' | 'password'
+export type RuntimeWorkspaceCreateAccessMode = 'password' | 'token'
+export type DeleteSavedWorkspaceResult = { ok: true } | { ok: false; error: string }
 
 export type RuntimeAccount = {
   accountId: number
@@ -295,29 +301,55 @@ async function fetchAccountSnapshot(baseUrl: string, accountToken: string, works
   return accountFromPayload(payload as Account)
 }
 
-async function submitWorkspaceSession(baseUrl: string, workspaceToken: string, accountToken: string) {
+async function submitWorkspaceSession(
+  baseUrl: string,
+  accountToken: string,
+  payload: { workspace_token?: string; table_name?: string; table_password?: string },
+) {
   const headers = new Headers({ 'Content-Type': 'application/json' })
   if (accountToken.trim()) {
     headers.set('Authorization', `Bearer ${accountToken.trim()}`)
   }
-  if (workspaceToken.trim()) {
-    headers.set('X-AIDM-Workspace-Token', workspaceToken.trim())
+  if (payload.workspace_token?.trim()) {
+    headers.set('X-AIDM-Workspace-Token', payload.workspace_token.trim())
   }
   addNgrokBrowserWarningBypassHeader(headers, baseUrl)
 
   const response = await fetch(`${normalizeBaseUrl(baseUrl)}${'/api/accounts/workspace'}`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({
-      workspace_token: workspaceToken.trim(),
-    }),
+    body: JSON.stringify(payload),
   })
   const text = await response.text()
-  const payload = text ? JSON.parse(text) as unknown : null
+  const responsePayload = text ? JSON.parse(text) as unknown : null
   if (!response.ok) {
-    throw responseError(payload, `Workspace request failed with status ${response.status}`)
+    throw responseError(responsePayload, `Workspace request failed with status ${response.status}`)
   }
-  return payload as AccountSession
+  return responsePayload as AccountSession
+}
+
+async function createWorkspaceSession(
+  baseUrl: string,
+  accountToken: string,
+  payload: { table_name: string; access_mode: RuntimeWorkspaceCreateAccessMode; table_password?: string },
+) {
+  const headers = new Headers({ 'Content-Type': 'application/json' })
+  if (accountToken.trim()) {
+    headers.set('Authorization', `Bearer ${accountToken.trim()}`)
+  }
+  addNgrokBrowserWarningBypassHeader(headers, baseUrl)
+
+  const response = await fetch(`${normalizeBaseUrl(baseUrl)}${'/api/accounts/workspaces'}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  })
+  const text = await response.text()
+  const responsePayload = text ? JSON.parse(text) as unknown : null
+  if (!response.ok) {
+    throw responseError(responsePayload, `Table request failed with status ${response.status}`)
+  }
+  return responsePayload as AccountSession
 }
 
 async function selectWorkspaceSession(baseUrl: string, workspaceId: string, accountToken: string) {
@@ -338,6 +370,37 @@ async function selectWorkspaceSession(baseUrl: string, workspaceId: string, acco
   const payload = text ? JSON.parse(text) as unknown : null
   if (!response.ok) {
     throw responseError(payload, `Workspace request failed with status ${response.status}`)
+  }
+  return payload as AccountSession
+}
+
+async function deleteWorkspaceSession(baseUrl: string, workspaceId: string, accountToken: string) {
+  const headers = new Headers()
+  if (accountToken.trim()) {
+    headers.set('Authorization', `Bearer ${accountToken.trim()}`)
+  }
+  addNgrokBrowserWarningBypassHeader(headers, baseUrl)
+
+  const response = await fetch(
+    `${normalizeBaseUrl(baseUrl)}${`/api/accounts/workspaces/${encodeURIComponent(workspaceId.trim())}`}`,
+    {
+      method: 'DELETE',
+      headers,
+    },
+  )
+  const text = await response.text()
+  let payload: unknown = null
+  if (text) {
+    try {
+      payload = JSON.parse(text) as unknown
+    } catch {
+      if (response.ok) {
+        throw new Error('Table delete response was not valid JSON.')
+      }
+    }
+  }
+  if (!response.ok) {
+    throw responseError(payload, `Table delete request failed with status ${response.status}`)
   }
   return payload as AccountSession
 }
@@ -363,12 +426,19 @@ export function useRuntimeSettings({
   const [runtimeSettingsMode, setRuntimeSettingsMode] = useState<RuntimeSettingsMode>('settings')
   const [runtimeAuthIntent, setRuntimeAuthIntent] = useState<RuntimeAuthIntent>('login')
   const [runtimeAuthStep, setRuntimeAuthStep] = useState<RuntimeAuthStep>(() => (loadSessionAuthToken() ? 'workspace' : 'account'))
+  const [runtimeWorkspaceAction, setRuntimeWorkspaceAction] = useState<RuntimeWorkspaceAction>('join')
+  const [runtimeWorkspaceJoinMethod, setRuntimeWorkspaceJoinMethod] = useState<RuntimeWorkspaceJoinMethod>('token')
+  const [runtimeWorkspaceCreateAccessMode, setRuntimeWorkspaceCreateAccessMode] =
+    useState<RuntimeWorkspaceCreateAccessMode>('password')
+  const [runtimeCreatedWorkspaceToken, setRuntimeCreatedWorkspaceToken] = useState('')
   const [runtimeSettingsError, setRuntimeSettingsError] = useState('')
   const [legacyPasswordSetupRequired, setLegacyPasswordSetupRequired] = useState(false)
   const accountRefreshTokenRef = useRef('')
   const [runtimeSettingsForm, setRuntimeSettingsForm] = useState<RuntimeSettingsForm>(() => ({
     baseUrl: loadInitialBaseUrl(defaultBaseUrl),
     workspaceToken: loadSessionWorkspaceToken(),
+    workspaceName: '',
+    workspacePassword: '',
     username: loadSessionAccount()?.username ?? '',
     firstName: '',
     lastName: '',
@@ -383,6 +453,7 @@ export function useRuntimeSettings({
     }))
     setRuntimeAuthIntent('login')
     setRuntimeAuthStep('account')
+    setRuntimeCreatedWorkspaceToken('')
     setRuntimeSettingsMode('auth')
     setRuntimeSettingsOpen(true)
     setLegacyPasswordSetupRequired(true)
@@ -451,14 +522,25 @@ export function useRuntimeSettings({
 
   const openRuntimeSettings = useCallback((mode: RuntimeSettingsMode = 'settings') => {
     const needsPasswordSetup = runtimeAccount?.requiresPasswordSetup === true
+    const preserveOpenAuthFlow = mode === 'auth' && runtimeSettingsOpen && runtimeSettingsMode === 'auth'
+    if (preserveOpenAuthFlow && !needsPasswordSetup) {
+      setRuntimeSettingsMode('auth')
+      setRuntimeSettingsOpen(true)
+      return
+    }
     setRuntimeSettingsForm((current) => ({
       baseUrl,
       workspaceToken,
+      workspaceName: current.workspaceName,
+      workspacePassword: '',
       username: runtimeAccount?.username ?? current.username,
       firstName: current.firstName,
       lastName: current.lastName,
       password: '',
     }))
+    setRuntimeWorkspaceAction('join')
+    setRuntimeWorkspaceJoinMethod('token')
+    setRuntimeCreatedWorkspaceToken('')
     setRuntimeAuthStep(
       needsPasswordSetup || !(mode === 'auth' && (authToken.trim() || pendingAuthToken.trim()))
         ? 'account'
@@ -481,6 +563,8 @@ export function useRuntimeSettings({
     refreshRuntimeAccount,
     runtimeAccount?.requiresPasswordSetup,
     runtimeAccount?.username,
+    runtimeSettingsMode,
+    runtimeSettingsOpen,
     workspaceToken,
   ])
 
@@ -492,6 +576,7 @@ export function useRuntimeSettings({
     setRuntimeSettingsOpen(false)
     setRuntimeSettingsMode('settings')
     setRuntimeSettingsError('')
+    setRuntimeCreatedWorkspaceToken('')
     setLegacyPasswordSetupRequired(false)
   }, [])
 
@@ -548,7 +633,7 @@ export function useRuntimeSettings({
           setWorkspaceToken('')
           setWorkspaceId(account.workspaceId ?? '')
           setRuntimeAccount(account)
-          setRuntimeSettingsForm((current) => ({ ...current, workspaceToken: '' }))
+          setRuntimeSettingsForm((current) => ({ ...current, workspaceToken: '', workspacePassword: '' }))
           setRuntimeAuthStep('workspace')
           setLegacyPasswordSetupRequired(false)
           setRuntimeSettingsError('')
@@ -566,18 +651,66 @@ export function useRuntimeSettings({
       }
 
       if (runtimeSettingsMode === 'auth' && runtimeAuthStep === 'workspace') {
+        if (runtimeCreatedWorkspaceToken) {
+          setRuntimeSettingsOpen(false)
+          setRuntimeSettingsMode('settings')
+          setRuntimeCreatedWorkspaceToken('')
+          setRuntimeAuthStep('account')
+          setRuntimeSettingsError('')
+          return
+        }
         const accountStepToken = pendingAuthToken.trim() || nextAuthToken
         if (!accountStepToken) {
-          setRuntimeSettingsError('Log in or sign up before joining a workspace.')
+          setRuntimeSettingsError('Log in or sign up before joining a table.')
           setRuntimeAuthStep('account')
           return
         }
-        if (!nextWorkspaceToken) {
-          setRuntimeSettingsError('Workspace token is required.')
-          return
-        }
         try {
-          const accountSession = await submitWorkspaceSession(nextBaseUrl, nextWorkspaceToken, accountStepToken)
+          let accountSession: AccountSession
+          let storedWorkspaceToken = ''
+          let createdWorkspaceToken = ''
+          if (runtimeWorkspaceAction === 'create') {
+            const tableName = runtimeSettingsForm.workspaceName.trim()
+            if (!tableName) {
+              setRuntimeSettingsError('Table name is required.')
+              return
+            }
+            const tablePassword = runtimeSettingsForm.workspacePassword
+            if (runtimeWorkspaceCreateAccessMode === 'password' && !tablePassword.trim()) {
+              setRuntimeSettingsError('Table password is required.')
+              return
+            }
+            accountSession = await createWorkspaceSession(nextBaseUrl, accountStepToken, {
+              table_name: tableName,
+              access_mode: runtimeWorkspaceCreateAccessMode,
+              ...(runtimeWorkspaceCreateAccessMode === 'password' ? { table_password: tablePassword } : {}),
+            })
+            createdWorkspaceToken = accountSession.workspace_token?.trim() ?? ''
+          } else if (runtimeWorkspaceJoinMethod === 'password') {
+            const tableName = runtimeSettingsForm.workspaceName.trim()
+            const tablePassword = runtimeSettingsForm.workspacePassword
+            if (!tableName) {
+              setRuntimeSettingsError('Table name is required.')
+              return
+            }
+            if (!tablePassword.trim()) {
+              setRuntimeSettingsError('Table password is required.')
+              return
+            }
+            accountSession = await submitWorkspaceSession(nextBaseUrl, accountStepToken, {
+              table_name: tableName,
+              table_password: tablePassword,
+            })
+          } else {
+            if (!nextWorkspaceToken) {
+              setRuntimeSettingsError('Table token is required.')
+              return
+            }
+            storedWorkspaceToken = nextWorkspaceToken
+            accountSession = await submitWorkspaceSession(nextBaseUrl, accountStepToken, {
+              workspace_token: nextWorkspaceToken,
+            })
+          }
           const accountToken = accountSession.account_token.trim()
           const account = accountFromSession(accountSession)
           if (nextBaseUrl) {
@@ -586,17 +719,31 @@ export function useRuntimeSettings({
             localStorage.removeItem('aidm:baseUrl')
           }
           storeSessionAuthToken(accountToken)
-          storeSessionWorkspaceToken(nextWorkspaceToken)
+          storeSessionWorkspaceToken(storedWorkspaceToken)
           storeWorkspaceId(account.workspaceId)
           storeSessionAccount(account)
           setBaseUrl(nextBaseUrl)
           setAuthToken(accountToken)
           setPendingAuthToken('')
-          setWorkspaceToken(nextWorkspaceToken)
+          setWorkspaceToken(storedWorkspaceToken)
           setWorkspaceId(account.workspaceId ?? '')
           setRuntimeAccount(account)
+          setRuntimeSettingsForm((current) => ({
+            ...current,
+            workspacePassword: '',
+            workspaceToken: storedWorkspaceToken,
+          }))
           resetRuntimeState()
           reconnectSocket()
+          setRuntimeCreatedWorkspaceToken(createdWorkspaceToken)
+          if (createdWorkspaceToken) {
+            setRuntimeSettingsOpen(true)
+            setRuntimeSettingsMode('auth')
+            setRuntimeAuthStep('workspace')
+            setLegacyPasswordSetupRequired(false)
+            setRuntimeSettingsError('')
+            return
+          }
           setRuntimeSettingsOpen(false)
           setRuntimeSettingsMode('settings')
           setRuntimeAuthStep('account')
@@ -651,6 +798,10 @@ export function useRuntimeSettings({
       runtimeSettingsMode,
       runtimeAuthIntent,
       runtimeAuthStep,
+      runtimeCreatedWorkspaceToken,
+      runtimeWorkspaceAction,
+      runtimeWorkspaceCreateAccessMode,
+      runtimeWorkspaceJoinMethod,
       legacyPasswordSetupRequired,
       promptForLegacyPasswordSetup,
       runtimeAccount,
@@ -670,8 +821,17 @@ export function useRuntimeSettings({
     setRuntimeAccount(null)
     setRuntimeAuthIntent('login')
     setRuntimeAuthStep('account')
+    setRuntimeWorkspaceAction('join')
+    setRuntimeWorkspaceJoinMethod('token')
+    setRuntimeWorkspaceCreateAccessMode('password')
+    setRuntimeCreatedWorkspaceToken('')
     setLegacyPasswordSetupRequired(false)
-    setRuntimeSettingsForm((current) => ({ ...current, workspaceToken: '', password: '' }))
+    setRuntimeSettingsForm((current) => ({
+      ...current,
+      workspaceToken: '',
+      workspacePassword: '',
+      password: '',
+    }))
     reconnectSocket()
   }, [reconnectSocket])
 
@@ -739,6 +899,81 @@ export function useRuntimeSettings({
     ],
   )
 
+  const deleteSavedWorkspace = useCallback(
+    async (nextWorkspaceId: string): Promise<DeleteSavedWorkspaceResult> => {
+      const cleanWorkspaceId = nextWorkspaceId.trim()
+      const accountStepToken = pendingAuthToken.trim() || authToken.trim()
+      if (!accountStepToken) {
+        const message = 'Log in or sign up before deleting a saved table.'
+        setRuntimeSettingsError(message)
+        setRuntimeAuthStep('account')
+        return { ok: false, error: message }
+      }
+      if (!cleanWorkspaceId) {
+        const message = 'Choose a saved table to delete.'
+        setRuntimeSettingsError(message)
+        return { ok: false, error: message }
+      }
+      try {
+        const nextBaseUrl = normalizeBaseUrl(runtimeSettingsForm.baseUrl)
+        if (nextBaseUrl && !isHttpBaseUrl(nextBaseUrl)) {
+          const message = 'Backend URL must start with http:// or https://.'
+          setRuntimeSettingsError(message)
+          return { ok: false, error: message }
+        }
+        const accountSession = await deleteWorkspaceSession(nextBaseUrl, cleanWorkspaceId, accountStepToken)
+        const accountToken = accountSession.account_token.trim()
+        const removedCurrentWorkspace =
+          cleanWorkspaceId === workspaceId.trim() || cleanWorkspaceId === runtimeAccount?.workspaceId
+        const account = removedCurrentWorkspace
+          ? accountFromSession(accountSession)
+          : mergeAccountWorkspaceState(accountFromSession(accountSession), runtimeAccount, workspaceId)
+        const nextWorkspaceToken = removedCurrentWorkspace ? '' : workspaceToken
+        if (nextBaseUrl) {
+          localStorage.setItem('aidm:baseUrl', nextBaseUrl)
+        } else {
+          localStorage.removeItem('aidm:baseUrl')
+        }
+        storeSessionAuthToken(accountToken)
+        storeSessionWorkspaceToken(nextWorkspaceToken)
+        storeWorkspaceId(account.workspaceId)
+        storeSessionAccount(account)
+        setBaseUrl(nextBaseUrl)
+        setAuthToken(accountToken)
+        setPendingAuthToken('')
+        setWorkspaceToken(nextWorkspaceToken)
+        setWorkspaceId(account.workspaceId ?? '')
+        setRuntimeAccount(account)
+        setRuntimeSettingsError('')
+        if (removedCurrentWorkspace) {
+          resetRuntimeState()
+          reconnectSocket()
+        }
+        return { ok: true }
+      } catch (error) {
+        const runtimeError = error as RuntimeApiError
+        if (runtimeError.errorCode === LEGACY_PASSWORD_SETUP_ERROR_CODE) {
+          promptForLegacyPasswordSetup(runtimeAccount ?? undefined)
+          return { ok: false, error: LEGACY_PASSWORD_SETUP_MESSAGE }
+        }
+        const message = error instanceof Error ? error.message : String(error)
+        setRuntimeSettingsError(message)
+        return { ok: false, error: message }
+      }
+    },
+    [
+      authToken,
+      pendingAuthToken,
+      promptForLegacyPasswordSetup,
+      reconnectSocket,
+      resetRuntimeState,
+      runtimeAccount,
+      runtimeSettingsForm.baseUrl,
+      workspaceId,
+      workspaceToken,
+    ],
+  )
+
   return {
     authToken,
     baseUrl,
@@ -749,6 +984,10 @@ export function useRuntimeSettings({
     runtimeAuthIntent,
     runtimeAuthStep,
     runtimeAccount,
+    runtimeCreatedWorkspaceToken,
+    runtimeWorkspaceAction,
+    runtimeWorkspaceCreateAccessMode,
+    runtimeWorkspaceJoinMethod,
     legacyPasswordSetupRequired,
     runtimeSettingsError,
     runtimeSettingsForm,
@@ -756,10 +995,15 @@ export function useRuntimeSettings({
     runtimeSettingsOpen,
     setRuntimeAuthIntent,
     setRuntimeAuthStep,
+    setRuntimeCreatedWorkspaceToken,
+    setRuntimeWorkspaceAction,
+    setRuntimeWorkspaceCreateAccessMode,
+    setRuntimeWorkspaceJoinMethod,
     setLegacyPasswordSetupRequired,
     setRuntimeSettingsError,
     setRuntimeSettingsForm,
     submitRuntimeSettings,
+    deleteSavedWorkspace,
     selectSavedWorkspace,
     workspaceToken,
     workspaceId,

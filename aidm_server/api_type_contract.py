@@ -213,6 +213,9 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
         'AccountWorkspace',
         fields=(
             field('workspace_id', 'string'),
+            field('workspace_name', 'string', optional=True),
+            field('table_name', 'string', optional=True),
+            field('access_mode', "'password' | 'token' | 'configured' | 'unknown'", optional=True),
             field('workspace_role', 'string'),
             field('is_workspace_admin', 'boolean'),
             field('created_at', 'string | null'),
@@ -244,6 +247,7 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
             field('is_workspace_admin', 'boolean'),
             field('claimed_player_ids', 'number[]'),
             field('workspaces', 'AccountWorkspace[]'),
+            field('workspace_token', 'string | null', optional=True),
         ),
     ),
     TypeContract(
@@ -348,6 +352,7 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
             field('character_sheet', 'unknown'),
         ),
     ),
+    TypeContract('PlayerEquipmentUpdateResponse', alias='PlayerDetail & { snapshot_changed: boolean; equipment_update: JsonRecord }'),
     TypeContract(
         'MapItem',
         fields=(

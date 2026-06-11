@@ -60,6 +60,30 @@ class Account(db.Model):
     updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
 
 
+class Workspace(db.Model):
+    __tablename__ = 'workspaces'
+    __table_args__ = (
+        db.Index('ix_workspaces_name_key', 'name_key', unique=True),
+        db.Index('ix_workspaces_token_hash', 'token_hash', unique=True),
+        db.Index('ix_workspaces_created_by_account', 'created_by_account_id', 'created_at'),
+    )
+
+    workspace_id = db.Column(db.String(80), primary_key=True)
+    name = db.Column(db.String(120), nullable=False)
+    name_key = db.Column(db.String(120), nullable=False)
+    password_hash = db.Column(db.String(255), nullable=True)
+    token_hash = db.Column(db.String(64), nullable=True)
+    created_by_account_id = db.Column(
+        db.Integer,
+        db.ForeignKey('accounts.account_id', ondelete='SET NULL'),
+        nullable=True,
+    )
+    created_at = db.Column(db.DateTime, default=utc_now)
+    updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
+
+    created_by_account = db.relationship('Account', backref='created_workspaces')
+
+
 class AccountWorkspaceMembership(db.Model):
     __tablename__ = 'account_workspace_memberships'
     __table_args__ = (

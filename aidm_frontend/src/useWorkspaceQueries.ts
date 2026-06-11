@@ -286,7 +286,7 @@ export function useWorkspaceQueries({
       if (isUnauthorizedError(error)) {
         if (requestAccessSnapshot !== storedRuntimeAccessSnapshot()) return
         onUnauthorized()
-        pushError('connection', 'Workspace token required. Enter the workspace token to connect.')
+        pushError('connection', 'Table token required. Enter the table token to connect.')
         return
       }
       pushError('connection', `Connection failed: ${error instanceof Error ? error.message : String(error)}`)

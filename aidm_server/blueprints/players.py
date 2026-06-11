@@ -10,9 +10,16 @@ from aidm_server.character_state import serialize_stats_payload
 from aidm_server.database import db
 from aidm_server.errors import error_response
 from aidm_server.game_state.application.applier import apply_state_changes
-from aidm_server.game_state.models import display_actor_id, dump_inventory_items, load_inventory_items, stable_change_id
+from aidm_server.game_state.models import (
+    display_actor_id,
+    dump_inventory_items,
+    find_actor,
+    load_inventory_items,
+    player_character_from_model,
+    stable_change_id,
+)
 from aidm_server.game_state.validation.validator import validate_state_changes, validated_changes_for_application
-from aidm_server.models import DmTurn, Player, PlayerAction, TurnEvent, safe_json_dumps
+from aidm_server.models import DmTurn, Player, PlayerAction, TurnEvent, safe_json_dumps, safe_json_loads
 from aidm_server.pagination import jsonify_page, limited_page
 from aidm_server.response_dtos import player_detail_payload, player_summary_payload
 from aidm_server.race_system import (
@@ -33,6 +40,7 @@ from aidm_server.workspace_access import (
     current_workspace_id,
     get_campaign as workspace_campaign,
     get_player as workspace_player,
+    get_session as workspace_session,
     visible_players_query,
 )
 
@@ -99,6 +107,54 @@ def _assign_missing_starting_spells(player: Player) -> bool:
         return False
     player.character_sheet = safe_json_dumps(sheet, {})
     return True
+
+
+def _equipment_session_from_payload(payload: dict, player: Player):
+    raw_session_id = payload.get('session_id') if 'session_id' in payload else payload.get('sessionId')
+    if raw_session_id in (None, ''):
+        return None, None
+    session_id = coerce_int(raw_session_id)
+    if session_id is None or session_id <= 0:
+        return None, error_response('validation_error', 'session_id must be a positive integer.', 400)
+    session_obj = workspace_session(session_id)
+    if not session_obj:
+        return None, error_response('session_not_found', 'Session not found.', 404)
+    if player.campaign_id != session_obj.campaign_id:
+        return None, error_response('validation_error', 'session_id must belong to the player campaign.', 400)
+    return session_obj, None
+
+
+def _equipment_state_for_player(player: Player, session_obj):
+    actor_id = display_actor_id(player.player_id)
+    if not session_obj:
+        return {
+            'playerCharacters': [
+                {
+                    'id': actor_id,
+                    'playerId': player.player_id,
+                    'name': player.character_name,
+                    'inventory': {'items': load_inventory_items(player.inventory), 'currency': {}},
+                    'metadata': {},
+                }
+            ],
+            'stateChangeLedger': [],
+        }
+
+    snapshot = safe_json_loads(session_obj.state_snapshot, {})
+    state = snapshot if isinstance(snapshot, dict) else {}
+    if not isinstance(state.get('playerCharacters'), list):
+        state['playerCharacters'] = []
+    actor = find_actor(state, actor_id)
+    if not actor:
+        actor = player_character_from_model(player)
+        state['playerCharacters'].append(actor)
+    inventory = actor.get('inventory') if isinstance(actor.get('inventory'), dict) else {}
+    inventory['items'] = load_inventory_items(player.inventory)
+    inventory.setdefault('currency', {})
+    actor['inventory'] = inventory
+    if not isinstance(state.get('stateChangeLedger'), list):
+        state['stateChangeLedger'] = []
+    return state
 
 
 @players_bp.route('/campaigns/<int:campaign_id>/players', methods=['GET', 'POST'])
@@ -362,23 +418,25 @@ def update_player_equipment(player_id):
     if not item_id and not item_name:
         return error_response('validation_error', 'item_id or item_name is required.', 400)
 
+    session_obj, session_error = _equipment_session_from_payload(payload, player)
+    if session_error:
+        return session_error
+
     try:
         actor_id = display_actor_id(player.player_id)
-        items = load_inventory_items(player.inventory)
-        state = {
-            'playerCharacters': [
-                {
-                    'id': actor_id,
-                    'playerId': player.player_id,
-                    'name': player.character_name,
-                    'inventory': {'items': items, 'currency': {}},
-                    'metadata': {},
-                }
-            ],
-            'stateChangeLedger': [],
-        }
+        state = _equipment_state_for_player(player, session_obj)
+        ledger_size = len(state.get('stateChangeLedger') or []) if isinstance(state.get('stateChangeLedger'), list) else 0
         change = {
-            'id': stable_change_id('manual_equipment', player.player_id, action, item_id, item_name, payload.get('slot')),
+            'id': stable_change_id(
+                'manual_equipment',
+                session_obj.session_id if session_obj else 'player_only',
+                player.player_id,
+                action,
+                item_id,
+                item_name,
+                payload.get('slot'),
+                ledger_size,
+            ),
             'type': f'inventory.{action}',
             'source': 'manual',
             'actorId': actor_id,
@@ -394,15 +452,22 @@ def update_player_equipment(player_id):
             return error_response('validation_error', reason, 400, {'validation': validation})
 
         result = apply_state_changes(state, validated_changes_for_application(validation))
-        next_actor = (result.get('nextState') or {}).get('playerCharacters', [{}])[0]
+        next_state = result.get('nextState') if isinstance(result.get('nextState'), dict) else state
+        next_actor = find_actor(next_state, actor_id) or {}
         next_inventory = next_actor.get('inventory') if isinstance(next_actor.get('inventory'), dict) else {}
         player.inventory = dump_inventory_items(next_inventory.get('items') or [])
+        snapshot_changed = bool(session_obj and result.get('appliedChanges'))
+        if session_obj:
+            session_obj.state_snapshot = safe_json_dumps(next_state, {})
         db.session.commit()
         return jsonify(
             {
                 **player_detail_payload(player),
+                'snapshot_changed': snapshot_changed,
                 'equipment_update': {
                     'action': action,
+                    'session_id': session_obj.session_id if session_obj else None,
+                    'snapshot_changed': snapshot_changed,
                     'applied_changes': result.get('appliedChanges') or [],
                     'validation': validation,
                 },

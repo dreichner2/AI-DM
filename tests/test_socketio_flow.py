@@ -7,6 +7,7 @@ from aidm_server.database import db
 import aidm_server.game_state.extraction.post_dm_outcome_extractor as post_extractor_module
 import aidm_server.turn_events as turn_events_module
 import aidm_server.turn_control as turn_control_module
+from aidm_server.turn_engine import _state_application_event_details
 from aidm_server.models import (
     Campaign,
     CampaignSegment,
@@ -81,6 +82,44 @@ def _assert_realtime_state_applied(received, *, item_name: str | None = None, ac
             for change in changes
         )
     return state_payload
+
+
+def test_state_application_event_details_marks_snapshot_refresh_domains():
+    base_kwargs = {
+        'stage': 'dm_response',
+        'player_id': 1,
+        'affected_player_ids': [1],
+        'inventory_changes_applied': [],
+        'character_state_changes_applied': [],
+        'state_log': {},
+    }
+
+    combat_details = _state_application_event_details(
+        **base_kwargs,
+        applied_changes=[{'type': 'combat.participant.update'}],
+    )
+    assert combat_details['snapshot_changed'] is True
+    assert combat_details['combat_state_changed'] is True
+    assert 'world_state_changed' not in combat_details
+
+    player_details = _state_application_event_details(
+        **base_kwargs,
+        applied_changes=[
+            {'type': 'spell.learn'},
+            {'type': 'inventory.equip'},
+            {'type': 'race_ability.mark_used'},
+        ],
+    )
+    assert player_details['snapshot_changed'] is True
+    assert player_details['player_state_changed'] is True
+    assert 'world_state_changed' not in player_details
+
+    world_details = _state_application_event_details(
+        **base_kwargs,
+        applied_changes=[{'type': 'scene.move_location'}],
+    )
+    assert world_details['snapshot_changed'] is True
+    assert world_details['world_state_changed'] is True
 
 
 def test_send_message_persists_turn_and_emits_metadata(app, socketio, app_runtime, monkeypatch):
@@ -1228,6 +1267,8 @@ def test_turn_pipeline_equips_two_handed_weapon_and_clears_hand_conflicts(app, s
     received = client.get_received()
 
     state_payload = _assert_realtime_state_applied(received, item_name='Greatsword', action='equip')
+    assert state_payload['details']['snapshot_changed'] is True
+    assert state_payload['details']['player_state_changed'] is True
     assert state_payload['details']['inventory_changes_applied'][0]['conflict_item_names'] == ['Longsword', 'Dagger']
 
     with app.app_context():
