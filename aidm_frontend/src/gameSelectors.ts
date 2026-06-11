@@ -41,6 +41,38 @@ export type XpProgress = {
   label: string
 }
 
+export type SpellSummary = {
+  id: string
+  name: string
+  level: number
+  levelLabel: string
+  source: string
+  sourceType: string
+  sourceDetail: string
+  description: string
+  tags: string[]
+  catalog: string
+  prepared: boolean
+}
+
+export type SpellbookSummary = {
+  knownSpells: SpellSummary[]
+  preparedSpellNames: string[]
+  sources: string[]
+}
+
+export type CharacterTraitSummary = {
+  id: string
+  name: string
+  category: string
+  typeLabel: string
+  source: string
+  description: string
+  actionType: string
+  cooldown: string
+  active: boolean
+}
+
 export type MapPanelMeta = {
   explored: string
   threat: string
@@ -71,6 +103,44 @@ export type WorldNpcSummary = {
   status: string
 }
 
+export type CombatParticipantSummary = {
+  id: string
+  name: string
+  team: string
+  kind: string
+  source: string
+  health: string
+  healthTone: 'healthy' | 'hurt' | 'critical' | 'down'
+  conditions: string[]
+  morale: string
+  moraleEvents: string[]
+  intent: string
+  telegraph: string
+  tacticSource: string
+  brainSource: string
+  position: string
+  selectionScore: string
+  selectionMethod: string
+}
+
+export type CombatStatePanel = {
+  active: boolean
+  status: string
+  round: string
+  battlefield: string
+  goal: string
+  creatureSource: string
+  resolverMethod: string
+  tacticalLevel: string
+  endReason: string
+  combatStartedBy: string
+  initiativeRequired: boolean
+  debugEnabled: boolean
+  enemies: CombatParticipantSummary[]
+  allies: CombatParticipantSummary[]
+  telegraphs: string[]
+}
+
 export type WorldStatePanel = {
   sceneName: string
   sceneType: string
@@ -79,6 +149,7 @@ export type WorldStatePanel = {
   activeQuests: WorldQuestSummary[]
   knownLocations: WorldLocationSummary[]
   knownNpcs: WorldNpcSummary[]
+  combat: CombatStatePanel
 }
 
 export type PendingRollOption = {
@@ -95,6 +166,15 @@ export function stringValue(value: unknown, fallback = '') {
   if (typeof value === 'string' && value.trim()) return value.trim()
   if (typeof value === 'number' && Number.isFinite(value)) return String(value)
   return fallback
+}
+
+export function turnStatusAllowsNextSend(status: unknown, details?: JsonRecord | null) {
+  const normalizedStatus = stringValue(status)
+  if (normalizedStatus === 'failed' || normalizedStatus === 'canon_pending') return true
+  if (normalizedStatus !== 'saved') return false
+
+  const stage = stringValue(details?.stage)
+  return stage !== 'dm_response'
 }
 
 export function numberValue(value: unknown) {
@@ -158,6 +238,101 @@ function collectRecords(value: unknown): JsonRecord[] {
   return records
 }
 
+function healthTone(current: number | null, max: number | null): CombatParticipantSummary['healthTone'] {
+  if (current !== null && current <= 0) return 'down'
+  if (!current || !max) return 'healthy'
+  const pct = current / Math.max(1, max)
+  if (pct <= 0.25) return 'critical'
+  if (pct <= 0.6) return 'hurt'
+  return 'healthy'
+}
+
+function combatParticipantSummary(participant: JsonRecord): CombatParticipantSummary {
+  const hp = isRecord(participant.hp) ? participant.hp : {}
+  const current = numberValue(hp.current ?? hp.currentHp)
+  const max = numberValue(hp.max ?? hp.maxHp)
+  const intent = isRecord(participant.currentIntent)
+    ? participant.currentIntent
+    : isRecord(participant.intent)
+      ? participant.intent
+      : {}
+  const conditions = Array.isArray(participant.conditions)
+    ? participant.conditions.map((value) => stringValue(value)).filter(Boolean)
+    : []
+  const position = isRecord(participant.position) ? participant.position : {}
+  const rangeBand = stringValue(position.rangeBand).replace(/_/g, ' ')
+  const zoneId = stringValue(position.zoneId || position.zone_id).replace(/_/g, ' ')
+  const health =
+    current !== null && max !== null
+      ? current <= 0
+        ? 'Down'
+        : current >= max
+          ? 'Unhurt'
+          : current / Math.max(1, max) <= 0.25
+            ? 'Critical'
+            : current / Math.max(1, max) <= 0.6
+              ? 'Wounded'
+              : 'Hurt'
+      : 'Unknown'
+  return {
+    id: stringValue(participant.id),
+    name: stringValue(participant.name, 'Unknown combatant'),
+    team: stringValue(participant.team, 'enemy'),
+    kind: stringValue(participant.kind, 'creature'),
+    source: stringValue(participant.source),
+    health,
+    healthTone: healthTone(current, max),
+    conditions,
+    morale: participant.morale === undefined || participant.morale === null ? '—' : stringValue(participant.morale),
+    moraleEvents: Array.isArray(participant.moraleEvents)
+      ? participant.moraleEvents.map((value) => stringValue(value).replace(/_/g, ' ')).filter(Boolean)
+      : [],
+    intent: stringValue(intent.intentType).replace(/_/g, ' '),
+    telegraph: stringValue(intent.visibleTelegraph),
+    tacticSource: stringValue(intent.tacticSource),
+    brainSource: stringValue(intent.brainSource || intent.tacticSource),
+    position: [rangeBand, zoneId].filter(Boolean).join(' / '),
+    selectionScore: intent.selectionScore === undefined || intent.selectionScore === null ? '' : stringValue(intent.selectionScore),
+    selectionMethod: stringValue(intent.selectionMethod).replace(/_/g, ' '),
+  }
+}
+
+function combatStateFromSnapshot(snapshot: JsonRecord): CombatStatePanel {
+  const combat = isRecord(snapshot.combat) ? snapshot.combat : {}
+  const status = stringValue(combat.status, 'none')
+  const battlefield = isRecord(combat.battlefield) ? combat.battlefield : {}
+  const encounterGoal = isRecord(combat.encounterGoal) ? combat.encounterGoal : {}
+  const flags = isRecord(combat.flags) ? combat.flags : {}
+  const difficultyAI = isRecord(flags.combatDifficultyAI) ? flags.combatDifficultyAI : {}
+  const participants = recordArray(combat.participants).map(combatParticipantSummary)
+  const enemies = participants.filter((participant) => participant.team === 'enemy')
+  const allies = participants.filter((participant) => participant.team !== 'enemy')
+  const telegraphs = enemies.map((enemy) => enemy.telegraph).filter(Boolean).slice(0, 4)
+  return {
+    active: ['starting', 'active'].includes(status) && enemies.length > 0,
+    status,
+    round: stringValue(combat.round, '1'),
+    battlefield: [
+      stringValue(battlefield.lighting),
+      stringValue(battlefield.environmentType).replace(/_/g, ' '),
+      stringValue(battlefield.visibility),
+    ]
+      .filter(Boolean)
+      .join(' / ') || 'No battlefield recorded',
+    goal: stringValue(encounterGoal.description || encounterGoal.playerObjective || combat.lastRoundSummary, 'Resolve the threat'),
+    creatureSource: stringValue(flags.creatureSource).replace(/_/g, ' '),
+    resolverMethod: stringValue(flags.resolverMethod).replace(/_/g, ' '),
+    tacticalLevel: stringValue(difficultyAI.tacticalLevel, 'normal'),
+    endReason: stringValue(flags.endReason).replace(/_/g, ' '),
+    combatStartedBy: stringValue(flags.combatStartedBy).replace(/_/g, ' '),
+    initiativeRequired: Boolean(flags.initiativeRequired),
+    debugEnabled: Boolean(flags.debugCombat || flags.showDebug || flags.debug),
+    enemies,
+    allies,
+    telegraphs,
+  }
+}
+
 function findValue(records: JsonRecord[], keys: string[]) {
   for (const record of records) {
     for (const key of keys) {
@@ -167,6 +342,353 @@ function findValue(records: JsonRecord[], keys: string[]) {
     }
   }
   return null
+}
+
+function parsedJsonValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  const trimmed = value.trim()
+  if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) return value
+  try {
+    return JSON.parse(trimmed) as unknown
+  } catch {
+    return value
+  }
+}
+
+function collectSpellbookCandidates(value: unknown): unknown[] {
+  const parsed = parsedJsonValue(value)
+  if (Array.isArray(parsed)) return [parsed]
+  if (!isRecord(parsed)) return []
+
+  const nestedCandidates: unknown[] = []
+  ;['spellbook', 'magic', 'casting', 'character', 'stats'].forEach((key) => {
+    const nested = parsedJsonValue(parsed[key])
+    if (isRecord(nested) || Array.isArray(nested)) nestedCandidates.push(nested)
+  })
+  return parsed.spellbook !== undefined ? [...nestedCandidates, parsed] : [parsed, ...nestedCandidates]
+}
+
+function sourceLabel(sourceType: string, sourceDetail: string, source: string) {
+  const cleanedSource = source.replace(/_/g, ' ').replace(/:/g, ' / ').trim()
+  const cleanedType = sourceType.replace(/_/g, ' ').replace(/\bcatalog\b/g, '').trim()
+  const cleanedDetail = sourceDetail.replace(/_/g, ' ').trim()
+  const typeLabel = cleanedType ? cleanedType.replace(/\b\w/g, (letter) => letter.toUpperCase()) : ''
+  if (typeLabel && cleanedDetail) return `${typeLabel} / ${cleanedDetail}`
+  if (typeLabel) return typeLabel
+  return cleanedSource
+}
+
+function spellLevelLabel(level: number) {
+  return level <= 0 ? 'Cantrip' : `Lv ${level}`
+}
+
+function spellNameKey(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+function titleCaseWords(value: string) {
+  return value
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function characterTraitSourceLabel(source: string, detail: string) {
+  const sourceLabel = titleCaseWords(source || 'Trait')
+  const detailLabel = titleCaseWords(detail)
+  if (sourceLabel && detailLabel) return `${sourceLabel} / ${detailLabel}`
+  return sourceLabel || detailLabel || 'Character Trait'
+}
+
+function characterTraitTypeLabel(category: string, mechanics: JsonRecord) {
+  if (category === 'active_ability' || isRecord(mechanics.activeAbility) || isRecord(mechanics.active_ability)) {
+    return 'Active'
+  }
+  if (category === 'passive_ability' || isRecord(mechanics.passiveAbility) || isRecord(mechanics.passive_ability)) {
+    return 'Passive'
+  }
+  if (category) return titleCaseWords(category)
+  return 'Trait'
+}
+
+function characterTraitActiveMechanic(mechanics: JsonRecord) {
+  if (isRecord(mechanics.activeAbility)) return mechanics.activeAbility
+  if (isRecord(mechanics.active_ability)) return mechanics.active_ability
+  return null
+}
+
+function collectCharacterTraitCandidates(value: unknown): Array<{ source: string; detail: string; entries: unknown[] }> {
+  const parsed = parsedJsonValue(value)
+  if (Array.isArray(parsed)) return [{ source: 'trait', detail: '', entries: parsed }]
+  if (!isRecord(parsed)) return []
+
+  const candidates: Array<{ source: string; detail: string; entries: unknown[] }> = []
+  const customRace =
+    isRecord(parsed.customRaceDefinition)
+      ? parsed.customRaceDefinition
+      : isRecord(parsed.custom_race_definition)
+        ? parsed.custom_race_definition
+        : null
+  const raceName = stringValue(parsed.raceName ?? parsed.race_name ?? customRace?.name)
+  if (customRace && Array.isArray(customRace.traits)) {
+    candidates.push({ source: 'race', detail: raceName, entries: customRace.traits })
+  }
+  if (Array.isArray(parsed.traits)) {
+    candidates.push({ source: raceName ? 'race' : 'trait', detail: raceName, entries: parsed.traits })
+  }
+
+  ;[
+    ['class', 'classFeatures'],
+    ['class', 'class_features'],
+    ['class', 'features'],
+    ['race', 'racialTraits'],
+    ['race', 'racial_traits'],
+    ['trait', 'specialAbilities'],
+    ['trait', 'special_abilities'],
+  ].forEach(([source, key]) => {
+    const entries = parsed[key]
+    if (Array.isArray(entries)) candidates.push({ source, detail: '', entries })
+  })
+
+  return candidates
+}
+
+function normalizeCharacterTraitEntry(entry: unknown, source: string, detail: string): CharacterTraitSummary | null {
+  if (typeof entry === 'string') {
+    const name = stringValue(entry)
+    if (!name) return null
+    return {
+      id: `trait-${spellNameKey(name).replace(/\s+/g, '-')}`,
+      name,
+      category: '',
+      typeLabel: 'Trait',
+      source: characterTraitSourceLabel(source, detail),
+      description: '',
+      actionType: '',
+      cooldown: '',
+      active: false,
+    }
+  }
+  if (!isRecord(entry)) return null
+
+  const name =
+    stringValue(entry.name) ||
+    stringValue(entry.traitName) ||
+    stringValue(entry.trait_name) ||
+    stringValue(entry.label) ||
+    stringValue(entry.title)
+  if (!name) return null
+
+  const mechanics = isRecord(entry.mechanics) ? entry.mechanics : {}
+  const activeMechanic = characterTraitActiveMechanic(mechanics)
+  const category = stringValue(entry.category ?? entry.type).toLowerCase()
+  const actionType = activeMechanic
+    ? titleCaseWords(stringValue(activeMechanic.actionType ?? activeMechanic.action_type))
+    : titleCaseWords(stringValue(entry.actionType ?? entry.action_type))
+  const cooldown = activeMechanic
+    ? titleCaseWords(stringValue(activeMechanic.cooldown))
+    : titleCaseWords(stringValue(entry.cooldown ?? entry.recharge))
+  const typeLabel = characterTraitTypeLabel(category, mechanics)
+
+  return {
+    id: stringValue(entry.id ?? entry.traitId ?? entry.trait_id, `trait-${spellNameKey(name).replace(/\s+/g, '-')}`),
+    name,
+    category,
+    typeLabel,
+    source: characterTraitSourceLabel(source, detail),
+    description: stringValue(entry.description ?? entry.summary ?? entry.effect),
+    actionType,
+    cooldown,
+    active: typeLabel === 'Active',
+  }
+}
+
+export function normalizeCharacterTraits(...values: unknown[]): CharacterTraitSummary[] {
+  const traits: CharacterTraitSummary[] = []
+  const seen = new Set<string>()
+
+  values.flatMap(collectCharacterTraitCandidates).forEach((candidate) => {
+    candidate.entries.forEach((entry) => {
+      const trait = normalizeCharacterTraitEntry(entry, candidate.source, candidate.detail)
+      if (!trait) return
+      const key = `${spellNameKey(trait.name)}:${trait.source.toLowerCase()}`
+      if (seen.has(key)) return
+      seen.add(key)
+      traits.push(trait)
+    })
+  })
+
+  return traits.sort((left, right) => {
+    if (left.active !== right.active) return left.active ? -1 : 1
+    return left.name.localeCompare(right.name)
+  })
+}
+
+function normalizeSpellEntry(entry: unknown, preparedNames: Set<string>): SpellSummary | null {
+  if (typeof entry === 'string') {
+    const name = stringValue(entry)
+    if (!name) return null
+    const id = `spell-${spellNameKey(name).replace(/\s+/g, '-')}`
+    return {
+      id,
+      name,
+      level: 0,
+      levelLabel: 'Cantrip',
+      source: '',
+      sourceType: '',
+      sourceDetail: '',
+      description: '',
+      tags: [],
+      catalog: '',
+      prepared: preparedNames.has(spellNameKey(name)),
+    }
+  }
+  if (!isRecord(entry)) return null
+
+  const name =
+    stringValue(entry.name) ||
+    stringValue(entry.spellName) ||
+    stringValue(entry.spell_name) ||
+    stringValue(entry.label) ||
+    stringValue(entry.title)
+  if (!name) return null
+
+  const level = Math.max(
+    0,
+    Math.min(
+      9,
+      Math.floor(numberValue(entry.level ?? entry.spellLevel ?? entry.spell_level) ?? 0),
+    ),
+  )
+  const sourceType = stringValue(entry.sourceType ?? entry.source_type).toLowerCase()
+  const sourceDetail = stringValue(entry.sourceDetail ?? entry.source_detail)
+  const rawSource =
+    stringValue(entry.source) ||
+    (Array.isArray(entry.sources) ? stringValue(entry.sources[0]) : '') ||
+    [sourceType, sourceDetail].filter(Boolean).join(':')
+  const source = sourceLabel(sourceType, sourceDetail, rawSource)
+  const tags = Array.isArray(entry.tags)
+    ? entry.tags.map((tag) => stringValue(tag).toLowerCase()).filter(Boolean)
+    : []
+
+  return {
+    id: stringValue(entry.id ?? entry.spellId ?? entry.spell_id, `spell-${spellNameKey(name).replace(/\s+/g, '-')}`),
+    name,
+    level,
+    levelLabel: spellLevelLabel(level),
+    source,
+    sourceType,
+    sourceDetail,
+    description: stringValue(entry.description ?? entry.summary ?? entry.effect),
+    tags,
+    catalog: stringValue(entry.catalog).replace(/_/g, ' '),
+    prepared: preparedNames.has(spellNameKey(name)),
+  }
+}
+
+function mergeSpellSummary(existing: SpellSummary, incoming: SpellSummary) {
+  const existingHasDetails = Boolean(
+    existing.description ||
+    existing.source ||
+    existing.sourceType ||
+    existing.sourceDetail ||
+    existing.catalog ||
+    existing.tags.length,
+  )
+  const incomingHasDetails = Boolean(
+    incoming.description ||
+    incoming.source ||
+    incoming.sourceType ||
+    incoming.sourceDetail ||
+    incoming.catalog ||
+    incoming.tags.length,
+  )
+
+  if (incomingHasDetails && !existingHasDetails) {
+    Object.assign(existing, incoming)
+    return
+  }
+
+  if (!existing.id && incoming.id) existing.id = incoming.id
+  if (!existing.description && incoming.description) existing.description = incoming.description
+  if (!existing.source && incoming.source) existing.source = incoming.source
+  if (!existing.sourceType && incoming.sourceType) existing.sourceType = incoming.sourceType
+  if (!existing.sourceDetail && incoming.sourceDetail) existing.sourceDetail = incoming.sourceDetail
+  if (!existing.catalog && incoming.catalog) existing.catalog = incoming.catalog
+  if (!existing.source && incoming.source && existing.level === 0 && incoming.level > 0) {
+    existing.level = incoming.level
+    existing.levelLabel = incoming.levelLabel
+  }
+  incoming.tags.forEach((tag) => {
+    if (!existing.tags.includes(tag)) existing.tags.push(tag)
+  })
+  existing.prepared = existing.prepared || incoming.prepared
+}
+
+export function normalizeSpellbook(...values: unknown[]): SpellbookSummary {
+  const knownSpells: SpellSummary[] = []
+  const preparedSpellNames: string[] = []
+  const sources: string[] = []
+  const seen = new Set<string>()
+  const spellsByName = new Map<string, SpellSummary>()
+
+  values.flatMap(collectSpellbookCandidates).forEach((candidate) => {
+    const parsed = parsedJsonValue(candidate)
+    const book = isRecord(parsed) ? parsed : {}
+    const rawKnown = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(book.knownSpells)
+        ? book.knownSpells
+        : Array.isArray(book.known_spells)
+          ? book.known_spells
+          : Array.isArray(book.spells)
+            ? book.spells
+            : []
+    const rawPrepared = Array.isArray(book.preparedSpells)
+      ? book.preparedSpells
+      : Array.isArray(book.prepared_spells)
+        ? book.prepared_spells
+        : []
+    const preparedNames = new Set(rawPrepared.map((item) => spellNameKey(stringValue(item))).filter(Boolean))
+    preparedNames.forEach((name) => {
+      if (!preparedSpellNames.some((existing) => spellNameKey(existing) === name)) {
+        const rawName = rawPrepared.find((item) => spellNameKey(stringValue(item)) === name)
+        preparedSpellNames.push(stringValue(rawName))
+      }
+    })
+
+    rawKnown.forEach((entry) => {
+      const spell = normalizeSpellEntry(entry, preparedNames)
+      if (!spell) return
+      const key = spellNameKey(spell.name)
+      if (seen.has(key)) {
+        const existing = spellsByName.get(key)
+        if (existing) mergeSpellSummary(existing, spell)
+        ;[spell.source, spell.catalog, ...spell.tags].forEach((source) => {
+          if (source && !sources.includes(source)) sources.push(source)
+        })
+        return
+      }
+      seen.add(key)
+      knownSpells.push(spell)
+      spellsByName.set(key, spell)
+      ;[spell.source, spell.catalog, ...spell.tags].forEach((source) => {
+        if (source && !sources.includes(source)) sources.push(source)
+      })
+    })
+
+    if (Array.isArray(book.sources)) {
+      book.sources.map((item) => stringValue(item)).filter(Boolean).forEach((source) => {
+        if (!sources.includes(source)) sources.push(source)
+      })
+    }
+  })
+
+  knownSpells.sort((left, right) => left.level - right.level || left.name.localeCompare(right.name))
+
+  return { knownSpells, preparedSpellNames, sources }
 }
 
 export function normalizeInventory(value: unknown): InventoryRow[] {
@@ -513,6 +1035,7 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
         disposition: stringValue(npc.disposition, 'unknown'),
         status: stringValue(npc.status, 'unknown'),
       })),
+    combat: combatStateFromSnapshot(root),
   }
 }
 
@@ -592,9 +1115,30 @@ export function buildTimeline({
         }
       : entry
   }
-  const entries = logEntries.map(timelineFromLog).map(withStatus).concat(optimisticEntries)
+  const logTimeline = logEntries.map(timelineFromLog).map(withStatus)
+  const loggedClientMessageIds = new Set(
+    logTimeline.map((entry) => stringValue(entry.metadata.client_message_id)).filter(Boolean),
+  )
+  const loggedTurnRoleKeys = new Set(
+    logTimeline
+      .map((entry) => {
+        const turnId = metadataTurnId(entry.metadata)
+        return turnId !== null ? `${entry.role}:${turnId}` : ''
+      })
+      .filter(Boolean),
+  )
+  const unresolvedOptimisticEntries = optimisticEntries
+    .filter((entry) => {
+      const clientMessageId = stringValue(entry.metadata.client_message_id)
+      if (clientMessageId && loggedClientMessageIds.has(clientMessageId)) return false
+      const turnId = metadataTurnId(entry.metadata)
+      if (turnId !== null && loggedTurnRoleKeys.has(`${entry.role}:${turnId}`)) return false
+      return true
+    })
+    .map(withStatus)
+  const entries = logTimeline.concat(unresolvedOptimisticEntries)
   if (streamingTurn) {
-    entries.push({
+    const streamingEntry: TimelineEntry = {
       id: `stream-${streamingTurn.turnId}`,
       role: 'dm',
       speaker: 'DM',
@@ -608,7 +1152,11 @@ export function buildTimeline({
         ...streamingTurn.rulesHint,
       },
       streaming: true,
-    })
+    }
+    if (turnStatusAllowsNextSend(turnStatuses[streamingTurn.turnId])) {
+      return logTimeline.concat([streamingEntry], unresolvedOptimisticEntries)
+    }
+    entries.push(streamingEntry)
   }
   return entries
 }

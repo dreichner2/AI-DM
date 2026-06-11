@@ -11,6 +11,7 @@ from aidm_server.canon_text import int_or_default, normalized_name, positive_int
 from aidm_server.character_state import character_state_for_player
 from aidm_server.game_state.equipment import infer_equipment_slot
 from aidm_server.models import Campaign, Player, Session, safe_json_dumps, safe_json_loads
+from aidm_server.spellbook import known_spell_names
 from aidm_server.time_utils import utc_now
 
 
@@ -308,7 +309,8 @@ def _health_from_player(player: Player, stats: dict[str, Any]) -> dict[str, Any]
 def player_character_from_model(player: Player) -> dict[str, Any]:
     stats = _as_record(player.stats)
     state = character_state_for_player(player)
-    return {
+    spellbook = state.get('spellbook') if isinstance(state.get('spellbook'), dict) else {}
+    actor = {
         'id': display_actor_id(player.player_id),
         'playerId': player.player_id,
         'name': player.character_name,
@@ -330,6 +332,10 @@ def player_character_from_model(player: Player) -> dict[str, Any]:
             'defaultWeaponId': stats.get('default_weapon_id') or stats.get('defaultWeaponId'),
         },
     }
+    if spellbook.get('knownSpells'):
+        actor['spellbook'] = spellbook
+        actor['spells'] = known_spell_names(spellbook)
+    return actor
 
 
 def state_snapshot_for_session(
@@ -337,11 +343,17 @@ def state_snapshot_for_session(
     session_obj: Session,
     campaign: Campaign,
     players: Iterable[Player],
+    active_player_ids: Iterable[int] | None = None,
 ) -> dict[str, Any]:
     existing = safe_json_loads(session_obj.state_snapshot, {})
     snapshot = deepcopy(existing) if isinstance(existing, dict) else {}
     now = utc_now().replace(tzinfo=timezone.utc).isoformat().replace('+00:00', 'Z')
     player_characters = [player_character_from_model(player) for player in players]
+    active_ids: list[int] = []
+    for raw_id in active_player_ids or []:
+        parsed = int_or_default(raw_id, default=0)
+        if parsed > 0 and parsed not in active_ids:
+            active_ids.append(parsed)
 
     scene = snapshot.get('currentScene') if isinstance(snapshot.get('currentScene'), dict) else {}
     snapshot.update(
@@ -359,14 +371,20 @@ def state_snapshot_for_session(
                 'description': scene.get('description') or '',
                 'activeNpcIds': scene.get('activeNpcIds') if isinstance(scene.get('activeNpcIds'), list) else [],
                 'activeQuestIds': scene.get('activeQuestIds') if isinstance(scene.get('activeQuestIds'), list) else [],
+                'playerPositions': scene.get('playerPositions') if isinstance(scene.get('playerPositions'), dict) else {},
+                'playerZones': scene.get('playerZones') if isinstance(scene.get('playerZones'), dict) else {},
+                'characterPositions': scene.get('characterPositions') if isinstance(scene.get('characterPositions'), dict) else {},
+                'characterZones': scene.get('characterZones') if isinstance(scene.get('characterZones'), dict) else {},
                 'musicTag': scene.get('musicTag') or None,
                 'updatedAtTurn': scene.get('updatedAtTurn'),
             },
             'playerCharacters': player_characters,
+            'activePlayerIds': active_ids,
             'partyNpcs': snapshot.get('partyNpcs') if isinstance(snapshot.get('partyNpcs'), list) else [],
             'knownNpcs': snapshot.get('knownNpcs') if isinstance(snapshot.get('knownNpcs'), list) else [],
             'quests': snapshot.get('quests') if isinstance(snapshot.get('quests'), list) else [],
             'locations': snapshot.get('locations') if isinstance(snapshot.get('locations'), list) else [],
+            'combat': snapshot.get('combat') if isinstance(snapshot.get('combat'), dict) else {'status': 'none', 'round': 1, 'participants': [], 'battlefield': {}, 'flags': {}},
             'flags': snapshot.get('flags') if isinstance(snapshot.get('flags'), dict) else {},
             'stateChangeLedger': snapshot.get('stateChangeLedger') if isinstance(snapshot.get('stateChangeLedger'), list) else [],
             'lastUpdatedAt': now,
@@ -382,16 +400,35 @@ def compact_state_for_extraction(state: dict[str, Any]) -> dict[str, Any]:
             continue
         inventory = actor.get('inventory') if isinstance(actor.get('inventory'), dict) else {}
         health = actor.get('health') if isinstance(actor.get('health'), dict) else {}
+        spellbook = actor.get('spellbook') if isinstance(actor.get('spellbook'), dict) else {}
         players.append(
             {
                 'id': actor.get('id'),
                 'name': actor.get('name'),
+                'playerId': actor.get('playerId'),
+                'race': actor.get('race'),
+                'class': actor.get('class'),
+                'level': actor.get('level'),
                 'health': {
                     'currentHp': health.get('currentHp'),
                     'maxHp': health.get('maxHp'),
                     'tempHp': health.get('tempHp'),
                 },
                 'xp': actor.get('xp') if isinstance(actor.get('xp'), dict) else {},
+                'spellbook': {
+                    'knownSpells': [
+                        {
+                            'id': spell.get('id'),
+                            'name': spell.get('name'),
+                            'level': spell.get('level'),
+                            'source': spell.get('source'),
+                        }
+                        for spell in (spellbook.get('knownSpells') or [])
+                        if isinstance(spell, dict)
+                    ][:30],
+                }
+                if spellbook.get('knownSpells')
+                else {},
                 'inventory': [
                     {
                         'id': item.get('id'),
@@ -418,6 +455,14 @@ def compact_state_for_extraction(state: dict[str, Any]) -> dict[str, Any]:
             'status': quest.get('status'),
             'stage': quest.get('stage'),
             'summary': quest.get('summary'),
+            'xpReward': quest.get('xpReward'),
+            'rewardXp': quest.get('rewardXp'),
+            'experienceReward': quest.get('experienceReward'),
+            'difficulty': quest.get('difficulty'),
+            'priority': quest.get('priority'),
+            'type': quest.get('type'),
+            'reward': quest.get('reward') if isinstance(quest.get('reward'), dict) else {},
+            'rewards': quest.get('rewards') if isinstance(quest.get('rewards'), dict) else {},
             'objectives': [
                 {
                     'id': objective.get('id'),
@@ -456,9 +501,46 @@ def compact_state_for_extraction(state: dict[str, Any]) -> dict[str, Any]:
         for npc in [*(state.get('knownNpcs') or []), *(state.get('partyNpcs') or [])]
         if isinstance(npc, dict)
     ]
+    turn_control = state.get('turnControl') if isinstance(state.get('turnControl'), dict) else {}
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    combat_participants = []
+    for participant in combat.get('participants') or []:
+        if not isinstance(participant, dict):
+            continue
+        hp = participant.get('hp') if isinstance(participant.get('hp'), dict) else {}
+        intent = participant.get('currentIntent') if isinstance(participant.get('currentIntent'), dict) else {}
+        combat_participants.append(
+            {
+                'id': participant.get('id'),
+                'name': participant.get('name'),
+                'team': participant.get('team'),
+                'kind': participant.get('kind'),
+                'definitionId': participant.get('definitionId'),
+                'level': participant.get('level'),
+                'challengeTier': participant.get('challengeTier'),
+                'xpReward': participant.get('xpReward'),
+                'hp': {'current': hp.get('current'), 'max': hp.get('max'), 'temp': hp.get('temp')},
+                'armorClass': participant.get('armorClass'),
+                'conditions': participant.get('conditions') if isinstance(participant.get('conditions'), list) else [],
+                'position': participant.get('position') if isinstance(participant.get('position'), dict) else {},
+                'morale': participant.get('morale'),
+                'isAlive': participant.get('isAlive'),
+                'currentIntent': {
+                    'intentType': intent.get('intentType'),
+                    'targetId': intent.get('targetId'),
+                    'abilityId': intent.get('abilityId'),
+                    'reason': intent.get('reason'),
+                    'visibleTelegraph': intent.get('visibleTelegraph'),
+                    'suggestedSpeech': intent.get('suggestedSpeech'),
+                }
+                if intent
+                else None,
+            }
+        )
     return {
         'sessionId': state.get('sessionId'),
         'campaignId': state.get('campaignId'),
+        'activePlayerIds': state.get('activePlayerIds') if isinstance(state.get('activePlayerIds'), list) else [],
         'currentScene': {
             'locationId': scene.get('locationId'),
             'name': scene.get('name'),
@@ -469,11 +551,33 @@ def compact_state_for_extraction(state: dict[str, Any]) -> dict[str, Any]:
             'description': scene.get('description'),
             'activeNpcIds': scene.get('activeNpcIds') if isinstance(scene.get('activeNpcIds'), list) else [],
             'activeQuestIds': scene.get('activeQuestIds') if isinstance(scene.get('activeQuestIds'), list) else [],
+            'playerPositions': scene.get('playerPositions') if isinstance(scene.get('playerPositions'), dict) else {},
+            'playerZones': scene.get('playerZones') if isinstance(scene.get('playerZones'), dict) else {},
+            'characterPositions': scene.get('characterPositions') if isinstance(scene.get('characterPositions'), dict) else {},
+            'characterZones': scene.get('characterZones') if isinstance(scene.get('characterZones'), dict) else {},
         },
         'playerCharacters': players,
         'quests': quests,
         'locations': locations,
         'npcs': npcs,
+        'combat': {
+            'status': combat.get('status') or 'none',
+            'round': combat.get('round') or 1,
+            'turnIndex': combat.get('turnIndex'),
+            'participants': combat_participants[:12],
+            'battlefield': combat.get('battlefield') if isinstance(combat.get('battlefield'), dict) else {},
+            'encounterGoal': combat.get('encounterGoal') if isinstance(combat.get('encounterGoal'), dict) else None,
+            'lastRoundSummary': combat.get('lastRoundSummary'),
+            'flags': combat.get('flags') if isinstance(combat.get('flags'), dict) else {},
+        },
+        'turnControl': {
+            'activePlayerId': turn_control.get('activePlayerId'),
+            'activePlayerName': turn_control.get('activePlayerName'),
+            'participantPlayerIds': turn_control.get('participantPlayerIds') if isinstance(turn_control.get('participantPlayerIds'), list) else [],
+            'participantPlayerNames': turn_control.get('participantPlayerNames') if isinstance(turn_control.get('participantPlayerNames'), list) else [],
+        }
+        if turn_control
+        else {},
         'flags': state.get('flags') if isinstance(state.get('flags'), dict) else {},
     }
 

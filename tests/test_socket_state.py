@@ -32,3 +32,23 @@ def test_socket_state_tracks_typing_by_socket():
 
     assert state.release_active_player(3, 7, 'sid-b') is False
     assert state.active_player_payloads(3) == [player]
+
+
+def test_socket_state_stores_session_music_independently_from_presence():
+    state = SocketState()
+    music_state = state.set_music_state(
+        3,
+        {
+            'track_id': 'forest-road',
+            'status': 'playing',
+            'position': 42.5,
+            'updated_at_ms': 1000,
+            'updated_by_player_id': 7,
+        },
+    )
+
+    assert music_state['session_id'] == 3
+    assert state.music_state(3)['track_id'] == 'forest-road'
+
+    state.clear()
+    assert state.music_state(3) is None

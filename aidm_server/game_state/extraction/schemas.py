@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 from aidm_server.game_state.action_types import PRE_DM_ACTION_TYPES
-from aidm_server.game_state.change_types import STATE_CHANGE_TYPES, WORLD_STATE_CHANGE_TYPES
+from aidm_server.game_state.change_types import COMBAT_STATE_CHANGE_TYPES, STATE_CHANGE_TYPES, WORLD_STATE_CHANGE_TYPES
 from aidm_server.game_state.models import stable_slug
 
 GENERIC_INTENT_SAFE_FIELDS = {'summary', 'intentDescription', 'intent_description', 'description', 'sourceText', 'source_text'}
@@ -23,6 +23,10 @@ WORLD_FIELD_ALIASES = {
     'combat_state': 'combatState',
     'active_npc_ids': 'activeNpcIds',
     'active_quest_ids': 'activeQuestIds',
+    'player_positions': 'playerPositions',
+    'player_zones': 'playerZones',
+    'character_positions': 'characterPositions',
+    'character_zones': 'characterZones',
     'music_tag': 'musicTag',
     'updated_at_turn': 'updatedAtTurn',
     'parent_location_id': 'parentLocationId',
@@ -49,6 +53,27 @@ WORLD_FIELD_ALIASES = {
     'relationship_label': 'relationshipLabel',
     'flag_key': 'flagKey',
     'flag_value': 'flagValue',
+}
+COMBAT_FIELD_ALIASES = {
+    'participant_id': 'participantId',
+    'enemy_id': 'enemyId',
+    'combat_id': 'combatId',
+    'turn_id': 'turnId',
+    'intent_type': 'intentType',
+    'target_id': 'targetId',
+    'ability_id': 'abilityId',
+    'movement_goal': 'movementGoal',
+    'to_range_band': 'toRangeBand',
+    'from_range_band': 'fromRangeBand',
+    'visible_telegraph': 'visibleTelegraph',
+    'suggested_speech': 'suggestedSpeech',
+    'condition_name': 'condition',
+    'morale_event': 'event',
+    'end_reason': 'endReason',
+    'is_alive': 'isAlive',
+    'is_conscious': 'isConscious',
+    'current_hp': 'currentHp',
+    'max_hp': 'maxHp',
 }
 CURRENCY_ALIASES = {
     'pp': 'pp',
@@ -391,6 +416,7 @@ def normalize_state_change(raw_change: Any, *, fallback_actor_id: str, fallback_
     if change_type not in STATE_CHANGE_TYPES:
         return None
     is_world_change = change_type in WORLD_STATE_CHANGE_TYPES
+    is_combat_change = change_type in COMBAT_STATE_CHANGE_TYPES
     for field in POSITIVE_INT_FIELDS:
         if field in raw_change:
             try:
@@ -404,17 +430,40 @@ def normalize_state_change(raw_change: Any, *, fallback_actor_id: str, fallback_
     change['id'] = str(change_id)
     change['type'] = change_type
     change['source'] = str(raw_change.get('source') or source)
-    change['actorId'] = str(
-        _value(raw_change, 'actorId', 'actor_id', None)
-        or raw_change.get('target')
-        or raw_change.get('targetId')
-        or raw_change.get('target_id')
-        or fallback_actor_id
-    )
+    if not is_combat_change:
+        change['actorId'] = str(
+            _value(raw_change, 'actorId', 'actor_id', None)
+            or raw_change.get('target')
+            or raw_change.get('targetId')
+            or raw_change.get('target_id')
+            or fallback_actor_id
+        )
+    elif raw_change.get('actorId') or raw_change.get('actor_id'):
+        change['actorId'] = str(_value(raw_change, 'actorId', 'actor_id', fallback_actor_id))
     change['visible'] = bool(raw_change.get('visible', True))
     change['reason'] = str(raw_change.get('reason') or 'Extracted from DM response.')
     if is_world_change:
         _normalize_world_change_ids(change, raw_id)
+    if is_combat_change:
+        _copy_aliases(change, COMBAT_FIELD_ALIASES)
+        if change.get('enemyId') and not change.get('participantId'):
+            change['participantId'] = change.get('enemyId')
+        if change_type == 'combat.intent.set':
+            intent = change.get('intent') if isinstance(change.get('intent'), dict) else {}
+            _copy_aliases(intent, COMBAT_FIELD_ALIASES)
+            if change.get('intentType') and not intent.get('intentType'):
+                intent['intentType'] = change.get('intentType')
+            if change.get('participantId') and not intent.get('enemyId'):
+                intent['enemyId'] = change.get('participantId')
+            change['intent'] = intent
+        if change_type == 'combat.participant.update':
+            hp = change.get('hp') if isinstance(change.get('hp'), dict) else {}
+            if change.get('currentHp') is not None and 'current' not in hp:
+                hp['current'] = change.get('currentHp')
+            if change.get('maxHp') is not None and 'max' not in hp:
+                hp['max'] = change.get('maxHp')
+            if hp:
+                change['hp'] = hp
     currency = _currency_code(raw_change)
     if currency:
         change['currency'] = currency
@@ -432,6 +481,26 @@ def normalize_state_change(raw_change: Any, *, fallback_actor_id: str, fallback_
         change['toActorId'] = change.pop('to_actor_id')
     if 'to_actor_name' in change and 'toActorName' not in change:
         change['toActorName'] = change.pop('to_actor_name')
+    if 'spell_name' in change and 'spellName' not in change:
+        change['spellName'] = change.pop('spell_name')
+    if 'spell_level' in change and 'spellLevel' not in change:
+        change['spellLevel'] = change.pop('spell_level')
+    if 'learned_from' in change and 'learnedFrom' not in change:
+        change['learnedFrom'] = change.pop('learned_from')
+    if change_type == 'spell.learn':
+        raw_spell = change.get('spell')
+        if isinstance(raw_spell, dict):
+            if raw_spell.get('name') and not change.get('spellName'):
+                change['spellName'] = raw_spell.get('name')
+            if raw_spell.get('level') is not None and change.get('spellLevel') is None:
+                change['spellLevel'] = raw_spell.get('level')
+        elif isinstance(raw_spell, str) and raw_spell.strip() and not change.get('spellName'):
+            change['spellName'] = raw_spell.strip()
+        if change.get('spellLevel') is not None:
+            try:
+                change['spellLevel'] = max(0, min(9, int(change.get('spellLevel'))))
+            except (TypeError, ValueError):
+                return None
     if 'amount' in change:
         try:
             change['amount'] = max(1, int(change.get('amount') or 1))
@@ -504,6 +573,10 @@ def _state_change_has_required_fields(change: dict[str, Any]) -> bool:
                     'description',
                     'activeNpcIds',
                     'activeQuestIds',
+                    'playerPositions',
+                    'playerZones',
+                    'characterPositions',
+                    'characterZones',
                     'musicTag',
                 )
             )
@@ -527,6 +600,24 @@ def _state_change_has_required_fields(change: dict[str, Any]) -> bool:
             return bool(str(change.get('npcId') or change.get('name') or '').strip())
         if change_type in {'flag.set', 'flag.unset'}:
             return bool(str(change.get('flagKey') or '').strip())
+        return False
+    if change_type in COMBAT_STATE_CHANGE_TYPES:
+        if change_type == 'combat.start':
+            combat = change.get('combat') if isinstance(change.get('combat'), dict) else change
+            return bool(isinstance(combat.get('participants'), list) and combat.get('participants'))
+        if change_type in {'combat.update', 'combat.round.advance', 'combat.battlefield.update', 'combat.end'}:
+            return True
+        if change_type in {
+            'combat.participant.update',
+            'combat.intent.set',
+            'combat.morale.update',
+            'combat.morale.event',
+            'combat.move',
+            'combat.condition.add',
+            'combat.condition.remove',
+            'combat.ability.mark_used',
+        }:
+            return bool(str(change.get('participantId') or change.get('enemyId') or '').strip())
         return False
     if not change.get('actorId'):
         return False
@@ -555,6 +646,9 @@ def _state_change_has_required_fields(change: dict[str, Any]) -> bool:
         return 'amount' in change
     if change_type in {'xp.add', 'xp.remove'}:
         return 'amount' in change
+    if change_type == 'spell.learn':
+        raw_spell = change.get('spell') if isinstance(change.get('spell'), dict) else {}
+        return bool(str(change.get('spellName') or raw_spell.get('name') or '').strip())
     if change_type == 'inventory.mark_used':
         return bool(str(change.get('itemId') or '').strip())
     return False

@@ -137,6 +137,37 @@ def test_validate_ability_and_item_intents():
     assert item['cost_gold'] == 5
 
 
+def test_validate_spell_intent_and_applies_spellcasting_rule_hint():
+    intent, error = validate_action_intent(
+        {
+            'kind': 'spell',
+            'text': 'Timmeh casts Wild Surge: lift the bubbles with magic',
+            'spell': {'name': 'Wild Surge', 'effect': 'lift the bubbles with magic'},
+            'ability': {'key': 'charisma', 'label': 'CHA', 'modifier': -1},
+        }
+    )
+    hint = RuleHint(
+        requires_roll=False,
+        roll_type=None,
+        dc_hint=None,
+        reason='Narrative action',
+        confidence=0.1,
+    )
+
+    assert error is None
+    assert intent is not None
+    assert intent['kind'] == 'spell'
+    assert intent['spell'] == {'name': 'Wild Surge', 'effect': 'lift the bubbles with magic'}
+
+    updated = apply_action_intent_to_rule_hint(intent, hint)
+
+    assert updated.requires_roll is True
+    assert updated.roll_type == 'spell'
+    assert updated.dc_hint == '12-18 (CHA mod -1)'
+    assert updated.outcome_deferred is True
+    assert updated.reason == 'Typed spell action: Wild Surge'
+
+
 def test_validate_item_intent_rejects_non_items():
     intent, error = validate_action_intent(
         {

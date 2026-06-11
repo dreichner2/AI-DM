@@ -10,6 +10,7 @@ from typing import Any
 class SocketState:
     active_players: dict[int, dict[int, dict[str, Any]]] = field(default_factory=dict)
     connections: dict[str, dict[str, Any]] = field(default_factory=dict)
+    session_music: dict[int, dict[str, Any]] = field(default_factory=dict)
 
     def connection(self, sid: str | None) -> dict[str, Any] | None:
         if not sid:
@@ -88,6 +89,15 @@ class SocketState:
 
         return was_typing != bool(typing_sids)
 
+    def music_state(self, session_id: int) -> dict[str, Any] | None:
+        state = self.session_music.get(session_id)
+        return dict(state) if state else None
+
+    def set_music_state(self, session_id: int, state: dict[str, Any]) -> dict[str, Any]:
+        next_state = {**state, 'session_id': session_id}
+        self.session_music[session_id] = next_state
+        return dict(next_state)
+
     def release_active_player(self, session_id: int, player_id: int, sid: str) -> bool:
         session_players = self.active_players.get(session_id)
         if not session_players:
@@ -119,3 +129,4 @@ class SocketState:
     def clear(self) -> None:
         self.active_players.clear()
         self.connections.clear()
+        self.session_music.clear()

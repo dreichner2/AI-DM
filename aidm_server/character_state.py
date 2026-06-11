@@ -8,6 +8,12 @@ from typing import Any
 from aidm_server.canon_text import int_or_default, normalized_name
 from aidm_server.database import db
 from aidm_server.models import DmTurn, Player, safe_json_dumps, safe_json_loads
+from aidm_server.spellbook import (
+    known_spell_names,
+    merge_spellbooks,
+    spellbook_for_character,
+    spellbook_from_character_sheet,
+)
 
 
 ABILITY_KEYS = ('strength', 'dexterity', 'constitution', 'intelligence', 'wisdom', 'charisma')
@@ -237,8 +243,17 @@ def character_state_for_player(player: Player | None) -> dict[str, Any]:
     platinum = max(0, int_or_default(stats.get('platinum'), default=0))
     xp = max(0, int_or_default(stats.get('xp', stats.get('experience')), default=0))
     spent = point_buy_spent(scores) if scores and all(key in scores for key in ABILITY_KEYS) else None
+    spellbook = merge_spellbooks(
+        spellbook_from_character_sheet(player.character_sheet),
+        spellbook_for_character(
+            class_name=player.class_,
+            race_name=player.race,
+            race_selection=player.race_selection,
+            level=player.level or 1,
+        ),
+    )
 
-    return {
+    state = {
         'ability_scores': scores,
         'ability_modifiers': {key: ability_modifier(scores.get(key)) for key in ABILITY_KEYS if key in scores},
         'point_buy': {
@@ -261,6 +276,10 @@ def character_state_for_player(player: Player | None) -> dict[str, Any]:
         'level': int(player.level or 1),
         'proficiency_bonus': int_or_default(stats.get('proficiency_bonus'), default=2 + max(0, int(player.level or 1) - 1) // 4),
     }
+    if spellbook.get('knownSpells'):
+        state['spellbook'] = spellbook
+        state['spells'] = known_spell_names(spellbook)
+    return state
 
 
 def apply_character_dc_adjustment(rule_hint, player: Player | None):

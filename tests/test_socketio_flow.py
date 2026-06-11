@@ -355,6 +355,71 @@ def test_turn_control_can_return_to_auto_source(app, socketio):
     assert auto_payload['turn_control']['activePlayerId'] is None
 
 
+def test_music_control_syncs_room_state_without_shared_volume(app, socketio):
+    ids = seed_world_campaign_player_session(app)
+    second_player_id = _seed_second_player(app, ids['campaign_id'])
+
+    first_client = socketio.test_client(app, flask_test_client=app.test_client())
+    second_client = socketio.test_client(app, flask_test_client=app.test_client())
+    first_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    second_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': second_player_id})
+    first_client.get_received()
+    second_client.get_received()
+
+    first_client.emit(
+        'music_control',
+        {
+            'session_id': ids['session_id'],
+            'player_id': ids['player_id'],
+            'track_id': 'dnd-calm-fantasy-adventure-exploration',
+            'status': 'playing',
+            'position': 42.5,
+            'volume': 0,
+        },
+    )
+
+    first_payload = _event_payload(first_client.get_received(), 'music_state')
+    second_payload = _event_payload(second_client.get_received(), 'music_state')
+
+    for payload in (first_payload, second_payload):
+        assert payload['session_id'] == ids['session_id']
+        assert payload['track_id'] == 'dnd-calm-fantasy-adventure-exploration'
+        assert payload['status'] == 'playing'
+        assert 42.5 <= payload['position'] < 44
+        assert payload['updated_by_player_id'] == ids['player_id']
+        assert 'volume' not in payload
+
+
+def test_join_session_receives_existing_music_state(app, socketio):
+    ids = seed_world_campaign_player_session(app)
+    second_player_id = _seed_second_player(app, ids['campaign_id'])
+
+    first_client = socketio.test_client(app, flask_test_client=app.test_client())
+    first_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    first_client.get_received()
+    first_client.emit(
+        'music_control',
+        {
+            'session_id': ids['session_id'],
+            'player_id': ids['player_id'],
+            'track_id': 'dnd-calm-fantasy-adventure-exploration',
+            'status': 'paused',
+            'position': 81.25,
+        },
+    )
+    first_client.get_received()
+
+    second_client = socketio.test_client(app, flask_test_client=app.test_client())
+    second_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': second_player_id})
+    music_payload = _event_payload(second_client.get_received(), 'music_state')
+
+    assert music_payload['session_id'] == ids['session_id']
+    assert music_payload['track_id'] == 'dnd-calm-fantasy-adventure-exploration'
+    assert music_payload['status'] == 'paused'
+    assert music_payload['position'] == 81.25
+    assert music_payload['updated_by_player_id'] == ids['player_id']
+
+
 def test_ai_conductor_adds_player_to_spotlight_conversation(app, socketio, app_runtime, monkeypatch):
     socketio_module = app_runtime['modules']['socketio_events']
 
@@ -615,6 +680,74 @@ def test_structured_turn_control_advances_after_completed_turn(app, socketio, ap
         assert snapshot['turnControl']['activePlayerId'] == second_player_id
 
 
+def test_structured_turn_control_waits_when_turn_creates_pending_roll_gate(app, socketio, app_runtime, monkeypatch):
+    socketio_module = app_runtime['modules']['socketio_events']
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        yield 'The spell bends the air around the target. Please roll a d20 for the spell.'
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+
+    ids = seed_world_campaign_player_session(app)
+    second_player_id = _seed_second_player(app, ids['campaign_id'])
+
+    first_client = socketio.test_client(app, flask_test_client=app.test_client())
+    second_client = socketio.test_client(app, flask_test_client=app.test_client())
+    first_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    second_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': second_player_id})
+    first_client.get_received()
+    second_client.get_received()
+
+    first_client.emit(
+        'set_turn_control',
+        {
+            'session_id': ids['session_id'],
+            'player_id': ids['player_id'],
+            'mode': 'structured',
+            'active_player_id': ids['player_id'],
+        },
+    )
+    first_client.get_received()
+    second_client.get_received()
+
+    first_client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'Seraphina casts Starflare: pin the shadow in place.',
+            'action_intent': {
+                'kind': 'spell',
+                'source': 'composer',
+                'text': 'Seraphina casts Starflare: pin the shadow in place.',
+                'client_message_id': 'spell-turn-lock',
+                'spell': {'name': 'Starflare', 'effect': 'pin the shadow in place'},
+                'ability': {'key': 'wisdom', 'label': 'WIS', 'modifier': 2},
+            },
+        },
+    )
+    received = first_client.get_received()
+    start_payload = _event_payload(received, 'dm_response_start')
+
+    assert start_payload is not None
+    assert start_payload['rules_hint']['roll_type'] == 'spell'
+    assert _event_payload(received, 'turn_control_updated') is None
+
+    with app.app_context():
+        turn = DmTurn.query.filter_by(session_id=ids['session_id']).order_by(DmTurn.turn_id.desc()).first()
+        assert turn is not None
+        assert turn.outcome_status == 'deferred'
+        assert turn.rule_type == 'spell'
+        metadata = safe_json_loads(turn.metadata_json, {})
+        assert metadata['roll_gate']['remaining_player_ids'] == [ids['player_id']]
+
+        session = db.session.get(Session, ids['session_id'])
+        snapshot = safe_json_loads(session.state_snapshot, {})
+        assert snapshot['turnControl']['activePlayerId'] == ids['player_id']
+
+
 def test_join_session_rejects_same_workspace_player_from_other_campaign(app, socketio):
     ids = seed_world_campaign_player_session(app)
     with app.app_context():
@@ -710,6 +843,94 @@ def test_harmful_player_targeting_creates_pvp_roll_gate(app, socketio, app_runti
         assert gate['required_player_ids'] == [ids['player_id'], target_player_id]
         assert gate['remaining_player_ids'] == [ids['player_id'], target_player_id]
         assert turn.outcome_status == 'deferred'
+
+
+def test_interaction_text_npc_target_overrides_stale_player_target(app, socketio, app_runtime, monkeypatch):
+    socketio_module = app_runtime['modules']['socketio_events']
+    captured = {}
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        captured['user_input'] = user_input
+        captured['rules_hint'] = rules_hint
+        yield 'The Trickster answers Loki without drawing Himeros into the exchange.'
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    ids = seed_world_campaign_player_session(app)
+    target_player_id = _seed_second_player(app, ids['campaign_id'])
+
+    with app.app_context():
+        actor = db.session.get(Player, ids['player_id'])
+        session = db.session.get(Session, ids['session_id'])
+        assert actor is not None
+        assert session is not None
+        actor.character_name = 'Loki'
+        session.state_snapshot = safe_json_dumps(
+            {
+                'currentScene': {
+                    'locationId': 'colosseum',
+                    'name': 'Colosseum',
+                    'sceneType': 'social',
+                    'combatState': 'resolved',
+                    'activeNpcIds': ['mirror_trickster'],
+                },
+                'knownNpcs': [
+                    {
+                        'id': 'mirror_trickster',
+                        'name': 'Mirror Trickster',
+                        'role': 'surrendered enemy',
+                        'locationId': 'colosseum',
+                    }
+                ],
+            },
+            {},
+        )
+        db.session.commit()
+
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'Loki says to the Mirror Trickster: Then why did you attack us?',
+            'action_intent': {
+                'kind': 'interact',
+                'source': 'composer',
+                'text': 'Loki says to the Mirror Trickster: Then why did you attack us?',
+                'client_message_id': 'stale-target-reconcile',
+                'interaction': {'type': 'speak_to', 'label': 'Speak to'},
+                'target': {
+                    'kind': 'player',
+                    'player_id': target_player_id,
+                    'character_name': 'Himeros',
+                    'player_name': 'Daniel',
+                },
+            },
+        },
+    )
+
+    received = client.get_received()
+    assert _event_payload(received, 'error') is None
+    assert 'PLAYER-TO-NPC INTERACTION' in captured['user_input']
+    assert 'pvp' not in captured['rules_hint']
+
+    with app.app_context():
+        turn = DmTurn.query.order_by(DmTurn.turn_id.desc()).first()
+        assert turn is not None
+        metadata = safe_json_loads(turn.metadata_json, {})
+        target = metadata['action_intent']['target']
+        assert target['kind'] == 'npc'
+        assert target['npc_id'] == 'mirror_trickster'
+        gate = metadata.get('roll_gate') if isinstance(metadata.get('roll_gate'), dict) else None
+        if gate:
+            assert gate['scope'] == 'single_player'
+            assert gate['required_player_ids'] == [ids['player_id']]
+            assert gate.get('target_player_id') is None
 
 
 def test_turn_pipeline_missing_item_does_not_reach_dm_as_valid(app, socketio, app_runtime, monkeypatch):
@@ -2731,6 +2952,9 @@ def test_roll_cannot_resolve_another_players_pending_turn(app, socketio, app_run
 
     assert error_payload is not None
     assert error_payload['error_code'] == 'pending_roll_not_owned'
+    assert 'Seraphina has an unresolved attack' in error_payload['error']
+    assert error_payload['details']['pending_player_name'] == 'Seraphina'
+    assert error_payload['details']['pending_turn_summary'] == 'I attack the goblin.'
     assert _event_payload(second_events, 'dm_response_start') is None
 
     with app.app_context():
@@ -3112,9 +3336,12 @@ def test_group_roll_gate_waits_for_all_required_players(app, socketio, app_runti
     assert _event_payload(one_roll_events, 'dm_response_start') is None
     with app.app_context():
         pending_turn = db.session.get(DmTurn, pending_turn_id)
+        roll_turn = DmTurn.query.filter_by(session_id=ids['session_id'], player_id=ids['player_id']).order_by(DmTurn.turn_id.desc()).first()
         metadata = safe_json_loads(pending_turn.metadata_json, {})
         gate = metadata['roll_gate']
         assert pending_turn.outcome_status == 'deferred'
+        assert roll_turn.status == 'waiting_for_group_roll'
+        assert roll_turn.outcome_status == 'resolved'
         assert gate['resolved_player_ids'] == [ids['player_id']]
         assert gate['remaining_player_ids'] == [other_player_id]
 

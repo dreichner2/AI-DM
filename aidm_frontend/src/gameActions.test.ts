@@ -9,6 +9,7 @@ import {
   itemActionText,
   parseRollModifier,
   resolveRoll,
+  spellActionText,
   stripComposerCommand,
   type AbilityOption,
   type ItemOption,
@@ -54,11 +55,16 @@ describe('game action helpers', () => {
     expect(composerTextForMode('ability', '[OOC] lift the gate', 'Ember', 'd20', strength)).toBe(
       'Ember attempts a STR check (+3): lift the gate',
     )
+    expect(composerTextForMode('spell', '[OOC] light the sigil', 'Ember', 'd20', strength, null, null, 'speak_to', 'use', '', '', 'Fire Bolt')).toBe(
+      'Ember casts Fire Bolt: light the sigil',
+    )
     expect(stripComposerCommand('/admin force the door open')).toBe('force the door open')
     expect(stripComposerCommand('(ADMIN) force the door open')).toBe('force the door open')
     expect(stripComposerCommand('/ADMIN/ force the door open')).toBe('force the door open')
     expect(stripComposerCommand('/emote waves')).toBe('waves')
     expect(stripComposerCommand('Ember uses Healing Potion: test the sigil')).toBe('test the sigil')
+    expect(stripComposerCommand('Ember casts Fire Bolt: light the sigil')).toBe('light the sigil')
+    expect(stripComposerCommand('I cast a spell: light the sigil')).toBe('light the sigil')
   })
 
   it('detects reserved admin-looking prefixes without matching ordinary admin words', () => {
@@ -79,6 +85,12 @@ describe('game action helpers', () => {
     )
     expect(itemActionText('Ember', 'buy', 'rope', 'before leaving', '5')).toBe(
       'Ember tries to buy rope for 5 gold: before leaving',
+    )
+    expect(spellActionText('Ember', 'Fire Bolt', 'light the sigil')).toBe(
+      'Ember casts Fire Bolt: light the sigil',
+    )
+    expect(spellActionText('I', 'Fire Bolt', 'light the sigil')).toBe(
+      'I cast Fire Bolt: light the sigil',
     )
   })
 
@@ -170,6 +182,20 @@ describe('game action helpers', () => {
       inventory_action: 'buy',
       cost_gold: 5,
       item: { name: 'rope', quantity: 1 },
+    })
+
+    const spellIntent = buildActionIntent({
+      mode: 'spell',
+      message: 'Ember casts Fire Bolt: light the sigil',
+      clientMessageId: 'spell-fire-bolt',
+      ability: strength,
+      spellName: 'Fire Bolt',
+    })
+
+    expect(spellIntent).toMatchObject({
+      kind: 'spell',
+      spell: { name: 'Fire Bolt', effect: 'light the sigil' },
+      ability: { key: 'strength', label: 'STR', modifier: 3 },
     })
 
     const npcInteractionIntent = buildActionIntent({

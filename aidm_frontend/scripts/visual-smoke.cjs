@@ -265,6 +265,9 @@ async function runVisualFlow(frontendUrl, backendUrl, ids, artifactDir) {
   })
 
   const routeUrl = `${frontendUrl}/?campaign=${ids.campaign.campaign_id}&session=${ids.session.session_id}&player=${ids.player.player_id}`
+  await page.addInitScript((playerId) => {
+    localStorage.setItem('aidm:open:selectedPlayerId', String(playerId))
+  }, ids.player.player_id)
   await page.goto(routeUrl, { waitUntil: 'domcontentloaded' })
   await page.locator('.prototype-shell').waitFor({ state: 'visible', timeout: 20_000 })
   await expect(page).toHaveTitle(/AI-DM/)

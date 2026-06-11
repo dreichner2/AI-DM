@@ -12,7 +12,7 @@ export type RaceVisualMetadata = JsonRecord
 
 export type RacePhysicalMetadata = { averageHeight: string; averageWeight: string }
 
-export type RaceDefinition = JsonRecord & { id: string; version: number; name: string; source: RaceSource; descriptionShort: string; descriptionLong: string; aliases: string[]; tags: string[]; size: string; baseSpeed: number; visual: RaceVisualMetadata; originStory: string; physical: RacePhysicalMetadata; languages: string[]; commonProficiencies: string[]; friendlyWith: string[]; waryOf: string[]; traits: JsonRecord[]; aiNarrationHints: string[]; roleplayHooks: string[]; recommendedClasses: string[]; difficulty: string; balance: RaceBalanceMetadata; approvalStatus?: string; parentRaceId?: string | null }
+export type RaceDefinition = JsonRecord & { id: string; version: number; name: string; source: RaceSource; descriptionShort: string; descriptionLong: string; aliases: string[]; tags: string[]; size: string; baseSpeed: number; visual: RaceVisualMetadata; originStory: string; physical: RacePhysicalMetadata; languages: string[]; commonProficiencies: string[]; friendlyWith: string[]; waryOf: string[]; traits: JsonRecord[]; aiNarrationHints: string[]; roleplayHooks: string[]; recommendedClasses: string[]; difficulty: string; balance: RaceBalanceMetadata; approvalStatus?: string; parentRaceId?: string | null; workspaceId?: string; createdByAccountId?: number | null; createdByUsername?: string | null; createdByDisplayName?: string | null; createdAt?: string | null; updatedAt?: string | null }
 
 export type RaceSummary = {
   id: string
@@ -37,6 +37,12 @@ export type RaceSummary = {
   balance: RaceBalanceMetadata
   approvalStatus?: string
   parentRaceId?: string | null
+  workspaceId?: string
+  createdByAccountId?: number | null
+  createdByUsername?: string | null
+  createdByDisplayName?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
 }
 
 export type CharacterRaceSelection = {
@@ -49,9 +55,61 @@ export type CharacterRaceSelection = {
 
 export type RaceListResponse = { races: RaceSummary[] }
 
-export type CustomRaceGenerateResponse = { draftRace: RaceDefinition; balanceAnalysis: RaceBalanceMetadata; warnings: string[]; generationSource: string }
+export type CustomRaceGenerateResponse = { draftRace: RaceDefinition; balanceAnalysis: RaceBalanceMetadata; warnings: string[]; generationSource: string; generationMode: 'canon' | 'balanced' }
 
 export type CustomRaceSaveResponse = { race: RaceDefinition; summary: RaceSummary }
+
+export type CreatureSource = 'core_bestiary' | 'campaign_pack' | 'region_bestiary' | 'generated' | 'generated_variant' | 'user_custom' | 'evolved'
+
+export type BestiaryScope = 'core' | 'campaign' | 'region' | 'session'
+
+export type CreatureBalanceMetadata = JsonRecord & { estimatedTier: string; targetTier: string; estimatedDamagePerRound: number; estimatedDurability: number; estimatedControlStrength: number; warnings: string[]; balanceAdjustments?: string[]; reviewed: boolean }
+
+export type CreatureDefinition = JsonRecord & { id: string; version: number; name: string; source: CreatureSource; descriptionShort: string; descriptionLong: string; creatureType: string; visualTags: string[]; level: number; challengeTier: string; size: string; stats: JsonRecord; movement: JsonRecord; senses: JsonRecord; abilities: JsonRecord[]; behavior: JsonRecord; aiNarrationHints: string[]; balance: CreatureBalanceMetadata }
+
+export type BestiaryEntryPayload = {
+  bestiary_entry_id: number | null
+  workspace_id: string
+  campaign_id: number | null
+  session_id: number | null
+  scope: BestiaryScope | string
+  creature_id: string
+  version: number
+  name: string
+  source: CreatureSource | string
+  persistence: string
+  region_id: string | null
+  location_ids: string[]
+  faction_ids: string[]
+  tags: string[]
+  creature: CreatureDefinition
+  balance: JsonRecord
+  created_because: string | null
+  base_creature_id: string | null
+  variant_reason: string | null
+  created_at_turn: number | null
+  created_by_model: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export type BestiaryListResponse = { campaign_id?: number; region_id?: string; entries: BestiaryEntryPayload[] | CreatureDefinition[] }
+
+export type CreatureResolutionResult = { creature: CreatureDefinition; source: CreatureSource | string; resolutionMethod: string; matchScore?: number | null; generated: boolean; savedToBestiary: boolean; notes: string[]; debug: JsonRecord }
+
+export type CreatureGenerateResponse = { creature: CreatureDefinition; generationSource: string; balance: JsonRecord }
+
+export type CreatureBalanceResponse = { balance: CreatureBalanceMetadata; scaledCreature: CreatureDefinition }
+
+export type CreatureEvolveResponse = { creature: CreatureDefinition; entry?: BestiaryEntryPayload | null }
+
+export type CampaignPackGenerateResponse = { campaign_id: number; creatures: CreatureDefinition[]; entries: BestiaryEntryPayload[] }
+
+export type CombatIntentPlanResponse = { intentPlan: JsonRecord; combat: JsonRecord }
+
+export type SessionCombatResponse = { combat: JsonRecord | null; validation?: JsonRecord; appliedChanges?: JsonRecord[]; endReason?: string | null }
+
+export type CombatDebugEventsResponse = { events: JsonRecord[] }
 
 export type World = {
   world_id: number

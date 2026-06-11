@@ -9,7 +9,7 @@ from aidm_server.canon_inventory import INVENTORY_ACTIONS, clean_inventory_item_
 from aidm_server.rules import DC_HINTS, RuleHint
 
 
-VALID_ACTION_KINDS = {'message', 'roll', 'ability', 'item', 'interact', 'emote', 'ooc', 'admin'}
+VALID_ACTION_KINDS = {'message', 'roll', 'ability', 'spell', 'item', 'interact', 'emote', 'ooc', 'admin'}
 VALID_DICE = {'d4', 'd6', 'd8', 'd10', 'd12', 'd20', 'd100'}
 VALID_ROLL_MODES = {'normal', 'advantage', 'disadvantage'}
 VALID_RESULT_VISIBILITY = {'hidden_until_landed', 'visible'}
@@ -19,6 +19,8 @@ VALID_TARGET_KINDS = {'player', 'npc'}
 ACTION_TEXT_MAX_LENGTH = 2000
 ACTION_REASON_MAX_LENGTH = 240
 ACTION_ITEM_MAX_LENGTH = 120
+ACTION_SPELL_NAME_MAX_LENGTH = 120
+ACTION_SPELL_EFFECT_MAX_LENGTH = 1000
 ACTION_ID_MAX_LENGTH = 80
 ACTION_NAME_MAX_LENGTH = 120
 ACTION_ID_RE = re.compile(r'^[A-Za-z0-9._:-]+$')
@@ -146,6 +148,19 @@ def _validate_ability_payload(raw_ability: Any) -> tuple[dict[str, Any] | None, 
     }, None
 
 
+def _validate_spell_payload(raw_spell: Any) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(raw_spell, dict):
+        return None, 'spell action metadata must include a spell object.'
+    name = _clean_text(raw_spell.get('name'), max_length=ACTION_SPELL_NAME_MAX_LENGTH)
+    effect = _clean_text(raw_spell.get('effect'), max_length=ACTION_SPELL_EFFECT_MAX_LENGTH)
+    if not effect:
+        return None, 'spell.effect is required.'
+    return {
+        'name': name or 'spell',
+        'effect': effect,
+    }, None
+
+
 def _coerce_non_negative_int(value: Any) -> int:
     parsed = _coerce_int(value)
     if parsed is None:
@@ -193,6 +208,17 @@ def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | Non
         if ability_error:
             return None, ability_error
         normalized['ability'] = ability
+
+    if kind == 'spell':
+        spell, spell_error = _validate_spell_payload(value.get('spell'))
+        if spell_error:
+            return None, spell_error
+        normalized['spell'] = spell
+        if value.get('ability') not in (None, ''):
+            ability, ability_error = _validate_ability_payload(value.get('ability'))
+            if ability_error:
+                return None, ability_error
+            normalized['ability'] = ability
 
     if kind == 'item':
         inventory_action = _clean_text(value.get('inventory_action'), max_length=32).lower() or 'use'
@@ -293,6 +319,23 @@ def apply_action_intent_to_rule_hint(intent: dict[str, Any] | None, hint: RuleHi
         hint.dc_hint = hint.dc_hint or DC_HINTS['check']
         hint.reason = f'Typed {ability_key} ability check'
         hint.confidence = max(hint.confidence or 0.0, 0.96)
+        hint.outcome_deferred = hint.roll_value is None
+        return hint
+
+    if kind == 'spell':
+        spell = intent.get('spell') if isinstance(intent.get('spell'), dict) else {}
+        ability = intent.get('ability') if isinstance(intent.get('ability'), dict) else {}
+        ability_label = _clean_text(ability.get('label'), max_length=40)
+        ability_modifier = _coerce_int(ability.get('modifier'))
+        spell_name = _clean_text(spell.get('name'), max_length=ACTION_SPELL_NAME_MAX_LENGTH) or 'spell'
+        hint.requires_roll = True
+        hint.roll_type = 'spell'
+        if ability_label and ability_modifier is not None:
+            hint.dc_hint = f"{DC_HINTS['spell']} ({ability_label} mod {ability_modifier:+d})"
+        else:
+            hint.dc_hint = DC_HINTS['spell']
+        hint.reason = f'Typed spell action: {spell_name}'
+        hint.confidence = max(hint.confidence or 0.0, 0.97)
         hint.outcome_deferred = hint.roll_value is None
         return hint
 

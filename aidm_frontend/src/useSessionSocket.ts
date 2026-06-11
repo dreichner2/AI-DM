@@ -7,7 +7,8 @@ import {
 } from 'react'
 import { io, type Socket } from 'socket.io-client'
 import { ngrokBrowserWarningBypassHeaders, normalizeBaseUrl, storedWorkspaceId, storedWorkspaceToken } from './api'
-import { stringValue } from './gameSelectors'
+import { stringValue, turnStatusAllowsNextSend } from './gameSelectors'
+import type { SceneMusicSyncState } from './SceneMusicPlayer'
 import { normalizeTurnControl } from './turnControl'
 import type {
   ActivePlayer,
@@ -49,6 +50,19 @@ type NewMessagePayload = {
   client_message_id?: string | null
 }
 
+type MusicStatePayload = {
+  session_id?: number
+  sessionId?: number
+  track_id?: string
+  trackId?: string
+  status?: string
+  position?: number
+  updated_at_ms?: number
+  updatedAtMs?: number
+  updated_by_player_id?: number | null
+  updatedByPlayerId?: number | null
+}
+
 type SocketErrorCategory = 'connection' | 'workspace'
 
 type UseSessionSocketOptions = {
@@ -73,6 +87,7 @@ type UseSessionSocketOptions = {
   setStreamingTurn: Dispatch<SetStateAction<StreamingTurn | null>>
   setTurnStatuses: Dispatch<SetStateAction<Record<number, string>>>
   setClarificationRequest: Dispatch<SetStateAction<ClarificationRequest | null>>
+  setSceneMusicSyncState: Dispatch<SetStateAction<SceneMusicSyncState | null>>
   spokenTextLengthRef: MutableRefObject<number>
   speakableStreamingTextRef: MutableRefObject<string>
   queueTtsNarrationRef: MutableRefObject<((text: string) => void) | null>
@@ -83,6 +98,28 @@ type UseSessionSocketOptions = {
   lastSpokenDmEntryRef: MutableRefObject<string | null>
   lastSpokenTurnIdRef: MutableRefObject<number | null>
   lastSpokenTextRef: MutableRefObject<string | null>
+}
+
+function normalizeMusicState(payload: MusicStatePayload): SceneMusicSyncState | null {
+  const sessionId = Number(payload.session_id ?? payload.sessionId)
+  const trackId = stringValue(payload.track_id ?? payload.trackId)
+  const status = stringValue(payload.status)
+  const position = Number(payload.position)
+  const updatedAtMs = Number(payload.updated_at_ms ?? payload.updatedAtMs)
+  const updatedByPlayerId = Number(payload.updated_by_player_id ?? payload.updatedByPlayerId)
+  if (!Number.isInteger(sessionId) || sessionId <= 0) return null
+  if (!trackId || !['playing', 'paused'].includes(status)) return null
+  if (!Number.isFinite(position) || position < 0) return null
+  if (!Number.isFinite(updatedAtMs) || updatedAtMs <= 0) return null
+  return {
+    sessionId,
+    trackId,
+    status: status as SceneMusicSyncState['status'],
+    position,
+    updatedAtMs,
+    receivedAtMs: Date.now(),
+    updatedByPlayerId: Number.isInteger(updatedByPlayerId) && updatedByPlayerId > 0 ? updatedByPlayerId : null,
+  }
 }
 
 function socketMessage(payload: SocketErrorPayload) {
@@ -168,6 +205,7 @@ export function useSessionSocket({
   setStreamingTurn,
   setTurnStatuses,
   setClarificationRequest,
+  setSceneMusicSyncState,
   spokenTextLengthRef,
   speakableStreamingTextRef,
   queueTtsNarrationRef,
@@ -187,11 +225,13 @@ export function useSessionSocket({
       socketRef.current = null
       lastWorldSnapshotRefreshRef.current = null
       setActivePlayers([])
+      setSceneMusicSyncState(null)
       setSocketStatus('idle')
       return
     }
 
     lastWorldSnapshotRefreshRef.current = null
+    setSceneMusicSyncState(null)
     const socketBaseUrl = normalizeBaseUrl(baseUrl)
     const ngrokBypassHeaders = socketBaseUrl ? ngrokBrowserWarningBypassHeaders(socketBaseUrl) : undefined
     const workspaceToken = storedWorkspaceToken().trim()
@@ -267,13 +307,20 @@ export function useSessionSocket({
       })
     })
 
+    socket.on('music_state', (payload: MusicStatePayload) => {
+      if (!payload || typeof payload !== 'object') return
+      const musicState = normalizeMusicState(payload)
+      if (!musicState || musicState.sessionId !== selectedSessionId) return
+      setSceneMusicSyncState(musicState)
+    })
+
     socket.on('new_message', (payload: NewMessagePayload) => {
       const entry = timelineEntryFromNewMessage(payload)
       if (!entry) return
       setOptimisticEntries((current) => {
         const nextTurnId = entry.metadata.turn_id
         const nextClientMessageId = stringValue(entry.metadata.client_message_id)
-        const exists = current.some((item) => {
+        const existingIndex = current.findIndex((item) => {
           const currentTurnId = item.metadata.turn_id
           const currentClientMessageId = stringValue(item.metadata.client_message_id)
           return (
@@ -282,7 +329,8 @@ export function useSessionSocket({
             item.id === entry.id
           )
         })
-        return exists ? current : [...current, entry]
+        if (existingIndex < 0) return [...current, entry]
+        return current.map((item, index) => (index === existingIndex ? entry : item))
       })
     })
 
@@ -423,7 +471,6 @@ export function useSessionSocket({
       if (payload.session_id === selectedSessionId) {
         loadSessionData(selectedSessionId)
           .then(() => {
-            setOptimisticEntries([])
             setStreamingTurn(null)
           })
           .catch((error: unknown) => {
@@ -436,7 +483,7 @@ export function useSessionSocket({
       if (payload.session_id !== selectedSessionId || typeof payload.turn_id !== 'number') return
       const status = stringValue(payload.status)
       if (!status) return
-      if (status === 'saved' || status === 'failed') {
+      if (turnStatusAllowsNextSend(status, payload.details)) {
         setSendPending(false)
       }
       if (status === 'canon_applied' || status === 'state_applied') {
@@ -490,6 +537,7 @@ export function useSessionSocket({
       setSendPending(false)
       setStreamingTurn(null)
       setActivePlayers([])
+      setSceneMusicSyncState(null)
       setSocketStatus('offline')
     })
 
@@ -503,6 +551,7 @@ export function useSessionSocket({
         socketRef.current = null
       }
       setActivePlayers([])
+      setSceneMusicSyncState(null)
     }
   }, [
     auth,
@@ -522,6 +571,7 @@ export function useSessionSocket({
     setActivePlayers,
     setOptimisticEntries,
     setClarificationRequest,
+    setSceneMusicSyncState,
     setSendPending,
     setSessionState,
     setSocketStatus,

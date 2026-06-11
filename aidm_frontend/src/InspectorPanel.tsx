@@ -1,10 +1,13 @@
 import { useState, type Dispatch, type FormEvent, type SetStateAction } from 'react'
-import { ChevronDown, Coins, ExternalLink, ShieldCheck, ShieldOff } from 'lucide-react'
+import { ChevronDown, Coins, ExternalLink, ShieldCheck, ShieldOff, Swords } from 'lucide-react'
 import { ThinIcon } from './AppChrome'
+import { BestiaryDebugPanel } from './BestiaryDebugPanel'
 import {
   truncateText,
+  type CharacterTraitSummary,
   type InventoryRow,
   type MapPanelMeta,
+  type SpellbookSummary,
   type StatBlock,
   type WorldStatePanel,
   type XpProgress,
@@ -13,7 +16,7 @@ import { profileIconSrcForCharacter } from './profileIcons'
 import type { ActivePlayer, Campaign, CampaignSegment, MapItem } from './types'
 import type { MainTab } from './SessionBoard'
 
-export type InspectorTab = 'party' | 'map' | 'canon' | 'inventory'
+export type InspectorTab = 'party' | 'map' | 'magic' | 'canon' | 'inventory' | 'bestiary'
 
 type DisplayCharacter = {
   name: string
@@ -43,6 +46,8 @@ type InspectorPanelProps = {
   inspectorTab: InspectorTab
   setInspectorTab: Dispatch<SetStateAction<InspectorTab>>
   setMainTab: Dispatch<SetStateAction<MainTab>>
+  baseUrl: string
+  auth: string
   displayCharacter: DisplayCharacter
   characterAvatarSrc: string
   xpProgress: XpProgress
@@ -54,8 +59,11 @@ type InspectorPanelProps = {
   editSelectedPlayer: () => void
   deleteSelectedPlayer: () => void
   selectedCampaignId: number | null
+  selectedSessionId: number | null
   createPlayerPending: boolean
   statBlock: StatBlock
+  spellbook: SpellbookSummary
+  characterTraits: CharacterTraitSummary[]
   inventoryRows: InventoryRow[]
   inventoryWeightLabel: string
   inventoryGoldLabel: string
@@ -115,6 +123,8 @@ export function InspectorPanel({
   inspectorTab,
   setInspectorTab,
   setMainTab,
+  baseUrl,
+  auth,
   displayCharacter,
   characterAvatarSrc,
   xpProgress,
@@ -126,8 +136,11 @@ export function InspectorPanel({
   editSelectedPlayer,
   deleteSelectedPlayer,
   selectedCampaignId,
+  selectedSessionId,
   createPlayerPending,
   statBlock,
+  spellbook,
+  characterTraits,
   inventoryRows,
   inventoryWeightLabel,
   inventoryGoldLabel,
@@ -168,6 +181,13 @@ export function InspectorPanel({
     : worldStatePanel.knownLocations.slice(0, VISIBLE_WORLD_STATE_ITEMS)
   const olderNpcCount = Math.max(0, worldStatePanel.knownNpcs.length - VISIBLE_WORLD_STATE_ITEMS)
   const olderLocationCount = Math.max(0, worldStatePanel.knownLocations.length - VISIBLE_WORLD_STATE_ITEMS)
+  const visibleSpells = inspectorTab === 'magic' ? spellbook.knownSpells : spellbook.knownSpells.slice(0, 5)
+  const visibleCharacterTraits = inspectorTab === 'magic' ? characterTraits : characterTraits.slice(0, 4)
+  const spellbookSourceLabel = spellbook.sources.some((source) => source === 'aidm-original')
+    ? 'AIDM'
+    : spellbook.sources.find((source) => source.toLowerCase().includes('class')) ||
+      spellbook.sources[0] ||
+      'Known'
 
   return (
     <aside className="right-inspector">
@@ -193,6 +213,15 @@ export function InspectorPanel({
         <button
           type="button"
           role="tab"
+          aria-selected={inspectorTab === 'magic'}
+          className={inspectorTab === 'magic' ? 'active' : ''}
+          onClick={() => setInspectorTab('magic')}
+        >
+          Magic
+        </button>
+        <button
+          type="button"
+          role="tab"
           aria-selected={inspectorTab === 'canon'}
           className={inspectorTab === 'canon' ? 'active' : ''}
           onClick={() => setInspectorTab('canon')}
@@ -207,6 +236,15 @@ export function InspectorPanel({
           onClick={() => setInspectorTab('inventory')}
         >
           Inventory
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={inspectorTab === 'bestiary'}
+          className={inspectorTab === 'bestiary' ? 'active' : ''}
+          onClick={() => setInspectorTab('bestiary')}
+        >
+          Bestiary
         </button>
       </div>
 
@@ -344,6 +382,73 @@ export function InspectorPanel({
         </section>
       ) : null}
 
+      {inspectorTab === 'party' || inspectorTab === 'magic' ? (
+        <section className="inspector-box spellbook-box">
+          <div className="box-title">
+            <h3>Spellbook ({spellbook.knownSpells.length})</h3>
+            <span>{spellbookSourceLabel}</span>
+          </div>
+          <div className="spellbook-list" aria-label="Known spells">
+            {visibleSpells.length ? (
+              visibleSpells.map((spell) => (
+                <div key={spell.id || spell.name} className={spell.prepared ? 'prepared' : ''}>
+                  <span className="spell-level">{spell.levelLabel}</span>
+                  <div>
+                    <strong>{spell.name}</strong>
+                    <small>
+                      {[spell.source, spell.catalog === 'aidm-original' ? 'AIDM' : '']
+                        .filter(Boolean)
+                        .join(' / ') || 'Known spell'}
+                    </small>
+                    {spell.description ? (
+                      <p>{truncateText(spell.description, inspectorTab === 'magic' ? 110 : 82)}</p>
+                    ) : null}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="empty-row">No spells recorded.</div>
+            )}
+          </div>
+          {inspectorTab !== 'magic' && spellbook.knownSpells.length > 5 ? (
+            <button type="button" className="view-link" onClick={() => setInspectorTab('magic')}>
+              View All Magic <ExternalLink size={12} />
+            </button>
+          ) : null}
+        </section>
+      ) : null}
+
+      {(inspectorTab === 'party' || inspectorTab === 'magic') && characterTraits.length ? (
+        <section className="inspector-box trait-box">
+          <div className="box-title">
+            <h3>Abilities &amp; Traits ({characterTraits.length})</h3>
+            <span>{characterTraits.some((trait) => trait.active) ? 'Active' : 'Traits'}</span>
+          </div>
+          <div className="trait-list" aria-label="Character abilities and traits">
+            {visibleCharacterTraits.map((trait) => (
+              <div key={trait.id || trait.name} className={trait.active ? 'active' : ''}>
+                <span className="trait-type">{trait.typeLabel}</span>
+                <div>
+                  <strong>{trait.name}</strong>
+                  <small>
+                    {[trait.source, trait.actionType, trait.cooldown].filter(Boolean).join(' / ') ||
+                      'Character trait'}
+                  </small>
+                  {trait.description ? (
+                    <p>{truncateText(trait.description, inspectorTab === 'magic' ? 120 : 86)}</p>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+          {inspectorTab !== 'magic' && characterTraits.length > 4 ? (
+            <button type="button" className="view-link" onClick={() => setInspectorTab('magic')}>
+              View All Magic <ExternalLink size={12} />
+            </button>
+          ) : null}
+        </section>
+      ) : null}
+
       {inspectorTab === 'party' || inspectorTab === 'inventory' ? (
         <section className="inspector-box">
           <div className="box-title">
@@ -358,7 +463,7 @@ export function InspectorPanel({
           </div>
           <div className="inventory-table">
             {inventoryRows.length ? (
-              inventoryRows.slice(0, inspectorTab === 'inventory' ? 8 : 4).map((item, index) => (
+              (inspectorTab === 'inventory' ? inventoryRows : inventoryRows.slice(0, 4)).map((item, index) => (
                 <div key={`${item.id || item.item}-${index}`} className={item.equipped ? 'equipped' : ''}>
                   <span className={`item-icon ${item.icon}`}>
                     <ThinIcon name={inventoryIconName(item.icon)} size={15} />
@@ -388,9 +493,11 @@ export function InspectorPanel({
               <div className="empty-row">No inventory recorded.</div>
             )}
           </div>
-          <button type="button" className="view-link" onClick={() => setInspectorTab('inventory')}>
-            View All Inventory <ExternalLink size={12} />
-          </button>
+          {inspectorTab !== 'inventory' && inventoryRows.length > 4 ? (
+            <button type="button" className="view-link" onClick={() => setInspectorTab('inventory')}>
+              View All Inventory <ExternalLink size={12} />
+            </button>
+          ) : null}
         </section>
       ) : null}
 
@@ -446,6 +553,58 @@ export function InspectorPanel({
               <strong>{worldStatePanel.dangerLevel}</strong>
             </div>
           </div>
+          {worldStatePanel.combat.active ? (
+            <div className="combat-state-panel">
+              <div className="combat-state-header">
+                <span>
+                  <Swords size={13} aria-hidden="true" />
+                  Round {worldStatePanel.combat.round}
+                </span>
+                <small>{worldStatePanel.combat.battlefield}</small>
+              </div>
+              <p>{worldStatePanel.combat.goal}</p>
+              <div className="combatant-list">
+                {worldStatePanel.combat.enemies.slice(0, 5).map((enemy) => (
+                  <div key={enemy.id || enemy.name} className={`combatant-row health-${enemy.healthTone}`}>
+                    <div>
+                      <strong>{enemy.name}</strong>
+                      <small>
+                        {enemy.health}
+                        {enemy.conditions.length ? ` / ${enemy.conditions.join(', ')}` : ''}
+                        {worldStatePanel.combat.debugEnabled && enemy.morale !== '—' ? ` / morale ${enemy.morale}` : ''}
+                        {worldStatePanel.combat.debugEnabled && enemy.position ? ` / ${enemy.position}` : ''}
+                        {worldStatePanel.combat.debugEnabled && enemy.selectionScore ? ` / score ${enemy.selectionScore}` : ''}
+                        {worldStatePanel.combat.debugEnabled && enemy.brainSource ? ` / ${enemy.brainSource}` : ''}
+                      </small>
+                    </div>
+                    <span title={worldStatePanel.combat.debugEnabled && enemy.selectionMethod ? enemy.selectionMethod : undefined}>
+                      {enemy.intent || 'watching'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {worldStatePanel.combat.debugEnabled ? (
+                <div className="combat-debug-strip">
+                  <span>{worldStatePanel.combat.resolverMethod || 'manual'}</span>
+                  <span>{worldStatePanel.combat.creatureSource || 'unknown source'}</span>
+                  <span>{worldStatePanel.combat.tacticalLevel}</span>
+                  {worldStatePanel.combat.combatStartedBy ? <span>{worldStatePanel.combat.combatStartedBy}</span> : null}
+                  {worldStatePanel.combat.initiativeRequired ? <span>initiative</span> : null}
+                  {worldStatePanel.combat.endReason ? <span>{worldStatePanel.combat.endReason}</span> : null}
+                  {worldStatePanel.combat.enemies.flatMap((enemy) => enemy.moraleEvents).slice(0, 3).map((event) => (
+                    <span key={event}>{event}</span>
+                  ))}
+                </div>
+              ) : null}
+              {worldStatePanel.combat.telegraphs.length ? (
+                <div className="combat-telegraphs">
+                  {worldStatePanel.combat.telegraphs.map((telegraph) => (
+                    <span key={telegraph}>{telegraph}</span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div className="world-state-list">
             <div>
               <strong>Active Quests</strong>
@@ -518,6 +677,15 @@ export function InspectorPanel({
             </div>
           </div>
         </section>
+      ) : null}
+
+      {inspectorTab === 'bestiary' ? (
+        <BestiaryDebugPanel
+          baseUrl={baseUrl}
+          auth={auth}
+          selectedCampaignId={selectedCampaignId}
+          selectedSessionId={selectedSessionId}
+        />
       ) : null}
 
       {inspectorTab === 'party' || inspectorTab === 'map' ? (

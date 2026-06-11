@@ -16,6 +16,8 @@ import {
   turnNumber,
   turnPersistenceLabel,
 } from './gameSelectors'
+import { SceneMusicPlayer } from './SceneMusicPlayer'
+import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
 import type { Campaign, ClarificationRequest, Player, SessionState, SessionSummary, TimelineEntry } from './types'
 
 export type MainTab = 'turns' | 'dm' | 'notes'
@@ -76,6 +78,12 @@ function saveChatTextSettings(settings: ChatTextSettings) {
 type SessionBoardProps = {
   activeSessionTitle: string
   campaignTitle: string
+  sessionId: number | null
+  playerId: number | null
+  showSceneMusicPlayer: boolean
+  duckMusicForNarration: boolean
+  sceneMusicSyncState: SceneMusicSyncState | null
+  onSceneMusicControl: (payload: SceneMusicControlPayload) => void
   workspaceLoading: boolean
   sessionLoading: boolean
   mainTab: MainTab
@@ -141,6 +149,12 @@ function formatClock(value: string | null) {
 export function SessionBoard({
   activeSessionTitle,
   campaignTitle,
+  sessionId,
+  playerId,
+  showSceneMusicPlayer,
+  duckMusicForNarration,
+  sceneMusicSyncState,
+  onSceneMusicControl,
   workspaceLoading,
   sessionLoading,
   mainTab,
@@ -318,6 +332,16 @@ export function SessionBoard({
         </button>
       </div>
 
+      {showSceneMusicPlayer ? (
+        <SceneMusicPlayer
+          sessionId={sessionId}
+          playerId={playerId}
+          duckForNarration={duckMusicForNarration}
+          musicSyncState={sceneMusicSyncState}
+          onMusicControl={onSceneMusicControl}
+        />
+      ) : null}
+
       <div className="chat-reading-control">
         <button
           type="button"
@@ -427,29 +451,31 @@ export function SessionBoard({
               </div>
             )}
 
-            <article className="turn-row current">
-              <div className="turn-number">
-                {currentResponseEntry ? turnNumber(currentResponseEntry, turnRows.length) : '—'}
-              </div>
-              <div className="dm-response-card">
-                <div className="turn-speaker">
-                  <strong>{currentResponseEntry?.speaker ?? 'DM'}</strong>
-                  <span>{currentResponseEntry?.streaming ? 'Streaming' : 'Latest Response'}</span>
+            {currentResponseEntry ? (
+              <article className="turn-row current">
+                <div className="turn-number">
+                  {turnNumber(currentResponseEntry, turnRows.length)}
                 </div>
-                <div className="response-copy">
-                  <p>{latestDmText}</p>
+                <div className="dm-response-card">
+                  <div className="turn-speaker">
+                    <strong>{currentResponseEntry.speaker}</strong>
+                    <span>{currentResponseEntry.streaming ? 'Streaming' : 'Latest Response'}</span>
+                  </div>
+                  <div className="response-copy">
+                    <p>{latestDmText}</p>
+                  </div>
+                  <div className={`stream-state ${sendPending || streamingTurnActive ? 'streaming' : ''}`}>
+                    <span />
+                    {streamLabel}
+                  </div>
+                  <div className="execution-footer">
+                    Tokens: {dmExecutionStats.tokens} <span>|</span> Time: {dmExecutionStats.time}{' '}
+                    <span>|</span> Model: {dmExecutionStats.model} <span>|</span> Temp:{' '}
+                    {dmExecutionStats.temperature}
+                  </div>
                 </div>
-                <div className={`stream-state ${sendPending || streamingTurnActive ? 'streaming' : ''}`}>
-                  <span />
-                  {streamLabel}
-                </div>
-                <div className="execution-footer">
-                  Tokens: {dmExecutionStats.tokens} <span>|</span> Time: {dmExecutionStats.time}{' '}
-                  <span>|</span> Model: {dmExecutionStats.model} <span>|</span> Temp:{' '}
-                  {dmExecutionStats.temperature}
-                </div>
-              </div>
-            </article>
+              </article>
+            ) : null}
           </section>
           {showJumpToLatest ? (
             <button

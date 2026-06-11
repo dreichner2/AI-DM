@@ -103,6 +103,15 @@ def _chunk_text_for_stream(text: str, max_chunk_size: int = 260):
         start = split_at
 
 
+def _completion_chunks_for_stream(provider: BaseLLMProvider, request: ProviderRequest, user_input: str):
+    response = provider.generate(request)
+    text = response.text.strip()
+    if text:
+        yield from _chunk_text_for_stream(text)
+        return
+    yield _fallback_dm_response(user_input)
+
+
 def query_dm_function(user_input, context, speaking_player_id=None, rules_hint: dict | None = None):
     request = build_dm_generate_request(user_input=str(user_input), context=str(context), rules_hint=rules_hint)
     _record_prompt_context_estimate('dm_generate', request, context)
@@ -129,26 +138,34 @@ def query_dm_function_stream(user_input, context, speaking_player=None, rules_hi
 
     provider = get_provider()
     try:
-        if isinstance(provider, NvidiaChatProvider):
+        if type(provider) is NvidiaChatProvider:
             # NVIDIA/Kimi's SSE path has been materially less reliable than
             # single-shot generation for large campaign prompts. For gameplay,
             # prefer the stable completion path and stream it to the client in
             # application-sized chunks.
-            response = provider.generate(request)
-            text = response.text.strip()
-            if text:
-                for chunk in _chunk_text_for_stream(text):
-                    yield chunk
-                return
-            yield _fallback_dm_response(user_input)
+            yield from _completion_chunks_for_stream(provider, request, str(user_input))
             return
 
         yielded = False
-        for chunk in provider.stream(request):
-            yielded = True
-            if chunk:
-                yield chunk
+        try:
+            for chunk in provider.stream(request):
+                yielded = True
+                if chunk:
+                    yield chunk
+        except Exception:
+            if yielded or not isinstance(provider, NvidiaChatProvider):
+                raise
+            telemetry_event(
+                'llm.query_dm_stream.completion_fallback',
+                payload={'provider': getattr(provider, 'provider_name', provider.__class__.__name__)},
+                severity='warning',
+            )
+            yield from _completion_chunks_for_stream(provider, request, str(user_input))
+            return
         if not yielded:
+            if isinstance(provider, NvidiaChatProvider):
+                yield from _completion_chunks_for_stream(provider, request, str(user_input))
+                return
             yield _fallback_dm_response(user_input)
     except Exception as exc:
         logger.warning('DM provider failure in stream: %s', str(exc))

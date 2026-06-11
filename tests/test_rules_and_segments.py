@@ -22,6 +22,26 @@ def test_rules_classifier_detects_decisive_attack_wording():
     assert hint.outcome_deferred is True
 
 
+def test_rules_classifier_detects_unarmed_attack_wording():
+    hint = classify_player_action('I punch a hole through the machine.')
+    assert hint.requires_roll is True
+    assert hint.roll_type == 'attack'
+    assert hint.outcome_deferred is True
+
+
+def test_rules_classifier_detects_spell_actions_as_spell_checks():
+    hint = classify_player_action('I use my magic to make the dagger huge.')
+    assert hint.requires_roll is True
+    assert hint.roll_type == 'spell'
+    assert hint.outcome_deferred is True
+
+
+def test_rules_classifier_ignores_retrospective_attack_references():
+    hint = classify_player_action('I was the one who killed it, so please teach me to fly first.')
+    assert hint.requires_roll is False
+    assert hint.roll_type is None
+
+
 def test_rules_classifier_marks_resolved_when_roll_is_provided():
     hint = classify_player_action('I attack and rolled a d20: 17')
     assert hint.requires_roll is True

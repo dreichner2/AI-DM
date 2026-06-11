@@ -15,6 +15,7 @@ PHASE_1_STATE_CHANGE_TYPES = {
     'health.damage',
     'race_ability.mark_used',
     'race_ability.refresh',
+    'spell.learn',
     'xp.add',
     'xp.remove',
 }
@@ -39,6 +40,22 @@ WORLD_STATE_CHANGE_TYPES = {
     'flag.unset',
 }
 
-STATE_CHANGE_TYPES = PHASE_1_STATE_CHANGE_TYPES | WORLD_STATE_CHANGE_TYPES
+COMBAT_STATE_CHANGE_TYPES = {
+    'combat.start',
+    'combat.update',
+    'combat.round.advance',
+    'combat.participant.update',
+    'combat.move',
+    'combat.condition.add',
+    'combat.condition.remove',
+    'combat.ability.mark_used',
+    'combat.intent.set',
+    'combat.morale.update',
+    'combat.morale.event',
+    'combat.battlefield.update',
+    'combat.end',
+}
+
+STATE_CHANGE_TYPES = PHASE_1_STATE_CHANGE_TYPES | WORLD_STATE_CHANGE_TYPES | COMBAT_STATE_CHANGE_TYPES
 
 CURRENCY_TYPES = {'pp', 'gp', 'ep', 'sp', 'cp'}

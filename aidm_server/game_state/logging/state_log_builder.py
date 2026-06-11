@@ -84,6 +84,12 @@ def _change_message(change: dict[str, Any], *, status: str, reason: str | None =
     if change_type == 'xp.remove':
         suffix = ' (capped at current XP).' if status == 'modified' else '.'
         return f"Removed {_amount(change)} XP{suffix}"
+    if change_type == 'spell.learn':
+        spell_payload = change.get('spell') if isinstance(change.get('spell'), dict) else {}
+        spell_name = str(change.get('spellName') or change.get('spell_name') or spell_payload.get('name') or 'spell').strip()
+        if change.get('alreadyKnown'):
+            return f"Already knew {spell_name}."
+        return f"Learned spell: {spell_name}."
     if change_type == 'inventory.mark_used':
         return f"Marked {_item_name(change)} as recently used."
     if change_type == 'scene.update':

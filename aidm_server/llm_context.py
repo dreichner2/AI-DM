@@ -33,6 +33,7 @@ MAX_LIVE_RECENT_LOCATIONS = 8
 MAX_LIVE_ACTIVE_NPCS = 8
 MAX_LIVE_RECENT_KNOWN_NPCS = 8
 MAX_LIVE_FLAGS = 20
+MAX_LIVE_COMBAT_PARTICIPANTS = 12
 
 
 def _truncate_text(value: str | None, max_length: int) -> str:
@@ -147,6 +148,55 @@ def _compact_flags(flags) -> dict:
     return compact
 
 
+def _compact_combat(snapshot: dict) -> dict:
+    combat = snapshot.get('combat') if isinstance(snapshot.get('combat'), dict) else {}
+    if not combat:
+        return {'status': 'none'}
+    participants = []
+    for participant in combat.get('participants') or []:
+        if not isinstance(participant, dict):
+            continue
+        hp = participant.get('hp') if isinstance(participant.get('hp'), dict) else {}
+        intent = participant.get('currentIntent') if isinstance(participant.get('currentIntent'), dict) else {}
+        participants.append(
+            {
+                'id': _text_or_none(participant.get('id'), 120),
+                'name': _text_or_none(participant.get('name'), 160),
+                'team': _text_or_none(participant.get('team'), 40),
+                'kind': _text_or_none(participant.get('kind'), 40),
+                'hp': {
+                    'current': hp.get('current'),
+                    'max': hp.get('max'),
+                },
+                'conditions': _string_list(participant.get('conditions'), limit=8),
+                'morale': participant.get('morale') if isinstance(participant.get('morale'), (int, float)) else None,
+                'intent': {
+                    'intentType': _text_or_none(intent.get('intentType'), 80),
+                    'reason': _text_or_none(intent.get('reason'), 220),
+                    'visibleTelegraph': _text_or_none(intent.get('visibleTelegraph'), 220),
+                    'suggestedSpeech': _text_or_none(intent.get('suggestedSpeech'), 160),
+                }
+                if intent
+                else None,
+            }
+        )
+        if len(participants) >= MAX_LIVE_COMBAT_PARTICIPANTS:
+            break
+    battlefield = combat.get('battlefield') if isinstance(combat.get('battlefield'), dict) else {}
+    return {
+        'status': _text_or_none(combat.get('status'), 40) or 'none',
+        'round': combat.get('round') if isinstance(combat.get('round'), (int, float)) else 1,
+        'battlefield': {
+            'environmentType': _text_or_none(battlefield.get('environmentType'), 80),
+            'lighting': _text_or_none(battlefield.get('lighting'), 40),
+            'visibility': _text_or_none(battlefield.get('visibility'), 80),
+        },
+        'encounterGoal': combat.get('encounterGoal') if isinstance(combat.get('encounterGoal'), dict) else None,
+        'participants': participants,
+        'lastRoundSummary': _text_or_none(combat.get('lastRoundSummary'), 360),
+    }
+
+
 def _unique_records(records: list[dict]) -> list[dict]:
     seen: set[str] = set()
     unique: list[dict] = []
@@ -242,6 +292,7 @@ def _compact_live_world_state(snapshot: dict) -> dict:
         'recentLocations': [_compact_location(location) for location in locations[:MAX_LIVE_RECENT_LOCATIONS]],
         'activeNpcs': [_compact_npc(npc) for npc in active_npcs[:MAX_LIVE_ACTIVE_NPCS]],
         'recentKnownNpcs': [_compact_npc(npc) for npc in recent_known_npcs[:MAX_LIVE_RECENT_KNOWN_NPCS]],
+        'combat': _compact_combat(snapshot),
         'flags': _compact_flags(snapshot.get('flags')),
     }
 

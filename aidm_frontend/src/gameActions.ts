@@ -1,4 +1,4 @@
-export type ComposerMode = 'action' | 'roll' | 'ability' | 'item' | 'interact' | 'emote' | 'ooc' | 'admin'
+export type ComposerMode = 'action' | 'roll' | 'ability' | 'spell' | 'item' | 'interact' | 'emote' | 'ooc' | 'admin'
 export type RollMode = 'normal' | 'advantage' | 'disadvantage'
 export type ResultVisibility = 'hidden_until_landed' | 'visible'
 export type InteractionType = 'speak_to' | 'act_on' | 'give_to' | 'take_from'
@@ -89,6 +89,10 @@ export type ActionIntent = {
     name: string
     quantity: number
   }
+  spell?: {
+    name: string
+    effect: string
+  }
   inventory_action?: InventoryAction
   cost_gold?: number
   interaction?: {
@@ -116,6 +120,8 @@ const COMPOSER_PREFIX_PATTERNS = [
   /^I roll a d\d{1,3}(?:\s*[+-]\s*\d+)?(?:\s+for\s+[^:\n]{1,120})?(?:\s*\([^)]*\))?\s*:\s*/i,
   /^[^:\n]{1,80}\s+attempts an ability check(?:\s*\([^)]*\))?:\s*/i,
   /^[^:\n]{1,80}\s+attempts a [^:\n]{1,40} check(?:\s*\([^)]*\))?:\s*/i,
+  /^[^:\n]{1,80}\s+cast(?:s)?\s+[^:\n]{1,80}:\s*/i,
+  /^[^:\n]{1,80}\s+cast(?:s)?\s+a spell:\s*/i,
   /^[^:\n]{1,80}\s+tr(?:y|ies) to pick up\s+[^:\n]{1,80}:\s*/i,
   /^[^:\n]{1,80}\s+tr(?:y|ies) to pick up\s+/i,
   /^[^:\n]{1,80}\s+tr(?:y|ies) to buy\s+[^:\n]{1,80}(?:\s+for\s+\d+\s+gold)?:\s*/i,
@@ -157,6 +163,7 @@ export function composerModeLabel(mode: ComposerMode, die: string) {
   if (mode === 'ooc') return 'Out of Character'
   if (mode === 'roll') return `Roll ${die.toUpperCase()}`
   if (mode === 'ability') return 'Ability Check'
+  if (mode === 'spell') return 'Spell'
   if (mode === 'item') return 'Item'
   if (mode === 'interact') return 'Player Interaction'
   if (mode === 'emote') return 'Emote'
@@ -295,6 +302,13 @@ export function abilityActionText(characterName: string, ability: AbilityOption 
   return `${characterName} attempts a ${label} check${modifier}: ${body}`.trim()
 }
 
+export function spellActionText(characterName: string, spellName: string, current: string) {
+  const body = stripComposerCommand(current)
+  const cleanSpellName = spellName.trim() || 'a spell'
+  const verb = characterName.trim().toLowerCase() === 'i' ? 'cast' : 'casts'
+  return `${characterName} ${verb} ${cleanSpellName}: ${body}`.trim()
+}
+
 export function rollActionText(die: string, ability: AbilityOption | null, current: string) {
   const body = stripComposerCommand(current)
   if (isInitiativeRollAbility(ability)) return `I roll for initiative: ${body}`.trim()
@@ -367,12 +381,14 @@ export function composerTextForMode(
   inventoryAction: InventoryAction = 'use',
   itemName = item?.name ?? '',
   costGold = '',
+  spellName = '',
 ) {
   const body = stripComposerCommand(current)
   if (mode === 'roll') return rollActionText(die, ability, current)
   if (mode === 'admin') return `[ADMIN] ${body}`
   if (mode === 'ooc') return `[OOC] ${body}`
   if (mode === 'ability') return abilityActionText(characterName, ability, current)
+  if (mode === 'spell') return spellActionText(characterName, spellName, current)
   if (mode === 'item') {
     const resolvedItemName =
       inventoryAction === 'pick_up' || inventoryAction === 'buy'
@@ -399,6 +415,7 @@ export function buildActionIntent({
   itemName,
   itemQuantity = '1',
   costGold = '0',
+  spellName = '',
   interactionType,
   interactionTarget,
 }: {
@@ -413,6 +430,7 @@ export function buildActionIntent({
   itemName?: string
   itemQuantity?: string
   costGold?: string
+  spellName?: string
   interactionType?: InteractionType
   interactionTarget?: InteractionTarget | null
 }): ActionIntent {
@@ -443,6 +461,21 @@ export function buildActionIntent({
       key: ability.key,
       label: ability.label,
       modifier: abilityModifierValue(ability),
+    }
+  }
+  if (mode === 'spell') {
+    const effect = stripComposerCommand(message)
+    const name = spellName.trim() || 'spell'
+    intent.spell = {
+      name,
+      effect,
+    }
+    if (ability) {
+      intent.ability = {
+        key: ability.key,
+        label: ability.label,
+        modifier: abilityModifierValue(ability),
+      }
     }
   }
   if (mode === 'item') {

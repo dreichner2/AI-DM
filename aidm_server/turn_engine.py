@@ -78,6 +78,10 @@ _HARMFUL_PVP_RE = re.compile(
     re.IGNORECASE,
 )
 _GENERIC_PLAYER_RACE_LABELS = {'human', 'elf', 'dwarf', 'gnome', 'halfling'}
+_INTERACTION_TARGET_CUE_RE = re.compile(
+    r'\b(?:to|at|toward|towards|with|from)\s+(?:the\s+)?(?P<target>[A-Za-z][A-Za-z0-9\'\-\s]{1,80}?)(?:\s*:|[.!?]|$)',
+    re.IGNORECASE,
+)
 
 
 def _coerce_player_id(value) -> int | None:
@@ -414,6 +418,12 @@ class TurnEngine:
         candidate = (text or '').lower()
         if re.search(r'\binitiative\b', candidate):
             return 'initiative'
+        if re.search(
+            r'\bspell\b|\bmagic\b|\bcast\b|\bconjure\b|\bsummon\b|\bsorcery\b|'
+            r'\bsorcerous\b|\btelekinesis\b|\blevitat\w*\b|\bwild magic\b',
+            candidate,
+        ):
+            return 'spell'
         if re.search(r'\battack\b|\bweapon\b', candidate):
             return 'attack'
         if re.search(r'\bstealth\b|\bsneak\b|\bhide\b', candidate):
@@ -489,6 +499,37 @@ class TurnEngine:
         players = Player.query.filter(Player.player_id.in_(player_ids)).all()
         return {player.player_id: player.character_name or player.name or f'Player {player.player_id}' for player in players}
 
+    def _pending_roll_context(self, pending_turn: DmTurn) -> dict:
+        required_player_ids = pending_turn_required_player_ids(pending_turn)
+        remaining_player_ids = pending_turn_remaining_player_ids(pending_turn)
+        relevant_player_ids = list(dict.fromkeys([
+            *(required_player_ids or []),
+            *(remaining_player_ids or []),
+            *([pending_turn.player_id] if pending_turn.player_id else []),
+        ]))
+        player_names = self._player_names_by_id(relevant_player_ids)
+        pending_summary = (pending_turn.player_input or '').strip().replace('\n', ' ')
+        if len(pending_summary) > 140:
+            pending_summary = f'{pending_summary[:137]}...'
+        pending_player_name = player_names.get(
+            pending_turn.player_id,
+            f'Player {pending_turn.player_id}' if pending_turn.player_id else 'Another player',
+        )
+        remaining_player_names = [
+            player_names.get(player_id, f'Player {player_id}')
+            for player_id in remaining_player_ids
+        ]
+        return {
+            'pending_turn_id': pending_turn.turn_id,
+            'pending_player_id': pending_turn.player_id,
+            'pending_player_name': pending_player_name,
+            'pending_rule_type': pending_turn.rule_type or 'check',
+            'pending_turn_summary': pending_summary,
+            'remaining_player_ids': remaining_player_ids,
+            'remaining_player_names': remaining_player_names,
+            'required_player_ids': required_player_ids,
+        }
+
     @staticmethod
     def _current_scene_npc_target(session_obj: Session, target: dict) -> dict | None:
         snapshot = safe_json_loads(session_obj.state_snapshot, {})
@@ -529,6 +570,71 @@ class TurnEngine:
             }
         return None
 
+    @classmethod
+    def _current_scene_npc_target_from_text(cls, session_obj: Session, text: str) -> dict | None:
+        snapshot = safe_json_loads(session_obj.state_snapshot, {})
+        if not isinstance(snapshot, dict):
+            return None
+        scene = snapshot.get('currentScene') if isinstance(snapshot.get('currentScene'), dict) else {}
+        active_npc_ids = {
+            str(value).strip()
+            for value in scene.get('activeNpcIds', [])
+            if str(value or '').strip()
+        } if isinstance(scene.get('activeNpcIds'), list) else set()
+        scene_location_id = str(scene.get('locationId') or '').strip()
+        npc_records: list[dict] = []
+        for key in ('knownNpcs', 'partyNpcs'):
+            value = snapshot.get(key)
+            if isinstance(value, list):
+                npc_records.extend([record for record in value if isinstance(record, dict)])
+        if not npc_records:
+            return None
+
+        normalized_text = str(text or '').lower()
+        explicit_target_terms = {normalized_text}
+        for match in _INTERACTION_TARGET_CUE_RE.finditer(text or ''):
+            target = str(match.group('target') or '').strip().lower()
+            if target:
+                explicit_target_terms.add(target)
+
+        matches: list[tuple[int, dict]] = []
+        for npc in npc_records:
+            npc_id = str(npc.get('id') or npc.get('npcId') or '').strip()
+            npc_name = str(npc.get('name') or '').strip()
+            if not npc_id or not npc_name:
+                continue
+            if active_npc_ids and npc_id not in active_npc_ids:
+                continue
+            npc_location_id = str(npc.get('locationId') or '').strip()
+            if not active_npc_ids and npc_location_id and scene_location_id and npc_location_id != scene_location_id:
+                continue
+            labels = [npc_name, npc_id.replace('_', ' ')]
+            aliases = npc.get('aliases') if isinstance(npc.get('aliases'), list) else []
+            labels.extend(str(alias) for alias in aliases if str(alias or '').strip())
+            best_score = 0
+            for label in labels:
+                label_text = str(label or '').strip().lower()
+                if not label_text:
+                    continue
+                label_pattern = cls._target_label_regex(label_text)
+                if label_pattern and re.search(label_pattern, normalized_text, re.IGNORECASE):
+                    best_score = max(best_score, 100 + len(label_text))
+                    continue
+                if any(label_text == term or label_text in term or term in label_text for term in explicit_target_terms):
+                    best_score = max(best_score, 50 + len(label_text))
+            if best_score:
+                matches.append((best_score, npc))
+
+        if not matches:
+            return None
+        matches.sort(key=lambda item: item[0], reverse=True)
+        npc = matches[0][1]
+        return {
+            'npc_id': str(npc.get('id') or npc.get('npcId') or '').strip(),
+            'character_name': str(npc.get('name') or 'Scene NPC').strip(),
+            'player_name': str(npc.get('role') or npc.get('disposition') or 'Current scene NPC').strip(),
+        }
+
     def _prepare_interaction_target(self, command: TurnCommand, campaign: Campaign, session_obj: Session) -> bool:
         action_intent = command.action_intent
         if not isinstance(action_intent, dict) or action_intent.get('kind') != 'interact':
@@ -566,6 +672,25 @@ class TurnEngine:
             target['character_name'] = npc_target['character_name']
             target['player_name'] = npc_target['player_name']
             target.pop('player_id', None)
+            return True
+
+        text_npc_target = self._current_scene_npc_target_from_text(session_obj, command.user_input)
+        if text_npc_target:
+            target['kind'] = 'npc'
+            target['npc_id'] = text_npc_target['npc_id']
+            target['character_name'] = text_npc_target['character_name']
+            target['player_name'] = text_npc_target['player_name']
+            target.pop('player_id', None)
+            telemetry_event(
+                'socket.send_message.interaction_target_reconciled_to_npc',
+                payload={
+                    'sid': command.sid,
+                    'session_id': command.session_id,
+                    'player_id': command.player_id,
+                    'npc_id': text_npc_target['npc_id'],
+                    'campaign_id': campaign.campaign_id,
+                },
+            )
             return True
 
         target_player_id = target.get('player_id') if isinstance(target, dict) else None
@@ -929,14 +1054,17 @@ class TurnEngine:
             if rule_hint.roll_value is None:
                 remaining_player_ids = pending_turn_remaining_player_ids(any_pending_turn)
                 if len(pending_turn_required_player_ids(any_pending_turn)) > 1:
+                    pending_context = self._pending_roll_context(any_pending_turn)
+                    remaining_names = pending_context.get('remaining_player_names') or []
+                    waiting_on = ', '.join(remaining_names) if remaining_names else 'all requested players'
                     self.emit(
                         'error',
                         socket_error(
                             'pending_rolls_block_story',
-                            'The story is waiting for all requested rolls before it can move forward.',
+                            f'The story is waiting on {waiting_on} to roll before it can move forward.',
                             {
                                 'session_id': command.session_id,
-                                'pending_turn_id': any_pending_turn.turn_id,
+                                **pending_context,
                                 'remaining_player_ids': remaining_player_ids,
                             },
                         ),
@@ -955,15 +1083,22 @@ class TurnEngine:
                     return
 
             if rule_hint.roll_value is not None and any_pending_turn.player_id != command.player_id:
+                pending_context = self._pending_roll_context(any_pending_turn)
+                pending_name = pending_context.get('pending_player_name') or 'Another player'
+                pending_rule = pending_context.get('pending_rule_type') or 'check'
+                pending_summary = pending_context.get('pending_turn_summary') or 'their last action'
+                message = (
+                    f'{pending_name} has an unresolved {pending_rule} from turn '
+                    f'{any_pending_turn.turn_id}: "{pending_summary}". Your roll cannot resolve it.'
+                )
                 self.emit(
                     'error',
                     socket_error(
                         'pending_roll_not_owned',
-                        'Another player has the unresolved check. Your roll cannot resolve it.',
+                        message,
                         {
                             'session_id': command.session_id,
-                            'pending_turn_id': any_pending_turn.turn_id,
-                            'pending_player_id': any_pending_turn.player_id,
+                            **pending_context,
                         },
                     ),
                 )
@@ -1082,7 +1217,6 @@ class TurnEngine:
                 turn_number=session_turn_number,
             ),
             room=str(command.session_id),
-            include_self=False,
         )
 
         if incoming_result.get('waiting_for_rolls'):
@@ -1104,6 +1238,9 @@ class TurnEngine:
         pre_pipeline_result: dict = {}
         state_pipeline_started = time.perf_counter()
         try:
+            active_player_ids = []
+            if self.active_player_ids:
+                active_player_ids = [player_id for player_id in self.active_player_ids(command.session_id) if player_id]
             pre_pipeline_result = pre_dm_pipeline(
                 turn=turn,
                 session_obj=session_obj,
@@ -1121,6 +1258,7 @@ class TurnEngine:
                     if isinstance(command.state_pipeline_override, dict)
                     else None
                 ),
+                active_player_ids=active_player_ids,
             )
             db.session.commit()
             self._record_phase_timing(
@@ -1407,6 +1545,9 @@ class TurnEngine:
                     gate['remaining_player_ids'] = remaining_player_ids
                     pending_metadata['roll_gate'] = gate
                     pending_turn_to_resolve.outcome_status = 'deferred' if remaining_player_ids else 'resolved'
+                    if remaining_player_ids:
+                        turn.status = 'waiting_for_group_roll'
+                        turn.outcome_status = 'resolved'
                 else:
                     pending_turn_to_resolve.outcome_status = 'resolved'
                 pending_metadata['resolved_by_turn_id'] = turn.turn_id
@@ -1788,10 +1929,22 @@ class TurnEngine:
                 record_phase_timing=self._record_phase_timing,
             )
 
+    @staticmethod
+    def _turn_has_unresolved_roll_gate(turn_obj: DmTurn) -> bool:
+        if turn_obj.outcome_status == 'deferred':
+            return True
+        metadata = safe_json_loads(turn_obj.metadata_json, {})
+        metadata = metadata if isinstance(metadata, dict) else {}
+        gate = metadata.get('roll_gate')
+        if not isinstance(gate, dict):
+            return False
+        remaining_player_ids = gate.get('remaining_player_ids')
+        return isinstance(remaining_player_ids, list) and bool(remaining_player_ids)
+
     def _advance_structured_turn_if_ready(self, *, turn_obj: DmTurn, action_intent: dict | None) -> None:
         if self._is_admin_override(action_intent):
             return
-        if turn_obj.outcome_status == 'deferred':
+        if self._turn_has_unresolved_roll_gate(turn_obj):
             return
         if not self.active_player_ids:
             return
@@ -1935,12 +2088,16 @@ class TurnEngine:
                     session_for_pipeline = db.session.get(Session, turn.session_id)
                     if session_for_pipeline is None:
                         raise RuntimeError('Turn session not found for state pipeline.')
+                    active_player_ids = []
+                    if self.active_player_ids:
+                        active_player_ids = [player_id for player_id in self.active_player_ids(turn.session_id) if player_id]
                     post_pipeline_result = post_dm_pipeline(
                         turn=turn_obj,
                         session_obj=session_for_pipeline,
                         campaign=campaign,
                         player=player_obj,
                         dm_response_text=dm_response_text,
+                        active_player_ids=active_player_ids,
                     )
                     immediate_state_summary = post_pipeline_result.get('legacyImmediateSummary') or {}
                     state_log = post_pipeline_result.get('stateLog') or {}

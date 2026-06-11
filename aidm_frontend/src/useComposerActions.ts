@@ -31,7 +31,7 @@ import {
   turnControlBlockMessage,
   turnControlStatusLabel,
 } from './turnControl'
-import type { ActivePlayer, Campaign, Player, SessionState, StreamingTurn, TimelineEntry, TurnControl } from './types'
+import type { ActivePlayer, Campaign, Player, SessionState, TimelineEntry, TurnControl } from './types'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -41,6 +41,14 @@ function cleanString(value: unknown, fallback = '') {
   if (typeof value === 'string' && value.trim()) return value.trim()
   if (typeof value === 'number' && Number.isFinite(value)) return String(value)
   return fallback
+}
+
+function preferredSpellAbilityKey(player: Player | null) {
+  const classText = `${player?.char_class ?? ''} ${player?.class_ ?? ''}`.toLowerCase()
+  if (/\b(?:sorcerer|bard|warlock|paladin)\b/.test(classText)) return 'charisma'
+  if (/\b(?:cleric|druid|ranger|monk)\b/.test(classText)) return 'wisdom'
+  if (/\b(?:wizard|artificer|eldritch|arcane)\b/.test(classText)) return 'intelligence'
+  return 'charisma'
 }
 
 type SceneNpcTargetEntry = {
@@ -113,11 +121,11 @@ type UseComposerActionsOptions = {
   selectedPlayerId: number | null
   selectedSessionId: number | null
   sendPending: boolean
+  dmResponseBlocking: boolean
   setOptimisticEntries: Dispatch<SetStateAction<TimelineEntry[]>>
   setSendPending: Dispatch<SetStateAction<boolean>>
   socketRef: RefObject<Socket | null>
   stopTtsAudio: () => void
-  streamingTurn: StreamingTurn | null
   turnControl: TurnControl
   pushError: (category: 'validation', message: string) => void
 }
@@ -134,11 +142,11 @@ export function useComposerActions({
   selectedPlayerId,
   selectedSessionId,
   sendPending,
+  dmResponseBlocking,
   setOptimisticEntries,
   setSendPending,
   socketRef,
   stopTtsAudio,
-  streamingTurn,
   turnControl,
   pushError,
 }: UseComposerActionsOptions) {
@@ -155,6 +163,7 @@ export function useComposerActions({
   const [itemDraftName, setItemDraftName] = useState('')
   const [itemQuantity, setItemQuantity] = useState('1')
   const [itemCostGold, setItemCostGold] = useState('0')
+  const [spellName, setSpellName] = useState('')
   const [selectedInteractionType, setSelectedInteractionType] = useState<InteractionType>('speak_to')
   const [rawSelectedInteractionTargetId, setSelectedInteractionTargetId] = useState('')
   const [adminPasscode, setAdminPasscode] = useState(() => sessionStorage.getItem('aidm:adminPasscode') ?? '')
@@ -258,6 +267,14 @@ export function useComposerActions({
       : selectedAbilityKey === INITIATIVE_ROLL_ABILITY_KEY
         ? initiativeAbility
         : abilityOptions.find((ability) => ability.key === selectedAbilityKey) ?? null
+  const defaultSpellAbility =
+    abilityOptions.find((ability) => ability.key === preferredSpellAbilityKey(selectedPlayer)) ??
+    abilityOptions.find((ability) => ability.key === 'charisma') ??
+    abilityOptions.find((ability) => ability.key === 'intelligence') ??
+    abilityOptions[0] ??
+    null
+  const selectedSpellAbility =
+    selectedAbilityKey === INITIATIVE_ROLL_ABILITY_KEY ? defaultSpellAbility : selectedAbility ?? defaultSpellAbility
   const selectedItem =
     itemOptions.find((item) => item.name === selectedItemName) ?? itemOptions[0] ?? null
   const selectedInventoryActionRequiresItem = ['use', 'equip', 'unequip', 'drop', 'give', 'sell'].includes(selectedInventoryAction)
@@ -302,7 +319,7 @@ export function useComposerActions({
   }
 
   const submitAction = (overrideMessage?: string, overrideIntent?: ActionIntent) => {
-    if (sendPending || streamingTurn) {
+    if (sendPending || dmResponseBlocking) {
       pushError('validation', 'Wait for the current DM response to save before sending again.')
       return
     }
@@ -349,12 +366,13 @@ export function useComposerActions({
         mode: composerMode,
         message,
         clientMessageId,
-        ability: selectedAbility,
+        ability: composerMode === 'spell' ? selectedSpellAbility : selectedAbility,
         item: selectedItem,
         inventoryAction: selectedInventoryAction,
         itemName: itemIntentName,
         itemQuantity,
         costGold: itemCostGold,
+        spellName,
         interactionType: selectedInteractionType,
         interactionTarget: selectedInteractionTarget,
       })
@@ -405,6 +423,12 @@ export function useComposerActions({
 
   const applyComposerMode = (mode: ComposerMode, die = selectedDie) => {
     if (mode === 'admin' && !adminToolsUnlocked) return
+    const abilityForMode = mode === 'spell' ? selectedSpellAbility : selectedAbility
+    if (mode === 'spell' && abilityForMode) {
+      setSelectedAbilityKey(abilityForMode.key)
+      setRollModifier(String(abilityModifierValue(abilityForMode)))
+      setRollReason(`${abilityForMode.label} spell`)
+    }
     setComposerMode(mode)
     setActionText((current) =>
       composerTextForMode(
@@ -412,13 +436,14 @@ export function useComposerActions({
         current,
         selectedPlayer?.character_name ?? 'I',
         die,
-        selectedAbility,
+        abilityForMode,
         selectedItem,
         selectedInteractionTarget,
         selectedInteractionType,
         selectedInventoryAction,
         itemIntentName,
         itemCostGold,
+        spellName,
       ),
     )
   }
@@ -440,7 +465,7 @@ export function useComposerActions({
       nextKey === INITIATIVE_ROLL_ABILITY_KEY
         ? INITIATIVE_ROLL_REASON
         : nextAbility
-          ? `${nextAbility.label} check`
+          ? `${nextAbility.label} ${composerMode === 'spell' ? 'spell' : 'check'}`
           : '',
     )
     if (composerMode === 'roll') {
@@ -457,6 +482,28 @@ export function useComposerActions({
           selectedInventoryAction,
           itemIntentName,
           itemCostGold,
+        ),
+      )
+    }
+  }
+
+  const updateSpellName = (nextName: string) => {
+    setSpellName(nextName)
+    if (composerMode === 'spell') {
+      setActionText((current) =>
+        composerTextForMode(
+          'spell',
+          current,
+          selectedPlayer?.character_name ?? 'I',
+          selectedDie,
+          selectedSpellAbility,
+          selectedItem,
+          selectedInteractionTarget,
+          selectedInteractionType,
+          selectedInventoryAction,
+          itemIntentName,
+          itemCostGold,
+          nextName,
         ),
       )
     }
@@ -620,6 +667,7 @@ export function useComposerActions({
     rollModifier,
     rollReason,
     rollTargetPendingTurnId,
+    spellName,
     selectedAbility,
     selectedAbilityKey,
     selectedDie,
@@ -642,6 +690,7 @@ export function useComposerActions({
     setRollReason,
     setRollTargetPendingTurnId,
     updateRollAbilityKey,
+    updateSpellName,
     setSelectedItemName,
     updateSelectedInventoryAction,
     updateItemDraftName,

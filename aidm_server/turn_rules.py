@@ -11,6 +11,7 @@ from aidm_server.rules import RuleHint
 ROLL_TYPE_LABELS = {
     'attack': 'an Attack roll',
     'initiative': 'initiative',
+    'spell': 'a spellcasting ability check',
     'stealth': 'a Dexterity (Stealth) check',
     'social': 'a Charisma (Persuasion/Deception) check',
     'lore': 'an Intelligence (Investigation/Arcana) check',

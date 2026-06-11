@@ -19,6 +19,7 @@ from aidm_server.race_system import (
     normalize_character_race_selection,
     race_selection_to_json,
 )
+from aidm_server.spellbook import ensure_character_sheet_spellbook
 from aidm_server.starting_inventory import starting_inventory_for_class
 from aidm_server.validation import (
     coerce_int,
@@ -48,6 +49,24 @@ def _structured_text(value):
     return safe_json_dumps(value, {})
 
 
+def _character_sheet_payload_with_spellbook(
+    raw_value,
+    *,
+    class_name: str | None,
+    race: str | None,
+    race_selection,
+    level: int,
+):
+    sheet, _changed = ensure_character_sheet_spellbook(
+        raw_value,
+        class_name=class_name,
+        race_name=race,
+        race_selection=race_selection,
+        level=level,
+    )
+    return safe_json_dumps(sheet, {}) if sheet else _structured_text(raw_value)
+
+
 def _race_selection_payload(payload: dict, fallback_race: str | None):
     if 'race_selection' not in payload and 'race' not in payload:
         return None, None
@@ -65,6 +84,20 @@ def _assign_missing_starting_inventory(player: Player) -> bool:
     if not inventory_items:
         return False
     player.inventory = safe_json_dumps(inventory_items, [])
+    return True
+
+
+def _assign_missing_starting_spells(player: Player) -> bool:
+    sheet, changed = ensure_character_sheet_spellbook(
+        player.character_sheet,
+        class_name=player.class_,
+        race_name=player.race,
+        race_selection=player.race_selection,
+        level=player.level or 1,
+    )
+    if not changed:
+        return False
+    player.character_sheet = safe_json_dumps(sheet, {})
     return True
 
 
@@ -150,7 +183,13 @@ def add_player(campaign_id):
             level=level,
             stats=stats_payload,
             inventory=(safe_json_dumps(inventory_items, []) if raw_inventory is not None or inventory_items else None),
-            character_sheet=_structured_text(payload.get('character_sheet')),
+            character_sheet=_character_sheet_payload_with_spellbook(
+                payload.get('character_sheet'),
+                class_name=class_name,
+                race=race,
+                race_selection=race_selection,
+                level=level,
+            ),
         )
         db.session.add(new_player)
         db.session.commit()
@@ -182,7 +221,9 @@ def get_player_by_id(player_id):
     if not player:
         return error_response('player_not_found', 'Player not found.', 404)
 
-    if _assign_missing_starting_inventory(player):
+    inventory_changed = _assign_missing_starting_inventory(player)
+    spells_changed = _assign_missing_starting_spells(player)
+    if inventory_changed or spells_changed:
         db.session.commit()
 
     return jsonify(player_detail_payload(player))
@@ -197,6 +238,7 @@ def update_player(player_id):
     player = workspace_player(player_id)
     if not player:
         return error_response('player_not_found', 'Player not found.', 404)
+    original_character_sheet = player.character_sheet
 
     text_fields = {
         'character_name': (80, True),
@@ -261,6 +303,17 @@ def update_player(player_id):
             player.character_sheet = _structured_text(payload.get('character_sheet'))
         if 'inventory' in payload:
             player.inventory = safe_json_dumps(inventory_payload(payload.get('inventory')), [])
+
+        sheet_source = player.character_sheet if player.character_sheet is not None else original_character_sheet
+        sheet, changed = ensure_character_sheet_spellbook(
+            sheet_source,
+            class_name=player.class_,
+            race_name=player.race,
+            race_selection=player.race_selection,
+            level=player.level or 1,
+        )
+        if changed:
+            player.character_sheet = safe_json_dumps(sheet, {})
 
         db.session.commit()
         return jsonify(player_detail_payload(player))

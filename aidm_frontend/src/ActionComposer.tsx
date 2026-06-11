@@ -1,5 +1,5 @@
 import { useRef, type Dispatch, type RefObject, type SetStateAction } from 'react'
-import { MessagesSquare, Volume2, VolumeX, X } from 'lucide-react'
+import { MessagesSquare, Sparkles, Volume2, VolumeX, X } from 'lucide-react'
 import { ThinIcon } from './AppChrome'
 import {
   DICE_OPTIONS,
@@ -63,10 +63,12 @@ export type ActionComposerProps = {
   pendingRollOptions: PendingRollOption[]
   rollTargetPendingTurnId: string
   setRollTargetPendingTurnId: Dispatch<SetStateAction<string>>
+  spellName: string
   selectedAbility: AbilityOption | null
   selectedAbilityKey: string
   abilityOptions: AbilityOption[]
   updateRollAbilityKey: (key: string) => void
+  updateSpellName: (name: string) => void
   interactionTargets: InteractionTarget[]
   selectedInteractionTarget: InteractionTarget | null
   selectedInteractionTargetId: string
@@ -127,10 +129,12 @@ export function ActionComposer({
   pendingRollOptions,
   rollTargetPendingTurnId,
   setRollTargetPendingTurnId,
+  spellName,
   selectedAbility,
   selectedAbilityKey,
   abilityOptions,
   updateRollAbilityKey,
+  updateSpellName,
   interactionTargets,
   selectedInteractionTarget,
   selectedInteractionTargetId,
@@ -290,6 +294,15 @@ export function ActionComposer({
             </button>
             <button
               type="button"
+              aria-label="Spell mode"
+              aria-pressed={composerMode === 'spell'}
+              className={composerMode === 'spell' ? 'selected' : ''}
+              onClick={() => applyComposerMode('spell')}
+            >
+              <Sparkles size={18} strokeWidth={1.45} />
+            </button>
+            <button
+              type="button"
               aria-label="Interact mode"
               aria-pressed={composerMode === 'interact'}
               className={composerMode === 'interact' ? 'selected' : ''}
@@ -388,6 +401,35 @@ export function ActionComposer({
           <button type="button" aria-label="Roll dice" onClick={() => startDiceRoll()} disabled={sendPending}>
             <ThinIcon name="dice" size={15} /> Roll
           </button>
+        </div>
+      ) : null}
+      {composerMode === 'spell' ? (
+        <div className="action-intent-panel spell-intent-panel" aria-label="Spell options">
+          <select
+            value={selectedAbilityKey}
+            aria-label="Spellcasting ability"
+            onChange={(event) => updateRollAbilityKey(event.target.value)}
+            disabled={!abilityOptions.length}
+          >
+            {abilityOptions.length ? (
+              abilityOptions.map((ability) => (
+                <option key={ability.key} value={ability.key}>
+                  {ability.label} {ability.modifier}
+                </option>
+              ))
+            ) : (
+              <option value={selectedAbilityKey}>No abilities</option>
+            )}
+          </select>
+          <input
+            type="text"
+            value={spellName}
+            aria-label="Spell name"
+            maxLength={80}
+            placeholder="Spell name"
+            onChange={(event) => updateSpellName(event.target.value)}
+          />
+          <span>{selectedAbility ? `${selectedAbility.label} ${selectedAbility.modifier}` : 'Spell check'}</span>
         </div>
       ) : null}
       {composerMode === 'item' ? (
@@ -543,6 +585,14 @@ export function ActionComposer({
             </option>
           ))}
         </select>
+        <button
+          type="button"
+          className={composerMode === 'spell' ? 'selected' : ''}
+          aria-pressed={composerMode === 'spell'}
+          onClick={() => applyComposerMode('spell')}
+        >
+          <Sparkles size={16} strokeWidth={1.45} /> Spell
+        </button>
         <button
           type="button"
           className={composerMode === 'item' ? 'selected' : ''}

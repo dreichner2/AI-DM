@@ -21,9 +21,15 @@ _ATTACK_KEYWORDS = {
     "attack",
     "attacks",
     "attacked",
+    "blast",
+    "blasts",
+    "blasted",
     "behead",
     "beheads",
     "beheaded",
+    "crush",
+    "crushes",
+    "crushed",
     "cut",
     "cuts",
     "decapitate",
@@ -37,9 +43,18 @@ _ATTACK_KEYWORDS = {
     "kill",
     "kills",
     "killed",
+    "kick",
+    "kicks",
+    "kicked",
     "maim",
     "maims",
     "maimed",
+    "punch",
+    "punches",
+    "punched",
+    "rip",
+    "rips",
+    "ripped",
     "shoot",
     "shoots",
     "shot",
@@ -50,13 +65,61 @@ _ATTACK_KEYWORDS = {
     "slices",
     "sliced",
     "smite",
+    "slam",
+    "slams",
+    "slammed",
+    "smash",
+    "smashes",
+    "smashed",
     "stab",
     "stabs",
     "stabbed",
     "strike",
     "strikes",
     "struck",
+    "throw",
+    "throws",
+    "threw",
 }
+_SPELL_ACTION_KEYWORDS = {
+    "cast",
+    "casts",
+    "casting",
+    "channel",
+    "channels",
+    "channeling",
+    "conjure",
+    "conjures",
+    "conjuring",
+    "enchant",
+    "enchants",
+    "enchanting",
+    "hex",
+    "hexes",
+    "invoke",
+    "invokes",
+    "invoking",
+    "levitate",
+    "levitates",
+    "levitating",
+    "spell",
+    "spells",
+    "summon",
+    "summons",
+    "summoning",
+    "telekinesis",
+}
+_SPELL_ACTION_PATTERNS = [
+    re.compile(r'\buse\s+(?:my\s+|the\s+)?magic\b', re.IGNORECASE),
+    re.compile(r'\bmagic\s+to\b', re.IGNORECASE),
+    re.compile(r'\bwild\s+(?:magic|spell)\b', re.IGNORECASE),
+]
+_RETROSPECTIVE_ATTACK_RE = re.compile(
+    r'\b(?:was|were|had|already|earlier|before|previously)\b[^.!?]{0,80}'
+    r'\b(?:attacked|blasted|crushed|decapitated|executed|hit|killed|kicked|maimed|punched|ripped|'
+    r'shot|slammed|slashed|sliced|smashed|stabbed|struck|threw)\b',
+    re.IGNORECASE,
+)
 _STEALTH_KEYWORDS = {"sneak", "stealth", "hide", "silently"}
 _SOCIAL_KEYWORDS = {
     "persuade",
@@ -144,6 +207,7 @@ _GENERIC_ROLL_REQUEST_PATTERNS = [
 DC_HINTS = {
     "attack": "10-18 (target armor dependent)",
     "initiative": "initiative order",
+    "spell": "12-18",
     "stealth": "12-17",
     "social": "12-18",
     "lore": "10-18",
@@ -189,6 +253,12 @@ def _with_resolution(hint: RuleHint) -> RuleHint:
     return hint
 
 
+def _looks_like_spell_action(text: str, tokens: set[str]) -> bool:
+    if tokens & _SPELL_ACTION_KEYWORDS:
+        return True
+    return any(pattern.search(text) for pattern in _SPELL_ACTION_PATTERNS)
+
+
 def classify_player_action(message: str) -> RuleHint:
     text = (message or "").strip().lower()
     if not text:
@@ -197,7 +267,18 @@ def classify_player_action(message: str) -> RuleHint:
     tokens = set(text.replace(".", " ").replace(",", " ").split())
     roll_value = _extract_roll_value(text)
 
-    if tokens & _ATTACK_KEYWORDS:
+    if _looks_like_spell_action(text, tokens):
+        return _with_resolution(
+            RuleHint(
+                True,
+                "spell",
+                DC_HINTS["spell"],
+                "Spell or magic action detected",
+                confidence=0.91,
+                roll_value=roll_value,
+            )
+        )
+    if tokens & _ATTACK_KEYWORDS and not _RETROSPECTIVE_ATTACK_RE.search(text):
         return _with_resolution(
             RuleHint(
                 True,

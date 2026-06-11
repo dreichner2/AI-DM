@@ -337,6 +337,11 @@ All runtime config is centralized in `aidm_server/config.py`.
 | `AIDM_LLM_FALLBACK_MODELS` | empty | Comma-separated model fallbacks. |
 | `AIDM_LLM_RATE_LIMIT_THRESHOLD` | `2` | Consecutive `429` count before model cooldown begins. |
 | `AIDM_LLM_RATE_LIMIT_COOLDOWN_SECONDS` | `120` | Seconds to skip a rate-limited model before retrying it. |
+| `AIDM_HELPER_LLM_MODEL` | `deepseek-v4-flash` | Shared helper model for live-turn extraction and turn-control jobs. |
+| `AIDM_CUSTOM_RACE_HELPER_LLM_MODEL` | `deepseek-v4-pro` | Custom-race metadata helper model. |
+| `AIDM_CUSTOM_RACE_HELPER_LLM_MAX_TOKENS` | `4096` | Max output tokens for custom-race helper drafts. |
+| `AIDM_CUSTOM_RACE_HELPER_DEEPSEEK_TIMEOUT_SECONDS` | `180` | Backward-compatible default read timeout for custom-race DeepSeek calls. |
+| `AIDM_CUSTOM_RACE_HELPER_DEEPSEEK_THINKING` | `false` | Keeps custom-race metadata generation focused on visible structured JSON. |
 | `GOOGLE_GENAI_API_KEY` | unset | Gemini API key. |
 | `AIDM_DEEPSEEK_API_KEY` | unset | DeepSeek API key. |
 | `AIDM_DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek/OpenAI-compatible base URL. |

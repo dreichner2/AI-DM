@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { addNgrokBrowserWarningBypassHeader, normalizeBaseUrl } from './api'
+import { addNgrokBrowserWarningBypassHeader, addWorkspaceTokenHeader, normalizeBaseUrl } from './api'
 import { metadataTurnId, stripMarkdown } from './gameSelectors'
 import type { JsonRecord, StreamingTurn, TimelineEntry, TtsRuntimeConfig } from './types'
 
@@ -851,6 +851,7 @@ export function useTtsNarration({
       if (auth) {
         headers.set('Authorization', `Bearer ${auth}`)
       }
+      addWorkspaceTokenHeader(headers)
       addNgrokBrowserWarningBypassHeader(headers, baseUrl)
 
       const requestAudio = () => fetchTtsAudioWithRetry(baseUrl, headers, cleanText, controller.signal)

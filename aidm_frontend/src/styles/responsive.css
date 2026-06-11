@@ -105,6 +105,24 @@
     height: 38px;
   }
 
+  .scene-music-player {
+    min-height: 66px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .scene-music-now strong {
+    font-size: 0.8rem;
+  }
+
+  .scene-music-tags button {
+    min-height: 22px;
+  }
+
+  .chat-reading-control {
+    top: 104px;
+  }
+
   .turn-feed {
     padding-top: 8px;
     padding-bottom: 10px;
@@ -408,6 +426,41 @@
     flex-wrap: wrap;
   }
 
+  .scene-music-player {
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+    align-items: stretch;
+    min-height: 0;
+    padding: 10px 14px;
+  }
+
+  .scene-music-now {
+    align-self: center;
+  }
+
+  .scene-music-controls {
+    align-self: center;
+    justify-content: flex-end;
+  }
+
+  .scene-music-progress,
+  .scene-music-select,
+  .scene-music-volume,
+  .scene-music-tags,
+  .scene-music-error {
+    grid-column: 1 / -1;
+  }
+
+  .scene-music-select {
+    grid-template-columns: 43px minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .chat-reading-control {
+    top: auto;
+    right: 16px;
+    bottom: calc(var(--composer-row-height) + 18px);
+  }
+
   .turn-feed {
     min-height: 0;
     padding-left: 14px;
@@ -527,6 +580,14 @@
   }
 
   .custom-race-edit-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .custom-race-metadata-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .custom-race-library-card {
     grid-template-columns: 1fr;
   }
 

@@ -1,9 +1,9 @@
 import type { Dispatch, SetStateAction } from 'react'
 import { Archive, Globe2, Pencil, Plus, Trash2 } from 'lucide-react'
 import { NavItem, StatusDot, ThinIcon, Thumbnail } from './AppChrome'
+import type { InspectorTab } from './InspectorPanel'
 
 type MainTab = 'turns' | 'dm' | 'notes'
-type InspectorTab = 'party' | 'map' | 'canon' | 'inventory'
 
 export type CampaignCard = {
   id: number

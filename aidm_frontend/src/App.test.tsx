@@ -1052,6 +1052,127 @@ describe('App user workflow regressions', () => {
     )
   })
 
+  it('allows the next send while the previous saved turn is only canon pending', async () => {
+    await renderLoadedApp()
+
+    await act(async () => {
+      socketHandler<{ turn_id: number; turn_number?: number }>('dm_response_start')({
+        turn_id: 77,
+        turn_number: 4,
+      })
+      socketHandler<{ turn_id: number; chunk: string }>('dm_chunk')({
+        turn_id: 77,
+        chunk: 'The arena dust settles as the last beam of energy fades.',
+      })
+      socketHandler<{ session_id: number; turn_id: number; status: string; details: Record<string, unknown> }>(
+        'turn_status',
+      )({
+        session_id: 20,
+        turn_id: 77,
+        status: 'saved',
+        details: { stage: 'dm_response' },
+      })
+      socketHandler<{ session_id: number; turn_id: number; status: string; details: Record<string, unknown> }>(
+        'turn_status',
+      )({
+        session_id: 20,
+        turn_id: 77,
+        status: 'canon_pending',
+        details: { job_id: 9 },
+      })
+    })
+
+    await waitFor(() => expect(screen.getAllByText('canon pending').length).toBeGreaterThan(0))
+
+    const actionInput = screen.getByLabelText(/Your Action/i)
+    fireEvent.change(actionInput, { target: { value: 'I launch forward before the smoke clears.' } })
+    socketMock.socket.emit.mockClear()
+
+    fireEvent.click(screen.getByRole('button', { name: /Send/i }))
+
+    await waitFor(() =>
+      expect(socketMock.socket.emit).toHaveBeenCalledWith(
+        'send_message',
+        expect.objectContaining({
+          message: 'I launch forward before the smoke clears.',
+        }),
+      ),
+    )
+  })
+
+  it('keeps a pending player message below the previous DM while log refreshes settle', async () => {
+    const rendered = await renderLoadedApp()
+    const pendingMessage = 'I sprint through the smoke before the echo fades.'
+
+    const actionInput = screen.getByLabelText(/Your Action/i)
+    fireEvent.change(actionInput, { target: { value: pendingMessage } })
+    socketMock.socket.emit.mockClear()
+
+    fireEvent.click(screen.getByRole('button', { name: /Send/i }))
+
+    await waitFor(() =>
+      expect(socketMock.socket.emit).toHaveBeenCalledWith(
+        'send_message',
+        expect.objectContaining({
+          message: pendingMessage,
+        }),
+      ),
+    )
+
+    const rowTexts = [...rendered.container.querySelectorAll('.turn-feed .turn-row')].map(
+      (row) => row.textContent ?? '',
+    )
+    const latestDmIndex = rowTexts.findIndex((text) => text.includes('The chamber beyond is much larger'))
+    const pendingIndex = rowTexts.findIndex((text) => text.includes(pendingMessage))
+    expect(latestDmIndex).toBeGreaterThanOrEqual(0)
+    expect(pendingIndex).toBeGreaterThan(latestDmIndex)
+    expect(rowTexts.at(-1)).toContain(pendingMessage)
+
+    const logFetchCount = fetchCalls.filter((call) => call.method === 'GET' && call.path === '/api/sessions/20/log').length
+    await act(async () => {
+      socketHandler<{ session_id?: number }>('session_log_update')({ session_id: 20 })
+    })
+    await waitFor(() =>
+      expect(fetchCalls.filter((call) => call.method === 'GET' && call.path === '/api/sessions/20/log').length)
+        .toBeGreaterThan(logFetchCount),
+    )
+    expect(screen.getByText(pendingMessage)).toBeInTheDocument()
+
+    const sendPayload = socketMock.socket.emit.mock.calls.find(([event]) => event === 'send_message')?.[1] as {
+      client_message_id?: string
+    }
+    await act(async () => {
+      socketHandler<{
+        message: string
+        speaker: string
+        turn_id: number
+        turn_number: number
+        requires_roll: boolean
+        rules_hint: Record<string, unknown>
+        context_version: string
+        client_message_id: string
+        action_intent: Record<string, unknown>
+      }>('new_message')({
+        message: pendingMessage,
+        speaker: 'Ember',
+        turn_id: 78,
+        turn_number: 5,
+        requires_roll: false,
+        rules_hint: { requires_roll: false },
+        context_version: 'v2',
+        client_message_id: sendPayload.client_message_id ?? '',
+        action_intent: {
+          kind: 'message',
+          source: 'composer',
+          text: pendingMessage,
+          client_message_id: sendPayload.client_message_id ?? '',
+        },
+      })
+    })
+
+    expect(screen.getAllByText(pendingMessage)).toHaveLength(1)
+  })
+
   it('keeps admin mode hidden until the composer label gesture unlocks it', async () => {
     await renderLoadedApp()
 
@@ -1381,6 +1502,97 @@ describe('App user workflow regressions', () => {
     expect(screen.getByRole('button', { name: 'Unequip Greataxe' })).toBeInTheDocument()
   })
 
+  it('shows the selected character spellbook in the inspector', async () => {
+    playerDetails[30] = {
+      ...playerDetails[30],
+      character_sheet: {
+        ...(playerDetails[30].character_sheet as Record<string, unknown>),
+        spellbook: {
+          knownSpells: [
+            {
+              id: 'spell-cobalt-charm',
+              name: 'Cobalt Charm',
+              level: 1,
+              sourceType: 'class_catalog',
+              sourceDetail: 'sorcerer',
+              description: 'Tint a social moment with charged blue sparks.',
+              catalog: 'aidm-original',
+            },
+            {
+              id: 'spell-river-ward',
+              name: 'River Ward',
+              level: 1,
+              sourceType: 'race_catalog',
+              sourceDetail: 'riverborn',
+              description: 'Raise a quick protective sign from moving water.',
+              catalog: 'aidm-original',
+            },
+          ],
+        },
+      },
+    }
+
+    await renderLoadedApp()
+
+    expect(screen.getByText('Spellbook (2)')).toBeInTheDocument()
+    expect(screen.getByText('Cobalt Charm')).toBeInTheDocument()
+    expect(screen.getByText(/Tint a social moment/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Magic' }))
+
+    expect(screen.getByText('River Ward')).toBeInTheDocument()
+    expect(screen.getByText(/Raise a quick protective sign/)).toBeInTheDocument()
+  })
+
+  it('shows custom race active abilities and passive traits in the magic inspector', async () => {
+    playerDetails[30] = {
+      ...playerDetails[30],
+      race: 'Himeros',
+      race_selection: {
+        raceId: 'himeros',
+        raceName: 'Himeros',
+        source: 'custom',
+        customRaceDefinition: {
+          traits: [
+            {
+              id: 'himeros_aura_of_desire',
+              name: 'Aura of Desire',
+              category: 'active_ability',
+              description: 'Creatures of your choice within 30 feet must make a Wisdom saving throw.',
+              mechanics: {
+                activeAbility: {
+                  actionType: 'action',
+                  cooldown: 'longRest',
+                  effectType: 'charm',
+                },
+              },
+            },
+            {
+              id: 'himeros_divine_beauty',
+              name: 'Divine Beauty',
+              category: 'skill',
+              description: 'You have proficiency in the Persuasion skill. If already proficient, you gain expertise.',
+              mechanics: {
+                skillProficiency: { skill: 'Persuasion', expertiseIfProficient: true },
+              },
+            },
+          ],
+        } as Record<string, unknown>,
+      } as PlayerDetail['race_selection'],
+    }
+
+    await renderLoadedApp()
+
+    expect(screen.getByText('Abilities & Traits (2)')).toBeInTheDocument()
+    expect(screen.getByText('Aura of Desire')).toBeInTheDocument()
+    expect(screen.getByText(/Race \/ Himeros \/ Action \/ Long Rest/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Magic' }))
+
+    expect(screen.getByText('Divine Beauty')).toBeInTheDocument()
+    expect(screen.getByText(/Persuasion skill/)).toBeInTheDocument()
+  })
+
   it('keeps turn mode overrides behind the hidden admin tools', async () => {
     await renderLoadedApp()
     socketMock.socket.emit.mockClear()
@@ -1433,7 +1645,7 @@ describe('App user workflow regressions', () => {
     }
     await renderLoadedApp()
 
-    expect(screen.getByText('Auto: Spotlight - Borin')).toBeInTheDocument()
+    expect(await screen.findByText('Auto: Spotlight - Borin')).toBeInTheDocument()
     const actionInput = screen.getByLabelText(/Your Action/i)
     fireEvent.change(actionInput, { target: { value: 'I step beside Borin and add my support.' } })
     socketMock.socket.emit.mockClear()
@@ -1604,7 +1816,9 @@ describe('App user workflow regressions', () => {
     await renderLoadedApp()
 
     expect(screen.getByText('Scene State')).toBeInTheDocument()
-    expect(screen.getAllByText('Blackwake Tavern').length).toBeGreaterThan(0)
+    await waitFor(() => {
+      expect(screen.getAllByText('Blackwake Tavern').length).toBeGreaterThan(0)
+    })
     expect(screen.getByText('Find the Missing Sailor')).toBeInTheDocument()
     expect(screen.getByText('Captain Velra (Human)')).toBeInTheDocument()
     expect(screen.queryByText('Old Hermit (Gnome)')).not.toBeInTheDocument()
@@ -1800,6 +2014,7 @@ describe('App user workflow regressions', () => {
     render(<App />)
 
     let dialog = await screen.findByRole('dialog', { name: 'Log In' })
+    expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Workspace Token')).not.toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Sign Up' }))
@@ -1812,11 +2027,13 @@ describe('App user workflow regressions', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
 
     dialog = await screen.findByRole('dialog', { name: 'Join Workspace' })
+    expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Username')).not.toBeInTheDocument()
     fireEvent.change(within(dialog).getByLabelText('Workspace Token'), { target: { value: 'shared-token' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Join Workspace' }))
 
     await screen.findByRole('heading', { name: /Session Alpha/i })
+    expect(screen.getByLabelText('Scene music player')).toBeInTheDocument()
     expect(sessionStorage.getItem('aidm:authToken')).toBe('account-token')
     expect(sessionStorage.getItem('aidm:workspaceToken')).toBe('shared-token')
     expect(screen.queryByRole('dialog', { name: 'Join Workspace' })).not.toBeInTheDocument()
@@ -1844,10 +2061,12 @@ describe('App user workflow regressions', () => {
 
   it('opens account auth from the backend gear when no account is active', async () => {
     await renderLoadedApp()
+    expect(screen.getByLabelText('Scene music player')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Change workspace access' }))
 
     const dialog = await screen.findByRole('dialog', { name: 'Log In' })
+    expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Workspace Token')).not.toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Sign Up' })).toBeInTheDocument()

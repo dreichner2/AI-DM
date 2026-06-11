@@ -6,6 +6,7 @@ from typing import Any
 
 from aidm_server.canon_inventory import append_drop_all_inventory_changes_from_text, inventory_change_from_intent_outcome
 from aidm_server.canon_text import int_or_default
+from aidm_server.combat.pipeline import prepare_combat_for_turn, prepare_combat_from_dm_response, record_combat_debug_from_prepare
 from aidm_server.database import db
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY, STATE_PIPELINE_VERSION
 from aidm_server.game_state.application.applier import (
@@ -34,7 +35,7 @@ from aidm_server.turn_events import record_turn_event
 
 
 STATE_UPDATE_EVENT = 'state_update'
-MANAGED_STATE_DOMAINS = ['inventory', 'currency', 'health', 'xp', 'scene', 'quests', 'locations', 'npcs', 'flags']
+MANAGED_STATE_DOMAINS = ['inventory', 'currency', 'health', 'xp', 'spells', 'scene', 'quests', 'locations', 'npcs', 'flags', 'combat']
 SAFE_PRE_DM_IMMEDIATE_CHANGE_TYPES = {'inventory.mark_used', 'inventory.equip', 'inventory.unequip'}
 CONFIRMATION_DENIAL_PATTERN = re.compile(
     r"\b(?:do not|don't|does not|doesn't|did not|cannot|can't|fail|fails|failed|before you can|instead)\b",
@@ -280,6 +281,9 @@ def _state_change_signature(change: dict[str, Any]) -> tuple[Any, ...] | None:
         return (change_type, actor_id, int_or_default(change.get('amount'), default=0))
     if change_type in {'xp.add', 'xp.remove'}:
         return (change_type, actor_id, int_or_default(change.get('amount'), default=0))
+    if change_type == 'spell.learn':
+        spell = change.get('spell') if isinstance(change.get('spell'), dict) else {}
+        return (change_type, actor_id, normalize_item_name(change.get('spellName') or spell.get('name')))
     if change_type in {'scene.update', 'scene.move_location'}:
         return (
             change_type,
@@ -306,6 +310,12 @@ def _state_change_signature(change: dict[str, Any]) -> tuple[Any, ...] | None:
         )
     if change_type.startswith('flag.'):
         return (change_type, normalize_item_name(change.get('flagKey')))
+    if change_type.startswith('combat.'):
+        return (
+            change_type,
+            normalize_item_name(change.get('participantId') or change.get('enemyId') or change.get('combatId')),
+            normalize_item_name(change.get('intentType') or change.get('status') or change.get('round')),
+        )
     return None
 
 
@@ -481,6 +491,7 @@ def _dm_context_packet(
     player_message: str,
     pre_validation: dict[str, Any],
     applied_changes: list[dict[str, Any]],
+    combat_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     compact = compact_state_for_extraction(state)
     validated_actions = []
@@ -528,6 +539,26 @@ def _dm_context_packet(
                     'clarificationRequest': result.get('clarificationRequest'),
                 }
             )
+    instructions = [
+        'Narrate valid actions as possible.',
+        'Anchor narration to the latest playerMessage and validatedActions.',
+        'Do not substitute a different known object for the object named or described in the latest playerMessage.',
+        'Do not narrate invalid actions as successful.',
+        'If an action is invalid, explain it naturally in-world.',
+        'Do not output JSON.',
+        'Do not claim state changes that contradict validatedActions.',
+    ]
+    if combat_context:
+        instructions.extend(
+            [
+                'Narrate enemy actions according to combatState enemyIntentSummary, enemyRequiredActions, and enemyTelegraphs.',
+                'If the player action is resolved in this response and combat continues, include each planned enemy action in the same response; do not skip the enemy turn after a miss or failed roll.',
+                'Only omit the planned enemy action when the response is solely asking the player for a pending roll to resolve their current action.',
+                'Do not make fleeing, surrendering, or negotiating enemies fight to the death unless blocked or forced.',
+                'Use enemy morale, survival instincts, and objectives when describing choices.',
+                'Do not directly mutate game state; narrate concrete outcomes clearly for extraction and validation.',
+            ]
+        )
     return {
         'currentStateSummary': compact,
         'playerMessage': player_message,
@@ -552,19 +583,15 @@ def _dm_context_packet(
                 'amount': change.get('actualAmount', change.get('amount')),
                 'currency': change.get('currency'),
                 'xp': change.get('actualAmount', change.get('amount')) if str(change.get('type') or '').startswith('xp.') else None,
+                'combatStatus': change.get('combatStatus'),
+                'participantName': change.get('participantName'),
+                'intentType': change.get('intentType'),
             }
             for change in applied_changes
             if isinstance(change, dict) and change.get('visible', True)
         ],
-        'dmInstructions': [
-            'Narrate valid actions as possible.',
-            'Anchor narration to the latest playerMessage and validatedActions.',
-            'Do not substitute a different known object for the object named or described in the latest playerMessage.',
-            'Do not narrate invalid actions as successful.',
-            'If an action is invalid, explain it naturally in-world.',
-            'Do not output JSON.',
-            'Do not claim state changes that contradict validatedActions.',
-        ],
+        'combatState': combat_context,
+        'dmInstructions': instructions,
     }
 
 
@@ -584,10 +611,16 @@ def pre_dm_pipeline(
     action_intent: dict[str, Any] | None = None,
     selected_item_ids: dict[str, str] | None = None,
     declared_actions_override: list[dict[str, Any]] | None = None,
+    active_player_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     players = _players_for_campaign(campaign, player)
     players_by_id = {player_obj.player_id: player_obj for player_obj in players}
-    state = state_snapshot_for_session(session_obj=session_obj, campaign=campaign, players=players)
+    state = state_snapshot_for_session(
+        session_obj=session_obj,
+        campaign=campaign,
+        players=players,
+        active_player_ids=active_player_ids,
+    )
     recent_timeline = recent_timeline_for_session(session_obj.session_id, limit=5)
     actor_id = display_actor_id(player.player_id)
 
@@ -624,16 +657,41 @@ def pre_dm_pipeline(
     apply_result = apply_state_changes(state, immediate_changes)
     state_after_immediate = apply_result['nextState']
     applied_immediate = apply_result['appliedChanges']
-    if applied_immediate:
-        persist_state_to_database(session_obj=session_obj, state=state_after_immediate, players_by_id=players_by_id)
+    combat_prepare = prepare_combat_for_turn(
+        state=state_after_immediate,
+        session_obj=session_obj,
+        campaign=campaign,
+        turn=turn,
+        player_message=player_message,
+        workspace_id=campaign.workspace_id,
+    )
+    combat_changes = [
+        change
+        for change in (combat_prepare.get('changes') or [])
+        if isinstance(change, dict)
+    ]
+    combat_validation = validate_state_changes(state=state_after_immediate, changes=combat_changes)
+    applied_combat_changes = validated_changes_for_application(combat_validation)
+    combat_apply = apply_state_changes(state_after_immediate, applied_combat_changes)
+    state_before_dm = combat_apply['nextState']
+    applied_combat = combat_apply['appliedChanges']
+    if applied_immediate or applied_combat:
+        persist_state_to_database(session_obj=session_obj, state=state_before_dm, players_by_id=players_by_id)
     else:
-        session_obj.state_snapshot = safe_json_dumps(state_after_immediate, {})
+        session_obj.state_snapshot = safe_json_dumps(state_before_dm, {})
+    record_combat_debug_from_prepare(
+        session_obj=session_obj,
+        campaign=campaign,
+        turn=turn,
+        prepare_result=combat_prepare,
+    )
 
     dm_context = _dm_context_packet(
-        state=state_after_immediate,
+        state=state_before_dm,
         player_message=player_message,
         pre_validation=pre_validation,
-        applied_changes=applied_immediate,
+        applied_changes=[*applied_immediate, *applied_combat],
+        combat_context=combat_prepare.get('combatContext') if isinstance(combat_prepare.get('combatContext'), dict) else None,
     )
     state_log = build_state_log(
         turn_id=turn.turn_id,
@@ -645,13 +703,17 @@ def pre_dm_pipeline(
         'version': STATE_PIPELINE_VERSION,
         'actorId': actor_id,
         'stateBeforePreDm': compact_state_for_extraction(state),
-        'stateBeforeDm': state_after_immediate,
+        'stateBeforeDm': state_before_dm,
         'preDmExtraction': pre_extraction,
         'preDmValidation': pre_validation,
         'immediateValidation': immediate_validation,
         'pendingImmediateChanges': validated_changes_for_application(pending_immediate_validation),
         'pendingImmediateValidation': pending_immediate_validation,
         'immediateAppliedChanges': applied_immediate,
+        'combatPreDmChanges': combat_changes,
+        'combatPreDmValidation': combat_validation,
+        'combatAppliedChanges': applied_combat,
+        'combatDebug': combat_prepare.get('debug') if isinstance(combat_prepare.get('debug'), dict) else {},
         'dmContextPacket': dm_context,
         'stateLog': state_log,
         'managedDomains': MANAGED_STATE_DOMAINS,
@@ -660,7 +722,7 @@ def pre_dm_pipeline(
     db.session.flush()
 
     return {
-        'stateBeforeDm': state_after_immediate,
+        'stateBeforeDm': state_before_dm,
         'playersById': players_by_id,
         'preExtraction': pre_extraction,
         'preValidation': pre_validation,
@@ -668,6 +730,9 @@ def pre_dm_pipeline(
         'pendingImmediateValidation': pending_immediate_validation,
         'pendingImmediateChanges': validated_changes_for_application(pending_immediate_validation),
         'immediateAppliedChanges': applied_immediate,
+        'combatValidation': combat_validation,
+        'combatAppliedChanges': applied_combat,
+        'combatDebug': combat_prepare.get('debug') if isinstance(combat_prepare.get('debug'), dict) else {},
         'dmContextPacket': dm_context,
         'stateLog': state_log,
         'clarificationRequests': pre_validation.get('clarificationRequests') or [],
@@ -681,6 +746,7 @@ def post_dm_pipeline(
     campaign: Campaign,
     player: Player,
     dm_response_text: str,
+    active_player_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     metadata = _metadata(turn)
     pipeline = metadata.get(STATE_PIPELINE_METADATA_KEY) if isinstance(metadata.get(STATE_PIPELINE_METADATA_KEY), dict) else {}
@@ -688,16 +754,30 @@ def post_dm_pipeline(
     players_by_id = {player_obj.player_id: player_obj for player_obj in players}
     state_before_dm = pipeline.get('stateBeforeDm')
     if not isinstance(state_before_dm, dict):
-        state_before_dm = state_snapshot_for_session(session_obj=session_obj, campaign=campaign, players=players)
+        state_before_dm = state_snapshot_for_session(
+            session_obj=session_obj,
+            campaign=campaign,
+            players=players,
+            active_player_ids=active_player_ids,
+        )
+    elif active_player_ids is not None:
+        state_before_dm = deepcopy(state_before_dm)
+        active_ids: list[int] = []
+        for raw_id in active_player_ids:
+            parsed = int_or_default(raw_id, default=0)
+            if parsed > 0 and parsed not in active_ids:
+                active_ids.append(parsed)
+        state_before_dm['activePlayerIds'] = active_ids
 
     actor_id = str(pipeline.get('actorId') or display_actor_id(player.player_id))
     recent_timeline = recent_timeline_for_session(session_obj.session_id, limit=5)
-    already_applied = list(pipeline.get('immediateAppliedChanges') or [])
+    already_applied = [*(pipeline.get('immediateAppliedChanges') or []), *(pipeline.get('combatAppliedChanges') or [])]
     pending_immediate_changes = [
         change
         for change in (pipeline.get('pendingImmediateChanges') or [])
         if isinstance(change, dict)
     ]
+    post_combat_prepare: dict[str, Any] = {'debug': {}}
     skip_post_extraction = bool(turn.requires_roll and turn.roll_value is None and str(turn.outcome_status or '').lower() == 'deferred')
     if skip_post_extraction:
         post_extraction = {
@@ -733,6 +813,31 @@ def post_dm_pipeline(
             actor_id=actor_id,
             turn_id=turn.turn_id,
         )
+        post_combat_prepare = prepare_combat_from_dm_response(
+            state=state_before_dm,
+            session_obj=session_obj,
+            campaign=campaign,
+            turn=turn,
+            player_message=turn.player_input or '',
+            dm_response=dm_response_text,
+            workspace_id=campaign.workspace_id,
+        )
+        post_combat_changes = [
+            change
+            for change in (post_combat_prepare.get('changes') or [])
+            if isinstance(change, dict)
+        ]
+        if post_combat_changes:
+            post_extraction = deepcopy(post_extraction)
+            post_extraction['proposedChanges'] = _merge_state_changes(
+                post_combat_changes,
+                post_extraction.get('proposedChanges') or [],
+                seed_changes=already_applied,
+            )
+            notes = list(post_extraction.get('notes') or [])
+            if 'post_dm_combat_adjudicator' not in notes:
+                notes.append('post_dm_combat_adjudicator')
+            post_extraction['notes'] = notes
         intent_changes = _intent_confirmed_post_changes(
             turn=turn,
             dm_response_text=dm_response_text,
@@ -792,6 +897,7 @@ def post_dm_pipeline(
         {
             'stateBeforeDm': state_before_dm,
             'postDmExtraction': post_extraction,
+            'postDmCombatDebug': post_combat_prepare.get('debug') if isinstance(post_combat_prepare.get('debug'), dict) else {},
             'postDmValidation': post_validation,
             'postAppliedChanges': applied_post,
             'finalStateSummary': compact_state_for_extraction(final_state),

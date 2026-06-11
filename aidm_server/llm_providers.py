@@ -760,6 +760,89 @@ def _cfg_list(key: str) -> list[str]:
     return []
 
 
+HELPER_TASK_DEFAULTS: dict[str, dict[str, Any]] = {
+    'custom_race': {
+        'prefix': 'AIDM_CUSTOM_RACE_HELPER',
+        'LLM_PROVIDER': 'deepseek',
+        'LLM_MODEL': 'deepseek-v4-pro',
+        'LLM_MAX_TOKENS': 4096,
+        'LLM_TEMPERATURE': 0.2,
+        'LLM_TOP_P': 0.9,
+        'DEEPSEEK_TIMEOUT_SECONDS': 180,
+        'DEEPSEEK_THINKING': 'false',
+        'DEEPSEEK_REASONING_EFFORT': 'low',
+    },
+    'sentient_enemy_brain': {
+        'prefix': 'AIDM_SENTIENT_ENEMY_BRAIN_HELPER',
+        'LLM_PROVIDER': 'deepseek',
+        'LLM_MODEL': 'deepseek-v4-pro',
+        'LLM_MAX_TOKENS': 2048,
+        'LLM_TEMPERATURE': 0.35,
+        'LLM_TOP_P': 0.9,
+        'DEEPSEEK_TIMEOUT_SECONDS': 90,
+        'DEEPSEEK_THINKING': 'false',
+        'DEEPSEEK_REASONING_EFFORT': 'medium',
+    }
+}
+
+
+def _helper_task_config(task: str | None) -> dict[str, Any] | None:
+    task_name = str(task or '').strip().lower().replace('-', '_')
+    return HELPER_TASK_DEFAULTS.get(task_name)
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _helper_cfg(task: str | None, suffix: str, default=None):
+    task_config = _helper_task_config(task)
+    if task_config:
+        value = _cfg(f"{task_config['prefix']}_{suffix}", None)
+        if value is not None:
+            return value
+        if suffix in task_config:
+            return task_config[suffix]
+    return _cfg(f'AIDM_HELPER_{suffix}', default)
+
+
+def _helper_cfg_list(task: str | None, suffix: str) -> list[str]:
+    raw_value = _helper_cfg(task, suffix, [])
+    if isinstance(raw_value, list):
+        return [str(item).strip() for item in raw_value if str(item).strip()]
+    if isinstance(raw_value, str):
+        return [item.strip() for item in raw_value.split(',') if item.strip()]
+    return []
+
+
+def _helper_int(task: str | None, suffix: str, default: int) -> int:
+    return _positive_int(_helper_cfg(task, suffix, default), default)
+
+
+def _helper_float(task: str | None, suffix: str, default: float) -> float:
+    try:
+        return float(_helper_cfg(task, suffix, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _helper_bool(task: str | None, suffix: str, default: bool) -> bool:
+    raw_value = _helper_cfg(task, suffix, 'true' if default else 'false')
+    if isinstance(raw_value, bool):
+        return raw_value
+    return str(raw_value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _helper_timeout_prefix(task: str | None, provider_suffix: str) -> str:
+    task_config = _helper_task_config(task)
+    if task_config:
+        return f"{task_config['prefix']}_{provider_suffix}"
+    return f'AIDM_HELPER_{provider_suffix}'
+
+
 def get_provider() -> BaseLLMProvider:
     provider_name = str(_cfg('AIDM_LLM_PROVIDER', 'gemini')).strip().lower()
     if provider_name not in SUPPORTED_LLM_PROVIDERS:
@@ -833,55 +916,72 @@ def get_provider() -> BaseLLMProvider:
     return DeterministicFallbackProvider()
 
 
-def get_helper_provider() -> BaseLLMProvider:
-    provider_name = str(_cfg('AIDM_HELPER_LLM_PROVIDER', 'deepseek')).strip().lower()
-    model_name = str(_cfg('AIDM_HELPER_LLM_MODEL', 'deepseek-v4-flash')).strip()
-    fallback_models = _cfg_list('AIDM_HELPER_LLM_FALLBACK_MODELS')
-    max_tokens = _int_env('AIDM_HELPER_LLM_MAX_TOKENS', 2048)
-    temperature = _float_env('AIDM_HELPER_LLM_TEMPERATURE', 0.1)
-    top_p = _float_env('AIDM_HELPER_LLM_TOP_P', 0.9)
+def get_helper_provider(task: str | None = None) -> BaseLLMProvider:
+    provider_name = str(_helper_cfg(task, 'LLM_PROVIDER', 'deepseek')).strip().lower()
+    model_name = str(_helper_cfg(task, 'LLM_MODEL', 'deepseek-v4-flash')).strip()
+    fallback_models = _helper_cfg_list(task, 'LLM_FALLBACK_MODELS')
+    max_tokens = _helper_int(task, 'LLM_MAX_TOKENS', 2048)
+    temperature = _helper_float(task, 'LLM_TEMPERATURE', 0.1)
+    top_p = _helper_float(task, 'LLM_TOP_P', 0.9)
 
     if provider_name == 'deepseek':
-        default_read_timeout = _int_env('AIDM_HELPER_DEEPSEEK_TIMEOUT_SECONDS', 30)
+        default_read_timeout = _helper_int(task, 'DEEPSEEK_TIMEOUT_SECONDS', 30)
         connect_timeout, read_timeout = timeout_from_config(
-            'AIDM_HELPER_DEEPSEEK',
+            _helper_timeout_prefix(task, 'DEEPSEEK'),
             default_connect=5.0,
             default_read=default_read_timeout,
         )
         return DeepSeekChatProvider(
             model_name=model_name or 'deepseek-v4-flash',
-            api_key=_cfg(
-                'AIDM_HELPER_DEEPSEEK_API_KEY',
+            api_key=_helper_cfg(
+                task,
+                'DEEPSEEK_API_KEY',
                 _cfg('AIDM_DEEPSEEK_API_KEY', os.getenv('DEEPSEEK_API_KEY')),
             ),
-            base_url=str(_cfg('AIDM_HELPER_DEEPSEEK_BASE_URL', _cfg('AIDM_DEEPSEEK_BASE_URL', 'https://api.deepseek.com'))),
+            base_url=str(
+                _helper_cfg(
+                    task,
+                    'DEEPSEEK_BASE_URL',
+                    _cfg('AIDM_DEEPSEEK_BASE_URL', 'https://api.deepseek.com'),
+                )
+            ),
             fallback_models=fallback_models,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
-            thinking_enabled=str(_cfg('AIDM_HELPER_DEEPSEEK_THINKING', 'false')).strip().lower() in {'1', 'true', 'yes', 'on'},
-            reasoning_effort=str(_cfg('AIDM_HELPER_DEEPSEEK_REASONING_EFFORT', 'low')),
+            thinking_enabled=_helper_bool(task, 'DEEPSEEK_THINKING', False),
+            reasoning_effort=str(_helper_cfg(task, 'DEEPSEEK_REASONING_EFFORT', 'low')),
             timeout_seconds=int(read_timeout),
             connect_timeout_seconds=connect_timeout,
             read_timeout_seconds=read_timeout,
         )
 
     if provider_name in {'nvidia', 'kimi'}:
-        default_read_timeout = _int_env('AIDM_HELPER_NVIDIA_TIMEOUT_SECONDS', 30)
+        default_read_timeout = _helper_int(task, 'NVIDIA_TIMEOUT_SECONDS', 30)
         connect_timeout, read_timeout = timeout_from_config(
-            'AIDM_HELPER_NVIDIA',
+            _helper_timeout_prefix(task, 'NVIDIA'),
             default_connect=5.0,
             default_read=default_read_timeout,
         )
         return NvidiaChatProvider(
             model_name=model_name or DEFAULT_NVIDIA_MODEL,
-            api_key=_cfg('AIDM_HELPER_NVIDIA_API_KEY', _cfg('AIDM_NVIDIA_API_KEY', os.getenv('NVIDIA_API_KEY'))),
-            invoke_url=str(_cfg('AIDM_HELPER_NVIDIA_INVOKE_URL', _cfg('AIDM_NVIDIA_INVOKE_URL', 'https://integrate.api.nvidia.com/v1'))),
+            api_key=_helper_cfg(
+                task,
+                'NVIDIA_API_KEY',
+                _cfg('AIDM_NVIDIA_API_KEY', os.getenv('NVIDIA_API_KEY')),
+            ),
+            invoke_url=str(
+                _helper_cfg(
+                    task,
+                    'NVIDIA_INVOKE_URL',
+                    _cfg('AIDM_NVIDIA_INVOKE_URL', 'https://integrate.api.nvidia.com/v1'),
+                )
+            ),
             fallback_models=fallback_models,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
-            thinking_enabled=str(_cfg('AIDM_HELPER_NVIDIA_THINKING', 'false')).strip().lower() in {'1', 'true', 'yes', 'on'},
+            thinking_enabled=_helper_bool(task, 'NVIDIA_THINKING', False),
             timeout_seconds=int(read_timeout),
             connect_timeout_seconds=connect_timeout,
             read_timeout_seconds=read_timeout,

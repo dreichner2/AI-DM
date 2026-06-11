@@ -14,7 +14,45 @@ from aidm_server.llm import (
     get_provider,
     query_dm_function_stream,
 )
+from aidm_server.llm_providers import get_helper_provider
 from aidm_server.provider_registry import provider_capabilities, provider_default_model
+
+
+def _clear_helper_env(monkeypatch):
+    for key in (
+        'AIDM_HELPER_LLM_PROVIDER',
+        'AIDM_HELPER_LLM_MODEL',
+        'AIDM_HELPER_LLM_FALLBACK_MODELS',
+        'AIDM_HELPER_LLM_MAX_TOKENS',
+        'AIDM_HELPER_LLM_TEMPERATURE',
+        'AIDM_HELPER_LLM_TOP_P',
+        'AIDM_HELPER_DEEPSEEK_TIMEOUT_SECONDS',
+        'AIDM_HELPER_DEEPSEEK_THINKING',
+        'AIDM_HELPER_DEEPSEEK_REASONING_EFFORT',
+        'AIDM_CUSTOM_RACE_HELPER_LLM_PROVIDER',
+        'AIDM_CUSTOM_RACE_HELPER_LLM_MODEL',
+        'AIDM_CUSTOM_RACE_HELPER_LLM_FALLBACK_MODELS',
+        'AIDM_CUSTOM_RACE_HELPER_LLM_MAX_TOKENS',
+        'AIDM_CUSTOM_RACE_HELPER_LLM_TEMPERATURE',
+        'AIDM_CUSTOM_RACE_HELPER_LLM_TOP_P',
+        'AIDM_CUSTOM_RACE_HELPER_DEEPSEEK_TIMEOUT_SECONDS',
+        'AIDM_CUSTOM_RACE_HELPER_DEEPSEEK_CONNECT_TIMEOUT_SECONDS',
+        'AIDM_CUSTOM_RACE_HELPER_DEEPSEEK_READ_TIMEOUT_SECONDS',
+        'AIDM_CUSTOM_RACE_HELPER_DEEPSEEK_THINKING',
+        'AIDM_CUSTOM_RACE_HELPER_DEEPSEEK_REASONING_EFFORT',
+        'AIDM_SENTIENT_ENEMY_BRAIN_HELPER_LLM_PROVIDER',
+        'AIDM_SENTIENT_ENEMY_BRAIN_HELPER_LLM_MODEL',
+        'AIDM_SENTIENT_ENEMY_BRAIN_HELPER_LLM_FALLBACK_MODELS',
+        'AIDM_SENTIENT_ENEMY_BRAIN_HELPER_LLM_MAX_TOKENS',
+        'AIDM_SENTIENT_ENEMY_BRAIN_HELPER_LLM_TEMPERATURE',
+        'AIDM_SENTIENT_ENEMY_BRAIN_HELPER_LLM_TOP_P',
+        'AIDM_SENTIENT_ENEMY_BRAIN_HELPER_DEEPSEEK_TIMEOUT_SECONDS',
+        'AIDM_SENTIENT_ENEMY_BRAIN_HELPER_DEEPSEEK_CONNECT_TIMEOUT_SECONDS',
+        'AIDM_SENTIENT_ENEMY_BRAIN_HELPER_DEEPSEEK_READ_TIMEOUT_SECONDS',
+        'AIDM_SENTIENT_ENEMY_BRAIN_HELPER_DEEPSEEK_THINKING',
+        'AIDM_SENTIENT_ENEMY_BRAIN_HELPER_DEEPSEEK_REASONING_EFFORT',
+    ):
+        monkeypatch.delenv(key, raising=False)
 
 
 def test_provider_registry_defines_defaults_and_capabilities():
@@ -194,6 +232,57 @@ def test_get_provider_rejects_unknown_provider(monkeypatch):
 
     with pytest.raises(ProviderNotConfiguredError):
         get_provider()
+
+
+def test_get_helper_provider_defaults_to_fast_state_helper(monkeypatch):
+    _clear_helper_env(monkeypatch)
+    monkeypatch.setenv('AIDM_DEEPSEEK_API_KEY', 'deepseek-test')
+
+    provider = get_helper_provider()
+
+    assert isinstance(provider, DeepSeekChatProvider)
+    assert provider.api_key == 'deepseek-test'
+    assert provider.model_name == 'deepseek-v4-flash'
+    assert provider.max_tokens == 2048
+    assert provider.temperature == 0.1
+    assert provider.top_p == 0.9
+    assert provider.thinking_enabled is False
+    assert provider.reasoning_effort == 'low'
+    assert provider.read_timeout_seconds == 30.0
+
+
+def test_get_helper_provider_uses_pro_defaults_for_custom_races(monkeypatch):
+    _clear_helper_env(monkeypatch)
+    monkeypatch.setenv('AIDM_DEEPSEEK_API_KEY', 'deepseek-test')
+
+    provider = get_helper_provider(task='custom_race')
+
+    assert isinstance(provider, DeepSeekChatProvider)
+    assert provider.api_key == 'deepseek-test'
+    assert provider.model_name == 'deepseek-v4-pro'
+    assert provider.max_tokens == 4096
+    assert provider.temperature == 0.2
+    assert provider.top_p == 0.9
+    assert provider.thinking_enabled is False
+    assert provider.reasoning_effort == 'low'
+    assert provider.read_timeout_seconds == 180.0
+
+
+def test_get_helper_provider_uses_pro_defaults_for_sentient_enemy_brain(monkeypatch):
+    _clear_helper_env(monkeypatch)
+    monkeypatch.setenv('AIDM_DEEPSEEK_API_KEY', 'deepseek-test')
+
+    provider = get_helper_provider(task='sentient_enemy_brain')
+
+    assert isinstance(provider, DeepSeekChatProvider)
+    assert provider.api_key == 'deepseek-test'
+    assert provider.model_name == 'deepseek-v4-pro'
+    assert provider.max_tokens == 2048
+    assert provider.temperature == 0.35
+    assert provider.top_p == 0.9
+    assert provider.thinking_enabled is False
+    assert provider.reasoning_effort == 'medium'
+    assert provider.read_timeout_seconds == 90.0
 
 
 def test_nvidia_provider_generate_parses_openai_shape(monkeypatch):
@@ -491,6 +580,54 @@ def test_query_dm_function_stream_uses_generate_chunking_for_nvidia(monkeypatch)
 
     assert ''.join(chunk if chunk.endswith(' ') else f'{chunk} ' for chunk in chunks).strip().startswith('First sentence.')
     assert len(chunks) >= 1
+
+
+def test_query_dm_function_stream_uses_real_streaming_for_deepseek(monkeypatch):
+    provider = DeepSeekChatProvider(
+        model_name='deepseek-v4-pro',
+        api_key='deepseek-test',
+    )
+
+    def fake_stream(_request):
+        yield 'First '
+        yield 'streamed '
+        yield 'sentence.'
+
+    def fail_generate(_request):
+        raise AssertionError('provider.generate should not be used for DeepSeek query_dm_function_stream')
+
+    monkeypatch.setattr(provider, 'stream', fake_stream)
+    monkeypatch.setattr(provider, 'generate', fail_generate)
+    monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
+
+    chunks = list(query_dm_function_stream('hello', '{"campaign":"test"}'))
+
+    assert chunks == ['First ', 'streamed ', 'sentence.']
+
+
+def test_query_dm_function_stream_falls_back_to_completion_for_deepseek_stream_failure(monkeypatch):
+    provider = DeepSeekChatProvider(
+        model_name='deepseek-v4-pro',
+        api_key='deepseek-test',
+    )
+
+    def fake_stream(_request):
+        raise RuntimeError('stream unavailable')
+
+    def fake_generate(_request):
+        return ProviderResponse(
+            text='Completion fallback sentence. Another fallback sentence.',
+            provider='deepseek',
+            model='deepseek-v4-pro',
+        )
+
+    monkeypatch.setattr(provider, 'stream', fake_stream)
+    monkeypatch.setattr(provider, 'generate', fake_generate)
+    monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
+
+    chunks = list(query_dm_function_stream('hello', '{"campaign":"test"}'))
+
+    assert ''.join(chunks) == 'Completion fallback sentence. Another fallback sentence.'
 
 
 def test_get_provider_uses_phase_timeout_env(monkeypatch):

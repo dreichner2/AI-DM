@@ -33,6 +33,7 @@ from aidm_server.rate_limiter import FixedWindowRateLimiter, build_rate_limiter
 from aidm_server.telemetry import init_telemetry, telemetry_event, telemetry_metric
 from aidm_server.blueprints.accounts import accounts_bp
 from aidm_server.blueprints.campaigns import campaigns_bp
+from aidm_server.blueprints.creatures import creatures_bp
 from aidm_server.blueprints.maps import maps_bp
 from aidm_server.blueprints.players import players_bp
 from aidm_server.blueprints.races import races_bp
@@ -267,6 +268,7 @@ def create_app() -> Flask:
     app.register_blueprint(worlds_bp, url_prefix='/api/worlds')
     app.register_blueprint(players_bp, url_prefix='/api/players')
     app.register_blueprint(races_bp, url_prefix='/api')
+    app.register_blueprint(creatures_bp, url_prefix='/api')
     app.register_blueprint(sessions_bp, url_prefix='/api/sessions')
     app.register_blueprint(maps_bp, url_prefix='/api/maps')
     app.register_blueprint(segments_bp, url_prefix='/api/segments')

@@ -131,11 +131,15 @@ class CustomRace(db.Model):
     __tablename__ = 'custom_races'
     __table_args__ = (
         db.Index('ix_custom_races_workspace_race', 'workspace_id', 'race_id'),
+        db.Index('ix_custom_races_account_created_at', 'account_id', 'created_at'),
         db.UniqueConstraint('workspace_id', 'race_id', 'version', name='uq_custom_races_workspace_race_version'),
     )
 
     custom_race_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     workspace_id = db.Column(db.String(80), nullable=False, default='owner', server_default='owner', index=True)
+    account_id = db.Column(db.Integer, db.ForeignKey('accounts.account_id', ondelete='SET NULL'), nullable=True, index=True)
+    creator_username = db.Column(db.String(80), nullable=True)
+    creator_display_name = db.Column(db.String(180), nullable=True)
     race_id = db.Column(db.String(120), nullable=False)
     version = db.Column(db.Integer, nullable=False, default=1)
     name = db.Column(db.String(80), nullable=False)
@@ -143,6 +147,101 @@ class CustomRace(db.Model):
     race_definition = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=utc_now)
     updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
+
+    account = db.relationship('Account', backref='custom_races')
+
+
+class BestiaryEntry(db.Model):
+    __tablename__ = 'bestiary_entries'
+    __table_args__ = (
+        db.Index('ix_bestiary_entries_workspace_scope_name', 'workspace_id', 'scope', 'name'),
+        db.Index('ix_bestiary_entries_campaign_scope_region', 'campaign_id', 'scope', 'region_id'),
+        db.Index('ix_bestiary_entries_session_scope', 'session_id', 'scope'),
+        db.Index('ix_bestiary_entries_creature_id', 'creature_id'),
+    )
+
+    bestiary_entry_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    workspace_id = db.Column(db.String(80), nullable=False, default='owner', server_default='owner', index=True)
+    campaign_id = db.Column(db.Integer, db.ForeignKey('campaigns.campaign_id', ondelete='CASCADE'), nullable=True, index=True)
+    session_id = db.Column(db.Integer, db.ForeignKey('sessions.session_id', ondelete='CASCADE'), nullable=True, index=True)
+    scope = db.Column(db.String(32), nullable=False)
+    creature_id = db.Column(db.String(120), nullable=False)
+    version = db.Column(db.Integer, nullable=False, default=1)
+    name = db.Column(db.String(120), nullable=False)
+    source = db.Column(db.String(32), nullable=False)
+    persistence = db.Column(db.String(32), nullable=False, default='session')
+    region_id = db.Column(db.String(120), nullable=True)
+    location_ids_json = db.Column(db.Text)
+    faction_ids_json = db.Column(db.Text)
+    tags_json = db.Column(db.Text)
+    creature_json = db.Column(db.Text, nullable=False)
+    balance_json = db.Column(db.Text)
+    created_because = db.Column(db.Text)
+    base_creature_id = db.Column(db.String(120), nullable=True)
+    variant_reason = db.Column(db.Text)
+    created_at_turn = db.Column(db.Integer, nullable=True)
+    created_by_model = db.Column(db.String(160), nullable=True)
+    created_at = db.Column(db.DateTime, default=utc_now)
+    updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
+
+    campaign = db.relationship('Campaign', backref='bestiary_entries')
+    session = db.relationship('Session', backref='bestiary_entries')
+
+
+class CombatEncounter(db.Model):
+    __tablename__ = 'combat_encounters'
+    __table_args__ = (
+        db.Index('ix_combat_encounters_session_status', 'session_id', 'status'),
+        db.Index('ix_combat_encounters_campaign_status_updated', 'campaign_id', 'status', 'updated_at'),
+    )
+
+    combat_encounter_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    session_id = db.Column(db.Integer, db.ForeignKey('sessions.session_id', ondelete='CASCADE'), nullable=False, index=True)
+    campaign_id = db.Column(db.Integer, db.ForeignKey('campaigns.campaign_id', ondelete='CASCADE'), nullable=False, index=True)
+    status = db.Column(db.String(32), nullable=False, default='active')
+    round = db.Column(db.Integer, nullable=False, default=1)
+    encounter_goal_json = db.Column(db.Text)
+    battlefield_json = db.Column(db.Text)
+    participant_ids_json = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=utc_now)
+    updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
+    ended_at = db.Column(db.DateTime)
+
+    campaign = db.relationship('Campaign', backref='combat_encounters')
+    session = db.relationship(
+        'Session',
+        backref=db.backref('combat_encounters', cascade='all, delete-orphan', passive_deletes=True),
+    )
+
+
+class CombatDebugEvent(db.Model):
+    __tablename__ = 'combat_debug_events'
+    __table_args__ = (
+        db.Index('ix_combat_debug_events_session_created', 'session_id', 'created_at'),
+        db.Index('ix_combat_debug_events_turn_type', 'turn_id', 'event_type'),
+    )
+
+    debug_event_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    session_id = db.Column(db.Integer, db.ForeignKey('sessions.session_id', ondelete='CASCADE'), nullable=False, index=True)
+    campaign_id = db.Column(db.Integer, db.ForeignKey('campaigns.campaign_id', ondelete='CASCADE'), nullable=False, index=True)
+    turn_id = db.Column(db.Integer, db.ForeignKey('dm_turns.turn_id', ondelete='SET NULL'), nullable=True, index=True)
+    combat_encounter_id = db.Column(
+        db.Integer,
+        db.ForeignKey('combat_encounters.combat_encounter_id', ondelete='SET NULL'),
+        nullable=True,
+        index=True,
+    )
+    event_type = db.Column(db.String(80), nullable=False)
+    payload_json = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=utc_now, index=True)
+
+    campaign = db.relationship('Campaign', backref='combat_debug_events')
+    session = db.relationship(
+        'Session',
+        backref=db.backref('combat_debug_events', cascade='all, delete-orphan', passive_deletes=True),
+    )
+    turn = db.relationship('DmTurn', backref='combat_debug_events')
+    combat_encounter = db.relationship('CombatEncounter', backref='debug_events')
 
 
 class Session(db.Model):

@@ -37,3 +37,6 @@ tmp/
 aidm_frontend/node_modules/
 aidm_frontend/dist/
 aidm_frontend/.vite/
+
+# Local media assets
+aidm_frontend/public/music/*.mp3

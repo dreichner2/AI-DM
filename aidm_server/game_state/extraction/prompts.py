@@ -46,10 +46,12 @@ def build_post_dm_prompt(
 ) -> str:
     allowed_types = (
         'inventory.add, inventory.remove, inventory.transfer, inventory.equip, inventory.unequip, currency.add, currency.remove, currency.transfer, '
-        'health.heal, health.damage, xp.add, xp.remove, scene.update, scene.move_location, '
+        'health.heal, health.damage, xp.add, xp.remove, spell.learn, scene.update, scene.move_location, '
         'location.discover, location.update, location.connect, quest.add, quest.update, '
         'quest.objective.add, quest.objective.update, quest.complete, quest.fail, '
-        'npc.discover, npc.update, npc.move, npc.relationship.update, flag.set, flag.unset'
+        'npc.discover, npc.update, npc.move, npc.relationship.update, flag.set, flag.unset, '
+        'combat.update, combat.round.advance, combat.battlefield.update, combat.participant.update, combat.move, '
+        'combat.condition.add, combat.condition.remove, combat.ability.mark_used, combat.morale.update, combat.morale.event, combat.end'
     )
     return (
         'Return JSON with keys proposedChanges, uncertainChanges, notes. '
@@ -63,7 +65,9 @@ def build_post_dm_prompt(
         'For currency.add, currency.remove, and currency.transfer, include amount and currency using key "currency" with one of pp, gp, ep, sp, cp. '
         'For transfer changes, include the source actor as actorId/fromActorId and the recipient as toActorId or toActorName.\n\n'
         'For XP changes, use xp.add or xp.remove with positive integer amount.\n\n'
-        'For scene.update, include only persistent scene fields that clearly changed: locationId, name, sceneType, dangerLevel, mood, combatState, description, activeNpcIds, activeQuestIds, musicTag. '
+        'For spell.learn, include actorId and spellName. Magic is not limited to D&D, Pathfinder, or any official spell list; preserve invented spell names and magical techniques when the DM response confirms them. Use spell.learn when the DM response confirms a character learns, copies, reads, is taught, unlocks, or masters a spell, cantrip, ritual, magical technique, shapeshifting form, or race/class magic. Include spellLevel when known and learnedFrom when a book, teacher, item, or source is named.\n\n'
+        'For scene.update, include only persistent scene fields that clearly changed: locationId, name, sceneType, dangerLevel, mood, combatState, description, activeNpcIds, activeQuestIds, playerPositions, playerZones, characterPositions, characterZones, musicTag. '
+        'Use playerPositions/playerZones or characterPositions/characterZones when the response clearly separates characters by zone, room, inside/outside boundary, line of sight, or reachability. '
         'Update dangerLevel whenever immediate scene danger clearly rises or falls; use 0 for safe/calm, 5 for meaningful threat, and 8-10 for active combat or lethal danger. '
         'sceneType must be one of social, exploration, travel, combat, dungeon, rest, mystery, shopping, dialogue. '
         'mood must be one of calm, tense, eerie, heroic, sad, mysterious, dangerous. '
@@ -83,6 +87,11 @@ def build_post_dm_prompt(
         'NPC status must be known, met, allied, hostile, dead, missing, or unknown. '
         'Use memory for short stable NPC memories that the app should persist.\n\n'
         'For flags, use flagKey and flagValue for flag.set; use flagKey for flag.unset.\n\n'
+        'For combat changes, use participantId for the affected combat participant. '
+        'Use combat.participant.update for HP changes, defeat, fleeing, surrender, consciousness, or full participant replacement; include hp.current/hp.max when HP changes. '
+        'Use combat.condition.add/remove for named conditions. Use combat.move with toRangeBand for range-band movement. '
+        'Use combat.ability.mark_used only when a creature ability was actually spent. Use combat.morale.update/event only for explicit morale changes or supported morale events. '
+        'Use combat.end only when the response clearly ends the fight, and do not duplicate combat changes already applied before narration.\n\n'
         'Extract world/story changes only when the DM response clearly states them. Avoid speculative, conditional, hypothetical, or purely flavor-only mentions. '
         'Do not duplicate already-applied changes. The app validates and applies changes; you only propose structured changes.\n\n'
         f'State before DM:\n{json.dumps(state_before_dm, separators=(",", ":"))}\n\n'

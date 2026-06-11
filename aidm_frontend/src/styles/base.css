@@ -1468,6 +1468,251 @@ select:focus-visible {
   margin-top: 1px;
 }
 
+.custom-race-library {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.custom-race-library-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.custom-race-library-head span {
+  color: var(--orange);
+  font-size: 0.68rem;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.custom-race-library-head strong {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 720;
+  text-transform: uppercase;
+}
+
+.custom-race-library-list {
+  display: grid;
+  gap: 7px;
+}
+
+.custom-race-library-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(74px, auto);
+  gap: 6px 10px;
+  align-items: center;
+  width: 100%;
+  min-height: 64px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.028);
+  text-align: left;
+}
+
+.custom-race-library-card:hover,
+.custom-race-library-card:focus-visible,
+.custom-race-library-card.selected {
+  border-color: rgba(255, 107, 44, 0.45);
+  background: rgba(255, 107, 44, 0.08);
+}
+
+.custom-race-library-card > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.custom-race-library-card strong {
+  color: var(--heading);
+  font-size: 0.82rem;
+}
+
+.custom-race-library-card em {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-style: normal;
+}
+
+.custom-race-library-card small {
+  grid-column: 1 / -1;
+  color: var(--text);
+  font-size: 0.73rem;
+  line-height: 1.35;
+}
+
+.custom-race-metadata {
+  display: grid;
+  gap: 11px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.custom-race-metadata-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.custom-race-metadata-head span,
+.custom-race-ability-list h4 {
+  margin: 0;
+  color: var(--orange);
+  font-size: 0.68rem;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.custom-race-metadata-head strong {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 720;
+  text-transform: uppercase;
+}
+
+.custom-race-metadata-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+  margin: 0;
+}
+
+.custom-race-metadata-grid > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding-bottom: 7px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+}
+
+.custom-race-metadata-grid dt,
+.custom-race-ability dt,
+.race-metadata-nested dt {
+  color: var(--muted);
+  font-size: 0.61rem;
+  font-weight: 780;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.custom-race-metadata-grid dd,
+.custom-race-ability dd,
+.race-metadata-nested dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: 0.74rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.race-metadata-list {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding-left: 15px;
+}
+
+.race-metadata-nested {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.race-metadata-nested > div {
+  display: grid;
+  gap: 2px;
+}
+
+.race-metadata-empty {
+  color: var(--muted);
+}
+
+.custom-race-ability-list {
+  display: grid;
+  gap: 9px;
+  padding-top: 2px;
+}
+
+.custom-race-ability {
+  display: grid;
+  gap: 7px;
+  padding-top: 9px;
+  border-top: 1px solid rgba(255, 255, 255, 0.065);
+}
+
+.custom-race-ability header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 7px;
+}
+
+.custom-race-ability header strong {
+  color: var(--heading);
+  font-size: 0.82rem;
+}
+
+.custom-race-ability header span {
+  color: #f6c38b;
+  font-size: 0.68rem;
+  font-weight: 720;
+  text-transform: uppercase;
+}
+
+.custom-race-ability p {
+  color: var(--text);
+  font-size: 0.76rem;
+}
+
+.custom-race-ability > dl {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.custom-race-ability > dl > div {
+  display: grid;
+  gap: 3px;
+}
+
+.custom-race-json {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.custom-race-json summary {
+  cursor: pointer;
+  color: var(--orange);
+  font-size: 0.68rem;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.custom-race-json pre {
+  max-height: 280px;
+  margin: 8px 0 0;
+  padding: 9px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.18);
+  font-size: 0.68rem;
+  line-height: 1.35;
+  white-space: pre-wrap;
+}
+
 .race-details-backdrop {
   position: fixed;
   inset: 0;

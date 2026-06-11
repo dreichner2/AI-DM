@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any
 
 from aidm_server.canon_text import int_or_default
+from aidm_server.combat.state import ensure_combat_state, normalize_battlefield, normalize_combat_state, normalize_participant, normalize_position
 from aidm_server.game_state.equipment import conflict_items, equipment_slot_label, infer_equipment_slot
 from aidm_server.game_state.models import (
     CURRENCY_CODES,
@@ -20,6 +21,13 @@ from aidm_server.game_state.models import (
     stats_with_currency,
 )
 from aidm_server.models import Player, Session, safe_json_dumps, safe_json_loads
+from aidm_server.spellbook import (
+    character_sheet_record,
+    known_spell_names,
+    merge_spellbooks,
+    normalize_spellbook,
+    spell_from_change,
+)
 from aidm_server.time_utils import utc_now
 
 
@@ -176,6 +184,23 @@ def _apply_xp(actor: dict[str, Any], change: dict[str, Any], direction: int) -> 
     return amount
 
 
+def _apply_spell_learn(actor: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] | None:
+    spell = spell_from_change(change)
+    if not spell:
+        return None
+    existing = normalize_spellbook(actor.get('spellbook') if isinstance(actor.get('spellbook'), dict) else {})
+    known_before = {normalize_item_name(candidate.get('name')) for candidate in existing.get('knownSpells', []) if isinstance(candidate, dict)}
+    merged = merge_spellbooks(existing, {'knownSpells': [spell]})
+    actor['spellbook'] = merged
+    actor['spells'] = known_spell_names(merged)
+    return {
+        'spellId': spell.get('id'),
+        'spellName': spell.get('name'),
+        'spellLevel': spell.get('level'),
+        'alreadyKnown': normalize_item_name(spell.get('name')) in known_before,
+    }
+
+
 def _text(value: Any) -> str:
     return str(value or '').strip()
 
@@ -323,6 +348,10 @@ def _apply_scene_fields(scene: dict[str, Any], change: dict[str, Any]) -> None:
         scene['activeNpcIds'] = _string_list(change.get('activeNpcIds'))
     if 'activeQuestIds' in change:
         scene['activeQuestIds'] = _merge_unique(scene.get('activeQuestIds'), change.get('activeQuestIds'))
+    for key in ('playerPositions', 'playerZones', 'characterPositions', 'characterZones'):
+        if isinstance(change.get(key), dict):
+            current = scene.get(key) if isinstance(scene.get(key), dict) else {}
+            scene[key] = {**current, **{str(k): v for k, v in change[key].items() if v not in (None, '', [], {})}}
     turn_id = _turn_id(change)
     if turn_id is not None:
         scene['updatedAtTurn'] = turn_id
@@ -653,6 +682,181 @@ def _apply_relationship_update(state: dict[str, Any], change: dict[str, Any]) ->
     return npc
 
 
+def _combat_participant(combat: dict[str, Any], participant_id: Any) -> dict[str, Any] | None:
+    requested = _text(participant_id)
+    if not requested:
+        return None
+    for participant in combat.get('participants') or []:
+        if isinstance(participant, dict) and _text(participant.get('id')) == requested:
+            return participant
+    return None
+
+
+def _sync_actor_health_to_combat_participant(state: dict[str, Any], actor: dict[str, Any]) -> None:
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else None
+    if not combat:
+        return
+    participant = _combat_participant(combat, actor.get('id'))
+    if not participant:
+        return
+    health = actor.get('health') if isinstance(actor.get('health'), dict) else {}
+    hp = participant.setdefault('hp', {})
+    current = max(0, int_or_default(health.get('currentHp'), default=hp.get('current') or 0))
+    maximum = max(current, int_or_default(health.get('maxHp'), default=hp.get('max') or current))
+    hp['current'] = current
+    hp['max'] = maximum
+    hp['temp'] = max(0, int_or_default(health.get('tempHp'), default=hp.get('temp') or 0))
+    if participant.get('team') == 'player':
+        participant['isAlive'] = participant.get('isAlive', True)
+        participant['isConscious'] = current > 0
+
+
+def _sync_scene_combat_state(state: dict[str, Any], combat: dict[str, Any]) -> None:
+    scene = _ensure_scene(state)
+    status = _text(combat.get('status'))
+    if status in {'starting', 'active'}:
+        scene['sceneType'] = 'combat'
+        scene['combatState'] = 'active'
+        scene['dangerLevel'] = max(8, int_or_default(scene.get('dangerLevel'), default=0))
+    elif status == 'ended':
+        scene['combatState'] = 'resolved'
+        scene['dangerLevel'] = min(int_or_default(scene.get('dangerLevel'), default=0), 4)
+        if scene.get('sceneType') == 'combat':
+            scene['sceneType'] = 'exploration'
+        if scene.get('mood') == 'dangerous':
+            scene['mood'] = 'calm'
+    elif status == 'none':
+        scene['combatState'] = 'none'
+
+
+def _apply_combat_start(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
+    combat_payload = change.get('combat') if isinstance(change.get('combat'), dict) else change
+    combat = normalize_combat_state(
+        {
+            **combat_payload,
+            'status': combat_payload.get('status') or 'active',
+            'round': combat_payload.get('round') or 1,
+        },
+        state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {},
+    )
+    state['combat'] = combat
+    _sync_scene_combat_state(state, combat)
+    return combat
+
+
+def _apply_combat_update(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
+    combat = ensure_combat_state(state)
+    for key in ('status', 'round', 'turnIndex', 'lastRoundSummary', 'encounterGoal'):
+        _set_if_present(combat, key, change.get(key))
+    if isinstance(change.get('flags'), dict):
+        flags = combat.setdefault('flags', {})
+        if not isinstance(flags, dict):
+            flags = {}
+            combat['flags'] = flags
+        flags.update(change['flags'])
+    _sync_scene_combat_state(state, combat)
+    return combat
+
+
+def _apply_combat_participant_update(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] | None:
+    combat = ensure_combat_state(state)
+    participant = _combat_participant(combat, change.get('participantId'))
+    if not participant:
+        return None
+    replacement = normalize_participant(change.get('participant')) if isinstance(change.get('participant'), dict) else None
+    if replacement:
+        participant.update(replacement)
+    hp = change.get('hp') if isinstance(change.get('hp'), dict) else {}
+    if hp:
+        current = max(0, int_or_default(hp.get('current', hp.get('currentHp', participant.get('hp', {}).get('current'))), default=0))
+        maximum = max(current, int_or_default(hp.get('max', hp.get('maxHp', participant.get('hp', {}).get('max'))), default=current))
+        participant['hp'] = {
+            'current': current,
+            'max': maximum,
+            'temp': max(0, int_or_default(hp.get('temp', participant.get('hp', {}).get('temp')), default=0)),
+        }
+        participant['isAlive'] = current > 0
+        participant['isConscious'] = current > 0 and bool(change.get('isConscious', participant.get('isConscious', True)))
+    if 'conditions' in change:
+        participant['conditions'] = _string_list(change.get('conditions'))
+    if isinstance(change.get('position'), dict):
+        participant['position'] = change['position']
+    for key in ('isAlive', 'isConscious'):
+        if key in change:
+            participant[key] = bool(change[key])
+    return participant
+
+
+def _apply_combat_intent(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] | None:
+    combat = ensure_combat_state(state)
+    participant = _combat_participant(combat, change.get('participantId'))
+    if not participant:
+        return None
+    participant['currentIntent'] = change.get('intent') if isinstance(change.get('intent'), dict) else None
+    return participant
+
+
+def _apply_combat_morale(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] | None:
+    combat = ensure_combat_state(state)
+    participant = _combat_participant(combat, change.get('participantId'))
+    if not participant:
+        return None
+    participant['morale'] = max(0, min(100, int_or_default(change.get('morale'), default=participant.get('morale') or 50)))
+    if change.get('event'):
+        participant['moraleEvents'] = _merge_unique(participant.get('moraleEvents'), [change.get('event')])
+    return participant
+
+
+def _apply_combat_move(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] | None:
+    combat = ensure_combat_state(state)
+    participant = _combat_participant(combat, change.get('participantId'))
+    if not participant:
+        return None
+    position = normalize_position({**(participant.get('position') if isinstance(participant.get('position'), dict) else {}), 'rangeBand': change.get('toRangeBand')})
+    for key in ('zoneId', 'coverId', 'isHidden'):
+        if key in change:
+            position[key] = change[key]
+    participant['position'] = position
+    return participant
+
+
+def _apply_combat_condition(state: dict[str, Any], change: dict[str, Any], *, add: bool) -> dict[str, Any] | None:
+    combat = ensure_combat_state(state)
+    participant = _combat_participant(combat, change.get('participantId'))
+    if not participant:
+        return None
+    condition = _text(change.get('condition')).lower().replace(' ', '_')
+    conditions = [str(item).strip().lower().replace(' ', '_') for item in participant.get('conditions') or [] if str(item or '').strip()]
+    if add and condition and condition not in conditions:
+        conditions.append(condition)
+    if not add:
+        conditions = [item for item in conditions if item != condition]
+    participant['conditions'] = conditions
+    if condition in {'fled', 'escaped'} and add:
+        participant['isConscious'] = False
+    if condition == 'surrendered' and add:
+        participant['currentIntent'] = None
+    return participant
+
+
+def _apply_combat_ability_mark_used(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] | None:
+    combat = ensure_combat_state(state)
+    participant = _combat_participant(combat, change.get('participantId'))
+    if not participant:
+        return None
+    ability_id = _text(change.get('abilityId'))
+    for ability in participant.get('abilities') or []:
+        if not isinstance(ability, dict) or _text(ability.get('id')) != ability_id:
+            continue
+        if ability.get('usesRemaining') is not None:
+            ability['usesRemaining'] = max(0, int_or_default(ability.get('usesRemaining'), default=1) - 1)
+        ability['lastUsedRound'] = (combat.get('round') or 1)
+        if ability.get('cooldown') in {'once_per_combat', 'short_rest', 'long_rest'}:
+            ability['used'] = True
+        return participant
+    return participant
+
+
 def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, Any]]) -> dict[str, Any]:
     next_state = deepcopy(previous_state)
     applied: list[dict[str, Any]] = []
@@ -747,14 +951,125 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             applied_change['actualAmount'] = abs(_apply_currency(actor, change, -1))
         elif change_type == 'health.heal' and actor:
             applied_change['actualAmount'] = _apply_health_heal(actor, change)
+            _sync_actor_health_to_combat_participant(next_state, actor)
         elif change_type == 'health.damage' and actor:
             result = _apply_health_damage(actor, change)
+            _sync_actor_health_to_combat_participant(next_state, actor)
             applied_change.update(result)
             applied_change['actualAmount'] = result['amount']
         elif change_type == 'xp.add' and actor:
             applied_change['actualAmount'] = _apply_xp(actor, change, 1)
         elif change_type == 'xp.remove' and actor:
             applied_change['actualAmount'] = _apply_xp(actor, change, -1)
+        elif change_type == 'spell.learn' and actor:
+            result = _apply_spell_learn(actor, change)
+            if not result:
+                skipped.append({'change': change, 'reason': 'Spell missing during learn application.'})
+                continue
+            applied_change.update(result)
+            applied_change['actualAmount'] = 0 if result.get('alreadyKnown') else 1
+        elif change_type == 'combat.start':
+            combat = _apply_combat_start(next_state, change)
+            applied_change['combatStatus'] = combat.get('status')
+            applied_change['participantCount'] = len(combat.get('participants') or [])
+        elif change_type == 'combat.update':
+            combat = _apply_combat_update(next_state, change)
+            applied_change['combatStatus'] = combat.get('status')
+            applied_change['round'] = combat.get('round')
+        elif change_type == 'combat.round.advance':
+            combat = ensure_combat_state(next_state)
+            combat['round'] = max(1, int_or_default(change.get('round'), default=int_or_default(combat.get('round'), default=1) + 1))
+            combat['turnIndex'] = 0
+            if change.get('summary'):
+                combat['lastRoundSummary'] = change.get('summary')
+            applied_change['combatStatus'] = combat.get('status')
+            applied_change['round'] = combat.get('round')
+        elif change_type == 'combat.battlefield.update':
+            combat = ensure_combat_state(next_state)
+            combat['battlefield'] = normalize_battlefield(
+                change.get('battlefield'),
+                next_state.get('currentScene') if isinstance(next_state.get('currentScene'), dict) else {},
+            )
+            applied_change['battlefieldType'] = combat['battlefield'].get('environmentType')
+        elif change_type == 'combat.participant.update':
+            participant = _apply_combat_participant_update(next_state, change)
+            if not participant:
+                skipped.append({'change': change, 'reason': 'Combat participant missing during update.'})
+                continue
+            applied_change['participantId'] = participant.get('id')
+            applied_change['participantName'] = participant.get('name')
+        elif change_type == 'combat.move':
+            participant = _apply_combat_move(next_state, change)
+            if not participant:
+                skipped.append({'change': change, 'reason': 'Combat participant missing during movement.'})
+                continue
+            applied_change['participantId'] = participant.get('id')
+            applied_change['participantName'] = participant.get('name')
+            applied_change['toRangeBand'] = (participant.get('position') or {}).get('rangeBand')
+        elif change_type == 'combat.condition.add':
+            participant = _apply_combat_condition(next_state, change, add=True)
+            if not participant:
+                skipped.append({'change': change, 'reason': 'Combat participant missing during condition add.'})
+                continue
+            applied_change['participantId'] = participant.get('id')
+            applied_change['participantName'] = participant.get('name')
+            applied_change['condition'] = change.get('condition')
+        elif change_type == 'combat.condition.remove':
+            participant = _apply_combat_condition(next_state, change, add=False)
+            if not participant:
+                skipped.append({'change': change, 'reason': 'Combat participant missing during condition remove.'})
+                continue
+            applied_change['participantId'] = participant.get('id')
+            applied_change['participantName'] = participant.get('name')
+            applied_change['condition'] = change.get('condition')
+        elif change_type == 'combat.ability.mark_used':
+            participant = _apply_combat_ability_mark_used(next_state, change)
+            if not participant:
+                skipped.append({'change': change, 'reason': 'Combat participant missing during ability mark used.'})
+                continue
+            applied_change['participantId'] = participant.get('id')
+            applied_change['participantName'] = participant.get('name')
+            applied_change['abilityId'] = change.get('abilityId')
+        elif change_type == 'combat.intent.set':
+            participant = _apply_combat_intent(next_state, change)
+            if not participant:
+                skipped.append({'change': change, 'reason': 'Combat participant missing during intent update.'})
+                continue
+            applied_change['participantId'] = participant.get('id')
+            applied_change['participantName'] = participant.get('name')
+            applied_change['intentType'] = (participant.get('currentIntent') or {}).get('intentType') if isinstance(participant.get('currentIntent'), dict) else None
+        elif change_type == 'combat.morale.update':
+            participant = _apply_combat_morale(next_state, change)
+            if not participant:
+                skipped.append({'change': change, 'reason': 'Combat participant missing during morale update.'})
+                continue
+            applied_change['participantId'] = participant.get('id')
+            applied_change['participantName'] = participant.get('name')
+            applied_change['morale'] = participant.get('morale')
+        elif change_type == 'combat.morale.event':
+            participant = _apply_combat_morale(next_state, change)
+            if not participant:
+                skipped.append({'change': change, 'reason': 'Combat participant missing during morale event.'})
+                continue
+            applied_change['participantId'] = participant.get('id')
+            applied_change['participantName'] = participant.get('name')
+            applied_change['morale'] = participant.get('morale')
+            applied_change['event'] = change.get('event')
+        elif change_type == 'combat.end':
+            combat = ensure_combat_state(next_state)
+            combat['status'] = change.get('status') or 'ended'
+            combat['lastRoundSummary'] = change.get('summary') or change.get('reason') or combat.get('lastRoundSummary')
+            if change.get('endReason'):
+                combat.setdefault('flags', {})['endReason'] = change.get('endReason')
+            for participant in combat.get('participants') or []:
+                if not isinstance(participant, dict):
+                    continue
+                if participant.get('team') == 'enemy':
+                    participant['currentIntent'] = None
+                    if 'morale' in participant:
+                        participant['morale'] = min(int_or_default(participant.get('morale'), default=0), 10)
+            _sync_scene_combat_state(next_state, combat)
+            applied_change['combatStatus'] = combat.get('status')
         elif change_type == 'scene.update':
             scene = _ensure_scene(next_state)
             _apply_scene_fields(scene, change)
@@ -904,6 +1219,12 @@ def persist_state_to_database(
             stats['xp'] = current_xp
             stats['experience'] = current_xp
         player.stats = safe_json_dumps(stats, {})
+        spellbook = actor.get('spellbook') if isinstance(actor.get('spellbook'), dict) else {}
+        if spellbook.get('knownSpells'):
+            sheet = character_sheet_record(player.character_sheet)
+            sheet['spellbook'] = normalize_spellbook(spellbook)
+            sheet['spells'] = known_spell_names(sheet['spellbook'])
+            player.character_sheet = safe_json_dumps(sheet, {})
 
     session_obj.state_snapshot = safe_json_dumps(state, {})
 
@@ -967,6 +1288,17 @@ def legacy_immediate_summary_from_applied(applied_changes: list[dict[str, Any]],
                     character_change['gold_delta'] = 0
                     character_change['currency_delta'] = {currency_names[currency_code]: signed_amount}
             character_changes.append(character_change)
+        elif change_type == 'spell.learn':
+            character_changes.append(
+                {
+                    'player_id': parse_actor_player_id(change.get('actorId') or change.get('actor_id')),
+                    'change_type': change_type,
+                    'spell_name': change.get('spellName') or change.get('spell_name'),
+                    'spell_level': change.get('spellLevel') if change.get('spellLevel') is not None else change.get('spell_level'),
+                    'state_change_id': change.get('id'),
+                    'already_applied': True,
+                }
+            )
     return {
         'inventory_changes_applied': inventory_changes,
         'character_state_changes_applied': character_changes,

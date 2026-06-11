@@ -3,7 +3,7 @@ from __future__ import annotations
 from aidm_server.contracts import ProviderResponse
 from aidm_server.database import db
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY, STATE_PIPELINE_VERSION
-from aidm_server.game_state.application.applier import apply_state_changes
+from aidm_server.game_state.application.applier import apply_state_changes, persist_state_to_database
 import aidm_server.game_state.extraction.post_dm_outcome_extractor as post_extractor_module
 import aidm_server.game_state.extraction.pre_dm_action_extractor as pre_extractor_module
 import aidm_server.game_state.orchestration.turn_pipeline as turn_pipeline_module
@@ -11,6 +11,7 @@ from aidm_server.game_state.extraction.post_dm_outcome_extractor import extract_
 from aidm_server.game_state.extraction.pre_dm_action_extractor import extract_pre_dm_actions
 from aidm_server.game_state.extraction.schemas import normalize_post_extraction
 from aidm_server.game_state.logging.state_log_builder import build_state_log
+from aidm_server.game_state.models import display_actor_id
 from aidm_server.game_state.orchestration.turn_pipeline import post_dm_pipeline
 from aidm_server.game_state.validation.inventory_validator import resolve_inventory_item_reference
 from aidm_server.game_state.validation.validator import (
@@ -361,6 +362,46 @@ def test_apply_health_damage_uses_temp_hp_first():
     health = result['nextState']['playerCharacters'][0]['health']
     assert health['tempHp'] == 0
     assert health['currentHp'] == 8
+
+
+def test_apply_health_damage_syncs_matching_combat_participant():
+    state = _state(hp_current=10, hp_max=20, temp_hp=0)
+    state['combat'] = {
+        'status': 'active',
+        'round': 1,
+        'participants': [
+            {
+                'id': 'player_1',
+                'team': 'player',
+                'name': 'Kael',
+                'hp': {'current': 10, 'max': 20, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            }
+        ],
+    }
+
+    result = apply_state_changes(
+        state,
+        [
+            {
+                'id': 'chg_damage_combat_sync',
+                'type': 'health.damage',
+                'actorId': 'player_1',
+                'amount': 4,
+                'source': 'post_dm',
+                'reason': 'Damage.',
+                'visible': True,
+            }
+        ],
+    )
+
+    actor_health = result['nextState']['playerCharacters'][0]['health']
+    combat_hp = result['nextState']['combat']['participants'][0]['hp']
+    assert actor_health['currentHp'] == 6
+    assert combat_hp == {'current': 6, 'max': 20, 'temp': 0}
+    assert result['nextState']['combat']['participants'][0]['isConscious'] is True
 
 
 def test_apply_xp_gain_and_capped_loss():
@@ -831,6 +872,33 @@ def test_scene_update_changes_mood_danger_and_type_without_removing_location():
     assert scene['dangerLevel'] == 3
     assert scene['mood'] == 'tense'
     assert scene['updatedAtTurn'] == 21
+
+
+def test_scene_update_tracks_character_positions_and_zones():
+    state = _state()
+    state['currentScene'] = {'locationId': 'colosseum', 'name': 'Colosseum'}
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'scene_positions_1',
+                'type': 'scene.update',
+                'playerPositions': {
+                    'player_1': {'zoneId': 'inside_colosseum', 'rangeBand': 'near'},
+                    '2': {'zoneId': 'outside_colosseum', 'rangeBand': 'far'},
+                },
+                'characterZones': {'Loki': 'inside_colosseum', 'Himeros': 'outside_colosseum'},
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    scene = result['nextState']['currentScene']
+
+    assert validation['rejected'] == []
+    assert scene['playerPositions']['player_1']['zoneId'] == 'inside_colosseum'
+    assert scene['playerPositions']['2']['zoneId'] == 'outside_colosseum'
+    assert scene['characterZones']['Loki'] == 'inside_colosseum'
+    assert scene['characterZones']['Himeros'] == 'outside_colosseum'
 
 
 def test_scene_move_location_updates_scene_and_marks_location_visited():
@@ -1464,6 +1532,917 @@ def test_post_dm_extracts_scene_danger_decrease(app):
     assert scene_change['dangerLevel'] == 1
     assert scene_change['combatState'] == 'resolved'
     assert scene_change['mood'] == 'calm'
+
+
+def test_post_dm_marks_mentioned_known_npcs_active(app):
+    state = _state()
+    state['currentScene'] = {
+        'locationId': 'colosseum',
+        'name': 'Colosseum',
+        'sceneType': 'social',
+        'activeNpcIds': [],
+    }
+    state['knownNpcs'] = [
+        {
+            'id': 'mirror_trickster',
+            'name': 'Mirror Trickster',
+            'locationId': 'colosseum',
+            'status': 'met',
+        },
+        {
+            'id': 'distant_judge',
+            'name': 'Distant Judge',
+            'locationId': 'upper_gallery',
+            'status': 'known',
+        },
+    ]
+
+    with app.app_context():
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I ask the Trickster why it attacked.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The Mirror Trickster lowers its shard and answers in a hoarse whisper.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=16,
+        )
+
+    scene_change = next(
+        change for change in result['proposedChanges']
+        if change['type'] == 'scene.update' and change.get('activeNpcIds')
+    )
+    assert scene_change['activeNpcIds'] == ['mirror_trickster']
+    assert 'heuristic_active_npcs' in result['notes']
+
+
+def test_post_dm_extracts_enemy_combat_damage_and_conditions(app):
+    state = _state()
+    state['combat'] = {
+        'status': 'active',
+        'round': 1,
+        'participants': [
+            {
+                'id': 'player_1',
+                'team': 'player',
+                'name': 'Kael',
+                'hp': {'current': 10, 'max': 20, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'enemy_wolf_1',
+                'team': 'enemy',
+                'name': 'Wolf',
+                'kind': 'creature',
+                'hp': {'current': 11, 'max': 11, 'temp': 0},
+                'conditions': [],
+                'position': {'rangeBand': 'near'},
+                'abilities': [],
+                'morale': 50,
+                'isAlive': True,
+                'isConscious': True,
+            },
+        ],
+        'battlefield': {'environmentType': 'forest'},
+        'flags': {},
+    }
+
+    with app.app_context():
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I slash the wolf and try to scare it back.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='Your strike deals 5 damage to the Wolf. The Wolf is frightened.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=16,
+        )
+
+    damage_change = next(
+        change
+        for change in result['proposedChanges']
+        if change['type'] == 'combat.participant.update' and change.get('participantId') == 'enemy_wolf_1'
+    )
+    condition_change = next(change for change in result['proposedChanges'] if change['type'] == 'combat.condition.add')
+    assert damage_change['hp']['current'] == 6
+    assert damage_change['hp']['max'] == 11
+    assert damage_change['isAlive'] is True
+    assert condition_change['participantId'] == 'enemy_wolf_1'
+    assert condition_change['condition'] == 'frightened'
+    assert 'heuristic_combat_outcomes' in result['notes']
+
+
+def test_post_dm_filters_helper_enemy_health_damage_and_updates_combat_participant(app, monkeypatch):
+    class FakeProvider:
+        def generate(self, _request):
+            return ProviderResponse(
+                text=(
+                    '{"proposedChanges":[{"type":"health.damage","participantId":"enemy_wolf_1",'
+                    '"participantName":"Wolf","amount":1}],'
+                    '"uncertainChanges":[],"notes":["enemy damage extracted by helper"]}'
+                ),
+                provider='fake',
+                model='fake-helper',
+            )
+
+    monkeypatch.setattr(post_extractor_module, 'get_helper_provider', lambda: FakeProvider())
+    state = _state(hp_current=10, hp_max=20)
+    state['combat'] = {
+        'status': 'active',
+        'round': 1,
+        'participants': [
+            {
+                'id': 'player_1',
+                'team': 'player',
+                'name': 'Kael',
+                'hp': {'current': 10, 'max': 20, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'enemy_wolf_1',
+                'team': 'enemy',
+                'name': 'Wolf',
+                'kind': 'creature',
+                'hp': {'current': 11, 'max': 11, 'temp': 0},
+                'conditions': [],
+                'position': {'rangeBand': 'near'},
+                'abilities': [],
+                'morale': 50,
+                'isAlive': True,
+                'isConscious': True,
+            },
+        ],
+        'battlefield': {'environmentType': 'forest'},
+        'flags': {},
+    }
+
+    with app.app_context():
+        app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I punch the wolf.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='Kael deals 1 bludgeoning damage to the Wolf (HP 11 to 10).',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=18,
+        )
+
+    assert all(change['type'] != 'health.damage' for change in result['proposedChanges'])
+    damage_change = next(change for change in result['proposedChanges'] if change['type'] == 'combat.participant.update')
+    assert damage_change['participantId'] == 'enemy_wolf_1'
+    assert damage_change['hp']['current'] == 10
+    assert 'filtered_misrouted_combat_health' in result['notes']
+    validation = validate_state_changes(state=state, changes=result['proposedChanges'])
+    applied = apply_state_changes(state, validated_changes_for_application(validation))
+    player = applied['nextState']['playerCharacters'][0]
+    enemy = next(participant for participant in applied['nextState']['combat']['participants'] if participant['id'] == 'enemy_wolf_1')
+    assert not validation['rejected']
+    assert player['health']['currentHp'] == 10
+    assert enemy['hp']['current'] == 10
+
+
+def test_post_dm_filters_helper_enemy_actor_health_damage_at_combat_end(app, monkeypatch):
+    class FakeProvider:
+        def generate(self, _request):
+            return ProviderResponse(
+                text=(
+                    '{"proposedChanges":[{"type":"health.damage","actorId":"enemy_wolf_1","amount":11}],'
+                    '"uncertainChanges":[],"notes":["enemy killed"]}'
+                ),
+                provider='fake',
+                model='fake-helper',
+            )
+
+    monkeypatch.setattr(post_extractor_module, 'get_helper_provider', lambda: FakeProvider())
+    state = _state()
+    state['combat'] = {
+        'status': 'active',
+        'round': 1,
+        'participants': [
+            {
+                'id': 'player_1',
+                'team': 'player',
+                'name': 'Kael',
+                'hp': {'current': 10, 'max': 20, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'enemy_wolf_1',
+                'team': 'enemy',
+                'name': 'Wolf',
+                'kind': 'creature',
+                'hp': {'current': 11, 'max': 11, 'temp': 0},
+                'conditions': [],
+                'position': {'rangeBand': 'near'},
+                'abilities': [],
+                'morale': 50,
+                'isAlive': True,
+                'isConscious': True,
+            },
+        ],
+        'battlefield': {'environmentType': 'forest'},
+        'flags': {},
+    }
+
+    with app.app_context():
+        app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I finish the wolf.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The Wolf is slain. The fight is over.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=19,
+        )
+
+    assert all(change['type'] != 'health.damage' for change in result['proposedChanges'])
+    assert any(change['type'] == 'combat.participant.update' and change['hp']['current'] == 0 for change in result['proposedChanges'])
+    assert any(change['type'] == 'combat.end' for change in result['proposedChanges'])
+    validation = validate_state_changes(state=state, changes=result['proposedChanges'])
+    assert not validation['rejected']
+
+
+def test_post_dm_awards_enemy_defeat_xp_from_combat_participant(app):
+    state = _state(xp_current=0)
+    state['combat'] = {
+        'status': 'active',
+        'round': 1,
+        'participants': [
+            {
+                'id': 'player_1',
+                'team': 'player',
+                'name': 'Kael',
+                'hp': {'current': 10, 'max': 20, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'enemy_wolf_1',
+                'team': 'enemy',
+                'name': 'Wolf',
+                'kind': 'creature',
+                'level': 1,
+                'challengeTier': 'easy',
+                'xpReward': 35,
+                'hp': {'current': 11, 'max': 11, 'temp': 0},
+                'conditions': [],
+                'position': {'rangeBand': 'near'},
+                'abilities': [],
+                'morale': 50,
+                'isAlive': True,
+                'isConscious': True,
+            },
+        ],
+        'battlefield': {'environmentType': 'forest'},
+        'flags': {},
+    }
+
+    with app.app_context():
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I finish the wolf.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The Wolf is slain. The fight is over.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=119,
+        )
+
+    xp_changes = [change for change in result['proposedChanges'] if change['type'] == 'xp.add']
+    assert len(xp_changes) == 1
+    assert xp_changes[0]['amount'] == 35
+    assert xp_changes[0]['actorId'] == 'player_1'
+    assert 'automatic_xp_award' in result['notes']
+
+    validation = validate_state_changes(state=state, changes=result['proposedChanges'])
+    applied = apply_state_changes(state, validated_changes_for_application(validation))
+    assert validation['rejected'] == []
+    assert applied['nextState']['playerCharacters'][0]['xp']['current'] == 35
+
+
+def test_post_dm_awards_combat_xp_to_all_player_participants(app):
+    state = _two_player_state()
+    state['combat'] = {
+        'status': 'active',
+        'round': 1,
+        'participants': [
+            {
+                'id': 'player_1',
+                'team': 'player',
+                'name': 'Kael',
+                'hp': {'current': 10, 'max': 20, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'player_2',
+                'team': 'player',
+                'name': 'Borin',
+                'hp': {'current': 12, 'max': 12, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'enemy_serpent_1',
+                'team': 'enemy',
+                'name': 'Sea Serpent',
+                'kind': 'creature',
+                'challengeTier': 'hard',
+                'xpReward': 125,
+                'hp': {'current': 18, 'max': 18, 'temp': 0},
+                'conditions': [],
+                'position': {'rangeBand': 'near'},
+                'abilities': [],
+                'morale': 50,
+                'isAlive': True,
+                'isConscious': True,
+            },
+        ],
+        'battlefield': {'environmentType': 'coast'},
+        'flags': {},
+    }
+
+    with app.app_context():
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='We finish the serpent.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The Sea Serpent is slain. The fight is over.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=122,
+        )
+
+    xp_changes = [change for change in result['proposedChanges'] if change['type'] == 'xp.add']
+    assert {change['actorId'] for change in xp_changes} == {'player_1', 'player_2'}
+    assert all(change['amount'] == 125 for change in xp_changes)
+
+    validation = validate_state_changes(state=state, changes=result['proposedChanges'])
+    applied = apply_state_changes(state, validated_changes_for_application(validation))
+    assert validation['rejected'] == []
+    assert [actor['xp']['current'] for actor in applied['nextState']['playerCharacters']] == [125, 125]
+
+
+def test_post_dm_combat_xp_uses_turn_control_participants_when_present(app):
+    state = _two_player_state()
+    state['turnControl'] = {'participantPlayerIds': [1], 'activePlayerId': 1}
+    state['combat'] = {
+        'status': 'active',
+        'round': 1,
+        'participants': [
+            {
+                'id': 'player_1',
+                'team': 'player',
+                'name': 'Kael',
+                'hp': {'current': 10, 'max': 20, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'player_2',
+                'team': 'player',
+                'name': 'Borin',
+                'hp': {'current': 12, 'max': 12, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'enemy_serpent_1',
+                'team': 'enemy',
+                'name': 'Sea Serpent',
+                'kind': 'creature',
+                'challengeTier': 'hard',
+                'xpReward': 125,
+                'hp': {'current': 18, 'max': 18, 'temp': 0},
+                'conditions': [],
+                'position': {'rangeBand': 'near'},
+                'abilities': [],
+                'morale': 50,
+                'isAlive': True,
+                'isConscious': True,
+            },
+        ],
+        'battlefield': {'environmentType': 'coast'},
+        'flags': {},
+    }
+
+    with app.app_context():
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I finish the serpent.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The Sea Serpent is slain. The fight is over.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=123,
+        )
+
+    xp_changes = [change for change in result['proposedChanges'] if change['type'] == 'xp.add']
+    assert len(xp_changes) == 1
+    assert xp_changes[0]['actorId'] == 'player_1'
+    assert xp_changes[0]['amount'] == 125
+
+
+def test_post_dm_combat_xp_prefers_active_session_players(app):
+    state = _two_player_state()
+    state['activePlayerIds'] = [1, 2]
+    state['turnControl'] = {'participantPlayerIds': [1], 'activePlayerId': 1}
+    state['combat'] = {
+        'status': 'active',
+        'round': 1,
+        'participants': [
+            {
+                'id': 'player_1',
+                'team': 'player',
+                'name': 'Kael',
+                'hp': {'current': 10, 'max': 20, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'player_2',
+                'team': 'player',
+                'name': 'Borin',
+                'hp': {'current': 12, 'max': 12, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'enemy_serpent_1',
+                'team': 'enemy',
+                'name': 'Sea Serpent',
+                'kind': 'creature',
+                'challengeTier': 'hard',
+                'xpReward': 125,
+                'hp': {'current': 18, 'max': 18, 'temp': 0},
+                'conditions': [],
+                'position': {'rangeBand': 'near'},
+                'abilities': [],
+                'morale': 50,
+                'isAlive': True,
+                'isConscious': True,
+            },
+        ],
+        'battlefield': {'environmentType': 'coast'},
+        'flags': {},
+    }
+
+    with app.app_context():
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I finish the serpent.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The Sea Serpent is slain. The fight is over.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=126,
+        )
+
+    xp_changes = [change for change in result['proposedChanges'] if change['type'] == 'xp.add']
+    assert {change['actorId'] for change in xp_changes} == {'player_1', 'player_2'}
+    assert all(change['amount'] == 125 for change in xp_changes)
+
+
+def test_post_dm_awards_npc_defeat_xp_in_combat_context(app, monkeypatch):
+    class FakeProvider:
+        def generate(self, _request):
+            return ProviderResponse(
+                text=(
+                    '{"proposedChanges":[{"type":"npc.update","npcId":"unknown_segmented_creature",'
+                    '"status":"dead"}],"uncertainChanges":[]}'
+                ),
+                provider='fake',
+                model='fake-helper',
+            )
+
+    monkeypatch.setattr(post_extractor_module, 'get_helper_provider', lambda: FakeProvider())
+    state = _two_player_state()
+    state['currentScene'] = {'sceneType': 'combat', 'combatState': 'resolved', 'dangerLevel': 1}
+    state['knownNpcs'] = [
+        {
+            'id': 'unknown_segmented_creature',
+            'name': 'Unknown Segmented Creature',
+            'description': 'A massive segmented horror the size of a small whale.',
+            'status': 'known',
+            'disposition': 'unknown',
+        }
+    ]
+
+    with app.app_context():
+        app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='We drag the creature ashore.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The massive creature is dead on the dock.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=124,
+        )
+
+    xp_changes = [change for change in result['proposedChanges'] if change['type'] == 'xp.add']
+    assert {change['actorId'] for change in xp_changes} == {'player_1', 'player_2'}
+    assert all(change['amount'] == 100 for change in xp_changes)
+    assert 'automatic_xp_award' in result['notes']
+
+
+def test_post_dm_does_not_award_npc_death_xp_for_friendly_npc(app, monkeypatch):
+    class FakeProvider:
+        def generate(self, _request):
+            return ProviderResponse(
+                text='{"proposedChanges":[{"type":"npc.update","npcId":"old_mentor","status":"dead"}],"uncertainChanges":[]}',
+                provider='fake',
+                model='fake-helper',
+            )
+
+    monkeypatch.setattr(post_extractor_module, 'get_helper_provider', lambda: FakeProvider())
+    state = _state()
+    state['currentScene'] = {'sceneType': 'combat', 'combatState': 'resolved', 'dangerLevel': 1}
+    state['knownNpcs'] = [
+        {
+            'id': 'old_mentor',
+            'name': 'Old Mentor',
+            'description': 'A friendly teacher.',
+            'status': 'met',
+            'disposition': 'friendly',
+        }
+    ]
+
+    with app.app_context():
+        app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='The mentor dies.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The old mentor dies protecting you.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=125,
+        )
+
+    assert not any(change['type'] == 'xp.add' for change in result['proposedChanges'])
+
+
+def test_post_dm_does_not_double_award_combat_xp_when_dm_states_xp(app):
+    state = _state(xp_current=0)
+    state['combat'] = {
+        'status': 'active',
+        'round': 1,
+        'participants': [
+            {
+                'id': 'player_1',
+                'team': 'player',
+                'name': 'Kael',
+                'hp': {'current': 10, 'max': 20, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'enemy_wolf_1',
+                'team': 'enemy',
+                'name': 'Wolf',
+                'kind': 'creature',
+                'challengeTier': 'easy',
+                'xpReward': 35,
+                'hp': {'current': 11, 'max': 11, 'temp': 0},
+                'conditions': [],
+                'position': {'rangeBand': 'near'},
+                'abilities': [],
+                'morale': 50,
+                'isAlive': True,
+                'isConscious': True,
+            },
+        ],
+        'battlefield': {'environmentType': 'forest'},
+        'flags': {},
+    }
+
+    with app.app_context():
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I finish the wolf.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The Wolf is slain. The fight is over. You gain 35 XP.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=120,
+        )
+
+    xp_changes = [change for change in result['proposedChanges'] if change['type'] == 'xp.add']
+    assert len(xp_changes) == 1
+    assert xp_changes[0]['amount'] == 35
+    assert 'automatic_xp_award' not in result['notes']
+
+
+def test_post_dm_helper_quest_complete_awards_quest_xp(app, monkeypatch):
+    class FakeProvider:
+        def generate(self, _request):
+            return ProviderResponse(
+                text=(
+                    '{"proposedChanges":[{"type":"quest.complete","questId":"find_missing_sailor",'
+                    '"reason":"The missing sailor is rescued."}],"uncertainChanges":[]}'
+                ),
+                provider='fake',
+                model='fake-helper',
+            )
+
+    monkeypatch.setattr(post_extractor_module, 'get_helper_provider', lambda: FakeProvider())
+    state = _state(xp_current=0)
+    state['quests'] = [
+        {
+            'id': 'find_missing_sailor',
+            'title': 'Find the Missing Sailor',
+            'status': 'active',
+            'xpReward': 80,
+        }
+    ]
+
+    with app.app_context():
+        app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I bring the sailor home.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The missing sailor is safe, and the job is done.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=121,
+        )
+
+    xp_change = next(change for change in result['proposedChanges'] if change['type'] == 'xp.add')
+    assert xp_change['amount'] == 80
+    assert xp_change['actorId'] == 'player_1'
+    assert 'automatic_xp_award' in result['notes']
+
+    validation = validate_state_changes(state=state, changes=result['proposedChanges'])
+    applied = apply_state_changes(state, validated_changes_for_application(validation))
+    assert validation['rejected'] == []
+    assert applied['nextState']['quests'][0]['status'] == 'completed'
+    assert applied['nextState']['playerCharacters'][0]['xp']['current'] == 80
+
+
+def test_post_dm_heuristic_spell_learn_updates_spellbook(app):
+    state = _state()
+
+    with app.app_context():
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I study the old tome.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The old tome teaches you Misty Step.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=127,
+        )
+
+    spell_changes = [change for change in result['proposedChanges'] if change['type'] == 'spell.learn']
+    assert len(spell_changes) == 1
+    assert spell_changes[0]['spellName'] == 'Misty Step'
+
+    validation = validate_state_changes(state=state, changes=result['proposedChanges'])
+    applied = apply_state_changes(state, validated_changes_for_application(validation))
+    known = {
+        spell['name']
+        for spell in applied['nextState']['playerCharacters'][0]['spellbook']['knownSpells']
+    }
+    assert validation['rejected'] == []
+    assert 'Misty Step' in known
+
+
+def test_spell_learn_persists_to_player_character_sheet(app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        session_obj = db.session.get(Session, ids['session_id'])
+        player.character_sheet = safe_json_dumps({'current_hp': 12}, {})
+        db.session.commit()
+
+        actor_id = display_actor_id(player.player_id)
+        state = {
+            'sessionId': session_obj.session_id,
+            'campaignId': ids['campaign_id'],
+            'playerCharacters': [
+                {
+                    'id': actor_id,
+                    'playerId': player.player_id,
+                    'name': player.character_name,
+                    'health': {'currentHp': 12, 'maxHp': 12, 'tempHp': 0, 'conditions': []},
+                    'inventory': {'items': [], 'currency': {'pp': 0, 'gp': 0, 'ep': 0, 'sp': 0, 'cp': 0}},
+                    'xp': {'current': 0},
+                    'metadata': {},
+                }
+            ],
+            'stateChangeLedger': [],
+        }
+        changes = [
+            {
+                'id': 'learn_misty_step',
+                'type': 'spell.learn',
+                'source': 'post_dm',
+                'actorId': actor_id,
+                'spellName': 'Misty Step',
+                'spellLevel': 2,
+                'visible': True,
+            }
+        ]
+        validation = validate_state_changes(state=state, changes=changes)
+        applied = apply_state_changes(state, validated_changes_for_application(validation))
+        persist_state_to_database(
+            session_obj=session_obj,
+            state=applied['nextState'],
+            players_by_id={player.player_id: player},
+        )
+        db.session.commit()
+
+        sheet = safe_json_loads(player.character_sheet, {})
+        known = {spell['name'] for spell in sheet['spellbook']['knownSpells']}
+        assert validation['rejected'] == []
+        assert sheet['current_hp'] == 12
+        assert 'Misty Step' in known
+
+
+def test_post_dm_heuristic_enemy_takes_word_damage_does_not_damage_player(app):
+    state = _state(hp_current=10, hp_max=20)
+    state['combat'] = {
+        'status': 'active',
+        'round': 1,
+        'participants': [
+            {
+                'id': 'player_1',
+                'team': 'player',
+                'name': 'Kael',
+                'hp': {'current': 10, 'max': 20, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'enemy_wolf_1',
+                'team': 'enemy',
+                'name': 'Wolf',
+                'kind': 'creature',
+                'hp': {'current': 11, 'max': 11, 'temp': 0},
+                'conditions': [],
+                'position': {'rangeBand': 'near'},
+                'abilities': [],
+                'morale': 50,
+                'isAlive': True,
+                'isConscious': True,
+            },
+        ],
+        'battlefield': {'environmentType': 'forest'},
+        'flags': {},
+    }
+
+    with app.app_context():
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I graze the wolf.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The Wolf takes one slashing damage.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=20,
+        )
+
+    assert all(change['type'] != 'health.damage' for change in result['proposedChanges'])
+    damage_change = next(change for change in result['proposedChanges'] if change['type'] == 'combat.participant.update')
+    assert damage_change['participantId'] == 'enemy_wolf_1'
+    assert damage_change['hp']['current'] == 10
+
+
+def test_post_dm_heuristic_player_takes_typed_word_damage_still_damages_player(app):
+    state = _state(hp_current=10, hp_max=20)
+    state['combat'] = {
+        'status': 'active',
+        'round': 1,
+        'participants': [
+            {
+                'id': 'player_1',
+                'team': 'player',
+                'name': 'Kael',
+                'hp': {'current': 10, 'max': 20, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'enemy_wolf_1',
+                'team': 'enemy',
+                'name': 'Wolf',
+                'kind': 'creature',
+                'hp': {'current': 11, 'max': 11, 'temp': 0},
+                'conditions': [],
+                'position': {'rangeBand': 'near'},
+                'abilities': [],
+                'morale': 50,
+                'isAlive': True,
+                'isConscious': True,
+            },
+        ],
+        'battlefield': {'environmentType': 'forest'},
+        'flags': {},
+    }
+
+    with app.app_context():
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I hold my ground.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The Wolf rakes your arm. You take one slashing damage.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=21,
+        )
+
+    player_damage = next(change for change in result['proposedChanges'] if change['type'] == 'health.damage')
+    assert player_damage['actorId'] == 'player_1'
+    assert player_damage['amount'] == 1
+    assert not any(change['type'] == 'combat.participant.update' for change in result['proposedChanges'])
+
+
+def test_post_dm_does_not_damage_enemy_when_enemy_damages_player(app):
+    state = _state()
+    state['combat'] = {
+        'status': 'active',
+        'round': 1,
+        'participants': [
+            {
+                'id': 'player_1',
+                'team': 'player',
+                'name': 'Kael',
+                'hp': {'current': 10, 'max': 20, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'enemy_wolf_1',
+                'team': 'enemy',
+                'name': 'Wolf',
+                'kind': 'creature',
+                'hp': {'current': 11, 'max': 11, 'temp': 0},
+                'conditions': [],
+                'position': {'rangeBand': 'near'},
+                'abilities': [],
+                'morale': 50,
+                'isAlive': True,
+                'isConscious': True,
+            },
+        ],
+        'battlefield': {'environmentType': 'forest'},
+        'flags': {},
+    }
+
+    with app.app_context():
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I hold my ground.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The Wolf bites you; you take 5 damage.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=17,
+        )
+
+    enemy_updates = [
+        change
+        for change in result['proposedChanges']
+        if change['type'] == 'combat.participant.update' and change.get('participantId') == 'enemy_wolf_1'
+    ]
+    assert enemy_updates == []
 
 
 def test_valid_empty_post_dm_helper_response_prevents_fallback(app, monkeypatch):

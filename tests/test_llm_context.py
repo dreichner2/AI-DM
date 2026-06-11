@@ -376,6 +376,12 @@ def test_build_dm_context_shape_snapshot(app):
     payload['world']['world_id'] = '<world-id>'
     payload['campaign']['campaign_id'] = '<campaign-id>'
     payload['active_players'][0]['player_id'] = '<player-id>'
+    spellbook = payload['active_players'][0]['state']['spellbook']
+    known_spell_names = [spell['name'] for spell in spellbook['knownSpells']]
+    assert {"Hunter's Mark", 'Pass without Trace', 'Minor Illusion', 'Detect Magic'} <= set(known_spell_names)
+    assert any(name not in {"Hunter's Mark", 'Cure Wounds', 'Speak with Animals', 'Entangle', 'Goodberry'} for name in known_spell_names)
+    spellbook['knownSpells'] = '<known-spells>'
+    payload['active_players'][0]['state']['spells'] = '<spells>'
 
     assert payload == {
         'context_version': 'v2',
@@ -445,6 +451,20 @@ def test_build_dm_context_shape_snapshot(app):
                     'xp': 0,
                     'level': 3,
                     'proficiency_bonus': 2,
+                    'spellbook': {
+                        'knownSpells': '<known-spells>',
+                        'preparedSpells': [],
+                        'sources': [
+                            'class:ranger',
+                            'level:ranger:3',
+                            'class_catalog:ranger:original:1',
+                            'class_catalog:ranger:original:2',
+                            'class_catalog:ranger:original:3',
+                            'race:elf',
+                            'race_catalog:elf',
+                        ],
+                    },
+                    'spells': '<spells>',
                 },
                 'inventory': [],
                 'recent_actions': [],

@@ -54,16 +54,20 @@ import {
   isRecord,
   itemOptionsFromInventory,
   memorySnippetRecords,
+  normalizeCharacterTraits,
   normalizeInventory,
+  normalizeSpellbook,
   normalizeStats,
   normalizeXp,
   pendingRollOptionsFromTimeline,
   stringValue,
   truncateText,
+  turnStatusAllowsNextSend,
   worldStateFromSnapshot,
 } from './gameSelectors'
 import { profileIconSrcForCharacter } from './profileIcons'
 import { RaceSelector } from './RaceSelector'
+import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
 import { turnControlFromSnapshot, turnControlWithActiveName } from './turnControl'
 import './App.css'
 import type {
@@ -362,6 +366,7 @@ function App() {
   const [metrics, setMetrics] = useState<BetaSummary | null>(null)
   const [socketStatus, setSocketStatus] = useState('idle')
   const [activePlayers, setActivePlayers] = useState<ActivePlayer[]>([])
+  const [sceneMusicSyncState, setSceneMusicSyncState] = useState<SceneMusicSyncState | null>(null)
   const [sendPending, setSendPending] = useState(false)
   const [errors, setErrors] = useState<UiError[]>([])
   const [optimisticEntries, setOptimisticEntries] = useState<TimelineEntry[]>([])
@@ -585,6 +590,8 @@ function App() {
     selectedPlayer?.level ?? null,
   )
   const inventoryRows = normalizeInventory(playerDetail?.inventory)
+  const spellbook = normalizeSpellbook(playerDetail?.stats, playerDetail?.character_sheet)
+  const characterTraits = normalizeCharacterTraits(playerDetail?.race_selection, playerDetail?.character_sheet)
   const abilityOptions = abilityOptionsFromStatBlock(statBlock)
   const itemOptions = itemOptionsFromInventory(inventoryRows)
   const campaignWorldId = campaign?.world_id ?? campaigns[0]?.world_id ?? null
@@ -606,6 +613,8 @@ function App() {
     () => buildTimeline({ logEntries, optimisticEntries, streamingTurn, turnStatuses }),
     [logEntries, optimisticEntries, streamingTurn, turnStatuses],
   )
+  const streamingTurnStatus = streamingTurn ? turnStatuses[streamingTurn.turnId] : ''
+  const dmResponseBlocking = Boolean(streamingTurn && !turnStatusAllowsNextSend(streamingTurnStatus))
   const pendingRollOptions = useMemo(() => pendingRollOptionsFromTimeline(timeline), [timeline])
   const turnControlSnapshot = isRecord(sessionState?.state_snapshot) ? sessionState.state_snapshot : null
   const turnControl = useMemo(
@@ -621,15 +630,23 @@ function App() {
     ) ?? null
   const activeSessionId = activeSession?.session_id ?? null
   const selectedPlayerDetailId = selectedPlayer?.player_id ?? null
+  const sceneMusicWorkspaceReady =
+    health?.auth_required === false || Boolean(auth && runtimeAccount?.workspaceId && workspaceId)
+  const showSceneMusicPlayer =
+    Boolean(activeSessionId && selectedPlayerDetailId && sceneMusicWorkspaceReady) &&
+    !(runtimeSettingsOpen && runtimeSettingsMode === 'auth')
   const socketCampaignId = activeSessionId && selectedPlayerDetailId ? selectedCampaignId : null
   const activeSessionName = activeSession
     ? sessionDisplayName(activeSession, campaign?.world_id ?? selectedCampaignId)
     : 'No session selected'
   const latestDmEntry =
     [...timeline].reverse().find((entry) => entry.role === 'dm') ?? null
+  const latestTimelineEntry = timeline.length ? timeline[timeline.length - 1] : null
   const currentResponseEntry =
-    timeline.find((entry) => entry.streaming) ?? latestDmEntry
-  const turnRows = timeline.filter((entry) => entry.id !== currentResponseEntry?.id)
+    latestTimelineEntry?.streaming || latestTimelineEntry?.role === 'dm' ? latestTimelineEntry : null
+  const turnRows = currentResponseEntry
+    ? timeline.filter((entry) => entry.id !== currentResponseEntry.id)
+    : timeline
   const speakableDmEntry =
     currentResponseEntry?.role === 'dm' && !currentResponseEntry.streaming
       ? currentResponseEntry
@@ -640,6 +657,7 @@ function App() {
 
   const latestDmText =
     currentResponseEntry?.text ||
+    latestDmEntry?.text ||
     sessionState?.rolling_summary ||
     welcomeText
 
@@ -689,6 +707,7 @@ function App() {
     rollModifier,
     rollReason,
     rollTargetPendingTurnId,
+    spellName,
     selectedAbility,
     selectedAbilityKey,
     selectedDie,
@@ -713,6 +732,7 @@ function App() {
     setRollTargetPendingTurnId,
     setSelectedItemName,
     updateRollAbilityKey,
+    updateSpellName,
     updateSelectedInventoryAction,
     updateItemDraftName,
     updateItemCostGold,
@@ -735,11 +755,11 @@ function App() {
     selectedPlayerId: selectedPlayerDetailId,
     selectedSessionId: activeSessionId,
     sendPending,
+    dmResponseBlocking,
     setOptimisticEntries,
     setSendPending,
     socketRef,
     stopTtsAudio,
-    streamingTurn,
     turnControl,
     pushError,
   })
@@ -2124,6 +2144,7 @@ function App() {
     setStreamingTurn,
     setTurnStatuses,
     setClarificationRequest,
+    setSceneMusicSyncState,
     spokenTextLengthRef,
     speakableStreamingTextRef,
     queueTtsNarrationRef,
@@ -2135,6 +2156,25 @@ function App() {
     lastSpokenTurnIdRef,
     lastSpokenTextRef,
   })
+
+  const updateSceneMusicControl = useCallback(
+    (payload: SceneMusicControlPayload) => {
+      if (!activeSessionId || !selectedPlayerDetailId) return
+      const socket = socketRef.current
+      if (!socket) {
+        pushError('connection', 'Socket is not connected; reconnect before changing session music.')
+        return
+      }
+      socket.emit('music_control', {
+        session_id: activeSessionId,
+        player_id: selectedPlayerDetailId,
+        track_id: payload.trackId,
+        status: payload.status,
+        position: payload.position,
+      })
+    },
+    [activeSessionId, pushError, selectedPlayerDetailId],
+  )
 
   const resolveClarification = useCallback(
     (selectedItemId: string) => {
@@ -2586,6 +2626,12 @@ function App() {
       <SessionBoard
         activeSessionTitle={activeSessionTitle}
         campaignTitle={campaignTitle}
+        sessionId={activeSessionId}
+        playerId={selectedPlayerDetailId}
+        showSceneMusicPlayer={showSceneMusicPlayer}
+        duckMusicForNarration={ttsSpeaking}
+        sceneMusicSyncState={sceneMusicSyncState}
+        onSceneMusicControl={updateSceneMusicControl}
         workspaceLoading={workspaceLoading}
         sessionLoading={sessionLoading}
         mainTab={mainTab}
@@ -2615,7 +2661,7 @@ function App() {
         currentResponseEntry={currentResponseEntry}
         latestDmText={latestDmText}
         sendPending={sendPending}
-        streamingTurnActive={Boolean(streamingTurn)}
+        streamingTurnActive={dmResponseBlocking}
         dmExecutionStats={dmExecutionStats}
         welcomeText={welcomeText}
         showJumpToLatest={showJumpToLatest}
@@ -2666,10 +2712,12 @@ function App() {
           pendingRollOptions,
           rollTargetPendingTurnId,
           setRollTargetPendingTurnId,
+          spellName,
           selectedAbility,
           selectedAbilityKey,
           abilityOptions,
           updateRollAbilityKey,
+          updateSpellName,
           interactionTargets,
           selectedInteractionTarget,
           selectedInteractionTargetId,
@@ -2695,6 +2743,8 @@ function App() {
         inspectorTab={inspectorTab}
         setInspectorTab={setInspectorTab}
         setMainTab={setMainTab}
+        baseUrl={baseUrl}
+        auth={auth}
         displayCharacter={displayCharacter}
         characterAvatarSrc={characterAvatarSrc}
         xpProgress={xpProgress}
@@ -2706,8 +2756,11 @@ function App() {
         editSelectedPlayer={openPlayerEditDialog}
         deleteSelectedPlayer={openPlayerDeleteDialog}
         selectedCampaignId={selectedCampaignId}
+        selectedSessionId={activeSessionId}
         createPlayerPending={createPlayerPending}
         statBlock={statBlock}
+        spellbook={spellbook}
+        characterTraits={characterTraits}
         inventoryRows={inventoryRows}
         inventoryWeightLabel={inventoryWeightLabel}
         inventoryGoldLabel={inventoryGoldLabel}

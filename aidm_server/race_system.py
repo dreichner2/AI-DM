@@ -1205,6 +1205,12 @@ def race_summary(race: dict[str, Any]) -> dict[str, Any]:
         'balance': race.get('balance', analyze_race_balance(race)),
         **({'approvalStatus': race.get('approvalStatus')} if race.get('approvalStatus') else {}),
         **({'parentRaceId': race.get('parentRaceId')} if race.get('parentRaceId') else {}),
+        **({'workspaceId': race.get('workspaceId')} if race.get('workspaceId') else {}),
+        **({'createdByAccountId': race.get('createdByAccountId')} if race.get('createdByAccountId') is not None else {}),
+        **({'createdByUsername': race.get('createdByUsername')} if race.get('createdByUsername') else {}),
+        **({'createdByDisplayName': race.get('createdByDisplayName')} if race.get('createdByDisplayName') else {}),
+        **({'createdAt': race.get('createdAt')} if race.get('createdAt') else {}),
+        **({'updatedAt': race.get('updatedAt')} if race.get('updatedAt') else {}),
     }
 
 
@@ -1242,10 +1248,10 @@ def _normalize_trait(raw_trait: Any, prefix: str) -> dict[str, Any] | None:
     return {
         'id': _clean_text(raw_trait.get('id'), fallback=f'{prefix}_{_slug(name)}', max_length=120),
         'name': name,
-        'description': _clean_text(raw_trait.get('description'), fallback=name, max_length=400),
+        'description': _clean_text(raw_trait.get('description'), fallback=name, max_length=800),
         'category': category,
         **({'mechanics': mechanics} if mechanics else {}),
-        **({'aiHint': _clean_text(raw_trait.get('aiHint'), max_length=240)} if raw_trait.get('aiHint') else {}),
+        **({'aiHint': _clean_text(raw_trait.get('aiHint'), max_length=600)} if raw_trait.get('aiHint') else {}),
         'balanceCost': max(-5, min(10, balance_cost)),
     }
 

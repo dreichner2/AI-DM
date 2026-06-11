@@ -9,7 +9,9 @@ import {
   inventoryWeightLabel,
   itemOptionsFromInventory,
   memorySnippetRecords,
+  normalizeCharacterTraits,
   normalizeInventory,
+  normalizeSpellbook,
   normalizeStats,
   normalizeXp,
   pendingRollOptionsFromTimeline,
@@ -71,6 +73,132 @@ describe('game selector helpers', () => {
       current: 150,
       max: 300,
       percent: 50,
+    })
+  })
+
+  it('normalizes spellbooks from character sheets and dedupes known spells', () => {
+    const spellbook = normalizeSpellbook(
+      {
+        spellbook: {
+          known_spells: [
+            'Minor Illusion',
+            {
+              spellName: 'Cobalt Charm',
+              spellLevel: '1',
+              sourceType: 'class_catalog',
+              sourceDetail: 'wizard',
+              description: 'Tint a social moment with blue sparks.',
+              tags: ['social', 'Original'],
+              catalog: 'aidm-original',
+            },
+          ],
+          prepared_spells: ['Cobalt Charm'],
+        },
+      },
+      {
+        spells: [
+          { name: 'River Ward', level: 1, source: 'race:riverborn' },
+          { name: 'Minor Illusion', level: 0 },
+        ],
+      },
+    )
+
+    expect(spellbook.knownSpells.map((spell) => spell.name)).toEqual([
+      'Minor Illusion',
+      'Cobalt Charm',
+      'River Ward',
+    ])
+    expect(spellbook.knownSpells[1]).toMatchObject({
+      level: 1,
+      levelLabel: 'Lv 1',
+      source: 'Class / wizard',
+      prepared: true,
+      catalog: 'aidm-original',
+    })
+    expect(spellbook.preparedSpellNames).toEqual(['Cobalt Charm'])
+    expect(spellbook.sources).toEqual(expect.arrayContaining(['Class / wizard', 'aidm-original', 'social']))
+  })
+
+  it('keeps spell descriptions when character sheets also include a plain spell name list', () => {
+    const spellbook = normalizeSpellbook({
+      spells: ['Ki Blast', 'Ki Sense'],
+      spellbook: {
+        knownSpells: [
+          {
+            name: 'Ki Blast',
+            level: 0,
+            sourceType: 'race',
+            sourceDetail: 'saiyan',
+            description: 'Project a focused ranged burst of life energy.',
+          },
+          {
+            name: 'Ki Sense',
+            level: 0,
+            sourceType: 'race',
+            sourceDetail: 'saiyan',
+            description: 'Feel strong nearby life force, battle pressure, or hidden power.',
+          },
+        ],
+      },
+    })
+
+    expect(spellbook.knownSpells).toEqual([
+      expect.objectContaining({
+        name: 'Ki Blast',
+        source: 'Race / saiyan',
+        description: 'Project a focused ranged burst of life energy.',
+      }),
+      expect.objectContaining({
+        name: 'Ki Sense',
+        description: 'Feel strong nearby life force, battle pressure, or hidden power.',
+      }),
+    ])
+  })
+
+  it('normalizes custom race active abilities and passive traits for the inspector', () => {
+    const traits = normalizeCharacterTraits({
+      raceName: 'Himeros',
+      customRaceDefinition: {
+        traits: [
+          {
+            id: 'himeros_divine_beauty',
+            name: 'Divine Beauty',
+            category: 'skill',
+            description: 'You have proficiency in the Persuasion skill.',
+            mechanics: {
+              skillProficiency: { skill: 'Persuasion', expertiseIfProficient: true },
+            },
+          },
+          {
+            id: 'himeros_aura_of_desire',
+            name: 'Aura of Desire',
+            category: 'active_ability',
+            description: 'Creatures of your choice within 30 feet must make a Wisdom saving throw.',
+            mechanics: {
+              activeAbility: {
+                actionType: 'action',
+                cooldown: 'longRest',
+                effectType: 'charm',
+              },
+            },
+          },
+        ],
+      },
+    })
+
+    expect(traits.map((trait) => trait.name)).toEqual(['Aura of Desire', 'Divine Beauty'])
+    expect(traits[0]).toMatchObject({
+      active: true,
+      actionType: 'Action',
+      cooldown: 'Long Rest',
+      source: 'Race / Himeros',
+      typeLabel: 'Active',
+    })
+    expect(traits[1]).toMatchObject({
+      active: false,
+      source: 'Race / Himeros',
+      typeLabel: 'Skill',
+      description: 'You have proficiency in the Persuasion skill.',
     })
   })
 
@@ -138,6 +266,108 @@ describe('game selector helpers', () => {
     expect(timeline[2]).toMatchObject({ role: 'system', speaker: 'System', text: 'Welcome to the table.' })
     expect(turnNumber(timeline[0], 0)).toBe(1)
     expect(turnPersistenceLabel(timeline.at(-1) as TimelineEntry)).toBe('streaming')
+  })
+
+  it('derives subtle combat panel state from the session snapshot', () => {
+    const panel = worldStateFromSnapshot({
+      currentScene: { name: 'Ash Road', sceneType: 'combat', mood: 'dangerous', dangerLevel: 8 },
+      combat: {
+        status: 'active',
+        round: 2,
+        battlefield: { lighting: 'dim', environmentType: 'forest', visibility: 'smoke' },
+        encounterGoal: { description: 'Drive off the ambushers.' },
+        flags: {
+          resolverMethod: 'generated_variant',
+          creatureSource: 'generated_variant',
+          debugCombat: true,
+          combatStartedBy: 'post_dm_adjudicator',
+          initiativeRequired: true,
+          combatDifficultyAI: { tacticalLevel: 'smart' },
+        },
+        participants: [
+          {
+            id: 'player_1',
+            name: 'Ember',
+            team: 'player',
+            kind: 'player_character',
+            hp: { current: 12, max: 20 },
+          },
+          {
+            id: 'enemy_goblin_1',
+            name: 'Ash Goblin',
+            team: 'enemy',
+            kind: 'creature',
+            hp: { current: 2, max: 7 },
+            conditions: ['frightened'],
+            morale: 18,
+            moraleEvents: ['leader_died'],
+            source: 'generated_variant',
+            position: { rangeBand: 'near', zoneId: 'ash_road' },
+            currentIntent: {
+              intentType: 'retreat',
+              tacticSource: 'deterministic',
+              brainSource: 'deepseek-v4-pro',
+              selectionScore: 91,
+              selectionMethod: 'deterministic_scoring',
+              visibleTelegraph: 'The goblin looks toward the treeline.',
+            },
+          },
+        ],
+      },
+    })
+
+    expect(panel.combat.active).toBe(true)
+    expect(panel.combat.round).toBe('2')
+    expect(panel.combat.battlefield).toBe('dim / forest / smoke')
+    expect(panel.combat.enemies[0]).toMatchObject({
+      name: 'Ash Goblin',
+      health: 'Wounded',
+      healthTone: 'hurt',
+      intent: 'retreat',
+      morale: '18',
+      source: 'generated_variant',
+      moraleEvents: ['leader died'],
+      tacticSource: 'deterministic',
+      brainSource: 'deepseek-v4-pro',
+      position: 'near / ash road',
+      selectionScore: '91',
+      selectionMethod: 'deterministic scoring',
+    })
+    expect(panel.combat.debugEnabled).toBe(true)
+    expect(panel.combat.resolverMethod).toBe('generated variant')
+    expect(panel.combat.creatureSource).toBe('generated variant')
+    expect(panel.combat.tacticalLevel).toBe('smart')
+    expect(panel.combat.combatStartedBy).toBe('post dm adjudicator')
+    expect(panel.combat.initiativeRequired).toBe(true)
+    expect(panel.combat.telegraphs).toEqual(['The goblin looks toward the treeline.'])
+  })
+
+  it('places a non-blocking streamed response before newer optimistic player rows', () => {
+    const optimisticEntries: TimelineEntry[] = [
+      {
+        id: 'optimistic-local',
+        role: 'player',
+        speaker: 'Ember',
+        text: 'I keep moving.',
+        timestamp: null,
+        metadata: { client_message_id: 'local-1', persistence_status: 'pending' },
+      },
+    ]
+
+    const timeline = buildTimeline({
+      logEntries: [],
+      optimisticEntries,
+      streamingTurn: {
+        turnId: 12,
+        turnNumber: 2,
+        text: 'The previous answer is waiting on canon.',
+        requiresRoll: false,
+        rulesHint: {},
+      },
+      turnStatuses: { 12: 'canon_pending' },
+    })
+
+    expect(timeline.map((entry) => entry.id)).toEqual(['stream-12', 'optimistic-local'])
   })
 
   it('derives unresolved pending roll target options from timeline metadata', () => {
@@ -321,6 +551,23 @@ describe('game selector helpers', () => {
           status: 'met',
         },
       ],
+      combat: {
+        active: false,
+        status: 'none',
+        round: '1',
+        battlefield: 'No battlefield recorded',
+        goal: 'Resolve the threat',
+        creatureSource: '',
+        resolverMethod: '',
+        tacticalLevel: 'normal',
+        endReason: '',
+        combatStartedBy: '',
+        initiativeRequired: false,
+        debugEnabled: false,
+        enemies: [],
+        allies: [],
+        telegraphs: [],
+      },
     })
   })
 

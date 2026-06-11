@@ -89,6 +89,54 @@ def test_create_player_assigns_starting_inventory_from_extended_class(client, ap
     assert "Gunsmith's Tools" in inventory
 
 
+def test_create_player_assigns_starting_spells_from_magical_class_and_race(client, app):
+    ids = seed_world_campaign_player_session(app)
+
+    response = client.post(
+        f"/api/players/campaigns/{ids['campaign_id']}/players",
+        json={
+            'name': 'Nessa',
+            'character_name': 'Nessa Ember',
+            'race': 'Tiefling',
+            'char_class': 'Wizard - Evoker',
+        },
+    )
+    assert response.status_code == 201
+
+    player_response = client.get(f"/api/players/{response.get_json()['player_id']}")
+    assert player_response.status_code == 200
+    sheet = player_response.get_json()['character_sheet']
+    known = {spell['name'] for spell in sheet['spellbook']['knownSpells']}
+
+    assert {'Fire Bolt', 'Magic Missile', 'Shield', 'Detect Magic'} <= known
+    assert {'Thaumaturgy', 'Hellish Rebuke'} <= known
+
+
+def test_update_player_level_up_unlocks_more_spells(client, app):
+    ids = seed_world_campaign_player_session(app)
+
+    response = client.post(
+        f"/api/players/campaigns/{ids['campaign_id']}/players",
+        json={
+            'name': 'Nessa',
+            'character_name': 'Nessa Ember',
+            'char_class': 'Wizard',
+            'level': 1,
+        },
+    )
+    assert response.status_code == 201
+    player_id = response.get_json()['player_id']
+
+    update_response = client.patch(f'/api/players/{player_id}', json={'level': 5})
+    assert update_response.status_code == 200
+    sheet = update_response.get_json()['character_sheet']
+    known = {spell['name'] for spell in sheet['spellbook']['knownSpells']}
+
+    assert 'Fireball' in known
+    assert 'Counterspell' in known
+    assert 'Magic Missile' in known
+
+
 def test_create_player_respects_explicit_empty_inventory_over_class_starter(client, app):
     ids = seed_world_campaign_player_session(app)
 
@@ -123,6 +171,29 @@ def test_get_player_backfills_starting_inventory_for_existing_blank_player(clien
     with app.app_context():
         player = db.session.get(Player, ids['player_id'])
         assert player.inventory
+
+
+def test_get_player_backfills_starting_spells_for_existing_blank_player(client, app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        player.class_ = 'Shapeshifter'
+        player.race = 'Changeling'
+        player.race_selection = None
+        player.character_sheet = None
+        db.session.commit()
+
+    response = client.get(f"/api/players/{ids['player_id']}")
+    assert response.status_code == 200
+    sheet = response.get_json()['character_sheet']
+    known = {spell['name'] for spell in sheet['spellbook']['knownSpells']}
+
+    assert 'Primal Shift' in known
+    assert 'Disguise Self' in known
+
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        assert player.character_sheet
 
 
 def test_get_player_does_not_backfill_explicit_empty_inventory(client, app):
@@ -217,7 +288,10 @@ def test_update_player_persists_profile_sheet_stats_and_inventory(client, app):
     assert payload['char_class'] == 'Rogue'
     assert payload['level'] == 4
     assert payload['stats'] == {'strength': 10, 'dexterity': 18}
-    assert payload['character_sheet'] == {'current_hp': 22, 'max_hp': 28}
+    assert payload['character_sheet']['current_hp'] == 22
+    assert payload['character_sheet']['max_hp'] == 28
+    known = {spell['name'] for spell in payload['character_sheet']['spellbook']['knownSpells']}
+    assert {'Minor Illusion', 'Detect Magic'} <= known
     assert payload['inventory'] == [
         {'name': 'Silver Key', 'quantity': 1, 'weight': 0.1},
         {'name': 'Torch', 'quantity': 1, 'weight': 1},

@@ -11,7 +11,7 @@ from aidm_server.game_state.equipment import (
     is_equippable,
 )
 from aidm_server.game_state.action_types import PRE_DM_ACTION_TYPES
-from aidm_server.game_state.change_types import CURRENCY_TYPES, STATE_CHANGE_TYPES, WORLD_STATE_CHANGE_TYPES
+from aidm_server.game_state.change_types import COMBAT_STATE_CHANGE_TYPES, CURRENCY_TYPES, STATE_CHANGE_TYPES, WORLD_STATE_CHANGE_TYPES
 from aidm_server.game_state.models import (
     actor_currency,
     actor_items,
@@ -23,7 +23,10 @@ from aidm_server.game_state.models import (
     stable_change_id,
     state_applied_change_ids,
 )
+from aidm_server.combat.morale import MORALE_EVENTS, apply_morale_event
+from aidm_server.combat.state import RANGE_BANDS, normalize_battlefield, normalize_combat_state, normalize_participant
 from aidm_server.game_state.validation.inventory_validator import resolve_inventory_item_reference
+from aidm_server.spellbook import normalize_spellbook, spell_from_change
 
 
 CONSUMABLE_TYPES = {'consumable', 'potion', 'food'}
@@ -785,6 +788,26 @@ def _validate_xp_change(state: dict[str, Any], change: dict[str, Any]) -> tuple[
     return 'accepted', 'XP change is valid.', None
 
 
+def _validate_spell_learn_change(state: dict[str, Any], change: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None]:
+    actor = find_actor(state, _action_value(change, 'actorId', 'actor_id'))
+    if not actor:
+        return 'rejected', 'Actor not found.', None
+    spell = spell_from_change(change)
+    if not spell:
+        return 'rejected', 'Spell learn requires a spell name.', None
+    normalized = deepcopy(change)
+    normalized['actorId'] = actor.get('id')
+    normalized['spell'] = spell
+    normalized['spellName'] = spell.get('name')
+    normalized['spellLevel'] = spell.get('level')
+    spellbook = normalize_spellbook(actor.get('spellbook') if isinstance(actor.get('spellbook'), dict) else {})
+    known = {normalize_item_name(candidate.get('name')) for candidate in spellbook.get('knownSpells', []) if isinstance(candidate, dict)}
+    if normalize_item_name(spell.get('name')) in known:
+        normalized['alreadyKnown'] = True
+        return 'accepted', 'Spell is already known.', normalized
+    return 'accepted', 'Spell learn is valid.', normalized
+
+
 def _text(value: Any) -> str:
     return str(value or '').strip()
 
@@ -908,6 +931,9 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
             normalized['locationId'] = _stable_id(normalized.get('locationId'), normalized.get('name'))
         normalized['activeNpcIds'] = _string_list(normalized.get('activeNpcIds'))
         normalized['activeQuestIds'] = _string_list(normalized.get('activeQuestIds'))
+        for key in ('playerPositions', 'playerZones', 'characterPositions', 'characterZones'):
+            if key in normalized and not isinstance(normalized.get(key), dict):
+                return 'rejected', f'Scene {key} must be an object.', None
         return 'accepted', 'Scene update is valid.', normalized
 
     if change_type == 'scene.move_location':
@@ -1050,6 +1076,197 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
         return 'accepted', 'Flag unset is valid.', normalized
 
     return 'rejected', 'Unsupported world state change.', None
+
+
+def _combat_participant_ids(state: dict[str, Any]) -> set[str]:
+    combat = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
+    return {
+        _text(participant.get('id'))
+        for participant in combat.get('participants') or []
+        if isinstance(participant, dict) and _text(participant.get('id'))
+    }
+
+
+def _combat_participant(state: dict[str, Any], participant_id: str) -> dict[str, Any] | None:
+    combat = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
+    for participant in combat.get('participants') or []:
+        if isinstance(participant, dict) and _text(participant.get('id')) == participant_id:
+            return participant
+    return None
+
+
+def _combat_start_reopens_resolved_enemy(state: dict[str, Any], combat: dict[str, Any], normalized: dict[str, Any]) -> str | None:
+    if normalized.get('allowResolvedEncounterRestart') or normalized.get('allow_resolved_encounter_restart'):
+        return None
+    existing = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
+    scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
+    if str(existing.get('status') or '') not in {'ended', 'none'} and str(scene.get('combatState') or '') not in {'resolved', 'none'}:
+        return None
+    resolved_signatures: set[str] = set()
+    for participant in existing.get('participants') or []:
+        if not isinstance(participant, dict) or participant.get('team') != 'enemy':
+            continue
+        conditions = {str(item or '').lower() for item in participant.get('conditions') or []}
+        if not conditions.intersection({'surrendered', 'fled', 'defeated'}) and participant.get('isAlive') is not False:
+            continue
+        for value in (participant.get('definitionId'), participant.get('name'), participant.get('id')):
+            text = stable_slug(value)
+            if text:
+                resolved_signatures.add(text)
+    if not resolved_signatures:
+        return None
+    for participant in combat.get('participants') or []:
+        if not isinstance(participant, dict) or participant.get('team') != 'enemy':
+            continue
+        for value in (participant.get('definitionId'), participant.get('name'), participant.get('id')):
+            if stable_slug(value) in resolved_signatures:
+                return str(participant.get('name') or participant.get('id') or 'enemy')
+    return None
+
+
+def _normalize_combat_change(change: dict[str, Any], state: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None]:
+    change_type = _text(change.get('type'))
+    normalized = deepcopy(change)
+    turn_id = _turn_value(normalized)
+    if turn_id is not None:
+        normalized['turnId'] = turn_id
+
+    if change_type == 'combat.start':
+        combat_payload = normalized.get('combat') if isinstance(normalized.get('combat'), dict) else normalized
+        combat = normalize_combat_state(
+            {
+                **combat_payload,
+                'status': combat_payload.get('status') or 'active',
+                'round': combat_payload.get('round') or 1,
+            },
+            state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {},
+        )
+        if not combat.get('participants'):
+            return 'rejected', 'Combat start requires participants.', None
+        if not any(participant.get('team') == 'enemy' for participant in combat['participants']):
+            return 'rejected', 'Combat start requires at least one enemy participant.', None
+        reopened_enemy = _combat_start_reopens_resolved_enemy(state, combat, normalized)
+        if reopened_enemy:
+            return 'rejected', f"Combat start would reopen resolved enemy '{reopened_enemy}'.", None
+        normalized['combat'] = combat
+        return 'accepted', 'Combat start is valid.', normalized
+
+    if change_type == 'combat.update':
+        status = _text(normalized.get('status'))
+        if status and status not in {'none', 'starting', 'active', 'ended'}:
+            return 'rejected', f"Unsupported combat status '{status}'.", None
+        if normalized.get('round') is not None:
+            round_number = int_or_default(normalized.get('round'), default=0)
+            if round_number < 1:
+                return 'rejected', 'Combat round must be positive.', None
+            normalized['round'] = min(999, round_number)
+        if normalized.get('flags') is not None and not isinstance(normalized.get('flags'), dict):
+            return 'rejected', 'Combat flags must be an object.', None
+        return 'accepted', 'Combat update is valid.', normalized
+
+    if change_type == 'combat.round.advance':
+        combat = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
+        normalized['round'] = max(1, int_or_default(normalized.get('round'), default=int(combat.get('round') or 1) + 1))
+        return 'accepted', 'Combat round advance is valid.', normalized
+
+    if change_type == 'combat.battlefield.update':
+        normalized['battlefield'] = normalize_battlefield(
+            normalized.get('battlefield'),
+            state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {},
+        )
+        return 'accepted', 'Combat battlefield update is valid.', normalized
+
+    if change_type == 'combat.end':
+        status = _text(normalized.get('status') or 'ended')
+        if status not in {'ended', 'none'}:
+            return 'rejected', 'Combat end status must be ended or none.', None
+        normalized['status'] = status
+        return 'accepted', 'Combat end is valid.', normalized
+
+    participant_id = _text(normalized.get('participantId') or normalized.get('participant_id') or normalized.get('enemyId') or normalized.get('enemy_id'))
+    if not participant_id:
+        return 'rejected', 'Combat participant change requires participantId.', None
+    if participant_id not in _combat_participant_ids(state):
+        return 'rejected', f"Combat participant '{participant_id}' was not found.", None
+    normalized['participantId'] = participant_id
+
+    if change_type == 'combat.participant.update':
+        if normalized.get('hp') is not None and not isinstance(normalized.get('hp'), dict):
+            return 'rejected', 'Combat participant hp must be an object.', None
+        if normalized.get('conditions') is not None:
+            normalized['conditions'] = _string_list(normalized.get('conditions'))
+        if normalized.get('position') is not None and not isinstance(normalized.get('position'), dict):
+            return 'rejected', 'Combat participant position must be an object.', None
+        if normalized.get('participant') is not None:
+            participant = normalize_participant(normalized.get('participant'))
+            if not participant:
+                return 'rejected', 'Combat participant payload is invalid.', None
+            normalized['participant'] = participant
+        return 'accepted', 'Combat participant update is valid.', normalized
+
+    if change_type == 'combat.move':
+        to_range = _text(normalized.get('toRangeBand') or normalized.get('to_range_band') or normalized.get('rangeBand') or normalized.get('range_band')).lower().replace(' ', '_')
+        if to_range not in RANGE_BANDS:
+            return 'rejected', 'Combat movement requires a valid toRangeBand.', None
+        normalized['toRangeBand'] = to_range
+        from_range = _text(normalized.get('fromRangeBand') or normalized.get('from_range_band')).lower().replace(' ', '_')
+        if from_range and from_range not in RANGE_BANDS:
+            return 'rejected', 'Combat movement fromRangeBand is invalid.', None
+        if from_range:
+            normalized['fromRangeBand'] = from_range
+        return 'accepted', 'Combat movement is valid.', normalized
+
+    if change_type in {'combat.condition.add', 'combat.condition.remove'}:
+        condition = _text(normalized.get('condition') or normalized.get('conditionName') or normalized.get('condition_name')).lower().replace(' ', '_')
+        if not condition:
+            return 'rejected', 'Combat condition change requires condition.', None
+        normalized['condition'] = condition
+        return 'accepted', 'Combat condition change is valid.', normalized
+
+    if change_type == 'combat.ability.mark_used':
+        ability_id = _text(normalized.get('abilityId') or normalized.get('ability_id'))
+        if not ability_id:
+            return 'rejected', 'Combat ability mark used requires abilityId.', None
+        normalized['abilityId'] = ability_id
+        return 'accepted', 'Combat ability mark used is valid.', normalized
+
+    if change_type == 'combat.intent.set':
+        intent = normalized.get('intent') if isinstance(normalized.get('intent'), dict) else {}
+        intent_type = _text(intent.get('intentType') or normalized.get('intentType'))
+        if not intent_type:
+            return 'rejected', 'Combat intent requires intentType.', None
+        try:
+            confidence = float(intent.get('confidence', normalized.get('confidence', 0.5)) or 0.5)
+        except (TypeError, ValueError):
+            confidence = 0.5
+        normalized['intent'] = {
+            **intent,
+            'enemyId': participant_id,
+            'intentType': intent_type,
+            'reason': _text(intent.get('reason') or normalized.get('reason')) or 'Backend selected enemy intent.',
+            'confidence': max(0.0, min(1.0, confidence)),
+        }
+        return 'accepted', 'Combat intent update is valid.', normalized
+
+    if change_type == 'combat.morale.update':
+        morale = int_or_default(normalized.get('morale'), default=-1)
+        if morale < 0:
+            return 'rejected', 'Combat morale update requires morale.', None
+        normalized['morale'] = max(0, min(100, morale))
+        return 'accepted', 'Combat morale update is valid.', normalized
+
+    if change_type == 'combat.morale.event':
+        event = _text(normalized.get('event') or normalized.get('moraleEvent') or normalized.get('morale_event')).lower()
+        if event not in MORALE_EVENTS:
+            return 'rejected', 'Combat morale event is unsupported.', None
+        participant = _combat_participant(state, participant_id)
+        if not participant:
+            return 'rejected', f"Combat participant '{participant_id}' was not found.", None
+        normalized['event'] = event
+        normalized['morale'] = apply_morale_event(participant, event)
+        return 'accepted', 'Combat morale event is valid.', normalized
+
+    return 'rejected', 'Unsupported combat state change.', None
 
 
 def _atomic_change_id(parent_id: str, suffix: str, *parts: Any) -> str:
@@ -1280,6 +1497,8 @@ def validate_state_changes(*, state: dict[str, Any], changes: list[dict[str, Any
             status, reason, normalized = _validate_health_change(state, change)
         elif change_type in {'xp.add', 'xp.remove'}:
             status, reason, normalized = _validate_xp_change(state, change)
+        elif change_type == 'spell.learn':
+            status, reason, normalized = _validate_spell_learn_change(state, change)
         elif change_type == 'inventory.mark_used':
             status, reason, normalized = 'accepted', 'Inventory use marker is valid.', None
         elif change_type == 'race_ability.mark_used':
@@ -1301,6 +1520,8 @@ def validate_state_changes(*, state: dict[str, Any], changes: list[dict[str, Any
                 status, reason, normalized = 'rejected', 'Race ability refresh requires abilityId.'
             else:
                 status, reason, normalized = 'accepted', 'Race ability refresh marker is valid.', None
+        elif change_type in COMBAT_STATE_CHANGE_TYPES:
+            status, reason, normalized = _normalize_combat_change(change, state)
         elif change_type in WORLD_STATE_CHANGE_TYPES:
             status, reason, normalized = _normalize_world_change(change, state)
         else:
