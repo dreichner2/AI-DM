@@ -64,6 +64,30 @@ def _clear_helper_env(monkeypatch):
         'AIDM_SENTIENT_ENEMY_BRAIN_HELPER_DEEPSEEK_THINKING',
         'AIDM_SENTIENT_ENEMY_BRAIN_HELPER_DEEPSEEK_REASONING_EFFORT',
         'AIDM_HELPER_PROFILE_SENTIENT_ENEMY_BRAIN',
+        'AIDM_ENEMY_TACTICS_PLANNER_HELPER_LLM_PROVIDER',
+        'AIDM_ENEMY_TACTICS_PLANNER_HELPER_LLM_MODEL',
+        'AIDM_ENEMY_TACTICS_PLANNER_HELPER_LLM_FALLBACK_MODELS',
+        'AIDM_ENEMY_TACTICS_PLANNER_HELPER_LLM_MAX_TOKENS',
+        'AIDM_ENEMY_TACTICS_PLANNER_HELPER_LLM_TEMPERATURE',
+        'AIDM_ENEMY_TACTICS_PLANNER_HELPER_LLM_TOP_P',
+        'AIDM_ENEMY_TACTICS_PLANNER_HELPER_PROFILE',
+        'AIDM_ENEMY_TACTICS_PLANNER_HELPER_CODEX_TIMEOUT_SECONDS',
+        'AIDM_ENEMY_TACTICS_PLANNER_HELPER_CODEX_REASONING_EFFORT',
+        'AIDM_ENEMY_TACTICS_PLANNER_HELPER_CODEX_IGNORE_RULES',
+        'AIDM_HELPER_PROFILE_ENEMY_TACTICS_PLANNER',
+        'AIDM_ENEMY_TACTICS_COMPILER_HELPER_LLM_PROVIDER',
+        'AIDM_ENEMY_TACTICS_COMPILER_HELPER_LLM_MODEL',
+        'AIDM_ENEMY_TACTICS_COMPILER_HELPER_LLM_FALLBACK_MODELS',
+        'AIDM_ENEMY_TACTICS_COMPILER_HELPER_LLM_MAX_TOKENS',
+        'AIDM_ENEMY_TACTICS_COMPILER_HELPER_LLM_TEMPERATURE',
+        'AIDM_ENEMY_TACTICS_COMPILER_HELPER_LLM_TOP_P',
+        'AIDM_ENEMY_TACTICS_COMPILER_HELPER_PROFILE',
+        'AIDM_ENEMY_TACTICS_COMPILER_HELPER_DEEPSEEK_TIMEOUT_SECONDS',
+        'AIDM_ENEMY_TACTICS_COMPILER_HELPER_DEEPSEEK_CONNECT_TIMEOUT_SECONDS',
+        'AIDM_ENEMY_TACTICS_COMPILER_HELPER_DEEPSEEK_READ_TIMEOUT_SECONDS',
+        'AIDM_ENEMY_TACTICS_COMPILER_HELPER_DEEPSEEK_THINKING',
+        'AIDM_ENEMY_TACTICS_COMPILER_HELPER_DEEPSEEK_REASONING_EFFORT',
+        'AIDM_HELPER_PROFILE_ENEMY_TACTICS_COMPILER',
         'AIDM_BOSS_TACTICS_HELPER_LLM_PROVIDER',
         'AIDM_BOSS_TACTICS_HELPER_LLM_MODEL',
         'AIDM_BOSS_TACTICS_HELPER_LLM_FALLBACK_MODELS',
@@ -373,6 +397,31 @@ def test_get_helper_provider_uses_codex_medium_for_sentient_enemy_brain(monkeypa
     provider = get_helper_provider(task='sentient_enemy_brain')
 
     _assert_codex_medium_helper(provider)
+
+
+def test_get_helper_provider_uses_codex_medium_for_enemy_tactics_planner(monkeypatch):
+    _clear_helper_env(monkeypatch)
+
+    provider = get_helper_provider(task='enemy_tactics_planner')
+
+    _assert_codex_medium_helper(provider)
+
+
+def test_get_helper_provider_uses_fast_deepseek_for_enemy_tactics_compiler(monkeypatch):
+    _clear_helper_env(monkeypatch)
+    monkeypatch.setenv('AIDM_DEEPSEEK_API_KEY', 'deepseek-test')
+
+    provider = get_helper_provider(task='enemy_tactics_compiler')
+
+    assert isinstance(provider, DeepSeekChatProvider)
+    assert provider.api_key == 'deepseek-test'
+    assert provider.model_name == 'deepseek-v4-flash'
+    assert provider.max_tokens == 1024
+    assert provider.temperature == 0.05
+    assert provider.top_p == 0.9
+    assert provider.thinking_enabled is False
+    assert provider.reasoning_effort == 'low'
+    assert provider.read_timeout_seconds == 30.0
 
 
 def test_get_helper_provider_uses_codex_medium_for_boss_tactics(monkeypatch):

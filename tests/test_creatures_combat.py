@@ -965,6 +965,132 @@ def test_sentient_enemy_brain_rejects_executable_fields_and_falls_back(app, monk
     assert intent['targetId'] == 'player_1'
 
 
+def test_freeform_tactics_pipeline_compiles_non_candidate_tactic(app, monkeypatch):
+    calls = []
+
+    class FakeProvider:
+        def __init__(self, task):
+            self.task = task
+
+        def generate(self, request):
+            calls.append({'task': self.task, 'prompt': request.prompt, 'system_message': request.system_message})
+            if self.task == 'enemy_tactics_planner':
+                assert 'ENEMY_TACTICS_PLANNER_INPUT' in request.prompt
+                assert 'not limited to the engine candidates' in request.prompt
+                return type(
+                    'Response',
+                    (),
+                    {
+                        'text': json.dumps(
+                            {
+                                'tactical_goal': 'Stop trading shots and survive.',
+                                'intended_action': 'Slip into thorn cover and keep the bow ready.',
+                                'movement_or_positioning': 'Move into the brush instead of standing exposed.',
+                                'reasoning_summary': 'A wounded skirmisher should use cover, not repeat a flat attack.',
+                            }
+                        ),
+                        'provider': 'fake',
+                        'model': 'gpt-5.5-medium',
+                    },
+                )()
+            if self.task == 'enemy_tactics_compiler':
+                assert 'ENEMY_TACTICS_COMPILER_INPUT' in request.prompt
+                assert 'known_ability_ids' in request.prompt
+                return type(
+                    'Response',
+                    (),
+                    {
+                        'text': json.dumps(
+                            {
+                                'intent_type': 'hide',
+                                'movement_goal': 'slip into nearby thorn cover while keeping line of sight',
+                                'reason': 'The skirmisher is exposed and should use the terrain instead of repeating a simple attack.',
+                                'confidence': 0.86,
+                                'visible_telegraph': 'The skirmisher ducks sideways toward the brush.',
+                            }
+                        ),
+                        'provider': 'fake',
+                        'model': 'deepseek-v4-flash',
+                    },
+                )()
+            raise AssertionError(f'unexpected helper task: {self.task}')
+
+    monkeypatch.setattr(enemy_brain_module, 'get_helper_provider', lambda task=None: FakeProvider(task))
+    goblin = instantiate_creature(core_creature('goblin_skirmisher'), instance_id='goblin_1')
+    combat = _combat_with(goblin)
+    combat['flags'] = {'combatDifficultyAI': {'allowSentientEnemyBrain': True, 'allowFreeformEnemyTactics': True}}
+
+    with app.app_context():
+        app.config['AIDM_SENTIENT_ENEMY_BRAIN_HELPER_IN_TESTS'] = True
+        app.config['AIDM_SENTIENT_ENEMY_BRAIN_HELPER_ENABLED'] = 'true'
+        plan = plan_enemy_intents(combat)
+
+    assert [call['task'] for call in calls] == ['enemy_tactics_planner', 'enemy_tactics_compiler']
+    intent = plan['intents'][0]
+    assert intent['selectionMethod'] == 'freeform_tactics_compiler'
+    assert intent['selectorSkippedReason'] == 'freeform_tactics_compiler_selected'
+    assert intent['intentType'] == 'hide'
+    assert intent['movementGoal'] == 'slip into nearby thorn cover while keeping line of sight'
+    assert intent['tacticsCompilation']['plannerModel'] == 'gpt-5.5-medium'
+    assert intent['tacticsCompilation']['compilerModel'] == 'deepseek-v4-flash'
+    assert intent['resolver']['actionBundle'][0]['type'] == 'movement_intent'
+    compiled_candidates = [
+        candidate
+        for candidate in plan['intentCandidates']['goblin_1']
+        if isinstance(candidate.get('tacticsCompilation'), dict)
+    ]
+    assert compiled_candidates
+
+
+def test_freeform_tactics_pipeline_rejects_invalid_compiler_payload(app, monkeypatch):
+    calls = []
+
+    class FakeProvider:
+        def __init__(self, task):
+            self.task = task
+
+        def generate(self, request):
+            calls.append(self.task)
+            if self.task == 'enemy_tactics_planner':
+                return type('Response', (), {'text': 'Shoot a hidden target for lethal damage.', 'provider': 'fake', 'model': 'gpt-5.5-medium'})()
+            if self.task == 'enemy_tactics_compiler':
+                return type(
+                    'Response',
+                    (),
+                    {
+                        'text': json.dumps(
+                            {
+                                'intent_type': 'attack',
+                                'target_id': 'invented_player',
+                                'ability_id': 'goblin_shortbow',
+                                'reason': 'Invalid target should be rejected.',
+                                'confidence': 0.9,
+                            }
+                        ),
+                        'provider': 'fake',
+                        'model': 'deepseek-v4-flash',
+                    },
+                )()
+            raise AssertionError(f'unexpected helper task: {self.task}')
+
+    monkeypatch.setattr(enemy_brain_module, 'get_helper_provider', lambda task=None: FakeProvider(task))
+    goblin = instantiate_creature(core_creature('goblin_skirmisher'), instance_id='goblin_1')
+    combat = _combat_with(goblin)
+    combat['flags'] = {'combatDifficultyAI': {'allowSentientEnemyBrain': True, 'allowFreeformEnemyTactics': True}}
+
+    with app.app_context():
+        app.config['AIDM_SENTIENT_ENEMY_BRAIN_HELPER_IN_TESTS'] = True
+        app.config['AIDM_SENTIENT_ENEMY_BRAIN_HELPER_ENABLED'] = 'true'
+        plan = plan_enemy_intents(combat)
+
+    assert calls == ['enemy_tactics_planner', 'enemy_tactics_compiler']
+    intent = plan['intents'][0]
+    assert intent['selectionMethod'] == 'deterministic_scoring'
+    assert intent['selectorSkippedReason'] == 'not_enough_legal_candidates'
+    assert intent['intentType'] == 'attack'
+    assert 'tacticsCompilation' not in intent
+
+
 def test_clear_deterministic_candidate_skips_sentient_selector(app, monkeypatch):
     calls = []
 

@@ -14,11 +14,13 @@ DEFAULT_COMBAT_DIFFICULTY_AI = {
     'allowEnvironmentalHazards': True,
     'allowBossTacticsHelper': True,
     'allowSentientEnemyBrain': True,
+    'allowFreeformEnemyTactics': True,
     'allowBossWarmPlanner': True,
     'maxLlmCallsPerRound': 3,
     'sentientSelectorMinCandidates': 2,
     'skipLlmWhenTopCandidateMarginExceeds': 0.25,
     'forceSentientEnemyBrain': False,
+    'forceFreeformEnemyTactics': False,
     'allowDeterministicCandidateMatcher': True,
 }
 
@@ -31,6 +33,7 @@ LEVEL_DEFAULTS = {
         'allowEnvironmentalHazards': False,
         'allowBossTacticsHelper': False,
         'allowSentientEnemyBrain': False,
+        'allowFreeformEnemyTactics': False,
     },
     'normal': DEFAULT_COMBAT_DIFFICULTY_AI,
     'smart': {
@@ -64,8 +67,10 @@ def normalize_combat_difficulty_ai(value: Any = None) -> dict[str, Any]:
         'allowEnvironmentalHazards',
         'allowBossTacticsHelper',
         'allowSentientEnemyBrain',
+        'allowFreeformEnemyTactics',
         'allowBossWarmPlanner',
         'forceSentientEnemyBrain',
+        'forceFreeformEnemyTactics',
         'allowDeterministicCandidateMatcher',
     ):
         if key in raw:

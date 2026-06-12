@@ -9,7 +9,7 @@ from flask import current_app, has_app_context
 
 from aidm_server.combat.boss_tactics import deterministic_boss_tactic, plan_boss_advisory, plan_boss_candidate_tactic, should_use_boss_tactics_helper
 from aidm_server.combat.difficulty import combat_difficulty_from_state, normalize_combat_difficulty_ai
-from aidm_server.combat.enemy_brain import plan_sentient_enemy_intent, should_use_sentient_enemy_brain
+from aidm_server.combat.enemy_brain import plan_freeform_enemy_tactic, plan_sentient_enemy_intent, should_use_sentient_enemy_brain
 from aidm_server.combat.morale import living_participants, recalculate_morale
 from aidm_server.canon_text import int_or_default
 from aidm_server.combat.state import normalize_combat_state
@@ -553,6 +553,7 @@ def _attach_candidate_contracts(
 
 
 def _candidate_debug_view(candidate: dict[str, Any]) -> dict[str, Any]:
+    intent = candidate.get('intent') if isinstance(candidate.get('intent'), dict) else {}
     return {
         'candidateId': candidate.get('candidateId'),
         'candidateVersion': candidate.get('candidateVersion'),
@@ -577,6 +578,10 @@ def _candidate_debug_view(candidate: dict[str, Any]) -> dict[str, Any]:
         'matcherScore': candidate.get('matcherScore'),
         'matcherSignals': candidate.get('matcherSignals'),
         'bossPlanner': candidate.get('bossPlanner'),
+        'brainSource': intent.get('brainSource'),
+        'selectionMethod': intent.get('selectionMethod'),
+        'selectorSkippedReason': intent.get('selectorSkippedReason'),
+        'tacticsCompilation': intent.get('tacticsCompilation'),
         'resolverType': (candidate.get('resolver') or {}).get('resolverType') if isinstance(candidate.get('resolver'), dict) else None,
         'dryRun': candidate.get('dryRun'),
     }
@@ -877,6 +882,9 @@ def _should_call_sentient_selector(
     if use_boss_tactics:
         selected_intent['selectorSkippedReason'] = 'boss_tactics_owns_selection'
         return False
+    if isinstance(selected_intent.get('tacticsCompilation'), dict):
+        selected_intent['selectorSkippedReason'] = 'freeform_tactics_compiler_selected'
+        return False
     if not should_use_sentient_enemy_brain(enemy, settings):
         selected_intent['selectorSkippedReason'] = 'sentient_brain_disabled_or_not_sentient'
         return False
@@ -895,6 +903,35 @@ def _should_call_sentient_selector(
     selected_intent['deterministicCandidateMargin'] = margin
     if threshold > 0 and margin >= threshold:
         selected_intent['selectorSkippedReason'] = 'deterministic_top_candidate_clear'
+        return False
+    return True
+
+
+def _should_call_freeform_tactics(
+    enemy: dict[str, Any],
+    settings: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    *,
+    use_boss_tactics: bool,
+) -> bool:
+    if use_boss_tactics:
+        return False
+    if not settings.get('allowFreeformEnemyTactics', True):
+        return False
+    if settings.get('forceSentientEnemyBrain'):
+        return False
+    if settings.get('_sentientSelectorAllowedByBudget') is False:
+        return False
+    if not should_use_sentient_enemy_brain(enemy, settings):
+        return False
+    if settings.get('forceFreeformEnemyTactics'):
+        return True
+    legal_candidates = [candidate for candidate in candidates if candidate.get('legalAtGeneration') is not False]
+    min_candidates = max(1, int_or_default(settings.get('sentientSelectorMinCandidates'), default=2))
+    if len(legal_candidates) < min_candidates:
+        return True
+    threshold = float(settings.get('skipLlmWhenTopCandidateMarginExceeds') or 0.0)
+    if threshold > 0 and _candidate_score_margin(legal_candidates) >= threshold:
         return False
     return True
 
@@ -1316,10 +1353,33 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
                 candidates=candidates,
             )
         _apply_boss_planner_bias(candidates, boss_planner, boss_planner_source)
+    if _should_call_freeform_tactics(enemy, settings, candidates, use_boss_tactics=use_boss_tactics):
+        deterministic_preview, _deterministic_preview_method = _select_deterministic_candidate(candidates, settings)
+        freeform_intent, freeform_source = plan_freeform_enemy_tactic(
+            enemy,
+            combat,
+            settings,
+            allowed_target_ids=allowed_target_ids,
+            fallback_intent=deterministic_preview.get('intent') if isinstance(deterministic_preview.get('intent'), dict) else {},
+            candidates=candidates,
+            facts=facts,
+        )
+        if freeform_intent:
+            freeform_score = 80 + round(float(freeform_intent.get('confidence') or 0.7) * 15)
+            freeform_intent['selectionMethod'] = 'freeform_tactics_compiler'
+            freeform_intent['brainSource'] = freeform_intent.get('brainSource') or freeform_source
+            candidates.append(_candidate(freeform_intent, min(96, freeform_score)))
+            candidates.sort(key=lambda item: item['score'], reverse=True)
+            _attach_candidate_contracts(candidates, enemy=enemy, combat=combat)
+            _apply_candidate_matcher(candidates, enemy, settings)
     deterministic_candidate, deterministic_method = _select_deterministic_candidate(candidates, settings)
     selected = deepcopy(deterministic_candidate['intent'])
     selected['selectionScore'] = deterministic_candidate['score']
-    selected['selectionMethod'] = deterministic_method
+    if isinstance(selected.get('tacticsCompilation'), dict):
+        selected['selectionMethod'] = 'freeform_tactics_compiler'
+        selected['deterministicSelectionMethod'] = deterministic_method
+    else:
+        selected['selectionMethod'] = deterministic_method
     if use_boss_tactics:
         selected, boss_tactic_source = plan_boss_candidate_tactic(
             enemy,
