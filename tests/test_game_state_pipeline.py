@@ -83,6 +83,108 @@ def _two_player_state():
     return state
 
 
+def _enemy_roll_test_state():
+    state = _state(hp_current=20, hp_max=20)
+    state['playerCharacters'][0]['name'] = 'Legoless'
+    state['playerCharacters'][0]['stats'] = {'armorClass': 13}
+    state['combat'] = {
+        'status': 'active',
+        'round': 1,
+        'participants': [
+            {'id': 'player_1', 'name': 'Legoless', 'team': 'player', 'armorClass': 13},
+            {
+                'id': 'enemy_right_flank_raider_1',
+                'name': 'Right-Flank Raider',
+                'team': 'enemy',
+                'armorClass': 12,
+                'abilities': [
+                    {
+                        'id': 'shortbow',
+                        'name': 'Shortbow',
+                        'type': 'attack',
+                        'attackBonus': 4,
+                        'damage': {'dice': '1d6+2', 'type': 'piercing'},
+                    }
+                ],
+            },
+        ],
+    }
+    return state
+
+
+def _enemy_attack_combat_context():
+    return {
+        'enemyIntentSummary': 'Right-Flank Raider fires from the bracken.',
+        'enemyRequiredActions': [
+            {
+                'enemyId': 'enemy_right_flank_raider_1',
+                'targetId': 'player_1',
+                'intentType': 'attack',
+                'abilityId': 'shortbow',
+            }
+        ],
+        'enemyTelegraphs': ['The raider draws a bead on Legoless.'],
+    }
+
+
+def test_dm_context_resolves_enemy_attack_rolls_without_player_prompt():
+    rolls = iter([14, 5])
+
+    context = turn_pipeline_module._dm_context_packet(
+        state=_enemy_roll_test_state(),
+        player_message='I move up the slope.',
+        pre_validation={'validatedActions': [], 'pendingRolls': []},
+        applied_changes=[],
+        combat_context=_enemy_attack_combat_context(),
+        enemy_roller=lambda _sides: next(rolls),
+    )
+
+    resolved = context['combatState']['enemyResolvedActions'][0]
+    assert resolved['enemyName'] == 'Right-Flank Raider'
+    assert resolved['targetName'] == 'Legoless'
+    assert resolved['attackRoll'] == 14
+    assert resolved['attackBonus'] == 4
+    assert resolved['attackTotal'] == 18
+    assert resolved['targetArmorClass'] == 13
+    assert resolved['hit'] is True
+    assert resolved['damageRolls'] == [5]
+    assert resolved['damageBonus'] == 2
+    assert resolved['damageTotal'] == 7
+    assert resolved['damageType'] == 'piercing'
+    assert any('Enemy rolls are engine-owned' in instruction for instruction in context['dmInstructions'])
+    assert any('Never ask the player to roll enemy attacks' in instruction for instruction in context['dmInstructions'])
+
+
+def test_dm_context_defers_enemy_actions_when_player_roll_is_pending_or_resolved():
+    def fail_if_called(_sides):
+        raise AssertionError('enemy roller should not run while a player roll is being resolved')
+
+    pending_context = turn_pipeline_module._dm_context_packet(
+        state=_enemy_roll_test_state(),
+        player_message='I shoot the raider.',
+        pre_validation={'validatedActions': [], 'pendingRolls': [{'rollType': 'attack'}]},
+        applied_changes=[],
+        combat_context=_enemy_attack_combat_context(),
+        enemy_roller=fail_if_called,
+    )
+    resolved_context = turn_pipeline_module._dm_context_packet(
+        state=_enemy_roll_test_state(),
+        player_message='I roll a d20+4: 13 = 17',
+        pre_validation={'validatedActions': [], 'pendingRolls': []},
+        applied_changes=[],
+        combat_context=_enemy_attack_combat_context(),
+        resolved_player_roll=True,
+        enemy_roller=fail_if_called,
+    )
+
+    assert pending_context['combatState']['enemyResolvedActions'] == []
+    assert pending_context['combatState']['enemyRequiredActions'] == []
+    assert pending_context['combatState']['enemyActionDeferredReason'] == 'pending_player_roll'
+    assert resolved_context['combatState']['enemyResolvedActions'] == []
+    assert resolved_context['combatState']['enemyRequiredActions'] == []
+    assert resolved_context['combatState']['enemyActionDeferredReason'] == 'player_roll_resolution'
+
+
 def test_extract_consume_item_from_player_message(app):
     with app.app_context():
         result = extract_pre_dm_actions(
@@ -2082,6 +2184,148 @@ def test_post_dm_marks_mentioned_known_npcs_active(app):
     )
     assert scene_change['activeNpcIds'] == ['mirror_trickster']
     assert 'heuristic_active_npcs' in result['notes']
+
+
+def test_active_npc_heuristic_keeps_newly_discovered_hostile_visible():
+    state = _state()
+    state['currentScene'] = {
+        'locationId': 'dead_shelter',
+        'name': 'Dead Shelter',
+        'sceneType': 'combat',
+        'activeNpcIds': ['captor_1', 'captor_2', 'captive_human'],
+    }
+    state['knownNpcs'] = [
+        {'id': 'captor_1', 'name': 'Captor 1', 'status': 'known', 'disposition': 'hostile'},
+        {'id': 'captor_2', 'name': 'Captor 2', 'status': 'known', 'disposition': 'hostile'},
+        {'id': 'captive_human', 'name': 'Human Captive', 'status': 'met', 'disposition': 'friendly'},
+    ]
+
+    changes = post_extractor_module._heuristic_active_npc_changes(
+        state_before_dm=state,
+        dm_response='A third captor shifts inside the dead shelter, still visible through the torn hide flap.',
+        turn_id=17,
+        already_applied_changes=[],
+        proposed_changes=[
+            {
+                'type': 'npc.discover',
+                'npcId': 'captor_3',
+                'name': 'Captor 3',
+                'status': 'known',
+                'disposition': 'hostile',
+            }
+        ],
+    )
+
+    scene_change = next(change for change in changes if change['type'] == 'scene.update')
+    assert scene_change['activeNpcIds'] == ['captor_1', 'captor_2', 'captive_human', 'captor_3']
+
+
+def test_bound_combat_creature_updates_known_npc_after_defeat():
+    state = _state()
+    state['knownNpcs'] = [
+        {
+            'id': 'captor_3',
+            'name': 'Captor 3',
+            'status': 'known',
+            'disposition': 'hostile',
+            'memory': [],
+            'metadata': {},
+        }
+    ]
+    state['combat'] = {
+        'status': 'active',
+        'participants': [
+            {
+                'id': 'enemy_shelter_lurker_1',
+                'team': 'enemy',
+                'name': 'Shelter Lurker (Captor 3)',
+                'creatureTypeName': 'Shelter Lurker',
+                'npcBinding': {
+                    'npcId': 'captor_3',
+                    'npcName': 'Captor 3',
+                    'creatureTypeName': 'Shelter Lurker',
+                },
+                'hp': {'current': 4, 'max': 4, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+            }
+        ],
+    }
+
+    changes = post_extractor_module._bound_npc_updates_from_combat_changes(
+        state_before_dm=state,
+        changes=[
+            {
+                'type': 'combat.participant.update',
+                'participantId': 'enemy_shelter_lurker_1',
+                'conditions': ['defeated'],
+                'isAlive': False,
+            }
+        ],
+        turn_id=18,
+        already_applied_changes=[],
+    )
+    validation = validate_state_changes(state=state, changes=changes)
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    npc = result['nextState']['knownNpcs'][0]
+
+    assert validation['rejected'] == []
+    assert changes[0]['npcId'] == 'captor_3'
+    assert changes[0]['status'] == 'dead'
+    assert changes[0]['metadata']['creatureTypeName'] == 'Shelter Lurker'
+    assert npc['status'] == 'dead'
+    assert 'entered combat as Shelter Lurker' in npc['memory'][-1]
+
+    fled_changes = post_extractor_module._bound_npc_updates_from_combat_changes(
+        state_before_dm=state,
+        changes=[
+            {
+                'type': 'combat.participant.update',
+                'participantId': 'enemy_shelter_lurker_1',
+                'conditions': ['fled'],
+                'isAlive': False,
+            }
+        ],
+        turn_id=20,
+        already_applied_changes=[],
+    )
+    assert fled_changes[0]['status'] == 'fleeing'
+    assert fled_changes[0]['metadata']['combatOutcome'] == 'fleeing'
+
+
+def test_fleeing_group_marks_remaining_hostile_npcs_and_removes_offscreen_active_ids():
+    state = _state()
+    state['currentScene'] = {
+        'locationId': 'dead_shelter',
+        'name': 'Dead Shelter',
+        'sceneType': 'combat',
+        'activeNpcIds': ['captor_1', 'captor_2', 'captive_human'],
+    }
+    state['knownNpcs'] = [
+        {'id': 'captor_1', 'name': 'Captor 1', 'status': 'known', 'disposition': 'hostile', 'memory': [], 'metadata': {}},
+        {'id': 'captor_2', 'name': 'Captor 2', 'status': 'known', 'disposition': 'hostile', 'memory': [], 'metadata': {}},
+        {'id': 'captor_3', 'name': 'Captor 3', 'status': 'known', 'disposition': 'hostile', 'memory': [], 'metadata': {}},
+        {'id': 'captive_human', 'name': 'Human Captive', 'status': 'met', 'disposition': 'friendly'},
+    ]
+
+    changes = post_extractor_module._heuristic_fleeing_npc_changes(
+        state_before_dm=state,
+        dm_response='The other two captors are no longer in sight; their tracks cut west-northwest through the thorn break.',
+        turn_id=19,
+        already_applied_changes=[],
+        proposed_changes=[{'type': 'npc.update', 'npcId': 'captor_3', 'status': 'dead'}],
+    )
+    validation = validate_state_changes(state=state, changes=changes)
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    by_id = {npc['id']: npc for npc in result['nextState']['knownNpcs']}
+    scene = result['nextState']['currentScene']
+
+    assert validation['rejected'] == []
+    assert [change['npcId'] for change in changes if change['type'] == 'npc.update'] == ['captor_1', 'captor_2']
+    assert by_id['captor_1']['status'] == 'fleeing'
+    assert by_id['captor_2']['status'] == 'fleeing'
+    assert by_id['captor_1']['metadata']['lastKnownDirection'].startswith('west-northwest')
+    assert scene['activeNpcIds'] == ['captive_human']
 
 
 def test_post_dm_extracts_enemy_combat_damage_and_conditions(app):

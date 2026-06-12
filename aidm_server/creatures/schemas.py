@@ -413,6 +413,8 @@ def normalize_creature_definition(value: Any, *, source: str | None = None) -> d
         'descriptionShort': _text(raw.get('descriptionShort', raw.get('description_short')), name)[:240],
         'descriptionLong': _text(raw.get('descriptionLong', raw.get('description_long')), raw.get('descriptionShort') or name)[:2000],
         'creatureType': creature_type,
+        'creatureTypeName': _text(raw.get('creatureTypeName', raw.get('creature_type_name')))[:100],
+        'npcBinding': deepcopy(raw.get('npcBinding', raw.get('npc_binding'))) if isinstance(raw.get('npcBinding', raw.get('npc_binding')), dict) else {},
         'aliases': _string_list(raw.get('aliases'), limit=12),
         'visualTags': _string_list(raw.get('visualTags', raw.get('visual_tags', raw.get('tags'))), limit=16),
         'level': level,

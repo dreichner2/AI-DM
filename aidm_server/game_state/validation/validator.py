@@ -41,7 +41,7 @@ LOCATION_STATUSES = {'known', 'discovered', 'visited', 'hidden', 'inaccessible'}
 QUEST_STATUSES = {'available', 'active', 'completed', 'failed', 'abandoned', 'hidden'}
 OBJECTIVE_STATUSES = {'open', 'completed', 'failed', 'optional'}
 NPC_DISPOSITIONS = {'friendly', 'neutral', 'hostile', 'suspicious', 'afraid', 'loyal', 'unknown'}
-NPC_STATUSES = {'known', 'met', 'allied', 'hostile', 'dead', 'missing', 'unknown'}
+NPC_STATUSES = {'known', 'met', 'allied', 'hostile', 'fleeing', 'dead', 'missing', 'unknown'}
 NPC_DISPOSITION_ALIASES = {
     'cautious': 'suspicious',
     'fearful': 'afraid',

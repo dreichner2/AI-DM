@@ -10,6 +10,7 @@ from flask import has_app_context
 
 import aidm_server.combat.boss_tactics as boss_tactics_module
 import aidm_server.combat.intent_planner as intent_planner_module
+import aidm_server.creatures.resolver as resolver_module
 from aidm_server.combat.end_conditions import check_combat_end
 import aidm_server.combat.enemy_brain as enemy_brain_module
 from aidm_server.combat.evaluation import run_combat_helper_evaluation, summarize_combat_helper_plan
@@ -234,6 +235,151 @@ def test_default_encounter_request_prefers_hostile_scene_npc_over_weapon_phrase(
     assert creature['id'] == 'thunderer'
     assert creature['name'] == 'The Thunderer'
     assert 'thunderer' in creature['aliases']
+
+
+def test_default_encounter_request_binds_generic_captor_to_generated_group(app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        session_obj = db.session.get(Session, ids['session_id'])
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        assert session_obj is not None
+        assert campaign is not None
+        state = {
+            'currentScene': {
+                'name': 'Dead shelter',
+                'sceneType': 'combat',
+                'combatState': 'active',
+                'activeNpcIds': ['captor_1', 'captor_2', 'captor_3', 'captive_human'],
+            },
+            'playerCharacters': [_player(name='Legoless')],
+            'npcs': [
+                {'id': 'captor_1', 'name': 'Captor 1', 'disposition': 'hostile', 'status': 'known'},
+                {'id': 'captor_2', 'name': 'Captor 2', 'disposition': 'hostile', 'status': 'known'},
+                {
+                    'id': 'captor_3',
+                    'name': 'Captor 3',
+                    'disposition': 'hostile',
+                    'status': 'known',
+                    'memory': ['A pale hostile shape was discovered inside the dead shelter.'],
+                },
+                {'id': 'captive_human', 'name': 'Human Captive', 'disposition': 'friendly', 'status': 'met'},
+            ],
+        }
+
+        request = default_request_from_session(
+            session_obj=session_obj,
+            campaign=campaign,
+            state=state,
+            player_message='Shoot another arrow at the figure in the shelter',
+        )
+
+    assert request['allowGeneration'] is True
+    assert request.get('encounterDefinedCreatures') in (None, [])
+    assert request['enemyCount'] == 1
+    group = request['enemyGroups'][0]
+    assert group['boundNpc']['npcId'] == 'captor_3'
+    assert group['boundNpc']['npcName'] == 'Captor 3'
+    assert 'Known NPC Captor 3.' in group['descriptionHint']
+
+
+def test_default_encounter_request_binds_directional_known_npc_to_generated_group(app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        session_obj = db.session.get(Session, ids['session_id'])
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        assert session_obj is not None
+        assert campaign is not None
+        state = {
+            'currentScene': {
+                'name': 'Thorn break',
+                'sceneType': 'combat',
+                'combatState': 'active',
+                'activeNpcIds': ['ash_pale_watcher_right', 'second_pale_shape_left'],
+            },
+            'playerCharacters': [_player(name='Legoless')],
+            'knownNpcs': [
+                {
+                    'id': 'ash_pale_watcher_right',
+                    'name': 'Ash-pale watcher (right slope)',
+                    'disposition': 'hostile',
+                    'status': 'known',
+                    'memory': ['A pale hostile shape watches from the right side of the thorn break.'],
+                },
+                {
+                    'id': 'second_pale_shape_left',
+                    'name': 'Second pale shape (left slope)',
+                    'disposition': 'hostile',
+                    'status': 'known',
+                    'memory': ['A second hostile shape keeps to the left side of the slope.'],
+                },
+            ],
+        }
+
+        request = default_request_from_session(
+            session_obj=session_obj,
+            campaign=campaign,
+            state=state,
+            player_message='I shoot an arrow at the one on the right',
+        )
+
+    assert request['allowGeneration'] is True
+    assert request.get('encounterDefinedCreatures') in (None, [])
+    assert request['enemyCount'] == 1
+    group = request['enemyGroups'][0]
+    assert group['boundNpc']['npcId'] == 'ash_pale_watcher_right'
+    assert group['boundNpc']['npcName'] == 'Ash-pale watcher (right slope)'
+    assert 'Known NPC Ash-pale watcher (right slope).' in group['descriptionHint']
+
+
+def test_resolver_preserves_bound_npc_identity_on_generated_creature(app, monkeypatch):
+    def fake_generate_new_creature(_request):
+        creature = {
+            **core_creature('bandit_thug'),
+            'id': 'hollow_arrowmark_scout',
+            'name': 'Hollow Arrowmark Scout',
+            'source': 'generated',
+            'descriptionShort': 'A pale bowman hiding in wet bracken.',
+            'visualTags': ['hollow', 'arrowmark', 'scout'],
+        }
+        return creature, 'fake-json-compiler'
+
+    monkeypatch.setattr(resolver_module, 'generate_new_creature', fake_generate_new_creature)
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        result = resolve_creatures_for_encounter(
+            {
+                'campaignId': ids['campaign_id'],
+                'sessionId': ids['session_id'],
+                'encounterPurpose': 'ambush',
+                'desiredRole': 'skirmisher',
+                'desiredCreatureType': 'humanoid',
+                'themeTags': ['arrowmark', 'shortbow'],
+                'partyLevel': 2,
+                'partySize': 1,
+                'difficulty': 'standard',
+                'allowGeneration': True,
+                'allowVariants': False,
+                'saveGenerated': False,
+                'enemyGroups': [
+                    {
+                        'count': 1,
+                        'label': 'bound_captor_1',
+                        'descriptionHint': 'One fleeing captor raises a shortbow from wet bracken.',
+                        'boundNpc': {'npcId': 'captor_1', 'npcName': 'Captor 1', 'status': 'known', 'disposition': 'hostile'},
+                    }
+                ],
+            },
+            workspace_id='owner',
+        )
+
+    creature = result['groups'][0]['creature']
+    assert result['resolutionMethod'] == 'generated_new'
+    assert creature['creatureTypeName'] == 'Hollow Arrowmark Scout'
+    assert creature['name'] == 'Hollow Arrowmark Scout (Captor 1)'
+    assert creature['npcBinding']['npcId'] == 'captor_1'
+    assert creature['npcBinding']['npcName'] == 'Captor 1'
+    assert result['groups'][0]['boundNpc']['creatureTypeName'] == 'Hollow Arrowmark Scout'
+    assert 'captor_1' in creature['aliases']
 
 
 def test_prepare_combat_starts_known_thunderer_npc_instead_of_generated_thrower(app):

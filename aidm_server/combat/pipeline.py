@@ -324,6 +324,8 @@ def _encounter_flag_summary(encounter_resolution: dict[str, Any]) -> dict[str, A
             'count': group.get('count'),
             'creatureId': (group.get('creature') or {}).get('id') if isinstance(group.get('creature'), dict) else None,
             'name': (group.get('creature') or {}).get('name') if isinstance(group.get('creature'), dict) else None,
+            'creatureTypeName': (group.get('creature') or {}).get('creatureTypeName') if isinstance(group.get('creature'), dict) else None,
+            'npcBinding': (group.get('creature') or {}).get('npcBinding') if isinstance(group.get('creature'), dict) else None,
             'source': group.get('source'),
             'resolutionMethod': group.get('resolutionMethod'),
         }

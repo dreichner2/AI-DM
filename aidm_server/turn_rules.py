@@ -35,6 +35,21 @@ ROLL_REQUEST_PATTERNS = [
     re.compile(r'\bwhat\s+did\s+you\s+roll\b', re.IGNORECASE),
     re.compile(r'\broll\s+for\b', re.IGNORECASE),
 ]
+RESOLVED_ROLL_RESULT_PATTERNS = [
+    re.compile(r'\b(?:attack|damage|saving\s+throw|save|check)\s+roll\s+(?:of|is|was)\s*\d+\b', re.IGNORECASE),
+    re.compile(r'\broll(?:s|ed)?\s+(?:an?\s+)?\d+\s*(?:,|and)?\s*(?:hits?|misses?|succeeds?|fails?)\b', re.IGNORECASE),
+    re.compile(r'\b(?:hits?|misses?|succeeds?|fails?)\s+(?:with\s+)?(?:an?\s+)?(?:attack\s+)?roll\s+of\s+\d+\b', re.IGNORECASE),
+]
+
+
+def _sentence_chunks(text: str) -> list[str]:
+    return [chunk.strip() for chunk in re.split(r'(?<=[.!?])\s+|\n+', text or '') if chunk.strip()]
+
+
+def _resolved_roll_result_sentence(sentence: str) -> bool:
+    if re.search(r'\b(?:please|need|needs|must|should|can you|send|what did you)\b.*\broll\b', sentence, re.IGNORECASE):
+        return False
+    return any(pattern.search(sentence) for pattern in RESOLVED_ROLL_RESULT_PATTERNS)
 
 
 def _modifier_from_dc_hint(dc_hint: str | None) -> int | None:
@@ -186,5 +201,9 @@ def build_roll_prompt(rule_hint: RuleHint, pending_turn_id: int | None = None) -
 
 
 def response_mentions_roll_request(text: str) -> bool:
-    candidate = text or ''
-    return any(pattern.search(candidate) for pattern in ROLL_REQUEST_PATTERNS)
+    for sentence in _sentence_chunks(text):
+        if _resolved_roll_result_sentence(sentence):
+            continue
+        if any(pattern.search(sentence) for pattern in ROLL_REQUEST_PATTERNS):
+            return True
+    return False

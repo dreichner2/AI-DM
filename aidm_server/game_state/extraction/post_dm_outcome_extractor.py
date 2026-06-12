@@ -1397,6 +1397,7 @@ def _heuristic_active_npc_changes(
     dm_response: str,
     turn_id: int,
     already_applied_changes: list[dict[str, Any]],
+    proposed_changes: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     scene = _current_scene(state_before_dm)
     text = str(dm_response or '').strip()
@@ -1414,7 +1415,22 @@ def _heuristic_active_npc_changes(
         values = state_before_dm.get(key)
         if isinstance(values, list):
             records.extend([record for record in values if isinstance(record, dict)])
+    proposed_npcs: list[dict[str, Any]] = []
+    for change in proposed_changes or []:
+        if not isinstance(change, dict) or str(change.get('type') or '') not in {'npc.discover', 'npc.update'}:
+            continue
+        npc_payload = change.get('npc') if isinstance(change.get('npc'), dict) else {}
+        npc_id = str(change.get('npcId') or npc_payload.get('id') or npc_payload.get('npcId') or '').strip()
+        npc_name = str(change.get('name') or change.get('npcName') or npc_payload.get('name') or npc_id).strip()
+        if not npc_id or not npc_name:
+            continue
+        status = normalize_item_name(change.get('status') or npc_payload.get('status') or 'known')
+        if status in {'dead', 'defeated', 'fled', 'hidden', 'missing'}:
+            continue
+        proposed_npcs.append({'id': npc_id, 'name': npc_name, 'aliases': change.get('aliases') or npc_payload.get('aliases') or []})
+    records.extend(proposed_npcs)
     mentioned_ids: list[str] = []
+    proposed_ids = {str(npc.get('id') or '').strip() for npc in proposed_npcs if str(npc.get('id') or '').strip()}
     for npc in records:
         npc_id = str(npc.get('id') or npc.get('npcId') or '').strip()
         npc_name = str(npc.get('name') or npc.get('npcName') or '').strip()
@@ -1426,7 +1442,7 @@ def _heuristic_active_npc_changes(
         labels = [npc_name, npc_id.replace('_', ' ')]
         aliases = npc.get('aliases') if isinstance(npc.get('aliases'), list) else []
         labels.extend(str(alias) for alias in aliases if str(alias or '').strip())
-        if any((pattern := _target_label_regex(label)) and re.search(pattern, normalized_text, re.IGNORECASE) for label in labels):
+        if npc_id in proposed_ids or any((pattern := _target_label_regex(label)) and re.search(pattern, normalized_text, re.IGNORECASE) for label in labels):
             if npc_id not in mentioned_ids:
                 mentioned_ids.append(npc_id)
     merged_ids = list(dict.fromkeys([*current_active_ids, *mentioned_ids]))
@@ -1839,6 +1855,254 @@ def _heuristic_combat_changes(
     return changes
 
 
+def _combat_participant_by_id(state_before_dm: dict[str, Any], participant_id: Any) -> dict[str, Any] | None:
+    requested = str(participant_id or '').strip()
+    if not requested:
+        return None
+    combat = state_before_dm.get('combat') if isinstance(state_before_dm.get('combat'), dict) else {}
+    for participant in combat.get('participants') or []:
+        if isinstance(participant, dict) and str(participant.get('id') or '').strip() == requested:
+            return participant
+    return None
+
+
+def _bound_npc_update_from_combat_change(
+    *,
+    state_before_dm: dict[str, Any],
+    change: dict[str, Any],
+    turn_id: int,
+    already: set[tuple[Any, ...]],
+    existing_changes: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if str(change.get('type') or '') != 'combat.participant.update':
+        return None
+    participant = _combat_participant_by_id(state_before_dm, change.get('participantId'))
+    binding = participant.get('npcBinding') if isinstance(participant, dict) and isinstance(participant.get('npcBinding'), dict) else {}
+    npc_id = str(binding.get('npcId') or '').strip()
+    npc_name = str(binding.get('npcName') or npc_id).strip()
+    if not npc_id:
+        return None
+    conditions = {normalize_item_name(item) for item in (change.get('conditions') or [])}
+    outcome = ''
+    status = ''
+    disposition = ''
+    if conditions.intersection({'fled', 'escaped', 'retreated', 'withdrawn'}):
+        outcome = 'fleeing'
+        status = 'fleeing'
+        disposition = 'hostile'
+    elif 'surrendered' in conditions:
+        outcome = 'surrendered'
+        status = 'known'
+        disposition = 'afraid'
+    elif change.get('isAlive') is False or 'defeated' in conditions:
+        outcome = 'defeated'
+        status = 'dead'
+        disposition = 'hostile'
+    else:
+        return None
+    creature_type_name = str(
+        binding.get('creatureTypeName')
+        or (participant or {}).get('creatureTypeName')
+        or (participant or {}).get('name')
+        or ''
+    ).strip()
+    memory = f"{npc_name} entered combat as {creature_type_name or 'a hostile creature'} and is now {outcome}."
+    npc_change = {
+        'id': stable_change_id(turn_id, 'post_dm', 'npc.update', npc_id, status, outcome),
+        'turnId': turn_id,
+        'type': 'npc.update',
+        'source': 'post_dm',
+        'npcId': npc_id,
+        'name': npc_name,
+        'status': status,
+        'disposition': disposition,
+        'memory': [memory],
+        'metadata': {
+            'combatParticipantId': change.get('participantId'),
+            'creatureTypeName': creature_type_name,
+            'combatOutcome': outcome,
+        },
+        'reason': f'Combat outcome updated known NPC {npc_name}.',
+        'visible': False,
+    }
+    signature = _already_applied_signature(npc_change)
+    if signature and signature in already:
+        return None
+    if signature and any(_already_applied_signature(existing) == signature for existing in existing_changes):
+        return None
+    return npc_change
+
+
+def _bound_npc_updates_from_combat_changes(
+    *,
+    state_before_dm: dict[str, Any],
+    changes: list[dict[str, Any]],
+    turn_id: int,
+    already_applied_changes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    already = _already_applied(already_applied_changes)
+    npc_changes: list[dict[str, Any]] = []
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+        npc_change = _bound_npc_update_from_combat_change(
+            state_before_dm=state_before_dm,
+            change=change,
+            turn_id=turn_id,
+            already=already,
+            existing_changes=[*changes, *npc_changes],
+        )
+        if npc_change:
+            npc_changes.append(npc_change)
+    return npc_changes
+
+
+FLEEING_NPC_GROUP_PATTERN = re.compile(
+    r'\b(?:(?:other|remaining|last)\s+)?(?:two\s+)?(?:captors|enemies|guards|figures)\b.{0,120}'
+    r'\b(?:flee|flees|fled|flight|run|runs|ran|running|retreat|retreats|tracks?|gone|no longer in sight)\b',
+    re.IGNORECASE | re.DOTALL,
+)
+FLEEING_OFFSCREEN_PATTERN = re.compile(
+    r'\b(?:no longer in sight|out of sight|gone|vanish(?:es|ed)?|disappear(?:s|ed)?|'
+    r'signs? of (?:their )?flight|tracks? (?:lead|leading|cut|cuts))\b',
+    re.IGNORECASE,
+)
+
+
+def _direction_from_flee_text(text: str) -> str:
+    match = re.search(
+        r'\b(?:toward|towards|heading|lead(?:ing)?|gone|cuts?)\s+([a-z][a-z -]{0,80}?(?:north|south|east|west|scrub|woods|forest|road|slope|hollow|thorn)[a-z -]*)',
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return ''
+    return re.sub(r'\s+', ' ', match.group(1)).strip(' .,:;')
+
+
+def _npc_group_reference_terms(npc: dict[str, Any]) -> set[str]:
+    raw_terms: list[Any] = [
+        npc.get('id'),
+        npc.get('npcId'),
+        npc.get('name'),
+        npc.get('npcName'),
+        npc.get('role'),
+    ]
+    aliases = npc.get('aliases')
+    if isinstance(aliases, list):
+        raw_terms.extend(aliases)
+    terms = {
+        normalize_item_name(term)
+        for term in raw_terms
+        if str(term or '').strip()
+    }
+    stems = {
+        re.sub(r'[\s_-]*\d+$', '', term).strip()
+        for term in terms
+        if term
+    }
+    return {term for term in [*terms, *stems] if len(term) >= 3}
+
+
+def _heuristic_fleeing_npc_changes(
+    *,
+    state_before_dm: dict[str, Any],
+    dm_response: str,
+    turn_id: int,
+    already_applied_changes: list[dict[str, Any]],
+    proposed_changes: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    text = str(dm_response or '')
+    if not FLEEING_NPC_GROUP_PATTERN.search(text):
+        return []
+    proposed_changes = [change for change in (proposed_changes or []) if isinstance(change, dict)]
+    resolved_npc_ids = {
+        str(change.get('npcId') or '').strip()
+        for change in proposed_changes
+        if str(change.get('type') or '') == 'npc.update'
+        and normalize_item_name(change.get('status')) in {'dead', 'missing', 'fled'}
+    }
+    scene = _current_scene(state_before_dm)
+    current_active_list = [
+        str(value or '').strip()
+        for value in (scene.get('activeNpcIds') if isinstance(scene.get('activeNpcIds'), list) else [])
+        if str(value or '').strip()
+    ]
+    for change in proposed_changes:
+        if str(change.get('type') or '') == 'scene.update' and isinstance(change.get('activeNpcIds'), list):
+            current_active_list = [str(value or '').strip() for value in change.get('activeNpcIds') or [] if str(value or '').strip()]
+    current_active_ids = set(current_active_list)
+    records = [
+        npc
+        for npc in [*(state_before_dm.get('knownNpcs') or []), *(state_before_dm.get('partyNpcs') or []), *(state_before_dm.get('npcs') or [])]
+        if isinstance(npc, dict)
+    ]
+    normalized_text = normalize_item_name(text)
+    direction = _direction_from_flee_text(text)
+    remove_from_scene = bool(FLEEING_OFFSCREEN_PATTERN.search(text))
+    already = _already_applied(already_applied_changes)
+    changes: list[dict[str, Any]] = []
+    fleeing_ids: list[str] = []
+    for npc in records:
+        npc_id = str(npc.get('id') or npc.get('npcId') or '').strip()
+        npc_name = str(npc.get('name') or npc.get('npcName') or npc_id).strip()
+        if not npc_id or npc_id in resolved_npc_ids:
+            continue
+        disposition = normalize_item_name(npc.get('disposition'))
+        status = normalize_item_name(npc.get('status'))
+        if disposition not in {'hostile', 'enemy', 'aggressive'} or status in {'dead', 'defeated', 'fled', 'missing'}:
+            continue
+        npc_terms = _npc_group_reference_terms(npc)
+        group_match = any(term and term in normalized_text for term in npc_terms)
+        if npc_id not in current_active_ids and not group_match:
+            continue
+        memory = f"{npc_name} fled from the scene."
+        if direction:
+            memory = f"{memory} Last known direction: {direction}."
+        change = {
+            'id': stable_change_id(turn_id, 'post_dm', 'npc.update', npc_id, 'fleeing'),
+            'turnId': turn_id,
+            'type': 'npc.update',
+            'source': 'post_dm',
+            'npcId': npc_id,
+            'name': npc_name,
+            'status': 'fleeing',
+            'disposition': 'hostile',
+            'memory': [memory],
+            'metadata': {'lastKnownDirection': direction} if direction else {},
+            'reason': f'DM narration marked {npc_name} as fleeing.',
+            'visible': False,
+        }
+        signature = _already_applied_signature(change)
+        if signature and signature in already:
+            continue
+        if signature and any(_already_applied_signature(existing) == signature for existing in [*proposed_changes, *changes]):
+            continue
+        changes.append(change)
+        fleeing_ids.append(npc_id)
+    if remove_from_scene and fleeing_ids and current_active_list:
+        remaining_active = [npc_id for npc_id in current_active_list if npc_id not in set(fleeing_ids)]
+        if remaining_active != current_active_list:
+            location_key = str(scene.get('locationId') or scene.get('name') or 'current_scene').strip()
+            scene_change = {
+                'id': stable_change_id(turn_id, 'post_dm', 'scene.update', location_key, 'fleeing_npcs_offscreen'),
+                'turnId': turn_id,
+                'type': 'scene.update',
+                'source': 'post_dm',
+                'activeNpcIds': remaining_active,
+                'reason': 'Fleeing hostile NPCs are no longer visible in the active scene.',
+            }
+            if not any(
+                str(existing.get('type') or '') == 'scene.update'
+                and isinstance(existing.get('activeNpcIds'), list)
+                and [str(value or '').strip() for value in existing.get('activeNpcIds') or [] if str(value or '').strip()] == remaining_active
+                for existing in [*proposed_changes, *changes]
+                if isinstance(existing, dict)
+            ):
+                changes.append(scene_change)
+    return changes
+
+
 def _change_resolves_combat(change: dict[str, Any]) -> bool:
     change_type = str(change.get('type') or '').strip()
     if change_type == 'combat.end':
@@ -2064,6 +2328,7 @@ def _heuristic_extract(
         dm_response=dm_response,
         turn_id=turn_id,
         already_applied_changes=[*already_applied_changes, *changes],
+        proposed_changes=changes,
     )
     changes.extend(active_npc_changes)
     combat_changes = _heuristic_combat_changes(
@@ -2073,6 +2338,21 @@ def _heuristic_extract(
         already_applied_changes=[*already_applied_changes, *changes],
     )
     changes.extend(combat_changes)
+    bound_npc_changes = _bound_npc_updates_from_combat_changes(
+        state_before_dm=state_before_dm,
+        changes=changes,
+        turn_id=turn_id,
+        already_applied_changes=[*already_applied_changes, *changes],
+    )
+    changes.extend(bound_npc_changes)
+    fleeing_npc_changes = _heuristic_fleeing_npc_changes(
+        state_before_dm=state_before_dm,
+        dm_response=dm_response,
+        turn_id=turn_id,
+        already_applied_changes=[*already_applied_changes, *changes],
+        proposed_changes=changes,
+    )
+    changes.extend(fleeing_npc_changes)
     xp_reward_changes = _automatic_xp_reward_changes(
         state_before_dm=state_before_dm,
         proposed_changes=changes,
@@ -2095,6 +2375,10 @@ def _heuristic_extract(
         notes.append('heuristic_active_npcs')
     if combat_changes and 'heuristic_combat_outcomes' not in notes:
         notes.append('heuristic_combat_outcomes')
+    if bound_npc_changes and 'heuristic_bound_npc_combat_outcomes' not in notes:
+        notes.append('heuristic_bound_npc_combat_outcomes')
+    if fleeing_npc_changes and 'heuristic_fleeing_npcs' not in notes:
+        notes.append('heuristic_fleeing_npcs')
     if xp_reward_changes and 'automatic_xp_award' not in notes:
         notes.append('automatic_xp_award')
     if conflict_resolved and 'resolved_combat_scene_conflict' not in notes:
@@ -2223,6 +2507,7 @@ def extract_post_dm_outcomes(
             dm_response=dm_response,
             turn_id=turn_id,
             already_applied_changes=[*already_applied_changes, *(normalized.get('proposedChanges') or []), *scene_changes],
+            proposed_changes=[*(normalized.get('proposedChanges') or []), *scene_changes],
         )
         combat_changes = _heuristic_combat_changes(
             state_before_dm=state_before_dm,
@@ -2230,12 +2515,28 @@ def extract_post_dm_outcomes(
             turn_id=turn_id,
             already_applied_changes=[*already_applied_changes, *(normalized.get('proposedChanges') or []), *scene_changes, *active_npc_changes],
         )
-        if scene_changes or active_npc_changes or combat_changes:
+        base_changes = list(normalized.get('proposedChanges') or [])
+        heuristic_changes = [*scene_changes, *active_npc_changes, *combat_changes]
+        proposed_with_heuristics = [*base_changes, *heuristic_changes]
+        bound_npc_changes = _bound_npc_updates_from_combat_changes(
+            state_before_dm=state_before_dm,
+            changes=proposed_with_heuristics,
+            turn_id=turn_id,
+            already_applied_changes=[*already_applied_changes, *proposed_with_heuristics],
+        )
+        fleeing_npc_changes = _heuristic_fleeing_npc_changes(
+            state_before_dm=state_before_dm,
+            dm_response=dm_response,
+            turn_id=turn_id,
+            already_applied_changes=[*already_applied_changes, *proposed_with_heuristics, *bound_npc_changes],
+            proposed_changes=[*proposed_with_heuristics, *bound_npc_changes],
+        )
+        if heuristic_changes or bound_npc_changes or fleeing_npc_changes:
             normalized['proposedChanges'] = [
-                *(normalized.get('proposedChanges') or []),
-                *scene_changes,
-                *active_npc_changes,
-                *combat_changes,
+                *base_changes,
+                *heuristic_changes,
+                *bound_npc_changes,
+                *fleeing_npc_changes,
             ]
         xp_reward_changes = _automatic_xp_reward_changes(
             state_before_dm=state_before_dm,
@@ -2258,6 +2559,10 @@ def extract_post_dm_outcomes(
             notes.append('heuristic_active_npcs')
         if combat_changes and 'heuristic_combat_outcomes' not in notes:
             notes.append('heuristic_combat_outcomes')
+        if bound_npc_changes and 'heuristic_bound_npc_combat_outcomes' not in notes:
+            notes.append('heuristic_bound_npc_combat_outcomes')
+        if fleeing_npc_changes and 'heuristic_fleeing_npcs' not in notes:
+            notes.append('heuristic_fleeing_npcs')
         if xp_reward_changes and 'automatic_xp_award' not in notes:
             notes.append('automatic_xp_award')
         if filtered_count and 'filtered_misrouted_combat_health' not in notes:

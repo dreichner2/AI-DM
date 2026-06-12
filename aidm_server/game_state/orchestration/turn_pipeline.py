@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import random
 import re
-from typing import Any
+from typing import Any, Callable
 
 from aidm_server.canon_inventory import append_drop_all_inventory_changes_from_text, inventory_change_from_intent_outcome
 from aidm_server.canon_text import int_or_default
@@ -61,6 +62,7 @@ CURRENCY_TRANSFER_CONFIRMATION_PATTERN = re.compile(
     r'\b(?:give|gives|gave|pay|pays|paid|hand over|hands over|handed over)\b',
     re.IGNORECASE,
 )
+DAMAGE_DICE_PATTERN = re.compile(r'^\s*(?:(\d*)d(\d+))?\s*([+-]\s*\d+)?\s*$', re.IGNORECASE)
 
 
 def _sentences(text: str) -> list[str]:
@@ -263,6 +265,15 @@ def _confirmed_pre_dm_changes(
                 }
             )
     return _merge_state_changes(confirmed)
+
+
+def _turn_resolves_player_roll(turn: DmTurn) -> bool:
+    if getattr(turn, 'roll_value', None) is not None:
+        return True
+    rules_hint = safe_json_loads(turn.rules_hint, {})
+    if not isinstance(rules_hint, dict):
+        return False
+    return rules_hint.get('roll_value') is not None and not bool(rules_hint.get('outcome_deferred'))
 
 
 def _state_change_signature(change: dict[str, Any]) -> tuple[Any, ...] | None:
@@ -512,6 +523,188 @@ def _intent_confirmed_post_changes(
     return _merge_state_changes(changes)
 
 
+def _participant_id(participant: dict[str, Any]) -> str:
+    return str(participant.get('id') or participant.get('participantId') or participant.get('actorId') or '').strip()
+
+
+def _participant_name(participant: dict[str, Any] | None, fallback: str) -> str:
+    if not isinstance(participant, dict):
+        return fallback
+    return str(participant.get('name') or participant.get('displayName') or fallback).strip() or fallback
+
+
+def _combat_participants(state: dict[str, Any]) -> list[dict[str, Any]]:
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    participants = combat.get('participants') if isinstance(combat.get('participants'), list) else []
+    return [participant for participant in participants if isinstance(participant, dict)]
+
+
+def _participant_by_id(participants: list[dict[str, Any]], participant_id: Any) -> dict[str, Any] | None:
+    wanted = str(participant_id or '').strip()
+    if not wanted:
+        return None
+    for participant in participants:
+        if _participant_id(participant) == wanted:
+            return participant
+    return None
+
+
+def _ability_by_id(participant: dict[str, Any] | None, ability_id: Any) -> dict[str, Any] | None:
+    if not isinstance(participant, dict):
+        return None
+    wanted = str(ability_id or '').strip()
+    abilities = participant.get('abilities') if isinstance(participant.get('abilities'), list) else []
+    if wanted:
+        for ability in abilities:
+            if isinstance(ability, dict) and str(ability.get('id') or ability.get('abilityId') or '').strip() == wanted:
+                return ability
+    for ability in abilities:
+        if isinstance(ability, dict) and str(ability.get('type') or '').strip().lower() == 'attack':
+            return ability
+    return abilities[0] if abilities and isinstance(abilities[0], dict) else None
+
+
+def _roll_die(sides: int, roller: Callable[[int], int] | None) -> int:
+    sides = max(1, int_or_default(sides, default=1))
+    raw_value = roller(sides) if roller else random.randint(1, sides)
+    value = int_or_default(raw_value, default=1)
+    return max(1, min(sides, value))
+
+
+def _roll_damage_expression(dice_expression: Any, roller: Callable[[int], int] | None) -> dict[str, Any]:
+    expression = str(dice_expression or '').strip().replace(' ', '')
+    if re.fullmatch(r'[+-]?\d+', expression):
+        total = int_or_default(expression, default=0)
+        return {'dice': expression, 'rolls': [], 'bonus': total, 'total': max(0, total)}
+
+    match = DAMAGE_DICE_PATTERN.match(expression)
+    if not match:
+        return {'dice': expression, 'rolls': [], 'bonus': 0, 'total': 0}
+
+    count = int_or_default(match.group(1) or 1, default=1)
+    sides = int_or_default(match.group(2), default=0)
+    bonus = int_or_default((match.group(3) or '0').replace(' ', ''), default=0)
+    rolls = [_roll_die(sides, roller) for _ in range(max(0, count))] if sides > 0 else []
+    return {'dice': expression, 'rolls': rolls, 'bonus': bonus, 'total': max(0, sum(rolls) + bonus)}
+
+
+def _target_armor_class(target: dict[str, Any] | None) -> int:
+    if not isinstance(target, dict):
+        return 10
+    stats = target.get('stats') if isinstance(target.get('stats'), dict) else {}
+    return _bounded_int(target.get('armorClass', stats.get('armorClass')), default=10, minimum=1, maximum=40)
+
+
+def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    parsed = int_or_default(value, default=default)
+    return max(minimum, min(maximum, parsed))
+
+
+def _ability_damage(ability: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(ability, dict):
+        return {}
+    damage = ability.get('damage')
+    if isinstance(damage, dict):
+        return damage
+    if isinstance(damage, str):
+        return {'dice': damage}
+    return {}
+
+
+def _resolve_enemy_required_actions(
+    *,
+    state: dict[str, Any],
+    combat_context: dict[str, Any] | None,
+    roller: Callable[[int], int] | None = None,
+) -> list[dict[str, Any]]:
+    if not isinstance(combat_context, dict):
+        return []
+    actions = combat_context.get('enemyRequiredActions') if isinstance(combat_context.get('enemyRequiredActions'), list) else []
+    if not actions:
+        return []
+
+    participants = _combat_participants(state)
+    resolved: list[dict[str, Any]] = []
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        intent_type = str(action.get('intentType') or action.get('type') or '').strip().lower()
+        enemy_id = str(action.get('enemyId') or action.get('actorId') or action.get('participantId') or '').strip()
+        target_id = str(action.get('targetId') or action.get('targetActorId') or '').strip()
+        ability_id = str(action.get('abilityId') or action.get('ability_id') or '').strip()
+        enemy = _participant_by_id(participants, enemy_id)
+        target = _participant_by_id(participants, target_id)
+        ability = _ability_by_id(enemy, ability_id)
+        ability_name = str((ability or {}).get('name') or action.get('abilityName') or ability_id or '').strip()
+        entry: dict[str, Any] = {
+            'enemyId': enemy_id,
+            'enemyName': _participant_name(enemy, enemy_id or 'Enemy'),
+            'targetId': target_id,
+            'targetName': _participant_name(target, target_id or 'target'),
+            'intentType': intent_type,
+            'abilityId': ability_id or ((ability or {}).get('id') if isinstance(ability, dict) else None),
+            'abilityName': ability_name or None,
+            'sourceIntent': action,
+            'instruction': 'Narrate this enemy result as already resolved by the engine; do not ask the player to roll it.',
+        }
+
+        if intent_type in {'attack', 'use_ability'} and ability:
+            attack_bonus = int_or_default((ability or {}).get('attackBonus', (ability or {}).get('toHitBonus')), default=0)
+            attack_roll = _roll_die(20, roller)
+            attack_total = attack_roll + attack_bonus
+            target_ac = _target_armor_class(target)
+            hit = attack_roll != 1 and (attack_roll == 20 or attack_total >= target_ac)
+            damage = _ability_damage(ability)
+            damage_roll = (
+                _roll_damage_expression(damage.get('dice'), roller)
+                if hit
+                else {'dice': damage.get('dice'), 'rolls': [], 'bonus': 0, 'total': 0}
+            )
+            entry.update(
+                {
+                    'attackRoll': attack_roll,
+                    'attackBonus': attack_bonus,
+                    'attackTotal': attack_total,
+                    'targetArmorClass': target_ac,
+                    'hit': hit,
+                    'critical': attack_roll == 20,
+                    'damageDice': damage.get('dice'),
+                    'damageRolls': damage_roll.get('rolls') or [],
+                    'damageBonus': damage_roll.get('bonus') or 0,
+                    'damageTotal': damage_roll.get('total') or 0,
+                    'damageType': damage.get('type') or damage.get('damageType'),
+                }
+            )
+        else:
+            entry['resolvedWithoutRoll'] = True
+        resolved.append(entry)
+    return resolved
+
+
+def _dm_combat_context(
+    *,
+    state: dict[str, Any],
+    combat_context: dict[str, Any] | None,
+    pending_rolls: list[dict[str, Any]],
+    resolved_player_roll: bool,
+    enemy_roller: Callable[[int], int] | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(combat_context, dict):
+        return None
+    context = deepcopy(combat_context)
+    if pending_rolls or resolved_player_roll:
+        context['enemyRequiredActions'] = []
+        context['enemyIntentSummary'] = ''
+        context['enemyTelegraphs'] = []
+        context['enemyResolvedActions'] = []
+        context['enemyActionDeferredReason'] = 'pending_player_roll' if pending_rolls else 'player_roll_resolution'
+        return context
+    resolved_actions = _resolve_enemy_required_actions(state=state, combat_context=context, roller=enemy_roller)
+    if resolved_actions:
+        context['enemyResolvedActions'] = resolved_actions
+    return context
+
+
 def _dm_context_packet(
     *,
     state: dict[str, Any],
@@ -519,8 +712,19 @@ def _dm_context_packet(
     pre_validation: dict[str, Any],
     applied_changes: list[dict[str, Any]],
     combat_context: dict[str, Any] | None = None,
+    resolved_player_roll: bool = False,
+    enemy_roller: Callable[[int], int] | None = None,
 ) -> dict[str, Any]:
     compact = compact_state_for_extraction(state)
+    raw_pending_rolls = pre_validation.get('pendingRolls')
+    pending_rolls = [roll for roll in raw_pending_rolls if isinstance(roll, dict)] if isinstance(raw_pending_rolls, list) else []
+    dm_combat = _dm_combat_context(
+        state=state,
+        combat_context=combat_context,
+        pending_rolls=pending_rolls,
+        resolved_player_roll=resolved_player_roll,
+        enemy_roller=enemy_roller,
+    )
     validated_actions = []
     valid_actions = []
     invalid_actions = []
@@ -578,9 +782,10 @@ def _dm_context_packet(
     if combat_context:
         instructions.extend(
             [
-                'Narrate enemy actions according to combatState enemyIntentSummary, enemyRequiredActions, and enemyTelegraphs.',
-                'If the player action is resolved in this response and combat continues, include each planned enemy action in the same response; do not skip the enemy turn after a miss or failed roll.',
-                'Only omit the planned enemy action when the response is solely asking the player for a pending roll to resolve their current action.',
+                'Enemy rolls are engine-owned. Never ask the player to roll enemy attacks, enemy saving throws, enemy checks, or enemy damage.',
+                'If combatState.enemyResolvedActions is present, narrate those exact enemy results, including attack totals, hit or miss, damage totals, and targets.',
+                'If combatState.enemyResolvedActions is absent, do not invent enemy roll results and do not request enemy rolls from the player.',
+                'Only ask the player for rolls listed in pendingRolls.',
                 'Do not make fleeing, surrendering, or negotiating enemies fight to the death unless blocked or forced.',
                 'Use enemy morale, survival instincts, and objectives when describing choices.',
                 'Do not directly mutate game state; narrate concrete outcomes clearly for extraction and validation.',
@@ -594,7 +799,7 @@ def _dm_context_packet(
         'invalidActions': invalid_actions,
         'pendingActions': pending_actions,
         'needsClarification': needs_clarification,
-        'pendingRolls': pre_validation.get('pendingRolls') or [],
+        'pendingRolls': pending_rolls,
         'stateChangesAlreadyApplied': [
             {
                 'type': change.get('type'),
@@ -617,7 +822,7 @@ def _dm_context_packet(
             for change in applied_changes
             if isinstance(change, dict) and change.get('visible', True)
         ],
-        'combatState': combat_context,
+        'combatState': dm_combat,
         'dmInstructions': instructions,
     }
 
@@ -719,6 +924,7 @@ def pre_dm_pipeline(
         pre_validation=pre_validation,
         applied_changes=[*applied_immediate, *applied_combat],
         combat_context=combat_prepare.get('combatContext') if isinstance(combat_prepare.get('combatContext'), dict) else None,
+        resolved_player_roll=_turn_resolves_player_roll(turn),
     )
     state_log = build_state_log(
         turn_id=turn.turn_id,

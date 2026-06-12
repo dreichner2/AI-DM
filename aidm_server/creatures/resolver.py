@@ -9,7 +9,7 @@ from aidm_server.creatures.generator import generate_new_creature
 from aidm_server.creatures.repository import list_bestiary_entries, save_bestiary_entry, should_save_generated_creature
 from aidm_server.creatures.schemas import normalize_creature_definition
 from aidm_server.creatures.variants import create_creature_variant
-from aidm_server.game_state.models import stable_slug
+from aidm_server.game_state.models import normalize_item_name, stable_slug
 from aidm_server.models import Campaign, Session
 
 
@@ -426,6 +426,8 @@ def _merge_group_request(base_request: dict[str, Any], raw_group: dict[str, Any]
         'save_generated',
         'encounterDefinedCreatures',
         'encounter_defined_creatures',
+        'boundNpc',
+        'bound_npc',
     }
     merged = dict(base_request)
     for key, value in raw_group.items():
@@ -436,6 +438,9 @@ def _merge_group_request(base_request: dict[str, Any], raw_group: dict[str, Any]
         merged['themeTags'] = [*base_request.get('themeTags', []), *group_tags]
     if raw_group.get('creature') and isinstance(raw_group.get('creature'), dict):
         merged['encounterDefinedCreatures'] = [raw_group['creature']]
+    bound_npc = raw_group.get('boundNpc', raw_group.get('bound_npc'))
+    if isinstance(bound_npc, dict):
+        merged['boundNpc'] = bound_npc
     return merged
 
 
@@ -456,6 +461,7 @@ def _group_result_from_resolution(
             debug={'request': group_request},
         )
     creature = normalize_creature_definition(resolution.get('creature') if isinstance(resolution, dict) else {}, source=resolution.get('source'))
+    creature = _apply_npc_binding_to_creature(creature, group_request.get('boundNpc') if isinstance(group_request.get('boundNpc'), dict) else None)
     count = _bounded_int(raw_group.get('count', raw_group.get('enemyCount', raw_group.get('enemy_count'))), default=1, minimum=1, maximum=MAX_ENCOUNTER_ENEMIES)
     return {
         'id': str(raw_group.get('id') or raw_group.get('label') or f'group_{index + 1}'),
@@ -470,6 +476,7 @@ def _group_result_from_resolution(
         'notes': resolution.get('notes') or [],
         'request': group_request,
         'debug': resolution.get('debug') or {},
+        'boundNpc': creature.get('npcBinding') or None,
     }
 
 
@@ -498,6 +505,25 @@ def _scene_npc_reference_ids(scene: dict[str, Any]) -> set[str]:
     return ids
 
 
+def _state_scene_npcs(state: dict[str, Any]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    npcs: list[dict[str, Any]] = []
+    for key in ('npcs', 'knownNpcs', 'known_npcs', 'partyNpcs', 'party_npcs'):
+        values = state.get(key)
+        if not isinstance(values, list):
+            continue
+        for npc in values:
+            if not isinstance(npc, dict):
+                continue
+            identity = _text(npc.get('id') or npc.get('npcId') or npc.get('name') or npc.get('npcName')).lower()
+            if identity and identity in seen:
+                continue
+            if identity:
+                seen.add(identity)
+            npcs.append(npc)
+    return npcs
+
+
 def _npc_is_hostile(npc: dict[str, Any]) -> bool:
     disposition = str(npc.get('disposition') or '').strip().lower()
     status = str(npc.get('status') or '').strip().lower()
@@ -510,6 +536,7 @@ def _npc_reference_terms(npc: dict[str, Any]) -> set[str]:
         npc.get('id'),
         npc.get('npcId'),
         npc.get('name'),
+        npc.get('npcName'),
         npc.get('role'),
         npc.get('title'),
     ):
@@ -517,6 +544,187 @@ def _npc_reference_terms(npc: dict[str, Any]) -> set[str]:
     for alias in npc.get('aliases') or []:
         terms.update(_reference_terms(alias))
     return terms
+
+
+def _direction_terms(value: Any) -> set[str]:
+    normalized = normalize_item_name(value)
+    terms: set[str] = set()
+    if re.search(r'\bright(?:\s*(?:hand|flank|slope|side))?\b', normalized):
+        terms.add('right')
+    if re.search(r'\bleft(?:\s*(?:hand|flank|slope|side))?\b', normalized):
+        terms.add('left')
+    if re.search(r'\b(?:middle|center|centre)\b', normalized):
+        terms.add('middle')
+    if re.search(r'\b(?:front|nearest|closest)\b', normalized):
+        terms.add('front')
+    if re.search(r'\b(?:back|rear|far|farthest)\b', normalized):
+        terms.add('back')
+    return terms
+
+
+def _npc_direction_terms(npc: dict[str, Any]) -> set[str]:
+    values = [
+        npc.get('id'),
+        npc.get('npcId'),
+        npc.get('name'),
+        npc.get('npcName'),
+        npc.get('role'),
+        npc.get('title'),
+        npc.get('locationId'),
+        _npc_memory_text(npc),
+    ]
+    values.extend(npc.get('aliases') or [])
+    terms: set[str] = set()
+    for value in values:
+        terms.update(_direction_terms(value))
+    return terms
+
+
+def _npc_memory_text(npc: dict[str, Any]) -> str:
+    memory = npc.get('memory')
+    if isinstance(memory, list):
+        return ' '.join(str(item or '') for item in memory)
+    return str(memory or '')
+
+
+def _generic_placeholder_npc(npc: dict[str, Any]) -> bool:
+    name = _text(npc.get('name') or npc.get('npcName') or npc.get('id') or npc.get('npcId')).lower()
+    return bool(re.match(r'^(?:captor|guard|bandit|raider|cultist|enemy|scout|sentry|orc|goblin)\s*#?\d+$', name.replace('_', ' ')))
+
+
+def _npc_binding_payload(npc: dict[str, Any]) -> dict[str, Any]:
+    npc_id = _text(npc.get('id') or npc.get('npcId') or npc.get('name'))
+    npc_name = _display_name(npc.get('name') or npc.get('npcName'), npc_id)
+    return {
+        'npcId': npc_id,
+        'npcName': npc_name,
+        'disposition': _text(npc.get('disposition')),
+        'status': _text(npc.get('status')),
+        'locationId': _text(npc.get('locationId')),
+    }
+
+
+def _apply_npc_binding_to_creature(creature: dict[str, Any], binding: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(binding, dict) or not _text(binding.get('npcId') or binding.get('npcName')):
+        return creature
+    bound = deepcopy(creature)
+    npc_id = _text(binding.get('npcId') or binding.get('npcName'))
+    npc_name = _display_name(binding.get('npcName'), npc_id)
+    archetype_name = _text(bound.get('creatureTypeName') or bound.get('name') or 'Creature')
+    bound['creatureTypeName'] = archetype_name
+    if npc_name and npc_name.lower() not in str(bound.get('name') or '').lower():
+        bound['name'] = f'{archetype_name} ({npc_name})'
+    bound['npcBinding'] = {
+        'npcId': npc_id,
+        'npcName': npc_name,
+        'creatureTypeName': archetype_name,
+        **{key: value for key, value in binding.items() if value not in (None, '')},
+    }
+    aliases = [*(bound.get('aliases') or []), npc_id, npc_name, archetype_name, f'{archetype_name} {npc_name}']
+    bound['aliases'] = list(dict.fromkeys(str(alias).strip() for alias in aliases if str(alias or '').strip()))[:12]
+    hints = list(bound.get('aiNarrationHints') or [])
+    hints.insert(0, f'This combatant is the known NPC {npc_name}; preserve that identity while using the {archetype_name} mechanics.')
+    bound['aiNarrationHints'] = list(dict.fromkeys(hints))[:10]
+    return bound
+
+
+def _message_requests_single_target(player_message: str) -> bool:
+    normalized = str(player_message or '').lower()
+    if re.search(r'\b(?:one of|figure|shape|target|head|him|her|it|that one|the one)\b', normalized):
+        return True
+    return bool(re.search(r'\b(?:shoot|stab|slash|strike|attack|kill|hit)\s+(?:the|a|an)\b', normalized))
+
+
+def _npc_encounter_score(npc: dict[str, Any], *, player_message: str, message_terms: set[str], scene_terms: set[str]) -> int:
+    npc_terms = _npc_reference_terms(npc)
+    if not npc_terms:
+        return 0
+    score = 0
+    if message_terms.intersection(npc_terms):
+        score += 12
+    if scene_terms.intersection(npc_terms):
+        score += 4
+    memory_text = _npc_memory_text(npc)
+    memory_terms = _reference_terms(memory_text)
+    if message_terms.intersection(memory_terms):
+        score += 6
+    direction_terms = _direction_terms(player_message)
+    if direction_terms and direction_terms.intersection(_npc_direction_terms(npc)):
+        score += 10
+    normalized_message = str(player_message or '').lower()
+    normalized_identity = normalize_item_name(f"{npc.get('id') or ''} {npc.get('name') or ''}")
+    shelter_words = {'shelter', 'tent', 'inside', 'within'}
+    if any(word in normalized_message for word in shelter_words):
+        memory_norm = normalize_item_name(memory_text)
+        if any(word in memory_norm for word in shelter_words):
+            score += 8
+        elif re.search(r'\b(?:captor|enemy|guard|figure)\s*3\b', normalized_identity):
+            score += 6
+    if 'one of' in normalized_message and scene_terms.intersection(npc_terms):
+        score += 2
+    return score
+
+
+def _selected_hostile_scene_npcs(
+    *,
+    state: dict[str, Any],
+    player_message: str,
+) -> list[dict[str, Any]]:
+    scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
+    npcs = _state_scene_npcs(state)
+    scene_terms = _scene_npc_reference_ids(scene)
+    message_terms = _reference_terms(player_message)
+    scored: list[tuple[int, int, dict[str, Any]]] = []
+    for index, npc in enumerate(npcs):
+        if not isinstance(npc, dict) or not _npc_is_hostile(npc):
+            continue
+        score = _npc_encounter_score(npc, player_message=player_message, message_terms=message_terms, scene_terms=scene_terms)
+        if score > 0:
+            scored.append((score, index, npc))
+    if not scored:
+        return []
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    direct = [npc for score, _, npc in scored if score >= 12]
+    if direct:
+        return direct[:MAX_ENCOUNTER_GROUPS]
+    top_score = scored[0][0]
+    top = [npc for score, _, npc in scored if score == top_score]
+    if len(top) == 1 and top_score >= 6:
+        return top
+    if _message_requests_single_target(player_message):
+        return [scored[0][2]]
+    scene_matches = [npc for _, _, npc in scored if _npc_reference_terms(npc).intersection(scene_terms)]
+    if len(scene_matches) == 1:
+        return scene_matches
+    return [npc for _, _, npc in scored[:MAX_ENCOUNTER_GROUPS]] if len(scored) == 1 else []
+
+
+def _npc_has_combat_definition(npc: dict[str, Any]) -> bool:
+    if isinstance(npc.get('abilities'), list) and npc.get('abilities'):
+        return True
+    if isinstance(npc.get('stats'), dict) and npc.get('stats'):
+        return True
+    if isinstance(npc.get('health'), dict) and npc.get('health'):
+        return True
+    return False
+
+
+def _message_directly_references_npc(npc: dict[str, Any], message_terms: set[str]) -> bool:
+    return bool(message_terms.intersection(_npc_reference_terms(npc)))
+
+
+def _npc_should_use_generated_binding(npc: dict[str, Any], *, player_message: str) -> bool:
+    if _generic_placeholder_npc(npc):
+        return True
+    message_terms = _reference_terms(player_message)
+    if _message_directly_references_npc(npc, message_terms):
+        return False
+    if _npc_has_combat_definition(npc):
+        return False
+    status = str(npc.get('status') or '').strip().lower()
+    if status in {'met', 'introduced', 'present'} and not _npc_direction_terms(npc):
+        return False
+    return True
 
 
 def _display_name(value: Any, fallback: str) -> str:
@@ -585,31 +793,48 @@ def _encounter_defined_creatures_from_scene_npcs(
     party_level: int,
     difficulty: str,
 ) -> list[dict[str, Any]]:
-    scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
-    npcs = state.get('npcs') if isinstance(state.get('npcs'), list) else []
-    scene_terms = _scene_npc_reference_ids(scene)
-    message_terms = _reference_terms(player_message)
-    candidates: list[dict[str, Any]] = []
-    message_matches: list[dict[str, Any]] = []
-    scene_matches: list[dict[str, Any]] = []
-    for npc in npcs:
-        if not isinstance(npc, dict) or not _npc_is_hostile(npc):
-            continue
-        npc_terms = _npc_reference_terms(npc)
-        if not npc_terms:
-            continue
-        if message_terms.intersection(npc_terms):
-            message_matches.append(npc)
-        if scene_terms.intersection(npc_terms):
-            scene_matches.append(npc)
-        if message_terms.intersection(npc_terms) or scene_terms.intersection(npc_terms):
-            candidates.append(npc)
-
-    selected = message_matches or (scene_matches if len(scene_matches) == 1 else candidates if len(candidates) == 1 else [])
+    selected = [
+        npc
+        for npc in _selected_hostile_scene_npcs(state=state, player_message=player_message)
+        if not _npc_should_use_generated_binding(npc, player_message=player_message)
+    ]
     return [
         _npc_creature_definition(npc, party_level=party_level, difficulty=difficulty)
         for npc in selected[:MAX_ENCOUNTER_GROUPS]
     ]
+
+
+def _bound_generated_npc_groups(
+    *,
+    state: dict[str, Any],
+    player_message: str,
+) -> list[dict[str, Any]]:
+    selected = [
+        npc
+        for npc in _selected_hostile_scene_npcs(state=state, player_message=player_message)
+        if _npc_should_use_generated_binding(npc, player_message=player_message)
+    ]
+    groups: list[dict[str, Any]] = []
+    for index, npc in enumerate(selected[:MAX_ENCOUNTER_GROUPS]):
+        binding = _npc_binding_payload(npc)
+        memory = _npc_memory_text(npc)
+        groups.append(
+            {
+                'count': 1,
+                'label': f"bound_npc_{binding['npcId'] or index + 1}",
+                'boundNpc': binding,
+                'descriptionHint': ' '.join(
+                    part
+                    for part in [
+                        player_message,
+                        f"Known NPC {binding.get('npcName') or binding.get('npcId')}.",
+                        memory,
+                    ]
+                    if part
+                ),
+            }
+        )
+    return groups
 
 
 def resolve_creatures_for_encounter(
@@ -744,6 +969,10 @@ def default_request_from_session(
         party_level=party_level,
         difficulty=difficulty,
     )
+    bound_generated_npc_groups = _bound_generated_npc_groups(
+        state=state,
+        player_message=player_message,
+    )
     request = {
         'campaignId': campaign.campaign_id,
         'sessionId': session_obj.session_id,
@@ -759,7 +988,10 @@ def default_request_from_session(
         'allowVariants': True,
         'enemyCount': min(4, max(2, party_size)) if plural_signal else 1,
     }
-    if encounter_defined_creatures:
+    if bound_generated_npc_groups:
+        request['enemyGroups'] = bound_generated_npc_groups
+        request['enemyCount'] = len(bound_generated_npc_groups)
+    elif encounter_defined_creatures:
         request['encounterDefinedCreatures'] = encounter_defined_creatures
         request['allowGeneration'] = False
         request['allowVariants'] = False
