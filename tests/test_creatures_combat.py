@@ -99,6 +99,15 @@ def test_combat_turn_context_orders_players_then_enemy_block():
     assert summary['handoffActor']['id'] == 'player_1'
 
 
+def test_player_combat_participant_uses_dexterity_ac_fallback():
+    actor = _player()
+    actor['stats'] = {'strength': 15, 'dexterity': 15}
+
+    participant = player_combat_participant(actor)
+
+    assert participant['armorClass'] == 12
+
+
 def test_prepare_combat_uses_roster_turn_not_submitting_player_for_active_combat(app):
     ids = seed_world_campaign_player_session(app)
     with app.app_context():

@@ -202,6 +202,20 @@ def normalize_position(value: Any) -> dict[str, Any]:
     return position
 
 
+def _ability_modifier(score: Any) -> int:
+    return (int_or_default(score, default=10) - 10) // 2
+
+
+def _effective_player_armor_class(stats: dict[str, Any]) -> int:
+    explicit_ac = stats.get('armorClass', stats.get('armor_class', stats.get('ac')))
+    if explicit_ac is not None:
+        return max(1, min(40, int_or_default(explicit_ac, default=10)))
+    dexterity = stats.get('dexterity', stats.get('dex'))
+    if dexterity is not None:
+        return max(1, min(40, 10 + _ability_modifier(dexterity)))
+    return 10
+
+
 def player_combat_participant(player_actor: dict[str, Any]) -> dict[str, Any]:
     health = player_actor.get('health') if isinstance(player_actor.get('health'), dict) else {}
     stats = player_actor.get('stats') if isinstance(player_actor.get('stats'), dict) else {}
@@ -216,7 +230,7 @@ def player_combat_participant(player_actor: dict[str, Any]) -> dict[str, Any]:
             'max': max(0, int_or_default(health.get('maxHp'), default=0)),
             'temp': max(0, int_or_default(health.get('tempHp'), default=0)),
         },
-        'armorClass': int_or_default(stats.get('armorClass', stats.get('ac')), default=10),
+        'armorClass': _effective_player_armor_class(stats),
         'stats': stats,
         'conditions': _string_list(health.get('conditions')),
         'position': normalize_position({'rangeBand': 'near'}),
