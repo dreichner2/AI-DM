@@ -11,7 +11,7 @@ from aidm_server.creatures.balance import analyze_creature_balance, auto_scale_c
 from aidm_server.creatures.schemas import normalize_creature_definition
 from aidm_server.game_state.extraction.schemas import extract_json_object
 from aidm_server.game_state.models import stable_slug
-from aidm_server.llm_providers import get_helper_provider
+from aidm_server.llm_providers import get_helper_provider, helper_provider_name
 from aidm_server.services.runtime_config import provider_configured
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 
@@ -33,11 +33,7 @@ def _config_value(name: str) -> str:
 
 
 def _helper_provider_name() -> str:
-    return str(
-        _config_value(f'{CREATURE_HELPER_PREFIX}_LLM_PROVIDER')
-        or _config_value('AIDM_HELPER_LLM_PROVIDER')
-        or 'deepseek'
-    ).strip().lower()
+    return helper_provider_name(CREATURE_HELPER_TASK)
 
 
 def _helper_configured(provider_name: str) -> bool:
@@ -57,6 +53,8 @@ def _helper_configured(provider_name: str) -> bool:
         return provider_configured('gemini')
     if provider_name == 'fallback':
         return True
+    if provider_name in {'codex', 'codex_cli'}:
+        return provider_configured(provider_name)
     return False
 
 

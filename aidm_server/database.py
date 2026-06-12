@@ -4,8 +4,10 @@ import os
 import logging
 import pathlib
 import stat
+import time
 
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.exc import OperationalError
 from sqlalchemy import MetaData, event, inspect, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.pool import NullPool
@@ -43,8 +45,68 @@ def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
     cursor = dbapi_connection.cursor()
     try:
         cursor.execute('PRAGMA foreign_keys=ON')
+        cursor.execute('PRAGMA busy_timeout=30000')
     finally:
         cursor.close()
+
+
+def _is_sqlite_lock_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return 'database is locked' in message or 'database table is locked' in message or 'database is busy' in message
+
+
+def commit_with_retry(
+    *,
+    label: str = 'database write',
+    attempts: int = 4,
+    base_delay_seconds: float = 0.05,
+) -> None:
+    max_attempts = max(1, int(attempts))
+    for attempt in range(1, max_attempts + 1):
+        try:
+            db.session.commit()
+            return
+        except OperationalError as exc:
+            if attempt >= max_attempts or not _is_sqlite_lock_error(exc):
+                raise
+            db.session.rollback()
+            delay = base_delay_seconds * attempt
+            logger.warning(
+                'SQLite write lock during %s; retrying commit attempt %s/%s after %.2fs.',
+                label,
+                attempt + 1,
+                max_attempts,
+                delay,
+            )
+            time.sleep(delay)
+
+
+def run_with_commit_retry(
+    operation,
+    *,
+    label: str = 'database write',
+    attempts: int = 4,
+    base_delay_seconds: float = 0.05,
+):
+    max_attempts = max(1, int(attempts))
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = operation()
+            db.session.commit()
+            return result
+        except OperationalError as exc:
+            if attempt >= max_attempts or not _is_sqlite_lock_error(exc):
+                raise
+            db.session.rollback()
+            delay = base_delay_seconds * attempt
+            logger.warning(
+                'SQLite write lock during %s; retrying write attempt %s/%s after %.2fs.',
+                label,
+                attempt + 1,
+                max_attempts,
+                delay,
+            )
+            time.sleep(delay)
 
 
 def _resolve_sqlite_uri(database_uri: str, root_path: str) -> str:

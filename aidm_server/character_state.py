@@ -62,6 +62,44 @@ ROLL_TYPE_BASE_DC = {
     'mobility': 14,
     'check': 14,
 }
+ROLL_TYPE_PROFICIENCY_SKILLS = {
+    'athletics': {'athletics'},
+    'lore': {'arcana', 'history', 'investigation', 'nature', 'religion'},
+    'mobility': {'acrobatics', 'athletics'},
+    'social': {'deception', 'intimidation', 'performance', 'persuasion'},
+    'spell': {'arcana', 'nature', 'religion'},
+    'stealth': {'stealth'},
+    'thieves_tools': {'sleight_of_hand', 'thieves_tools'},
+}
+SKILL_NAME_ALIASES = {
+    'animal_handling': 'animal_handling',
+    'sleight': 'sleight_of_hand',
+    'sleight_hand': 'sleight_of_hand',
+    'sleight_of_hand': 'sleight_of_hand',
+    'thieves_tool': 'thieves_tools',
+    'thieves_tools': 'thieves_tools',
+}
+KNOWN_SKILLS = {
+    'acrobatics',
+    'animal_handling',
+    'arcana',
+    'athletics',
+    'deception',
+    'history',
+    'insight',
+    'intimidation',
+    'investigation',
+    'medicine',
+    'nature',
+    'perception',
+    'performance',
+    'persuasion',
+    'religion',
+    'sleight_of_hand',
+    'stealth',
+    'survival',
+    'thieves_tools',
+}
 
 GOLD_SPEND_PATTERNS = [
     re.compile(r'\b(?:spend|pay|paid|buy|bought|purchase|purchased|hand over|give)\s+(?:[^.!?\n]{0,80}?\s+)?(\d{1,5})\s+(?:gp|gold)\b', re.IGNORECASE),
@@ -130,6 +168,57 @@ def ability_modifier(score: int | None) -> int:
     if score is None:
         return 0
     return (int(score) - 10) // 2
+
+
+def _skill_key(value: Any) -> str:
+    text = str(value or '').strip().lower().replace('&', 'and')
+    text = re.sub(r"['’]", '', text)
+    text = re.sub(r'[^a-z0-9]+', '_', text).strip('_')
+    return SKILL_NAME_ALIASES.get(text, text)
+
+
+def _collect_skill_values(raw: Any, proficiencies: set[str]) -> None:
+    if isinstance(raw, str):
+        key = _skill_key(raw)
+        if key in KNOWN_SKILLS:
+            proficiencies.add(key)
+        return
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                if item.get('proficient') is False or item.get('trained') is False:
+                    continue
+                _collect_skill_values(item.get('name') or item.get('skill') or item.get('id'), proficiencies)
+            else:
+                _collect_skill_values(item, proficiencies)
+        return
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            if isinstance(value, dict):
+                enabled = value.get('proficient', value.get('trained', value.get('value', True)))
+                if not enabled:
+                    continue
+            elif isinstance(value, bool):
+                if not value:
+                    continue
+            else:
+                continue
+            _collect_skill_values(key, proficiencies)
+
+
+def _extract_skill_proficiencies(stats: dict[str, Any], sheet: dict[str, Any]) -> list[str]:
+    proficiencies: set[str] = set()
+    for source in (stats, sheet):
+        if not isinstance(source, dict):
+            continue
+        for key in (
+            'skill_proficiencies',
+            'skillProficiencies',
+            'proficientSkills',
+            'skills',
+        ):
+            _collect_skill_values(source.get(key), proficiencies)
+    return sorted(proficiencies)
 
 
 def _extract_ability_scores(stats: dict[str, Any]) -> dict[str, int]:
@@ -226,6 +315,7 @@ def character_state_for_player(player: Player | None) -> dict[str, Any]:
         return {}
 
     stats = _as_record(player.stats)
+    sheet = _as_record(player.character_sheet)
     scores = _extract_ability_scores(stats)
     con_mod = ability_modifier(scores.get('constitution'))
     max_hp = int_or_default(
@@ -276,6 +366,9 @@ def character_state_for_player(player: Player | None) -> dict[str, Any]:
         'level': int(player.level or 1),
         'proficiency_bonus': int_or_default(stats.get('proficiency_bonus'), default=2 + max(0, int(player.level or 1) - 1) // 4),
     }
+    skill_proficiencies = _extract_skill_proficiencies(stats, sheet)
+    if skill_proficiencies:
+        state['skill_proficiencies'] = skill_proficiencies
     if spellbook.get('knownSpells'):
         state['spellbook'] = spellbook
         state['spells'] = known_spell_names(spellbook)
@@ -290,6 +383,10 @@ def apply_character_dc_adjustment(rule_hint, player: Player | None):
     scores = state.get('ability_scores') if isinstance(state.get('ability_scores'), dict) else {}
     modifiers = state.get('ability_modifiers') if isinstance(state.get('ability_modifiers'), dict) else {}
     ability_mod = int_or_default(modifiers.get(ability_key), default=0) if ability_key else 0
+    skill_proficiencies = set(state.get('skill_proficiencies') if isinstance(state.get('skill_proficiencies'), list) else [])
+    matching_proficiencies = sorted(skill_proficiencies.intersection(ROLL_TYPE_PROFICIENCY_SKILLS.get(rule_hint.roll_type or 'check', set())))
+    proficiency_bonus = int_or_default(state.get('proficiency_bonus'), default=0) if matching_proficiencies else 0
+    total_modifier = ability_mod + proficiency_bonus
     hp = state.get('hp') if isinstance(state.get('hp'), dict) else {}
     current_hp = int_or_default(hp.get('current'), default=0)
     max_hp = int_or_default(hp.get('max'), default=0)
@@ -304,10 +401,18 @@ def apply_character_dc_adjustment(rule_hint, player: Player | None):
             hp_penalty = 1
 
     base_dc = ROLL_TYPE_BASE_DC.get(rule_hint.roll_type or 'check', ROLL_TYPE_BASE_DC['check'])
-    adjusted_dc = max(5, min(30, base_dc - ability_mod + hp_penalty))
+    adjusted_dc = max(5, min(30, base_dc - total_modifier + hp_penalty))
     ability_label = ABILITY_LABELS.get(ability_key or '', 'ability')
     score = scores.get(ability_key) if ability_key else None
-    details = [f'base {base_dc}', f'{ability_label} {score if score is not None else "unknown"} mod {ability_mod:+d}']
+    if proficiency_bonus:
+        details = [
+            f'base {base_dc}',
+            f'total mod {total_modifier:+d}',
+            f'{ability_label} {score if score is not None else "unknown"} mod {ability_mod:+d}',
+            f'proficiency +{proficiency_bonus} ({"/".join(matching_proficiencies)})',
+        ]
+    else:
+        details = [f'base {base_dc}', f'{ability_label} {score if score is not None else "unknown"} mod {ability_mod:+d}']
     if hp_penalty:
         details.append(f'wounded +{hp_penalty}')
     rule_hint.dc_hint = f'{adjusted_dc} ({", ".join(details)})'

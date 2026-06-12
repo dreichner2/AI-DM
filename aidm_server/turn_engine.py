@@ -17,7 +17,7 @@ from aidm_server.character_state import (
     requested_gold_spend,
 )
 from aidm_server.canon_inventory import OWNED_ITEM_ACTIONS
-from aidm_server.database import db
+from aidm_server.database import commit_with_retry, db, run_with_commit_retry
 from aidm_server.emergent_memory import apply_immediate_state_changes
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY
 from aidm_server.game_state.change_types import (
@@ -1278,7 +1278,7 @@ class TurnEngine:
                 ),
                 active_player_ids=active_player_ids,
             )
-            db.session.commit()
+            commit_with_retry(label='pre-DM state pipeline')
             self._record_phase_timing(
                 'state_pre_dm',
                 state_pipeline_started,
@@ -1430,7 +1430,7 @@ class TurnEngine:
             turn_obj.metadata_json = safe_json_dumps(metadata, {})
             turn_obj.status = 'awaiting_clarification'
             turn_obj.outcome_status = 'resolved'
-            db.session.commit()
+            commit_with_retry(label='clarification request')
         self.socketio.emit('clarification_required', request_payload, room=str(session_id))
         self._emit_turn_status(session_id, turn_id, 'clarification_required', request_payload)
         self.socketio.emit('session_log_update', session_log_update_payload(session_id, turn_id), room=str(session_id))
@@ -1514,7 +1514,7 @@ class TurnEngine:
                     },
                 },
             )
-            db.session.commit()
+            commit_with_retry(label='roll gate waiting message')
         except Exception as exc:
             db.session.rollback()
             logger.error('Failed to persist roll gate waiting message: %s', str(exc))
@@ -1531,6 +1531,32 @@ class TurnEngine:
             room=str(command.session_id),
         )
 
+    @staticmethod
+    def _complete_group_roll_waiting_rows(
+        *,
+        session_id: int,
+        pending_turn_id: int,
+        completed_by_turn_id: int,
+    ) -> None:
+        waiting_turns = DmTurn.query.filter_by(
+            session_id=session_id,
+            status='waiting_for_group_roll',
+            outcome_status='resolved',
+        ).all()
+        completed_at = utc_now().isoformat()
+        for waiting_turn in waiting_turns:
+            if waiting_turn.turn_id == completed_by_turn_id:
+                continue
+            metadata = safe_json_loads(waiting_turn.metadata_json, {})
+            metadata = metadata if isinstance(metadata, dict) else {}
+            if int(metadata.get('resolved_turn_id') or 0) != pending_turn_id:
+                continue
+            metadata['group_roll_completed_by_turn_id'] = completed_by_turn_id
+            metadata['group_roll_completed_at'] = completed_at
+            waiting_turn.metadata_json = safe_json_dumps(metadata, {})
+            waiting_turn.status = 'completed'
+            waiting_turn.outcome_status = 'resolved'
+
     def _persist_incoming_turn(
         self,
         turn: DmTurn,
@@ -1543,83 +1569,93 @@ class TurnEngine:
     ) -> dict:
         remaining_player_ids: list[int] = []
         try:
-            db.session.add(turn)
-            db.session.flush()
-            set_logging_context(turn_id=turn.turn_id)
+            def _save_incoming_turn():
+                nonlocal remaining_player_ids
+                remaining_player_ids = []
+                db.session.add(turn)
+                db.session.flush()
+                set_logging_context(turn_id=turn.turn_id)
 
-            if pending_turn_to_resolve:
-                pending_metadata = safe_json_loads(pending_turn_to_resolve.metadata_json, {})
-                pending_metadata = pending_metadata if isinstance(pending_metadata, dict) else {}
-                gate = pending_metadata.get('roll_gate') if isinstance(pending_metadata.get('roll_gate'), dict) else {}
-                if gate:
-                    resolved_player_ids = list(
-                        dict.fromkeys([*pending_turn_resolved_player_ids(pending_turn_to_resolve), command.player_id])
+                if pending_turn_to_resolve:
+                    pending_metadata = safe_json_loads(pending_turn_to_resolve.metadata_json, {})
+                    pending_metadata = pending_metadata if isinstance(pending_metadata, dict) else {}
+                    gate = pending_metadata.get('roll_gate') if isinstance(pending_metadata.get('roll_gate'), dict) else {}
+                    if gate:
+                        resolved_player_ids = list(
+                            dict.fromkeys([*pending_turn_resolved_player_ids(pending_turn_to_resolve), command.player_id])
+                        )
+                        required_player_ids = pending_turn_required_player_ids(pending_turn_to_resolve)
+                        remaining_player_ids = [
+                            player_id for player_id in required_player_ids if player_id not in set(resolved_player_ids)
+                        ]
+                        gate['resolved_player_ids'] = resolved_player_ids
+                        gate['remaining_player_ids'] = remaining_player_ids
+                        pending_metadata['roll_gate'] = gate
+                        pending_turn_to_resolve.outcome_status = 'deferred' if remaining_player_ids else 'resolved'
+                        if remaining_player_ids:
+                            turn.status = 'waiting_for_group_roll'
+                            turn.outcome_status = 'resolved'
+                        else:
+                            self._complete_group_roll_waiting_rows(
+                                session_id=command.session_id,
+                                pending_turn_id=pending_turn_to_resolve.turn_id,
+                                completed_by_turn_id=turn.turn_id,
+                            )
+                    else:
+                        pending_turn_to_resolve.outcome_status = 'resolved'
+                    pending_metadata['resolved_by_turn_id'] = turn.turn_id
+                    pending_metadata['resolved_at'] = utc_now().isoformat()
+                    pending_turn_to_resolve.metadata_json = safe_json_dumps(pending_metadata, {})
+                    record_turn_event(
+                        session_id=command.session_id,
+                        campaign_id=command.campaign_id,
+                        turn_id=turn.turn_id,
+                        player_id=command.player_id,
+                        event_type=ROLL_RESOLVED_EVENT,
+                        payload={
+                            'pending_turn_id': pending_turn_to_resolve.turn_id,
+                            'roll_value': rule_hint.roll_value,
+                            'metadata': {
+                                'turn_id': turn.turn_id,
+                                'turn_number': session_turn_number,
+                                'resolved_turn_id': pending_turn_to_resolve.turn_id,
+                                'roll_value': rule_hint.roll_value,
+                                'rule_type': rule_hint.roll_type,
+                                'roll_gate': pending_metadata.get('roll_gate'),
+                                'remaining_player_ids': remaining_player_ids,
+                                'action_intent': command.action_intent,
+                                'client_message_id': command.client_message_id,
+                            },
+                        },
                     )
-                    required_player_ids = pending_turn_required_player_ids(pending_turn_to_resolve)
-                    remaining_player_ids = [
-                        player_id for player_id in required_player_ids if player_id not in set(resolved_player_ids)
-                    ]
-                    gate['resolved_player_ids'] = resolved_player_ids
-                    gate['remaining_player_ids'] = remaining_player_ids
-                    pending_metadata['roll_gate'] = gate
-                    pending_turn_to_resolve.outcome_status = 'deferred' if remaining_player_ids else 'resolved'
-                    if remaining_player_ids:
-                        turn.status = 'waiting_for_group_roll'
-                        turn.outcome_status = 'resolved'
-                else:
-                    pending_turn_to_resolve.outcome_status = 'resolved'
-                pending_metadata['resolved_by_turn_id'] = turn.turn_id
-                pending_metadata['resolved_at'] = utc_now().isoformat()
-                pending_turn_to_resolve.metadata_json = safe_json_dumps(pending_metadata, {})
+
                 record_turn_event(
                     session_id=command.session_id,
                     campaign_id=command.campaign_id,
                     turn_id=turn.turn_id,
                     player_id=command.player_id,
-                    event_type=ROLL_RESOLVED_EVENT,
+                    event_type=PLAYER_MESSAGE_EVENT,
                     payload={
-                        'pending_turn_id': pending_turn_to_resolve.turn_id,
-                        'roll_value': rule_hint.roll_value,
+                        'message': command.user_input,
+                        'speaker': player_label,
                         'metadata': {
                             'turn_id': turn.turn_id,
                             'turn_number': session_turn_number,
-                            'resolved_turn_id': pending_turn_to_resolve.turn_id,
-                            'roll_value': rule_hint.roll_value,
-                            'rule_type': rule_hint.roll_type,
-                            'roll_gate': pending_metadata.get('roll_gate'),
-                            'remaining_player_ids': remaining_player_ids,
+                            'confidence': rule_hint.confidence,
+                            'outcome_status': turn.outcome_status,
+                            'resolved_turn_id': resolved_turn_id,
                             'action_intent': command.action_intent,
                             'client_message_id': command.client_message_id,
                         },
                     },
                 )
+                return {
+                    'ok': True,
+                    'waiting_for_rolls': bool(pending_turn_to_resolve and remaining_player_ids),
+                    'remaining_player_ids': remaining_player_ids,
+                }
 
-            record_turn_event(
-                session_id=command.session_id,
-                campaign_id=command.campaign_id,
-                turn_id=turn.turn_id,
-                player_id=command.player_id,
-                event_type=PLAYER_MESSAGE_EVENT,
-                payload={
-                    'message': command.user_input,
-                    'speaker': player_label,
-                    'metadata': {
-                        'turn_id': turn.turn_id,
-                        'turn_number': session_turn_number,
-                        'confidence': rule_hint.confidence,
-                        'outcome_status': turn.outcome_status,
-                        'resolved_turn_id': resolved_turn_id,
-                        'action_intent': command.action_intent,
-                        'client_message_id': command.client_message_id,
-                    },
-                },
-            )
-            db.session.commit()
-            return {
-                'ok': True,
-                'waiting_for_rolls': bool(pending_turn_to_resolve and remaining_player_ids),
-                'remaining_player_ids': remaining_player_ids,
-            }
+            return run_with_commit_retry(_save_incoming_turn, label='incoming player turn')
         except Exception as exc:
             db.session.rollback()
             logger.error('Failed to persist incoming player turn: %s', str(exc))
@@ -1731,7 +1767,7 @@ class TurnEngine:
                 session_id=command.session_id,
                 segments_to_activate=segments_to_activate,
             )
-            db.session.commit()
+            commit_with_retry(label='segment evaluation')
             if triggered_segments:
                 telemetry_metric('socket.segment_triggered_total', len(triggered_segments))
         except Exception as exc:
@@ -1979,7 +2015,7 @@ class TurnEngine:
             )
             if not turn_control:
                 return
-            db.session.commit()
+            commit_with_retry(label='structured turn advance')
             self.socketio.emit(
                 'turn_control_updated',
                 turn_control_update_payload(turn_obj.session_id, turn_control),
@@ -2086,7 +2122,7 @@ class TurnEngine:
                     },
                 )
 
-            db.session.commit()
+            commit_with_retry(label='DM response save')
             self._record_phase_timing(
                 'db_save',
                 db_save_started,
@@ -2119,7 +2155,7 @@ class TurnEngine:
                     )
                     immediate_state_summary = post_pipeline_result.get('legacyImmediateSummary') or {}
                     state_log = post_pipeline_result.get('stateLog') or {}
-                    db.session.commit()
+                    commit_with_retry(label='post-DM state pipeline')
                 except Exception as exc:
                     db.session.rollback()
                     logger.warning('State pipeline post-DM application failed: %s', str(exc))
@@ -2132,7 +2168,7 @@ class TurnEngine:
                         turn_obj = db.session.get(DmTurn, turn.turn_id)
                         if turn_obj:
                             immediate_state_summary = apply_immediate_state_changes(turn_obj, campaign, dm_response_text)
-                            db.session.commit()
+                            commit_with_retry(label='legacy immediate state fallback')
                     except Exception as fallback_exc:
                         db.session.rollback()
                         logger.warning('Immediate character state application failed: %s', str(fallback_exc))
@@ -2217,7 +2253,7 @@ class TurnEngine:
                     speaking_player_name=player_label,
                     triggered_segments=triggered_segments,
                 )
-                db.session.commit()
+                commit_with_retry(label='canon job enqueue')
                 self._emit_turn_status(
                     turn.session_id,
                     turn.turn_id,
@@ -2243,7 +2279,7 @@ class TurnEngine:
                         canon_job.job_id,
                     )
 
-            db.session.commit()
+            commit_with_retry(label='post-turn final save')
             self._emit_turn_status(turn.session_id, turn.turn_id, 'saved', {'stage': 'post_turn'})
 
             if dm_response_text:
@@ -2271,7 +2307,7 @@ class TurnEngine:
                 failed_turn.metadata_json = safe_json_dumps(metadata_payload, {})
                 if failed_turn.dm_output:
                     failed_turn.status = 'completed'
-                db.session.commit()
+                commit_with_retry(label='post-turn failure metadata')
             self._emit_turn_status(turn.session_id, turn.turn_id, 'failed', {'stage': 'post_turn', 'error': str(exc)})
             self.socketio.emit(
                 'error',

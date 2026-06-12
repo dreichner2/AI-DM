@@ -42,6 +42,28 @@ QUEST_STATUSES = {'available', 'active', 'completed', 'failed', 'abandoned', 'hi
 OBJECTIVE_STATUSES = {'open', 'completed', 'failed', 'optional'}
 NPC_DISPOSITIONS = {'friendly', 'neutral', 'hostile', 'suspicious', 'afraid', 'loyal', 'unknown'}
 NPC_STATUSES = {'known', 'met', 'allied', 'hostile', 'dead', 'missing', 'unknown'}
+NPC_DISPOSITION_ALIASES = {
+    'cautious': 'suspicious',
+    'fearful': 'afraid',
+    'grateful': 'friendly',
+    'helpful': 'friendly',
+    'hopeful': 'friendly',
+    'scared': 'afraid',
+    'terrified': 'afraid',
+    'wary': 'suspicious',
+}
+NPC_STATUS_ALIASES = {
+    'alive': 'known',
+    'bleeding': 'known',
+    'down': 'known',
+    'dying': 'known',
+    'escaped': 'missing',
+    'fled': 'missing',
+    'injured': 'known',
+    'present': 'known',
+    'unconscious': 'known',
+    'wounded': 'known',
+}
 
 
 def _action_value(action: dict[str, Any], camel_key: str, snake_key: str | None = None, default=None):
@@ -758,6 +780,21 @@ def _validate_health_change(state: dict[str, Any], change: dict[str, Any]) -> tu
     actor = find_actor(state, _action_value(change, 'actorId', 'actor_id'))
     if not actor:
         return 'rejected', 'Actor not found.', None
+    if change.get('type') == 'health.max.set':
+        max_hp = int_or_default(
+            change.get('maxHp', change.get('max_hp', change.get('amount'))),
+            default=0,
+        )
+        if max_hp <= 0:
+            return 'rejected', 'Max HP change requires a positive maxHp value.', None
+        normalized = deepcopy(change)
+        normalized['maxHp'] = max_hp
+        if normalized.get('currentHp') is not None or normalized.get('current_hp') is not None:
+            normalized['currentHp'] = max(
+                0,
+                min(max_hp, int_or_default(normalized.get('currentHp', normalized.get('current_hp')), default=0)),
+            )
+        return 'accepted', 'Max HP change is valid.', normalized
     amount = max(0, int_or_default(change.get('amount'), default=0))
     if amount <= 0:
         return 'rejected', 'Health change amount must be positive.', None
@@ -867,6 +904,37 @@ def _find_npc(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] |
     )
 
 
+def _find_npc_by_reference(state: dict[str, Any], reference: Any) -> dict[str, Any] | None:
+    reference_text = _text(reference)
+    if not reference_text:
+        return None
+    reference_keys = {
+        normalize_item_name(reference_text),
+        stable_slug(reference_text),
+    }
+    for npc in [*_records(state, 'knownNpcs'), *_records(state, 'partyNpcs')]:
+        candidate_values = [
+            npc.get('id'),
+            npc.get('npcId'),
+            npc.get('name'),
+            npc.get('npcName'),
+            *(
+                npc.get('aliases')
+                if isinstance(npc.get('aliases'), list)
+                else []
+            ),
+        ]
+        candidate_keys = {
+            key
+            for value in candidate_values
+            for key in (normalize_item_name(value), stable_slug(value))
+            if key
+        }
+        if reference_keys.intersection(candidate_keys):
+            return npc
+    return None
+
+
 def _player_character_collision_label(state: dict[str, Any], change: dict[str, Any]) -> str | None:
     requested_id = _text(change.get('npcId') or change.get('id'))
     requested_name = normalize_item_name(change.get('name') or change.get('npcName'))
@@ -909,6 +977,53 @@ def _valid_location_label(value: Any) -> bool:
         return True
     words = re.findall(r'[A-Za-z0-9]+', label)
     return len(label) <= 90 and len(words) <= 10
+
+
+def _append_metadata_note(normalized: dict[str, Any], key: str, value: str) -> None:
+    metadata = normalized.get('metadata') if isinstance(normalized.get('metadata'), dict) else {}
+    metadata[key] = value
+    normalized['metadata'] = metadata
+
+
+def _normalize_npc_status_and_disposition(normalized: dict[str, Any]) -> None:
+    disposition = _text(normalized.get('disposition')).lower()
+    if disposition in NPC_DISPOSITION_ALIASES:
+        normalized['disposition'] = NPC_DISPOSITION_ALIASES[disposition]
+        _append_metadata_note(normalized, 'extractedDisposition', disposition)
+
+    status = _text(normalized.get('status')).lower()
+    if status in NPC_STATUS_ALIASES:
+        normalized['status'] = NPC_STATUS_ALIASES[status]
+        _append_metadata_note(normalized, 'extractedStatus', status)
+        normalized['memory'] = _string_list(normalized.get('memory')) + [f'Status note: {status}.']
+
+
+def _noncombat_condition_as_npc_update(change: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | None:
+    if str(change.get('type') or '').strip() not in {'combat.condition.add', 'combat.condition.remove'}:
+        return None
+    reference = change.get('participantId') or change.get('participant_id') or change.get('enemyId') or change.get('enemy_id')
+    if _resolve_combat_participant_id(state, _text(reference)):
+        return None
+    npc = _find_npc_by_reference(state, reference)
+    if not npc:
+        return None
+    condition = _text(change.get('condition') or change.get('conditionName') or change.get('condition_name')).lower().replace(' ', '_')
+    if not condition:
+        return None
+    action = 'removed' if str(change.get('type') or '').strip() == 'combat.condition.remove' else 'added'
+    return {
+        **change,
+        'type': 'npc.update',
+        'npcId': npc.get('id') or npc.get('npcId'),
+        'name': npc.get('name') or npc.get('npcName'),
+        'status': 'known',
+        'memory': _string_list(change.get('memory')) + [f'Condition {action}: {condition}.'],
+        'metadata': {
+            **(change.get('metadata') if isinstance(change.get('metadata'), dict) else {}),
+            'sourceCombatCondition': condition,
+            'sourceCombatConditionAction': action,
+        },
+    }
 
 
 def _scene_items(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1072,7 +1187,8 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
         if status and status not in LOCATION_STATUSES:
             return 'rejected', f"Unsupported location status '{status}'.", None
         if change_type == 'location.update' and not _find_location(state, normalized):
-            return 'rejected', 'Location update target was not found.', None
+            change_type = 'location.discover'
+            normalized['type'] = change_type
         normalized['connectedLocationIds'] = [_stable_id(value) for value in _string_list(normalized.get('connectedLocationIds'))]
         normalized['npcIds'] = _string_list(normalized.get('npcIds'))
         normalized['questIds'] = _string_list(normalized.get('questIds'))
@@ -1096,7 +1212,7 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
         if not normalized['questId']:
             return 'rejected', 'Quest change requires a quest id or title.', None
         status = _text(normalized.get('status'))
-        if status and status not in QUEST_STATUSES:
+        if change_type not in {'quest.objective.add', 'quest.objective.update'} and status and status not in QUEST_STATUSES:
             return 'rejected', f"Unsupported quest status '{status}'.", None
         if change_type != 'quest.add' and not _find_quest(state, normalized):
             return 'rejected', 'Quest update target was not found.', None
@@ -1115,9 +1231,11 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
             normalized['objectives'] = objectives
         if change_type in {'quest.objective.add', 'quest.objective.update'}:
             objective = normalized.get('objective') if isinstance(normalized.get('objective'), dict) else {}
-            objective_status = _text(objective.get('status') or normalized.get('objectiveStatus'))
+            objective_status = _text(objective.get('status') or normalized.get('objectiveStatus') or normalized.get('status'))
             if objective_status and objective_status not in OBJECTIVE_STATUSES:
                 return 'rejected', f"Unsupported quest objective status '{objective_status}'.", None
+            if objective_status:
+                normalized['objectiveStatus'] = objective_status
             objective_id = _stable_id(normalized.get('objectiveId'), objective.get('id') or objective.get('description'))
             if not objective_id:
                 return 'rejected', 'Quest objective change requires an objective id or description.', None
@@ -1134,6 +1252,7 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
         player_collision = _player_character_collision_label(state, normalized)
         if player_collision:
             return 'rejected', f"NPC change targets player character '{player_collision}'.", None
+        _normalize_npc_status_and_disposition(normalized)
         disposition = _text(normalized.get('disposition'))
         status = _text(normalized.get('status'))
         if disposition and disposition not in NPC_DISPOSITIONS:
@@ -1625,6 +1744,9 @@ def validate_state_changes(*, state: dict[str, Any], changes: list[dict[str, Any
         if not isinstance(raw_change, dict):
             continue
         change = deepcopy(raw_change)
+        npc_condition_change = _noncombat_condition_as_npc_update(change, state)
+        if npc_condition_change:
+            change = npc_condition_change
         change_type = str(change.get('type') or '').strip()
         change_id = str(change.get('id') or '').strip()
         if change_type not in STATE_CHANGE_TYPES:
@@ -1662,7 +1784,7 @@ def validate_state_changes(*, state: dict[str, Any], changes: list[dict[str, Any
             status, reason, normalized = _validate_equipment_change(state, change)
         elif change_type in {'currency.add', 'currency.remove'}:
             status, reason, normalized = _validate_currency_change(state, change)
-        elif change_type in {'health.heal', 'health.damage'}:
+        elif change_type in {'health.heal', 'health.damage', 'health.max.set'}:
             status, reason, normalized = _validate_health_change(state, change)
         elif change_type in {'xp.add', 'xp.remove'}:
             status, reason, normalized = _validate_xp_change(state, change)

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from aidm_server.database import db
-from aidm_server.models import CampaignSegment
+from aidm_server.character_state import apply_character_dc_adjustment, character_state_for_player
+from aidm_server.models import CampaignSegment, Player, safe_json_dumps
+from aidm_server.rules import RuleHint
 from aidm_server.rules import classify_player_action
 from aidm_server.segment_triggers import evaluate_segment_trigger
 from tests.helpers import seed_world_campaign_player_session
@@ -29,8 +31,22 @@ def test_rules_classifier_detects_unarmed_attack_wording():
     assert hint.outcome_deferred is True
 
 
+def test_rules_classifier_detects_stomp_as_attack_wording():
+    hint = classify_player_action('I stomp Koryl before he can get away.')
+    assert hint.requires_roll is True
+    assert hint.roll_type == 'attack'
+    assert hint.outcome_deferred is True
+
+
 def test_rules_classifier_detects_spell_actions_as_spell_checks():
     hint = classify_player_action('I use my magic to make the dagger huge.')
+    assert hint.requires_roll is True
+    assert hint.roll_type == 'spell'
+    assert hint.outcome_deferred is True
+
+
+def test_rules_classifier_detects_spirit_contact_as_spell_check():
+    hint = classify_player_action('I try to speak with the spirits in the ruined house.')
     assert hint.requires_roll is True
     assert hint.roll_type == 'spell'
     assert hint.outcome_deferred is True
@@ -80,6 +96,45 @@ def test_rules_classifier_detects_mobility_escape_context():
     hint = classify_player_action('I sprint to the side door and leap across the rain gutter.')
     assert hint.requires_roll is True
     assert hint.roll_type == 'mobility'
+
+
+def test_character_state_exposes_and_applies_skill_proficiencies(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        player.level = 3
+        player.stats = safe_json_dumps(
+            {
+                'ability_scores': {
+                    'strength': 10,
+                    'dexterity': 10,
+                    'constitution': 10,
+                    'intelligence': 10,
+                    'wisdom': 10,
+                    'charisma': 14,
+                },
+                'current_hp': 20,
+                'max_hp': 20,
+                'skill_proficiencies': ['Persuasion'],
+                'proficiency_bonus': 2,
+            },
+            {},
+        )
+        db.session.commit()
+
+        state = character_state_for_player(player)
+        hint = RuleHint(
+            requires_roll=True,
+            roll_type='social',
+            dc_hint=None,
+            reason='Social influence action detected',
+            confidence=0.9,
+        )
+        adjusted = apply_character_dc_adjustment(hint, player)
+
+    assert state['skill_proficiencies'] == ['persuasion']
+    assert adjusted.dc_hint == '11 (base 15, total mod +4, CHA 14 mod +2, proficiency +2 (persuasion))'
 
 
 def test_segment_keywords_trigger():

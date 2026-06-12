@@ -5,8 +5,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import json
 import os
-from threading import Lock
+from pathlib import Path
+import queue
+import shutil
+import subprocess
+import tempfile
+from threading import Lock, Thread
+import time
 from typing import Any, Generator
+from uuid import uuid4
 
 from flask import current_app, has_app_context
 import requests
@@ -14,7 +21,13 @@ import requests
 from aidm_server.contracts import ProviderRequest, ProviderResponse
 from aidm_server.http_client import post as http_post
 from aidm_server.http_client import timeout_from_config
-from aidm_server.provider_registry import SUPPORTED_LLM_PROVIDERS, provider_default_model
+from aidm_server.provider_registry import (
+    SUPPORTED_LLM_PROVIDERS,
+    normalize_provider_model_id,
+    provider_default_model,
+    provider_model_reasoning_effort,
+    provider_runtime_model,
+)
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 from aidm_server.time_utils import utc_now
 
@@ -22,6 +35,8 @@ from aidm_server.time_utils import utc_now
 DEFAULT_GEMINI_MODEL = provider_default_model('gemini')
 DEFAULT_NVIDIA_MODEL = provider_default_model('nvidia')
 DEFAULT_DEEPSEEK_MODEL = provider_default_model('deepseek')
+DEFAULT_CODEX_MODEL = provider_default_model('codex_cli')
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _int_env(name: str, default: int) -> int:
@@ -743,6 +758,379 @@ class DeepSeekChatProvider(NvidiaChatProvider):
         return payload
 
 
+class CodexCliProvider(BaseLLMProvider):
+    provider_name = 'codex_cli'
+
+    def __init__(
+        self,
+        model_name: str = 'gpt-5.5',
+        executable: str = 'codex',
+        workdir: str | None = None,
+        timeout_seconds: int = 180,
+        reasoning_effort: str = 'low',
+        ignore_rules: bool = True,
+        prompt_role: str = 'helper',
+        display_model_name: str | None = None,
+    ):
+        self.model_name = str(model_name or 'gpt-5.5').strip()
+        self.display_model_name = str(display_model_name or self.model_name).strip()
+        self.executable = str(executable or 'codex').strip()
+        self.workdir = str(workdir or os.getcwd()).strip()
+        self.timeout_seconds = max(1, int(timeout_seconds))
+        self.reasoning_effort = str(reasoning_effort or 'low').strip().lower()
+        self.ignore_rules = bool(ignore_rules)
+        self.prompt_role = str(prompt_role or 'helper').strip().lower()
+
+    def _resolved_executable(self) -> str:
+        if not self.executable:
+            raise ProviderNotConfiguredError('AIDM_CODEX_EXECUTABLE is empty')
+        if os.path.sep in self.executable:
+            if Path(self.executable).is_file():
+                return self.executable
+            raise ProviderNotConfiguredError(f'Codex executable not found: {self.executable}')
+        resolved = shutil.which(self.executable)
+        if not resolved:
+            telemetry_event('llm.provider_not_configured', payload={'provider': self.provider_name}, severity='warning')
+            raise ProviderNotConfiguredError(f'Codex executable "{self.executable}" is not on PATH')
+        return resolved
+
+    def _build_prompt(self, request: ProviderRequest) -> str:
+        if self.prompt_role == 'dm':
+            sections = [
+                'You are acting as the main AIDM Dungeon Master narration model, not as a code-editing agent.',
+                'Do not inspect files, run commands, modify files, or explain implementation details.',
+                'Use only the campaign state, rules hint, system contract, and player action in this prompt.',
+                'Return only the in-world DM response that should be shown to the player.',
+            ]
+        else:
+            sections = [
+                'You are acting as an AIDM helper model, not as a code-editing agent.',
+                'Do not inspect files, run commands, modify files, or explain the codebase.',
+                'Use only the task data in this prompt and return exactly the response shape requested.',
+            ]
+        if request.system_message:
+            sections.append(f'SYSTEM CONTRACT:\n{request.system_message}')
+        sections.append(f'TASK INPUT:\n{request.prompt}')
+        return '\n\n'.join(sections)
+
+    def _command(self, output_path: str | None = None, *, json_output: bool = False) -> list[str]:
+        command = [
+            self._resolved_executable(),
+            'exec',
+        ]
+        if json_output:
+            command.append('--json')
+        command.extend(
+            [
+                '--ephemeral',
+                '--sandbox',
+                'read-only',
+                '-C',
+                self.workdir,
+                '--model',
+                self.model_name,
+                '-c',
+                f'model_reasoning_effort="{self.reasoning_effort}"',
+            ]
+        )
+        if output_path:
+            command.extend(['-o', output_path])
+        if self.ignore_rules:
+            command.insert(3, '--ignore-rules')
+        command.append('-')
+        return command
+
+    @staticmethod
+    def _toml_string(value: str) -> str:
+        return json.dumps(str(value or ''))
+
+    def _app_server_command(self) -> list[str]:
+        return [
+            self._resolved_executable(),
+            'app-server',
+            '--stdio',
+            '-c',
+            f'model={self._toml_string(self.model_name)}',
+            '-c',
+            f'model_reasoning_effort={self._toml_string(self.reasoning_effort)}',
+            '-c',
+            'approval_policy="never"',
+            '-c',
+            'sandbox_mode="read-only"',
+        ]
+
+    def _env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        access_token = _cfg('AIDM_CODEX_ACCESS_TOKEN', os.getenv('CODEX_ACCESS_TOKEN'))
+        if access_token and not env.get('CODEX_ACCESS_TOKEN'):
+            env['CODEX_ACCESS_TOKEN'] = str(access_token)
+        return env
+
+    @staticmethod
+    def _error_preview(value: str) -> str:
+        return str(value or '').strip()[-1200:]
+
+    @staticmethod
+    def _send_app_server_message(process: subprocess.Popen, message: dict[str, Any]):
+        if process.stdin is None:
+            raise RuntimeError('Codex app-server stdin is unavailable')
+        process.stdin.write(json.dumps(message, separators=(',', ':')) + '\n')
+        process.stdin.flush()
+
+    @staticmethod
+    def _pipe_reader(name: str, pipe, output_queue: queue.Queue):
+        try:
+            for line in pipe:
+                output_queue.put((name, line))
+        finally:
+            output_queue.put((name, None))
+
+    @staticmethod
+    def _event_message_text(event: dict[str, Any]) -> tuple[str | None, bool]:
+        event_type = str(event.get('type') or event.get('method') or '')
+        if event_type in {'item.delta', 'item.agent_message.delta', 'item/agentMessage/delta'}:
+            delta = event.get('delta')
+            if isinstance(delta, str):
+                return delta, True
+            if isinstance(delta, dict):
+                text = delta.get('text') or delta.get('content')
+                return (str(text), True) if text else (None, True)
+            params = event.get('params')
+            if isinstance(params, dict):
+                text = params.get('delta') or params.get('text') or params.get('content')
+                if isinstance(text, dict):
+                    text = text.get('text') or text.get('content')
+                return (str(text), True) if text else (None, True)
+            return None, True
+        if event_type in {'item.completed', 'item/completed'}:
+            params = event.get('params') if isinstance(event.get('params'), dict) else {}
+            item = event.get('item') or params.get('item')
+            if isinstance(item, dict) and item.get('type') in {'agent_message', 'agentMessage'}:
+                text = item.get('text')
+                return (str(text), False) if text else (None, False)
+        return None, False
+
+    def generate(self, request: ProviderRequest) -> ProviderResponse:
+        prompt = self._build_prompt(request)
+        output_file = tempfile.NamedTemporaryFile(prefix='aidm-codex-', suffix='.txt', delete=False)
+        output_path = output_file.name
+        output_file.close()
+        try:
+            completed = subprocess.run(
+                self._command(output_path),
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                cwd=self.workdir,
+                env=self._env(),
+                check=False,
+            )
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    'Codex CLI provider failed '
+                    f'(exit {completed.returncode}): {self._error_preview(completed.stderr or completed.stdout)}'
+                )
+            text = Path(output_path).read_text(encoding='utf-8').strip()
+            if not text:
+                text = str(completed.stdout or '').strip()
+            if not text:
+                raise RuntimeError('Codex CLI provider returned an empty response')
+            telemetry_metric(
+                'llm.generate.success_total',
+                1,
+                tags={'provider': self.provider_name, 'model': self.display_model_name},
+            )
+            return ProviderResponse(text=text, provider=self.provider_name, model=self.display_model_name)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f'Codex CLI provider timed out after {self.timeout_seconds} seconds') from exc
+        finally:
+            try:
+                Path(output_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def stream(self, request: ProviderRequest) -> Generator[str, None, None]:
+        prompt = self._build_prompt(request)
+        command = self._app_server_command()
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=self.workdir,
+                env=self._env(),
+            )
+        except OSError as exc:
+            raise RuntimeError(f'Codex app-server provider failed to start: {self._error_preview(str(exc))}') from exc
+
+        output_queue: queue.Queue = queue.Queue()
+        for name, pipe in (('stdout', process.stdout), ('stderr', process.stderr)):
+            if pipe is not None:
+                Thread(target=self._pipe_reader, args=(name, pipe, output_queue), daemon=True).start()
+
+        stderr_parts: list[str] = []
+        stdout_parts: list[str] = []
+        accumulated_text = ''
+        yielded_text = False
+        deadline = time.monotonic() + self.timeout_seconds
+        initialize_id = uuid4().hex
+        thread_start_id = uuid4().hex
+        turn_start_id = uuid4().hex
+        thread_id: str | None = None
+        initialized = False
+        turn_started = False
+        turn_completed = False
+
+        try:
+            self._send_app_server_message(
+                process,
+                {
+                    'id': initialize_id,
+                    'method': 'initialize',
+                    'params': {
+                        'clientInfo': {
+                            'name': 'aidm-codex-provider',
+                            'title': 'AIDM Codex Provider',
+                            'version': '0.1.0',
+                        },
+                        'capabilities': {
+                            'experimentalApi': True,
+                            'optOutNotificationMethods': [
+                                'command/exec/outputDelta',
+                                'item/fileChange/outputDelta',
+                                'item/plan/delta',
+                                'item/reasoning/summaryTextDelta',
+                                'item/reasoning/textDelta',
+                            ],
+                        },
+                    },
+                },
+            )
+
+            while not turn_completed:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    process.kill()
+                    raise RuntimeError(f'Codex app-server provider timed out after {self.timeout_seconds} seconds')
+                try:
+                    source, line = output_queue.get(timeout=min(0.25, remaining))
+                except queue.Empty:
+                    if process.poll() is not None:
+                        preview = self._error_preview(''.join(stderr_parts) or '\n'.join(stdout_parts))
+                        raise RuntimeError(f'Codex app-server provider exited before turn completion: {preview}')
+                    continue
+                if line is None:
+                    if source == 'stdout' and not turn_completed:
+                        preview = self._error_preview(''.join(stderr_parts) or '\n'.join(stdout_parts))
+                        raise RuntimeError(f'Codex app-server provider closed stdout before turn completion: {preview}')
+                    continue
+                if source == 'stderr':
+                    stderr_parts.append(str(line))
+                    continue
+
+                raw_line = str(line).strip()
+                if not raw_line:
+                    continue
+                stdout_parts.append(raw_line)
+                try:
+                    event = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(event.get('error'), dict):
+                    error = event['error']
+                    message = error.get('message') or error
+                    raise RuntimeError(f'Codex app-server provider error: {message}')
+
+                event_id = str(event.get('id') or '')
+                result = event.get('result') if isinstance(event.get('result'), dict) else {}
+                method = str(event.get('method') or '')
+
+                if event_id == initialize_id and not initialized:
+                    initialized = True
+                    self._send_app_server_message(process, {'method': 'initialized', 'params': {}})
+                    self._send_app_server_message(
+                        process,
+                        {
+                            'id': thread_start_id,
+                            'method': 'thread/start',
+                            'params': {
+                                'model': self.model_name,
+                                'cwd': self.workdir,
+                                'ephemeral': True,
+                                'approvalPolicy': 'never',
+                                'sandbox': 'read-only',
+                            },
+                        },
+                    )
+                    continue
+
+                if event_id == thread_start_id and not thread_id:
+                    thread = result.get('thread') if isinstance(result.get('thread'), dict) else {}
+                    thread_id = str(thread.get('id') or '')
+                    if not thread_id:
+                        raise RuntimeError('Codex app-server provider did not return a thread id')
+                    self._send_app_server_message(
+                        process,
+                        {
+                            'id': turn_start_id,
+                            'method': 'turn/start',
+                            'params': {
+                                'threadId': thread_id,
+                                'input': [{'type': 'text', 'text': prompt}],
+                                'model': self.model_name,
+                                'effort': self.reasoning_effort,
+                                'cwd': self.workdir,
+                                'approvalPolicy': 'never',
+                                'sandboxPolicy': {'type': 'readOnly', 'networkAccess': False},
+                            },
+                        },
+                    )
+                    continue
+
+                if event_id == turn_start_id:
+                    turn_started = True
+
+                text, is_delta = self._event_message_text(event)
+                if not text:
+                    if method == 'turn/completed':
+                        turn_completed = True
+                    continue
+                if is_delta:
+                    accumulated_text += text
+                    yielded_text = True
+                    yield text
+                elif not yielded_text:
+                    accumulated_text = text
+                    yielded_text = True
+                    yield text
+                elif text.startswith(accumulated_text):
+                    suffix = text[len(accumulated_text) :]
+                    if suffix:
+                        accumulated_text = text
+                        yield suffix
+
+                if method == 'turn/completed':
+                    turn_completed = True
+
+            if not turn_started:
+                preview = self._error_preview(''.join(stderr_parts) or '\n'.join(stdout_parts))
+                raise RuntimeError(f'Codex app-server provider did not start a turn: {preview}')
+            if not yielded_text:
+                preview = self._error_preview(''.join(stderr_parts) or '\n'.join(stdout_parts))
+                raise RuntimeError(f'Codex app-server provider returned no agent message events: {preview}')
+            telemetry_metric(
+                'llm.stream.success_total',
+                1,
+                tags={'provider': self.provider_name, 'model': self.display_model_name},
+            )
+        finally:
+            if process.poll() is None:
+                process.kill()
+
+
 def _cfg(key: str, default=None):
     if has_app_context():
         value = current_app.config.get(key, None)
@@ -758,6 +1146,74 @@ def _cfg_list(key: str) -> list[str]:
     if isinstance(raw_value, str):
         return [item.strip() for item in raw_value.split(',') if item.strip()]
     return []
+
+
+HELPER_MODEL_PROFILES: dict[str, dict[str, Any]] = {
+    'fast': {
+        'LLM_PROVIDER': 'deepseek',
+        'LLM_MODEL': 'deepseek-v4-flash',
+        'LLM_MAX_TOKENS': 2048,
+        'LLM_TEMPERATURE': 0.1,
+        'LLM_TOP_P': 0.9,
+        'DEEPSEEK_TIMEOUT_SECONDS': 30,
+        'DEEPSEEK_THINKING': 'false',
+        'DEEPSEEK_REASONING_EFFORT': 'low',
+    },
+    'deepseek_pro': {
+        'LLM_PROVIDER': 'deepseek',
+        'LLM_MODEL': 'deepseek-v4-pro',
+        'LLM_MAX_TOKENS': 3072,
+        'LLM_TEMPERATURE': 0.55,
+        'LLM_TOP_P': 0.9,
+        'DEEPSEEK_TIMEOUT_SECONDS': 90,
+        'DEEPSEEK_THINKING': 'false',
+        'DEEPSEEK_REASONING_EFFORT': 'medium',
+    },
+    'codex': {
+        'LLM_PROVIDER': 'codex_cli',
+        'LLM_MODEL': 'gpt-5.5',
+        'CODEX_TIMEOUT_SECONDS': 180,
+        'CODEX_REASONING_EFFORT': 'low',
+        'CODEX_IGNORE_RULES': 'true',
+    },
+    'codex_low': {
+        'LLM_PROVIDER': 'codex_cli',
+        'LLM_MODEL': 'gpt-5.5',
+        'CODEX_TIMEOUT_SECONDS': 180,
+        'CODEX_REASONING_EFFORT': 'low',
+        'CODEX_IGNORE_RULES': 'true',
+    },
+    'codex_medium': {
+        'LLM_PROVIDER': 'codex_cli',
+        'LLM_MODEL': 'gpt-5.5',
+        'CODEX_TIMEOUT_SECONDS': 240,
+        'CODEX_REASONING_EFFORT': 'medium',
+        'CODEX_IGNORE_RULES': 'true',
+    },
+    'codex_high': {
+        'LLM_PROVIDER': 'codex_cli',
+        'LLM_MODEL': 'gpt-5.5',
+        'CODEX_TIMEOUT_SECONDS': 300,
+        'CODEX_REASONING_EFFORT': 'high',
+        'CODEX_IGNORE_RULES': 'true',
+    },
+    'codex_extra_high': {
+        'LLM_PROVIDER': 'codex_cli',
+        'LLM_MODEL': 'gpt-5.5',
+        'CODEX_TIMEOUT_SECONDS': 360,
+        'CODEX_REASONING_EFFORT': 'xhigh',
+        'CODEX_IGNORE_RULES': 'true',
+    },
+}
+
+
+HELPER_TASK_PROFILE: dict[str, str] = {
+    'custom_race': 'codex_medium',
+    'sentient_enemy_brain': 'codex_medium',
+    'boss_tactics': 'codex_medium',
+    'boss_tactics_planner': 'codex_medium',
+    'creature_generation': 'codex_medium',
+}
 
 
 HELPER_TASK_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -805,12 +1261,60 @@ HELPER_TASK_DEFAULTS: dict[str, dict[str, Any]] = {
         'DEEPSEEK_THINKING': 'false',
         'DEEPSEEK_REASONING_EFFORT': 'medium',
     },
+    'creature_generation': {
+        'prefix': 'AIDM_CREATURE_HELPER',
+        'LLM_PROVIDER': 'deepseek',
+        'LLM_MODEL': 'deepseek-v4-flash',
+        'LLM_MAX_TOKENS': 4096,
+        'LLM_TEMPERATURE': 0.2,
+        'LLM_TOP_P': 0.9,
+        'DEEPSEEK_TIMEOUT_SECONDS': 120,
+        'DEEPSEEK_THINKING': 'false',
+        'DEEPSEEK_REASONING_EFFORT': 'low',
+    },
 }
 
 
+def _helper_task_name(task: str | None) -> str:
+    return str(task or '').strip().lower().replace('-', '_')
+
+
 def _helper_task_config(task: str | None) -> dict[str, Any] | None:
-    task_name = str(task or '').strip().lower().replace('-', '_')
-    return HELPER_TASK_DEFAULTS.get(task_name)
+    return HELPER_TASK_DEFAULTS.get(_helper_task_name(task))
+
+
+def _explicit_helper_profile_name(task: str | None) -> str:
+    task_name = _helper_task_name(task)
+    task_config = _helper_task_config(task)
+    task_env_key = f"AIDM_HELPER_PROFILE_{task_name.upper()}" if task_name else ''
+    for key in (task_env_key, f"{task_config['prefix']}_PROFILE" if task_config else ''):
+        if not key:
+            continue
+        value = _cfg(key, None)
+        if value not in (None, ''):
+            return str(value).strip().lower()
+    value = _cfg('AIDM_HELPER_PROFILE_DEFAULT', None)
+    return str(value or '').strip().lower()
+
+
+def _helper_profile_name(task: str | None) -> str:
+    explicit = _explicit_helper_profile_name(task)
+    if explicit:
+        return explicit
+    mapped = HELPER_TASK_PROFILE.get(_helper_task_name(task))
+    if mapped:
+        return mapped
+    return ''
+
+
+def _helper_profile_config(task: str | None) -> tuple[dict[str, Any] | None, bool]:
+    explicit_name = _explicit_helper_profile_name(task)
+    if explicit_name:
+        return HELPER_MODEL_PROFILES.get(explicit_name), True
+    profile_name = HELPER_TASK_PROFILE.get(_helper_task_name(task))
+    if not profile_name:
+        return None, False
+    return HELPER_MODEL_PROFILES.get(profile_name), False
 
 
 def _positive_int(value: Any, default: int) -> int:
@@ -822,12 +1326,18 @@ def _positive_int(value: Any, default: int) -> int:
 
 def _helper_cfg(task: str | None, suffix: str, default=None):
     task_config = _helper_task_config(task)
+    profile_config, profile_is_explicit = _helper_profile_config(task)
     if task_config:
         value = _cfg(f"{task_config['prefix']}_{suffix}", None)
         if value is not None:
             return value
+    if profile_config and suffix in profile_config and (profile_is_explicit or suffix in {'LLM_PROVIDER', 'LLM_MODEL'}):
+        return profile_config[suffix]
+    if task_config:
         if suffix in task_config:
             return task_config[suffix]
+    if profile_config and suffix in profile_config:
+        return profile_config[suffix]
     return _cfg(f'AIDM_HELPER_{suffix}', default)
 
 
@@ -858,11 +1368,41 @@ def _helper_bool(task: str | None, suffix: str, default: bool) -> bool:
     return str(raw_value).strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
+def helper_provider_configured(provider_name: str) -> bool:
+    provider = str(provider_name or '').strip().lower()
+    if provider == 'fallback':
+        return True
+    if provider == 'deepseek':
+        return bool(
+            _cfg('AIDM_HELPER_DEEPSEEK_API_KEY')
+            or _cfg('AIDM_DEEPSEEK_API_KEY', os.getenv('DEEPSEEK_API_KEY'))
+            or os.getenv('DEEPSEEK_API_KEY')
+        )
+    if provider in {'nvidia', 'kimi'}:
+        return bool(
+            _cfg('AIDM_HELPER_NVIDIA_API_KEY')
+            or _cfg('AIDM_NVIDIA_API_KEY', os.getenv('NVIDIA_API_KEY'))
+            or os.getenv('NVIDIA_API_KEY')
+        )
+    if provider == 'gemini':
+        return bool(_cfg('GOOGLE_GENAI_API_KEY'))
+    if provider in {'codex', 'codex_cli'}:
+        executable = str(_cfg('AIDM_CODEX_EXECUTABLE', os.getenv('AIDM_CODEX_EXECUTABLE', 'codex')) or 'codex')
+        if os.path.sep in executable:
+            return Path(executable).is_file()
+        return shutil.which(executable) is not None
+    return False
+
+
 def _helper_timeout_prefix(task: str | None, provider_suffix: str) -> str:
     task_config = _helper_task_config(task)
     if task_config:
         return f"{task_config['prefix']}_{provider_suffix}"
     return f'AIDM_HELPER_{provider_suffix}'
+
+
+def helper_provider_name(task: str | None = None) -> str:
+    return str(_helper_cfg(task, 'LLM_PROVIDER', 'deepseek')).strip().lower()
 
 
 def get_provider() -> BaseLLMProvider:
@@ -872,7 +1412,7 @@ def get_provider() -> BaseLLMProvider:
             'Unsupported AIDM_LLM_PROVIDER '
             f'"{provider_name}". Expected one of: {", ".join(sorted(SUPPORTED_LLM_PROVIDERS))}.'
         )
-    model_name = str(_cfg('AIDM_LLM_MODEL', DEFAULT_GEMINI_MODEL))
+    model_name = str(_cfg('AIDM_LLM_MODEL', provider_default_model(provider_name)))
     fallback_models = _cfg_list('AIDM_LLM_FALLBACK_MODELS')
 
     if provider_name == 'gemini':
@@ -933,6 +1473,25 @@ def get_provider() -> BaseLLMProvider:
             timeout_seconds=int(read_timeout),
             connect_timeout_seconds=connect_timeout,
             read_timeout_seconds=read_timeout,
+        )
+    if provider_name in {'codex', 'codex_cli'}:
+        selected_model = normalize_provider_model_id('codex_cli', model_name or DEFAULT_CODEX_MODEL)
+        chosen_model = provider_runtime_model('codex_cli', selected_model)
+        if chosen_model == DEFAULT_GEMINI_MODEL:
+            chosen_model = 'gpt-5.5'
+        reasoning_effort = (
+            provider_model_reasoning_effort('codex_cli', selected_model)
+            or str(_cfg('AIDM_CODEX_REASONING_EFFORT', 'medium'))
+        )
+        return CodexCliProvider(
+            model_name=chosen_model,
+            executable=str(_cfg('AIDM_CODEX_EXECUTABLE', 'codex')),
+            workdir=str(_cfg('AIDM_CODEX_WORKDIR', str(REPO_ROOT))),
+            timeout_seconds=_int_env('AIDM_CODEX_TIMEOUT_SECONDS', 240),
+            reasoning_effort=reasoning_effort,
+            ignore_rules=str(_cfg('AIDM_CODEX_IGNORE_RULES', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'},
+            prompt_role='dm',
+            display_model_name=selected_model,
         )
 
     return DeterministicFallbackProvider()
@@ -1007,6 +1566,16 @@ def get_helper_provider(task: str | None = None) -> BaseLLMProvider:
             timeout_seconds=int(read_timeout),
             connect_timeout_seconds=connect_timeout,
             read_timeout_seconds=read_timeout,
+        )
+
+    if provider_name in {'codex', 'codex_cli'}:
+        return CodexCliProvider(
+            model_name=model_name or 'gpt-5.5',
+            executable=str(_helper_cfg(task, 'CODEX_EXECUTABLE', _cfg('AIDM_CODEX_EXECUTABLE', 'codex'))),
+            workdir=str(_helper_cfg(task, 'CODEX_WORKDIR', _cfg('AIDM_CODEX_WORKDIR', str(REPO_ROOT)))),
+            timeout_seconds=_helper_int(task, 'CODEX_TIMEOUT_SECONDS', 180),
+            reasoning_effort=str(_helper_cfg(task, 'CODEX_REASONING_EFFORT', 'low')),
+            ignore_rules=_helper_bool(task, 'CODEX_IGNORE_RULES', True),
         )
 
     return DeterministicFallbackProvider(model_name='state-helper-fallback-v1')

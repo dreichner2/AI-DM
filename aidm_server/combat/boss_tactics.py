@@ -8,7 +8,7 @@ from flask import current_app, has_app_context
 
 from aidm_server.contracts import ProviderRequest
 from aidm_server.game_state.extraction.schemas import extract_json_object
-from aidm_server.llm_providers import get_helper_provider
+from aidm_server.llm_providers import get_helper_provider, helper_provider_name
 from aidm_server.services.runtime_config import provider_configured
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 
@@ -61,11 +61,11 @@ def _config_value(name: str) -> str:
 
 
 def _helper_provider_name() -> str:
-    return str(_config_value('AIDM_BOSS_TACTICS_HELPER_LLM_PROVIDER') or _config_value('AIDM_HELPER_LLM_PROVIDER') or 'deepseek').strip().lower()
+    return helper_provider_name(BOSS_TACTICS_TASK)
 
 
 def _planner_provider_name() -> str:
-    return str(_config_value('AIDM_BOSS_TACTICS_PLANNER_HELPER_LLM_PROVIDER') or _helper_provider_name()).strip().lower()
+    return helper_provider_name(BOSS_TACTICS_PLANNER_TASK)
 
 
 def boss_tactics_helper_enabled() -> bool:
@@ -87,6 +87,8 @@ def boss_tactics_helper_enabled() -> bool:
         return bool(os.getenv('AIDM_BOSS_TACTICS_HELPER_NVIDIA_API_KEY') or os.getenv('AIDM_HELPER_NVIDIA_API_KEY') or os.getenv('AIDM_NVIDIA_API_KEY'))
     if provider == 'gemini':
         return bool(os.getenv('AIDM_GEMINI_API_KEY'))
+    if provider in {'codex', 'codex_cli'}:
+        return provider_configured(provider)
     return False
 
 
@@ -109,6 +111,8 @@ def boss_tactics_planner_enabled() -> bool:
         return bool(os.getenv('AIDM_BOSS_TACTICS_PLANNER_HELPER_NVIDIA_API_KEY') or os.getenv('AIDM_BOSS_TACTICS_HELPER_NVIDIA_API_KEY') or os.getenv('AIDM_NVIDIA_API_KEY'))
     if provider == 'gemini':
         return bool(os.getenv('AIDM_GEMINI_API_KEY'))
+    if provider in {'codex', 'codex_cli'}:
+        return provider_configured(provider)
     return False
 
 

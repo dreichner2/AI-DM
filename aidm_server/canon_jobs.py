@@ -10,7 +10,7 @@ from datetime import timedelta
 from flask import current_app
 from sqlalchemy import func, or_, update
 
-from aidm_server.database import db
+from aidm_server.database import commit_with_retry, db
 from aidm_server.emergent_memory import (
     append_session_memory,
     apply_canon_patch,
@@ -141,7 +141,7 @@ def retry_canon_job(job_id: int) -> CanonJob | None:
     job.next_run_at = _job_timestamp()
     job.updated_at = _job_timestamp()
     _set_turn_canon_metadata(job.turn, status='queued', job=job)
-    db.session.commit()
+    commit_with_retry(label='canon job retry')
     return job
 
 
@@ -160,7 +160,7 @@ def reset_stale_canon_jobs(*, stale_after_seconds: int = DEFAULT_CANON_JOB_STALE
         job.updated_at = _job_timestamp()
         _set_turn_canon_metadata(job.turn, status='queued', job=job)
     if stale_jobs:
-        db.session.commit()
+        commit_with_retry(label='stale canon job reset')
     return len(stale_jobs)
 
 
@@ -185,12 +185,12 @@ def _claim_canon_job(job_id: int) -> CanonJob | None:
         job = db.session.get(CanonJob, job_id)
         return job if job and job.status in CANON_JOB_TERMINAL_STATUSES else None
 
-    db.session.commit()
+    commit_with_retry(label='canon job claim')
     job = db.session.get(CanonJob, job_id)
     if not job:
         return None
     _set_turn_canon_metadata(job.turn, status='running', job=job)
-    db.session.commit()
+    commit_with_retry(label='canon job running metadata')
     return job
 
 
@@ -306,7 +306,7 @@ def _mark_job_failed(
     job.updated_at = now
     job.locked_at = None
     _set_turn_canon_metadata(job.turn, status='failed', job=job, error=error)
-    db.session.commit()
+    commit_with_retry(label='canon job failure')
     _emit_status(
         emit_turn_status,
         job.session_id,
@@ -485,7 +485,7 @@ def process_canon_job(
         job.locked_at = None
         job.updated_at = now
         _set_turn_canon_metadata(turn, status='applied', job=job)
-        db.session.commit()
+        commit_with_retry(label='canon job success')
         telemetry_metric('memory.canon_job.succeeded_total', 1)
         return job
     except Exception as exc:

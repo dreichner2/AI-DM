@@ -8,7 +8,7 @@ import secrets
 from dataclasses import dataclass
 from typing import Dict, List
 
-from aidm_server.provider_registry import SUPPORTED_LLM_PROVIDERS, provider_default_model
+from aidm_server.provider_registry import SUPPORTED_LLM_PROVIDERS, normalize_provider_model_id, provider_default_model
 from aidm_server.rate_limiter import SUPPORTED_RATE_LIMIT_STORES, RATE_LIMIT_STORE_MEMORY
 
 TURN_COORDINATOR_STORE_MEMORY = 'memory'
@@ -178,7 +178,7 @@ def load_config() -> AppConfig:
         api_auth_tokens=_to_list(os.getenv('AIDM_API_AUTH_TOKENS'), []),
         api_auth_token_workspaces=_to_token_workspace_map(os.getenv('AIDM_API_AUTH_TOKEN_WORKSPACES')),
         llm_provider=llm_provider,
-        llm_model=os.getenv('AIDM_LLM_MODEL', default_llm_model),
+        llm_model=normalize_provider_model_id(llm_provider, os.getenv('AIDM_LLM_MODEL', default_llm_model)),
         llm_fallback_models=llm_fallback_models,
         google_genai_api_key=os.getenv('GOOGLE_GENAI_API_KEY'),
         deepgram_api_key=os.getenv('AIDM_DEEPGRAM_API_KEY') or os.getenv('DEEPGRAM_API_KEY'),

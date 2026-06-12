@@ -295,6 +295,8 @@ def _state_change_signature(change: dict[str, Any]) -> tuple[Any, ...] | None:
         )
     if change_type in {'health.heal', 'health.damage'}:
         return (change_type, actor_id, int_or_default(change.get('amount'), default=0))
+    if change_type == 'health.max.set':
+        return (change_type, actor_id, int_or_default(change.get('maxHp', change.get('amount')), default=0))
     if change_type in {'xp.add', 'xp.remove'}:
         return (change_type, actor_id, int_or_default(change.get('amount'), default=0))
     if change_type == 'spell.learn':

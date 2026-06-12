@@ -4,7 +4,7 @@ import json
 
 from aidm_server.database import db
 from aidm_server.llm import build_dm_context
-from aidm_server.models import Campaign, Player, PlayerAction, Session, SessionState, World, safe_json_dumps
+from aidm_server.models import Campaign, DmTurn, Player, PlayerAction, Session, SessionState, World, safe_json_dumps
 from tests.helpers import seed_world_campaign_player_session
 
 
@@ -44,6 +44,185 @@ def test_build_dm_context_collects_recent_actions_for_multiple_players(app):
     players = {entry['character_name']: entry for entry in payload['active_players']}
     assert players['Alice']['recent_actions'] == ['hide', 'strike', 'retreat']
     assert players['Borin']['recent_actions'] == ['chant', 'guard']
+
+
+def test_build_dm_context_skips_unfinished_recent_turns(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        stable_first = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='I ask Larin to steady himself.',
+            dm_output='Larin plants a hand against the wall and catches his breath.',
+            status='completed',
+            outcome_status='resolved',
+        )
+        stable_second = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='I scan the next ledge before jumping.',
+            dm_output='The next ledge looks slick but reachable if Larin commits.',
+            status='completed',
+            outcome_status='resolved',
+        )
+        unfinished_roll = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='I roll a d20-1 for STR check: 14 = 13',
+            dm_output=None,
+            status='processing',
+            requires_roll=True,
+            rule_type='strength_check',
+            roll_value=13,
+            outcome_status='resolved',
+        )
+        db.session.add_all([stable_first, stable_second, unfinished_roll])
+        db.session.commit()
+
+        stable_turn_ids = [stable_first.turn_id, stable_second.turn_id]
+        unfinished_turn_id = unfinished_roll.turn_id
+        payload = json.loads(
+            build_dm_context(
+                ids['world_id'],
+                ids['campaign_id'],
+                ids['session_id'],
+                max_turns=2,
+            )
+        )
+
+    recent_turns = payload['recent_turns']
+    assert [turn['turn_id'] for turn in recent_turns] == stable_turn_ids
+    assert unfinished_turn_id not in [turn['turn_id'] for turn in recent_turns]
+    assert all(turn['dm_output'] for turn in recent_turns)
+    assert 'I roll a d20-1' not in json.dumps(recent_turns)
+
+
+def test_build_dm_context_skips_resolved_roll_request_turns(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        stable_first = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='I ask the watchman to pause.',
+            dm_output='The watchman hesitates, spear still held between you.',
+            status='completed',
+            outcome_status='resolved',
+        )
+        stable_second = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='I step back from the stall.',
+            dm_output='You give ground, keeping the spice counter at your side.',
+            status='completed',
+            outcome_status='resolved',
+        )
+        roll_request = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='I leap over the guard and try to wrench his neck.',
+            dm_output='Larin, roll d20 - 1 for Athletics (DC 16).',
+            status='completed',
+            requires_roll=True,
+            rule_type='athletics',
+            roll_value=None,
+            outcome_status='deferred',
+            rules_hint=safe_json_dumps({'requires_roll': True, 'outcome_deferred': True}, {}),
+        )
+        db.session.add_all([stable_first, stable_second, roll_request])
+        db.session.flush()
+
+        resolver = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='I roll a d20-1 for STR check: 14 = 13',
+            dm_output=None,
+            status='processing',
+            requires_roll=True,
+            rule_type='athletics',
+            roll_value=13,
+            outcome_status='resolved',
+            rules_hint=safe_json_dumps(
+                {
+                    'requires_roll': True,
+                    'roll_type': 'athletics',
+                    'roll_value': 13,
+                    'resolved_turn_id': roll_request.turn_id,
+                    'outcome_deferred': False,
+                },
+                {},
+            ),
+        )
+        db.session.add(resolver)
+        db.session.flush()
+        roll_request.outcome_status = 'resolved'
+        roll_request.metadata_json = safe_json_dumps({'resolved_by_turn_id': resolver.turn_id}, {})
+        db.session.commit()
+
+        stable_turn_ids = [stable_first.turn_id, stable_second.turn_id]
+        roll_request_turn_id = roll_request.turn_id
+        resolver_turn_id = resolver.turn_id
+        payload = json.loads(
+            build_dm_context(
+                ids['world_id'],
+                ids['campaign_id'],
+                ids['session_id'],
+                max_turns=2,
+            )
+        )
+
+    recent_turns = payload['recent_turns']
+    assert [turn['turn_id'] for turn in recent_turns] == stable_turn_ids
+    assert {turn['context_role'] for turn in recent_turns} == {'completed_narration'}
+    assert roll_request_turn_id not in [turn['turn_id'] for turn in recent_turns]
+    assert resolver_turn_id not in [turn['turn_id'] for turn in recent_turns]
+    encoded_recent_turns = json.dumps(recent_turns)
+    assert 'roll d20' not in encoded_recent_turns
+    assert 'I roll a d20-1' not in encoded_recent_turns
+
+
+def test_build_dm_context_keeps_final_no_roll_rulings(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        no_roll_ruling = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input="I throw a dagger at the watchman's throat.",
+            dm_output='Your hand finds no dagger. No attack reaches the watchman.',
+            status='completed',
+            requires_roll=True,
+            rule_type='attack',
+            roll_value=None,
+            outcome_status='resolved',
+            rules_hint=safe_json_dumps({'requires_roll': True, 'outcome_deferred': True}, {}),
+        )
+        db.session.add(no_roll_ruling)
+        db.session.commit()
+
+        payload = json.loads(
+            build_dm_context(
+                ids['world_id'],
+                ids['campaign_id'],
+                ids['session_id'],
+                max_turns=2,
+            )
+        )
+        no_roll_turn_id = no_roll_ruling.turn_id
+
+    recent_turns = payload['recent_turns']
+    assert [turn['turn_id'] for turn in recent_turns] == [no_roll_turn_id]
+    assert recent_turns[0]['context_role'] == 'completed_narration'
+    assert 'No attack reaches the watchman.' in recent_turns[0]['dm_output']
 
 
 def test_build_dm_context_scopes_players_to_current_campaign(app):

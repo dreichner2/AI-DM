@@ -87,4 +87,8 @@ def test_turn_rules_build_roll_prompt_and_detect_roll_requests():
     assert 'Include the -1 modifier' in prompt
     assert 'I roll a d20-1: 14 = 13' in prompt
     assert response_mentions_roll_request('Please roll a d20 for the ward.')
+    assert response_mentions_roll_request(
+        'Roll a Longbow attack for Legoless: `d20 + 4` against AC 13.'
+    )
+    assert not response_mentions_roll_request("On a hit, you'll roll `1d8 + 2` piercing damage.")
     assert not response_mentions_roll_request('The ward glows silently.')

@@ -25,6 +25,11 @@ ROLL_TYPE_LABELS = {
 ROLL_REQUEST_PATTERNS = [
     re.compile(r'\bplease\s+roll\b', re.IGNORECASE),
     re.compile(r'\broll\s+(?:a\s+)?d20\b', re.IGNORECASE),
+    re.compile(
+        r"\broll\s+(?:an?\s+)?(?:[a-z][a-z0-9 +'()/+-]{0,60}\s+)?"
+        r"(?:attack(?:\s+roll)?|check|saving\s+throw|save)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r'\broll\s+(?:for\s+)?initiative\b', re.IGNORECASE),
     re.compile(r'\bmake\s+(?:an?\s+)?[a-z][a-z \'-]{0,40}\s+check\b', re.IGNORECASE),
     re.compile(r'\bwhat\s+did\s+you\s+roll\b', re.IGNORECASE),

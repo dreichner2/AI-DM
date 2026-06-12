@@ -491,6 +491,10 @@ def normalize_state_change(raw_change: Any, *, fallback_actor_id: str, fallback_
         change['spellLevel'] = change.pop('spell_level')
     if 'learned_from' in change and 'learnedFrom' not in change:
         change['learnedFrom'] = change.pop('learned_from')
+    if 'max_hp' in change and 'maxHp' not in change:
+        change['maxHp'] = change.pop('max_hp')
+    if 'current_hp' in change and 'currentHp' not in change:
+        change['currentHp'] = change.pop('current_hp')
     if change_type == 'spell.learn':
         raw_spell = change.get('spell')
         if isinstance(raw_spell, dict):
@@ -510,6 +514,12 @@ def normalize_state_change(raw_change: Any, *, fallback_actor_id: str, fallback_
             change['amount'] = max(1, int(change.get('amount') or 1))
         except (TypeError, ValueError):
             return None
+    for hp_field in ('maxHp', 'currentHp'):
+        if hp_field in change:
+            try:
+                change[hp_field] = max(0, int(change.get(hp_field) or 0))
+            except (TypeError, ValueError):
+                return None
     if 'quantity' in change:
         try:
             change['quantity'] = max(1, int(change.get('quantity') or 1))
@@ -651,6 +661,8 @@ def _state_change_has_required_fields(change: dict[str, Any]) -> bool:
         )
     if change_type in {'health.heal', 'health.damage'}:
         return 'amount' in change
+    if change_type == 'health.max.set':
+        return 'maxHp' in change or 'amount' in change
     if change_type in {'xp.add', 'xp.remove'}:
         return 'amount' in change
     if change_type == 'spell.learn':

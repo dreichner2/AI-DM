@@ -193,6 +193,7 @@ def test_direct_hostile_action_pattern_covers_thrown_or_smashing_attacks():
     assert DIRECT_HOSTILE_ACTION_PATTERN.search('I smash the champion with both fists')
     assert DIRECT_HOSTILE_ACTION_PATTERN.search('I leap and try to smack Thor')
     assert DIRECT_HOSTILE_ACTION_PATTERN.search('I grab his head and try to crush it')
+    assert DIRECT_HOSTILE_ACTION_PATTERN.search('I stomp the crawling ghoul')
 
 
 def test_default_encounter_request_prefers_hostile_scene_npc_over_weapon_phrase(app):

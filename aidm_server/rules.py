@@ -74,6 +74,9 @@ _ATTACK_KEYWORDS = {
     "stab",
     "stabs",
     "stabbed",
+    "stomp",
+    "stomps",
+    "stomped",
     "strike",
     "strikes",
     "struck",
@@ -113,11 +116,21 @@ _SPELL_ACTION_PATTERNS = [
     re.compile(r'\buse\s+(?:my\s+|the\s+)?magic\b', re.IGNORECASE),
     re.compile(r'\bmagic\s+to\b', re.IGNORECASE),
     re.compile(r'\bwild\s+(?:magic|spell)\b', re.IGNORECASE),
+    re.compile(
+        r'\b(?:speak|commune|contact|call|listen|reach\s+out)\b[^.!?\n]{0,80}'
+        r'\b(?:spirit|spirits|ghost|ghosts|dead|ancestor|ancestors|shade|shades)\b',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r'\b(?:spirit|spirits|ghost|ghosts|dead|ancestor|ancestors|shade|shades)\b[^.!?\n]{0,80}'
+        r'\b(?:speak|answer|commune|contact|listen|respond)\b',
+        re.IGNORECASE,
+    ),
 ]
 _RETROSPECTIVE_ATTACK_RE = re.compile(
     r'\b(?:was|were|had|already|earlier|before|previously)\b[^.!?]{0,80}'
     r'\b(?:attacked|blasted|crushed|decapitated|executed|hit|killed|kicked|maimed|punched|ripped|'
-    r'shot|slammed|slashed|sliced|smashed|stabbed|struck|threw)\b',
+    r'shot|slammed|slashed|sliced|smashed|stabbed|stomped|struck|threw)\b',
     re.IGNORECASE,
 )
 _STEALTH_KEYWORDS = {"sneak", "stealth", "hide", "silently"}

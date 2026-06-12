@@ -19,6 +19,7 @@ from aidm_server.models import (
     StoryFact,
     StoryThread,
     TurnCanonUpdate,
+    get_or_create_session_state,
     safe_json_dumps,
     safe_json_loads,
 )
@@ -1041,7 +1042,7 @@ def test_projection_syncs_session_state_and_snapshot_quests(app):
         refresh_session_projection(ids['session_id'], campaign)
         db.session.commit()
 
-        state = SessionState.query.filter_by(session_id=ids['session_id']).one()
+        state = get_or_create_session_state(ids['session_id'], campaign)
         snapshot = safe_json_loads(db.session.get(Session, ids['session_id']).state_snapshot, {})
         scene = snapshot['currentScene']
         quests = {quest['id']: quest for quest in snapshot['quests']}
@@ -1058,6 +1059,112 @@ def test_projection_syncs_session_state_and_snapshot_quests(app):
         assert 'mood' not in scene
         assert quests['investigate_underwater_disturbance']['status'] == 'completed'
         assert quests['flying_lessons_from_master_roshi']['status'] == 'active'
+
+
+def test_refresh_session_projection_ignores_prose_current_location_fact(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        first_turn = _create_turn(
+            app,
+            ids,
+            player_input='We arrive in Rensira.',
+            dm_output='The party reaches Rensira.',
+        )
+        second_turn = _create_turn(
+            app,
+            ids,
+            player_input='Joe stands in the moonlight.',
+            dm_output='Joe basks in Moonbeam while the party spreads across the stairs and street.',
+        )
+        campaign = first_turn.campaign
+        db.session.add_all(
+            [
+                StoryFact(
+                    campaign_id=ids['campaign_id'],
+                    predicate='current_location',
+                    value_text='Rensira',
+                    fact_status='accepted',
+                    source_turn_id=first_turn.turn_id,
+                ),
+                StoryFact(
+                    campaign_id=ids['campaign_id'],
+                    predicate='current_location',
+                    value_text='Joe basks in Moonbeam while Alfred watches the stairs and Koryl hovers near the door',
+                    fact_status='accepted',
+                    source_turn_id=second_turn.turn_id,
+                ),
+            ]
+        )
+        refresh_session_projection(ids['session_id'], campaign)
+        db.session.flush()
+        state = get_or_create_session_state(ids['session_id'], campaign)
+        state.current_location = 'Joe basks in Moonbeam while Alfred watches the stairs and Koryl hovers near the door'
+        session = db.session.get(Session, ids['session_id'])
+        snapshot = safe_json_loads(session.state_snapshot, {})
+        snapshot['currentScene'] = {
+            'locationId': 'joe_basks_in_moonbeam_while_alfred_watches_the_stairs_and_koryl_hovers_near_the_door',
+            'name': 'Joe basks in Moonbeam while Alfred watches the stairs and Koryl hovers near the door',
+        }
+        session.state_snapshot = safe_json_dumps(snapshot, {})
+        db.session.commit()
+
+        refresh_session_projection(ids['session_id'], campaign)
+        db.session.commit()
+
+        refreshed_state = SessionState.query.filter_by(session_id=ids['session_id']).one()
+        refreshed_snapshot = safe_json_loads(db.session.get(Session, ids['session_id']).state_snapshot, {})
+
+        assert refreshed_state.current_location == 'Rensira'
+        assert refreshed_snapshot['currentScene']['name'] == 'Rensira'
+        assert refreshed_snapshot['currentScene']['locationId'] == 'rensira'
+
+
+def test_refresh_session_projection_repairs_prose_scene_from_snapshot_location(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        turn = _create_turn(
+            app,
+            ids,
+            player_input='Joe stands in moonlight.',
+            dm_output='Joe basks in Moonbeam near the carved stone.',
+        )
+        campaign = turn.campaign
+        campaign.location = ''
+        db.session.add(
+            StoryFact(
+                campaign_id=ids['campaign_id'],
+                predicate='current_location',
+                value_text='Joe basks in Moonbeam while Alfred watches the stairs and Koryl hovers near the door',
+                fact_status='accepted',
+                source_turn_id=turn.turn_id,
+            )
+        )
+        state = get_or_create_session_state(ids['session_id'], campaign)
+        state.current_location = ''
+        session = db.session.get(Session, ids['session_id'])
+        snapshot = safe_json_loads(session.state_snapshot, {})
+        snapshot['currentScene'] = {
+            'locationId': 'joe_basks_in_moonbeam_while_alfred_watches_the_stairs_and_koryl_hovers_near_the_door',
+            'name': 'Joe basks in Moonbeam while Alfred watches the stairs and Koryl hovers near the door',
+        }
+        snapshot['locations'] = [
+            {'id': 'rensira', 'name': 'Rensira'},
+            {'id': 'dark_hollow_beneath_the_carved_stone', 'name': 'Dark hollow beneath the carved stone'},
+        ]
+        session.state_snapshot = safe_json_dumps(snapshot, {})
+        db.session.commit()
+
+        refresh_session_projection(ids['session_id'], campaign)
+        db.session.commit()
+
+        refreshed_state = SessionState.query.filter_by(session_id=ids['session_id']).one()
+        refreshed_snapshot = safe_json_loads(db.session.get(Session, ids['session_id']).state_snapshot, {})
+
+        assert refreshed_state.current_location == 'Dark hollow beneath the carved stone'
+        assert refreshed_snapshot['currentScene']['name'] == 'Dark hollow beneath the carved stone'
+        assert refreshed_snapshot['currentScene']['locationId'] == 'dark_hollow_beneath_the_carved_stone'
 
 
 def test_extract_canon_patch_does_not_reuse_shared_patch_state(app, monkeypatch):

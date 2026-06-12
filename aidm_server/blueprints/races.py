@@ -12,7 +12,7 @@ from aidm_server.contracts import ProviderRequest
 from aidm_server.database import db
 from aidm_server.errors import error_response
 from aidm_server.game_state.extraction.schemas import extract_json_object
-from aidm_server.llm_providers import get_helper_provider
+from aidm_server.llm_providers import get_helper_provider, helper_provider_name
 from aidm_server.models import CustomRace, safe_json_dumps, safe_json_loads
 from aidm_server.race_system import (
     CUSTOM_RACE_APPROVAL_STATUSES,
@@ -46,13 +46,7 @@ CUSTOM_RACE_SYSTEM_MESSAGE = (
 
 
 def _helper_provider_name() -> str:
-    return str(
-        current_app.config.get(f'{CUSTOM_RACE_HELPER_PREFIX}_LLM_PROVIDER')
-        or os.getenv(f'{CUSTOM_RACE_HELPER_PREFIX}_LLM_PROVIDER')
-        or current_app.config.get('AIDM_HELPER_LLM_PROVIDER')
-        or os.getenv('AIDM_HELPER_LLM_PROVIDER')
-        or 'deepseek'
-    ).strip().lower()
+    return helper_provider_name(CUSTOM_RACE_HELPER_TASK)
 
 
 def _custom_race_helper_configured(provider_name: str) -> bool:
@@ -76,6 +70,8 @@ def _custom_race_helper_configured(provider_name: str) -> bool:
         return provider_configured('gemini')
     if provider_name == 'fallback':
         return True
+    if provider_name in {'codex', 'codex_cli'}:
+        return provider_configured(provider_name)
     return False
 
 

@@ -79,6 +79,12 @@ def _change_message(change: dict[str, Any], *, status: str, reason: str | None =
         return f"Restored {_amount(change)} HP{suffix}"
     if change_type == 'health.damage':
         return f"Took {_amount(change)} damage."
+    if change_type == 'health.max.set':
+        max_hp = int_or_default(change.get('newMaxHp', change.get('maxHp', change.get('amount'))), default=0)
+        current_hp = int_or_default(change.get('newCurrentHp', change.get('currentHp')), default=0)
+        if current_hp:
+            return f"Set max HP to {max_hp} and current HP to {current_hp}."
+        return f"Set max HP to {max_hp}."
     if change_type == 'xp.add':
         return f"Added {_amount(change)} XP."
     if change_type == 'xp.remove':

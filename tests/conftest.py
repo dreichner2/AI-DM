@@ -7,6 +7,11 @@ import pytest
 from aidm_server.database import ensure_schema
 
 
+@pytest.fixture(autouse=True)
+def disable_external_codex_helpers_by_default(monkeypatch):
+    monkeypatch.setenv('AIDM_CODEX_EXECUTABLE', '/nonexistent/aidm-test-codex')
+
+
 @pytest.fixture()
 def app_runtime(tmp_path, monkeypatch):
     db_path = tmp_path / 'test.db'

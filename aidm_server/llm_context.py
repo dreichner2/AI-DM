@@ -24,6 +24,7 @@ from aidm_server.models import (
 )
 from aidm_server.race_system import build_race_context_summary
 from aidm_server.time_utils import utc_now
+from aidm_server.turn_rules import response_mentions_roll_request
 
 
 CONTEXT_VERSION = 'v2'
@@ -35,6 +36,9 @@ MAX_LIVE_RECENT_KNOWN_NPCS = 8
 MAX_LIVE_FLAGS = 20
 MAX_LIVE_COMBAT_PARTICIPANTS = 12
 MAX_LIVE_SCENE_ITEMS = 12
+RECENT_TURN_BACKFILL_MULTIPLIER = 3
+RECENT_TURN_BACKFILL_EXTRA = 5
+RECENT_TURN_CONTEXT_ROLE = 'completed_narration'
 
 
 def _truncate_text(value: str | None, max_length: int) -> str:
@@ -325,6 +329,41 @@ def _live_world_state_for_session(session_id) -> dict:
     return _compact_live_world_state(snapshot)
 
 
+def _stable_turn_for_recent_context(turn: DmTurn) -> bool:
+    """Only completed final narration belongs in recent_turns.
+
+    The active turn is inserted before DM generation and has no dm_output yet.
+    Roll-resolution rows can also briefly remain processing with no narration.
+    Roll-request rows are likewise not final scene outcomes; unresolved ones are
+    represented by pending_checks, and resolved ones should not keep steering
+    unrelated future actions.
+    Including those rows makes the model continue old actions instead of
+    answering the current PLAYER INPUT.
+    """
+    if str(turn.status or '').strip().lower() == 'processing':
+        return False
+    if bool(turn.requires_roll) and turn.roll_value is None and response_mentions_roll_request(turn.dm_output):
+        return False
+    return bool(str(turn.dm_output or '').strip())
+
+
+def _recent_turns_for_context(session_id: int, max_turns: int) -> list[DmTurn]:
+    limit = max(max_turns, max_turns * RECENT_TURN_BACKFILL_MULTIPLIER, max_turns + RECENT_TURN_BACKFILL_EXTRA)
+    candidates = (
+        DmTurn.query.filter_by(session_id=session_id)
+        .order_by(DmTurn.turn_id.desc())
+        .limit(limit)
+        .all()
+    )
+    stable_turns = []
+    for turn in candidates:
+        if _stable_turn_for_recent_context(turn):
+            stable_turns.append(turn)
+        if len(stable_turns) >= max_turns:
+            break
+    return list(reversed(stable_turns))
+
+
 def _recent_actions_by_player(player_ids: list[int], limit_per_player: int = 3) -> dict[int, list[str]]:
     if not player_ids:
         return {}
@@ -414,16 +453,11 @@ def build_dm_context(
 
     recent_turns = []
     if session_id:
-        turns = (
-            DmTurn.query.filter_by(session_id=session_id)
-            .order_by(DmTurn.turn_id.desc())
-            .limit(max_turns)
-            .all()
-        )
-        for turn in reversed(turns):
+        for turn in _recent_turns_for_context(session_id, max_turns):
             recent_turns.append(
                 {
                     'turn_id': turn.turn_id,
+                    'context_role': RECENT_TURN_CONTEXT_ROLE,
                     'player_id': turn.player_id,
                     'player_input': _truncate_text(turn.player_input, 240),
                     'dm_output': _truncate_text(turn.dm_output, 600),

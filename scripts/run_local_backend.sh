@@ -38,6 +38,11 @@ elif [[ "${AIDM_LLM_PROVIDER}" == "nvidia" || "${AIDM_LLM_PROVIDER}" == "kimi" ]
   export AIDM_LLM_MODEL="${AIDM_LLM_MODEL:-moonshotai/kimi-k2.5}"
   export AIDM_LLM_FALLBACK_MODELS="${AIDM_LLM_FALLBACK_MODELS:-}"
   export AIDM_NVIDIA_INVOKE_URL="${AIDM_NVIDIA_INVOKE_URL:-https://integrate.api.nvidia.com/v1}"
+elif [[ "${AIDM_LLM_PROVIDER}" == "codex" || "${AIDM_LLM_PROVIDER}" == "codex_cli" ]]; then
+  export AIDM_LLM_MODEL="${AIDM_LLM_MODEL:-gpt-5.5-medium}"
+  export AIDM_LLM_FALLBACK_MODELS="${AIDM_LLM_FALLBACK_MODELS:-}"
+  export AIDM_CODEX_REASONING_EFFORT="${AIDM_CODEX_REASONING_EFFORT:-medium}"
+  export AIDM_CODEX_TIMEOUT_SECONDS="${AIDM_CODEX_TIMEOUT_SECONDS:-240}"
 elif [[ "${AIDM_LLM_PROVIDER}" == "fallback" ]]; then
   export AIDM_LLM_MODEL="${AIDM_LLM_MODEL:-deterministic-v1}"
   export AIDM_LLM_FALLBACK_MODELS="${AIDM_LLM_FALLBACK_MODELS:-}"

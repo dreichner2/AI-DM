@@ -9,7 +9,7 @@ from aidm_server.canon_text import int_or_default
 from aidm_server.contracts import ProviderRequest
 from aidm_server.game_state.extraction.prompts import POST_DM_SYSTEM_MESSAGE, build_post_dm_prompt
 from aidm_server.game_state.extraction.schemas import extract_json_object, normalize_post_extraction
-from aidm_server.game_state.models import normalize_item_name, stable_change_id
+from aidm_server.game_state.models import normalize_item_name, stable_change_id, stable_slug
 from aidm_server.llm_providers import get_helper_provider
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 
@@ -39,6 +39,21 @@ HEAL_PATTERN = re.compile(
 DAMAGE_PATTERN = re.compile(
     r'\b(?:take|takes|took|suffer|suffers|suffered)\s+'
     rf'(?P<amount>{SMALL_NUMBER_PATTERN})\s*(?:points?\s+of\s+)?(?:[a-z]+\s+)?(?:damage|hp)\b',
+    re.IGNORECASE,
+)
+MAX_HP_SET_PATTERNS = [
+    re.compile(
+        r'\b(?:max(?:imum)?\s*(?:hp|hit points?)|hit point maximum)\s*'
+        r'(?:is|are|becomes?|now|to|increases? to|rises? to|sets? to)\s*(?P<amount>\d{1,3})\b',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r'\b(?P<amount>\d{1,3})\s*(?:max(?:imum)?\s*(?:hp|hit points?)|hit point maximum)\b',
+        re.IGNORECASE,
+    ),
+]
+FULL_HEAL_PATTERN = re.compile(
+    r'\b(?:fully healed|heals? to full|restored to full|full heal|full hp|restored completely)\b',
     re.IGNORECASE,
 )
 XP_GAIN_PATTERN = re.compile(
@@ -222,7 +237,15 @@ LOWER_DANGER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ENEMY_DEFEATED_PATTERN = re.compile(
-    r'\b(?:falls?|drops?|dies?|dead|defeated|destroyed|collapses?|goes down|is slain|are slain|last enemy falls)\b',
+    r'\b(?:dies?|dead|defeated|destroyed|goes down|is slain|are slain|slain|last enemy falls)\b|'
+    r'\b(?:falls?|drops?|collapses?)\s+(?:dead|lifeless|unconscious|unmoving)\b',
+    re.IGNORECASE,
+)
+ENEMY_DEFEAT_NEGATION_PATTERN = re.compile(
+    r"\b(?:does\s+not|doesn't|do\s+not|don't|not|never)\s+"
+    r'(?:fall|falls|drop|drops|collapse|collapses|go\s+down|goes\s+down|die|dies|dead|defeated|slain)\b|'
+    r'\b(?:not\s+down|not\s+dead|not\s+defeated|still\s+alive|is\s+still\s+alive|remains\s+alive|'
+    r'hurt\s*,?\s+but\s+not\s+down|wounded\s*,?\s+but\s+not\s+down)\b',
     re.IGNORECASE,
 )
 ENEMY_FLEE_PATTERN = re.compile(r'\b(?:flees?|runs? away|retreats?|escapes?|withdraws?)\b', re.IGNORECASE)
@@ -256,6 +279,15 @@ EXPLICIT_LEARN_MAGIC_PATTERN = re.compile(
 )
 TRANSFORM_ONLY_PATTERN = re.compile(
     r'\b(?:turns?\s+into|transforms?\s+into|shapeshifts?\s+into|form\s+ripples|form\s+shifts)\b',
+    re.IGNORECASE,
+)
+FORM_CHANGE_PATTERN = re.compile(
+    r'\b(?:turns?\s+into|transforms?\s+into|shapeshifts?\s+into)\s+'
+    r'(?:a|an|the|his|her|their)?\s*(?P<form>[A-Za-z][A-Za-z0-9 \'-]{1,50})',
+    re.IGNORECASE,
+)
+FORM_REVERT_PATTERN = re.compile(
+    r'\b(?:reverts?|returns?|shifts?)\s+(?:back\s+)?(?:to\s+)?(?:normal|true|original|base|humanoid)\s+form\b',
     re.IGNORECASE,
 )
 LARGE_THREAT_PATTERN = re.compile(
@@ -349,6 +381,7 @@ def _change_identity_value(change: dict[str, Any]) -> Any:
         or change.get('spellName')
         or spell.get('id')
         or spell.get('name')
+        or change.get('maxHp')
         or change.get('amount')
         or change.get('quantity')
     )
@@ -386,6 +419,13 @@ def _already_applied_signature(change: dict[str, Any]) -> tuple[Any, ...] | None
         return (change_type, str(change.get('actorId') or ''), str(change.get('currency') or '').lower(), int(change.get('amount') or 0))
     if change_type in {'health.heal', 'health.damage'}:
         return (change_type, str(change.get('actorId') or ''), int(change.get('amount') or 0))
+    if change_type == 'health.max.set':
+        return (
+            change_type,
+            str(change.get('actorId') or ''),
+            int(change.get('maxHp') or change.get('amount') or 0),
+            bool(change.get('healToMax') or change.get('setCurrentToMax')),
+        )
     if change_type in {'xp.add', 'xp.remove'}:
         return (change_type, str(change.get('actorId') or ''), int(change.get('amount') or 0))
     if change_type == 'spell.learn':
@@ -766,10 +806,11 @@ def _add_change(
             actor_id,
             payload.get('itemName'),
             payload.get('slot'),
-        payload.get('currency'),
-        payload.get('spellName'),
-        payload.get('amount'),
-    ),
+            payload.get('currency'),
+            payload.get('spellName'),
+            payload.get('maxHp'),
+            payload.get('amount'),
+        ),
         'turnId': turn_id,
         'type': change_type,
         'source': 'post_dm',
@@ -1291,6 +1332,65 @@ def _heuristic_scene_danger_changes(
     return changes
 
 
+def _clean_form_label(value: Any) -> str:
+    text = re.split(r'\b(?:and|as|while|with|then)\b|[.!?,;:]', str(value or '').strip(), maxsplit=1, flags=re.IGNORECASE)[0]
+    text = re.sub(r'\s+', ' ', text).strip(" -'\"")
+    words = re.findall(r'[A-Za-z0-9]+', text)
+    if not text or len(text) > 48 or len(words) > 5:
+        return ''
+    return text.lower()
+
+
+def _heuristic_form_state_changes(
+    *,
+    dm_response: str,
+    actor_id: str | None,
+    turn_id: int,
+    already_applied_changes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    actor_key = str(actor_id or '').strip()
+    if not actor_key:
+        return []
+    flag_key = f'{stable_slug(actor_key)}_current_form'
+    already = {
+        _already_applied_signature(change)
+        for change in already_applied_changes
+        if isinstance(change, dict)
+    }
+
+    if FORM_REVERT_PATTERN.search(dm_response or ''):
+        change = {
+            'id': stable_change_id(turn_id, 'post_dm', 'form', actor_key, 'unset'),
+            'turnId': turn_id,
+            'type': 'flag.unset',
+            'source': 'post_dm',
+            'flagKey': flag_key,
+            'reason': 'DM narration confirmed the character returned to their base form.',
+            'visible': False,
+        }
+        signature = _already_applied_signature(change)
+        return [] if signature and signature in already else [change]
+
+    match = FORM_CHANGE_PATTERN.search(dm_response or '')
+    if not match:
+        return []
+    form = _clean_form_label(match.group('form'))
+    if not form:
+        return []
+    change = {
+        'id': stable_change_id(turn_id, 'post_dm', 'form', actor_key, form),
+        'turnId': turn_id,
+        'type': 'flag.set',
+        'source': 'post_dm',
+        'flagKey': flag_key,
+        'flagValue': form,
+        'reason': f'DM narration confirmed current form: {form}.',
+        'visible': False,
+    }
+    signature = _already_applied_signature(change)
+    return [] if signature and signature in already else [change]
+
+
 def _heuristic_active_npc_changes(
     *,
     state_before_dm: dict[str, Any],
@@ -1424,6 +1524,12 @@ def _combat_condition_delta(sentence: str, enemy: dict[str, Any], enemy_count: i
             if match:
                 return 'combat.condition.add', match.group('condition')
     return None
+
+
+def _sentence_defeats_enemy(sentence: str) -> bool:
+    if ENEMY_DEFEAT_NEGATION_PATTERN.search(sentence):
+        return False
+    return bool(ENEMY_DEFEATED_PATTERN.search(sentence))
 
 
 def _combat_enemies(state_before_dm: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1569,6 +1675,52 @@ def _add_combat_change(
     changes.append(change)
 
 
+def _heuristic_max_hp_changes(
+    *,
+    state_before_dm: dict[str, Any],
+    dm_response: str,
+    actor_id: str,
+    turn_id: int,
+    already_applied_changes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    text = re.sub(r'\*+', '', dm_response or '')
+    if not text.strip():
+        return []
+    actor = _actor_by_id(state_before_dm, actor_id)
+    health = actor.get('health') if isinstance(actor, dict) and isinstance(actor.get('health'), dict) else {}
+    current_max_hp = max(0, int_or_default(health.get('maxHp'), default=0))
+    current_hp = max(0, int_or_default(health.get('currentHp'), default=0))
+    changes: list[dict[str, Any]] = []
+    already = _already_applied(already_applied_changes)
+    seen_amounts: set[int] = set()
+    for pattern in MAX_HP_SET_PATTERNS:
+        for match in pattern.finditer(text):
+            max_hp = int_or_default(match.group('amount'), default=0)
+            if max_hp <= 0 or max_hp in seen_amounts:
+                continue
+            if current_max_hp and max_hp < current_max_hp:
+                continue
+            sentence = _sentence_around(text, match.start(), match.end())
+            heal_to_max = bool(FULL_HEAL_PATTERN.search(sentence) or FULL_HEAL_PATTERN.search(text))
+            if current_max_hp == max_hp and not (heal_to_max and current_hp < max_hp):
+                continue
+            payload: dict[str, Any] = {'maxHp': max_hp}
+            if heal_to_max:
+                payload['healToMax'] = True
+                payload['currentHp'] = max_hp
+            _add_change(
+                changes,
+                turn_id=turn_id,
+                actor_id=actor_id,
+                change_type='health.max.set',
+                reason=f'DM stated max HP is {max_hp}.',
+                already=already,
+                **payload,
+            )
+            seen_amounts.add(max_hp)
+    return changes
+
+
 def _heuristic_combat_changes(
     *,
     state_before_dm: dict[str, Any],
@@ -1594,7 +1746,7 @@ def _heuristic_combat_changes(
             if not enemy_id or not _combat_enemy_match(sentence, enemy, len(enemies)):
                 continue
             hp = enemy.get('hp') if isinstance(enemy.get('hp'), dict) else {}
-            if ENEMY_DEFEATED_PATTERN.search(sentence):
+            if _sentence_defeats_enemy(sentence):
                 resolved_enemy_ids.add(enemy_id)
                 _add_combat_change(
                     changes,
@@ -1789,6 +1941,15 @@ def _heuristic_extract(
                 reason=f'DM stated XP change of {amount}.',
                 already=already,
             )
+    max_hp_changes = _heuristic_max_hp_changes(
+        state_before_dm=state_before_dm,
+        dm_response=dm_response,
+        actor_id=actor_id,
+        turn_id=turn_id,
+        already_applied_changes=[*already_applied_changes, *changes],
+    )
+    if max_hp_changes:
+        changes.extend(max_hp_changes)
     _heuristic_spell_learn_changes(
         text=text,
         changes=changes,
@@ -1884,6 +2045,13 @@ def _heuristic_extract(
         already_applied_changes=already_applied_changes,
     )
     changes.extend(scene_item_changes)
+    form_changes = _heuristic_form_state_changes(
+        dm_response=dm_response,
+        actor_id=actor_id,
+        turn_id=turn_id,
+        already_applied_changes=[*already_applied_changes, *changes],
+    )
+    changes.extend(form_changes)
     scene_changes = _heuristic_scene_danger_changes(
         state_before_dm=state_before_dm,
         dm_response=dm_response,
@@ -1919,6 +2087,10 @@ def _heuristic_extract(
         notes.append('heuristic_scene_danger')
     if scene_item_changes and 'scene_item_grounding' not in notes:
         notes.append('scene_item_grounding')
+    if form_changes and 'heuristic_form_state' not in notes:
+        notes.append('heuristic_form_state')
+    if max_hp_changes and 'heuristic_max_hp' not in notes:
+        notes.append('heuristic_max_hp')
     if active_npc_changes and 'heuristic_active_npcs' not in notes:
         notes.append('heuristic_active_npcs')
     if combat_changes and 'heuristic_combat_outcomes' not in notes:
@@ -2023,6 +2195,23 @@ def extract_post_dm_outcomes(
         )
         if scene_item_changes:
             normalized['proposedChanges'] = [*(normalized.get('proposedChanges') or []), *scene_item_changes]
+        form_changes = _heuristic_form_state_changes(
+            dm_response=dm_response,
+            actor_id=actor_id,
+            turn_id=turn_id,
+            already_applied_changes=[*already_applied_changes, *(normalized.get('proposedChanges') or [])],
+        )
+        if form_changes:
+            normalized['proposedChanges'] = [*(normalized.get('proposedChanges') or []), *form_changes]
+        max_hp_changes = _heuristic_max_hp_changes(
+            state_before_dm=state_before_dm,
+            dm_response=dm_response,
+            actor_id=actor_id,
+            turn_id=turn_id,
+            already_applied_changes=[*already_applied_changes, *(normalized.get('proposedChanges') or [])],
+        )
+        if max_hp_changes:
+            normalized['proposedChanges'] = [*(normalized.get('proposedChanges') or []), *max_hp_changes]
         scene_changes = _heuristic_scene_danger_changes(
             state_before_dm=state_before_dm,
             dm_response=dm_response,
@@ -2079,6 +2268,10 @@ def extract_post_dm_outcomes(
             notes.append('filtered_transform_only_spell_learn')
         if scene_item_changes and 'scene_item_grounding' not in notes:
             notes.append('scene_item_grounding')
+        if form_changes and 'heuristic_form_state' not in notes:
+            notes.append('heuristic_form_state')
+        if max_hp_changes and 'heuristic_max_hp' not in notes:
+            notes.append('heuristic_max_hp')
         if conflict_resolved and 'resolved_combat_scene_conflict' not in notes:
             notes.append('resolved_combat_scene_conflict')
         normalized['notes'] = notes

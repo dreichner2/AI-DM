@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 
 from aidm_server.config import default_sqlite_uri
 from aidm_server.database import _resolve_sqlite_uri
@@ -163,8 +164,12 @@ def test_llm_config_update_requires_json_body(client):
     assert response.get_json()['error_code'] == 'validation_error'
 
 
-def test_llm_config_exposes_provider_capabilities(client, monkeypatch):
+def test_llm_config_exposes_provider_capabilities(client, monkeypatch, tmp_path):
     monkeypatch.setenv('AIDM_NVIDIA_API_KEY', 'nvapi-test')
+    codex_executable = tmp_path / 'codex'
+    codex_executable.write_text('#!/bin/sh\n', encoding='utf-8')
+    codex_executable.chmod(0o755)
+    monkeypatch.setenv('AIDM_CODEX_EXECUTABLE', str(codex_executable))
     monkeypatch.delenv('AIDM_DEEPSEEK_API_KEY', raising=False)
     monkeypatch.delenv('DEEPSEEK_API_KEY', raising=False)
 
@@ -173,13 +178,66 @@ def test_llm_config_exposes_provider_capabilities(client, monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     providers = {provider['id']: provider for provider in payload['providers']}
+    codex_models = providers['codex_cli']['models']
     assert providers['deepseek']['capabilities']['openai_compatible'] is True
     assert providers['deepseek']['capabilities']['thinking_control'] is True
     assert providers['deepseek']['configured'] is False
+    assert providers['codex_cli']['label'] == 'Codex'
+    assert providers['codex_cli']['default_model'] == 'gpt-5.5-medium'
+    assert [model['id'] for model in codex_models] == [
+        'gpt-5.5-low',
+        'gpt-5.5-medium',
+        'gpt-5.5-high',
+        'gpt-5.5-xhigh',
+    ]
+    assert [model['reasoning_effort'] for model in codex_models] == ['low', 'medium', 'high', 'xhigh']
+    assert providers['codex_cli']['configured'] is True
+    assert providers['codex_cli']['capabilities']['streaming'] is True
+    assert providers['codex_cli']['capabilities']['oauth_cli'] is True
     assert providers['nvidia']['configured'] is True
     assert providers['nvidia']['capabilities']['default_timeout_seconds'] >= 1
     assert payload['runtime_scope'] == 'process'
     assert payload['restart_required_for_other_workers'] is True
+
+
+def test_llm_config_update_accepts_codex_reasoning_effort_model(client, monkeypatch, tmp_path):
+    codex_executable = tmp_path / 'codex'
+    codex_executable.write_text('#!/bin/sh\n', encoding='utf-8')
+    codex_executable.chmod(0o755)
+    monkeypatch.setenv('AIDM_CODEX_EXECUTABLE', str(codex_executable))
+    monkeypatch.delenv('AIDM_CODEX_REASONING_EFFORT', raising=False)
+    monkeypatch.delenv('AIDM_CODEX_TIMEOUT_SECONDS', raising=False)
+
+    response = client.patch(
+        '/api/llm/config',
+        json={'provider': 'codex_cli', 'model': 'gpt-5.5-xhigh', 'persist': False},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['current']['provider'] == 'codex_cli'
+    assert payload['current']['model'] == 'gpt-5.5-xhigh'
+    assert payload['persisted'] is False
+    assert os.environ['AIDM_CODEX_REASONING_EFFORT'] == 'xhigh'
+    assert os.environ['AIDM_CODEX_TIMEOUT_SECONDS'] == '240'
+
+
+def test_llm_config_update_normalizes_legacy_codex_model(client, monkeypatch, tmp_path):
+    codex_executable = tmp_path / 'codex'
+    codex_executable.write_text('#!/bin/sh\n', encoding='utf-8')
+    codex_executable.chmod(0o755)
+    monkeypatch.setenv('AIDM_CODEX_EXECUTABLE', str(codex_executable))
+
+    response = client.patch(
+        '/api/llm/config',
+        json={'provider': 'codex_cli', 'model': 'gpt-5.5', 'persist': False},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['current']['provider'] == 'codex_cli'
+    assert payload['current']['model'] == 'gpt-5.5-medium'
+    assert os.environ['AIDM_CODEX_REASONING_EFFORT'] == 'medium'
 
 
 def test_llm_config_route_is_owned_by_runtime_config_blueprint(app):
@@ -205,6 +263,7 @@ def test_database_engine_options_are_sqlite_specific():
     postgres_options = engine_options_for_database_uri('postgresql://user:pass@example.test/db')
 
     assert sqlite_options['connect_args']['check_same_thread'] is False
+    assert sqlite_options['connect_args']['timeout'] == 30
     assert postgres_options == {}
 
 

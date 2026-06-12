@@ -13,6 +13,7 @@ PHASE_1_STATE_CHANGE_TYPES = {
     'currency.transfer',
     'health.heal',
     'health.damage',
+    'health.max.set',
     'race_ability.mark_used',
     'race_ability.refresh',
     'spell.learn',
@@ -62,6 +63,7 @@ PLAYER_SNAPSHOT_CHANGE_TYPES = {
     'spell.learn',
     'inventory.equip',
     'inventory.unequip',
+    'health.max.set',
     'race_ability.mark_used',
     'race_ability.refresh',
 }

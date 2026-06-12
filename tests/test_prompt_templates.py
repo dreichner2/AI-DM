@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from aidm_server.prompt_templates import (
+    ACTIVE_DM_SYSTEM_PROMPT_VERSION,
     CANON_EXTRACTION_RESPONSE_SCHEMA,
     CANON_EXTRACTION_SYSTEM_MESSAGE,
     DM_SYSTEM_MESSAGE,
+    DM_SYSTEM_MESSAGE_V1,
+    DM_SYSTEM_MESSAGE_V2,
+    DM_SYSTEM_PROMPTS,
     PROMPT_TEMPLATE_VERSION,
     build_canon_extraction_request,
     build_dm_generate_request,
@@ -22,7 +26,7 @@ def test_dm_stream_request_snapshot():
     assert PROMPT_TEMPLATE_VERSION == 'v2'
     assert request.system_message == DM_SYSTEM_MESSAGE
     assert 'brief character color' in request.system_message
-    assert 'Do not decide new player goals' in request.system_message
+    assert 'Do not make a player character choose goals' in request.system_message
     assert 'exact d20 modifier' in request.system_message
     assert request.prompt == (
         '\nCurrent speaker: Ember (character ID: 7; this is the character, not the account profile).\n'
@@ -30,6 +34,15 @@ def test_dm_stream_request_snapshot():
         'RULES_HINT:\n{"requires_roll": false}\n'
         'PLAYER INPUT:\nopen the iron gate\n'
     )
+
+
+def test_active_dm_system_prompt_version():
+    assert ACTIVE_DM_SYSTEM_PROMPT_VERSION == 'v2'
+    assert DM_SYSTEM_PROMPTS['v1'] == DM_SYSTEM_MESSAGE_V1
+    assert DM_SYSTEM_PROMPTS['v2'] == DM_SYSTEM_MESSAGE_V2
+    assert DM_SYSTEM_MESSAGE_V2 != DM_SYSTEM_MESSAGE_V1
+    assert "You are AIDM's live Dungeon Master" in DM_SYSTEM_MESSAGE_V2
+    assert DM_SYSTEM_MESSAGE == DM_SYSTEM_MESSAGE_V2
 
 
 def test_dm_generate_request_snapshot():

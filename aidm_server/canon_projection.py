@@ -22,6 +22,14 @@ ACTIVE_THREAD_STATUSES = ('open', 'active')
 ACTIVE_QUEST_STATUSES = {'active', 'open', 'available', 'in_progress', 'in-progress', 'started'}
 
 
+def _valid_location_label(value: Any) -> bool:
+    label = _text(value)
+    if not label:
+        return False
+    words = re.findall(r'[A-Za-z0-9]+', label)
+    return len(label) <= 90 and len(words) <= 10
+
+
 def append_session_memory(turn: DmTurn):
     state = get_or_create_session_state(turn.session_id, turn.campaign)
     memory_snippets = safe_json_loads(state.memory_snippets, [])
@@ -60,15 +68,17 @@ def append_session_memory(turn: DmTurn):
 
 
 def _latest_location_fact(campaign_id: int) -> StoryFact | None:
-    return (
+    candidates = (
         StoryFact.query.filter(
             StoryFact.campaign_id == campaign_id,
             StoryFact.predicate == 'current_location',
             StoryFact.fact_status == 'accepted',
         )
         .order_by(StoryFact.fact_id.desc())
-        .first()
+        .limit(100)
+        .all()
     )
+    return next((fact for fact in candidates if _valid_location_label(fact.value_text)), None)
 
 
 def _text(value: Any) -> str:
@@ -128,10 +138,45 @@ def _ensure_scene(snapshot: dict) -> dict:
     return scene
 
 
-def _sync_snapshot_location(snapshot: dict, location_fact: StoryFact | None) -> bool:
+def _latest_valid_snapshot_location(snapshot: dict) -> str:
+    for location in reversed(_snapshot_records(snapshot, 'locations')):
+        location_name = _text(location.get('name') or location.get('locationName') or location.get('id'))
+        if _valid_location_label(location_name):
+            return location_name
+    return ''
+
+
+def _session_snapshot_location(session_id: int) -> str:
+    session_obj = db.session.get(Session, session_id)
+    if not session_obj:
+        return ''
+    snapshot = safe_json_loads(session_obj.state_snapshot, {})
+    if not isinstance(snapshot, dict):
+        return ''
+    scene = snapshot.get('currentScene') if isinstance(snapshot.get('currentScene'), dict) else {}
+    scene_name = _text(scene.get('name') or scene.get('locationId'))
+    if _valid_location_label(scene_name):
+        return scene_name
+    return _latest_valid_snapshot_location(snapshot)
+
+
+def _sync_snapshot_location(
+    snapshot: dict,
+    location_fact: StoryFact | None,
+    *,
+    fallback_location: str = '',
+) -> bool:
     location_name = _text(location_fact.value_text if location_fact else None)
-    if not location_name:
-        return False
+    if not _valid_location_label(location_name):
+        location_name = _text(fallback_location)
+    if not _valid_location_label(location_name):
+        location_name = _latest_valid_snapshot_location(snapshot)
+    if not _valid_location_label(location_name):
+        scene = _ensure_scene(snapshot)
+        current_name = _text(scene.get('name') or scene.get('locationId'))
+        if _valid_location_label(current_name):
+            return False
+        location_name = 'Unknown Location'
 
     scene = _ensure_scene(snapshot)
     location_id = _slug(location_name)
@@ -230,7 +275,13 @@ def _sync_snapshot_quests(snapshot: dict, open_threads: list[StoryThread]) -> bo
     return True
 
 
-def _sync_session_snapshot(session_id: int, location_fact: StoryFact | None, open_threads: list[StoryThread]) -> None:
+def _sync_session_snapshot(
+    session_id: int,
+    location_fact: StoryFact | None,
+    open_threads: list[StoryThread],
+    *,
+    fallback_location: str = '',
+) -> None:
     session_obj = db.session.get(Session, session_id)
     if not session_obj:
         return
@@ -239,7 +290,7 @@ def _sync_session_snapshot(session_id: int, location_fact: StoryFact | None, ope
         return
 
     changed = False
-    changed = _sync_snapshot_location(snapshot, location_fact) or changed
+    changed = _sync_snapshot_location(snapshot, location_fact, fallback_location=fallback_location) or changed
     changed = _sync_snapshot_quests(snapshot, open_threads) or changed
     if changed:
         session_obj.state_snapshot = safe_json_dumps(snapshot, {})
@@ -252,8 +303,9 @@ def refresh_session_projection(session_id: int, campaign: Campaign, triggered_se
     location_fact = _latest_location_fact(campaign.campaign_id)
     if location_fact and location_fact.value_text:
         state.current_location = location_fact.value_text
-    elif not state.current_location:
-        state.current_location = campaign.location
+    elif not state.current_location or not _valid_location_label(state.current_location):
+        fallback_location = campaign.location or _session_snapshot_location(session_id)
+        state.current_location = fallback_location if _valid_location_label(fallback_location) else campaign.location
 
     open_threads = (
         StoryThread.query.filter(
@@ -267,7 +319,7 @@ def refresh_session_projection(session_id: int, campaign: Campaign, triggered_se
         state.current_quest = ' | '.join(thread.title for thread in open_threads[:3])
     else:
         state.current_quest = campaign.current_quest
-    _sync_session_snapshot(session_id, location_fact, open_threads)
+    _sync_session_snapshot(session_id, location_fact, open_threads, fallback_location=state.current_location or campaign.location or '')
 
     active_segments = safe_json_loads(state.active_segments, [])
     active_segments = active_segments if isinstance(active_segments, list) else []

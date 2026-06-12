@@ -8,7 +8,7 @@ from flask import current_app, has_app_context
 
 from aidm_server.contracts import ProviderRequest
 from aidm_server.game_state.extraction.schemas import extract_json_object
-from aidm_server.llm_providers import get_helper_provider
+from aidm_server.llm_providers import get_helper_provider, helper_provider_name
 from aidm_server.services.runtime_config import provider_configured
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 
@@ -58,7 +58,7 @@ def _config_value(name: str) -> str:
 
 
 def _helper_provider_name() -> str:
-    return str(_config_value('AIDM_SENTIENT_ENEMY_BRAIN_HELPER_LLM_PROVIDER') or 'deepseek').strip().lower()
+    return helper_provider_name(SENTIENT_ENEMY_BRAIN_TASK)
 
 
 def sentient_enemy_brain_enabled() -> bool:
@@ -80,6 +80,8 @@ def sentient_enemy_brain_enabled() -> bool:
         return bool(os.getenv('AIDM_SENTIENT_ENEMY_BRAIN_NVIDIA_API_KEY') or os.getenv('AIDM_NVIDIA_API_KEY') or os.getenv('NVIDIA_API_KEY'))
     if provider == 'gemini':
         return bool(os.getenv('GOOGLE_GENAI_API_KEY'))
+    if provider in {'codex', 'codex_cli'}:
+        return provider_configured(provider)
     return False
 
 

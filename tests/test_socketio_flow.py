@@ -3564,6 +3564,7 @@ def test_group_roll_gate_waits_for_all_required_players(app, socketio, app_runti
         assert pending_turn.outcome_status == 'deferred'
         assert roll_turn.status == 'waiting_for_group_roll'
         assert roll_turn.outcome_status == 'resolved'
+        first_roll_turn_id = roll_turn.turn_id
         assert gate['resolved_player_ids'] == [ids['player_id']]
         assert gate['remaining_player_ids'] == [other_player_id]
 
@@ -3585,6 +3586,10 @@ def test_group_roll_gate_waits_for_all_required_players(app, socketio, app_runti
     with app.app_context():
         pending_turn = db.session.get(DmTurn, pending_turn_id)
         assert pending_turn.outcome_status == 'resolved'
+        roll_turn = db.session.get(DmTurn, first_roll_turn_id)
+        assert roll_turn.status == 'completed'
+        metadata = safe_json_loads(roll_turn.metadata_json, {})
+        assert metadata['group_roll_completed_by_turn_id']
 
 
 def test_dm_requested_initiative_waits_for_all_active_players(app, socketio, app_runtime, monkeypatch):
@@ -3696,6 +3701,13 @@ def test_dm_requested_initiative_waits_for_all_active_players(app, socketio, app
     with app.app_context():
         pending_turn = db.session.get(DmTurn, pending_turn_id)
         assert pending_turn.outcome_status == 'resolved'
+        first_roll_turn = (
+            DmTurn.query.filter_by(session_id=ids['session_id'], player_id=ids['player_id'])
+            .filter(DmTurn.turn_id != pending_turn_id)
+            .order_by(DmTurn.turn_id.desc())
+            .first()
+        )
+        assert first_roll_turn.status == 'completed'
 
 
 def test_character_resource_limits_block_missing_items_and_gold_spend(app, socketio, app_runtime, monkeypatch):

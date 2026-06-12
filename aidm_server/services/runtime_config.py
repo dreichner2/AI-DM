@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shutil
 
-from flask import current_app
+from flask import current_app, has_app_context
 
 from aidm_server.models import DmTurn
 from aidm_server.provider_registry import (
     SUPPORTED_LLM_PROVIDERS,
+    normalize_provider_model_id,
     provider_catalog_payload,
+    provider_model_option,
+    provider_model_reasoning_effort,
     provider_option,
 )
 
@@ -20,6 +24,14 @@ class RuntimeConfigError(ValueError):
         self.message = message
         self.status_code = status_code
         self.details = details
+
+
+def _config_value(name: str) -> str | None:
+    if has_app_context():
+        value = current_app.config.get(name)
+        if value not in (None, ''):
+            return str(value)
+    return os.getenv(name)
 
 
 def latest_llm_turn_payload() -> dict | None:
@@ -43,23 +55,27 @@ def latest_llm_turn_payload() -> dict | None:
 def provider_configured(provider_id: str) -> bool:
     if provider_id == 'deepseek':
         return bool(
-            current_app.config.get('AIDM_DEEPSEEK_API_KEY')
-            or os.getenv('AIDM_DEEPSEEK_API_KEY')
+            _config_value('AIDM_DEEPSEEK_API_KEY')
             or os.getenv('DEEPSEEK_API_KEY')
         )
     if provider_id in {'nvidia', 'kimi'}:
         return bool(os.getenv('AIDM_NVIDIA_API_KEY') or os.getenv('NVIDIA_API_KEY'))
     if provider_id == 'gemini':
-        return bool(current_app.config.get('GOOGLE_GENAI_API_KEY') or os.getenv('GOOGLE_GENAI_API_KEY'))
+        return bool(_config_value('GOOGLE_GENAI_API_KEY'))
     if provider_id == 'fallback':
         return True
+    if provider_id in {'codex', 'codex_cli'}:
+        executable = _config_value('AIDM_CODEX_EXECUTABLE') or 'codex'
+        if os.path.sep in executable:
+            return Path(executable).is_file()
+        return shutil.which(executable) is not None
     return False
 
 
 def current_llm_payload() -> dict:
     fallback_models = current_app.config.get('AIDM_LLM_FALLBACK_MODELS', []) or []
     provider = str(current_app.config.get('AIDM_LLM_PROVIDER', 'unknown'))
-    model = str(current_app.config.get('AIDM_LLM_MODEL', 'unknown'))
+    model = normalize_provider_model_id(provider, str(current_app.config.get('AIDM_LLM_MODEL', 'unknown')))
     return {
         'provider': provider,
         'model': model,
@@ -131,7 +147,7 @@ def validate_provider_model(provider: str, model: str) -> tuple[str, str]:
     if option is None:
         raise RuntimeConfigError('unsupported_provider', f'Provider "{provider}" is not configurable from the UI.')
 
-    selected_model = model or str(option['default_model'])
+    selected_model = normalize_provider_model_id(provider, model or str(option['default_model']))
     allowed_models = {str(item['id']) for item in option.get('models', [])}
     if selected_model not in allowed_models:
         raise RuntimeConfigError(
@@ -159,6 +175,18 @@ def apply_llm_runtime(provider: str, model: str, *, persist: bool = True):
     elif provider == 'nvidia':
         option = provider_option(provider) or {}
         updates['AIDM_NVIDIA_INVOKE_URL'] = str(option.get('base_url') or 'https://integrate.api.nvidia.com/v1')
+    elif provider == 'codex_cli':
+        model_option = provider_model_option(provider, model) or {}
+        updates['AIDM_CODEX_REASONING_EFFORT'] = (
+            provider_model_reasoning_effort(provider, model)
+            or os.getenv('AIDM_CODEX_REASONING_EFFORT')
+            or 'medium'
+        )
+        updates['AIDM_CODEX_TIMEOUT_SECONDS'] = str(
+            model_option.get('timeout_seconds')
+            or os.getenv('AIDM_CODEX_TIMEOUT_SECONDS')
+            or '240'
+        )
 
     for key, value in updates.items():
         os.environ[key] = value
@@ -170,6 +198,9 @@ def apply_llm_runtime(provider: str, model: str, *, persist: bool = True):
         current_app.config['AIDM_DEEPSEEK_BASE_URL'] = updates['AIDM_DEEPSEEK_BASE_URL']
         if os.getenv('AIDM_DEEPSEEK_API_KEY'):
             current_app.config['AIDM_DEEPSEEK_API_KEY'] = os.getenv('AIDM_DEEPSEEK_API_KEY')
+    elif provider == 'codex_cli':
+        current_app.config['AIDM_CODEX_REASONING_EFFORT'] = updates['AIDM_CODEX_REASONING_EFFORT']
+        current_app.config['AIDM_CODEX_TIMEOUT_SECONDS'] = updates['AIDM_CODEX_TIMEOUT_SECONDS']
 
     if persist:
         persist_env_updates(updates)

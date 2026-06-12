@@ -172,6 +172,29 @@ def _apply_health_heal(actor: dict[str, Any], change: dict[str, Any]) -> int:
     return actual
 
 
+def _apply_health_max_set(actor: dict[str, Any], change: dict[str, Any]) -> dict[str, int]:
+    health = actor.setdefault('health', {})
+    old_max = max(0, int_or_default(health.get('maxHp'), default=0))
+    old_current = max(0, int_or_default(health.get('currentHp'), default=0))
+    new_max = max(1, int_or_default(change.get('maxHp', change.get('amount')), default=old_max or 1))
+    if change.get('currentHp') is not None:
+        new_current = max(0, min(new_max, int_or_default(change.get('currentHp'), default=old_current)))
+    elif change.get('healToMax') or change.get('setCurrentToMax'):
+        new_current = new_max
+    else:
+        new_current = min(old_current, new_max)
+    health['maxHp'] = new_max
+    health['currentHp'] = new_current
+    return {
+        'oldMaxHp': old_max,
+        'newMaxHp': new_max,
+        'oldCurrentHp': old_current,
+        'newCurrentHp': new_current,
+        'maxHpDelta': new_max - old_max,
+        'currentHpDelta': new_current - old_current,
+    }
+
+
 def _apply_health_damage(actor: dict[str, Any], change: dict[str, Any]) -> dict[str, int]:
     amount = max(0, int_or_default(change.get('amount'), default=0))
     health = actor.setdefault('health', {})
@@ -1048,6 +1071,10 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
         elif change_type == 'health.heal' and actor:
             applied_change['actualAmount'] = _apply_health_heal(actor, change)
             _sync_actor_health_to_combat_participant(next_state, actor)
+        elif change_type == 'health.max.set' and actor:
+            applied_change.update(_apply_health_max_set(actor, change))
+            applied_change['actualAmount'] = applied_change.get('maxHpDelta', 0)
+            _sync_actor_health_to_combat_participant(next_state, actor)
         elif change_type == 'health.damage' and actor:
             result = _apply_health_damage(actor, change)
             _sync_actor_health_to_combat_participant(next_state, actor)
@@ -1411,7 +1438,7 @@ def legacy_immediate_summary_from_applied(applied_changes: list[dict[str, Any]],
                     'state_change_id': change.get('id'),
                 }
             )
-        elif change_type in {'health.heal', 'health.damage', 'currency.add', 'currency.remove', 'xp.add', 'xp.remove'}:
+        elif change_type in {'health.heal', 'health.damage', 'health.max.set', 'currency.add', 'currency.remove', 'xp.add', 'xp.remove'}:
             amount = int_or_default(change.get('actualAmount', change.get('amount')), default=0)
             signed_amount = -amount if change_type in {'health.damage', 'currency.remove', 'xp.remove'} else amount
             character_change = {
@@ -1424,6 +1451,9 @@ def legacy_immediate_summary_from_applied(applied_changes: list[dict[str, Any]],
             }
             if change_type in {'health.heal', 'health.damage'}:
                 character_change['hp_delta'] = signed_amount
+            if change_type == 'health.max.set':
+                character_change['max_hp_delta'] = int_or_default(change.get('maxHpDelta'), default=0)
+                character_change['hp_delta'] = int_or_default(change.get('currentHpDelta'), default=0)
             if change_type in {'xp.add', 'xp.remove'}:
                 character_change['xp_delta'] = signed_amount
             if change_type in {'currency.add', 'currency.remove'}:

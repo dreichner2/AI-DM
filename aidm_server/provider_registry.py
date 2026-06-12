@@ -25,6 +25,25 @@ PROVIDER_CATALOG: dict[str, dict] = {
             'default_temperature': 0.7,
         },
     },
+    'codex_cli': {
+        'id': 'codex_cli',
+        'label': 'Codex',
+        'default_model': 'gpt-5.5-medium',
+        'models': [
+            {'id': 'gpt-5.5-low', 'label': 'GPT-5.5 Low', 'runtime_model': 'gpt-5.5', 'reasoning_effort': 'low'},
+            {'id': 'gpt-5.5-medium', 'label': 'GPT-5.5 Medium', 'runtime_model': 'gpt-5.5', 'reasoning_effort': 'medium'},
+            {'id': 'gpt-5.5-high', 'label': 'GPT-5.5 High', 'runtime_model': 'gpt-5.5', 'reasoning_effort': 'high'},
+            {'id': 'gpt-5.5-xhigh', 'label': 'GPT-5.5 xHigh', 'runtime_model': 'gpt-5.5', 'reasoning_effort': 'xhigh'},
+        ],
+        'capabilities': {
+            'streaming': True,
+            'oauth_cli': True,
+            'thinking_control': True,
+            'default_timeout_seconds': 240,
+            'default_temperature': 0.0,
+            'default_reasoning_effort': 'medium',
+        },
+    },
     'gemini': {
         'id': 'gemini',
         'label': 'Gemini',
@@ -87,11 +106,48 @@ PROVIDER_CATALOG: dict[str, dict] = {
 }
 
 SUPPORTED_LLM_PROVIDERS = set(PROVIDER_CATALOG)
+MODEL_ID_ALIASES: dict[tuple[str, str], str] = {
+    ('codex_cli', 'gpt-5.5'): 'gpt-5.5-medium',
+    ('codex', 'gpt-5.5'): 'gpt-5.5-medium',
+}
+
+
+def normalize_provider_model_id(provider_id: str, model_id: str) -> str:
+    provider = str(provider_id or '').strip().lower()
+    model = str(model_id or '').strip()
+    return MODEL_ID_ALIASES.get((provider, model), model)
 
 
 def provider_option(provider_id: str) -> dict | None:
     option = PROVIDER_CATALOG.get(provider_id)
     return deepcopy(option) if option else None
+
+
+def provider_model_option(provider_id: str, model_id: str) -> dict | None:
+    option = PROVIDER_CATALOG.get(str(provider_id or '').strip().lower())
+    if not option:
+        return None
+    selected_model = normalize_provider_model_id(provider_id, model_id)
+    for item in option.get('models', []):
+        if str(item.get('id')) == selected_model:
+            return deepcopy(item)
+    return None
+
+
+def provider_runtime_model(provider_id: str, model_id: str) -> str:
+    selected_model = normalize_provider_model_id(provider_id, model_id)
+    option = provider_model_option(provider_id, selected_model)
+    if option:
+        return str(option.get('runtime_model') or selected_model)
+    return selected_model
+
+
+def provider_model_reasoning_effort(provider_id: str, model_id: str) -> str | None:
+    option = provider_model_option(provider_id, model_id)
+    if not option:
+        return None
+    effort = option.get('reasoning_effort')
+    return str(effort).strip().lower() if effort else None
 
 
 def provider_default_model(provider_id: str) -> str:
@@ -105,4 +161,4 @@ def provider_capabilities(provider_id: str) -> dict:
 
 
 def provider_catalog_payload() -> list[dict]:
-    return [deepcopy(PROVIDER_CATALOG[key]) for key in ('deepseek', 'gemini', 'nvidia', 'kimi', 'fallback')]
+    return [deepcopy(PROVIDER_CATALOG[key]) for key in ('deepseek', 'codex_cli', 'gemini', 'nvidia', 'kimi', 'fallback')]

@@ -414,6 +414,49 @@ def test_apply_health_damage_uses_temp_hp_first():
     assert health['currentHp'] == 8
 
 
+def test_apply_health_max_set_can_heal_to_new_max_and_sync_combat():
+    state = _state(hp_current=7, hp_max=15)
+    state['combat'] = {
+        'status': 'active',
+        'participants': [
+            {
+                'id': 'player_1',
+                'team': 'player',
+                'name': 'Kael',
+                'hp': {'current': 7, 'max': 15, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            }
+        ],
+    }
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'level_reward_hp',
+                'type': 'health.max.set',
+                'actorId': 'player_1',
+                'maxHp': 21,
+                'healToMax': True,
+                'source': 'post_dm',
+                'reason': 'Level reward.',
+                'visible': True,
+            }
+        ],
+    )
+
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    health = result['nextState']['playerCharacters'][0]['health']
+    assert validation['rejected'] == []
+    assert health['currentHp'] == 21
+    assert health['maxHp'] == 21
+    assert result['nextState']['combat']['participants'][0]['hp'] == {'current': 21, 'max': 21, 'temp': 0}
+    assert result['appliedChanges'][0]['maxHpDelta'] == 6
+    assert result['appliedChanges'][0]['currentHpDelta'] == 14
+
+
 def test_apply_health_damage_syncs_matching_combat_participant():
     state = _state(hp_current=10, hp_max=20, temp_hp=0)
     state['combat'] = {
@@ -1211,6 +1254,30 @@ def test_location_discover_adds_location_and_does_not_duplicate_on_retry():
     assert len(retry['nextState']['locations']) == 1
 
 
+def test_missing_location_update_is_applied_as_discovery():
+    state = _state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'update_rensira',
+                'type': 'location.update',
+                'source': 'post_dm',
+                'turnId': 24,
+                'locationId': 'rensira',
+                'name': 'Rensira',
+                'locationType': 'town',
+                'status': 'visited',
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    assert validation['rejected'] == []
+    assert validation['accepted'][0]['change']['type'] == 'location.discover'
+    assert result['nextState']['locations'][0]['id'] == 'rensira'
+
+
 def test_quest_add_creates_quest_with_objective():
     state = _state()
     validation = validate_state_changes(
@@ -1292,6 +1359,43 @@ def test_quest_update_updates_stage_and_objective_without_duplicates():
     assert quest['stage'] == 'Search Old Harbor'
     assert len(quest['objectives']) == 1
     assert quest['objectives'][0]['status'] == 'completed'
+
+
+def test_quest_objective_update_accepts_top_level_open_status():
+    state = _state()
+    state['quests'] = [
+        {
+            'id': 'rensira_threads',
+            'title': 'Rensira Threads',
+            'status': 'active',
+            'objectives': [
+                {
+                    'id': 'find_the_source',
+                    'description': 'Find the source of the black threads.',
+                    'status': 'completed',
+                }
+            ],
+        }
+    ]
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'reopen_source_objective',
+                'type': 'quest.objective.update',
+                'source': 'post_dm',
+                'turnId': 26,
+                'questId': 'rensira_threads',
+                'objectiveId': 'find_the_source',
+                'description': 'Find the source of the black threads.',
+                'status': 'open',
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    assert validation['rejected'] == []
+    assert result['nextState']['quests'][0]['objectives'][0]['status'] == 'open'
 
 
 def test_quest_complete_marks_completed_and_does_not_recomplete_on_retry():
@@ -1393,6 +1497,77 @@ def test_npc_discover_adds_npc_and_links_location_and_quest():
     assert result['nextState']['knownNpcs'][0]['race'] == 'Human'
     assert result['nextState']['locations'][0]['npcIds'] == ['captain_velra']
     assert result['nextState']['quests'][0]['relatedNpcIds'] == ['captain_velra']
+
+
+def test_npc_update_normalizes_condition_like_status_and_disposition_aliases():
+    state = _state()
+    state['knownNpcs'] = [
+        {
+            'id': 'grey_wool_stranger',
+            'name': 'Grey Wool Stranger',
+            'status': 'met',
+            'disposition': 'suspicious',
+            'memory': [],
+            'metadata': {},
+        }
+    ]
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'stranger_dying_hopeful',
+                'type': 'npc.update',
+                'source': 'post_dm',
+                'turnId': 28,
+                'npcId': 'grey_wool_stranger',
+                'status': 'dying',
+                'disposition': 'hopeful',
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    npc = result['nextState']['knownNpcs'][0]
+
+    assert validation['rejected'] == []
+    assert npc['status'] == 'known'
+    assert npc['disposition'] == 'friendly'
+    assert npc['metadata']['extractedStatus'] == 'dying'
+    assert npc['metadata']['extractedDisposition'] == 'hopeful'
+    assert 'Status note: dying.' in npc['memory']
+
+
+def test_noncombat_condition_for_known_npc_becomes_npc_update():
+    state = _state()
+    state['knownNpcs'] = [
+        {
+            'id': 'grey_wool_stranger',
+            'name': 'Grey Wool Stranger',
+            'status': 'met',
+            'disposition': 'hostile',
+            'memory': [],
+            'metadata': {},
+        }
+    ]
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'poison_stranger_noncombat',
+                'type': 'combat.condition.add',
+                'source': 'post_dm',
+                'turnId': 29,
+                'participantId': 'grey_wool_stranger',
+                'condition': 'poisoned',
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    npc = result['nextState']['knownNpcs'][0]
+
+    assert validation['rejected'] == []
+    assert validation['accepted'][0]['change']['type'] == 'npc.update'
+    assert npc['metadata']['sourceCombatCondition'] == 'poisoned'
+    assert 'Condition added: poisoned.' in npc['memory']
 
 
 def test_npc_change_targeting_player_character_is_rejected():
@@ -1569,6 +1744,26 @@ def test_post_dm_extracts_explicit_xp_gain(app):
         )
 
     assert any(change['type'] == 'xp.add' and change.get('amount') == 75 for change in result['proposedChanges'])
+
+
+def test_post_dm_extracts_explicit_max_hp_reward(app):
+    state = _state(hp_current=7, hp_max=15)
+    with app.app_context():
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I accept the level reward.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='Koryl reaches level 3. His max HP becomes 21 and he receives a full heal.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=10,
+        )
+
+    max_hp_change = next(change for change in result['proposedChanges'] if change['type'] == 'health.max.set')
+    assert max_hp_change['maxHp'] == 21
+    assert max_hp_change['currentHp'] == 21
+    assert max_hp_change['healToMax'] is True
 
 
 def test_post_dm_does_not_extract_pending_roll_prompt_as_loot(app):
@@ -1749,7 +1944,11 @@ def test_post_dm_helper_does_not_learn_spell_for_transform_only_form_use(app, mo
         )
 
     assert not any(change['type'] == 'spell.learn' for change in result['proposedChanges'])
+    form_change = next(change for change in result['proposedChanges'] if change['type'] == 'flag.set')
+    assert form_change['flagKey'] == 'player_1_current_form'
+    assert form_change['flagValue'] == 'little finch'
     assert 'filtered_transform_only_spell_learn' in result['notes']
+    assert 'heuristic_form_state' in result['notes']
 
 
 def test_post_dm_extracts_scene_danger_increase(app):
@@ -2015,6 +2214,129 @@ def test_post_dm_filters_helper_enemy_health_damage_and_updates_combat_participa
     assert not validation['rejected']
     assert player['health']['currentHp'] == 10
     assert enemy['hp']['current'] == 10
+
+
+def test_post_dm_combat_heuristic_does_not_end_when_enemy_does_not_fall(app):
+    state = _state(hp_current=10, hp_max=20)
+    state['combat'] = {
+        'status': 'active',
+        'round': 2,
+        'participants': [
+            {
+                'id': 'player_1',
+                'team': 'player',
+                'name': 'Kael',
+                'hp': {'current': 10, 'max': 20, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'enemy_shelter_lurker_1',
+                'team': 'enemy',
+                'name': 'Shelter Lurker',
+                'kind': 'creature',
+                'xpReward': 25,
+                'hp': {'current': 9, 'max': 9, 'temp': 0},
+                'conditions': [],
+                'position': {'rangeBand': 'near'},
+                'abilities': [],
+                'morale': 50,
+                'isAlive': True,
+                'isConscious': True,
+            },
+        ],
+        'battlefield': {'environmentType': 'forest'},
+        'flags': {},
+    }
+
+    with app.app_context():
+        app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = False
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I roll damage.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response=(
+                'Shelter Lurker takes 4 piercing damage. It does not fall. Instead, it tears itself '
+                'sideways with a wet snarl and lunges at Kael with a scrap-spear. Kael, roll Dexterity '
+                'saving throw: d20 + 2 against DC 12.'
+            ),
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=118,
+        )
+
+    enemy_updates = [
+        change for change in result['proposedChanges']
+        if change['type'] == 'combat.participant.update' and change.get('participantId') == 'enemy_shelter_lurker_1'
+    ]
+    assert any((change.get('hp') or {}).get('current') == 5 for change in enemy_updates)
+    assert not any((change.get('hp') or {}).get('current') == 0 for change in enemy_updates)
+    assert not any(change['type'] == 'combat.end' for change in result['proposedChanges'])
+    assert not any(change['type'] == 'xp.add' for change in result['proposedChanges'])
+
+
+def test_post_dm_combat_heuristic_does_not_defeat_enemy_when_player_drops_knee(app):
+    state = _state(hp_current=10, hp_max=20)
+    state['combat'] = {
+        'status': 'active',
+        'round': 3,
+        'participants': [
+            {
+                'id': 'player_1',
+                'team': 'player',
+                'name': 'Kael',
+                'hp': {'current': 10, 'max': 20, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'enemy_arrowmark_scout_1',
+                'team': 'enemy',
+                'name': 'Hollow Arrowmark Scout',
+                'kind': 'creature',
+                'xpReward': 50,
+                'hp': {'current': 7, 'max': 10, 'temp': 0},
+                'conditions': [],
+                'position': {'rangeBand': 'near'},
+                'abilities': [],
+                'morale': 50,
+                'isAlive': True,
+                'isConscious': True,
+            },
+        ],
+        'battlefield': {'environmentType': 'forest'},
+        'flags': {},
+    }
+
+    with app.app_context():
+        app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = False
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I roll a save.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response=(
+                "The Hollow Arrowmark Scout's arrow snaps down through the thorn tangle and punches "
+                "into Kael's side, driving the breath from him as he drops one knee into the wet mud. "
+                'Kael takes 4 piercing damage. The Hollow Arrowmark Scout is still alive, wounded, '
+                'and moving in cover.'
+            ),
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=119,
+        )
+
+    assert any(change['type'] == 'health.damage' and change.get('amount') == 4 for change in result['proposedChanges'])
+    enemy_updates = [
+        change for change in result['proposedChanges']
+        if change['type'] == 'combat.participant.update' and change.get('participantId') == 'enemy_arrowmark_scout_1'
+    ]
+    assert not any((change.get('hp') or {}).get('current') == 0 for change in enemy_updates)
+    assert not any(change['type'] == 'combat.end' for change in result['proposedChanges'])
+    assert not any(change['type'] == 'xp.add' for change in result['proposedChanges'])
 
 
 def test_single_enemy_combat_participant_update_resolves_unknown_npc_alias():
