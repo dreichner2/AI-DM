@@ -401,6 +401,7 @@ def _normalize_world_change_ids(change: dict[str, Any], raw_id: Any) -> None:
         'npcIds',
         'questIds',
         'tags',
+        'aliases',
         'relatedNpcIds',
         'relatedLocationIds',
         'importantItemIds',
@@ -415,6 +416,12 @@ def normalize_state_change(raw_change: Any, *, fallback_actor_id: str, fallback_
     change_type = str(raw_change.get('type') or '').strip()
     if change_type not in STATE_CHANGE_TYPES:
         return None
+    if change_type == 'scene.update':
+        nested_changes = raw_change.get('changes')
+        if not isinstance(nested_changes, dict):
+            nested_changes = raw_change.get('updates') if isinstance(raw_change.get('updates'), dict) else {}
+        if nested_changes:
+            raw_change = {**raw_change, **nested_changes}
     is_world_change = change_type in WORLD_STATE_CHANGE_TYPES
     is_combat_change = change_type in COMBAT_STATE_CHANGE_TYPES
     for field in POSITIVE_INT_FIELDS:

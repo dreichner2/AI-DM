@@ -357,6 +357,33 @@ def test_post_dm_extracts_equipment_outcomes(app):
     assert changes[1]['itemName'] == 'dagger'
 
 
+def test_normalize_post_extraction_preserves_nested_scene_update_changes():
+    result = normalize_post_extraction(
+        {
+            'proposedChanges': [
+                {
+                    'type': 'scene.update',
+                    'changes': {
+                        'dangerLevel': 5,
+                        'mood': 'tense',
+                        'combatState': 'pending',
+                        'activeNpcIds': ['ash_pale_watcher_right', 'second_pale_shape_left'],
+                    },
+                }
+            ],
+            'uncertainChanges': [],
+        },
+        fallback_actor_id='player_1',
+    )
+
+    change = result['proposedChanges'][0]
+
+    assert change['dangerLevel'] == 5
+    assert change['mood'] == 'tense'
+    assert change['combatState'] == 'pending'
+    assert change['activeNpcIds'] == ['ash_pale_watcher_right', 'second_pale_shape_left']
+
+
 def test_pre_dm_helper_debug_captures_raw_response(app, monkeypatch):
     helper_text = (
         '{"declaredActions":[{"id":"act_001","type":"generic.intent","actorId":"player_1",'
@@ -2409,6 +2436,41 @@ def test_bound_combat_creature_updates_known_npc_after_defeat():
     )
     assert fled_changes[0]['status'] == 'fleeing'
     assert fled_changes[0]['metadata']['combatOutcome'] == 'fleeing'
+
+
+def test_npc_update_by_id_preserves_display_name_and_merges_aliases():
+    state = _state()
+    state['knownNpcs'] = [
+        {
+            'id': 'ash_pale_watcher_right',
+            'name': 'Ash-pale watcher (right slope)',
+            'status': 'met',
+            'disposition': 'hostile',
+            'aliases': ['right watcher'],
+            'memory': [],
+            'metadata': {},
+        }
+    ]
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'update_bound_npc',
+                'type': 'npc.update',
+                'npcId': 'ash_pale_watcher_right',
+                'status': 'dead',
+                'aliases': ['ash-pale watcher'],
+            }
+        ],
+    )
+
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    npc = result['nextState']['knownNpcs'][0]
+
+    assert validation['rejected'] == []
+    assert npc['name'] == 'Ash-pale watcher (right slope)'
+    assert npc['status'] == 'dead'
+    assert npc['aliases'] == ['right watcher', 'ash-pale watcher']
 
 
 def test_fleeing_group_marks_remaining_hostile_npcs_and_removes_offscreen_active_ids():

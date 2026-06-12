@@ -31,7 +31,7 @@ COMBAT_TRIGGER_PATTERN = re.compile(
 DIRECT_HOSTILE_ACTION_PATTERN = re.compile(
     r'\b(?:i|we|[A-Z][A-Za-z0-9\'-]{1,40})\s+'
     r'(?:attack|attacks|stab|stabs|strike|strikes|shoot|shoots|slash|slashes|swing|swings|'
-        r'punch|punches|kick|kicks|smite|smites|kill|kills|throw|throws|hurl|hurls|'
+        r'cut|cuts|lunge|lunges|punch|punches|kick|kicks|smite|smites|kill|kills|throw|throws|hurl|hurls|'
         r'smash|smashes|smack|smacks|slam|slams|bash|bashes|crush|crushes|'
         r'grab|grabs|grapple|grapples|slice|slices|stomp|stomps|cripple|cripples|disable|disables)\b|'
     r'\b(?:roll initiative|initiative)\b',

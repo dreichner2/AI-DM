@@ -530,6 +530,40 @@ def _npc_is_hostile(npc: dict[str, Any]) -> bool:
     return disposition in {'hostile', 'enemy', 'aggressive'} and status not in {'dead', 'defeated', 'fled'}
 
 
+def _npc_is_unavailable(npc: dict[str, Any]) -> bool:
+    status = str(npc.get('status') or '').strip().lower()
+    return status in {'dead', 'defeated', 'fled', 'hidden', 'missing', 'offscreen'}
+
+
+def _npc_can_be_combat_target(
+    npc: dict[str, Any],
+    *,
+    scene: dict[str, Any],
+    player_message: str,
+    message_terms: set[str],
+    scene_terms: set[str],
+) -> bool:
+    if _npc_is_unavailable(npc):
+        return False
+    disposition = str(npc.get('disposition') or '').strip().lower()
+    if disposition in {'friendly', 'ally', 'allied', 'companion'}:
+        return False
+    if _npc_is_hostile(npc):
+        return True
+    npc_terms = _npc_reference_terms(npc)
+    if message_terms.intersection(npc_terms):
+        return True
+    scene_combat_state = str(scene.get('combatState') or '').strip().lower()
+    scene_type = str(scene.get('sceneType') or '').strip().lower()
+    try:
+        danger_level = int(scene.get('dangerLevel') or 0)
+    except (TypeError, ValueError):
+        danger_level = 0
+    active_scene_target = bool(scene_terms.intersection(npc_terms))
+    combatish_scene = scene_combat_state in {'pending', 'active'} or scene_type == 'combat' or danger_level >= 5
+    return active_scene_target and combatish_scene and _message_requests_single_target(player_message)
+
+
 def _npc_reference_terms(npc: dict[str, Any]) -> set[str]:
     terms: set[str] = set()
     for value in (
@@ -630,9 +664,9 @@ def _apply_npc_binding_to_creature(creature: dict[str, Any], binding: dict[str, 
 
 def _message_requests_single_target(player_message: str) -> bool:
     normalized = str(player_message or '').lower()
-    if re.search(r'\b(?:one of|figure|shape|target|head|him|her|it|that one|the one)\b', normalized):
+    if re.search(r'\b(?:one of|figure|shape|target|head|him|her|it|its|that one|the one)\b', normalized):
         return True
-    return bool(re.search(r'\b(?:shoot|stab|slash|strike|attack|kill|hit)\s+(?:the|a|an)\b', normalized))
+    return bool(re.search(r'\b(?:shoot|stab|slash|strike|attack|kill|hit|cut|lunge)\s+(?:the|a|an|its|their|his|her)\b', normalized))
 
 
 def _npc_encounter_score(npc: dict[str, Any], *, player_message: str, message_terms: set[str], scene_terms: set[str]) -> int:
@@ -676,7 +710,13 @@ def _selected_hostile_scene_npcs(
     message_terms = _reference_terms(player_message)
     scored: list[tuple[int, int, dict[str, Any]]] = []
     for index, npc in enumerate(npcs):
-        if not isinstance(npc, dict) or not _npc_is_hostile(npc):
+        if not isinstance(npc, dict) or not _npc_can_be_combat_target(
+            npc,
+            scene=scene,
+            player_message=player_message,
+            message_terms=message_terms,
+            scene_terms=scene_terms,
+        ):
             continue
         score = _npc_encounter_score(npc, player_message=player_message, message_terms=message_terms, scene_terms=scene_terms)
         if score > 0:

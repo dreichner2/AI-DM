@@ -263,6 +263,7 @@ def test_direct_hostile_action_pattern_covers_thrown_or_smashing_attacks():
     assert DIRECT_HOSTILE_ACTION_PATTERN.search('I leap and try to smack Thor')
     assert DIRECT_HOSTILE_ACTION_PATTERN.search('I grab his head and try to crush it')
     assert DIRECT_HOSTILE_ACTION_PATTERN.search('I stomp the crawling ghoul')
+    assert DIRECT_HOSTILE_ACTION_PATTERN.search('I take out my sword and try to cut its throat')
 
 
 def test_default_encounter_request_prefers_hostile_scene_npc_over_weapon_phrase(app):
@@ -397,6 +398,55 @@ def test_default_encounter_request_binds_directional_known_npc_to_generated_grou
     assert group['boundNpc']['npcId'] == 'ash_pale_watcher_right'
     assert group['boundNpc']['npcName'] == 'Ash-pale watcher (right slope)'
     assert 'Known NPC Ash-pale watcher (right slope).' in group['descriptionHint']
+
+
+def test_default_encounter_request_binds_active_unknown_npc_when_attacked(app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        session_obj = db.session.get(Session, ids['session_id'])
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        assert session_obj is not None
+        assert campaign is not None
+        state = {
+            'currentScene': {
+                'name': 'Grey Narrows',
+                'sceneType': 'combat',
+                'combatState': 'active',
+                'dangerLevel': 8,
+                'activeNpcIds': ['ash_pale_watcher_right', 'second_pale_shape_left'],
+            },
+            'playerCharacters': [_player(name='Legoless')],
+            'knownNpcs': [
+                {
+                    'id': 'ash_pale_watcher_right',
+                    'name': 'Ash-pale watcher (right slope)',
+                    'disposition': 'hostile',
+                    'status': 'dead',
+                    'memory': ['The right-side watcher has already been dropped.'],
+                },
+                {
+                    'id': 'second_pale_shape_left',
+                    'name': 'second_pale_shape_left',
+                    'disposition': 'unknown',
+                    'status': 'known',
+                    'memory': ['Lower on the left slope, half-hidden behind thorn and stone.'],
+                },
+            ],
+        }
+
+        request = default_request_from_session(
+            session_obj=session_obj,
+            campaign=campaign,
+            state=state,
+            player_message='I take out my sword and try to cut its throat',
+        )
+
+    assert request['allowGeneration'] is True
+    assert request['enemyCount'] == 1
+    group = request['enemyGroups'][0]
+    assert group['boundNpc']['npcId'] == 'second_pale_shape_left'
+    assert group['boundNpc']['npcName'] == 'Second Pale Shape Left'
+    assert 'Known NPC Second Pale Shape Left.' in group['descriptionHint']
 
 
 def test_resolver_preserves_bound_npc_identity_on_generated_creature(app, monkeypatch):

@@ -665,6 +665,7 @@ def _npc_payload(change: dict[str, Any]) -> dict[str, Any]:
         'locationId': _world_id(change.get('locationId'), npc.get('locationId')) if (change.get('locationId') or npc.get('locationId')) else None,
         'status': change.get('status') or npc.get('status') or 'known',
         'faction': change.get('faction') or npc.get('faction'),
+        'aliases': _merge_unique(npc.get('aliases'), change.get('aliases')),
         'questIds': _merge_unique(npc.get('questIds'), change.get('questIds')),
         'memory': _merge_unique(npc.get('memory'), change.get('memory')),
         'metadata': npc.get('metadata') if isinstance(npc.get('metadata'), dict) else {},
@@ -696,6 +697,7 @@ def _merge_npc(state: dict[str, Any], payload: dict[str, Any], *, party: bool = 
             'locationId': payload.get('locationId'),
             'status': payload.get('status') or 'known',
             'faction': payload.get('faction'),
+            'aliases': _string_list(payload.get('aliases')),
             'questIds': _string_list(payload.get('questIds')),
             'memory': _string_list(payload.get('memory')),
             'firstMetTurn': payload.get('firstMetTurn'),
@@ -707,8 +709,11 @@ def _merge_npc(state: dict[str, Any], payload: dict[str, Any], *, party: bool = 
     for key in ('name', 'race', 'role', 'disposition', 'locationId', 'status', 'faction', 'firstMetTurn', 'lastSeenTurn'):
         if key == 'firstMetTurn' and record.get(key):
             continue
+        if key == 'name' and payload.get('name') == payload.get('id') and record.get('name'):
+            continue
         _set_if_present(record, key, payload.get(key))
     _merge_rich_text(record, 'description', payload.get('description'))
+    record['aliases'] = _merge_unique(record.get('aliases'), payload.get('aliases'))
     record['questIds'] = _merge_unique(record.get('questIds'), payload.get('questIds'))
     record['memory'] = _merge_unique(record.get('memory'), payload.get('memory'))
     relationship = record.setdefault('relationship', {})
