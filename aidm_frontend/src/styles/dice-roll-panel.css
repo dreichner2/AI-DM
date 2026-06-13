@@ -1,0 +1,343 @@
+.roll-tray {
+  display: grid;
+  gap: 10px;
+  margin: 10px 8px 0;
+  padding: 10px;
+  border: 1px solid rgba(144, 164, 159, 0.2);
+  border-radius: 6px;
+  color: var(--text);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.012)),
+    rgba(8, 16, 16, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.roll-tray-section {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.roll-tray-label {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 680;
+  text-transform: uppercase;
+}
+
+.dice-chip-grid,
+.ability-chip-grid,
+.roll-modifier-quick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.dice-chip-grid button,
+.ability-chip-grid button,
+.roll-mode-toggle button,
+.roll-modifier-control button,
+.roll-primary-button {
+  border: 1px solid rgba(144, 164, 159, 0.24);
+  border-radius: 5px;
+  color: var(--heading);
+  background: rgba(255, 255, 255, 0.035);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.dice-chip-grid button:hover:not(:disabled),
+.ability-chip-grid button:hover:not(:disabled),
+.roll-mode-toggle button:hover:not(:disabled),
+.roll-modifier-control button:hover:not(:disabled) {
+  border-color: rgba(255, 176, 103, 0.42);
+  background: rgba(255, 107, 44, 0.12);
+}
+
+.dice-chip-grid button:focus-visible,
+.ability-chip-grid button:focus-visible,
+.roll-mode-toggle button:focus-visible,
+.roll-modifier-control button:focus-visible,
+.roll-primary-button:focus-visible,
+.roll-reason-field input:focus,
+.roll-pending-field select:focus,
+.roll-modifier-control input:focus {
+  outline: none;
+  border-color: rgba(255, 176, 103, 0.72);
+  box-shadow: 0 0 0 2px rgba(255, 107, 44, 0.14);
+}
+
+.dice-chip-grid button:disabled,
+.ability-chip-grid button:disabled,
+.roll-mode-toggle button:disabled,
+.roll-modifier-control button:disabled,
+.roll-primary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.dice-chip {
+  min-width: 48px;
+  height: 34px;
+  padding: 0 10px;
+  font-size: 0.78rem;
+  font-weight: 760;
+}
+
+.dice-chip.primary {
+  min-width: 62px;
+}
+
+.dice-chip.selected,
+.ability-chip-grid button.selected,
+.roll-mode-toggle button.selected,
+.roll-modifier-control button.selected {
+  border-color: rgba(255, 176, 103, 0.6);
+  color: #fff6ed;
+  background:
+    linear-gradient(180deg, rgba(255, 130, 65, 0.28), rgba(255, 107, 44, 0.18)),
+    rgba(255, 107, 44, 0.08);
+}
+
+.ability-chip-grid button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 0.74rem;
+  font-weight: 660;
+  white-space: nowrap;
+}
+
+.ability-chip-grid small,
+.roll-modifier-quick small {
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 640;
+}
+
+.ability-chip-grid button.selected small,
+.roll-modifier-control button.selected small {
+  color: #ffe1c7;
+}
+
+.roll-ability-note {
+  color: var(--muted);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.roll-tray-controls {
+  display: grid;
+  grid-template-columns: auto minmax(250px, 1fr) minmax(190px, 0.75fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.roll-mode-toggle {
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(40px, 1fr));
+  min-width: 138px;
+  padding: 2px;
+  border: 1px solid rgba(144, 164, 159, 0.2);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.roll-mode-toggle button {
+  height: 28px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.roll-modifier-control {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.roll-modifier-control input {
+  width: 58px;
+  height: 30px;
+  border: 1px solid rgba(144, 164, 159, 0.24);
+  border-radius: 5px;
+  color: var(--heading);
+  background: rgba(255, 255, 255, 0.035);
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.roll-modifier-control .icon-adjust {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  padding: 0;
+}
+
+.roll-modifier-quick button {
+  height: 30px;
+  padding: 0 8px;
+  font-size: 0.7rem;
+  font-weight: 720;
+}
+
+.roll-reason-field,
+.roll-pending-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.roll-reason-field span,
+.roll-pending-field span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 680;
+}
+
+.roll-reason-field input,
+.roll-pending-field select {
+  min-width: 0;
+  width: 100%;
+  height: 30px;
+  border: 1px solid rgba(144, 164, 159, 0.24);
+  border-radius: 5px;
+  color: var(--heading);
+  background: rgba(255, 255, 255, 0.035);
+  font: inherit;
+  font-size: 0.72rem;
+}
+
+.roll-reason-field input {
+  padding: 0 8px;
+}
+
+.roll-pending-field select {
+  max-width: 220px;
+  padding: 0 24px 0 8px;
+}
+
+.roll-tray-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.roll-preview {
+  min-width: 0;
+  overflow: hidden;
+  color: #dce8e2;
+  font-size: 0.75rem;
+  font-weight: 590;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roll-primary-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 34px;
+  min-width: 110px;
+  padding: 0 13px;
+  color: white;
+  background: linear-gradient(180deg, #ff8241, #f05b22);
+  font-size: 0.78rem;
+  font-weight: 730;
+  box-shadow: 0 8px 22px rgba(255, 91, 34, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.roll-primary-button:hover:not(:disabled) {
+  border-color: rgba(255, 176, 103, 0.72);
+  background: linear-gradient(180deg, #ff9255, #f4662d);
+}
+
+@media (max-width: 920px) {
+  .roll-tray {
+    margin: 8px 0 0;
+    padding: 8px;
+  }
+
+  .roll-tray-section {
+    grid-template-columns: 1fr;
+    align-items: start;
+    gap: 6px;
+  }
+
+  .roll-ability-note {
+    display: none;
+  }
+
+  .dice-chip-grid,
+  .ability-chip-grid {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+
+  .dice-chip-grid::-webkit-scrollbar,
+  .ability-chip-grid::-webkit-scrollbar {
+    display: none;
+  }
+
+  .dice-chip,
+  .ability-chip-grid button {
+    flex: 0 0 auto;
+  }
+
+  .roll-tray-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .roll-mode-toggle {
+    width: 100%;
+  }
+
+  .roll-modifier-control {
+    flex-wrap: wrap;
+  }
+
+  .roll-reason-field,
+  .roll-pending-field {
+    align-items: stretch;
+  }
+
+  .roll-pending-field select {
+    max-width: none;
+  }
+
+  .roll-tray-footer {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .roll-preview {
+    white-space: normal;
+  }
+
+  .roll-primary-button {
+    width: 100%;
+  }
+}

@@ -336,10 +336,20 @@ export function spellActionText(characterName: string, spellName: string, curren
   return `${characterName} ${verb} ${cleanSpellName}: ${body}`.trim()
 }
 
-export function rollActionText(die: string, ability: AbilityOption | null, current: string) {
+export function rollActionText(
+  die: string,
+  ability: AbilityOption | null,
+  current: string,
+  modifierOverride: number | null = null,
+) {
   const body = stripComposerCommand(current)
   if (isInitiativeRollAbility(ability)) return `I roll for initiative: ${body}`.trim()
-  const modifier = ability ? formatModifier(abilityModifierValue(ability)) : ''
+  const modifier =
+    typeof modifierOverride === 'number'
+      ? formatModifier(modifierOverride)
+      : ability
+        ? formatModifier(abilityModifierValue(ability))
+        : ''
   const reason = ability ? ` for ${ability.label} check` : ''
   return `I roll a ${normalizeDie(die)}${modifier}${reason}: ${body}`.trim()
 }
@@ -409,9 +419,10 @@ export function composerTextForMode(
   itemName = item?.name ?? '',
   costGold = '',
   spellName = '',
+  rollModifierOverride: number | null = null,
 ) {
   const body = stripComposerCommand(current)
-  if (mode === 'roll') return rollActionText(die, ability, current)
+  if (mode === 'roll') return rollActionText(die, ability, current, rollModifierOverride)
   if (mode === 'admin') return `[ADMIN] ${body}`
   if (mode === 'ooc') return `[OOC] ${body}`
   if (mode === 'ability') return abilityActionText(characterName, ability, current)

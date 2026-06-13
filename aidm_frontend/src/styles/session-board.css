@@ -1406,8 +1406,7 @@
   flex-wrap: wrap;
 }
 
-.composer-tools button,
-.dice-select {
+.composer-tools button {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -1423,16 +1422,8 @@
   font-weight: 470;
 }
 
-.composer-tools button.selected,
-.dice-select:focus,
-.dice-select:hover {
+.composer-tools button.selected {
   border-color: rgba(255, 176, 103, 0.32);
   color: var(--orange);
   background: rgba(255, 107, 44, 0.1);
-}
-
-.dice-select {
-  width: auto;
-  color: var(--muted);
-  background: rgba(255, 255, 255, 0.025);
 }

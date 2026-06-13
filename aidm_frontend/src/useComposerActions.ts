@@ -115,6 +115,7 @@ type UseComposerActionsOptions = {
   campaign: Campaign | null
   itemOptions: ItemOption[]
   pendingRollOptions: PendingRollOption[]
+  proficiencyBonus: string
   sessionState: SessionState | null
   selectedCampaignId: number | null
   selectedPlayer: Player | null
@@ -136,6 +137,7 @@ export function useComposerActions({
   campaign,
   itemOptions,
   pendingRollOptions,
+  proficiencyBonus,
   sessionState,
   selectedCampaignId,
   selectedPlayer,
@@ -156,6 +158,7 @@ export function useComposerActions({
   const [rollModifier, setRollModifier] = useState('0')
   const [rollMode, setRollMode] = useState<RollMode>('normal')
   const [rollReason, setRollReason] = useState('')
+  const [rollProficiencyApplied, setRollProficiencyApplied] = useState(false)
   const [rawRollTargetPendingTurnId, setRollTargetPendingTurnId] = useState('')
   const [selectedAbilityKey, setSelectedAbilityKey] = useState(PLAIN_ROLL_ABILITY_KEY)
   const [selectedInventoryAction, setSelectedInventoryAction] = useState<InventoryAction>('use')
@@ -267,6 +270,9 @@ export function useComposerActions({
       : selectedAbilityKey === INITIATIVE_ROLL_ABILITY_KEY
         ? initiativeAbility
         : abilityOptions.find((ability) => ability.key === selectedAbilityKey) ?? null
+  const rollProficiencyBonus = Math.max(0, parseRollModifier(proficiencyBonus))
+  const rollModifierForAbility = (ability: AbilityOption | null) =>
+    abilityModifierValue(ability) + (rollProficiencyApplied ? rollProficiencyBonus : 0)
   const defaultSpellAbility =
     abilityOptions.find((ability) => ability.key === preferredSpellAbilityKey(selectedPlayer)) ??
     abilityOptions.find((ability) => ability.key === 'charisma') ??
@@ -444,6 +450,7 @@ export function useComposerActions({
         itemIntentName,
         itemCostGold,
         spellName,
+        mode === 'roll' ? parseRollModifier(rollModifier) : null,
       ),
     )
   }
@@ -460,7 +467,8 @@ export function useComposerActions({
         ? INITIATIVE_ROLL_ABILITY_KEY
         : nextAbility?.key ?? PLAIN_ROLL_ABILITY_KEY,
     )
-    setRollModifier(String(abilityModifierValue(nextAbility)))
+    const nextModifier = rollModifierForAbility(nextAbility)
+    setRollModifier(String(nextModifier))
     setRollReason(
       nextKey === INITIATIVE_ROLL_ABILITY_KEY
         ? INITIATIVE_ROLL_REASON
@@ -482,6 +490,8 @@ export function useComposerActions({
           selectedInventoryAction,
           itemIntentName,
           itemCostGold,
+          undefined,
+          nextModifier,
         ),
       )
     }
@@ -514,7 +524,21 @@ export function useComposerActions({
     setSelectedDie(normalizedDie)
     if (composerMode === 'roll') {
       setActionText((current) =>
-        composerTextForMode('roll', current, selectedPlayer?.character_name ?? 'I', normalizedDie, selectedAbility, selectedItem),
+        composerTextForMode(
+          'roll',
+          current,
+          selectedPlayer?.character_name ?? 'I',
+          normalizedDie,
+          selectedAbility,
+          selectedItem,
+          null,
+          'speak_to',
+          'use',
+          '',
+          '',
+          '',
+          parseRollModifier(rollModifier),
+        ),
       )
     }
   }
@@ -665,6 +689,8 @@ export function useComposerActions({
     interactionTargets,
     rollMode,
     rollModifier,
+    rollProficiencyApplied,
+    rollProficiencyBonus,
     rollReason,
     rollTargetPendingTurnId,
     spellName,
@@ -687,6 +713,7 @@ export function useComposerActions({
     setItemQuantity,
     setRollMode,
     setRollModifier,
+    setRollProficiencyApplied,
     setRollReason,
     setRollTargetPendingTurnId,
     updateRollAbilityKey,

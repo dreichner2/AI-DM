@@ -6,7 +6,6 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
-import { INITIATIVE_ROLL_ABILITY_KEY } from './gameActions'
 import { LEGACY_PASSWORD_SETUP_MESSAGE } from './useRuntimeSettings'
 import type {
   BetaSummary,
@@ -1171,13 +1170,18 @@ describe('App user workflow regressions', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
     expect(actionInput).toHaveValue('I roll a d20: test the sigil')
-    expect(screen.getByLabelText('Roll options')).toBeInTheDocument()
-    expect(screen.getByLabelText('Roll ability')).toHaveValue('plain_roll')
+    const rollOptions = screen.getByLabelText('Roll options')
+    expect(rollOptions).toBeInTheDocument()
+    expect(within(rollOptions).getByRole('button', { name: 'Plain' })).toHaveAttribute('aria-pressed', 'true')
 
-    fireEvent.change(screen.getByLabelText('Roll ability'), { target: { value: 'strength' } })
+    fireEvent.click(within(rollOptions).getByRole('button', { name: 'STR +3' }))
     expect(actionInput).toHaveValue('I roll a d20+3 for STR check: test the sigil')
     expect(screen.getByLabelText('Roll modifier')).toHaveValue(3)
     expect(screen.getByLabelText('Roll reason')).toHaveValue('STR check')
+
+    fireEvent.click(within(rollOptions).getByRole('button', { name: '+PB +2' }))
+    expect(actionInput).toHaveValue('I roll a d20+5 for STR check: test the sigil')
+    expect(screen.getByLabelText('Roll modifier')).toHaveValue(5)
 
     fireEvent.click(screen.getByRole('button', { name: 'Item' }))
     expect(actionInput).toHaveValue('Ember uses Healing Potion: test the sigil')
@@ -1618,10 +1622,12 @@ describe('App user workflow regressions', () => {
     const actionInput = screen.getByLabelText(/Your Action/i)
     fireEvent.change(actionInput, { target: { value: 'kick the door' } })
     fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
-    fireEvent.change(screen.getByLabelText('Roll ability'), { target: { value: 'strength' } })
+    const rollOptions = screen.getByLabelText('Roll options')
+    fireEvent.click(within(rollOptions).getByRole('button', { name: 'STR +3' }))
+    fireEvent.click(within(rollOptions).getByRole('button', { name: '+PB +2' }))
 
-    expect(actionInput).toHaveValue('I roll a d20+3 for STR check: kick the door')
-    expect(screen.getByLabelText('Roll modifier')).toHaveValue(3)
+    expect(actionInput).toHaveValue('I roll a d20+5 for STR check: kick the door')
+    expect(screen.getByLabelText('Roll modifier')).toHaveValue(5)
 
     fireEvent.click(screen.getByRole('button', { name: 'Roll dice' }))
     const dialog = await screen.findByRole('dialog', { name: 'Dice Roller' })
@@ -1639,7 +1645,7 @@ describe('App user workflow regressions', () => {
               modifier: 3,
             },
             roll: expect.objectContaining({
-              modifier: 3,
+              modifier: 5,
               reason: 'STR check',
             }),
           }),
@@ -1653,11 +1659,9 @@ describe('App user workflow regressions', () => {
 
     const actionInput = screen.getByLabelText(/Your Action/i)
     fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
-    fireEvent.change(screen.getByLabelText('Roll ability'), {
-      target: { value: INITIATIVE_ROLL_ABILITY_KEY },
-    })
+    const rollOptions = screen.getByLabelText('Roll options')
+    fireEvent.click(within(rollOptions).getByRole('button', { name: 'Initiative DEX +1' }))
 
-    expect(screen.getByRole('option', { name: 'Initiative (DEX +1)' })).toBeInTheDocument()
     expect(actionInput).toHaveValue('I roll for initiative:')
     expect(screen.getByLabelText('Roll modifier')).toHaveValue(1)
     expect(screen.getByLabelText('Roll reason')).toHaveValue('initiative')

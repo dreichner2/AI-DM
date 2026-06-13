@@ -2,5 +2,6 @@
 @import './styles/base.css';
 @import './styles/campaign-rail.css';
 @import './styles/session-board.css';
+@import './styles/dice-roll-panel.css';
 @import './styles/inspector.css';
 @import './styles/responsive.css';

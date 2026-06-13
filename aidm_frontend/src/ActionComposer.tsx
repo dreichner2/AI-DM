@@ -1,5 +1,5 @@
 import { useRef, type Dispatch, type RefObject, type SetStateAction } from 'react'
-import { MessagesSquare, Sparkles, Volume2, VolumeX, X } from 'lucide-react'
+import { MessagesSquare, Minus, Plus, RotateCcw, Sparkles, Volume2, VolumeX, X } from 'lucide-react'
 import { ThinIcon } from './AppChrome'
 import {
   DICE_OPTIONS,
@@ -8,9 +8,12 @@ import {
   INTERACTION_TYPE_OPTIONS,
   PLAIN_ROLL_ABILITY_KEY,
   composerModeLabel,
+  formatModifier,
   interactionActionText,
   interactionTargetId,
   itemActionText,
+  parseRollModifier,
+  rollActionText,
   type AbilityOption,
   type ComposerMode,
   type InteractionTarget,
@@ -21,6 +24,23 @@ import {
 } from './gameActions'
 import type { PendingRollOption } from './gameSelectors'
 import type { ActivePlayer, TurnControl, TurnControlMode, TurnControlSource } from './types'
+
+const ROLL_TRAY_DICE_OPTIONS = ['d20', ...DICE_OPTIONS.filter((die) => die !== 'd20')]
+const ROLL_MODE_OPTIONS: Array<{ value: RollMode; label: string; shortLabel: string }> = [
+  { value: 'normal', label: 'Normal', shortLabel: 'Normal' },
+  { value: 'advantage', label: 'Advantage', shortLabel: 'Adv' },
+  { value: 'disadvantage', label: 'Disadvantage', shortLabel: 'Dis' },
+]
+
+function clampRollModifier(value: number) {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(-99, Math.min(99, Math.trunc(value)))
+}
+
+function abilityChipLabel(ability: AbilityOption) {
+  const modifier = ability.modifier && ability.modifier !== '—' ? ability.modifier : ''
+  return `${ability.label}${modifier ? ` ${modifier}` : ''}`
+}
 
 export type ActionComposerProps = {
   actionInputRef: RefObject<HTMLTextAreaElement | null>
@@ -50,7 +70,7 @@ export type ActionComposerProps = {
   stopTtsAudio: () => void
   submitAction: () => void
   toggleAdminTools: () => void
-  startDiceRoll: () => void
+  startDiceRoll: (die?: string) => void
   preloadDiceRollDialog: () => void
   applyComposerMode: (mode: ComposerMode) => void
   updateSelectedDie: (die: string) => void
@@ -58,6 +78,9 @@ export type ActionComposerProps = {
   setRollMode: Dispatch<SetStateAction<RollMode>>
   rollModifier: string
   setRollModifier: Dispatch<SetStateAction<string>>
+  rollProficiencyApplied: boolean
+  rollProficiencyBonus: number
+  setRollProficiencyApplied: Dispatch<SetStateAction<boolean>>
   rollReason: string
   setRollReason: Dispatch<SetStateAction<string>>
   pendingRollOptions: PendingRollOption[]
@@ -124,6 +147,9 @@ export function ActionComposer({
   setRollMode,
   rollModifier,
   setRollModifier,
+  rollProficiencyApplied,
+  rollProficiencyBonus,
+  setRollProficiencyApplied,
   rollReason,
   setRollReason,
   pendingRollOptions,
@@ -158,13 +184,42 @@ export function ActionComposer({
   const inventoryActionUsesOwnedItem = ['use', 'equip', 'unequip', 'drop', 'give', 'sell'].includes(selectedInventoryAction)
   const currentItemName = inventoryActionUsesOwnedItem ? selectedItem?.name ?? itemDraftName : itemDraftName
   const dexterityAbility = abilityOptions.find((ability) => ability.key === 'dexterity')
-  const initiativeOptionLabel =
-    dexterityAbility?.modifier && dexterityAbility.modifier !== '—'
-      ? `Initiative (DEX ${dexterityAbility.modifier})`
-      : 'Initiative (DEX)'
+  const initiativeChipModifier =
+    dexterityAbility?.modifier && dexterityAbility.modifier !== '—' ? `DEX ${dexterityAbility.modifier}` : 'DEX'
+  const rollModifierValue = parseRollModifier(rollModifier)
+  const rollModifierPreview = formatModifier(rollModifierValue)
+  const rollModeLabel = ROLL_MODE_OPTIONS.find((option) => option.value === rollMode)?.label ?? 'Normal'
+  const rollReasonPreview = rollReason.trim() || (selectedAbility ? `${selectedAbility.label} check` : '')
+  const rollPreviewParts = [
+    `Rolling ${selectedDie.toUpperCase()}${rollModifierPreview ? ` ${rollModifierPreview}` : ''}${
+      selectedAbility ? ` ${selectedAbility.label}` : ''
+    }`,
+    ...(rollMode === 'normal' ? [] : [rollModeLabel]),
+    ...(rollReasonPreview ? [rollReasonPreview] : []),
+  ]
+  const rollPreview = rollPreviewParts.join(' · ')
   const activeTurnPlayerId = turnControl.activePlayerId ?? selectedPlayerId ?? activePlayers[0]?.id ?? null
   const conductorControlled = turnControl.source === 'auto' || turnControl.source === 'ai'
   const manualOverrideActive = turnControl.source === 'manual' || turnControl.source === 'admin'
+  const updateRollModifierDraft = (nextModifier: number) => {
+    const clamped = clampRollModifier(nextModifier)
+    setRollModifier(String(clamped))
+    setActionText((current) => rollActionText(selectedDie, selectedAbility, current, clamped))
+  }
+  const adjustRollModifier = (delta: number) => {
+    updateRollModifierDraft(rollModifierValue + delta)
+  }
+  const clearRollModifier = () => {
+    updateRollModifierDraft(0)
+    setRollProficiencyApplied(false)
+  }
+  const toggleRollProficiency = () => {
+    if (!rollProficiencyBonus) return
+    const nextApplied = !rollProficiencyApplied
+    const delta = nextApplied ? rollProficiencyBonus : -rollProficiencyBonus
+    updateRollModifierDraft(rollModifierValue + delta)
+    setRollProficiencyApplied(nextApplied)
+  }
   const turnModeButton = (mode: TurnControlMode, label: string) => (
     <button
       key={mode}
@@ -343,65 +398,204 @@ export function ActionComposer({
         </div>
       </div>
       {composerMode === 'roll' ? (
-        <div className="action-intent-panel" aria-label="Roll options">
-          <select
-            value={selectedAbilityKey}
-            aria-label="Roll ability"
-            onChange={(event) => updateRollAbilityKey(event.target.value)}
-          >
-            <option value={PLAIN_ROLL_ABILITY_KEY}>Plain roll</option>
-            <option value={INITIATIVE_ROLL_ABILITY_KEY}>{initiativeOptionLabel}</option>
-            {abilityOptions.map((ability) => (
-              <option key={ability.key} value={ability.key}>
-                {ability.label} {ability.modifier}
-              </option>
-            ))}
-          </select>
-          <select
-            value={rollMode}
-            aria-label="Roll mode"
-            onChange={(event) => setRollMode(event.target.value as RollMode)}
-          >
-            <option value="normal">Normal</option>
-            <option value="advantage">Advantage</option>
-            <option value="disadvantage">Disadvantage</option>
-          </select>
-          <input
-            type="number"
-            value={rollModifier}
-            aria-label="Roll modifier"
-            min={-99}
-            max={99}
-            onChange={(event) => setRollModifier(event.target.value)}
-          />
-          <input
-            type="text"
-            value={rollReason}
-            aria-label="Roll reason"
-            maxLength={120}
-            placeholder="Reason"
-            onChange={(event) => setRollReason(event.target.value)}
-          />
-          {pendingRollOptions.length ? (
-            <select
-              value={rollTargetPendingTurnId}
-              aria-label="Target pending check"
-              title="Target pending check"
-              onChange={(event) => setRollTargetPendingTurnId(event.target.value)}
-            >
-              <option value="">Latest pending check</option>
-              {pendingRollOptions.map((option) => (
-                <option key={option.turnId} value={option.turnId}>
-                  {option.label}
-                </option>
+        <section className="roll-tray" aria-label="Roll options">
+          <div className="roll-tray-section dice-section">
+            <span className="roll-tray-label">Dice</span>
+            <div className="dice-chip-grid" role="group" aria-label="Dice">
+              {ROLL_TRAY_DICE_OPTIONS.map((dieOption) => (
+                <button
+                  key={dieOption}
+                  type="button"
+                  className={`dice-chip ${selectedDie === dieOption ? 'selected' : ''} ${
+                    dieOption === 'd20' ? 'primary' : ''
+                  }`}
+                  aria-pressed={selectedDie === dieOption}
+                  title={`Double-click to roll ${dieOption.toUpperCase()}`}
+                  onClick={() => updateSelectedDie(dieOption)}
+                  onDoubleClick={() => startDiceRoll(dieOption)}
+                  disabled={sendPending}
+                >
+                  {dieOption.toUpperCase()}
+                </button>
               ))}
-            </select>
-          ) : null}
-          <span>{selectedAbility ? `${selectedAbility.score} score` : 'No ability check'}</span>
-          <button type="button" aria-label="Roll dice" onClick={() => startDiceRoll()} disabled={sendPending}>
-            <ThinIcon name="dice" size={15} /> Roll
-          </button>
-        </div>
+            </div>
+          </div>
+
+          <div className="roll-tray-section check-section">
+            <span className="roll-tray-label">Check</span>
+            <div className="ability-chip-grid" role="group" aria-label="Roll ability">
+              <button
+                type="button"
+                className={selectedAbilityKey === PLAIN_ROLL_ABILITY_KEY ? 'selected' : ''}
+                aria-pressed={selectedAbilityKey === PLAIN_ROLL_ABILITY_KEY}
+                onClick={() => updateRollAbilityKey(PLAIN_ROLL_ABILITY_KEY)}
+                disabled={sendPending}
+              >
+                Plain
+              </button>
+              <button
+                type="button"
+                className={selectedAbilityKey === INITIATIVE_ROLL_ABILITY_KEY ? 'selected' : ''}
+                aria-pressed={selectedAbilityKey === INITIATIVE_ROLL_ABILITY_KEY}
+                aria-label={`Initiative ${initiativeChipModifier}`}
+                onClick={() => updateRollAbilityKey(INITIATIVE_ROLL_ABILITY_KEY)}
+                disabled={sendPending}
+              >
+                <span>Initiative</span>
+                <small>{initiativeChipModifier}</small>
+              </button>
+              {abilityOptions.map((ability) => (
+                <button
+                  key={ability.key}
+                  type="button"
+                  className={selectedAbilityKey === ability.key ? 'selected' : ''}
+                  aria-pressed={selectedAbilityKey === ability.key}
+                  onClick={() => updateRollAbilityKey(ability.key)}
+                  disabled={sendPending}
+                >
+                  {abilityChipLabel(ability)}
+                </button>
+              ))}
+            </div>
+            <span className="roll-ability-note">
+              {selectedAbility ? `${selectedAbility.score} score` : 'No ability check'}
+            </span>
+          </div>
+
+          <div className="roll-tray-controls">
+            <div className="roll-mode-toggle" role="group" aria-label="Roll mode">
+              {ROLL_MODE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={rollMode === option.value ? 'selected' : ''}
+                  aria-pressed={rollMode === option.value}
+                  aria-label={option.label}
+                  onClick={() => setRollMode(option.value)}
+                  disabled={sendPending}
+                >
+                  {option.shortLabel}
+                </button>
+              ))}
+            </div>
+
+            <div className="roll-modifier-control">
+              <span className="roll-tray-label">Mod</span>
+              <button
+                type="button"
+                className="icon-adjust"
+                aria-label="Decrease roll modifier"
+                title="Decrease modifier"
+                onClick={() => adjustRollModifier(-1)}
+                disabled={sendPending}
+              >
+                <Minus size={14} />
+              </button>
+              <input
+                type="number"
+                value={rollModifier}
+                aria-label="Roll modifier"
+                min={-99}
+                max={99}
+                onChange={(event) => {
+                  const nextValue = event.target.value
+                  setRollModifier(nextValue)
+                  setActionText((current) =>
+                    rollActionText(selectedDie, selectedAbility, current, parseRollModifier(nextValue)),
+                  )
+                  setRollProficiencyApplied(false)
+                }}
+              />
+              <button
+                type="button"
+                className="icon-adjust"
+                aria-label="Increase roll modifier"
+                title="Increase modifier"
+                onClick={() => adjustRollModifier(1)}
+                disabled={sendPending}
+              >
+                <Plus size={14} />
+              </button>
+              <div className="roll-modifier-quick" role="group" aria-label="Modifier shortcuts">
+                <button type="button" onClick={() => adjustRollModifier(1)} disabled={sendPending}>
+                  +1
+                </button>
+                <button type="button" onClick={() => adjustRollModifier(2)} disabled={sendPending}>
+                  +2
+                </button>
+                <button type="button" onClick={() => adjustRollModifier(-1)} disabled={sendPending}>
+                  -1
+                </button>
+                <button
+                  type="button"
+                  className={rollProficiencyApplied ? 'selected' : ''}
+                  aria-pressed={rollProficiencyApplied}
+                  onClick={toggleRollProficiency}
+                  disabled={sendPending || !rollProficiencyBonus}
+                >
+                  +PB <small>{formatModifier(rollProficiencyBonus) || '+0'}</small>
+                </button>
+                <button
+                  type="button"
+                  className="icon-adjust"
+                  aria-label="Clear roll modifier"
+                  title="Clear modifier"
+                  onClick={clearRollModifier}
+                  disabled={sendPending}
+                >
+                  <RotateCcw size={14} />
+                </button>
+              </div>
+            </div>
+
+            <label className="roll-reason-field">
+              <span>Reason</span>
+              <input
+                type="text"
+                value={rollReason}
+                aria-label="Roll reason"
+                maxLength={120}
+                placeholder="Stealth check"
+                onChange={(event) => setRollReason(event.target.value)}
+              />
+            </label>
+
+            {pendingRollOptions.length ? (
+              <label className="roll-pending-field">
+                <span>For</span>
+                <select
+                  value={rollTargetPendingTurnId}
+                  aria-label="Target pending check"
+                  title="Target pending check"
+                  onChange={(event) => setRollTargetPendingTurnId(event.target.value)}
+                >
+                  <option value="">Latest pending check</option>
+                  {pendingRollOptions.map((option) => (
+                    <option key={option.turnId} value={option.turnId}>
+                      {option.label} - {option.detail}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+          </div>
+
+          <div className="roll-tray-footer">
+            <span className="roll-preview" aria-live="polite">
+              {rollPreview}
+            </span>
+            <button
+              type="button"
+              className="roll-primary-button"
+              aria-label="Roll dice"
+              onClick={() => startDiceRoll()}
+              disabled={sendPending}
+            >
+              <ThinIcon name="dice" size={16} />
+              Roll {selectedDie.toUpperCase()}
+            </button>
+          </div>
+        </section>
       ) : null}
       {composerMode === 'spell' ? (
         <div className="action-intent-panel spell-intent-panel" aria-label="Spell options">
@@ -573,18 +767,6 @@ export function ActionComposer({
         >
           <ThinIcon name="dice" size={16} /> Roll <ThinIcon name="chevron" size={13} />
         </button>
-        <select
-          className="dice-select"
-          value={selectedDie}
-          aria-label="Select die"
-          onChange={(event) => updateSelectedDie(event.target.value)}
-        >
-          {DICE_OPTIONS.map((die) => (
-            <option key={die} value={die}>
-              {die.toUpperCase()}
-            </option>
-          ))}
-        </select>
         <button
           type="button"
           className={composerMode === 'spell' ? 'selected' : ''}

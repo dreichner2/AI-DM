@@ -1347,8 +1347,7 @@
     display: none;
   }
 
-  .composer-tools button,
-  .dice-select {
+  .composer-tools button {
     flex: 0 0 auto;
     min-height: 28px;
     font-size: 0.72rem;
