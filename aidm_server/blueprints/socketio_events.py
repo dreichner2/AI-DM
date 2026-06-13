@@ -52,6 +52,26 @@ def _socket_rate_limiter():
     return socket_runtime.rate_limiter()
 
 
+def _socket_rate_key(workspace_id: str, session_id: int, player_id: int) -> str:
+    return f"{workspace_id}:{session_id}:{player_id}"
+
+
+def _emit_socket_rate_limited(telemetry_prefix: str, session_id: int, reset_in_seconds: int) -> None:
+    emit(
+        'error',
+        socket_error(
+            'rate_limited',
+            'Too many socket messages; please wait before sending more.',
+            {'reset_in_seconds': reset_in_seconds},
+        ),
+    )
+    telemetry_event(
+        f'{telemetry_prefix}.rate_limited',
+        payload={'sid': request.sid, 'session_id': session_id, 'reset_in_seconds': reset_in_seconds},
+        severity='warning',
+    )
+
+
 def _socket_auth_required() -> bool:
     return socket_runtime.auth_required()
 
@@ -633,8 +653,21 @@ def register_socketio_events(socketio):
                 return
 
             is_typing = data.get('is_typing') is True or data.get('typing') is True
-            if _set_player_typing(session_id, player_id, request.sid, is_typing):
-                emit('active_players', _active_player_payloads(session_id), room=str(session_id))
+            typing_state_changed = _set_player_typing(session_id, player_id, request.sid, is_typing)
+            if not typing_state_changed:
+                telemetry_metric('socket.typing_status_total', 1)
+                return
+
+            limit_result = _socket_rate_limiter().allow(_socket_rate_key(workspace_id, session_id, player_id))
+            if not limit_result.allowed:
+                if is_typing:
+                    _set_player_typing(session_id, player_id, request.sid, False)
+                else:
+                    emit('active_players', _active_player_payloads(session_id), room=str(session_id))
+                _emit_socket_rate_limited('socket.typing', session_id, limit_result.reset_in_seconds)
+                return
+
+            emit('active_players', _active_player_payloads(session_id), room=str(session_id))
             telemetry_metric('socket.typing_status_total', 1)
         finally:
             clear_logging_context()
@@ -764,22 +797,9 @@ def register_socketio_events(socketio):
                 )
                 return
 
-            rate_key = f"{request.sid}:{session_id}"
-            limit_result = _socket_rate_limiter().allow(rate_key)
+            limit_result = _socket_rate_limiter().allow(_socket_rate_key(workspace_id, session_id, player_id))
             if not limit_result.allowed:
-                emit(
-                    'error',
-                    socket_error(
-                        'rate_limited',
-                        'Too many socket messages; please wait before sending more.',
-                        {'reset_in_seconds': limit_result.reset_in_seconds},
-                    ),
-                )
-                telemetry_event(
-                    'socket.send_message.rate_limited',
-                    payload={'sid': request.sid, 'session_id': session_id, 'reset_in_seconds': limit_result.reset_in_seconds},
-                    severity='warning',
-                )
+                _emit_socket_rate_limited('socket.send_message', session_id, limit_result.reset_in_seconds)
                 return
 
             action_kind = (

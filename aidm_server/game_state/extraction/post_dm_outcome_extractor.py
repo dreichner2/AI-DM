@@ -7,6 +7,7 @@ from flask import current_app, has_app_context
 
 from aidm_server.canon_text import int_or_default
 from aidm_server.contracts import ProviderRequest
+from aidm_server.game_state.change_types import PHASE_1_STATE_CHANGE_TYPES
 from aidm_server.game_state.extraction.prompts import POST_DM_SYSTEM_MESSAGE, build_post_dm_prompt
 from aidm_server.game_state.extraction.schemas import extract_json_object, normalize_post_extraction
 from aidm_server.game_state.models import normalize_item_name, stable_change_id, stable_slug
@@ -15,6 +16,15 @@ from aidm_server.telemetry import telemetry_event, telemetry_metric
 
 
 HELPER_RAW_PREVIEW_LIMIT = 2000
+TRANSFER_STATE_CHANGE_TYPES = {'inventory.transfer', 'currency.transfer'}
+PLAYER_OWNED_STATE_CHANGE_TYPES = PHASE_1_STATE_CHANGE_TYPES - TRANSFER_STATE_CHANGE_TYPES
+PLAYER_COMBAT_PARTICIPANT_CHANGE_TYPES = {
+    'combat.participant.update',
+    'combat.move',
+    'combat.condition.add',
+    'combat.condition.remove',
+    'combat.ability.mark_used',
+}
 SMALL_NUMBER_WORDS = {
     'zero': 0,
     'one': 1,
@@ -1578,6 +1588,72 @@ def _combat_participant_ids(state_before_dm: dict[str, Any], *, team: str | None
     return ids
 
 
+def _actor_ref(value: Any) -> str:
+    return str(value or '').strip()
+
+
+def _helper_change_actor_id(change: dict[str, Any]) -> str:
+    return _actor_ref(change.get('actorId') or change.get('actor_id'))
+
+
+def _helper_transfer_source_actor_id(change: dict[str, Any]) -> str:
+    return _actor_ref(
+        change.get('fromActorId')
+        or change.get('from_actor_id')
+        or change.get('actorId')
+        or change.get('actor_id')
+    )
+
+
+def _helper_combat_participant_id(change: dict[str, Any]) -> str:
+    return _actor_ref(
+        change.get('participantId')
+        or change.get('participant_id')
+        or change.get('enemyId')
+        or change.get('enemy_id')
+    )
+
+
+def _filter_unauthorized_player_owned_changes(
+    state_before_dm: dict[str, Any],
+    changes: list[dict[str, Any]],
+    actor_id: str,
+) -> tuple[list[dict[str, Any]], int]:
+    expected_actor_id = _actor_ref(actor_id)
+    if not expected_actor_id:
+        return changes, 0
+    player_actor_ids = set(_player_actor_ids(state_before_dm))
+    combat_player_ids = _combat_participant_ids(state_before_dm, team='player')
+    filtered: list[dict[str, Any]] = []
+    removed = 0
+    for change in changes:
+        if not isinstance(change, dict):
+            filtered.append(change)
+            continue
+        change_type = str(change.get('type') or '').strip()
+        if change_type in PLAYER_OWNED_STATE_CHANGE_TYPES:
+            target_actor_id = _helper_change_actor_id(change)
+            if target_actor_id and target_actor_id != expected_actor_id:
+                removed += 1
+                continue
+        elif change_type in TRANSFER_STATE_CHANGE_TYPES:
+            source_actor_id = _helper_transfer_source_actor_id(change)
+            if source_actor_id and source_actor_id != expected_actor_id:
+                removed += 1
+                continue
+        elif change_type in PLAYER_COMBAT_PARTICIPANT_CHANGE_TYPES:
+            participant_id = _helper_combat_participant_id(change)
+            if (
+                participant_id
+                and participant_id != expected_actor_id
+                and (participant_id in player_actor_ids or participant_id in combat_player_ids)
+            ):
+                removed += 1
+                continue
+        filtered.append(change)
+    return filtered, removed
+
+
 def _filter_misrouted_combat_health_changes(
     state_before_dm: dict[str, Any],
     changes: list[dict[str, Any]],
@@ -2383,7 +2459,16 @@ def _heuristic_extract(
         notes.append('automatic_xp_award')
     if conflict_resolved and 'resolved_combat_scene_conflict' not in notes:
         notes.append('resolved_combat_scene_conflict')
-    return {'proposedChanges': changes, 'uncertainChanges': [], 'notes': notes}
+    return {
+        'proposedChanges': changes,
+        'uncertainChanges': [],
+        'notes': notes,
+        'authorizedCrossActorChangeIds': [
+            str(change.get('id'))
+            for change in xp_reward_changes
+            if isinstance(change, dict) and str(change.get('id') or '').strip()
+        ],
+    }
 
 
 def extract_post_dm_outcomes(
@@ -2461,13 +2546,18 @@ def extract_post_dm_outcomes(
     if helper_schema_valid:
         normalized = normalize_post_extraction(helper_payload, fallback_actor_id=actor_id)
         _assign_turn_scoped_change_ids(normalized['proposedChanges'], turn_id=turn_id)
-        filtered_changes, filtered_count = _filter_misrouted_combat_health_changes(
+        filtered_changes, filtered_ownership_count = _filter_unauthorized_player_owned_changes(
             state_before_dm,
             normalized.get('proposedChanges') or [],
+            actor_id,
+        )
+        filtered_changes, filtered_count = _filter_misrouted_combat_health_changes(
+            state_before_dm,
+            filtered_changes,
         )
         filtered_changes, filtered_ability_count = _filter_noncombat_ability_changes(state_before_dm, filtered_changes)
         filtered_changes, filtered_spell_count = _filter_transform_only_spell_learns(dm_response, filtered_changes)
-        if filtered_count or filtered_ability_count or filtered_spell_count:
+        if filtered_ownership_count or filtered_count or filtered_ability_count or filtered_spell_count:
             normalized['proposedChanges'] = filtered_changes
         scene_item_changes = _scene_item_grounding_changes(
             state_before_dm=state_before_dm,
@@ -2547,6 +2637,11 @@ def extract_post_dm_outcomes(
         )
         if xp_reward_changes:
             normalized['proposedChanges'] = [*(normalized.get('proposedChanges') or []), *xp_reward_changes]
+            normalized['authorizedCrossActorChangeIds'] = [
+                str(change.get('id'))
+                for change in xp_reward_changes
+                if isinstance(change, dict) and str(change.get('id') or '').strip()
+            ]
         resolved_changes, conflict_resolved = _resolve_combat_scene_conflicts(normalized.get('proposedChanges') or [])
         if conflict_resolved:
             normalized['proposedChanges'] = resolved_changes
@@ -2567,6 +2662,8 @@ def extract_post_dm_outcomes(
             notes.append('automatic_xp_award')
         if filtered_count and 'filtered_misrouted_combat_health' not in notes:
             notes.append('filtered_misrouted_combat_health')
+        if filtered_ownership_count and 'filtered_actor_ownership' not in notes:
+            notes.append('filtered_actor_ownership')
         if filtered_ability_count and 'filtered_noncombat_ability' not in notes:
             notes.append('filtered_noncombat_ability')
         if filtered_spell_count and 'filtered_transform_only_spell_learn' not in notes:
@@ -2590,6 +2687,8 @@ def extract_post_dm_outcomes(
         already_applied_changes=already_applied_changes,
     )
     normalized = normalize_post_extraction(fallback, fallback_actor_id=actor_id)
+    if fallback.get('authorizedCrossActorChangeIds'):
+        normalized['authorizedCrossActorChangeIds'] = fallback.get('authorizedCrossActorChangeIds')
     helper_debug['fallbackRan'] = True
     helper_debug['fallbackReason'] = fallback_reason
     return _attach_debug(normalized, helper_debug)

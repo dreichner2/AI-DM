@@ -21,6 +21,7 @@ from aidm_server.emergent_memory import (
 from aidm_server.models import CanonJob, Campaign, CampaignSegment, DmTurn, safe_json_dumps, safe_json_loads
 from aidm_server.segment_state import build_segment_state_payload
 from aidm_server.segment_triggers import evaluate_segment_trigger, parse_trigger_spec
+from aidm_server.services.campaign_pack_progress import update_campaign_pack_progress
 from aidm_server.socket_contracts import segment_triggered_payload
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 from aidm_server.time_utils import utc_now
@@ -254,7 +255,13 @@ def _evaluate_state_segments_after_turn(turn: DmTurn, campaign: Campaign) -> lis
             )
             segments_to_activate.append((segment, payload))
 
-        return _activate_state_segments(turn, segments_to_activate)
+        triggered_segments = _activate_state_segments(turn, segments_to_activate)
+        update_campaign_pack_progress(
+            session_id=turn.session_id,
+            campaign_id=campaign.campaign_id,
+            triggered_segments=triggered_segments,
+        )
+        return triggered_segments
     except Exception as exc:
         logger.error('Post-turn state segment evaluation failed: %s', str(exc))
         telemetry_event(
@@ -440,6 +447,17 @@ def process_canon_job(
         if emit_segment_triggered:
             for segment_payload in post_turn_segments:
                 emit_segment_triggered(turn.session_id, segment_payload)
+        if post_turn_segments and emit_turn_status:
+            emit_turn_status(
+                turn.session_id,
+                turn.turn_id,
+                'canon_applied',
+                {
+                    'stage': 'segment_evaluation',
+                    'snapshot_changed': True,
+                    'campaign_pack_progress_changed': True,
+                },
+            )
         if post_turn_segments:
             segment_patch = _segment_thread_patch(post_turn_segments)
             validated_segment_patch, segment_rejections = validate_canon_patch(

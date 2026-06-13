@@ -394,6 +394,52 @@ def _merge_metadata(record: dict[str, Any], incoming: Any) -> None:
             metadata[key] = value
 
 
+CONTENT_RECORD_SOURCES = {'campaign_pack', 'emergent', 'player_created', 'dm_override', 'admin_override'}
+PROTECTED_CONTENT_RECORD_SOURCES = {'campaign_pack', 'dm_override', 'admin_override'}
+
+
+def _content_record_source(*values: Any) -> str | None:
+    for value in values:
+        source = _text(value)
+        if source in CONTENT_RECORD_SOURCES:
+            return source
+    return None
+
+
+def _record_source_fields(change: dict[str, Any], embedded: dict[str, Any], metadata: dict[str, Any]) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    source = _content_record_source(change.get('source'), embedded.get('source'), metadata.get('source'))
+    if source:
+        fields['source'] = source
+    pack_id = _text(
+        change.get('packId')
+        or change.get('pack_id')
+        or embedded.get('packId')
+        or embedded.get('pack_id')
+        or metadata.get('packId')
+        or metadata.get('pack_id')
+    )
+    if pack_id:
+        fields['packId'] = pack_id
+    return fields
+
+
+def _merge_record_source(record: dict[str, Any], payload: dict[str, Any]) -> None:
+    metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+    source = _content_record_source(payload.get('source'), metadata.get('source'))
+    if source:
+        existing_source = _text(record.get('source'))
+        if (
+            not existing_source
+            or source in PROTECTED_CONTENT_RECORD_SOURCES
+            or existing_source not in PROTECTED_CONTENT_RECORD_SOURCES
+        ):
+            record['source'] = source
+    pack_id = _text(payload.get('packId') or payload.get('pack_id') or metadata.get('packId') or metadata.get('pack_id'))
+    if pack_id and not _text(record.get('packId') or record.get('pack_id')):
+        record['packId'] = pack_id
+
+
 def _ensure_scene(state: dict[str, Any]) -> dict[str, Any]:
     scene = state.get('currentScene')
     if not isinstance(scene, dict):
@@ -472,6 +518,7 @@ def _location_payload(change: dict[str, Any], *, status: str | None = None) -> d
             payload['lastVisitedTurn'] = turn_id
     if change.get('metadata'):
         payload['metadata'] = {**payload.get('metadata', {}), **(change.get('metadata') if isinstance(change.get('metadata'), dict) else {})}
+    payload.update(_record_source_fields(change, location, payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}))
     return payload
 
 
@@ -494,6 +541,7 @@ def _merge_location(state: dict[str, Any], payload: dict[str, Any]) -> dict[str,
             'lastVisitedTurn': payload.get('lastVisitedTurn'),
             'metadata': payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {},
         }
+        _merge_record_source(record, payload)
         locations.append(record)
         return record
     for key in ('name', 'type', 'status', 'parentLocationId', 'firstDiscoveredTurn', 'lastVisitedTurn'):
@@ -504,6 +552,7 @@ def _merge_location(state: dict[str, Any], payload: dict[str, Any]) -> dict[str,
     for key in ('connectedLocationIds', 'npcIds', 'questIds', 'tags'):
         record[key] = _merge_unique(record.get(key), payload.get(key))
     _merge_metadata(record, payload.get('metadata'))
+    _merge_record_source(record, payload)
     return record
 
 
@@ -530,12 +579,14 @@ def _apply_scene_move(state: dict[str, Any], change: dict[str, Any]) -> dict[str
 
 
 def _normalize_objective(raw: dict[str, Any]) -> dict[str, Any]:
+    description_explicit = 'description' in raw and raw.get('description') is not None
     description = _text(raw.get('description'))
     objective_id = _world_id(raw.get('id'), raw.get('objectiveId'), description)
     return {
         **raw,
         'id': objective_id,
         'description': description,
+        '_descriptionExplicit': description_explicit,
         'status': raw.get('status') or 'open',
     }
 
@@ -547,11 +598,13 @@ def _merge_objectives(existing: Any, incoming: Any) -> list[dict[str, Any]]:
         if not isinstance(raw_objective, dict):
             continue
         objective = _normalize_objective(raw_objective)
+        description_explicit = bool(objective.pop('_descriptionExplicit', False))
         current = _find_record(objectives, record_id=objective.get('id'), name=objective.get('description'))
         if not current:
             objectives.append(objective)
             continue
-        _merge_rich_text(current, 'description', objective.get('description'))
+        if description_explicit:
+            _merge_rich_text(current, 'description', objective.get('description'))
         _set_if_present(current, 'status', objective.get('status'))
     return objectives
 
@@ -574,11 +627,13 @@ def _quest_payload(change: dict[str, Any]) -> dict[str, Any]:
         'importantItemIds': _merge_unique(quest.get('importantItemIds'), change.get('importantItemIds')),
         'flags': quest.get('flags') if isinstance(quest.get('flags'), dict) else {},
         'metadata': quest.get('metadata') if isinstance(quest.get('metadata'), dict) else {},
+        '_titleExplicit': bool(title),
     }
     if isinstance(change.get('flags'), dict):
         payload['flags'] = {**payload['flags'], **change['flags']}
     if isinstance(change.get('metadata'), dict):
         payload['metadata'] = {**payload['metadata'], **change['metadata']}
+    payload.update(_record_source_fields(change, quest, payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}))
     if turn_id is not None:
         payload['createdAtTurn'] = quest.get('createdAtTurn') or change.get('createdAtTurn') or turn_id
         payload['updatedAtTurn'] = turn_id
@@ -605,10 +660,13 @@ def _merge_quest(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, An
             'completedAtTurn': payload.get('completedAtTurn'),
             'metadata': payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {},
         }
+        _merge_record_source(record, payload)
         quests.append(record)
         return record
     for key in ('title', 'status', 'stage', 'createdAtTurn', 'updatedAtTurn', 'completedAtTurn'):
         if key == 'createdAtTurn' and record.get(key):
+            continue
+        if key == 'title' and not payload.get('_titleExplicit'):
             continue
         _set_if_present(record, key, payload.get(key))
     _merge_rich_text(record, 'summary', payload.get('summary'))
@@ -619,6 +677,7 @@ def _merge_quest(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, An
     if isinstance(flags, dict) and isinstance(payload.get('flags'), dict):
         flags.update(payload['flags'])
     _merge_metadata(record, payload.get('metadata'))
+    _merge_record_source(record, payload)
     return record
 
 
@@ -674,6 +733,7 @@ def _npc_payload(change: dict[str, Any]) -> dict[str, Any]:
         payload['relationship'] = {**payload['relationship'], **change['relationship']}
     if isinstance(change.get('metadata'), dict):
         payload['metadata'] = {**payload['metadata'], **change['metadata']}
+    payload.update(_record_source_fields(change, npc, payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}))
     if turn_id is not None:
         if str(change.get('type')) == 'npc.discover':
             payload['firstMetTurn'] = npc.get('firstMetTurn') or change.get('firstMetTurn') or turn_id
@@ -704,6 +764,7 @@ def _merge_npc(state: dict[str, Any], payload: dict[str, Any], *, party: bool = 
             'lastSeenTurn': payload.get('lastSeenTurn'),
             'metadata': payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {},
         }
+        _merge_record_source(record, payload)
         collection.append(record)
         return record
     for key in ('name', 'race', 'role', 'disposition', 'locationId', 'status', 'faction', 'firstMetTurn', 'lastSeenTurn'):
@@ -725,6 +786,7 @@ def _merge_npc(state: dict[str, Any], payload: dict[str, Any], *, party: bool = 
     relationship.setdefault('score', 0)
     relationship.setdefault('label', 'neutral')
     _merge_metadata(record, payload.get('metadata'))
+    _merge_record_source(record, payload)
     return record
 
 

@@ -408,6 +408,50 @@ def test_turn_control_blocks_out_of_turn_player(app, socketio):
         assert DmTurn.query.filter_by(session_id=ids['session_id'], player_id=second_player_id).count() == 0
 
 
+def test_socket_message_rate_limit_follows_player_across_reconnects(app, socketio, app_runtime, monkeypatch):
+    socketio_module = app_runtime['modules']['socketio_events']
+    app.config['AIDM_RATE_LIMIT_MAX_SOCKET_MESSAGES'] = 1
+    app.config['AIDM_RATE_LIMIT_WINDOW_SECONDS'] = 30
+    monkeypatch.setattr(
+        socketio_module,
+        'query_dm_function_stream',
+        lambda *args, **kwargs: iter(['The first action resolves.']),
+    )
+    ids = seed_world_campaign_player_session(app)
+
+    first_client = socketio.test_client(app, flask_test_client=app.test_client())
+    first_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    first_client.get_received()
+    first_client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I take the first action.',
+        },
+    )
+    assert _event_payload(first_client.get_received(), 'dm_response_start') is not None
+
+    second_client = socketio.test_client(app, flask_test_client=app.test_client())
+    second_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    second_client.get_received()
+    second_client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I try again from a new socket.',
+        },
+    )
+    error_payload = _event_payload(second_client.get_received(), 'error')
+
+    assert error_payload['error_code'] == 'rate_limited'
+
+
 def test_turn_control_can_return_to_auto_source(app, socketio):
     ids = seed_world_campaign_player_session(app)
 
@@ -772,8 +816,43 @@ def test_ai_conductor_cannot_bypass_existing_structured_turn_lock(app, socketio,
 
     assert error_payload['error_code'] == 'turn_out_of_order'
     assert error_payload['details']['turn_control']['activePlayerId'] == ids['player_id']
+    assert provider.requests == []
     with app.app_context():
         assert DmTurn.query.filter_by(session_id=ids['session_id'], player_id=second_player_id).count() == 0
+
+
+def test_conduct_turn_submission_skips_helper_for_locked_structured_turn(app, monkeypatch):
+    ids = seed_world_campaign_player_session(app)
+    second_player_id = _seed_second_player(app, ids['campaign_id'])
+    provider = FakeConductorProvider(json.dumps({'decision': 'allow'}))
+    app.config['AIDM_TURN_CONDUCTOR_HELPER_IN_TESTS'] = True
+    monkeypatch.setattr(turn_control_module, 'get_helper_provider', lambda: provider)
+
+    with app.app_context():
+        session = db.session.get(Session, ids['session_id'])
+        turn_control_module.set_session_turn_control(
+            session,
+            mode='structured',
+            active_player_id=ids['player_id'],
+            participant_player_ids=[ids['player_id'], second_player_id],
+            updated_by_player_id=ids['player_id'],
+            source='manual',
+        )
+
+        allowed, reason, turn_control, changed, decision = turn_control_module.conduct_turn_submission(
+            session,
+            player_id=second_player_id,
+            message='I try to cut ahead anyway with a private plan: flank left.',
+            action_intent={'kind': 'message', 'source': 'composer'},
+            active_player_ids=[ids['player_id'], second_player_id],
+        )
+
+    assert allowed is False
+    assert 'structured turn' in str(reason)
+    assert turn_control['activePlayerId'] == ids['player_id']
+    assert changed is False
+    assert decision['decision'] == 'queue'
+    assert provider.requests == []
 
 
 def test_structured_turn_control_advances_after_completed_turn(app, socketio, app_runtime, monkeypatch):
@@ -3040,6 +3119,49 @@ def test_active_player_roster_includes_character_profile_and_typing_status(app, 
     roster = _event_payload(client_two.get_received(), 'active_players')
     typing_player = next(player for player in roster if player['id'] == ids['player_id'])
     assert 'is_typing' not in typing_player
+
+
+def test_typing_status_is_rate_limited_without_sticking_presence(app, socketio):
+    app.config['AIDM_RATE_LIMIT_MAX_SOCKET_MESSAGES'] = 3
+    app.config['AIDM_RATE_LIMIT_WINDOW_SECONDS'] = 30
+    ids = seed_world_campaign_player_session(app)
+    other_player_id = _seed_second_player(app, ids['campaign_id'])
+
+    client_one = socketio.test_client(app, flask_test_client=app.test_client())
+    client_two = socketio.test_client(app, flask_test_client=app.test_client())
+    assert client_one.is_connected()
+    assert client_two.is_connected()
+
+    client_one.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client_one.get_received()
+    client_two.emit('join_session', {'session_id': ids['session_id'], 'player_id': other_player_id})
+    client_one.get_received()
+    client_two.get_received()
+
+    roster_updates = []
+    error_codes = []
+    for is_typing in [True, False, True, False, True, False, True, False]:
+        client_one.emit(
+            'typing_status',
+            {'session_id': ids['session_id'], 'player_id': ids['player_id'], 'is_typing': is_typing},
+        )
+        error_codes.extend(
+            event['args'][0].get('error_code')
+            for event in client_one.get_received()
+            if event['name'] == 'error' and event['args']
+        )
+        roster_updates.extend(
+            event['args'][0]
+            for event in client_two.get_received()
+            if event['name'] == 'active_players' and event['args']
+        )
+
+    typing_states = [
+        bool(next(player for player in roster if player['id'] == ids['player_id']).get('is_typing'))
+        for roster in roster_updates
+    ]
+    assert typing_states == [True, False, True, False]
+    assert 'rate_limited' in error_codes
 
 
 def test_other_player_is_not_blocked_by_another_players_pending_check(app, socketio, app_runtime, monkeypatch):

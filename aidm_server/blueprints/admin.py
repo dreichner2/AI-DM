@@ -39,7 +39,7 @@ class ProtectedAdminMixin:
 
         auth_required = bool(current_app.config.get('AIDM_AUTH_REQUIRED', False))
         if not auth_required:
-            return current_app.config.get('AIDM_ENV', 'development') != 'production'
+            return False
         return _admin_request_authorized()
 
     def inaccessible_callback(self, name, **kwargs):

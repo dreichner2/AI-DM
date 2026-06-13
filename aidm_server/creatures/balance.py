@@ -6,6 +6,7 @@ from copy import deepcopy
 from typing import Any
 
 from aidm_server.canon_text import int_or_default
+from aidm_server.damage_dice import MAX_DAMAGE_DICE_COUNT, MAX_DAMAGE_DIE_SIDES, normalize_damage_dice_expression
 from aidm_server.creatures.schemas import CHALLENGE_TIERS, normalize_creature_definition
 
 
@@ -54,7 +55,7 @@ def _average_die(die_count: int, die_size: int) -> float:
 
 
 def average_damage_from_dice(dice: str | None) -> float:
-    text = str(dice or '').strip().lower()
+    text = normalize_damage_dice_expression(dice)
     if not text:
         return 0.0
     total = 0.0
@@ -198,11 +199,12 @@ def analyze_creature_balance(
 
 
 def _scale_damage_dice(dice: str, ratio: float) -> str:
-    match = re.search(r'(\d*)d(\d+)(.*)', str(dice or ''))
+    normalized = normalize_damage_dice_expression(dice)
+    match = re.search(r'(\d*)d(\d+)(.*)', normalized or '')
     if not match:
         return '1d4'
-    count = max(1, int(match.group(1) or 1))
-    sides = max(4, int(match.group(2)))
+    count = max(1, min(MAX_DAMAGE_DICE_COUNT, int(match.group(1) or 1)))
+    sides = max(4, min(MAX_DAMAGE_DIE_SIDES, int(match.group(2))))
     suffix = match.group(3) or ''
     new_count = max(1, math.floor(count * ratio))
     if ratio < 0.75 and sides > 6:

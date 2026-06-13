@@ -20,6 +20,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   margin-bottom: 10px;
   color: var(--heading);
   font-size: 0.76rem;
@@ -28,14 +29,35 @@
   text-transform: uppercase;
 }
 
+.rail-heading > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .rail-heading-actions {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 6px;
+}
+
+.campaign-heading {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.campaign-heading .rail-heading-actions {
+  width: 100%;
+  justify-content: space-between;
+  gap: 4px;
 }
 
 .rail-heading button {
   display: grid;
+  flex: 0 0 auto;
   width: 27px;
   height: 27px;
   place-items: center;
@@ -439,4 +461,3 @@
   color: #ffbda8;
   font-size: 0.72rem;
 }
-

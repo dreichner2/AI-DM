@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from aidm_server.canon_inventory import append_drop_all_inventory_changes_from_text, inventory_change_from_intent_outcome
 from aidm_server.canon_text import int_or_default
+from aidm_server.damage_dice import normalize_damage_dice_expression, parse_damage_dice_expression
 from aidm_server.combat.pipeline import (
     combat_turn_advance_change,
     prepare_combat_for_turn,
@@ -62,12 +63,59 @@ CURRENCY_TRANSFER_CONFIRMATION_PATTERN = re.compile(
     r'\b(?:give|gives|gave|pay|pays|paid|hand over|hands over|handed over)\b',
     re.IGNORECASE,
 )
-DAMAGE_DICE_PATTERN = re.compile(r'^\s*(?:(\d*)d(\d+))?\s*([+-]\s*\d+)?\s*$', re.IGNORECASE)
 TEXT_DAMAGE_PATTERN = re.compile(
-    r'\b(?:deals?|does|for)\s+(\d*d\d+(?:\s*[+-]\s*\d+)?)\s+'
+    r'\b(?:deals?|does|for)\s+(\d{0,2}d\d{1,3}(?:\s*[+-]\s*\d{1,4})?)\s+'
     r'(acid|cold|fire|force|lightning|necrotic|poison|psychic|radiant|thunder|bludgeoning|piercing|slashing)\s+damage\b',
     re.IGNORECASE,
 )
+
+
+def _signature_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return tuple((str(key), _signature_value(value[key])) for key in sorted(value))
+    if isinstance(value, (list, tuple)):
+        return tuple(_signature_value(item) for item in value)
+    if isinstance(value, set):
+        return tuple(sorted(_signature_value(item) for item in value))
+    if isinstance(value, str):
+        return normalize_item_name(value)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return normalize_item_name(value)
+
+
+def _signature_string_list(value: Any) -> tuple[str, ...]:
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    return tuple(sorted(normalize_item_name(item) for item in values if str(item or '').strip()))
+
+
+def _combat_participant_update_signature(change: dict[str, Any]) -> tuple[Any, ...]:
+    fields: list[tuple[str, Any]] = []
+    if 'hp' in change:
+        hp = change.get('hp')
+        if isinstance(hp, dict):
+            fields.append(
+                (
+                    'hp',
+                    (
+                        ('current', _signature_value(hp.get('current', hp.get('currentHp')))),
+                        ('max', _signature_value(hp.get('max', hp.get('maxHp')))),
+                        ('temp', _signature_value(hp.get('temp', hp.get('tempHp')))),
+                    ),
+                )
+            )
+        else:
+            fields.append(('hp', _signature_value(hp)))
+    if 'conditions' in change:
+        fields.append(('conditions', _signature_string_list(change.get('conditions'))))
+    if 'position' in change:
+        fields.append(('position', _signature_value(change.get('position'))))
+    if 'participant' in change:
+        fields.append(('participant', _signature_value(change.get('participant'))))
+    for key in ('isAlive', 'isConscious'):
+        if key in change:
+            fields.append((key, _signature_value(change.get(key))))
+    return tuple(fields)
 
 
 def _sentences(text: str) -> list[str]:
@@ -353,11 +401,16 @@ def _state_change_signature(change: dict[str, Any]) -> tuple[Any, ...] | None:
             normalize_item_name(change.get('sceneType') or change.get('mood') or change.get('combatState')),
         )
     if change_type == 'combat.end':
-        return (change_type,)
+        return (
+            change_type,
+            normalize_item_name(change.get('status') or 'ended'),
+            normalize_item_name(change.get('endReason') or change.get('end_reason')),
+        )
     if change_type == 'combat.participant.update':
         return (
             change_type,
             normalize_item_name(change.get('participantId') or change.get('enemyId')),
+            _combat_participant_update_signature(change),
         )
     if change_type == 'combat.round.advance':
         return (change_type, int_or_default(change.get('round'), default=0))
@@ -606,19 +659,15 @@ def _roll_die(sides: int, roller: Callable[[int], int] | None) -> int:
 
 def _roll_damage_expression(dice_expression: Any, roller: Callable[[int], int] | None) -> dict[str, Any]:
     expression = str(dice_expression or '').strip().replace(' ', '')
-    if re.fullmatch(r'[+-]?\d+', expression):
-        total = int_or_default(expression, default=0)
-        return {'dice': expression, 'rolls': [], 'bonus': total, 'total': max(0, total)}
+    parsed = parse_damage_dice_expression(expression)
+    if not parsed:
+        return {'dice': expression[:24], 'rolls': [], 'bonus': 0, 'total': 0}
 
-    match = DAMAGE_DICE_PATTERN.match(expression)
-    if not match:
-        return {'dice': expression, 'rolls': [], 'bonus': 0, 'total': 0}
-
-    count = int_or_default(match.group(1) or 1, default=1)
-    sides = int_or_default(match.group(2), default=0)
-    bonus = int_or_default((match.group(3) or '0').replace(' ', ''), default=0)
-    rolls = [_roll_die(sides, roller) for _ in range(max(0, count))] if sides > 0 else []
-    return {'dice': expression, 'rolls': rolls, 'bonus': bonus, 'total': max(0, sum(rolls) + bonus)}
+    count = int(parsed['count'])
+    sides = int(parsed['sides'])
+    bonus = int(parsed['bonus'])
+    rolls = [_roll_die(sides, roller) for _ in range(count)] if sides > 0 and count > 0 else []
+    return {'dice': parsed['dice'], 'rolls': rolls, 'bonus': bonus, 'total': max(0, sum(rolls) + bonus)}
 
 
 def _target_armor_class(target: dict[str, Any] | None) -> int:
@@ -674,12 +723,19 @@ def _ability_damage(enemy: dict[str, Any] | None, ability: dict[str, Any] | None
         return {}
     damage = ability.get('damage')
     if isinstance(damage, dict):
-        return damage
+        normalized_dice = normalize_damage_dice_expression(damage.get('dice'))
+        result = {'type': damage.get('type') or damage.get('damageType')}
+        if normalized_dice:
+            result['dice'] = normalized_dice
+        return result
     if isinstance(damage, str):
-        return {'dice': damage}
+        normalized_dice = normalize_damage_dice_expression(damage)
+        return {'dice': normalized_dice} if normalized_dice else {}
     match = TEXT_DAMAGE_PATTERN.search(str(ability.get('description') or ''))
     if match:
-        return {'dice': match.group(1).replace(' ', ''), 'type': match.group(2).lower()}
+        normalized_dice = normalize_damage_dice_expression(match.group(1).replace(' ', ''))
+        if normalized_dice:
+            return {'dice': normalized_dice, 'type': match.group(2).lower()}
     text = normalize_item_name(f"{ability.get('name') or ''} {ability.get('description') or ''} {ability.get('range') or ''}")
     bonus = _attack_stat_modifier(enemy, ability)
     bonus_suffix = f'+{bonus}' if bonus > 0 else str(bonus) if bonus < 0 else ''
@@ -954,6 +1010,7 @@ def pre_dm_pipeline(
         current_turn=turn.turn_id,
         recent_context=_recent_context_strings(recent_timeline),
         selected_item_ids=selected_item_ids,
+        expected_actor_id=actor_id,
     )
     pre_immediate_changes = [
         change
@@ -962,8 +1019,8 @@ def pre_dm_pipeline(
     ]
     safe_immediate_changes = [change for change in pre_immediate_changes if _safe_pre_dm_immediate_change(change)]
     pending_immediate_changes = [change for change in pre_immediate_changes if not _safe_pre_dm_immediate_change(change)]
-    immediate_validation = validate_state_changes(state=state, changes=safe_immediate_changes)
-    pending_immediate_validation = validate_state_changes(state=state, changes=pending_immediate_changes)
+    immediate_validation = validate_state_changes(state=state, changes=safe_immediate_changes, expected_actor_id=actor_id)
+    pending_immediate_validation = validate_state_changes(state=state, changes=pending_immediate_changes, expected_actor_id=actor_id)
     immediate_changes = validated_changes_for_application(immediate_validation)
     apply_result = apply_state_changes(state, immediate_changes)
     state_after_immediate = apply_result['nextState']
@@ -1200,14 +1257,19 @@ def post_dm_pipeline(
             if 'post_dm_semantic_dedupe' not in notes:
                 notes.append('post_dm_semantic_dedupe')
             post_extraction['notes'] = notes
-        post_validation = validate_state_changes(state=state_before_dm, changes=post_extraction.get('proposedChanges') or [])
+        post_validation = validate_state_changes(
+            state=state_before_dm,
+            changes=post_extraction.get('proposedChanges') or [],
+            expected_actor_id=actor_id,
+            authorized_cross_actor_change_ids=post_extraction.get('authorizedCrossActorChangeIds') or [],
+        )
         post_changes = validated_changes_for_application(post_validation)
         post_apply = apply_state_changes(state_before_dm, post_changes)
         final_state = post_apply['nextState']
         applied_post = post_apply['appliedChanges']
         turn_advance_change = combat_turn_advance_change(state=final_state, turn=turn, actor_id=actor_id)
         if turn_advance_change:
-            advance_validation = validate_state_changes(state=final_state, changes=[turn_advance_change])
+            advance_validation = validate_state_changes(state=final_state, changes=[turn_advance_change], expected_actor_id=actor_id)
             advance_changes = validated_changes_for_application(advance_validation)
             advance_apply = apply_state_changes(final_state, advance_changes)
             final_state = advance_apply['nextState']

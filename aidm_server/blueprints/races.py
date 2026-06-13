@@ -285,10 +285,8 @@ def _definition_from_custom(row: CustomRace) -> dict:
     return _attach_custom_race_metadata(normalized, row)
 
 
-def _latest_custom_race_rows(*, all_workspaces: bool = False) -> list[CustomRace]:
-    query = CustomRace.query
-    if not all_workspaces:
-        query = query.filter_by(workspace_id=current_workspace_id())
+def _latest_custom_race_rows() -> list[CustomRace]:
+    query = CustomRace.query.filter_by(workspace_id=current_workspace_id())
     rows = (
         query.order_by(
             CustomRace.workspace_id.asc(),
@@ -309,8 +307,8 @@ def _latest_custom_race_rows(*, all_workspaces: bool = False) -> list[CustomRace
     return latest_rows
 
 
-def _latest_custom_races(*, all_workspaces: bool = False) -> list[dict]:
-    return [_definition_from_custom(row) for row in _latest_custom_race_rows(all_workspaces=all_workspaces)]
+def _latest_custom_races() -> list[dict]:
+    return [_definition_from_custom(row) for row in _latest_custom_race_rows()]
 
 
 def _latest_workspace_custom_row(race_id: str) -> CustomRace | None:
@@ -322,25 +320,14 @@ def _latest_workspace_custom_row(race_id: str) -> CustomRace | None:
 
 
 def _latest_visible_custom_row(race_id: str, workspace_id: str | None = None) -> CustomRace | None:
-    if workspace_id:
-        return (
-            CustomRace.query.filter_by(workspace_id=workspace_id, race_id=race_id)
-            .order_by(CustomRace.version.desc(), CustomRace.custom_race_id.desc())
-            .first()
-        )
-    workspace_row = _latest_workspace_custom_row(race_id)
-    if workspace_row:
-        return workspace_row
-    return (
-        CustomRace.query.filter_by(race_id=race_id)
-        .order_by(CustomRace.version.desc(), CustomRace.custom_race_id.desc())
-        .first()
-    )
+    if workspace_id and workspace_id != current_workspace_id():
+        return None
+    return _latest_workspace_custom_row(race_id)
 
 
 @races_bp.get('/races')
 def list_races():
-    all_races = curated_races() + _latest_custom_races(all_workspaces=True)
+    all_races = curated_races() + _latest_custom_races()
     source = (request.args.get('source') or '').strip().lower()
     if source:
         all_races = [race for race in all_races if race.get('source') == source]

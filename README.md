@@ -370,7 +370,7 @@ All runtime config is centralized in `aidm_server/config.py`.
 | `AIDM_TELEMETRY_API_KEY` | unset | Bearer token for telemetry endpoint. |
 | `AIDM_TELEMETRY_TIMEOUT_SECONDS` | `2` | External telemetry request timeout. |
 | `AIDM_TELEMETRY_MAX_QUEUE_SIZE` | `1000` | Max queued outbound telemetry events before dropping. |
-| `HOST` | `0.0.0.0` | Bootstrap server host. |
+| `HOST` | `127.0.0.1` | Bootstrap server host. Public bind addresses require `AIDM_AUTH_REQUIRED=true` with API tokens. |
 | `PORT` | `5000` (bootstrap), `5050` via `run_local_backend.sh` | Server port. |
 
 ---
@@ -700,14 +700,16 @@ Local development conveniences should not be treated as production defaults:
 
 - `.env.local` writes from `/api/llm/config` are for local runtime switching.
 - Wildcard CORS is local/debug only; production bootstrap rejects wildcard CORS.
-- `AIDM_AUTH_REQUIRED=false` is local/private-network only.
+- `AIDM_AUTH_REQUIRED=false` is local loopback only for `deploy_bootstrap`; public
+  bind addresses fail closed unless auth is enabled with API tokens.
 - `scripts/deploy_bootstrap.py` may serve local/test runs, but production should
   run it with `--check-only` and start with a production Socket.IO server.
 - Production requires database-backed shared stores:
   `AIDM_RATE_LIMIT_STORE=database` and
   `AIDM_TURN_COORDINATOR_STORE=database`.
 - SQLite and local DB backups are developer data, not source fixtures or a shared deployment store. Local defaults use `~/.aidm/`; do not put active DBs or backups under `aidm_server/instance/` before packaging or sharing.
-- Flask admin is a local/admin surface and should be deliberately gated.
+- Flask admin is an admin surface and is only accessible when auth is required
+  and the request is authorized for the owner workspace.
 - In-memory rate limiting, the in-memory turn coordinator, and module-global socket state are single-process only. For multiple backend workers, keep Socket.IO session affinity or a shared Socket.IO message queue in the deployment layer.
 - `scripts/smoke_beta_flow.py` defaults to isolated fallback mode to avoid
   local DB pollution and provider spend.

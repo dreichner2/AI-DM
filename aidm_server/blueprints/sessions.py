@@ -26,6 +26,11 @@ from aidm_server.services.session_lifecycle import (
     metadata_cleaned_snapshot,
     restore_session_record,
 )
+from aidm_server.services.campaign_pack_progress import (
+    CampaignPackProgressError,
+    campaign_pack_progress_payload,
+    control_campaign_pack_progress,
+)
 from aidm_server.services.session_import import SessionImportError, import_session_export
 from aidm_server.services.workspace import list_campaign_session_payloads
 from aidm_server.telemetry import telemetry_event, telemetry_metric
@@ -518,3 +523,56 @@ def get_session_state(session_id):
 
     session_state = SessionState.query.filter_by(session_id=session_id).first()
     return jsonify(session_state_payload(session_obj, session_state))
+
+
+@sessions_bp.route('/<int:session_id>/campaign-pack/progress', methods=['GET'])
+def get_session_campaign_pack_progress(session_id):
+    session_obj = workspace_session(session_id)
+    if not session_obj:
+        return error_response('session_not_found', 'Session not found.', 404)
+    try:
+        return jsonify(campaign_pack_progress_payload(session_id=session_id))
+    except CampaignPackProgressError as exc:
+        return error_response(exc.error_code, str(exc), exc.status_code)
+
+
+@sessions_bp.route('/<int:session_id>/campaign-pack/progress', methods=['POST'])
+def update_session_campaign_pack_progress(session_id):
+    session_obj = workspace_session(session_id)
+    if not session_obj:
+        return error_response('session_not_found', 'Session not found.', 404)
+    payload = parse_json_body(request)
+    if payload is None:
+        return error_response('validation_error', 'Expected JSON request body.', 400)
+    action = str(payload.get('action') or '').strip()
+    checkpoint_id = payload.get('checkpointId') or payload.get('checkpoint_id')
+    checkpoint_id = str(checkpoint_id).strip() if checkpoint_id not in (None, '') else None
+    reason = payload.get('reason')
+    reason = str(reason).strip() if reason not in (None, '') else None
+    try:
+        result = control_campaign_pack_progress(
+            session_id=session_id,
+            action=action,
+            checkpoint_id=checkpoint_id,
+            reason=reason,
+        )
+        session_state = SessionState.query.filter_by(session_id=session_id).first()
+        db.session.commit()
+        return jsonify(
+            {
+                'changed': result.changed,
+                'active_checkpoint_id': result.active_checkpoint_id,
+                'completed_checkpoint_ids': result.completed_checkpoint_ids,
+                'skipped_checkpoint_ids': result.skipped_checkpoint_ids,
+                'failed_checkpoint_ids': result.failed_checkpoint_ids or [],
+                'reason': result.reason,
+                'state': session_state_payload(session_obj, session_state),
+            }
+        )
+    except CampaignPackProgressError as exc:
+        db.session.rollback()
+        return error_response(exc.error_code, str(exc), exc.status_code)
+    except Exception as exc:
+        db.session.rollback()
+        logger.error('Failed to update campaign pack progress: %s', str(exc))
+        return error_response('campaign_pack_progress_failed', 'Failed to update campaign pack progress.', 400)

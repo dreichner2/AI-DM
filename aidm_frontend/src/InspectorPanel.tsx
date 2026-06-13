@@ -2,6 +2,7 @@ import { useState, type Dispatch, type FormEvent, type SetStateAction } from 're
 import { ChevronDown, Coins, ExternalLink, ShieldCheck, ShieldOff, Swords } from 'lucide-react'
 import { ThinIcon } from './AppChrome'
 import { BestiaryDebugPanel } from './BestiaryDebugPanel'
+import { CampaignPackPanel, type CampaignPackControlAction } from './CampaignPackPanel'
 import {
   truncateText,
   type CharacterTraitSummary,
@@ -13,7 +14,7 @@ import {
   type XpProgress,
 } from './gameSelectors'
 import { profileIconSrcForCharacter } from './profileIcons'
-import type { ActivePlayer, Campaign, CampaignSegment, MapItem } from './types'
+import type { ActivePlayer, Campaign, CampaignSegment, JsonRecord, MapItem } from './types'
 import type { MainTab } from './SessionBoard'
 
 export type InspectorTab = 'party' | 'map' | 'magic' | 'canon' | 'inventory' | 'bestiary'
@@ -93,6 +94,13 @@ type InspectorPanelProps = {
   segmentManagementForm: SegmentManagementForm
   setSegmentManagementForm: Dispatch<SetStateAction<SegmentManagementForm>>
   createSegment: (event?: FormEvent<HTMLFormElement>) => Promise<void>
+  campaignPackSnapshot: JsonRecord | null
+  campaignPackControlPending: string | null
+  controlCampaignPackProgress: (
+    action: CampaignPackControlAction,
+    checkpointId?: string | null,
+    reason?: string,
+  ) => Promise<void>
 }
 
 function displayStatValue(value: string) {
@@ -170,6 +178,9 @@ export function InspectorPanel({
   segmentManagementForm,
   setSegmentManagementForm,
   createSegment,
+  campaignPackSnapshot,
+  campaignPackControlPending,
+  controlCampaignPackProgress,
 }: InspectorPanelProps) {
   const [showAllKnownNpcs, setShowAllKnownNpcs] = useState(false)
   const [showAllKnownLocations, setShowAllKnownLocations] = useState(false)
@@ -678,6 +689,14 @@ export function InspectorPanel({
             </div>
           </div>
         </section>
+      ) : null}
+
+      {inspectorTab === 'party' || inspectorTab === 'map' || inspectorTab === 'canon' ? (
+        <CampaignPackPanel
+          snapshot={campaignPackSnapshot}
+          pendingAction={campaignPackControlPending}
+          onControl={controlCampaignPackProgress}
+        />
       ) : null}
 
       {inspectorTab === 'bestiary' ? (

@@ -41,3 +41,19 @@ def test_state_application_details_do_not_flag_mechanical_only_changes():
 
     assert 'world_state_changed' not in details
     assert 'snapshot_changed' not in details
+
+
+def test_state_application_details_flag_campaign_pack_progress_changes():
+    details = _state_application_event_details(
+        stage='state_applied',
+        player_id=30,
+        affected_player_ids=[30],
+        inventory_changes_applied=[],
+        character_state_changes_applied=[],
+        state_log={'lines': []},
+        applied_changes=[],
+        campaign_pack_progress_changed=True,
+    )
+
+    assert details['campaign_pack_progress_changed'] is True
+    assert details['snapshot_changed'] is True

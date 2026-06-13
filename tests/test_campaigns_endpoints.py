@@ -80,6 +80,364 @@ def test_create_campaign_can_opt_out_of_bestiary_seed(client, app):
         assert BestiaryEntry.query.filter_by(campaign_id=payload['campaign_id']).count() == 0
 
 
+def test_import_campaign_pack_seeds_structured_campaign_content(client, app):
+    with app.app_context():
+        world = World(name='Bleakmoor', description='A marshland test world')
+        db.session.add(world)
+        db.session.commit()
+        world_id = world.world_id
+
+    response = client.post(
+        '/api/campaigns/import-pack',
+        json={
+            'world_id': world_id,
+            'pack': {
+                'packId': 'bleakmoor_intro',
+                'title': 'The Lanterns of Bleakmoor',
+                'version': '1.0.0',
+                'description': 'A short authored marsh adventure.',
+                'startingState': {
+                    'locationId': 'bleakmoor_gate',
+                    'questId': 'q_missing_caravan',
+                    'currentScene': {
+                        'mood': 'rain-darkened',
+                        'description': 'The gatehouse lanterns hiss in the rain.',
+                        'activeNpcIds': ['npc_captain_veyra'],
+                    },
+                },
+                'locations': [
+                    {
+                        'id': 'bleakmoor_gate',
+                        'name': 'Bleakmoor Gate',
+                        'type': 'town',
+                        'description': 'A rain-darkened gatehouse on the edge of the marsh.',
+                    },
+                    {
+                        'id': 'old_road',
+                        'name': 'Old Road',
+                        'type': 'road',
+                        'description': 'A drowned road that should remain hidden until discovered.',
+                    }
+                ],
+                'npcs': [
+                    {
+                        'id': 'npc_captain_veyra',
+                        'name': 'Captain Veyra',
+                        'role': 'Gate captain',
+                        'disposition': 'suspicious',
+                        'locationId': 'bleakmoor_gate',
+                        'questIds': ['q_missing_caravan'],
+                    },
+                    {
+                        'id': 'npc_lantern_keeper',
+                        'name': 'Lantern Keeper',
+                        'role': 'Hidden witness',
+                        'locationId': 'old_road',
+                        'questIds': ['q_old_road_witness'],
+                    }
+                ],
+                'quests': [
+                    {
+                        'id': 'q_missing_caravan',
+                        'title': 'Find the Missing Caravan',
+                        'status': 'active',
+                        'stage': 'Ask at Bleakmoor Gate',
+                        'summary': 'A supply caravan vanished near the old road.',
+                        'objectives': [
+                            {
+                                'id': 'obj_question_veyra',
+                                'description': 'Question Captain Veyra.',
+                                'status': 'open',
+                            }
+                        ],
+                    },
+                    {
+                        'id': 'q_old_road_witness',
+                        'title': 'Find the Old Road Witness',
+                        'status': 'available',
+                        'summary': 'A later quest that should not appear before discovery.',
+                    }
+                ],
+                'enemies': [
+                    {
+                        'id': 'lantern_wraith',
+                        'name': 'Lantern Wraith',
+                        'creatureType': 'undead',
+                        'challengeTier': 'hard',
+                        'tags': ['wraith', 'lantern'],
+                    }
+                ],
+                'segments': [
+                    {
+                        'id': 'seg_question_veyra',
+                        'title': 'Question Captain Veyra',
+                        'description': 'Veyra reveals the caravan was last seen near the old road.',
+                        'trigger': {
+                            'type': 'state',
+                            'location_contains': 'bleakmoor',
+                            'quest_contains': 'missing caravan',
+                        },
+                        'tags': ['gate', 'mainline'],
+                    }
+                ],
+                'checkpoints': [
+                    {
+                        'id': 'cp_old_road',
+                        'title': 'Find the old road',
+                        'nextCheckpointIds': ['cp_watchtower'],
+                    },
+                    {
+                        'id': 'cp_watchtower',
+                        'title': 'Reach the watchtower',
+                    }
+                ],
+                'directorRules': {
+                    'mainQuestGeneration': 'pack_only',
+                    'sideQuestGeneration': 'allowed_tagged',
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload['imported'] is True
+    assert payload['pack_id'] == 'bleakmoor_intro'
+    assert payload['counts'] == {
+        'locations': 2,
+        'npcs': 2,
+        'quests': 2,
+        'segments': 1,
+        'checkpoints': 2,
+        'encounters': 0,
+        'enemies': 1,
+        'bestiary_entries': 1,
+    }
+
+    with app.app_context():
+        campaign = db.session.get(Campaign, payload['campaign_id'])
+        session_obj = db.session.get(Session, payload['session_id'])
+        session_state = SessionState.query.filter_by(session_id=session_obj.session_id).one()
+        segment = CampaignSegment.query.filter_by(campaign_id=campaign.campaign_id).one()
+        bestiary = BestiaryEntry.query.filter_by(campaign_id=campaign.campaign_id).one()
+
+        assert campaign.title == 'The Lanterns of Bleakmoor'
+        assert campaign.current_quest == 'Find the Missing Caravan - Ask at Bleakmoor Gate'
+        assert campaign.location == 'Bleakmoor Gate'
+        assert session_state.current_location == 'Bleakmoor Gate'
+        assert session_state.current_quest == 'Find the Missing Caravan - Ask at Bleakmoor Gate'
+
+        snapshot = json.loads(session_obj.state_snapshot)
+        assert snapshot['campaignPack']['packId'] == 'bleakmoor_intro'
+        assert snapshot['campaignPack']['schemaVersion'] == '1'
+        assert snapshot['campaignPack']['directorRules']['mainQuestGeneration'] == 'pack_only'
+        assert snapshot['currentScene']['locationId'] == 'bleakmoor_gate'
+        assert snapshot['currentScene']['name'] == 'Bleakmoor Gate'
+        assert snapshot['currentScene']['activeNpcIds'] == ['npc_captain_veyra']
+        assert snapshot['currentScene']['activeQuestIds'] == ['q_missing_caravan']
+        assert [location['id'] for location in snapshot['locations']] == ['bleakmoor_gate']
+        assert [npc['id'] for npc in snapshot['knownNpcs']] == ['npc_captain_veyra']
+        assert [quest['id'] for quest in snapshot['quests']] == ['q_missing_caravan']
+        assert snapshot['locations'][0]['source'] == 'campaign_pack'
+        assert snapshot['knownNpcs'][0]['packId'] == 'bleakmoor_intro'
+        assert snapshot['quests'][0]['source'] == 'campaign_pack'
+        assert [location['id'] for location in snapshot['campaignPack']['catalog']['locations']] == ['bleakmoor_gate', 'old_road']
+        assert [npc['id'] for npc in snapshot['campaignPack']['catalog']['npcs']] == [
+            'npc_captain_veyra',
+            'npc_lantern_keeper',
+        ]
+        assert [quest['id'] for quest in snapshot['campaignPack']['catalog']['quests']] == [
+            'q_missing_caravan',
+            'q_old_road_witness',
+        ]
+
+        trigger = json.loads(segment.trigger_condition)
+        assert segment.title == 'Question Captain Veyra'
+        assert trigger['type'] == 'state'
+        assert trigger['packId'] == 'bleakmoor_intro'
+        assert 'campaign_pack' in segment.tags
+        assert 'pack:bleakmoor_intro' in segment.tags
+
+        assert bestiary.source == 'campaign_pack'
+        assert bestiary.persistence == 'campaign'
+        assert 'pack:bleakmoor_intro' in json.loads(bestiary.tags_json)
+
+
+def test_import_campaign_pack_can_create_world_from_manifest(client, app):
+    response = client.post(
+        '/api/campaigns/import-pack',
+        json={
+            'packId': 'self_contained_pack',
+            'title': 'Self Contained Pack',
+            'world': {
+                'name': 'Pack World',
+                'description': 'Created during pack import.',
+            },
+            'locations': [{'id': 'start', 'name': 'Start'}],
+            'startingState': {'locationId': 'start'},
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    with app.app_context():
+        campaign = db.session.get(Campaign, payload['campaign_id'])
+        world = db.session.get(World, campaign.world_id)
+        assert world.name == 'Pack World'
+        assert campaign.location == 'Start'
+
+
+def test_import_campaign_pack_dry_run_previews_without_creating_records(client, app):
+    response = client.post(
+        '/api/campaigns/import-pack?dry_run=true',
+        json={
+            'schemaVersion': '1.0.0',
+            'packId': 'dry_run_pack',
+            'title': 'Dry Run Pack',
+            'world': {'name': 'Dry Run World'},
+            'startingState': {'locationId': 'start', 'questId': 'q_start'},
+            'locations': [{'id': 'start', 'name': 'Start', 'visibleAtStart': True}],
+            'quests': [{'id': 'q_start', 'title': 'Begin', 'status': 'active', 'visibleAtStart': True}],
+            'npcs': [{'id': 'npc_guide', 'name': 'Guide', 'visibleAtStart': True}],
+            'enemies': [{'id': 'shade', 'name': 'Shade'}],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['dry_run'] is True
+    assert payload['imported'] is False
+    assert payload['schema_version'] == '1'
+    assert payload['preview']['world']['mode'] == 'create'
+    assert payload['preview']['world']['name'] == 'Dry Run World'
+    assert payload['preview']['starting_location'] == 'Start'
+    assert payload['counts']['enemies'] == 1
+    assert payload['counts']['bestiary_entries'] == 1
+
+    with app.app_context():
+        assert Campaign.query.filter_by(title='Dry Run Pack').count() == 0
+        assert World.query.filter_by(name='Dry Run World').count() == 0
+        assert BestiaryEntry.query.filter_by(creature_id='shade').count() == 0
+
+
+def test_import_campaign_pack_rejects_unsupported_schema_version(client):
+    response = client.post(
+        '/api/campaigns/import-pack',
+        json={
+            'schemaVersion': '99',
+            'packId': 'future_pack',
+            'title': 'Future Pack',
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()['error_code'] == 'unsupported_schema_version'
+
+
+def test_import_campaign_pack_rejects_unknown_checkpoint_edge(client):
+    response = client.post(
+        '/api/campaigns/import-pack',
+        json={
+            'packId': 'broken_graph_pack',
+            'title': 'Broken Graph Pack',
+            'checkpoints': [
+                {
+                    'id': 'cp_start',
+                    'title': 'Start',
+                    'nextCheckpointIds': ['cp_missing'],
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload['error_code'] == 'invalid_pack_reference'
+    assert 'unknown checkpoint "cp_missing"' in payload['error']
+
+
+def test_import_campaign_pack_rejects_unknown_branch_checkpoint_reference(client):
+    response = client.post(
+        '/api/campaigns/import-pack',
+        json={
+            'packId': 'broken_branch_pack',
+            'title': 'Broken Branch Pack',
+            'checkpoints': [
+                {
+                    'id': 'cp_start',
+                    'title': 'Start',
+                    'failureCheckpointIds': ['cp_missing_fallback'],
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload['error_code'] == 'invalid_pack_reference'
+    assert 'unknown checkpoint "cp_missing_fallback"' in payload['error']
+
+
+def test_import_campaign_pack_rejects_checkpoint_cycles(client):
+    response = client.post(
+        '/api/campaigns/import-pack',
+        json={
+            'packId': 'cycle_pack',
+            'title': 'Cycle Pack',
+            'checkpoints': [
+                {
+                    'id': 'cp_one',
+                    'title': 'One',
+                    'nextCheckpointIds': ['cp_two'],
+                },
+                {
+                    'id': 'cp_two',
+                    'title': 'Two',
+                    'nextCheckpointIds': ['cp_one'],
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload['error_code'] == 'invalid_checkpoint_graph'
+    assert 'nextCheckpointIds cycle' in payload['error']
+
+
+def test_import_campaign_pack_validates_required_pack_fields(client, app):
+    response = client.post('/api/campaigns/import-pack', json={'pack': {'title': 'No Pack ID'}})
+
+    assert response.status_code == 400
+    assert response.get_json()['error_code'] == 'validation_error'
+    assert response.get_json()['error'] == 'packId is required.'
+
+
+def test_import_campaign_pack_rejects_unknown_starting_location(client, app):
+    with app.app_context():
+        world = World(name='Pack Validation World', description='For pack validation')
+        db.session.add(world)
+        db.session.commit()
+        world_id = world.world_id
+
+    response = client.post(
+        '/api/campaigns/import-pack',
+        json={
+            'world_id': world_id,
+            'pack': {
+                'packId': 'bad_start_location',
+                'title': 'Bad Start Location',
+                'startingState': {'locationId': 'missing_gate'},
+                'locations': [{'id': 'real_gate', 'name': 'Real Gate'}],
+            },
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()['error_code'] == 'validation_error'
+    assert response.get_json()['error'] == 'startingState.locationId must reference an imported location.'
+
+
 def test_create_campaign_rejects_invalid_world_id(client):
     response = client.post('/api/campaigns', json={'title': 'Broken', 'world_id': 'nope'})
 

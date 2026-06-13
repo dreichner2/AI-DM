@@ -38,6 +38,7 @@ from aidm_server.response_dtos import (
     campaign_payloads,
     isoformat,
 )
+from aidm_server.services.campaign_pack import CampaignPackImportError, import_campaign_pack
 from aidm_server.services.workspace import campaign_workspace_payload
 from aidm_server.services.session_lifecycle import delete_session_record
 from aidm_server.time_utils import utc_now
@@ -289,6 +290,35 @@ def _canon_update_payload(update: TurnCanonUpdate) -> dict:
         'error_text': update.error_text,
         'created_at': isoformat(update.created_at),
     }
+
+
+@campaigns_bp.route('/import-pack', methods=['POST'])
+def import_campaign_pack_manifest():
+    payload = parse_json_body(request)
+    if payload is None:
+        return error_response('validation_error', 'Expected JSON request body.', 400)
+
+    dry_run = _truthy_enabled(
+        request.args.get('dry_run')
+        or request.args.get('dryRun')
+        or payload.get('dry_run')
+        or payload.get('dryRun'),
+        default=False,
+    )
+    try:
+        result = import_campaign_pack(payload, workspace_id=current_workspace_id(), dry_run=dry_run)
+        if dry_run:
+            db.session.rollback()
+            return jsonify(result.payload), 200
+        db.session.commit()
+        return jsonify(result.payload), 201
+    except CampaignPackImportError as exc:
+        db.session.rollback()
+        return error_response(exc.error_code, str(exc), exc.status_code)
+    except Exception as exc:
+        db.session.rollback()
+        logger.error('Failed to import campaign pack: %s', str(exc))
+        return error_response('campaign_pack_import_failed', 'Failed to import campaign pack.', 400)
 
 
 @campaigns_bp.route('', methods=['POST'])

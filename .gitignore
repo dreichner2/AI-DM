@@ -29,6 +29,7 @@ aidm_server/:memory:
 
 # Runtime artifacts
 .pytest_cache/
+.playwright-cli/
 tmp/
 *.log
 *.pid

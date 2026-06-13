@@ -6,6 +6,7 @@ from typing import Any
 from aidm_server.armor_class import armor_class_details
 from aidm_server.canon_text import int_or_default
 from aidm_server.creatures.schemas import DAMAGE_TYPES, normalize_creature_definition
+from aidm_server.damage_dice import normalize_damage_dice_expression
 from aidm_server.game_state.models import stable_slug
 
 
@@ -73,11 +74,11 @@ def _normalize_zone(value: Any, index: int) -> dict[str, Any] | None:
 
 def _normalize_damage(value: Any) -> dict[str, Any] | None:
     raw = value if isinstance(value, dict) else {}
-    dice = _text(raw.get('dice'))
+    dice = normalize_damage_dice_expression(raw.get('dice'))
     if not dice:
         return None
     return {
-        'dice': dice[:40],
+        'dice': dice,
         'type': _enum(raw.get('type'), DAMAGE_TYPES, 'bludgeoning'),
     }
 

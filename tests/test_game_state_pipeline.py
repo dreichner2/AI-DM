@@ -46,6 +46,128 @@ def _state(*, items=None, currency=None, hp_current=10, hp_max=20, temp_hp=0, xp
     }
 
 
+def _campaign_pack_state():
+    state = _state()
+    state['currentScene'] = {
+        'locationId': 'bleakmoor_gate',
+        'name': 'Bleakmoor Gate',
+        'activeNpcIds': ['npc_captain_veyra'],
+        'activeQuestIds': ['q_missing_caravan'],
+    }
+    state['flags'] = {'campaignPackActiveCheckpointId': 'cp_gate'}
+    state['campaignPack'] = {
+        'packId': 'bleakmoor_intro',
+        'title': 'The Lanterns of Bleakmoor',
+        'directorRules': {
+            'mainQuestGeneration': 'pack_only',
+            'sideQuestGeneration': 'allowed_tagged',
+            'offTrackPolicy': 'improvise_and_reconnect',
+        },
+        'checkpoints': [
+            {
+                'id': 'cp_gate',
+                'title': 'Question Captain Veyra',
+                'rejoinTargetCheckpointId': 'cp_old_road',
+            },
+            {'id': 'cp_old_road', 'title': 'Find the Caravan Wreck'},
+        ],
+        'catalog': {
+            'locations': [
+                {
+                    'id': 'bleakmoor_gate',
+                    'name': 'Bleakmoor Gate',
+                    'source': 'campaign_pack',
+                    'packId': 'bleakmoor_intro',
+                    'npcIds': ['npc_captain_veyra'],
+                    'questIds': ['q_missing_caravan'],
+                },
+                {
+                    'id': 'old_road',
+                    'name': 'Old Road',
+                    'type': 'road',
+                    'description': 'A drowned road into the marsh.',
+                    'source': 'campaign_pack',
+                    'packId': 'bleakmoor_intro',
+                    'questIds': ['q_missing_caravan'],
+                },
+            ],
+            'npcs': [
+                {
+                    'id': 'npc_captain_veyra',
+                    'name': 'Captain Veyra',
+                    'source': 'campaign_pack',
+                    'packId': 'bleakmoor_intro',
+                    'locationId': 'bleakmoor_gate',
+                    'questIds': ['q_missing_caravan'],
+                },
+                {
+                    'id': 'npc_lantern_keeper',
+                    'name': 'Lantern Keeper',
+                    'role': 'hidden witness',
+                    'source': 'campaign_pack',
+                    'packId': 'bleakmoor_intro',
+                    'locationId': 'old_road',
+                    'questIds': ['q_lantern_witness'],
+                },
+            ],
+            'quests': [
+                {
+                    'id': 'q_missing_caravan',
+                    'title': 'Find the Missing Caravan',
+                    'status': 'active',
+                    'source': 'campaign_pack',
+                    'packId': 'bleakmoor_intro',
+                    'stage': 'Ask at Bleakmoor Gate',
+                },
+                {
+                    'id': 'q_lantern_witness',
+                    'title': 'Question the Lantern Witness',
+                    'status': 'available',
+                    'summary': 'Find the witness near the old road.',
+                    'source': 'campaign_pack',
+                    'packId': 'bleakmoor_intro',
+                    'relatedLocationIds': ['old_road'],
+                    'relatedNpcIds': ['npc_lantern_keeper'],
+                },
+            ],
+        },
+    }
+    state['locations'] = [
+        {
+            'id': 'bleakmoor_gate',
+            'name': 'Bleakmoor Gate',
+            'source': 'campaign_pack',
+            'packId': 'bleakmoor_intro',
+            'npcIds': ['npc_captain_veyra'],
+            'questIds': ['q_missing_caravan'],
+        }
+    ]
+    state['knownNpcs'] = [
+        {
+            'id': 'npc_captain_veyra',
+            'name': 'Captain Veyra',
+            'source': 'campaign_pack',
+            'packId': 'bleakmoor_intro',
+            'locationId': 'bleakmoor_gate',
+            'questIds': ['q_missing_caravan'],
+        }
+    ]
+    state['quests'] = [
+        {
+            'id': 'q_missing_caravan',
+            'title': 'Find the Missing Caravan',
+            'status': 'active',
+            'source': 'campaign_pack',
+            'packId': 'bleakmoor_intro',
+            'stage': 'Ask at Bleakmoor Gate',
+            'objectives': [{'id': 'obj_question_veyra', 'description': 'Question Captain Veyra.', 'status': 'open'}],
+            'relatedNpcIds': ['npc_captain_veyra'],
+            'relatedLocationIds': ['bleakmoor_gate'],
+        }
+    ]
+    return state
+
+
 def _item(name, *, item_id=None, quantity=1, item_type='misc', subtype=None, equipped=False, last_used=None, favorite=False):
     return {
         'id': item_id or f'itm_{name.lower().replace(" ", "_")}',
@@ -75,6 +197,25 @@ def _two_player_state():
             'inventory': {
                 'items': [],
                 'currency': {'pp': 0, 'gp': 1, 'ep': 0, 'sp': 0, 'cp': 0},
+            },
+            'xp': {'current': 0, 'nextLevelAt': 300},
+            'metadata': {},
+        }
+    )
+    return state
+
+
+def _three_player_state():
+    state = _two_player_state()
+    state['playerCharacters'].append(
+        {
+            'id': 'player_3',
+            'playerId': 3,
+            'name': 'Cara',
+            'health': {'currentHp': 10, 'maxHp': 10, 'tempHp': 0, 'conditions': []},
+            'inventory': {
+                'items': [],
+                'currency': {'pp': 0, 'gp': 0, 'ep': 0, 'sp': 0, 'cp': 0},
             },
             'xp': {'current': 0, 'nextLevelAt': 300},
             'metadata': {},
@@ -270,6 +411,69 @@ def test_enemy_attack_rolls_infer_missing_generated_ability_mechanics():
     assert resolved['damageBonus'] == 2
     assert resolved['damageTotal'] == 7
     assert resolved['damageType'] == 'piercing'
+
+
+def test_enemy_attack_rejects_unbounded_inferred_damage_dice():
+    state = _enemy_roll_test_state()
+    ability = state['combat']['participants'][1]['abilities'][0]
+    ability.pop('damage')
+    ability['description'] = 'On a hit, deals 1000000d1 fire damage.'
+    roll_calls = []
+
+    def roller(sides):
+        roll_calls.append(sides)
+        if len(roll_calls) > 2:
+            raise AssertionError('oversized inferred damage dice should not drive extra rolls')
+        return 20 if len(roll_calls) == 1 else 1
+
+    context = turn_pipeline_module._dm_context_packet(
+        state=state,
+        player_message='I wait.',
+        pre_validation={'validatedActions': [], 'pendingRolls': []},
+        applied_changes=[],
+        combat_context=_enemy_attack_combat_context(),
+        enemy_roller=roller,
+    )
+
+    resolved = context['combatState']['enemyResolvedActions'][0]
+    assert roll_calls == [20, 6]
+    assert resolved['hit'] is True
+    assert resolved['damageDice'] == '1d6+2'
+    assert resolved['damageRolls'] == [1]
+    assert resolved['damageTotal'] == 3
+    assert turn_pipeline_module.TEXT_DAMAGE_PATTERN.search('deals 1000000d1 fire damage') is None
+
+
+def test_enemy_attack_rejects_unbounded_damage_dice_without_rolling():
+    state = _enemy_roll_test_state()
+    state['combat']['participants'][1]['abilities'][0]['damage'] = {
+        'dice': '99999999999999999999999999999999999999d6',
+        'type': 'piercing',
+    }
+    roll_calls = []
+
+    def roller(sides):
+        roll_calls.append(sides)
+        if len(roll_calls) > 1:
+            raise AssertionError('oversized damage dice should not be rolled')
+        return 20
+
+    context = turn_pipeline_module._dm_context_packet(
+        state=state,
+        player_message='I wait.',
+        pre_validation={'validatedActions': [], 'pendingRolls': []},
+        applied_changes=[],
+        combat_context=_enemy_attack_combat_context(),
+        enemy_roller=roller,
+    )
+
+    resolved = context['combatState']['enemyResolvedActions'][0]
+    assert roll_calls == [20]
+    assert resolved['hit'] is True
+    assert resolved['damageDice'] is None
+    assert resolved['damageRolls'] == []
+    assert resolved['damageBonus'] == 0
+    assert resolved['damageTotal'] == 0
 
 
 def test_extract_consume_item_from_player_message(app):
@@ -543,6 +747,33 @@ def test_validate_transfer_uses_from_actor_inventory_for_pickups():
     assert 'Borin can give Scimitar x1 to Kael' in validated['reason']
 
 
+def test_validate_declared_actions_rejects_mismatched_expected_actor():
+    state = _two_player_state()
+    state['playerCharacters'][1]['inventory']['items'] = [
+        _item('Minor Healing Potion', item_id='potion_2', item_type='consumable', subtype='potion'),
+    ]
+
+    result = validate_declared_actions(
+        state=state,
+        declared_actions=[
+            {
+                'id': 'act_001',
+                'type': 'inventory.consume',
+                'actorId': 'player_2',
+                'itemName': 'healing potion',
+                'quantity': 1,
+                'sourceText': "I drink Borin's healing potion.",
+            }
+        ],
+        current_turn=12,
+        expected_actor_id='player_1',
+    )
+
+    validated = result['validatedActions'][0]
+    assert validated['status'] == 'invalid'
+    assert validated['reason'] == 'Declared action actor does not match the current player.'
+
+
 def test_generic_intent_summary_anchors_dm_context():
     result = validate_declared_actions(
         state=_state(),
@@ -583,6 +814,33 @@ def test_apply_inventory_remove_quantity_and_delete_zero():
     result = apply_state_changes(state, validated_changes_for_application(validation))
 
     assert result['nextState']['playerCharacters'][0]['inventory']['items'] == []
+
+
+def test_validate_state_changes_rejects_mismatched_expected_actor():
+    state = _two_player_state()
+    state['playerCharacters'][1]['inventory']['items'] = [
+        _item('Minor Healing Potion', item_id='potion_2', quantity=1, item_type='consumable'),
+    ]
+
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'evil_remove',
+                'type': 'inventory.remove',
+                'actorId': 'player_2',
+                'itemId': 'potion_2',
+                'quantity': 1,
+                'source': 'post_dm',
+                'reason': 'Injected cross-player removal.',
+                'visible': True,
+            }
+        ],
+        expected_actor_id='player_1',
+    )
+
+    assert validation['accepted'] == []
+    assert validation['rejected'][0]['reason'] == 'State change actor does not match the current player.'
 
 
 def test_apply_health_heal_caps_at_max():
@@ -849,6 +1107,44 @@ def test_inventory_transfer_missing_item_rejects_without_partial_add():
     assert result['nextState']['playerCharacters'][1]['inventory']['items'] == []
 
 
+def test_inventory_transfer_batch_rejects_cumulative_overdraw_without_target_add():
+    state = _three_player_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'transfer_rope_borin',
+                'type': 'inventory.transfer',
+                'actorId': 'player_1',
+                'fromActorId': 'player_1',
+                'toActorId': 'player_2',
+                'itemId': 'rope_1',
+                'quantity': 1,
+                'visible': True,
+            },
+            {
+                'id': 'transfer_rope_cara',
+                'type': 'inventory.transfer',
+                'actorId': 'player_1',
+                'fromActorId': 'player_1',
+                'toActorId': 'player_3',
+                'itemId': 'rope_1',
+                'quantity': 1,
+                'visible': True,
+            },
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    assert [entry['change']['transferId'] for entry in validation['accepted']] == ['transfer_rope_borin', 'transfer_rope_borin']
+    assert validation['rejected'][0]['change']['id'] == 'transfer_rope_cara'
+    assert validation['rejected'][0]['reason'] == 'Insufficient quantity. Available: 0.'
+    assert result['skippedChanges'] == []
+    assert result['nextState']['playerCharacters'][0]['inventory']['items'] == []
+    assert [item['name'] for item in result['nextState']['playerCharacters'][1]['inventory']['items']] == ['Rope']
+    assert result['nextState']['playerCharacters'][2]['inventory']['items'] == []
+
+
 def test_currency_transfer_expands_to_atomic_remove_and_add():
     state = _two_player_state()
     validation = validate_state_changes(
@@ -875,6 +1171,102 @@ def test_currency_transfer_expands_to_atomic_remove_and_add():
     state_log = build_state_log(turn_id=1, post_validation=validation)
     assert len(state_log['lines']) == 1
     assert state_log['lines'][0]['message'] == 'Transferred 3 gp from Kael to Borin.'
+
+
+def test_currency_transfer_batch_rejects_cumulative_overdraw_without_target_add():
+    state = _three_player_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'transfer_gold_borin',
+                'type': 'currency.transfer',
+                'actorId': 'player_1',
+                'fromActorId': 'player_1',
+                'toActorId': 'player_2',
+                'currency': 'gp',
+                'amount': 5,
+                'visible': True,
+            },
+            {
+                'id': 'transfer_gold_cara',
+                'type': 'currency.transfer',
+                'actorId': 'player_1',
+                'fromActorId': 'player_1',
+                'toActorId': 'player_3',
+                'currency': 'gp',
+                'amount': 5,
+                'visible': True,
+            },
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    assert [entry['change']['transferId'] for entry in validation['accepted']] == ['transfer_gold_borin', 'transfer_gold_borin']
+    assert validation['rejected'][0]['change']['id'] == 'transfer_gold_cara'
+    assert validation['rejected'][0]['reason'] == 'Insufficient gp. Available: 0.'
+    assert result['skippedChanges'] == []
+    assert result['nextState']['playerCharacters'][0]['inventory']['currency']['gp'] == 0
+    assert result['nextState']['playerCharacters'][1]['inventory']['currency']['gp'] == 6
+    assert result['nextState']['playerCharacters'][2]['inventory']['currency']['gp'] == 0
+
+
+def test_transfer_reservations_include_direct_source_removals():
+    state = _three_player_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'remove_gold',
+                'type': 'currency.remove',
+                'actorId': 'player_1',
+                'currency': 'gp',
+                'amount': 5,
+                'visible': True,
+            },
+            {
+                'id': 'transfer_gold_cara',
+                'type': 'currency.transfer',
+                'actorId': 'player_1',
+                'fromActorId': 'player_1',
+                'toActorId': 'player_3',
+                'currency': 'gp',
+                'amount': 5,
+                'visible': True,
+            },
+            {
+                'id': 'remove_rope',
+                'type': 'inventory.remove',
+                'actorId': 'player_1',
+                'itemId': 'rope_1',
+                'quantity': 1,
+                'visible': True,
+            },
+            {
+                'id': 'transfer_rope_cara',
+                'type': 'inventory.transfer',
+                'actorId': 'player_1',
+                'fromActorId': 'player_1',
+                'toActorId': 'player_3',
+                'itemId': 'rope_1',
+                'quantity': 1,
+                'visible': True,
+            },
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    assert [entry['change']['id'] for entry in validation['accepted']] == ['remove_gold', 'remove_rope']
+    assert [entry['change']['id'] for entry in validation['rejected']] == ['transfer_gold_cara', 'transfer_rope_cara']
+    assert [entry['reason'] for entry in validation['rejected']] == [
+        'Insufficient gp. Available: 0.',
+        'Insufficient quantity. Available: 0.',
+    ]
+    assert result['skippedChanges'] == []
+    assert result['nextState']['playerCharacters'][0]['inventory']['currency']['gp'] == 0
+    assert result['nextState']['playerCharacters'][0]['inventory']['items'] == []
+    assert result['nextState']['playerCharacters'][2]['inventory']['currency']['gp'] == 0
+    assert result['nextState']['playerCharacters'][2]['inventory']['items'] == []
 
 
 def test_inventory_transfer_log_uses_structured_transfer_message_for_helper_reason():
@@ -1560,6 +1952,333 @@ def test_quest_add_creates_quest_with_objective():
     assert result['nextState']['currentScene']['activeQuestIds'] == ['find_missing_sailor']
 
 
+def test_pack_only_quest_add_is_downgraded_to_emergent_side_quest():
+    state = _campaign_pack_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'add_marsh_lights',
+                'type': 'quest.add',
+                'source': 'post_dm',
+                'reason': 'The DM introduces a local marsh task.',
+                'turnId': 31,
+                'questId': 'q_investigate_marsh_lights',
+                'title': 'Investigate the Marsh Lights',
+                'status': 'active',
+                'summary': 'Find out why ghostly lights are circling the reeds.',
+                'objectives': [{'id': 'obj_track_lights', 'description': 'Track the lights.', 'status': 'open'}],
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    modified = validation['modified'][0]['modifiedChange']
+    side_quest = next(quest for quest in result['nextState']['quests'] if quest['id'] == 'q_investigate_marsh_lights')
+    pack_quest = next(quest for quest in result['nextState']['quests'] if quest['id'] == 'q_missing_caravan')
+
+    assert validation['accepted'] == []
+    assert validation['rejected'] == []
+    assert modified['source'] == 'emergent'
+    assert modified['flags']['sideQuest'] is True
+    assert modified['metadata']['questType'] == 'side_quest'
+    assert modified['metadata']['driftControl'] == 'downgraded_from_mainline'
+    assert modified['metadata']['rejoinTargetCheckpointId'] == 'cp_old_road'
+    assert side_quest['source'] == 'emergent'
+    assert side_quest['packId'] == 'bleakmoor_intro'
+    assert side_quest['flags']['sideQuest'] is True
+    assert side_quest['flags']['mainQuest'] is False
+    assert side_quest['metadata']['packContentRole'] == 'side_quest'
+    assert side_quest['metadata']['questType'] == 'side_quest'
+    assert pack_quest['source'] == 'campaign_pack'
+    assert result['nextState']['currentScene']['activeQuestIds'] == ['q_missing_caravan', 'q_investigate_marsh_lights']
+
+
+def test_pack_only_allows_dm_override_quest_add_without_side_downgrade():
+    state = _campaign_pack_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'add_override_main_quest',
+                'type': 'quest.add',
+                'source': 'dm_override',
+                'reason': 'The DM explicitly promotes a new mainline branch.',
+                'turnId': 32,
+                'questId': 'q_override_watchtower_path',
+                'title': 'Secure the Watchtower Path',
+                'status': 'active',
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    quest = next(quest for quest in result['nextState']['quests'] if quest['id'] == 'q_override_watchtower_path')
+
+    assert validation['modified'] == []
+    assert validation['rejected'] == []
+    assert validation['accepted'][0]['change']['source'] == 'dm_override'
+    assert quest['source'] == 'dm_override'
+    assert quest.get('flags', {}).get('sideQuest') is None
+    assert result['nextState']['currentScene']['activeQuestIds'] == ['q_missing_caravan', 'q_override_watchtower_path']
+
+
+def test_pack_drift_tags_new_location_and_npc_as_emergent():
+    state = _campaign_pack_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'discover_marsh_camp',
+                'type': 'location.discover',
+                'source': 'post_dm',
+                'reason': 'The party finds a small camp off the authored path.',
+                'turnId': 33,
+                'locationId': 'marsh_camp',
+                'name': 'Marsh Camp',
+                'locationType': 'wilderness',
+                'description': 'A muddy camp tucked behind reeds.',
+            },
+            {
+                'id': 'discover_reed_hermit',
+                'type': 'npc.discover',
+                'source': 'post_dm',
+                'reason': 'A local hermit appears in the marsh camp.',
+                'turnId': 33,
+                'npcId': 'npc_reed_hermit',
+                'name': 'Reed Hermit',
+                'role': 'local guide',
+                'locationId': 'marsh_camp',
+            },
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    location = next(location for location in result['nextState']['locations'] if location['id'] == 'marsh_camp')
+    npc = next(npc for npc in result['nextState']['knownNpcs'] if npc['id'] == 'npc_reed_hermit')
+
+    assert validation['accepted'] == []
+    assert validation['rejected'] == []
+    assert [entry['modifiedChange']['source'] for entry in validation['modified']] == ['emergent', 'emergent']
+    assert location['source'] == 'emergent'
+    assert location['packId'] == 'bleakmoor_intro'
+    assert location['metadata']['packContentRole'] == 'local_detail'
+    assert location['metadata']['rejoinTargetCheckpointId'] == 'cp_old_road'
+    assert npc['source'] == 'emergent'
+    assert npc['packId'] == 'bleakmoor_intro'
+    assert npc['metadata']['packContentRole'] == 'minor_or_temporary'
+    assert npc['locationId'] == 'marsh_camp'
+    assert location['npcIds'] == ['npc_reed_hermit']
+
+
+def test_pack_catalog_discovery_materializes_authored_records():
+    state = _campaign_pack_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'discover_old_road',
+                'type': 'location.discover',
+                'source': 'post_dm',
+                'turnId': 34,
+                'locationId': 'old_road',
+                'name': 'Old Road',
+                'status': 'visited',
+            },
+            {
+                'id': 'discover_lantern_keeper',
+                'type': 'npc.discover',
+                'source': 'post_dm',
+                'turnId': 34,
+                'npcId': 'npc_lantern_keeper',
+                'name': 'Lantern Keeper',
+            },
+            {
+                'id': 'add_lantern_witness_quest',
+                'type': 'quest.add',
+                'source': 'post_dm',
+                'turnId': 34,
+                'questId': 'q_lantern_witness',
+                'title': 'Question the Lantern Witness',
+                'status': 'active',
+            },
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    location = next(location for location in result['nextState']['locations'] if location['id'] == 'old_road')
+    npc = next(npc for npc in result['nextState']['knownNpcs'] if npc['id'] == 'npc_lantern_keeper')
+    quest = next(quest for quest in result['nextState']['quests'] if quest['id'] == 'q_lantern_witness')
+
+    assert validation['accepted'] == []
+    assert validation['rejected'] == []
+    assert [entry['modifiedChange']['source'] for entry in validation['modified']] == [
+        'campaign_pack',
+        'campaign_pack',
+        'campaign_pack',
+    ]
+    assert location['source'] == 'campaign_pack'
+    assert location['packId'] == 'bleakmoor_intro'
+    assert location['metadata']['driftControl'] == 'materialized_from_catalog'
+    assert npc['source'] == 'campaign_pack'
+    assert npc['packId'] == 'bleakmoor_intro'
+    assert npc['locationId'] == 'old_road'
+    assert npc['metadata']['driftControl'] == 'materialized_from_catalog'
+    assert quest['source'] == 'campaign_pack'
+    assert quest['packId'] == 'bleakmoor_intro'
+    assert quest['flags'].get('sideQuest') is None
+    assert quest['metadata']['driftControl'] == 'materialized_from_catalog'
+    assert result['nextState']['currentScene']['activeQuestIds'] == ['q_missing_caravan', 'q_lantern_witness']
+
+
+def test_pack_record_updates_preserve_campaign_pack_source():
+    state = _campaign_pack_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'update_pack_quest_stage',
+                'type': 'quest.update',
+                'source': 'post_dm',
+                'turnId': 34,
+                'questId': 'q_missing_caravan',
+                'stage': 'Follow the lantern tracks',
+                'objectives': [
+                    {
+                        'id': 'obj_question_veyra',
+                        'description': 'Question Captain Veyra.',
+                        'status': 'completed',
+                    }
+                ],
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    quest = result['nextState']['quests'][0]
+
+    assert validation['modified'] == []
+    assert validation['rejected'] == []
+    assert quest['source'] == 'campaign_pack'
+    assert quest['packId'] == 'bleakmoor_intro'
+    assert quest['stage'] == 'Follow the lantern tracks'
+    assert quest['objectives'][0]['status'] == 'completed'
+
+
+def test_pack_drift_tags_new_scene_item_as_emergent():
+    state = _campaign_pack_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'drop_marsh_key',
+                'type': 'scene.item.add',
+                'source': 'post_dm',
+                'turnId': 35,
+                'itemName': 'Marsh Key',
+                'quantity': 1,
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    item = result['nextState']['currentScene']['items'][0]
+
+    assert validation['accepted'] == []
+    assert validation['rejected'] == []
+    assert validation['modified'][0]['modifiedChange']['source'] == 'emergent'
+    assert item['source'] == 'emergent'
+    assert item['packId'] == 'bleakmoor_intro'
+    assert item['metadata']['packContentRole'] == 'local_item'
+    assert item['metadata']['rejoinTargetCheckpointId'] == 'cp_old_road'
+
+
+def test_pack_drift_tags_inventory_flags_routes_and_relationships():
+    state = _campaign_pack_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'add_marsh_token',
+                'type': 'inventory.add',
+                'source': 'post_dm',
+                'turnId': 36,
+                'actorId': 'player_1',
+                'itemName': 'Marsh Token',
+                'quantity': 1,
+            },
+            {
+                'id': 'set_clue_flag',
+                'type': 'flag.set',
+                'source': 'post_dm',
+                'turnId': 36,
+                'flagKey': 'clue.muddy_tracks',
+                'value': True,
+            },
+            {
+                'id': 'connect_marsh_shortcut',
+                'type': 'location.connect',
+                'source': 'post_dm',
+                'turnId': 36,
+                'fromLocationId': 'bleakmoor_gate',
+                'toLocationId': 'marsh_shortcut',
+            },
+            {
+                'id': 'veyra_trusts_party',
+                'type': 'npc.relationship.update',
+                'source': 'post_dm',
+                'turnId': 36,
+                'npcId': 'npc_captain_veyra',
+                'relationshipLabel': 'trusting',
+                'relationshipScore': 35,
+            },
+        ],
+    )
+
+    assert validation['accepted'] == []
+    assert validation['rejected'] == []
+    modified = [entry['modifiedChange'] for entry in validation['modified']]
+    assert [change['metadata']['packContentRole'] for change in modified] == [
+        'runtime_inventory_item',
+        'runtime_flag',
+        'local_route',
+        'relationship_delta',
+    ]
+    assert modified[0]['item']['source'] == 'emergent'
+    assert modified[0]['item']['packId'] == 'bleakmoor_intro'
+    assert modified[1]['metadata']['rejoinTargetCheckpointId'] == 'cp_old_road'
+    assert modified[2]['metadata']['driftControl'] == 'tagged_local_route'
+    assert modified[3]['source'] == 'player_created'
+    assert modified[3]['packId'] == 'bleakmoor_intro'
+
+
+def test_pack_drift_tags_non_pack_combat_start_as_emergent_encounter():
+    state = _campaign_pack_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'start_marsh_combat',
+                'type': 'combat.start',
+                'source': 'post_dm',
+                'turnId': 36,
+                'combat': {
+                    'status': 'active',
+                    'round': 1,
+                    'participants': [
+                        {'id': 'player_1', 'team': 'player', 'name': 'Kael'},
+                        {'id': 'enemy_marsh_stalker', 'team': 'enemy', 'name': 'Marsh Stalker'},
+                    ],
+                },
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    combat = result['nextState']['combat']
+
+    assert validation['accepted'] == []
+    assert validation['rejected'] == []
+    assert validation['modified'][0]['modifiedChange']['source'] == 'emergent'
+    assert combat['flags']['source'] == 'emergent'
+    assert combat['flags']['packId'] == 'bleakmoor_intro'
+    assert combat['flags']['packContentRole'] == 'runtime_encounter'
+    assert combat['flags']['rejoinTargetCheckpointId'] == 'cp_old_road'
+
+
 def test_quest_update_updates_stage_and_objective_without_duplicates():
     state = _state()
     state['quests'] = [
@@ -1603,6 +2322,7 @@ def test_quest_update_updates_stage_and_objective_without_duplicates():
     quest = result['nextState']['quests'][0]
 
     assert validation['rejected'] == []
+    assert quest['title'] == 'Find the Missing Sailor'
     assert quest['stage'] == 'Search Old Harbor'
     assert len(quest['objectives']) == 1
     assert quest['objectives'][0]['status'] == 'completed'
@@ -1634,7 +2354,6 @@ def test_quest_objective_update_accepts_top_level_open_status():
                 'turnId': 26,
                 'questId': 'rensira_threads',
                 'objectiveId': 'find_the_source',
-                'description': 'Find the source of the black threads.',
                 'status': 'open',
             }
         ],
@@ -1643,6 +2362,7 @@ def test_quest_objective_update_accepts_top_level_open_status():
 
     assert validation['rejected'] == []
     assert result['nextState']['quests'][0]['objectives'][0]['status'] == 'open'
+    assert result['nextState']['quests'][0]['objectives'][0]['description'] == 'Find the source of the black threads.'
 
 
 def test_quest_complete_marks_completed_and_does_not_recomplete_on_retry():
@@ -3054,8 +3774,14 @@ def test_post_dm_awards_combat_xp_to_all_player_participants(app):
     assert {change['actorId'] for change in xp_changes} == {'player_1', 'player_2'}
     assert all(change['amount'] == 125 for change in xp_changes)
 
-    validation = validate_state_changes(state=state, changes=result['proposedChanges'])
+    validation = validate_state_changes(
+        state=state,
+        changes=result['proposedChanges'],
+        expected_actor_id='player_1',
+        authorized_cross_actor_change_ids=result.get('authorizedCrossActorChangeIds') or [],
+    )
     applied = apply_state_changes(state, validated_changes_for_application(validation))
+    assert set(result.get('authorizedCrossActorChangeIds') or []) == {change['id'] for change in xp_changes}
     assert validation['rejected'] == []
     assert [actor['xp']['current'] for actor in applied['nextState']['playerCharacters']] == [125, 125]
 
@@ -3939,6 +4665,102 @@ def test_post_dm_helper_currency_type_alias_normalizes_to_currency(app, monkeypa
     assert [change['type'] for change in applied] == ['currency.remove', 'currency.add']
 
 
+def test_post_dm_helper_filters_cross_player_owned_mutations(app, monkeypatch):
+    class FakeProvider:
+        def generate(self, _request):
+            return ProviderResponse(
+                text=(
+                    '{"proposedChanges":['
+                    '{"id":"evil_remove","type":"inventory.remove","actorId":"player_2","itemId":"potion_2","quantity":1},'
+                    '{"id":"evil_gold","type":"currency.remove","actorId":"player_2","currency":"gp","amount":10},'
+                    '{"id":"evil_damage","type":"health.damage","actorId":"player_2","amount":3}'
+                    '],"uncertainChanges":[]}'
+                ),
+                provider='fake',
+                model='fake-helper',
+            )
+
+    monkeypatch.setattr(post_extractor_module, 'get_helper_provider', lambda: FakeProvider())
+    state = _two_player_state()
+    state['playerCharacters'][1]['inventory']['items'] = [
+        _item('Minor Healing Potion', item_id='potion_2', quantity=1, item_type='consumable'),
+    ]
+    state['playerCharacters'][1]['inventory']['currency']['gp'] = 50
+
+    with app.app_context():
+        app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I wait.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The room stays quiet.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=55,
+        )
+
+    applied = apply_state_changes(
+        state,
+        validated_changes_for_application(validate_state_changes(state=state, changes=result['proposedChanges'])),
+    )
+    victim = applied['nextState']['playerCharacters'][1]
+    assert not any(
+        change.get('type') in {'inventory.remove', 'currency.remove', 'health.damage'}
+        and change.get('actorId') == 'player_2'
+        for change in result['proposedChanges']
+    )
+    assert 'filtered_actor_ownership' in result['notes']
+    assert victim['inventory']['items'][0]['id'] == 'potion_2'
+    assert victim['inventory']['currency']['gp'] == 50
+    assert victim['health']['currentHp'] == 12
+
+
+def test_post_dm_helper_filters_other_player_combat_mutations(app, monkeypatch):
+    class FakeProvider:
+        def generate(self, _request):
+            return ProviderResponse(
+                text=(
+                    '{"proposedChanges":[{"id":"evil_combat","type":"combat.participant.update",'
+                    '"participantId":"player_2","hp":{"current":0,"max":12}}],"uncertainChanges":[]}'
+                ),
+                provider='fake',
+                model='fake-helper',
+            )
+
+    monkeypatch.setattr(post_extractor_module, 'get_helper_provider', lambda: FakeProvider())
+    state = _two_player_state()
+    state['combat'] = {
+        'status': 'active',
+        'round': 1,
+        'participants': [
+            {'id': 'player_1', 'team': 'player', 'name': 'Kael', 'hp': {'current': 10, 'max': 20}},
+            {'id': 'player_2', 'team': 'player', 'name': 'Borin', 'hp': {'current': 12, 'max': 12}},
+            {'id': 'enemy_1', 'team': 'enemy', 'name': 'Bandit', 'hp': {'current': 6, 'max': 6}},
+        ],
+    }
+
+    with app.app_context():
+        app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
+        result = extract_post_dm_outcomes(
+            state_before_dm=state,
+            player_message='I wait.',
+            validated_actions={},
+            already_applied_changes=[],
+            dm_response='The room stays quiet.',
+            recent_timeline=[],
+            actor_id='player_1',
+            turn_id=56,
+        )
+
+    assert not any(
+        change.get('type') == 'combat.participant.update'
+        and change.get('participantId') == 'player_2'
+        for change in result['proposedChanges']
+    )
+    assert 'filtered_actor_ownership' in result['notes']
+
+
 def test_post_dm_helper_inventory_remove_missing_quantity_does_not_apply_or_fallback(app, monkeypatch):
     class FakeProvider:
         def generate(self, _request):
@@ -4678,12 +5500,13 @@ def test_build_visible_state_log():
     assert state_log['lines'][0]['message'] == 'Removed Minor Healing Potion x1.'
 
 
-def test_post_dm_semantic_merge_dedupes_duplicate_combat_outcomes():
+def test_post_dm_semantic_merge_dedupes_exact_duplicate_combat_outcomes():
     changes = turn_pipeline_module._merge_state_changes(
         [
             {
                 'id': 'helper_end',
                 'type': 'combat.end',
+                'status': 'ended',
                 'reason': 'Combat ends after the scout is killed.',
             },
             {
@@ -4696,15 +5519,13 @@ def test_post_dm_semantic_merge_dedupes_duplicate_combat_outcomes():
                 'id': 'heuristic_participant',
                 'type': 'combat.participant.update',
                 'participantId': 'enemy_scout_1',
-                'hp': {'current': 0, 'max': 10, 'temp': 0},
-                'conditions': ['defeated'],
-                'isAlive': False,
+                'hp': {'current': 0, 'max': 10},
             },
             {
                 'id': 'heuristic_end',
                 'type': 'combat.end',
                 'status': 'ended',
-                'summary': 'Combat ended from DM narration.',
+                'reason': 'Combat ends after the scout is killed.',
             },
             {
                 'id': 'xp',
@@ -4716,6 +5537,75 @@ def test_post_dm_semantic_merge_dedupes_duplicate_combat_outcomes():
     )
 
     assert [change['id'] for change in changes] == ['helper_end', 'helper_participant', 'xp']
+
+
+def test_post_dm_semantic_merge_keeps_distinct_combat_participant_updates():
+    state = _state()
+    state['currentScene'] = {'sceneType': 'combat', 'combatState': 'active'}
+    state['combat'] = {
+        'status': 'active',
+        'round': 1,
+        'participants': [
+            {
+                'id': 'enemy_scout_1',
+                'name': 'Scout',
+                'team': 'enemy',
+                'hp': {'current': 10, 'max': 10, 'temp': 0},
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            }
+        ],
+    }
+    changes = turn_pipeline_module._merge_state_changes(
+        [
+            {
+                'id': 'partial',
+                'type': 'combat.participant.update',
+                'participantId': 'enemy_scout_1',
+                'hp': {'current': 5, 'max': 10},
+            },
+            {
+                'id': 'defeat',
+                'type': 'combat.participant.update',
+                'participantId': 'enemy_scout_1',
+                'hp': {'current': 0, 'max': 10, 'temp': 0},
+                'conditions': ['defeated'],
+                'isAlive': False,
+                'isConscious': False,
+            },
+        ]
+    )
+    validation = validate_state_changes(state=state, changes=changes)
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    enemy = result['nextState']['combat']['participants'][0]
+
+    assert [change['id'] for change in changes] == ['partial', 'defeat']
+    assert validation['rejected'] == []
+    assert [entry['change']['id'] for entry in validation['accepted']] == ['partial', 'defeat']
+    assert enemy['hp']['current'] == 0
+    assert enemy['isAlive'] is False
+    assert enemy['isConscious'] is False
+    assert enemy['conditions'] == ['defeated']
+
+
+def test_post_dm_semantic_merge_keeps_valid_combat_end_after_invalid_status():
+    state = _state()
+    state['currentScene'] = {'sceneType': 'combat', 'combatState': 'active'}
+    state['combat'] = {'status': 'active', 'round': 1, 'participants': []}
+    changes = turn_pipeline_module._merge_state_changes(
+        [
+            {'id': 'bad_end', 'type': 'combat.end', 'status': 'finished'},
+            {'id': 'good_end', 'type': 'combat.end', 'status': 'ended'},
+        ]
+    )
+    validation = validate_state_changes(state=state, changes=changes)
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    assert [change['id'] for change in changes] == ['bad_end', 'good_end']
+    assert [entry['change']['id'] for entry in validation['rejected']] == ['bad_end']
+    assert [entry['change']['id'] for entry in validation['accepted']] == ['good_end']
+    assert result['nextState']['combat']['status'] == 'ended'
 
 
 def test_build_visible_state_log_names_combat_outcomes():

@@ -32,7 +32,7 @@ from aidm_server.logging_context import (
 )
 from aidm_server.rate_limiter import FixedWindowRateLimiter, build_rate_limiter
 from aidm_server.telemetry import init_telemetry, telemetry_event, telemetry_metric
-from aidm_server.blueprints.accounts import accounts_bp
+from aidm_server.blueprints.accounts import LEGACY_PASSWORD_SETUP_MESSAGE, accounts_bp
 from aidm_server.blueprints.campaigns import campaigns_bp
 from aidm_server.blueprints.creatures import creatures_bp
 from aidm_server.blueprints.maps import maps_bp
@@ -210,7 +210,7 @@ def create_app() -> Flask:
         if account_requires_password_setup(account):
             return error_response(
                 code='legacy_password_setup_required',
-                message='Passwords are required now. Please set one now.',
+                message=LEGACY_PASSWORD_SETUP_MESSAGE,
                 status=401,
             )
         workspace_id = request_workspace_id()

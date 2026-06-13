@@ -188,80 +188,139 @@ def test_custom_race_generation_save_and_versioning(client):
     assert full_response.get_json()['version'] == 2
 
 
-def test_custom_race_catalog_is_global_and_includes_creator(client, app):
+def test_custom_race_catalog_is_scoped_to_request_workspace(client, app):
+    app.config['AIDM_AUTH_REQUIRED'] = True
+    app.config['AIDM_API_AUTH_TOKENS'] = ['attacker-token', 'victim-token']
+    app.config['AIDM_API_AUTH_TOKEN_WORKSPACES'] = {
+        'attacker-token': 'attacker-ws',
+        'victim-token': 'victim-ws',
+    }
     with app.app_context():
-        account = Account(
-            username='aidan',
-            first_name='Aidan',
-            last_name='Fernandez',
+        victim_account = Account(
+            username='victim_user',
+            first_name='Victim',
+            last_name='GM',
         )
-        db.session.add(account)
+        attacker_account = Account(
+            username='attacker_user',
+            first_name='Attacker',
+            last_name='Player',
+        )
+        db.session.add_all([victim_account, attacker_account])
         db.session.flush()
-        race_definition = {
-            'id': 'custom_global_saiyan',
+        victim_race_definition = {
+            'id': 'secret_moonfolk',
             'version': 1,
-            'name': 'Saiyan',
+            'name': 'Secret Moonfolk',
             'source': 'custom',
-            'descriptionShort': 'Warrior aliens with tails and explosive battle growth.',
-            'descriptionLong': 'Canon-first custom Saiyan race.',
-            'aliases': ['saiyan'],
-            'tags': ['martial', 'exotic'],
+            'descriptionShort': 'Victim-only lunar heritage.',
+            'descriptionLong': 'VICTIM SECRET full definition includes campaign-specific Castle Umbra prompt.',
+            'aliases': ['moonfolk'],
+            'tags': ['mystical', 'exotic'],
             'size': 'medium',
             'baseSpeed': 30,
             'visual': {
-                'portraitKey': 'saiyan_portrait',
-                'iconKey': 'saiyan_icon',
-                'bodyType': 'humanoid_muscular',
-                'commonFeatures': ['tail', 'spiky hair'],
+                'portraitKey': 'moonfolk_portrait',
+                'iconKey': 'moonfolk_icon',
+                'bodyType': 'lithe_humanoid',
+                'commonFeatures': ['silver eyes', 'moonlit markings'],
             },
             'physical': {'averageHeight': '5 to 6 feet', 'averageWeight': '140 to 230 lb'},
             'languages': ['Common'],
-            'commonProficiencies': ['Athletics'],
+            'commonProficiencies': ['Insight'],
             'traits': [
                 {
-                    'id': 'great_ape_transformation',
-                    'name': 'Great Ape Transformation',
-                    'description': 'Transform under full moon or Blutz Waves.',
+                    'id': 'moon_veil',
+                    'name': 'Moon Veil',
+                    'description': 'Blend with pale moonlight.',
                     'category': 'active_ability',
-                    'mechanics': {'activeAbility': {'effectType': 'transformation'}},
-                    'aiHint': 'Treat this as a campaign-defining form.',
-                    'balanceCost': 8,
+                    'mechanics': {'activeAbility': {'effectType': 'stealth_boost'}},
+                    'aiHint': 'Use only in the victim campaign context.',
+                    'balanceCost': 3,
                 }
             ],
-            'roleplayHooks': ['Always seeks stronger opponents.'],
-            'recommendedClasses': ['Fighter'],
-            'difficulty': 'advanced',
-            'balance': {'budget': 5, 'spent': 8, 'tier': 'strong'},
+            'roleplayHooks': ['Protects the Castle Umbra secret.'],
+            'recommendedClasses': ['Rogue'],
+            'difficulty': 'medium',
+            'balance': {'budget': 5, 'spent': 3, 'tier': 'standard'},
         }
-        db.session.add(
+        attacker_race_definition = {
+            **victim_race_definition,
+            'id': 'attacker_drakekin',
+            'name': 'Attacker Drakekin',
+            'descriptionShort': 'Attacker workspace race.',
+            'descriptionLong': 'Attacker workspace full definition.',
+            'aliases': ['drakekin'],
+            'roleplayHooks': ['Tests workspace isolation.'],
+        }
+        db.session.add_all([
             CustomRace(
-                workspace_id='aidan_test',
-                account_id=account.account_id,
-                creator_username=account.username,
-                creator_display_name='Aidan Fernandez',
-                race_id='custom_global_saiyan',
+                workspace_id='victim-ws',
+                account_id=victim_account.account_id,
+                creator_username=victim_account.username,
+                creator_display_name='Victim GM',
+                race_id='secret_moonfolk',
                 version=1,
-                name='Saiyan',
+                name='Secret Moonfolk',
                 approval_status='approved_by_user',
-                race_definition=safe_json_dumps(race_definition, {}),
-            )
-        )
+                race_definition=safe_json_dumps(victim_race_definition, {}),
+            ),
+            CustomRace(
+                workspace_id='attacker-ws',
+                account_id=attacker_account.account_id,
+                creator_username=attacker_account.username,
+                creator_display_name='Attacker Player',
+                race_id='attacker_drakekin',
+                version=1,
+                name='Attacker Drakekin',
+                approval_status='approved_by_user',
+                race_definition=safe_json_dumps(attacker_race_definition, {}),
+            ),
+        ])
         db.session.commit()
 
-    list_response = client.get('/api/races?source=custom')
+    assert client.get('/api/races?source=custom').status_code == 401
+
+    attacker_headers = {'X-AIDM-Workspace-Token': 'attacker-token'}
+    list_response = client.get('/api/races?source=custom', headers=attacker_headers)
     assert list_response.status_code == 200
     races = list_response.get_json()['races']
-    assert [race['id'] for race in races] == ['custom_global_saiyan']
-    assert races[0]['workspaceId'] == 'aidan_test'
-    assert races[0]['createdByUsername'] == 'aidan'
-    assert races[0]['createdByDisplayName'] == 'Aidan Fernandez'
+    assert [race['id'] for race in races] == ['attacker_drakekin']
+    assert races[0]['workspaceId'] == 'attacker-ws'
+    assert races[0]['createdByUsername'] == 'attacker_user'
+    assert races[0]['createdByDisplayName'] == 'Attacker Player'
+    assert 'secret_moonfolk' not in {race['id'] for race in races}
+    assert 'Victim' not in str(races)
 
-    full_response = client.get('/api/races/custom_global_saiyan')
+    full_response = client.get('/api/races/attacker_drakekin', headers=attacker_headers)
     assert full_response.status_code == 200
     full_race = full_response.get_json()
-    assert full_race['name'] == 'Saiyan'
-    assert full_race['createdByUsername'] == 'aidan'
+    assert full_race['workspaceId'] == 'attacker-ws'
+    assert full_race['createdByUsername'] == 'attacker_user'
 
-    exact_response = client.get('/api/races/custom_global_saiyan?workspaceId=aidan_test')
-    assert exact_response.status_code == 200
-    assert exact_response.get_json()['workspaceId'] == 'aidan_test'
+    exact_attacker_response = client.get(
+        '/api/races/attacker_drakekin?workspaceId=attacker-ws',
+        headers=attacker_headers,
+    )
+    assert exact_attacker_response.status_code == 200
+    assert exact_attacker_response.get_json()['workspaceId'] == 'attacker-ws'
+
+    hidden_response = client.get('/api/races/secret_moonfolk', headers=attacker_headers)
+    assert hidden_response.status_code == 404
+    hidden_exact_response = client.get(
+        '/api/races/secret_moonfolk?workspaceId=victim-ws',
+        headers=attacker_headers,
+    )
+    assert hidden_exact_response.status_code == 404
+    mismatched_workspace_response = client.get(
+        '/api/races/attacker_drakekin?workspaceId=victim-ws',
+        headers=attacker_headers,
+    )
+    assert mismatched_workspace_response.status_code == 404
+
+    victim_headers = {'X-AIDM-Workspace-Token': 'victim-token'}
+    victim_response = client.get('/api/races/secret_moonfolk', headers=victim_headers)
+    assert victim_response.status_code == 200
+    victim_race = victim_response.get_json()
+    assert victim_race['workspaceId'] == 'victim-ws'
+    assert victim_race['descriptionLong'].startswith('VICTIM SECRET')

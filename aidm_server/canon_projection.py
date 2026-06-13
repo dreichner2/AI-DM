@@ -99,6 +99,109 @@ def _string_list(value: Any) -> list[str]:
     return []
 
 
+def _id_key(value: Any) -> str:
+    return _slug(value)
+
+
+def _record_source(record: dict) -> str:
+    metadata = record.get('metadata') if isinstance(record.get('metadata'), dict) else {}
+    return _text(record.get('source') or metadata.get('source'))
+
+
+def _campaign_pack(snapshot: dict) -> dict:
+    pack = snapshot.get('campaignPack')
+    return pack if isinstance(pack, dict) else {}
+
+
+def _campaign_pack_rules(snapshot: dict) -> dict:
+    pack = _campaign_pack(snapshot)
+    rules = pack.get('activeDirectorRules') if isinstance(pack.get('activeDirectorRules'), dict) else None
+    if rules is None:
+        rules = pack.get('directorRules') if isinstance(pack.get('directorRules'), dict) else {}
+    return rules
+
+
+def _campaign_pack_main_quest_policy(snapshot: dict) -> str:
+    rules = _campaign_pack_rules(snapshot)
+    return _text(rules.get('mainQuestGeneration') or rules.get('main_quest_generation') or '').casefold()
+
+
+def _record_is_campaign_pack(record: dict, pack_id: str = '') -> bool:
+    if not isinstance(record, dict):
+        return False
+    if _record_source(record) == 'campaign_pack':
+        return True
+    return bool(pack_id and _text(record.get('packId') or record.get('pack_id')) == pack_id)
+
+
+def _active_pack_quest_ids(snapshot: dict, quests: list[dict]) -> list[str]:
+    pack = _campaign_pack(snapshot)
+    pack_id = _text(pack.get('packId') or pack.get('pack_id'))
+    pack_quest_ids = {
+        _id_key(quest.get('id') or quest.get('questId'))
+        for quest in quests
+        if _record_is_campaign_pack(quest, pack_id)
+    }
+    catalog = pack.get('catalog') if isinstance(pack.get('catalog'), dict) else {}
+    for quest in catalog.get('quests') or []:
+        if isinstance(quest, dict):
+            pack_quest_ids.add(_id_key(quest.get('id') or quest.get('questId')))
+
+    scene = _ensure_scene(snapshot)
+    active_ids = [
+        quest_id
+        for quest_id in _string_list(scene.get('activeQuestIds'))
+        if _id_key(quest_id) in pack_quest_ids
+    ]
+    if active_ids:
+        return active_ids
+
+    quest_by_key = {_id_key(quest.get('id') or quest.get('questId')): quest for quest in quests}
+    active_ids = [
+        _text(quest.get('id') or quest.get('questId'))
+        for quest in quests
+        if _record_is_campaign_pack(quest, pack_id)
+        and _text(quest.get('id') or quest.get('questId'))
+        and _text(quest.get('status')).lower() in ACTIVE_QUEST_STATUSES
+    ]
+    if active_ids:
+        return active_ids
+
+    starting_quest_id = _text(pack.get('startingQuestId') or pack.get('starting_quest_id'))
+    if starting_quest_id and (_id_key(starting_quest_id) in pack_quest_ids or _id_key(starting_quest_id) in quest_by_key):
+        return [starting_quest_id]
+    return []
+
+
+def _quest_is_canon_projection(quest: dict) -> bool:
+    metadata = quest.get('metadata') if isinstance(quest.get('metadata'), dict) else {}
+    return _text(metadata.get('source') or quest.get('source')) == 'canon_projection'
+
+
+def _sync_pack_only_snapshot_quests(snapshot: dict, open_threads: list[StoryThread]) -> bool:
+    scene = _ensure_scene(snapshot)
+    quests = _snapshot_records(snapshot, 'quests')
+    active_pack_ids = _active_pack_quest_ids(snapshot, quests)
+    changed = scene.get('activeQuestIds') != active_pack_ids
+    scene['activeQuestIds'] = active_pack_ids
+
+    open_thread_ids = {_id_key(_thread_quest_id(thread)) for thread in open_threads}
+    for quest in quests:
+        if not _quest_is_canon_projection(quest):
+            continue
+        quest_id = _id_key(quest.get('id') or quest.get('questId'))
+        if quest_id not in open_thread_ids:
+            continue
+        if _text(quest.get('status')).lower() in ACTIVE_QUEST_STATUSES:
+            quest['status'] = 'noted'
+            changed = True
+        metadata = quest.setdefault('metadata', {})
+        if isinstance(metadata, dict) and metadata.get('questType') != 'story_thread':
+            metadata['questType'] = 'story_thread'
+            changed = True
+    return changed
+
+
 def _snapshot_records(snapshot: dict, key: str) -> list[dict]:
     records = snapshot.get(key)
     if isinstance(records, list):
@@ -158,6 +261,16 @@ def _session_snapshot_location(session_id: int) -> str:
     if _valid_location_label(scene_name):
         return scene_name
     return _latest_valid_snapshot_location(snapshot)
+
+
+def _session_pack_main_quest_policy(session_id: int) -> str:
+    session_obj = db.session.get(Session, session_id)
+    if not session_obj:
+        return ''
+    snapshot = safe_json_loads(session_obj.state_snapshot, {})
+    if not isinstance(snapshot, dict):
+        return ''
+    return _campaign_pack_main_quest_policy(snapshot)
 
 
 def _sync_snapshot_location(
@@ -228,6 +341,8 @@ def _thread_quest_id(thread: StoryThread) -> str:
 
 
 def _sync_snapshot_quests(snapshot: dict, open_threads: list[StoryThread]) -> bool:
+    if _campaign_pack_main_quest_policy(snapshot) == 'pack_only':
+        return _sync_pack_only_snapshot_quests(snapshot, open_threads)
     if not open_threads:
         return False
 
@@ -315,7 +430,7 @@ def refresh_session_projection(session_id: int, campaign: Campaign, triggered_se
         .order_by(StoryThread.priority.desc(), StoryThread.updated_at.desc(), StoryThread.thread_id.desc())
         .all()
     )
-    if open_threads:
+    if open_threads and _session_pack_main_quest_policy(session_id) != 'pack_only':
         state.current_quest = ' | '.join(thread.title for thread in open_threads[:3])
     else:
         state.current_quest = campaign.current_quest

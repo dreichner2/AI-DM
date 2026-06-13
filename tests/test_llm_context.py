@@ -4,7 +4,18 @@ import json
 
 from aidm_server.database import db
 from aidm_server.llm import build_dm_context
-from aidm_server.models import Campaign, DmTurn, Player, PlayerAction, Session, SessionState, World, safe_json_dumps
+from aidm_server.models import (
+    BestiaryEntry,
+    Campaign,
+    CampaignSegment,
+    DmTurn,
+    Player,
+    PlayerAction,
+    Session,
+    SessionState,
+    World,
+    safe_json_dumps,
+)
 from tests.helpers import seed_world_campaign_player_session
 
 
@@ -467,6 +478,406 @@ def test_build_dm_context_includes_compact_live_world_state_from_snapshot(app):
     assert 'Hidden item note' not in encoded_live_state
 
 
+def test_build_dm_context_includes_campaign_pack_director_packet(app):
+    with app.app_context():
+        world = World(name='Pack World', description='world')
+        db.session.add(world)
+        db.session.flush()
+
+        campaign = Campaign(
+            title='Pack Campaign',
+            world_id=world.world_id,
+            location='Bleakmoor Gate',
+            current_quest='Find the Missing Caravan',
+        )
+        db.session.add(campaign)
+        db.session.flush()
+
+        session = Session(
+            campaign_id=campaign.campaign_id,
+            state_snapshot=safe_json_dumps(
+                {
+                    'currentScene': {
+                        'locationId': 'bleakmoor_gate',
+                        'name': 'Bleakmoor Gate',
+                        'activeNpcIds': ['npc_captain_veyra'],
+                        'activeQuestIds': ['q_missing_caravan'],
+                    },
+                    'locations': [
+                        {
+                            'id': 'bleakmoor_gate',
+                            'name': 'Bleakmoor Gate',
+                            'type': 'town',
+                            'description': 'A rain-darkened gatehouse.',
+                            'connectedLocationIds': ['old_road'],
+                            'source': 'campaign_pack',
+                            'packId': 'bleakmoor_intro',
+                        },
+                    ],
+                    'knownNpcs': [
+                        {
+                            'id': 'npc_captain_veyra',
+                            'name': 'Captain Veyra',
+                            'role': 'Gate captain',
+                            'disposition': 'suspicious',
+                            'locationId': 'bleakmoor_gate',
+                            'questIds': ['q_missing_caravan'],
+                            'source': 'campaign_pack',
+                            'packId': 'bleakmoor_intro',
+                        }
+                    ],
+                    'quests': [
+                        {
+                            'id': 'q_missing_caravan',
+                            'title': 'Find the Missing Caravan',
+                            'status': 'in_progress',
+                            'stage': 'Follow the Old Road',
+                            'summary': 'A supply caravan vanished.',
+                            'source': 'campaign_pack',
+                            'packId': 'bleakmoor_intro',
+                        }
+                    ],
+                    'flags': {'campaignPackActiveCheckpointId': 'cp_gate'},
+                    'campaignPack': {
+                        'packId': 'bleakmoor_intro',
+                        'title': 'The Lanterns of Bleakmoor',
+                        'version': '1.0.0',
+                        'directorRules': {
+                            'mainQuestGeneration': 'pack_only',
+                            'sideQuestGeneration': 'allowed_tagged',
+                            'offTrackPolicy': 'improvise_and_reconnect',
+                        },
+                        'checkpoints': [
+                            {
+                                'id': 'cp_gate',
+                                'title': 'Question the gate captain',
+                                'summary': 'Learn where the caravan went.',
+                                'locationIds': ['bleakmoor_gate'],
+                                'questIds': ['q_missing_caravan'],
+                                'npcIds': ['npc_captain_veyra'],
+                                'nextCheckpointIds': ['cp_wreck'],
+                                'directorRules': {'checkpointStyle': 'soft_clue_forward'},
+                            },
+                            {
+                                'id': 'cp_wreck',
+                                'title': 'Find the caravan wreck',
+                                'locationIds': ['old_road'],
+                                'questIds': ['q_missing_caravan'],
+                            },
+                        ],
+                        'encounters': [
+                            {
+                                'id': 'enc_lantern_wraith',
+                                'title': 'Lantern Wraith',
+                                'checkpointIds': ['cp_wreck'],
+                                'locationIds': ['old_road'],
+                                'enemyIds': ['lantern_wraith'],
+                            }
+                        ],
+                        'catalog': {
+                            'locations': [
+                                {
+                                    'id': 'bleakmoor_gate',
+                                    'name': 'Bleakmoor Gate',
+                                    'type': 'town',
+                                    'description': 'A rain-darkened gatehouse.',
+                                    'connectedLocationIds': ['old_road'],
+                                    'source': 'campaign_pack',
+                                    'packId': 'bleakmoor_intro',
+                                },
+                                {
+                                    'id': 'old_road',
+                                    'name': 'Old Road',
+                                    'type': 'road',
+                                    'description': 'A drowned road into the marsh.',
+                                    'source': 'campaign_pack',
+                                    'packId': 'bleakmoor_intro',
+                                },
+                            ],
+                            'npcs': [
+                                {
+                                    'id': 'npc_captain_veyra',
+                                    'name': 'Captain Veyra',
+                                    'role': 'Gate captain',
+                                    'disposition': 'suspicious',
+                                    'locationId': 'bleakmoor_gate',
+                                    'questIds': ['q_missing_caravan'],
+                                    'source': 'campaign_pack',
+                                    'packId': 'bleakmoor_intro',
+                                }
+                            ],
+                            'quests': [
+                                {
+                                    'id': 'q_missing_caravan',
+                                    'title': 'Find the Missing Caravan',
+                                    'status': 'active',
+                                    'stage': 'Ask at Bleakmoor Gate',
+                                    'summary': 'A supply caravan vanished.',
+                                    'source': 'campaign_pack',
+                                    'packId': 'bleakmoor_intro',
+                                }
+                            ],
+                            'encounters': [
+                                {
+                                    'id': 'enc_lantern_wraith',
+                                    'title': 'Lantern Wraith',
+                                    'checkpointIds': ['cp_wreck'],
+                                    'locationIds': ['old_road'],
+                                    'enemyIds': ['lantern_wraith'],
+                                }
+                            ],
+                        },
+                    },
+                },
+                {},
+            ),
+        )
+        db.session.add(session)
+        db.session.flush()
+
+        db.session.add(
+            CampaignSegment(
+                campaign_id=campaign.campaign_id,
+                title='Question Captain Veyra',
+                description='Veyra points toward the old road.',
+                trigger_condition=safe_json_dumps(
+                    {
+                        'type': 'state',
+                        'location_contains': 'bleakmoor',
+                        'quest_contains': 'missing caravan',
+                    },
+                    {},
+                ),
+                tags='campaign_pack,pack:bleakmoor_intro,mainline',
+                is_triggered=False,
+            )
+        )
+        db.session.add(
+            BestiaryEntry(
+                workspace_id='owner',
+                campaign_id=campaign.campaign_id,
+                scope='campaign',
+                creature_id='lantern_wraith',
+                version=1,
+                name='Lantern Wraith',
+                source='campaign_pack',
+                persistence='campaign',
+                location_ids_json=safe_json_dumps(['old_road'], []),
+                faction_ids_json=safe_json_dumps([], []),
+                tags_json=safe_json_dumps(['campaign_pack', 'pack:bleakmoor_intro', 'wraith'], []),
+                creature_json=safe_json_dumps(
+                    {
+                        'id': 'lantern_wraith',
+                        'name': 'Lantern Wraith',
+                        'source': 'campaign_pack',
+                        'creatureType': 'undead',
+                        'challengeTier': 'hard',
+                        'descriptionShort': 'A marsh undead bound to lost lantern light.',
+                        'behavior': {'combatRole': 'assassin'},
+                    },
+                    {},
+                ),
+                balance_json=safe_json_dumps({}, {}),
+            )
+        )
+        db.session.commit()
+
+        payload = json.loads(build_dm_context(world.world_id, campaign.campaign_id, session.session_id))
+
+    director = payload['campaign_pack_director']
+    assert director['enabled'] is True
+    assert director['pack']['packId'] == 'bleakmoor_intro'
+    assert director['policy']['mainQuestGeneration'] == 'pack_only'
+    assert director['policy']['checkpointStyle'] == 'soft_clue_forward'
+    assert 'Do not invent replacement main quests' in director['policy']['instructions'][-2]
+    assert director['activeCheckpoint']['id'] == 'cp_gate'
+    assert director['activeCheckpoint']['status'] == 'active'
+    assert director['nextCheckpoints'][0]['id'] == 'cp_wreck'
+    assert director['progress']['offTrack'] is False
+    assert director['progress']['rejoinTargetCheckpointId'] == 'cp_gate'
+    assert director['progress']['checkpointStatuses'] == {'cp_gate': 'active', 'cp_wreck': 'open'}
+    assert director['relevantRecords']['quests'][0]['id'] == 'q_missing_caravan'
+    assert director['relevantRecords']['quests'][0]['stage'] == 'Follow the Old Road'
+    assert director['relevantRecords']['quests'][0]['status'] == 'in_progress'
+    assert [location['id'] for location in director['relevantRecords']['locations']] == ['bleakmoor_gate', 'old_road']
+    assert [location['knownToPlayers'] for location in director['relevantRecords']['locations']] == [True, False]
+    assert director['relevantRecords']['npcs'][0]['id'] == 'npc_captain_veyra'
+    assert director['relevantRecords']['npcs'][0]['knownToPlayers'] is True
+    assert director['relevantRecords']['encounters'][0]['id'] == 'enc_lantern_wraith'
+    assert director['relevantRecords']['enemies'][0]['id'] == 'lantern_wraith'
+    assert director['relevantRecords']['segments'][0]['triggerType'] == 'state'
+    assert director['relevantRecords']['segments'][0]['isTriggered'] is False
+
+
+def test_build_dm_context_campaign_pack_director_flags_off_track_rejoin(app):
+    with app.app_context():
+        world = World(name='Off Track Pack World', description='world')
+        db.session.add(world)
+        db.session.flush()
+
+        campaign = Campaign(title='Off Track Pack Campaign', world_id=world.world_id)
+        db.session.add(campaign)
+        db.session.flush()
+
+        session = Session(
+            campaign_id=campaign.campaign_id,
+            state_snapshot=safe_json_dumps(
+                {
+                    'currentScene': {
+                        'locationId': 'marsh_detour',
+                        'name': 'Marsh Detour',
+                        'activeQuestIds': ['q_missing_caravan'],
+                    },
+                    'locations': [
+                        {
+                            'id': 'bleakmoor_gate',
+                            'name': 'Bleakmoor Gate',
+                            'source': 'campaign_pack',
+                            'packId': 'bleakmoor_intro',
+                        }
+                    ],
+                    'quests': [
+                        {
+                            'id': 'q_missing_caravan',
+                            'title': 'Find the Missing Caravan',
+                            'status': 'active',
+                            'source': 'campaign_pack',
+                            'packId': 'bleakmoor_intro',
+                        }
+                    ],
+                    'campaignPack': {
+                        'packId': 'bleakmoor_intro',
+                        'title': 'The Lanterns of Bleakmoor',
+                        'checkpoints': [
+                            {
+                                'id': 'cp_wreck',
+                                'title': 'Find the caravan wreck',
+                                'rejoinTargetCheckpointId': 'cp_wreck',
+                            }
+                        ],
+                        'directorRules': {'offTrackPolicy': 'improvise_and_reconnect'},
+                    },
+                },
+                {},
+            ),
+        )
+        db.session.add(session)
+        db.session.commit()
+
+        payload = json.loads(build_dm_context(world.world_id, campaign.campaign_id, session.session_id))
+
+    progress = payload['campaign_pack_director']['progress']
+    assert progress['offTrack'] is True
+    assert progress['currentLocationId'] == 'marsh_detour'
+    assert progress['rejoinTargetCheckpointId'] == 'cp_wreck'
+
+
+def test_build_dm_context_campaign_pack_director_honors_terminal_checkpoint_state(app):
+    with app.app_context():
+        world = World(name='Branched Pack World', description='world')
+        db.session.add(world)
+        db.session.flush()
+
+        campaign = Campaign(title='Branched Pack Campaign', world_id=world.world_id)
+        db.session.add(campaign)
+        db.session.flush()
+
+        session = Session(
+            campaign_id=campaign.campaign_id,
+            state_snapshot=safe_json_dumps(
+                {
+                    'currentScene': {
+                        'locationId': 'watchtower_ruins',
+                        'name': 'Watchtower Ruins',
+                        'activeQuestIds': ['q_missing_caravan'],
+                    },
+                    'locations': [
+                        {
+                            'id': 'watchtower_ruins',
+                            'name': 'Watchtower Ruins',
+                            'source': 'campaign_pack',
+                            'packId': 'bleakmoor_intro',
+                        }
+                    ],
+                    'quests': [
+                        {
+                            'id': 'q_missing_caravan',
+                            'title': 'Find the Missing Caravan',
+                            'status': 'active',
+                            'source': 'campaign_pack',
+                            'packId': 'bleakmoor_intro',
+                        }
+                    ],
+                    'flags': {
+                        'campaignPackActiveCheckpointId': 'cp_gate',
+                        'campaignPackCompletedCheckpointIds': ['cp_gate'],
+                        'campaignPackSkippedCheckpointIds': ['cp_gate'],
+                        'campaignPackFailedCheckpointIds': ['cp_old_road'],
+                    },
+                    'campaignPack': {
+                        'packId': 'bleakmoor_intro',
+                        'title': 'The Lanterns of Bleakmoor',
+                        'activeCheckpointId': 'cp_gate',
+                        'completedCheckpointIds': ['cp_gate'],
+                        'skippedCheckpointIds': ['cp_gate'],
+                        'failedCheckpointIds': ['cp_old_road'],
+                        'directorRules': {'checkpointStyle': 'soft'},
+                        'checkpoints': [
+                            {'id': 'cp_gate', 'title': 'Question the gate captain'},
+                            {'id': 'cp_chapel', 'title': 'Search the chapel', 'optional': True},
+                            {'id': 'cp_old_road', 'title': 'Find the old road'},
+                            {
+                                'id': 'cp_watchtower',
+                                'title': 'Enter the old watchtower',
+                                'locationIds': ['watchtower_ruins'],
+                                'questIds': ['q_missing_caravan'],
+                                'prerequisiteCheckpointIds': ['cp_gate'],
+                                'directorRules': {'checkpointStyle': 'firm_checkpoint'},
+                            },
+                        ],
+                        'catalog': {
+                            'locations': [
+                                {
+                                    'id': 'watchtower_ruins',
+                                    'name': 'Watchtower Ruins',
+                                    'source': 'campaign_pack',
+                                    'packId': 'bleakmoor_intro',
+                                }
+                            ],
+                            'quests': [
+                                {
+                                    'id': 'q_missing_caravan',
+                                    'title': 'Find the Missing Caravan',
+                                    'status': 'active',
+                                    'source': 'campaign_pack',
+                                    'packId': 'bleakmoor_intro',
+                                }
+                            ],
+                        },
+                    },
+                },
+                {},
+            ),
+        )
+        db.session.add(session)
+        db.session.commit()
+
+        payload = json.loads(build_dm_context(world.world_id, campaign.campaign_id, session.session_id))
+
+    director = payload['campaign_pack_director']
+    assert director['activeCheckpoint']['id'] == 'cp_watchtower'
+    assert director['policy']['checkpointStyle'] == 'firm_checkpoint'
+    assert director['progress']['completedCheckpointIds'] == ['cp_gate']
+    assert director['progress']['skippedCheckpointIds'] == ['cp_gate']
+    assert director['progress']['failedCheckpointIds'] == ['cp_old_road']
+    assert director['progress']['checkpointStatuses'] == {
+        'cp_gate': 'skipped',
+        'cp_chapel': 'optional',
+        'cp_old_road': 'failed',
+        'cp_watchtower': 'active',
+    }
+
+
 def test_build_dm_context_live_world_state_is_bounded(app):
     with app.app_context():
         world = World(name='Bounded World', description='world')
@@ -610,6 +1021,7 @@ def test_build_dm_context_shape_snapshot(app):
             'memory_snippets': [],
         },
         'live_world_state': {},
+        'campaign_pack_director': {},
         'player_identity_rules': [
             'character_name is the in-world player character identity.',
             'Account/profile names are out-of-character labels and are not characters in the scene.',

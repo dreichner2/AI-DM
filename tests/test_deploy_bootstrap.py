@@ -16,6 +16,7 @@ from aidm_server.deploy_bootstrap import (
     _validate_rate_limits,
     _validate_network_exposure,
     _validate_server_start_allowed,
+    build_parser,
 )
 from aidm_server.database import harden_sqlite_permissions
 
@@ -176,14 +177,21 @@ def test_harden_env_local_permissions_locks_down_file(tmp_path):
     assert '.env.local permissions were tightened to 0600.' in report.warnings
 
 
-def test_validate_network_exposure_warns_for_open_host_without_auth(app):
+def test_validate_network_exposure_rejects_open_host_without_auth(app):
     app.config['AIDM_ENV'] = 'development'
     app.config['AIDM_AUTH_REQUIRED'] = False
     report = BootstrapReport(warnings=[])
 
-    _validate_network_exposure(app, '0.0.0.0', report)
+    with pytest.raises(BootstrapError, match='auth is disabled'):
+        _validate_network_exposure(app, '0.0.0.0', report)
 
-    assert any('auth is disabled' in warning for warning in report.warnings)
+
+def test_deploy_bootstrap_defaults_to_loopback_host(monkeypatch):
+    monkeypatch.delenv('HOST', raising=False)
+
+    args = build_parser().parse_args([])
+
+    assert args.host == '127.0.0.1'
 
 
 def test_validate_network_exposure_rejects_production_wildcard_cors(app):

@@ -213,7 +213,10 @@ def _validate_network_exposure(app, host: str, report: BootstrapReport):
     public_host = host in {'0.0.0.0', '::', ''}
 
     if public_host and not auth_required:
-        report.warnings.append(f'Server host {host or "<all>"} exposes the backend on the network while auth is disabled.')
+        raise BootstrapError(
+            f'Server host {host or "<all>"} exposes the backend on the network while auth is disabled; '
+            'set AIDM_AUTH_REQUIRED=true with API tokens or bind --host to a loopback interface.'
+        )
 
     cors_allowlist = app.config.get('AIDM_CORS_ALLOWLIST', [])
     socket_allowlist = app.config.get('AIDM_SOCKET_CORS_ALLOWLIST', [])
@@ -353,7 +356,7 @@ def bootstrap(check_only: bool, host: str, port: int):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='AI-DM deployment bootstrap')
     parser.add_argument('--check-only', action='store_true', help='Run preflight checks without starting server')
-    parser.add_argument('--host', default=os.getenv('HOST', '0.0.0.0'), help='Host interface for server startup')
+    parser.add_argument('--host', default=os.getenv('HOST', '127.0.0.1'), help='Host interface for server startup')
     parser.add_argument('--port', type=int, default=int(os.getenv('PORT', '5000')), help='Port for server startup')
     return parser
 

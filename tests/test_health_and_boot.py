@@ -135,7 +135,7 @@ def test_admin_ui_is_not_registered_when_disabled(client):
     assert response.status_code == 404
 
 
-def test_admin_ui_can_be_enabled_for_local_development(tmp_path, monkeypatch):
+def test_admin_ui_requires_auth_when_enabled_for_local_development(tmp_path, monkeypatch):
     db_path = tmp_path / 'admin_enabled.db'
     monkeypatch.setenv('AIDM_DATABASE_URI', f'sqlite:///{db_path}')
     monkeypatch.setenv('AIDM_AUTO_CREATE_SCHEMA', 'true')
@@ -154,7 +154,7 @@ def test_admin_ui_can_be_enabled_for_local_development(tmp_path, monkeypatch):
 
     response = app.test_client().get('/admin/')
 
-    assert response.status_code == 200
+    assert response.status_code == 403
 
 
 def test_llm_config_update_requires_json_body(client):

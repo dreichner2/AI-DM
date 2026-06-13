@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 
 from aidm_server.auth import generate_account_token, hash_secret, normalize_username
+from aidm_server.blueprints.accounts import LEGACY_PASSWORD_SETUP_MESSAGE
 from aidm_server.database import db
 from aidm_server.models import Account, AccountWorkspaceMembership, Campaign, Player, Workspace, World
 
@@ -486,6 +487,70 @@ def test_existing_password_account_requires_password_even_with_saved_session(tmp
     assert saved_token_with_password.get_json()['account_token'] == session_token
 
 
+def test_signup_sets_password_for_legacy_passwordless_account_with_original_name(tmp_path, monkeypatch):
+    app = _build_account_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    _create_legacy_passwordless_account(
+        app,
+        username='Maya',
+        first_name='Maya',
+        last_name='Stone',
+    )
+
+    missing_identity_signup = _login(
+        client,
+        username='Maya',
+        first_name='',
+        last_name='',
+        password='new-secret',
+        intent='signup',
+    )
+    assert missing_identity_signup.status_code == 401
+    assert missing_identity_signup.get_json()['error_code'] == 'legacy_password_setup_required'
+    assert missing_identity_signup.get_json()['error'] == LEGACY_PASSWORD_SETUP_MESSAGE
+
+    mismatch_signup = _login(
+        client,
+        username='Maya',
+        first_name='Mara',
+        last_name='Stone',
+        password='new-secret',
+        intent='signup',
+    )
+    assert mismatch_signup.status_code == 401
+    assert mismatch_signup.get_json()['error_code'] == 'legacy_password_setup_required'
+    with app.app_context():
+        account = Account.query.filter_by(username='maya').one()
+        assert account.password_hash is None
+
+    signup = _login(
+        client,
+        username='Maya',
+        first_name='Maya',
+        last_name='Stone',
+        password='new-secret',
+        intent='signup',
+    )
+    assert signup.status_code == 200
+    signup_token = signup.get_json()['account_token']
+    assert signup_token
+
+    with app.app_context():
+        account = Account.query.filter_by(username='maya').one()
+        assert account.password_hash
+
+    password_login = _login(
+        client,
+        username='Maya',
+        first_name='',
+        last_name='',
+        password='new-secret',
+        intent='login',
+    )
+    assert password_login.status_code == 200
+
+
 def test_passwordless_account_requires_saved_session_or_explicit_password_setup(tmp_path, monkeypatch):
     app = _build_account_runtime(tmp_path, monkeypatch)
     client = app.test_client()
@@ -510,7 +575,7 @@ def test_passwordless_account_requires_saved_session_or_explicit_password_setup(
     )
     assert stale_login.status_code == 401
     assert stale_login.get_json()['error_code'] == 'legacy_password_setup_required'
-    assert stale_login.get_json()['error'] == 'Passwords are required now. Please set one now.'
+    assert stale_login.get_json()['error'] == LEGACY_PASSWORD_SETUP_MESSAGE
 
     saved_token_without_password = client.post(
         '/api/accounts/login',
@@ -642,10 +707,41 @@ def test_legacy_claim_sets_password_once_for_passwordless_account(tmp_path, monk
     )
     assert mismatch_claim.status_code == 401
 
+    missing_identity_claim = client.post(
+        '/api/accounts/login',
+        json={
+            'username': 'Maya',
+            'password': 'new-secret',
+            'legacy_claim': True,
+        },
+    )
+    assert missing_identity_claim.status_code == 401
+    assert missing_identity_claim.get_json()['error_code'] == 'legacy_password_setup_required'
+    with app.app_context():
+        account = Account.query.filter_by(username='maya').one()
+        assert account.password_hash is None
+
+    partial_identity_claim = client.post(
+        '/api/accounts/login',
+        json={
+            'username': 'Maya',
+            'first_name': 'Maya',
+            'password': 'new-secret',
+            'legacy_claim': True,
+        },
+    )
+    assert partial_identity_claim.status_code == 401
+    assert partial_identity_claim.get_json()['error_code'] == 'legacy_password_setup_required'
+    with app.app_context():
+        account = Account.query.filter_by(username='maya').one()
+        assert account.password_hash is None
+
     claim = client.post(
         '/api/accounts/login',
         json={
             'username': 'Maya',
+            'first_name': 'Maya',
+            'last_name': 'Stone',
             'password': 'new-secret',
             'legacy_claim': True,
         },

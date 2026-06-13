@@ -26,6 +26,8 @@ def test_dm_stream_request_snapshot():
     assert PROMPT_TEMPLATE_VERSION == 'v2'
     assert request.system_message == DM_SYSTEM_MESSAGE
     assert 'brief character color' in request.system_message
+    assert 'campaign_pack_director' in request.system_message
+    assert 'mainQuestGeneration is "pack_only"' in request.system_message
     assert 'Do not make a player character choose goals' in request.system_message
     assert 'exact d20 modifier' in request.system_message
     assert request.prompt == (

@@ -29,6 +29,8 @@ import {
 } from 'lucide-react'
 import { StatusDot, ThinIcon } from './AppChrome'
 import { CampaignRail, type CampaignCard, type SessionCard } from './CampaignRail'
+import { CampaignPackImportDialog } from './CampaignPackImportDialog'
+import type { CampaignPackControlAction } from './CampaignPackPanel'
 import { ClassSelector } from './ClassSelector'
 import {
   InspectorPanel,
@@ -68,6 +70,7 @@ import {
   turnStatusAllowsNextSend,
   worldStateFromSnapshot,
 } from './gameSelectors'
+import { subscribeToMediaQueryChange } from './mediaQuery'
 import { profileIconSrcForCharacter } from './profileIcons'
 import { RaceSelector } from './RaceSelector'
 import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
@@ -432,6 +435,8 @@ function App() {
     useState<CampaignArchiveDialogState>(null)
   const [sessionArchiveDialog, setSessionArchiveDialog] =
     useState<SessionArchiveDialogState>(null)
+  const [campaignPackImportOpen, setCampaignPackImportOpen] = useState(false)
+  const [campaignPackControlPending, setCampaignPackControlPending] = useState<string | null>(null)
   const [campaignChooserOpen, setCampaignChooserOpen] = useState(false)
   const [campaignChooserDismissedKey, setCampaignChooserDismissedKey] = useState('')
   const [characterJoinDialogOpen, setCharacterJoinDialogOpen] = useState(false)
@@ -518,8 +523,7 @@ function App() {
     }
 
     syncMobileViewport()
-    mediaQuery.addEventListener('change', syncMobileViewport)
-    return () => mediaQuery.removeEventListener('change', syncMobileViewport)
+    return subscribeToMediaQueryChange(mediaQuery, syncMobileViewport)
   }, [])
 
   const auth = runtimeAccount?.requiresPasswordSetup ? '' : authToken.trim()
@@ -1113,6 +1117,93 @@ function App() {
     setInspectorTab,
     pushError,
   })
+
+  const openCampaignPackImportDialog = useCallback(() => {
+    rememberDialogTrigger()
+    setCampaignPackImportOpen(true)
+  }, [rememberDialogTrigger])
+
+  const closeCampaignPackImportDialog = useCallback(() => {
+    setCampaignPackImportOpen(false)
+  }, [])
+
+  const handleCampaignPackImported = useCallback(
+    async (campaignId: number, sessionId: number) => {
+      setCampaignPackImportOpen(false)
+      setSelectedSessionId(null)
+      setLogEntries([])
+      setSessionState(null)
+      setOptimisticEntries([])
+      setStreamingTurn(null)
+      setMainTab('turns')
+      setInspectorTab('map')
+      await refreshRoot()
+      setSelectedCampaignId(campaignId)
+      await refreshCampaignWorkspace(campaignId)
+      setSelectedSessionId(sessionId)
+      await loadSessionData(sessionId)
+    },
+    [
+      loadSessionData,
+      refreshCampaignWorkspace,
+      refreshRoot,
+      setInspectorTab,
+      setLogEntries,
+      setMainTab,
+      setOptimisticEntries,
+      setSelectedCampaignId,
+      setSelectedSessionId,
+      setSessionState,
+      setStreamingTurn,
+    ],
+  )
+
+  const controlCampaignPackProgress = useCallback(
+    async (
+      action: CampaignPackControlAction,
+      checkpointId?: string | null,
+      reason?: string,
+    ) => {
+      if (!activeSessionId) {
+        pushError('validation', 'Choose a campaign-pack session before changing checkpoints.')
+        return
+      }
+      setCampaignPackControlPending(action)
+      try {
+        await apiFetch(
+          baseUrl,
+          `/api/sessions/${activeSessionId}/campaign-pack/progress`,
+          auth,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              action,
+              checkpointId: checkpointId || undefined,
+              reason,
+            }),
+          },
+        )
+        await loadSessionData(activeSessionId)
+        if (selectedCampaignId) {
+          await refreshCampaignWorkspace(selectedCampaignId)
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        pushError('persistence', `Campaign pack checkpoint update failed: ${message}`)
+      } finally {
+        setCampaignPackControlPending(null)
+      }
+    },
+    [
+      activeSessionId,
+      auth,
+      baseUrl,
+      loadSessionData,
+      pushError,
+      refreshCampaignWorkspace,
+      selectedCampaignId,
+    ],
+  )
 
   const loadArchivedCampaigns = useCallback(async () => {
     setCampaignArchiveDialog((current) => ({
@@ -1743,6 +1834,10 @@ function App() {
       closeSessionArchiveDialog()
       return
     }
+    if (campaignPackImportOpen) {
+      closeCampaignPackImportDialog()
+      return
+    }
     if (campaignChooserOpen) {
       closeCampaignChooserDialog()
       return
@@ -1783,8 +1878,10 @@ function App() {
     closeWorldDeleteDialog,
     closeCampaignArchiveDialog,
     closeSessionArchiveDialog,
+    closeCampaignPackImportDialog,
     closeCampaignChooserDialog,
     campaignArchiveDialog,
+    campaignPackImportOpen,
     campaignChooserOpen,
     characterJoinDialogOpen,
     createCampaignOpen,
@@ -1817,25 +1914,27 @@ function App() {
           ? 'campaign-archive'
           : sessionArchiveDialog
             ? 'session-archive'
-            : campaignChooserOpen
-              ? 'campaign-chooser'
-              : characterJoinDialogOpen
-                ? 'character-join'
-                : playerDeleteDialog
-                  ? 'player-delete'
-                  : playerEditDialog
-                    ? `player-edit-${playerEditDialog.mode}`
-                    : savedWorkspaceDeleteDialog
-                      ? 'saved-workspace-delete'
-                      : runtimeSettingsOpen
-                        ? 'runtime-settings'
-                        : shareSessionUrl
-                          ? 'share-session'
-                          : profileSettingsOpen
-                            ? 'profile-settings'
-                            : createCampaignOpen
-                              ? 'create-campaign'
-                              : null
+            : campaignPackImportOpen
+              ? 'campaign-pack-import'
+              : campaignChooserOpen
+                ? 'campaign-chooser'
+                : characterJoinDialogOpen
+                  ? 'character-join'
+                  : playerDeleteDialog
+                    ? 'player-delete'
+                    : playerEditDialog
+                      ? `player-edit-${playerEditDialog.mode}`
+                      : savedWorkspaceDeleteDialog
+                        ? 'saved-workspace-delete'
+                        : runtimeSettingsOpen
+                          ? 'runtime-settings'
+                          : shareSessionUrl
+                            ? 'share-session'
+                            : profileSettingsOpen
+                              ? 'profile-settings'
+                              : createCampaignOpen
+                                ? 'create-campaign'
+                                : null
   const modalOpen = Boolean(activeModalKey)
   const runtimeSettingsIsAuthPrompt = runtimeSettingsMode === 'auth'
   const runtimeSettingsIsAccountStep = runtimeSettingsIsAuthPrompt && runtimeAuthStep === 'account'
@@ -1862,10 +1961,10 @@ function App() {
           ? 'Enter the table name and password.'
           : 'Enter the table token for the table you want to join.'
     : runtimeSettingsIsAccountStep
-      ? runtimeAuthIntent === 'signup'
-        ? 'Create your player account first. Password is required.'
-        : legacyPasswordSetupRequired
-          ? LEGACY_PASSWORD_SETUP_MESSAGE
+      ? legacyPasswordSetupRequired
+        ? LEGACY_PASSWORD_SETUP_MESSAGE
+        : runtimeAuthIntent === 'signup'
+          ? 'Create your player account first. Password is required.'
           : 'Log in with your username. Use your password if one is set.'
       : 'Leave Backend URL blank when the frontend and backend share one origin.'
 
@@ -2823,6 +2922,7 @@ function App() {
         onArchiveCampaign={openCampaignArchiveManager}
         onDeleteCampaign={openDeleteCampaignDialog}
         onCreateCampaign={openCreateCampaignDialog}
+        onImportCampaignPack={openCampaignPackImportDialog}
         onManageWorlds={openWorldManagerDialog}
         onRenameSession={openRenameSessionDialog}
         onArchiveSession={openSessionArchiveManager}
@@ -3021,6 +3121,9 @@ function App() {
         segmentManagementForm={segmentManagementForm}
         setSegmentManagementForm={setSegmentManagementForm}
         createSegment={createSegment}
+        campaignPackSnapshot={turnControlSnapshot}
+        campaignPackControlPending={campaignPackControlPending}
+        controlCampaignPackProgress={controlCampaignPackProgress}
       />
 
       {diceRoll ? (
@@ -3127,8 +3230,8 @@ function App() {
                       aria-pressed={runtimeAuthIntent === 'signup'}
                       onClick={() => {
                         setRuntimeAuthIntent('signup')
-                        setLegacyPasswordSetupRequired(false)
-                        setRuntimeSettingsError('')
+                        setLegacyPasswordSetupRequired(legacyPasswordSetupRequired)
+                        setRuntimeSettingsError(legacyPasswordSetupRequired ? LEGACY_PASSWORD_SETUP_MESSAGE : '')
                       }}
                     >
                       Sign Up
@@ -3988,6 +4091,47 @@ function App() {
                 </button>
               </footer>
             </div>
+          </section>
+        </div>
+      ) : null}
+
+      {campaignPackImportOpen ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              closeCampaignPackImportDialog()
+            }
+          }}
+        >
+          <section
+            ref={modalDialogRef}
+            className="campaign-dialog campaign-pack-import-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="campaign-pack-import-title"
+          >
+            <header>
+              <div>
+                <span>Campaign Pack</span>
+                <h2 id="campaign-pack-import-title">Import Campaign Pack</h2>
+              </div>
+              <button
+                type="button"
+                aria-label="Close campaign pack import"
+                onClick={closeCampaignPackImportDialog}
+              >
+                <X size={18} />
+              </button>
+            </header>
+            <CampaignPackImportDialog
+              auth={auth}
+              baseUrl={baseUrl}
+              onClose={closeCampaignPackImportDialog}
+              onImported={handleCampaignPackImported}
+              pushError={pushError}
+            />
           </section>
         </div>
       ) : null}

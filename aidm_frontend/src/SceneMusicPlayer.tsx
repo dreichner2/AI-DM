@@ -6,6 +6,7 @@ import {
   type SceneMusicTag,
   type SceneMusicTrack,
 } from './musicLibrary'
+import { subscribeToMediaQueryChange } from './mediaQuery'
 
 type MusicFilter = SceneMusicTag | 'all'
 
@@ -271,8 +272,7 @@ export function SceneMusicPlayer({
     const mediaQuery = window.matchMedia(MOBILE_MUSIC_LAYOUT_QUERY)
     const handleLayoutChange = () => setMobileStaticLayout(mediaQuery.matches)
     handleLayoutChange()
-    mediaQuery.addEventListener('change', handleLayoutChange)
-    return () => mediaQuery.removeEventListener('change', handleLayoutChange)
+    return subscribeToMediaQueryChange(mediaQuery, handleLayoutChange)
   }, [])
 
   useEffect(() => {

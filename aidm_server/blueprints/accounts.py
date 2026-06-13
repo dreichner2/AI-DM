@@ -67,7 +67,10 @@ from aidm_server.validation import optional_text as _optional_text, parse_json_b
 
 logger = logging.getLogger(__name__)
 accounts_bp = Blueprint('accounts', __name__)
-LEGACY_PASSWORD_SETUP_MESSAGE = 'Passwords are required now. Please set one now.'
+LEGACY_PASSWORD_SETUP_MESSAGE = (
+    'Legacy account found. Use Sign Up with this username, the exact first and last name originally used, '
+    'and a new password.'
+)
 WORKSPACE_NAME_TAKEN_MESSAGE = 'table/ workspace name already in use'
 
 
@@ -193,8 +196,6 @@ def _legacy_claim_identity_matches(account: Account, first_name: str | None, las
     existing_last = str(account.last_name or '').strip().casefold()
     supplied_first = str(first_name or '').strip().casefold()
     supplied_last = str(last_name or '').strip().casefold()
-    if not supplied_first and not supplied_last:
-        return True
     return bool(existing_first and existing_last and supplied_first and supplied_last) and (
         existing_first,
         existing_last,
@@ -410,18 +411,18 @@ def login_or_create_account():
             db.session.flush()
             created = True
         else:
-            if account_intent == 'signup':
+            account_has_password = bool(account.password_hash)
+            if account_intent == 'signup' and account_has_password:
                 return error_response('username_taken', 'Username is already taken. Please sign in.', 409)
             token_is_valid_for_account = bool(token_account and token_account.account_id == account.account_id)
             password_is_valid = password_matches(account, password)
-            account_has_password = bool(account.password_hash)
             if not account_has_password:
+                legacy_identity_claim_allowed = (
+                    _legacy_claim_requested(payload) or account_intent == 'signup'
+                ) and _legacy_claim_identity_matches(account, first_name, last_name)
                 password_setup_allowed = bool(password) and (
                     token_is_valid_for_account
-                    or (
-                        _legacy_claim_requested(payload)
-                        and _legacy_claim_identity_matches(account, first_name, last_name)
-                    )
+                    or legacy_identity_claim_allowed
                 )
                 if password_setup_allowed:
                     if not token_is_valid_for_account:

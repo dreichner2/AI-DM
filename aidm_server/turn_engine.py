@@ -37,6 +37,7 @@ from aidm_server.models import Campaign, CampaignSegment, DmTurn, Player, Sessio
 from aidm_server.rules import RuleHint, classify_player_action
 from aidm_server.segment_triggers import evaluate_segment_trigger, parse_trigger_spec
 from aidm_server.segment_state import build_segment_state_payload
+from aidm_server.services.campaign_pack_progress import update_campaign_pack_progress
 from aidm_server.socket_contracts import (
     dm_chunk_payload,
     dm_response_end_payload,
@@ -149,6 +150,7 @@ def _state_application_event_details(
     state_log: dict,
     applied_changes: list[dict],
     state_applied: bool | None = None,
+    campaign_pack_progress_changed: bool = False,
 ) -> dict:
     details = {
         'stage': stage,
@@ -161,6 +163,9 @@ def _state_application_event_details(
     if state_applied is not None:
         details['state_applied'] = state_applied
     details.update(_snapshot_refresh_flags_from_applied_changes(applied_changes))
+    if campaign_pack_progress_changed:
+        details['campaign_pack_progress_changed'] = True
+        details['snapshot_changed'] = True
     return details
 
 
@@ -1767,6 +1772,11 @@ class TurnEngine:
                 session_id=command.session_id,
                 segments_to_activate=segments_to_activate,
             )
+            update_campaign_pack_progress(
+                session_id=command.session_id,
+                campaign_id=command.campaign_id,
+                triggered_segments=triggered_segments,
+            )
             commit_with_retry(label='segment evaluation')
             if triggered_segments:
                 telemetry_metric('socket.segment_triggered_total', len(triggered_segments))
@@ -2134,6 +2144,7 @@ class TurnEngine:
             immediate_state_summary: dict = {}
             state_log: dict = {}
             post_pipeline_result: dict = {}
+            campaign_pack_progress_changed = False
             if turn_obj and dm_succeeded:
                 try:
                     player_obj = db.session.get(Player, turn.player_id) if turn.player_id else None
@@ -2155,6 +2166,12 @@ class TurnEngine:
                     )
                     immediate_state_summary = post_pipeline_result.get('legacyImmediateSummary') or {}
                     state_log = post_pipeline_result.get('stateLog') or {}
+                    progress_result = update_campaign_pack_progress(
+                        session_id=turn.session_id,
+                        campaign_id=campaign.campaign_id,
+                        triggered_segments=triggered_segments,
+                    )
+                    campaign_pack_progress_changed = bool(progress_result.changed)
                     commit_with_retry(label='post-DM state pipeline')
                 except Exception as exc:
                     db.session.rollback()
@@ -2222,6 +2239,7 @@ class TurnEngine:
                             character_state_changes_applied=character_state_changes,
                             state_log=state_log,
                             applied_changes=applied_changes_for_status,
+                            campaign_pack_progress_changed=campaign_pack_progress_changed,
                         ),
                     )
                     self._emit_turn_status(
@@ -2237,6 +2255,7 @@ class TurnEngine:
                             state_log=state_log,
                             applied_changes=applied_changes_for_status,
                             state_applied=True,
+                            campaign_pack_progress_changed=campaign_pack_progress_changed,
                         ),
                     )
 

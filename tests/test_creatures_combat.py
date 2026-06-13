@@ -139,6 +139,38 @@ def test_player_combat_participant_applies_medium_armor_dex_cap_and_shield():
     assert participant['armorClass'] == 18
 
 
+def test_player_combat_participant_ignores_non_finite_shield_metadata():
+    actor = _player()
+    actor['stats'] = {'strength': 15, 'dexterity': 14}
+    actor['inventory'] = {
+        'items': json.loads(
+            '[{"name":"Shield","type":"armor","subtype":"shield","equipped":true,'
+            '"slot":"off_hand","metadata":{"acBonus":1e10000}}]'
+        ),
+    }
+
+    participant = player_combat_participant(actor)
+
+    assert participant['armorClass'] == 14
+    assert participant['armorClassBreakdown']['shieldBonus'] == 2
+
+
+def test_player_combat_participant_ignores_non_finite_body_armor_fields():
+    actor = _player()
+    actor['stats'] = {'strength': 15, 'dexterity': 14}
+    actor['inventory'] = {
+        'items': json.loads(
+            '[{"name":"Homebrew Armor","type":"armor","equipped":true,'
+            '"slot":"body_armor","baseAc":1e10000}]'
+        ),
+    }
+
+    participant = player_combat_participant(actor)
+
+    assert participant['armorClass'] == 13
+    assert participant['armorClassBreakdown']['armorBase'] == 11
+
+
 def test_player_combat_participant_applies_heavy_armor_without_dex_bonus():
     actor = _player()
     actor['stats'] = {'strength': 15, 'dexterity': 18}
@@ -947,6 +979,33 @@ def test_schema_aliases_and_survival_rules_drive_planner_behavior():
     assert creature['behavior']['survivalRules']['surrenderBelowHpPercent'] == 15
     assert plan['intents'][0]['intentType'] == 'call_reinforcements'
     assert any(candidate['targetId'] == 'player_1' for candidate in plan['intentCandidates']['schematic_bandit_1'])
+
+
+def test_creature_schema_rejects_unbounded_damage_dice():
+    creature = normalize_creature_definition(
+        {
+            'id': 'dice_bomber',
+            'name': 'Dice Bomber',
+            'abilities': [
+                {
+                    'id': 'bad_strike',
+                    'name': 'Bad Strike',
+                    'damage': {'dice': '99999999999999999999999999999999999999d6', 'type': 'slashing'},
+                },
+                {
+                    'id': 'safe_strike',
+                    'name': 'Safe Strike',
+                    'damageDice': '2d6 + 3',
+                    'damageType': 'fire',
+                },
+            ],
+        },
+        source='user_custom',
+    )
+
+    bad, safe = creature['abilities']
+    assert 'damage' not in bad
+    assert safe['damage'] == {'dice': '2d6+3', 'type': 'fire'}
 
 
 def test_non_boss_enemy_uses_battlefield_hazard_when_objective_depends_on_terrain():
@@ -2221,6 +2280,145 @@ def test_creature_api_endpoints(client, app):
     assert composed['combat']['flags']['resolverMethod'] == 'encounter_composed'
     assert composed['combat']['flags']['enemyCount'] == 3
     assert len([participant for participant in composed['combat']['participants'] if participant['team'] == 'enemy']) == 3
+
+
+def test_combat_start_uses_campaign_pack_encounter_enemy_groups(client, app):
+    ids = seed_world_campaign_player_session(app)
+    lantern_wraith = {
+        **core_creature('wolf'),
+        'id': 'lantern_wraith',
+        'name': 'Lantern Wraith',
+        'source': 'campaign_pack',
+        'packId': 'bleakmoor_intro',
+        'creatureType': 'undead',
+        'challengeTier': 'hard',
+        'visualTags': ['campaign_pack', 'wraith'],
+    }
+    with app.app_context():
+        session = db.session.get(Session, ids['session_id'])
+        session.state_snapshot = safe_json_dumps(
+            {
+                'currentScene': {'locationId': 'watchtower_ruins', 'name': 'Watchtower Ruins'},
+                'flags': {'campaignPackActiveCheckpointId': 'cp_watchtower'},
+                'campaignPack': {
+                    'packId': 'bleakmoor_intro',
+                    'title': 'The Lanterns of Bleakmoor',
+                    'checkpoints': [
+                        {
+                            'id': 'cp_watchtower',
+                            'title': 'Confront the lantern wraith',
+                            'encounterIds': ['enc_lantern_wraith'],
+                        }
+                    ],
+                    'catalog': {
+                        'enemies': [lantern_wraith],
+                        'encounters': [
+                            {
+                                'id': 'enc_lantern_wraith',
+                                'title': 'The Lantern Wraith',
+                                'checkpointIds': ['cp_watchtower'],
+                                'enemyIds': ['lantern_wraith'],
+                            }
+                        ],
+                    },
+                },
+            },
+            {},
+        )
+        db.session.commit()
+
+    response = client.post(
+        f"/api/sessions/{ids['session_id']}/combat/start",
+        json={'encounterId': 'enc_lantern_wraith'},
+    )
+
+    assert response.status_code == 200
+    combat = response.get_json()['combat']
+    enemy = next(participant for participant in combat['participants'] if participant['team'] == 'enemy')
+    assert enemy['name'] == 'Lantern Wraith'
+    assert combat['flags']['campaignPackEncounterId'] == 'enc_lantern_wraith'
+    assert combat['flags']['campaignPackId'] == 'bleakmoor_intro'
+    assert combat['flags']['resolverMethod'] == 'encounter_defined'
+
+
+def test_campaign_pack_combat_end_advances_encounter_checkpoint(client, app):
+    ids = seed_world_campaign_player_session(app)
+    lantern_wraith = {
+        **core_creature('wolf'),
+        'id': 'lantern_wraith',
+        'name': 'Lantern Wraith',
+        'source': 'campaign_pack',
+        'packId': 'bleakmoor_intro',
+        'creatureType': 'undead',
+        'challengeTier': 'hard',
+        'visualTags': ['campaign_pack', 'wraith'],
+    }
+    with app.app_context():
+        session = db.session.get(Session, ids['session_id'])
+        session.state_snapshot = safe_json_dumps(
+            {
+                'currentScene': {'locationId': 'watchtower_ruins', 'name': 'Watchtower Ruins'},
+                'flags': {'campaignPackActiveCheckpointId': 'cp_watchtower'},
+                'campaignPack': {
+                    'packId': 'bleakmoor_intro',
+                    'title': 'The Lanterns of Bleakmoor',
+                    'checkpoints': [
+                        {
+                            'id': 'cp_watchtower',
+                            'title': 'Confront the lantern wraith',
+                            'encounterIds': ['enc_lantern_wraith'],
+                            'nextCheckpointIds': ['cp_aftermath'],
+                        },
+                        {'id': 'cp_aftermath', 'title': 'Aftermath'},
+                    ],
+                    'catalog': {
+                        'enemies': [lantern_wraith],
+                        'encounters': [
+                            {
+                                'id': 'enc_lantern_wraith',
+                                'title': 'The Lantern Wraith',
+                                'checkpointIds': ['cp_watchtower'],
+                                'enemyIds': ['lantern_wraith'],
+                                'completion': {'anyOf': ['defeat', 'bargain']},
+                            }
+                        ],
+                    },
+                },
+            },
+            {},
+        )
+        db.session.commit()
+
+    start = client.post(
+        f"/api/sessions/{ids['session_id']}/combat/start",
+        json={'encounterId': 'enc_lantern_wraith'},
+    ).get_json()
+    enemy_id = next(participant['id'] for participant in start['combat']['participants'] if participant['team'] == 'enemy')
+    update = client.post(
+        f"/api/sessions/{ids['session_id']}/combat/apply-state-changes",
+        json={
+            'changes': [
+                {
+                    'id': 'defeat_lantern_wraith',
+                    'type': 'combat.participant.update',
+                    'participantId': enemy_id,
+                    'hp': {'current': 0, 'max': 11},
+                }
+            ]
+        },
+    )
+    end = client.post(
+        f"/api/sessions/{ids['session_id']}/combat/check-end",
+        json={'apply': True},
+    )
+
+    assert update.status_code == 200
+    assert end.status_code == 200
+    payload = end.get_json()
+    assert payload['endReason'] == 'all_enemies_defeated'
+    assert payload['campaignPackProgress']['reason'] == 'checkpoint_encounter_completed'
+    assert payload['campaignPackProgress']['completed_checkpoint_ids'] == ['cp_watchtower']
+    assert payload['campaignPackProgress']['active_checkpoint_id'] == 'cp_aftermath'
 
 
 def test_creature_deep_api_endpoints_for_pack_evolution_morale_and_debug(client, app):

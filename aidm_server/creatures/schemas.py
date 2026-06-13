@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from aidm_server.canon_text import int_or_default
+from aidm_server.damage_dice import normalize_damage_dice_expression
 from aidm_server.game_state.models import stable_slug
 
 
@@ -287,11 +288,15 @@ def normalize_ability(value: Any, *, creature_id: str, index: int) -> dict[str, 
     dice = _text(damage.get('dice') or value.get('damageDice') or value.get('damage_dice'))
     damage_type = _enum(damage.get('type') or value.get('damageType') or value.get('damage_type'), DAMAGE_TYPES, 'slashing')
     if dice:
-        ability['damage'] = {'dice': dice[:40], 'type': damage_type}
+        normalized_dice = normalize_damage_dice_expression(dice)
+        if normalized_dice:
+            ability['damage'] = {'dice': normalized_dice, 'type': damage_type}
     healing = value.get('healing') if isinstance(value.get('healing'), dict) else {}
     healing_dice = _text(healing.get('dice') or value.get('healingDice') or value.get('healing_dice'))
     if healing_dice:
-        ability['healing'] = {'dice': healing_dice[:40]}
+        normalized_healing_dice = normalize_damage_dice_expression(healing_dice)
+        if normalized_healing_dice:
+            ability['healing'] = {'dice': normalized_healing_dice}
     save = value.get('save') if isinstance(value.get('save'), dict) else {}
     if save:
         ability['save'] = {

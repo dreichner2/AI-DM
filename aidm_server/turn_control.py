@@ -573,6 +573,15 @@ def conduct_turn_submission(
         return True, None, turn_control, False, {'decision': 'allow_admin'}
     if kind == 'roll' and has_pending_roll:
         return True, None, turn_control, False, {'decision': 'allow_pending_roll'}
+    if turn_control['mode'] == 'structured':
+        active_player_id = turn_control.get('activePlayerId')
+        if active_player_id and active_player_id != player_id:
+            return _queue_result(
+                session_obj,
+                player_id=player_id,
+                action_intent=action_intent,
+                has_pending_roll=has_pending_roll,
+            )
 
     active_ids = _positive_int_list(active_player_ids or [])
     if player_id and player_id not in active_ids:

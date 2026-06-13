@@ -12,7 +12,7 @@ from aidm_server.game_state.equipment import (
     is_equippable,
 )
 from aidm_server.game_state.action_types import PRE_DM_ACTION_TYPES
-from aidm_server.game_state.change_types import COMBAT_STATE_CHANGE_TYPES, CURRENCY_TYPES, STATE_CHANGE_TYPES, WORLD_STATE_CHANGE_TYPES
+from aidm_server.game_state.change_types import COMBAT_STATE_CHANGE_TYPES, CURRENCY_TYPES, PHASE_1_STATE_CHANGE_TYPES, STATE_CHANGE_TYPES, WORLD_STATE_CHANGE_TYPES
 from aidm_server.game_state.models import (
     actor_currency,
     actor_items,
@@ -33,6 +33,15 @@ from aidm_server.spellbook import normalize_spellbook, spell_from_change
 CONSUMABLE_TYPES = {'consumable', 'potion', 'food'}
 UNRESOLVED_TARGET_LABELS = {'', 'target', 'someone', 'somebody', 'an npc', 'a npc', 'npc'}
 GENERIC_EXTRACTED_REASON = 'Extracted from DM response.'
+TRANSFER_STATE_CHANGE_TYPES = {'inventory.transfer', 'currency.transfer'}
+PLAYER_OWNED_STATE_CHANGE_TYPES = PHASE_1_STATE_CHANGE_TYPES - TRANSFER_STATE_CHANGE_TYPES
+PLAYER_COMBAT_PARTICIPANT_CHANGE_TYPES = {
+    'combat.participant.update',
+    'combat.move',
+    'combat.condition.add',
+    'combat.condition.remove',
+    'combat.ability.mark_used',
+}
 SCENE_TYPES = {'social', 'exploration', 'travel', 'combat', 'dungeon', 'rest', 'mystery', 'shopping', 'dialogue'}
 SCENE_MOODS = {'calm', 'tense', 'eerie', 'heroic', 'sad', 'mysterious', 'dangerous'}
 COMBAT_STATES = {'none', 'pending', 'active', 'resolved'}
@@ -72,6 +81,34 @@ def _action_value(action: dict[str, Any], camel_key: str, snake_key: str | None 
     if snake_key and snake_key in action:
         return action.get(snake_key)
     return default
+
+
+def _actor_ref(value: Any) -> str:
+    return str(value or '').strip()
+
+
+def _actor_matches_expected(actor_id: Any, expected_actor_id: str | None) -> bool:
+    expected = _actor_ref(expected_actor_id)
+    if not expected:
+        return True
+    actor = _actor_ref(actor_id)
+    return bool(actor and actor == expected)
+
+
+def _declared_action_actor_error(action: dict[str, Any], action_type: str, expected_actor_id: str | None) -> str | None:
+    expected = _actor_ref(expected_actor_id)
+    if not expected:
+        return None
+
+    actor_id = _action_value(action, 'actorId', 'actor_id')
+    if not _actor_matches_expected(actor_id, expected):
+        return 'Declared action actor does not match the current player.'
+
+    if action_type in TRANSFER_STATE_CHANGE_TYPES:
+        source_actor_id = _action_value(action, 'fromActorId', 'from_actor_id') or actor_id
+        if not _actor_matches_expected(source_actor_id, expected):
+            return 'Transfer source actor does not match the current player.'
+    return None
 
 
 def _target_actor_from_payload(state: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
@@ -574,6 +611,7 @@ def validate_declared_actions(
     current_turn: int,
     recent_context: list[str] | None = None,
     selected_item_ids: dict[str, str] | None = None,
+    expected_actor_id: str | None = None,
 ) -> dict[str, Any]:
     selected_item_ids = selected_item_ids or {}
     validated: list[dict[str, Any]] = []
@@ -584,6 +622,10 @@ def validate_declared_actions(
         action_type = str(action.get('type') or '').strip()
         if action_type not in PRE_DM_ACTION_TYPES:
             validated.append(_invalid(action, f"Unsupported declared action type '{action_type}'."))
+            continue
+        actor_error = _declared_action_actor_error(action, action_type, expected_actor_id)
+        if actor_error:
+            validated.append(_invalid(action, actor_error))
             continue
         selected_item_id = selected_item_ids.get(str(action.get('id')))
         if action_type == 'inventory.consume':
@@ -902,6 +944,519 @@ def _find_npc(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] |
         record_id=change.get('npcId'),
         name=change.get('name') or change.get('npcName'),
     )
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return _text(value).lower() in {'1', 'true', 'yes', 'y', 'on', 'allow', 'allowed'}
+
+
+def _campaign_pack_policy(state: dict[str, Any]) -> tuple[str | None, dict[str, Any], str | None]:
+    pack = state.get('campaignPack') if isinstance(state.get('campaignPack'), dict) else {}
+    pack_id = _text(pack.get('packId') or pack.get('pack_id'))
+    if not pack_id:
+        return None, {}, None
+    rules = pack.get('directorRules') if isinstance(pack.get('directorRules'), dict) else {}
+    flags = state.get('flags') if isinstance(state.get('flags'), dict) else {}
+    active_checkpoint_id = _text(
+        pack.get('activeCheckpointId')
+        or pack.get('active_checkpoint_id')
+        or pack.get('currentCheckpointId')
+        or pack.get('current_checkpoint_id')
+        or flags.get('campaignPackActiveCheckpointId')
+        or flags.get('activeCheckpointId')
+    )
+    rejoin_target_id = active_checkpoint_id or None
+    checkpoints = pack.get('checkpoints') if isinstance(pack.get('checkpoints'), list) else []
+    for checkpoint in checkpoints:
+        if not isinstance(checkpoint, dict):
+            continue
+        checkpoint_id = _text(
+            checkpoint.get('id')
+            or checkpoint.get('checkpointId')
+            or checkpoint.get('checkpoint_id')
+        )
+        if checkpoint_id and checkpoint_id == active_checkpoint_id:
+            rejoin_target_id = _text(
+                checkpoint.get('rejoinTargetCheckpointId')
+                or checkpoint.get('rejoin_target_checkpoint_id')
+            ) or checkpoint_id
+            break
+    return pack_id, rules, rejoin_target_id
+
+
+def _record_is_campaign_pack(record: dict[str, Any] | None, pack_id: str | None) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if _text(record.get('source')) == 'campaign_pack':
+        return True
+    metadata = record.get('metadata') if isinstance(record.get('metadata'), dict) else {}
+    if _text(metadata.get('source')) == 'campaign_pack':
+        return True
+    return bool(pack_id and _text(record.get('packId') or record.get('pack_id') or metadata.get('packId')) == pack_id)
+
+
+def _campaign_pack_catalog_records(state: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    pack = state.get('campaignPack') if isinstance(state.get('campaignPack'), dict) else {}
+    catalog = pack.get('catalog') if isinstance(pack.get('catalog'), dict) else {}
+    records = catalog.get(key)
+    if not isinstance(records, list):
+        return []
+    return [record for record in records if isinstance(record, dict)]
+
+
+def _pack_catalog_record_for_change(
+    state: dict[str, Any],
+    *,
+    pack_id: str,
+    key: str,
+    change: dict[str, Any],
+) -> dict[str, Any] | None:
+    records = _campaign_pack_catalog_records(state, key)
+    if key == 'locations':
+        return _find_record(
+            records,
+            record_id=change.get('locationId'),
+            name=change.get('name') or change.get('locationName'),
+        )
+    if key == 'quests':
+        return _find_record(records, record_id=change.get('questId'), title=change.get('title') or change.get('name'))
+    if key == 'npcs':
+        return _find_record(
+            records,
+            record_id=change.get('npcId'),
+            name=change.get('name') or change.get('npcName'),
+        )
+    return None
+
+
+def _materialize_pack_catalog_change(
+    change: dict[str, Any],
+    record: dict[str, Any],
+    *,
+    pack_id: str,
+    embedded_key: str,
+    id_key: str,
+    label_key: str,
+) -> dict[str, Any]:
+    updated = deepcopy(change)
+    embedded = deepcopy(record)
+    existing_embedded = updated.get(embedded_key) if isinstance(updated.get(embedded_key), dict) else {}
+    embedded.update(existing_embedded)
+    embedded['source'] = 'campaign_pack'
+    embedded['packId'] = pack_id
+    updated[embedded_key] = embedded
+    updated['source'] = 'campaign_pack'
+    updated['packId'] = pack_id
+    updated.setdefault(id_key, record.get('id'))
+    if label_key and not updated.get(label_key):
+        updated[label_key] = record.get(label_key) or record.get('name') or record.get('title')
+    if embedded_key == 'quest' and not updated.get('title'):
+        updated['title'] = record.get('title') or record.get('name')
+    if embedded_key == 'location' and not updated.get('name'):
+        updated['name'] = record.get('name') or record.get('title')
+    if embedded_key == 'npc' and not updated.get('name'):
+        updated['name'] = record.get('name')
+
+    record_metadata = record.get('metadata') if isinstance(record.get('metadata'), dict) else {}
+    change_metadata = updated.get('metadata') if isinstance(updated.get('metadata'), dict) else {}
+    catalog_metadata = {
+        **record_metadata,
+        **change_metadata,
+        'source': 'campaign_pack',
+        'packId': pack_id,
+        'packContentRole': 'authored',
+        'driftControl': 'materialized_from_catalog',
+    }
+    updated['metadata'] = catalog_metadata
+    embedded_metadata = embedded.get('metadata') if isinstance(embedded.get('metadata'), dict) else {}
+    embedded['metadata'] = {**embedded_metadata, **catalog_metadata}
+
+    if embedded_key == 'quest':
+        record_flags = record.get('flags') if isinstance(record.get('flags'), dict) else {}
+        change_flags = updated.get('flags') if isinstance(updated.get('flags'), dict) else {}
+        if record_flags or change_flags:
+            flags = {**record_flags, **change_flags}
+            updated['flags'] = flags
+            embedded['flags'] = {**(embedded.get('flags') if isinstance(embedded.get('flags'), dict) else {}), **flags}
+
+    return updated
+
+
+def _content_payload(change: dict[str, Any], key: str) -> dict[str, Any]:
+    value = change.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _content_metadata(change: dict[str, Any], key: str) -> dict[str, Any]:
+    payload = _content_payload(change, key)
+    metadata: dict[str, Any] = {}
+    if isinstance(payload.get('metadata'), dict):
+        metadata.update(payload['metadata'])
+    if isinstance(change.get('metadata'), dict):
+        metadata.update(change['metadata'])
+    return metadata
+
+
+def _content_flags(change: dict[str, Any], key: str) -> dict[str, Any]:
+    payload = _content_payload(change, key)
+    flags: dict[str, Any] = {}
+    if isinstance(payload.get('flags'), dict):
+        flags.update(payload['flags'])
+    if isinstance(change.get('flags'), dict):
+        flags.update(change['flags'])
+    return flags
+
+
+def _content_source(change: dict[str, Any], key: str) -> str:
+    payload = _content_payload(change, key)
+    metadata = _content_metadata(change, key)
+    return _text(change.get('source') or payload.get('source') or metadata.get('source'))
+
+
+def _is_pack_override(change: dict[str, Any], key: str) -> bool:
+    source = _content_source(change, key)
+    metadata = _content_metadata(change, key)
+    flags = _content_flags(change, key)
+    return (
+        source in {'campaign_pack', 'dm_override', 'admin_override'}
+        or _truthy(metadata.get('allowPackOverride'))
+        or _truthy(metadata.get('allow_pack_override'))
+        or _truthy(metadata.get('promoteToPackMainline'))
+        or _truthy(metadata.get('promote_to_pack_mainline'))
+        or _truthy(flags.get('dmOverride'))
+        or _truthy(flags.get('dm_override'))
+    )
+
+
+def _set_content_source_and_metadata(
+    change: dict[str, Any],
+    *,
+    key: str,
+    source: str,
+    pack_id: str,
+    role: str,
+    drift_control: str,
+    rejoin_target_id: str | None,
+) -> None:
+    change['source'] = source
+    change['packId'] = pack_id
+    payload = change.get(key)
+    if isinstance(payload, dict):
+        payload['source'] = source
+        payload['packId'] = pack_id
+
+    additions = {
+        'source': source,
+        'packId': pack_id,
+        'packContentRole': role,
+        'driftControl': drift_control,
+    }
+    if rejoin_target_id:
+        additions['rejoinTargetCheckpointId'] = rejoin_target_id
+
+    metadata = change.get('metadata') if isinstance(change.get('metadata'), dict) else {}
+    change['metadata'] = {**metadata, **additions}
+    if isinstance(payload, dict):
+        payload_metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+        payload['metadata'] = {**payload_metadata, **additions}
+
+
+def _set_quest_side_flags(change: dict[str, Any]) -> None:
+    payload = change.get('quest')
+    flags = _content_flags(change, 'quest')
+    flags.update({'sideQuest': True, 'mainQuest': False, 'packSideQuest': True})
+    change['flags'] = flags
+    if isinstance(payload, dict):
+        payload['flags'] = {**(payload.get('flags') if isinstance(payload.get('flags'), dict) else {}), **flags}
+
+    metadata = change.get('metadata') if isinstance(change.get('metadata'), dict) else {}
+    metadata.update({'questType': 'side_quest'})
+    change['metadata'] = metadata
+    if isinstance(payload, dict):
+        payload_metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+        payload['metadata'] = {**payload_metadata, 'questType': 'side_quest'}
+
+
+def _apply_campaign_pack_drift_control(
+    state: dict[str, Any],
+    change: dict[str, Any],
+) -> tuple[str, str | None, dict[str, Any] | None]:
+    pack_id, rules, rejoin_target_id = _campaign_pack_policy(state)
+    if not pack_id:
+        return 'accepted', None, change
+
+    change_type = _text(change.get('type'))
+    if change_type == 'quest.add':
+        existing_quest = _find_quest(state, change)
+        if _record_is_campaign_pack(existing_quest, pack_id):
+            return 'accepted', None, change
+        catalog_quest = _pack_catalog_record_for_change(state, pack_id=pack_id, key='quests', change=change)
+        if catalog_quest:
+            return (
+                'modified',
+                'Campaign pack catalog quest was revealed into visible state.',
+                _materialize_pack_catalog_change(
+                    change,
+                    catalog_quest,
+                    pack_id=pack_id,
+                    embedded_key='quest',
+                    id_key='questId',
+                    label_key='title',
+                ),
+            )
+        if _is_pack_override(change, 'quest'):
+            return 'accepted', None, change
+
+        main_quest_policy = _text(rules.get('mainQuestGeneration') or rules.get('main_quest_generation') or 'allowed_tagged')
+        side_quest_policy = _text(rules.get('sideQuestGeneration') or rules.get('side_quest_generation') or 'allowed_tagged')
+        if main_quest_policy == 'pack_only' and side_quest_policy in {'blocked', 'disabled', 'none', 'pack_only'}:
+            return 'rejected', 'Campaign pack policy blocks new non-pack quests.', None
+
+        updated = deepcopy(change)
+        _set_content_source_and_metadata(
+            updated,
+            key='quest',
+            source='emergent',
+            pack_id=pack_id,
+            role='side_quest' if main_quest_policy == 'pack_only' else 'runtime_quest',
+            drift_control='downgraded_from_mainline' if main_quest_policy == 'pack_only' else 'tagged_emergent_quest',
+            rejoin_target_id=rejoin_target_id,
+        )
+        if main_quest_policy == 'pack_only':
+            _set_quest_side_flags(updated)
+            return 'modified', 'Campaign pack drift control downgraded new quest to emergent side content.', updated
+        return 'modified', 'Campaign pack drift control tagged new quest as emergent content.', updated
+
+    if change_type == 'location.discover':
+        existing_location = _find_location(state, change)
+        if _record_is_campaign_pack(existing_location, pack_id):
+            return 'accepted', None, change
+        catalog_location = _pack_catalog_record_for_change(state, pack_id=pack_id, key='locations', change=change)
+        if catalog_location:
+            return (
+                'modified',
+                'Campaign pack catalog location was revealed into visible state.',
+                _materialize_pack_catalog_change(
+                    change,
+                    catalog_location,
+                    pack_id=pack_id,
+                    embedded_key='location',
+                    id_key='locationId',
+                    label_key='name',
+                ),
+            )
+        if _is_pack_override(change, 'location'):
+            return 'accepted', None, change
+        new_location_policy = _text(rules.get('newLocations') or rules.get('new_locations') or 'allowed_as_local_detail')
+        if new_location_policy in {'blocked', 'disabled', 'none', 'pack_only'}:
+            return 'rejected', 'Campaign pack policy blocks new non-pack locations.', None
+        updated = deepcopy(change)
+        _set_content_source_and_metadata(
+            updated,
+            key='location',
+            source='emergent',
+            pack_id=pack_id,
+            role='local_detail',
+            drift_control='tagged_local_detail',
+            rejoin_target_id=rejoin_target_id,
+        )
+        return 'modified', 'Campaign pack drift control tagged new location as emergent local detail.', updated
+
+    if change_type == 'npc.discover':
+        existing_npc = _find_npc(state, change)
+        if _record_is_campaign_pack(existing_npc, pack_id):
+            return 'accepted', None, change
+        catalog_npc = _pack_catalog_record_for_change(state, pack_id=pack_id, key='npcs', change=change)
+        if catalog_npc:
+            return (
+                'modified',
+                'Campaign pack catalog NPC was revealed into visible state.',
+                _materialize_pack_catalog_change(
+                    change,
+                    catalog_npc,
+                    pack_id=pack_id,
+                    embedded_key='npc',
+                    id_key='npcId',
+                    label_key='name',
+                ),
+            )
+        if _is_pack_override(change, 'npc'):
+            return 'accepted', None, change
+        new_npc_policy = _text(rules.get('newNpcs') or rules.get('new_npcs') or 'allowed_as_minor_or_temporary')
+        if new_npc_policy in {'blocked', 'disabled', 'none', 'pack_only'}:
+            return 'rejected', 'Campaign pack policy blocks new non-pack NPCs.', None
+        updated = deepcopy(change)
+        _set_content_source_and_metadata(
+            updated,
+            key='npc',
+            source='emergent',
+            pack_id=pack_id,
+            role='minor_or_temporary',
+            drift_control='tagged_minor_or_temporary',
+            rejoin_target_id=rejoin_target_id,
+        )
+        return 'modified', 'Campaign pack drift control tagged new NPC as emergent minor content.', updated
+
+    if change_type == 'scene.item.add':
+        if _is_pack_override(change, 'item'):
+            return 'accepted', None, change
+        updated = deepcopy(change)
+        _set_content_source_and_metadata(
+            updated,
+            key='item',
+            source='emergent',
+            pack_id=pack_id,
+            role='local_item',
+            drift_control='tagged_local_item',
+            rejoin_target_id=rejoin_target_id,
+        )
+        return 'modified', 'Campaign pack drift control tagged new scene item as emergent local content.', updated
+
+    if change_type == 'location.update':
+        existing_location = _find_location(state, change)
+        if _record_is_campaign_pack(existing_location, pack_id) or _is_pack_override(change, 'location'):
+            return 'accepted', None, change
+        updated = deepcopy(change)
+        _set_content_source_and_metadata(
+            updated,
+            key='location',
+            source='emergent',
+            pack_id=pack_id,
+            role='local_detail_update',
+            drift_control='tagged_local_detail_update',
+            rejoin_target_id=rejoin_target_id,
+        )
+        return 'modified', 'Campaign pack drift control tagged location update as emergent local detail.', updated
+
+    if change_type == 'location.connect':
+        if _is_pack_override(change, 'location'):
+            return 'accepted', None, change
+        updated = deepcopy(change)
+        _set_content_source_and_metadata(
+            updated,
+            key='location',
+            source='emergent',
+            pack_id=pack_id,
+            role='local_route',
+            drift_control='tagged_local_route',
+            rejoin_target_id=rejoin_target_id,
+        )
+        return 'modified', 'Campaign pack drift control tagged new location connection as emergent route content.', updated
+
+    if change_type == 'npc.relationship.update':
+        existing_npc = _find_npc(state, change)
+        if _is_pack_override(change, 'npc'):
+            return 'accepted', None, change
+        updated = deepcopy(change)
+        _set_content_source_and_metadata(
+            updated,
+            key='relationship',
+            source='player_created' if _record_is_campaign_pack(existing_npc, pack_id) else 'emergent',
+            pack_id=pack_id,
+            role='relationship_delta',
+            drift_control='tagged_relationship_delta',
+            rejoin_target_id=rejoin_target_id,
+        )
+        return 'modified', 'Campaign pack drift control tagged NPC relationship change with source metadata.', updated
+
+    if change_type == 'flag.set':
+        if _is_pack_override(change, 'flag'):
+            return 'accepted', None, change
+        updated = deepcopy(change)
+        _set_content_source_and_metadata(
+            updated,
+            key='flag',
+            source='emergent',
+            pack_id=pack_id,
+            role='runtime_flag',
+            drift_control='tagged_runtime_flag',
+            rejoin_target_id=rejoin_target_id,
+        )
+        return 'modified', 'Campaign pack drift control tagged runtime flag as emergent content.', updated
+
+    return 'accepted', None, change
+
+
+def _apply_campaign_pack_inventory_drift_control(
+    state: dict[str, Any],
+    change: dict[str, Any],
+) -> tuple[str, str | None, dict[str, Any] | None]:
+    pack_id, _rules, rejoin_target_id = _campaign_pack_policy(state)
+    if not pack_id or _text(change.get('type')) != 'inventory.add':
+        return 'accepted', None, change
+    item = change.get('item') if isinstance(change.get('item'), dict) else {}
+    if _record_is_campaign_pack(item, pack_id) or _is_pack_override(change, 'item'):
+        return 'accepted', None, change
+    updated = deepcopy(change)
+    if not isinstance(updated.get('item'), dict):
+        item_name = _text(updated.get('itemName') or updated.get('item_name'))
+        updated['item'] = {
+            'id': _text(updated.get('itemId') or updated.get('item_id')) or stable_slug(item_name),
+            'name': item_name,
+            'quantity': max(1, int_or_default(updated.get('quantity'), default=1)),
+            'type': _text(updated.get('itemType') or updated.get('item_type')) or 'misc',
+        }
+    _set_content_source_and_metadata(
+        updated,
+        key='item',
+        source='emergent',
+        pack_id=pack_id,
+        role='runtime_inventory_item',
+        drift_control='tagged_runtime_inventory_item',
+        rejoin_target_id=rejoin_target_id,
+    )
+    return 'modified', 'Campaign pack drift control tagged inventory item as emergent runtime content.', updated
+
+
+def _apply_campaign_pack_combat_drift_control(
+    state: dict[str, Any],
+    change: dict[str, Any],
+) -> tuple[str, str | None, dict[str, Any] | None]:
+    pack_id, _rules, rejoin_target_id = _campaign_pack_policy(state)
+    if not pack_id or _text(change.get('type')) != 'combat.start':
+        return 'accepted', None, change
+
+    combat = change.get('combat') if isinstance(change.get('combat'), dict) else {}
+    flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+    if (
+        _text(change.get('source')) in {'campaign_pack', 'dm_override', 'admin_override'}
+        or _text(flags.get('campaignPackEncounterId'))
+        or _text(flags.get('campaignPackId')) == pack_id
+    ):
+        return 'accepted', None, change
+
+    updated = deepcopy(change)
+    updated['source'] = 'emergent'
+    updated['packId'] = pack_id
+    updated_combat = updated.get('combat') if isinstance(updated.get('combat'), dict) else {}
+    updated['combat'] = updated_combat
+    updated_flags = updated_combat.get('flags') if isinstance(updated_combat.get('flags'), dict) else {}
+    updated_flags.update(
+        {
+            'source': 'emergent',
+            'packId': pack_id,
+            'packContentRole': 'runtime_encounter',
+            'driftControl': 'tagged_emergent_combat',
+        }
+    )
+    if rejoin_target_id:
+        updated_flags['rejoinTargetCheckpointId'] = rejoin_target_id
+    updated_combat['flags'] = updated_flags
+    metadata = updated.get('metadata') if isinstance(updated.get('metadata'), dict) else {}
+    metadata.update(
+        {
+            'source': 'emergent',
+            'packId': pack_id,
+            'packContentRole': 'runtime_encounter',
+            'driftControl': 'tagged_emergent_combat',
+        }
+    )
+    if rejoin_target_id:
+        metadata['rejoinTargetCheckpointId'] = rejoin_target_id
+    updated['metadata'] = metadata
+    return 'modified', 'Campaign pack drift control tagged non-pack combat as emergent runtime encounter.', updated
 
 
 def _find_npc_by_reference(state: dict[str, Any], reference: Any) -> dict[str, Any] | None:
@@ -1382,6 +1937,39 @@ def _combat_participant(state: dict[str, Any], participant_id: str) -> dict[str,
     return None
 
 
+def _state_change_actor_error(
+    state: dict[str, Any],
+    change: dict[str, Any],
+    change_type: str,
+    expected_actor_id: str | None,
+) -> str | None:
+    expected = _actor_ref(expected_actor_id)
+    if not expected:
+        return None
+
+    if change_type in PLAYER_OWNED_STATE_CHANGE_TYPES:
+        if not _actor_matches_expected(_action_value(change, 'actorId', 'actor_id'), expected):
+            return 'State change actor does not match the current player.'
+        return None
+
+    if change_type in TRANSFER_STATE_CHANGE_TYPES:
+        source_actor_id = _action_value(change, 'fromActorId', 'from_actor_id') or _action_value(change, 'actorId', 'actor_id')
+        if not _actor_matches_expected(source_actor_id, expected):
+            return 'Transfer source actor does not match the current player.'
+        return None
+
+    if change_type in PLAYER_COMBAT_PARTICIPANT_CHANGE_TYPES:
+        participant_id = _actor_ref(
+            _action_value(change, 'participantId', 'participant_id')
+            or _action_value(change, 'enemyId', 'enemy_id')
+        )
+        resolved_id = _resolve_combat_participant_id(state, participant_id) if participant_id else None
+        participant = _combat_participant(state, resolved_id) if resolved_id else None
+        if isinstance(participant, dict) and participant.get('team') == 'player' and not _actor_matches_expected(participant.get('id'), expected):
+            return 'Combat participant change actor does not match the current player.'
+    return None
+
+
 def _combat_start_reopens_resolved_enemy(state: dict[str, Any], combat: dict[str, Any], normalized: dict[str, Any]) -> str | None:
     if normalized.get('allowResolvedEncounterRestart') or normalized.get('allow_resolved_encounter_restart'):
         return None
@@ -1572,6 +2160,88 @@ def _change_id_already_seen(change: dict[str, Any], applied_ids: set[str], seen_
     return bool(change_id and (change_id in applied_ids or change_id in seen_ids))
 
 
+def _inventory_reservation_key(actor: dict[str, Any], item: dict[str, Any]) -> tuple[str, str] | None:
+    actor_id = str(actor.get('id') or '').strip()
+    item_key = str(item.get('id') or '').strip() or normalize_item_name(item.get('name'))
+    if not actor_id or not item_key:
+        return None
+    return actor_id, item_key
+
+
+def _inventory_item_from_change(actor: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] | None:
+    item_id = _action_value(change, 'itemId', 'item_id')
+    item_name = _action_value(change, 'itemName', 'item_name')
+    for candidate in actor_items(actor):
+        if item_id and str(candidate.get('id')) == str(item_id):
+            return candidate
+        if item_name and normalize_item_name(candidate.get('name')) == normalize_item_name(item_name):
+            return candidate
+    return None
+
+
+def _reserve_inventory_quantity(
+    actor: dict[str, Any],
+    item: dict[str, Any],
+    quantity: int,
+    reservations: dict[tuple[str, str], int],
+) -> str | None:
+    key = _inventory_reservation_key(actor, item)
+    if not key:
+        return 'Inventory transfer source item is invalid.'
+    available = max(0, int_or_default(item.get('quantity'), default=1))
+    reserved = max(0, int_or_default(reservations.get(key), default=0))
+    remaining = max(0, available - reserved)
+    if quantity > remaining:
+        return f"Insufficient quantity. Available: {remaining}."
+    reservations[key] = reserved + quantity
+    return None
+
+
+def _reserve_inventory_remove_change(
+    state: dict[str, Any],
+    change: dict[str, Any],
+    reservations: dict[tuple[str, str], int],
+) -> str | None:
+    actor = find_actor(state, _action_value(change, 'actorId', 'actor_id'))
+    if not actor:
+        return 'Actor not found.'
+    item = _inventory_item_from_change(actor, change)
+    if not item:
+        return 'Item not found in inventory.'
+    quantity = max(0, int_or_default(change.get('quantity'), default=0))
+    return _reserve_inventory_quantity(actor, item, quantity, reservations)
+
+
+def _reserve_currency_amount(
+    actor: dict[str, Any],
+    currency: str,
+    amount: int,
+    reservations: dict[tuple[str, str], int],
+) -> str | None:
+    actor_id = str(actor.get('id') or '').strip()
+    key = (actor_id, currency)
+    available = max(0, int_or_default(actor_currency(actor).get(currency), default=0))
+    reserved = max(0, int_or_default(reservations.get(key), default=0))
+    remaining = max(0, available - reserved)
+    if amount > remaining:
+        return f"Insufficient {currency}. Available: {remaining}."
+    reservations[key] = reserved + amount
+    return None
+
+
+def _reserve_currency_remove_change(
+    state: dict[str, Any],
+    change: dict[str, Any],
+    reservations: dict[tuple[str, str], int],
+) -> str | None:
+    actor = find_actor(state, _action_value(change, 'actorId', 'actor_id'))
+    if not actor:
+        return 'Actor not found.'
+    currency = str(change.get('currency') or '').strip().lower()
+    amount = max(0, int_or_default(change.get('amount'), default=0))
+    return _reserve_currency_amount(actor, currency, amount, reservations)
+
+
 def _transfer_reason(change: dict[str, Any], fallback: str) -> str:
     reason = str(change.get('reason') or '').strip()
     if not reason or reason == GENERIC_EXTRACTED_REASON:
@@ -1585,6 +2255,7 @@ def _validate_inventory_transfer_change(
     *,
     applied_ids: set[str],
     seen_ids: set[str],
+    inventory_reservations: dict[tuple[str, str], int],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     source = _transfer_source_actor(state, change)
     if not source:
@@ -1654,6 +2325,9 @@ def _validate_inventory_transfer_change(
     if remove_status != 'accepted' or add_status != 'accepted':
         reasons = [reason for status, reason in ((remove_status, remove_reason), (add_status, add_reason)) if status != 'accepted']
         return [], [_rejected(change, '; '.join(reasons) or 'Inventory transfer validation failed.')]
+    reservation_error = _reserve_inventory_quantity(source, source_item, quantity, inventory_reservations)
+    if reservation_error:
+        return [], [_rejected(change, reservation_error)]
 
     accepted = [
         _accepted(normalized_remove or remove_change, 'Inventory transfer source removal is valid.'),
@@ -1672,6 +2346,7 @@ def _validate_currency_transfer_change(
     *,
     applied_ids: set[str],
     seen_ids: set[str],
+    currency_reservations: dict[tuple[str, str], int],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     source = _transfer_source_actor(state, change)
     if not source:
@@ -1721,6 +2396,9 @@ def _validate_currency_transfer_change(
     if remove_status != 'accepted' or add_status != 'accepted':
         reasons = [reason for status, reason in ((remove_status, remove_reason), (add_status, add_reason)) if status != 'accepted']
         return [], [_rejected(change, '; '.join(reasons) or 'Currency transfer validation failed.')]
+    reservation_error = _reserve_currency_amount(source, currency, amount, currency_reservations)
+    if reservation_error:
+        return [], [_rejected(change, reservation_error)]
 
     accepted = [
         _accepted(normalized_remove or remove_change, 'Currency transfer source removal is valid.'),
@@ -1733,12 +2411,25 @@ def _validate_currency_transfer_change(
     return accepted, []
 
 
-def validate_state_changes(*, state: dict[str, Any], changes: list[dict[str, Any]]) -> dict[str, Any]:
+def validate_state_changes(
+    *,
+    state: dict[str, Any],
+    changes: list[dict[str, Any]],
+    expected_actor_id: str | None = None,
+    authorized_cross_actor_change_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     accepted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     modified: list[dict[str, Any]] = []
     applied_ids = state_applied_change_ids(state)
     seen_ids: set[str] = set()
+    inventory_reservations: dict[tuple[str, str], int] = {}
+    currency_reservations: dict[tuple[str, str], int] = {}
+    authorized_cross_actor_ids = {
+        str(change_id).strip()
+        for change_id in (authorized_cross_actor_change_ids or [])
+        if str(change_id or '').strip()
+    }
 
     for raw_change in changes:
         if not isinstance(raw_change, dict):
@@ -1752,12 +2443,19 @@ def validate_state_changes(*, state: dict[str, Any], changes: list[dict[str, Any
         if change_type not in STATE_CHANGE_TYPES:
             rejected.append(_rejected(change, f"Unsupported state change type '{change_type}'."))
             continue
+        actor_error = None
+        if not (change_id and change_id in authorized_cross_actor_ids):
+            actor_error = _state_change_actor_error(state, change, change_type, expected_actor_id)
+        if actor_error:
+            rejected.append(_rejected(change, actor_error))
+            continue
         if change_type == 'inventory.transfer':
             transfer_accepted, transfer_rejected = _validate_inventory_transfer_change(
                 state,
                 change,
                 applied_ids=applied_ids,
                 seen_ids=seen_ids,
+                inventory_reservations=inventory_reservations,
             )
             accepted.extend(transfer_accepted)
             rejected.extend(transfer_rejected)
@@ -1768,6 +2466,7 @@ def validate_state_changes(*, state: dict[str, Any], changes: list[dict[str, Any
                 change,
                 applied_ids=applied_ids,
                 seen_ids=seen_ids,
+                currency_reservations=currency_reservations,
             )
             accepted.extend(transfer_accepted)
             rejected.extend(transfer_rejected)
@@ -1780,6 +2479,12 @@ def validate_state_changes(*, state: dict[str, Any], changes: list[dict[str, Any
 
         if change_type in {'inventory.add', 'inventory.remove'}:
             status, reason, normalized = _validate_inventory_change(state, change)
+            if status == 'accepted' and change_type == 'inventory.add':
+                drift_status, drift_reason, drift_normalized = _apply_campaign_pack_inventory_drift_control(state, normalized or change)
+                if drift_status != 'accepted':
+                    status = drift_status
+                    reason = drift_reason or reason
+                    normalized = drift_normalized
         elif change_type in {'inventory.equip', 'inventory.unequip'}:
             status, reason, normalized = _validate_equipment_change(state, change)
         elif change_type in {'currency.add', 'currency.remove'}:
@@ -1813,12 +2518,35 @@ def validate_state_changes(*, state: dict[str, Any], changes: list[dict[str, Any
                 status, reason, normalized = 'accepted', 'Race ability refresh marker is valid.', None
         elif change_type in COMBAT_STATE_CHANGE_TYPES:
             status, reason, normalized = _normalize_combat_change(change, state)
+            if status == 'accepted' and normalized:
+                drift_status, drift_reason, drift_normalized = _apply_campaign_pack_combat_drift_control(state, normalized)
+                if drift_status != 'accepted':
+                    status = drift_status
+                    reason = drift_reason or reason
+                    normalized = drift_normalized
         elif change_type in WORLD_STATE_CHANGE_TYPES:
             status, reason, normalized = _normalize_world_change(change, state)
+            if status == 'accepted' and normalized:
+                drift_status, drift_reason, drift_normalized = _apply_campaign_pack_drift_control(state, normalized)
+                if drift_status != 'accepted':
+                    status = drift_status
+                    reason = drift_reason or reason
+                    normalized = drift_normalized
         else:
             status, reason, normalized = 'rejected', 'State pipeline does not apply this change directly.', None
 
         if status == 'accepted':
+            accepted_change = normalized or change
+            if change_type == 'inventory.remove':
+                reservation_error = _reserve_inventory_remove_change(state, accepted_change, inventory_reservations)
+                if reservation_error:
+                    rejected.append(_rejected(change, reservation_error))
+                    continue
+            if change_type == 'currency.remove':
+                reservation_error = _reserve_currency_remove_change(state, accepted_change, currency_reservations)
+                if reservation_error:
+                    rejected.append(_rejected(change, reservation_error))
+                    continue
             accepted.append(_accepted(normalized or change, reason))
         elif status == 'modified' and normalized:
             modified.append(_modified(change, normalized, reason))

@@ -24,6 +24,8 @@ export type DeleteSavedWorkspaceResult = { ok: true } | { ok: false; error: stri
 export type RuntimeAccount = {
   accountId: number
   username: string
+  firstName: string
+  lastName: string
   displayName: string
   workspaceId: string | null
   workspaceRole: string | null
@@ -39,7 +41,8 @@ type RuntimeApiError = Error & {
 const ACCOUNT_TOKEN_COOKIE = 'aidm_account_token'
 const ACCOUNT_TOKEN_COOKIE_MAX_AGE = 60 * 60 * 24 * 30
 const LEGACY_PASSWORD_SETUP_ERROR_CODE = 'legacy_password_setup_required'
-export const LEGACY_PASSWORD_SETUP_MESSAGE = 'Passwords are required now. Please set one now.'
+export const LEGACY_PASSWORD_SETUP_MESSAGE =
+  'Legacy account found. Use Sign Up with this username, the exact first and last name originally used, and a new password.'
 
 function readCookie(name: string) {
   const prefix = `${encodeURIComponent(name)}=`
@@ -135,6 +138,8 @@ function loadSessionAccount(): RuntimeAccount {
     return {
       accountId: typeof parsed.accountId === 'number' ? parsed.accountId : 0,
       username: parsed.username,
+      firstName: typeof parsed.firstName === 'string' ? parsed.firstName : '',
+      lastName: typeof parsed.lastName === 'string' ? parsed.lastName : '',
       displayName: typeof parsed.displayName === 'string' ? parsed.displayName : parsed.username,
       workspaceId: typeof parsed.workspaceId === 'string' ? parsed.workspaceId : null,
       workspaceRole: typeof parsed.workspaceRole === 'string' ? parsed.workspaceRole : null,
@@ -187,6 +192,8 @@ function accountFromSession(session: AccountSession): NonNullable<RuntimeAccount
   return {
     accountId: session.account.account_id,
     username: session.account.username,
+    firstName: session.account.first_name,
+    lastName: session.account.last_name,
     displayName: session.account.display_name,
     workspaceId: session.workspace_id,
     workspaceRole: session.workspace_role,
@@ -200,6 +207,8 @@ function accountFromPayload(account: Account): NonNullable<RuntimeAccount> {
   return {
     accountId: account.account_id,
     username: account.username,
+    firstName: account.first_name,
+    lastName: account.last_name,
     displayName: account.display_name,
     workspaceId: account.workspace_id,
     workspaceRole: account.workspace_role,
@@ -269,7 +278,7 @@ async function submitAccountSession(
       username: form.username.trim(),
       password: form.password,
       intent: options.intent,
-      ...(options.intent === 'signup'
+      ...(options.intent === 'signup' || options.legacyClaim
         ? {
             first_name: form.firstName.trim(),
             last_name: form.lastName.trim(),
@@ -453,9 +462,11 @@ export function useRuntimeSettings({
     setRuntimeSettingsForm((current) => ({
       ...current,
       username: account?.username || current.username,
+      firstName: account?.firstName || current.firstName,
+      lastName: account?.lastName || current.lastName,
       password: '',
     }))
-    setRuntimeAuthIntent('login')
+    setRuntimeAuthIntent('signup')
     setRuntimeAuthStep('account')
     setRuntimeCreatedWorkspaceToken('')
     setRuntimeSettingsMode('auth')
@@ -551,7 +562,7 @@ export function useRuntimeSettings({
         : 'workspace',
     )
     if (needsPasswordSetup) {
-      setRuntimeAuthIntent('login')
+      setRuntimeAuthIntent('signup')
     }
     setRuntimeSettingsMode(mode)
     setRuntimeSettingsError(needsPasswordSetup ? LEGACY_PASSWORD_SETUP_MESSAGE : '')
@@ -645,6 +656,8 @@ export function useRuntimeSettings({
         } catch (error) {
           const runtimeError = error as RuntimeApiError
           if (runtimeAuthIntent === 'login' && runtimeError.errorCode === LEGACY_PASSWORD_SETUP_ERROR_CODE) {
+            setRuntimeAuthIntent('signup')
+            setRuntimeSettingsForm((current) => ({ ...current, password: '' }))
             setLegacyPasswordSetupRequired(true)
             setRuntimeSettingsError(LEGACY_PASSWORD_SETUP_MESSAGE)
             return

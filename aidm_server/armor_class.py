@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -64,9 +65,11 @@ def normalize_armor_text(value: Any) -> str:
 def _coerced_int(value: Any) -> int | None:
     if value in (None, ''):
         return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
 
 

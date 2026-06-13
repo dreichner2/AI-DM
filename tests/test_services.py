@@ -118,6 +118,159 @@ def test_session_lifecycle_service_hard_delete_removes_session_origin_canon(app)
         assert db.session.get(StoryThread, thread_id) is None
 
 
+def test_session_lifecycle_hard_delete_preserves_later_session_canon_on_reused_entity(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        live_session = Session(campaign_id=ids['campaign_id'])
+        db.session.add(live_session)
+        db.session.flush()
+        old_turn = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='I meet Captain Liora Vale.',
+            dm_output='Captain Liora Vale offers guarded help.',
+            status='completed',
+            outcome_status='resolved',
+        )
+        live_turn = DmTurn(
+            session_id=live_session.session_id,
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='I ask Liora about the passphrase.',
+            dm_output='Liora admits she knows the passphrase.',
+            status='completed',
+            outcome_status='resolved',
+        )
+        db.session.add_all([old_turn, live_turn])
+        db.session.flush()
+        entity = StoryEntity(
+            campaign_id=ids['campaign_id'],
+            session_id=ids['session_id'],
+            entity_type='npc',
+            name='Captain Liora Vale',
+            canonical_name='Captain Liora Vale',
+            aliases_json='["Liora"]',
+            first_seen_turn_id=old_turn.turn_id,
+            last_seen_turn_id=live_turn.turn_id,
+        )
+        db.session.add(entity)
+        db.session.flush()
+        old_fact = StoryFact(
+            campaign_id=ids['campaign_id'],
+            subject_entity_id=entity.entity_id,
+            predicate='role',
+            value_text='captain',
+            source_turn_id=old_turn.turn_id,
+        )
+        live_fact = StoryFact(
+            campaign_id=ids['campaign_id'],
+            subject_entity_id=entity.entity_id,
+            predicate='secret',
+            value_text='knows the passphrase',
+            source_turn_id=live_turn.turn_id,
+        )
+        db.session.add_all([old_fact, live_fact])
+        db.session.commit()
+        live_session_id = live_session.session_id
+        old_turn_id = old_turn.turn_id
+        live_turn_id = live_turn.turn_id
+        entity_id = entity.entity_id
+        old_fact_id = old_fact.fact_id
+        live_fact_id = live_fact.fact_id
+
+        session_obj = db.session.get(Session, ids['session_id'])
+        result = delete_session_record(session_obj, hard_delete=True)
+        db.session.commit()
+
+        preserved_entity = db.session.get(StoryEntity, entity_id)
+        preserved_fact = db.session.get(StoryFact, live_fact_id)
+        assert result.hard_deleted is True
+        assert db.session.get(Session, ids['session_id']) is None
+        assert db.session.get(Session, live_session_id) is not None
+        assert db.session.get(DmTurn, old_turn_id) is None
+        assert db.session.get(DmTurn, live_turn_id) is not None
+        assert db.session.get(StoryFact, old_fact_id) is None
+        assert preserved_entity is not None
+        assert preserved_entity.session_id is None
+        assert preserved_entity.first_seen_turn_id is None
+        assert preserved_entity.last_seen_turn_id == live_turn_id
+        assert preserved_fact is not None
+        assert preserved_fact.subject_entity_id == entity_id
+        assert preserved_fact.source_turn_id == live_turn_id
+
+
+def test_session_lifecycle_hard_delete_clears_supersedes_refs_to_deleted_facts(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        live_session = Session(campaign_id=ids['campaign_id'])
+        db.session.add(live_session)
+        db.session.flush()
+        old_turn = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='I hear Mira is missing.',
+            dm_output='Mira is missing.',
+            status='completed',
+            outcome_status='resolved',
+        )
+        live_turn = DmTurn(
+            session_id=live_session.session_id,
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='I find Mira.',
+            dm_output='Mira is safe.',
+            status='completed',
+            outcome_status='resolved',
+        )
+        db.session.add_all([old_turn, live_turn])
+        db.session.flush()
+        entity = StoryEntity(
+            campaign_id=ids['campaign_id'],
+            entity_type='npc',
+            name='Mira',
+            first_seen_turn_id=old_turn.turn_id,
+            last_seen_turn_id=live_turn.turn_id,
+        )
+        db.session.add(entity)
+        db.session.flush()
+        old_fact = StoryFact(
+            campaign_id=ids['campaign_id'],
+            subject_entity_id=entity.entity_id,
+            predicate='status',
+            value_text='missing',
+            source_turn_id=old_turn.turn_id,
+        )
+        db.session.add(old_fact)
+        db.session.flush()
+        live_fact = StoryFact(
+            campaign_id=ids['campaign_id'],
+            subject_entity_id=entity.entity_id,
+            predicate='status',
+            value_text='safe',
+            source_turn_id=live_turn.turn_id,
+            supersedes_fact_id=old_fact.fact_id,
+        )
+        db.session.add(live_fact)
+        db.session.commit()
+        old_fact_id = old_fact.fact_id
+        live_fact_id = live_fact.fact_id
+
+        session_obj = db.session.get(Session, ids['session_id'])
+        result = delete_session_record(session_obj, hard_delete=True)
+        db.session.commit()
+
+        preserved_fact = db.session.get(StoryFact, live_fact_id)
+        assert result.hard_deleted is True
+        assert db.session.get(StoryFact, old_fact_id) is None
+        assert preserved_fact is not None
+        assert preserved_fact.supersedes_fact_id is None
+        assert preserved_fact.value_text == 'safe'
+
+
 def test_database_session_delete_cascades_owned_rows_and_nulls_canon_refs(app):
     ids = seed_world_campaign_player_session(app)
 

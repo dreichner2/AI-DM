@@ -1061,6 +1061,94 @@ def test_projection_syncs_session_state_and_snapshot_quests(app):
         assert quests['flying_lessons_from_master_roshi']['status'] == 'active'
 
 
+def test_projection_does_not_promote_story_threads_to_active_quests_in_pack_only_mode(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        turn = _create_turn(
+            app,
+            ids,
+            player_input='I question the gate captain.',
+            dm_output='Captain Veyra gives directions toward the old road.',
+        )
+        campaign = turn.campaign
+        campaign.current_quest = 'Find the Missing Caravan'
+        session_obj = db.session.get(Session, ids['session_id'])
+        session_obj.state_snapshot = safe_json_dumps(
+            {
+                'currentScene': {
+                    'locationId': 'bleakmoor_gate',
+                    'name': 'Bleakmoor Gate',
+                    'activeQuestIds': ['q_missing_caravan', 'question_captain_veyra'],
+                },
+                'quests': [
+                    {
+                        'id': 'q_missing_caravan',
+                        'title': 'Find the Missing Caravan',
+                        'status': 'active',
+                        'summary': 'A supply caravan vanished.',
+                        'stage': 'Follow the Old Road',
+                        'objectives': [],
+                        'source': 'campaign_pack',
+                        'packId': 'bleakmoor_intro',
+                    },
+                    {
+                        'id': 'question_captain_veyra',
+                        'title': 'Question Captain Veyra',
+                        'status': 'active',
+                        'summary': 'A story thread should not become the main quest.',
+                        'stage': '',
+                        'objectives': [],
+                        'metadata': {'source': 'canon_projection'},
+                    },
+                ],
+                'campaignPack': {
+                    'packId': 'bleakmoor_intro',
+                    'startingQuestId': 'q_missing_caravan',
+                    'directorRules': {'mainQuestGeneration': 'pack_only'},
+                    'catalog': {
+                        'quests': [
+                            {
+                                'id': 'q_missing_caravan',
+                                'title': 'Find the Missing Caravan',
+                                'source': 'campaign_pack',
+                                'packId': 'bleakmoor_intro',
+                            }
+                        ]
+                    },
+                },
+            },
+            {},
+        )
+
+        patch = {
+            'threads': [
+                {
+                    'title': 'Question Captain Veyra',
+                    'summary': 'Veyra pointed toward the old road.',
+                    'status': 'open',
+                    'priority': 2,
+                }
+            ]
+        }
+        validated_patch, rejections = validate_canon_patch(turn, campaign, patch)
+        assert rejections == []
+        apply_canon_patch(turn, campaign, validated_patch, 'test-extractor', rejections)
+        refresh_session_projection(ids['session_id'], campaign)
+        db.session.commit()
+
+        state = get_or_create_session_state(ids['session_id'], campaign)
+        snapshot = safe_json_loads(db.session.get(Session, ids['session_id']).state_snapshot, {})
+        scene = snapshot['currentScene']
+        quests = {quest['id']: quest for quest in snapshot['quests']}
+
+        assert state.current_quest == 'Find the Missing Caravan'
+        assert scene['activeQuestIds'] == ['q_missing_caravan']
+        assert quests['q_missing_caravan']['status'] == 'active'
+        assert quests['question_captain_veyra']['status'] == 'noted'
+        assert quests['question_captain_veyra']['metadata']['questType'] == 'story_thread'
+
+
 def test_refresh_session_projection_ignores_prose_current_location_fact(app):
     ids = seed_world_campaign_player_session(app)
 

@@ -1,0 +1,578 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidm.local/schemas/campaign-pack.schema.json",
+  "title": "AIDM Campaign Pack",
+  "description": "Structured adventure module import format for AIDM campaigns.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["packId", "title"],
+  "properties": {
+    "schemaVersion": {
+      "description": "Campaign pack schema version. AIDM currently accepts 1, 1.0, and 1.0.0 as version 1.",
+      "type": ["string", "number"],
+      "enum": ["1", "1.0", "1.0.0", 1]
+    },
+    "packId": {
+      "$ref": "#/$defs/id"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "version": {
+      "type": "string",
+      "maxLength": 80,
+      "default": "1.0.0"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 4000
+    },
+    "world": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4000
+        }
+      }
+    },
+    "startingState": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "locationId": {
+          "$ref": "#/$defs/id"
+        },
+        "questId": {
+          "$ref": "#/$defs/id"
+        },
+        "currentScene": {
+          "$ref": "#/$defs/currentScene"
+        },
+        "knownLocationIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "knownNpcIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "activeNpcIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "knownQuestIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "activeQuestIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "flags": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "locations": {
+      "type": "array",
+      "maxItems": 250,
+      "items": {
+        "$ref": "#/$defs/location"
+      }
+    },
+    "npcs": {
+      "type": "array",
+      "maxItems": 250,
+      "items": {
+        "$ref": "#/$defs/npc"
+      }
+    },
+    "quests": {
+      "type": "array",
+      "maxItems": 250,
+      "items": {
+        "$ref": "#/$defs/quest"
+      }
+    },
+    "enemies": {
+      "type": "array",
+      "maxItems": 150,
+      "items": {
+        "$ref": "#/$defs/enemy"
+      }
+    },
+    "encounters": {
+      "type": "array",
+      "maxItems": 250,
+      "items": {
+        "$ref": "#/$defs/encounter"
+      }
+    },
+    "segments": {
+      "type": "array",
+      "maxItems": 250,
+      "items": {
+        "$ref": "#/$defs/segment"
+      }
+    },
+    "checkpoints": {
+      "type": "array",
+      "maxItems": 250,
+      "items": {
+        "$ref": "#/$defs/checkpoint"
+      }
+    },
+    "directorRules": {
+      "$ref": "#/$defs/directorRules"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "idList": {
+      "type": "array",
+      "maxItems": 150,
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "uniqueItems": true
+    },
+    "sourceFields": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "source": {
+          "const": "campaign_pack"
+        },
+        "packId": {
+          "$ref": "#/$defs/id"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "location": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/sourceFields"
+        },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["id"],
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "name": {
+              "type": "string",
+              "maxLength": 160
+            },
+            "type": {
+              "type": "string",
+              "maxLength": 80
+            },
+            "status": {
+              "type": "string",
+              "maxLength": 80
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 4000
+            },
+            "connectedLocationIds": {
+              "$ref": "#/$defs/idList"
+            },
+            "visibleAtStart": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    "npc": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/sourceFields"
+        },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["id", "name"],
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "role": {
+              "type": "string",
+              "maxLength": 160
+            },
+            "disposition": {
+              "type": "string",
+              "maxLength": 80
+            },
+            "locationId": {
+              "$ref": "#/$defs/id"
+            },
+            "questIds": {
+              "$ref": "#/$defs/idList"
+            },
+            "visibleAtStart": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    "quest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/sourceFields"
+        },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["id", "title"],
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "status": {
+              "type": "string",
+              "maxLength": 80,
+              "default": "available"
+            },
+            "stage": {
+              "type": "string",
+              "maxLength": 160
+            },
+            "summary": {
+              "type": "string",
+              "maxLength": 4000
+            },
+            "objectives": {
+              "type": "array",
+              "maxItems": 150,
+              "items": {
+                "$ref": "#/$defs/objective"
+              }
+            },
+            "visibleAtStart": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    "objective": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "description"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "status": {
+          "type": "string",
+          "maxLength": 80,
+          "default": "open"
+        }
+      }
+    },
+    "enemy": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "name"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "creatureType": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "challengeTier": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "locationIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "factionIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "tags": {
+          "type": "array",
+          "maxItems": 150,
+          "items": {
+            "type": "string",
+            "maxLength": 120
+          }
+        }
+      }
+    },
+    "encounter": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "title"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "locationIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "questIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "checkpointIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "enemyIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "completion": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "segment": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "title"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "trigger": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 4000
+            },
+            {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "type": {
+                  "enum": ["manual", "keyword", "state"]
+                },
+                "keyword": {
+                  "type": "string"
+                },
+                "location_contains": {
+                  "type": "string"
+                },
+                "quest_contains": {
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 120
+          }
+        }
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "title"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "status": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "locationIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "questIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "npcIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "encounterIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "objectiveIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "segmentIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "nextCheckpointIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "alternateCheckpointIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "prerequisiteCheckpointIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "prerequisitePolicy": {
+          "enum": ["completed", "completed_or_skipped", "completed_or_skipped_or_failed", "terminal"]
+        },
+        "failureCheckpointIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "optional": {
+          "type": "boolean",
+          "default": false
+        },
+        "canFail": {
+          "type": "boolean",
+          "default": false
+        },
+        "rejoinTargetCheckpointId": {
+          "$ref": "#/$defs/id"
+        },
+        "completeWhen": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "failWhen": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "directorRules": {
+          "$ref": "#/$defs/directorRules"
+        }
+      }
+    },
+    "directorRules": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "mainQuestGeneration": {
+          "enum": ["pack_only", "allowed_tagged", "open"]
+        },
+        "sideQuestGeneration": {
+          "enum": ["allowed_tagged", "blocked", "open", "pack_only"]
+        },
+        "newNpcs": {
+          "enum": ["allowed_as_minor_or_temporary", "blocked", "open", "pack_only"]
+        },
+        "newLocations": {
+          "enum": ["allowed_as_local_detail", "blocked", "open", "pack_only"]
+        },
+        "offTrackPolicy": {
+          "enum": ["improvise_and_reconnect", "strict", "open"]
+        },
+        "checkpointStyle": {
+          "enum": ["soft", "guided", "strict"]
+        }
+      }
+    },
+    "currentScene": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "locationId": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "sceneType": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "dangerLevel": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "mood": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "combatState": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "activeNpcIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "activeQuestIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "items": {
+          "type": "array",
+          "maxItems": 150,
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}

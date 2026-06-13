@@ -352,7 +352,7 @@ describe('useRuntimeSettings', () => {
     expect(result.current.runtimeSettingsError).toBe('Username is already taken. Please sign in.')
   })
 
-  it('prompts legacy passwordless accounts to set and save a password', async () => {
+  it('prompts legacy passwordless accounts to use Sign Up and save a password', async () => {
     const requestBodies: Array<Record<string, unknown>> = []
     vi.stubGlobal(
       'fetch',
@@ -360,7 +360,7 @@ describe('useRuntimeSettings', () => {
         const path = new URL(String(input), 'http://localhost').pathname
         const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {}
         requestBodies.push(body)
-        if (path === '/api/accounts/login' && !body.legacy_claim) {
+        if (path === '/api/accounts/login' && body.intent === 'login') {
           return new Response(
             JSON.stringify({
               error_code: 'legacy_password_setup_required',
@@ -422,15 +422,22 @@ describe('useRuntimeSettings', () => {
 
     expect(result.current.runtimeSettingsError).toBe(LEGACY_PASSWORD_SETUP_MESSAGE)
     expect(result.current.legacyPasswordSetupRequired).toBe(true)
+    expect(result.current.runtimeAuthIntent).toBe('signup')
     expect(result.current.runtimeAuthStep).toBe('account')
     expect(requestBodies[0]).toMatchObject({
       username: 'Danny',
       password: '',
+      intent: 'login',
     })
     expect(requestBodies[0]).not.toHaveProperty('legacy_claim')
 
     act(() => {
-      result.current.setRuntimeSettingsForm((current) => ({ ...current, password: 'new-secret' }))
+      result.current.setRuntimeSettingsForm((current) => ({
+        ...current,
+        firstName: 'Danny',
+        lastName: 'Reichner',
+        password: 'new-secret',
+      }))
     })
     await act(async () => {
       await result.current.submitRuntimeSettings(submitEvent())
@@ -438,9 +445,12 @@ describe('useRuntimeSettings', () => {
 
     expect(requestBodies[1]).toMatchObject({
       username: 'Danny',
+      first_name: 'Danny',
+      last_name: 'Reichner',
       password: 'new-secret',
-      legacy_claim: true,
+      intent: 'signup',
     })
+    expect(requestBodies[1]).not.toHaveProperty('legacy_claim')
     expect(sessionStorage.getItem('aidm:authToken')).toBe('upgraded-account-token')
     expect(result.current.legacyPasswordSetupRequired).toBe(false)
     expect(result.current.runtimeSettingsError).toBe('')
@@ -493,10 +503,12 @@ describe('useRuntimeSettings', () => {
 
     expect(result.current.runtimeSettingsOpen).toBe(true)
     expect(result.current.runtimeSettingsMode).toBe('auth')
-    expect(result.current.runtimeAuthIntent).toBe('login')
+    expect(result.current.runtimeAuthIntent).toBe('signup')
     expect(result.current.runtimeAuthStep).toBe('account')
     expect(result.current.runtimeSettingsError).toBe(LEGACY_PASSWORD_SETUP_MESSAGE)
     expect(result.current.runtimeSettingsForm.username).toBe('aidan')
+    expect(result.current.runtimeSettingsForm.firstName).toBe('Aidan')
+    expect(result.current.runtimeSettingsForm.lastName).toBe('Fernandez')
     expect(result.current.runtimeAccount?.requiresPasswordSetup).toBe(true)
     expect(result.current.workspaceToken).toBe('')
     expect(result.current.workspaceId).toBe('')

@@ -2092,6 +2092,108 @@ select:focus-visible {
   width: min(680px, 100%);
 }
 
+.campaign-pack-import-dialog {
+  width: min(760px, 100%);
+}
+
+.campaign-pack-import-form .file-picker-field input {
+  height: auto;
+  padding: 9px 11px;
+}
+
+.campaign-pack-import-form footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.campaign-pack-import-form .dialog-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.campaign-pack-preview {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(144, 164, 159, 0.2);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.campaign-pack-preview-title {
+  display: flex;
+  min-width: 0;
+  gap: 9px;
+  align-items: center;
+  color: #74dc8a;
+}
+
+.campaign-pack-preview-title span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.campaign-pack-preview-title strong,
+.campaign-pack-preview-grid strong,
+.campaign-pack-counts strong,
+.campaign-pack-visible strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--heading);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.campaign-pack-preview-title small,
+.campaign-pack-preview-grid span,
+.campaign-pack-counts span,
+.campaign-pack-visible span {
+  color: var(--muted);
+  font-size: 0.73rem;
+}
+
+.campaign-pack-preview-grid,
+.campaign-pack-counts {
+  display: grid;
+  gap: 7px;
+}
+
+.campaign-pack-preview-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.campaign-pack-preview-grid div,
+.campaign-pack-counts div {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.022);
+}
+
+.campaign-pack-preview-grid div,
+.campaign-pack-counts div,
+.campaign-pack-visible {
+  display: grid;
+  gap: 4px;
+}
+
+.campaign-pack-counts {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.campaign-pack-visible {
+  grid-template-columns: 92px repeat(3, minmax(0, 1fr));
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
 .world-manager-list {
   display: grid;
   gap: 8px;

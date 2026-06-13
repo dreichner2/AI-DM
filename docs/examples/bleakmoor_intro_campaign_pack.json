@@ -1,0 +1,184 @@
+{
+  "schemaVersion": "1",
+  "packId": "bleakmoor_intro",
+  "title": "The Lanterns of Bleakmoor",
+  "version": "1.0.0",
+  "description": "A short authored marsh adventure for testing campaign-pack import and checkpoint play.",
+  "world": {
+    "name": "Bleakmoor",
+    "description": "A rain-heavy marsh frontier where old signal lanterns still burn after their keepers vanish."
+  },
+  "startingState": {
+    "locationId": "bleakmoor_gate",
+    "questId": "q_missing_caravan",
+    "currentScene": {
+      "locationId": "bleakmoor_gate",
+      "name": "Bleakmoor Gate",
+      "sceneType": "exploration",
+      "dangerLevel": 2,
+      "mood": "rain-darkened",
+      "description": "Lanterns hiss above a guarded gatehouse while marsh water runs through the road ruts.",
+      "activeNpcIds": ["npc_captain_veyra"],
+      "activeQuestIds": ["q_missing_caravan"]
+    }
+  },
+  "locations": [
+    {
+      "id": "bleakmoor_gate",
+      "name": "Bleakmoor Gate",
+      "type": "town",
+      "description": "A guarded gatehouse at the last dry rise before the marsh road.",
+      "connectedLocationIds": ["old_road", "watchtower_ruins"],
+      "visibleAtStart": true
+    },
+    {
+      "id": "old_road",
+      "name": "Old Road",
+      "type": "road",
+      "description": "A flooded road marked by broken wheel ruts and lantern posts.",
+      "connectedLocationIds": ["bleakmoor_gate", "watchtower_ruins"]
+    },
+    {
+      "id": "watchtower_ruins",
+      "name": "Watchtower Ruins",
+      "type": "ruin",
+      "description": "A leaning stone tower where green lantern fire moves without wind.",
+      "connectedLocationIds": ["old_road"]
+    }
+  ],
+  "npcs": [
+    {
+      "id": "npc_captain_veyra",
+      "name": "Captain Veyra",
+      "role": "Gate captain",
+      "disposition": "suspicious",
+      "locationId": "bleakmoor_gate",
+      "questIds": ["q_missing_caravan"],
+      "visibleAtStart": true
+    },
+    {
+      "id": "npc_lantern_keeper",
+      "name": "Lantern Keeper Orsik",
+      "role": "Hidden witness",
+      "disposition": "terrified",
+      "locationId": "old_road",
+      "questIds": ["q_missing_caravan"]
+    }
+  ],
+  "quests": [
+    {
+      "id": "q_missing_caravan",
+      "title": "Find the Missing Caravan",
+      "status": "active",
+      "stage": "Ask at Bleakmoor Gate",
+      "summary": "A supply caravan vanished after leaving for the old road.",
+      "visibleAtStart": true,
+      "objectives": [
+        {
+          "id": "obj_question_veyra",
+          "description": "Question Captain Veyra about the caravan route.",
+          "status": "open"
+        },
+        {
+          "id": "obj_find_wreck",
+          "description": "Find the caravan wreck on the old road.",
+          "status": "open"
+        }
+      ]
+    }
+  ],
+  "enemies": [
+    {
+      "id": "lantern_wraith",
+      "name": "Lantern Wraith",
+      "creatureType": "undead",
+      "challengeTier": "hard",
+      "descriptionShort": "A drowned spirit bound to a green marsh lantern.",
+      "locationIds": ["watchtower_ruins"],
+      "tags": ["undead", "lantern", "boss"],
+      "behavior": {
+        "combatRole": "assassin"
+      }
+    }
+  ],
+  "encounters": [
+    {
+      "id": "enc_lantern_wraith",
+      "title": "The Lantern Wraith",
+      "summary": "The wraith tests whether the party follows the caravan lights or flees into the ruin.",
+      "locationIds": ["watchtower_ruins"],
+      "questIds": ["q_missing_caravan"],
+      "checkpointIds": ["cp_watchtower"],
+      "enemyIds": ["lantern_wraith"],
+      "completion": {
+        "anyOf": ["defeat", "banish", "bargain"]
+      }
+    }
+  ],
+  "segments": [
+    {
+      "id": "seg_question_veyra",
+      "title": "Question Captain Veyra",
+      "description": "Veyra reveals the caravan was last seen following lanterns down the old road.",
+      "trigger": {
+        "type": "state",
+        "location_contains": "bleakmoor",
+        "quest_contains": "missing caravan"
+      },
+      "tags": ["gate", "mainline"]
+    }
+  ],
+  "checkpoints": [
+    {
+      "id": "cp_gate",
+      "title": "Question the gate captain",
+      "summary": "Learn where the caravan went.",
+      "locationIds": ["bleakmoor_gate"],
+      "questIds": ["q_missing_caravan"],
+      "npcIds": ["npc_captain_veyra"],
+      "objectiveIds": ["obj_question_veyra"],
+      "segmentIds": ["seg_question_veyra"],
+      "nextCheckpointIds": ["cp_old_road"],
+      "completeWhen": {
+        "objectiveIds": ["obj_question_veyra"]
+      }
+    },
+    {
+      "id": "cp_old_road",
+      "title": "Find the caravan wreck",
+      "summary": "Reach the flooded road and discover what hit the caravan.",
+      "locationIds": ["old_road"],
+      "questIds": ["q_missing_caravan"],
+      "objectiveIds": ["obj_find_wreck"],
+      "prerequisiteCheckpointIds": ["cp_gate"],
+      "nextCheckpointIds": ["cp_watchtower"],
+      "rejoinTargetCheckpointId": "cp_old_road",
+      "completeWhen": {
+        "objectiveIds": ["obj_find_wreck"]
+      }
+    },
+    {
+      "id": "cp_watchtower",
+      "title": "Confront the lantern wraith",
+      "summary": "Resolve the wraith at the watchtower by force, ritual, or bargain.",
+      "locationIds": ["watchtower_ruins"],
+      "questIds": ["q_missing_caravan"],
+      "encounterIds": ["enc_lantern_wraith"],
+      "prerequisiteCheckpointIds": ["cp_old_road"],
+      "failureCheckpointIds": ["cp_old_road"],
+      "rejoinTargetCheckpointId": "cp_watchtower",
+      "directorRules": {
+        "checkpointStyle": "soft",
+        "offTrackPolicy": "improvise_and_reconnect"
+      }
+    }
+  ],
+  "directorRules": {
+    "mainQuestGeneration": "pack_only",
+    "sideQuestGeneration": "allowed_tagged",
+    "newNpcs": "allowed_as_minor_or_temporary",
+    "newLocations": "allowed_as_local_detail",
+    "offTrackPolicy": "improvise_and_reconnect",
+    "checkpointStyle": "soft"
+  }
+}

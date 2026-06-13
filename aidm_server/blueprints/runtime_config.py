@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 
+from aidm_server.auth import DEFAULT_WORKSPACE_ID
 from aidm_server.errors import error_response
 from aidm_server.services.runtime_config import (
     RuntimeConfigError,
@@ -17,6 +18,16 @@ from aidm_server.validation import coerce_bool, parse_json_body
 runtime_config_bp = Blueprint('runtime_config', __name__)
 
 
+def _llm_config_update_authorized() -> bool:
+    if not bool(current_app.config.get('AIDM_AUTH_REQUIRED', False)):
+        return True
+    if str(getattr(g, 'aidm_workspace_id', '') or '') != DEFAULT_WORKSPACE_ID:
+        return False
+    if getattr(g, 'aidm_account_id', None):
+        return bool(getattr(g, 'aidm_workspace_admin', False))
+    return True
+
+
 @runtime_config_bp.route('/llm/config', methods=['GET'])
 def llm_config():
     telemetry_metric('runtime_config.llm_config.requests_total', 1)
@@ -29,6 +40,14 @@ def update_llm_config():
     payload = parse_json_body(request)
     if payload is None:
         return error_response('validation_error', 'Expected JSON request body.', 400)
+
+    if not _llm_config_update_authorized():
+        telemetry_metric('runtime_config.llm_config_updates.denied_total', 1)
+        return error_response(
+            'runtime_config_admin_required',
+            'Only the owner table admin can change global LLM runtime config.',
+            403,
+        )
 
     persist = coerce_bool(payload.get('persist'), True)
     if persist is None:

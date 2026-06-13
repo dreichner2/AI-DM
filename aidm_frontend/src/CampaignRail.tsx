@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from 'react'
-import { Archive, Globe2, Pencil, Plus, Trash2 } from 'lucide-react'
+import { Archive, Globe2, Pencil, Plus, Trash2, Upload } from 'lucide-react'
 import { NavItem, StatusDot, ThinIcon, Thumbnail } from './AppChrome'
 import type { InspectorTab } from './InspectorPanel'
 
@@ -49,6 +49,7 @@ type CampaignRailProps = {
   onArchiveCampaign: () => void
   onDeleteCampaign: () => void
   onCreateCampaign: () => void
+  onImportCampaignPack: () => void
   onManageWorlds: () => void
   onRenameSession: () => void
   onArchiveSession: () => void
@@ -91,6 +92,7 @@ export function CampaignRail({
   onArchiveCampaign,
   onDeleteCampaign,
   onCreateCampaign,
+  onImportCampaignPack,
   onManageWorlds,
   onRenameSession,
   onArchiveSession,
@@ -108,7 +110,7 @@ export function CampaignRail({
   return (
     <aside className="campaign-rail">
       <section className="rail-section">
-        <div className="rail-heading">
+        <div className="rail-heading campaign-heading">
           <span>Campaigns</span>
           <div className="rail-heading-actions">
             <button
@@ -140,6 +142,14 @@ export function CampaignRail({
             </button>
             <button type="button" aria-label="Manage worlds" title="Manage worlds" onClick={onManageWorlds}>
               <Globe2 size={15} />
+            </button>
+            <button
+              type="button"
+              aria-label="Import campaign pack"
+              title="Import campaign pack"
+              onClick={onImportCampaignPack}
+            >
+              <Upload size={15} />
             </button>
             <button type="button" aria-label="Add campaign" title="Add campaign" onClick={onCreateCampaign}>
               <Plus size={16} />

@@ -89,10 +89,15 @@ def hard_delete_session_record(session_obj: Session) -> dict:
             .all()
         ]
 
-        fact_delete_filters = []
+        fact_ids_to_delete = []
         thread_delete_filters = []
         if turn_ids:
-            fact_delete_filters.append(StoryFact.source_turn_id.in_(turn_ids))
+            fact_ids_to_delete = [
+                row[0]
+                for row in db.session.query(StoryFact.fact_id)
+                .filter(StoryFact.source_turn_id.in_(turn_ids))
+                .all()
+            ]
             thread_delete_filters.append(StoryThread.origin_turn_id.in_(turn_ids))
             TurnCanonUpdate.query.filter(TurnCanonUpdate.turn_id.in_(turn_ids)).delete(
                 synchronize_session=False,
@@ -113,6 +118,10 @@ def hard_delete_session_record(session_obj: Session) -> dict:
                 {StoryEntity.last_seen_turn_id: None},
                 synchronize_session=False,
             )
+            StoryEntity.query.filter(StoryEntity.first_seen_turn_id.in_(turn_ids)).update(
+                {StoryEntity.first_seen_turn_id: None},
+                synchronize_session=False,
+            )
             StoryThread.query.filter(StoryThread.last_touched_turn_id.in_(turn_ids)).update(
                 {StoryThread.last_touched_turn_id: None},
                 synchronize_session=False,
@@ -126,15 +135,46 @@ def hard_delete_session_record(session_obj: Session) -> dict:
             DmCoherenceFeedback.query.filter_by(session_id=session_id).delete(synchronize_session=False)
             TurnEvent.query.filter_by(session_id=session_id).delete(synchronize_session=False)
 
-        if session_entity_ids:
-            fact_delete_filters.append(StoryFact.subject_entity_id.in_(session_entity_ids))
-            fact_delete_filters.append(StoryFact.object_entity_id.in_(session_entity_ids))
-        if fact_delete_filters:
-            StoryFact.query.filter(or_(*fact_delete_filters)).delete(synchronize_session=False)
+        if fact_ids_to_delete:
+            StoryFact.query.filter(StoryFact.supersedes_fact_id.in_(fact_ids_to_delete)).update(
+                {StoryFact.supersedes_fact_id: None},
+                synchronize_session=False,
+            )
+            StoryFact.query.filter(StoryFact.fact_id.in_(fact_ids_to_delete)).delete(synchronize_session=False)
         if thread_delete_filters:
             StoryThread.query.filter(or_(*thread_delete_filters)).delete(synchronize_session=False)
+
+        entity_ids_to_delete: list[int] = []
         if session_entity_ids:
-            StoryEntity.query.filter(StoryEntity.entity_id.in_(session_entity_ids)).delete(synchronize_session=False)
+            referenced_entity_ids = {
+                row[0]
+                for row in db.session.query(StoryFact.subject_entity_id)
+                .filter(StoryFact.subject_entity_id.in_(session_entity_ids))
+                .distinct()
+                .all()
+                if row[0] is not None
+            }
+            referenced_entity_ids.update(
+                row[0]
+                for row in db.session.query(StoryFact.object_entity_id)
+                .filter(StoryFact.object_entity_id.in_(session_entity_ids))
+                .distinct()
+                .all()
+                if row[0] is not None
+            )
+            query = StoryEntity.query.filter(StoryEntity.entity_id.in_(session_entity_ids))
+            for entity in query.all():
+                if entity.entity_id in referenced_entity_ids:
+                    continue
+                if entity.last_seen_turn_id is not None and entity.last_seen_turn_id not in turn_ids:
+                    continue
+                entity_ids_to_delete.append(entity.entity_id)
+            if entity_ids_to_delete:
+                StoryEntity.query.filter(StoryEntity.entity_id.in_(entity_ids_to_delete)).delete(synchronize_session=False)
+            StoryEntity.query.filter(StoryEntity.entity_id.in_(session_entity_ids)).update(
+                {StoryEntity.session_id: None},
+                synchronize_session=False,
+            )
 
         PlayerAction.query.filter_by(session_id=session_id).delete(synchronize_session=False)
         SessionLogEntry.query.filter_by(session_id=session_id).delete(synchronize_session=False)

@@ -7,6 +7,7 @@ import { dirname, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { INITIATIVE_ROLL_ABILITY_KEY } from './gameActions'
+import { LEGACY_PASSWORD_SETUP_MESSAGE } from './useRuntimeSettings'
 import type {
   BetaSummary,
   Campaign,
@@ -178,6 +179,23 @@ function installMatchMediaMock(matches: boolean) {
       dispatchEvent: vi.fn(),
     })),
   )
+}
+
+function installLegacyMatchMediaMock(matches: boolean) {
+  const addListener = vi.fn()
+  const removeListener = vi.fn()
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((query: string) => ({
+      matches,
+      media: query,
+      onchange: null,
+      addListener,
+      removeListener,
+      dispatchEvent: vi.fn(),
+    })),
+  )
+  return { addListener, removeListener }
 }
 
 function resetApiData() {
@@ -1750,6 +1768,18 @@ describe('App user workflow regressions', () => {
     expect(within(mobilePresence).queryByLabelText('Ember is typing')).not.toBeInTheDocument()
   })
 
+  it('mounts mobile layout with legacy MediaQueryList listeners', async () => {
+    const legacyListeners = installLegacyMatchMediaMock(true)
+    const rendered = await renderLoadedApp()
+
+    expect(screen.getByRole('button', { name: 'Open table settings' })).toBeInTheDocument()
+    expect(legacyListeners.addListener).toHaveBeenCalledWith(expect.any(Function))
+
+    rendered.unmount()
+
+    expect(legacyListeners.removeListener).toHaveBeenCalledWith(legacyListeners.addListener.mock.calls[0][0])
+  })
+
   it('opens table settings from the mobile top bar gear', async () => {
     installMatchMediaMock(true)
     await renderLoadedApp()
@@ -2395,8 +2425,10 @@ describe('App user workflow regressions', () => {
 
     render(<App />)
 
-    const dialog = await screen.findByRole('dialog', { name: 'Log In' })
-    expect(within(dialog).getAllByText('Passwords are required now. Please set one now.')).not.toHaveLength(0)
+    const dialog = await screen.findByRole('dialog', { name: 'Sign Up' })
+    expect(within(dialog).getAllByText(LEGACY_PASSWORD_SETUP_MESSAGE)).not.toHaveLength(0)
+    expect(within(dialog).getByLabelText('First Name')).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('Last Name')).toBeInTheDocument()
     expect(within(dialog).getByLabelText('New Password')).toBeInTheDocument()
     expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
     await waitFor(() => expect(sessionStorage.getItem('aidm:workspaceToken')).toBeNull())

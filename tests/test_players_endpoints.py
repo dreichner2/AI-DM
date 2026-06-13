@@ -71,6 +71,25 @@ def test_create_player_assigns_starting_inventory_from_class(client, app):
         assert actor['metadata']['armorClassBreakdown']['shieldBonus'] == 2
 
 
+def test_player_character_from_model_ignores_non_finite_persisted_armor_metadata(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        assert player is not None
+        player.stats = safe_json_dumps({'dexterity': 14}, {})
+        player.inventory = (
+            '[{"name":"Homebrew Armor","type":"armor","equipped":true,'
+            '"slot":"body_armor","baseAc":1e10000}]'
+        )
+        db.session.commit()
+
+        actor = player_character_from_model(player)
+
+    assert actor['stats']['armorClass'] == 13
+    assert actor['metadata']['armorClassBreakdown']['armorBase'] == 11
+
+
 def test_create_player_assigns_starting_inventory_from_extended_class(client, app):
     ids = seed_world_campaign_player_session(app)
 

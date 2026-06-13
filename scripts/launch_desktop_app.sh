@@ -4,6 +4,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="${AIDM_LAUNCHER_LOG_DIR:-${REPO_ROOT}/tmp/launcher_logs}"
 LOCK_DIR="${LOG_DIR}/launcher.lock"
+LOCK_OWNER_FILE="${LOCK_DIR}/owner"
+LOCK_CLEANUP_DIR="${LOG_DIR}/launcher.lock.cleanup"
+LOCK_WAIT_ATTEMPTS="${AIDM_LAUNCHER_LOCK_WAIT_ATTEMPTS:-25}"
+LOCK_WAIT_SECONDS="${AIDM_LAUNCHER_LOCK_WAIT_SECONDS:-0.2}"
 BACKEND_PORT="${AIDM_BACKEND_PORT:-5050}"
 BACKEND_HEALTH_URL="http://127.0.0.1:${BACKEND_PORT}/api/health"
 APP_URL="${AIDM_APP_URL:-http://127.0.0.1:${BACKEND_PORT}/}"
@@ -36,6 +40,9 @@ log() {
 fail() {
   local message="$1"
   log "ERROR: ${message}"
+  if [[ "${AIDM_LAUNCHER_SUPPRESS_UI:-0}" == "1" ]]; then
+    exit 1
+  fi
   /usr/bin/open "${LOG_DIR}" >/dev/null 2>&1 || true
   /usr/bin/osascript - "${message}" "${LOG_DIR}" <<'APPLESCRIPT' >/dev/null 2>&1 || true
 on run argv
@@ -47,26 +54,134 @@ APPLESCRIPT
 }
 
 acquire_launcher_lock() {
-  if /bin/mkdir "${LOCK_DIR}" 2>/dev/null; then
-    trap '/bin/rmdir "${LOCK_DIR}" >/dev/null 2>&1 || true' EXIT
+  local token
+  token="$(new_launcher_lock_token)"
+  if try_acquire_launcher_lock "${token}"; then
     return 0
   fi
 
   log "Another launcher run is active; waiting briefly."
 
   local attempt
-  for attempt in {1..25}; do
-    sleep 0.2
-    if /bin/mkdir "${LOCK_DIR}" 2>/dev/null; then
-      trap '/bin/rmdir "${LOCK_DIR}" >/dev/null 2>&1 || true' EXIT
+  for ((attempt = 1; attempt <= LOCK_WAIT_ATTEMPTS; attempt++)); do
+    sleep "${LOCK_WAIT_SECONDS}"
+    if try_acquire_launcher_lock "${token}"; then
       return 0
     fi
   done
 
-  log "Removing stale launcher lock."
-  /bin/rm -rf "${LOCK_DIR}"
-  /bin/mkdir "${LOCK_DIR}" || fail "Could not acquire launcher lock at ${LOCK_DIR}."
-  trap '/bin/rmdir "${LOCK_DIR}" >/dev/null 2>&1 || true' EXIT
+  if take_over_stale_launcher_lock "${token}"; then
+    return 0
+  fi
+
+  local owner_pid
+  owner_pid="$(launcher_lock_value pid || true)"
+  if launcher_lock_pid_alive "${owner_pid}"; then
+    log "Another launcher run is still active (pid ${owner_pid}); leaving it to finish."
+    exit 0
+  fi
+  fail "Could not acquire launcher lock at ${LOCK_DIR}."
+}
+
+new_launcher_lock_token() {
+  printf '%s.%s.%s' "$$" "$(date +%s)" "${RANDOM}"
+}
+
+launcher_lock_value_from() {
+  local owner_file="$1"
+  local key="$2"
+  [[ -f "${owner_file}" ]] || return 1
+  /usr/bin/awk -F= -v key="${key}" '$1 == key { print substr($0, length($1) + 2); exit }' "${owner_file}"
+}
+
+launcher_lock_value() {
+  launcher_lock_value_from "${LOCK_OWNER_FILE}" "$1"
+}
+
+launcher_lock_pid_alive() {
+  local pid="$1"
+  [[ "${pid}" =~ ^[0-9]+$ ]] || return 1
+  /bin/kill -0 "${pid}" >/dev/null 2>&1
+}
+
+write_launcher_lock_owner() {
+  {
+    printf 'pid=%s\n' "$$"
+    printf 'token=%s\n' "${LOCK_TOKEN}"
+    printf 'created_at=%s\n' "$(date +%s)"
+  } >"${LOCK_OWNER_FILE}"
+}
+
+activate_launcher_lock() {
+  LOCK_TOKEN="$1"
+  write_launcher_lock_owner || fail "Could not write launcher lock owner at ${LOCK_OWNER_FILE}."
+  trap 'release_launcher_lock' EXIT
+}
+
+try_acquire_launcher_lock() {
+  local token="$1"
+  if ! /bin/mkdir "${LOCK_DIR}" 2>/dev/null; then
+    return 1
+  fi
+  if [[ -d "${LOCK_CLEANUP_DIR}" ]]; then
+    /bin/rmdir "${LOCK_DIR}" >/dev/null 2>&1 || true
+    return 1
+  fi
+  activate_launcher_lock "${token}"
+}
+
+take_over_stale_launcher_lock() {
+  local token="$1"
+  if ! /bin/mkdir "${LOCK_CLEANUP_DIR}" 2>/dev/null; then
+    return 1
+  fi
+
+  local owner_pid
+  owner_pid="$(launcher_lock_value pid || true)"
+  if [[ -z "${owner_pid}" ]]; then
+    log "Launcher lock has no owner metadata; not removing it automatically."
+    /bin/rmdir "${LOCK_CLEANUP_DIR}" >/dev/null 2>&1 || true
+    return 1
+  fi
+  if launcher_lock_pid_alive "${owner_pid}"; then
+    /bin/rmdir "${LOCK_CLEANUP_DIR}" >/dev/null 2>&1 || true
+    return 1
+  fi
+
+  local stale_dir="${LOCK_DIR}.stale.$$.$RANDOM"
+  if [[ -d "${LOCK_DIR}" ]]; then
+    if ! /bin/mv "${LOCK_DIR}" "${stale_dir}" 2>/dev/null; then
+      /bin/rmdir "${LOCK_CLEANUP_DIR}" >/dev/null 2>&1 || true
+      return 1
+    fi
+    local moved_pid
+    moved_pid="$(launcher_lock_value_from "${stale_dir}/owner" pid || true)"
+    if [[ -z "${moved_pid}" ]] || launcher_lock_pid_alive "${moved_pid}"; then
+      if [[ ! -e "${LOCK_DIR}" ]]; then
+        /bin/mv "${stale_dir}" "${LOCK_DIR}" >/dev/null 2>&1 || true
+      fi
+      /bin/rmdir "${LOCK_CLEANUP_DIR}" >/dev/null 2>&1 || true
+      return 1
+    fi
+    /bin/rm -rf "${stale_dir}"
+  fi
+
+  if ! /bin/mkdir "${LOCK_DIR}" 2>/dev/null; then
+    /bin/rmdir "${LOCK_CLEANUP_DIR}" >/dev/null 2>&1 || true
+    return 1
+  fi
+  activate_launcher_lock "${token}"
+  /bin/rmdir "${LOCK_CLEANUP_DIR}" >/dev/null 2>&1 || true
+  log "Removed stale launcher lock."
+}
+
+release_launcher_lock() {
+  local owner_token
+  owner_token="$(launcher_lock_value token || true)"
+  if [[ -n "${LOCK_TOKEN:-}" && "${owner_token}" == "${LOCK_TOKEN}" ]]; then
+    /bin/rm -f "${LOCK_OWNER_FILE}" >/dev/null 2>&1 || true
+    /bin/rmdir "${LOCK_DIR}" >/dev/null 2>&1 || true
+  fi
 }
 
 xml_escape() {
@@ -590,7 +705,7 @@ start_backend() {
   wait_for_http "${BACKEND_HEALTH_URL}" "Backend" 5 || fail "Backend did not become ready at ${BACKEND_HEALTH_URL}."
 }
 
-{
+main() {
   log "Launch requested at $(date)"
   acquire_launcher_lock
   stop_legacy_frontend
@@ -603,4 +718,8 @@ start_backend() {
 
   start_tailscale_funnel
   /usr/bin/osascript -e 'display notification "Unified AI-DM is running." with title "AI-DM Launcher"' >/dev/null 2>&1 || true
-} >>"${LOG_DIR}/launcher.log" 2>&1
+}
+
+if [[ "${AIDM_LAUNCHER_SOURCE_ONLY:-0}" != "1" ]]; then
+  main >>"${LOG_DIR}/launcher.log" 2>&1
+fi

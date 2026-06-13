@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 
 import pytest
 from flask import Flask
 
-from aidm_server.auth import extract_socket_token
+from aidm_server.auth import extract_socket_token, hash_secret
 from aidm_server.database import db
-from aidm_server.models import Campaign, Player, Session, World
+from aidm_server.models import Account, AccountWorkspaceMembership, Campaign, Player, Session, World
 
 
 def _build_auth_runtime(tmp_path, monkeypatch, extra_env: dict[str, str] | None = None):
@@ -277,6 +278,100 @@ def test_auth_tokens_are_scoped_to_campaign_workspaces(tmp_path, monkeypatch):
     friend_socket.disconnect()
 
 
+def test_llm_config_update_requires_owner_workspace_token(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={
+            'AIDM_API_AUTH_TOKENS': 'owner-token,tenant-token',
+            'AIDM_API_AUTH_TOKEN_WORKSPACES': 'owner=owner-token,tenant_b=tenant-token',
+            'AIDM_LLM_PROVIDER': 'gemini',
+            'AIDM_LLM_MODEL': 'gemini-2.5-pro',
+        },
+    )
+    client = app.test_client()
+    app.config['AIDM_LLM_PROVIDER'] = 'gemini'
+    app.config['AIDM_LLM_MODEL'] = 'gemini-2.5-pro'
+
+    tenant_patch = client.patch(
+        '/api/llm/config',
+        headers={'Authorization': 'Bearer tenant-token'},
+        json={'provider': 'fallback', 'model': 'deterministic-v1', 'persist': False},
+    )
+
+    assert tenant_patch.status_code == 403
+    assert tenant_patch.get_json()['error_code'] == 'runtime_config_admin_required'
+    assert app.config['AIDM_LLM_PROVIDER'] == 'gemini'
+    assert os.environ['AIDM_LLM_PROVIDER'] == 'gemini'
+
+    owner_patch = client.patch(
+        '/api/llm/config',
+        headers={'Authorization': 'Bearer owner-token'},
+        json={'provider': 'fallback', 'model': 'deterministic-v1', 'persist': False},
+    )
+
+    assert owner_patch.status_code == 200
+    assert owner_patch.get_json()['current']['provider'] == 'fallback'
+    assert app.config['AIDM_LLM_PROVIDER'] == 'fallback'
+    assert os.environ['AIDM_LLM_PROVIDER'] == 'fallback'
+
+
+def test_llm_config_update_requires_owner_account_admin_role(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={
+            'AIDM_API_AUTH_TOKENS': 'owner-token',
+            'AIDM_API_AUTH_TOKEN_WORKSPACES': 'owner=owner-token',
+            'AIDM_LLM_PROVIDER': 'gemini',
+            'AIDM_LLM_MODEL': 'gemini-2.5-pro',
+        },
+    )
+    client = app.test_client()
+    app.config['AIDM_LLM_PROVIDER'] = 'gemini'
+    app.config['AIDM_LLM_MODEL'] = 'gemini-2.5-pro'
+    with app.app_context():
+        account = Account(
+            username='maya',
+            first_name='Maya',
+            last_name='Tester',
+            password_hash='configured',
+            account_token_hash=hash_secret('account-token'),
+        )
+        db.session.add(account)
+        db.session.flush()
+        membership = AccountWorkspaceMembership(account_id=account.account_id, workspace_id='owner', role='player')
+        db.session.add(membership)
+        db.session.commit()
+        account_id = account.account_id
+
+    account_headers = {'Authorization': 'Bearer account-token', 'X-AIDM-Workspace-Id': 'owner'}
+    player_patch = client.patch(
+        '/api/llm/config',
+        headers=account_headers,
+        json={'provider': 'fallback', 'model': 'deterministic-v1', 'persist': False},
+    )
+
+    assert player_patch.status_code == 403
+    assert player_patch.get_json()['error_code'] == 'runtime_config_admin_required'
+    assert app.config['AIDM_LLM_PROVIDER'] == 'gemini'
+
+    with app.app_context():
+        membership = AccountWorkspaceMembership.query.filter_by(account_id=account_id, workspace_id='owner').one()
+        membership.role = 'admin'
+        db.session.commit()
+
+    admin_patch = client.patch(
+        '/api/llm/config',
+        headers=account_headers,
+        json={'provider': 'fallback', 'model': 'deterministic-v1', 'persist': False},
+    )
+
+    assert admin_patch.status_code == 200
+    assert admin_patch.get_json()['current']['provider'] == 'fallback'
+    assert app.config['AIDM_LLM_PROVIDER'] == 'fallback'
+
+
 def test_socket_token_extraction_ignores_query_and_event_payloads(tmp_path, monkeypatch):
     app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
 
@@ -288,6 +383,45 @@ def test_socket_token_extraction_ignores_query_and_event_payloads(tmp_path, monk
 
     with app.test_request_context('/socket.io/'):
         assert extract_socket_token(auth_payload={'token': 'token-123'}) == 'token-123'
+
+
+def test_admin_denies_access_when_auth_is_disabled(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={
+            'AIDM_AUTH_REQUIRED': 'false',
+            'AIDM_ADMIN_ENABLED': 'true',
+            'AIDM_API_AUTH_TOKENS': '',
+        },
+    )
+    client = app.test_client()
+
+    response = client.get('/admin/')
+
+    assert response.status_code == 403
+
+
+def test_admin_denies_model_view_writes_when_auth_is_disabled(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={
+            'AIDM_AUTH_REQUIRED': 'false',
+            'AIDM_ADMIN_ENABLED': 'true',
+            'AIDM_API_AUTH_TOKENS': '',
+        },
+    )
+    client = app.test_client()
+
+    response = client.post(
+        '/admin/world/new/',
+        data={'name': 'pwned-world', 'description': 'created without authentication'},
+    )
+
+    assert response.status_code == 403
+    with app.app_context():
+        assert World.query.filter_by(name='pwned-world').count() == 0
 
 
 def test_admin_requires_auth_when_enabled(tmp_path, monkeypatch):

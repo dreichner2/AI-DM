@@ -50,6 +50,23 @@ function installMatchMediaMock(matches: boolean) {
   )
 }
 
+function installLegacyMatchMediaMock(matches: boolean) {
+  const addListener = vi.fn()
+  const removeListener = vi.fn()
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((query: string) => ({
+      matches,
+      media: query,
+      onchange: null,
+      addListener,
+      removeListener,
+      dispatchEvent: vi.fn(),
+    })),
+  )
+  return { addListener, removeListener }
+}
+
 describe('SceneMusicPlayer', () => {
   let playMock: ReturnType<typeof vi.spyOn>
   let pauseMock: ReturnType<typeof vi.spyOn>
@@ -224,6 +241,20 @@ describe('SceneMusicPlayer', () => {
     expect(screen.getByRole('button', { name: 'Previous music track' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Move music player' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Resize music player' })).not.toBeInTheDocument()
+  })
+
+  it('mounts mobile layout with legacy MediaQueryList listeners', () => {
+    const legacyListeners = installLegacyMatchMediaMock(true)
+    storeMusicLayout(96, 60)
+    const rendered = render(<SceneMusicPlayer />)
+
+    const player = screen.getByLabelText('Scene music player')
+    expect(player).toHaveClass('is-mobile-static')
+    expect(legacyListeners.addListener).toHaveBeenCalledWith(expect.any(Function))
+
+    rendered.unmount()
+
+    expect(legacyListeners.removeListener).toHaveBeenCalledWith(legacyListeners.addListener.mock.calls[0][0])
   })
 
   it('applies remote session music state while keeping local volume independent', async () => {
