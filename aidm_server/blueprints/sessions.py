@@ -10,7 +10,6 @@ from aidm_server.database import db
 from aidm_server.errors import error_response
 from aidm_server.llm import query_gpt
 from aidm_server.models import (
-    Campaign,
     Session,
     SessionLogEntry,
     SessionState,
@@ -28,6 +27,7 @@ from aidm_server.services.session_lifecycle import (
 )
 from aidm_server.services.campaign_pack_progress import (
     CampaignPackProgressError,
+    PROGRESS_CHANGED_EVENT,
     campaign_pack_progress_payload,
     control_campaign_pack_progress,
 )
@@ -38,6 +38,8 @@ from aidm_server.time_utils import utc_now
 from aidm_server.turn_events import SESSION_ENDED_EVENT, SESSION_RECAP_EVENT, SESSION_STARTED_EVENT, record_turn_event
 from aidm_server.validation import coerce_int, missing_fields, optional_text, parse_json_body, positive_int, required_text
 from aidm_server.workspace_access import (
+    current_account_id,
+    current_account_is_workspace_admin,
     current_workspace_id,
     get_campaign as workspace_campaign,
     get_session as workspace_session,
@@ -111,6 +113,18 @@ def _stale_update_error(payload: dict, current_updated_at) -> tuple[dict, int] |
 
 def _include_archived() -> bool:
     return str(request.args.get('include_archived', '')).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _campaign_pack_operator_view() -> bool:
+    return current_account_id() is None or current_account_is_workspace_admin()
+
+
+def _campaign_pack_progress_actor() -> str:
+    account_id = current_account_id()
+    if account_id is None:
+        return 'operator'
+    role = 'admin' if current_account_is_workspace_admin() else 'player'
+    return f'account:{account_id}:{role}'
 
 
 def _bounded_session_recap_source(session_id: int, session_state: SessionState | None) -> str:
@@ -309,6 +323,7 @@ def list_campaign_sessions(campaign_id):
             campaign_id,
             include_archived=_include_archived(),
             limit=(max(1, min(500, limit)) if limit is not None else None),
+            include_hidden_state=_campaign_pack_operator_view(),
         )
     )
 
@@ -322,7 +337,11 @@ def import_session():
         return error_response('validation_error', 'Expected JSON request body.', 400)
 
     try:
-        result = import_session_export(payload, workspace_id=current_workspace_id())
+        result = import_session_export(
+            payload,
+            workspace_id=current_workspace_id(),
+            include_hidden_state=_campaign_pack_operator_view(),
+        )
         db.session.commit()
         telemetry_metric('sessions.import.success_total', 1)
         return jsonify(result.payload), 201
@@ -368,7 +387,7 @@ def update_session(session_id):
         session_obj.state_snapshot = safe_json_dumps(_metadata_cleaned_snapshot(session_obj.state_snapshot), {})
         db.session.commit()
         telemetry_metric('sessions.update.success_total', 1)
-        return jsonify(session_payload(session_obj))
+        return jsonify(session_payload(session_obj, include_hidden_state=_campaign_pack_operator_view()))
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to update session: %s', str(exc))
@@ -385,7 +404,7 @@ def archive_session(session_id):
         return error_response('session_not_found', 'Session not found.', 404)
 
     try:
-        payload = archive_session_record(session_obj)
+        payload = archive_session_record(session_obj, include_hidden_state=_campaign_pack_operator_view())
         db.session.commit()
         telemetry_metric('sessions.archive.success_total', 1)
         return jsonify({'archived': True, 'session': payload})
@@ -405,7 +424,7 @@ def restore_session(session_id):
         return error_response('session_not_found', 'Session not found.', 404)
 
     try:
-        payload = restore_session_record(session_obj)
+        payload = restore_session_record(session_obj, include_hidden_state=_campaign_pack_operator_view())
         db.session.commit()
         telemetry_metric('sessions.restore.success_total', 1)
         return jsonify({'restored': True, 'session': payload})
@@ -426,7 +445,11 @@ def delete_session(session_id):
 
     hard_delete = str(request.args.get('hard', '')).strip().lower() in {'1', 'true', 'yes', 'on'}
     try:
-        result = delete_session_record(session_obj, hard_delete=hard_delete)
+        result = delete_session_record(
+            session_obj,
+            hard_delete=hard_delete,
+            include_hidden_state=_campaign_pack_operator_view(),
+        )
         db.session.commit()
         telemetry_metric(
             'sessions.delete.success_total' if result.hard_deleted else 'sessions.delete.archived_total',
@@ -494,6 +517,8 @@ def get_session_events(session_id):
     before_id = coerce_int(request.args.get('before_id'))
 
     query = TurnEvent.query.filter_by(session_id=session_id)
+    if not _campaign_pack_operator_view():
+        query = query.filter(TurnEvent.event_type != PROGRESS_CHANGED_EVENT)
     if before_id is not None:
         query = query.filter(TurnEvent.event_id < before_id)
 
@@ -522,7 +547,13 @@ def get_session_state(session_id):
         return error_response('session_not_found', 'Session not found.', 404)
 
     session_state = SessionState.query.filter_by(session_id=session_id).first()
-    return jsonify(session_state_payload(session_obj, session_state))
+    return jsonify(
+        session_state_payload(
+            session_obj,
+            session_state,
+            include_hidden_state=_campaign_pack_operator_view(),
+        )
+    )
 
 
 @sessions_bp.route('/<int:session_id>/campaign-pack/progress', methods=['GET'])
@@ -531,7 +562,7 @@ def get_session_campaign_pack_progress(session_id):
     if not session_obj:
         return error_response('session_not_found', 'Session not found.', 404)
     try:
-        return jsonify(campaign_pack_progress_payload(session_id=session_id))
+        return jsonify(campaign_pack_progress_payload(session_id=session_id, include_hidden=_campaign_pack_operator_view()))
     except CampaignPackProgressError as exc:
         return error_response(exc.error_code, str(exc), exc.status_code)
 
@@ -541,6 +572,12 @@ def update_session_campaign_pack_progress(session_id):
     session_obj = workspace_session(session_id)
     if not session_obj:
         return error_response('session_not_found', 'Session not found.', 404)
+    if not _campaign_pack_operator_view():
+        return error_response(
+            'forbidden',
+            'Only workspace admins can control campaign pack progress.',
+            403,
+        )
     payload = parse_json_body(request)
     if payload is None:
         return error_response('validation_error', 'Expected JSON request body.', 400)
@@ -549,12 +586,16 @@ def update_session_campaign_pack_progress(session_id):
     checkpoint_id = str(checkpoint_id).strip() if checkpoint_id not in (None, '') else None
     reason = payload.get('reason')
     reason = str(reason).strip() if reason not in (None, '') else None
+    raw_expected_revision = payload.get('expectedRevision') if 'expectedRevision' in payload else payload.get('expected_revision')
+    expected_revision = coerce_int(raw_expected_revision)
     try:
         result = control_campaign_pack_progress(
             session_id=session_id,
             action=action,
             checkpoint_id=checkpoint_id,
             reason=reason,
+            actor=_campaign_pack_progress_actor(),
+            expected_revision=expected_revision,
         )
         session_state = SessionState.query.filter_by(session_id=session_id).first()
         db.session.commit()
@@ -566,7 +607,13 @@ def update_session_campaign_pack_progress(session_id):
                 'skipped_checkpoint_ids': result.skipped_checkpoint_ids,
                 'failed_checkpoint_ids': result.failed_checkpoint_ids or [],
                 'reason': result.reason,
-                'state': session_state_payload(session_obj, session_state),
+                'progress_revision': result.progress_revision,
+                'event_id': result.event_id,
+                'state': session_state_payload(
+                    session_obj,
+                    session_state,
+                    include_hidden_state=_campaign_pack_operator_view(),
+                ),
             }
         )
     except CampaignPackProgressError as exc:

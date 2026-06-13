@@ -126,8 +126,70 @@
         "$ref": "#/$defs/checkpoint"
       }
     },
+    "clues": {
+      "type": "array",
+      "maxItems": 250,
+      "items": {
+        "$ref": "#/$defs/packRecord"
+      }
+    },
+    "factions": {
+      "type": "array",
+      "maxItems": 250,
+      "items": {
+        "$ref": "#/$defs/packRecord"
+      }
+    },
+    "maps": {
+      "type": "array",
+      "maxItems": 250,
+      "items": {
+        "$ref": "#/$defs/packRecord"
+      }
+    },
+    "handouts": {
+      "type": "array",
+      "maxItems": 250,
+      "items": {
+        "$ref": "#/$defs/packRecord"
+      }
+    },
+    "lore": {
+      "type": "array",
+      "maxItems": 250,
+      "items": {
+        "$ref": "#/$defs/packRecord"
+      }
+    },
     "directorRules": {
       "$ref": "#/$defs/directorRules"
+    },
+    "multiSessionGroupKey": {
+      "$ref": "#/$defs/id"
+    },
+    "gmNotes": {
+      "$ref": "#/$defs/gmNotes"
+    },
+    "hiddenSceneNotes": {
+      "$ref": "#/$defs/gmNotes"
+    },
+    "dependencies": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "$ref": "#/$defs/dependency"
+      }
+    },
+    "mods": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "$ref": "#/$defs/mod"
+      }
+    },
+    "marketplace": {
+      "type": "object",
+      "additionalProperties": true
     }
   },
   "$defs": {
@@ -160,6 +222,52 @@
           "additionalProperties": true
         }
       }
+    },
+    "packRecord": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/sourceFields"
+        },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["id"],
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 160
+            },
+            "name": {
+              "type": "string",
+              "maxLength": 160
+            },
+            "summary": {
+              "type": "string",
+              "maxLength": 4000
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 4000
+            },
+            "status": {
+              "type": "string",
+              "maxLength": 80
+            },
+            "visibleAtStart": {
+              "type": "boolean"
+            },
+            "hiddenToPlayers": {
+              "type": "boolean"
+            },
+            "knownToPlayers": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
     },
     "location": {
       "allOf": [
@@ -445,6 +553,44 @@
           "type": "string",
           "maxLength": 80
         },
+        "playerTitle": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "playerSummary": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "terminal": {
+          "type": "boolean",
+          "default": false
+        },
+        "chapter": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "act": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "gate": {
+          "enum": ["soft", "hard", "optional", "none"]
+        },
+        "canCompleteOutOfOrder": {
+          "type": "boolean",
+          "default": false
+        },
+        "visibleToPlayers": {
+          "type": "boolean"
+        },
+        "hiddenToPlayers": {
+          "type": "boolean"
+        },
         "locationIds": {
           "$ref": "#/$defs/idList"
         },
@@ -461,6 +607,9 @@
           "$ref": "#/$defs/idList"
         },
         "segmentIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "clueIds": {
           "$ref": "#/$defs/idList"
         },
         "nextCheckpointIds": {
@@ -525,6 +674,72 @@
           "enum": ["soft", "guided", "strict"]
         }
       }
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["packId"],
+      "properties": {
+        "packId": {
+          "$ref": "#/$defs/id"
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "versionRange": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "optional": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "mod": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "appliesToPackId": {
+          "$ref": "#/$defs/id"
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "dependencyPackIds": {
+          "$ref": "#/$defs/idList"
+        }
+      }
+    },
+    "gmNotes": {
+      "oneOf": [
+        {
+          "type": "string",
+          "maxLength": 4000
+        },
+        {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "maxLength": 2000
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": true
+        }
+      ]
     },
     "currentScene": {
       "type": "object",

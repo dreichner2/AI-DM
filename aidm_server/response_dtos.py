@@ -26,6 +26,7 @@ from aidm_server.models import (
 )
 from aidm_server.profile_icons import profile_icon_src_for_character
 from aidm_server.race_system import profile_race_from_selection, race_selection_from_json
+from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
 
 ACTIVE_STATUS = 'active'
 ARCHIVED_STATUS = 'archived'
@@ -266,8 +267,9 @@ def session_summaries(session_ids: list[int]) -> dict[int, dict]:
     return summaries
 
 
-def session_payload(session_obj: Session, summary: dict | None = None) -> dict:
+def session_payload(session_obj: Session, summary: dict | None = None, *, include_hidden_state: bool = True) -> dict:
     snapshot = session_snapshot(session_obj)
+    payload_snapshot = snapshot if include_hidden_state else filter_session_snapshot_for_player(snapshot)
     summary = summary or session_summaries([session_obj.session_id]).get(session_obj.session_id, {})
     session_state = summary.get('session_state')
     latest_log_at = summary.get('latest_log_at')
@@ -305,16 +307,26 @@ def session_payload(session_obj: Session, summary: dict | None = None) -> dict:
         'turn_count': int(turn_count),
         'latest_summary': latest_summary,
         'is_archived': session_obj.status == ARCHIVED_STATUS or bool(snapshot.get('is_archived') or snapshot.get('archived')),
-        'state_snapshot': safe_json_loads(session_obj.state_snapshot, None),
+        'state_snapshot': payload_snapshot,
     }
 
 
-def session_payloads(session_objs: list[Session]) -> list[dict]:
+def session_payloads(session_objs: list[Session], *, include_hidden_state: bool = True) -> list[dict]:
     summaries = session_summaries([session_obj.session_id for session_obj in session_objs])
-    return [session_payload(session_obj, summaries.get(session_obj.session_id)) for session_obj in session_objs]
+    return [
+        session_payload(session_obj, summaries.get(session_obj.session_id), include_hidden_state=include_hidden_state)
+        for session_obj in session_objs
+    ]
 
 
-def session_state_payload(session_obj: Session, session_state: SessionState | None) -> dict:
+def session_state_payload(
+    session_obj: Session,
+    session_state: SessionState | None,
+    *,
+    include_hidden_state: bool = True,
+) -> dict:
+    raw_snapshot = safe_json_loads(session_obj.state_snapshot, None)
+    payload_snapshot = raw_snapshot if include_hidden_state else filter_session_snapshot_for_player(raw_snapshot)
     if session_state is None:
         return {
             'session_id': session_obj.session_id,
@@ -324,7 +336,7 @@ def session_state_payload(session_obj: Session, session_state: SessionState | No
             'rolling_summary': '',
             'active_segments': [],
             'memory_snippets': [],
-            'state_snapshot': safe_json_loads(session_obj.state_snapshot, None),
+            'state_snapshot': payload_snapshot,
             'updated_at': None,
         }
 
@@ -336,7 +348,7 @@ def session_state_payload(session_obj: Session, session_state: SessionState | No
         'rolling_summary': session_state.rolling_summary,
         'active_segments': safe_json_loads(session_state.active_segments, []),
         'memory_snippets': safe_json_loads(session_state.memory_snippets, []),
-        'state_snapshot': safe_json_loads(session_obj.state_snapshot, None),
+        'state_snapshot': payload_snapshot,
         'updated_at': isoformat(session_state.updated_at),
     }
 
@@ -413,6 +425,10 @@ def segment_payload(segment: CampaignSegment) -> dict:
         'description': segment.description,
         'trigger_condition': segment.trigger_condition,
         'tags': segment.tags,
+        'external_id': segment.external_id,
+        'source': segment.source,
+        'source_pack_id': segment.source_pack_id,
+        'metadata': safe_json_loads(segment.metadata_json, {}),
         'is_triggered': segment.is_triggered,
         'created_at': isoformat(segment.created_at),
         'updated_at': isoformat(segment.updated_at),

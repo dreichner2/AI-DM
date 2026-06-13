@@ -15,7 +15,9 @@ from aidm_server.models import (
     SessionState,
     World,
     safe_json_dumps,
+    safe_json_loads,
 )
+from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
 from tests.helpers import seed_world_campaign_player_session
 
 
@@ -561,6 +563,12 @@ def test_build_dm_context_includes_campaign_pack_director_packet(app):
                             {
                                 'id': 'cp_wreck',
                                 'title': 'Find the caravan wreck',
+                                'playerTitle': 'Follow the old road',
+                                'chapter': 'Act I',
+                                'act': 'I',
+                                'priority': 7,
+                                'gate': 'soft',
+                                'canCompleteOutOfOrder': True,
                                 'locationIds': ['old_road'],
                                 'questIds': ['q_missing_caravan'],
                             },
@@ -693,6 +701,11 @@ def test_build_dm_context_includes_campaign_pack_director_packet(app):
     assert director['activeCheckpoint']['id'] == 'cp_gate'
     assert director['activeCheckpoint']['status'] == 'active'
     assert director['nextCheckpoints'][0]['id'] == 'cp_wreck'
+    assert director['nextCheckpoints'][0]['playerTitle'] == 'Follow the old road'
+    assert director['nextCheckpoints'][0]['chapter'] == 'Act I'
+    assert director['nextCheckpoints'][0]['priority'] == 7
+    assert director['nextCheckpoints'][0]['gate'] == 'soft'
+    assert director['nextCheckpoints'][0]['canCompleteOutOfOrder'] is True
     assert director['progress']['offTrack'] is False
     assert director['progress']['rejoinTargetCheckpointId'] == 'cp_gate'
     assert director['progress']['checkpointStatuses'] == {'cp_gate': 'active', 'cp_wreck': 'open'}
@@ -707,6 +720,143 @@ def test_build_dm_context_includes_campaign_pack_director_packet(app):
     assert director['relevantRecords']['enemies'][0]['id'] == 'lantern_wraith'
     assert director['relevantRecords']['segments'][0]['triggerType'] == 'state'
     assert director['relevantRecords']['segments'][0]['isTriggered'] is False
+
+
+def test_large_imported_campaign_pack_keeps_dm_context_and_player_snapshot_bounded(client, app):
+    locations = [
+        {
+            'id': f'loc_{index}',
+            'name': f'Location {index}',
+            'description': f'Pack location {index}.',
+            'connectedLocationIds': [f'loc_{index + 1}'] if index < 249 else [],
+            'visibleAtStart': index == 0,
+        }
+        for index in range(250)
+    ]
+    quests = [
+        {
+            'id': f'q_{index}',
+            'title': f'Quest {index}',
+            'status': 'active' if index == 0 else 'available',
+            'summary': f'Pack quest {index}.',
+            'visibleAtStart': index == 0,
+        }
+        for index in range(250)
+    ]
+    npcs = [
+        {
+            'id': f'npc_{index}',
+            'name': f'NPC {index}',
+            'role': 'Witness',
+            'locationId': f'loc_{index % 250}',
+            'questIds': [f'q_{index % 250}'],
+            'visibleAtStart': index == 0,
+        }
+        for index in range(250)
+    ]
+    enemies = [
+        {
+            'id': f'enemy_{index}',
+            'name': f'Enemy {index}',
+            'creatureType': 'undead',
+            'challengeTier': 'easy',
+            'locationIds': [f'loc_{index % 250}'],
+        }
+        for index in range(150)
+    ]
+    encounters = [
+        {
+            'id': f'enc_{index}',
+            'title': f'Encounter {index}',
+            'locationIds': [f'loc_{index % 250}'],
+            'questIds': [f'q_{index % 250}'],
+            'checkpointIds': [f'cp_{index % 250}'],
+            'enemyIds': [f'enemy_{index % 150}'],
+        }
+        for index in range(250)
+    ]
+    checkpoints = [
+        {
+            'id': f'cp_{index}',
+            'title': f'Checkpoint {index}',
+            'locationIds': [f'loc_{index}'],
+            'questIds': [f'q_{index}'],
+            'npcIds': [f'npc_{index}'],
+            'encounterIds': [f'enc_{index}'],
+            **({'nextCheckpointIds': [f'cp_{index + 1}']} if index < 249 else {}),
+        }
+        for index in range(250)
+    ]
+    segments = [
+        {
+            'id': f'seg_{index}',
+            'title': f'Segment {index}',
+            'description': f'Pack segment {index}.',
+            'trigger': {'type': 'manual'},
+        }
+        for index in range(250)
+    ]
+
+    response = client.post(
+        '/api/campaigns/import-pack',
+        json={
+            'packId': 'large_pack',
+            'title': 'Large Pack',
+            'startingState': {
+                'locationId': 'loc_0',
+                'questId': 'q_0',
+                'currentScene': {
+                    'locationId': 'loc_0',
+                    'activeQuestIds': ['q_0'],
+                    'activeNpcIds': ['npc_0'],
+                },
+            },
+            'locations': locations,
+            'quests': quests,
+            'npcs': npcs,
+            'enemies': enemies,
+            'encounters': encounters,
+            'checkpoints': checkpoints,
+            'segments': segments,
+            'directorRules': {'mainQuestGeneration': 'pack_only'},
+        },
+    )
+
+    assert response.status_code == 201
+    import_payload = response.get_json()
+    assert import_payload['counts'] == {
+        'locations': 250,
+        'npcs': 250,
+        'quests': 250,
+        'segments': 250,
+        'checkpoints': 250,
+        'encounters': 250,
+        'enemies': 150,
+        'bestiary_entries': 150,
+    }
+
+    with app.app_context():
+        campaign = db.session.get(Campaign, import_payload['campaign_id'])
+        session = db.session.get(Session, import_payload['session_id'])
+        raw_snapshot = safe_json_loads(session.state_snapshot, {})
+        context = json.loads(build_dm_context(campaign.world_id, campaign.campaign_id, session.session_id))
+
+    director = context['campaign_pack_director']
+    assert director['enabled'] is True
+    assert director['pack']['packId'] == 'large_pack'
+    assert len(director['nextCheckpoints']) <= 4
+    assert len(director['relevantRecords']['locations']) <= 6
+    assert len(director['relevantRecords']['quests']) <= 4
+    assert len(director['relevantRecords']['npcs']) <= 6
+    assert len(director['relevantRecords']['encounters']) <= 4
+    assert len(director['relevantRecords']['enemies']) <= 6
+    assert len(director['relevantRecords']['segments']) <= 6
+    assert len(director['progress']['checkpointStatuses']) <= 13
+    assert 'loc_249' not in json.dumps(director['relevantRecords'])
+
+    player_snapshot = filter_session_snapshot_for_player(raw_snapshot)
+    assert 'catalog' not in player_snapshot['campaignPack']
+    assert len(json.dumps(player_snapshot)) < len(json.dumps(raw_snapshot)) // 3
 
 
 def test_build_dm_context_campaign_pack_director_flags_off_track_rejoin(app):
@@ -726,7 +876,7 @@ def test_build_dm_context_campaign_pack_director_flags_off_track_rejoin(app):
                     'currentScene': {
                         'locationId': 'marsh_detour',
                         'name': 'Marsh Detour',
-                        'activeQuestIds': ['q_missing_caravan'],
+                        'activeQuestIds': ['q_missing_caravan', 'q_player_faction_war'],
                     },
                     'locations': [
                         {
@@ -745,6 +895,33 @@ def test_build_dm_context_campaign_pack_director_flags_off_track_rejoin(app):
                             'packId': 'bleakmoor_intro',
                         }
                     ],
+                    'knownNpcs': [
+                        {
+                            'id': 'npc_captain_veyra',
+                            'name': 'Captain Veyra',
+                            'status': 'dead',
+                            'source': 'campaign_pack',
+                            'packId': 'bleakmoor_intro',
+                        }
+                    ],
+                    'clues': [
+                        {
+                            'id': 'clue_lantern_wax',
+                            'title': 'Lantern Wax',
+                            'status': 'destroyed',
+                            'source': 'campaign_pack',
+                            'packId': 'bleakmoor_intro',
+                        }
+                    ],
+                    'combat': {
+                        'status': 'ended',
+                        'participants': [],
+                        'flags': {
+                            'campaignPackEncounterId': 'enc_lantern_wraith',
+                            'campaignPackAllowedOutcomes': ['defeat', 'negotiate'],
+                            'endReason': 'players_fled',
+                        },
+                    },
                     'campaignPack': {
                         'packId': 'bleakmoor_intro',
                         'title': 'The Lanterns of Bleakmoor',
@@ -752,9 +929,17 @@ def test_build_dm_context_campaign_pack_director_flags_off_track_rejoin(app):
                             {
                                 'id': 'cp_wreck',
                                 'title': 'Find the caravan wreck',
+                                'npcIds': ['npc_captain_veyra'],
+                                'clueIds': ['clue_lantern_wax'],
                                 'rejoinTargetCheckpointId': 'cp_wreck',
                             }
                         ],
+                        'catalog': {
+                            'locations': [{'id': 'bleakmoor_gate', 'name': 'Bleakmoor Gate'}],
+                            'quests': [{'id': 'q_missing_caravan', 'title': 'Find the Missing Caravan'}],
+                            'npcs': [{'id': 'npc_captain_veyra', 'name': 'Captain Veyra'}],
+                            'clues': [{'id': 'clue_lantern_wax', 'title': 'Lantern Wax'}],
+                        },
                         'directorRules': {'offTrackPolicy': 'improvise_and_reconnect'},
                     },
                 },
@@ -770,6 +955,17 @@ def test_build_dm_context_campaign_pack_director_flags_off_track_rejoin(app):
     assert progress['offTrack'] is True
     assert progress['currentLocationId'] == 'marsh_detour'
     assert progress['rejoinTargetCheckpointId'] == 'cp_wreck'
+    assert progress['offTrackScore'] >= 5
+    assert set(progress['offTrackReasons']) >= {
+        'locationOffTrack',
+        'questOffTrack',
+        'npcDependencyBroken',
+        'requiredClueDestroyed',
+        'combatOutcomeDiverged',
+    }
+    assert progress['offTrackDetails']['brokenNpcIds'] == ['npc_captain_veyra']
+    assert progress['offTrackDetails']['brokenClueIds'] == ['clue_lantern_wax']
+    assert progress['offTrackDetails']['combatOutcome'] == 'players_fled'
 
 
 def test_build_dm_context_campaign_pack_director_honors_terminal_checkpoint_state(app):
@@ -872,7 +1068,6 @@ def test_build_dm_context_campaign_pack_director_honors_terminal_checkpoint_stat
     assert director['progress']['failedCheckpointIds'] == ['cp_old_road']
     assert director['progress']['checkpointStatuses'] == {
         'cp_gate': 'skipped',
-        'cp_chapel': 'optional',
         'cp_old_road': 'failed',
         'cp_watchtower': 'active',
     }

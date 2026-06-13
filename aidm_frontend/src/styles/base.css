@@ -2194,6 +2194,92 @@ select:focus-visible {
   background: rgba(255, 255, 255, 0.018);
 }
 
+.campaign-pack-lint {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(144, 164, 159, 0.2);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.campaign-pack-lint.ok {
+  border-color: rgba(116, 220, 138, 0.34);
+}
+
+.campaign-pack-lint.has-errors {
+  border-color: rgba(255, 107, 44, 0.44);
+}
+
+.campaign-pack-lint-title,
+.campaign-pack-graph-summary {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.campaign-pack-lint-title strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--heading);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.campaign-pack-lint-title span,
+.campaign-pack-graph-summary span,
+.campaign-pack-lint-list small {
+  color: var(--muted);
+  font-size: 0.73rem;
+}
+
+.campaign-pack-lint-list {
+  display: grid;
+  gap: 6px;
+}
+
+.campaign-pack-lint-list div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 130px) minmax(0, 1fr);
+  gap: 5px 8px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.campaign-pack-lint-list div.error {
+  border-color: rgba(255, 107, 44, 0.42);
+}
+
+.campaign-pack-lint-list div.warning {
+  border-color: rgba(255, 199, 87, 0.3);
+}
+
+.campaign-pack-lint-list span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.campaign-pack-lint-list strong,
+.campaign-pack-lint-list small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.campaign-pack-lint-list p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
 .world-manager-list {
   display: grid;
   gap: 8px;

@@ -26,6 +26,7 @@ from aidm_server.game_state.models import (
 )
 from aidm_server.combat.morale import MORALE_EVENTS, apply_morale_event
 from aidm_server.combat.state import RANGE_BANDS, normalize_battlefield, normalize_combat_state, normalize_participant
+from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start
 from aidm_server.game_state.validation.inventory_validator import resolve_inventory_item_reference
 from aidm_server.spellbook import normalize_spellbook, spell_from_change
 
@@ -72,6 +73,72 @@ NPC_STATUS_ALIASES = {
     'present': 'known',
     'unconscious': 'known',
     'wounded': 'known',
+}
+PACK_CONTENT_CHANGE_CONFIG = {
+    'clue.discover': {
+        'catalog_key': 'clues',
+        'collection_key': 'clues',
+        'embedded_key': 'clue',
+        'id_key': 'clueId',
+        'label': 'clue',
+        'default_status': 'discovered',
+    },
+    'clue.update': {
+        'catalog_key': 'clues',
+        'collection_key': 'clues',
+        'embedded_key': 'clue',
+        'id_key': 'clueId',
+        'label': 'clue',
+        'default_status': 'known',
+    },
+    'faction.discover': {
+        'catalog_key': 'factions',
+        'collection_key': 'factions',
+        'embedded_key': 'faction',
+        'id_key': 'factionId',
+        'label': 'faction',
+        'default_status': 'known',
+    },
+    'faction.relationship.update': {
+        'catalog_key': 'factions',
+        'collection_key': 'factions',
+        'embedded_key': 'faction',
+        'id_key': 'factionId',
+        'label': 'faction',
+        'default_status': 'known',
+    },
+    'map.reveal': {
+        'catalog_key': 'maps',
+        'collection_key': 'maps',
+        'embedded_key': 'map',
+        'id_key': 'mapId',
+        'label': 'map',
+        'default_status': 'revealed',
+    },
+    'map.region.update': {
+        'catalog_key': 'maps',
+        'collection_key': 'maps',
+        'embedded_key': 'map',
+        'id_key': 'mapId',
+        'label': 'map',
+        'default_status': 'known',
+    },
+    'handout.reveal': {
+        'catalog_key': 'handouts',
+        'collection_key': 'handouts',
+        'embedded_key': 'handout',
+        'id_key': 'handoutId',
+        'label': 'handout',
+        'default_status': 'revealed',
+    },
+    'lore.unlock': {
+        'catalog_key': 'lore',
+        'collection_key': 'lore',
+        'embedded_key': 'lore',
+        'id_key': 'loreId',
+        'label': 'lore',
+        'default_status': 'unlocked',
+    },
 }
 
 
@@ -946,6 +1013,16 @@ def _find_npc(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] |
     )
 
 
+def _find_pack_content_record(state: dict[str, Any], change: dict[str, Any], config: dict[str, str]) -> dict[str, Any] | None:
+    embedded = change.get(config['embedded_key']) if isinstance(change.get(config['embedded_key']), dict) else {}
+    return _find_record(
+        _records(state, config['collection_key']),
+        record_id=change.get(config['id_key']) or embedded.get('id') or embedded.get(config['id_key']),
+        name=change.get('name') or embedded.get('name'),
+        title=change.get('title') or embedded.get('title'),
+    )
+
+
 def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -1027,6 +1104,16 @@ def _pack_catalog_record_for_change(
             records,
             record_id=change.get('npcId'),
             name=change.get('name') or change.get('npcName'),
+        )
+    for config in PACK_CONTENT_CHANGE_CONFIG.values():
+        if key != config['catalog_key']:
+            continue
+        embedded = change.get(config['embedded_key']) if isinstance(change.get(config['embedded_key']), dict) else {}
+        return _find_record(
+            records,
+            record_id=change.get(config['id_key']) or embedded.get('id') or embedded.get(config['id_key']),
+            name=change.get('name') or embedded.get('name'),
+            title=change.get('title') or embedded.get('title'),
         )
     return None
 
@@ -1298,6 +1385,44 @@ def _apply_campaign_pack_drift_control(
             rejoin_target_id=rejoin_target_id,
         )
         return 'modified', 'Campaign pack drift control tagged new NPC as emergent minor content.', updated
+
+    if change_type in PACK_CONTENT_CHANGE_CONFIG:
+        config = PACK_CONTENT_CHANGE_CONFIG[change_type]
+        existing_record = _find_pack_content_record(state, change, config)
+        if _record_is_campaign_pack(existing_record, pack_id):
+            return 'accepted', None, change
+        catalog_record = _pack_catalog_record_for_change(
+            state,
+            pack_id=pack_id,
+            key=config['catalog_key'],
+            change=change,
+        )
+        if catalog_record:
+            return (
+                'modified',
+                f"Campaign pack catalog {config['label']} was revealed into visible state.",
+                _materialize_pack_catalog_change(
+                    change,
+                    catalog_record,
+                    pack_id=pack_id,
+                    embedded_key=config['embedded_key'],
+                    id_key=config['id_key'],
+                    label_key='title',
+                ),
+            )
+        if _is_pack_override(change, config['embedded_key']):
+            return 'accepted', None, change
+        updated = deepcopy(change)
+        _set_content_source_and_metadata(
+            updated,
+            key=config['embedded_key'],
+            source='emergent',
+            pack_id=pack_id,
+            role=f"{config['label']}_content",
+            drift_control=f"tagged_runtime_{config['label']}",
+            rejoin_target_id=rejoin_target_id,
+        )
+        return 'modified', f"Campaign pack drift control tagged {config['label']} content as emergent.", updated
 
     if change_type == 'scene.item.add':
         if _is_pack_override(change, 'item'):
@@ -1626,6 +1751,58 @@ def _turn_value(change: dict[str, Any]) -> int | None:
     return value if value > 0 else None
 
 
+def _normalize_pack_content_change(change_type: str, normalized: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None]:
+    config = PACK_CONTENT_CHANGE_CONFIG[change_type]
+    embedded = normalized.get(config['embedded_key']) if isinstance(normalized.get(config['embedded_key']), dict) else {}
+    label = _text(normalized.get('title') or normalized.get('name') or embedded.get('title') or embedded.get('name'))
+    record_id = _stable_id(normalized.get(config['id_key']), embedded.get('id'), embedded.get(config['id_key']), label)
+    if not record_id:
+        return 'rejected', f"{config['label'].title()} change requires an id or title.", None
+    normalized[config['id_key']] = record_id
+    if label:
+        normalized.setdefault('title', label)
+    normalized.setdefault('status', config['default_status'])
+    for list_key in ('locationIds', 'npcIds', 'questIds', 'checkpointIds', 'tags'):
+        normalized[list_key] = _string_list(normalized.get(list_key))
+
+    if change_type == 'faction.relationship.update':
+        relationship = normalized.get('relationship') if isinstance(normalized.get('relationship'), dict) else {}
+        score_value = normalized.get('relationshipScore', relationship.get('score'))
+        if score_value is not None:
+            try:
+                normalized['relationshipScore'] = max(-100, min(100, int(score_value)))
+            except (TypeError, ValueError):
+                return 'rejected', 'Faction relationship score must be numeric.', None
+        delta_value = normalized.get('scoreDelta')
+        if delta_value is not None:
+            try:
+                normalized['scoreDelta'] = max(-100, min(100, int(delta_value)))
+            except (TypeError, ValueError):
+                return 'rejected', 'Faction relationship scoreDelta must be numeric.', None
+        if normalized.get('relationshipLabel') is None and relationship.get('label') is not None:
+            normalized['relationshipLabel'] = relationship.get('label')
+
+    if change_type in {'map.reveal', 'map.region.update'}:
+        region = normalized.get('region') if isinstance(normalized.get('region'), dict) else {}
+        region_label = _text(
+            normalized.get('regionTitle')
+            or normalized.get('regionName')
+            or region.get('title')
+            or region.get('name')
+        )
+        region_id = _stable_id(normalized.get('regionId'), region.get('id'), region.get('regionId'), region_label)
+        if change_type == 'map.region.update' and not region_id:
+            return 'rejected', 'Map region update requires a region id or name.', None
+        if region_id:
+            normalized['regionId'] = region_id
+            if region_label:
+                normalized.setdefault('regionTitle', region_label)
+        if change_type == 'map.reveal':
+            normalized['revealed'] = True
+
+    return 'accepted', f"{config['label'].title()} change is valid.", normalized
+
+
 def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None]:
     change_type = str(change.get('type') or '').strip()
     normalized = deepcopy(change)
@@ -1841,6 +2018,9 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
                 normalized['relationshipLabel'] = relationship.get('label')
         return 'accepted', 'NPC change is valid.', normalized
 
+    if change_type in PACK_CONTENT_CHANGE_CONFIG:
+        return _normalize_pack_content_change(change_type, normalized)
+
     if change_type == 'flag.set':
         if not _text(normalized.get('flagKey')):
             return 'rejected', 'Flag set requires flagKey.', None
@@ -2001,7 +2181,7 @@ def _combat_start_reopens_resolved_enemy(state: dict[str, Any], combat: dict[str
 
 def _normalize_combat_change(change: dict[str, Any], state: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None]:
     change_type = _text(change.get('type'))
-    normalized = deepcopy(change)
+    normalized = materialize_campaign_pack_combat_start(state, deepcopy(change))
     turn_id = _turn_value(normalized)
     if turn_id is not None:
         normalized['turnId'] = turn_id
@@ -2027,6 +2207,14 @@ def _normalize_combat_change(change: dict[str, Any], state: dict[str, Any]) -> t
         return 'accepted', 'Combat start is valid.', normalized
 
     if change_type == 'combat.update':
+        data = normalized.pop('data', None)
+        if isinstance(data, dict):
+            for key in ('status', 'round', 'turnIndex', 'lastRoundSummary', 'encounterGoal'):
+                if key in data and key not in normalized:
+                    normalized[key] = data[key]
+            if isinstance(data.get('flags'), dict):
+                flags = normalized.get('flags') if isinstance(normalized.get('flags'), dict) else {}
+                normalized['flags'] = {**flags, **data['flags']}
         status = _text(normalized.get('status'))
         if status and status not in {'none', 'starting', 'active', 'ended'}:
             return 'rejected', f"Unsupported combat status '{status}'.", None

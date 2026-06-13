@@ -5,11 +5,17 @@ from typing import Any
 
 from aidm_server.database import db
 from aidm_server.game_state.models import stable_slug
-from aidm_server.models import CampaignSegment, Session, safe_json_dumps, safe_json_loads
+from aidm_server.models import CampaignSegment, Session, TurnEvent, safe_json_dumps, safe_json_loads
+from aidm_server.services.campaign_pack_snapshot import migrate_campaign_pack_snapshot
+from aidm_server.services.campaign_pack_storage import (
+    propagate_shared_campaign_pack_progress,
+    record_campaign_pack_progress_event,
+)
 from aidm_server.segment_triggers import parse_trigger_spec
 from aidm_server.time_utils import utc_now
 
 
+PROGRESS_CHANGED_EVENT = 'campaign_pack.progress.changed'
 COMPLETED_STATUSES = {'complete', 'completed', 'done', 'resolved', 'succeeded', 'success', 'closed'}
 FAILED_STATUSES = {'failed', 'failure', 'lost', 'abandoned'}
 COMBAT_COMPLETE_REASONS = {
@@ -30,6 +36,8 @@ class CampaignPackProgressResult:
     reason: str | None = None
     skipped_checkpoint_ids: list[str] | None = None
     failed_checkpoint_ids: list[str] | None = None
+    progress_revision: int = 0
+    event_id: int | None = None
 
 
 class CampaignPackProgressError(ValueError):
@@ -47,6 +55,8 @@ class CampaignPackControlResult:
     skipped_checkpoint_ids: list[str]
     reason: str
     failed_checkpoint_ids: list[str] | None = None
+    progress_revision: int = 0
+    event_id: int | None = None
 
 
 def update_campaign_pack_progress(
@@ -54,14 +64,16 @@ def update_campaign_pack_progress(
     session_id: int,
     campaign_id: int,
     triggered_segments: list[dict] | None = None,
+    turn_id: int | None = None,
 ) -> CampaignPackProgressResult:
-    session = db.session.get(Session, session_id)
+    session = _session_for_update(session_id)
     if not session:
         return CampaignPackProgressResult(False, None, [], None)
 
     snapshot = safe_json_loads(session.state_snapshot, {})
     if not isinstance(snapshot, dict):
         return CampaignPackProgressResult(False, None, [], None)
+    snapshot, migrations_applied = migrate_campaign_pack_snapshot(snapshot)
 
     pack = snapshot.get('campaignPack') if isinstance(snapshot.get('campaignPack'), dict) else {}
     pack_id = _text(_first(pack, 'packId', 'pack_id'))
@@ -91,6 +103,7 @@ def update_campaign_pack_progress(
         _first(pack, 'activeCheckpointId', 'active_checkpoint_id', 'currentCheckpointId', 'current_checkpoint_id')
         or _first(flags, 'campaignPackActiveCheckpointId', 'activeCheckpointId')
     )
+    previous_revision = _progress_revision(pack, flags)
 
     active_checkpoint = _checkpoint_by_id(checkpoints, previous_active_id)
     if not active_checkpoint or _checkpoint_id(active_checkpoint) in _terminal_checkpoint_ids(completed_ids, skipped_ids, failed_ids):
@@ -133,6 +146,21 @@ def update_campaign_pack_progress(
                     _add_unique_id(completed_ids, _checkpoint_id(active_checkpoint))
                     next_checkpoint = _next_checkpoint(active_checkpoint, checkpoints, completed_ids, skipped_ids, failed_ids)
                     reason = completion_reason
+    if not reason:
+        out_of_order = _completed_out_of_order_checkpoint(
+            checkpoints=checkpoints,
+            active_checkpoint=active_checkpoint,
+            completed_ids=completed_ids,
+            skipped_ids=skipped_ids,
+            failed_ids=failed_ids,
+            pack=pack,
+            snapshot=snapshot,
+            triggered_segment_refs=triggered_segment_refs,
+        )
+        if out_of_order:
+            _add_unique_id(completed_ids, _checkpoint_id(out_of_order))
+            next_checkpoint = active_checkpoint
+            reason = 'checkpoint_out_of_order_completed'
 
     active_checkpoint_id = _checkpoint_id(next_checkpoint) if next_checkpoint else None
     if active_checkpoint_id in _terminal_checkpoint_ids(completed_ids, skipped_ids, failed_ids):
@@ -149,25 +177,56 @@ def update_campaign_pack_progress(
         or flags.get('campaignPackFailedCheckpointIds') != failed_ids
     )
     if not changed:
-        return CampaignPackProgressResult(False, active_checkpoint_id, completed_ids, None, skipped_ids, failed_ids)
+        if migrations_applied:
+            session.state_snapshot = safe_json_dumps(snapshot, {})
+        return CampaignPackProgressResult(
+            False,
+            active_checkpoint_id,
+            completed_ids,
+            None,
+            skipped_ids,
+            failed_ids,
+            previous_revision,
+        )
 
+    next_revision = previous_revision + 1
     flags['campaignPackActiveCheckpointId'] = active_checkpoint_id
     flags['campaignPackCompletedCheckpointIds'] = completed_ids
     flags['campaignPackSkippedCheckpointIds'] = skipped_ids
     flags['campaignPackFailedCheckpointIds'] = failed_ids
+    flags['campaignPackProgressRevision'] = next_revision
     pack['activeCheckpointId'] = active_checkpoint_id
     pack['completedCheckpointIds'] = completed_ids
     pack['skippedCheckpointIds'] = skipped_ids
     pack['failedCheckpointIds'] = failed_ids
+    pack['progressSchemaVersion'] = 1
+    pack['progressRevision'] = next_revision
     pack['activeDirectorRules'] = _active_director_rules(pack, next_checkpoint)
     if reason:
         pack['lastProgressReason'] = reason
     snapshot['campaignPack'] = pack
     session.state_snapshot = safe_json_dumps(snapshot, {})
-    return CampaignPackProgressResult(True, active_checkpoint_id, completed_ids, reason, skipped_ids, failed_ids)
+    event_id = _record_progress_event(
+        session=session,
+        pack_id=pack_id,
+        action='auto_progress',
+        reason=reason or 'progress_state_changed',
+        actor='system',
+        previous_active_id=previous_active_id or None,
+        active_checkpoint_id=active_checkpoint_id,
+        previous_completed_ids=previous_completed_ids,
+        completed_ids=completed_ids,
+        previous_skipped_ids=previous_skipped_ids,
+        skipped_ids=skipped_ids,
+        previous_failed_ids=previous_failed_ids,
+        failed_ids=failed_ids,
+        progress_revision=next_revision,
+        turn_id=turn_id,
+    )
+    return CampaignPackProgressResult(True, active_checkpoint_id, completed_ids, reason, skipped_ids, failed_ids, next_revision, event_id)
 
 
-def campaign_pack_progress_payload(*, session_id: int) -> dict:
+def campaign_pack_progress_payload(*, session_id: int, include_hidden: bool = True) -> dict:
     snapshot, pack, checkpoints, flags = _session_pack_state(session_id)
     active_checkpoint, completed_ids, skipped_ids, failed_ids = _current_pack_progress(pack, flags, checkpoints)
     skipped_ids = _unique_ids(
@@ -179,8 +238,33 @@ def campaign_pack_progress_payload(*, session_id: int) -> dict:
         or _ids_from(flags, 'campaignPackFailedCheckpointIds', 'failedCheckpointIds')
     )
     active_rules = _active_director_rules(pack, active_checkpoint)
+    checkpoint_statuses = _checkpoint_statuses(
+        checkpoints,
+        active_checkpoint_id=_checkpoint_id(active_checkpoint),
+        completed_ids=completed_ids,
+        skipped_ids=skipped_ids,
+        failed_ids=failed_ids,
+    )
+    visible_checkpoints = checkpoints
+    visible_statuses = checkpoint_statuses
+    director_rules = pack.get('directorRules') if isinstance(pack.get('directorRules'), dict) else {}
+    visible_flags = flags
+    operator_fields = {}
+    if include_hidden:
+        operator_fields = {
+            'multiSessionGroupKey': _text(_first(pack, 'multiSessionGroupKey', 'multi_session_group_key')) or None,
+            'gmNotes': _first(pack, 'gmNotes', 'gm_notes', 'hiddenNotes', 'hidden_notes'),
+            'hiddenSceneNotes': _first(pack, 'hiddenSceneNotes', 'hidden_scene_notes'),
+        }
+    if not include_hidden:
+        visible_checkpoints = _player_visible_checkpoints(checkpoints, checkpoint_statuses)
+        visible_statuses = {checkpoint['id']: checkpoint['status'] for checkpoint in visible_checkpoints if checkpoint.get('id')}
+        director_rules = {}
+        active_rules = {}
+        visible_flags = _player_visible_flags(flags)
     return {
         'enabled': True,
+        'visibility': 'dm' if include_hidden else 'player',
         'pack': {
             'packId': _text(_first(pack, 'packId', 'pack_id')),
             'title': _text(_first(pack, 'title', 'name')),
@@ -192,18 +276,14 @@ def campaign_pack_progress_payload(*, session_id: int) -> dict:
         'completedCheckpointIds': completed_ids,
         'skippedCheckpointIds': skipped_ids,
         'failedCheckpointIds': failed_ids,
-        'checkpointStatuses': _checkpoint_statuses(
-            checkpoints,
-            active_checkpoint_id=_checkpoint_id(active_checkpoint),
-            completed_ids=completed_ids,
-            skipped_ids=skipped_ids,
-            failed_ids=failed_ids,
-        ),
-        'checkpoints': checkpoints,
-        'directorRules': pack.get('directorRules') if isinstance(pack.get('directorRules'), dict) else {},
+        'checkpointStatuses': visible_statuses,
+        'checkpoints': visible_checkpoints,
+        'directorRules': director_rules,
         'activeDirectorRules': active_rules,
-        'flags': flags,
+        'flags': visible_flags,
         'currentLocationId': _current_location_id(snapshot),
+        'progressRevision': _progress_revision(pack, flags),
+        **{key: value for key, value in operator_fields.items() if value not in (None, '')},
     }
 
 
@@ -213,6 +293,8 @@ def control_campaign_pack_progress(
     action: str,
     checkpoint_id: str | None = None,
     reason: str | None = None,
+    actor: str | None = None,
+    expected_revision: int | None = None,
 ) -> CampaignPackControlResult:
     session, snapshot, pack, checkpoints, flags = _mutable_session_pack_state(session_id)
     normalized_action = _status_key(action)
@@ -221,6 +303,13 @@ def control_campaign_pack_progress(
 
     active_checkpoint, completed_ids, skipped_ids, failed_ids = _current_pack_progress(pack, flags, checkpoints)
     previous_active_id = _checkpoint_id(active_checkpoint)
+    previous_revision = _progress_revision(pack, flags)
+    if expected_revision is not None and expected_revision != previous_revision:
+        raise CampaignPackProgressError(
+            'Campaign pack progress changed before this control request. Refresh before retrying.',
+            error_code='stale_campaign_pack_progress',
+            status_code=409,
+        )
     target_checkpoint = _checkpoint_by_id(checkpoints, checkpoint_id)
     if checkpoint_id and not target_checkpoint:
         raise CampaignPackProgressError('checkpointId must reference an imported checkpoint.')
@@ -290,28 +379,55 @@ def control_campaign_pack_progress(
     )
 
     now = utc_now().isoformat()
+    next_revision = previous_revision + 1 if changed else previous_revision
     flags['campaignPackActiveCheckpointId'] = active_checkpoint_id
     flags['campaignPackCompletedCheckpointIds'] = completed_ids
     flags['campaignPackSkippedCheckpointIds'] = skipped_ids
     flags['campaignPackFailedCheckpointIds'] = failed_ids
+    flags['campaignPackProgressRevision'] = next_revision
     flags['campaignPackLastManualControl'] = {
         'action': normalized_action,
         'checkpointId': active_checkpoint_id,
         'previousCheckpointId': previous_active_id,
         'reason': control_reason,
         'at': now,
+        'actor': actor or 'operator',
     }
     pack['activeCheckpointId'] = active_checkpoint_id
     pack['completedCheckpointIds'] = completed_ids
     pack['skippedCheckpointIds'] = skipped_ids
     pack['failedCheckpointIds'] = failed_ids
+    pack['progressSchemaVersion'] = 1
+    pack['progressRevision'] = next_revision
     pack['activeDirectorRules'] = _active_director_rules(pack, next_checkpoint)
     pack['lastProgressReason'] = control_reason
     pack['lastManualControlAt'] = now
     snapshot['flags'] = flags
     snapshot['campaignPack'] = pack
     session.state_snapshot = safe_json_dumps(snapshot, {})
-    return CampaignPackControlResult(changed, active_checkpoint_id, completed_ids, skipped_ids, control_reason, failed_ids)
+    event_id = None
+    if changed:
+        event_id = _record_progress_event(
+            session=session,
+            pack_id=_text(_first(pack, 'packId', 'pack_id')),
+            action=normalized_action,
+            reason=control_reason,
+            actor=actor or 'operator',
+            previous_active_id=previous_active_id,
+            active_checkpoint_id=active_checkpoint_id,
+            previous_completed_ids=previous_completed_ids,
+            completed_ids=completed_ids,
+            previous_skipped_ids=previous_skipped_ids,
+            skipped_ids=skipped_ids,
+            previous_failed_ids=previous_failed_ids,
+            failed_ids=failed_ids,
+            progress_revision=next_revision,
+        )
+    return CampaignPackControlResult(changed, active_checkpoint_id, completed_ids, skipped_ids, control_reason, failed_ids, next_revision, event_id)
+
+
+def _session_for_update(session_id: int) -> Session | None:
+    return Session.query.filter_by(session_id=session_id).with_for_update().first()
 
 
 def _session_pack_state(session_id: int) -> tuple[dict, dict, list[dict], dict]:
@@ -321,6 +437,7 @@ def _session_pack_state(session_id: int) -> tuple[dict, dict, list[dict], dict]:
     snapshot = safe_json_loads(session.state_snapshot, {})
     if not isinstance(snapshot, dict):
         raise CampaignPackProgressError('Session does not have structured state.')
+    snapshot, _migrations_applied = migrate_campaign_pack_snapshot(snapshot)
     pack = snapshot.get('campaignPack') if isinstance(snapshot.get('campaignPack'), dict) else {}
     pack_id = _text(_first(pack, 'packId', 'pack_id'))
     checkpoints = [checkpoint for checkpoint in (pack.get('checkpoints') or []) if isinstance(checkpoint, dict)]
@@ -335,12 +452,13 @@ def _session_pack_state(session_id: int) -> tuple[dict, dict, list[dict], dict]:
 
 
 def _mutable_session_pack_state(session_id: int) -> tuple[Session, dict, dict, list[dict], dict]:
-    session = db.session.get(Session, session_id)
+    session = _session_for_update(session_id)
     if not session:
         raise CampaignPackProgressError('Session not found.', error_code='session_not_found', status_code=404)
     snapshot = safe_json_loads(session.state_snapshot, {})
     if not isinstance(snapshot, dict):
         raise CampaignPackProgressError('Session does not have structured state.')
+    snapshot, _migrations_applied = migrate_campaign_pack_snapshot(snapshot)
     pack = snapshot.get('campaignPack') if isinstance(snapshot.get('campaignPack'), dict) else {}
     pack_id = _text(_first(pack, 'packId', 'pack_id'))
     checkpoints = [checkpoint for checkpoint in (pack.get('checkpoints') or []) if isinstance(checkpoint, dict)]
@@ -354,6 +472,89 @@ def _mutable_session_pack_state(session_id: int) -> tuple[Session, dict, dict, l
     snapshot['flags'] = flags
     snapshot['campaignPack'] = pack
     return session, snapshot, pack, checkpoints, flags
+
+
+def _progress_revision(pack: dict, flags: dict) -> int:
+    for value in (
+        _first(pack, 'progressRevision', 'progress_revision'),
+        _first(flags, 'campaignPackProgressRevision', 'progressRevision', 'progress_revision'),
+    ):
+        try:
+            revision = int(value)
+        except (TypeError, ValueError):
+            continue
+        return max(0, revision)
+    return 0
+
+
+def _record_progress_event(
+    *,
+    session: Session,
+    pack_id: str,
+    action: str,
+    reason: str,
+    actor: str,
+    previous_active_id: str | None,
+    active_checkpoint_id: str | None,
+    previous_completed_ids: list[str],
+    completed_ids: list[str],
+    previous_skipped_ids: list[str],
+    skipped_ids: list[str],
+    previous_failed_ids: list[str],
+    failed_ids: list[str],
+    progress_revision: int,
+    turn_id: int | None = None,
+) -> int | None:
+    now = utc_now()
+    payload = {
+        'type': PROGRESS_CHANGED_EVENT,
+        'packId': pack_id,
+        'action': action,
+        'fromCheckpointId': previous_active_id,
+        'toCheckpointId': active_checkpoint_id,
+        'reason': reason,
+        'actor': actor,
+        'turnId': turn_id,
+        'progressRevision': progress_revision,
+        'previousCompletedCheckpointIds': previous_completed_ids,
+        'completedCheckpointIds': completed_ids,
+        'previousSkippedCheckpointIds': previous_skipped_ids,
+        'skippedCheckpointIds': skipped_ids,
+        'previousFailedCheckpointIds': previous_failed_ids,
+        'failedCheckpointIds': failed_ids,
+        'createdAt': now.isoformat(),
+    }
+    event = TurnEvent(
+        session_id=session.session_id,
+        campaign_id=session.campaign_id,
+        turn_id=turn_id,
+        event_type=PROGRESS_CHANGED_EVENT,
+        payload_json=safe_json_dumps(payload, {}),
+        created_at=now,
+    )
+    db.session.add(event)
+    db.session.flush()
+    idempotency_key = f'turn:{turn_id}:revision:{progress_revision}' if turn_id else None
+    record_campaign_pack_progress_event(
+        session=session,
+        turn_event_id=event.event_id,
+        payload=payload,
+        idempotency_key=idempotency_key,
+    )
+    shared_snapshot = safe_json_loads(session.state_snapshot, {})
+    shared_pack = shared_snapshot.get('campaignPack') if isinstance(shared_snapshot, dict) else {}
+    propagate_shared_campaign_pack_progress(
+        session=session,
+        pack=shared_pack if isinstance(shared_pack, dict) else {},
+        active_checkpoint_id=active_checkpoint_id,
+        completed_ids=completed_ids,
+        skipped_ids=skipped_ids,
+        failed_ids=failed_ids,
+        progress_revision=progress_revision,
+        reason=reason,
+        actor=actor,
+    )
+    return event.event_id
 
 
 def _current_pack_progress(pack: dict, flags: dict, checkpoints: list[dict]) -> tuple[dict | None, list[str], list[str], list[str]]:
@@ -657,6 +858,30 @@ def _failure_next_checkpoint(
     return _next_checkpoint(active_checkpoint, checkpoints, completed_ids, skipped_ids, failed_ids)
 
 
+def _completed_out_of_order_checkpoint(
+    *,
+    checkpoints: list[dict],
+    active_checkpoint: dict | None,
+    completed_ids: list[str],
+    skipped_ids: list[str],
+    failed_ids: list[str],
+    pack: dict,
+    snapshot: dict,
+    triggered_segment_refs: set[str],
+) -> dict | None:
+    active_id = _checkpoint_id(active_checkpoint)
+    terminal_keys = {_id_key(checkpoint_id) for checkpoint_id in _terminal_checkpoint_ids(completed_ids, skipped_ids, failed_ids)}
+    for checkpoint in checkpoints:
+        checkpoint_id = _checkpoint_id(checkpoint)
+        if not checkpoint_id or checkpoint_id == active_id or _id_key(checkpoint_id) in terminal_keys:
+            continue
+        if not _checkpoint_can_complete_out_of_order(checkpoint):
+            continue
+        if _checkpoint_completion_reason(checkpoint, pack=pack, snapshot=snapshot, triggered_segment_refs=triggered_segment_refs):
+            return checkpoint
+    return None
+
+
 def _next_checkpoint_ids(checkpoint: dict) -> list[str]:
     return _ids_from(
         checkpoint,
@@ -870,6 +1095,18 @@ def _checkpoint_optional(checkpoint: dict) -> bool:
     return _truthy(_first(checkpoint, 'optional', 'isOptional', 'is_optional'))
 
 
+def _checkpoint_can_complete_out_of_order(checkpoint: dict) -> bool:
+    return _truthy(
+        _first(
+            checkpoint,
+            'canCompleteOutOfOrder',
+            'can_complete_out_of_order',
+            'outOfOrderCompletion',
+            'out_of_order_completion',
+        )
+    )
+
+
 def _checkpoint_prerequisite_ids(checkpoint: dict) -> list[str]:
     return _ids_from(
         checkpoint,
@@ -935,6 +1172,65 @@ def _checkpoint_statuses(
     return statuses
 
 
+def _player_visible_checkpoints(checkpoints: list[dict], checkpoint_statuses: dict[str, str]) -> list[dict]:
+    visible: list[dict] = []
+    for checkpoint in checkpoints:
+        checkpoint_id = _checkpoint_id(checkpoint)
+        if not checkpoint_id:
+            continue
+        status = checkpoint_statuses.get(checkpoint_id) or 'open'
+        if status not in {'active', 'completed', 'skipped', 'failed'} and not _checkpoint_player_visible(checkpoint):
+            continue
+        payload = {
+            'id': checkpoint_id,
+            'status': status,
+        }
+        title = (
+            _text(_first(checkpoint, 'playerTitle', 'player_title', 'publicTitle', 'public_title'))
+            or _text(_first(checkpoint, 'title', 'name'))
+        )
+        if title:
+            payload['title'] = title
+        summary = (
+            _text(_first(checkpoint, 'playerSummary', 'player_summary', 'publicSummary', 'public_summary'))
+            or (_text(_first(checkpoint, 'summary', 'description')) if status in {'active', 'completed', 'skipped', 'failed'} else '')
+        )
+        if summary:
+            payload['summary'] = summary
+        if _checkpoint_optional(checkpoint):
+            payload['optional'] = True
+        visible.append(payload)
+    return visible
+
+
+def _checkpoint_player_visible(checkpoint: dict) -> bool:
+    return _truthy(
+        _first(
+            checkpoint,
+            'visibleToPlayers',
+            'visible_to_players',
+            'knownToPlayers',
+            'known_to_players',
+            'playerVisible',
+            'player_visible',
+        )
+    )
+
+
+def _player_visible_flags(flags: dict) -> dict:
+    return {
+        key: flags[key]
+        for key in (
+            'campaignPackActiveCheckpointId',
+            'campaignPackCompletedCheckpointIds',
+            'campaignPackSkippedCheckpointIds',
+            'campaignPackFailedCheckpointIds',
+            'campaignPackProgressRevision',
+        )
+        if key in flags
+    }
+
+
 def _active_director_rules(pack: dict, checkpoint: dict | None) -> dict:
     rules = pack.get('directorRules') if isinstance(pack.get('directorRules'), dict) else {}
     checkpoint_rules = checkpoint.get('directorRules') if isinstance(checkpoint, dict) and isinstance(checkpoint.get('directorRules'), dict) else {}
@@ -955,8 +1251,13 @@ def _triggered_segment_refs(*, campaign_id: int, pack_id: str, triggered_segment
     segments = CampaignSegment.query.filter_by(campaign_id=campaign_id, is_triggered=True).all()
     for segment in segments:
         tags = _ids_from({'tags': segment.tags}, 'tags')
-        if 'campaign_pack' not in tags and f'pack:{pack_id}' not in tags:
+        source = _text(getattr(segment, 'source', None))
+        source_pack_id = _text(getattr(segment, 'source_pack_id', None))
+        if source != 'campaign_pack' and source_pack_id != pack_id and 'campaign_pack' not in tags and f'pack:{pack_id}' not in tags:
             continue
+        external_id = _text(getattr(segment, 'external_id', None))
+        if external_id:
+            refs.add(_id_key(external_id))
         refs.add(_id_key(segment.segment_id))
         refs.add(_id_key(segment.title))
         refs.add(_id_key(stable_slug(segment.title)))

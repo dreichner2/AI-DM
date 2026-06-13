@@ -312,6 +312,10 @@ export type CampaignSegment = {
   description: string | null
   trigger_condition: string | null
   tags: string | null
+  external_id: string | null
+  source: string
+  source_pack_id: string | null
+  metadata: JsonRecord
   is_triggered: boolean
   created_at: string | null
   updated_at: string | null

@@ -28,7 +28,7 @@ from aidm_server.creatures.schemas import normalize_creature_definition
 from aidm_server.game_state.application.applier import apply_state_changes
 from aidm_server.game_state.validation.validator import validate_state_changes, validated_changes_for_application
 from aidm_server.database import db
-from aidm_server.models import BestiaryEntry, Campaign, DmTurn, Session, safe_json_dumps
+from aidm_server.models import BestiaryEntry, Campaign, CombatEncounter, DmTurn, Session, safe_json_dumps
 from tests.helpers import seed_world_campaign_player_session
 
 
@@ -2394,6 +2394,11 @@ def test_campaign_pack_combat_end_advances_encounter_checkpoint(client, app):
         json={'encounterId': 'enc_lantern_wraith'},
     ).get_json()
     enemy_id = next(participant['id'] for participant in start['combat']['participants'] if participant['team'] == 'enemy')
+    with app.app_context():
+        encounter = CombatEncounter.query.filter_by(session_id=ids['session_id']).one()
+        assert encounter.status == 'active'
+        assert encounter.ended_at is None
+
     update = client.post(
         f"/api/sessions/{ids['session_id']}/combat/apply-state-changes",
         json={
@@ -2419,6 +2424,10 @@ def test_campaign_pack_combat_end_advances_encounter_checkpoint(client, app):
     assert payload['campaignPackProgress']['reason'] == 'checkpoint_encounter_completed'
     assert payload['campaignPackProgress']['completed_checkpoint_ids'] == ['cp_watchtower']
     assert payload['campaignPackProgress']['active_checkpoint_id'] == 'cp_aftermath'
+    with app.app_context():
+        encounter = CombatEncounter.query.filter_by(session_id=ids['session_id']).one()
+        assert encounter.status == 'ended'
+        assert encounter.ended_at is not None
 
 
 def test_creature_deep_api_endpoints_for_pack_evolution_morale_and_debug(client, app):

@@ -21,6 +21,7 @@ from aidm_server.creatures.resolver import default_request_from_session, resolve
 from aidm_server.database import db
 from aidm_server.game_state.models import display_actor_id, stable_change_id, stable_slug
 from aidm_server.models import Campaign, CombatEncounter, DmTurn, Session, safe_json_dumps
+from aidm_server.time_utils import utc_now
 
 
 COMBAT_TRIGGER_PATTERN = re.compile(
@@ -375,6 +376,42 @@ def _ensure_encounter_record(
     return encounter
 
 
+def sync_combat_encounter_record(
+    *,
+    session_obj: Session,
+    campaign: Campaign,
+    combat: dict[str, Any],
+) -> CombatEncounter | None:
+    """Keep the durable combat row aligned with the snapshot combat state."""
+    if not isinstance(combat, dict):
+        return None
+    status = str(combat.get('status') or '').strip().lower()
+    if status in {'starting', 'active'}:
+        return _ensure_encounter_record(session_obj=session_obj, campaign=campaign, combat=combat)
+
+    if status not in {'ended', 'resolved', 'none'}:
+        return None
+
+    encounter = (
+        CombatEncounter.query.filter_by(session_id=session_obj.session_id)
+        .filter(CombatEncounter.status.in_(['starting', 'active']))
+        .order_by(CombatEncounter.updated_at.desc())
+        .first()
+    )
+    if not encounter:
+        return None
+
+    participant_ids = [participant.get('id') for participant in combat.get('participants') or [] if isinstance(participant, dict)]
+    encounter.status = 'ended'
+    encounter.round = int(combat.get('round') or encounter.round or 1)
+    encounter.encounter_goal_json = safe_json_dumps(combat.get('encounterGoal') or {}, {})
+    encounter.battlefield_json = safe_json_dumps(combat.get('battlefield') or {}, {})
+    encounter.participant_ids_json = safe_json_dumps(participant_ids, [])
+    encounter.ended_at = encounter.ended_at or utc_now()
+    db.session.flush()
+    return encounter
+
+
 def _intent_changes(turn_id: int, combat: dict[str, Any], intent_plan: dict[str, Any]) -> list[dict[str, Any]]:
     changes = []
     morale_by_enemy = {
@@ -543,7 +580,7 @@ def prepare_combat_from_dm_response(
     workspace_id: str,
 ) -> dict[str, Any]:
     working_state = deepcopy(state)
-    combat = ensure_combat_state(working_state)
+    ensure_combat_state(working_state)
     submitted_actor_id = display_actor_id(turn.player_id)
     debug: dict[str, Any] = {
         'triggered': False,

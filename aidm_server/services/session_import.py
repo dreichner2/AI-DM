@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import islice
@@ -8,6 +9,7 @@ from typing import Any
 from aidm_server.database import db
 from aidm_server.models import Campaign, Player, Session, SessionLogEntry, SessionState, TurnEvent, safe_json_dumps
 from aidm_server.response_dtos import session_payload
+from aidm_server.services.campaign_pack_snapshot import migrate_campaign_pack_snapshot
 from aidm_server.time_utils import utc_now
 from aidm_server.turn_events import project_turn_event
 from aidm_server.validation import coerce_int
@@ -35,7 +37,12 @@ class SessionImportResult:
     payload: dict
 
 
-def import_session_export(payload: dict[str, Any], *, workspace_id: str | None = None) -> SessionImportResult:
+def import_session_export(
+    payload: dict[str, Any],
+    *,
+    workspace_id: str | None = None,
+    include_hidden_state: bool = True,
+) -> SessionImportResult:
     if not isinstance(payload, dict):
         raise SessionImportError('Expected JSON request body.')
 
@@ -52,26 +59,29 @@ def import_session_export(payload: dict[str, Any], *, workspace_id: str | None =
     now = utc_now()
     source_session = _record(payload.get('selectedSession'))
     exported_at = _optional_text(payload.get('exportedAt'), max_length=80)
-    imported_snapshot = {
-        'imported': True,
-        'imported_at': now.isoformat(),
-        'source_exported_at': exported_at,
-        'source_session_id': _coerce_positive(source_session.get('session_id')),
-    }
     source_snapshot = _record(source_session.get('state_snapshot'))
-    if source_snapshot:
-        imported_snapshot['source_state_snapshot'] = source_snapshot
 
     session_obj = Session(
         campaign_id=campaign.campaign_id,
         name=_session_name(payload, source_session),
         status='active',
-        state_snapshot=safe_json_dumps(imported_snapshot, {}),
+        state_snapshot=safe_json_dumps({}, {}),
         created_at=now,
         updated_at=now,
     )
     db.session.add(session_obj)
     db.session.flush()
+    session_obj.state_snapshot = safe_json_dumps(
+        _imported_state_snapshot(
+            source_snapshot=source_snapshot,
+            session_obj=session_obj,
+            campaign=campaign,
+            exported_at=exported_at,
+            source_session_id=_coerce_positive(source_session.get('session_id')),
+            imported_at=now,
+        ),
+        {},
+    )
 
     state_imported = _import_session_state(session_obj, campaign, payload.get('sessionState'), now)
     events_imported, projected_log_entries = _import_turn_events(
@@ -89,7 +99,7 @@ def import_session_export(payload: dict[str, Any], *, workspace_id: str | None =
     result_payload = {
         'imported': True,
         'session_id': session_obj.session_id,
-        'session': session_payload(session_obj),
+        'session': session_payload(session_obj, include_hidden_state=include_hidden_state),
         'counts': {
             'turn_events': events_imported,
             'projected_log_entries': projected_log_entries,
@@ -98,6 +108,35 @@ def import_session_export(payload: dict[str, Any], *, workspace_id: str | None =
         },
     }
     return SessionImportResult(payload=result_payload)
+
+
+def _imported_state_snapshot(
+    *,
+    source_snapshot: dict[str, Any],
+    session_obj: Session,
+    campaign: Campaign,
+    exported_at: str,
+    source_session_id: int | None,
+    imported_at: datetime,
+) -> dict[str, Any]:
+    snapshot = deepcopy(source_snapshot) if source_snapshot else {}
+    snapshot['imported'] = True
+    snapshot['imported_at'] = imported_at.isoformat()
+    snapshot['source_exported_at'] = exported_at
+    snapshot['source_session_id'] = source_session_id
+    snapshot['sessionId'] = session_obj.session_id
+    snapshot['campaignId'] = campaign.campaign_id
+    metadata = _record(snapshot.get('importMetadata')).copy()
+    metadata.update(
+        {
+            'importedAt': imported_at.isoformat(),
+            'sourceExportedAt': exported_at,
+            'sourceSessionId': source_session_id,
+        }
+    )
+    snapshot['importMetadata'] = metadata
+    snapshot, _migrations_applied = migrate_campaign_pack_snapshot(snapshot)
+    return snapshot
 
 
 def _campaign_id(payload: dict[str, Any]) -> int | None:

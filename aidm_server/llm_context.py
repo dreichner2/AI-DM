@@ -426,9 +426,17 @@ def _compact_pack_checkpoint(checkpoint: dict | None, *, runtime_status: str | N
     payload = {
         'id': _text_or_none(_record_id(checkpoint), 120),
         'title': _text_or_none(_record_value(checkpoint, 'title', 'name'), 180),
+        'playerTitle': _text_or_none(_record_value(checkpoint, 'playerTitle', 'player_title', 'publicTitle', 'public_title'), 180),
         'status': _text_or_none(runtime_status or _record_value(checkpoint, 'status'), 80),
         'optional': True if _checkpoint_optional(checkpoint) else None,
+        'terminal': True if _checkpoint_terminal(checkpoint) else None,
+        'chapter': _text_or_none(_record_value(checkpoint, 'chapter'), 80),
+        'act': _text_or_none(_record_value(checkpoint, 'act'), 80),
+        'priority': _positive_int(_record_value(checkpoint, 'priority')),
+        'gate': _text_or_none(_record_value(checkpoint, 'gate', 'gateBehavior', 'gate_behavior'), 80),
+        'canCompleteOutOfOrder': True if _checkpoint_can_complete_out_of_order(checkpoint) else None,
         'summary': _text_or_none(_record_value(checkpoint, 'summary', 'description'), 420),
+        'playerSummary': _text_or_none(_record_value(checkpoint, 'playerSummary', 'player_summary', 'publicSummary', 'public_summary'), 420),
         'locationIds': _string_values(
             _record_value(checkpoint, 'locationIds', 'location_ids', 'locations'),
             limit=8,
@@ -521,12 +529,14 @@ def _compact_pack_segment(segment: CampaignSegment, *, pack_id: str | None) -> d
     trigger_spec = parse_trigger_spec(segment.trigger_condition)
     return {
         'segment_id': segment.segment_id,
+        'externalId': _text_or_none(segment.external_id, 120),
         'title': _text_or_none(segment.title, 180),
         'description': _text_or_none(segment.description, 420),
         'triggerType': trigger_spec.trigger_type,
         'isTriggered': bool(segment.is_triggered),
         'tags': _string_values(segment.tags, limit=12),
-        'packId': pack_id,
+        'source': _text_or_none(segment.source, 40),
+        'packId': _text_or_none(segment.source_pack_id, 120) or pack_id,
     }
 
 
@@ -614,7 +624,7 @@ def _select_next_checkpoints(
             and _checkpoint_optional(checkpoint)
         ]
         selected = required or optional
-    return selected[:MAX_PACK_CHECKPOINTS]
+    return _prioritized_checkpoints(selected, checkpoints)[:MAX_PACK_CHECKPOINTS]
 
 
 def _next_checkpoint_ids(checkpoint: dict) -> list[str]:
@@ -678,6 +688,36 @@ def _first_incomplete_checkpoint(
 
 def _checkpoint_optional(checkpoint: dict) -> bool:
     return _truthy(_record_value(checkpoint, 'optional', 'isOptional', 'is_optional'))
+
+
+def _checkpoint_terminal(checkpoint: dict) -> bool:
+    kind = _status_key(_record_value(checkpoint, 'kind', 'type', 'checkpointType', 'checkpoint_type'))
+    return _truthy(_record_value(checkpoint, 'terminal', 'isTerminal', 'is_terminal', 'end', 'isEnd')) or kind in {
+        'terminal',
+        'end',
+        'finale',
+    }
+
+
+def _checkpoint_can_complete_out_of_order(checkpoint: dict) -> bool:
+    return _truthy(
+        _record_value(
+            checkpoint,
+            'canCompleteOutOfOrder',
+            'can_complete_out_of_order',
+            'outOfOrderCompletion',
+            'out_of_order_completion',
+        )
+    )
+
+
+def _checkpoint_priority(checkpoint: dict) -> int:
+    return _positive_int(_record_value(checkpoint, 'priority')) or 0
+
+
+def _prioritized_checkpoints(selected: list[dict], all_checkpoints: list[dict]) -> list[dict]:
+    order = {_record_id(checkpoint): index for index, checkpoint in enumerate(all_checkpoints)}
+    return sorted(selected, key=lambda checkpoint: (-_checkpoint_priority(checkpoint), order.get(_record_id(checkpoint), 9999)))
 
 
 def _checkpoint_prerequisite_ids(checkpoint: dict) -> list[str]:
@@ -745,6 +785,31 @@ def _checkpoint_statuses(
     return statuses
 
 
+def _compact_checkpoint_statuses(
+    checkpoint_statuses: dict[str, str],
+    *,
+    active_checkpoint: dict | None,
+    next_checkpoints: list[dict],
+    completed_ids: list[str],
+    skipped_ids: list[str],
+    failed_ids: list[str],
+) -> dict[str, str]:
+    wanted_ids = _unique_pack_ids(
+        [
+            _record_id(active_checkpoint),
+            *[_record_id(checkpoint) for checkpoint in next_checkpoints[:MAX_PACK_CHECKPOINTS]],
+            *completed_ids[:MAX_PACK_CHECKPOINTS],
+            *skipped_ids[:MAX_PACK_CHECKPOINTS],
+            *failed_ids[:MAX_PACK_CHECKPOINTS],
+        ]
+    )
+    return {
+        checkpoint_id: checkpoint_statuses[checkpoint_id]
+        for checkpoint_id in wanted_ids
+        if checkpoint_id in checkpoint_statuses
+    }
+
+
 def _active_director_rules(pack: dict, checkpoint: dict | None) -> dict:
     rules = pack.get('directorRules') if isinstance(pack.get('directorRules'), dict) else {}
     checkpoint_rules = checkpoint.get('directorRules') if isinstance(checkpoint, dict) and isinstance(checkpoint.get('directorRules'), dict) else {}
@@ -777,6 +842,42 @@ def _pack_director_policy(director_rules: dict) -> dict:
         'checkpointStyle': checkpoint_style,
         'instructions': instructions,
     }
+
+
+def _compact_pack_operator_notes(pack: dict) -> dict:
+    notes: dict[str, Any] = {}
+    for output_key, input_keys in {
+        'gmNotes': ('gmNotes', 'gm_notes', 'hiddenNotes', 'hidden_notes'),
+        'hiddenSceneNotes': ('hiddenSceneNotes', 'hidden_scene_notes'),
+    }.items():
+        value = _record_value(pack, *input_keys)
+        compacted = _compact_pack_note_value(value)
+        if compacted not in (None, '', [], {}):
+            notes[output_key] = compacted
+    return notes
+
+
+def _compact_pack_note_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return _text_or_none(value, 700)
+    if isinstance(value, list):
+        compacted_items = []
+        for item in value[:6]:
+            compacted_item = _compact_pack_note_value(item)
+            if compacted_item not in (None, ''):
+                compacted_items.append(compacted_item)
+        return compacted_items
+    if isinstance(value, dict):
+        compacted: dict[str, Any] = {}
+        for key, item in list(value.items())[:8]:
+            text_key = _text_or_none(key, 80)
+            if not text_key:
+                continue
+            compacted_value = _compact_pack_note_value(item)
+            if compacted_value not in (None, '', [], {}):
+                compacted[text_key] = compacted_value
+        return compacted
+    return _text_or_none(value, 240) if value not in (None, '') else None
 
 
 def _ids_from(record: dict, *keys: str) -> list[str]:
@@ -819,6 +920,14 @@ def _status_key(value: Any) -> str:
     return str(value or '').strip().casefold().replace(' ', '_').replace('-', '_')
 
 
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
 def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -834,6 +943,107 @@ def _location_ids_near_current(current_location_id: str, locations: list[dict]) 
         limit=10,
     )
     return [current_location_id, *connected]
+
+
+def _off_track_analysis(
+    *,
+    snapshot: dict,
+    pack: dict,
+    current_location_id: str,
+    active_checkpoint: dict | None,
+    checkpoints: list[dict],
+    completed_ids: list[str],
+    skipped_ids: list[str],
+    failed_ids: list[str],
+    rejoin_target_id: str | None,
+) -> dict:
+    scene = snapshot.get('currentScene') if isinstance(snapshot.get('currentScene'), dict) else {}
+    locations = _catalog_records(pack, 'locations', snapshot.get('locations') if isinstance(snapshot.get('locations'), list) else [])
+    quests = _catalog_records(pack, 'quests', snapshot.get('quests') if isinstance(snapshot.get('quests'), list) else [])
+    npcs = _catalog_records(
+        pack,
+        'npcs',
+        [
+            *[npc for npc in (snapshot.get('knownNpcs') or []) if isinstance(npc, dict)],
+            *[npc for npc in (snapshot.get('partyNpcs') or []) if isinstance(npc, dict)],
+        ],
+    )
+    clues = _catalog_records(pack, 'clues', snapshot.get('clues') if isinstance(snapshot.get('clues'), list) else [])
+    pack_location_ids = {_record_id(location) for location in locations if _record_id(location)}
+    pack_quest_ids = {_record_id(quest) for quest in quests if _record_id(quest)}
+    active_quest_ids = _string_values(scene.get('activeQuestIds'), limit=20)
+    terminal_ids = {_id_key(value) for value in _terminal_checkpoint_ids(completed_ids, skipped_ids, failed_ids)}
+    active_checkpoint_id = _record_id(active_checkpoint)
+    checkpoint_location_matches: list[str] = []
+    if current_location_id:
+        for checkpoint in checkpoints:
+            checkpoint_id = _record_id(checkpoint)
+            if not checkpoint_id or _id_key(checkpoint_id) in terminal_ids or checkpoint_id == active_checkpoint_id:
+                continue
+            location_ids = _string_values(_record_value(checkpoint, 'locationIds', 'location_ids', 'locations'), limit=20)
+            if current_location_id in location_ids:
+                checkpoint_location_matches.append(checkpoint_id)
+
+    npc_by_id = {_record_id(npc): npc for npc in npcs if _record_id(npc)}
+    required_npc_ids = _string_values(_record_value(active_checkpoint, 'npcIds', 'npc_ids', 'npcs') if active_checkpoint else [], limit=20)
+    broken_npc_ids = [
+        npc_id
+        for npc_id in required_npc_ids
+        if _status_key((npc_by_id.get(npc_id) or {}).get('status')) in {'dead', 'hostile', 'missing', 'alienated'}
+        or _status_key((npc_by_id.get(npc_id) or {}).get('disposition')) in {'hostile', 'alienated'}
+    ]
+
+    clue_by_id = {_record_id(clue): clue for clue in clues if _record_id(clue)}
+    required_clue_ids = _string_values(
+        _record_value(active_checkpoint, 'clueIds', 'clue_ids', 'requiredClueIds', 'required_clue_ids') if active_checkpoint else [],
+        limit=20,
+    )
+    broken_clue_ids = [
+        clue_id
+        for clue_id in required_clue_ids
+        if _status_key((clue_by_id.get(clue_id) or {}).get('status')) in {'destroyed', 'lost', 'failed', 'unavailable'}
+    ]
+
+    combat = snapshot.get('combat') if isinstance(snapshot.get('combat'), dict) else {}
+    combat_flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+    allowed_outcomes = {_status_key(value) for value in _string_values(combat_flags.get('campaignPackAllowedOutcomes'), limit=20)}
+    end_reason = _status_key(combat_flags.get('endReason') or combat_flags.get('end_reason'))
+    combat_diverged = bool(
+        _record_value(combat_flags, 'campaignPackEncounterId', 'campaign_pack_encounter_id')
+        and end_reason
+        and allowed_outcomes
+        and end_reason not in allowed_outcomes
+    )
+
+    details = {
+        'locationOffTrack': bool(current_location_id and pack_location_ids and current_location_id not in pack_location_ids),
+        'questOffTrack': any(quest_id not in pack_quest_ids for quest_id in active_quest_ids) if pack_quest_ids else False,
+        'npcDependencyBroken': bool(broken_npc_ids),
+        'brokenNpcIds': broken_npc_ids,
+        'checkpointBypassed': bool(checkpoint_location_matches),
+        'bypassedCheckpointIds': checkpoint_location_matches[:8],
+        'requiredClueDestroyed': bool(broken_clue_ids),
+        'brokenClueIds': broken_clue_ids,
+        'combatOutcomeDiverged': combat_diverged,
+        'combatOutcome': end_reason or None,
+        'rejoinTargetConfidence': 'high' if rejoin_target_id and not checkpoint_location_matches else 'medium' if rejoin_target_id else 'low',
+    }
+    reasons = [
+        key
+        for key in (
+            'locationOffTrack',
+            'questOffTrack',
+            'npcDependencyBroken',
+            'checkpointBypassed',
+            'requiredClueDestroyed',
+            'combatOutcomeDiverged',
+        )
+        if details[key]
+    ]
+    details['score'] = len(reasons)
+    details['offTrack'] = bool(reasons)
+    details['reasons'] = reasons
+    return details
 
 
 def _campaign_pack_director_for_session(campaign_id: int, session_id) -> dict:
@@ -915,6 +1125,14 @@ def _campaign_pack_director_for_session(campaign_id: int, session_id) -> dict:
         skipped_ids=skipped_checkpoint_ids,
         failed_ids=failed_checkpoint_ids,
     )
+    compact_checkpoint_statuses = _compact_checkpoint_statuses(
+        checkpoint_statuses,
+        active_checkpoint=active_checkpoint,
+        next_checkpoints=next_checkpoints,
+        completed_ids=completed_checkpoint_ids,
+        skipped_ids=skipped_checkpoint_ids,
+        failed_ids=failed_checkpoint_ids,
+    )
     active_director_rules = _active_director_rules(pack, active_checkpoint)
 
     active_checkpoint_ids = _string_values([_record_id(active_checkpoint)] if active_checkpoint else [], limit=1)
@@ -992,7 +1210,9 @@ def _campaign_pack_director_for_session(campaign_id: int, session_id) -> dict:
             CampaignSegment.is_triggered.asc(),
             CampaignSegment.segment_id.asc(),
         )
-        if 'campaign_pack' in _string_values(segment.tags, limit=20)
+        if segment.source == 'campaign_pack'
+        or (pack_id and segment.source_pack_id == pack_id)
+        or 'campaign_pack' in _string_values(segment.tags, limit=20)
         or (pack_id and f'pack:{pack_id}' in _string_values(segment.tags, limit=20))
     ]
 
@@ -1003,13 +1223,22 @@ def _campaign_pack_director_for_session(campaign_id: int, session_id) -> dict:
         .all()
     )
 
-    pack_location_ids = {str(location.get('id') or '').strip() for location in locations}
-    is_off_track = bool(current_location_id and pack_location_ids and current_location_id not in pack_location_ids)
     rejoin_target = (
         _text_or_none(_record_value(active_checkpoint, 'rejoinTargetCheckpointId', 'rejoin_target_checkpoint_id'), 120)
         if active_checkpoint
         else None
     ) or _text_or_none(_record_id(active_checkpoint), 120)
+    off_track = _off_track_analysis(
+        snapshot=snapshot,
+        pack=pack,
+        current_location_id=current_location_id,
+        active_checkpoint=active_checkpoint,
+        checkpoints=checkpoints,
+        completed_ids=completed_checkpoint_ids,
+        skipped_ids=skipped_checkpoint_ids,
+        failed_ids=failed_checkpoint_ids,
+        rejoin_target_id=rejoin_target,
+    )
 
     return {
         'enabled': True,
@@ -1019,6 +1248,7 @@ def _campaign_pack_director_for_session(campaign_id: int, session_id) -> dict:
             'version': _text_or_none(_record_value(pack, 'version'), 80),
         },
         'policy': _pack_director_policy(active_director_rules),
+        'operatorNotes': _compact_pack_operator_notes(pack),
         'activeCheckpoint': _compact_pack_checkpoint(
             active_checkpoint,
             runtime_status=checkpoint_statuses.get(_record_id(active_checkpoint)),
@@ -1062,10 +1292,13 @@ def _campaign_pack_director_for_session(campaign_id: int, session_id) -> dict:
             'completedCheckpointIds': completed_checkpoint_ids[:MAX_PACK_CHECKPOINTS],
             'skippedCheckpointIds': skipped_checkpoint_ids[:MAX_PACK_CHECKPOINTS],
             'failedCheckpointIds': failed_checkpoint_ids[:MAX_PACK_CHECKPOINTS],
-            'checkpointStatuses': checkpoint_statuses,
+            'checkpointStatuses': compact_checkpoint_statuses,
             'activeQuestIds': active_quest_ids[:MAX_PACK_QUESTS],
             'currentLocationId': _text_or_none(current_location_id, 120),
-            'offTrack': is_off_track,
+            'offTrack': off_track['offTrack'],
+            'offTrackScore': off_track['score'],
+            'offTrackReasons': off_track['reasons'],
+            'offTrackDetails': off_track,
             'rejoinTargetCheckpointId': rejoin_target,
         },
     }

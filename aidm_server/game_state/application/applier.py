@@ -7,6 +7,7 @@ from typing import Any
 from aidm_server.armor_class import sync_actor_armor_class
 from aidm_server.canon_text import int_or_default
 from aidm_server.combat.state import ensure_combat_state, normalize_battlefield, normalize_combat_state, normalize_participant, normalize_position
+from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start
 from aidm_server.game_state.equipment import conflict_items, equipment_slot_label, infer_equipment_slot
 from aidm_server.game_state.models import (
     CURRENCY_CODES,
@@ -438,6 +439,154 @@ def _merge_record_source(record: dict[str, Any], payload: dict[str, Any]) -> Non
     pack_id = _text(payload.get('packId') or payload.get('pack_id') or metadata.get('packId') or metadata.get('pack_id'))
     if pack_id and not _text(record.get('packId') or record.get('pack_id')):
         record['packId'] = pack_id
+
+
+def _domain_record_payload(
+    change: dict[str, Any],
+    *,
+    embedded_key: str,
+    id_key: str,
+    default_status: str,
+) -> dict[str, Any]:
+    embedded = change.get(embedded_key) if isinstance(change.get(embedded_key), dict) else {}
+    title = _text(change.get('title') or change.get('name') or embedded.get('title') or embedded.get('name'))
+    record_id = _world_id(change.get(id_key), embedded.get('id'), embedded.get(id_key), title)
+    metadata = embedded.get('metadata') if isinstance(embedded.get('metadata'), dict) else {}
+    if isinstance(change.get('metadata'), dict):
+        metadata = {**metadata, **change['metadata']}
+    payload: dict[str, Any] = {
+        **embedded,
+        'id': record_id,
+        'title': title or record_id,
+        'name': change.get('name') or embedded.get('name'),
+        'status': change.get('status') or embedded.get('status') or default_status,
+        'summary': change.get('summary') or embedded.get('summary'),
+        'description': change.get('description') or embedded.get('description'),
+        'locationIds': _merge_unique(embedded.get('locationIds'), change.get('locationIds')),
+        'npcIds': _merge_unique(embedded.get('npcIds'), change.get('npcIds')),
+        'questIds': _merge_unique(embedded.get('questIds'), change.get('questIds')),
+        'checkpointIds': _merge_unique(embedded.get('checkpointIds'), change.get('checkpointIds')),
+        'tags': _merge_unique(embedded.get('tags'), change.get('tags')),
+        'metadata': metadata,
+    }
+    if isinstance(change.get('flags'), dict) or isinstance(embedded.get('flags'), dict):
+        payload['flags'] = {
+            **(embedded.get('flags') if isinstance(embedded.get('flags'), dict) else {}),
+            **(change.get('flags') if isinstance(change.get('flags'), dict) else {}),
+        }
+    payload.update(_record_source_fields(change, embedded, metadata))
+    turn_id = _turn_id(change)
+    if turn_id is not None:
+        payload['updatedAtTurn'] = turn_id
+        payload.setdefault('firstRevealedTurn', turn_id)
+    return payload
+
+
+def _merge_domain_record(state: dict[str, Any], collection_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+    collection = _ensure_list(state, collection_key)
+    record = _find_record(collection, record_id=payload.get('id'), title=payload.get('title'), name=payload.get('name'))
+    if not record:
+        record = {
+            'id': payload.get('id'),
+            'title': payload.get('title') or payload.get('name') or payload.get('id'),
+            'name': payload.get('name'),
+            'status': payload.get('status'),
+            'summary': _text(payload.get('summary')),
+            'description': _text(payload.get('description')),
+            'locationIds': _string_list(payload.get('locationIds')),
+            'npcIds': _string_list(payload.get('npcIds')),
+            'questIds': _string_list(payload.get('questIds')),
+            'checkpointIds': _string_list(payload.get('checkpointIds')),
+            'tags': _string_list(payload.get('tags')),
+            'flags': payload.get('flags') if isinstance(payload.get('flags'), dict) else {},
+            'metadata': payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {},
+            'firstRevealedTurn': payload.get('firstRevealedTurn'),
+            'updatedAtTurn': payload.get('updatedAtTurn'),
+        }
+        _merge_record_source(record, payload)
+        collection.append(record)
+        return record
+    for key in ('title', 'name', 'status', 'firstRevealedTurn', 'updatedAtTurn'):
+        if key == 'firstRevealedTurn' and record.get(key):
+            continue
+        _set_if_present(record, key, payload.get(key))
+    _merge_rich_text(record, 'summary', payload.get('summary'))
+    _merge_rich_text(record, 'description', payload.get('description'))
+    for key in ('locationIds', 'npcIds', 'questIds', 'checkpointIds', 'tags'):
+        record[key] = _merge_unique(record.get(key), payload.get(key))
+    if isinstance(record.setdefault('flags', {}), dict) and isinstance(payload.get('flags'), dict):
+        record['flags'].update(payload['flags'])
+    _merge_metadata(record, payload.get('metadata'))
+    _merge_record_source(record, payload)
+    return record
+
+
+def _apply_faction_relationship_update(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
+    faction = _merge_domain_record(
+        state,
+        'factions',
+        _domain_record_payload(
+            change,
+            embedded_key='faction',
+            id_key='factionId',
+            default_status='known',
+        ),
+    )
+    relationship = faction.setdefault('relationship', {})
+    if not isinstance(relationship, dict):
+        relationship = {}
+        faction['relationship'] = relationship
+    current = int_or_default(relationship.get('score'), default=0)
+    if change.get('scoreDelta') is not None:
+        relationship['score'] = max(-100, min(100, current + int_or_default(change.get('scoreDelta'), default=0)))
+    elif change.get('relationshipScore') is not None:
+        relationship['score'] = max(-100, min(100, int_or_default(change.get('relationshipScore'), default=current)))
+    elif isinstance(change.get('relationship'), dict) and change['relationship'].get('score') is not None:
+        relationship['score'] = max(-100, min(100, int_or_default(change['relationship'].get('score'), default=current)))
+    if change.get('relationshipLabel'):
+        relationship['label'] = _text(change.get('relationshipLabel'))
+    elif isinstance(change.get('relationship'), dict) and change['relationship'].get('label'):
+        relationship['label'] = _text(change['relationship'].get('label'))
+    relationship.setdefault('score', 0)
+    relationship.setdefault('label', 'neutral')
+    return faction
+
+
+def _apply_map_change(state: dict[str, Any], change: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    map_record = _merge_domain_record(
+        state,
+        'maps',
+        _domain_record_payload(
+            change,
+            embedded_key='map',
+            id_key='mapId',
+            default_status='revealed' if change.get('type') == 'map.reveal' else 'known',
+        ),
+    )
+    if change.get('type') == 'map.reveal':
+        map_record['revealed'] = True
+    region = change.get('region') if isinstance(change.get('region'), dict) else {}
+    region_title = _text(change.get('regionTitle') or change.get('regionName') or region.get('title') or region.get('name'))
+    region_id = _world_id(change.get('regionId'), region.get('id'), region.get('regionId'), region_title)
+    if not region_id:
+        return map_record, None
+    regions = map_record.setdefault('regions', [])
+    if not isinstance(regions, list):
+        regions = []
+        map_record['regions'] = regions
+    existing_region = _find_record(regions, record_id=region_id, title=region_title, name=region_title)
+    if not existing_region:
+        existing_region = {'id': region_id, 'title': region_title or region_id}
+        regions.append(existing_region)
+    existing_region['revealed'] = bool(change.get('type') == 'map.reveal' or change.get('revealed', True))
+    _set_if_present(existing_region, 'status', change.get('regionStatus') or region.get('status'))
+    _merge_rich_text(existing_region, 'summary', change.get('summary') or region.get('summary'))
+    _merge_rich_text(existing_region, 'description', change.get('description') or region.get('description'))
+    region_metadata = region.get('metadata') if isinstance(region.get('metadata'), dict) else {}
+    change_metadata = change.get('metadata') if isinstance(change.get('metadata'), dict) else {}
+    if region_metadata or change_metadata:
+        _merge_metadata(existing_region, {**region_metadata, **change_metadata})
+    return map_record, existing_region
 
 
 def _ensure_scene(state: dict[str, Any]) -> dict[str, Any]:
@@ -947,6 +1096,7 @@ def _sync_scene_combat_state(state: dict[str, Any], combat: dict[str, Any]) -> N
 
 
 def _apply_combat_start(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
+    change = materialize_campaign_pack_combat_start(state, change)
     combat_payload = change.get('combat') if isinstance(change.get('combat'), dict) else change
     combat = normalize_combat_state(
         {
@@ -1404,6 +1554,53 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
                 continue
             applied_change['npcId'] = npc.get('id')
             applied_change['npcName'] = npc.get('name')
+        elif change_type in {'clue.discover', 'clue.update'}:
+            clue = _merge_domain_record(
+                next_state,
+                'clues',
+                _domain_record_payload(
+                    change,
+                    embedded_key='clue',
+                    id_key='clueId',
+                    default_status='discovered' if change_type == 'clue.discover' else 'known',
+                ),
+            )
+            applied_change['clueId'] = clue.get('id')
+            applied_change['clueTitle'] = clue.get('title')
+        elif change_type == 'faction.discover':
+            faction = _merge_domain_record(
+                next_state,
+                'factions',
+                _domain_record_payload(change, embedded_key='faction', id_key='factionId', default_status='known'),
+            )
+            applied_change['factionId'] = faction.get('id')
+            applied_change['factionTitle'] = faction.get('title')
+        elif change_type == 'faction.relationship.update':
+            faction = _apply_faction_relationship_update(next_state, change)
+            applied_change['factionId'] = faction.get('id')
+            applied_change['factionTitle'] = faction.get('title')
+        elif change_type in {'map.reveal', 'map.region.update'}:
+            map_record, region = _apply_map_change(next_state, change)
+            applied_change['mapId'] = map_record.get('id')
+            applied_change['mapTitle'] = map_record.get('title')
+            if region:
+                applied_change['regionId'] = region.get('id')
+        elif change_type == 'handout.reveal':
+            handout = _merge_domain_record(
+                next_state,
+                'handouts',
+                _domain_record_payload(change, embedded_key='handout', id_key='handoutId', default_status='revealed'),
+            )
+            applied_change['handoutId'] = handout.get('id')
+            applied_change['handoutTitle'] = handout.get('title')
+        elif change_type == 'lore.unlock':
+            lore = _merge_domain_record(
+                next_state,
+                'lore',
+                _domain_record_payload(change, embedded_key='lore', id_key='loreId', default_status='unlocked'),
+            )
+            applied_change['loreId'] = lore.get('id')
+            applied_change['loreTitle'] = lore.get('title')
         elif change_type == 'flag.set':
             flags = _ensure_dict(next_state, 'flags')
             flags[_world_id(change.get('flagKey'))] = change.get('flagValue')

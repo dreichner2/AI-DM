@@ -43,6 +43,209 @@ class Campaign(db.Model):
     world = db.relationship('World', backref='campaigns')
 
 
+class InstalledCampaignPack(db.Model):
+    __tablename__ = 'installed_campaign_packs'
+    __table_args__ = (
+        db.Index('ix_installed_campaign_packs_workspace_pack', 'workspace_id', 'pack_id', 'pack_version'),
+        db.Index('ix_installed_campaign_packs_workspace_hash', 'workspace_id', 'pack_hash', unique=True),
+        db.Index('ix_installed_campaign_packs_imported_by', 'imported_by_account_id', 'validated_at'),
+    )
+
+    installed_pack_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    workspace_id = db.Column(db.String(80), nullable=False, default='owner', server_default='owner', index=True)
+    pack_id = db.Column(db.String(120), nullable=False)
+    title = db.Column(db.String(120), nullable=False)
+    pack_version = db.Column(db.String(80), nullable=False, default='1.0.0')
+    schema_version = db.Column(db.String(20), nullable=False, default='1')
+    pack_hash = db.Column(db.String(64), nullable=False)
+    source_filename = db.Column(db.String(255), nullable=True)
+    imported_by_account_id = db.Column(db.Integer, db.ForeignKey('accounts.account_id', ondelete='SET NULL'), nullable=True)
+    manifest_json = db.Column(db.Text, nullable=False)
+    validated_at = db.Column(db.DateTime, default=utc_now, index=True)
+    created_at = db.Column(db.DateTime, default=utc_now)
+    updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
+
+    imported_by_account = db.relationship('Account', backref='installed_campaign_packs')
+
+
+class CampaignPack(db.Model):
+    __tablename__ = 'campaign_packs'
+    __table_args__ = (
+        db.UniqueConstraint('workspace_id', 'pack_hash', name='uq_campaign_packs_workspace_hash'),
+        db.Index('ix_campaign_packs_workspace_pack', 'workspace_id', 'pack_id', 'pack_version'),
+        db.Index('ix_campaign_packs_installed_pack', 'installed_pack_id'),
+    )
+
+    campaign_pack_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    workspace_id = db.Column(db.String(80), nullable=False, default='owner', server_default='owner', index=True)
+    installed_pack_id = db.Column(
+        db.Integer,
+        db.ForeignKey('installed_campaign_packs.installed_pack_id', ondelete='SET NULL'),
+        nullable=True,
+    )
+    pack_id = db.Column(db.String(120), nullable=False)
+    title = db.Column(db.String(120), nullable=False)
+    pack_version = db.Column(db.String(80), nullable=False, default='1.0.0')
+    schema_version = db.Column(db.String(20), nullable=False, default='1')
+    pack_hash = db.Column(db.String(64), nullable=False)
+    manifest_json = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=utc_now)
+    updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
+
+    installed_pack = db.relationship('InstalledCampaignPack', backref='campaign_packs')
+
+
+class CampaignPackRecord(db.Model):
+    __tablename__ = 'campaign_pack_records'
+    __table_args__ = (
+        db.UniqueConstraint('campaign_pack_id', 'record_type', 'record_id', name='uq_campaign_pack_records_identity'),
+        db.Index('ix_campaign_pack_records_pack_type', 'campaign_pack_id', 'record_type'),
+        db.Index('ix_campaign_pack_records_workspace_type', 'workspace_id', 'record_type'),
+    )
+
+    record_pk = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    campaign_pack_id = db.Column(
+        db.Integer,
+        db.ForeignKey('campaign_packs.campaign_pack_id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    workspace_id = db.Column(db.String(80), nullable=False, default='owner', server_default='owner', index=True)
+    pack_id = db.Column(db.String(120), nullable=False)
+    record_type = db.Column(db.String(40), nullable=False)
+    record_id = db.Column(db.String(120), nullable=False)
+    title = db.Column(db.String(160), nullable=True)
+    visibility = db.Column(db.String(32), nullable=False, default='dm')
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+    record_json = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=utc_now)
+    updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
+
+    campaign_pack = db.relationship(
+        'CampaignPack',
+        backref=db.backref('records', cascade='all, delete-orphan', passive_deletes=True),
+    )
+
+
+class CampaignPackSession(db.Model):
+    __tablename__ = 'campaign_pack_sessions'
+    __table_args__ = (
+        db.UniqueConstraint('session_id', name='uq_campaign_pack_sessions_session_id'),
+        db.Index('ix_campaign_pack_sessions_campaign_status', 'campaign_id', 'status'),
+        db.Index('ix_campaign_pack_sessions_pack', 'campaign_pack_id'),
+        db.Index('ix_campaign_pack_sessions_workspace_pack', 'workspace_id', 'pack_id'),
+    )
+
+    campaign_pack_session_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    campaign_pack_id = db.Column(
+        db.Integer,
+        db.ForeignKey('campaign_packs.campaign_pack_id', ondelete='SET NULL'),
+        nullable=True,
+    )
+    installed_pack_id = db.Column(
+        db.Integer,
+        db.ForeignKey('installed_campaign_packs.installed_pack_id', ondelete='SET NULL'),
+        nullable=True,
+    )
+    session_id = db.Column(db.Integer, db.ForeignKey('sessions.session_id', ondelete='CASCADE'), nullable=False)
+    campaign_id = db.Column(db.Integer, db.ForeignKey('campaigns.campaign_id', ondelete='CASCADE'), nullable=False)
+    workspace_id = db.Column(db.String(80), nullable=False, default='owner', server_default='owner', index=True)
+    pack_id = db.Column(db.String(120), nullable=False)
+    pack_title = db.Column(db.String(120), nullable=True)
+    pack_version = db.Column(db.String(80), nullable=True)
+    active_checkpoint_id = db.Column(db.String(120), nullable=True)
+    progress_revision = db.Column(db.Integer, nullable=False, default=0)
+    snapshot_schema_version = db.Column(db.Integer, nullable=False, default=1)
+    progress_schema_version = db.Column(db.Integer, nullable=False, default=1)
+    progress_events_version = db.Column(db.Integer, nullable=False, default=1)
+    status = db.Column(db.String(32), nullable=False, default='active')
+    multi_session_group_key = db.Column(db.String(120), nullable=True)
+    gm_notes_json = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=utc_now)
+    updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
+
+    campaign_pack = db.relationship('CampaignPack', backref='campaign_sessions')
+    installed_pack = db.relationship('InstalledCampaignPack', backref='campaign_sessions')
+    session = db.relationship(
+        'Session',
+        backref=db.backref('campaign_pack_session', cascade='all, delete-orphan', passive_deletes=True, uselist=False),
+    )
+    campaign = db.relationship('Campaign', backref='campaign_pack_sessions')
+
+
+class CampaignPackCheckpointProgress(db.Model):
+    __tablename__ = 'campaign_pack_checkpoint_progress'
+    __table_args__ = (
+        db.UniqueConstraint('campaign_pack_session_id', 'checkpoint_id', name='uq_campaign_pack_checkpoint_progress_identity'),
+        db.Index('ix_campaign_pack_checkpoint_progress_status', 'campaign_pack_session_id', 'status'),
+    )
+
+    checkpoint_progress_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    campaign_pack_session_id = db.Column(
+        db.Integer,
+        db.ForeignKey('campaign_pack_sessions.campaign_pack_session_id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    checkpoint_id = db.Column(db.String(120), nullable=False)
+    title = db.Column(db.String(160), nullable=True)
+    status = db.Column(db.String(32), nullable=False, default='open')
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+    progress_revision = db.Column(db.Integer, nullable=False, default=0)
+    activated_at = db.Column(db.DateTime, nullable=True)
+    completed_at = db.Column(db.DateTime, nullable=True)
+    skipped_at = db.Column(db.DateTime, nullable=True)
+    failed_at = db.Column(db.DateTime, nullable=True)
+    metadata_json = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=utc_now)
+    updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
+
+    campaign_pack_session = db.relationship(
+        'CampaignPackSession',
+        backref=db.backref('checkpoint_progress', cascade='all, delete-orphan', passive_deletes=True),
+    )
+
+
+class CampaignPackProgressEvent(db.Model):
+    __tablename__ = 'campaign_pack_progress_events'
+    __table_args__ = (
+        db.UniqueConstraint('campaign_pack_session_id', 'idempotency_key', name='uq_campaign_pack_progress_events_idempotency'),
+        db.Index('ix_campaign_pack_progress_events_session_revision', 'campaign_pack_session_id', 'progress_revision'),
+        db.Index('ix_campaign_pack_progress_events_session_created', 'session_id', 'created_at'),
+    )
+
+    progress_event_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    campaign_pack_session_id = db.Column(
+        db.Integer,
+        db.ForeignKey('campaign_pack_sessions.campaign_pack_session_id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    session_id = db.Column(db.Integer, db.ForeignKey('sessions.session_id', ondelete='CASCADE'), nullable=False, index=True)
+    campaign_id = db.Column(db.Integer, db.ForeignKey('campaigns.campaign_id', ondelete='CASCADE'), nullable=False, index=True)
+    turn_id = db.Column(db.Integer, db.ForeignKey('dm_turns.turn_id', ondelete='SET NULL'), nullable=True, index=True)
+    turn_event_id = db.Column(db.Integer, db.ForeignKey('turn_events.event_id', ondelete='SET NULL'), nullable=True, index=True)
+    event_type = db.Column(db.String(80), nullable=False)
+    action = db.Column(db.String(40), nullable=False)
+    actor = db.Column(db.String(120), nullable=True)
+    from_checkpoint_id = db.Column(db.String(120), nullable=True)
+    to_checkpoint_id = db.Column(db.String(120), nullable=True)
+    reason = db.Column(db.Text, nullable=True)
+    progress_revision = db.Column(db.Integer, nullable=False, default=0)
+    idempotency_key = db.Column(db.String(160), nullable=True)
+    payload_json = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=utc_now, index=True)
+
+    campaign_pack_session = db.relationship(
+        'CampaignPackSession',
+        backref=db.backref('progress_events', cascade='all, delete-orphan', passive_deletes=True),
+    )
+    session = db.relationship('Session', backref='campaign_pack_progress_events')
+    campaign = db.relationship('Campaign', backref='campaign_pack_progress_events')
+    turn = db.relationship('DmTurn', backref='campaign_pack_progress_events')
+    turn_event = db.relationship('TurnEvent', backref='campaign_pack_progress_event')
+
+
 class Account(db.Model):
     __tablename__ = 'accounts'
     __table_args__ = (
@@ -364,6 +567,7 @@ class CampaignSegment(db.Model):
     __tablename__ = 'campaign_segments'
     __table_args__ = (
         db.Index('ix_campaign_segments_campaign_id_is_triggered', 'campaign_id', 'is_triggered'),
+        db.Index('ix_campaign_segments_campaign_source_external', 'campaign_id', 'source', 'external_id'),
     )
 
     segment_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -372,6 +576,10 @@ class CampaignSegment(db.Model):
     description = db.Column(db.Text, nullable=True)
     trigger_condition = db.Column(db.Text, nullable=True)
     tags = db.Column(db.Text, nullable=True)
+    external_id = db.Column(db.String(120), nullable=True)
+    source = db.Column(db.String(40), nullable=False, default='authored')
+    source_pack_id = db.Column(db.String(120), nullable=True)
+    metadata_json = db.Column(db.Text, nullable=True)
     is_triggered = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=utc_now)
     updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)

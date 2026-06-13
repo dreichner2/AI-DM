@@ -20,6 +20,7 @@ from aidm_server.models import (
     TurnCanonUpdate,
     World,
 )
+from aidm_server.services.campaign_pack_progress import PROGRESS_CHANGED_EVENT
 from aidm_server.turn_events import DM_RESPONSE_EVENT, PLAYER_MESSAGE_EVENT, SESSION_ENDED_EVENT, SESSION_RECAP_EVENT, SESSION_STARTED_EVENT
 from tests.helpers import seed_world_campaign_player_session
 
@@ -308,6 +309,12 @@ def test_import_session_from_export_restores_state_events_and_projected_log(clie
         assert imported_session is not None
         assert imported_session.campaign_id == ids['campaign_id']
         assert imported_session.name == 'Ash Gate Alpha'
+        imported_snapshot = json.loads(imported_session.state_snapshot)
+        assert imported_snapshot['recap'] == 'Old recap'
+        assert imported_snapshot['imported'] is True
+        assert imported_snapshot['source_session_id'] == ids['session_id']
+        assert imported_snapshot['sessionId'] == imported_session_id
+        assert imported_snapshot['campaignId'] == ids['campaign_id']
 
         imported_state = SessionState.query.filter_by(session_id=imported_session_id).one()
         assert imported_state.current_location == 'Restored Gate'
@@ -330,6 +337,161 @@ def test_import_session_from_export_restores_state_events_and_projected_log(clie
         assert 'I test the restored gate.' in log_entries[0].message
         assert 'The restored gate opens.' in log_entries[1].message
         assert 'This should not be duplicated' not in '\n'.join(entry.message for entry in log_entries)
+
+
+def test_import_session_preserves_campaign_pack_state_progress_events_and_archive_restore(client, app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        session = db.session.get(Session, ids['session_id'])
+        session.state_snapshot = json.dumps(
+            {
+                'schemaVersion': 1,
+                'sessionId': ids['session_id'],
+                'campaignId': ids['campaign_id'],
+                'currentScene': {
+                    'locationId': 'old_road',
+                    'name': 'Old Road',
+                    'activeQuestIds': ['q_missing_caravan'],
+                    'activeNpcIds': ['npc_captain_veyra'],
+                },
+                'locations': [
+                    {'id': 'bleakmoor_gate', 'name': 'Bleakmoor Gate', 'source': 'campaign_pack', 'packId': 'bleakmoor_intro'},
+                    {'id': 'old_road', 'name': 'Old Road', 'source': 'campaign_pack', 'packId': 'bleakmoor_intro'},
+                ],
+                'knownNpcs': [
+                    {'id': 'npc_captain_veyra', 'name': 'Captain Veyra', 'source': 'campaign_pack', 'packId': 'bleakmoor_intro'}
+                ],
+                'quests': [
+                    {'id': 'q_missing_caravan', 'title': 'Find the Missing Caravan', 'status': 'active', 'source': 'campaign_pack', 'packId': 'bleakmoor_intro'}
+                ],
+                'flags': {
+                    'campaignPackActiveCheckpointId': 'cp_old_road',
+                    'campaignPackCompletedCheckpointIds': ['cp_gate'],
+                    'campaignPackSkippedCheckpointIds': [],
+                    'campaignPackFailedCheckpointIds': [],
+                    'campaignPackProgressRevision': 3,
+                },
+                'campaignPack': {
+                    'packId': 'bleakmoor_intro',
+                    'title': 'The Lanterns of Bleakmoor',
+                    'schemaVersion': '1',
+                    'version': '1.0.0',
+                    'source': 'campaign_pack',
+                    'snapshotSchemaVersion': 1,
+                    'progressSchemaVersion': 1,
+                    'progressRevision': 3,
+                    'progressEventsVersion': 1,
+                    'activeCheckpointId': 'cp_old_road',
+                    'completedCheckpointIds': ['cp_gate'],
+                    'skippedCheckpointIds': [],
+                    'failedCheckpointIds': [],
+                    'checkpoints': [
+                        {'id': 'cp_gate', 'title': 'Question the gate captain', 'nextCheckpointIds': ['cp_old_road']},
+                        {'id': 'cp_old_road', 'title': 'Find the old road', 'locationIds': ['old_road']},
+                    ],
+                    'catalog': {
+                        'locations': [
+                            {'id': 'bleakmoor_gate', 'name': 'Bleakmoor Gate'},
+                            {'id': 'old_road', 'name': 'Old Road'},
+                        ],
+                        'npcs': [{'id': 'npc_lantern_keeper', 'name': 'Lantern Keeper', 'hiddenToPlayers': True}],
+                        'quests': [{'id': 'q_hidden_witness', 'title': 'Find the Old Road Witness'}],
+                        'encounters': [{'id': 'enc_lantern_wraith', 'title': 'Lantern Wraith'}],
+                    },
+                    'directorRules': {'mainQuestGeneration': 'pack_only'},
+                },
+            }
+        )
+        db.session.add(
+            SessionState(
+                session_id=ids['session_id'],
+                current_location='Old Road',
+                current_quest='Find the Missing Caravan',
+                rolling_summary='The party reached the old road.',
+                active_segments=json.dumps([]),
+                memory_snippets=json.dumps([]),
+            )
+        )
+        db.session.add(
+            TurnEvent(
+                session_id=ids['session_id'],
+                campaign_id=ids['campaign_id'],
+                event_type=PROGRESS_CHANGED_EVENT,
+                payload_json=json.dumps(
+                    {
+                        'type': PROGRESS_CHANGED_EVENT,
+                        'packId': 'bleakmoor_intro',
+                        'action': 'advance',
+                        'fromCheckpointId': 'cp_gate',
+                        'toCheckpointId': 'cp_old_road',
+                        'progressRevision': 3,
+                    }
+                ),
+            )
+        )
+        db.session.commit()
+        source_snapshot = json.loads(session.state_snapshot)
+        progress_event = TurnEvent.query.filter_by(session_id=ids['session_id'], event_type=PROGRESS_CHANGED_EVENT).one()
+        progress_event_id = progress_event.event_id
+        progress_event_created_at = progress_event.created_at.isoformat()
+        progress_event_payload = json.loads(progress_event.payload_json)
+
+    response = client.post(
+        '/api/sessions/import',
+        json={
+            'exportedAt': '2026-06-06T10:30:00+00:00',
+            'selectedIds': {'campaignId': ids['campaign_id'], 'sessionId': ids['session_id']},
+            'selectedSession': {
+                'session_id': ids['session_id'],
+                'display_name': 'Bleakmoor Reimport',
+                'state_snapshot': source_snapshot,
+            },
+            'sessionState': {
+                'current_location': 'Old Road',
+                'current_quest': 'Find the Missing Caravan',
+                'rolling_summary': 'The party reached the old road.',
+            },
+            'turnEvents': [
+                {
+                    'event_id': progress_event_id,
+                    'event_type': PROGRESS_CHANGED_EVENT,
+                    'payload': progress_event_payload,
+                    'created_at': progress_event_created_at,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 201
+    imported_session_id = response.get_json()['session_id']
+    assert imported_session_id != ids['session_id']
+    archive_response = client.post(f'/api/sessions/{imported_session_id}/archive')
+    restore_response = client.post(f'/api/sessions/{imported_session_id}/restore')
+    state_response = client.get(f'/api/sessions/{imported_session_id}/state')
+
+    assert archive_response.status_code == 200
+    assert restore_response.status_code == 200
+    assert state_response.status_code == 200
+    restored_snapshot = state_response.get_json()['state_snapshot']
+    assert restored_snapshot['sessionId'] == imported_session_id
+    assert restored_snapshot['campaignId'] == ids['campaign_id']
+    assert restored_snapshot['source_session_id'] == ids['session_id']
+    assert restored_snapshot['currentScene']['locationId'] == 'old_road'
+    assert restored_snapshot['campaignPack']['activeCheckpointId'] == 'cp_old_road'
+    assert restored_snapshot['campaignPack']['completedCheckpointIds'] == ['cp_gate']
+    assert restored_snapshot['campaignPack']['progressRevision'] == 3
+    assert restored_snapshot['campaignPack']['catalog']['npcs'][0]['id'] == 'npc_lantern_keeper'
+    assert restored_snapshot['campaignPack']['directorRules']['mainQuestGeneration'] == 'pack_only'
+
+    with app.app_context():
+        imported_events = TurnEvent.query.filter_by(
+            session_id=imported_session_id,
+            event_type=PROGRESS_CHANGED_EVENT,
+        ).all()
+        imported_event_payload = json.loads(imported_events[0].payload_json)
+    assert len(imported_events) == 1
+    assert imported_event_payload['toCheckpointId'] == 'cp_old_road'
+    assert imported_event_payload['metadata']['imported_from_event_id'] == progress_event_id
 
 
 def test_import_session_falls_back_to_log_entries_when_events_are_absent(client, app):

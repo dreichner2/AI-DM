@@ -14,6 +14,7 @@ from aidm_server.combat.pipeline import (
     prepare_combat_from_dm_response,
     record_combat_debug_from_outcome,
     record_combat_debug_from_prepare,
+    sync_combat_encounter_record,
 )
 from aidm_server.database import db
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY, STATE_PIPELINE_VERSION
@@ -1288,6 +1289,11 @@ def post_dm_pipeline(
             persist_state_to_database(session_obj=session_obj, state=final_state, players_by_id=players_by_id)
         else:
             session_obj.state_snapshot = safe_json_dumps(final_state, {})
+        sync_combat_encounter_record(
+            session_obj=session_obj,
+            campaign=campaign,
+            combat=final_state.get('combat') if isinstance(final_state.get('combat'), dict) else {},
+        )
 
     state_log = build_state_log(
         turn_id=turn.turn_id,

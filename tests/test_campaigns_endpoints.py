@@ -8,8 +8,13 @@ from aidm_server.models import (
     CampaignSegment,
     BestiaryEntry,
     CanonJob,
+    CampaignPack,
+    CampaignPackCheckpointProgress,
+    CampaignPackRecord,
+    CampaignPackSession,
     DmCoherenceFeedback,
     DmTurn,
+    InstalledCampaignPack,
     Map,
     Player,
     PlayerAction,
@@ -91,6 +96,7 @@ def test_import_campaign_pack_seeds_structured_campaign_content(client, app):
         '/api/campaigns/import-pack',
         json={
             'world_id': world_id,
+            'sourceFilename': 'bleakmoor_intro_campaign_pack.json',
             'pack': {
                 'packId': 'bleakmoor_intro',
                 'title': 'The Lanterns of Bleakmoor',
@@ -203,6 +209,9 @@ def test_import_campaign_pack_seeds_structured_campaign_content(client, app):
     payload = response.get_json()
     assert payload['imported'] is True
     assert payload['pack_id'] == 'bleakmoor_intro'
+    assert payload['installed_campaign_pack']['pack_id'] == 'bleakmoor_intro'
+    assert payload['installed_campaign_pack']['source_filename'] == 'bleakmoor_intro_campaign_pack.json'
+    assert len(payload['installed_campaign_pack']['pack_hash']) == 64
     assert payload['counts'] == {
         'locations': 2,
         'npcs': 2,
@@ -220,8 +229,45 @@ def test_import_campaign_pack_seeds_structured_campaign_content(client, app):
         session_state = SessionState.query.filter_by(session_id=session_obj.session_id).one()
         segment = CampaignSegment.query.filter_by(campaign_id=campaign.campaign_id).one()
         bestiary = BestiaryEntry.query.filter_by(campaign_id=campaign.campaign_id).one()
+        installed_pack = InstalledCampaignPack.query.filter_by(workspace_id='owner', pack_id='bleakmoor_intro').one()
+        campaign_pack = CampaignPack.query.filter_by(workspace_id='owner', pack_id='bleakmoor_intro').one()
+        pack_session = CampaignPackSession.query.filter_by(session_id=session_obj.session_id).one()
+        pack_records = CampaignPackRecord.query.filter_by(campaign_pack_id=campaign_pack.campaign_pack_id).all()
+        checkpoint_progress = (
+            CampaignPackCheckpointProgress.query.filter_by(campaign_pack_session_id=pack_session.campaign_pack_session_id)
+            .order_by(CampaignPackCheckpointProgress.sort_order.asc())
+            .all()
+        )
 
         assert campaign.title == 'The Lanterns of Bleakmoor'
+        assert installed_pack.title == 'The Lanterns of Bleakmoor'
+        assert installed_pack.pack_version == '1.0.0'
+        assert installed_pack.schema_version == '1'
+        assert installed_pack.source_filename == 'bleakmoor_intro_campaign_pack.json'
+        assert json.loads(installed_pack.manifest_json)['packId'] == 'bleakmoor_intro'
+        assert campaign_pack.installed_pack_id == installed_pack.installed_pack_id
+        assert campaign_pack.pack_hash == installed_pack.pack_hash
+        assert {record.record_type for record in pack_records} == {
+            'checkpoint',
+            'enemy',
+            'location',
+            'npc',
+            'quest',
+            'segment',
+        }
+        assert {record.record_id for record in pack_records if record.record_type == 'location'} == {
+            'bleakmoor_gate',
+            'old_road',
+        }
+        assert pack_session.campaign_pack_id == campaign_pack.campaign_pack_id
+        assert pack_session.installed_pack_id == installed_pack.installed_pack_id
+        assert pack_session.pack_id == 'bleakmoor_intro'
+        assert pack_session.active_checkpoint_id == 'cp_old_road'
+        assert pack_session.progress_revision == 0
+        assert [(row.checkpoint_id, row.status) for row in checkpoint_progress] == [
+            ('cp_old_road', 'active'),
+            ('cp_watchtower', 'open'),
+        ]
         assert campaign.current_quest == 'Find the Missing Caravan - Ask at Bleakmoor Gate'
         assert campaign.location == 'Bleakmoor Gate'
         assert session_state.current_location == 'Bleakmoor Gate'
@@ -230,6 +276,7 @@ def test_import_campaign_pack_seeds_structured_campaign_content(client, app):
         snapshot = json.loads(session_obj.state_snapshot)
         assert snapshot['campaignPack']['packId'] == 'bleakmoor_intro'
         assert snapshot['campaignPack']['schemaVersion'] == '1'
+        assert snapshot['campaignPack']['activeCheckpointId'] == 'cp_old_road'
         assert snapshot['campaignPack']['directorRules']['mainQuestGeneration'] == 'pack_only'
         assert snapshot['currentScene']['locationId'] == 'bleakmoor_gate'
         assert snapshot['currentScene']['name'] == 'Bleakmoor Gate'
@@ -253,6 +300,10 @@ def test_import_campaign_pack_seeds_structured_campaign_content(client, app):
 
         trigger = json.loads(segment.trigger_condition)
         assert segment.title == 'Question Captain Veyra'
+        assert segment.external_id == 'seg_question_veyra'
+        assert segment.source == 'campaign_pack'
+        assert segment.source_pack_id == 'bleakmoor_intro'
+        assert json.loads(segment.metadata_json)['packSegmentId'] == 'seg_question_veyra'
         assert trigger['type'] == 'state'
         assert trigger['packId'] == 'bleakmoor_intro'
         assert 'campaign_pack' in segment.tags
@@ -285,6 +336,102 @@ def test_import_campaign_pack_can_create_world_from_manifest(client, app):
         world = db.session.get(World, campaign.world_id)
         assert world.name == 'Pack World'
         assert campaign.location == 'Start'
+
+
+def test_import_campaign_pack_reuses_installed_pack_source_by_hash(client, app):
+    pack = {
+        'packId': 'repeatable_pack',
+        'title': 'Repeatable Pack',
+        'version': '1.2.3',
+        'locations': [{'id': 'start', 'name': 'Start'}],
+        'startingState': {'locationId': 'start'},
+    }
+
+    first = client.post('/api/campaigns/import-pack', json={'sourceFilename': 'repeatable.json', 'pack': pack})
+    second = client.post('/api/campaigns/import-pack', json={'sourceFilename': 'repeatable.json', 'pack': pack})
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    first_source = first.get_json()['installed_campaign_pack']
+    second_source = second.get_json()['installed_campaign_pack']
+    assert second_source['installed_pack_id'] == first_source['installed_pack_id']
+    assert second_source['pack_hash'] == first_source['pack_hash']
+    with app.app_context():
+        assert InstalledCampaignPack.query.filter_by(pack_id='repeatable_pack').count() == 1
+        assert CampaignPack.query.filter_by(pack_id='repeatable_pack').count() == 1
+        assert CampaignPackSession.query.filter_by(pack_id='repeatable_pack').count() == 2
+        assert Campaign.query.filter_by(title='Repeatable Pack').count() == 2
+
+
+def test_installed_campaign_pack_library_lists_details_and_imports(client, app):
+    pack = {
+        'packId': 'library_pack',
+        'title': 'Library Pack',
+        'version': '2.0.0',
+        'multiSessionGroupKey': 'shared-west-marches',
+        'gmNotes': {'opening': 'Keep the bell secret.'},
+        'dependencies': [{'packId': 'shared_rules', 'versionRange': '^1'}],
+        'mods': [{'id': 'winter_overlay', 'title': 'Winter Overlay'}],
+        'locations': [{'id': 'start', 'name': 'Start'}],
+        'startingState': {'locationId': 'start'},
+        'checkpoints': [{'id': 'cp_start', 'title': 'Start', 'terminal': True}],
+    }
+
+    imported = client.post('/api/campaigns/import-pack', json={'sourceFilename': 'library_pack.json', 'pack': pack})
+    assert imported.status_code == 201
+    installed_pack_id = imported.get_json()['installed_campaign_pack']['installed_pack_id']
+
+    list_response = client.get('/api/campaigns/installed-packs')
+    assert list_response.status_code == 200
+    list_payload = list_response.get_json()
+    assert list_payload['count'] == 1
+    assert list_payload['installed_packs'][0]['pack_id'] == 'library_pack'
+    assert list_payload['installed_packs'][0]['dependencies'][0]['packId'] == 'shared_rules'
+    assert list_payload['installed_packs'][0]['multi_session_group_key'] == 'shared-west-marches'
+
+    detail_response = client.get(f'/api/campaigns/installed-packs/{installed_pack_id}')
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.get_json()
+    assert detail_payload['manifest']['gmNotes']['opening'] == 'Keep the bell secret.'
+    assert detail_payload['record_count'] == 2
+    assert {record['record_type'] for record in detail_payload['records']} == {'checkpoint', 'location'}
+
+    reimport_response = client.post(
+        f'/api/campaigns/installed-packs/{installed_pack_id}/import',
+        json={'sessionName': 'Second Table'},
+    )
+    assert reimport_response.status_code == 201
+    assert reimport_response.get_json()['session']['display_name'] == 'Second Table'
+    with app.app_context():
+        assert CampaignPackSession.query.filter_by(pack_id='library_pack').count() == 2
+
+
+def test_campaign_pack_lint_endpoint_returns_authoring_issues(client):
+    response = client.post(
+        '/api/campaigns/pack-tools/lint',
+        json={
+            'packId': 'lint_endpoint_pack',
+            'title': 'Lint Endpoint Pack',
+            'locations': [{'id': 'start', 'name': 'Start'}],
+            'startingState': {'locationId': 'start'},
+            'checkpoints': [{'id': 'cp_start', 'title': 'Start', 'terminal': True}],
+            'handouts': [
+                {
+                    'id': 'handout_secret',
+                    'title': 'Secret Handout',
+                    'visibleAtStart': True,
+                    'hiddenToPlayers': True,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['ok'] is False
+    assert payload['summary']['packId'] == 'lint_endpoint_pack'
+    assert payload['graph']['reachable'] == ['cp_start']
+    assert any(issue['code'] == 'hidden_record_visible_at_start' for issue in payload['issues'])
 
 
 def test_import_campaign_pack_dry_run_previews_without_creating_records(client, app):
@@ -436,6 +583,49 @@ def test_import_campaign_pack_rejects_unknown_starting_location(client, app):
     assert response.status_code == 400
     assert response.get_json()['error_code'] == 'validation_error'
     assert response.get_json()['error'] == 'startingState.locationId must reference an imported location.'
+
+
+def test_import_campaign_pack_runs_schema_validation_with_pathful_errors(client):
+    response = client.post(
+        '/api/campaigns/import-pack',
+        json={
+            'packId': 'bad_schema_pack',
+            'title': 'Bad Schema Pack',
+            'quests': [
+                {
+                    'id': 'q_bad',
+                    'title': 'Broken Quest',
+                    'objectives': [
+                        {
+                            'id': 'obj_bad',
+                            'description': 'This one has a bad status shape.',
+                            'status': {'not': 'a string'},
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload['error_code'] == 'invalid_campaign_pack_schema'
+    assert payload['error'] == 'quests[0].objectives[0].status must be a string.'
+
+
+def test_import_campaign_pack_accepts_supported_schema_version_variants(client):
+    for schema_version in ['1', '1.0', '1.0.0', 1]:
+        response = client.post(
+            '/api/campaigns/import-pack?dry_run=true',
+            json={
+                'schemaVersion': schema_version,
+                'packId': f'schema_variant_{str(schema_version).replace(".", "_")}',
+                'title': f'Schema Variant {schema_version}',
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.get_json()['schema_version'] == '1'
 
 
 def test_create_campaign_rejects_invalid_world_id(client):

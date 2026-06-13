@@ -48,7 +48,7 @@ def metadata_cleaned_snapshot(raw_snapshot) -> dict:
     return snapshot
 
 
-def archive_session_record(session_obj: Session) -> dict:
+def archive_session_record(session_obj: Session, *, include_hidden_state: bool = True) -> dict:
     now = utc_now()
     session_obj.status = ARCHIVED_STATUS
     session_obj.deleted_at = now
@@ -56,17 +56,17 @@ def archive_session_record(session_obj: Session) -> dict:
     session_obj.archived_by_campaign_id = None
     session_obj.state_snapshot = safe_json_dumps(metadata_cleaned_snapshot(session_obj.state_snapshot), {})
     session_turn_coordinator.discard_session(session_obj.session_id)
-    return session_payload(session_obj)
+    return session_payload(session_obj, include_hidden_state=include_hidden_state)
 
 
-def restore_session_record(session_obj: Session) -> dict:
+def restore_session_record(session_obj: Session, *, include_hidden_state: bool = True) -> dict:
     now = utc_now()
     session_obj.status = ACTIVE_STATUS
     session_obj.deleted_at = None
     session_obj.updated_at = now
     session_obj.archived_by_campaign_id = None
     session_obj.state_snapshot = safe_json_dumps(metadata_cleaned_snapshot(session_obj.state_snapshot), {})
-    return session_payload(session_obj)
+    return session_payload(session_obj, include_hidden_state=include_hidden_state)
 
 
 def hard_delete_session_record(session_obj: Session) -> dict:
@@ -187,14 +187,14 @@ def hard_delete_session_record(session_obj: Session) -> dict:
     return {'deleted': True, 'session_id': session_id}
 
 
-def delete_session_record(session_obj: Session, *, hard_delete: bool) -> SessionDeletionResult:
+def delete_session_record(session_obj: Session, *, hard_delete: bool, include_hidden_state: bool = True) -> SessionDeletionResult:
     session_id = session_obj.session_id
     if hard_delete:
         payload = hard_delete_session_record(session_obj)
         session_turn_coordinator.discard_session(session_id)
         return SessionDeletionResult(hard_deleted=True, payload=payload)
 
-    session_payload_data = archive_session_record(session_obj)
+    session_payload_data = archive_session_record(session_obj, include_hidden_state=include_hidden_state)
     return SessionDeletionResult(
         hard_deleted=False,
         payload={

@@ -67,6 +67,7 @@ def _campaign_pack_state():
             {
                 'id': 'cp_gate',
                 'title': 'Question Captain Veyra',
+                'encounterIds': ['enc_lantern_wraith'],
                 'rejoinTargetCheckpointId': 'cp_old_road',
             },
             {'id': 'cp_old_road', 'title': 'Find the Caravan Wreck'},
@@ -129,6 +130,79 @@ def _campaign_pack_state():
                     'relatedLocationIds': ['old_road'],
                     'relatedNpcIds': ['npc_lantern_keeper'],
                 },
+            ],
+            'clues': [
+                {
+                    'id': 'clue_lantern_wax',
+                    'title': 'Lantern Wax',
+                    'summary': 'Blue wax flakes point toward the old road.',
+                    'source': 'campaign_pack',
+                    'packId': 'bleakmoor_intro',
+                    'locationIds': ['old_road'],
+                }
+            ],
+            'factions': [
+                {
+                    'id': 'f_marsh_watch',
+                    'title': 'Marsh Watch',
+                    'summary': 'Gate sentries loyal to Bleakmoor.',
+                    'source': 'campaign_pack',
+                    'packId': 'bleakmoor_intro',
+                }
+            ],
+            'maps': [
+                {
+                    'id': 'map_bleakmoor_marsh',
+                    'title': 'Bleakmoor Marsh Map',
+                    'source': 'campaign_pack',
+                    'packId': 'bleakmoor_intro',
+                }
+            ],
+            'handouts': [
+                {
+                    'id': 'handout_veyra_note',
+                    'title': "Veyra's Mud-Spattered Note",
+                    'source': 'campaign_pack',
+                    'packId': 'bleakmoor_intro',
+                }
+            ],
+            'lore': [
+                {
+                    'id': 'lore_lantern_oath',
+                    'title': 'The Lantern Oath',
+                    'source': 'campaign_pack',
+                    'packId': 'bleakmoor_intro',
+                }
+            ],
+            'enemies': [
+                {
+                    'id': 'lantern_wraith',
+                    'name': 'Lantern Wraith',
+                    'source': 'campaign_pack',
+                    'packId': 'bleakmoor_intro',
+                    'challengeTier': 'hard',
+                    'stats': {'maxHp': 22, 'armorClass': 13},
+                    'abilities': [
+                        {
+                            'id': 'life_drain',
+                            'name': 'Life Drain',
+                            'type': 'attack',
+                            'attackBonus': 5,
+                            'damage': {'dice': '1d8+2', 'type': 'necrotic'},
+                        }
+                    ],
+                }
+            ],
+            'encounters': [
+                {
+                    'id': 'enc_lantern_wraith',
+                    'title': 'Lantern Wraith Ambush',
+                    'source': 'campaign_pack',
+                    'packId': 'bleakmoor_intro',
+                    'enemyIds': ['lantern_wraith'],
+                    'checkpointIds': ['cp_gate'],
+                    'completion': {'anyOf': ['defeat', 'negotiate', 'flee']},
+                }
             ],
         },
     }
@@ -2127,6 +2201,120 @@ def test_pack_catalog_discovery_materializes_authored_records():
     assert result['nextState']['currentScene']['activeQuestIds'] == ['q_missing_caravan', 'q_lantern_witness']
 
 
+def test_pack_catalog_materializes_clues_factions_maps_handouts_and_lore():
+    state = _campaign_pack_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'discover_lantern_wax',
+                'type': 'clue.discover',
+                'source': 'post_dm',
+                'turnId': 35,
+                'clueId': 'clue_lantern_wax',
+                'title': 'Lantern Wax',
+            },
+            {
+                'id': 'discover_marsh_watch',
+                'type': 'faction.discover',
+                'source': 'post_dm',
+                'turnId': 35,
+                'factionId': 'f_marsh_watch',
+                'title': 'Marsh Watch',
+            },
+            {
+                'id': 'reveal_marsh_map',
+                'type': 'map.reveal',
+                'source': 'post_dm',
+                'turnId': 35,
+                'mapId': 'map_bleakmoor_marsh',
+                'title': 'Bleakmoor Marsh Map',
+                'regionId': 'old_road',
+                'regionTitle': 'Old Road',
+            },
+            {
+                'id': 'reveal_note',
+                'type': 'handout.reveal',
+                'source': 'post_dm',
+                'turnId': 35,
+                'handoutId': 'handout_veyra_note',
+                'title': "Veyra's Mud-Spattered Note",
+            },
+            {
+                'id': 'unlock_lantern_oath',
+                'type': 'lore.unlock',
+                'source': 'post_dm',
+                'turnId': 35,
+                'loreId': 'lore_lantern_oath',
+                'title': 'The Lantern Oath',
+            },
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    next_state = result['nextState']
+
+    assert validation['accepted'] == []
+    assert validation['rejected'] == []
+    assert [entry['modifiedChange']['source'] for entry in validation['modified']] == [
+        'campaign_pack',
+        'campaign_pack',
+        'campaign_pack',
+        'campaign_pack',
+        'campaign_pack',
+    ]
+    assert next_state['clues'][0]['source'] == 'campaign_pack'
+    assert next_state['clues'][0]['metadata']['driftControl'] == 'materialized_from_catalog'
+    assert next_state['factions'][0]['source'] == 'campaign_pack'
+    assert next_state['maps'][0]['revealed'] is True
+    assert {
+        key: next_state['maps'][0]['regions'][0][key]
+        for key in ('id', 'title', 'revealed')
+    } == {'id': 'old_road', 'title': 'Old Road', 'revealed': True}
+    assert next_state['maps'][0]['regions'][0]['metadata']['driftControl'] == 'materialized_from_catalog'
+    assert next_state['handouts'][0]['status'] == 'revealed'
+    assert next_state['lore'][0]['status'] == 'unlocked'
+
+
+def test_pack_drift_tags_new_clue_and_faction_content_as_emergent():
+    state = _campaign_pack_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'discover_side_clue',
+                'type': 'clue.discover',
+                'source': 'post_dm',
+                'turnId': 36,
+                'title': 'Reed-Scratched Coin',
+                'summary': 'A local clue unrelated to the main path.',
+            },
+            {
+                'id': 'change_side_faction',
+                'type': 'faction.relationship.update',
+                'source': 'post_dm',
+                'turnId': 36,
+                'factionId': 'f_reed_smugglers',
+                'title': 'Reed Smugglers',
+                'relationshipScore': -20,
+                'relationshipLabel': 'hostile',
+            },
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    clue = result['nextState']['clues'][0]
+    faction = result['nextState']['factions'][0]
+
+    assert validation['accepted'] == []
+    assert validation['rejected'] == []
+    assert [entry['modifiedChange']['source'] for entry in validation['modified']] == ['emergent', 'emergent']
+    assert clue['source'] == 'emergent'
+    assert clue['packId'] == 'bleakmoor_intro'
+    assert clue['metadata']['packContentRole'] == 'clue_content'
+    assert clue['metadata']['rejoinTargetCheckpointId'] == 'cp_old_road'
+    assert faction['relationship'] == {'score': -20, 'label': 'hostile'}
+    assert faction['metadata']['packContentRole'] == 'faction_content'
+
+
 def test_pack_record_updates_preserve_campaign_pack_source():
     state = _campaign_pack_state()
     validation = validate_state_changes(
@@ -2244,6 +2432,38 @@ def test_pack_drift_tags_inventory_flags_routes_and_relationships():
     assert modified[2]['metadata']['driftControl'] == 'tagged_local_route'
     assert modified[3]['source'] == 'player_created'
     assert modified[3]['packId'] == 'bleakmoor_intro'
+
+
+def test_pack_encounter_combat_start_materializes_authored_enemies():
+    state = _campaign_pack_state()
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'start_lantern_wraith',
+                'type': 'combat.start',
+                'source': 'post_dm',
+                'turnId': 36,
+                'campaignPackEncounterId': 'enc_lantern_wraith',
+                'combat': {'status': 'active', 'round': 1, 'participants': []},
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    combat = result['nextState']['combat']
+    enemies = [participant for participant in combat['participants'] if participant['team'] == 'enemy']
+
+    assert validation['modified'] == []
+    assert validation['rejected'] == []
+    assert validation['accepted'][0]['change']['source'] == 'campaign_pack'
+    assert len(enemies) == 1
+    assert enemies[0]['name'] == 'Lantern Wraith'
+    assert enemies[0]['source'] == 'campaign_pack'
+    assert enemies[0]['campaignPackEnemyId'] == 'lantern_wraith'
+    assert combat['flags']['campaignPackEncounterId'] == 'enc_lantern_wraith'
+    assert combat['flags']['campaignPackCheckpointIds'] == ['cp_gate']
+    assert combat['flags']['campaignPackAllowedOutcomes'] == ['defeat', 'negotiate', 'flee']
+    assert combat['encounterGoal']['type'] == 'campaign_pack'
 
 
 def test_pack_drift_tags_non_pack_combat_start_as_emergent_encounter():
@@ -5605,6 +5825,35 @@ def test_post_dm_semantic_merge_keeps_valid_combat_end_after_invalid_status():
     assert [change['id'] for change in changes] == ['bad_end', 'good_end']
     assert [entry['change']['id'] for entry in validation['rejected']] == ['bad_end']
     assert [entry['change']['id'] for entry in validation['accepted']] == ['good_end']
+    assert result['nextState']['combat']['status'] == 'ended'
+
+
+def test_nested_combat_update_data_is_validated_before_application():
+    state = _state()
+    state['currentScene'] = {'sceneType': 'exploration', 'combatState': 'resolved'}
+    state['combat'] = {
+        'status': 'ended',
+        'round': 1,
+        'participants': [],
+        'flags': {'campaignPackEncounterId': 'enc_lantern_wraith', 'endReason': 'all_enemies_defeated'},
+    }
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'pending_pack_combat',
+                'type': 'combat.update',
+                'data': {
+                    'status': 'pending',
+                    'flags': {'campaignPackEncounterId': 'enc_lantern_wraith'},
+                },
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    assert validation['accepted'] == []
+    assert validation['rejected'][0]['reason'] == "Unsupported combat status 'pending'."
     assert result['nextState']['combat']['status'] == 'ended'
 
 

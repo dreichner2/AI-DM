@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import json
+import hashlib
+import re
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from aidm_server.creatures.repository import save_bestiary_entry
@@ -9,12 +14,14 @@ from aidm_server.game_state.models import stable_slug
 from aidm_server.models import (
     Campaign,
     CampaignSegment,
+    InstalledCampaignPack,
     Session,
     SessionState,
     World,
     safe_json_dumps,
 )
 from aidm_server.response_dtos import campaign_payload, session_payload
+from aidm_server.services.campaign_pack_storage import sync_campaign_pack_progress, upsert_campaign_pack_definition
 from aidm_server.time_utils import utc_now
 from aidm_server.validation import coerce_int
 
@@ -31,6 +38,7 @@ MAX_NESTED_TEXT_LENGTH = 2_000
 MAX_DICT_KEYS = 80
 MAX_LIST_ITEMS = 150
 MAX_NESTED_DEPTH = 5
+CAMPAIGN_PACK_SCHEMA_PATH = Path(__file__).resolve().parents[2] / 'docs' / 'campaign_pack.schema.json'
 
 
 class CampaignPackImportError(ValueError):
@@ -48,7 +56,13 @@ class CampaignPackImportResult:
 SUPPORTED_SCHEMA_VERSIONS = {'1', '1.0', '1.0.0'}
 
 
-def import_campaign_pack(payload: dict[str, Any], *, workspace_id: str, dry_run: bool = False) -> CampaignPackImportResult:
+def import_campaign_pack(
+    payload: dict[str, Any],
+    *,
+    workspace_id: str,
+    dry_run: bool = False,
+    imported_by_account_id: int | None = None,
+) -> CampaignPackImportResult:
     if not isinstance(payload, dict):
         raise CampaignPackImportError('Expected JSON request body.')
 
@@ -56,8 +70,11 @@ def import_campaign_pack(payload: dict[str, Any], *, workspace_id: str, dry_run:
     pack_id = _required_slug(_first(pack, 'packId', 'pack_id'), field='packId')
     title = _required_text(_first(pack, 'title', 'name'), field='title', max_length=MAX_TITLE_LENGTH)
     schema_version = _schema_version(_first(pack, 'schemaVersion', 'schema_version'))
+    _validate_pack_schema_contract(pack)
     version = _optional_text(_first(pack, 'version'), max_length=80) or '1.0.0'
     description = _optional_text(_first(pack, 'description', 'summary'), max_length=MAX_TEXT_LENGTH) or ''
+    pack_hash = _pack_hash(pack)
+    source_filename = _optional_text(_first(payload, 'sourceFilename', 'source_filename') or _first(pack, 'sourceFilename', 'source_filename'), max_length=255)
 
     starting_state = _record(_first(pack, 'startingState', 'starting_state', 'start'))
     locations = _pack_records(
@@ -98,7 +115,17 @@ def import_campaign_pack(payload: dict[str, Any], *, workspace_id: str, dry_run:
         fallback_prefix='encounter',
         required_name=False,
     )
+    future_records_by_type = _future_records_by_type(pack, pack_id=pack_id)
     director_rules = _bounded_json_value(_record(_first(pack, 'directorRules', 'director_rules')), depth=0)
+    multi_session_group_key = _optional_text(
+        _first(pack, 'multiSessionGroupKey', 'multi_session_group_key'),
+        max_length=MAX_ID_LENGTH,
+    )
+    gm_notes = _optional_bounded_json(_first(pack, 'gmNotes', 'gm_notes', 'hiddenNotes', 'hidden_notes'))
+    hidden_scene_notes = _optional_bounded_json(_first(pack, 'hiddenSceneNotes', 'hidden_scene_notes'))
+    dependencies = _record_list(_first(pack, 'dependencies'))
+    mods = _record_list(_first(pack, 'mods'))
+    marketplace = _optional_bounded_json(_first(pack, 'marketplace', 'library'))
     _validate_pack_references(
         starting_state=starting_state,
         locations=locations,
@@ -150,6 +177,7 @@ def import_campaign_pack(payload: dict[str, Any], *, workspace_id: str, dry_run:
                 'pack_id': pack_id,
                 'schema_version': schema_version,
                 'pack_version': version,
+                'pack_hash': pack_hash,
                 'counts': _counts_payload(
                     locations=locations,
                     npcs=npcs,
@@ -217,6 +245,13 @@ def import_campaign_pack(payload: dict[str, Any], *, workspace_id: str, dry_run:
                 checkpoints=checkpoints,
                 encounters=encounters,
                 director_rules=director_rules,
+                multi_session_group_key=multi_session_group_key,
+                gm_notes=gm_notes,
+                hidden_scene_notes=hidden_scene_notes,
+                dependencies=dependencies,
+                mods=mods,
+                marketplace=marketplace,
+                extra_catalog_records=future_records_by_type,
                 session_id=None,
                 campaign_id=campaign.campaign_id,
                 imported_at=now.isoformat(),
@@ -246,6 +281,13 @@ def import_campaign_pack(payload: dict[str, Any], *, workspace_id: str, dry_run:
         checkpoints=checkpoints,
         encounters=encounters,
         director_rules=director_rules,
+        multi_session_group_key=multi_session_group_key,
+        gm_notes=gm_notes,
+        hidden_scene_notes=hidden_scene_notes,
+        dependencies=dependencies,
+        mods=mods,
+        marketplace=marketplace,
+        extra_catalog_records=future_records_by_type,
         session_id=session_obj.session_id,
         campaign_id=campaign.campaign_id,
         imported_at=now.isoformat(),
@@ -263,6 +305,52 @@ def import_campaign_pack(payload: dict[str, Any], *, workspace_id: str, dry_run:
     )
     db.session.add(session_state)
 
+    installed_pack = _upsert_installed_campaign_pack(
+        workspace_id=workspace_id,
+        pack_id=pack_id,
+        title=title,
+        version=version,
+        schema_version=schema_version,
+        pack_hash=pack_hash,
+        source_filename=source_filename,
+        imported_by_account_id=imported_by_account_id,
+        manifest=pack,
+        validated_at=now,
+    )
+    campaign_pack_definition = upsert_campaign_pack_definition(
+        workspace_id=workspace_id,
+        installed_pack=installed_pack,
+        pack_id=pack_id,
+        title=title,
+        version=version,
+        schema_version=schema_version,
+        pack_hash=pack_hash,
+        manifest=pack,
+        records_by_type=_definition_records_by_type(
+            locations=locations,
+            npcs=npcs,
+            quests=quests,
+            enemies=enemies,
+            encounters=encounters,
+            segments=segments,
+            checkpoints=checkpoints,
+            future_records_by_type=future_records_by_type,
+        ),
+        validated_at=now,
+    )
+    sync_campaign_pack_progress(
+        session=session_obj,
+        pack=snapshot['campaignPack'],
+        checkpoints=checkpoints,
+        active_checkpoint_id=snapshot['campaignPack'].get('activeCheckpointId'),
+        completed_ids=[],
+        skipped_ids=[],
+        failed_ids=[],
+        progress_revision=0,
+        campaign_pack=campaign_pack_definition,
+        installed_pack=installed_pack,
+    )
+
     for segment in segments:
         db.session.add(
             CampaignSegment(
@@ -271,6 +359,17 @@ def import_campaign_pack(payload: dict[str, Any], *, workspace_id: str, dry_run:
                 description=segment.get('description'),
                 trigger_condition=segment.get('trigger_condition'),
                 tags=segment.get('tags'),
+                external_id=segment.get('id'),
+                source='campaign_pack',
+                source_pack_id=pack_id,
+                metadata_json=safe_json_dumps(
+                    {
+                        'packId': pack_id,
+                        'packSegmentId': segment.get('id'),
+                        'source': 'campaign_pack',
+                    },
+                    {},
+                ),
                 is_triggered=False,
                 created_at=now,
                 updated_at=now,
@@ -299,6 +398,8 @@ def import_campaign_pack(payload: dict[str, Any], *, workspace_id: str, dry_run:
         'pack_id': pack_id,
         'schema_version': schema_version,
         'pack_version': version,
+        'pack_hash': pack_hash,
+        'installed_campaign_pack': _installed_pack_payload(installed_pack),
         'campaign_id': campaign.campaign_id,
         'session_id': session_obj.session_id,
         'campaign': campaign_payload(campaign),
@@ -334,6 +435,209 @@ def _schema_version(value: Any) -> str:
             error_code='unsupported_schema_version',
         )
     return '1'
+
+
+def _pack_hash(pack: dict[str, Any]) -> str:
+    encoded = json.dumps(pack, sort_keys=True, separators=(',', ':'), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+
+
+def _upsert_installed_campaign_pack(
+    *,
+    workspace_id: str,
+    pack_id: str,
+    title: str,
+    version: str,
+    schema_version: str,
+    pack_hash: str,
+    source_filename: str | None,
+    imported_by_account_id: int | None,
+    manifest: dict[str, Any],
+    validated_at,
+) -> InstalledCampaignPack:
+    installed_pack = InstalledCampaignPack.query.filter_by(workspace_id=workspace_id, pack_hash=pack_hash).first()
+    if installed_pack is None:
+        installed_pack = InstalledCampaignPack(
+            workspace_id=workspace_id,
+            pack_hash=pack_hash,
+            created_at=validated_at,
+        )
+        db.session.add(installed_pack)
+    installed_pack.pack_id = pack_id
+    installed_pack.title = title
+    installed_pack.pack_version = version
+    installed_pack.schema_version = schema_version
+    installed_pack.source_filename = source_filename
+    installed_pack.imported_by_account_id = imported_by_account_id
+    installed_pack.manifest_json = safe_json_dumps(manifest, {})
+    installed_pack.validated_at = validated_at
+    installed_pack.updated_at = validated_at
+    db.session.flush()
+    return installed_pack
+
+
+def _installed_pack_payload(installed_pack: InstalledCampaignPack) -> dict[str, Any]:
+    return {
+        'installed_pack_id': installed_pack.installed_pack_id,
+        'workspace_id': installed_pack.workspace_id,
+        'pack_id': installed_pack.pack_id,
+        'title': installed_pack.title,
+        'pack_version': installed_pack.pack_version,
+        'schema_version': installed_pack.schema_version,
+        'pack_hash': installed_pack.pack_hash,
+        'source_filename': installed_pack.source_filename,
+        'imported_by_account_id': installed_pack.imported_by_account_id,
+        'validated_at': installed_pack.validated_at.isoformat() if installed_pack.validated_at else None,
+    }
+
+
+@lru_cache(maxsize=1)
+def _campaign_pack_schema() -> dict[str, Any]:
+    with CAMPAIGN_PACK_SCHEMA_PATH.open('r', encoding='utf-8') as schema_file:
+        schema = json.load(schema_file)
+    return schema if isinstance(schema, dict) else {}
+
+
+def _validate_pack_schema_contract(pack: dict[str, Any]) -> None:
+    schema = _campaign_pack_schema()
+    error = _schema_validation_error(pack, schema, path='campaign pack', root=schema)
+    if error:
+        raise CampaignPackImportError(error, error_code='invalid_campaign_pack_schema')
+
+
+def _schema_validation_error(value: Any, schema: dict[str, Any], *, path: str, root: dict[str, Any]) -> str | None:
+    if not isinstance(schema, dict):
+        return None
+
+    if '$ref' in schema:
+        return _schema_validation_error(value, _resolve_schema_ref(root, str(schema['$ref'])), path=path, root=root)
+
+    for subschema in schema.get('allOf') or []:
+        error = _schema_validation_error(value, subschema, path=path, root=root)
+        if error:
+            return error
+
+    if schema.get('oneOf'):
+        errors = [
+            _schema_validation_error(value, subschema, path=path, root=root)
+            for subschema in schema.get('oneOf') or []
+            if isinstance(subschema, dict)
+        ]
+        if sum(error is None for error in errors) != 1:
+            return f'{path} must match exactly one supported schema shape.'
+        return None
+
+    if 'type' in schema and not _schema_type_matches(value, schema['type']):
+        return f'{path} must be {_schema_type_label(schema["type"])}.'
+
+    if 'const' in schema and value != schema['const']:
+        return f'{path} must be {schema["const"]!r}.'
+
+    if 'enum' in schema and not any(value == allowed for allowed in schema['enum']):
+        return f'{path} must be one of: {", ".join(str(allowed) for allowed in schema["enum"])}.'
+
+    if isinstance(value, str):
+        min_length = schema.get('minLength')
+        if isinstance(min_length, int) and len(value) < min_length:
+            return f'{path} must be at least {min_length} character{"s" if min_length != 1 else ""}.'
+        max_length = schema.get('maxLength')
+        if isinstance(max_length, int) and len(value) > max_length:
+            return f'{path} must be {max_length} characters or fewer.'
+        pattern = schema.get('pattern')
+        if isinstance(pattern, str) and re.fullmatch(pattern, value) is None:
+            return f'{path} contains unsupported characters.'
+
+    if isinstance(value, int) and not isinstance(value, bool):
+        minimum = schema.get('minimum')
+        if isinstance(minimum, int | float) and value < minimum:
+            return f'{path} must be at least {minimum}.'
+        maximum = schema.get('maximum')
+        if isinstance(maximum, int | float) and value > maximum:
+            return f'{path} must be at most {maximum}.'
+
+    if isinstance(value, list):
+        max_items = schema.get('maxItems')
+        if isinstance(max_items, int) and len(value) > max_items:
+            return f'{path} may include at most {max_items} items.'
+        if schema.get('uniqueItems') is True:
+            seen_items: set[str] = set()
+            for item in value:
+                item_key = json.dumps(item, sort_keys=True, separators=(',', ':'))
+                if item_key in seen_items:
+                    return f'{path} must not contain duplicate values.'
+                seen_items.add(item_key)
+        item_schema = schema.get('items')
+        if isinstance(item_schema, dict):
+            for index, item in enumerate(value):
+                error = _schema_validation_error(item, item_schema, path=f'{path}[{index}]', root=root)
+                if error:
+                    return error
+
+    if isinstance(value, dict):
+        for required_key in schema.get('required') or []:
+            if required_key not in value or value.get(required_key) in (None, ''):
+                return f'{_schema_child_path(path, required_key)} is required.'
+        properties = schema.get('properties') if isinstance(schema.get('properties'), dict) else {}
+        for key, item_schema in properties.items():
+            if key not in value:
+                continue
+            error = _schema_validation_error(value.get(key), item_schema, path=_schema_child_path(path, key), root=root)
+            if error:
+                return error
+
+    return None
+
+
+def _resolve_schema_ref(root: dict[str, Any], ref: str) -> dict[str, Any]:
+    if not ref.startswith('#/'):
+        return {}
+    current: Any = root
+    for raw_part in ref[2:].split('/'):
+        part = raw_part.replace('~1', '/').replace('~0', '~')
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(part)
+    return current if isinstance(current, dict) else {}
+
+
+def _schema_type_matches(value: Any, schema_type: Any) -> bool:
+    if isinstance(schema_type, list):
+        return any(_schema_type_matches(value, item) for item in schema_type)
+    if schema_type == 'object':
+        return isinstance(value, dict)
+    if schema_type == 'array':
+        return isinstance(value, list)
+    if schema_type == 'string':
+        return isinstance(value, str)
+    if schema_type == 'boolean':
+        return isinstance(value, bool)
+    if schema_type == 'integer':
+        return isinstance(value, int) and not isinstance(value, bool)
+    if schema_type == 'number':
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return True
+
+
+def _schema_type_label(schema_type: Any) -> str:
+    if isinstance(schema_type, list):
+        return ' or '.join(str(item) for item in schema_type)
+    if schema_type == 'object':
+        return 'a JSON object'
+    if schema_type == 'array':
+        return 'a list'
+    if schema_type == 'string':
+        return 'a string'
+    if schema_type == 'boolean':
+        return 'a boolean'
+    if schema_type == 'integer':
+        return 'an integer'
+    if schema_type == 'number':
+        return 'a number'
+    return str(schema_type)
+
+
+def _schema_child_path(path: str, key: str) -> str:
+    return key if path == 'campaign pack' else f'{path}.{key}'
 
 
 def _world_reference(payload: dict[str, Any], pack: dict[str, Any]) -> int | None:
@@ -515,6 +819,52 @@ def _enemy_records(value: Any, *, pack_id: str) -> list[dict[str, Any]]:
         item['packId'] = pack_id
         records.append(item)
     return records
+
+
+def _future_records_by_type(pack: dict[str, Any], *, pack_id: str) -> dict[str, list[dict[str, Any]]]:
+    domains = {
+        'clue': ('clues', 'clue'),
+        'faction': ('factions', 'faction'),
+        'map': ('maps', 'map'),
+        'handout': ('handouts', 'handout'),
+        'lore': ('lore', 'lore'),
+    }
+    records_by_type: dict[str, list[dict[str, Any]]] = {}
+    for record_type, (field, fallback_prefix) in domains.items():
+        records = _pack_records(
+            _first(pack, field),
+            field=field,
+            pack_id=pack_id,
+            fallback_prefix=fallback_prefix,
+            required_name=False,
+        )
+        if records:
+            records_by_type[record_type] = records
+    return records_by_type
+
+
+def _definition_records_by_type(
+    *,
+    locations: list[dict],
+    npcs: list[dict],
+    quests: list[dict],
+    enemies: list[dict],
+    encounters: list[dict],
+    segments: list[dict],
+    checkpoints: list[dict],
+    future_records_by_type: dict[str, list[dict]],
+) -> dict[str, list[dict]]:
+    records_by_type = {
+        'location': locations,
+        'npc': npcs,
+        'quest': quests,
+        'enemy': enemies,
+        'encounter': encounters,
+        'segment': segments,
+        'checkpoint': checkpoints,
+    }
+    records_by_type.update(future_records_by_type)
+    return records_by_type
 
 
 def _truthy(value: Any) -> bool:
@@ -860,6 +1210,13 @@ def _initial_snapshot(
     checkpoints: list[dict],
     encounters: list[dict],
     director_rules: dict,
+    multi_session_group_key: str | None,
+    gm_notes: Any,
+    hidden_scene_notes: Any,
+    dependencies: list[dict],
+    mods: list[dict],
+    marketplace: Any,
+    extra_catalog_records: dict[str, list[dict]],
     session_id: int | None,
     campaign_id: int,
     imported_at: str,
@@ -891,6 +1248,21 @@ def _initial_snapshot(
     flags = _record(_first(starting_state, 'flags'))
     flags['campaignPackImported'] = True
     flags['campaignPackId'] = pack_id
+    active_checkpoint_id = _initial_checkpoint_id(checkpoints)
+    flags['campaignPackActiveCheckpointId'] = active_checkpoint_id
+    flags['campaignPackCompletedCheckpointIds'] = []
+    flags['campaignPackSkippedCheckpointIds'] = []
+    flags['campaignPackFailedCheckpointIds'] = []
+    flags['campaignPackProgressRevision'] = 0
+    catalog = {
+        'locations': locations,
+        'npcs': npcs,
+        'quests': quests,
+        'enemies': enemies,
+        'encounters': encounters,
+    }
+    for record_type, records in extra_catalog_records.items():
+        catalog[f'{record_type}s'] = records
     return {
         'schemaVersion': 1,
         'sessionId': session_id,
@@ -930,26 +1302,42 @@ def _initial_snapshot(
         'campaignPack': {
             'packId': pack_id,
             'title': title,
+            'snapshotSchemaVersion': 1,
             'schemaVersion': schema_version,
             'version': version,
             'source': 'campaign_pack',
             'importedAt': imported_at,
+            'progressSchemaVersion': 1,
+            'progressRevision': 0,
+            'activeCheckpointId': active_checkpoint_id,
+            'completedCheckpointIds': [],
+            'skippedCheckpointIds': [],
+            'failedCheckpointIds': [],
+            'progressEventsVersion': 1,
             'startingLocationId': starting_location_id,
             'startingQuestId': starting_quest_id,
             'directorRules': director_rules,
+            'multiSessionGroupKey': multi_session_group_key,
+            'gmNotes': gm_notes,
+            'hiddenSceneNotes': hidden_scene_notes,
+            'dependencies': dependencies,
+            'mods': mods,
+            'marketplace': marketplace,
             'checkpoints': checkpoints,
             'encounters': encounters,
-            'catalog': {
-                'locations': locations,
-                'npcs': npcs,
-                'quests': quests,
-                'enemies': enemies,
-                'encounters': encounters,
-            },
+            'catalog': catalog,
         },
         'stateChangeLedger': [],
         'lastUpdatedAt': imported_at,
     }
+
+
+def _initial_checkpoint_id(checkpoints: list[dict]) -> str | None:
+    for checkpoint in checkpoints:
+        checkpoint_id = _clean_id(_first(checkpoint, 'id', 'checkpointId', 'checkpoint_id'))
+        if checkpoint_id:
+            return checkpoint_id
+    return None
 
 
 def _counts_payload(
@@ -1068,6 +1456,12 @@ def _record_list(value: Any) -> list[dict]:
     if not isinstance(value, list):
         return []
     return [_bounded_json_value(item, depth=0) for item in value[:MAX_LIST_ITEMS] if isinstance(item, dict)]
+
+
+def _optional_bounded_json(value: Any) -> Any:
+    if value in (None, ''):
+        return None
+    return _bounded_json_value(value, depth=0)
 
 
 def _string_list(value: Any) -> list[str]:

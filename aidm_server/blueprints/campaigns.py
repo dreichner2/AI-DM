@@ -13,6 +13,9 @@ from aidm_server.database import db
 from aidm_server.errors import error_response
 from aidm_server.models import (
     Campaign,
+    CampaignPack,
+    CampaignPackRecord,
+    CampaignPackSession,
     CampaignSegment,
     CanonJob,
     BestiaryEntry,
@@ -29,6 +32,7 @@ from aidm_server.models import (
     StoryThread,
     TurnCanonUpdate,
     TurnEvent,
+    InstalledCampaignPack,
     safe_json_loads,
 )
 from aidm_server.pagination import limited_page
@@ -39,6 +43,7 @@ from aidm_server.response_dtos import (
     isoformat,
 )
 from aidm_server.services.campaign_pack import CampaignPackImportError, import_campaign_pack
+from aidm_server.services.campaign_pack_linter import lint_campaign_pack_manifest
 from aidm_server.services.workspace import campaign_workspace_payload
 from aidm_server.services.session_lifecycle import delete_session_record
 from aidm_server.time_utils import utc_now
@@ -51,6 +56,8 @@ from aidm_server.validation import (
 )
 from aidm_server.workspace_access import (
     campaign_query,
+    current_account_id,
+    current_account_is_workspace_admin,
     current_workspace_id,
     get_campaign as workspace_campaign,
     get_world as workspace_world,
@@ -292,8 +299,201 @@ def _canon_update_payload(update: TurnCanonUpdate) -> dict:
     }
 
 
+def _installed_campaign_pack_payload(installed_pack: InstalledCampaignPack, *, include_manifest: bool = False) -> dict:
+    manifest = safe_json_loads(installed_pack.manifest_json, {})
+    if not isinstance(manifest, dict):
+        manifest = {}
+    campaign_pack = (
+        CampaignPack.query.filter_by(
+            workspace_id=installed_pack.workspace_id,
+            installed_pack_id=installed_pack.installed_pack_id,
+        )
+        .order_by(CampaignPack.updated_at.desc(), CampaignPack.campaign_pack_id.desc())
+        .first()
+    )
+    record_count = (
+        CampaignPackRecord.query.filter_by(campaign_pack_id=campaign_pack.campaign_pack_id).count()
+        if campaign_pack
+        else 0
+    )
+    payload = {
+        'installed_pack_id': installed_pack.installed_pack_id,
+        'workspace_id': installed_pack.workspace_id,
+        'pack_id': installed_pack.pack_id,
+        'title': installed_pack.title,
+        'pack_version': installed_pack.pack_version,
+        'schema_version': installed_pack.schema_version,
+        'pack_hash': installed_pack.pack_hash,
+        'source_filename': installed_pack.source_filename,
+        'imported_by_account_id': installed_pack.imported_by_account_id,
+        'validated_at': isoformat(installed_pack.validated_at),
+        'created_at': isoformat(installed_pack.created_at),
+        'updated_at': isoformat(installed_pack.updated_at),
+        'campaign_pack_id': campaign_pack.campaign_pack_id if campaign_pack else None,
+        'record_count': record_count,
+        'session_count': CampaignPackSession.query.filter_by(installed_pack_id=installed_pack.installed_pack_id).count(),
+        'dependencies': manifest.get('dependencies') if isinstance(manifest.get('dependencies'), list) else [],
+        'mods': manifest.get('mods') if isinstance(manifest.get('mods'), list) else [],
+        'multi_session_group_key': manifest.get('multiSessionGroupKey') or manifest.get('multi_session_group_key'),
+    }
+    if include_manifest:
+        payload['manifest'] = manifest
+        if campaign_pack:
+            records = (
+                CampaignPackRecord.query.filter_by(campaign_pack_id=campaign_pack.campaign_pack_id)
+                .order_by(CampaignPackRecord.record_type.asc(), CampaignPackRecord.sort_order.asc())
+                .all()
+            )
+            payload['records'] = [
+                {
+                    'record_type': record.record_type,
+                    'record_id': record.record_id,
+                    'title': record.title,
+                    'visibility': record.visibility,
+                    'sort_order': record.sort_order,
+                    'record': safe_json_loads(record.record_json, {}),
+                }
+                for record in records
+            ]
+    return payload
+
+
+@campaigns_bp.route('/pack-tools/lint', methods=['POST'])
+def lint_campaign_pack_manifest_endpoint():
+    if not _include_hidden_session_state():
+        return error_response(
+            'forbidden',
+            'Only workspace admins can lint campaign packs.',
+            403,
+        )
+    payload = parse_json_body(request)
+    if payload is None:
+        return error_response('validation_error', 'Expected JSON request body.', 400)
+    try:
+        result = lint_campaign_pack_manifest(payload, workspace_id=current_workspace_id())
+        db.session.rollback()
+        return jsonify(result), 200
+    except Exception as exc:
+        db.session.rollback()
+        logger.error('Failed to lint campaign pack: %s', str(exc))
+        return error_response('campaign_pack_lint_failed', 'Failed to lint campaign pack.', 400)
+
+
+@campaigns_bp.route('/installed-packs', methods=['GET'])
+def list_installed_campaign_packs():
+    if not _include_hidden_session_state():
+        return error_response(
+            'forbidden',
+            'Only workspace admins can inspect installed campaign packs.',
+            403,
+        )
+    query = InstalledCampaignPack.query.filter_by(workspace_id=current_workspace_id())
+    pack_id = request.args.get('pack_id') or request.args.get('packId')
+    if pack_id:
+        query = query.filter(InstalledCampaignPack.pack_id == str(pack_id).strip())
+    limit = _pagination_limit(default=100, maximum=250)
+    rows = (
+        query.order_by(
+            InstalledCampaignPack.validated_at.desc(),
+            InstalledCampaignPack.installed_pack_id.desc(),
+        )
+        .limit(limit)
+        .all()
+    )
+    return jsonify(
+        {
+            'installed_packs': [_installed_campaign_pack_payload(row) for row in rows],
+            'count': len(rows),
+        }
+    )
+
+
+@campaigns_bp.route('/installed-packs/<int:installed_pack_id>', methods=['GET'])
+def get_installed_campaign_pack(installed_pack_id):
+    if not _include_hidden_session_state():
+        return error_response(
+            'forbidden',
+            'Only workspace admins can inspect installed campaign packs.',
+            403,
+        )
+    installed_pack = InstalledCampaignPack.query.filter_by(
+        workspace_id=current_workspace_id(),
+        installed_pack_id=installed_pack_id,
+    ).first()
+    if not installed_pack:
+        return error_response('installed_campaign_pack_not_found', 'Installed campaign pack not found.', 404)
+    return jsonify(_installed_campaign_pack_payload(installed_pack, include_manifest=True))
+
+
+@campaigns_bp.route('/installed-packs/<int:installed_pack_id>/import', methods=['POST'])
+def import_installed_campaign_pack(installed_pack_id):
+    if not _include_hidden_session_state():
+        return error_response(
+            'forbidden',
+            'Only workspace admins can import campaign packs.',
+            403,
+        )
+    installed_pack = InstalledCampaignPack.query.filter_by(
+        workspace_id=current_workspace_id(),
+        installed_pack_id=installed_pack_id,
+    ).first()
+    if not installed_pack:
+        return error_response('installed_campaign_pack_not_found', 'Installed campaign pack not found.', 404)
+
+    payload = request.get_json(silent=True) if request.is_json else {}
+    if payload is None:
+        return error_response('validation_error', 'Expected JSON request body.', 400)
+    if not isinstance(payload, dict):
+        return error_response('validation_error', 'Expected JSON request body.', 400)
+    manifest = safe_json_loads(installed_pack.manifest_json, {})
+    if not isinstance(manifest, dict):
+        return error_response('invalid_installed_campaign_pack', 'Installed campaign pack manifest is invalid.', 400)
+
+    import_payload = {
+        'pack': manifest,
+        'sourceFilename': installed_pack.source_filename,
+    }
+    for key in ('world_id', 'worldId', 'session_name', 'sessionName'):
+        if key in payload:
+            import_payload[key] = payload[key]
+
+    dry_run = _truthy_enabled(
+        request.args.get('dry_run')
+        or request.args.get('dryRun')
+        or payload.get('dry_run')
+        or payload.get('dryRun'),
+        default=False,
+    )
+    try:
+        result = import_campaign_pack(
+            import_payload,
+            workspace_id=current_workspace_id(),
+            dry_run=dry_run,
+            imported_by_account_id=current_account_id(),
+        )
+        if dry_run:
+            db.session.rollback()
+            return jsonify(result.payload), 200
+        db.session.commit()
+        return jsonify(result.payload), 201
+    except CampaignPackImportError as exc:
+        db.session.rollback()
+        return error_response(exc.error_code, str(exc), exc.status_code)
+    except Exception as exc:
+        db.session.rollback()
+        logger.error('Failed to import installed campaign pack: %s', str(exc))
+        return error_response('campaign_pack_import_failed', 'Failed to import campaign pack.', 400)
+
+
 @campaigns_bp.route('/import-pack', methods=['POST'])
 def import_campaign_pack_manifest():
+    if not _include_hidden_session_state():
+        return error_response(
+            'forbidden',
+            'Only workspace admins can import campaign packs.',
+            403,
+        )
+
     payload = parse_json_body(request)
     if payload is None:
         return error_response('validation_error', 'Expected JSON request body.', 400)
@@ -306,7 +506,12 @@ def import_campaign_pack_manifest():
         default=False,
     )
     try:
-        result = import_campaign_pack(payload, workspace_id=current_workspace_id(), dry_run=dry_run)
+        result = import_campaign_pack(
+            payload,
+            workspace_id=current_workspace_id(),
+            dry_run=dry_run,
+            imported_by_account_id=current_account_id(),
+        )
         if dry_run:
             db.session.rollback()
             return jsonify(result.payload), 200
@@ -390,6 +595,10 @@ def create_campaign():
         db.session.rollback()
         logger.error('Failed to create campaign: %s', str(exc))
         return error_response('campaign_create_failed', 'Failed to create campaign.', 400)
+
+
+def _include_hidden_session_state() -> bool:
+    return current_account_id() is None or current_account_is_workspace_admin()
 
 
 @campaigns_bp.route('', methods=['GET'])
@@ -619,6 +828,7 @@ def get_campaign_workspace(campaign_id):
             player_limit=_optional_limit_arg('player_limit'),
             map_limit=_optional_limit_arg('map_limit'),
             segment_limit=_optional_limit_arg('segment_limit'),
+            include_hidden_state=_include_hidden_session_state(),
         )
     )
 

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any
 
 from flask import Blueprint, jsonify, request
 
 from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
 from aidm_server.combat.intent_planner import attach_intents_to_combat, plan_enemy_intents
+from aidm_server.combat.pipeline import sync_combat_encounter_record
 from aidm_server.combat.state import default_battlefield, instantiate_creature, player_combat_participant
 from aidm_server.creatures.balance import analyze_creature_balance, auto_scale_creature
 from aidm_server.creatures.campaign_pack import generate_campaign_pack_bestiary
@@ -26,7 +26,7 @@ from aidm_server.errors import error_response
 from aidm_server.game_state.application.applier import apply_state_changes, persist_state_to_database
 from aidm_server.game_state.models import state_snapshot_for_session, stable_change_id
 from aidm_server.game_state.validation.validator import validate_state_changes, validated_changes_for_application
-from aidm_server.models import Campaign, CombatDebugEvent, Player, Session, safe_json_dumps, safe_json_loads
+from aidm_server.models import Campaign, CombatDebugEvent, Player, Session, safe_json_loads
 from aidm_server.services.campaign_pack_progress import update_campaign_pack_progress
 from aidm_server.validation import parse_json_body
 from aidm_server.workspace_access import current_workspace_id, get_campaign, get_session
@@ -535,6 +535,11 @@ def start_session_combat(session_id: int):
     applied = validated_changes_for_application(validation)
     apply_result = apply_state_changes(state, applied)
     _persist_session_state(session_obj, apply_result['nextState'])
+    sync_combat_encounter_record(
+        session_obj=session_obj,
+        campaign=campaign,
+        combat=apply_result['nextState'].get('combat') if isinstance(apply_result['nextState'].get('combat'), dict) else {},
+    )
     record_combat_debug_event(
         session_id=session_id,
         campaign_id=campaign.campaign_id,
@@ -578,6 +583,11 @@ def apply_session_combat_morale_event(session_id: int):
     applied = validated_changes_for_application(validation)
     apply_result = apply_state_changes(state, applied)
     _persist_session_state(session_obj, apply_result['nextState'])
+    sync_combat_encounter_record(
+        session_obj=session_obj,
+        campaign=session_obj.campaign,
+        combat=apply_result['nextState'].get('combat') if isinstance(apply_result['nextState'].get('combat'), dict) else {},
+    )
     db.session.commit()
     return jsonify({'validation': validation, 'appliedChanges': apply_result['appliedChanges'], 'combat': apply_result['nextState'].get('combat')})
 
@@ -598,6 +608,11 @@ def check_session_combat_end(session_id: int):
         applied = validated_changes_for_application(validation)
         apply_result = apply_state_changes(state, applied)
         _persist_session_state(session_obj, apply_result['nextState'])
+        sync_combat_encounter_record(
+            session_obj=session_obj,
+            campaign=session_obj.campaign,
+            combat=apply_result['nextState'].get('combat') if isinstance(apply_result['nextState'].get('combat'), dict) else {},
+        )
         progress = _refresh_campaign_pack_progress(session_obj)
         db.session.commit()
         response.update(
@@ -623,6 +638,11 @@ def apply_session_combat_changes(session_id: int):
     applied = validated_changes_for_application(validation)
     apply_result = apply_state_changes(state, applied)
     _persist_session_state(session_obj, apply_result['nextState'])
+    sync_combat_encounter_record(
+        session_obj=session_obj,
+        campaign=session_obj.campaign,
+        combat=apply_result['nextState'].get('combat') if isinstance(apply_result['nextState'].get('combat'), dict) else {},
+    )
     progress = _refresh_campaign_pack_progress(session_obj)
     db.session.commit()
     return jsonify(

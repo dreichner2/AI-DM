@@ -25,6 +25,7 @@ def list_campaign_session_payloads(
     *,
     include_archived: bool = False,
     limit: int | None = None,
+    include_hidden_state: bool = True,
 ) -> list[dict]:
     sessions_query = (
         Session.query.filter_by(campaign_id=campaign_id)
@@ -35,7 +36,7 @@ def list_campaign_session_payloads(
         sessions_query.order_by(Session.updated_at.desc(), Session.created_at.desc()),
         limit,
     ).all()
-    payloads = session_payloads(sessions)
+    payloads = session_payloads(sessions, include_hidden_state=include_hidden_state)
     payloads.sort(key=lambda item: item.get('latest_activity_at') or '', reverse=True)
     return payloads
 
@@ -48,6 +49,7 @@ def campaign_workspace_payload(
     player_limit: int | None = None,
     map_limit: int | None = None,
     segment_limit: int | None = None,
+    include_hidden_state: bool = True,
 ) -> dict:
     campaign_id = campaign.campaign_id
     campaign_data = campaign_payload(campaign)
@@ -61,7 +63,7 @@ def campaign_workspace_payload(
         sessions_query.order_by(Session.updated_at.desc(), Session.created_at.desc()),
         limit=session_limit,
     )
-    session_items = session_payloads(session_rows)
+    session_items = session_payloads(session_rows, include_hidden_state=include_hidden_state)
     session_items.sort(key=lambda item: item.get('latest_activity_at') or '', reverse=True)
     players_query = visible_players_query(campaign.workspace_id, campaign_id=campaign_id)
     player_count = players_query.count()

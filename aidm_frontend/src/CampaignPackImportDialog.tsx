@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
-import { AlertTriangle, CheckCircle2, FileJson, Upload } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, FileJson, GitBranch, Upload } from 'lucide-react'
 import { ApiClientError, apiFetch } from './api'
 
 type CampaignPackCounts = {
@@ -43,6 +43,30 @@ type CampaignPackImportResponse = {
   session_id?: number
   counts: CampaignPackCounts
   preview?: CampaignPackPreview
+}
+
+type CampaignPackLintIssue = {
+  severity: 'error' | 'warning' | string
+  code: string
+  path: string
+  message: string
+}
+
+type CampaignPackLintResponse = {
+  ok: boolean
+  issues: CampaignPackLintIssue[]
+  preview?: CampaignPackImportResponse | null
+  graph?: {
+    nodes?: string[]
+    edges?: Array<{ from?: string; to?: string; type?: string }>
+    reachable?: string[]
+  }
+  summary?: {
+    packId?: string
+    title?: string
+    version?: string
+    counts?: Record<string, number>
+  }
 }
 
 type CampaignPackImportDialogProps = {
@@ -89,11 +113,13 @@ export function CampaignPackImportDialog({
   const [packText, setPackText] = useState('')
   const [packPayload, setPackPayload] = useState<unknown>(null)
   const [preview, setPreview] = useState<CampaignPackImportResponse | null>(null)
+  const [lintResult, setLintResult] = useState<CampaignPackLintResponse | null>(null)
   const [error, setError] = useState('')
   const [previewPending, setPreviewPending] = useState(false)
   const [importPending, setImportPending] = useState(false)
 
-  const canImport = Boolean(preview && packPayload && !previewPending && !importPending)
+  const hasLintErrors = Boolean(lintResult?.issues.some((issue) => issue.severity === 'error'))
+  const canImport = Boolean(preview && packPayload && !previewPending && !importPending && !hasLintErrors)
   const pending = previewPending || importPending
   const worldLabel = useMemo(() => {
     const world = preview?.preview?.world
@@ -109,6 +135,7 @@ export function CampaignPackImportDialog({
       if (!trimmed) {
         setError('Choose a campaign pack JSON file.')
         setPreview(null)
+        setLintResult(null)
         setPackPayload(null)
         return
       }
@@ -119,6 +146,7 @@ export function CampaignPackImportDialog({
       } catch {
         setError('Campaign pack JSON could not be parsed.')
         setPreview(null)
+        setLintResult(null)
         setPackPayload(null)
         return
       }
@@ -129,20 +157,22 @@ export function CampaignPackImportDialog({
       setPackPayload(parsed)
       setFileName(nextFileName)
       try {
-        const response = await apiFetch<CampaignPackImportResponse>(
+        const lintResponse = await apiFetch<CampaignPackLintResponse>(
           baseUrl,
-          '/api/campaigns/import-pack?dry_run=true',
+          '/api/campaigns/pack-tools/lint',
           auth,
           {
             method: 'POST',
             body: JSON.stringify(parsed),
           },
         )
-        setPreview(response)
+        setLintResult(lintResponse)
+        setPreview(lintResponse.preview ?? null)
       } catch (requestError) {
         const message = errorMessage(requestError)
         setError(message)
         setPreview(null)
+        setLintResult(null)
         pushError('validation', `Campaign pack preview failed: ${message}`)
       } finally {
         setPreviewPending(false)
@@ -219,6 +249,7 @@ export function CampaignPackImportDialog({
           onChange={(event) => {
             setPackText(event.target.value)
             setPreview(null)
+            setLintResult(null)
             setPackPayload(null)
             setError('')
           }}
@@ -269,6 +300,36 @@ export function CampaignPackImportDialog({
         </div>
       ) : null}
 
+      {lintResult ? (
+        <div className={`campaign-pack-lint ${lintResult.ok ? 'ok' : 'has-errors'}`} aria-live="polite">
+          <div className="campaign-pack-lint-title">
+            {lintResult.ok ? <CheckCircle2 size={15} aria-hidden="true" /> : <AlertTriangle size={15} aria-hidden="true" />}
+            <strong>{lintResult.ok ? 'Authoring checks passed' : 'Authoring checks need attention'}</strong>
+            <span>{lintResult.issues.length} issues</span>
+          </div>
+          {lintResult.issues.length ? (
+            <div className="campaign-pack-lint-list">
+              {lintResult.issues.slice(0, 5).map((issue, index) => (
+                <div key={`${issue.code}-${issue.path}-${index}`} className={issue.severity === 'error' ? 'error' : 'warning'}>
+                  <span>{issue.severity}</span>
+                  <strong>{issue.code}</strong>
+                  <small>{issue.path}</small>
+                  <p>{issue.message}</p>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {lintResult.graph ? (
+            <div className="campaign-pack-graph-summary">
+              <GitBranch size={14} aria-hidden="true" />
+              <span>{lintResult.graph.nodes?.length ?? 0} nodes</span>
+              <span>{lintResult.graph.edges?.length ?? 0} edges</span>
+              <span>{lintResult.graph.reachable?.length ?? 0} reachable</span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       {error ? (
         <div className="dialog-error">
           <AlertTriangle size={14} aria-hidden="true" />
@@ -282,7 +343,7 @@ export function CampaignPackImportDialog({
         </button>
         <button type="submit" className="secondary" disabled={previewPending || importPending}>
           <FileJson size={15} aria-hidden="true" />
-          {previewPending ? 'Previewing...' : fileName ? 'Preview Again' : 'Preview Pack'}
+          {previewPending ? 'Checking...' : fileName ? 'Check Again' : 'Check Pack'}
         </button>
         <button type="button" onClick={() => void importPack()} disabled={!canImport}>
           <Upload size={15} aria-hidden="true" />
