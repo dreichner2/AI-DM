@@ -31,7 +31,6 @@ import { StatusDot, ThinIcon } from './AppChrome'
 import { CampaignRail, type CampaignCard, type SessionCard } from './CampaignRail'
 import { CampaignPackImportDialog } from './CampaignPackImportDialog'
 import type { CampaignPackControlAction } from './CampaignPackPanel'
-import { ClassSelector } from './ClassSelector'
 import {
   InspectorPanel,
   type InspectorTab,
@@ -73,7 +72,6 @@ import {
 } from './gameSelectors'
 import { subscribeToMediaQueryChange } from './mediaQuery'
 import { profileIconSrcForCharacter } from './profileIcons'
-import { RaceSelector } from './RaceSelector'
 import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
 import { turnControlFromSnapshot, turnControlWithActiveName } from './turnControl'
 import './App.css'
@@ -115,6 +113,12 @@ const PHONE_LAYOUT_MEDIA_QUERY = '(max-width: 760px)'
 
 const loadDiceRollDialog = () => import('./DiceRollDialog')
 const DiceRollDialog = lazy(loadDiceRollDialog)
+const ClassSelector = lazy(() =>
+  import('./ClassSelector').then((module) => ({ default: module.ClassSelector })),
+)
+const RaceSelector = lazy(() =>
+  import('./RaceSelector').then((module) => ({ default: module.RaceSelector })),
+)
 
 function preloadDiceRollDialog() {
   if (import.meta.env.MODE === 'test') return
@@ -4453,38 +4457,40 @@ function App() {
                   }
                 />
               </label>
-              <RaceSelector
-                auth={auth}
-                baseUrl={baseUrl}
-                selectedRace={playerEditDialog.race}
-                selectedRaceSelection={playerEditDialog.raceSelection}
-                selectedSex={playerEditDialog.sex}
-                pending={playerEditDialog.pending}
-                onRaceChange={(race) =>
-                  setPlayerEditDialog((current) =>
-                    current ? { ...current, race } : current,
-                  )
-                }
-                onRaceSelectionChange={(raceSelection) =>
-                  setPlayerEditDialog((current) =>
-                    current ? { ...current, raceSelection } : current,
-                  )
-                }
-                onSexChange={(sex) =>
-                  setPlayerEditDialog((current) =>
-                    current ? { ...current, sex } : current,
-                  )
-                }
-              />
-              <ClassSelector
-                selectedClass={playerEditDialog.charClass}
-                pending={playerEditDialog.pending}
-                onClassChange={(charClass) =>
-                  setPlayerEditDialog((current) =>
-                    current ? { ...current, charClass } : current,
-                  )
-                }
-              />
+              <Suspense fallback={null}>
+                <RaceSelector
+                  auth={auth}
+                  baseUrl={baseUrl}
+                  selectedRace={playerEditDialog.race}
+                  selectedRaceSelection={playerEditDialog.raceSelection}
+                  selectedSex={playerEditDialog.sex}
+                  pending={playerEditDialog.pending}
+                  onRaceChange={(race) =>
+                    setPlayerEditDialog((current) =>
+                      current ? { ...current, race } : current,
+                    )
+                  }
+                  onRaceSelectionChange={(raceSelection) =>
+                    setPlayerEditDialog((current) =>
+                      current ? { ...current, raceSelection } : current,
+                    )
+                  }
+                  onSexChange={(sex) =>
+                    setPlayerEditDialog((current) =>
+                      current ? { ...current, sex } : current,
+                    )
+                  }
+                />
+                <ClassSelector
+                  selectedClass={playerEditDialog.charClass}
+                  pending={playerEditDialog.pending}
+                  onClassChange={(charClass) =>
+                    setPlayerEditDialog((current) =>
+                      current ? { ...current, charClass } : current,
+                    )
+                  }
+                />
+              </Suspense>
               <div className="dialog-grid two character-level-grid">
                 <label>
                   Level

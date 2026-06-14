@@ -22,8 +22,7 @@ export default defineConfig({
     },
   },
   build: {
-    // Three.js powers the lazy-loaded 3D dice roller. Keep Vite's raw-size
-    // warning aligned with the stricter gzip/raw bundle budget script.
-    chunkSizeWarningLimit: 620,
+    // Vite reports decimal kB; this matches the 620 KiB raw chunk budget.
+    chunkSizeWarningLimit: 635,
   },
 })

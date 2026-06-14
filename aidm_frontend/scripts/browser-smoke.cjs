@@ -225,7 +225,8 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
   await expect(diceDialog).toContainText('D20')
   await diceDialog.getByRole('button', { name: 'Close dice roller' }).click()
   await expect(diceDialog).toBeHidden()
-  await page.getByRole('button', { name: 'Action mode' }).click()
+  await page.locator('.composer-tools').getByRole('button', { name: /Roll/i }).click()
+  await expect(page.getByLabel(/Your Action/i)).toBeVisible()
 
   const inspectorTabs = page.getByRole('tablist', { name: 'Inspector panels' })
   await inspectorTabs.getByRole('tab', { name: 'Map' }).click()
