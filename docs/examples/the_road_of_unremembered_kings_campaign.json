@@ -1,0 +1,1810 @@
+{
+  "schemaVersion": "1",
+  "packId": "original_fantasy.road_of_unremembered_kings",
+  "title": "The Road of Unremembered Kings",
+  "version": "1.0.0",
+  "description": "An original LOTR-inspired heroic-fantasy campaign for AIDM. In the western roadlands, travelers vanish from an ancient road that was once built to protect the weak. The company must uncover why the road ward has awakened, restore the names of forgotten guardians, and decide whether the last road-stone should be renewed, destroyed, hidden, or claimed.",
+  "world": {
+    "name": "The Western Roadlands",
+    "description": "A grounded heroic-fantasy borderland of old roads, rain-dark inns, broken watch-posts, burial hills, hidden valleys, and scattered settlements that survive by trade and courage. Great powers are distant. The story belongs to ordinary travelers, wardens, masons, rangers, and forgotten dead whose oaths still echo under stone."
+  },
+  "hiddenSceneNotes": "Opening secret: the caravan drivers were not killed. The damaged road ward pulled them into a false refuge after the Cinder Scribe erased their names from the travel ledger. The road is trying to protect people, but without the missing names it cannot tell protection from imprisonment.",
+  "startingState": {
+    "locationId": "loc_lantern_post_inn",
+    "questId": "quest_road_unremembered_kings",
+    "checkpointId": "cp_01_empty_caravan",
+    "partyStatus": {
+      "knownThreat": "An empty caravan has reached the Lantern Post with untouched cargo, calm horses, and no drivers.",
+      "startingRumor": "Pale lanterns have been seen moving along the old road at night, and some milestones now stand where no milestones stood before.",
+      "urgency": "Winter stores depend on the road staying open. If the disappearances continue, the smaller settlements will be isolated."
+    },
+    "campaignFlags": {
+      "stone_fragment_recovered": false,
+      "caravan_ledger_read": false,
+      "mara_trusts_party": false,
+      "tovin_button_revealed": false,
+      "osric_supports_party": false,
+      "radan_allied": false,
+      "brokk_helping": false,
+      "serenil_song_learned": false,
+      "veyra_redeemed": false,
+      "caelorn_name_restored": false,
+      "roadwardens_hostile": false,
+      "hollow_marshal_active": false,
+      "missing_travelers_found": false,
+      "cinder_scribe_true_name_known": false,
+      "original_oath_known": false,
+      "ward_ritual_prepared": false,
+      "ashmarked_agents_delayed": false,
+      "final_valley_entered_by_stealth": false,
+      "ward_corruption_level": "moderate"
+    },
+    "currentScene": {
+      "locationId": "loc_lantern_post_inn",
+      "title": "The Caravan Without Names",
+      "summary": "At dusk, an empty caravan rolls into the Lantern Post. Its cargo is untouched, its horses are calm, and every name in the travel ledger has been scratched away.",
+      "description": "Rain taps on the inn shutters as the settlement gathers around a caravan that should have carried drivers, guards, and winter goods. The wagons are intact. The horses do not look panicked. But the ledger on the driver's bench has been ruined: every traveler's name has been cut out in black strokes.",
+      "visibleDetails": [
+        "One wagon bell rings three times though no hand touches it.",
+        "The wheel rims are wet with marsh water despite the road being dry for miles behind the caravan.",
+        "A cloth-wrapped chip of pale stone rests beneath the driver's bench.",
+        "A faint ash mark stains the rear signboard where the caravan route was written."
+      ],
+      "activeNpcIds": [
+        "npc_mara_reedwake",
+        "npc_tovin_bell",
+        "npc_osric_hale"
+      ],
+      "activeQuestIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "hiddenSceneNotes": "The cloth-wrapped chip is part of a road-stone. The bell rang because the ward recognized a danger but no longer remembers whom it is supposed to protect."
+    },
+    "knownNpcIds": [
+      "npc_mara_reedwake",
+      "npc_tovin_bell",
+      "npc_osric_hale"
+    ],
+    "knownLocationIds": [
+      "loc_lantern_post_inn",
+      "loc_old_north_road"
+    ],
+    "knownQuestIds": [
+      "quest_road_unremembered_kings"
+    ],
+    "partyNotes": [
+      "The players should begin with a grounded mystery, not a lore dump.",
+      "The road is not evil. It is damaged protection.",
+      "The campaign should allow combat, stealth, negotiation, investigation, ritual repair, and moral choices as valid solutions."
+    ]
+  },
+  "locations": [
+    {
+      "id": "loc_lantern_post_inn",
+      "name": "The Lantern Post Inn",
+      "type": "roadside_inn_settlement",
+      "region": "Western Roadlands",
+      "visibleAtStart": true,
+      "tags": [
+        "settlement",
+        "inn",
+        "safe_haven",
+        "investigation",
+        "starting_location"
+      ],
+      "description": "A timber-and-stone inn settlement built where the old north road meets smaller farm tracks. Its lantern tower is meant to guide travelers through rain and fog, but lately its light has been answered by pale lanterns moving across empty hills.",
+      "playerSummary": "A warm but anxious roadside settlement where the empty caravan arrives.",
+      "gmNotes": "Use this as the emotional anchor. The danger matters because ordinary people need the road. If the players skip social investigation, move critical clues into the caravan, road signs, or the first travel scene."
+    },
+    {
+      "id": "loc_old_north_road",
+      "name": "The Old North Road",
+      "type": "ancient_road",
+      "region": "Western Roadlands",
+      "visibleAtStart": true,
+      "tags": [
+        "road",
+        "travel",
+        "supernatural",
+        "tracking"
+      ],
+      "description": "A weathered road of old stone, mud, half-buried milestones, and leaning signposts. At night, its distances change. A bridge may appear whole under moonlight and broken again by dawn.",
+      "playerSummary": "The changing road where milestones move, paths loop, and pale lanterns appear in the fog.",
+      "gmNotes": "This location can absorb detours. If players leave the road, show the ward's influence through animal behavior, false tracks, impossible echoes, and road-stones appearing in fields or marshes."
+    },
+    {
+      "id": "loc_waystation_scratched_names",
+      "name": "Waystation of Scratched Names",
+      "type": "ruined_waystation",
+      "region": "Old North Road",
+      "visibleAtStart": false,
+      "tags": [
+        "ruin",
+        "memorial",
+        "lore",
+        "ambush"
+      ],
+      "description": "A roofless waystation with a cold hearth, collapsed stable, and a stone memorial wall. The wall once carried the names of roadwardens who died defending travelers, but many names have been freshly chiseled away.",
+      "playerSummary": "A ruined road shelter where missing names reveal the deeper nature of the mystery.",
+      "gmNotes": "This is the main clue site for the memory theme. If skipped, the erased names can be recovered from Serenil's song, Brokk's rubbings, a captured ledger, or the final road-stone."
+    },
+    {
+      "id": "loc_cairns_roadwardens",
+      "name": "Cairns of the Roadwardens",
+      "type": "haunted_cairn_field",
+      "region": "Hill Road",
+      "visibleAtStart": false,
+      "tags": [
+        "haunted",
+        "moral_choice",
+        "spirits",
+        "ancient_oath"
+      ],
+      "description": "A field of low cairns, banner-stones, and wind-scraped grass. Old guardians stand here when the fog thickens, challenging travelers with words they only half remember.",
+      "playerSummary": "A haunted field where the party may fight, appease, bypass, or restore the forgotten road spirits.",
+      "gmNotes": "This should be a moral-choice encounter. Violence works but increases final corruption. Restoring Caelorn's name creates a major ally. Bypassing the cairns is valid and should not halt the campaign."
+    },
+    {
+      "id": "loc_old_masons_yard",
+      "name": "Old Mason's Yard",
+      "type": "stonewright_refuge",
+      "region": "Roadside Quarry",
+      "visibleAtStart": false,
+      "tags": [
+        "craft",
+        "lore",
+        "ally",
+        "preparation"
+      ],
+      "description": "A half-abandoned yard of cut stones, bridge blocks, charcoal rubbings, and old tools. The place smells of rain, slate dust, and banked forge-coals.",
+      "playerSummary": "A practical refuge where the road-stone fragment can be studied, repaired, or prepared for the final choice.",
+      "gmNotes": "Brokk's scene should give tools, not a railroad. The party can learn ritual options here, but the finale should still support improvised choices if this location is skipped."
+    },
+    {
+      "id": "loc_ridge_and_culvert_paths",
+      "name": "Ridge and Culvert Paths",
+      "type": "alternate_routes",
+      "region": "Roadlands Wilds",
+      "visibleAtStart": false,
+      "tags": [
+        "bypass",
+        "wilderness",
+        "stealth",
+        "dangerous_shortcut"
+      ],
+      "description": "A network of deer ridges, old drainage tunnels, broken culverts, and shepherd paths that cut around the haunted road. They are safer from spirits but harder on bodies and supplies.",
+      "playerSummary": "Alternate routes that can bypass the cairns or waystation at the cost of danger, delay, or lost information.",
+      "gmNotes": "Use this location when players look for another way around a checkpoint. It should preserve agency while still creating consequences: fatigue, lost supplies, missed allies, or enemy movement."
+    },
+    {
+      "id": "loc_valley_last_road_stone",
+      "name": "Valley of the Last Road-Stone",
+      "type": "hidden_valley_finale",
+      "region": "Where the Old Roads Meet",
+      "visibleAtStart": false,
+      "tags": [
+        "finale",
+        "ancient_ward",
+        "ritual",
+        "captives",
+        "choice"
+      ],
+      "description": "A hidden valley where several forgotten roads meet beneath pale trees and broken banners. At its center stands a white road-stone carved with names that appear, vanish, and bleed ash as the ward struggles to remember its purpose.",
+      "playerSummary": "The final valley where the missing travelers are trapped and the fate of the old road ward must be decided.",
+      "gmNotes": "The finale should reflect previous choices. Restored names, redeemed enemies, prepared rituals, or skipped clues should materially change the scene."
+    }
+  ],
+  "npcs": [
+    {
+      "id": "npc_mara_reedwake",
+      "name": "Mara Reedwake",
+      "role": "innkeeper_and_local_witness",
+      "locationId": "loc_lantern_post_inn",
+      "visibleAtStart": true,
+      "description": "A practical innkeeper with steady hands, tired eyes, and a memory for every traveler who has passed her door.",
+      "personality": "Warm but watchful. She listens before speaking and rarely forgets a face, a debt, or a kindness.",
+      "motivation": "Keep the settlement alive and the road open long enough for winter stores to arrive.",
+      "disposition": "cautious_helpful",
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "playerSummary": "The innkeeper who notices that the empty caravan's cargo is untouched but its travelers' names are erased.",
+      "knows": [
+        "The caravan was expected before sunset.",
+        "The horses were calm, not panicked.",
+        "A stranger with ash-stained gloves asked about old road-stones two nights earlier.",
+        "One wagon bell rang without being touched."
+      ],
+      "secret": "Mara's husband vanished on the same road years ago. She once followed a pale lantern into the fog and heard his voice calling beyond a milestone.",
+      "useInPlay": [
+        "Quest giver",
+        "Local rumor source",
+        "Emotional anchor",
+        "Safe rest contact",
+        "Can identify forged travel records or suspicious strangers"
+      ],
+      "ifSkipped": "Move her key information to a stablehand, the caravan ledger, a frightened traveler, or road signs on the first journey.",
+      "gmNotes": "Do not make Mara helpless. She is not a combatant, but she is competent, respected, and emotionally grounded."
+    },
+    {
+      "id": "npc_tovin_bell",
+      "name": "Tovin Bell",
+      "role": "stablehand_and_accidental_witness",
+      "locationId": "loc_lantern_post_inn",
+      "visibleAtStart": true,
+      "description": "A nervous young stablehand with muddy sleeves, quick words, and guilt written plainly across his face.",
+      "personality": "Eager, frightened, observant, and prone to panic when accused.",
+      "motivation": "Prove he is not lying and avoid being blamed for the caravan's condition.",
+      "disposition": "anxious_cooperative_if_kind",
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "playerSummary": "The stablehand who heard whispers inside the empty wagons and saw wet wheel rims from a marsh road the caravan never took.",
+      "knows": [
+        "The wagon wheels were wet with marsh water.",
+        "One horse had a white dust handprint on its neck.",
+        "The driver's bench held a cloth-wrapped stone fragment.",
+        "The caravan bell rang three times before the horses stopped."
+      ],
+      "secret": "Tovin stole a silver button from one wagon before anyone arrived. It belongs to a missing driver and can help identify that traveler later.",
+      "useInPlay": [
+        "Witness",
+        "Moral pressure point",
+        "Possible guide",
+        "Can trigger a rescue complication if he runs off to prove himself"
+      ],
+      "ifSkipped": "His facts can be discovered by inspecting the horses, wagon wheels, bell, and driver's bench.",
+      "gmNotes": "If intimidated, Tovin gives useful information but hides the silver button unless later reassured."
+    },
+    {
+      "id": "npc_osric_hale",
+      "name": "Osric Hale",
+      "role": "local_reeve",
+      "locationId": "loc_lantern_post_inn",
+      "visibleAtStart": true,
+      "description": "A stern settlement leader in a rain-dark cloak, carrying too much responsibility and too little trust.",
+      "personality": "Suspicious, defensive, controlled, and afraid of losing order.",
+      "motivation": "Prevent panic and protect the settlement, even if that means closing the road and abandoning the missing.",
+      "disposition": "guarded_authoritarian",
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "playerSummary": "The local authority who wants the old road closed before more people vanish.",
+      "knows": [
+        "More travelers have vanished than the public knows.",
+        "One survivor returned changed and refuses to speak.",
+        "The settlement has only a few weeks of supplies if the road closes.",
+        "A strange message promised safety if the road is left alone."
+      ],
+      "secret": "Osric received a letter from the Cinder Scribe promising the settlement would be spared if he kept people off the road. He has not accepted, but he has not destroyed the letter.",
+      "useInPlay": [
+        "Political obstacle",
+        "Source of records",
+        "Potential source of guards and supplies",
+        "Can close the road behind the party",
+        "Can become an ally if persuaded rather than humiliated"
+      ],
+      "ifSkipped": "Osric's choices still affect the world: roads close, supplies run low, or settlement guards arrive late and angry.",
+      "gmNotes": "Osric is not a villain. He is the campaign's mundane version of the Cinder Scribe's temptation: safety through control."
+    },
+    {
+      "id": "npc_brokk_stonehand",
+      "name": "Brokk Stonehand",
+      "role": "dwarven_stonewright",
+      "locationId": "loc_old_masons_yard",
+      "visibleAtStart": false,
+      "description": "A broad Dwarven stonewright with scarred knuckles, slate dust in his beard, and a professional hatred of careless masonry.",
+      "personality": "Blunt, dry, skeptical of mysticism, but deeply reverent toward craft and sworn work.",
+      "motivation": "Prevent fools from breaking ancient stonework they do not understand.",
+      "disposition": "skeptical_helpful_if_respected",
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "playerSummary": "A stonewright who can identify the road-stone fragment and explain how damaged protection can become dangerous.",
+      "knows": [
+        "The fragment came from an ancient ward-stone.",
+        "The road-stones were made to guide and protect travelers.",
+        "The cut marks are recent and ritual-made.",
+        "The missing names are the dangerous part because the ward cannot protect people it cannot remember."
+      ],
+      "secret": "Brokk's clan once helped maintain the ward, then abandoned that duty. He hides inherited shame behind criticism.",
+      "useInPlay": [
+        "Stone lore source",
+        "Ritual repair support",
+        "Hidden stone route provider",
+        "Can prepare a destruction, renewal, or concealment method for the final stone"
+      ],
+      "ifSkipped": "Stone lore can be recovered from Serenil, Radan's map, the memorial wall, or the final road-stone itself.",
+      "gmNotes": "If angered, Brokk refuses to travel but leaves a charcoal rubbing that still helps the party."
+    },
+    {
+      "id": "npc_radan_greycloak",
+      "name": "Radan Greycloak",
+      "role": "ranger_scout",
+      "locationId": "loc_old_north_road",
+      "visibleAtStart": false,
+      "description": "A weathered ranger with grey eyes, a green-brown cloak, and the patient severity of someone used to being mistrusted.",
+      "personality": "Quiet, cautious, testing, and loyal once convinced.",
+      "motivation": "Keep the settlements alive while stronger powers are distant or unaware.",
+      "disposition": "guarded_allied",
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "playerSummary": "A ranger tracking ash-marked agents and looking for a safer path through the roadlands.",
+      "knows": [
+        "Someone is marking road signs with ash.",
+        "Spies and cutthroats are moving ahead of the disappearances.",
+        "Pale lanterns appear before travelers vanish.",
+        "There is an old valley where forgotten roads meet."
+      ],
+      "secret": "Radan's brother vanished on this road years ago and may be among the trapped travelers in the final valley.",
+      "useInPlay": [
+        "Wilderness guide",
+        "Alternate route source",
+        "Enemy tracker",
+        "Finale reinforcement if trusted",
+        "Can point to the ridge path around the cairns"
+      ],
+      "ifSkipped": "His warning can appear through enemy tracks, a dead scout's map, a shepherd's testimony, or a road sign pointing two directions at once.",
+      "gmNotes": "Radan should help without replacing the players. If they rely on him too much, call him away to protect another settlement."
+    },
+    {
+      "id": "npc_serenil_westward_song",
+      "name": "Serenil of the Westward Song",
+      "role": "elven_lorekeeper",
+      "locationId": "loc_waystation_scratched_names",
+      "visibleAtStart": false,
+      "description": "A calm traveler whose old songs carry fragments of fallen kingdoms, road-oaths, and names removed from living memory.",
+      "personality": "Distant, gentle, sorrowful, and precise with words.",
+      "motivation": "Prevent the old ward from being turned into a tool of domination.",
+      "disposition": "benevolent_but_testing",
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "playerSummary": "A lorekeeper who understands that the road's danger comes from grief and broken duty, not simple evil.",
+      "knows": [
+        "The road ward was created to protect refugees and messengers.",
+        "The ward remembers names, promises, and places.",
+        "If names are erased, the ward becomes blind and possessive.",
+        "The dead Roadwardens can be reached through respect, song, and restored memory."
+      ],
+      "secret": "Serenil knows one of the first Roadwarden names but will not speak it until the party proves they understand memory as a burden, not a weapon.",
+      "useInPlay": [
+        "Lore source",
+        "Ritual support",
+        "Alternative to Brokk",
+        "Teaches the Westward Song",
+        "Can help cleanse the final ward"
+      ],
+      "ifSkipped": "The song can be carved into a waystation beam, remembered by an old shepherd, heard from the spirits, or revealed by the final road-stone.",
+      "gmNotes": "Serenil should not become a walking encyclopedia. Let her answer with memory, image, and warning."
+    },
+    {
+      "id": "npc_veyra_ashcap",
+      "name": "Veyra Ashcap",
+      "role": "reluctant_agent",
+      "locationId": "loc_old_north_road",
+      "visibleAtStart": false,
+      "description": "A sharp-eyed peddler or message-runner with ash under her fingernails and too many answers prepared in advance.",
+      "personality": "Evasive, clever, tired, and redeemable if treated as more than a criminal.",
+      "motivation": "Survive and protect her missing brother, even if that means serving the Cinder Scribe.",
+      "disposition": "deceptive_frightened",
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "playerSummary": "A suspicious traveler carrying ash-marked instructions for the Cinder Scribe's followers.",
+      "knows": [
+        "The Cinder Scribe is gathering names and stone fragments.",
+        "Ash marks can confuse the ward.",
+        "The final road-stone lies in a hidden valley.",
+        "The missing travelers are not all dead."
+      ],
+      "secret": "The Cinder Scribe knows Veyra's true name and has threatened to erase it from the road. Her brother is among the missing.",
+      "useInPlay": [
+        "Potential spy",
+        "Infiltration route",
+        "Enemy-plan source",
+        "Moral choice",
+        "Can sabotage the binding ledger in the finale if redeemed"
+      ],
+      "ifSkipped": "Her information can be recovered from ash-coded notes, a captured scout, a marked road sign, or a prisoner in the final valley.",
+      "gmNotes": "If threatened or humiliated, Veyra may betray the party. If protected, she can reveal a safer route into the final valley."
+    },
+    {
+      "id": "npc_caelorn_erased",
+      "name": "Caelorn the Erased",
+      "role": "spirit_captain_of_the_roadwardens",
+      "locationId": "loc_cairns_roadwardens",
+      "visibleAtStart": false,
+      "hiddenToPlayers": true,
+      "description": "A pale captain in broken mail, holding a banner with no symbol and wearing a helm whose name-rune has been scraped away.",
+      "personality": "Stern, sorrowful, repetitive, and hostile until remembered.",
+      "motivation": "Fulfill the road oath, though he no longer remembers its true purpose.",
+      "disposition": "hostile_until_remembered",
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "playerSummary": "A forgotten roadwarden spirit who may become either an enemy or an ally depending on how the party treats the dead.",
+      "knows": [
+        "The Cinder Scribe stole names from old memorials.",
+        "The ward is damaged, not evil.",
+        "The final road-stone can still be restored.",
+        "The dead cannot rest while the oath is corrupted."
+      ],
+      "secret": "Caelorn held the road while refugees escaped. His name was erased by betrayal, not by time.",
+      "useInPlay": [
+        "Major obstacle",
+        "Potential ally",
+        "Reveals the original road oath",
+        "Can hold back spirits in the finale if restored"
+      ],
+      "ifSkipped": "Caelorn appears later in the final valley as a confused guardian, hostile marshal, or desperate spirit depending on the party's previous choices.",
+      "gmNotes": "If destroyed rather than restored, the path opens but the final ward becomes harsher and the Hollow Marshal may activate."
+    },
+    {
+      "id": "npc_cinder_scribe",
+      "name": "The Cinder Scribe",
+      "trueName": "Maedran Voss",
+      "role": "main_villain_oath_corruptor",
+      "locationId": "loc_valley_last_road_stone",
+      "visibleAtStart": false,
+      "hiddenToPlayers": true,
+      "description": "A burned-voiced keeper of stolen names who writes with ash-black ink and speaks of safety as though it were a chain worth blessing.",
+      "personality": "Calm, articulate, reasonable-sounding, and deeply controlling.",
+      "motivation": "Control the old road ward and decide who may pass, who must be protected, and who should be forgotten.",
+      "disposition": "cold_persuasive_hostile",
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "playerSummary": "A hidden enemy who seeks to turn the old road's protection into a system of control.",
+      "knows": [
+        "The final road-stone can bind the entire ward network.",
+        "Names are keys to the ward's memory.",
+        "A willing living hand makes the strongest binding.",
+        "Fear can make people accept chains if the chains are called protection."
+      ],
+      "secret": "Maedran Voss was once a legitimate oath-keeper who saw a protected road used for betrayal and slaughter. His conclusion is corrupted: if freedom permits tragedy, freedom must be restricted.",
+      "useInPlay": [
+        "Final villain",
+        "Tempting negotiator",
+        "Voice through stones",
+        "False ally if met early",
+        "Can pressure a player to claim the ward"
+      ],
+      "ifSkipped": "He remains mostly unseen until the finale, but his ideology should appear through letters, ash marks, frightened followers, and altered road signs.",
+      "gmNotes": "The Cinder Scribe should offer order, safety, recognition, and power before violence. He should feel wrong because his argument is understandable but tyrannical."
+    }
+  ],
+  "quests": [
+    {
+      "id": "quest_road_unremembered_kings",
+      "title": "The Road of Unremembered Kings",
+      "type": "main",
+      "visibleAtStart": true,
+      "status": "active",
+      "description": "Investigate the empty caravan, follow the changing road, recover the erased names of the Roadwardens, uncover the Cinder Scribe's plan, and decide the fate of the final road-stone.",
+      "playerSummary": "Find out why travelers are vanishing from the old road and stop the power twisting protection into imprisonment.",
+      "objectives": [
+        {
+          "id": "obj_investigate_empty_caravan",
+          "title": "Investigate the empty caravan",
+          "description": "Question witnesses, examine the wagons, inspect the erased ledger, and recover or identify the road-stone fragment."
+        },
+        {
+          "id": "obj_follow_changing_road",
+          "title": "Follow the changing road",
+          "description": "Track the caravan route and learn how the old road, pale lanterns, and moving milestones are connected to the disappearances."
+        },
+        {
+          "id": "obj_recover_erased_names",
+          "title": "Recover the erased names",
+          "description": "Find evidence of the missing Roadwarden names from the waystation, songs, ledgers, stone rubbings, spirits, or the final road-stone."
+        },
+        {
+          "id": "obj_confront_roadwardens",
+          "title": "Confront or bypass the Roadwardens",
+          "description": "Fight, evade, appease, restore, or negotiate with the oath-bound spirits guarding the old road."
+        },
+        {
+          "id": "obj_learn_ward_choices",
+          "title": "Learn what can be done with the ward",
+          "description": "Discover that the final road-stone can be renewed, broken, hidden, claimed, or corrupted."
+        },
+        {
+          "id": "obj_reach_final_valley",
+          "title": "Reach the Valley of the Last Road-Stone",
+          "description": "Find a route into the hidden valley by road, ridge, culvert, pale lantern, enemy infiltration, or spirit guidance."
+        },
+        {
+          "id": "obj_decide_ward_fate",
+          "title": "Decide the fate of the road ward",
+          "description": "Stop the Cinder Scribe and choose whether the old protection should be renewed, destroyed, hidden, claimed, or left damaged."
+        }
+      ],
+      "gmNotes": "The main quest should be resilient. Do not require every objective to be completed in strict order. Missed objectives should change the cost, available options, ally support, and ward corruption level rather than halt the campaign."
+    }
+  ],
+  "enemies": [
+    {
+      "id": "enemy_ashmarked_cutthroats",
+      "name": "Ashmarked Cutthroats",
+      "type": "human_spies_and_mercenaries",
+      "role": "early_enemy_pressure",
+      "difficulty": "low_to_moderate",
+      "description": "Frightened people, bought blades, failed guards, and criminals marked with ash-signs that help them pass through parts of the broken ward.",
+      "tactics": [
+        "Avoid fair fights.",
+        "Ambush from ditches, rain, broken walls, and false road signs.",
+        "Steal road-stone fragments instead of fighting to the death.",
+        "Flee if exposed or outmatched.",
+        "Threaten witnesses before attacking heroes."
+      ],
+      "nonCombatOptions": [
+        "intimidate",
+        "bribe",
+        "offer_protection_from_cinder_scribe",
+        "capture_and_question",
+        "trick_with_false_fragment",
+        "turn_against_handler"
+      ],
+      "reveals": [
+        "Someone is paying for names, ledgers, and road-stone fragments.",
+        "The Cinder Scribe's servants fear being unwritten.",
+        "The final valley is real, though most cutthroats do not know the exact route."
+      ],
+      "failureOutcome": "If they escape with a clue or stone fragment, deliver it to the Cinder Scribe and increase the finale's ritual pressure.",
+      "gmNotes": "Use them as pressure and evidence of organization, not as mandatory combat walls."
+    },
+    {
+      "id": "enemy_pale_lanterns",
+      "name": "Pale Lanterns",
+      "type": "supernatural_lure_and_hazard",
+      "role": "travel_danger",
+      "difficulty": "variable",
+      "description": "Small ghostly lights that move along the road at night. Some guide travelers away from danger. Others lead them into the ward's false refuge.",
+      "tactics": [
+        "Appear when characters are tired, lost, grieving, or afraid.",
+        "Mimic voices of missing loved ones or companions.",
+        "Lead the party toward shortcuts with hidden costs.",
+        "Separate scouts from the group.",
+        "Reveal truth only if approached with calm respect."
+      ],
+      "nonCombatOptions": [
+        "refuse_to_follow",
+        "follow_while_anchored",
+        "speak_names_of_missing",
+        "test_with_road_stone_fragment",
+        "ask_whom_the_lantern_serves",
+        "answer_with_song_or_oath"
+      ],
+      "reveals": [
+        "The road is trying to protect people, but its judgment is broken.",
+        "Some missing travelers may still be alive.",
+        "The old ward responds to names, oaths, bells, songs, and stones."
+      ],
+      "failureOutcome": "A character may be separated, lose time, suffer fear, or glimpse the false refuge early.",
+      "gmNotes": "These are not simple monsters. Treat them as a supernatural navigation and temptation system."
+    },
+    {
+      "id": "enemy_name_eaten_roadwardens",
+      "name": "Name-Eaten Roadwardens",
+      "type": "oath_bound_spirits",
+      "role": "major_moral_encounter",
+      "difficulty": "moderate_to_hard",
+      "description": "Ancient guardians whose names were erased. They still defend the road but no longer understand whom they are defending or why.",
+      "tactics": [
+        "Block roads and bridges.",
+        "Demand names, oaths, and proof of lawful passage.",
+        "Chill courage rather than simply deal damage.",
+        "Punish lies harshly.",
+        "Grow more aggressive if treated as monsters."
+      ],
+      "nonCombatOptions": [
+        "restore_a_name",
+        "speak_original_road_oath",
+        "return_banner_token",
+        "offer_new_oath_to_protect_living",
+        "sing_westward_song",
+        "show_road_stone_fragment",
+        "retreat_respectfully_and_find_another_path"
+      ],
+      "reveals": [
+        "The ward was originally protective.",
+        "The Cinder Scribe is using erased names to command the dead.",
+        "Caelorn the Erased can become an ally."
+      ],
+      "failureOutcome": "The party can still pass by force, stealth, or detour, but the spirits remain hostile in the finale.",
+      "gmNotes": "Do not force combat. If the players honor the dead, reward them with information, safe passage, or future aid."
+    },
+    {
+      "id": "enemy_wardbound_beasts",
+      "name": "Wardbound Beasts",
+      "type": "animals_altered_by_ward",
+      "role": "wilderness_pressure",
+      "difficulty": "low_to_moderate",
+      "description": "Wolves, crows, deer, and road-beasts marked by white dust, ash lines, or strange stillness. They behave like guardians, scouts, or warnings rather than normal predators.",
+      "tactics": [
+        "Circle the party without immediately attacking.",
+        "Drive travelers away from forbidden paths.",
+        "Attack anyone carrying corrupted ash marks.",
+        "Lead perceptive characters toward hidden memorials.",
+        "Panic around the Cinder Scribe's servants."
+      ],
+      "nonCombatOptions": [
+        "animal_handling",
+        "remove_ash_marks",
+        "offer_food",
+        "follow_to_clue",
+        "use_nature_magic",
+        "move_slowly_and_calmly"
+      ],
+      "reveals": [
+        "The ward affects living creatures.",
+        "Some parts of the road still protect the innocent.",
+        "The safest route is not always the obvious route."
+      ],
+      "failureOutcome": "Supplies are lost, travel is delayed, or the party is forced toward a more dangerous checkpoint.",
+      "gmNotes": "Use sparingly to make the wild feel responsive to the ward."
+    },
+    {
+      "id": "enemy_hollow_marshal",
+      "name": "The Hollow Marshal",
+      "type": "greater_roadwarden_spirit",
+      "role": "conditional_mini_boss",
+      "difficulty": "hard",
+      "description": "A corrupted command-form of the Roadwarden oath, wearing a helm full of black ash and carrying a cracked horn that can seal roads behind the living.",
+      "tactics": [
+        "Command lesser spirits.",
+        "Seal roads behind the party.",
+        "Force characters to relive abandonment or betrayal.",
+        "Punish broken promises.",
+        "Retreat if a true name is spoken with proof."
+      ],
+      "nonCombatOptions": [
+        "restore_caelorn_name",
+        "break_command_horn",
+        "prove_the_oath_was_altered",
+        "invoke_original_road_oath",
+        "return_stolen_names_from_ledger"
+      ],
+      "reveals": [
+        "The road can become a prison if the ward is fully corrupted.",
+        "The final valley is the center of the ward's judgment."
+      ],
+      "failureOutcome": "The party reaches the finale pursued by hostile spirits or with the road actively resisting them.",
+      "gmNotes": "Use this enemy if the party destroys, ignores, or badly mishandles the Roadwardens. If Caelorn was restored, the Hollow Marshal should be weakened or absent."
+    },
+    {
+      "id": "enemy_cinder_scribe",
+      "name": "The Cinder Scribe",
+      "type": "ritualist_oathbreaker_name_thief",
+      "role": "final_boss",
+      "difficulty": "boss",
+      "description": "A burned-voiced keeper of stolen names who seeks to bind the last road-stone and turn an ancient protection into a controlled road of obedience.",
+      "tactics": [
+        "Use stolen names to command spirits.",
+        "Offer bargains before and during conflict.",
+        "Try to make a player willingly bind the road.",
+        "Turn paths, doors, and distances against the party.",
+        "Use minions, ash marks, and ritual pressure.",
+        "Retreat if his true name is spoken before the final rite is stable."
+      ],
+      "nonCombatOptions": [
+        "speak_true_name_with_proof",
+        "restore_enough_roadwarden_names",
+        "turn_followers_against_him",
+        "destroy_binding_quill",
+        "spill_ash_ink",
+        "renew_original_road_oath",
+        "refuse_offer_of_perfect_safety",
+        "claim_ward_temporarily_then_release_it"
+      ],
+      "reveals": [
+        "He believes free roads are dangerous because freedom allowed betrayal.",
+        "He needs living consent for the strongest version of the binding.",
+        "He sees himself as correcting mercy, not destroying it."
+      ],
+      "failureOutcome": "A full failure may leave the ward partially corrupted, isolate a settlement, trap some travelers, mark a party member's name on the stone, or allow the Cinder Scribe to escape.",
+      "gmNotes": "The Cinder Scribe should be persuasive first and violent second. His ideology is safety through control."
+    }
+  ],
+  "encounters": [
+    {
+      "id": "enc_empty_caravan_pressure",
+      "title": "Hands in the Rain",
+      "locationIds": [
+        "loc_lantern_post_inn"
+      ],
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "checkpointIds": [
+        "cp_01_empty_caravan"
+      ],
+      "enemyIds": [
+        "enemy_ashmarked_cutthroats"
+      ],
+      "description": "As the company investigates the empty caravan, ashmarked cutthroats attempt to steal the road-stone fragment or silence a witness.",
+      "setup": "Rain thickens, the lantern tower gutters, and one of the wagon doors creaks open though nobody stands beside it.",
+      "stakes": "If the fragment is stolen, it appears later in enemy hands, raising the ward corruption level.",
+      "completion": {
+        "anyOf": [
+          "defeat",
+          "capture",
+          "negotiate",
+          "misdirect",
+          "protect_witness",
+          "recover_fragment",
+          "success"
+        ]
+      },
+      "gmNotes": "This encounter is optional pressure. If the opening already has enough tension, delay the cutthroats until the road or waystation."
+    },
+    {
+      "id": "enc_pale_lantern_detour",
+      "title": "Lanterns Where No Hands Hold Them",
+      "locationIds": [
+        "loc_old_north_road",
+        "loc_ridge_and_culvert_paths"
+      ],
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "checkpointIds": [
+        "cp_02_moving_road"
+      ],
+      "enemyIds": [
+        "enemy_pale_lanterns",
+        "enemy_wardbound_beasts"
+      ],
+      "description": "Pale lanterns appear in the fog and offer a shortcut. The path may lead toward safety, separation, the waystation, or an early glimpse of the false refuge.",
+      "setup": "A bell sounds from somewhere ahead. One by one, pale lights appear between the rain-dark stones.",
+      "stakes": "Following may save time or reveal truth, but it may also separate the party or draw them toward the ward's prison.",
+      "completion": {
+        "anyOf": [
+          "navigate",
+          "refuse",
+          "follow_safely",
+          "anchor_party",
+          "speak_names",
+          "success",
+          "flee"
+        ]
+      },
+      "gmNotes": "Use this encounter to support alternate routing. Players can skip the waystation or cairns through the lantern path, but they should pay with uncertainty or lost preparation."
+    },
+    {
+      "id": "enc_waystation_ambush",
+      "title": "The Wall Without Names",
+      "locationIds": [
+        "loc_waystation_scratched_names"
+      ],
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "checkpointIds": [
+        "cp_03_scratched_names"
+      ],
+      "enemyIds": [
+        "enemy_ashmarked_cutthroats",
+        "enemy_wardbound_beasts"
+      ],
+      "description": "At the ruined waystation, the company finds the scratched memorial wall while ashmarked agents return to erase the remaining names.",
+      "setup": "A chisel rings once from inside the ruin, then stops. The hearth is cold, but fresh stone dust lies beneath the memorial.",
+      "stakes": "If the remaining names are lost, the Roadwardens are harder to restore and the Hollow Marshal is more likely to appear.",
+      "completion": {
+        "anyOf": [
+          "defeat",
+          "drive_off",
+          "preserve_names",
+          "capture_agent",
+          "recover_ledger",
+          "stealth",
+          "success"
+        ]
+      },
+      "gmNotes": "This encounter should reinforce the campaign's theme: preserving names matters more than killing enemies."
+    },
+    {
+      "id": "enc_roadwarden_judgment",
+      "title": "Judgment of the Name-Eaten",
+      "locationIds": [
+        "loc_cairns_roadwardens"
+      ],
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "checkpointIds": [
+        "cp_04_roadwarden_cairns"
+      ],
+      "enemyIds": [
+        "enemy_name_eaten_roadwardens"
+      ],
+      "description": "The Roadwardens rise from the cairns and demand names, oaths, and proof that the living have any right to pass.",
+      "setup": "Fog folds around the cairns. A banner with no mark lifts in a wind the party cannot feel.",
+      "stakes": "Mercy and remembrance weaken the final corruption. Violence opens the road but may awaken the Hollow Marshal.",
+      "completion": {
+        "anyOf": [
+          "restore_name",
+          "speak_oath",
+          "negotiate",
+          "defeat",
+          "bypass",
+          "retreat",
+          "success"
+        ]
+      },
+      "gmNotes": "This is a central moral encounter but not a mandatory checkpoint. If bypassed, Caelorn should reappear later."
+    },
+    {
+      "id": "enc_hollow_marshal_pursuit",
+      "title": "The Road Seals Behind",
+      "locationIds": [
+        "loc_old_north_road",
+        "loc_ridge_and_culvert_paths",
+        "loc_valley_last_road_stone"
+      ],
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "checkpointIds": [
+        "cp_05_stonewright_warning",
+        "cp_06_final_valley"
+      ],
+      "enemyIds": [
+        "enemy_hollow_marshal",
+        "enemy_name_eaten_roadwardens"
+      ],
+      "description": "If the Roadwardens remain hostile or the ward corruption rises too high, the Hollow Marshal seals paths behind the party and drives them toward the final valley under pressure.",
+      "setup": "A cracked horn sounds behind the company. The road they just walked is gone, replaced by a wall of standing stones.",
+      "stakes": "The party may reach the finale exhausted, separated, or with fewer ritual options unless they break the Marshal's command.",
+      "completion": {
+        "anyOf": [
+          "escape",
+          "break_horn",
+          "restore_name",
+          "invoke_oath",
+          "endure",
+          "defeat",
+          "success"
+        ]
+      },
+      "gmNotes": "Use only if dramatically appropriate. This is a consequence engine, not a required boss fight."
+    },
+    {
+      "id": "enc_final_binding",
+      "title": "The Binding of the Last Road-Stone",
+      "locationIds": [
+        "loc_valley_last_road_stone"
+      ],
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "checkpointIds": [
+        "cp_06_final_valley"
+      ],
+      "enemyIds": [
+        "enemy_cinder_scribe",
+        "enemy_ashmarked_cutthroats",
+        "enemy_name_eaten_roadwardens",
+        "enemy_hollow_marshal"
+      ],
+      "description": "The Cinder Scribe begins binding the last road-stone while missing travelers stand trapped in the ward's false refuge. The party must stop him and decide the ward's fate.",
+      "setup": "The white road-stone pulses beneath dead banners. Names appear across its face, vanish into ash, then return as whispers from the fog.",
+      "stakes": "The road can be renewed, broken, hidden, claimed, corrupted, or left wounded. The ending depends on the party's choices and previous state.",
+      "completion": {
+        "anyOf": [
+          "defeat",
+          "ritual_renewal",
+          "ritual_destruction",
+          "conceal_stone",
+          "claim_ward",
+          "redeem_follower",
+          "speak_true_name",
+          "rescue_captives",
+          "success"
+        ]
+      },
+      "gmNotes": "Do not reduce the finale to a single combat. Make earlier flags matter. The Cinder Scribe should offer one player the chance to control the road in the name of protection."
+    }
+  ],
+  "segments": [
+    {
+      "id": "seg_empty_caravan",
+      "title": "The Caravan Without Names",
+      "locationId": "loc_lantern_post_inn",
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "summary": "The party investigates an empty caravan, erased ledger, calm horses, and the first road-stone fragment.",
+      "playerSummary": "Discover why the caravan arrived without its travelers.",
+      "tone": "grounded_mystery",
+      "gmNotes": "Start small and tactile: rain, bells, wet wheel rims, frightened locals, practical stakes."
+    },
+    {
+      "id": "seg_road_moves",
+      "title": "The Road That Moves",
+      "locationId": "loc_old_north_road",
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "summary": "The party follows the old road as milestones shift, pale lanterns appear, and distances become unreliable.",
+      "playerSummary": "Travel the changing road and determine whether it is hostile, protective, or broken.",
+      "tone": "eerie_travel",
+      "gmNotes": "Let navigation choices matter. Off-road travel should be viable but costly."
+    },
+    {
+      "id": "seg_scratched_names",
+      "title": "The Waystation's Scratched Names",
+      "locationId": "loc_waystation_scratched_names",
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "summary": "At a ruined waystation, the party discovers that old memorial names have been deliberately erased.",
+      "playerSummary": "Learn why names and memory are central to the danger.",
+      "tone": "ancient_lore_with_pressure",
+      "gmNotes": "If the party preserves or restores names here, reduce ward corruption or weaken spirit hostility."
+    },
+    {
+      "id": "seg_cairns_judgment",
+      "title": "The Cairns Remember",
+      "locationId": "loc_cairns_roadwardens",
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "summary": "The oath-bound Roadwardens confront the party and may become enemies, judges, or allies.",
+      "playerSummary": "Pass the haunted cairns by force, mercy, memory, stealth, or detour.",
+      "tone": "mythic_moral_choice",
+      "gmNotes": "Reward players who treat the dead as people. If they bypass the cairns, save consequences for the finale."
+    },
+    {
+      "id": "seg_stonewright_warning",
+      "title": "The Stonewright's Warning",
+      "locationId": "loc_old_masons_yard",
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "summary": "The party learns that the final road-stone can be renewed, broken, hidden, claimed, or corrupted.",
+      "playerSummary": "Prepare for the final choice and decide what kind of solution the company wants.",
+      "tone": "preparation_and_difficult_truth",
+      "gmNotes": "This is the clearest place to explain the possible endings, but do not make it the only place players can learn them."
+    },
+    {
+      "id": "seg_final_valley",
+      "title": "The Valley of the Last Road-Stone",
+      "locationId": "loc_valley_last_road_stone",
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "summary": "The party reaches the hidden valley, finds the missing travelers, confronts the Cinder Scribe, and decides the ward's fate.",
+      "playerSummary": "End the threat and choose what becomes of the old road's protection.",
+      "tone": "urgent_heroic_choice",
+      "gmNotes": "The finale should change based on state flags. Avoid a static boss fight."
+    },
+    {
+      "id": "seg_road_remembers",
+      "title": "The Road Remembers",
+      "locationId": "loc_lantern_post_inn",
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "summary": "The road's fate is revealed through the return, loss, haunting, or transformation of travel in the region.",
+      "playerSummary": "See the consequences of the company's choices.",
+      "tone": "quiet_aftermath",
+      "gmNotes": "End with ordinary people reacting. The emotional resolution should return to the settlement and the missing travelers."
+    }
+  ],
+  "checkpoints": [
+    {
+      "id": "cp_01_empty_caravan",
+      "title": "The Caravan Without Names",
+      "playerTitle": "The Empty Caravan",
+      "summary": "The party investigates the empty caravan at the Lantern Post and discovers erased names, strange wagon signs, and the road-stone fragment.",
+      "playerSummary": "A caravan has arrived without its travelers. Find the first clues before fear takes hold.",
+      "locationIds": [
+        "loc_lantern_post_inn"
+      ],
+      "npcIds": [
+        "npc_mara_reedwake",
+        "npc_tovin_bell",
+        "npc_osric_hale"
+      ],
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "objectiveIds": [
+        "obj_investigate_empty_caravan"
+      ],
+      "segmentIds": [
+        "seg_empty_caravan"
+      ],
+      "encounterIds": [
+        "enc_empty_caravan_pressure"
+      ],
+      "clueIds": [
+        "clue_road_stone_fragment",
+        "clue_erased_caravan_ledger",
+        "clue_pale_lantern_bell",
+        "clue_ash_marks",
+        "clue_tovin_silver_button"
+      ],
+      "completeWhen": {
+        "anyOf": [
+          "The party recovers or identifies the road-stone fragment.",
+          "The party reads or investigates the erased caravan ledger.",
+          "The party questions enough witnesses to follow the old road.",
+          "The party ignores the settlement and follows the wagon tracks directly."
+        ],
+        "summary": "The party understands that the caravan disappearance points back along the old road."
+      },
+      "nextCheckpointIds": [
+        "cp_02_moving_road"
+      ],
+      "alternateCheckpointIds": [
+        "cp_03_scratched_names"
+      ],
+      "failureCheckpointIds": [
+        "cp_02_moving_road"
+      ],
+      "rejoinTargetCheckpointId": "cp_02_moving_road",
+      "gmNotes": "If the players skip the inn, move the fragment to a milestone or enemy agent. If cutthroats steal it, let the party continue but raise ward corruption."
+    },
+    {
+      "id": "cp_02_moving_road",
+      "title": "The Road That Moves",
+      "playerTitle": "The Changing Road",
+      "summary": "The party follows the old road and experiences moving milestones, pale lanterns, false shortcuts, and wardbound beasts.",
+      "playerSummary": "Travel the old road and learn that the path itself is part of the mystery.",
+      "locationIds": [
+        "loc_old_north_road",
+        "loc_ridge_and_culvert_paths"
+      ],
+      "npcIds": [
+        "npc_radan_greycloak",
+        "npc_veyra_ashcap"
+      ],
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "objectiveIds": [
+        "obj_follow_changing_road"
+      ],
+      "segmentIds": [
+        "seg_road_moves"
+      ],
+      "encounterIds": [
+        "enc_pale_lantern_detour"
+      ],
+      "clueIds": [
+        "clue_pale_lantern_bell",
+        "clue_ash_marks",
+        "clue_false_refuge",
+        "clue_final_valley_map"
+      ],
+      "completeWhen": {
+        "anyOf": [
+          "The party reaches the waystation by following the road.",
+          "The party follows a pale lantern and reaches a shortcut or vision.",
+          "The party bypasses the road through ridge, marsh, field, or culvert.",
+          "The party tracks ashmarked agents toward the final valley."
+        ],
+        "summary": "The party learns the road is changing and chooses a route deeper into the mystery."
+      },
+      "nextCheckpointIds": [
+        "cp_03_scratched_names"
+      ],
+      "alternateCheckpointIds": [
+        "cp_04_roadwarden_cairns",
+        "cp_05_stonewright_warning",
+        "cp_06_final_valley"
+      ],
+      "failureCheckpointIds": [
+        "cp_03_scratched_names",
+        "cp_04_roadwarden_cairns"
+      ],
+      "rejoinTargetCheckpointId": "cp_03_scratched_names",
+      "gmNotes": "Players may leave the road. Let them. Off-road routes cost time, supplies, or missed clues, but they should still reconnect through the waystation, cairns, stonewright, or final valley."
+    },
+    {
+      "id": "cp_03_scratched_names",
+      "title": "The Waystation of Scratched Names",
+      "playerTitle": "The Names That Were Cut Away",
+      "summary": "The party discovers a ruined waystation where memorial names have been erased, revealing that memory is central to the ward's corruption.",
+      "playerSummary": "Find out why names are being removed from the old road.",
+      "locationIds": [
+        "loc_waystation_scratched_names"
+      ],
+      "npcIds": [
+        "npc_serenil_westward_song",
+        "npc_veyra_ashcap"
+      ],
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "objectiveIds": [
+        "obj_recover_erased_names"
+      ],
+      "segmentIds": [
+        "seg_scratched_names"
+      ],
+      "encounterIds": [
+        "enc_waystation_ambush"
+      ],
+      "clueIds": [
+        "clue_scratched_memorial_names",
+        "clue_original_road_oath",
+        "clue_cinder_scribe_true_name",
+        "clue_ash_marks"
+      ],
+      "completeWhen": {
+        "anyOf": [
+          "The party preserves or restores at least one Roadwarden name.",
+          "The party learns that names are keys to the ward.",
+          "The party captures or follows an ashmarked agent.",
+          "The party bypasses the ruin and takes another route."
+        ],
+        "summary": "The party gains evidence that the road's memory is being deliberately damaged."
+      },
+      "nextCheckpointIds": [
+        "cp_04_roadwarden_cairns"
+      ],
+      "alternateCheckpointIds": [
+        "cp_05_stonewright_warning",
+        "cp_06_final_valley"
+      ],
+      "failureCheckpointIds": [
+        "cp_04_roadwarden_cairns"
+      ],
+      "rejoinTargetCheckpointId": "cp_04_roadwarden_cairns",
+      "gmNotes": "If skipped, put the erased names in Serenil's song, Brokk's rubbing, a captured ledger, or the final road-stone. Skipping should increase difficulty, not stop progress."
+    },
+    {
+      "id": "cp_04_roadwarden_cairns",
+      "title": "Judgment of the Roadwardens",
+      "playerTitle": "The Cairns of the Forgotten Guard",
+      "summary": "The party confronts, appeases, restores, fights, or bypasses the Name-Eaten Roadwardens and Caelorn the Erased.",
+      "playerSummary": "Pass the haunted cairns and decide whether the dead are enemies, victims, or allies.",
+      "locationIds": [
+        "loc_cairns_roadwardens",
+        "loc_ridge_and_culvert_paths"
+      ],
+      "npcIds": [
+        "npc_caelorn_erased",
+        "npc_radan_greycloak",
+        "npc_serenil_westward_song"
+      ],
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "objectiveIds": [
+        "obj_confront_roadwardens"
+      ],
+      "segmentIds": [
+        "seg_cairns_judgment"
+      ],
+      "encounterIds": [
+        "enc_roadwarden_judgment"
+      ],
+      "clueIds": [
+        "clue_original_road_oath",
+        "clue_scratched_memorial_names"
+      ],
+      "completeWhen": {
+        "anyOf": [
+          "The party restores Caelorn's name.",
+          "The party speaks or reconstructs the original road oath.",
+          "The party fights through the Roadwardens.",
+          "The party retreats respectfully and finds another route.",
+          "The party bypasses the cairns through ridge, marsh, culvert, or enemy route."
+        ],
+        "summary": "The party gets past the Roadwardens, with consequences based on method."
+      },
+      "nextCheckpointIds": [
+        "cp_05_stonewright_warning"
+      ],
+      "alternateCheckpointIds": [
+        "cp_06_final_valley"
+      ],
+      "failureCheckpointIds": [
+        "cp_05_stonewright_warning",
+        "cp_06_final_valley"
+      ],
+      "rejoinTargetCheckpointId": "cp_05_stonewright_warning",
+      "gmNotes": "Restoring Caelorn weakens the final corruption. Destroying or ignoring the spirits may activate the Hollow Marshal. Bypassing is valid but removes a major ally."
+    },
+    {
+      "id": "cp_05_stonewright_warning",
+      "title": "The Stonewright's Warning",
+      "playerTitle": "What the Stone Can Become",
+      "summary": "The party learns the final road-stone can be renewed, broken, hidden, claimed, or corrupted, and may prepare a ritual path.",
+      "playerSummary": "Prepare for the final choice and learn what is at stake.",
+      "locationIds": [
+        "loc_old_masons_yard",
+        "loc_ridge_and_culvert_paths"
+      ],
+      "npcIds": [
+        "npc_brokk_stonehand",
+        "npc_serenil_westward_song",
+        "npc_radan_greycloak",
+        "npc_veyra_ashcap"
+      ],
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "objectiveIds": [
+        "obj_learn_ward_choices",
+        "obj_reach_final_valley"
+      ],
+      "segmentIds": [
+        "seg_stonewright_warning"
+      ],
+      "encounterIds": [
+        "enc_hollow_marshal_pursuit"
+      ],
+      "clueIds": [
+        "clue_final_valley_map",
+        "clue_original_road_oath",
+        "clue_binding_quill",
+        "clue_cinder_scribe_true_name"
+      ],
+      "completeWhen": {
+        "anyOf": [
+          "The party prepares a renewal method.",
+          "The party prepares a destruction method.",
+          "The party prepares a concealment method.",
+          "The party learns a route to the final valley.",
+          "The party skips preparation and rushes the final valley."
+        ],
+        "summary": "The party understands or improvises how they might deal with the final road-stone."
+      },
+      "nextCheckpointIds": [
+        "cp_06_final_valley"
+      ],
+      "alternateCheckpointIds": [
+        "cp_06_final_valley"
+      ],
+      "failureCheckpointIds": [
+        "cp_06_final_valley"
+      ],
+      "rejoinTargetCheckpointId": "cp_06_final_valley",
+      "gmNotes": "This checkpoint is useful but not mandatory. If skipped, reveal options under pressure in the finale through the stone, captives, villain, or spirits."
+    },
+    {
+      "id": "cp_06_final_valley",
+      "title": "The Binding of the Last Road-Stone",
+      "playerTitle": "The Valley Where Roads End",
+      "summary": "The party reaches the hidden valley, finds the missing travelers, confronts the Cinder Scribe, and chooses the road ward's fate.",
+      "playerSummary": "Stop the Cinder Scribe and decide whether the old road's protection should live, die, hide, or change hands.",
+      "locationIds": [
+        "loc_valley_last_road_stone"
+      ],
+      "npcIds": [
+        "npc_cinder_scribe",
+        "npc_veyra_ashcap",
+        "npc_caelorn_erased",
+        "npc_radan_greycloak",
+        "npc_brokk_stonehand",
+        "npc_serenil_westward_song",
+        "npc_osric_hale"
+      ],
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "objectiveIds": [
+        "obj_reach_final_valley",
+        "obj_decide_ward_fate"
+      ],
+      "segmentIds": [
+        "seg_final_valley"
+      ],
+      "encounterIds": [
+        "enc_final_binding"
+      ],
+      "clueIds": [
+        "clue_false_refuge",
+        "clue_binding_quill",
+        "clue_cinder_scribe_true_name",
+        "clue_original_road_oath",
+        "clue_scratched_memorial_names"
+      ],
+      "completeWhen": {
+        "anyOf": [
+          "The party defeats the Cinder Scribe.",
+          "The party breaks the binding quill or ash-ink.",
+          "The party restores enough names to renew the ward.",
+          "The party destroys or conceals the final stone.",
+          "The party claims the ward and accepts consequences.",
+          "The party interrupts the rite but leaves the ward damaged."
+        ],
+        "summary": "The Cinder Scribe's immediate plan is stopped, transformed, or partially completed, and the ward's fate is chosen or left unstable."
+      },
+      "nextCheckpointIds": [
+        "cp_07_road_remembers"
+      ],
+      "alternateCheckpointIds": [],
+      "failureCheckpointIds": [
+        "cp_07_road_remembers"
+      ],
+      "rejoinTargetCheckpointId": "cp_07_road_remembers",
+      "gmNotes": "Make previous choices matter: restored names, redeemed Veyra, allied Radan, Brokk's ritual, Serenil's song, Osric's support, and Caelorn's fate should all alter this scene."
+    },
+    {
+      "id": "cp_07_road_remembers",
+      "title": "The Road Remembers",
+      "playerTitle": "After the Last Stone",
+      "summary": "The campaign resolves based on whether the ward was renewed, broken, hidden, claimed, corrupted, or left wounded.",
+      "playerSummary": "Return to the people affected by the road and see what your choices changed.",
+      "locationIds": [
+        "loc_lantern_post_inn",
+        "loc_old_north_road",
+        "loc_valley_last_road_stone"
+      ],
+      "npcIds": [
+        "npc_mara_reedwake",
+        "npc_tovin_bell",
+        "npc_osric_hale",
+        "npc_radan_greycloak",
+        "npc_brokk_stonehand",
+        "npc_serenil_westward_song",
+        "npc_veyra_ashcap",
+        "npc_caelorn_erased"
+      ],
+      "questIds": [
+        "quest_road_unremembered_kings"
+      ],
+      "objectiveIds": [
+        "obj_decide_ward_fate"
+      ],
+      "segmentIds": [
+        "seg_road_remembers"
+      ],
+      "encounterIds": [],
+      "clueIds": [],
+      "completeWhen": {
+        "questIds": [
+          "quest_road_unremembered_kings"
+        ],
+        "summary": "The party sees the consequences of the road ward's final state and the fate of the missing travelers."
+      },
+      "nextCheckpointIds": [],
+      "alternateCheckpointIds": [],
+      "failureCheckpointIds": [],
+      "terminal": true,
+      "rejoinTargetCheckpointId": "cp_07_road_remembers",
+      "endingOptions": [
+        {
+          "id": "ending_ward_renewed",
+          "title": "Ward Renewed",
+          "summary": "The road is safe again because the names of the dead are restored, but someone must tend the oath and keep memory alive."
+        },
+        {
+          "id": "ending_ward_broken",
+          "title": "Ward Broken",
+          "summary": "The haunting ends permanently, but the old protection is gone and the settlements must rely on mortal courage."
+        },
+        {
+          "id": "ending_ward_hidden",
+          "title": "Ward Hidden",
+          "summary": "The final stone is concealed and entrusted to a few guardians, preventing immediate corruption but preserving future risk."
+        },
+        {
+          "id": "ending_ward_claimed",
+          "title": "Ward Claimed",
+          "summary": "A player, NPC, or faction takes responsibility for the ward, gaining power at the cost of a heavy burden."
+        },
+        {
+          "id": "ending_corrupted_victory",
+          "title": "Corrupted Victory",
+          "summary": "The Cinder Scribe is stopped, but the ward remains damaged. Some travelers return, some names remain lost, and pale lanterns still appear in the fog."
+        }
+      ],
+      "gmNotes": "Resolve through people, not just lore. Show Mara's reaction, Tovin's guilt or courage, Osric's relief or shame, Radan's brother if relevant, and whether the missing travelers return."
+    }
+  ],
+  "clues": [
+    {
+      "id": "clue_road_stone_fragment",
+      "name": "Pale Road-Stone Fragment",
+      "visibleAtStart": true,
+      "description": "A cloth-wrapped chip of pale stone carved with half a name-rune and faint lines like a road map.",
+      "foundAtLocationIds": [
+        "loc_lantern_post_inn",
+        "loc_old_north_road",
+        "loc_waystation_scratched_names"
+      ],
+      "questId": "quest_road_unremembered_kings",
+      "redundancy": "If missed at the caravan, place it in a changed milestone, an enemy pouch, or the hands of a trapped traveler.",
+      "gmNotes": "The fragment is not the whole key. It is a proof that the old road ward has physically broken."
+    },
+    {
+      "id": "clue_erased_caravan_ledger",
+      "name": "Erased Caravan Ledger",
+      "visibleAtStart": true,
+      "description": "A travel ledger where every driver's and guard's name has been scratched out with black strokes that smell faintly of cold ash.",
+      "foundAtLocationIds": [
+        "loc_lantern_post_inn"
+      ],
+      "questId": "quest_road_unremembered_kings",
+      "redundancy": "If ignored, another erased list appears at the waystation or in the Cinder Scribe's ledger.",
+      "gmNotes": "This introduces the campaign's core theme: names are being removed from the road's memory."
+    },
+    {
+      "id": "clue_pale_lantern_bell",
+      "name": "The Bell and the Pale Lanterns",
+      "visibleAtStart": true,
+      "description": "The caravan bell rings without touch. Later, pale lanterns answer it from the fog as if the road is signaling to itself.",
+      "foundAtLocationIds": [
+        "loc_lantern_post_inn",
+        "loc_old_north_road"
+      ],
+      "questId": "quest_road_unremembered_kings",
+      "redundancy": "If the bell is missed, pale lanterns appear on the road or a child mentions hearing bells from empty hills.",
+      "gmNotes": "The bell is a ward alarm. The road recognizes danger but cannot respond correctly."
+    },
+    {
+      "id": "clue_ash_marks",
+      "name": "Ash Marks on the Road",
+      "visibleAtStart": false,
+      "description": "Grey-black marks drawn on road signs, wagon boards, and milestone cracks. They confuse the ward and redirect its protection.",
+      "foundAtLocationIds": [
+        "loc_lantern_post_inn",
+        "loc_old_north_road",
+        "loc_waystation_scratched_names",
+        "loc_valley_last_road_stone"
+      ],
+      "questId": "quest_road_unremembered_kings",
+      "redundancy": "Ash marks can appear anywhere the party goes off-route, ensuring the Cinder Scribe's influence remains visible.",
+      "gmNotes": "Ash marks are the enemy's practical tool. Removing or corrupting them can alter travel."
+    },
+    {
+      "id": "clue_tovin_silver_button",
+      "name": "Missing Driver's Silver Button",
+      "visibleAtStart": false,
+      "description": "A small silver button stolen from the caravan by Tovin. It bears the initials of one missing driver.",
+      "foundAtLocationIds": [
+        "loc_lantern_post_inn",
+        "loc_valley_last_road_stone"
+      ],
+      "questId": "quest_road_unremembered_kings",
+      "redundancy": "If Tovin never reveals it, the button appears on a trapped traveler in the false refuge.",
+      "gmNotes": "This gives a personal identification hook for one missing traveler."
+    },
+    {
+      "id": "clue_scratched_memorial_names",
+      "name": "Scratched Memorial Names",
+      "visibleAtStart": false,
+      "description": "Freshly chiseled gaps in the waystation memorial wall where Roadwarden names used to be.",
+      "foundAtLocationIds": [
+        "loc_waystation_scratched_names",
+        "loc_cairns_roadwardens",
+        "loc_valley_last_road_stone"
+      ],
+      "questId": "quest_road_unremembered_kings",
+      "redundancy": "Recover through Serenil's song, Brokk's rubbing, a captured ledger, or the final road-stone.",
+      "gmNotes": "Restoring these names should reduce ward corruption or help pacify spirits."
+    },
+    {
+      "id": "clue_original_road_oath",
+      "name": "Original Road Oath",
+      "visibleAtStart": false,
+      "description": "The old oath: to keep the road for the lost, the hunted, the wounded, and the small folk fleeing shadow, asking no name as price for passage.",
+      "foundAtLocationIds": [
+        "loc_waystation_scratched_names",
+        "loc_cairns_roadwardens",
+        "loc_old_masons_yard",
+        "loc_valley_last_road_stone"
+      ],
+      "questId": "quest_road_unremembered_kings",
+      "redundancy": "Can be learned from Caelorn, Serenil, Brokk, a carved beam, or the final stone under pressure.",
+      "gmNotes": "Knowing the oath supports non-combat solutions and ward renewal."
+    },
+    {
+      "id": "clue_cinder_scribe_true_name",
+      "name": "True Name Fragment: Maedran Voss",
+      "visibleAtStart": false,
+      "description": "A partial record naming Maedran Voss, an oath-keeper who betrayed his charge and survived by giving his records to shadow.",
+      "foundAtLocationIds": [
+        "loc_waystation_scratched_names",
+        "loc_old_masons_yard",
+        "loc_valley_last_road_stone"
+      ],
+      "questId": "quest_road_unremembered_kings",
+      "redundancy": "Can appear in a broken inscription, enemy letter, Serenil's memory, or the Cinder Scribe's own ledger.",
+      "gmNotes": "Speaking the true name with proof can weaken the Cinder Scribe, but do not let the name alone auto-win the finale."
+    },
+    {
+      "id": "clue_final_valley_map",
+      "name": "Map to the Valley Where Roads Meet",
+      "visibleAtStart": false,
+      "description": "A route map, stone pattern, song-line, or set of ash orders pointing toward the hidden valley of the last road-stone.",
+      "foundAtLocationIds": [
+        "loc_old_north_road",
+        "loc_waystation_scratched_names",
+        "loc_old_masons_yard",
+        "loc_ridge_and_culvert_paths"
+      ],
+      "questId": "quest_road_unremembered_kings",
+      "redundancy": "Radan, Brokk, Veyra, pale lanterns, captured agents, or restored spirits can all provide routes.",
+      "gmNotes": "Never lock the finale behind one map."
+    },
+    {
+      "id": "clue_binding_quill",
+      "name": "Ash-Ink Binding Quill",
+      "visibleAtStart": false,
+      "description": "A blackened quill used by the Cinder Scribe to alter names, redirect oaths, and bind the final road-stone.",
+      "foundAtLocationIds": [
+        "loc_valley_last_road_stone"
+      ],
+      "questId": "quest_road_unremembered_kings",
+      "redundancy": "Foreshadow through ash marks, written orders, and Veyra's fear of being unwritten.",
+      "gmNotes": "Destroying, stealing, or corrupting the quill is a valid non-kill route to disrupting the final ritual."
+    },
+    {
+      "id": "clue_false_refuge",
+      "name": "The False Refuge",
+      "visibleAtStart": false,
+      "description": "A suspended place inside the ward where missing travelers are kept safe from harm but unable to leave because the road no longer remembers who they are.",
+      "foundAtLocationIds": [
+        "loc_old_north_road",
+        "loc_valley_last_road_stone"
+      ],
+      "questId": "quest_road_unremembered_kings",
+      "redundancy": "Can be glimpsed through pale lanterns, dreams, a missing traveler's voice, or the final valley.",
+      "gmNotes": "This reveals the road is broken protection, not simple murder."
+    }
+  ],
+  "factions": [
+    {
+      "id": "faction_lantern_post_settlement",
+      "name": "Lantern Post Settlement",
+      "description": "Innfolk, farmers, teamsters, stablehands, and local guards who depend on the old road but fear what it has become.",
+      "defaultDisposition": "cautious_friendly",
+      "visibleAtStart": true,
+      "knownNpcIds": [
+        "npc_mara_reedwake",
+        "npc_tovin_bell",
+        "npc_osric_hale"
+      ],
+      "gmNotes": "Their support depends on how the party handles panic, evidence, and Osric."
+    },
+    {
+      "id": "faction_rangers_of_old_road",
+      "name": "Rangers of the Old Road",
+      "description": "Thinly stretched watchers who protect settlements that often distrust them.",
+      "defaultDisposition": "guarded_allied",
+      "visibleAtStart": false,
+      "knownNpcIds": [
+        "npc_radan_greycloak"
+      ],
+      "gmNotes": "They can give route help and warnings, but the party must remain the main problem-solvers."
+    },
+    {
+      "id": "faction_stonewrights",
+      "name": "Stonewrights of the Broken Mile",
+      "description": "Masons and Dwarven craft-keepers who understand old road-stones as sworn craft rather than abstract magic.",
+      "defaultDisposition": "skeptical_neutral",
+      "visibleAtStart": false,
+      "knownNpcIds": [
+        "npc_brokk_stonehand"
+      ],
+      "gmNotes": "They may support renewal, destruction, or concealment depending on the party's argument."
+    },
+    {
+      "id": "faction_roadwarden_remnant",
+      "name": "The Roadwarden Remnant",
+      "description": "Forgotten spirits of ancient guards, scouts, masons, and messengers once sworn to protect travelers.",
+      "defaultDisposition": "guarded_hostile",
+      "visibleAtStart": false,
+      "hiddenToPlayers": true,
+      "knownNpcIds": [
+        "npc_caelorn_erased"
+      ],
+      "gmNotes": "Their disposition can become allied if names are restored and the original oath is honored."
+    },
+    {
+      "id": "faction_cinder_scribes_followers",
+      "name": "Followers of the Cinder Scribe",
+      "description": "Ashmarked cutthroats, spies, oathbreakers, frightened servants, and desperate people controlled by stolen names.",
+      "defaultDisposition": "hostile",
+      "visibleAtStart": false,
+      "hiddenToPlayers": true,
+      "knownNpcIds": [
+        "npc_veyra_ashcap",
+        "npc_cinder_scribe"
+      ],
+      "gmNotes": "Not every follower is committed. Some can be turned if offered protection from being unwritten."
+    }
+  ],
+  "maps": [
+    {
+      "id": "map_western_roadlands",
+      "title": "Western Roadlands Route Map",
+      "description": "A simple travel map showing the Lantern Post, Old North Road, Waystation of Scratched Names, Cairns of the Roadwardens, Old Mason's Yard, ridge and culvert bypasses, and the hidden valley.",
+      "locationIds": [
+        "loc_lantern_post_inn",
+        "loc_old_north_road",
+        "loc_waystation_scratched_names",
+        "loc_cairns_roadwardens",
+        "loc_old_masons_yard",
+        "loc_ridge_and_culvert_paths",
+        "loc_valley_last_road_stone"
+      ],
+      "visibleAtStart": false,
+      "gmNotes": "Reveal gradually. The map should change as the party discovers alternate routes."
+    },
+    {
+      "id": "map_final_valley_routes",
+      "title": "Ways into the Valley",
+      "description": "A route map showing multiple approaches into the final valley: the old road, ranger ridge, stone culvert, ashmarked enemy path, and pale lantern route.",
+      "locationIds": [
+        "loc_old_north_road",
+        "loc_ridge_and_culvert_paths",
+        "loc_valley_last_road_stone"
+      ],
+      "visibleAtStart": false,
+      "hiddenToPlayers": true,
+      "gmNotes": "Use this to support non-linear play. Different approaches should change the final setup."
+    },
+    {
+      "id": "map_old_ward_network",
+      "title": "The Broken Ward Network",
+      "description": "A lore map showing how road-stones, memorial names, bells, milestones, and oath-sites once formed a protective network.",
+      "locationIds": [
+        "loc_lantern_post_inn",
+        "loc_old_north_road",
+        "loc_waystation_scratched_names",
+        "loc_cairns_roadwardens",
+        "loc_valley_last_road_stone"
+      ],
+      "visibleAtStart": false,
+      "hiddenToPlayers": true,
+      "gmNotes": "Reveal this only after enough clues are found or during the Stonewright's Warning."
+    }
+  ],
+  "handouts": [
+    {
+      "id": "handout_erased_ledger_page",
+      "title": "Page from the Erased Caravan Ledger",
+      "description": "A ledger page with every traveler's name scratched away except one partial initial and a smeared ash mark.",
+      "text": "Route: Lantern Post by dusk. Drivers: [scratched out]. Guard: [scratched out]. Cargo: winter meal, lamp oil, salt, wool. Note: bell sounded at third mile though no tower stood there.",
+      "questId": "quest_road_unremembered_kings",
+      "visibleAtStart": false,
+      "gmNotes": "This can be given early to make the mystery concrete."
+    },
+    {
+      "id": "handout_westward_song",
+      "title": "Fragment of the Westward Song",
+      "description": "A short song-line preserving part of the original road oath.",
+      "text": "For the lost and the little, for the wounded and worn, keep stone beside footfall till shadow is torn. Ask not the name as the price of the way; remember the fallen, and guide them by day.",
+      "questId": "quest_road_unremembered_kings",
+      "visibleAtStart": false,
+      "gmNotes": "Players do not need exact recitation. Reward any respectful use of the song's meaning."
+    },
+    {
+      "id": "handout_brokk_charcoal_rubbing",
+      "title": "Brokk's Charcoal Rubbing",
+      "description": "A charcoal rubbing of road-stone marks showing a route and a missing name-rune.",
+      "text": "The lines are not decoration. They are a path, a promise, and a warning. The broken mark means the stone remembers the road but not the people walking it.",
+      "questId": "quest_road_unremembered_kings",
+      "visibleAtStart": false,
+      "gmNotes": "Useful if Brokk refuses to travel or the party needs a practical clue."
+    },
+    {
+      "id": "handout_cinder_letter",
+      "title": "Letter Sealed with Ash",
+      "description": "A controlled, polite threat from the Cinder Scribe to Osric Hale or another local authority.",
+      "text": "Close your gates. Keep your people from the old road. Obedience will be remembered. Defiance will not.",
+      "questId": "quest_road_unremembered_kings",
+      "visibleAtStart": false,
+      "gmNotes": "Use this to show the villain's ideology before the party meets him."
+    }
+  ],
+  "lore": [
+    {
+      "id": "lore_roadward_oath",
+      "title": "The Roadward Oath",
+      "summary": "The original oath bound guardians to protect travelers, refugees, messengers, and the wounded without demanding name, wealth, rank, or allegiance as the price of safe passage.",
+      "visibleAtStart": false,
+      "gmNotes": "This is the moral counterpoint to the Cinder Scribe's belief in safety through control."
+    },
+    {
+      "id": "lore_road_stones",
+      "title": "The Road-Stones",
+      "summary": "The road-stones were sworn craft: part memorial, part guide, part warning system, and part promise. They protect by remembering names, places, and the purpose of the road.",
+      "visibleAtStart": false,
+      "gmNotes": "They are not generic magic crystals. They are memory made durable through craft and oath."
+    },
+    {
+      "id": "lore_cinder_scribe",
+      "title": "Maedran Voss, the Cinder Scribe",
+      "summary": "Maedran Voss was once an oath-keeper who concluded that roads failed because they allowed anyone to pass. He now seeks to correct mercy by turning free passage into controlled permission.",
+      "visibleAtStart": false,
+      "hiddenToPlayers": true,
+      "gmNotes": "Reveal this gradually. His ideology should sound tempting to frightened NPCs."
+    },
+    {
+      "id": "lore_false_refuge",
+      "title": "The False Refuge",
+      "summary": "The damaged ward does not always kill or harm. Sometimes it keeps travelers in a suspended refuge, safe from danger but unable to leave because their names have been erased from the road's memory.",
+      "visibleAtStart": false,
+      "hiddenToPlayers": true,
+      "gmNotes": "This should reframe the mystery: the road is broken protection, not pure malice."
+    },
+    {
+      "id": "lore_names_and_ward",
+      "title": "Names, Memory, and Passage",
+      "summary": "Names are how the ward distinguishes people from threats, guests from prisoners, and protection from control. Erased names make the road blind.",
+      "visibleAtStart": false,
+      "gmNotes": "Use this to justify why restoring names affects the final encounter."
+    },
+    {
+      "id": "lore_possible_fates",
+      "title": "Possible Fates of the Last Road-Stone",
+      "summary": "The final stone can be renewed, broken, hidden, claimed, corrupted, or left wounded. Each answer solves one danger while creating another responsibility.",
+      "visibleAtStart": false,
+      "gmNotes": "This should be clear enough before or during the finale that players understand they are making a real choice."
+    }
+  ],
+  "directorRules": {
+    "mainQuestGeneration": "pack_only",
+    "sideQuestGeneration": "allowed_tagged",
+    "newNpcs": "allowed_as_minor_or_temporary",
+    "newLocations": "allowed_as_local_detail",
+    "offTrackPolicy": "improvise_and_reconnect",
+    "checkpointStyle": "soft",
+    "tone": [
+      "grounded_heroic_fantasy",
+      "lonely_roads",
+      "ancient_oaths",
+      "quiet_dread",
+      "memory_and_names",
+      "moral_choices",
+      "hope_against_control"
+    ],
+    "continuityGuidance": "Keep the campaign focused on the empty caravan, erased names, road-stone fragments, the damaged road ward, the Cinder Scribe, missing travelers, and the final road-stone. Improvised scenes should point back to one of those elements.",
+    "pathingGuidance": "No checkpoint is mandatory except the final resolution of the road ward. If players skip a scene, do not block them. Move essential clues to later locations, increase cost or corruption, and let consequences appear in the finale.",
+    "failForwardGuidance": "Failed checks should change time, danger, trust, supplies, clue quality, or ward corruption. Do not halt the campaign because one roll failed or one NPC was missed.",
+    "combatGuidance": "Combat is valid but should not be the only route through major scenes. Reward stealth, negotiation, mercy, intimidation, lore, ritual repair, destruction of corrupted tools, and refusing dangerous power.",
+    "spoilerGuidance": "Keep the false refuge, the Cinder Scribe's true name, the road's original protective purpose, Veyra's brother, and Caelorn's full history hidden until discovered in play.",
+    "finaleStateGuidance": {
+      "if_caelorn_name_restored": "Roadwarden spirits resist the Cinder Scribe and may protect captives or open a path.",
+      "if_roadwardens_hostile": "The Hollow Marshal or lesser spirits complicate the final approach.",
+      "if_veyra_redeemed": "Veyra sabotages the binding ledger, reveals an infiltration route, or protects a captive.",
+      "if_brokk_helping": "The party has a stonecraft ritual option for renewal, destruction, or concealment.",
+      "if_serenil_song_learned": "The Westward Song can calm spirits or stabilize the stone.",
+      "if_radan_allied": "The party gains a safer route, scouting advantage, or evacuation support.",
+      "if_osric_supports_party": "Settlement guards, supplies, or legal authority help with captives and aftermath.",
+      "if_many_clues_skipped": "The finale begins with more confusion, stronger ritual pressure, and fewer obvious non-combat options.",
+      "if_party_used_brutality": "The ward may interpret the party as another threat unless they clearly choose mercy or responsibility.",
+      "if_names_preserved": "The ward responds more gently and missing travelers are easier to free."
+    },
+    "endingGuidance": {
+      "ward_renewed": "Best when names were restored, spirits honored, and the original oath known.",
+      "ward_broken": "Best when players reject ancient power and choose mortal responsibility.",
+      "ward_hidden": "Best as a cautious compromise when factions disagree or corruption is not fully cleansed.",
+      "ward_claimed": "Best for a morally complex continuing campaign hook.",
+      "corrupted_victory": "Use when the Cinder Scribe is stopped but the ward remains damaged, allies were missed, or the party won by force without restoring memory."
+    },
+    "stateFlagsToTrack": [
+      "stone_fragment_recovered",
+      "caravan_ledger_read",
+      "mara_trusts_party",
+      "tovin_button_revealed",
+      "osric_supports_party",
+      "radan_allied",
+      "brokk_helping",
+      "serenil_song_learned",
+      "veyra_redeemed",
+      "caelorn_name_restored",
+      "roadwardens_hostile",
+      "hollow_marshal_active",
+      "missing_travelers_found",
+      "cinder_scribe_true_name_known",
+      "original_oath_known",
+      "ward_ritual_prepared",
+      "ashmarked_agents_delayed",
+      "final_valley_entered_by_stealth",
+      "ward_corruption_level"
+    ]
+  }
+}

@@ -2597,6 +2597,47 @@ def test_campaign_pack_combat_end_advances_encounter_checkpoint(client, app):
         assert encounter.ended_at is not None
 
 
+def test_combat_apply_state_changes_synthesizes_stable_ids_for_retries(client, app):
+    ids = seed_world_campaign_player_session(app)
+    combat = client.post(
+        f"/api/sessions/{ids['session_id']}/combat/start",
+        json={'creature': core_creature('wolf'), 'enemyCount': 1},
+    ).get_json()
+    enemy_id = next(participant['id'] for participant in combat['combat']['participants'] if participant['team'] == 'enemy')
+    change = {
+        'type': 'combat.participant.update',
+        'participantId': enemy_id,
+        'hp': {'current': 0, 'max': 11},
+    }
+
+    first = client.post(
+        f"/api/sessions/{ids['session_id']}/combat/apply-state-changes",
+        json={'changes': [change]},
+    )
+    second = client.post(
+        f"/api/sessions/{ids['session_id']}/combat/apply-state-changes",
+        json={'changes': [change]},
+    )
+
+    assert first.status_code == 200
+    first_payload = first.get_json()
+    assert len(first_payload['appliedChanges']) == 1
+    generated_id = first_payload['appliedChanges'][0]['id']
+    assert generated_id.startswith('chg_')
+
+    assert second.status_code == 200
+    second_payload = second.get_json()
+    assert second_payload['appliedChanges'] == []
+    assert second_payload['validation']['rejected'][0]['change']['id'] == generated_id
+    assert second_payload['validation']['rejected'][0]['reason'] == 'State change was already applied.'
+
+    with app.app_context():
+        session = db.session.get(Session, ids['session_id'])
+        snapshot = json.loads(session.state_snapshot)
+    ledger_entries = [entry for entry in snapshot['stateChangeLedger'] if entry.get('id') == generated_id]
+    assert len(ledger_entries) == 1
+
+
 def test_creature_deep_api_endpoints_for_pack_evolution_morale_and_debug(client, app):
     ids = seed_world_campaign_player_session(app)
 

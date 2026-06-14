@@ -1,3 +1,147 @@
+# Daily AIDM Codebase Improvement Audit - 2026-06-13 16:04 MDT
+
+Automation ID: `daily-aidm-codebase-improvement-audit`
+
+Scope: focused safe-improvement pass across combat API idempotency, route/security boundaries, direct session snapshot writers, frontend bestiary/debug UX, accessibility semantics, and developer workflow checks. The worktree already contained unrelated pending changes in `aidm_frontend/src/ActionComposer.tsx`, `aidm_frontend/src/App.tsx`, `aidm_frontend/src/DiceRollDialog.tsx`, plus an untracked campaign example JSON; this run preserved those changes and only edited the combat API route and its regression test.
+
+## What Was Inspected
+
+- Prior dated audit sections in `improvements_suggestions.md`, especially the recommended focus around `/combat/apply-state-changes`, id-less submitted changes, route authorization, and serialized session-state writes.
+- Combat API mutation surface:
+  - `aidm_server/blueprints/creatures.py`
+  - `aidm_server/game_state/validation/validator.py`
+  - `aidm_server/game_state/application/applier.py`
+  - `aidm_server/game_state/models.py`
+- Combat endpoint regression coverage in `tests/test_creatures_combat.py`, especially campaign-pack combat start/end, morale, debug-event, and arbitrary state-change API tests.
+- Session snapshot mutation paths:
+  - `aidm_server/blueprints/players.py`
+  - `aidm_server/services/campaign_pack_progress.py`
+  - `aidm_server/game_state/orchestration/turn_pipeline.py`
+  - `aidm_server/turn_engine.py`
+- Frontend bestiary/debug and accessibility exposure:
+  - `aidm_frontend/src/BestiaryDebugPanel.tsx`
+  - `aidm_frontend/src/InspectorPanel.tsx`
+  - `aidm_frontend/src/ActionComposer.tsx`
+  - `aidm_frontend/src/App.tsx`
+- Developer workflow and security scan surfaces:
+  - `Makefile`
+  - `pytest.ini`
+  - `aidm_frontend/package.json`
+  - `scripts/scan_secrets.py`
+
+## Small Safe Fix Made
+
+### Synthesize deterministic IDs for id-less combat API state changes
+
+Affected files:
+- `aidm_server/blueprints/creatures.py`
+- `tests/test_creatures_combat.py`
+
+Problem:
+`/api/sessions/<session_id>/combat/apply-state-changes` accepted caller-supplied state changes and forwarded them directly into validation. When a submitted change omitted `id`, the existing ledger protection could not reject retries, so an API retry or client double-submit could record another applied change even though it represented the same mutation.
+
+Change:
+- Added `_combat_api_changes_with_ids`, which preserves caller-provided `id`/`changeId` values and synthesizes a stable `chg_...` ID only when the route receives an id-less change.
+- The generated key is scoped to the session, this API boundary, the batch index, and a canonical JSON fingerprint of the submitted change excluding ID aliases.
+- Updated `apply_session_combat_changes` to normalize submitted changes before validation.
+- Added a regression test that posts the same id-less combat participant update twice, verifies the first request applies with a generated ID, verifies the second request is rejected as already applied, and confirms the ledger contains only one entry for that generated ID.
+
+Rationale:
+This is a narrow correctness/security hardening fix at an untrusted mutation boundary. It does not alter clients that already send IDs, and it uses the existing validator/applier idempotency path rather than inventing new dedupe behavior. Including the batch index avoids unexpectedly collapsing two identical id-less changes inside a single submitted batch.
+
+Verification:
+- `.venv/bin/python -m py_compile aidm_server/blueprints/creatures.py tests/test_creatures_combat.py`
+- `.venv/bin/python -m pytest tests/test_creatures_combat.py -k "stable_ids_for_retries or campaign_pack_combat_end_advances_encounter_checkpoint"`
+- `.venv/bin/python -m pytest tests/test_creatures_combat.py`
+- `git diff --check -- aidm_server/blueprints/creatures.py tests/test_creatures_combat.py`
+- `.venv/bin/python scripts/scan_secrets.py aidm_server/blueprints/creatures.py tests/test_creatures_combat.py`
+
+Result:
+All targeted checks passed: 2 focused endpoint tests, 70 creature/combat tests, diff whitespace check, py-compile, and touched-file secret scan.
+
+## High-Priority Findings Refreshed This Run
+
+### Critical: Combat mutation, bestiary authoring, and debug routes still need DM/admin capability checks
+
+Current evidence:
+- `aidm_server/blueprints/creatures.py:348-377` generates and optionally saves campaign bestiary packs.
+- `aidm_server/blueprints/creatures.py:424-459` evolves a creature and can save it to campaign/session bestiary scope.
+- `aidm_server/blueprints/creatures.py:484-580` starts combat, persists combat state, syncs the combat encounter record, and records debug payloads.
+- `aidm_server/blueprints/creatures.py:595-622` applies morale events directly to persisted combat state.
+- `aidm_server/blueprints/creatures.py:625-656` can apply combat-end state and campaign-pack progress when `apply` is set.
+- `aidm_server/blueprints/creatures.py:659-686` accepts arbitrary combat state changes and persists them.
+- `aidm_server/blueprints/creatures.py:689-712` returns combat debug event payloads.
+
+Risk:
+These are source-of-truth DM/admin actions, but the route layer still exposes them like general session APIs. In a shared table or public deployment, a normal participant could potentially start/end combat, mutate enemy state, seed/evolve hidden bestiary content, or inspect debug internals.
+
+Recommended next step:
+Add route-level capability checks and tests before changing all behavior broadly. Start with non-admin 403 coverage for combat debug, combat start, arbitrary combat state mutation, combat-end apply, morale apply, bestiary generation/save, and creature evolve/save routes. Then add an explicit local trusted-development bypass if needed.
+
+### High: Direct session snapshot writers still bypass one serialized mutation boundary
+
+Current evidence:
+- `aidm_server/turn_engine.py:876` serializes normal socket turns with `session_turn_coordinator.serialized`.
+- `aidm_server/blueprints/players.py:421-462` handles manual equip/unequip by reading state, applying changes, and writing `session_obj.state_snapshot` outside that coordinator.
+- `aidm_server/services/campaign_pack_progress.py:181` and `:208` write migrated/progressed campaign-pack state directly.
+- `aidm_server/blueprints/creatures.py:567`, `:615`, `:640`, and `:671` persist combat/session changes directly through the route helper.
+- `aidm_server/game_state/orchestration/turn_pipeline.py:1047-1050`, `:1181`, and `:1288-1291` persist normal turn snapshots from captured state.
+
+Risk:
+Out-of-band REST/service writes can still race with an active streamed turn and be overwritten by a later post-DM persistence step. The risk is highest for equipment, HP, combat state, campaign-pack progress, and projection/canon refreshes.
+
+Recommended next step:
+Create a shared session-state mutation service that acquires the same per-session coordinator, reloads inside the lock, applies validated changes, persists through one helper, and records version/audit metadata. Add a regression that a manual equipment or campaign-pack progress change made during a simulated turn survives final post-DM persistence.
+
+### High: Id-less state changes are now hardened for combat API submissions, but other public mutation boundaries still need review
+
+Current evidence:
+- This run normalized id-less submitted changes for `aidm_server/blueprints/creatures.py:659-686`.
+- The lower-level validator still only rejects already-applied and duplicate-in-batch IDs when a non-empty ID is present.
+- The applier still only skips already-applied changes when `change_id` is non-empty.
+
+Risk:
+The most obvious combat API retry path is now covered, but any other public or service boundary that forwards id-less state changes can still bypass ledger dedupe. Centralizing ID requirements would make retries safer across inventory, currency, XP, scene, NPC, and combat updates.
+
+Recommended next step:
+Audit every external route/service that calls `validate_state_changes` or `apply_state_changes`. Either require an ID at untrusted boundaries or synthesize a deterministic scoped ID before validation, with route-specific tests.
+
+### Medium-High: Player-facing bestiary UI still mixes catalog browsing with debug/authoring powers
+
+Current evidence:
+- `aidm_frontend/src/InspectorPanel.tsx:251-259` exposes the Bestiary tab in the general inspector.
+- `aidm_frontend/src/BestiaryDebugPanel.tsx:147-154` fetches combat debug events alongside normal bestiary data.
+- `aidm_frontend/src/BestiaryDebugPanel.tsx:203-219` seeds campaign-pack bestiary entries from the same panel.
+- `aidm_frontend/src/BestiaryDebugPanel.tsx:325-335` renders recent combat debug summaries.
+
+Risk:
+Even after backend authorization is added, the current UI blends player-safe catalog browsing with DM/debug tools. That increases accidental exposure risk and makes it harder to reason about what normal players should see.
+
+Recommended next step:
+Split bestiary browsing from DM/admin authoring/debug tools. Drive visibility from explicit backend capability fields rather than client-side convention.
+
+## Larger Suggested Improvements
+
+- Define a route capability matrix for `workspace_admin`, `dm`, `player`, `local_debug`, and `server_owned` actions; enforce it in a shared decorator/helper.
+- Route every `Session.state_snapshot` write through a coordinated mutation service with fresh reload, idempotency policy, optimistic revision/audit metadata, and one persistence path.
+- Make state change identity mandatory or deterministic at all public mutation boundaries.
+- Split combat debug payloads into player-safe summaries and admin-only raw/debug records.
+- Add adversarial tests for non-admin combat mutation, debug redaction, bestiary authoring, id-less duplicate submissions outside combat, and snapshot races during streamed turns.
+- Add a compact `make dev-check` target that runs script syntax checks, touched-file secret scan, focused backend tests, generated API type check, and frontend typecheck/lint when dependencies are present.
+- Clean up bestiary list semantics: `BestiaryDebugPanel` currently uses a `listbox` for catalog browsing, but the content behaves more like a selectable list of cards/details. Prefer plain list/listitem semantics or a fully keyboard-managed listbox.
+
+## Notes
+
+- No live backend restart, Tailscale tunnel check, or browser smoke was needed for this backend API idempotency fix.
+- Existing unrelated frontend changes and the untracked campaign JSON were left untouched.
+- Broader route authorization and serialized mutation changes were intentionally left as report items because they need role semantics and larger regression coverage.
+
+## Recommended Next Run Focus
+
+1. Add non-admin rejection tests for `/api/sessions/<id>/combat/debug` and `/combat/apply-state-changes`, then implement the smallest shared capability helper needed to make them pass.
+2. Audit other direct callers of `validate_state_changes`/`apply_state_changes` for id-less external input and add deterministic IDs where the boundary is untrusted.
+3. Add a race-focused regression around manual equipment changes during an active streamed turn before designing the shared mutation service.
+
 # Daily AIDM Codebase Improvement Audit - 2026-06-13 06:04 MDT
 
 Automation ID: `daily-aidm-codebase-improvement-audit`

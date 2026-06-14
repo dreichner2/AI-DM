@@ -1,4 +1,4 @@
-import { useRef, type Dispatch, type RefObject, type SetStateAction } from 'react'
+import { useEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from 'react'
 import { MessagesSquare, Minus, Plus, RotateCcw, Sparkles, Volume2, VolumeX, X } from 'lucide-react'
 import { ThinIcon } from './AppChrome'
 import {
@@ -179,6 +179,12 @@ export function ActionComposer({
   updateItemDraftName,
   updateItemCostGold,
 }: ActionComposerProps) {
+  useEffect(() => {
+    if (composerMode === 'roll') {
+      preloadDiceRollDialog()
+    }
+  }, [composerMode, preloadDiceRollDialog])
+
   const characterName = selectedCharacterName ?? 'I'
   const adminUnlockRef = useRef({ count: 0, startedAt: 0 })
   const inventoryActionUsesOwnedItem = ['use', 'equip', 'unequip', 'drop', 'give', 'sell'].includes(selectedInventoryAction)
@@ -201,6 +207,8 @@ export function ActionComposer({
   const activeTurnPlayerId = turnControl.activePlayerId ?? selectedPlayerId ?? activePlayers[0]?.id ?? null
   const conductorControlled = turnControl.source === 'auto' || turnControl.source === 'ai'
   const manualOverrideActive = turnControl.source === 'manual' || turnControl.source === 'admin'
+  const isRollMode = composerMode === 'roll'
+  const toggleRollMode = () => applyComposerMode(isRollMode ? 'action' : 'roll')
   const updateRollModifierDraft = (nextModifier: number) => {
     const clamped = clampRollModifier(nextModifier)
     setRollModifier(String(clamped))
@@ -249,155 +257,158 @@ export function ActionComposer({
   }
 
   return (
-    <section className="action-composer">
-      <label htmlFor="action-input" onClick={handleActionLabelClick}>
-        Your Action <span>({composerModeLabel(composerMode, selectedDie)})</span>
-      </label>
-      <div className={`turn-control-strip ${selectedPlayerHasTurn ? 'open' : 'locked'}`} aria-live="polite">
-        <div className="turn-control-summary">
-          <span>Flow</span>
-          <strong>{turnControlStatusLabel}</strong>
-        </div>
-        {adminToolsUnlocked ? (
-          <div className="turn-control-actions" role="group" aria-label="Turn mode override">
-            <button
-              type="button"
-              aria-pressed={conductorControlled}
-              className={conductorControlled ? 'selected' : ''}
-              onClick={() => updateTurnControl('free', null, 'auto')}
-              disabled={!selectedPlayerId}
-            >
-              Auto
-            </button>
-            {turnModeButton('free', 'Free')}
-            {turnModeButton('spotlight', 'Spotlight')}
-            {turnModeButton('structured', 'Structured')}
-            {turnControl.mode !== 'free' ? (
-              <select
-                aria-label="Active turn player"
-                value={activeTurnPlayerId ?? ''}
-                onChange={(event) => updateTurnControl(turnControl.mode, Number(event.target.value) || selectedPlayerId)}
-                disabled={!activePlayers.length || !selectedPlayerId}
-              >
-                {activePlayers.length ? (
-                  activePlayers.map((player) => (
-                    <option key={player.id} value={player.id}>
-                      {player.character_name || player.name}
-                    </option>
-                  ))
-                ) : (
-                  <option value={selectedPlayerId ?? ''}>{selectedCharacterName ?? 'Current player'}</option>
-                )}
-              </select>
+    <section className={`action-composer ${isRollMode ? 'roll-focused' : ''}`}>
+      {!isRollMode ? (
+        <>
+          <label htmlFor="action-input" onClick={handleActionLabelClick}>
+            Your Action <span>({composerModeLabel(composerMode, selectedDie)})</span>
+          </label>
+          <div className={`turn-control-strip ${selectedPlayerHasTurn ? 'open' : 'locked'}`} aria-live="polite">
+            <div className="turn-control-summary">
+              <span>Flow</span>
+              <strong>{turnControlStatusLabel}</strong>
+            </div>
+            {adminToolsUnlocked ? (
+              <div className="turn-control-actions" role="group" aria-label="Turn mode override">
+                <button
+                  type="button"
+                  aria-pressed={conductorControlled}
+                  className={conductorControlled ? 'selected' : ''}
+                  onClick={() => updateTurnControl('free', null, 'auto')}
+                  disabled={!selectedPlayerId}
+                >
+                  Auto
+                </button>
+                {turnModeButton('free', 'Free')}
+                {turnModeButton('spotlight', 'Spotlight')}
+                {turnModeButton('structured', 'Structured')}
+                {turnControl.mode !== 'free' ? (
+                  <select
+                    aria-label="Active turn player"
+                    value={activeTurnPlayerId ?? ''}
+                    onChange={(event) => updateTurnControl(turnControl.mode, Number(event.target.value) || selectedPlayerId)}
+                    disabled={!activePlayers.length || !selectedPlayerId}
+                  >
+                    {activePlayers.length ? (
+                      activePlayers.map((player) => (
+                        <option key={player.id} value={player.id}>
+                          {player.character_name || player.name}
+                        </option>
+                      ))
+                    ) : (
+                      <option value={selectedPlayerId ?? ''}>{selectedCharacterName ?? 'Current player'}</option>
+                    )}
+                  </select>
+                ) : null}
+              </div>
             ) : null}
           </div>
-        ) : null}
-      </div>
-      {queuedActionText ? (
-        <div className="queued-action-strip">
-          <span>Queued draft</span>
-          <strong>{queuedActionText}</strong>
-          <button type="button" onClick={clearQueuedAction}>
-            Clear
-          </button>
-        </div>
-      ) : null}
-      <div className={`tts-status-strip ${ttsStatusClassName}`} role="status" aria-live="polite">
-        <span>
-          {ttsEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
-          Narration <strong>{ttsStatusLabel}</strong>
-        </span>
-        {ttsLatencyLabel ? <small>{ttsLatencyLabel}</small> : null}
-        {canStopTts ? (
-          <button type="button" onClick={stopTtsAudio}>
-            <X size={14} />
-            Stop
-          </button>
-        ) : null}
-      </div>
-      <div className="composer-frame">
-        <textarea
-          id="action-input"
-          ref={actionInputRef}
-          value={actionText}
-          onChange={(event) => updateActionText(event.target.value)}
-          placeholder={selectedCharacterName ? 'Write your action...' : 'Choose a player before sending.'}
-          rows={3}
-        />
-        <div className="input-action-row">
-          <div className="mode-buttons">
-            <button
-              type="button"
-              aria-label="Dice mode"
-              aria-pressed={composerMode === 'roll'}
-              className={composerMode === 'roll' ? 'selected' : ''}
-              onClick={() => applyComposerMode('roll')}
-              onFocus={preloadDiceRollDialog}
-              onMouseEnter={preloadDiceRollDialog}
-              disabled={sendPending}
-            >
-              <ThinIcon name="dice" size={18} />
-            </button>
-            <button
-              type="button"
-              aria-label="Action mode"
-              aria-pressed={composerMode === 'action'}
-              className={composerMode === 'action' ? 'selected' : ''}
-              onClick={() => applyComposerMode('action')}
-            >
-              <ThinIcon name="bolt" size={18} />
-            </button>
-            <button
-              type="button"
-              aria-label="Spell mode"
-              aria-pressed={composerMode === 'spell'}
-              className={composerMode === 'spell' ? 'selected' : ''}
-              onClick={() => applyComposerMode('spell')}
-            >
-              <Sparkles size={18} strokeWidth={1.45} />
-            </button>
-            <button
-              type="button"
-              aria-label="Interact mode"
-              aria-pressed={composerMode === 'interact'}
-              className={composerMode === 'interact' ? 'selected' : ''}
-              onClick={() => applyComposerMode('interact')}
-            >
-              <MessagesSquare size={18} strokeWidth={1.45} />
-            </button>
-            <button
-              type="button"
-              aria-label="OOC mode"
-              aria-pressed={composerMode === 'ooc'}
-              className={composerMode === 'ooc' ? 'selected' : ''}
-              onClick={() => applyComposerMode('ooc')}
-            >
-              <ThinIcon name="chevron" size={17} />
-            </button>
-            {adminToolsUnlocked ? (
-              <button
-                type="button"
-                aria-label="Admin mode"
-                aria-pressed={composerMode === 'admin'}
-                className={composerMode === 'admin' ? 'selected' : ''}
-                onClick={() => applyComposerMode('admin')}
-              >
-                <ThinIcon name="spark" size={17} />
+          {queuedActionText ? (
+            <div className="queued-action-strip">
+              <span>Queued draft</span>
+              <strong>{queuedActionText}</strong>
+              <button type="button" onClick={clearQueuedAction}>
+                Clear
+              </button>
+            </div>
+          ) : null}
+          <div className={`tts-status-strip ${ttsStatusClassName}`} role="status" aria-live="polite">
+            <span>
+              {ttsEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
+              Narration <strong>{ttsStatusLabel}</strong>
+            </span>
+            {ttsLatencyLabel ? <small>{ttsLatencyLabel}</small> : null}
+            {canStopTts ? (
+              <button type="button" onClick={stopTtsAudio}>
+                <X size={14} />
+                Stop
               </button>
             ) : null}
           </div>
-          <button
-            type="button"
-            className="send-button"
-            onClick={() => submitAction()}
-            disabled={sendPending || !actionText.trim()}
-          >
-            <ThinIcon name="send" size={18} />
-            Send
-          </button>
-        </div>
-      </div>
-      {composerMode === 'roll' ? (
+          <div className="composer-frame">
+            <textarea
+              id="action-input"
+              ref={actionInputRef}
+              value={actionText}
+              onChange={(event) => updateActionText(event.target.value)}
+              placeholder={selectedCharacterName ? 'Write your action...' : 'Choose a player before sending.'}
+              rows={3}
+            />
+            <div className="input-action-row">
+              <div className="mode-buttons">
+                <button
+                  type="button"
+                  aria-label="Dice mode"
+                  aria-pressed={false}
+                  onClick={toggleRollMode}
+                  onFocus={preloadDiceRollDialog}
+                  onMouseEnter={preloadDiceRollDialog}
+                  disabled={sendPending}
+                >
+                  <ThinIcon name="dice" size={18} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Action mode"
+                  aria-pressed={composerMode === 'action'}
+                  className={composerMode === 'action' ? 'selected' : ''}
+                  onClick={() => applyComposerMode('action')}
+                >
+                  <ThinIcon name="bolt" size={18} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Spell mode"
+                  aria-pressed={composerMode === 'spell'}
+                  className={composerMode === 'spell' ? 'selected' : ''}
+                  onClick={() => applyComposerMode('spell')}
+                >
+                  <Sparkles size={18} strokeWidth={1.45} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Interact mode"
+                  aria-pressed={composerMode === 'interact'}
+                  className={composerMode === 'interact' ? 'selected' : ''}
+                  onClick={() => applyComposerMode('interact')}
+                >
+                  <MessagesSquare size={18} strokeWidth={1.45} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="OOC mode"
+                  aria-pressed={composerMode === 'ooc'}
+                  className={composerMode === 'ooc' ? 'selected' : ''}
+                  onClick={() => applyComposerMode('ooc')}
+                >
+                  <ThinIcon name="chevron" size={17} />
+                </button>
+                {adminToolsUnlocked ? (
+                  <button
+                    type="button"
+                    aria-label="Admin mode"
+                    aria-pressed={composerMode === 'admin'}
+                    className={composerMode === 'admin' ? 'selected' : ''}
+                    onClick={() => applyComposerMode('admin')}
+                  >
+                    <ThinIcon name="spark" size={17} />
+                  </button>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                className="send-button"
+                onClick={() => submitAction()}
+                disabled={sendPending || !actionText.trim()}
+              >
+                <ThinIcon name="send" size={18} />
+                Send
+              </button>
+            </div>
+          </div>
+        </>
+      ) : null}
+      {isRollMode ? (
         <section className="roll-tray" aria-label="Roll options">
           <div className="roll-tray-section dice-section">
             <span className="roll-tray-label">Dice</span>
@@ -597,7 +608,7 @@ export function ActionComposer({
           </div>
         </section>
       ) : null}
-      {composerMode === 'spell' ? (
+      {!isRollMode && composerMode === 'spell' ? (
         <div className="action-intent-panel spell-intent-panel" aria-label="Spell options">
           <select
             value={selectedAbilityKey}
@@ -626,7 +637,7 @@ export function ActionComposer({
           <span>{selectedAbility ? `${selectedAbility.label} ${selectedAbility.modifier}` : 'Spell check'}</span>
         </div>
       ) : null}
-      {composerMode === 'item' ? (
+      {!isRollMode && composerMode === 'item' ? (
         <div className="action-intent-panel item-intent-panel" aria-label="Item options">
           <select
             value={selectedInventoryAction}
@@ -691,7 +702,7 @@ export function ActionComposer({
           <span>{inventoryActionUsesOwnedItem ? 'Held item' : 'Attempt'}</span>
         </div>
       ) : null}
-      {composerMode === 'interact' ? (
+      {!isRollMode && composerMode === 'interact' ? (
         <div className="action-intent-panel interaction-intent-panel" aria-label="Interaction options">
           <select
             value={selectedInteractionType}
@@ -742,7 +753,7 @@ export function ActionComposer({
           </span>
         </div>
       ) : null}
-      {adminToolsUnlocked && composerMode === 'admin' ? (
+      {!isRollMode && adminToolsUnlocked && composerMode === 'admin' ? (
         <div className="action-intent-panel admin-intent-panel" aria-label="Admin options">
           <input
             type="password"
@@ -755,67 +766,71 @@ export function ActionComposer({
           <span>Authenticated override</span>
         </div>
       ) : null}
-      <div className="composer-tools">
+      <div className={`composer-tools ${isRollMode ? 'roll-focused-tools' : ''}`}>
         <button
           type="button"
-          className={composerMode === 'roll' ? 'selected' : ''}
-          aria-pressed={composerMode === 'roll'}
-          onClick={() => applyComposerMode('roll')}
+          className={isRollMode ? 'selected' : ''}
+          aria-pressed={isRollMode}
+          onClick={toggleRollMode}
           onFocus={preloadDiceRollDialog}
           onMouseEnter={preloadDiceRollDialog}
           disabled={sendPending}
         >
           <ThinIcon name="dice" size={16} /> Roll <ThinIcon name="chevron" size={13} />
         </button>
-        <button
-          type="button"
-          className={composerMode === 'spell' ? 'selected' : ''}
-          aria-pressed={composerMode === 'spell'}
-          onClick={() => applyComposerMode('spell')}
-        >
-          <Sparkles size={16} strokeWidth={1.45} /> Spell
-        </button>
-        <button
-          type="button"
-          className={composerMode === 'item' ? 'selected' : ''}
-          aria-pressed={composerMode === 'item'}
-          onClick={() => applyComposerMode('item')}
-        >
-          <ThinIcon name="briefcase" size={16} /> Item
-        </button>
-        <button
-          type="button"
-          className={composerMode === 'interact' ? 'selected' : ''}
-          aria-pressed={composerMode === 'interact'}
-          onClick={() => applyComposerMode('interact')}
-        >
-          <MessagesSquare size={16} strokeWidth={1.45} /> Interact
-        </button>
-        <button
-          type="button"
-          className={composerMode === 'emote' ? 'selected' : ''}
-          aria-pressed={composerMode === 'emote'}
-          onClick={() => applyComposerMode('emote')}
-        >
-          <ThinIcon name="smile" size={16} /> Emote
-        </button>
-        <button
-          type="button"
-          className={composerMode === 'ooc' ? 'selected' : ''}
-          aria-pressed={composerMode === 'ooc'}
-          onClick={() => applyComposerMode('ooc')}
-        >
-          <ThinIcon name="dot" size={16} /> OOC
-        </button>
-        {adminToolsUnlocked ? (
-          <button
-            type="button"
-            className={composerMode === 'admin' ? 'selected' : ''}
-            aria-pressed={composerMode === 'admin'}
-            onClick={() => applyComposerMode('admin')}
-          >
-            <ThinIcon name="spark" size={16} /> Admin
-          </button>
+        {!isRollMode ? (
+          <>
+            <button
+              type="button"
+              className={composerMode === 'spell' ? 'selected' : ''}
+              aria-pressed={composerMode === 'spell'}
+              onClick={() => applyComposerMode('spell')}
+            >
+              <Sparkles size={16} strokeWidth={1.45} /> Spell
+            </button>
+            <button
+              type="button"
+              className={composerMode === 'item' ? 'selected' : ''}
+              aria-pressed={composerMode === 'item'}
+              onClick={() => applyComposerMode('item')}
+            >
+              <ThinIcon name="briefcase" size={16} /> Item
+            </button>
+            <button
+              type="button"
+              className={composerMode === 'interact' ? 'selected' : ''}
+              aria-pressed={composerMode === 'interact'}
+              onClick={() => applyComposerMode('interact')}
+            >
+              <MessagesSquare size={16} strokeWidth={1.45} /> Interact
+            </button>
+            <button
+              type="button"
+              className={composerMode === 'emote' ? 'selected' : ''}
+              aria-pressed={composerMode === 'emote'}
+              onClick={() => applyComposerMode('emote')}
+            >
+              <ThinIcon name="smile" size={16} /> Emote
+            </button>
+            <button
+              type="button"
+              className={composerMode === 'ooc' ? 'selected' : ''}
+              aria-pressed={composerMode === 'ooc'}
+              onClick={() => applyComposerMode('ooc')}
+            >
+              <ThinIcon name="dot" size={16} /> OOC
+            </button>
+            {adminToolsUnlocked ? (
+              <button
+                type="button"
+                className={composerMode === 'admin' ? 'selected' : ''}
+                aria-pressed={composerMode === 'admin'}
+                onClick={() => applyComposerMode('admin')}
+              >
+                <ThinIcon name="spark" size={16} /> Admin
+              </button>
+            ) : null}
+          </>
         ) : null}
       </div>
     </section>

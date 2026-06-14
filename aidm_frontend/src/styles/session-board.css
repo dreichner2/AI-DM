@@ -14,6 +14,10 @@
     #091112;
 }
 
+.session-board:has(.action-composer.roll-focused) {
+  --composer-row-height: 188px;
+}
+
 .session-header {
   display: flex;
   align-items: center;
@@ -1058,6 +1062,12 @@
   box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.24);
 }
 
+.action-composer.roll-focused {
+  align-content: center;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
 .action-composer label {
   display: block;
   margin-bottom: 3px;
@@ -1404,6 +1414,11 @@
   margin: 12px 8px 0;
   padding: 0 4px 2px;
   flex-wrap: wrap;
+}
+
+.composer-tools.roll-focused-tools {
+  justify-content: flex-start;
+  margin-top: 8px;
 }
 
 .composer-tools button {

@@ -1169,29 +1169,32 @@ describe('App user workflow regressions', () => {
     expect(actionInput).toHaveValue('[OOC] test the sigil')
 
     fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
-    expect(actionInput).toHaveValue('I roll a d20: test the sigil')
     const rollOptions = screen.getByLabelText('Roll options')
     expect(rollOptions).toBeInTheDocument()
+    expect(screen.queryByLabelText(/Your Action/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Spell' })).not.toBeInTheDocument()
     expect(within(rollOptions).getByRole('button', { name: 'Plain' })).toHaveAttribute('aria-pressed', 'true')
 
     fireEvent.click(within(rollOptions).getByRole('button', { name: 'STR +3' }))
-    expect(actionInput).toHaveValue('I roll a d20+3 for STR check: test the sigil')
     expect(screen.getByLabelText('Roll modifier')).toHaveValue(3)
     expect(screen.getByLabelText('Roll reason')).toHaveValue('STR check')
 
     fireEvent.click(within(rollOptions).getByRole('button', { name: '+PB +2' }))
-    expect(actionInput).toHaveValue('I roll a d20+5 for STR check: test the sigil')
     expect(screen.getByLabelText('Roll modifier')).toHaveValue(5)
 
+    fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
+    const restoredActionInput = screen.getByLabelText(/Your Action/i)
+    expect(restoredActionInput).toHaveValue('test the sigil')
+
     fireEvent.click(screen.getByRole('button', { name: 'Item' }))
-    expect(actionInput).toHaveValue('Ember uses Healing Potion: test the sigil')
+    expect(restoredActionInput).toHaveValue('Ember uses Healing Potion: test the sigil')
     expect(screen.getByLabelText('Item options')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Emote' }))
-    expect(actionInput).toHaveValue('/emote test the sigil')
+    expect(restoredActionInput).toHaveValue('/emote test the sigil')
 
     fireEvent.click(screen.getByRole('button', { name: 'Action mode' }))
-    expect(actionInput).toHaveValue('test the sigil')
+    expect(restoredActionInput).toHaveValue('test the sigil')
   })
 
   it('sends structured item composer metadata for buying arbitrary items', async () => {
@@ -1523,7 +1526,7 @@ describe('App user workflow regressions', () => {
 
     const dialog = await screen.findByRole('dialog', { name: 'Dice Roller' })
     expect(within(dialog).getByText('D20')).toBeInTheDocument()
-    expect((screen.getByLabelText(/Your Action/i) as HTMLTextAreaElement).value).toMatch(/^I roll a d20:/)
+    expect(screen.queryByLabelText(/Your Action/i)).not.toBeInTheDocument()
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Complete roll' }))
 
@@ -1626,7 +1629,7 @@ describe('App user workflow regressions', () => {
     fireEvent.click(within(rollOptions).getByRole('button', { name: 'STR +3' }))
     fireEvent.click(within(rollOptions).getByRole('button', { name: '+PB +2' }))
 
-    expect(actionInput).toHaveValue('I roll a d20+5 for STR check: kick the door')
+    expect(screen.queryByLabelText(/Your Action/i)).not.toBeInTheDocument()
     expect(screen.getByLabelText('Roll modifier')).toHaveValue(5)
 
     fireEvent.click(screen.getByRole('button', { name: 'Roll dice' }))
@@ -1637,6 +1640,7 @@ describe('App user workflow regressions', () => {
       expect(socketMock.socket.emit).toHaveBeenCalledWith(
         'send_message',
         expect.objectContaining({
+          message: expect.stringMatching(/^kick the door\nI roll a d20\+5 for STR check: \d+/),
           action_intent: expect.objectContaining({
             kind: 'roll',
             ability: {
@@ -1657,18 +1661,16 @@ describe('App user workflow regressions', () => {
   it('rolls initiative from the Roll selector using the dexterity modifier', async () => {
     await renderLoadedApp()
 
-    const actionInput = screen.getByLabelText(/Your Action/i)
     fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
     const rollOptions = screen.getByLabelText('Roll options')
     fireEvent.click(within(rollOptions).getByRole('button', { name: 'Initiative DEX +1' }))
 
-    expect(actionInput).toHaveValue('I roll for initiative:')
+    expect(screen.queryByLabelText(/Your Action/i)).not.toBeInTheDocument()
     expect(screen.getByLabelText('Roll modifier')).toHaveValue(1)
     expect(screen.getByLabelText('Roll reason')).toHaveValue('initiative')
 
     fireEvent.click(screen.getByRole('button', { name: 'Roll dice' }))
     const dialog = await screen.findByRole('dialog', { name: 'Dice Roller' })
-    expect((actionInput as HTMLTextAreaElement).value).toMatch(/^I roll for initiative: \d+/)
     fireEvent.click(within(dialog).getByRole('button', { name: 'Complete roll' }))
 
     await waitFor(() =>

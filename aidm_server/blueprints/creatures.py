@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from flask import Blueprint, jsonify, request
@@ -132,6 +133,35 @@ def _list(value: Any) -> list[Any]:
     if isinstance(value, str):
         return [item.strip() for item in value.replace(';', ',').split(',') if item.strip()]
     return []
+
+
+def _canonical_change_payload(change: dict[str, Any]) -> str:
+    fingerprint = {key: value for key, value in change.items() if key not in {'id', 'changeId', 'change_id'}}
+    return json.dumps(fingerprint, sort_keys=True, separators=(',', ':'), default=str)
+
+
+def _combat_api_changes_with_ids(session_id: int, changes: list[Any]) -> list[Any]:
+    normalized: list[Any] = []
+    for index, change in enumerate(changes):
+        if not isinstance(change, dict):
+            normalized.append(change)
+            continue
+        change_id = _text(change.get('id') or change.get('changeId') or change.get('change_id'))
+        if change_id:
+            normalized.append({**change, 'id': change_id})
+            continue
+        normalized.append(
+            {
+                **change,
+                'id': stable_change_id(
+                    session_id,
+                    'api.combat.apply_state_changes',
+                    index,
+                    _canonical_change_payload(change),
+                ),
+            }
+        )
+    return normalized
 
 
 def _pack_record_id(record: dict[str, Any]) -> str:
@@ -633,6 +663,7 @@ def apply_session_combat_changes(session_id: int):
         return error_response('not_found', 'Session not found.', 404)
     payload = parse_json_body(request) or {}
     changes = payload.get('changes') if isinstance(payload.get('changes'), list) else []
+    changes = _combat_api_changes_with_ids(session_id, changes)
     state = _session_state(session_obj)
     validation = validate_state_changes(state=state, changes=changes)
     applied = validated_changes_for_application(validation)

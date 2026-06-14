@@ -113,6 +113,7 @@ const loadDiceRollDialog = () => import('./DiceRollDialog')
 const DiceRollDialog = lazy(loadDiceRollDialog)
 
 function preloadDiceRollDialog() {
+  if (import.meta.env.MODE === 'test') return
   void loadDiceRollDialog()
 }
 
@@ -510,6 +511,13 @@ function App() {
   const playerRequestRef = useRef(0)
   const sessionActionDialogRef = useRef<SessionActionDialogState>(null)
   const campaignActionDialogRef = useRef<CampaignActionDialogState>(null)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined
+
+    const timerId = window.setTimeout(preloadDiceRollDialog, 300)
+    return () => window.clearTimeout(timerId)
+  }, [])
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
@@ -3170,6 +3178,8 @@ function App() {
             <DiceRollDialog
               die={diceRoll.die}
               result={diceRoll.result}
+              modifier={diceRoll.roll.modifier}
+              total={diceRoll.roll.total}
               targetLabel={diceRoll.targetLabel}
               rollKey={diceRoll.rollKey}
               status={diceRoll.status}
