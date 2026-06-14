@@ -97,7 +97,11 @@ import type {
   TtsRuntimeConfig,
   World,
 } from './types'
-import { useCampaignActions, type CampaignActionDialogState } from './useCampaignActions'
+import {
+  useCampaignActions,
+  type CampaignActionDialogState,
+  type CampaignPackExample,
+} from './useCampaignActions'
 import { useComposerActions } from './useComposerActions'
 import { usePlayerProfileActions } from './usePlayerProfileActions'
 import { useSessionActions, type SessionActionDialogState } from './useSessionActions'
@@ -123,6 +127,36 @@ const RaceSelector = lazy(() =>
 function preloadDiceRollDialog() {
   if (import.meta.env.MODE === 'test') return
   void loadDiceRollDialog()
+}
+
+function formatCampaignPackRange(min?: number, max?: number, unit?: string) {
+  if (!min && !max) return ''
+  const suffix = unit ? ` ${unit}` : ''
+  if (!max || max === min) return `${min ?? max}${suffix}`
+  if (!min) return `${max}${suffix}`
+  return `${min}-${max}${suffix}`
+}
+
+function campaignPackLengthSummary(pack: CampaignPackExample | null) {
+  const estimate = pack?.length_estimate
+  if (!estimate) return ''
+  const label = stringValue(estimate.label)
+  const sessions = formatCampaignPackRange(
+    estimate.sessions_min,
+    estimate.sessions_max,
+    'sessions',
+  )
+  return [label, sessions].filter(Boolean).join(' / ')
+}
+
+function campaignPackLengthDetail(pack: CampaignPackExample | null) {
+  const estimate = pack?.length_estimate
+  if (!estimate) return ''
+  const hours = formatCampaignPackRange(estimate.hours_min, estimate.hours_max, 'hours')
+  const checkpoints = estimate.checkpoint_count
+    ? `${estimate.checkpoint_count} checkpoints`
+    : ''
+  return [hours, checkpoints].filter(Boolean).join(' / ')
 }
 
 const ACTIVE_PLAYER_HEALTH_LABELS: Record<ActivePlayerHealthTone, string> = {
@@ -1310,6 +1344,30 @@ function App() {
       null,
     [createCampaignForm.packId, createCampaignPackOptions],
   )
+  const [createCampaignPackPickerOpen, setCreateCampaignPackPickerOpen] = useState(false)
+  const selectedCreateCampaignPackLength = campaignPackLengthSummary(selectedCreateCampaignPack)
+  const selectedCreateCampaignPackLengthDetail = campaignPackLengthDetail(selectedCreateCampaignPack)
+  const selectCreateCampaignPack = useCallback(
+    (packId: string) => {
+      const pack = createCampaignPackOptions.find((item) => item.pack_id === packId)
+      setCreateCampaignForm((current) => ({
+        ...current,
+        packId,
+        title: pack ? pack.title : current.title,
+        description: pack ? pack.description : current.description,
+        worldId: pack ? '' : current.worldId || (campaignWorldId ? String(campaignWorldId) : ''),
+        worldName: pack ? '' : current.worldName,
+      }))
+      setCreateCampaignPackPickerOpen(false)
+    },
+    [campaignWorldId, createCampaignPackOptions, setCreateCampaignForm],
+  )
+
+  useEffect(() => {
+    if (!createCampaignOpen) {
+      setCreateCampaignPackPickerOpen(false)
+    }
+  }, [createCampaignOpen])
 
   const openCampaignPackImportDialog = useCallback(() => {
     rememberDialogTrigger()
@@ -5112,34 +5170,85 @@ function App() {
               </button>
             </header>
             <form onSubmit={(event) => void submitCreateCampaign(event)}>
-              <label>
-                Campaign Pack
-                <select
-                  value={createCampaignForm.packId}
-                  onChange={(event) => {
-                    const packId = event.target.value
-                    const pack = createCampaignPackOptions.find((item) => item.pack_id === packId)
-                    setCreateCampaignForm((current) => ({
-                      ...current,
-                      packId,
-                      title: pack ? pack.title : current.title,
-                      description: pack ? pack.description : current.description,
-                      worldId: pack ? '' : current.worldId || (campaignWorldId ? String(campaignWorldId) : ''),
-                      worldName: pack ? '' : current.worldName,
-                    }))
-                  }}
-                  disabled={createCampaignPending || createCampaignPackOptionsPending}
-                >
-                  <option value="">
-                    {createCampaignPackOptionsPending ? 'Loading packs...' : 'Start from scratch'}
-                  </option>
-                  {createCampaignPackOptions.map((pack) => (
-                    <option key={pack.pack_id} value={pack.pack_id}>
-                      {pack.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="campaign-pack-picker-field">
+                <span>Campaign Pack</span>
+                <div className="campaign-pack-picker">
+                  <button
+                    type="button"
+                    className="campaign-pack-picker-button"
+                    aria-label="Campaign Pack"
+                    aria-haspopup="listbox"
+                    aria-expanded={createCampaignPackPickerOpen}
+                    aria-controls="create-campaign-pack-options"
+                    onClick={() => setCreateCampaignPackPickerOpen((current) => !current)}
+                    disabled={createCampaignPending || createCampaignPackOptionsPending}
+                  >
+                    <span className="campaign-pack-picker-button-copy">
+                      <strong>
+                        {selectedCreateCampaignPack
+                          ? selectedCreateCampaignPack.title
+                          : createCampaignPackOptionsPending
+                            ? 'Loading packs...'
+                            : 'Start from scratch'}
+                      </strong>
+                      <small>
+                        {selectedCreateCampaignPack
+                          ? selectedCreateCampaignPackLength || 'Authored campaign pack'
+                          : 'Create a custom campaign without a bundled story spine'}
+                      </small>
+                    </span>
+                    <span className="campaign-pack-picker-button-meta">
+                      {selectedCreateCampaignPackLengthDetail || 'Custom'}
+                    </span>
+                    <ChevronDown size={16} aria-hidden="true" />
+                  </button>
+                  {createCampaignPackPickerOpen ? (
+                    <div
+                      id="create-campaign-pack-options"
+                      className="campaign-pack-picker-menu"
+                      role="listbox"
+                      aria-label="Campaign packs"
+                    >
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={!createCampaignForm.packId}
+                        className="campaign-pack-picker-option"
+                        onClick={() => selectCreateCampaignPack('')}
+                      >
+                        <span>
+                          <strong>Start from scratch</strong>
+                          <small>Create your own campaign name, description, and world.</small>
+                        </span>
+                        <em>Custom</em>
+                      </button>
+                      {createCampaignPackOptions.map((pack) => {
+                        const lengthSummary = campaignPackLengthSummary(pack)
+                        const lengthDetail = campaignPackLengthDetail(pack)
+                        return (
+                          <button
+                            key={pack.pack_id}
+                            type="button"
+                            role="option"
+                            aria-selected={createCampaignForm.packId === pack.pack_id}
+                            className="campaign-pack-picker-option"
+                            onClick={() => selectCreateCampaignPack(pack.pack_id)}
+                          >
+                            <span>
+                              <strong>{pack.title}</strong>
+                              <small>
+                                {pack.world_name ? `${pack.world_name} / ` : ''}
+                                {lengthSummary || 'Authored campaign pack'}
+                              </small>
+                            </span>
+                            <em>{lengthDetail || 'Story pack'}</em>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
               {selectedCreateCampaignPack ? (
                 <div className="campaign-pack-starter-summary">
                   <strong>{selectedCreateCampaignPack.title}</strong>
@@ -5147,6 +5256,12 @@ function App() {
                     {selectedCreateCampaignPack.short_description ||
                       selectedCreateCampaignPack.description}
                   </span>
+                  {selectedCreateCampaignPackLength ? (
+                    <small>{selectedCreateCampaignPackLength}</small>
+                  ) : null}
+                  {selectedCreateCampaignPackLengthDetail ? (
+                    <small>{selectedCreateCampaignPackLengthDetail}</small>
+                  ) : null}
                   {selectedCreateCampaignPack.world_name ? (
                     <small>{selectedCreateCampaignPack.world_name}</small>
                   ) : null}

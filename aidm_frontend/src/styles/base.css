@@ -1962,6 +1962,123 @@ select:focus-visible {
   line-height: 1.35;
 }
 
+.campaign-pack-picker-field {
+  display: grid;
+  gap: 7px;
+  color: var(--heading);
+  font-size: 0.82rem;
+  font-weight: 620;
+}
+
+.campaign-pack-picker {
+  position: relative;
+}
+
+.campaign-pack-picker-button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--heading);
+  background: var(--field);
+  text-align: left;
+}
+
+.campaign-pack-picker-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.campaign-pack-picker-button[aria-expanded="true"],
+.campaign-pack-picker-button:not(:disabled):hover {
+  border-color: rgba(255, 107, 44, 0.55);
+  background: rgba(255, 107, 44, 0.1);
+}
+
+.campaign-pack-picker-button-copy,
+.campaign-pack-picker-option span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.campaign-pack-picker-button strong,
+.campaign-pack-picker-option strong {
+  overflow: hidden;
+  color: var(--heading);
+  font-size: 0.84rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.campaign-pack-picker-button small,
+.campaign-pack-picker-option small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.campaign-pack-picker-button-meta,
+.campaign-pack-picker-option em {
+  max-width: 150px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 760;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.campaign-pack-picker-menu {
+  position: absolute;
+  z-index: 4;
+  top: calc(100% + 6px);
+  right: 0;
+  left: 0;
+  display: grid;
+  gap: 5px;
+  max-height: min(320px, 48svh);
+  padding: 6px;
+  overflow: auto;
+  border: 1px solid rgba(255, 107, 44, 0.34);
+  border-radius: 6px;
+  background: var(--surface-2);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
+}
+
+.campaign-pack-picker-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-height: 46px;
+  padding: 8px 9px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+
+.campaign-pack-picker-option:hover,
+.campaign-pack-picker-option[aria-selected="true"] {
+  border-color: rgba(255, 107, 44, 0.44);
+  background: rgba(255, 107, 44, 0.12);
+}
+
 .campaign-pack-starter-summary {
   display: grid;
   gap: 5px;

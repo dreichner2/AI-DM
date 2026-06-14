@@ -21,6 +21,17 @@ export type CreateCampaignForm = {
   packId: string
 }
 
+export type CampaignLengthEstimate = {
+  label?: string
+  sessions_min?: number
+  sessions_max?: number
+  hours_min?: number
+  hours_max?: number
+  checkpoint_count?: number
+  encounter_count?: number
+  pacing?: string
+}
+
 export type CampaignPackExample = {
   pack_id: string
   title: string
@@ -30,6 +41,7 @@ export type CampaignPackExample = {
   schema_version?: string
   source_filename?: string
   world_name?: string | null
+  length_estimate?: CampaignLengthEstimate | null
 }
 
 export type CampaignActionDialogState = {

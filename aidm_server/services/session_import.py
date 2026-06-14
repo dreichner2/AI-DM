@@ -23,6 +23,8 @@ MAX_IMPORTED_STATE_NESTED_ITEMS = 50
 MAX_IMPORTED_STATE_NESTED_TEXT_LENGTH = 2_000
 MAX_IMPORTED_STATE_NESTED_DEPTH = 4
 VALID_LOG_ENTRY_TYPES = {'dm', 'player', 'system'}
+CAMPAIGN_PACK_SNAPSHOT_KEYS = {'campaignPack', 'campaign_pack'}
+CAMPAIGN_PACK_METADATA_FLAG = 'campaignPackStateStripped'
 
 
 class SessionImportError(ValueError):
@@ -42,6 +44,7 @@ def import_session_export(
     *,
     workspace_id: str | None = None,
     include_hidden_state: bool = True,
+    allow_campaign_pack_state: bool = True,
 ) -> SessionImportResult:
     if not isinstance(payload, dict):
         raise SessionImportError('Expected JSON request body.')
@@ -79,6 +82,7 @@ def import_session_export(
             exported_at=exported_at,
             source_session_id=_coerce_positive(source_session.get('session_id')),
             imported_at=now,
+            allow_campaign_pack_state=allow_campaign_pack_state,
         ),
         {},
     )
@@ -88,6 +92,7 @@ def import_session_export(
         session_obj,
         campaign,
         _list(payload.get('turnEvents'))[:MAX_IMPORTED_EVENTS],
+        allow_campaign_pack_events=allow_campaign_pack_state,
     )
     log_entries_imported = 0
     if events_imported == 0:
@@ -118,8 +123,12 @@ def _imported_state_snapshot(
     exported_at: str,
     source_session_id: int | None,
     imported_at: datetime,
+    allow_campaign_pack_state: bool,
 ) -> dict[str, Any]:
     snapshot = deepcopy(source_snapshot) if source_snapshot else {}
+    campaign_pack_state_stripped = False
+    if not allow_campaign_pack_state:
+        campaign_pack_state_stripped = _strip_untrusted_campaign_pack_state(snapshot)
     snapshot['imported'] = True
     snapshot['imported_at'] = imported_at.isoformat()
     snapshot['source_exported_at'] = exported_at
@@ -134,9 +143,34 @@ def _imported_state_snapshot(
             'sourceSessionId': source_session_id,
         }
     )
+    if campaign_pack_state_stripped:
+        metadata[CAMPAIGN_PACK_METADATA_FLAG] = True
     snapshot['importMetadata'] = metadata
     snapshot, _migrations_applied = migrate_campaign_pack_snapshot(snapshot)
     return snapshot
+
+
+def _strip_untrusted_campaign_pack_state(snapshot: dict[str, Any]) -> bool:
+    stripped = False
+    for key in CAMPAIGN_PACK_SNAPSHOT_KEYS:
+        if key in snapshot:
+            snapshot.pop(key, None)
+            stripped = True
+
+    flags = snapshot.get('flags') if isinstance(snapshot.get('flags'), dict) else {}
+    if flags:
+        filtered_flags = {
+            key: value
+            for key, value in flags.items()
+            if not str(key).startswith('campaignPack')
+        }
+        if filtered_flags != flags:
+            stripped = True
+            if filtered_flags:
+                snapshot['flags'] = filtered_flags
+            else:
+                snapshot.pop('flags', None)
+    return stripped
 
 
 def _campaign_id(payload: dict[str, Any]) -> int | None:
@@ -188,13 +222,21 @@ def _import_session_state(session_obj: Session, campaign: Campaign, raw_state: A
     return True
 
 
-def _import_turn_events(session_obj: Session, campaign: Campaign, events: list[Any]) -> tuple[int, int]:
+def _import_turn_events(
+    session_obj: Session,
+    campaign: Campaign,
+    events: list[Any],
+    *,
+    allow_campaign_pack_events: bool = True,
+) -> tuple[int, int]:
     imported = 0
     projected_log_entries = 0
     for raw_event in events:
         event_record = _record(raw_event)
         event_type = _optional_text(event_record.get('event_type'), max_length=80)
         if not event_type:
+            continue
+        if not allow_campaign_pack_events and event_type.startswith('campaign_pack.'):
             continue
         payload = _record(event_record.get('payload'))
         payload = _with_import_metadata(payload, event_record)

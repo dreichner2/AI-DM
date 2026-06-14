@@ -6,6 +6,9 @@ from typing import Any
 from aidm_server.combat.state import instantiate_creature, player_combat_participant
 from aidm_server.game_state.models import stable_slug
 
+MAX_CAMPAIGN_PACK_ENEMIES_PER_GROUP = 12
+MAX_CAMPAIGN_PACK_ENEMY_PARTICIPANTS = 24
+
 
 def materialize_campaign_pack_combat_start(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(change, dict) or str(change.get('type') or '') != 'combat.start':
@@ -187,7 +190,7 @@ def _encounter_enemy_specs(encounter: dict[str, Any]) -> list[tuple[str, int]]:
         if key not in specs_by_id:
             ordered_ids.append(key)
         if override or key not in specs_by_id:
-            specs_by_id[key] = max(1, _positive_int(count) or 1)
+            specs_by_id[key] = _bounded_enemy_count(count)
 
     for enemy_id in _string_list(encounter.get('enemyIds') or encounter.get('enemy_ids')):
         add_spec(enemy_id, 1)
@@ -200,7 +203,19 @@ def _encounter_enemy_specs(encounter: dict[str, Any]) -> list[tuple[str, int]]:
                 enemy_id = _text(group.get('enemyId') or group.get('enemy_id') or group.get('id') or group.get('creatureId'))
                 if enemy_id:
                     add_spec(enemy_id, group.get('count'), override=True)
-    return [(enemy_id, specs_by_id[enemy_id]) for enemy_id in ordered_ids]
+    bounded_specs: list[tuple[str, int]] = []
+    remaining = MAX_CAMPAIGN_PACK_ENEMY_PARTICIPANTS
+    for enemy_id in ordered_ids:
+        if remaining <= 0:
+            break
+        count = min(specs_by_id[enemy_id], remaining)
+        bounded_specs.append((enemy_id, count))
+        remaining -= count
+    return bounded_specs
+
+
+def _bounded_enemy_count(value: Any) -> int:
+    return min(max(1, _positive_int(value) or 1), MAX_CAMPAIGN_PACK_ENEMIES_PER_GROUP)
 
 
 def _player_participants(state: dict[str, Any], combat: dict[str, Any]) -> list[dict[str, Any]]:

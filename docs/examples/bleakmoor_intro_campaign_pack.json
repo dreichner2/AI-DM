@@ -4,6 +4,11 @@
   "title": "The Lanterns of Bleakmoor",
   "version": "1.0.0",
   "description": "A short authored marsh adventure for testing campaign-pack import and checkpoint play.",
+  "metadata": {
+    "visibility": "internal",
+    "testPack": true,
+    "playerVisible": false
+  },
   "world": {
     "name": "Bleakmoor",
     "description": "A rain-heavy marsh frontier where old signal lanterns still burn after their keepers vanish."

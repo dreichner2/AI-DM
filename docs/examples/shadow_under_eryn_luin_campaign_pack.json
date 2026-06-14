@@ -2,8 +2,18 @@
     "schemaVersion": "1",
     "packId": "middle_earth.shadow_under_eryn_luin",
     "title": "Shadow Under Eryn Luin",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "An original Lord of the Rings-inspired campaign in Middle-earth. The company is drawn into a quiet borderland crisis where old Dwarf-roads beneath the Blue Mountains have awakened, a forgotten oath is being exploited, and a remnant servant of the Shadow seeks a buried seeing-stone shard before the Free Peoples can seal it away.",
+    "metadata": {
+        "lengthEstimate": {
+            "label": "Medium campaign",
+            "sessionsMin": 4,
+            "sessionsMax": 6,
+            "hoursMin": 12,
+            "hoursMax": 18,
+            "pacing": "Six checkpoint spine with meaningful shortcuts through Moonwell, the Black Pines, and Khazad-tarn Gate. Most groups can finish in four to six sessions depending on how much they negotiate, explore, or rescue."
+        }
+    },
     "world": {
         "name": "Middle-earth: Western Eriador",
         "description": "A grounded heroic-fantasy campaign set along the western marches of Eriador, between the Blue Mountains, Lindon, and the old roads that lead back toward the Shire. The War of the Ring has passed into song, but not every shadow was destroyed. The tone favors travel, suspicion, hard choices, old songs, ruins, oaths, and small acts of courage."
@@ -719,6 +729,175 @@
                 "ritual_containment"
             ],
             "gmNotes": "The Wight-Marshal should feel ancient and dangerous, but not unbeatable. Its strongest weapon is despair."
+        },
+        {
+            "id": "enemy_khazad_tarn_sentry_stones",
+            "name": "Khazad-tarn Sentry Stones",
+            "type": "runic_construct",
+            "creatureType": "construct",
+            "creatureTypeName": "Dwarf runestone sentry",
+            "challengeTier": "standard",
+            "level": 1,
+            "size": "medium",
+            "description": "Broken blue-veined gate stones that wake on old Dwarf commands, dragging themselves through tarn-water on rune-lit roots of ore.",
+            "descriptionShort": "Runic Dwarf sentries that test names, punish brute force, and can be calmed by restoring the gate-song.",
+            "descriptionLong": "The sentry stones were built to guard Khazad-tarn from oathbreakers and thieves. The Wight-Marshal cannot fully command them, but marred runes make them mistake fear, haste, or false names for intrusion.",
+            "visualTags": [
+                "construct",
+                "dwarf_ruin",
+                "runes",
+                "gate_guardian",
+                "blue_stone"
+            ],
+            "stats": {
+                "maxHp": 24,
+                "armorClass": 15,
+                "strength": 14,
+                "dexterity": 8,
+                "constitution": 15,
+                "intelligence": 6,
+                "wisdom": 12,
+                "charisma": 8
+            },
+            "movement": {
+                "walk": 20
+            },
+            "senses": {
+                "darkvision": 60,
+                "passivePerception": 12
+            },
+            "resistances": [
+                "poison",
+                "psychic"
+            ],
+            "abilities": [
+                {
+                    "id": "runestone_slam",
+                    "name": "Runestone Slam",
+                    "type": "attack",
+                    "description": "A slab of blue-veined stone swings down with the weight of a sealed mountain door.",
+                    "range": "melee",
+                    "targetType": "single",
+                    "attackBonus": 4,
+                    "damage": {
+                        "dice": "1d8+2",
+                        "type": "bludgeoning"
+                    },
+                    "aiUseWhen": [
+                        "A character tries to force the gate or break a rune.",
+                        "The sentry has already warned the intruder by grinding out the gate-name."
+                    ]
+                },
+                {
+                    "id": "blue_gate_pulse",
+                    "name": "Blue Gate Pulse",
+                    "type": "special",
+                    "description": "The runes flare with cold blue light, shoving intruders away from the gate and ringing through the deeps.",
+                    "range": "near",
+                    "targetType": "multiple",
+                    "cooldown": "recharge_5_6",
+                    "save": {
+                        "ability": "str",
+                        "dc": 12,
+                        "effectOnSuccess": "half_effect"
+                    },
+                    "conditionsApplied": [
+                        "pushed"
+                    ],
+                    "aiUseWhen": [
+                        "The party crowds the sealed doorway.",
+                        "The sentry needs to buy time for warning echoes to carry underground."
+                    ]
+                },
+                {
+                    "id": "oath_name_lock",
+                    "name": "Oath-name Lock",
+                    "type": "reaction",
+                    "description": "The sentry clamps a rune around a spoken lie, false passphrase, or careless boast, freezing the speaker in a ring of blue light.",
+                    "range": "near",
+                    "targetType": "single",
+                    "cooldown": "round",
+                    "save": {
+                        "ability": "cha",
+                        "dc": 12,
+                        "effectOnSuccess": "none"
+                    },
+                    "conditionsApplied": [
+                        "restrained"
+                    ],
+                    "aiUseWhen": [
+                        "A character lies about carrying the token or knowing the gate-song.",
+                        "The scene turns into a puzzle, parley, or desperate forced entry."
+                    ]
+                }
+            ],
+            "behavior": {
+                "intelligenceProfile": "scripted_guardian",
+                "combatRole": "guardian",
+                "primaryGoal": "protect_location",
+                "secondaryGoals": [
+                    "test_party",
+                    "delay_party",
+                    "warn_deeps"
+                ],
+                "aggression": 45,
+                "selfPreservation": 20,
+                "morale": 100,
+                "discipline": 100,
+                "cruelty": 0,
+                "loyalty": 100,
+                "fleeThreshold": 0,
+                "surrenderThreshold": 0,
+                "targetPriority": [
+                    "forcing_gate",
+                    "carrying_desired_item",
+                    "last_damaged_by"
+                ],
+                "tactics": [
+                    "Warn once in broken Dwarf-meter before striking.",
+                    "Use Blue Gate Pulse to separate the party from the door.",
+                    "Stand down if the true gate phrase, mended token, or respectful Dwarf-song is offered."
+                ],
+                "survivalRules": {
+                    "fightToDeath": false,
+                    "fleeBelowHpPercent": 0,
+                    "surrenderBelowMorale": 0,
+                    "notes": [
+                        "These sentries are obstacles and tests, not villains.",
+                        "Craft, song, lore, apology, or mending the marred rune can end the encounter without destroying them."
+                    ]
+                },
+                "personalityTags": [
+                    "ancient",
+                    "literal",
+                    "honorable",
+                    "damaged"
+                ],
+                "speechStyle": "Grinding Dwarf-meter fragments, gate-law, and repeated demands for the true road-name."
+            },
+            "balance": {
+                "estimatedTier": "standard",
+                "targetTier": "standard",
+                "estimatedDamagePerRound": 6,
+                "estimatedDurability": 24,
+                "estimatedControlStrength": 4,
+                "reviewed": true
+            },
+            "xpReward": 125,
+            "aiNarrationHints": [
+                "Make the sentry stones feel like old Dwarf craft misreading the present, not random animated rocks.",
+                "Let players bypass, calm, or disable them with the token, Torin's song, repaired runes, water-channel stealth, or respectful negotiation."
+            ],
+            "tactics": "Block the gate, pulse intruders away from the threshold, and stop fighting when the true gate-name or respectful repair is offered.",
+            "nonCombatOptions": [
+                "sing_gate_phrase",
+                "repair_marred_rune",
+                "show_broken_token",
+                "apologize_in_dwarf_meter",
+                "bypass_by_water_channel",
+                "disable_without_shattering"
+            ],
+            "gmNotes": "Use this enemy if the company forces the gate, rushes the passphrase, follows the water-channel shortcut, or needs a concrete challenge at Khazad-tarn before the deeps."
         }
     ],
     "encounters": [
@@ -736,6 +915,14 @@
             ],
             "enemyIds": [
                 "enemy_palehand_orcs"
+            ],
+            "enemyGroups": [
+                {
+                    "enemyId": "enemy_palehand_orcs",
+                    "count": 3,
+                    "role": "road ambushers and token thieves",
+                    "notes": "Use one Orc as the visible road-block, one as a net-throwing flanker, and one as the runner trying to steal or identify the Dwarf-token."
+                }
             ],
             "description": "Orc scouts test the company near the ruined bridge while a hidden watcher tries to steal the broken Dwarf-token.",
             "stakes": "If the token is lost, the company must recover its name from Matho, Elenwen, or the Moonwell reflection.",
@@ -766,6 +953,14 @@
             "enemyIds": [
                 "enemy_oathbound_dead"
             ],
+            "enemyGroups": [
+                {
+                    "enemyId": "enemy_oathbound_dead",
+                    "count": 2,
+                    "role": "spirit shield-wall and oath challengers",
+                    "notes": "Run them as two interlocking voices of the same old company: one blocks the path while the other repeats the forgotten command."
+                }
+            ],
             "description": "The company is confronted by oath-bound spirits who demand the return of a banner and the name of their betrayed captain.",
             "stakes": "Violence opens the road but strengthens the Wight-Marshal; mercy or remembrance weakens it.",
             "completion": {
@@ -779,6 +974,50 @@
                 ]
             },
             "gmNotes": "Thalara can become an ally here if the players treat the dead as people rather than monsters."
+        },
+        {
+            "id": "enc_khazad_tarn_sentries",
+            "title": "The Gate That Remembers Wrong",
+            "locationIds": [
+                "loc_khazad_tarn_gate"
+            ],
+            "questIds": [
+                "quest_shard_beneath_blue_mountains"
+            ],
+            "checkpointIds": [
+                "cp_04_khazad_tarn_gate"
+            ],
+            "enemyIds": [
+                "enemy_khazad_tarn_sentry_stones"
+            ],
+            "enemyGroups": [
+                {
+                    "enemyId": "enemy_khazad_tarn_sentry_stones",
+                    "count": 2,
+                    "role": "miskeyed Dwarf gate guardians",
+                    "notes": "One sentry holds the door-line while the other reacts to false names, brute force, or careless rune damage."
+                }
+            ],
+            "optional": true,
+            "triggerWhen": [
+                "The company forces the gate.",
+                "The company rushes the passphrase without learning or mending the token.",
+                "The company takes the water-channel shortcut but makes enough noise to wake old protections."
+            ],
+            "description": "The marred gate-runes wake damaged Dwarf sentries that cannot tell rescuers from thieves until the old road-name is restored.",
+            "stakes": "A careful party can bypass or calm the sentries; a loud entry warns Grishnak and starts the Silvervein Deeps under pressure.",
+            "completion": {
+                "anyOf": [
+                    "defeat",
+                    "resolve",
+                    "objective",
+                    "bypass",
+                    "negotiate",
+                    "success"
+                ],
+                "objective": "Open or bypass Khazad-tarn Gate while preserving enough of the gate-song to prevent a full alarm."
+            },
+            "gmNotes": "Do not force a fight if the party earns the passphrase, repairs the rune, or uses the token respectfully. This encounter exists to make forced entry, water-channel shortcuts, and failed rune work concrete."
         },
         {
             "id": "enc_star_shard_confrontation",
@@ -795,6 +1034,20 @@
             "enemyIds": [
                 "enemy_wight_marshal",
                 "enemy_palehand_orcs"
+            ],
+            "enemyGroups": [
+                {
+                    "enemyId": "enemy_wight_marshal",
+                    "count": 1,
+                    "role": "vault commander and ritual threat",
+                    "notes": "Always present unless the party achieved a rare pre-vault banishment."
+                },
+                {
+                    "enemyId": "enemy_palehand_orcs",
+                    "count": 2,
+                    "role": "fearful raiders, guards, or reluctant leverage",
+                    "notes": "Remove or convert these Orcs into allies if the party turned Grishnak against the Wight-Marshal in the deeps."
+                }
             ],
             "description": "The Wight-Marshal, Grishnak's raiders, and the company converge in the ancient vault. The shard whispers promises to anyone who will touch it.",
             "stakes": "The shard can be sealed, shattered, surrendered to a trusted keeper, or used briefly at great spiritual risk.",
@@ -886,23 +1139,29 @@
             ],
             "encounterIds": [],
             "completeWhen": {
+                "locationIds": [
+                    "loc_moonwell_crossing",
+                    "loc_hollow_of_black_pines"
+                ],
                 "objectiveIds": [
                     "obj_question_survivors"
                 ],
                 "segmentIds": [
                     "seg_graymere_council"
                 ],
-                "summary": "The company accepts the charge, studies the broken token, and chooses a route toward Moonwell Crossing."
+                "summary": "The company accepts the charge, studies the broken token, and chooses either the normal Moonwell road or the ranger shortcut toward the Black Pines."
             },
             "nextCheckpointIds": [
                 "cp_02_moonwell_crossing"
             ],
-            "alternateCheckpointIds": [],
+            "alternateCheckpointIds": [
+                "cp_03_black_pines"
+            ],
             "failureCheckpointIds": [
                 "cp_02_moonwell_crossing"
             ],
             "rejoinTargetCheckpointId": "cp_02_moonwell_crossing",
-            "gmNotes": "If the players refuse the mission, have the next caravan depart without them and return as wreckage near the road, reconnecting at Moonwell."
+            "gmNotes": "Standard path goes to Moonwell Crossing. If the party trusts Calanor's ranger marks, follows old battlefield signs, or deliberately avoids the road, skip Moonwell and start at the Black Pines with fewer clues about the token."
         },
         {
             "id": "cp_02_moonwell_crossing",
@@ -930,25 +1189,31 @@
                 "enc_moonwell_ambush"
             ],
             "completeWhen": {
+                "locationIds": [
+                    "loc_hollow_of_black_pines",
+                    "loc_khazad_tarn_gate",
+                    "loc_silvervein_deeps"
+                ],
                 "objectiveIds": [
                     "obj_trace_caravan"
                 ],
                 "encounterIds": [
                     "enc_moonwell_ambush"
                 ],
-                "summary": "The company learns the caravan was taken toward the Black Pines and either keeps, recovers, or reconstructs the token's meaning."
+                "summary": "The company learns where the caravan was taken and either keeps, recovers, or reconstructs enough of the token's meaning to choose the haunted road, the gate shortcut, or a risky captive trail into the deeps."
             },
             "nextCheckpointIds": [
                 "cp_03_black_pines"
             ],
             "alternateCheckpointIds": [
-                "cp_04_khazad_tarn_gate"
+                "cp_04_khazad_tarn_gate",
+                "cp_05_silvervein_deeps"
             ],
             "failureCheckpointIds": [
                 "cp_03_black_pines"
             ],
-            "rejoinTargetCheckpointId": "cp_03_black_pines",
-            "gmNotes": "Skipping the Black Pines is possible but costly. Without the dead's story, the Wight-Marshal is stronger in the vault."
+            "rejoinTargetCheckpointId": "cp_04_khazad_tarn_gate",
+            "gmNotes": "Standard path goes to the Black Pines. A clever Moonwell reflection or captured Orc can point straight to Khazad-tarn Gate. If the party allows capture, tracks prisoner drag-marks, or follows the water-channel, they can skip to Silvervein Deeps but lose the Black Pines' oath advantage."
         },
         {
             "id": "cp_03_black_pines",
@@ -976,6 +1241,10 @@
                 "enc_black_pines_oath"
             ],
             "completeWhen": {
+                "locationIds": [
+                    "loc_khazad_tarn_gate",
+                    "loc_silvervein_deeps"
+                ],
                 "objectiveIds": [
                     "obj_release_or_bypass_dead"
                 ],
@@ -987,12 +1256,14 @@
             "nextCheckpointIds": [
                 "cp_04_khazad_tarn_gate"
             ],
-            "alternateCheckpointIds": [],
+            "alternateCheckpointIds": [
+                "cp_05_silvervein_deeps"
+            ],
             "failureCheckpointIds": [
                 "cp_04_khazad_tarn_gate"
             ],
             "rejoinTargetCheckpointId": "cp_04_khazad_tarn_gate",
-            "gmNotes": "If the company releases Thalara, mark the Wight-Marshal weakened. If they destroy or ignore the dead, mark the vault encounter as spiritually harsher."
+            "gmNotes": "If the company releases Thalara, mark the Wight-Marshal weakened. If they find the old water-channel in the cairns or accept Thalara's ghostly escort, they may bypass the gate and rejoin at Silvervein Deeps."
         },
         {
             "id": "cp_04_khazad_tarn_gate",
@@ -1016,10 +1287,19 @@
             "segmentIds": [
                 "seg_gate_song"
             ],
-            "encounterIds": [],
+            "encounterIds": [
+                "enc_khazad_tarn_sentries"
+            ],
             "completeWhen": {
+                "locationIds": [
+                    "loc_silvervein_deeps",
+                    "loc_chamber_of_the_star_shard"
+                ],
                 "objectiveIds": [
                     "obj_open_khazad_tarn"
+                ],
+                "encounterIds": [
+                    "enc_khazad_tarn_sentries"
                 ],
                 "segmentIds": [
                     "seg_gate_song"
@@ -1029,12 +1309,14 @@
             "nextCheckpointIds": [
                 "cp_05_silvervein_deeps"
             ],
-            "alternateCheckpointIds": [],
+            "alternateCheckpointIds": [
+                "cp_06_star_shard"
+            ],
             "failureCheckpointIds": [
                 "cp_05_silvervein_deeps"
             ],
             "rejoinTargetCheckpointId": "cp_05_silvervein_deeps",
-            "gmNotes": "Forcing the gate alerts Grishnak and causes the first underground scene to begin under pressure."
+            "gmNotes": "Opening the gate with the song keeps the deeps calm. Forcing it or mishandling the runes wakes enc_khazad_tarn_sentries and alerts Grishnak. A risky water-channel or Dwarf-secret path can skip the deeps and rejoin at the vault with prisoners still unresolved."
         },
         {
             "id": "cp_05_silvervein_deeps",
@@ -1060,6 +1342,9 @@
             ],
             "encounterIds": [],
             "completeWhen": {
+                "locationIds": [
+                    "loc_chamber_of_the_star_shard"
+                ],
                 "objectiveIds": [
                     "obj_secure_star_shard"
                 ],
@@ -1071,12 +1356,14 @@
             "nextCheckpointIds": [
                 "cp_06_star_shard"
             ],
-            "alternateCheckpointIds": [],
+            "alternateCheckpointIds": [
+                "cp_06_star_shard"
+            ],
             "failureCheckpointIds": [
                 "cp_06_star_shard"
             ],
             "rejoinTargetCheckpointId": "cp_06_star_shard",
-            "gmNotes": "The Orc camp can be handled through combat, stealth, negotiation, prisoner exchange, sabotage, or turning Grishnak against the Wight-Marshal."
+            "gmNotes": "The Orc camp can be handled through combat, stealth, negotiation, prisoner exchange, sabotage, or turning Grishnak against the Wight-Marshal. If the party came here by capture or water-channel, let this checkpoint rejoin cleanly before the vault."
         },
         {
             "id": "cp_06_star_shard",
@@ -1105,6 +1392,9 @@
                 "enc_star_shard_confrontation"
             ],
             "completeWhen": {
+                "locationIds": [
+                    "loc_chamber_of_the_star_shard"
+                ],
                 "objectiveIds": [
                     "obj_secure_star_shard"
                 ],

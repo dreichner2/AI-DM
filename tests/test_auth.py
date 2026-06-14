@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
 
@@ -9,7 +10,7 @@ from flask import Flask
 
 from aidm_server.auth import extract_socket_token, hash_secret
 from aidm_server.database import db
-from aidm_server.models import Account, AccountWorkspaceMembership, Campaign, Player, Session, World, safe_json_dumps
+from aidm_server.models import Account, AccountWorkspaceMembership, Campaign, Player, Session, TurnEvent, World, safe_json_dumps
 
 
 def _build_auth_runtime(tmp_path, monkeypatch, extra_env: dict[str, str] | None = None):
@@ -472,6 +473,81 @@ def test_example_campaign_pack_import_requires_workspace_admin_account(tmp_path,
     payload = admin_import.get_json()
     assert payload['pack_id'] == 'bleakmoor_intro'
     assert payload['session']['state_snapshot']['campaignPack']['packId'] == 'bleakmoor_intro'
+
+
+def test_session_import_strips_campaign_pack_state_for_non_admin_account(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+    with app.app_context():
+        world = World(name='Import Auth World', description='auth import')
+        db.session.add(world)
+        db.session.flush()
+        campaign = Campaign(title='Import Auth Campaign', world_id=world.world_id, workspace_id='owner')
+        db.session.add(campaign)
+        account = Account(
+            username='session-import-player',
+            first_name='Session',
+            last_name='Importer',
+            password_hash='configured',
+            account_token_hash=hash_secret('session-import-token'),
+        )
+        db.session.add(account)
+        db.session.flush()
+        db.session.add(AccountWorkspaceMembership(account_id=account.account_id, workspace_id='owner', role='player'))
+        db.session.commit()
+        campaign_id = campaign.campaign_id
+
+    crafted_snapshot = {
+        'currentScene': {'locationId': 'evil_gate', 'name': 'Evil Gate'},
+        'flags': {
+            'campaignPackActiveCheckpointId': 'cp_evil',
+            'campaignPackProgressRevision': 999,
+            'ordinaryFlag': 'kept',
+        },
+        'campaignPack': {
+            'packId': 'evil_pack',
+            'activeCheckpointId': 'cp_evil',
+            'directorRules': {'mainQuestGeneration': 'pack_only'},
+            'checkpoints': [{'id': 'cp_evil', 'title': 'Injected', 'encounterIds': ['enc_evil']}],
+            'catalog': {
+                'encounters': [
+                    {'id': 'enc_evil', 'enemyGroups': [{'enemyId': 'enemy_evil', 'count': 20_000}]}
+                ],
+                'enemies': [{'id': 'enemy_evil', 'name': 'Injected Enemy'}],
+            },
+        },
+    }
+    headers = {'Authorization': 'Bearer session-import-token', 'X-AIDM-Workspace-Id': 'owner'}
+    response = client.post(
+        '/api/sessions/import',
+        headers=headers,
+        json={
+            'campaign_id': campaign_id,
+            'selectedSession': {'state_snapshot': crafted_snapshot},
+            'turnEvents': [
+                {
+                    'event_type': 'campaign_pack.progress.changed',
+                    'payload': {'packId': 'evil_pack', 'toCheckpointId': 'cp_evil'},
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 201
+    imported_session_id = response.get_json()['session_id']
+    with app.app_context():
+        imported_session = db.session.get(Session, imported_session_id)
+        snapshot = json.loads(imported_session.state_snapshot)
+        imported_pack_events = TurnEvent.query.filter_by(
+            session_id=imported_session_id,
+            event_type='campaign_pack.progress.changed',
+        ).count()
+
+    assert 'campaignPack' not in snapshot
+    assert snapshot['flags'] == {'ordinaryFlag': 'kept'}
+    assert snapshot['importMetadata']['campaignPackStateStripped'] is True
+    assert imported_pack_events == 0
+    assert 'campaignPack' not in response.get_json()['session']['state_snapshot']
 
 
 def test_socket_token_extraction_ignores_query_and_event_payloads(tmp_path, monkeypatch):

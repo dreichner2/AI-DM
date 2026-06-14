@@ -26,6 +26,10 @@ from aidm_server.creatures.variants import create_creature_variant
 from aidm_server.database import db
 from aidm_server.errors import error_response
 from aidm_server.game_state.application.applier import apply_state_changes, persist_state_to_database
+from aidm_server.game_state.campaign_pack_encounters import (
+    MAX_CAMPAIGN_PACK_ENEMIES_PER_GROUP,
+    MAX_CAMPAIGN_PACK_ENEMY_PARTICIPANTS,
+)
 from aidm_server.game_state.models import state_snapshot_for_session, stable_change_id
 from aidm_server.game_state.validation.validator import validate_state_changes, validated_changes_for_application
 from aidm_server.models import Campaign, CombatDebugEvent, Player, Session, safe_json_loads
@@ -234,7 +238,7 @@ def _encounter_enemy_specs(encounter: dict[str, Any]) -> list[tuple[str, int]]:
         if key not in specs_by_id:
             ordered_ids.append(key)
         if override or key not in specs_by_id:
-            specs_by_id[key] = _positive_int(count)
+            specs_by_id[key] = min(_positive_int(count), MAX_CAMPAIGN_PACK_ENEMIES_PER_GROUP)
 
     for enemy_id in _list(encounter.get('enemyIds') or encounter.get('enemy_ids')):
         add_spec(enemy_id, 1)
@@ -246,7 +250,15 @@ def _encounter_enemy_specs(encounter: dict[str, Any]) -> list[tuple[str, int]]:
             elif isinstance(group, dict):
                 enemy_id = group.get('enemyId') or group.get('enemy_id') or group.get('id') or group.get('creatureId')
                 add_spec(enemy_id, group.get('count'), override=True)
-    return [(enemy_id, specs_by_id[enemy_id]) for enemy_id in ordered_ids]
+    bounded_specs: list[tuple[str, int]] = []
+    remaining = MAX_CAMPAIGN_PACK_ENEMY_PARTICIPANTS
+    for enemy_id in ordered_ids:
+        if remaining <= 0:
+            break
+        count = min(specs_by_id[enemy_id], remaining)
+        bounded_specs.append((enemy_id, count))
+        remaining -= count
+    return bounded_specs
 
 
 def _pack_active_checkpoint(pack: dict[str, Any], flags: dict[str, Any], checkpoints: list[dict[str, Any]]) -> dict[str, Any] | None:

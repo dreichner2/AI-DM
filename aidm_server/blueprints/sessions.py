@@ -341,6 +341,7 @@ def import_session():
             payload,
             workspace_id=current_workspace_id(),
             include_hidden_state=_campaign_pack_operator_view(),
+            allow_campaign_pack_state=_campaign_pack_operator_view(),
         )
         db.session.commit()
         telemetry_metric('sessions.import.success_total', 1)

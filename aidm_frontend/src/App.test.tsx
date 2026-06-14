@@ -128,14 +128,27 @@ const ttsConfig: TtsRuntimeConfig = {
 
 const exampleCampaignPacks = [
   {
-    pack_id: 'bleakmoor_intro',
-    title: 'The Lanterns of Bleakmoor',
-    description: 'A short authored marsh adventure for testing campaign-pack import and checkpoint play.',
-    short_description: 'A short authored marsh adventure for testing campaign-pack import and checkpoint play.',
-    version: '1.0.0',
+    pack_id: 'middle_earth.shadow_under_eryn_luin',
+    title: 'Shadow Under Eryn Luin',
+    description:
+      'An original Lord of the Rings-inspired campaign in Middle-earth. The company is drawn into a quiet borderland crisis where old Dwarf-roads beneath the Blue Mountains have awakened, a forgotten oath is being exploited, and a remnant servant of the Shadow seeks a buried seeing-stone shard before the Free Peoples can seal it away.',
+    short_description:
+      'An original Lord of the Rings-inspired campaign in Middle-earth. The company is drawn into a quiet borderland crisis where old Dwarf-roads beneath the Blue Mountains...',
+    version: '1.0.1',
     schema_version: '1',
-    source_filename: 'bleakmoor_intro_campaign_pack.json',
-    world_name: 'Bleakmoor',
+    source_filename: 'shadow_under_eryn_luin_campaign_pack.json',
+    world_name: 'Middle-earth: Western Eriador',
+    length_estimate: {
+      label: 'Medium campaign',
+      sessions_min: 4,
+      sessions_max: 6,
+      hours_min: 12,
+      hours_max: 18,
+      checkpoint_count: 6,
+      encounter_count: 4,
+      pacing:
+        'Six checkpoint spine with meaningful shortcuts through Moonwell, the Black Pines, and Khazad-tarn Gate. Most groups can finish in four to six sessions depending on how much they negotiate, explore, or rescue.',
+    },
     source: 'bundled_example',
   },
 ]
@@ -937,7 +950,7 @@ function installFetchMock() {
           status: 'active',
           is_archived: false,
           current_quest: 'Find the Missing Caravan',
-          location: 'Bleakmoor Gate',
+          location: 'Graymere Watch',
           session_count: 1,
           latest_session_id: sessionId,
           latest_activity_at: fixedNow.toISOString(),
@@ -948,7 +961,7 @@ function installFetchMock() {
           created_at: fixedNow.toISOString(),
           updated_at: fixedNow.toISOString(),
           latest_activity_at: fixedNow.toISOString(),
-          display_name: 'The Lanterns of Bleakmoor',
+          display_name: pack.title,
           status: 'active',
           deleted_at: null,
           turn_count: 0,
@@ -965,8 +978,8 @@ function installFetchMock() {
         sessionStates[sessionId] = {
           session_id: sessionId,
           campaign_id: campaignId,
-          current_location: 'Bleakmoor Gate',
-          current_quest: 'Find the Missing Caravan',
+          current_location: 'Graymere Watch',
+          current_quest: 'The Shard Beneath the Blue Mountains',
           rolling_summary: '',
           active_segments: [],
           memory_snippets: [],
@@ -3428,24 +3441,28 @@ describe('App user workflow regressions', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Add campaign' }))
     const dialog = await screen.findByRole('dialog', { name: 'Create New Campaign' })
-    await within(dialog).findByRole('option', { name: 'The Lanterns of Bleakmoor' })
-    fireEvent.change(within(dialog).getByLabelText('Campaign Pack'), {
-      target: { value: 'bleakmoor_intro' },
-    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Campaign Pack' }))
+    fireEvent.click(await within(dialog).findByRole('option', { name: /Shadow Under Eryn Luin/ }))
 
-    expect(within(dialog).getAllByText('The Lanterns of Bleakmoor').length).toBeGreaterThan(0)
+    expect(within(dialog).getAllByText('Shadow Under Eryn Luin').length).toBeGreaterThan(0)
     expect(
-      within(dialog).getAllByText('A short authored marsh adventure for testing campaign-pack import and checkpoint play.').length,
+      within(dialog).getAllByText(
+        'An original Lord of the Rings-inspired campaign in Middle-earth. The company is drawn into a quiet borderland crisis where old Dwarf-roads beneath the Blue Mountains have awakened, a forgotten oath is being exploited, and a remnant servant of the Shadow seeks a buried seeing-stone shard before the Free Peoples can seal it away.',
+      ).length,
     ).toBeGreaterThan(0)
+    expect(within(dialog).getAllByText('Medium campaign / 4-6 sessions').length).toBeGreaterThan(0)
+    expect(within(dialog).getAllByText('12-18 hours / 6 checkpoints').length).toBeGreaterThan(0)
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create Campaign' }))
 
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: 'Create New Campaign' })).not.toBeInTheDocument(),
     )
-    await waitFor(() => expect(screen.getAllByText('The Lanterns of Bleakmoor').length).toBeGreaterThan(0))
+    await waitFor(() => expect(screen.getAllByText('Shadow Under Eryn Luin').length).toBeGreaterThan(0))
     const importCall = fetchCalls.find(
-      (call) => call.method === 'POST' && call.path === '/api/campaigns/example-packs/bleakmoor_intro/import',
+      (call) =>
+        call.method === 'POST'
+        && call.path === '/api/campaigns/example-packs/middle_earth.shadow_under_eryn_luin/import',
     )
     expect(importCall?.body).toEqual({})
     expect(

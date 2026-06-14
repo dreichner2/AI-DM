@@ -6,7 +6,7 @@ The current contract is version `1`. The JSON Schema lives at [campaign_pack.sch
 
 Current example packs:
 
-- [examples/bleakmoor_intro_campaign_pack.json](examples/bleakmoor_intro_campaign_pack.json): compact starter pack for import and visibility checks.
+- [examples/bleakmoor_intro_campaign_pack.json](examples/bleakmoor_intro_campaign_pack.json): internal test fixture for import and visibility checks; hidden from the player-facing campaign picker.
 - [examples/shadow_over_the_greenway_campaign_pack.json](examples/shadow_over_the_greenway_campaign_pack.json): larger checkpoint-spine campaign with branches and encounter pressure.
 - [examples/shadow_under_eryn_luin_campaign_pack.json](examples/shadow_under_eryn_luin_campaign_pack.json): larger multi-location campaign with hidden lore and finale state.
 - [examples/the_road_of_unremembered_kings_campaign.json](examples/the_road_of_unremembered_kings_campaign.json): original full campaign with soft checkpoint pathing, redundant clues, factions, maps, handouts, lore, and multiple ending states.

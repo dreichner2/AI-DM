@@ -92,24 +92,25 @@ def test_example_campaign_pack_library_lists_bundled_pack_summaries(client):
     payload = response.get_json()
     pack_ids = {pack['pack_id'] for pack in payload['packs']}
     assert {
-        'bleakmoor_intro',
         'middle_earth.shadow_over_the_greenway',
+        'middle_earth.shadow_under_eryn_luin',
         'original_fantasy.road_of_unremembered_kings',
     }.issubset(pack_ids)
-
-    bleakmoor = next(pack for pack in payload['packs'] if pack['pack_id'] == 'bleakmoor_intro')
-    assert bleakmoor['title'] == 'The Lanterns of Bleakmoor'
-    assert bleakmoor['source'] == 'bundled_example'
-    assert bleakmoor['source_filename'] == 'bleakmoor_intro_campaign_pack.json'
-    assert bleakmoor['world_name'] == 'Bleakmoor'
-    assert len(bleakmoor['short_description']) <= 183
-    assert 'manifest' not in bleakmoor
+    assert 'bleakmoor_intro' not in pack_ids
+    assert all(pack['source'] == 'bundled_example' for pack in payload['packs'])
+    assert all('manifest' not in pack for pack in payload['packs'])
     assert payload['count'] == len(payload['packs'])
 
     road = next(pack for pack in payload['packs'] if pack['pack_id'] == 'original_fantasy.road_of_unremembered_kings')
     assert road['title'] == 'The Road of Unremembered Kings'
     assert road['source_filename'] == 'the_road_of_unremembered_kings_campaign.json'
     assert road['world_name'] == 'The Western Roadlands'
+    assert road['length_estimate']['sessions_min'] == 4
+
+    eryn_luin = next(pack for pack in payload['packs'] if pack['pack_id'] == 'middle_earth.shadow_under_eryn_luin')
+    assert eryn_luin['length_estimate']['label'] == 'Medium campaign'
+    assert eryn_luin['length_estimate']['sessions_min'] == 4
+    assert eryn_luin['length_estimate']['sessions_max'] == 6
 
 
 def test_import_example_campaign_pack_creates_playable_campaign(client, app):
