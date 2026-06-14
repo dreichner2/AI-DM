@@ -12,6 +12,8 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..')
 const FRONTEND_ROOT = path.resolve(__dirname, '..')
 const PYTHON = process.env.PYTHON || path.join(REPO_ROOT, '.venv', 'bin', 'python')
 const SMOKE_TIMEOUT_MS = Number(process.env.AIDM_BROWSER_SMOKE_TIMEOUT_MS || 90_000)
+const SMOKE_TOTAL_TIMEOUT_MS = Number(process.env.AIDM_BROWSER_SMOKE_TOTAL_TIMEOUT_MS || 480_000)
+const SHUTDOWN_GRACE_MS = Number(process.env.AIDM_BROWSER_SMOKE_SHUTDOWN_GRACE_MS || 2_000)
 
 const children = new Set()
 let smokeTempDir = null
@@ -48,16 +50,16 @@ function spawnManaged(command, args, options) {
   return child
 }
 
-function stopManaged(child) {
+function stopManaged(child, signal = 'SIGTERM') {
   if (!child || child.killed) return
   try {
     if (process.platform === 'win32') {
-      child.kill('SIGTERM')
+      child.kill(signal)
     } else {
-      process.kill(-child.pid, 'SIGTERM')
+      process.kill(-child.pid, signal)
     }
   } catch {
-    child.kill('SIGTERM')
+    child.kill(signal)
   }
 }
 
@@ -67,10 +69,31 @@ function cleanupTempDir() {
   smokeTempDir = null
 }
 
-async function shutdown() {
-  for (const child of [...children]) {
+function waitForChildExit(child, timeoutMs) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve()
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs)
+    child.once('exit', () => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
+
+async function stopAllManaged() {
+  const activeChildren = [...children]
+  for (const child of activeChildren) {
     stopManaged(child)
   }
+  await Promise.all(activeChildren.map((child) => waitForChildExit(child, SHUTDOWN_GRACE_MS)))
+  for (const child of [...children]) {
+    stopManaged(child, 'SIGKILL')
+  }
+  await Promise.all([...children].map((child) => waitForChildExit(child, SHUTDOWN_GRACE_MS)))
+}
+
+async function shutdown() {
+  await stopAllManaged()
   cleanupTempDir()
 }
 
@@ -160,21 +183,22 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
     consoleErrors.push(error.message)
   })
 
-  await page.goto(frontendUrl, { waitUntil: 'domcontentloaded' })
-  await page.locator('.prototype-shell').waitFor({ state: 'visible', timeout: 20_000 })
+  try {
+    await page.goto(frontendUrl, { waitUntil: 'domcontentloaded' })
+    await page.locator('.prototype-shell').waitFor({ state: 'visible', timeout: 20_000 })
 
-  await expect(page).toHaveTitle(/AI-DM/)
-  await expect(page.locator('vite-error-overlay')).toHaveCount(0)
+    await expect(page).toHaveTitle(/AI-DM/)
+    await expect(page.locator('vite-error-overlay')).toHaveCount(0)
 
-  await page.getByRole('button', { name: 'Add campaign' }).click()
-  const createCampaignDialog = page.getByRole('dialog', { name: 'Create New Campaign' })
-  await expect(createCampaignDialog).toBeVisible()
-  await createCampaignDialog.getByLabel('Campaign Name').fill('Browser Smoke Campaign')
-  await createCampaignDialog.getByLabel('Description').fill('Created through the browser smoke UI.')
-  await createCampaignDialog.getByLabel('New World Name').fill('Browser Smoke World')
-  await createCampaignDialog.getByRole('button', { name: 'Create Campaign', exact: true }).click()
-  await expect(createCampaignDialog).toBeHidden({ timeout: 15_000 })
-  await expect(page.locator('.session-header').getByText('Browser Smoke Campaign')).toBeVisible()
+    await page.getByRole('button', { name: 'Add campaign' }).click()
+    const createCampaignDialog = page.getByRole('dialog', { name: 'Create New Campaign' })
+    await expect(createCampaignDialog).toBeVisible()
+    await createCampaignDialog.getByLabel('Campaign Name').fill('Browser Smoke Campaign')
+    await createCampaignDialog.getByLabel('Description').fill('Created through the browser smoke UI.')
+    await createCampaignDialog.getByLabel('New World Name').fill('Browser Smoke World')
+    await createCampaignDialog.getByRole('button', { name: 'Create Campaign', exact: true }).click()
+    await expect(createCampaignDialog).toBeHidden({ timeout: 15_000 })
+    await expect(page.locator('.session-header').getByText('Browser Smoke Campaign')).toBeVisible()
 
   const joinCampaignDialog = page.locator('.character-join-dialog')
   const joinCampaignDialogVisible = await joinCampaignDialog
@@ -334,10 +358,23 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
   await page.getByRole('button', { name: 'Delete Session' }).click()
   await expect(page.getByRole('heading', { name: /No session selected/i })).toBeVisible({ timeout: 15_000 })
 
-  await browser.close()
-  if (consoleErrors.length) {
-    throw new Error(`Browser console errors: ${consoleErrors.join(' | ')}`)
+    if (consoleErrors.length) {
+      throw new Error(`Browser console errors: ${consoleErrors.join(' | ')}`)
+    }
+  } finally {
+    await browser.close().catch(() => {})
   }
+}
+
+function withTimeout(promise, timeoutMs, label) {
+  let timer
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`))
+    }, timeoutMs)
+    timer.unref?.()
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
 async function main() {
@@ -396,13 +433,12 @@ async function main() {
   log('running browser flow')
   await runBrowserFlow(frontendUrl, backendUrl)
 
-  stopManaged(frontend)
-  stopManaged(backend)
+  await stopAllManaged()
   cleanupTempDir()
   log('passed: create campaign -> create player -> start session -> manage map/segments -> toggle TTS unavailable state -> send action -> receive DM response -> delete session -> import session -> delete imported session')
 }
 
-main()
+withTimeout(main(), SMOKE_TOTAL_TIMEOUT_MS, 'Browser smoke')
   .catch(async (error) => {
     await shutdown()
     console.error(`[browser-smoke][error] ${error instanceof Error ? error.message : String(error)}`)
