@@ -1,3 +1,168 @@
+# Daily AIDM Codebase Improvement Audit - 2026-06-14 16:05 MDT
+
+Automation ID: `daily-aidm-codebase-improvement-audit`
+
+Scope: focused safe-improvement pass across backend combat authorization, combat debug robustness, adjacent auth tests, previously flagged bestiary/debug exposure, direct session-state mutation paths, frontend accessibility/security exposure points, developer workflow checks, and prior dated audit recommendations. The worktree was clean at the start of this run; this run only edited `aidm_server/blueprints/creatures.py`, `tests/test_auth.py`, and this report.
+
+## What Was Inspected
+
+- Automation memory for this recurring audit, especially the prior run's recommendation to add non-admin 403 coverage for `/combat/debug` and `/combat/apply-state-changes`.
+- Prior audit sections in this file, especially the route-capability, bestiary/debug UI separation, and direct session snapshot writer findings.
+- Backend app auth context and workspace role wiring:
+  - `aidm_server/main.py`
+  - `aidm_server/auth.py`
+  - `aidm_server/workspace_access.py`
+  - `aidm_server/blueprints/runtime_config.py`
+- Backend combat and bestiary route surface:
+  - `aidm_server/blueprints/creatures.py`
+  - `aidm_server/blueprints/sessions.py`
+  - `aidm_server/blueprints/campaigns.py`
+- Existing role/capability tests:
+  - `tests/test_auth.py`
+  - `tests/test_campaign_pack_progress.py`
+  - `tests/test_creatures_combat.py`
+- Frontend exposure and accessibility scan around debug/admin controls:
+  - `aidm_frontend/src/BestiaryDebugPanel.tsx`
+  - `aidm_frontend/src/InspectorPanel.tsx`
+  - `aidm_frontend/src/ActionComposer.tsx`
+  - `aidm_frontend/src/useRuntimeSettings.ts`
+- Developer workflow/security surfaces:
+  - `Makefile`
+  - `pytest.ini`
+  - `scripts/scan_secrets.py`
+
+## Small Safe Fixes Made
+
+### Require workspace-admin accounts for raw combat state changes and combat debug logs
+
+Affected files:
+- `aidm_server/blueprints/creatures.py`
+- `tests/test_auth.py`
+
+Problem:
+`/api/sessions/<session_id>/combat/apply-state-changes` and `/api/sessions/<session_id>/combat/debug` were protected by workspace visibility but not by account role. In an authenticated shared table, a normal player account in the workspace could reach a raw combat state mutation endpoint and inspect internal combat debug events.
+
+Change:
+- Added `_combat_operator_forbidden_response()` in `aidm_server/blueprints/creatures.py`.
+- Preserved local unauthenticated operator mode by allowing requests with no account context.
+- Allowed workspace-admin accounts to continue using the endpoints.
+- Returned a normal `403 forbidden` response for non-admin accounts.
+- Added `tests/test_auth.py::test_combat_state_and_debug_endpoints_require_workspace_admin_account` to verify player 403 responses and admin success responses.
+
+Rationale:
+This is a narrow security hardening change that follows the existing campaign-pack progress pattern: local operator mode still works, but once a real account is present, DM/operator-grade state mutation and debug inspection require workspace-admin role.
+
+### Make combat debug limit parsing tolerant of malformed input
+
+Affected files:
+- `aidm_server/blueprints/creatures.py`
+- `tests/test_auth.py`
+
+Problem:
+`/api/sessions/<session_id>/combat/debug?limit=invalid` used direct `int(...)` parsing and could raise a server error after the request passed authorization.
+
+Change:
+- Switched the debug endpoint to the repo's existing `coerce_int(..., 50)` helper.
+- Kept the existing clamp behavior of `1..100`.
+- Covered the malformed limit case in the new auth regression.
+
+Rationale:
+This is a one-line correctness fix in the same endpoint touched for security. It prevents a trivial malformed query from becoming a 500.
+
+## Verification
+
+- `./.venv/bin/python -m pytest tests/test_auth.py::test_combat_state_and_debug_endpoints_require_workspace_admin_account`
+  - Passed.
+- `./.venv/bin/python -m pytest tests/test_auth.py::test_combat_state_and_debug_endpoints_require_workspace_admin_account tests/test_auth.py::test_llm_config_update_requires_owner_account_admin_role`
+  - Passed: 2 tests.
+- `./.venv/bin/python -m py_compile aidm_server/blueprints/creatures.py tests/test_auth.py`
+  - Passed.
+- `git diff --check -- aidm_server/blueprints/creatures.py tests/test_auth.py`
+  - Passed.
+- `./.venv/bin/python -m pytest tests/test_auth.py`
+  - Passed: 17 tests.
+- `./.venv/bin/python -m pytest tests/test_creatures_combat.py::test_creature_deep_api_endpoints_for_pack_evolution_morale_and_debug tests/test_creatures_combat.py::test_combat_apply_state_changes_synthesizes_stable_ids_for_retries`
+  - Passed: 2 tests.
+- `./.venv/bin/python scripts/scan_secrets.py aidm_server/blueprints/creatures.py tests/test_auth.py`
+  - Passed: no likely committed secrets found.
+
+## High-Priority Findings Refreshed This Run
+
+### High: Other combat mutation routes still need the same DM/admin capability boundary
+
+Current evidence:
+- `aidm_server/blueprints/creatures.py` now protects arbitrary combat state changes and raw debug reads.
+- `aidm_server/blueprints/creatures.py` still leaves these state-changing combat routes at workspace-visibility level only:
+  - `/api/sessions/<session_id>/combat/start`
+  - `/api/sessions/<session_id>/combat/apply-morale-event`
+  - `/api/sessions/<session_id>/combat/check-end` when `apply` is set
+- The existing unauthenticated local-operator behavior is still required by local development and was preserved by this run.
+
+Risk:
+Authenticated player accounts could still start combat, apply morale changes, or apply combat-end state through REST routes if they know the session ID inside their workspace.
+
+Recommended next step:
+Extend the same helper to these combat state-changing routes, but do it with route-level tests first so player 403 behavior and local operator compatibility are explicit.
+
+### High: Bestiary authoring and creature evolve/save routes remain player-reachable inside a workspace
+
+Current evidence:
+- `aidm_server/blueprints/creatures.py` still exposes campaign bestiary create, campaign bestiary generate/save, and creature evolve/save routes without a workspace-admin role check.
+- The frontend bestiary/debug panel still blends browsing, campaign-pack bestiary seeding, and debug display in one inspector tab.
+
+Risk:
+A normal participant in a shared/public deployment could author or persist DM-facing creature content, and the UI does not yet clearly separate player-safe browsing from operator-only tools.
+
+Recommended next step:
+Add non-admin 403 tests for bestiary create/generate/save and creature evolve/save. Then gate those routes and drive frontend visibility from backend capability data instead of client-side assumptions.
+
+### High: Direct session snapshot writers still bypass one serialized mutation boundary
+
+Current evidence:
+- Combat REST routes still persist session state directly after validation.
+- Player equipment and campaign-pack progress services still have direct session snapshot write paths.
+- These writes sit outside the normal streamed-turn coordinator boundary.
+
+Risk:
+REST/service writes can race active streamed turns and be overwritten by later turn persistence. The likely user-visible symptoms remain disappearing equipment changes, combat HP/status drift, and campaign-pack progress that appears to apply and later reverts.
+
+Recommended next step:
+Create a shared session-state mutation service that acquires the per-session coordinator, reloads inside the lock, applies validated changes, persists through one helper, and records revision/audit metadata. Start with a regression around manual equipment or combat HP updates surviving a simulated active turn.
+
+### Medium-High: Frontend account/session persistence needs a security pass before public beta
+
+Current evidence:
+- `aidm_frontend/src/useRuntimeSettings.ts` intentionally uses browser storage for workspace/account runtime selection.
+- The app has grown more account/role-aware, and operator-only controls now depend on server-side authorization instead of just hidden client UI.
+
+Risk:
+Local storage behavior may be acceptable for the current local table workflow, but before public beta the app should explicitly review token/session persistence, logout cleanup, cross-workspace switching, and stale admin capability display.
+
+Recommended next step:
+Document the expected browser storage threat model, add tests around logout/workspace switching cleanup, and prefer server capability checks for every operator-only action.
+
+## Larger Suggested Improvements
+
+- Promote the new combat helper into a broader route capability helper or decorator after the remaining combat and bestiary 403 tests exist.
+- Add a route capability matrix covering `local_operator`, `workspace_admin`, `player`, `server_owned`, and `debug_read`.
+- Split the frontend bestiary tab into player-safe browsing and operator-only authoring/debug sections.
+- Add frontend tests that verify operator controls stay hidden or degrade quietly when the backend returns 403.
+- Build a small `make audit-touched` or `make dev-check` target that runs py_compile, touched pytest, diff-check, and touched-file secret scan.
+- Add a concurrency regression suite for direct session snapshot writers before attempting a shared mutation service refactor.
+
+## Notes
+
+- No live backend restart, Tailscale tunnel check, frontend build, or browser smoke was needed for this backend-only route hardening.
+- This run intentionally did not change broader combat start/morale/check-end behavior because those routes need their own tests and have more gameplay-facing blast radius.
+- The previous frontend debug fetch fallback means the UI should already tolerate the new 403 behavior for combat debug events.
+
+## Recommended Next Run Focus
+
+1. Add non-admin 403 tests for combat start, morale apply, and combat check-end with `apply: true`, then extend the same role helper if the tests prove the desired behavior.
+2. Add non-admin 403 tests for bestiary create/generate/save and creature evolve/save before changing those routes.
+3. Start the direct session-state writer concurrency regression with one equipment or combat HP overwrite case.
+4. Audit frontend runtime account storage and operator-control rendering for stale capability displays.
+
 # Daily AIDM Codebase Improvement Audit - 2026-06-14 06:06 MDT
 
 Automation ID: `daily-aidm-codebase-improvement-audit`

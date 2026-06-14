@@ -1,812 +1,452 @@
-# AI-DM (AI Dungeon Master)
+# AI-DM
 
-Narrative-first backend for an AI-assisted D&D experience.
+AI-DM is a local-first AI Dungeon Master and tabletop companion for D&D-style
+campaigns. It combines a Flask backend, a React/Vite frontend, Socket.IO live
+play, persistent campaign state, campaign-pack tooling, combat helpers, maps,
+music, and optional TTS into one playtestable app.
 
-AI-DM provides:
-- REST APIs for worlds, campaigns, players, sessions, maps, and story segments.
-- Real-time play over Socket.IO (`join_session`, `send_message`, streamed DM output).
-- Stateful session continuity (`dm_turns`, `session_states`, rolling summaries, memory snippets, emergent canon memory).
-- D&D-lite fairness rails (roll detection, roll type/DC band suggestions, deferred outcomes) without constraining world creativity.
-- Security and operations controls (auth, CORS allowlists, request limits, rate limiting, telemetry).
+The project is actively developed for local and closed-beta use. It is not a
+hosted SaaS product by default: the usual source of truth is your local runtime,
+your local SQLite database, and the exact provider configuration loaded by the
+running backend.
 
-This README is aligned to the current codebase as of June 2026.
+Updated for the current codebase in June 2026.
 
----
+## What It Does
 
-## Table of Contents
-1. [Current Beta Status](#current-beta-status)
-2. [Quick Start (Beginner Friendly)](#quick-start-beginner-friendly)
-3. [Remote Multiplayer Play](#remote-multiplayer-play)
-4. [Enable Gemini AI (Flash with 2.5 Fallback)](#enable-gemini-ai-flash-with-25-fallback)
-5. [Enable NVIDIA Kimi (moonshotai/kimi-k2.5)](#enable-nvidia-kimi-moonshotaikimi-k25)
-6. [Enable DeepSeek](#enable-deepseek)
-7. [Enable Deepgram TTS](#enable-deepgram-tts)
-8. [Configuration Reference](#configuration-reference)
-9. [One-Command Bootstrap](#one-command-bootstrap)
-10. [REST API Reference](#rest-api-reference)
-11. [Socket.IO Contract](#socketio-contract)
-12. [Auth and Error Contracts](#auth-and-error-contracts)
-13. [Telemetry and Metrics](#telemetry-and-metrics)
-14. [Database and Migrations](#database-and-migrations)
-15. [Testing](#testing)
-16. [Troubleshooting](#troubleshooting)
-17. [Project Structure](#project-structure)
-18. [Known Gaps and Next Steps](#known-gaps-and-next-steps)
-19. [License](#license)
+- Runs a full local DM session with worlds, campaigns, players, sessions, maps,
+  story segments, inventory, equipment, XP, and persistent canon.
+- Streams live play over Socket.IO with joined-session presence, typing status,
+  turn control, music controls, clarification flows, and message submission.
+- Uses an AI provider when configured, or a deterministic fallback provider when
+  no key is available.
+- Keeps session continuity through turn logs, state snapshots, rolling summary,
+  emergent memory, campaign-pack progress, and projection/reprojection tools.
+- Supports campaign packs with authored locations, NPCs, encounters, optional
+  branches, checkpoints, visibility rules, and example packs in `docs/examples`.
+- Includes D&D-lite fairness rails for rolls, checks, combat state, creature
+  resolution, health, encounter flow, and authored-vs-discovered content.
+- Provides local operator scripts for unified serving, launchd-backed backend
+  restarts, health checks, Tailscale Funnel, smoke tests, secret scans, and
+  bundle-budget checks.
 
----
+## Quick Start
 
-## Current Beta Status
+Prerequisites:
 
-### Implemented
-- Reliability baseline (lazy LLM provider, centralized config, structured errors, transactional `send_message`, safer defaults).
-- Narrative state engine (`DmTurn`, `SessionState`, deterministic context builder, bounded history, fallback narration).
-- Emergent canon memory (`story_entities`, `story_facts`, `story_threads`, `turn_canon_updates`) with projection back into session state.
-- Append-only turn event spine (`turn_events`) with legacy session/player tables treated as projections.
-- Canon validation and entity linking (alias-aware entity reuse, conflicting-fact rejection unless marked as a controlled change).
-- Deterministic inventory consequences for explicit item gains/losses, persisted on players without constraining improvisation elsewhere.
-- D&D-lite mechanics and segment activation (rules classifier for fairness, keyword/state/manual segment triggers as optional authored threads).
-- Security/internet-readiness baseline (REST+socket token auth, CORS allowlists, request size limit, API+socket rate limits, structured correlation logging).
-- Beta hardening essentials (pytest suite, migration chain tests, smoke flow script, release checklist/runbook docs).
+- Python 3.12, matching `.python-version`
+- Node.js 24, matching `.nvmrc`
+- npm
+- macOS or another Unix-like shell environment
 
-### Partially Implemented / Pending
-- Local Prometheus/Grafana observability is bundled; hosted alerting/provider selection is still deployment-specific.
-- Closed-beta program execution (real users + ongoing telemetry review) is operational work, not fully automated in code.
-- Some Python 3.14+ deprecation warnings may still appear in optional/legacy paths.
-
-Runtime state source-of-truth boundaries are documented in
-[docs/runtime_state_boundaries.md](docs/runtime_state_boundaries.md).
-For the current beta-hardening map, see [docs/roadmap.md](docs/roadmap.md),
-[docs/architecture.md](docs/architecture.md), and
-[docs/production-readiness.md](docs/production-readiness.md).
-
----
-
-## Quick Start (Beginner Friendly)
-
-### 1) Create a virtual environment and install deps
-```bash
-git clone <repo-url> AIDM-main
-cd AIDM-main
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-`requirements.txt` installs the full local development set through `requirements-dev.txt`, including tests, migrations, and optional admin UI tooling. Minimal runtime installs can use `requirements.runtime.txt`. All Python install paths apply `requirements.constraints.txt`, which pins the current direct dependency set for repeatable local installs.
-
-### 2) Start backend immediately (no AI key required)
-This runs migrations, validates config/endpoints, then starts the server.
-```bash
-./scripts/run_local_backend.sh
-```
-
-Default from this launcher:
-- Port: `5050`
-- Provider: deterministic fallback (if no `GOOGLE_GENAI_API_KEY` is set)
-
-### 3) Verify backend health
-```bash
-curl http://127.0.0.1:5050/api/health
-curl http://127.0.0.1:5050/api/campaigns
-```
-
-### 4) Connect the web client
-The canonical local frontend is the React app in `aidm_frontend/`.
+Install everything:
 
 ```bash
-cd aidm_frontend
-npm ci
-npm run dev -- --host 127.0.0.1
+make install
 ```
 
-Open the printed Vite URL, usually:
-```text
-http://127.0.0.1:5173/
-```
-
-The Vite dev server proxies `/api/*` and `/socket.io/*` to the local backend,
-so the frontend can use same-origin requests during development. Override the
-proxy target with `VITE_AIDM_PROXY_TARGET=http://127.0.0.1:5050` if your backend
-is on a different port.
-
-If you run the frontend from a different host or scheme and your browser blocks
-private-network requests to the local HTTP backend, keep:
-```bash
-AIDM_CORS_ALLOW_PRIVATE_NETWORK=true
-```
-
-### 5) Single-link local playtest
-For a multiplayer playtest, prefer the unified server. It builds the frontend
-and serves it from the Flask backend, so API calls, Socket.IO, TTS, and shared
-session links all use one origin.
+Start the recommended single-origin local app:
 
 ```bash
 make unified
 ```
 
 Open:
+
 ```text
 http://127.0.0.1:5050/
 ```
 
----
-
-## Remote Multiplayer Play
-
-Remote friends can join the same campaign/session as long as every browser can
-reach the same public origin. Do not share a `127.0.0.1` or `localhost` URL with
-remote players; that points to each player's own computer.
-
-Recommended one-link setup:
-
-- Run `make unified` so Flask serves both the UI and `/api/*`.
-- Expose only backend port `5050` through a public HTTPS tunnel or deployment.
-- Leave Backend Settings' Backend URL blank. Blank means "same origin".
-- Share an in-game session link. It includes `campaign` and `session`, but not a
-  local `player` id. Each browser should choose an existing character or create
-  a new one in the Join Campaign prompt.
-- For internet exposure, set `AIDM_AUTH_REQUIRED=true` and give invited players
-  the bearer token out of band. The share link intentionally does not include
-  auth tokens.
-
-The Party inspector shows the live Active Players roster for the selected
-session. Socket identity is bound to the joined session/player pair, and
-`send_message` rejects mismatched player/session payloads.
-
-For one backend process, the default in-memory Socket.IO presence and turn
-coordination are fine. For more than one backend worker, use
-`AIDM_RATE_LIMIT_STORE=database`, `AIDM_TURN_COORDINATOR_STORE=database`, and
-deployment-level Socket.IO session affinity or a shared Socket.IO message queue.
-
-Check remote readiness before inviting players:
+Verify the backend:
 
 ```bash
-curl https://YOUR_PUBLIC_AIDM_HOST/api/health
-curl https://YOUR_PUBLIC_AIDM_HOST/api/tts/config
+curl http://127.0.0.1:5050/api/health
 ```
 
-### Quick ngrok playtest
+`make unified` builds the frontend when needed, serves it from Flask, and keeps
+the UI, `/api/*`, `/socket.io/*`, TTS, and shared session links on one origin.
 
-For a same-day playtest from your local machine, expose only the unified port.
+## Development Mode
 
-1. Start the unified server:
+Run backend and frontend separately when you want Vite hot reload:
+
+```bash
+make backend
+```
+
+In another terminal:
+
+```bash
+make frontend
+```
+
+The Vite dev server proxies `/api/*` and `/socket.io/*` to the backend. Override
+the proxy target when needed:
+
+```bash
+VITE_AIDM_PROXY_TARGET=http://127.0.0.1:5050 make frontend
+```
+
+## Configuration
+
+Copy the example file when you want a persistent local provider setup:
+
+```bash
+cp .env.local.example .env.local
+```
+
+`scripts/run_local_backend.sh` loads `.env.local` automatically and selects a
+provider in this order when `AIDM_LLM_PROVIDER` is not set:
+
+1. Gemini, when `GOOGLE_GENAI_API_KEY` is present
+2. DeepSeek, when `AIDM_DEEPSEEK_API_KEY` or `DEEPSEEK_API_KEY` is present
+3. NVIDIA/Kimi, when `AIDM_NVIDIA_API_KEY` or `NVIDIA_API_KEY` is present
+4. deterministic fallback, when no provider key is present
+
+Common provider examples:
+
+```bash
+# Local fallback, no external AI call
+AIDM_LLM_PROVIDER=fallback
+AIDM_LLM_MODEL=deterministic-v1
+```
+
+```bash
+# NVIDIA-hosted Kimi
+AIDM_LLM_PROVIDER=nvidia
+AIDM_NVIDIA_API_KEY=YOUR_KEY
+AIDM_LLM_MODEL=moonshotai/kimi-k2.5
+AIDM_NVIDIA_INVOKE_URL=https://integrate.api.nvidia.com/v1
+```
+
+```bash
+# Gemini
+AIDM_LLM_PROVIDER=gemini
+GOOGLE_GENAI_API_KEY=YOUR_KEY
+AIDM_LLM_MODEL=models/gemini-3-flash-preview
+AIDM_LLM_FALLBACK_MODELS=models/gemini-2.5-flash
+```
+
+```bash
+# DeepSeek
+AIDM_LLM_PROVIDER=deepseek
+AIDM_DEEPSEEK_API_KEY=YOUR_KEY
+AIDM_LLM_MODEL=deepseek-v4-pro
+```
+
+Optional TTS:
+
+```bash
+AIDM_DEEPGRAM_API_KEY=YOUR_KEY
+AIDM_DEEPGRAM_TTS_MODEL=aura-2-draco-en
+```
+
+Important runtime settings:
+
+| Setting | Purpose |
+| --- | --- |
+| `AIDM_DATABASE_URI` | Database URI. Defaults to SQLite at `~/.aidm/dnd_ai_dm.db`. |
+| `AIDM_LOCAL_DATA_DIR` | Directory used to build the default SQLite path. |
+| `AIDM_SERVE_FRONTEND` | Serve the built frontend from Flask. Set by `make unified`. |
+| `AIDM_FRONTEND_DIST_DIR` | Frontend `dist` path used by unified serving. |
+| `AIDM_AUTH_REQUIRED` | Require bearer-token auth for REST and socket traffic. |
+| `AIDM_API_AUTH_TOKENS` | Comma-separated bearer tokens. |
+| `AIDM_API_AUTH_TOKEN_WORKSPACES` | Optional `workspace_id=token` bindings. |
+| `AIDM_CORS_ALLOWLIST` | Comma-separated REST origins. |
+| `AIDM_SOCKET_CORS_ALLOWLIST` | Comma-separated Socket.IO origins. |
+| `AIDM_RATE_LIMIT_STORE` | `memory` or `database`. Use `database` for multi-process deployments. |
+| `AIDM_TURN_COORDINATOR_STORE` | `memory` or `database`. Use `database` for multi-process deployments. |
+| `AIDM_RULES_ENGINE_ENABLED` | Enables roll/check fairness helpers. |
+| `AIDM_SEGMENT_EVALUATOR_ENABLED` | Enables authored segment trigger evaluation. |
+| `AIDM_ADMIN_ENABLED` | Enables Flask-Admin in local/dev contexts. |
+| `FLASK_SECRET_KEY` | Required when `AIDM_ENV=production`. |
+
+## Common Commands
+
+| Command | What it does |
+| --- | --- |
+| `make install` | Create `.venv`, install Python requirements, run frontend `npm ci`. |
+| `make backend` | Start Flask through `scripts/run_local_backend.sh`. |
+| `make frontend` | Start Vite on `127.0.0.1` for frontend development. |
+| `make unified` | Build/reuse the frontend and serve the whole app from Flask on port 5050. |
+| `make health` | Check local backend health with `scripts/check_local_health.sh`. |
+| `make test` | Run the backend pytest suite. |
+| `make lint` | Run frontend ESLint. |
+| `make typecheck` | Run frontend TypeScript checks. |
+| `make build` | Run TypeScript checks and Vite production build. |
+| `make bundle-budget` | Check frontend bundle budget. |
+| `make smoke` | Run the backend beta smoke flow. |
+| `make browser-smoke` | Run the frontend browser smoke script. |
+| `make visual-smoke` | Run the frontend visual smoke script. |
+| `make secrets` | Run the repo secret scanner. |
+| `make api-types` | Regenerate frontend API contract types from backend routes. |
+| `make db-upgrade` | Run Flask database migrations. |
+| `make reproject-session SESSION_ID=...` | Rebuild projections for one session. |
+| `make reproject-all` | Rebuild projections for all sessions. |
+
+## Local Runtime Operations
+
+The default local backend runs on:
+
+```text
+http://127.0.0.1:5050
+```
+
+The health endpoint is the quickest truth check for the running app:
+
+```bash
+curl http://127.0.0.1:5050/api/health
+```
+
+On this development machine, the launchd backend service is managed as
+`local.aidm.backend`. The repo includes launch helpers and plists in
+`scripts/launchd/`:
+
+```bash
+scripts/launch_backend_service.sh
+launchctl list | grep local.aidm.backend
+```
+
+For Tailscale Funnel:
+
+```bash
+scripts/aidm_tailscale.sh status
+scripts/aidm_tailscale.sh login
+scripts/aidm_tailscale.sh funnel-on
+scripts/aidm_tailscale.sh url
+scripts/aidm_tailscale.sh funnel-off
+```
+
+Only expose the unified port (`5050`). For internet play, enable auth and share
+tokens out of band:
+
 ```bash
 AIDM_AUTH_REQUIRED=true \
 AIDM_API_AUTH_TOKENS=choose-a-long-random-token \
 make unified
 ```
 
-2. Start one tunnel:
+## Architecture
+
+AI-DM has four main runtime layers:
+
+- `aidm_server/`: Flask REST API, Socket.IO handlers, SQLAlchemy models,
+  migrations, provider registry, state engine, campaign-pack services, combat
+  helpers, validation, telemetry, and deployment bootstrap.
+- `aidm_frontend/`: React 19 + Vite 8 app with the session board, campaign rail,
+  action composer, dice dialog, inspector, music/TTS controls, import panels,
+  and workspace/session state hooks.
+- `~/.aidm/dnd_ai_dm.db`: default local SQLite database for accounts,
+  workspaces, campaigns, players, sessions, turn events, canon, state snapshots,
+  campaign-pack progress, and projections.
+- `docs/` and `scripts/`: authoring docs, campaign-pack schema/examples,
+  operator runbooks, smoke tests, launch helpers, reprojection tools, and
+  release checks.
+
+The deeper design docs live here:
+
+- `docs/architecture.md`
+- `docs/runtime_state_boundaries.md`
+- `docs/block_diagram.md`
+- `docs/production-readiness.md`
+- `docs/beta_runbook.md`
+- `docs/release_checklist.md`
+- `docs/roadmap.md`
+
+## API Overview
+
+The backend exposes REST endpoints under `/api` for:
+
+- accounts, workspace login, workspace selection, and current account context
+- worlds
+- campaigns, campaign packs, example-pack import, canon, archive/restore/delete
+- players, inventory, equipment, starting-loadout repair, and profile updates
+- sessions, imported sessions, live logs, events, state, and pack progress
+- maps and world-map segments
+- runtime configuration
+- creature generation, bestiary, and balance helpers
+- health, metrics, TTS config, feedback, and beta summaries
+
+Socket.IO supports live play events including:
+
+- `join_session`
+- `leave_session`
+- `send_message`
+- `typing_status`
+- `set_turn_control`
+- `music_control`
+- `resolve_clarification`
+
+Regenerate the frontend API contract after backend route changes:
+
 ```bash
-ngrok http 5050
+make api-types
 ```
 
-3. Give players the ngrok URL or the in-game Share link after the page loads.
-   If auth is enabled, each player enters the token once in Backend Settings and
-   leaves Backend URL blank.
+## Campaign Packs
 
-### Permanent Cloudflare tunnel
+Campaign packs are authored JSON adventures with schema validation, visibility
+rules, optional paths, encounter definitions, checkpoints, NPCs, items, and
+stateful progress tracking.
 
-For a stable bookmarked URL, point a Cloudflare Tunnel at the same unified port:
+Key files:
+
+- `docs/campaign_packs.md`
+- `docs/campaign_pack.schema.json`
+- `docs/examples/bleakmoor_intro_campaign_pack.json`
+- `docs/examples/shadow_over_the_greenway_campaign_pack.json`
+- `docs/examples/shadow_under_eryn_luin_campaign_pack.json`
+- `docs/examples/the_road_of_unremembered_kings_campaign.json`
+
+Useful pack commands:
 
 ```bash
-cloudflared tunnel --url http://127.0.0.1:5050
+.venv/bin/python scripts/aidm_pack.py lint docs/examples/the_road_of_unremembered_kings_campaign.json
+.venv/bin/python scripts/aidm_pack.py preview docs/examples/the_road_of_unremembered_kings_campaign.json
+.venv/bin/python scripts/aidm_pack.py graph docs/examples/the_road_of_unremembered_kings_campaign.json
+.venv/bin/python scripts/aidm_pack.py test-checkpoints docs/examples/the_road_of_unremembered_kings_campaign.json
 ```
 
-For long-term use, configure a named tunnel and DNS route in Cloudflare, then
-keep running `make unified` locally when you want the game online.
+## Testing And Verification
 
----
+Backend:
 
-## Enable Gemini AI (Flash with 2.5 Fallback)
-
-Important: if your API key was shared publicly, rotate it before production use.
-
-### 1) Configure env vars
 ```bash
-export GOOGLE_GENAI_API_KEY=YOUR_KEY
-export AIDM_LLM_PROVIDER=gemini
-export AIDM_LLM_MODEL=models/gemini-3-flash-preview
-export AIDM_LLM_FALLBACK_MODELS=models/gemini-2.5-flash
+.venv/bin/python -m pytest
 ```
 
-### 2) Optional model discovery and provider check
+Frontend:
+
 ```bash
-.venv/bin/python scripts/list_gemini_models.py
-.venv/bin/python scripts/check_llm_provider.py
+cd aidm_frontend
+npm run test
+npm run build
+npm run bundle:budget
 ```
 
-### 3) Start backend
+Smoke and safety checks:
+
 ```bash
-./scripts/run_local_backend.sh
+make smoke
+make browser-smoke
+make visual-smoke
+make secrets
+pip-audit -r requirements.txt
 ```
 
-Runtime behavior:
-- Tries `AIDM_LLM_MODEL` first.
-- Falls back through `AIDM_LLM_FALLBACK_MODELS` in order.
-- If all fail, returns deterministic continuity-safe narration.
-
----
-
-## Enable NVIDIA Kimi (moonshotai/kimi-k2.5)
+Before a beta or public playtest, also run:
 
 ```bash
-export AIDM_LLM_PROVIDER=nvidia
-export AIDM_NVIDIA_API_KEY=YOUR_NVIDIA_KEY
-export AIDM_LLM_MODEL=moonshotai/kimi-k2.5
-export AIDM_NVIDIA_INVOKE_URL=https://integrate.api.nvidia.com/v1
-# optional model fallback and tuning
-export AIDM_LLM_FALLBACK_MODELS=meta/llama-3.1-70b-instruct
-export AIDM_NVIDIA_THINKING=true
-export AIDM_NVIDIA_MAX_TOKENS=16384
-export AIDM_NVIDIA_TEMPERATURE=1.0 # thinking mode recommendation
-export AIDM_NVIDIA_TOP_P=0.95
-```
-
-Then run:
-```bash
-./scripts/run_local_backend.sh
-.venv/bin/python scripts/check_llm_provider.py
-```
-
-For persistent local-only Kimi setup, run this once:
-```bash
-./scripts/configure_local_kimi.sh
-```
-
-That writes an untracked `.env.local` file, pins `moonshotai/kimi-k2.5`, and leaves `AIDM_LLM_FALLBACK_MODELS` empty so Kimi is the only model used during local testing.
-
----
-
-## Enable DeepSeek
-
-```bash
-export AIDM_LLM_PROVIDER=deepseek
-export AIDM_DEEPSEEK_API_KEY=YOUR_DEEPSEEK_KEY
-export AIDM_LLM_MODEL=deepseek-v4-pro
-```
-
-Then run:
-```bash
-./scripts/run_local_backend.sh
-.venv/bin/python scripts/check_llm_provider.py
-```
-
-DeepSeek-compatible defaults and credential boundaries live in
-`aidm_server/provider_registry.py` and `aidm_server/llm_providers.py`. Rotate
-any provider key that has been pasted into chat, screenshots, docs, or issue
-text.
-
----
-
-## Enable Deepgram TTS
-
-DM narration TTS is optional. When configured, the React frontend TTS toggle
-requests speech for DM responses from the backend and plays the returned audio.
-
-```bash
-export AIDM_DEEPGRAM_API_KEY=YOUR_DEEPGRAM_KEY
-export AIDM_DEEPGRAM_TTS_MODEL=aura-2-draco-en
-```
-
-Then start backend and frontend normally. Check configuration with:
-```bash
+make health
+curl http://127.0.0.1:5050/api/health
 curl http://127.0.0.1:5050/api/tts/config
 ```
 
-Notes:
-- The frontend strips markdown/thought tags before speech.
-- The backend streams MP3 audio from `/api/tts/stream`; `/api/tts/speak` is kept as a compatible alias.
-- TTS responses include `X-AIDM-TTS-Chunk-Count` and `X-AIDM-TTS-First-Chunk-Chars` headers. Mid-stream upstream chunk failures are recorded in telemetry.
-- If TTS is toggled on but silent, check `/api/tts/config`, browser autoplay
-  policy, and visible frontend errors.
-- Long narrator responses are chunked; first speech should begin before the
-  full response is synthesized when browser streaming support is available.
+The CI workflow mirrors the important local gates: backend tests, frontend
+tests/build, bundle budget, secret scanning, and dependency/security checks.
 
----
+## Database And Migrations
 
-## Configuration Reference
+The default local database is:
 
-All runtime config is centralized in `aidm_server/config.py`.
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `AIDM_ENV` | `development` | Environment mode (`development`, `test`, `production`). |
-| `AIDM_DEBUG` | `true` when not production | Flask debug mode. |
-| `FLASK_SECRET_KEY` | random ephemeral key outside production; required in production | Flask session/app secret. |
-| `AIDM_DATABASE_URI` | `~/.aidm/dnd_ai_dm.db` via `AIDM_LOCAL_DATA_DIR` | SQLAlchemy DB URL. Defaults to a local user data directory outside the repo; set `AIDM_DATABASE_URI` for an explicit database. |
-| `AIDM_AUTO_CREATE_SCHEMA` | `true` outside production, `false` in production | Entry-point runtime may call `db.create_all()` before serving for local convenience. Production must use migrations and rejects auto schema creation. |
-| `AIDM_SERVE_FRONTEND` | `false` | Serves the built React frontend from Flask when `true`, enabling same-origin `/api/*`, `/socket.io/*`, and TTS through one public URL. |
-| `AIDM_FRONTEND_DIST_DIR` | `aidm_frontend/dist` | Static frontend build directory used when `AIDM_SERVE_FRONTEND=true`. |
-| `AIDM_MAX_REQUEST_BYTES` | `1048576` | Max request body size (bytes). |
-| `AIDM_CORS_ALLOWLIST` | `*` in debug, empty in production | Comma-separated allowed origins for REST `/api/*`. |
-| `AIDM_SOCKET_CORS_ALLOWLIST` | mirrors `AIDM_CORS_ALLOWLIST` | Comma-separated allowed origins for Socket.IO. |
-| `AIDM_CORS_ALLOW_PRIVATE_NETWORK` | `true` outside production | Allows private-network CORS preflight behavior. |
-| `AIDM_SOCKETIO_ASYNC_MODE` | `threading` | Socket.IO async mode. |
-| `AIDM_AUTH_REQUIRED` | `false` | Enforce bearer token auth for API/socket (except `/api/health`). |
-| `AIDM_API_AUTH_TOKENS` | empty | Comma-separated valid bearer tokens. |
-| `AIDM_ADMIN_PASSCODE` | unset | Enables authenticated Admin composer messages. Admin turns require `action_intent.kind=admin` plus this passcode and are converted into enforced DM override instructions. |
-| `AIDM_RATE_LIMIT_STORE` | `memory` | Rate-limit storage backend: `memory` for local single-process runs, `database` to share limits across workers. |
-| `AIDM_TURN_COORDINATOR_STORE` | `memory` | Per-session turn serialization backend: `memory` for local single-process runs, `database` to share turn locks across workers. |
-| `AIDM_TURN_COORDINATOR_LOCK_TTL_SECONDS` | `900` | Database turn-lock lease duration before a stale owner can be reclaimed. |
-| `AIDM_TURN_COORDINATOR_POLL_INTERVAL_MS` | `50` | Database turn-lock retry interval while another worker owns the session. |
-| `AIDM_RATE_LIMIT_WINDOW_SECONDS` | `30` | Fixed window size for API/socket limits. |
-| `AIDM_RATE_LIMIT_MAX_API_REQUESTS` | `120` | Max API requests per key+window. |
-| `AIDM_RATE_LIMIT_MAX_SOCKET_MESSAGES` | `40` | Max socket messages per sid/session+window. |
-| `AIDM_RULES_ENGINE_ENABLED` | `true` | Enables rules classifier metadata. |
-| `AIDM_SEGMENT_EVALUATOR_ENABLED` | `true` | Enables automatic segment trigger evaluation. |
-| `AIDM_LLM_PROVIDER` | `gemini` | Provider selector (`gemini`, `nvidia`/`kimi`, or deterministic fallback). |
-| `AIDM_LLM_MODEL` | `models/gemini-3-flash-preview` | Primary model name. |
-| `AIDM_LLM_FALLBACK_MODELS` | empty | Comma-separated model fallbacks. |
-| `AIDM_LLM_RATE_LIMIT_THRESHOLD` | `2` | Consecutive `429` count before model cooldown begins. |
-| `AIDM_LLM_RATE_LIMIT_COOLDOWN_SECONDS` | `120` | Seconds to skip a rate-limited model before retrying it. |
-| `AIDM_HELPER_LLM_MODEL` | `deepseek-v4-flash` | Shared helper model for live-turn extraction and turn-control jobs. |
-| `AIDM_CUSTOM_RACE_HELPER_LLM_MODEL` | `deepseek-v4-pro` | Custom-race metadata helper model. |
-| `AIDM_CUSTOM_RACE_HELPER_LLM_MAX_TOKENS` | `4096` | Max output tokens for custom-race helper drafts. |
-| `AIDM_CUSTOM_RACE_HELPER_DEEPSEEK_TIMEOUT_SECONDS` | `180` | Backward-compatible default read timeout for custom-race DeepSeek calls. |
-| `AIDM_CUSTOM_RACE_HELPER_DEEPSEEK_THINKING` | `false` | Keeps custom-race metadata generation focused on visible structured JSON. |
-| `GOOGLE_GENAI_API_KEY` | unset | Gemini API key. |
-| `AIDM_DEEPSEEK_API_KEY` | unset | DeepSeek API key. |
-| `AIDM_DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek/OpenAI-compatible base URL. |
-| `AIDM_DEEPSEEK_TIMEOUT_SECONDS` | `180` | Backward-compatible default read timeout for DeepSeek calls. |
-| `AIDM_DEEPSEEK_CONNECT_TIMEOUT_SECONDS` | `10` | DeepSeek TCP/TLS connect timeout. |
-| `AIDM_DEEPSEEK_READ_TIMEOUT_SECONDS` | `AIDM_DEEPSEEK_TIMEOUT_SECONDS` | DeepSeek response/read timeout. |
-| `AIDM_NVIDIA_API_KEY` | unset | NVIDIA API key (used when `AIDM_LLM_PROVIDER=nvidia`). |
-| `AIDM_NVIDIA_INVOKE_URL` | `https://integrate.api.nvidia.com/v1` | NVIDIA base URL (auto-normalized to `/chat/completions`). |
-| `AIDM_NVIDIA_THINKING` | `true` | Official Kimi thinking control (`thinking.type=enabled|disabled`). |
-| `AIDM_NVIDIA_MAX_TOKENS` | `16384` | Max completion tokens for NVIDIA provider. |
-| `AIDM_NVIDIA_TEMPERATURE` | `1.0` thinking / `0.6` instant | Sampling temperature for NVIDIA provider. |
-| `AIDM_NVIDIA_TOP_P` | `0.95` | Top-p sampling for NVIDIA provider. |
-| `AIDM_NVIDIA_TIMEOUT_SECONDS` | `60` | Backward-compatible default read timeout for NVIDIA provider calls. |
-| `AIDM_NVIDIA_CONNECT_TIMEOUT_SECONDS` | `10` | NVIDIA TCP/TLS connect timeout. |
-| `AIDM_NVIDIA_READ_TIMEOUT_SECONDS` | `AIDM_NVIDIA_TIMEOUT_SECONDS` | NVIDIA response/read timeout. |
-| `AIDM_DEEPGRAM_API_KEY` | unset | Deepgram API key for optional TTS. |
-| `AIDM_DEEPGRAM_TTS_MODEL` | `aura-2-draco-en` | Deepgram speech model used by `/api/tts/stream` and `/api/tts/speak`. |
-| `AIDM_DEEPGRAM_TTS_CONNECT_TIMEOUT_SECONDS` | `3` | Deepgram TTS TCP/TLS connect timeout. |
-| `AIDM_DEEPGRAM_TTS_READ_TIMEOUT_SECONDS` | `60` | Deepgram TTS response/read timeout. |
-| `AIDM_TELEMETRY_ENABLED` | `false` | Enables outbound telemetry events. |
-| `AIDM_TELEMETRY_ENDPOINT` | empty | External telemetry ingest endpoint. |
-| `AIDM_TELEMETRY_API_KEY` | unset | Bearer token for telemetry endpoint. |
-| `AIDM_TELEMETRY_TIMEOUT_SECONDS` | `2` | External telemetry request timeout. |
-| `AIDM_TELEMETRY_MAX_QUEUE_SIZE` | `1000` | Max queued outbound telemetry events before dropping. |
-| `HOST` | `127.0.0.1` | Bootstrap server host. Public bind addresses require `AIDM_AUTH_REQUIRED=true` with API tokens. |
-| `PORT` | `5000` (bootstrap), `5050` via `run_local_backend.sh` | Server port. |
-
----
-
-## One-Command Bootstrap
-
-`deploy_bootstrap` runs preflight checks before server start:
-1. `flask db upgrade`
-2. `/api/health` and `/api/metrics` sanity checks
-3. Socket auth behavior checks
-4. Rate-limit/auth config validation
-5. Local `.env.local` and SQLite permission hardening
-6. Production CORS and network exposure guardrails
-
-### Check-only
-```bash
-.venv/bin/python scripts/deploy_bootstrap.py --check-only
+```text
+~/.aidm/dnd_ai_dm.db
 ```
 
-### Start server after checks
-```bash
-.venv/bin/python scripts/deploy_bootstrap.py --port 5050
-```
-
-### Recommended local launcher
-```bash
-./scripts/run_local_backend.sh
-```
-
----
-
-## REST API Reference
-
-Base path: `/api`
-
-### Worlds
-- `POST /api/worlds`
-- `GET /api/worlds`
-  - Query params: `limit` (1..200, default 100), `before_id` for older-world cursors
-- `GET /api/worlds/<world_id>`
-
-### Campaigns
-- `POST /api/campaigns`
-- `GET /api/campaigns`
-- `GET /api/campaigns/<campaign_id>`
-- `PATCH /api/campaigns/<campaign_id>`
-- `POST /api/campaigns/<campaign_id>/archive`
-- `POST /api/campaigns/<campaign_id>/restore`
-- `DELETE /api/campaigns/<campaign_id>`
-
-### Players
-- `GET /api/players/campaigns/<campaign_id>/players`
-- `POST /api/players/campaigns/<campaign_id>/players`
-- `GET /api/players/<player_id>`
-- `PATCH /api/players/<player_id>`
-
-### Sessions
-- `POST /api/sessions/start`
-  - Payload: `{ "campaign_id": 1, "name": "<optional>", "client_session_id": "<optional retry key>" }`
-  - Replaying the same `client_session_id` or `idempotency_key` for a campaign returns the existing session with `idempotent_replay: true`.
-- `POST /api/sessions/<session_id>/end`
-- `GET /api/sessions/campaigns/<campaign_id>/sessions`
-- `GET /api/sessions/<session_id>/log`
-  - Query params: `limit` (1..500, default 200), `before_id` for older-history cursors
-- `GET /api/sessions/<session_id>/state`
-- `PATCH /api/sessions/<session_id>`
-  - Payload: `{ "name": "New session name", "expected_updated_at": "<optional ISO timestamp>" }`
-- `POST /api/sessions/<session_id>/archive`
-- `POST /api/sessions/<session_id>/restore`
-- `DELETE /api/sessions/<session_id>`
-  - Archives by default. Use `?hard=true` only for local cleanup.
-
-Session delete is archive-by-default so normal UI deletes hide a session without
-destroying its turn history. Hard delete remains explicit for local cleanup.
-
-### Maps
-- `POST /api/maps`
-- `GET /api/maps?world_id=<id>&campaign_id=<id>`
-- `GET /api/maps/<map_id>`
-- `PUT/PATCH /api/maps/<map_id>`
-
-### Segments
-- `POST /api/segments`
-- `GET /api/segments?campaign_id=<id>`
-- `GET /api/segments/<segment_id>`
-- `PUT/PATCH /api/segments/<segment_id>`
-- `DELETE /api/segments/<segment_id>`
-
-### System and Beta
-- `GET /api/health`
-- `GET /api/metrics`
-- `GET /api/metrics/prometheus`
-- `GET /api/beta/summary`
-- `POST /api/feedback/coherence`
-
-#### Coherence feedback payload
-```json
-{
-  "session_id": 1,
-  "turn_id": 42,
-  "coherence_score": 4,
-  "notes": "Strong continuity across turns."
-}
-```
-
----
-
-## Socket.IO Contract
-
-### Client -> Server events
-- `connect` (optional auth payload)
-- `join_session`
-  - `{ "session_id": <int>, "player_id": <int> }`
-- `leave_session`
-  - `{ "session_id": <int>, "player_id": <int> }`
-- `send_message`
-  - Required: `session_id`, `campaign_id`, `player_id`, `message`
-  - Optional context hint: `world_id` (the engine uses the campaign's world as authoritative)
-  - Optional idempotency: `client_message_id`
-  - Optional typed action metadata: `action_intent`
-    - `kind`: `message`, `roll`, `ability`, `item`, `emote`, `ooc`, or `admin`
-    - Roll intent includes `die`, `mode`, `modifier`, `rolls`, `kept`, `total`, `result_visibility`, and `reason`
-    - Ability and item intents carry selected character stat/inventory metadata
-    - Admin intents require a separate `admin_passcode` payload value matching `AIDM_ADMIN_PASSCODE`; the passcode is validated before turn creation and is not persisted.
-  - Auth tokens are not accepted in event payloads; use the socket auth payload or bearer header instead.
-
-### Server -> Client events
-- `active_players`
-- `player_joined`
-- `player_left`
-- `new_message`
-- `segment_triggered`
-- `roll_required` (emitted when a pending deferred check must be resolved before a new action)
-- `dm_response_start`
-- `dm_chunk`
-- `dm_response_end`
-- `turn_status` (`received`, `narrating`, `response_complete`, `saving`, `saved`, `canon_pending`, `canon_applied`, `failed`)
-- `session_log_update`
-- `error`
-
-### DM metadata fields (additive, backward compatible)
-`dm_response_start`, `dm_chunk`, `dm_response_end` include:
-- `turn_id`
-- `requires_roll`
-- `rules_hint`
-  - `roll_type`, `dc_hint`, `reason`, `confidence`, `roll_value`, `outcome_deferred`
-- `context_version`
-
-### Roll gating behavior
-- If a prior turn is still unresolved (`outcome_deferred=true`), new non-roll actions are rejected.
-- Server emits:
-  - `roll_required` event with `pending_turn_id`, `rule_type`, `dc_hint`, and a roll prompt.
-  - `error` envelope with `error_code=roll_required`.
-- Client should submit a roll result (for example, `I roll a d20: 14`) before continuing new actions.
-
----
-
-## Auth and Error Contracts
-
-### REST auth
-- When `AIDM_AUTH_REQUIRED=true`, send:
-```http
-Authorization: Bearer <token>
-```
-- `GET /api/health` remains open for liveness checks.
-
-### Socket auth
-If auth is required, token can be supplied by:
-1. Socket auth payload (`{ "token": "..." }`)
-2. `Authorization: Bearer ...` header
-
-Do not put auth tokens in socket event payloads or query strings.
-
-Presence and connection state are wrapped by `aidm_server.socket_state.SocketState`.
-The default store remains process-local for local play; use a shared store before
-running multiple Socket.IO workers.
-
-### Error envelope
-HTTP and socket errors share this shape:
-```json
-{
-  "error": "Human readable message",
-  "error_code": "machine_code",
-  "details": {}
-}
-```
-
-### Correlation IDs
-- Supply `X-Request-ID` to REST calls to control correlation ID.
-- Response echoes `X-Request-ID`.
-- Logs include correlation/session/turn IDs.
-
----
-
-## Telemetry and Metrics
-
-### Local metrics endpoint
-`GET /api/metrics` returns:
-- in-memory counters
-- timing aggregates
-- beta summary block
-
-`GET /api/metrics/prometheus` returns the same counters and timing aggregates in Prometheus text exposition format. Beta summary fields are exposed as `aidm_beta_*` gauges.
-
-### Local Prometheus/Grafana stack
-The repo includes a local beta observability bundle under `observability/`.
+Override it with:
 
 ```bash
-./scripts/run_local_backend.sh
-cd observability
-docker compose up
+AIDM_DATABASE_URI=sqlite:////absolute/path/to/dnd_ai_dm.db
 ```
 
-- Prometheus: http://localhost:9090
-- Grafana: http://localhost:3001
-- Grafana credentials: `aidm` / `aidm`
+Run migrations:
 
-Prometheus scrapes `host.docker.internal:5050/api/metrics/prometheus` by default. Update `observability/prometheus.yml` if your Docker runtime needs a different host address.
-
-### Beta summary endpoint
-`GET /api/beta/summary` includes:
-- `turn_latency_ms_avg`
-- `ai_failure_rate`
-- `session_completion_rate`
-- `coherence_feedback_avg`
-- `coherence_feedback_count`
-
-### Optional external telemetry delivery
 ```bash
-export AIDM_TELEMETRY_ENABLED=true
-export AIDM_TELEMETRY_ENDPOINT=https://your-endpoint.example/ingest
-export AIDM_TELEMETRY_API_KEY=your_token
-export AIDM_TELEMETRY_TIMEOUT_SECONDS=2
+make db-upgrade
 ```
 
----
+Projection repair:
 
-## Database and Migrations
-
-### Migration chain
-- `0001_initial_core`
-- `0002_beta_runtime`
-- `0003_turn_confidence_feedback`
-- `0004_emergent_memory_runtime`
-- `0005_turn_event_spine`
-- `0006_metadata_status_and_indexes`
-- `0007_rate_limit_events`
-- `0008_session_delete_semantics`
-- `0009_canon_jobs`
-- `0010_review_addendum_hardening`
-- `0011_session_turn_locks`
-
-### Run migrations manually
 ```bash
-export FLASK_APP=aidm_server.main:create_app
-flask db upgrade
+make reproject-session SESSION_ID=<session-id>
+make reproject-all
 ```
 
-### Notes
-- `AIDM_AUTO_CREATE_SCHEMA=true` still supports local bootstrap convenience through the explicit runtime entrypoint.
-- For stricter environments, set `AIDM_AUTO_CREATE_SCHEMA=false` and rely on migrations only.
-- `scripts/reproject_session.py` expects schema to already exist. Use `--create-schema` only for local/test repair databases; production rejects that flag.
+Use the live DB when investigating gameplay issues. Repo-local SQLite files are
+not necessarily what the running backend is serving.
 
----
+## Security Notes
 
-## Testing
-
-### Run full test suite
-```bash
-.venv/bin/python -m pytest -q
-```
-
-### Run migration tests only
-```bash
-.venv/bin/python -m pytest -q tests/test_migrations.py
-```
-
-### Run smoke flow (campaign -> session -> message -> recap)
-```bash
-.venv/bin/python scripts/smoke_beta_flow.py
-```
-
-By default, the smoke flow uses an isolated in-memory database and deterministic
-fallback provider. Use `--use-local-env` only when you intentionally want to run
-against `.env.local`, the configured database, and the configured provider.
-
-### Run browser smoke flow
-```bash
-cd aidm_frontend
-npx playwright install chromium
-npm run smoke:browser
-```
-
-The browser smoke starts an isolated fallback backend with a temporary SQLite
-database, starts the React dev server against it, then verifies the playable UI
-path: create a campaign, create a player, start a session, handle unavailable
-TTS, send an action, receive a streamed DM response, delete the session, import
-a saved session JSON file, verify the restored log, and delete the imported
-session.
-
-### Session export and import
-
-The React session toolbar can export the currently selected session to JSON.
-Exports include selected IDs, session state, log entries, turn events, campaign
-canon, maps, segments, and runtime metrics when those endpoints are available.
-The Import action accepts that JSON and posts it to `POST /api/sessions/import`.
-The backend creates a new active session in the target campaign, restores
-session state, imports canonical turn events when present, and falls back to
-legacy log entries for older export files.
-
-### Run visual smoke screenshots
-```bash
-cd aidm_frontend
-npm run smoke:visual
-```
-
-The visual smoke uses the same isolated fallback setup, drives a real turn, and
-captures desktop, short-height desktop, and mobile screenshots under
-`tmp/verification_artifacts/visual-smoke/`. It fails on Vite overlays, browser
-console errors, horizontal overflow, or desktop top/composer/inspector clipping.
-
----
-
-## Production And Local-Only Boundaries
-
-Local development conveniences should not be treated as production defaults:
-
-- `.env.local` writes from `/api/llm/config` are for local runtime switching.
-- Wildcard CORS is local/debug only; production bootstrap rejects wildcard CORS.
-- `AIDM_AUTH_REQUIRED=false` is local loopback only for `deploy_bootstrap`; public
-  bind addresses fail closed unless auth is enabled with API tokens.
-- `scripts/deploy_bootstrap.py` may serve local/test runs, but production should
-  run it with `--check-only` and start with a production Socket.IO server.
-- Production requires database-backed shared stores:
-  `AIDM_RATE_LIMIT_STORE=database` and
-  `AIDM_TURN_COORDINATOR_STORE=database`.
-- SQLite and local DB backups are developer data, not source fixtures or a shared deployment store. Local defaults use `~/.aidm/`; do not put active DBs or backups under `aidm_server/instance/` before packaging or sharing.
-- Flask admin is an admin surface and is only accessible when auth is required
-  and the request is authorized for the owner workspace.
-- In-memory rate limiting, the in-memory turn coordinator, and module-global socket state are single-process only. For multiple backend workers, keep Socket.IO session affinity or a shared Socket.IO message queue in the deployment layer.
-- `scripts/smoke_beta_flow.py` defaults to isolated fallback mode to avoid
-  local DB pollution and provider spend.
-- Browser QA screenshots and traces should live under ignored paths such as
-  `tmp/verification_artifacts/`, which is removed by `scripts/cleanup_artifacts.sh`.
-- Use `make source-archive` when sharing the project source. The archive is
-  written under ignored `tmp/release/` and excludes local dependencies,
-  frontend build output, runtime caches, SQLite data, logs, and `.env.local`.
-- Use `make clean-deps` only for source-only handoff or commit prep when you
-  want to remove `.venv` and `aidm_frontend/node_modules` from the local tree.
-
-Bootstrap tightens `.env.local` to `0600`, local SQLite data directories such
-as `~/.aidm` or `aidm_server/instance` to `0700`, and local SQLite
-database/backups to `0600` when those files are present.
-
-### Release docs
-- `docs/release_checklist.md`
-- `docs/beta_runbook.md`
-
----
+- Do not commit `.env.local` or real API keys.
+- Rotate any API key that appears in logs, chat, screenshots, commits, or issue
+  comments.
+- Set `AIDM_ENV=production` and `FLASK_SECRET_KEY` before production-style use.
+- Set `AIDM_AUTH_REQUIRED=true` before exposing the app outside your machine.
+- Use HTTPS for public play. Tailscale Funnel or a production reverse proxy can
+  provide the public TLS edge.
+- Keep `AIDM_CORS_ALLOWLIST` and `AIDM_SOCKET_CORS_ALLOWLIST` narrow outside
+  local development.
+- For multiple backend workers, use database-backed rate limits and turn
+  coordination, plus deployment-level Socket.IO affinity or a shared queue.
 
 ## Troubleshooting
 
-### `AxiosError: Network Error` from hosted web client
-Usually means browser could not reach backend at all (not an API 4xx/5xx response).
+Backend virtualenv is missing:
 
-Checklist:
-1. Backend running and healthy:
-   ```bash
-   curl http://127.0.0.1:5050/api/health
-   ```
-2. Use reachable URL in client (not `localhost` from another machine).
-3. If HTTPS client -> local HTTP backend, keep:
-   ```bash
-   AIDM_CORS_ALLOW_PRIVATE_NETWORK=true
-   ```
-4. For local development, set permissive CORS:
-   ```bash
-   AIDM_CORS_ALLOWLIST=*
-   AIDM_SOCKET_CORS_ALLOWLIST=*
-   ```
-5. If exposing over internet, tunnel or host backend (for example ngrok/cloudflared) and use that public URL.
-
-### Auth failures
-- REST returns `401 unauthorized` when token missing/invalid and auth is required.
-- Socket connect/join/send emits `error` with `error_code=unauthorized` when token is missing/invalid.
-
-### AI provider issues
-- If Gemini key/model is invalid, backend still runs.
-- AI responses fall back to deterministic narration instead of crashing the app.
-
----
-
-## Project Structure
-
-```text
-AIDM-main/
-├── aidm_server/
-│   ├── blueprints/            # REST + Socket handlers
-│   ├── auth.py                # REST/socket token validation
-│   ├── config.py              # Centralized env configuration
-│   ├── contracts.py           # Provider and segment runtime contracts
-│   ├── deploy_bootstrap.py    # Preflight + startup pipeline
-│   ├── llm.py                 # Provider abstraction + Gemini/fallback
-│   ├── logging_context.py     # Correlation/session/turn log context
-│   ├── models.py              # SQLAlchemy models
-│   ├── rate_limiter.py        # Pluggable fixed-window limiter
-│   ├── rules.py               # D&D-lite rules hints
-│   ├── segment_triggers.py    # Segment trigger evaluator
-│   └── telemetry.py           # Metrics/events + optional outbound delivery
-├── docs/
-│   ├── beta_runbook.md
-│   ├── runtime_state_boundaries.md
-│   └── release_checklist.md
-├── migrations/
-│   └── versions/
-├── scripts/
-│   ├── run_local_backend.sh
-│   ├── deploy_bootstrap.py
-│   ├── check_llm_provider.py
-│   ├── list_gemini_models.py
-│   └── smoke_beta_flow.py
-└── tests/
+```bash
+make install
 ```
 
----
+Frontend dependencies are stale:
 
-## Known Gaps and Next Steps
+```bash
+cd aidm_frontend
+npm ci
+```
 
-The current source of truth is [docs/roadmap.md](docs/roadmap.md). The biggest
-remaining hardening items are frontend dialog extraction, lifecycle service
-cleanup for destructive campaign/player/session flows, modal accessibility
-checks, hosted observability ownership, and production Socket.IO worker-model
-validation.
+Unified app serves an old frontend:
 
----
+```bash
+AIDM_FRONTEND_BUILD_MODE=always make unified
+```
+
+Health check fails:
+
+```bash
+make health
+tail -n 200 tmp/launcher_logs/backend.log tmp/launcher_logs/launcher.log
+```
+
+Provider does not match what you expected:
+
+```bash
+curl http://127.0.0.1:5050/api/health
+.venv/bin/python scripts/check_llm_provider.py
+```
+
+Tailscale URL is not available:
+
+```bash
+scripts/aidm_tailscale.sh login
+scripts/aidm_tailscale.sh funnel-on
+scripts/aidm_tailscale.sh url
+```
+
+## Project Map
+
+```text
+aidm_server/                 Flask app, API, sockets, state engine, providers
+aidm_frontend/               React/Vite frontend
+docs/                        Architecture, runbooks, schema, examples
+docs/examples/               Campaign-pack examples
+migrations/                  Alembic migrations
+scripts/                     Local runtime, CI, authoring, repair tools
+tests/                       Backend tests
+requirements*.txt            Python runtime/dev/constraint files
+Makefile                     Main local command surface
+```
 
 ## License
 
-MIT License.
+No license file is currently declared in this repository. Treat the code as
+private unless the repository owner adds an explicit license.

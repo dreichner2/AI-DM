@@ -29,11 +29,23 @@ from aidm_server.game_state.models import state_snapshot_for_session, stable_cha
 from aidm_server.game_state.validation.validator import validate_state_changes, validated_changes_for_application
 from aidm_server.models import Campaign, CombatDebugEvent, Player, Session, safe_json_loads
 from aidm_server.services.campaign_pack_progress import update_campaign_pack_progress
-from aidm_server.validation import parse_json_body
-from aidm_server.workspace_access import current_workspace_id, get_campaign, get_session
+from aidm_server.validation import coerce_int, parse_json_body
+from aidm_server.workspace_access import (
+    current_account_id,
+    current_account_is_workspace_admin,
+    current_workspace_id,
+    get_campaign,
+    get_session,
+)
 
 
 creatures_bp = Blueprint('creatures', __name__)
+
+
+def _combat_operator_forbidden_response():
+    if current_account_id() is None or current_account_is_workspace_admin():
+        return None
+    return error_response('forbidden', 'Only workspace admins can manage combat state and debug logs.', 403)
 
 
 def _campaign_players(campaign: Campaign) -> list[Player]:
@@ -695,6 +707,9 @@ def apply_session_combat_changes(session_id: int):
     session_obj = get_session(session_id)
     if not session_obj:
         return error_response('not_found', 'Session not found.', 404)
+    forbidden = _combat_operator_forbidden_response()
+    if forbidden:
+        return forbidden
     payload = parse_json_body(request) or {}
     changes = payload.get('changes') if isinstance(payload.get('changes'), list) else []
     changes = _combat_api_changes_with_ids(session_id, changes)
@@ -725,7 +740,10 @@ def get_session_combat_debug(session_id: int):
     session_obj = get_session(session_id)
     if not session_obj:
         return error_response('not_found', 'Session not found.', 404)
-    limit = max(1, min(100, int(request.args.get('limit') or 50)))
+    forbidden = _combat_operator_forbidden_response()
+    if forbidden:
+        return forbidden
+    limit = max(1, min(100, coerce_int(request.args.get('limit'), 50)))
     rows = (
         CombatDebugEvent.query.filter_by(session_id=session_id)
         .order_by(CombatDebugEvent.created_at.desc(), CombatDebugEvent.debug_event_id.desc())

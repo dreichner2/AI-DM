@@ -9,7 +9,7 @@ from flask import Flask
 
 from aidm_server.auth import extract_socket_token, hash_secret
 from aidm_server.database import db
-from aidm_server.models import Account, AccountWorkspaceMembership, Campaign, Player, Session, World
+from aidm_server.models import Account, AccountWorkspaceMembership, Campaign, Player, Session, World, safe_json_dumps
 
 
 def _build_auth_runtime(tmp_path, monkeypatch, extra_env: dict[str, str] | None = None):
@@ -370,6 +370,70 @@ def test_llm_config_update_requires_owner_account_admin_role(tmp_path, monkeypat
     assert admin_patch.status_code == 200
     assert admin_patch.get_json()['current']['provider'] == 'fallback'
     assert app.config['AIDM_LLM_PROVIDER'] == 'fallback'
+
+
+def test_combat_state_and_debug_endpoints_require_workspace_admin_account(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+    with app.app_context():
+        account = Account(
+            username='combat-player',
+            first_name='Combat',
+            last_name='Player',
+            password_hash='configured',
+            account_token_hash=hash_secret('combat-token'),
+        )
+        db.session.add(account)
+        db.session.flush()
+        membership = AccountWorkspaceMembership(account_id=account.account_id, workspace_id='owner', role='player')
+        db.session.add(membership)
+        world = World(name='Combat Auth World', description='combat auth')
+        db.session.add(world)
+        db.session.flush()
+        campaign = Campaign(title='Combat Auth Campaign', world_id=world.world_id, workspace_id='owner')
+        db.session.add(campaign)
+        db.session.flush()
+        session = Session(
+            campaign_id=campaign.campaign_id,
+            state_snapshot=safe_json_dumps({'combat': {'status': 'none', 'participants': [], 'flags': {}}}, {}),
+        )
+        db.session.add(session)
+        db.session.commit()
+        account_id = account.account_id
+        session_id = session.session_id
+
+    headers = {'Authorization': 'Bearer combat-token', 'X-AIDM-Workspace-Id': 'owner'}
+    player_apply = client.post(
+        f'/api/sessions/{session_id}/combat/apply-state-changes',
+        headers=headers,
+        json={'changes': []},
+    )
+    player_debug = client.get(f'/api/sessions/{session_id}/combat/debug', headers=headers)
+
+    assert player_apply.status_code == 403
+    assert player_apply.get_json()['error_code'] == 'forbidden'
+    assert player_debug.status_code == 403
+    assert player_debug.get_json()['error_code'] == 'forbidden'
+
+    with app.app_context():
+        membership = AccountWorkspaceMembership.query.filter_by(account_id=account_id, workspace_id='owner').one()
+        membership.role = 'admin'
+        db.session.commit()
+
+    admin_apply = client.post(
+        f'/api/sessions/{session_id}/combat/apply-state-changes',
+        headers=headers,
+        json={'changes': []},
+    )
+    admin_debug = client.get(f'/api/sessions/{session_id}/combat/debug', headers=headers)
+    admin_debug_bad_limit = client.get(f'/api/sessions/{session_id}/combat/debug?limit=invalid', headers=headers)
+
+    assert admin_apply.status_code == 200
+    assert admin_apply.get_json()['appliedChanges'] == []
+    assert admin_debug.status_code == 200
+    assert admin_debug.get_json()['events'] == []
+    assert admin_debug_bad_limit.status_code == 200
+    assert admin_debug_bad_limit.get_json()['events'] == []
 
 
 def test_socket_token_extraction_ignores_query_and_event_payloads(tmp_path, monkeypatch):
