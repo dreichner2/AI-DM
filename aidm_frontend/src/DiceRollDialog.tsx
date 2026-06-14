@@ -80,8 +80,8 @@ type DiceAnimationProfile = {
 }
 
 const SCRIPTED_ROLL_DURATION_MS = 900
-const PHYSICS_ROLL_DURATION_MS = 1780
-const RESULT_HOLD_MS = 760
+const PHYSICS_ROLL_DURATION_MS = 1850
+const RESULT_HOLD_MS = 850
 const FACE_LABEL_DEPTH_OFFSET = 0.045
 const FRONT_NORMAL = new Vector3(0, 0, 1)
 const CAMERA_RESULT_NORMAL = new Vector3(0, 0.42, 0.91).normalize()
@@ -738,9 +738,9 @@ function PhysicsDiceCanvas({
     const profile = animationProfileForDie(die)
     const seedBase = rollKey * 97 + result * 13 + getDieSides(die)
     const resultQuaternion = createResultRestQuaternion(resultNormal, seedBase)
-    const finalPosition = new Vector3(
+    const targetPosition = new Vector3(
       seededRange(seedBase + 15, -0.14, 0.14),
-      TABLE_SURFACE_Y + halfHeight + 0.02,
+      TABLE_SURFACE_Y + halfHeight + TABLE_GROUND_PADDING,
       seededRange(seedBase + 16, -0.08, 0.1),
     )
     const diceBounds = new Box3()
@@ -758,16 +758,16 @@ function PhysicsDiceCanvas({
 
     const tableMaterial = new CannonMaterial('dice-table')
     const diceMaterial = new CannonMaterial('dice-body')
-    world.defaultContactMaterial.friction = 0.64
+    world.defaultContactMaterial.friction = 0.38
     world.defaultContactMaterial.restitution = 0.22
     world.addContactMaterial(
       new ContactMaterial(diceMaterial, tableMaterial, {
-        friction: 0.74,
-        restitution: 0.24,
+        friction: 0.48,
+        restitution: 0.28,
         contactEquationStiffness: 1e7,
-        contactEquationRelaxation: 5,
+        contactEquationRelaxation: 4,
         frictionEquationStiffness: 1e7,
-        frictionEquationRelaxation: 6,
+        frictionEquationRelaxation: 5,
       }),
     )
 
@@ -795,25 +795,25 @@ function PhysicsDiceCanvas({
       material: diceMaterial,
       position: new Vec3(
         startX,
-        TABLE_SURFACE_Y + halfHeight + 0.72 * profile.bounce,
+        TABLE_SURFACE_Y + halfHeight + 0.72,
         startZ,
       ),
       quaternion: startQuaternion,
       velocity: new Vec3(
-        3.15 + profile.travel * 0.62 + seededRange(seedBase + 6, -0.2, 0.22),
-        1.05 + profile.bounce * 0.38,
-        seededRange(seedBase + 7, -0.42, 0.32),
+        2.45 + profile.travel * 0.9 + seededRange(seedBase + 6, -0.24, 0.24),
+        -1.45 + seededRange(seedBase + 11, -0.18, 0.16),
+        seededRange(seedBase + 7, -0.46, 0.34),
       ),
       angularVelocity: new Vec3(
-        8.8 + profile.spin * 3.4 + seededRange(seedBase + 8, -0.72, 0.72),
-        10.4 + profile.spin * 4.3 + seededRange(seedBase + 9, -0.78, 0.78),
-        -(9.8 + profile.spin * 4.6 + seededRange(seedBase + 10, -0.82, 0.82)),
+        8.8 + profile.spin * 3.4 + seededRange(seedBase + 8, -1.1, 1.1),
+        10.6 + profile.spin * 3.8 + seededRange(seedBase + 9, -1.2, 1.2),
+        -(12.4 + profile.spin * 4.2 + seededRange(seedBase + 10, -1.3, 1.3)),
       ),
-      linearDamping: 0.1,
-      angularDamping: 0.18,
+      linearDamping: 0.035,
+      angularDamping: 0.075,
       allowSleep: true,
-      sleepSpeedLimit: 0.08,
-      sleepTimeLimit: 0.18,
+      sleepSpeedLimit: 0.055,
+      sleepTimeLimit: 0.34,
       shape,
     })
     world.addBody(diceBody)
@@ -833,6 +833,7 @@ function PhysicsDiceCanvas({
     const resultFaceMaterial = resultFace.material as MeshBasicMaterial
     const resultHaloMaterial = resultHalo.material as MeshBasicMaterial
     const sideLabelMaterials = sideLabelPlanes.map((labelPlane) => labelPlane.material as MeshBasicMaterial)
+    const guideStart = 0.82
 
     const animate = (time: number) => {
       const deltaSeconds = Math.min(Math.max((time - previousTime) / 1000, 0), 0.05)
@@ -840,61 +841,47 @@ function PhysicsDiceCanvas({
       world.step(PHYSICS_STEP_SECONDS, deltaSeconds, PHYSICS_MAX_SUBSTEPS)
 
       const rawProgress = Math.min((time - startedAt) / PHYSICS_ROLL_DURATION_MS, 1)
-      const brakeProgress = easeOutCubic(clamp01((rawProgress - 0.55) / 0.42))
-      const settleBlend = easeInOutCubic(clamp01((rawProgress - 0.68) / 0.32))
+      const guideBlend = easeInOutCubic(clamp01((rawProgress - guideStart) / (1 - guideStart)))
       const linearSpeed = diceBody.velocity.length()
       const angularSpeed = diceBody.angularVelocity.length()
       const bodyLift = Math.max(0, diceBody.position.y - (TABLE_SURFACE_Y + halfHeight))
-      const nearTable = bodyLift < 0.18
+      const nearTable = bodyLift < 0.12
 
       if (nearTable && !wasNearTable) {
-        impactPulse = Math.min(1, impactPulse + Math.abs(lastVerticalVelocity) * 0.28 + angularSpeed * 0.014)
+        impactPulse = Math.min(1, impactPulse + Math.abs(lastVerticalVelocity) * 0.5 + angularSpeed * 0.018)
       }
       wasNearTable = nearTable
       lastVerticalVelocity = diceBody.velocity.y
-      impactPulse = Math.max(0, impactPulse - deltaSeconds * 3.3)
+      impactPulse = Math.max(0, impactPulse - deltaSeconds * 4.6)
 
-      if (rawProgress > 0.55) {
-        diceBody.velocity.scale(1 - brakeProgress * 0.075, diceBody.velocity)
-        diceBody.angularVelocity.scale(1 - brakeProgress * 0.12, diceBody.angularVelocity)
+      const softBrake = easeInOutCubic(clamp01((rawProgress - 0.64) / 0.28))
+      diceBody.velocity.scale(1 - softBrake * 0.035, diceBody.velocity)
+      diceBody.angularVelocity.scale(1 - softBrake * 0.055, diceBody.angularVelocity)
+      if (guideBlend > 0.82) {
+        diceBody.velocity.scale(0.78, diceBody.velocity)
+        diceBody.angularVelocity.scale(0.68, diceBody.angularVelocity)
       }
 
-      if (rawProgress > 0.58 && linearSpeed < 0.32 && angularSpeed < 0.7) {
+      if (rawProgress > guideStart && linearSpeed < 0.2 && angularSpeed < 0.36) {
         settledFor += deltaSeconds
       } else {
         settledFor = 0
       }
 
-      dice.position.set(
+      const physicsPosition = new Vector3(
         clamp(diceBody.position.x, -1.58, 1.42),
         diceBody.position.y,
-        clamp(diceBody.position.z, -0.46, 0.46),
+        clamp(diceBody.position.z, -0.5, 0.5),
       )
+      dice.position.copy(physicsPosition).lerp(targetPosition, guideBlend)
       dice.quaternion.set(diceBody.quaternion.x, diceBody.quaternion.y, diceBody.quaternion.z, diceBody.quaternion.w)
-
-      if (settleBlend > 0) {
-        const finalWobble = Math.sin(rawProgress * Math.PI * (8.4 + profile.settle)) * (1 - settleBlend) * 0.045
-        dice.position.lerp(finalPosition, settleBlend)
-        dice.quaternion.slerp(resultQuaternion, settleBlend)
-        dice.rotateOnAxis(new Vector3(1, 0, 0), finalWobble)
-        placeDiceOnTable(
-          dice,
-          bodyMesh,
-          diceBounds,
-          impactPulse * 0.018 * (1 - settleBlend),
-          TABLE_VISUAL_SINK,
-        )
+      dice.quaternion.slerp(resultQuaternion, guideBlend)
+      if (guideBlend > 0.94) {
+        placeDiceOnTable(dice, bodyMesh, diceBounds, 0, 0.02)
       }
 
-      if (settleBlend > 0.68) {
-        diceBody.position.set(dice.position.x, dice.position.y, dice.position.z)
-        diceBody.quaternion.set(dice.quaternion.x, dice.quaternion.y, dice.quaternion.z, dice.quaternion.w)
-        diceBody.velocity.scale(0.26, diceBody.velocity)
-        diceBody.angularVelocity.scale(0.2, diceBody.angularVelocity)
-      }
-
-      const heightForShadow = Math.max(0, dice.position.y - (TABLE_SURFACE_Y + halfHeight))
-      const shadowStrength = clamp01(1 - heightForShadow * 0.92)
+      const visualLift = Math.max(0, dice.position.y - targetPosition.y)
+      const shadowStrength = clamp01(1 - visualLift * 0.92)
       const speedEnergy = clamp01((linearSpeed + angularSpeed * 0.08) / 5.2)
       contactShadow.position.x = dice.position.x
       contactShadow.position.z = dice.position.z + 0.04
@@ -905,11 +892,11 @@ function PhysicsDiceCanvas({
         1,
       )
 
-      camera.position.x = Math.sin(rawProgress * Math.PI * 1.08) * 0.018 * (1 - settleBlend)
-      camera.position.y = 0.52 + Math.sin(rawProgress * Math.PI) * 0.02 * (1 - settleBlend * 0.6)
+      camera.position.x = Math.sin(rawProgress * Math.PI * 1.08) * 0.018 * (1 - guideBlend)
+      camera.position.y = 0.52 + Math.sin(rawProgress * Math.PI) * 0.02 * (1 - guideBlend * 0.6)
       camera.lookAt(0, -0.12, 0)
 
-      if ((rawProgress >= 0.74 || settledFor >= 0.2) && !landed) {
+      if ((rawProgress >= guideStart || settledFor >= 0.16) && !landed) {
         landed = true
         revealStartedAt = time
         landedRef.current()
@@ -918,7 +905,7 @@ function PhysicsDiceCanvas({
       const revealEase = landed ? easeOutCubic(clamp01((time - revealStartedAt) / 320)) : 0
       const resultPulse = revealEase > 0 && revealEase < 1 ? Math.sin(revealEase * Math.PI) * 0.12 : 0
       sideLabelMaterials.forEach((material) => {
-        material.opacity = 1 - Math.max(settleBlend, revealEase) * 0.88
+        material.opacity = 1 - Math.max(guideBlend, revealEase) * 0.88
       })
       if (landed) {
         resultFace.visible = true
