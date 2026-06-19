@@ -2098,7 +2098,7 @@ describe('App user workflow regressions', () => {
 
     await renderLoadedApp()
 
-    const banner = screen.getByRole('status', { name: 'Pending roll' })
+    const banner = await screen.findByRole('status', { name: 'Pending roll' })
     expect(within(banner).getByText('Waiting on Borin to roll')).toBeInTheDocument()
     expect(within(banner).getByText('Turn 3: initiative')).toBeInTheDocument()
     expect(within(banner).getByText('The bandits draw steel. Everyone roll initiative.')).toBeInTheDocument()

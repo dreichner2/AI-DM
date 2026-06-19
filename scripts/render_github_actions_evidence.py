@@ -710,7 +710,7 @@ def build_evidence(
     env: dict[str, str] | None = None,
     worktree: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    env = env or os.environ
+    env = os.environ if env is None else env
     ci_run_url = ci_run_url.strip()
     closed_beta_rc_run_url = closed_beta_rc_run_url.strip() or _closed_beta_rc_url_from_env(env)
     discovery_commit = commit.strip() or env.get('GITHUB_SHA', '') or _git_commit(short=False)
