@@ -946,6 +946,45 @@ def test_build_status_report_marks_external_proof_values_check_generated(tmp_pat
     assert 'required complete: 0/22' in report['items'][0]['evidence']
 
 
+def test_rc_finalize_signoff_row_requires_operator_signoff_even_when_values_check_exists(tmp_path, monkeypatch):
+    values_status_md = tmp_path / 'external-proof-values-status.md'
+    values_status_json = tmp_path / 'external-proof-values-status.json'
+    values_status_md.write_text('# External Proof Values Check\n', encoding='utf-8')
+    values_status_json.write_text(
+        json.dumps(
+            {
+                'status': 'passed',
+                'required_complete': '25/25',
+                'missing_required_count': 0,
+                'invalid_error_count': 0,
+            }
+        ),
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(checklist_status, 'DEFAULT_EXTERNAL_PROOF_VALUES_STATUS_MARKDOWN', values_status_md)
+    monkeypatch.setattr(checklist_status, 'DEFAULT_EXTERNAL_PROOF_VALUES_STATUS', values_status_json)
+    checklist = tmp_path / 'release_checklist.md'
+    checklist.write_text(
+        (
+            '## Preflight\n'
+            '- [ ] `make rc-finalize-signoff` runs after external hosted proof values are filled and merged. '
+            'It requires `make external-proof-values-check` to pass.\n'
+        ),
+        encoding='utf-8',
+    )
+    packet_path = _write_packet(tmp_path / 'packet.json', hosted_ready=False)
+
+    report = checklist_status.build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-06-19T00:00:00+00:00',
+    )
+
+    assert report['counts'] == {'external-required': 1}
+    assert 'operator signoff status is incomplete' in report['items'][0]['evidence']
+    assert report['items'][0]['remaining_action'] == 'fill external proof values and run make rc-finalize-signoff'
+
+
 def test_build_status_report_fails_external_proof_values_check_with_invalid_values(tmp_path, monkeypatch):
     values_status_md = tmp_path / 'external-proof-values-status.md'
     values_status_json = tmp_path / 'external-proof-values-status.json'

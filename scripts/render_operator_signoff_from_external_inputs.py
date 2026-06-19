@@ -136,6 +136,22 @@ def _write_json(path: pathlib.Path, payload: dict[str, Any]) -> None:
     resolved.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n', encoding='utf-8')
 
 
+def write_self_evidence_to_values(*, values_path: pathlib.Path, status_output: pathlib.Path) -> str:
+    resolved_values = _resolve_repo_path(values_path)
+    if not resolved_values.exists():
+        raise ValueError(
+            f'external proof values file is missing: {_relative_or_absolute(resolved_values)}'
+        )
+    payload = _load_json_object(values_path)
+    evidence = _relative_or_absolute(_resolve_repo_path(status_output))
+    if isinstance(payload.get('values'), dict):
+        payload['values']['operator_signoff_manifest_evidence'] = evidence
+    else:
+        payload['operator_signoff_manifest_evidence'] = evidence
+    _write_json(values_path, payload)
+    return evidence
+
+
 def _values_from_payload(payload: dict[str, Any]) -> dict[str, str]:
     raw_values = payload.get('values') if isinstance(payload.get('values'), dict) else payload
     values: dict[str, str] = {}
@@ -346,6 +362,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--status-output', type=pathlib.Path, default=DEFAULT_STATUS_OUTPUT)
     parser.add_argument('--status-json-output', type=pathlib.Path, default=DEFAULT_STATUS_JSON_OUTPUT)
     parser.add_argument('--write-values-template', type=pathlib.Path, nargs='?', const=DEFAULT_VALUES_TEMPLATE, default=None)
+    parser.add_argument(
+        '--write-self-evidence-to-values',
+        action='store_true',
+        help=(
+            'After a passed signoff render, write operator_signoff_manifest_evidence back to '
+            'the external proof values file using --status-output.'
+        ),
+    )
     parser.add_argument('--generated-at', default='', help=argparse.SUPPRESS)
     parser.add_argument('--require-complete', action='store_true')
     return parser
@@ -411,6 +435,21 @@ def main(argv: list[str] | None = None) -> int:
         print(
             '[operator-signoff-from-inputs] Wrote status JSON to '
             f'{_relative_or_absolute(_resolve_repo_path(args.status_json_output))}.'
+        )
+    if args.write_self_evidence_to_values and report.get('status') == 'passed':
+        try:
+            evidence = write_self_evidence_to_values(values_path=args.values, status_output=args.status_output)
+        except ValueError as exc:
+            print(f'[operator-signoff-from-inputs] {exc}', file=sys.stderr)
+            return 2
+        print(
+            '[operator-signoff-from-inputs] Wrote operator_signoff_manifest_evidence to '
+            f'{_relative_or_absolute(_resolve_repo_path(args.values))}: {evidence}'
+        )
+    elif args.write_self_evidence_to_values:
+        print(
+            '[operator-signoff-from-inputs] Skipped operator_signoff_manifest_evidence update '
+            f'because signoff status is {report.get("status") or "unknown"}.'
         )
     if args.require_complete and report.get('status') != 'passed':
         return 1

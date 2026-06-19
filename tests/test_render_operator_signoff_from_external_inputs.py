@@ -294,6 +294,76 @@ def test_main_writes_values_template_and_signoff_preview(tmp_path):
     assert json.loads(status_json.read_text(encoding='utf-8'))['status'] == 'passed'
 
 
+def test_main_writes_self_evidence_to_values_after_passed_signoff(tmp_path):
+    values = tmp_path / 'external-proof-values.json'
+    packet = tmp_path / 'release-evidence-packet.json'
+    output = tmp_path / 'operator-signoff.json'
+    status_output = tmp_path / 'operator-signoff-status.md'
+    status_json = tmp_path / 'operator-signoff-status.json'
+    values.write_text(json.dumps(_complete_values_payload()), encoding='utf-8')
+    packet.write_text(json.dumps({'source_archive': {'sha256': 'a' * 64}}), encoding='utf-8')
+    _write_hosted_target_reports(tmp_path)
+
+    exit_code = main(
+        [
+            '--values',
+            str(values),
+            '--packet-json',
+            str(packet),
+            '--output',
+            str(output),
+            '--status-output',
+            str(status_output),
+            '--status-json-output',
+            str(status_json),
+            '--write-self-evidence-to-values',
+            '--require-complete',
+            '--generated-at',
+            '2026-06-19T00:01:00+00:00',
+        ]
+    )
+
+    stored_values = json.loads(values.read_text(encoding='utf-8'))
+    assert exit_code == 0
+    assert json.loads(status_json.read_text(encoding='utf-8'))['status'] == 'passed'
+    assert stored_values['values']['operator_signoff_manifest_evidence'] == str(status_output)
+
+
+def test_main_does_not_write_self_evidence_after_invalid_signoff(tmp_path):
+    values = tmp_path / 'external-proof-values.json'
+    packet = tmp_path / 'release-evidence-packet.json'
+    output = tmp_path / 'operator-signoff.json'
+    status_output = tmp_path / 'operator-signoff-status.md'
+    status_json = tmp_path / 'operator-signoff-status.json'
+    values.write_text(json.dumps(_complete_values_payload()), encoding='utf-8')
+    packet.write_text(json.dumps({'source_archive': {'sha256': 'b' * 64}}), encoding='utf-8')
+    _write_hosted_target_reports(tmp_path)
+
+    exit_code = main(
+        [
+            '--values',
+            str(values),
+            '--packet-json',
+            str(packet),
+            '--output',
+            str(output),
+            '--status-output',
+            str(status_output),
+            '--status-json-output',
+            str(status_json),
+            '--write-self-evidence-to-values',
+            '--require-complete',
+            '--generated-at',
+            '2026-06-19T00:01:00+00:00',
+        ]
+    )
+
+    stored_values = json.loads(values.read_text(encoding='utf-8'))
+    assert exit_code == 1
+    assert json.loads(status_json.read_text(encoding='utf-8'))['status'] == 'invalid'
+    assert 'operator_signoff_manifest_evidence' not in stored_values['values']
+
+
 def test_main_validates_external_input_source_archive_against_packet_checksum(tmp_path):
     values = tmp_path / 'external-proof-values.json'
     packet = tmp_path / 'release-evidence-packet.json'

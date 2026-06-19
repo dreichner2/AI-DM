@@ -116,6 +116,25 @@ def test_external_proof_values_merge_target_uses_strict_default_helper():
     assert commands == ['$(PYTHON) scripts/merge_external_proof_values.py $(EXTERNAL_PROOF_VALUES_MERGE_ARGS)']
 
 
+def test_rc_finalize_signoff_generates_final_manifest_and_rechecks_values():
+    makefile = (REPO_ROOT / 'Makefile').read_text(encoding='utf-8')
+    commands = _target_commands(makefile, 'rc-finalize-signoff')
+
+    assert commands[0] == (
+        '$(PYTHON) scripts/render_operator_signoff_from_external_inputs.py '
+        '--output tmp/release/operator-signoff.json '
+        '--status-output tmp/release/operator-signoff-status.md '
+        '--status-json-output tmp/release/operator-signoff-status.json '
+        '--write-self-evidence-to-values --require-complete $(OPERATOR_SIGNOFF_FROM_INPUTS_ARGS)'
+    )
+    assert commands[1] == (
+        '$(PYTHON) scripts/check_external_proof_values.py --require-complete '
+        '$(EXTERNAL_PROOF_VALUES_CHECK_ARGS)'
+    )
+    assert any('scripts/check_release_artifact_consistency.py' in command for command in commands)
+    assert commands[-1] == '$(PYTHON) scripts/render_release_checklist_status.py $(RELEASE_CHECKLIST_STATUS_ARGS)'
+
+
 def test_github_actions_rc_plan_target_uses_guarded_helper():
     makefile = (REPO_ROOT / 'Makefile').read_text(encoding='utf-8')
     commands = _target_commands(makefile, 'github-actions-rc-plan')

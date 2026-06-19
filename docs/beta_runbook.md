@@ -43,7 +43,12 @@
    that fragment into the values file. The merge helper refuses
    planned/unusable fragments, rejects persisted token fields, and requires the
    existing operator values file unless `--allow-missing-existing` is passed
-   deliberately for a one-off bootstrap.
+   deliberately for a one-off bootstrap. After the merge and any remaining
+   manual proof links or paths are filled, run `make rc-finalize-signoff`; it
+   writes the final `tmp/release/operator-signoff.json`, records the generated
+   signoff status back into `tmp/release/external-proof-values.json`, requires
+   the external proof values check to pass, and refreshes the release
+   packet/checklist.
    Before closing the RC gate issues, run `make rc-handoff-artifacts` after the
    latest `make closed-beta-rc` evidence pass. This records frontend `npm ci`
    evidence, creates the source archive, refreshes a planned hosted RC command
@@ -66,11 +71,12 @@
    GitHub Actions URLs are intentionally not pre-seeded as final signoff proof
    until the packet shows the release candidate was regenerated from a clean
    signed-off worktree.
-   Review the draft/action plan, copy reconciled values into
-   `tmp/release/operator-signoff.json`, fill any remaining GitHub Actions URLs,
-   hosted proof links, backup/restore proof, worker-process proof, telemetry
-   receipt, source-archive attachment, issue-closure review, `npm ci`,
-   `make clean`, and `make clean-deps` evidence, then run:
+   Review the draft/action plan, then prefer `make rc-finalize-signoff` once
+   the external proof values file has the remaining GitHub Actions URLs, hosted
+   proof links, backup/restore proof, worker-process proof, telemetry receipt,
+   source-archive attachment, issue-closure review, `npm ci`, `make clean`,
+   and `make clean-deps` evidence. If you manually copy reconciled values into
+   `tmp/release/operator-signoff.json`, still run:
    `make operator-signoff-status OPERATOR_SIGNOFF_STATUS_ARGS="--require-complete"`.
    Final signoff also requires a real hosted/staging `target_url`, signed-off
    commit SHA, operator name, and ISO timestamp; placeholder or example values

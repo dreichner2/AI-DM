@@ -169,7 +169,7 @@ def _operator_signoff_status(packet: dict[str, Any]) -> ChecklistStatus:
     return _status(
         'external-required',
         f'operator signoff status is {status}; required complete: {signoff.get("required_complete") or "missing"}',
-        'fill tmp/release/operator-signoff.json and rerun operator-signoff-status with --require-complete',
+        'fill external proof values and run make rc-finalize-signoff',
     )
 
 
@@ -889,6 +889,9 @@ def classify_item(item: ChecklistItem, packet: dict[str, Any]) -> ChecklistStatu
 
     if 'operator-signoff-values-template' in lowered or 'external-proof-values.example.json' in lowered:
         return _with_item(item, _external_proof_values_template_status())
+
+    if 'rc-finalize-signoff' in lowered:
+        return _with_item(item, _operator_signoff_status(packet))
 
     if 'external-proof-values-check' in lowered or 'external-proof-values-status' in lowered:
         return _with_item(item, _external_proof_values_check_status())

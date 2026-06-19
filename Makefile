@@ -1,7 +1,7 @@
 PYTHON := .venv/bin/python
 FRONTEND_DIR := aidm_frontend
 
-.PHONY: install backend frontend unified test lint typecheck build bundle-budget smoke scenario-regression socket-concurrency-smoke hosted-cookie-auth-smoke security-forbidden-smoke session-export-import-smoke hosted-rc-evidence hosted-rc-plan export-support-bundle beta-slo-baseline local-beta-slo-baseline backup-restore-drill migration-chain-drill browser-smoke visual-smoke visual-smoke-review frontend-npm-ci-evidence packaging-cleanup-evidence github-actions-rc-plan github-actions-evidence clean clean-deps source-archive rc-issue-evidence rc-issue-closure-evidence release-evidence-packet release-artifact-consistency release-checklist-status rc-recommendation-matrix external-proof-inputs external-proof-execution-plan operator-signoff-values-template external-proof-values-merge external-proof-values-check operator-signoff-from-inputs operator-signoff-draft operator-signoff-action-plan operator-signoff-status rc-handoff-artifacts post-rc-issue-evidence db-upgrade health secrets api-types request-json-parsing state-writers socketio-worker-model-decision dev-check closed-beta-rc closed-beta-rc-fast deployment-readiness observability-check reproject-session reproject-all
+.PHONY: install backend frontend unified test lint typecheck build bundle-budget smoke scenario-regression socket-concurrency-smoke hosted-cookie-auth-smoke security-forbidden-smoke session-export-import-smoke hosted-rc-evidence hosted-rc-plan export-support-bundle beta-slo-baseline local-beta-slo-baseline backup-restore-drill migration-chain-drill browser-smoke visual-smoke visual-smoke-review frontend-npm-ci-evidence packaging-cleanup-evidence github-actions-rc-plan github-actions-evidence clean clean-deps source-archive rc-issue-evidence rc-issue-closure-evidence release-evidence-packet release-artifact-consistency release-checklist-status rc-recommendation-matrix external-proof-inputs external-proof-execution-plan operator-signoff-values-template external-proof-values-merge external-proof-values-check operator-signoff-from-inputs operator-signoff-draft operator-signoff-action-plan operator-signoff-status rc-finalize-signoff rc-handoff-artifacts post-rc-issue-evidence db-upgrade health secrets api-types request-json-parsing state-writers socketio-worker-model-decision dev-check closed-beta-rc closed-beta-rc-fast deployment-readiness observability-check reproject-session reproject-all
 
 install:
 	python3 -m venv .venv
@@ -149,6 +149,14 @@ operator-signoff-action-plan:
 
 operator-signoff-status:
 	$(PYTHON) scripts/render_operator_signoff_status.py $(OPERATOR_SIGNOFF_STATUS_ARGS)
+
+rc-finalize-signoff:
+	$(PYTHON) scripts/render_operator_signoff_from_external_inputs.py --output tmp/release/operator-signoff.json --status-output tmp/release/operator-signoff-status.md --status-json-output tmp/release/operator-signoff-status.json --write-self-evidence-to-values --require-complete $(OPERATOR_SIGNOFF_FROM_INPUTS_ARGS)
+	$(PYTHON) scripts/check_external_proof_values.py --require-complete $(EXTERNAL_PROOF_VALUES_CHECK_ARGS)
+	$(PYTHON) scripts/render_release_evidence_packet.py --json-output tmp/release/release-evidence-packet.json $(RELEASE_EVIDENCE_PACKET_ARGS)
+	$(PYTHON) scripts/check_release_artifact_consistency.py $(RELEASE_ARTIFACT_CONSISTENCY_ARGS)
+	$(PYTHON) scripts/render_release_evidence_packet.py --json-output tmp/release/release-evidence-packet.json $(RELEASE_EVIDENCE_PACKET_ARGS)
+	$(PYTHON) scripts/render_release_checklist_status.py $(RELEASE_CHECKLIST_STATUS_ARGS)
 
 rc-handoff-artifacts:
 	$(PYTHON) scripts/prepare_github_actions_rc_evidence.py $(GITHUB_ACTIONS_RC_PLAN_ARGS)

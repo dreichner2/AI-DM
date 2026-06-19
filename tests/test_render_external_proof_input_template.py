@@ -155,6 +155,8 @@ def test_build_template_lists_required_fields_and_command_templates():
     assert '--external-telemetry-receipt <link-or-path>' in commands['hosted_rc_evidence']['command']
     assert commands['external_proof_values_merge']['command'] == 'make external-proof-values-merge'
     assert 'existing operator-filled external proof values file' in commands['external_proof_values_merge']['description']
+    assert commands['operator_signoff']['command'] == 'make rc-finalize-signoff'
+    assert 'stamp its evidence into external proof values' in commands['operator_signoff']['description']
     assert template['external_recommendation_keys'] == ['github_actions_gate']
     assert '# External Proof Inputs' in markdown
     assert '| Signoff key | Issues | Category | Current context | Prerequisite | Next action | Evidence to record | Inputs |' in markdown

@@ -615,8 +615,11 @@ def _command_templates(source_archive: dict[str, Any]) -> list[dict[str, str]]:
         },
         {
             'key': 'operator_signoff',
-            'description': 'Validate final operator signoff after tmp/release/operator-signoff.json is filled.',
-            'command': 'make operator-signoff-status OPERATOR_SIGNOFF_STATUS_ARGS="--require-complete"',
+            'description': (
+                'Generate final operator signoff, stamp its evidence into external proof values, '
+                'and refresh the packet/checklist.'
+            ),
+            'command': 'make rc-finalize-signoff',
         },
         {
             'key': 'clean_signed_off_handoff',

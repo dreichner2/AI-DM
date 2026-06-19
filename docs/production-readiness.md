@@ -84,7 +84,7 @@ secret/env managers. Choose the matching exposure mode in
   `git diff --exit-code aidm_frontend/src/apiContract.generated.ts`
 - Frontend tests, build, bundle budget, single-origin browser smoke against the built frontend, visual smoke screenshots, and visual-smoke review evidence
 - Hosted RC evidence via `make hosted-rc-evidence` against the target URL, including deployment readiness, hosted cookie auth, non-admin forbidden responses, session export/import, beta SLO baseline, and the manual backup/restore, worker-process, and source-archive attachment proof flags needed to avoid `manual-evidence-required`
-- Final operator sign-off via `make operator-signoff-status OPERATOR_SIGNOFF_STATUS_ARGS="--require-complete"` after filling `tmp/release/operator-signoff.json` from `docs/rc_operator_signoff_manifest.example.json` with GitHub Actions URLs, hosted proof links, target env evidence, backup/restore proof, worker-process proof, telemetry receipt, source-archive attachment, issue-closure review, and packaging command evidence
+- Final operator sign-off via `make rc-finalize-signoff` after filling and merging `tmp/release/external-proof-values.json` with GitHub Actions URLs, hosted proof links, target env evidence, backup/restore proof, worker-process proof, telemetry receipt, source-archive attachment, issue-closure review, and packaging command evidence. Manual signoff edits still need `make operator-signoff-status OPERATOR_SIGNOFF_STATUS_ARGS="--require-complete"` before issue closure.
 - Socket.IO worker-model decision:
   `python scripts/check_socketio_worker_model_decision.py`
 - Observability bundle:
