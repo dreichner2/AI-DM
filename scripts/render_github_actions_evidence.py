@@ -131,6 +131,14 @@ def _github_run_id(url: str) -> str:
     return match.group(3)
 
 
+def _repository_from_run_url(url: str) -> str:
+    match = GITHUB_RUN_URL_RE.match(url.strip())
+    if not match:
+        return ''
+    owner, repo, _run_id = match.groups()
+    return f'{owner}/{repo}'
+
+
 def _gh_run_url(
     *,
     workflow: str,
@@ -235,8 +243,8 @@ def _artifact_payload(artifact: dict[str, Any], *, expected_name: str, run_id: s
         'status': 'passed',
         'expected_name': expected_name,
         'name': str(artifact.get('name') or ''),
-        'url': str(artifact.get('url') or ''),
-        'size_in_bytes': artifact.get('sizeInBytes'),
+        'url': str(artifact.get('url') or artifact.get('archive_download_url') or ''),
+        'size_in_bytes': artifact.get('sizeInBytes') or artifact.get('size_in_bytes'),
         'expired': artifact.get('expired'),
         'run_id': run_id,
         'checked': True,
@@ -326,9 +334,14 @@ def _download_artifact_contents(
             for path in root.rglob('*')
             if path.is_file()
         )
+        artifact_path_candidates = set(artifact_paths)
+        for artifact_path in artifact_paths:
+            if artifact_path.startswith(('release/', 'verification_artifacts/')):
+                artifact_path_candidates.add(f'tmp/{artifact_path}')
+        artifact_paths_for_matching = sorted(artifact_path_candidates)
 
     matches_by_glob: dict[str, list[str]] = {
-        pattern: [candidate for candidate in artifact_paths if fnmatch.fnmatch(candidate, pattern)]
+        pattern: [candidate for candidate in artifact_paths_for_matching if fnmatch.fnmatch(candidate, pattern)]
         for pattern in required_globs
     }
     missing_globs = [pattern for pattern, matches in matches_by_glob.items() if not matches]
@@ -346,6 +359,51 @@ def _download_artifact_contents(
     )
 
 
+def _artifacts_from_api_payload(payload: Any) -> list[dict[str, Any]] | None:
+    if isinstance(payload, dict):
+        artifacts = payload.get('artifacts')
+    elif isinstance(payload, list):
+        artifacts = payload
+    else:
+        return None
+    if not isinstance(artifacts, list):
+        return None
+    return [artifact for artifact in artifacts if isinstance(artifact, dict)]
+
+
+def _list_run_artifacts(
+    *,
+    gh_executable: str,
+    run_url: str,
+    run_id: str,
+) -> tuple[list[dict[str, Any]] | None, str]:
+    payload, error = _gh_json(
+        ('run', 'view', run_id, '--json', 'artifacts'),
+        gh_executable=gh_executable,
+    )
+    if not error:
+        artifacts = _artifacts_from_api_payload(payload)
+        if artifacts is not None:
+            return artifacts, ''
+        error = 'gh run view returned no artifacts list'
+
+    repository = _repository_from_run_url(run_url) or _git_repository()
+    if not repository:
+        return None, error or 'could not determine repository for artifact lookup'
+
+    api_payload, api_error = _gh_json(
+        ('api', f'repos/{repository}/actions/runs/{run_id}/artifacts', '--paginate'),
+        gh_executable=gh_executable,
+    )
+    if api_error:
+        combined = f'{error}; gh api artifacts: {api_error}' if error else f'gh api artifacts: {api_error}'
+        return None, combined
+    artifacts = _artifacts_from_api_payload(api_payload)
+    if artifacts is None:
+        return None, 'gh api artifacts returned no artifacts list'
+    return artifacts, ''
+
+
 def _closed_beta_rc_artifact_details(
     *,
     gh_executable: str,
@@ -360,16 +418,16 @@ def _closed_beta_rc_artifact_details(
         return _unchecked_artifact_payload(expected_name=expected_name), ''
     if defer_current_run_check:
         return _deferred_artifact_payload(expected_name=expected_name, run_id=run_id), ''
-    payload, error = _gh_json(
-        ('run', 'view', run_id, '--json', 'artifacts'),
+    artifacts, error = _list_run_artifacts(
         gh_executable=gh_executable,
+        run_url=closed_beta_rc_run_url,
+        run_id=run_id,
     )
     if error:
         return (
             _unchecked_artifact_payload(expected_name=expected_name, status='unknown', run_id=run_id, error=error),
             f'Closed Beta RC artifacts: {error}',
         )
-    artifacts = payload.get('artifacts') if isinstance(payload, dict) else []
     if not isinstance(artifacts, list):
         return (
             _unchecked_artifact_payload(

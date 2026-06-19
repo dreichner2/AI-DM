@@ -264,6 +264,84 @@ def test_build_evidence_records_closed_beta_artifact_details(monkeypatch):
     assert ('gh-test', 'run', 'view', '222', '--json', 'artifacts') in calls
 
 
+def test_build_evidence_falls_back_to_actions_artifacts_api(monkeypatch):
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append(tuple(args))
+        if args[1:3] == ('workflow', 'list'):
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {'name': 'AIDM CI', 'state': 'active', 'path': '.github/workflows/ci.yml'},
+                        {'name': 'Closed Beta RC', 'state': 'active', 'path': '.github/workflows/closed-beta-rc.yml'},
+                    ]
+                ),
+            )
+        if args[1:3] == ('run', 'list'):
+            workflow = args[args.index('--workflow') + 1]
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {
+                            'databaseId': 111 if workflow == 'AIDM CI' else 222,
+                            'displayTitle': workflow,
+                            'status': 'completed',
+                            'conclusion': 'success',
+                            'event': 'workflow_dispatch',
+                            'headSha': 'abc123',
+                            'updatedAt': '2026-06-19T00:00:00Z',
+                            'url': f'https://github.com/example/AIDM/actions/runs/{111 if workflow == "AIDM CI" else 222}',
+                        }
+                    ]
+                ),
+            )
+        if args[1:3] == ('run', 'view'):
+            return SimpleNamespace(
+                returncode=1,
+                stderr='Unknown JSON field: "artifacts"',
+                stdout='',
+            )
+        if args[1] == 'api':
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        'artifacts': [
+                            {
+                                'name': 'closed-beta-rc-evidence',
+                                'archive_download_url': 'https://api.github.com/repos/example/AIDM/actions/artifacts/333/zip',
+                                'size_in_bytes': 12345,
+                                'expired': False,
+                            }
+                        ]
+                    }
+                ),
+            )
+        return SimpleNamespace(returncode=1, stderr='unexpected call', stdout='')
+
+    monkeypatch.setattr(render_github_actions_evidence.subprocess, 'run', fake_run)
+
+    evidence = build_evidence(
+        ci_run_url='https://github.com/example/AIDM/actions/runs/111',
+        closed_beta_rc_run_url='https://github.com/example/AIDM/actions/runs/222',
+        include_gh_details=True,
+        gh_executable='gh-test',
+        commit='abc123',
+        repository='example/AIDM',
+        generated_at='2026-06-19T00:05:00+00:00',
+        env={},
+    )
+
+    assert evidence['status'] == 'passed'
+    assert evidence['closed_beta_rc_artifact_status'] == 'passed'
+    assert evidence['closed_beta_rc_artifact']['name'] == 'closed-beta-rc-evidence'
+    assert evidence['closed_beta_rc_artifact']['size_in_bytes'] == 12345
+    assert ('gh-test', 'api', 'repos/example/AIDM/actions/runs/222/artifacts', '--paginate') in calls
+
+
 def test_build_evidence_verifies_closed_beta_artifact_contents(monkeypatch):
     calls: list[tuple[str, ...]] = []
 
@@ -338,7 +416,7 @@ def test_build_evidence_verifies_closed_beta_artifact_contents(monkeypatch):
                 'tmp/verification_artifacts/visual-smoke/2026-06-19T00-00-00Z/mobile-full.png',
                 'tmp/verification_artifacts/visual-smoke/2026-06-19T00-00-00Z/short-height-composer.png',
             ):
-                path = output_dir / relative_path
+                path = output_dir / relative_path.removeprefix('tmp/')
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('ok', encoding='utf-8')
             return SimpleNamespace(returncode=0, stdout='')
