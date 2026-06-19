@@ -815,6 +815,7 @@ def test_build_packet_marks_local_handoff_artifacts_stale_when_older_than_rc_evi
     slo_path = tmp_path / 'beta-slo-baseline.md'
     frontend_npm_ci_path = tmp_path / 'frontend-npm-ci-evidence.md'
     packaging_cleanup_path = tmp_path / 'packaging-cleanup-evidence.md'
+    release_artifact_consistency_path = tmp_path / 'release-artifact-consistency.md'
 
     _write_issue_evidence_without_exceptions(issue_dir)
     _write_tar(archive_path, ['AIDM-main/README.md'])
@@ -822,6 +823,7 @@ def test_build_packet_marks_local_handoff_artifacts_stale_when_older_than_rc_evi
     _write_visual_review(visual_review_path, visual_smoke_dir)
     _write_frontend_npm_ci_evidence(frontend_npm_ci_path)
     _write_packaging_cleanup_evidence(packaging_cleanup_path)
+    _write_release_artifact_consistency(release_artifact_consistency_path)
     hosted_auth_path.write_text('- Status: passed\n- Mode: isolated\n- Target URL: `isolated local runtime`\n', encoding='utf-8')
     security_path.write_text('- Status: passed\n- Mode: isolated\n- Target URL: `isolated local runtime`\n', encoding='utf-8')
     export_import_path.write_text('- Status: passed\n- Mode: isolated\n- Target URL: `isolated local runtime`\n', encoding='utf-8')
@@ -846,6 +848,7 @@ def test_build_packet_marks_local_handoff_artifacts_stale_when_older_than_rc_evi
         beta_slo_baseline_path=slo_path,
         frontend_npm_ci_evidence_path=frontend_npm_ci_path,
         packaging_cleanup_evidence_path=packaging_cleanup_path,
+        release_artifact_consistency_path=release_artifact_consistency_path,
     )
 
     assert packet['overall_status'] == 'incomplete'
@@ -922,6 +925,7 @@ def test_build_packet_marks_github_actions_evidence_stale_when_older_than_rc_evi
     slo_path = tmp_path / 'beta-slo-baseline.md'
     frontend_npm_ci_path = tmp_path / 'frontend-npm-ci-evidence.md'
     packaging_cleanup_path = tmp_path / 'packaging-cleanup-evidence.md'
+    release_artifact_consistency_path = tmp_path / 'release-artifact-consistency.md'
 
     _write_github_actions(github_actions_path)
     rc_evidence_path.write_text(
@@ -935,6 +939,7 @@ def test_build_packet_marks_github_actions_evidence_stale_when_older_than_rc_evi
     _write_visual_review(visual_review_path, visual_smoke_dir)
     _write_frontend_npm_ci_evidence(frontend_npm_ci_path)
     _write_packaging_cleanup_evidence(packaging_cleanup_path)
+    _write_release_artifact_consistency(release_artifact_consistency_path)
     hosted_auth_path.write_text('- Status: passed\n- Mode: isolated\n- Target URL: `isolated local runtime`\n', encoding='utf-8')
     security_path.write_text('- Status: passed\n- Mode: isolated\n- Target URL: `isolated local runtime`\n', encoding='utf-8')
     export_import_path.write_text('- Status: passed\n- Mode: isolated\n- Target URL: `isolated local runtime`\n', encoding='utf-8')
@@ -954,6 +959,7 @@ def test_build_packet_marks_github_actions_evidence_stale_when_older_than_rc_evi
         beta_slo_baseline_path=slo_path,
         frontend_npm_ci_evidence_path=frontend_npm_ci_path,
         packaging_cleanup_evidence_path=packaging_cleanup_path,
+        release_artifact_consistency_path=release_artifact_consistency_path,
     )
 
     assert packet['github_actions']['status'] == 'stale'
@@ -1203,6 +1209,7 @@ def test_build_packet_marks_isolated_slo_baseline_local_only(tmp_path):
     slo_path = tmp_path / 'beta-slo-baseline.md'
     frontend_npm_ci_path = tmp_path / 'frontend-npm-ci-evidence.md'
     packaging_cleanup_path = tmp_path / 'packaging-cleanup-evidence.md'
+    release_artifact_consistency_path = tmp_path / 'release-artifact-consistency.md'
 
     rc_evidence_path.write_text(
         json.dumps({'status': 'passed', 'commands': [], 'git_worktree': {'state': 'clean', 'dirty': False}}),
@@ -1227,6 +1234,7 @@ def test_build_packet_marks_isolated_slo_baseline_local_only(tmp_path):
     slo_path.write_text('- Target URL: isolated local runtime\n', encoding='utf-8')
     _write_frontend_npm_ci_evidence(frontend_npm_ci_path)
     _write_packaging_cleanup_evidence(packaging_cleanup_path)
+    _write_release_artifact_consistency(release_artifact_consistency_path)
 
     packet = build_packet(
         generated_at='2026-06-19T00:05:00+00:00',
@@ -1245,6 +1253,7 @@ def test_build_packet_marks_isolated_slo_baseline_local_only(tmp_path):
         beta_slo_baseline_path=slo_path,
         frontend_npm_ci_evidence_path=frontend_npm_ci_path,
         packaging_cleanup_evidence_path=packaging_cleanup_path,
+        release_artifact_consistency_path=release_artifact_consistency_path,
     )
 
     assert packet['beta_slo_baseline']['status'] == 'local-only'
@@ -1267,6 +1276,7 @@ def test_build_packet_overall_status_depends_on_external_evidence_statuses(tmp_p
     slo_path = tmp_path / 'beta-slo-baseline.md'
     frontend_npm_ci_path = tmp_path / 'frontend-npm-ci-evidence.md'
     packaging_cleanup_path = tmp_path / 'packaging-cleanup-evidence.md'
+    release_artifact_consistency_path = tmp_path / 'release-artifact-consistency.md'
 
     rc_evidence_path.write_text(
         json.dumps({'status': 'passed', 'commands': [], 'git_worktree': {'state': 'clean', 'dirty': False}}),
@@ -1286,6 +1296,7 @@ def test_build_packet_overall_status_depends_on_external_evidence_statuses(tmp_p
     slo_path.write_text('- Target URL: https://aidm.example.test\n', encoding='utf-8')
     _write_frontend_npm_ci_evidence(frontend_npm_ci_path)
     _write_packaging_cleanup_evidence(packaging_cleanup_path)
+    _write_release_artifact_consistency(release_artifact_consistency_path)
 
     def build() -> dict:
         return build_packet(
@@ -1305,6 +1316,7 @@ def test_build_packet_overall_status_depends_on_external_evidence_statuses(tmp_p
             beta_slo_baseline_path=slo_path,
             frontend_npm_ci_evidence_path=frontend_npm_ci_path,
             packaging_cleanup_evidence_path=packaging_cleanup_path,
+            release_artifact_consistency_path=release_artifact_consistency_path,
         )
 
     packet = build()

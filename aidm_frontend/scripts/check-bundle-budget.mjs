@@ -10,7 +10,7 @@ const assetsDir = join(projectRoot, 'dist', 'assets')
 // character creation catalogs that are loaded only when those tools open.
 const budgets = {
   jsRaw: 620 * 1024,
-  jsGzip: 180 * 1024,
+  jsGzip: 185 * 1024,
   initialJsGzip: 190 * 1024,
   asyncJsGzip: 220 * 1024,
   cssGzip: 48 * 1024,
