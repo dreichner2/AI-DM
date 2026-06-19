@@ -288,6 +288,9 @@ def test_build_template_uses_current_passed_github_actions_context():
         'freshness': 'current',
         'aidm_ci_run_url': 'https://github.com/dreichner2/AIDM-main/actions/runs/111',
         'closed_beta_rc_run_url': 'https://github.com/dreichner2/AIDM-main/actions/runs/222',
+        'closed_beta_rc_artifact_status': 'passed',
+        'closed_beta_rc_artifact_content_status': 'passed',
+        'closed_beta_rc_artifact_url': 'https://api.github.com/repos/dreichner2/AIDM-main/actions/artifacts/333',
     }
 
     template = build_template(
@@ -302,6 +305,11 @@ def test_build_template_uses_current_passed_github_actions_context():
     assert fields['aidm_ci_run_url']['current_value'] == 'https://github.com/dreichner2/AIDM-main/actions/runs/111'
     assert fields['closed_beta_rc_run_url']['status'] == 'provided-context'
     assert fields['closed_beta_rc_run_url']['current_value'] == 'https://github.com/dreichner2/AIDM-main/actions/runs/222'
+    assert fields['closed_beta_rc_artifact_reference']['status'] == 'provided-context'
+    assert (
+        fields['closed_beta_rc_artifact_reference']['current_value']
+        == 'https://api.github.com/repos/dreichner2/AIDM-main/actions/artifacts/333'
+    )
 
 
 def test_build_template_does_not_use_current_github_actions_context_until_signed_off():
@@ -325,6 +333,38 @@ def test_build_template_does_not_use_current_github_actions_context_until_signed
     assert fields['aidm_ci_run_url']['current_value'] == ''
     assert fields['closed_beta_rc_run_url']['status'] == 'required'
     assert fields['closed_beta_rc_run_url']['current_value'] == ''
+
+
+def test_build_template_ignores_unverified_github_actions_artifact_context():
+    packet = _packet()
+    packet['signed_off_worktree'] = {
+        'status': 'passed',
+        'worktree': 'clean',
+        'commit': 'abc123',
+    }
+    packet['github_actions'] = {
+        'status': 'passed',
+        'freshness': 'current',
+        'closed_beta_rc_artifact_status': 'passed',
+        'closed_beta_rc_artifact_content_status': 'not-checked',
+        'closed_beta_rc_artifact_url': 'https://api.github.com/repos/dreichner2/AIDM-main/actions/artifacts/333',
+    }
+    action_plan = {
+        **_action_plan(),
+        'actions': [{'key': 'github_actions_rc_artifact'}],
+        'complete_items': [],
+    }
+
+    template = build_template(
+        packet=packet,
+        action_plan=action_plan,
+        recommendation_matrix={'status': 'local-ready-with-external-exceptions', 'recommendations': []},
+        generated_at='2026-06-19T00:00:00+00:00',
+    )
+    fields = {field['key']: field for field in template['fields']}
+
+    assert fields['closed_beta_rc_artifact_reference']['status'] == 'required'
+    assert fields['closed_beta_rc_artifact_reference']['current_value'] == ''
 
 
 def test_build_template_uses_partial_current_github_actions_context_after_signed_off():

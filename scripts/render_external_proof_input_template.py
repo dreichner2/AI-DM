@@ -397,6 +397,26 @@ def _github_actions_url(github_actions: dict[str, Any], signed_off: dict[str, An
     return _real_text(github_actions.get(key))
 
 
+def _github_actions_rc_artifact_reference(github_actions: dict[str, Any], signed_off: dict[str, Any]) -> str:
+    if signed_off.get('status') != 'passed':
+        return ''
+    if github_actions.get('freshness') == 'stale' or github_actions.get('status') in {'failed', 'invalid'}:
+        return ''
+    artifact = github_actions.get('closed_beta_rc_artifact')
+    if not isinstance(artifact, dict):
+        artifact = {}
+    artifact_status = _text(
+        github_actions.get('closed_beta_rc_artifact_status') or artifact.get('status')
+    ).lower()
+    content_status = _text(
+        github_actions.get('closed_beta_rc_artifact_content_status') or artifact.get('content_status')
+    ).lower()
+    artifact_url = _real_text(github_actions.get('closed_beta_rc_artifact_url') or artifact.get('url'))
+    if artifact_status == 'passed' and content_status == 'passed' and _is_real_url(artifact_url):
+        return artifact_url
+    return ''
+
+
 def _field_current_value(key: str, packet: dict[str, Any], action_plan: dict[str, Any]) -> str:
     github_actions = _section(packet, 'github_actions')
     hosted_rc = _section(packet, 'hosted_rc_evidence')
@@ -426,6 +446,7 @@ def _field_current_value(key: str, packet: dict[str, Any], action_plan: dict[str
     values = {
         'aidm_ci_run_url': _github_actions_url(github_actions, signed_off, 'aidm_ci_run_url'),
         'closed_beta_rc_run_url': _github_actions_url(github_actions, signed_off, 'closed_beta_rc_run_url'),
+        'closed_beta_rc_artifact_reference': _github_actions_rc_artifact_reference(github_actions, signed_off),
         'deployment_readiness_evidence': _evidence_path_if_hosted(readiness)
         or _hosted_rc_check_evidence(hosted_rc, 'Hosted deployment readiness'),
         'target_url': target_url if _is_hosted_target(target_url) else '',

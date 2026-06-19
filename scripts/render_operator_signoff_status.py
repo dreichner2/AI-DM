@@ -568,6 +568,20 @@ def _github_actions_allowed_for_signoff(section: dict[str, Any], signed_off_work
     return _github_actions_usable(section) and (not status or status == 'passed')
 
 
+def _github_actions_rc_artifact_reference(section: dict[str, Any]) -> str:
+    artifact = section.get('closed_beta_rc_artifact')
+    if not isinstance(artifact, dict):
+        artifact = {}
+    artifact_status = _text(section.get('closed_beta_rc_artifact_status') or artifact.get('status')).lower()
+    content_status = _text(
+        section.get('closed_beta_rc_artifact_content_status') or artifact.get('content_status')
+    ).lower()
+    artifact_url = _real_text(section.get('closed_beta_rc_artifact_url') or artifact.get('url'))
+    if artifact_status == 'passed' and content_status == 'passed' and _is_real_url(artifact_url):
+        return artifact_url
+    return ''
+
+
 def _local_artifact_passed(section: dict[str, Any]) -> bool:
     return section.get('status') == 'passed' and section.get('freshness') != 'stale'
 
@@ -966,6 +980,7 @@ def draft_manifest_from_packet(
     github_actions_usable = _github_actions_allowed_for_signoff(github_actions, signed_off_worktree)
     aidm_ci_url = _real_text(github_actions.get('aidm_ci_run_url'))
     closed_beta_rc_url = _real_text(github_actions.get('closed_beta_rc_run_url'))
+    closed_beta_rc_artifact = _github_actions_rc_artifact_reference(github_actions)
     if github_actions_usable and _is_real_url(aidm_ci_url):
         _set_provided(
             manifest,
@@ -1007,6 +1022,13 @@ def draft_manifest_from_packet(
             'github_actions_closed_beta_rc',
             evidence=closed_beta_rc_url,
             notes='Seeded from GitHub Actions evidence; verify the run matches the final signed-off commit.',
+        )
+    if github_actions_usable and closed_beta_rc_artifact:
+        _set_provided(
+            manifest,
+            'github_actions_rc_artifact',
+            evidence=closed_beta_rc_artifact,
+            notes='Seeded from GitHub Actions artifact verification; content status is passed.',
         )
 
     deployment_readiness = _section(packet, 'deployment_readiness')

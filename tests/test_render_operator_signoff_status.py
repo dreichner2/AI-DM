@@ -575,6 +575,9 @@ def test_draft_manifest_does_not_seed_github_actions_from_dirty_worktree():
             'freshness': 'current',
             'aidm_ci_run_url': 'https://github.com/dreichner2/AIDM-main/actions/runs/111',
             'closed_beta_rc_run_url': 'https://github.com/dreichner2/AIDM-main/actions/runs/222',
+            'closed_beta_rc_artifact_status': 'passed',
+            'closed_beta_rc_artifact_content_status': 'passed',
+            'closed_beta_rc_artifact_url': 'https://api.github.com/repos/dreichner2/AIDM-main/actions/artifacts/333',
         },
     }
 
@@ -585,6 +588,7 @@ def test_draft_manifest_does_not_seed_github_actions_from_dirty_worktree():
     assert items['clean_signed_off_worktree']['status'] == 'pending'
     assert items['github_actions_aidm_ci']['status'] == 'pending'
     assert items['github_actions_closed_beta_rc']['status'] == 'pending'
+    assert items['github_actions_rc_artifact']['status'] == 'pending'
 
 
 def test_draft_manifest_seeds_clean_signed_off_worktree_evidence():
@@ -615,6 +619,9 @@ def test_draft_manifest_seeds_live_hosted_and_manual_evidence():
             'freshness': 'current',
             'aidm_ci_run_url': 'https://github.com/example/AIDM/actions/runs/111',
             'closed_beta_rc_run_url': 'https://github.com/example/AIDM/actions/runs/222',
+            'closed_beta_rc_artifact_status': 'passed',
+            'closed_beta_rc_artifact_content_status': 'passed',
+            'closed_beta_rc_artifact_url': 'https://api.github.com/repos/dreichner2/AIDM-main/actions/artifacts/333',
         },
         'deployment_readiness': {
             'status': 'passed',
@@ -684,9 +691,31 @@ def test_draft_manifest_seeds_live_hosted_and_manual_evidence():
     assert items['source_archive_attachment']['evidence'] == 'archive-link'
     assert items['multi_worker_socketio_staging']['status'] == 'not_applicable'
     assert items['multi_worker_socketio_staging']['evidence'] == 'worker-link'
-    assert items['github_actions_rc_artifact']['status'] == 'pending'
+    assert items['github_actions_rc_artifact']['status'] == 'provided'
+    assert (
+        items['github_actions_rc_artifact']['evidence']
+        == 'https://api.github.com/repos/dreichner2/AIDM-main/actions/artifacts/333'
+    )
     assert items['hosted_external_telemetry']['status'] == 'pending'
     assert items['rc_issue_closure_review']['status'] == 'pending'
+
+
+def test_draft_manifest_does_not_seed_unverified_rc_artifact():
+    packet = {
+        'rc_evidence': {'commit': 'abc123'},
+        'signed_off_worktree': {'commit': 'abc123', 'status': 'passed', 'worktree': 'clean'},
+        'github_actions': {
+            'status': 'passed',
+            'freshness': 'current',
+            'closed_beta_rc_artifact_status': 'passed',
+            'closed_beta_rc_artifact_content_status': 'not-checked',
+            'closed_beta_rc_artifact_url': 'https://api.github.com/repos/dreichner2/AIDM-main/actions/artifacts/333',
+        },
+    }
+
+    draft = draft_manifest_from_packet(packet, generated_at='2026-06-19T00:00:00+00:00')
+
+    assert draft['items']['github_actions_rc_artifact']['status'] == 'pending'
 
 
 def test_main_writes_draft_from_packet(tmp_path):
