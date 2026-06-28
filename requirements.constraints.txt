@@ -14,7 +14,7 @@ gunicorn==23.0.0
 pytest==9.0.3
 python-dotenv==1.2.2
 python-json-logger==4.0.0
-python-socketio==5.16.0
+python-socketio==5.16.2
 pip-audit==2.10.1
 requests==2.33.0
 ruff==0.15.16
