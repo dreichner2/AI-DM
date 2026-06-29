@@ -3,5 +3,5 @@
 Flask-Migrate
 flask-admin
 pip-audit
-pytest>=9.0.3
+pytest>=9.1.1
 ruff
