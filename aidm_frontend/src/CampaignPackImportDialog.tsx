@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
-import { AlertTriangle, CheckCircle2, FileJson, GitBranch, Upload } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, FileJson, GitBranch, Sparkles, Upload } from 'lucide-react'
 import { ApiClientError, apiFetch } from './api'
 
 type CampaignPackCounts = {
@@ -115,6 +115,15 @@ type CampaignPackLintResponse = {
   }
 }
 
+type CampaignPackForgeResponse = {
+  ok: boolean
+  sourceFilename: string
+  pack: Record<string, unknown>
+  payload?: unknown
+  manifestText?: string
+  lint?: CampaignPackLintResponse
+}
+
 type CampaignPackImportDialogProps = {
   auth: string
   baseUrl: string
@@ -165,12 +174,15 @@ export function CampaignPackImportDialog({
   const [preview, setPreview] = useState<CampaignPackImportResponse | null>(null)
   const [lintResult, setLintResult] = useState<CampaignPackLintResponse | null>(null)
   const [error, setError] = useState('')
+  const [forgeTitle, setForgeTitle] = useState('')
+  const [forgePrompt, setForgePrompt] = useState('')
+  const [forgePending, setForgePending] = useState(false)
   const [previewPending, setPreviewPending] = useState(false)
   const [importPending, setImportPending] = useState(false)
 
   const hasLintErrors = Boolean(lintResult?.issues.some((issue) => issue.severity === 'error'))
-  const canImport = Boolean(preview && packPayload && !previewPending && !importPending && !hasLintErrors)
-  const pending = previewPending || importPending
+  const canImport = Boolean(preview && packPayload && !previewPending && !importPending && !forgePending && !hasLintErrors)
+  const pending = previewPending || importPending || forgePending
   const authoringReport = lintResult?.authoring_report
   const reportCollectionRows = reportCollections(authoringReport?.collections)
   const checkpointReport = authoringReport?.checkpoints
@@ -246,6 +258,52 @@ export function CampaignPackImportDialog({
     [previewPack],
   )
 
+  const forgePack = useCallback(async () => {
+    const title = forgeTitle.trim()
+    if (!title) {
+      setError('Pack title is required.')
+      return
+    }
+    setForgePending(true)
+    setError('')
+    try {
+      const response = await apiFetch<CampaignPackForgeResponse>(
+        baseUrl,
+        '/api/campaigns/pack-tools/forge',
+        auth,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            title,
+            prompt: forgePrompt,
+          }),
+        },
+      )
+      const nextPayload = response.payload ?? {
+        sourceFilename: response.sourceFilename,
+        pack: response.pack,
+      }
+      const nextText = response.manifestText || JSON.stringify(nextPayload, null, 2)
+      setFileName(response.sourceFilename)
+      setPackText(nextText)
+      setPackPayload(nextPayload)
+      setLintResult(response.lint ?? null)
+      setPreview(response.lint?.preview ?? null)
+      if (response.lint && !response.lint.ok) {
+        setError('Generated pack needs authoring attention before import.')
+      }
+    } catch (requestError) {
+      const message = errorMessage(requestError)
+      setError(message)
+      setPreview(null)
+      setLintResult(null)
+      setPackPayload(null)
+      pushError('validation', `Campaign pack forge failed: ${message}`)
+    } finally {
+      setForgePending(false)
+    }
+  }, [auth, baseUrl, forgePrompt, forgeTitle, pushError])
+
   const submitPreview = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault()
@@ -286,6 +344,46 @@ export function CampaignPackImportDialog({
 
   return (
     <form className="campaign-pack-import-form" onSubmit={(event) => void submitPreview(event)}>
+      <section className="campaign-pack-forge" aria-labelledby="campaign-pack-forge-title">
+        <div className="campaign-pack-forge-title">
+          <Sparkles size={16} aria-hidden="true" />
+          <strong id="campaign-pack-forge-title">Pack Forge</strong>
+        </div>
+        <div className="campaign-pack-forge-fields">
+          <label>
+            Pack Title
+            <input
+              type="text"
+              value={forgeTitle}
+              onChange={(event) => setForgeTitle(event.target.value)}
+              disabled={pending}
+              maxLength={120}
+              placeholder="Lanterns under Blackwater"
+            />
+          </label>
+          <label>
+            Premise
+            <textarea
+              value={forgePrompt}
+              onChange={(event) => setForgePrompt(event.target.value)}
+              rows={3}
+              disabled={pending}
+              maxLength={1200}
+              placeholder="Harbor intrigue, a drowned archive, and a guide with divided loyalties."
+            />
+          </label>
+        </div>
+        <button
+          type="button"
+          className="secondary campaign-pack-forge-button"
+          onClick={() => void forgePack()}
+          disabled={pending || !forgeTitle.trim()}
+        >
+          <Sparkles size={15} aria-hidden="true" />
+          {forgePending ? 'Forging...' : 'Forge Pack'}
+        </button>
+      </section>
+
       <label className="file-picker-field">
         Campaign Pack JSON
         <input

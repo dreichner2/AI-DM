@@ -709,6 +709,86 @@
     grid-template-rows: 52px 34px minmax(0, 1fr);
   }
 
+  .prototype-shell.title-screen-active {
+    grid-template-rows: 0 minmax(0, 1fr);
+  }
+
+  .prototype-shell.title-screen-active .ops-bar {
+    display: none;
+  }
+
+  .prototype-shell.title-screen-active.safe-mode-active,
+  .prototype-shell.title-screen-active.runtime-notices-active {
+    grid-template-rows: 34px minmax(0, 1fr);
+  }
+
+  .title-screen {
+    grid-row: 2 / -1;
+    z-index: 55;
+    padding: 14px;
+  }
+
+  .prototype-shell.runtime-notices-active .title-screen,
+  .prototype-shell.safe-mode-active .title-screen {
+    grid-row: 3 / -1;
+  }
+
+  .prototype-shell.title-screen-active.runtime-notices-active .title-screen,
+  .prototype-shell.title-screen-active.safe-mode-active .title-screen {
+    grid-row: 2 / -1;
+  }
+
+  .title-screen-stage {
+    min-height: 0;
+    grid-template-columns: 1fr;
+    align-content: center;
+    gap: 10px;
+  }
+
+  .title-screen-copy {
+    gap: 16px;
+    padding: 20px;
+  }
+
+  .title-mark svg {
+    width: 27px;
+    height: 27px;
+  }
+
+  .title-screen h1 {
+    font-size: 2.4rem;
+    line-height: 1;
+  }
+
+  .title-screen-copy p,
+  .title-screen-table p {
+    font-size: 0.86rem;
+    line-height: 1.42;
+  }
+
+  .title-screen-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .title-action {
+    width: 100%;
+    min-height: 43px;
+  }
+
+  .title-screen-table {
+    gap: 10px;
+    padding: 16px;
+  }
+
+  .title-screen-table strong {
+    font-size: 1.22rem;
+  }
+
+  .title-screen-table dl {
+    grid-template-columns: 1fr;
+  }
+
   .safe-mode-banner,
   .beta-runtime-notices {
     grid-row: 2;
@@ -806,6 +886,10 @@
   .prototype-shell.mobile-rail-open .mobile-panel-scrim,
   .prototype-shell.mobile-inspector-open .mobile-panel-scrim {
     display: block;
+  }
+
+  .prototype-shell.title-screen-active .mobile-panel-scrim {
+    display: none;
   }
 
   .campaign-rail,
@@ -1477,6 +1561,18 @@
   .modal-backdrop,
   .race-details-backdrop {
     padding: 12px;
+  }
+
+  .campaign-pack-forge-fields,
+  .campaign-pack-preview-grid,
+  .campaign-pack-counts,
+  .campaign-pack-authoring-report-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .campaign-pack-visible,
+  .campaign-pack-lint-list div {
+    grid-template-columns: 1fr;
   }
 
   .race-card-grid {

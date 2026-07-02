@@ -125,4 +125,121 @@ describe('CampaignPackImportDialog', () => {
     expect(within(report).getByText('lore: 1 / 1 hidden')).toBeInTheDocument()
     expect(within(report).getByText('Unreachable checkpoints: cp_orphan')).toBeInTheDocument()
   })
+
+  it('forges a campaign pack and populates the import preview', async () => {
+    apiFetchMock.mockResolvedValue({
+      ok: true,
+      sourceFilename: 'forge_lanterns.json',
+      pack: {
+        packId: 'forge_lanterns',
+        title: 'Lanterns Under Blackwater',
+      },
+      payload: {
+        sourceFilename: 'forge_lanterns.json',
+        pack: {
+          packId: 'forge_lanterns',
+          title: 'Lanterns Under Blackwater',
+        },
+      },
+      manifestText: JSON.stringify(
+        {
+          sourceFilename: 'forge_lanterns.json',
+          pack: {
+            packId: 'forge_lanterns',
+            title: 'Lanterns Under Blackwater',
+          },
+        },
+        null,
+        2,
+      ),
+      lint: {
+        ok: true,
+        issues: [],
+        preview: {
+          imported: false,
+          pack_id: 'forge_lanterns',
+          schema_version: '1',
+          pack_version: '1.0.0',
+          counts: {
+            locations: 3,
+            npcs: 2,
+            quests: 1,
+            segments: 1,
+            checkpoints: 4,
+            encounters: 2,
+            enemies: 2,
+            bestiary_entries: 2,
+          },
+          preview: {
+            title: 'Lanterns Under Blackwater',
+            world: { mode: 'new', name: 'Lanterns Under Blackwater Setting' },
+            starting_location: 'The Breakwater Gate',
+            starting_quest: 'Uncover Lanterns',
+            visible_at_start: {
+              locations: ['start'],
+              npcs: ['guide'],
+              quests: ['quest'],
+            },
+          },
+        },
+        graph: {
+          nodes: ['cp_1', 'cp_2', 'cp_3', 'cp_4'],
+          edges: [],
+          reachable: ['cp_1', 'cp_2', 'cp_3', 'cp_4'],
+        },
+        authoring_report: {
+          checkpoints: {
+            total: 4,
+            reachable: 4,
+            optionalIds: ['cp_3'],
+            terminalIds: ['cp_4'],
+            items: [],
+          },
+          encounters: {
+            total: 2,
+            linkedToCheckpoint: 2,
+            unlinkedIds: [],
+            items: [],
+          },
+          collections: [],
+        },
+      },
+    })
+
+    render(
+      <CampaignPackImportDialog
+        auth="token"
+        baseUrl="http://127.0.0.1:5050"
+        onClose={vi.fn()}
+        onImported={vi.fn()}
+        pushError={vi.fn()}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('Pack Title'), {
+      target: { value: 'Lanterns Under Blackwater' },
+    })
+    fireEvent.change(screen.getByLabelText('Premise'), {
+      target: { value: 'Harbor intrigue and a drowned archive.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Forge Pack' }))
+
+    await waitFor(() =>
+      expect(apiFetchMock).toHaveBeenCalledWith(
+        'http://127.0.0.1:5050',
+        '/api/campaigns/pack-tools/forge',
+        'token',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            title: 'Lanterns Under Blackwater',
+            prompt: 'Harbor intrigue and a drowned archive.',
+          }),
+        }),
+      ),
+    )
+    expect((screen.getByLabelText('JSON Preview') as HTMLTextAreaElement).value).toContain('"packId": "forge_lanterns"')
+    expect(screen.getByText('Lanterns Under Blackwater')).toBeInTheDocument()
+    expect(screen.getByText('4 / 4 reachable')).toBeInTheDocument()
+  })
 })

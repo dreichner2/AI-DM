@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import math
+
 from sqlalchemy.orm import joinedload
 
 from aidm_server.canon_text import normalized_name
@@ -11,8 +14,30 @@ from aidm_server.models import SessionState, StoryEntity, StoryFact, StoryThread
 EMERGENT_ENTITY_CANDIDATE_LIMIT = 240
 EMERGENT_FACT_CANDIDATE_LIMIT = 480
 EMERGENT_THREAD_CANDIDATE_LIMIT = 160
+HYBRID_EMBEDDING_DIMENSIONS = 96
 
 _GLOBAL_SINGLETON_FACTS = {'current_location', 'current_quest'}
+_SEMANTIC_ALIAS_GROUPS = (
+    ('moon', 'lunar', 'silver', 'night'),
+    ('sun', 'solar', 'golden', 'dawn'),
+    ('key', 'sigil', 'token', 'seal', 'rune'),
+    ('gate', 'door', 'portal', 'threshold', 'entrance'),
+    ('tower', 'belfry', 'spire', 'watch'),
+    ('ghost', 'spirit', 'shade', 'haunting'),
+    ('curse', 'hex', 'blight', 'doom'),
+    ('archive', 'library', 'record', 'ledger'),
+    ('captain', 'commander', 'marshal', 'warden'),
+    ('thief', 'rogue', 'smuggler', 'cutpurse'),
+    ('forest', 'wood', 'grove', 'wilds'),
+    ('harbor', 'dock', 'port', 'waterfront'),
+    ('desert', 'dune', 'sand', 'waste'),
+    ('dragon', 'wyrm', 'drake', 'serpent'),
+)
+_SEMANTIC_ALIASES = {
+    term: {alias for alias in group if alias != term}
+    for group in _SEMANTIC_ALIAS_GROUPS
+    for term in group
+}
 _RETRIEVAL_STOPWORDS = {
     'a',
     'an',
@@ -29,6 +54,52 @@ _RETRIEVAL_STOPWORDS = {
     'to',
     'with',
 }
+
+
+def dormant_threads(
+    campaign_id: int,
+    current_turn_id: int | None,
+    min_dormancy: int = 30,
+    limit: int = 3,
+) -> list[dict]:
+    """Return old open story threads that may be satisfying to echo back into play."""
+
+    if not current_turn_id or current_turn_id <= 0 or limit <= 0:
+        return []
+    threshold_turn_id = max(0, current_turn_id - max(1, min_dormancy))
+    candidates = (
+        StoryThread.query.filter(
+            StoryThread.campaign_id == campaign_id,
+            StoryThread.status == 'open',
+            StoryThread.last_touched_turn_id.isnot(None),
+            StoryThread.last_touched_turn_id <= threshold_turn_id,
+        )
+        .order_by(StoryThread.priority.desc(), StoryThread.last_touched_turn_id.asc(), StoryThread.thread_id.desc())
+        .limit(max(limit * 6, limit))
+        .all()
+    )
+    ranked_threads = sorted(
+        candidates,
+        key=lambda thread: (
+            thread.priority or 0,
+            current_turn_id - int(thread.last_touched_turn_id or current_turn_id),
+            thread.thread_id,
+        ),
+        reverse=True,
+    )
+    return [
+        {
+            'thread_id': thread.thread_id,
+            'title': thread.title,
+            'summary': thread.summary,
+            'status': thread.status,
+            'priority': thread.priority,
+            'source': thread.source,
+            'last_touched_turn_id': thread.last_touched_turn_id,
+            'dormant_turns': current_turn_id - int(thread.last_touched_turn_id or current_turn_id),
+        }
+        for thread in ranked_threads[:limit]
+    ]
 
 
 def _candidate_labels(entity: StoryEntity) -> set[str]:
@@ -55,6 +126,45 @@ def _retrieval_tokens(*values: str | None) -> set[str]:
     return tokens
 
 
+def _semantic_terms(*values: str | None) -> set[str]:
+    terms = set(_retrieval_tokens(*values))
+    expanded = set(terms)
+    for term in terms:
+        expanded.update(_SEMANTIC_ALIASES.get(term, set()))
+        if len(term) >= 5:
+            for index in range(0, max(0, len(term) - 3)):
+                expanded.add(f'ngram:{term[index:index + 4]}')
+    return expanded
+
+
+def _hashed_embedding(*values: str | None) -> dict[int, float]:
+    terms = _semantic_terms(*values)
+    vector: dict[int, float] = {}
+    for term in terms:
+        weight = 0.35 if term.startswith('ngram:') else 1.0
+        digest = hashlib.sha1(term.encode('utf-8')).digest()
+        index = int.from_bytes(digest[:4], 'big') % HYBRID_EMBEDDING_DIMENSIONS
+        sign = 1.0 if digest[4] % 2 == 0 else -1.0
+        vector[index] = vector.get(index, 0.0) + (weight * sign)
+    magnitude = math.sqrt(sum(value * value for value in vector.values()))
+    if magnitude <= 0:
+        return {}
+    return {index: value / magnitude for index, value in vector.items()}
+
+
+def _cosine_similarity(left: dict[int, float], right: dict[int, float]) -> float:
+    if not left or not right:
+        return 0.0
+    if len(left) > len(right):
+        left, right = right, left
+    return sum(value * right.get(index, 0.0) for index, value in left.items())
+
+
+def _embedding_score(candidate_text: str, signal_vector: dict[int, float]) -> float:
+    similarity = _cosine_similarity(_hashed_embedding(candidate_text), signal_vector)
+    return max(0.0, similarity)
+
+
 def _recent_signal_text(recent_turns: list[dict] | None) -> str:
     if not recent_turns:
         return ''
@@ -76,6 +186,7 @@ def _entity_retrieval_score(
     *,
     signal_text: str,
     signal_tokens: set[str],
+    signal_vector: dict[int, float],
     session_id: int | None,
 ) -> float:
     score = 0.0
@@ -96,6 +207,21 @@ def _entity_retrieval_score(
         score += 1.0
     if str(entity.status or '').lower() in {'active', 'open'}:
         score += 0.5
+    aliases = safe_json_loads(entity.aliases_json, [])
+    alias_text = ' '.join(str(alias or '') for alias in aliases) if isinstance(aliases, list) else ''
+    score += _embedding_score(
+        ' '.join(
+            [
+                str(entity.entity_type or ''),
+                str(entity.name or ''),
+                str(entity.canonical_name or ''),
+                alias_text,
+                str(entity.summary or ''),
+                str(entity.status or ''),
+            ]
+        ),
+        signal_vector,
+    ) * 4.0
     return score
 
 
@@ -104,6 +230,7 @@ def _fact_retrieval_score(
     *,
     signal_text: str,
     signal_tokens: set[str],
+    signal_vector: dict[int, float],
     relevant_entity_ids: set[int],
 ) -> float:
     score = 0.0
@@ -125,10 +252,27 @@ def _fact_retrieval_score(
         normalized = normalized_name(name)
         if normalized and normalized in signal_text:
             score += 3.0
+    score += _embedding_score(
+        ' '.join(
+            [
+                str(subject_name or ''),
+                str(fact.predicate or ''),
+                str(object_name or ''),
+                str(fact.value_text or ''),
+            ]
+        ),
+        signal_vector,
+    ) * 3.0
     return score
 
 
-def _thread_retrieval_score(thread: StoryThread, *, signal_text: str, signal_tokens: set[str]) -> float:
+def _thread_retrieval_score(
+    thread: StoryThread,
+    *,
+    signal_text: str,
+    signal_tokens: set[str],
+    signal_vector: dict[int, float],
+) -> float:
     score = float(thread.priority or 0)
     if str(thread.status or '').lower() in {'open', 'active'}:
         score += 2.0
@@ -139,6 +283,17 @@ def _thread_retrieval_score(thread: StoryThread, *, signal_text: str, signal_tok
     normalized_title = normalized_name(thread.title)
     if normalized_title and normalized_title in signal_text:
         score += 4.0
+    score += _embedding_score(
+        ' '.join(
+            [
+                str(thread.title or ''),
+                str(thread.summary or ''),
+                str(thread.status or ''),
+                str(thread.source or ''),
+            ]
+        ),
+        signal_vector,
+    ) * 3.5
     return score
 
 
@@ -170,6 +325,7 @@ def build_emergent_context(
         )
     )
     signal_tokens = _retrieval_tokens(query_text, current_location, current_quest, recent_signal)
+    signal_vector = _hashed_embedding(query_text, current_location, current_quest, recent_signal)
 
     entity_candidate_limit = min(
         max(entity_limit * 8, entity_limit),
@@ -193,7 +349,13 @@ def build_emergent_context(
     ranked_entities = sorted(
         all_entities,
         key=lambda entity: (
-            _entity_retrieval_score(entity, signal_text=signal_text, signal_tokens=signal_tokens, session_id=session_id),
+            _entity_retrieval_score(
+                entity,
+                signal_text=signal_text,
+                signal_tokens=signal_tokens,
+                signal_vector=signal_vector,
+                session_id=session_id,
+            ),
             entity.updated_at or entity.created_at,
             entity.entity_id,
         ),
@@ -222,6 +384,7 @@ def build_emergent_context(
                 fact,
                 signal_text=signal_text,
                 signal_tokens=signal_tokens,
+                signal_vector=signal_vector,
                 relevant_entity_ids=relevant_entity_ids,
             ),
             fact.fact_id,
@@ -232,6 +395,7 @@ def build_emergent_context(
         ranked_facts[0],
         signal_text=signal_text,
         signal_tokens=signal_tokens,
+        signal_vector=signal_vector,
         relevant_entity_ids=relevant_entity_ids,
     ) <= 0.0:
         ranked_facts = sorted(all_facts, key=lambda fact: fact.fact_id, reverse=True)
@@ -246,7 +410,12 @@ def build_emergent_context(
     ranked_threads = sorted(
         all_threads,
         key=lambda thread: (
-            _thread_retrieval_score(thread, signal_text=signal_text, signal_tokens=signal_tokens),
+            _thread_retrieval_score(
+                thread,
+                signal_text=signal_text,
+                signal_tokens=signal_tokens,
+                signal_vector=signal_vector,
+            ),
             thread.updated_at or thread.created_at,
             thread.thread_id,
         ),
@@ -289,6 +458,21 @@ def build_emergent_context(
             }
             for thread in threads
         ],
+        'retrieval': {
+            'mode': 'hybrid_lexical_local_embedding',
+            'embedding': {
+                'provider': 'local_hash_v1',
+                'dimensions': HYBRID_EMBEDDING_DIMENSIONS,
+                'query_active': bool(signal_vector),
+                'query_terms': sorted(signal_tokens)[:32],
+                'semantic_terms': sorted(term for term in _semantic_terms(query_text, current_location, current_quest, recent_signal) if not term.startswith('ngram:'))[:32],
+            },
+            'candidate_limits': {
+                'entities': entity_candidate_limit,
+                'facts': fact_candidate_limit,
+                'threads': thread_candidate_limit,
+            },
+        },
     }
 
     if session_id:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import json
 
 from aidm_server.contracts import ProviderRequest, ProviderResponse
 from aidm_server.llm_context import CONTEXT_VERSION, build_dm_context
@@ -23,6 +24,7 @@ from aidm_server.llm_providers import (
     get_provider,
 )
 from aidm_server.prompt_templates import DM_SYSTEM_MESSAGE, build_dm_generate_request, build_dm_stream_request
+from aidm_server.services.content_settings import content_settings_from_snapshot
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 
 
@@ -61,6 +63,17 @@ def _record_prompt_context_estimate(operation: str, request: ProviderRequest, co
 
 def _system_message_for_dm():
     return DM_SYSTEM_MESSAGE
+
+
+def _content_settings_for_context(context: str | None) -> dict:
+    try:
+        payload = json.loads(str(context or '{}'))
+    except (TypeError, ValueError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    settings = payload.get('content_settings')
+    return content_settings_from_snapshot(settings if isinstance(settings, dict) else {})
 
 
 def _fallback_dm_response(user_input: str) -> str:
@@ -113,7 +126,14 @@ def _completion_chunks_for_stream(provider: BaseLLMProvider, request: ProviderRe
 
 
 def query_dm_function(user_input, context, speaking_player_id=None, rules_hint: dict | None = None):
-    request = build_dm_generate_request(user_input=str(user_input), context=str(context), rules_hint=rules_hint)
+    content_settings = _content_settings_for_context(str(context))
+    request = build_dm_generate_request(
+        user_input=str(user_input),
+        context=str(context),
+        rules_hint=rules_hint,
+        content_rating=content_settings.get('content_rating', 'standard'),
+        tone_tags=content_settings.get('tone_tags', []),
+    )
     _record_prompt_context_estimate('dm_generate', request, context)
 
     provider = get_provider()
@@ -128,11 +148,14 @@ def query_dm_function(user_input, context, speaking_player_id=None, rules_hint: 
 
 
 def query_dm_function_stream(user_input, context, speaking_player=None, rules_hint: dict | None = None):
+    content_settings = _content_settings_for_context(str(context))
     request = build_dm_stream_request(
         user_input=str(user_input),
         context=str(context),
         speaking_player=speaking_player,
         rules_hint=rules_hint,
+        content_rating=content_settings.get('content_rating', 'standard'),
+        tone_tags=content_settings.get('tone_tags', []),
     )
     _record_prompt_context_estimate('dm_stream', request, context)
 

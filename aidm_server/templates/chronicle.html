@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1f2933;
+      --muted: #64748b;
+      --paper: #f8f4ec;
+      --panel: #fffdf8;
+      --accent: #7c3f2b;
+      --rule: #d8cbb8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: Georgia, "Times New Roman", serif;
+      line-height: 1.62;
+    }
+    .chronicle {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 48px 24px 64px;
+    }
+    header {
+      border-bottom: 2px solid var(--rule);
+      margin-bottom: 34px;
+      padding-bottom: 24px;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 2.45rem;
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+    .meta, .chapter-meta, .turn-meta, footer {
+      color: var(--muted);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 0.9rem;
+    }
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+      margin-top: 22px;
+    }
+    .summary div {
+      border: 1px solid var(--rule);
+      background: var(--panel);
+      padding: 10px 12px;
+    }
+    .summary strong {
+      display: block;
+      color: var(--accent);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+    }
+    .chapter {
+      margin: 42px 0 0;
+      break-inside: avoid;
+    }
+    .chapter h2 {
+      margin: 0 0 8px;
+      color: var(--accent);
+      font-size: 1.55rem;
+      line-height: 1.2;
+    }
+    .chapter-meta {
+      border-bottom: 1px solid var(--rule);
+      margin: 0 0 18px;
+      padding-bottom: 10px;
+    }
+    .commentary {
+      border: 1px solid var(--rule);
+      background: #fbf0dc;
+      margin: 0 0 18px;
+      padding: 10px 12px;
+    }
+    .commentary summary {
+      color: var(--accent);
+      cursor: pointer;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 0.84rem;
+      font-weight: 700;
+    }
+    .commentary ul {
+      margin: 10px 0 0;
+      padding-left: 20px;
+    }
+    .commentary li {
+      color: #475569;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 0.84rem;
+      line-height: 1.45;
+    }
+    .turn {
+      background: var(--panel);
+      border: 1px solid var(--rule);
+      margin: 18px 0;
+      padding: 18px 20px;
+    }
+    .turn-meta {
+      margin-bottom: 12px;
+    }
+    .player-input {
+      border-left: 3px solid var(--rule);
+      color: #334155;
+      margin: 0 0 14px;
+      padding-left: 12px;
+      font-style: italic;
+    }
+    .dm-prose p, .epilogue p {
+      margin: 0 0 0.9rem;
+    }
+    .empty-note {
+      border: 1px dashed var(--rule);
+      color: var(--muted);
+      padding: 14px 16px;
+    }
+    footer {
+      border-top: 1px solid var(--rule);
+      margin-top: 48px;
+      padding-top: 16px;
+    }
+    @media print {
+      body { background: white; }
+      .chronicle { max-width: none; padding: 0; }
+      .turn { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main class="chronicle">
+    <header>
+      <p class="meta">{{ scope_label }} Chronicle Export</p>
+      <h1>{{ title }}</h1>
+      <p>{{ description }}</p>
+      <div class="summary" aria-label="Chronicle summary">
+        <div><strong>Campaign</strong>{{ campaign.campaign_id }}</div>
+        <div><strong>Chapters</strong>{{ chapter_count }}</div>
+        <div><strong>Turns</strong>{{ turn_count }}</div>
+        <div><strong>Chapter Source</strong>{{ chapter_source }}</div>
+        <div><strong>Exported</strong>{{ exported_at }}</div>
+      </div>
+    </header>
+
+    {% for chapter in chapters %}
+    <section class="chapter" data-chapter-source="{{ chapter.source }}">
+      <h2>Chapter {{ chapter.index }}: {{ chapter.title }}</h2>
+      <p class="chapter-meta">{{ chapter.subtitle }}</p>
+      {% if chapter.commentary %}
+      <details class="commentary" open>
+        <summary>Director's Commentary</summary>
+        <ul>
+          {% for note in chapter.commentary %}
+          <li>{{ note }}</li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% endif %}
+      {% if chapter.turns %}
+        {% for turn in chapter.turns %}
+        <article class="turn">
+          <div class="turn-meta">Turn {{ turn.turn_id }} | {{ turn.session_name }} | {{ turn.created_at }}</div>
+          {% if turn.player_input %}
+          <blockquote class="player-input">
+            {% for line in turn.player_input %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+          </blockquote>
+          {% endif %}
+          <div class="dm-prose">
+            {% if turn.dm_paragraphs %}
+              {% for paragraph in turn.dm_paragraphs %}
+              <p>{% for line in paragraph %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</p>
+              {% endfor %}
+            {% else %}
+              <p>No DM prose was recorded for this turn.</p>
+            {% endif %}
+          </div>
+        </article>
+        {% endfor %}
+      {% else %}
+      <p class="empty-note">No recorded DM prose in this chapter yet.</p>
+      {% endif %}
+    </section>
+    {% endfor %}
+
+    {% if epilogue %}
+    <section class="chapter epilogue" data-chapter-source="epilogue">
+      <h2>Epilogue</h2>
+      <p class="chapter-meta">Stored session summary or recent line-log tail</p>
+      {% for paragraph in epilogue %}
+      <p>{% for line in paragraph %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</p>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    <footer>
+      Built from stored DmTurn prose and local campaign metadata. This file is self-contained and does not load external assets.
+    </footer>
+  </main>
+</body>
+</html>

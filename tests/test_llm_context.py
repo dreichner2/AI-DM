@@ -13,6 +13,7 @@ from aidm_server.models import (
     PlayerAction,
     Session,
     SessionState,
+    StoryThread,
     World,
     safe_json_dumps,
     safe_json_loads,
@@ -57,6 +58,108 @@ def test_build_dm_context_collects_recent_actions_for_multiple_players(app):
     players = {entry['character_name']: entry for entry in payload['active_players']}
     assert players['Alice']['recent_actions'] == ['hide', 'strike', 'retreat']
     assert players['Borin']['recent_actions'] == ['chant', 'guard']
+
+
+def test_build_dm_context_includes_dormant_threads(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        old_turn = DmTurn(
+            turn_id=10,
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='I pocket the moon key.',
+            dm_output='The moon key goes cold in your hand.',
+            status='completed',
+            outcome_status='resolved',
+        )
+        current_turn = DmTurn(
+            turn_id=45,
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='I open the silver gate.',
+            dm_output='The silver gate hums.',
+            status='completed',
+            outcome_status='resolved',
+        )
+        db.session.add_all([old_turn, current_turn])
+        db.session.flush()
+        db.session.add_all(
+            [
+                StoryThread(
+                    campaign_id=ids['campaign_id'],
+                    title='The Moon Key',
+                    summary='The moon key has not paid off yet.',
+                    status='open',
+                    priority=3,
+                    last_touched_turn_id=old_turn.turn_id,
+                ),
+                StoryThread(
+                    campaign_id=ids['campaign_id'],
+                    title='Fresh Gate',
+                    summary='This was just touched.',
+                    status='open',
+                    priority=10,
+                    last_touched_turn_id=current_turn.turn_id,
+                ),
+            ]
+        )
+        db.session.commit()
+
+        payload = json.loads(build_dm_context(ids['world_id'], ids['campaign_id'], ids['session_id']))
+
+    assert [thread['title'] for thread in payload['dormant_threads']] == ['The Moon Key']
+    assert payload['dormant_threads'][0]['dormant_turns'] == 35
+
+
+def test_build_dm_context_includes_hierarchical_session_memory(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        session = db.session.get(Session, ids['session_id'])
+        assert session is not None
+        session.state_snapshot = safe_json_dumps({'recap': 'Last session, the party found the moonlit seal.'}, {})
+        db.session.add(
+            SessionState(
+                session_id=ids['session_id'],
+                rolling_summary='The campaign arc points toward the Old Ruins.',
+                current_location='Old Ruins',
+                current_quest='Find the moonlit seal',
+                memory_snippets=safe_json_dumps(
+                    [
+                        {
+                            'turn_id': 1,
+                            'player_input': 'I inspect the seal.',
+                            'dm_output': 'The seal hums under silver dust.',
+                            'outcome_status': 'resolved',
+                        }
+                    ],
+                    [],
+                ),
+            )
+        )
+        db.session.add(
+            StoryThread(
+                campaign_id=ids['campaign_id'],
+                title='Moonlit Seal',
+                summary='The old seal still needs a key.',
+                status='open',
+                priority=4,
+            )
+        )
+        db.session.commit()
+
+        payload = json.loads(build_dm_context(ids['world_id'], ids['campaign_id'], ids['session_id']))
+
+    memory = payload['session_memory']
+    assert memory['hierarchy_version'] == 'v1'
+    assert memory['campaign_arc']['current_quest'] == 'Find the moonlit seal'
+    assert memory['session_recap'] == 'Last session, the party found the moonlit seal.'
+    assert memory['recent_beats'][0]['dm_output'] == 'The seal hums under silver dust.'
+    assert memory['open_threads'][0]['title'] == 'Moonlit Seal'
+    assert 'Latest beat' in memory['player_recap']
 
 
 def test_build_dm_context_skips_unfinished_recent_turns(app):
@@ -1215,8 +1318,27 @@ def test_build_dm_context_shape_snapshot(app):
             'active_segments': [],
             'memory_snippets': [],
         },
+        'session_memory': {
+            'hierarchy_version': 'v1',
+            'campaign_arc': {
+                'title': 'Test Campaign',
+                'current_location': 'Old Ruins',
+                'current_quest': 'Find the relic',
+                'summary': '',
+            },
+            'session_recap': '',
+            'recent_beats': [],
+            'open_threads': [],
+            'dormant_hooks': [],
+            'player_recap': 'Test Campaign is currently at Old Ruins. Current quest: Find the relic.',
+        },
         'live_world_state': {},
         'campaign_pack_director': {},
+        'content_settings': {
+            'content_rating': 'standard',
+            'tone_tags': [],
+            'updated_at': None,
+        },
         'player_identity_rules': [
             'character_name is the in-world player character identity.',
             'Account/profile names are out-of-character labels and are not characters in the scene.',
@@ -1284,10 +1406,26 @@ def test_build_dm_context_shape_snapshot(app):
         'triggered_segments': [],
         'authored_segments': [],
         'story_threads': [],
+        'dormant_threads': [],
         'emergent_memory': {
             'entities': [],
             'facts': [],
             'threads': [],
+            'retrieval': {
+                'mode': 'hybrid_lexical_local_embedding',
+                'embedding': {
+                    'provider': 'local_hash_v1',
+                    'dimensions': 96,
+                    'query_active': True,
+                    'query_terms': ['find', 'old', 'relic', 'ruins', 'search'],
+                    'semantic_terms': ['find', 'old', 'relic', 'ruins', 'search'],
+                },
+                'candidate_limits': {
+                    'entities': 96,
+                    'facts': 160,
+                    'threads': 64,
+                },
+            },
             'projection': {
                 'current_location': None,
                 'current_quest': None,

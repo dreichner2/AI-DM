@@ -1127,3 +1127,17 @@ def build_emergent_context(
         current_quest=current_quest,
         recent_turns=recent_turns,
     )
+
+
+def dormant_threads(
+    campaign_id: int,
+    current_turn_id: int | None,
+    min_dormancy: int = 30,
+    limit: int = 3,
+) -> list[dict]:
+    return _canon_retrieval.dormant_threads(
+        campaign_id=campaign_id,
+        current_turn_id=current_turn_id,
+        min_dormancy=min_dormancy,
+        limit=limit,
+    )

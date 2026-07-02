@@ -1,17 +1,27 @@
-import { useState, type ChangeEvent, type Dispatch, type RefObject, type SetStateAction } from 'react'
+import { useEffect, useState, type ChangeEvent, type Dispatch, type RefObject, type SetStateAction } from 'react'
 import {
   ArrowDown,
+  BookOpen,
   ChevronDown,
   ClipboardList,
   Download,
   MoreHorizontal,
   Share2,
+  SlidersHorizontal,
   Sparkles,
   Trash2,
   Upload,
+  Volume2,
+  X,
 } from 'lucide-react'
 import { ActionComposer, type ActionComposerProps } from './ActionComposer'
 import { ThinIcon, ToolbarButton } from './AppChrome'
+import {
+  CONTENT_RATING_OPTIONS,
+  CONTENT_TONE_TAG_OPTIONS,
+  type ContentRating,
+  type ContentSettings,
+} from './contentSettings'
 import {
   type PendingRollNotice,
   speakerDetail,
@@ -19,16 +29,57 @@ import {
   turnNumber,
   turnPersistenceLabel,
 } from './gameSelectors'
+import { NarrativeProse } from './NarrativeProse'
 import { profileIconSrcForCharacter } from './profileIcons'
 import { SceneMusicPlayer } from './SceneMusicPlayer'
 import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
+import type { SceneDisplayState } from './sceneState'
 import type { ActivePlayer, Campaign, ClarificationRequest, Player, SessionState, SessionSummary, TimelineEntry } from './types'
 
 export type MainTab = 'turns' | 'dm' | 'notes'
+export type BoardViewMode = 'theater' | 'ops'
 export type TurnQualityScores = {
   coherence: number
   fun: number
   rules: number
+}
+
+export type DirectorCommentaryCheckpoint = {
+  checkpointId: string
+  title: string
+  status?: string
+  summary?: string
+  edgeType?: string
+  fromCheckpointId?: string
+  fromTitle?: string
+}
+
+export type DirectorCommentaryRecord = {
+  id: string
+  title: string
+  summary?: string
+  hidden?: boolean
+  checkpointIds?: string[]
+}
+
+export type DirectorCommentaryPayload = {
+  enabled: boolean
+  pack: {
+    packId: string
+    title: string
+    version?: string
+  } | null
+  routeTaken: DirectorCommentaryCheckpoint[]
+  roadsNotTaken: DirectorCommentaryCheckpoint[]
+  alternateEndings: DirectorCommentaryCheckpoint[]
+  undiscoveredRecords: Record<string, DirectorCommentaryRecord[]>
+  summary: {
+    routeTakenCount: number
+    roadsNotTakenCount: number
+    alternateEndingsCount: number
+    undiscoveredRecordsCount: number
+  }
+  commentary: string[]
 }
 
 type ChatTextSize = 'default' | 'large' | 'extra'
@@ -49,6 +100,7 @@ type DmExecutionStats = {
 type CanonFact = [fact: string, source: string]
 
 const CHAT_TEXT_SETTINGS_STORAGE_KEY = 'aidm:chatTextSettings'
+const BOARD_VIEW_MODE_STORAGE_KEY = 'aidm:boardViewMode'
 const QUALITY_SCORE_OPTIONS = [1, 2, 3, 4, 5] as const
 const DEFAULT_TURN_QUALITY_SCORES: TurnQualityScores = {
   coherence: 4,
@@ -90,6 +142,23 @@ function saveChatTextSettings(settings: ChatTextSettings) {
   }
 }
 
+function loadBoardViewMode(): BoardViewMode {
+  try {
+    const rawValue = localStorage.getItem(BOARD_VIEW_MODE_STORAGE_KEY)
+    return rawValue === 'ops' || rawValue === 'theater' ? rawValue : 'ops'
+  } catch {
+    return 'ops'
+  }
+}
+
+function saveBoardViewMode(mode: BoardViewMode) {
+  try {
+    localStorage.setItem(BOARD_VIEW_MODE_STORAGE_KEY, mode)
+  } catch {
+    // The current page can still switch modes if storage is unavailable.
+  }
+}
+
 type SessionBoardProps = {
   activeSessionTitle: string
   campaignTitle: string
@@ -98,13 +167,25 @@ type SessionBoardProps = {
   showSceneMusicPlayer: boolean
   duckMusicForNarration: boolean
   sceneMusicSyncState: SceneMusicSyncState | null
+  sceneState: SceneDisplayState | null
   onSceneMusicControl: (payload: SceneMusicControlPayload) => void
+  contentSettings: ContentSettings
+  contentSettingsPending: boolean
+  canEditContentSettings: boolean
+  onContentRatingChange: (rating: ContentRating) => void
+  onContentToneTagsChange: (toneTags: string[]) => void
+  onBoardViewModeChange?: (mode: BoardViewMode) => void
+  directorCommentary: DirectorCommentaryPayload | null
+  sessionRecap: string
+  onSpeakSessionRecap: (text: string) => void
   workspaceLoading: boolean
   sessionLoading: boolean
   mainTab: MainTab
   setMainTab: Dispatch<SetStateAction<MainTab>>
   showMobilePresenceStrip: boolean
   activePlayers: ActivePlayer[]
+  downloadCampaignChronicle: () => Promise<void>
+  downloadSessionChronicle: () => Promise<void>
   downloadSessionJson: () => Promise<void>
   sessionImportPending: boolean
   sessionImportInputRef: RefObject<HTMLInputElement | null>
@@ -224,6 +305,350 @@ function RollWaitBanner({ notice }: { notice: PendingRollNotice }) {
   )
 }
 
+function SceneHeader({ sceneState }: { sceneState: SceneDisplayState | null }) {
+  if (!sceneState) return null
+  return (
+    <div className="scene-state-header" aria-label="Current scene">
+      <span>{sceneState.locationName}</span>
+      <small>
+        {sceneState.sceneType}
+        {sceneState.mood ? ` / ${sceneState.mood}` : ''}
+        {sceneState.inCombat ? ' / combat' : ` / danger ${sceneState.dangerLevel}`}
+      </small>
+    </div>
+  )
+}
+
+function OperatorDrawer({
+  boardViewMode,
+  canEditContentSettings,
+  contentSettings,
+  contentSettingsPending,
+  dmExecutionStats,
+  onBoardViewModeChange,
+  onContentRatingChange,
+  onContentToneTagsChange,
+}: {
+  boardViewMode: BoardViewMode
+  canEditContentSettings: boolean
+  contentSettings: ContentSettings
+  contentSettingsPending: boolean
+  dmExecutionStats: DmExecutionStats
+  onBoardViewModeChange: (mode: BoardViewMode) => void
+  onContentRatingChange: (rating: ContentRating) => void
+  onContentToneTagsChange: (toneTags: string[]) => void
+}) {
+  const toneTagSet = new Set(contentSettings.toneTags)
+  const toggleToneTag = (tag: string) => {
+    const nextTags = toneTagSet.has(tag)
+      ? contentSettings.toneTags.filter((item) => item !== tag)
+      : [...contentSettings.toneTags, tag].slice(0, 4)
+    onContentToneTagsChange(nextTags)
+  }
+  return (
+    <details className="operator-drawer">
+      <summary>
+        <SlidersHorizontal size={15} />
+        Operator
+      </summary>
+      <div className="operator-drawer-body">
+        <div className="operator-mode-toggle" role="group" aria-label="Board view mode">
+          <button
+            type="button"
+            aria-pressed={boardViewMode === 'theater'}
+            onClick={() => onBoardViewModeChange('theater')}
+          >
+            Theater
+          </button>
+          <button
+            type="button"
+            aria-pressed={boardViewMode === 'ops'}
+            onClick={() => onBoardViewModeChange('ops')}
+          >
+            Ops
+          </button>
+        </div>
+        <div className="operator-rating-toggle" role="group" aria-label="Content rating">
+          {CONTENT_RATING_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={contentSettings.contentRating === option.value}
+              disabled={!canEditContentSettings || contentSettingsPending}
+              onClick={() => onContentRatingChange(option.value)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <div className="operator-tone-toggle" role="group" aria-label="Tone tags">
+          {CONTENT_TONE_TAG_OPTIONS.map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              aria-pressed={toneTagSet.has(tag)}
+              disabled={!canEditContentSettings || contentSettingsPending}
+              onClick={() => toggleToneTag(tag)}
+            >
+              {formatDirectorStatus(tag)}
+            </button>
+          ))}
+        </div>
+        <dl>
+          <div>
+            <dt>Rating</dt>
+            <dd>{CONTENT_RATING_OPTIONS.find((option) => option.value === contentSettings.contentRating)?.label}</dd>
+          </div>
+          <div>
+            <dt>Tokens</dt>
+            <dd>{dmExecutionStats.tokens}</dd>
+          </div>
+          <div>
+            <dt>Time</dt>
+            <dd>{dmExecutionStats.time}</dd>
+          </div>
+          <div>
+            <dt>Model</dt>
+            <dd>{dmExecutionStats.model}</dd>
+          </div>
+          <div>
+            <dt>Temp</dt>
+            <dd>{dmExecutionStats.temperature}</dd>
+          </div>
+          <div>
+            <dt>Tone</dt>
+            <dd>{contentSettings.toneTags.length ? contentSettings.toneTags.join(', ') : 'Default'}</dd>
+          </div>
+        </dl>
+      </div>
+    </details>
+  )
+}
+
+function contentRatingLabel(contentSettings: ContentSettings) {
+  return CONTENT_RATING_OPTIONS.find((option) => option.value === contentSettings.contentRating)?.label ?? 'Not set'
+}
+
+function PreviouslyOnCard({
+  onSpeak,
+  text,
+  updatedAt,
+}: {
+  onSpeak: (text: string) => void
+  text: string
+  updatedAt: string | null
+}) {
+  const recapText = text.trim()
+  if (!recapText) return null
+  return (
+    <aside className="previously-on-card" aria-label="Previously On">
+      <div>
+        <span>Previously On</span>
+        {updatedAt ? <time>{formatDateTime(updatedAt)}</time> : null}
+        <button type="button" aria-label="Play recap" title="Play recap" onClick={() => onSpeak(recapText)}>
+          <Volume2 size={15} />
+        </button>
+      </div>
+      <NarrativeProse text={recapText} />
+    </aside>
+  )
+}
+
+function formatDirectorStatus(status: string | undefined) {
+  if (!status) return ''
+  return status.replace(/[_-]+/g, ' ').replace(/\b\w/g, (match) => match.toUpperCase())
+}
+
+function DirectorCheckpointList({
+  emptyText,
+  items,
+}: {
+  emptyText: string
+  items: DirectorCommentaryCheckpoint[]
+}) {
+  if (!items.length) return <p>{emptyText}</p>
+  return (
+    <ol className="director-checkpoint-list">
+      {items.slice(0, 5).map((item) => (
+        <li key={`${item.fromCheckpointId ?? 'route'}:${item.checkpointId}:${item.edgeType ?? item.status ?? ''}`}>
+          <strong>{item.title || item.checkpointId}</strong>
+          <span>
+            {item.edgeType ? `${formatDirectorStatus(item.edgeType)} from ${item.fromTitle || item.fromCheckpointId}` : formatDirectorStatus(item.status)}
+          </span>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+function DirectorUndiscoveredList({ records }: { records: Record<string, DirectorCommentaryRecord[]> }) {
+  const groups = Object.entries(records)
+    .map(([collection, items]) => ({ collection, items }))
+    .filter((group) => group.items.length)
+    .slice(0, 4)
+  if (!groups.length) return <p>No hidden campaign-pack records remain.</p>
+  return (
+    <div className="director-record-groups">
+      {groups.map((group) => (
+        <div key={group.collection}>
+          <strong>{formatDirectorStatus(group.collection)}</strong>
+          <span>{group.items.slice(0, 3).map((item) => item.title || item.id).join(', ')}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function DirectorCommentaryPanel({
+  activeSessionTitle,
+  canonFacts,
+  commentary,
+  contentSettings,
+  currentResponseEntry,
+  dmExecutionStats,
+  latestDmText,
+  onClose,
+  questTitle,
+  sceneState,
+  sessionState,
+  streamLabel,
+}: {
+  activeSessionTitle: string
+  canonFacts: CanonFact[]
+  commentary: DirectorCommentaryPayload | null
+  contentSettings: ContentSettings
+  currentResponseEntry: TimelineEntry | null
+  dmExecutionStats: DmExecutionStats
+  latestDmText: string
+  onClose: () => void
+  questTitle: string
+  sceneState: SceneDisplayState | null
+  sessionState: SessionState | null
+  streamLabel: string
+}) {
+  const sceneName = sceneState?.locationName || sessionState?.current_location || 'Scene unset'
+  const sceneDetail = sceneState
+    ? `${sceneState.sceneType}${sceneState.mood ? ` / ${sceneState.mood}` : ''}${
+        sceneState.inCombat ? ' / combat' : ` / danger ${sceneState.dangerLevel}`
+      }`
+    : questTitle
+  const latestResponseLabel = currentResponseEntry?.streaming
+    ? 'Streaming'
+    : currentResponseEntry
+      ? 'Latest response ready'
+      : 'Awaiting response'
+  const responseSummary = latestDmText.trim()
+    ? truncateText(latestDmText, 156)
+    : 'No DM prose recorded yet.'
+  const memoryHighlights = canonFacts.slice(0, 3)
+  const packTitle = commentary?.pack?.title || commentary?.pack?.packId || ''
+  const commentaryNotes = commentary?.commentary.slice(0, 3) ?? []
+
+  return (
+    <section
+      id="director-commentary-panel"
+      className="director-commentary-panel"
+      aria-labelledby="director-commentary-title"
+    >
+      <div className="director-commentary-heading">
+        <div>
+          <span>{activeSessionTitle}</span>
+          <h2 id="director-commentary-title">Director Commentary</h2>
+        </div>
+        <button
+          type="button"
+          aria-label="Close Director Commentary"
+          title="Close Director Commentary"
+          onClick={onClose}
+        >
+          <X size={17} />
+        </button>
+      </div>
+      <dl className="director-commentary-list">
+        {commentary?.enabled ? (
+          <div>
+            <dt>Pack</dt>
+            <dd>
+              <strong>{packTitle}</strong>
+              <span>
+                {commentary.summary.routeTakenCount} reached / {commentary.summary.roadsNotTakenCount} branch
+                {commentary.summary.roadsNotTakenCount === 1 ? '' : 'es'} missed /{' '}
+                {commentary.summary.undiscoveredRecordsCount} hidden
+              </span>
+            </dd>
+          </div>
+        ) : null}
+        <div>
+          <dt>Scene</dt>
+          <dd>
+            <strong>{sceneName}</strong>
+            <span>{sceneDetail}</span>
+          </dd>
+        </div>
+        <div>
+          <dt>Pacing</dt>
+          <dd>
+            <strong>{latestResponseLabel}</strong>
+            <span>
+              {streamLabel} / {dmExecutionStats.time} / {dmExecutionStats.tokens} tokens
+            </span>
+          </dd>
+        </div>
+        <div>
+          <dt>Tone</dt>
+          <dd>
+            <strong>{contentRatingLabel(contentSettings)}</strong>
+            <span>{dmExecutionStats.model} at temp {dmExecutionStats.temperature}</span>
+          </dd>
+        </div>
+        <div>
+          <dt>Latest Beat</dt>
+          <dd>
+            <span>{responseSummary}</span>
+          </dd>
+        </div>
+      </dl>
+      {commentary?.enabled ? (
+        <div className="director-pack-grid" aria-label="Campaign pack director notes">
+          <section>
+            <span>Route Taken</span>
+            <DirectorCheckpointList emptyText="No checkpoints reached yet." items={commentary.routeTaken} />
+          </section>
+          <section>
+            <span>Roads Not Taken</span>
+            <DirectorCheckpointList emptyText="No alternate branches recorded yet." items={commentary.roadsNotTaken} />
+          </section>
+          <section>
+            <span>Undiscovered</span>
+            <DirectorUndiscoveredList records={commentary.undiscoveredRecords} />
+          </section>
+          {commentaryNotes.length ? (
+            <section>
+              <span>Notes</span>
+              {commentaryNotes.map((note) => (
+                <p key={note}>{note}</p>
+              ))}
+            </section>
+          ) : null}
+        </div>
+      ) : null}
+      <div className="director-memory-strip" aria-label="Director memory">
+        <span>Memory</span>
+        {memoryHighlights.length ? (
+          memoryHighlights.map(([fact, source]) => (
+            <p key={`${fact}-${source}`}>
+              {fact}
+              <small>{source}</small>
+            </p>
+          ))
+        ) : (
+          <p>No memory snippets recorded yet.</p>
+        )}
+      </div>
+    </section>
+  )
+}
+
 function activePlayerAvatarSrc(player: ActivePlayer) {
   return (
     player.profile_image ||
@@ -313,13 +738,25 @@ export function SessionBoard({
   showSceneMusicPlayer,
   duckMusicForNarration,
   sceneMusicSyncState,
+  sceneState,
   onSceneMusicControl,
+  contentSettings,
+  contentSettingsPending,
+  canEditContentSettings,
+  onContentRatingChange,
+  onContentToneTagsChange,
+  onBoardViewModeChange,
+  directorCommentary,
+  sessionRecap,
+  onSpeakSessionRecap,
   workspaceLoading,
   sessionLoading,
   mainTab,
   setMainTab,
   showMobilePresenceStrip,
   activePlayers,
+  downloadCampaignChronicle,
+  downloadSessionChronicle,
   downloadSessionJson,
   sessionImportPending,
   sessionImportInputRef,
@@ -369,23 +806,42 @@ export function SessionBoard({
 }: SessionBoardProps) {
   const loading = workspaceLoading || sessionLoading
   const [chatTextSettings, setChatTextSettings] = useState(loadChatTextSettings)
+  const [boardViewMode, setBoardViewMode] = useState<BoardViewMode>(loadBoardViewMode)
   const [chatTextMenuOpen, setChatTextMenuOpen] = useState(false)
+  const [directorCommentaryOpen, setDirectorCommentaryOpen] = useState(false)
   const [qualityDrafts, setQualityDrafts] = useState<Record<number, TurnQualityScores>>({})
   const streamLabel =
     currentResponseEntry && turnPersistenceLabel(currentResponseEntry)
       ? turnPersistenceLabel(currentResponseEntry)
       : sendPending || streamingTurnActive ? 'Streaming...' : 'Ready'
   const chatTextClassName = `chat-text-size-${chatTextSettings.size} chat-text-font-${chatTextSettings.font}`
+  const theaterMode = boardViewMode === 'theater'
   const rollWaitBanner = pendingRollNotice ? <RollWaitBanner notice={pendingRollNotice} /> : null
   const showStartAdventure =
     Boolean(activeSession) && !loading && turnRows.length === 0 && !currentResponseEntry
   const startAdventureDisabled =
     sendPending || streamingTurnActive || !sessionId || !actionComposerProps.selectedPlayerId
+  const previouslyOnText =
+    sessionRecap.trim() ||
+    sessionState?.rolling_summary?.trim() ||
+    activeSession?.latest_summary?.trim() ||
+    (activeSession ? 'No recap recorded yet.' : welcomeText)
+  const previouslyOnUpdatedAt =
+    sessionState?.updated_at ?? activeSession?.latest_activity_at ?? activeSession?.updated_at ?? null
 
   const updateChatTextSettings = (nextSettings: ChatTextSettings) => {
     setChatTextSettings(nextSettings)
     saveChatTextSettings(nextSettings)
   }
+
+  const updateBoardViewMode = (nextMode: BoardViewMode) => {
+    setBoardViewMode(nextMode)
+    saveBoardViewMode(nextMode)
+  }
+
+  useEffect(() => {
+    onBoardViewModeChange?.(boardViewMode)
+  }, [boardViewMode, onBoardViewModeChange])
 
   const toggleTurnExpanded = (turnId: string) => {
     setExpandedTurnIds((current) => {
@@ -489,8 +945,27 @@ export function SessionBoard({
     )
   }
 
+  const renderTurnCopy = (turn: TimelineEntry, expanded: boolean) => {
+    const text = theaterMode && turn.role === 'dm'
+      ? turn.text
+      : expanded
+        ? turn.text
+        : truncateText(turn.text, 180)
+    if (theaterMode && turn.role === 'dm') {
+      return <NarrativeProse text={text} />
+    }
+    return <p>{text}</p>
+  }
+
+  const renderDmResponseCopy = (text: string) => (
+    theaterMode ? <NarrativeProse text={text} /> : <p>{text}</p>
+  )
+
   return (
-    <main className="session-board">
+    <main
+      className={`session-board session-board-${boardViewMode}`}
+      data-scene-mood={sceneState?.musicTag ?? 'calm'}
+    >
       <section className="session-header">
         <div>
           <h1>
@@ -500,8 +975,16 @@ export function SessionBoard({
             </span>
           </h1>
           <p>{campaignTitle}</p>
+          <SceneHeader sceneState={sceneState} />
         </div>
         <div className="session-actions">
+          <ToolbarButton
+            icon={theaterMode ? <SlidersHorizontal size={17} /> : <BookOpen size={17} />}
+            onClick={() => updateBoardViewMode(theaterMode ? 'ops' : 'theater')}
+            title={theaterMode ? 'Operator view' : 'Theater view'}
+          >
+            {theaterMode ? 'Ops' : 'Theater'}
+          </ToolbarButton>
           <ToolbarButton
             icon={<ClipboardList size={17} />}
             onClick={() => setMainTab('notes')}
@@ -510,11 +993,28 @@ export function SessionBoard({
             Summary
           </ToolbarButton>
           <ToolbarButton
+            ariaControls="director-commentary-panel"
+            ariaExpanded={directorCommentaryOpen}
+            icon={<Sparkles size={17} />}
+            onClick={() => setDirectorCommentaryOpen((current) => !current)}
+            title="Director Commentary"
+          >
+            Director
+          </ToolbarButton>
+          <ToolbarButton
             icon={<Download size={17} />}
             onClick={() => void downloadSessionJson()}
             title="Export"
           >
             Export
+          </ToolbarButton>
+          <ToolbarButton
+            disabled={!activeSession}
+            icon={<BookOpen size={17} />}
+            onClick={() => void downloadSessionChronicle()}
+            title="Download session Chronicle"
+          >
+            Chronicle
           </ToolbarButton>
           <ToolbarButton
             disabled={sessionImportPending}
@@ -555,6 +1055,12 @@ export function SessionBoard({
               >
                 <button type="button" role="menuitem" onClick={() => void refreshCurrentWorkspace()}>
                   Refresh session
+                </button>
+                <button type="button" role="menuitem" disabled={!activeSession} onClick={() => void downloadSessionChronicle()}>
+                  Download session Chronicle
+                </button>
+                <button type="button" role="menuitem" disabled={!campaign} onClick={() => void downloadCampaignChronicle()}>
+                  Download campaign Chronicle
                 </button>
                 <button type="button" role="menuitem" disabled={!activeSession} onClick={openRenameSessionDialog}>
                   Rename session
@@ -613,6 +1119,8 @@ export function SessionBoard({
           playerId={playerId}
           duckForNarration={duckMusicForNarration}
           musicSyncState={sceneMusicSyncState}
+          sceneState={sceneState}
+          autoFollowScene
           onMusicControl={onSceneMusicControl}
         />
       ) : null}
@@ -669,6 +1177,34 @@ export function SessionBoard({
         ) : null}
       </div>
 
+      <OperatorDrawer
+        boardViewMode={boardViewMode}
+        canEditContentSettings={canEditContentSettings}
+        contentSettings={contentSettings}
+        contentSettingsPending={contentSettingsPending}
+        dmExecutionStats={dmExecutionStats}
+        onBoardViewModeChange={updateBoardViewMode}
+        onContentRatingChange={onContentRatingChange}
+        onContentToneTagsChange={onContentToneTagsChange}
+      />
+
+      {directorCommentaryOpen ? (
+        <DirectorCommentaryPanel
+          activeSessionTitle={activeSessionTitle}
+          canonFacts={canonFacts}
+          commentary={directorCommentary}
+          contentSettings={contentSettings}
+          currentResponseEntry={currentResponseEntry}
+          dmExecutionStats={dmExecutionStats}
+          latestDmText={latestDmText}
+          onClose={() => setDirectorCommentaryOpen(false)}
+          questTitle={questTitle}
+          sceneState={sceneState}
+          sessionState={sessionState}
+          streamLabel={streamLabel}
+        />
+      ) : null}
+
       {mainTab === 'turns' ? (
         <>
           <section
@@ -677,6 +1213,11 @@ export function SessionBoard({
             onScroll={updateJumpToLatestVisibility}
           >
             {rollWaitBanner}
+            <PreviouslyOnCard
+              text={previouslyOnText}
+              updatedAt={previouslyOnUpdatedAt}
+              onSpeak={onSpeakSessionRecap}
+            />
             {loading ? (
               <div className="panel-loading-strip" role="status">
                 {sessionLoading ? 'Loading session history...' : 'Loading campaign workspace...'}
@@ -700,7 +1241,11 @@ export function SessionBoard({
                 return (
                   <article className="turn-row" key={turn.id}>
                     <div className="turn-number">{turnNumber(turn, index)}</div>
-                    <div className={`turn-card ${expanded ? 'expanded' : ''}`}>
+                    <div
+                      className={`turn-card ${expanded ? 'expanded' : ''} ${
+                        theaterMode && turn.role === 'dm' ? 'dm-theater-card' : ''
+                      }`}
+                    >
                       <div className="turn-speaker">
                         <strong>{turn.speaker}</strong>
                         <span>{speakerDetail(turn, selectedPlayer)}</span>
@@ -708,7 +1253,7 @@ export function SessionBoard({
                       {turnPersistenceLabel(turn) ? (
                         <span className="turn-status-label">{turnPersistenceLabel(turn)}</span>
                       ) : null}
-                      <p>{expanded ? turn.text : truncateText(turn.text, 180)}</p>
+                      {renderTurnCopy(turn, expanded)}
                       <time>{formatClock(turn.timestamp)}</time>
                       <div className={`turn-actions ${dismissible ? 'has-dismiss' : ''} ${reportable ? 'has-report' : ''}`}>
                         {renderReportButton(turn)}
@@ -766,17 +1311,12 @@ export function SessionBoard({
                   </div>
                   <div className="dm-response-actions">{renderReportButton(currentResponseEntry)}</div>
                   <div className="response-copy">
-                    <p>{latestDmText}</p>
+                    {renderDmResponseCopy(latestDmText)}
                   </div>
                   {renderQualityPrompt(currentResponseEntry)}
                   <div className={`stream-state ${sendPending || streamingTurnActive ? 'streaming' : ''}`}>
                     <span />
                     {streamLabel}
-                  </div>
-                  <div className="execution-footer">
-                    Tokens: {dmExecutionStats.tokens} <span>|</span> Time: {dmExecutionStats.time}{' '}
-                    <span>|</span> Model: {dmExecutionStats.model} <span>|</span> Temp:{' '}
-                    {dmExecutionStats.temperature}
                   </div>
                 </div>
               </article>
@@ -814,17 +1354,12 @@ export function SessionBoard({
               </div>
               <div className="dm-response-actions">{renderReportButton(currentResponseEntry)}</div>
               <div className="response-copy">
-                <p>{latestDmText}</p>
+                {renderDmResponseCopy(latestDmText)}
               </div>
               {renderQualityPrompt(currentResponseEntry)}
               <div className={`stream-state ${sendPending || streamingTurnActive ? 'streaming' : ''}`}>
                 <span />
                 {streamLabel}
-              </div>
-              <div className="execution-footer">
-                Tokens: {dmExecutionStats.tokens} <span>|</span> Time: {dmExecutionStats.time}{' '}
-                <span>|</span> Model: {dmExecutionStats.model} <span>|</span> Temp:{' '}
-                {dmExecutionStats.temperature}
               </div>
             </div>
           </article>

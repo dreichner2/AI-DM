@@ -43,6 +43,8 @@ from aidm_server.services.campaign_lifecycle import (
     delete_campaign_record,
     restore_campaign_record,
 )
+from aidm_server.services.chronicle_export import chronicle_html_response, export_campaign_chronicle_html
+from aidm_server.services.pack_forge import CampaignPackForgeError, forge_campaign_pack
 from aidm_server.services.workspace import campaign_workspace_payload
 from aidm_server.time_utils import utc_now
 from aidm_server.validation import (
@@ -327,6 +329,30 @@ def lint_campaign_pack_manifest_endpoint():
         db.session.rollback()
         logger.error('Failed to lint campaign pack: %s', str(exc))
         return error_response('campaign_pack_lint_failed', 'Failed to lint campaign pack.', 400)
+
+
+@campaigns_bp.route('/pack-tools/forge', methods=['POST'])
+def forge_campaign_pack_manifest_endpoint():
+    if not _include_hidden_session_state():
+        return error_response(
+            'forbidden',
+            'Only workspace admins can forge campaign packs.',
+            403,
+        )
+    payload = parse_json_body(request)
+    if payload is None:
+        return error_response('validation_error', 'Expected JSON request body.', 400)
+    try:
+        result = forge_campaign_pack(payload, workspace_id=current_workspace_id())
+        db.session.rollback()
+        return jsonify(result), 200
+    except CampaignPackForgeError as exc:
+        db.session.rollback()
+        return error_response(exc.error_code, str(exc), exc.status_code)
+    except Exception as exc:
+        db.session.rollback()
+        logger.error('Failed to forge campaign pack: %s', str(exc))
+        return error_response('campaign_pack_forge_failed', 'Failed to forge campaign pack.', 400)
 
 
 @campaigns_bp.route('/installed-packs', methods=['GET'])
@@ -797,6 +823,16 @@ def get_campaign_workspace(campaign_id):
             include_hidden_state=_include_hidden_session_state(),
         )
     )
+
+
+@campaigns_bp.route('/<int:campaign_id>/chronicle', methods=['GET'])
+def export_campaign_chronicle(campaign_id):
+    campaign = workspace_campaign(campaign_id)
+    if not campaign:
+        return error_response('campaign_not_found', 'Campaign not found.', 404)
+
+    export = export_campaign_chronicle_html(campaign, include_archived_sessions=_include_archived())
+    return chronicle_html_response(export)
 
 
 @campaigns_bp.route('/<int:campaign_id>/canon', methods=['GET'])

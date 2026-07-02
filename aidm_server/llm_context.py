@@ -10,7 +10,7 @@ from sqlalchemy import func
 from aidm_server.canon_inventory import inventory_payload
 from aidm_server.character_state import character_state_for_player
 from aidm_server.database import db
-from aidm_server.emergent_memory import build_emergent_context
+from aidm_server.emergent_memory import build_emergent_context, dormant_threads
 from aidm_server.models import (
     BestiaryEntry,
     Campaign,
@@ -26,6 +26,7 @@ from aidm_server.models import (
 )
 from aidm_server.race_system import build_race_context_summary
 from aidm_server.segment_triggers import parse_trigger_spec
+from aidm_server.services.content_settings import session_content_settings
 from aidm_server.time_utils import utc_now
 from aidm_server.turn_rules import response_mentions_roll_request
 
@@ -46,6 +47,8 @@ MAX_PACK_NPCS = 6
 MAX_PACK_ENCOUNTERS = 4
 MAX_PACK_ENEMIES = 6
 MAX_PACK_SEGMENTS = 6
+MAX_SESSION_MEMORY_BEATS = 5
+MAX_SESSION_MEMORY_THREADS = 5
 RECENT_TURN_BACKFILL_MULTIPLIER = 3
 RECENT_TURN_BACKFILL_EXTRA = 5
 RECENT_TURN_CONTEXT_ROLE = 'completed_narration'
@@ -1370,6 +1373,141 @@ def _recent_actions_by_player(player_ids: list[int], limit_per_player: int = 3) 
     return recent_actions
 
 
+def _session_snapshot_text(session_obj: Session | None, *keys: str, max_length: int = 1200) -> str:
+    if not session_obj:
+        return ''
+    snapshot = safe_json_loads(session_obj.state_snapshot, {})
+    if not isinstance(snapshot, dict):
+        return ''
+    for key in keys:
+        text = _truncate_text(snapshot.get(key), max_length)
+        if text:
+            return text
+    return ''
+
+
+def _memory_snippet_beat(snippet: dict) -> dict:
+    player_input = _truncate_text(snippet.get('player_input'), 160)
+    dm_output = _truncate_text(snippet.get('dm_output') or snippet.get('summary'), 220)
+    return {
+        'turn_id': snippet.get('turn_id'),
+        'player_input': player_input,
+        'dm_output': dm_output,
+        'outcome_status': _text_or_none(snippet.get('outcome_status'), 80),
+        'roll_value': snippet.get('roll_value') if isinstance(snippet.get('roll_value'), (int, float)) else None,
+    }
+
+
+def _recent_turn_beat(turn: dict) -> dict:
+    return {
+        'turn_id': turn.get('turn_id'),
+        'player_input': _truncate_text(turn.get('player_input'), 160),
+        'dm_output': _truncate_text(turn.get('dm_output'), 220),
+        'outcome_status': _text_or_none(turn.get('outcome_status'), 80),
+        'roll_value': turn.get('roll_value') if isinstance(turn.get('roll_value'), (int, float)) else None,
+    }
+
+
+def _thread_summary_item(thread: dict) -> dict:
+    return {
+        'thread_id': thread.get('thread_id'),
+        'title': _text_or_none(thread.get('title'), 180),
+        'summary': _text_or_none(thread.get('summary'), 360),
+        'status': _text_or_none(thread.get('status'), 80),
+        'priority': thread.get('priority') if isinstance(thread.get('priority'), int) else None,
+        'source': _text_or_none(thread.get('source'), 80),
+    }
+
+
+def _player_recap_text(
+    *,
+    campaign_summary: dict,
+    current_location: str | None,
+    current_quest: str | None,
+    recap_text: str,
+    recent_beats: list[dict],
+) -> str:
+    parts = [
+        f"{campaign_summary.get('title') or 'The campaign'} is currently at {current_location or campaign_summary.get('location') or 'an unknown location'}.",
+    ]
+    quest = current_quest or campaign_summary.get('current_quest')
+    if quest and quest != 'None':
+        parts.append(f'Current quest: {quest}.')
+    if recap_text:
+        parts.append(_truncate_text(recap_text, 520))
+    if recent_beats:
+        latest = recent_beats[-1]
+        latest_text = latest.get('dm_output') or latest.get('player_input')
+        if latest_text:
+            parts.append(f'Latest beat: {_truncate_text(latest_text, 220)}')
+    return ' '.join(part for part in parts if part).strip()
+
+
+def _build_session_memory(
+    *,
+    campaign_summary: dict,
+    session_state_payload: dict,
+    recent_turns: list[dict],
+    recent_log: list[str],
+    emergent_memory: dict,
+    dormant_story_threads: list[dict],
+    session_obj: Session | None,
+) -> dict:
+    memory_snippets = [
+        snippet for snippet in session_state_payload.get('memory_snippets', []) if isinstance(snippet, dict)
+    ]
+    recent_beats = [_memory_snippet_beat(snippet) for snippet in memory_snippets[-MAX_SESSION_MEMORY_BEATS:]]
+    if not recent_beats:
+        recent_beats = [_recent_turn_beat(turn) for turn in recent_turns[-MAX_SESSION_MEMORY_BEATS:]]
+    if not recent_beats and recent_log:
+        recent_beats = [
+            {
+                'turn_id': None,
+                'player_input': None,
+                'dm_output': _truncate_text(entry, 220),
+                'outcome_status': None,
+                'roll_value': None,
+            }
+            for entry in recent_log[-MAX_SESSION_MEMORY_BEATS:]
+        ]
+
+    recap_text = _session_snapshot_text(session_obj, 'recap', 'summary', max_length=1200)
+    rolling_summary = _truncate_text(session_state_payload.get('rolling_summary'), 1400)
+    session_recap = recap_text or rolling_summary
+    current_location = session_state_payload.get('current_location') or campaign_summary.get('location')
+    current_quest = session_state_payload.get('current_quest') or campaign_summary.get('current_quest')
+    open_threads = [
+        _thread_summary_item(thread)
+        for thread in emergent_memory.get('threads', [])[:MAX_SESSION_MEMORY_THREADS]
+        if isinstance(thread, dict)
+    ]
+    dormant_hooks = [
+        _thread_summary_item(thread)
+        for thread in dormant_story_threads[:MAX_SESSION_MEMORY_THREADS]
+        if isinstance(thread, dict)
+    ]
+    return {
+        'hierarchy_version': 'v1',
+        'campaign_arc': {
+            'title': _text_or_none(campaign_summary.get('title'), 180),
+            'current_location': _text_or_none(current_location, 180),
+            'current_quest': _text_or_none(current_quest, 180),
+            'summary': _truncate_text(rolling_summary or session_recap, 900),
+        },
+        'session_recap': _truncate_text(session_recap, 1200),
+        'recent_beats': recent_beats,
+        'open_threads': open_threads,
+        'dormant_hooks': dormant_hooks,
+        'player_recap': _player_recap_text(
+            campaign_summary=campaign_summary,
+            current_location=current_location,
+            current_quest=current_quest,
+            recap_text=session_recap,
+            recent_beats=recent_beats,
+        ),
+    }
+
+
 def build_dm_context(
     world_id,
     campaign_id,
@@ -1443,6 +1581,17 @@ def build_dm_context(
                     'outcome_status': turn.outcome_status,
                 }
             )
+    current_turn_id = max(
+        [int(turn.get('turn_id') or 0) for turn in recent_turns if isinstance(turn, dict)],
+        default=0,
+    )
+    if session_id and current_turn_id <= 0:
+        current_turn_id = (
+            db.session.query(func.max(DmTurn.turn_id))
+            .filter(DmTurn.session_id == session_id)
+            .scalar()
+            or 0
+        )
 
     recent_log = []
     if session_id and not recent_turns:
@@ -1525,8 +1674,25 @@ def build_dm_context(
         current_quest=session_state_payload['current_quest'],
         recent_turns=recent_turns,
     )
+    dormant_story_threads = dormant_threads(
+        campaign_id=campaign_id,
+        current_turn_id=current_turn_id,
+        min_dormancy=30,
+        limit=3,
+    )
     live_world_state = _live_world_state_for_session(session_id)
     campaign_pack_director = _campaign_pack_director_for_session(campaign_id, session_id)
+    session_obj = db.session.get(Session, session_id) if session_id else None
+    content_settings = session_content_settings(session_obj)
+    session_memory = _build_session_memory(
+        campaign_summary=campaign_summary,
+        session_state_payload=session_state_payload,
+        recent_turns=recent_turns,
+        recent_log=recent_log,
+        emergent_memory=emergent_memory,
+        dormant_story_threads=dormant_story_threads,
+        session_obj=session_obj,
+    )
 
     context_payload = {
         'context_version': CONTEXT_VERSION,
@@ -1534,8 +1700,10 @@ def build_dm_context(
         'world': world_summary,
         'campaign': campaign_summary,
         'session_state': session_state_payload,
+        'session_memory': session_memory,
         'live_world_state': live_world_state,
         'campaign_pack_director': campaign_pack_director,
+        'content_settings': content_settings,
         'player_identity_rules': [
             'character_name is the in-world player character identity.',
             'Account/profile names are out-of-character labels and are not characters in the scene.',
@@ -1545,6 +1713,7 @@ def build_dm_context(
         'triggered_segments': triggered_segments,
         'authored_segments': triggered_segments,
         'story_threads': emergent_memory.get('threads', []),
+        'dormant_threads': dormant_story_threads,
         'emergent_memory': emergent_memory,
         'recent_turns': recent_turns,
         'recent_log': recent_log,

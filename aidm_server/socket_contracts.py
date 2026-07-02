@@ -183,6 +183,21 @@ def dm_response_end_payload(
     return payload
 
 
+def scene_state_payload(scene_state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'session_id': scene_state.get('session_id'),
+        'location_id': scene_state.get('location_id'),
+        'location_name': scene_state.get('location_name') or 'Unknown location',
+        'scene_type': scene_state.get('scene_type') or 'scene',
+        'mood': scene_state.get('mood'),
+        'danger_level': scene_state.get('danger_level') or 0,
+        'combat_state': scene_state.get('combat_state') or 'none',
+        'in_combat': bool(scene_state.get('in_combat')),
+        'music_tag': scene_state.get('music_tag') or 'calm',
+        'acting_player_id': scene_state.get('acting_player_id'),
+    }
+
+
 def segment_triggered_payload(
     *,
     segment_id: int,

@@ -14,7 +14,8 @@ from aidm_server.logging_context import clear_logging_context, set_logging_conte
 from aidm_server.database import db
 from aidm_server.models import DmTurn, safe_json_loads
 from aidm_server.profile_icons import profile_icon_src_for_character
-from aidm_server.socket_contracts import socket_error_payload as socket_error, validate_send_message_payload
+from aidm_server.services.scene_state import scene_state_for_session
+from aidm_server.socket_contracts import scene_state_payload, socket_error_payload as socket_error, validate_send_message_payload
 from aidm_server.socket_runtime import SocketRuntime
 from aidm_server.socket_state import SocketState
 from aidm_server.telemetry import telemetry_event, telemetry_metric
@@ -308,6 +309,9 @@ def register_socketio_events(socketio):
             current_music_state = _music_state_for_emit(socket_state.music_state(session_id))
             if current_music_state:
                 emit('music_state', current_music_state)
+            current_scene_state = scene_state_for_session(session_id)
+            if current_scene_state:
+                emit('scene_state', scene_state_payload(current_scene_state))
             emit(
                 'new_message',
                 {

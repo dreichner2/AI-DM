@@ -38,6 +38,7 @@ from aidm_server.blueprints.accounts import LEGACY_PASSWORD_SETUP_MESSAGE, accou
 from aidm_server.blueprints.campaigns import campaigns_bp
 from aidm_server.blueprints.creatures import creatures_bp
 from aidm_server.blueprints.maps import maps_bp
+from aidm_server.blueprints.onboarding import onboarding_bp
 from aidm_server.blueprints.players import players_bp
 from aidm_server.blueprints.races import races_bp
 from aidm_server.blueprints.runtime_config import runtime_config_bp
@@ -322,6 +323,7 @@ def create_app() -> Flask:
     app.register_blueprint(sessions_bp, url_prefix='/api/sessions')
     app.register_blueprint(maps_bp, url_prefix='/api/maps')
     app.register_blueprint(segments_bp, url_prefix='/api/segments')
+    app.register_blueprint(onboarding_bp, url_prefix='/api/onboarding')
     app.register_blueprint(runtime_config_bp, url_prefix='/api')
     app.register_blueprint(system_bp, url_prefix='/api')
 

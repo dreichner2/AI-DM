@@ -38,6 +38,7 @@ from aidm_server.rules import RuleHint, classify_player_action
 from aidm_server.segment_triggers import evaluate_segment_trigger, parse_trigger_spec
 from aidm_server.segment_state import build_segment_state_payload
 from aidm_server.services.campaign_pack_progress import update_campaign_pack_progress
+from aidm_server.services.scene_state import scene_state_for_session
 from aidm_server.socket_contracts import (
     dm_chunk_payload,
     dm_response_end_payload,
@@ -45,6 +46,7 @@ from aidm_server.socket_contracts import (
     new_message_payload,
     roll_required_payload,
     segment_triggered_payload,
+    scene_state_payload,
     session_log_update_payload,
     socket_error_payload as socket_error,
     turn_duplicate_payload,
@@ -1550,6 +1552,19 @@ class TurnEngine:
     def _emit_turn_status(self, session_id: int, turn_id: int | None, status: str, details: dict | None = None):
         self.socketio.emit('turn_status', turn_status_payload(session_id, turn_id, status, details), room=str(session_id))
 
+    def _emit_scene_state(self, session_id: int, *, acting_player_id: int | None = None) -> None:
+        try:
+            state = scene_state_for_session(session_id, acting_player_id=acting_player_id)
+            if state:
+                self.socketio.emit('scene_state', scene_state_payload(state), room=str(session_id))
+        except Exception as exc:
+            logger.warning('Scene-state emit failed: %s', str(exc))
+            telemetry_event(
+                'socket.scene_state.emit_failed',
+                payload={'session_id': session_id, 'error': str(exc)},
+                severity='warning',
+            )
+
     def _emit_clarification_request(
         self,
         *,
@@ -2370,6 +2385,7 @@ class TurnEngine:
                     )
                     campaign_pack_progress_changed = bool(progress_result.changed)
                     commit_with_retry(label='post-DM state pipeline')
+                    self._emit_scene_state(turn.session_id, acting_player_id=turn.player_id)
                 except Exception as exc:
                     db.session.rollback()
                     logger.warning('State pipeline post-DM application failed: %s', str(exc))
@@ -2383,6 +2399,7 @@ class TurnEngine:
                         if turn_obj:
                             immediate_state_summary = apply_immediate_state_changes(turn_obj, campaign, dm_response_text)
                             commit_with_retry(label='legacy immediate state fallback')
+                            self._emit_scene_state(turn.session_id, acting_player_id=turn.player_id)
                     except Exception as fallback_exc:
                         db.session.rollback()
                         logger.warning('Immediate character state application failed: %s', str(fallback_exc))

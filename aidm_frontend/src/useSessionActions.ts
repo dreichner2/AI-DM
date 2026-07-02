@@ -1,5 +1,11 @@
 import { useState, type ChangeEvent, type Dispatch, type FormEvent, type SetStateAction } from 'react'
-import { apiFetch } from './api'
+import {
+  addCookieCsrfHeader,
+  addNgrokBrowserWarningBypassHeader,
+  addWorkspaceTokenHeader,
+  apiFetch,
+  normalizeBaseUrl,
+} from './api'
 import { createClientMessageId } from './gameActions'
 import type { MainTab } from './SessionBoard'
 import type {
@@ -76,6 +82,46 @@ function readFileText(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error ?? new Error('Could not read import file.'))
     reader.readAsText(file)
   })
+}
+
+function filenameFromDisposition(disposition: string | null, fallback: string) {
+  const match = disposition?.match(/filename\*=UTF-8''([^;]+)|filename="?([^"]+)"?/i)
+  const encodedName = match?.[1] || match?.[2]
+  if (!encodedName) return fallback
+  try {
+    return decodeURIComponent(encodedName)
+  } catch {
+    return encodedName
+  }
+}
+
+async function downloadHtmlResource(
+  baseUrl: string,
+  path: string,
+  token: string,
+  fallbackFilename: string,
+) {
+  const headers = new Headers()
+  if (token.trim()) {
+    headers.set('Authorization', `Bearer ${token.trim()}`)
+  }
+  addWorkspaceTokenHeader(headers)
+  addCookieCsrfHeader(headers)
+  addNgrokBrowserWarningBypassHeader(headers, baseUrl)
+
+  const response = await fetch(`${normalizeBaseUrl(baseUrl)}${path}`, { headers })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(text || `Download failed with status ${response.status}`)
+  }
+
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filenameFromDisposition(response.headers.get('Content-Disposition'), fallbackFilename)
+  link.click()
+  URL.revokeObjectURL(url)
 }
 
 export function useSessionActions({
@@ -193,6 +239,40 @@ export function useSessionActions({
     URL.revokeObjectURL(url)
     if (warnings.length) {
       pushError('workspace', `Export completed with missing live data: ${warnings.join('; ')}`)
+    }
+  }
+
+  const downloadSessionChronicle = async () => {
+    if (!selectedSessionId) {
+      pushError('workspace', 'Choose a session before exporting a Chronicle.')
+      return
+    }
+    try {
+      await downloadHtmlResource(
+        baseUrl,
+        `/api/sessions/${selectedSessionId}/chronicle`,
+        auth,
+        `aidm-session-${selectedSessionId}-chronicle.html`,
+      )
+    } catch (error) {
+      pushError('persistence', `Chronicle export failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  const downloadCampaignChronicle = async () => {
+    if (!selectedCampaignId) {
+      pushError('workspace', 'Choose a campaign before exporting a campaign Chronicle.')
+      return
+    }
+    try {
+      await downloadHtmlResource(
+        baseUrl,
+        `/api/campaigns/${selectedCampaignId}/chronicle`,
+        auth,
+        `aidm-campaign-${selectedCampaignId}-chronicle.html`,
+      )
+    } catch (error) {
+      pushError('persistence', `Campaign Chronicle export failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -387,6 +467,8 @@ export function useSessionActions({
     closeShareSessionDialog,
     closeSessionActionDialog,
     copyShareSessionUrl,
+    downloadCampaignChronicle,
+    downloadSessionChronicle,
     downloadSessionJson,
     importSessionJson,
     openDeleteSessionDialog,
