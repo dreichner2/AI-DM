@@ -5,6 +5,8 @@ from flask import current_app
 
 from alembic import context
 
+from aidm_server.migration_compat import ensure_alembic_version_table_capacity
+
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
@@ -97,6 +99,21 @@ def run_migrations_online():
     connectable = get_engine()
 
     with connectable.connect() as connection:
+        environment_options = getattr(getattr(context, '_proxy', None), 'context_opts', {})
+        database_mutation_requested = environment_options.get('destination_rev') is not None
+        if database_mutation_requested:
+            version_table_action = ensure_alembic_version_table_capacity(
+                connection,
+                table_name=conf_args.get('version_table', 'alembic_version'),
+                schema=conf_args.get('version_table_schema'),
+                primary_key=conf_args.get('version_table_pk', True),
+            )
+            if version_table_action == 'widened':
+                logger.info('Widened Alembic version table for AIDM revision identifiers.')
+            # SQLAlchemy inspection and DDL both start an implicit transaction.
+            # Finish that bookkeeping transaction so Alembic owns a fresh
+            # transaction for revision updates and can persist version_num.
+            connection.commit()
         context.configure(
             connection=connection,
             target_metadata=get_metadata(),

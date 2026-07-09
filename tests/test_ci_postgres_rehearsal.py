@@ -11,6 +11,7 @@ def test_postgres_ci_job_covers_production_rehearsal_contract():
         'postgres-integration:',
         'image: postgres:17',
         'python -m aidm_server.deploy_bootstrap --check-only',
+        'python -m flask --app aidm_server.main:create_app db check',
         'scripts/run_production_server.sh',
         '--target-url http://127.0.0.1:5099',
         'tests/test_postgres_runtime.py',

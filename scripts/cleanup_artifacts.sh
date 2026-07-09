@@ -23,6 +23,6 @@ find "$ROOT_DIR" \
   -path "$ROOT_DIR/.git" -prune -o \
   -path "$ROOT_DIR/.venv" -prune -o \
   -path "$ROOT_DIR/aidm_frontend/node_modules" -prune -o \
-  -type f -name ".DS_Store" -delete
+  -type f -name ".DS_Store" -exec rm -f {} +
 
 echo "Cleaned local cache and runtime artifacts."

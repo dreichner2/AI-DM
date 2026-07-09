@@ -3,14 +3,19 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 import os
+from pathlib import Path
+import subprocess
+import sys
 import threading
 import time
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, event, select, update
+from sqlalchemy import create_engine, delete, event, inspect, select, text, update
+from sqlalchemy.engine import URL, make_url
 
 from aidm_server.database import db
+from aidm_server.migration_compat import ALEMBIC_VERSION_COLUMN_LENGTH
 from aidm_server.models import RateLimitEvent, SessionLogEntry, SessionTurnLock
 from aidm_server.rate_limiter import DatabaseRateLimitStore, FixedWindowRateLimiter
 from aidm_server.time_utils import utc_now
@@ -19,10 +24,115 @@ from tests.helpers import seed_world_campaign_player_session
 
 
 POSTGRES_TEST_URI = str(os.getenv('AIDM_POSTGRES_TEST_URI') or '').strip()
+REPO_ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_HEAD_REVISION = '0029_players_account_fk'
 pytestmark = pytest.mark.skipif(
     not POSTGRES_TEST_URI.startswith('postgresql+psycopg://'),
     reason='AIDM_POSTGRES_TEST_URI is required for PostgreSQL integration tests.',
 )
+
+
+def _render_database_url(database_url: URL) -> str:
+    return database_url.render_as_string(hide_password=False)
+
+
+def _run_flask_db(database_url: URL, *args: str) -> None:
+    env = os.environ.copy()
+    env.update(
+        {
+            'FLASK_APP': 'aidm_server.main:create_app',
+            'PYTHONPATH': str(REPO_ROOT),
+            'PYTHON_DOTENV_DISABLED': '1',
+            'AIDM_SKIP_REPO_ENV_LOCAL': '1',
+            'AIDM_DATABASE_URI': _render_database_url(database_url),
+            'AIDM_AUTO_CREATE_SCHEMA': 'false',
+            'AIDM_ENV': 'test',
+            'AIDM_DEBUG': 'false',
+            'AIDM_SOCKETIO_ASYNC_MODE': 'threading',
+            'AIDM_TELEMETRY_ENABLED': 'false',
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, '-m', 'flask', 'db', *args],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        output = f'{result.stdout}\n{result.stderr}'
+        if database_url.password:
+            output = output.replace(database_url.password, '***')
+        pytest.fail(f"flask db {' '.join(args)} failed:\n{output}")
+
+
+def _version_column_length(engine) -> int | None:
+    version_column = next(
+        column
+        for column in inspect(engine).get_columns('alembic_version')
+        if column['name'] == 'version_num'
+    )
+    return getattr(version_column['type'], 'length', None)
+
+
+def test_postgres_migrations_recover_legacy_version_table_width():
+    base_url = make_url(POSTGRES_TEST_URI)
+    rehearsal_database = f'aidm_migration_{uuid4().hex}'
+    rehearsal_url = base_url.set(database=rehearsal_database)
+    maintenance_url = base_url.set(database='postgres')
+    maintenance_engine = create_engine(maintenance_url, isolation_level='AUTOCOMMIT')
+    rehearsal_engine = None
+
+    try:
+        with maintenance_engine.connect() as connection:
+            connection.exec_driver_sql(f'CREATE DATABASE "{rehearsal_database}"')
+
+        _run_flask_db(rehearsal_url, 'upgrade', '0014_workspace_character_pool')
+        rehearsal_engine = create_engine(rehearsal_url)
+        with rehearsal_engine.begin() as connection:
+            revision = connection.execute(text('SELECT version_num FROM alembic_version')).scalar_one()
+            assert revision == '0014_workspace_character_pool'
+            connection.exec_driver_sql(
+                'ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(32)'
+            )
+
+        _run_flask_db(rehearsal_url, 'upgrade', 'head')
+        with rehearsal_engine.connect() as connection:
+            revision = connection.execute(text('SELECT version_num FROM alembic_version')).scalar_one()
+        assert revision == EXPECTED_HEAD_REVISION
+        assert (_version_column_length(rehearsal_engine) or 0) >= ALEMBIC_VERSION_COLUMN_LENGTH
+
+        player_account_fk = next(
+            foreign_key
+            for foreign_key in inspect(rehearsal_engine).get_foreign_keys('players')
+            if foreign_key.get('constrained_columns') == ['account_id']
+        )
+        assert player_account_fk['referred_table'] == 'accounts'
+        assert (player_account_fk.get('options') or {}).get('ondelete') == 'SET NULL'
+
+        # A database manually stamped at a short current head must also be
+        # repaired even when Alembic has no application migration to run.
+        with rehearsal_engine.begin() as connection:
+            connection.exec_driver_sql(
+                'ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(32)'
+            )
+        _run_flask_db(rehearsal_url, 'upgrade', 'head')
+        assert (_version_column_length(rehearsal_engine) or 0) >= ALEMBIC_VERSION_COLUMN_LENGTH
+        _run_flask_db(rehearsal_url, 'check')
+    finally:
+        if rehearsal_engine is not None:
+            rehearsal_engine.dispose()
+        with maintenance_engine.connect() as connection:
+            connection.execute(
+                text(
+                    'SELECT pg_terminate_backend(pid) FROM pg_stat_activity '
+                    'WHERE datname = :database_name AND pid <> pg_backend_pid()'
+                ),
+                {'database_name': rehearsal_database},
+            )
+            connection.exec_driver_sql(f'DROP DATABASE IF EXISTS "{rehearsal_database}"')
+        maintenance_engine.dispose()
 
 
 @pytest.fixture()

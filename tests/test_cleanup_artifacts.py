@@ -16,7 +16,8 @@ def test_cleanup_preserves_release_evidence_and_removes_runtime_artifacts(tmp_pa
     runtime_artifact = repo / 'tmp' / 'browser-smoke' / 'server.log'
     pytest_cache = repo / '.pytest_cache' / 'state'
     frontend_dist = repo / 'aidm_frontend' / 'dist' / 'index.html'
-    for path in (release_evidence, runtime_artifact, pytest_cache, frontend_dist):
+    finder_artifact = repo / 'nested' / '.DS_Store'
+    for path in (release_evidence, runtime_artifact, pytest_cache, frontend_dist, finder_artifact):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('test', encoding='utf-8')
 
@@ -33,3 +34,4 @@ def test_cleanup_preserves_release_evidence_and_removes_runtime_artifacts(tmp_pa
     assert not runtime_artifact.exists()
     assert not pytest_cache.exists()
     assert not frontend_dist.exists()
+    assert not finder_artifact.exists()

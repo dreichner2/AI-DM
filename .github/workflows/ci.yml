@@ -93,6 +93,8 @@ jobs:
           python -m pip install -c requirements.constraints.txt pytest
       - name: Run migrations and production bootstrap against PostgreSQL
         run: python -m aidm_server.deploy_bootstrap --check-only --host 0.0.0.0
+      - name: Verify migrated schema matches runtime metadata
+        run: python -m flask --app aidm_server.main:create_app db check
       - name: Verify hosted database readiness round trip
         run: python scripts/deployment_readiness_check.py --allow-fallback-provider
       - name: Smoke production WSGI and Gunicorn eventlet entrypoint

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -101,7 +102,7 @@ def test_wsgi_import_fails_before_building_unsafe_production_runtime():
     }
 
     result = subprocess.run(
-        ['.venv/bin/python', '-c', 'import aidm_server.wsgi'],
+        [sys.executable, '-c', 'import aidm_server.wsgi'],
         cwd=os.getcwd(),
         env=env,
         capture_output=True,
