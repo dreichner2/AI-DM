@@ -35,7 +35,10 @@ HOSTED_FORBIDDEN_EXCEPTION = 'Attach non-admin forbidden-response evidence for i
 HOSTED_BACKUP_RESTORE_EXCEPTION = 'Attach provider-specific hosted database backup/restore evidence for hosted beta.'
 HOSTED_EXPORT_IMPORT_EXCEPTION = 'Attach target-environment export/import smoke evidence when signing off hosted data integrity.'
 HOSTED_WORKER_PROCESS_EXCEPTION = 'Attach hosted process evidence showing the documented single-worker model is running with exactly one backend worker.'
-HOSTED_STICKY_QUEUE_EXCEPTION = 'If the deployed target overrides the documented single-worker model, attach sticky/message-queue staging proof.'
+HOSTED_SINGLE_WORKER_POLICY_EXCEPTION = (
+    'Confirm the hosted target uses the supported single-worker Socket.IO topology; '
+    'sticky/message_queue production is unsupported even with staging proof.'
+)
 HOSTED_METRICS_EXCEPTION = 'Run deployment-readiness live checks for `/api/metrics` and `/api/metrics/prometheus` against the hosted target.'
 HOSTED_SLO_EXCEPTION = 'Fill `docs/beta_slo_baseline.md` with target-environment metrics before tester expansion.'
 SOURCE_ARCHIVE_ATTACHMENT_EXCEPTION = 'Attach the source archive to the RC issue or GitHub Release before closing.'
@@ -168,7 +171,7 @@ ISSUE_SPECS: tuple[IssueEvidenceSpec, ...] = (
         ),
         external_exceptions=(
             HOSTED_WORKER_PROCESS_EXCEPTION,
-            HOSTED_STICKY_QUEUE_EXCEPTION,
+            HOSTED_SINGLE_WORKER_POLICY_EXCEPTION,
         ),
     ),
     IssueEvidenceSpec(
@@ -868,13 +871,10 @@ def _apply_hosted_rc_exception_evidence(
     if spec.issue_number == 7:
         worker_proof = _hosted_manual_provided(hosted_rc_evidence, HOSTED_WORKER_PROCESS_LABEL)
         worker_model = str(hosted_rc_evidence.get('socketio_worker_model') or '').strip()
-        staging_proof = str(hosted_rc_evidence.get('socketio_staging_proof') or '').strip()
         if worker_proof:
             _remove_exception(remaining_exceptions, HOSTED_WORKER_PROCESS_EXCEPTION)
         if worker_proof and worker_model == 'single':
-            _remove_exception(remaining_exceptions, HOSTED_STICKY_QUEUE_EXCEPTION)
-        elif worker_model in {'sticky', 'message_queue'} and staging_proof and staging_proof != 'missing':
-            _remove_exception(remaining_exceptions, HOSTED_STICKY_QUEUE_EXCEPTION)
+            _remove_exception(remaining_exceptions, HOSTED_SINGLE_WORKER_POLICY_EXCEPTION)
     if spec.issue_number == 8 and _hosted_check_passed(hosted_rc_evidence, 'Hosted beta SLO baseline'):
         _remove_exception(remaining_exceptions, HOSTED_SLO_EXCEPTION)
     if spec.issue_number == 9 and _hosted_manual_provided(hosted_rc_evidence, SOURCE_ARCHIVE_ATTACHMENT_LABEL):

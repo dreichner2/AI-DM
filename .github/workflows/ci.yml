@@ -71,8 +71,9 @@ jobs:
       AIDM_SOCKET_CORS_ALLOWLIST: https://aidm-ci.example.test
       AIDM_RATE_LIMIT_STORE: database
       AIDM_TURN_COORDINATOR_STORE: database
-      AIDM_SOCKETIO_ASYNC_MODE: eventlet
+      AIDM_SOCKETIO_ASYNC_MODE: threading
       AIDM_SOCKETIO_WORKER_MODEL: single
+      AIDM_GUNICORN_THREADS: '16'
       AIDM_SECURITY_HEADERS_ENABLED: 'true'
       AIDM_OBSERVABILITY_PROVIDER: github-actions
       AIDM_ALERT_OWNER: ci
@@ -97,7 +98,7 @@ jobs:
         run: python -m flask --app aidm_server.main:create_app db check
       - name: Verify hosted database readiness round trip
         run: python scripts/deployment_readiness_check.py --allow-fallback-provider
-      - name: Smoke production WSGI and Gunicorn eventlet entrypoint
+      - name: Smoke production WSGI and Gunicorn threaded entrypoint
         timeout-minutes: 3
         run: |
           log_path="$RUNNER_TEMP/aidm-production-entrypoint.log"
@@ -127,9 +128,44 @@ jobs:
             cat "$log_path"
             exit 1
           fi
+          python - <<'PY'
+          import requests
+          import socketio
+
+          target_url = 'http://127.0.0.1:5099'
+          clients = []
+          try:
+              for _index in range(4):
+                  client = socketio.Client(
+                      reconnection=False,
+                      request_timeout=5,
+                      websocket_extra_options={'origin': 'https://aidm-ci.example.test'},
+                  )
+                  client.connect(
+                      target_url,
+                      headers={'Authorization': 'Bearer ci-operator-token'},
+                      auth={'workspace_token': 'ci-operator-token'},
+                      transports=['websocket'],
+                      wait_timeout=5,
+                  )
+                  if client.transport() != 'websocket':
+                      raise RuntimeError(f'Expected websocket transport, got {client.transport()!r}.')
+                  clients.append(client)
+
+              requests.get(f'{target_url}/api/health', timeout=5).raise_for_status()
+              requests.get(
+                  f'{target_url}/api/metrics',
+                  headers={'Authorization': 'Bearer ci-operator-token'},
+                  timeout=5,
+              ).raise_for_status()
+          finally:
+              for client in clients:
+                  client.disconnect()
+          PY
           python scripts/deployment_readiness_check.py \
             --target-url http://127.0.0.1:5099 \
             --auth-token ci-operator-token \
+            --socketio-origin https://aidm-ci.example.test \
             --allow-fallback-provider \
             --evidence-report "$readiness_path"
           cleanup

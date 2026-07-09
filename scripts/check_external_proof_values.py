@@ -255,10 +255,20 @@ def _field_counts_toward_required(field: dict[str, Any], current_value: str, val
 
 
 def _conditional_field_required(field: dict[str, Any], values: dict[str, str]) -> bool:
-    key = _field_key(field)
-    if key != 'socketio_staging_proof':
-        return False
-    return values.get('socketio_worker_model', '').lower() in {'sticky', 'message_queue'}
+    del field, values
+    # Historical multi-worker proof fields remain readable, but no amount of
+    # staging proof can make a non-single worker model valid for this release.
+    return False
+
+
+def _socketio_worker_model_errors(values: dict[str, str]) -> list[str]:
+    worker_model = values.get('socketio_worker_model', '').strip().lower()
+    if not worker_model or worker_model == 'single':
+        return []
+    return [
+        'socketio_worker_model: hosted production currently supports only single; '
+        f'{worker_model} is unsupported even when Socket.IO staging proof is provided'
+    ]
 
 
 def _metadata_value(payload: dict[str, Any], values: dict[str, str], key: str) -> str:
@@ -446,6 +456,7 @@ def build_report(
         f'command-only or secret-like field persisted in values file: {key}'
         for key in _sensitive_values(values_payload)
     ]
+    invalid_errors.extend(_socketio_worker_model_errors(values))
     if values_present:
         invalid_errors.extend(_clean_worktree_evidence_errors(values, values_path=values_path))
         invalid_errors.extend(_operator_signoff_evidence_errors(values, values_path=values_path))

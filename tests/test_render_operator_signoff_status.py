@@ -242,6 +242,29 @@ def test_invalid_manifest_requires_worker_evidence_for_multi_worker_not_applicab
     )
 
 
+def test_invalid_manifest_rejects_multi_worker_proof_as_release_evidence(tmp_path):
+    manifest = example_manifest()
+    manifest['commit'] = 'abc123'
+    manifest['target_url'] = 'https://aidm.closedbeta.dev'
+    manifest['signed_by'] = 'operator'
+    manifest['signed_at'] = '2026-06-19T00:00:00+00:00'
+    manifest['items']['multi_worker_socketio_staging'] = {
+        'status': 'provided',
+        'evidence': 'https://platform.aidm.closedbeta.dev/sticky-proof',
+        'notes': 'Historical staging proof must not make RC1 multi-worker eligible.',
+    }
+    manifest_path = tmp_path / 'operator-signoff.json'
+    manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
+
+    report = build_report(manifest_path=manifest_path, generated_at='2026-06-19T00:00:00+00:00')
+
+    assert report['status'] == 'invalid'
+    assert any(
+        'multi_worker_socketio_staging' in error and 'unsupported for hosted production' in error
+        for error in report['errors']
+    )
+
+
 def test_invalid_manifest_rejects_dirty_clean_worktree_evidence(tmp_path):
     evidence_path = tmp_path / 'rc-evidence.md'
     evidence_path.write_text(
@@ -702,6 +725,34 @@ def test_draft_manifest_seeds_live_hosted_and_manual_evidence():
     )
     assert items['hosted_external_telemetry']['status'] == 'pending'
     assert items['rc_issue_closure_review']['status'] == 'pending'
+
+
+def test_draft_manifest_keeps_unsupported_multi_worker_hosted_evidence_pending():
+    packet = {
+        'hosted_rc_evidence': {
+            'status': 'passed',
+            'target_url': 'https://aidm.closedbeta.dev',
+            'metadata': {
+                'release': 'RC1',
+                'socket_io_worker_model': 'message_queue',
+                'socket_io_staging_proof': 'https://evidence.example.test/queue',
+            },
+            'manual_evidence': [
+                {
+                    'label': 'Hosted Socket.IO worker process proof',
+                    'status': 'provided',
+                    'evidence': 'https://evidence.example.test/workers',
+                }
+            ],
+        }
+    }
+
+    draft = draft_manifest_from_packet(packet, generated_at='2026-06-19T00:00:00+00:00')
+    item = draft['items']['multi_worker_socketio_staging']
+
+    assert item['status'] == 'pending'
+    assert item['evidence'] == ''
+    assert 'unsupported Socket.IO worker model' in item['notes']
 
 
 def test_draft_manifest_seeds_source_archive_attachment_from_verified_rc_artifact():

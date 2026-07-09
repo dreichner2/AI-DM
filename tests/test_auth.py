@@ -671,14 +671,16 @@ def test_socket_auth_required(tmp_path, monkeypatch):
     )
     assert not query_auth_client.is_connected()
 
+    import aidm_server.blueprints.socketio_events as socketio_events_module
+
+    assert socketio_events_module.socketio_connections == {}
+
     auth_client = socketio.test_client(
         app,
         flask_test_client=app.test_client(),
         auth={'token': 'token-123'},
     )
     assert auth_client.is_connected()
-
-    import aidm_server.blueprints.socketio_events as socketio_events_module
 
     assert socketio_events_module.socketio_connections
     assert all('token' not in connection for connection in socketio_events_module.socketio_connections.values())

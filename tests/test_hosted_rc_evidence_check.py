@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from scripts import hosted_rc_evidence_check
 from scripts.hosted_rc_evidence_check import (
     HostedCheck,
@@ -18,6 +20,11 @@ from scripts.hosted_rc_evidence_check import (
 
 def _parse_args(*args: str):
     return build_parser().parse_args(list(args))
+
+
+def test_parser_rejects_unsupported_multi_worker_model():
+    with pytest.raises(SystemExit):
+        _parse_args('--socketio-worker-model', 'message_queue')
 
 
 def test_redacted_command_args_hide_sensitive_flag_values():
@@ -56,6 +63,8 @@ def test_command_plan_builds_hosted_checks_with_expected_artifacts():
         'target.env',
         '--auth-token',
         'operator-token',
+        '--socketio-origin',
+        'https://play.closedbeta.dev',
         '--workspace-id',
         'workspace-1',
         '--non-admin-token',
@@ -81,6 +90,7 @@ def test_command_plan_builds_hosted_checks_with_expected_artifacts():
     assert readiness.required == ()
     assert readiness.args[:2] == ('python-test', 'scripts/deployment_readiness_check.py')
     assert '--target-url' in readiness.args
+    assert readiness.args[readiness.args.index('--socketio-origin') + 1] == 'https://play.closedbeta.dev'
     assert 'tmp/release/deployment-readiness-evidence.md' in readiness.args
 
     forbidden = next(check for check in plan if check.label == 'Hosted non-admin forbidden smoke')

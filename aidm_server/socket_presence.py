@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from functools import wraps
 from typing import Any, Callable
 
 from flask import request
@@ -27,7 +28,7 @@ class SocketPresenceDependencies:
     runtime: SocketRuntime
     state: SocketState
     logger: logging.Logger
-    set_socket_context: Callable[..., None]
+    set_socket_context: Callable[..., str]
     socket_workspace_id: Callable[..., str | None]
     socket_capability_forbidden: Callable[[str], bool]
     workspace_session: Callable[[int, str], Any]
@@ -61,6 +62,15 @@ def player_presence_payload(player) -> dict:
 def register_socket_presence_events(socketio, dependencies: SocketPresenceDependencies) -> None:
     """Register connection, join, leave, and disconnect lifecycle handlers."""
 
+    def serialize_connection_lifecycle(handler):
+        @wraps(handler)
+        def serialized(*args, **kwargs):
+            sid = getattr(request, 'sid', '') or ''
+            with dependencies.state.connection_lifecycle(sid):
+                return handler(*args, **kwargs)
+
+        return serialized
+
     def clear_connection_binding(sid: str, *, leave_bound_room: bool):
         dependencies.runtime.clear_connection_binding(
             sid,
@@ -70,8 +80,9 @@ def register_socket_presence_events(socketio, dependencies: SocketPresenceDepend
         )
 
     @socketio.on('connect')
+    @serialize_connection_lifecycle
     def handle_connect(auth=None):
-        dependencies.set_socket_context('connect', auth if isinstance(auth, dict) else None)
+        correlation_id = dependencies.set_socket_context('connect', auth if isinstance(auth, dict) else None)
         try:
             try:
                 sid = getattr(request, 'sid', None)
@@ -108,7 +119,7 @@ def register_socket_presence_events(socketio, dependencies: SocketPresenceDepend
                             'global_operator': dependencies.runtime.global_operator_for_auth(auth_payload=auth),
                             'session_id': None,
                             'player_id': None,
-                            'correlation_id': (dependencies.state.connection(sid) or {}).get('correlation_id'),
+                            'correlation_id': correlation_id,
                         },
                     )
                 telemetry_metric('socket.connect.success_total', 1)
@@ -125,6 +136,7 @@ def register_socket_presence_events(socketio, dependencies: SocketPresenceDepend
             clear_logging_context()
 
     @socketio.on('join_session')
+    @serialize_connection_lifecycle
     def handle_join_session(data):
         dependencies.set_socket_context('join_session', data if isinstance(data, dict) else None)
         try:
@@ -187,18 +199,25 @@ def register_socket_presence_events(socketio, dependencies: SocketPresenceDepend
                     return
                 player_data = player_presence_payload(player)
 
-            connection_record = dependencies.state.ensure_connection(
-                request.sid,
-                {'authorized': True, 'workspace_id': workspace_id},
-            )
+            connection_record = dependencies.state.connection(request.sid)
+            if not connection_record or not connection_record.get('authorized'):
+                emit('error', socket_error('unauthorized', 'Socket connection is no longer active.'))
+                return
             existing_session_id, existing_player_id = connection_binding_ids(connection_record)
             if existing_session_id != session_id or existing_player_id != player_id:
                 clear_connection_binding(request.sid, leave_bound_room=True)
 
             join_room(str(session_id))
-            connection_record['workspace_id'] = workspace_id
-            connection_record['session_id'] = session_id
-            connection_record['player_id'] = player_id
+            updated_connection = dependencies.state.update_connection_if_present(
+                request.sid,
+                workspace_id=workspace_id,
+                session_id=session_id,
+                player_id=player_id,
+            )
+            if updated_connection is None:
+                leave_room(str(session_id))
+                emit('error', socket_error('unauthorized', 'Socket connection is no longer active.'))
+                return
 
             dependencies.state.ensure_session(session_id)
 
@@ -227,6 +246,7 @@ def register_socket_presence_events(socketio, dependencies: SocketPresenceDepend
             clear_logging_context()
 
     @socketio.on('leave_session')
+    @serialize_connection_lifecycle
     def handle_leave_session(data):
         dependencies.set_socket_context('leave_session', data if isinstance(data, dict) else None)
         try:
@@ -270,6 +290,21 @@ def register_socket_presence_events(socketio, dependencies: SocketPresenceDepend
                 )
                 return
 
+            unbound_connection = dependencies.state.unbind_connection(
+                request.sid,
+                expected_session_id=session_id,
+                expected_player_id=player_id,
+            )
+            if unbound_connection is None:
+                emit(
+                    'error',
+                    socket_error(
+                        'player_identity_mismatch',
+                        'The socket binding changed before the leave operation completed.',
+                    ),
+                )
+                return
+
             leave_room(str(session_id))
 
             was_typing = dependencies.player_is_typing(session_id, player_id)
@@ -280,14 +315,12 @@ def register_socket_presence_events(socketio, dependencies: SocketPresenceDepend
             elif was_typing != dependencies.player_is_typing(session_id, player_id):
                 emit('active_players', dependencies.active_player_payloads(session_id), room=str(session_id))
 
-            if connection_record is not None:
-                connection_record['session_id'] = None
-                connection_record['player_id'] = None
             telemetry_metric('socket.leave.success_total', 1)
         finally:
             clear_logging_context()
 
     @socketio.on('disconnect')
+    @serialize_connection_lifecycle
     def handle_disconnect():
         dependencies.set_socket_context('disconnect')
         try:

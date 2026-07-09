@@ -82,11 +82,10 @@
 - [ ] Socket message stream includes `turn_id`, `requires_roll`, `rules_hint`, `context_version`.
 - [ ] Typed `action_intent` metadata persists for roll/ability/item actions.
 - [ ] `turn_status` events progress through narration, save, canon, and failure states.
-- [ ] `AIDM_SOCKETIO_WORKER_MODEL` is explicitly set to `single`, `sticky`, or `message_queue`.
+- [ ] `AIDM_SOCKETIO_WORKER_MODEL` is explicitly set to `single`; hosted production rejects deferred multi-worker models.
 - [ ] `make socketio-worker-model-decision` passes and `docs/socketio_worker_model.md` records the RC1 hosted worker-model decision.
-- [ ] Hosted single-worker beta start command is `scripts/run_production_server.sh` with `AIDM_ENV=production`, `AIDM_SOCKETIO_ASYNC_MODE=eventlet`, `AIDM_SOCKETIO_WORKER_MODEL=single`, and `WEB_CONCURRENCY=1`; `scripts/run_production_server.sh --print` shows the exact Gunicorn command.
-- [ ] Multi-worker deployments set `AIDM_TURN_COORDINATOR_STORE=database`, have migrations through `0028_session_turn_lock_fencing` applied, prove stale lease holders cannot commit after a fencing-token takeover, and prove sticky-session affinity or Socket.IO message-queue delivery in staging.
-- [ ] Sticky or message-queue Socket.IO deployments provide `--socketio-staging-proof` to the deployment-readiness gate.
+- [ ] Hosted single-worker beta start command is `scripts/run_production_server.sh` with `AIDM_ENV=production`, `AIDM_SOCKETIO_ASYNC_MODE=threading`, `AIDM_SOCKETIO_WORKER_MODEL=single`, `AIDM_GUNICORN_THREADS=100`, and `WEB_CONCURRENCY=1`; `scripts/run_production_server.sh --print` shows the exact Gunicorn gthread command.
+- [ ] Deployment evidence proves exactly one backend process/replica; process-local presence/music makes multi-worker production unsafe even with turn fencing.
 - [ ] Campaign-pack progress service calls are serialized through the reentrant session turn coordinator, including nested calls from active turn processing.
 - [ ] `make socket-concurrency-smoke` proves same-session queue locking and different-session socket turn persistence.
 - [ ] Beta runtime notices are visible for deterministic fallback, missing live provider configuration, local/private auth-disabled mode, unavailable TTS, and process-local provider changes.

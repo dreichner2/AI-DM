@@ -20,8 +20,10 @@ def _configure_safe_production(monkeypatch) -> None:
         'AIDM_API_AUTH_TOKENS': 'operator-token',
         'AIDM_RATE_LIMIT_STORE': 'database',
         'AIDM_TURN_COORDINATOR_STORE': 'database',
-        'AIDM_SOCKETIO_ASYNC_MODE': 'eventlet',
+        'AIDM_SOCKETIO_ASYNC_MODE': 'threading',
         'AIDM_SOCKETIO_WORKER_MODEL': 'single',
+        'AIDM_GUNICORN_THREADS': '100',
+        'WEB_CONCURRENCY': '1',
         'AIDM_CORS_ALLOWLIST': 'https://aidm.example.test',
         'AIDM_SOCKET_CORS_ALLOWLIST': 'https://aidm.example.test',
         'AIDM_SECURITY_HEADERS_ENABLED': 'true',
@@ -76,6 +78,34 @@ def test_production_wsgi_config_rejects_flask_admin(monkeypatch):
         validate_production_startup_config(load_config())
 
 
+def test_production_wsgi_config_enforces_single_threaded_worker_capacity(monkeypatch):
+    _configure_safe_production(monkeypatch)
+    monkeypatch.setenv('AIDM_SOCKETIO_WORKER_MODEL', 'sticky')
+    monkeypatch.setenv('AIDM_SOCKETIO_MESSAGE_QUEUE', 'redis://redis.internal:6379/0')
+    monkeypatch.setenv('WEB_CONCURRENCY', '2')
+    monkeypatch.setenv('AIDM_GUNICORN_THREADS', '8')
+
+    with pytest.raises(ValueError) as exc_info:
+        validate_production_startup_config(load_config())
+
+    message = str(exc_info.value)
+    assert 'production currently supports only AIDM_SOCKETIO_WORKER_MODEL=single' in message
+    assert 'AIDM_GUNICORN_THREADS must be an integer >= 16' in message
+
+
+def test_production_wsgi_config_rejects_unsafe_single_worker_process_sizing(monkeypatch):
+    _configure_safe_production(monkeypatch)
+    monkeypatch.setenv('WEB_CONCURRENCY', '2')
+    monkeypatch.setenv('AIDM_GUNICORN_THREADS', '015')
+
+    with pytest.raises(ValueError) as exc_info:
+        validate_production_startup_config(load_config())
+
+    message = str(exc_info.value)
+    assert 'AIDM_SOCKETIO_WORKER_MODEL=single requires WEB_CONCURRENCY=1' in message
+    assert 'AIDM_GUNICORN_THREADS must be an integer >= 16' in message
+
+
 def test_non_production_wsgi_config_keeps_local_defaults(monkeypatch):
     monkeypatch.setenv('AIDM_ENV', 'development')
     monkeypatch.delenv('AIDM_DATABASE_URI', raising=False)
@@ -95,7 +125,7 @@ def test_wsgi_import_fails_before_building_unsafe_production_runtime():
         'AIDM_AUTH_REQUIRED': 'false',
         'AIDM_RATE_LIMIT_STORE': 'memory',
         'AIDM_TURN_COORDINATOR_STORE': 'memory',
-        'AIDM_SOCKETIO_ASYNC_MODE': 'eventlet',
+        'AIDM_SOCKETIO_ASYNC_MODE': 'threading',
         'AIDM_SOCKETIO_WORKER_MODEL': 'single',
         'AIDM_OBSERVABILITY_PROVIDER': 'test-observability',
         'AIDM_ALERT_OWNER': 'test-owner',

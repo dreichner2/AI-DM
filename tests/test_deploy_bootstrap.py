@@ -106,7 +106,7 @@ def test_deploy_bootstrap_rejects_invalid_production_config_before_migrations(tm
             'AIDM_API_AUTH_TOKENS': 'operator-token',
             'AIDM_RATE_LIMIT_STORE': 'database',
             'AIDM_TURN_COORDINATOR_STORE': 'database',
-            'AIDM_SOCKETIO_ASYNC_MODE': 'eventlet',
+            'AIDM_SOCKETIO_ASYNC_MODE': 'threading',
             'AIDM_SOCKETIO_WORKER_MODEL': 'single',
             'AIDM_CORS_ALLOWLIST': 'https://aidm.example.test',
             'AIDM_SOCKET_CORS_ALLOWLIST': 'https://aidm.example.test',
@@ -303,10 +303,20 @@ def test_validate_socketio_deployment_config_accepts_production_single_worker(ap
     assert 'run exactly one backend worker' in report.warnings[0]
 
 
-def test_validate_socketio_deployment_config_requires_message_queue_url(app):
+def test_validate_socketio_deployment_config_rejects_multi_worker_in_production(app):
     app.config['AIDM_ENV'] = 'production'
     app.config['AIDM_SOCKETIO_WORKER_MODEL'] = 'message_queue'
     app.config['AIDM_SOCKETIO_WORKER_MODEL_EXPLICIT'] = True
+    app.config['AIDM_SOCKETIO_MESSAGE_QUEUE'] = 'redis://redis.example:6379/0'
+    report = BootstrapReport(warnings=[])
+
+    with pytest.raises(BootstrapError, match='currently supports only AIDM_SOCKETIO_WORKER_MODEL=single'):
+        _validate_socketio_deployment_config(app, report)
+
+
+def test_validate_socketio_deployment_config_requires_queue_for_nonproduction_multi_worker(app):
+    app.config['AIDM_ENV'] = 'development'
+    app.config['AIDM_SOCKETIO_WORKER_MODEL'] = 'message_queue'
     app.config['AIDM_SOCKETIO_MESSAGE_QUEUE'] = ''
     report = BootstrapReport(warnings=[])
 

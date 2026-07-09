@@ -691,10 +691,6 @@ def _metadata_value(packet: dict[str, Any], artifact_key: str, metadata_key: str
     return str(value or '')
 
 
-def _truthy_metadata(value: str) -> bool:
-    return value.strip().lower() in {'1', 'true', 'yes', 'y', 'provided', 'present', 'passed'}
-
-
 def _socketio_worker_model(packet: dict[str, Any]) -> str:
     for artifact_key in ('hosted_rc_evidence', 'deployment_readiness', 'beta_slo_baseline'):
         value = _metadata_value(packet, artifact_key, 'socket_io_worker_model')
@@ -703,14 +699,8 @@ def _socketio_worker_model(packet: dict[str, Any]) -> str:
     return ''
 
 
-def _socketio_staging_proof_provided(packet: dict[str, Any]) -> bool:
-    return _truthy_metadata(_metadata_value(packet, 'deployment_readiness', 'socket_io_staging_proof_provided')) or (
-        _metadata_value(packet, 'hosted_rc_evidence', 'socket_io_staging_proof').strip().lower()
-        not in {'', 'missing', 'false', 'none', 'not checked'}
-    )
-
-
 def _conditional_socketio_multiworker_status(packet: dict[str, Any], *, proof_only: bool = False) -> ChecklistStatus:
+    del proof_only
     worker_model = _socketio_worker_model(packet)
     if worker_model == 'single':
         return _status(
@@ -718,30 +708,16 @@ def _conditional_socketio_multiworker_status(packet: dict[str, Any], *, proof_on
             'RC1 worker model is single; sticky/message-queue staging proof is not required',
             '',
         )
-    if worker_model in {'sticky', 'message_queue'}:
-        if _socketio_staging_proof_provided(packet):
-            return _status(
-                'passed',
-                f'{worker_model} Socket.IO staging proof is recorded',
-                '',
-            )
-        remaining_action = 'provide --socketio-staging-proof for the hosted/staging target'
-        if not proof_only:
-            remaining_action = (
-                'prove database-backed turn coordination/rate limiting and provide Socket.IO staging proof '
-                '(--socketio-staging-proof) for the hosted/staging target'
-            )
-        else:
-            remaining_action = 'provide Socket.IO staging proof (--socketio-staging-proof) for the hosted/staging target'
+    if worker_model:
         return _status(
-            'external-required',
-            f'{worker_model} Socket.IO deployment needs staging proof',
-            remaining_action,
+            'failed',
+            f'{worker_model} Socket.IO worker model is unsupported for hosted production in this release',
+            'set AIDM_SOCKETIO_WORKER_MODEL=single and provide hosted single-worker process proof',
         )
     return _status(
         'external-required',
         'Socket.IO worker model is missing from hosted evidence',
-        'record AIDM_SOCKETIO_WORKER_MODEL as single, sticky, or message_queue in hosted RC evidence',
+        'record AIDM_SOCKETIO_WORKER_MODEL=single in hosted RC evidence',
     )
 
 

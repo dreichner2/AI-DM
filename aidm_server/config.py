@@ -201,10 +201,32 @@ def validate_production_startup_config(
         errors.append('AIDM_TURN_COORDINATOR_STORE must be database')
     if not config.socketio_worker_model_explicit:
         errors.append('AIDM_SOCKETIO_WORKER_MODEL must be explicitly configured')
-    if config.socketio_async_mode != 'eventlet':
-        errors.append('AIDM_SOCKETIO_ASYNC_MODE must be eventlet')
-    if config.socketio_worker_model == SOCKETIO_WORKER_MODEL_MESSAGE_QUEUE and not config.socketio_message_queue:
-        errors.append('AIDM_SOCKETIO_MESSAGE_QUEUE is required for the message_queue worker model')
+    if config.socketio_worker_model != SOCKETIO_WORKER_MODEL_SINGLE:
+        errors.append('production currently supports only AIDM_SOCKETIO_WORKER_MODEL=single')
+    if config.socketio_async_mode != 'threading':
+        errors.append('AIDM_SOCKETIO_ASYNC_MODE must be threading')
+    web_concurrency_raw = str(runtime_env.get('WEB_CONCURRENCY') or '1').strip()
+    web_concurrency = (
+        int(web_concurrency_raw)
+        if web_concurrency_raw.isascii()
+        and web_concurrency_raw.isdigit()
+        and not web_concurrency_raw.startswith('0')
+        else 0
+    )
+    if web_concurrency < 1:
+        errors.append('WEB_CONCURRENCY must be a positive integer')
+    elif config.socketio_worker_model == SOCKETIO_WORKER_MODEL_SINGLE and web_concurrency != 1:
+        errors.append('AIDM_SOCKETIO_WORKER_MODEL=single requires WEB_CONCURRENCY=1')
+    gunicorn_threads_raw = str(runtime_env.get('AIDM_GUNICORN_THREADS') or '100').strip()
+    gunicorn_threads = (
+        int(gunicorn_threads_raw)
+        if gunicorn_threads_raw.isascii()
+        and gunicorn_threads_raw.isdigit()
+        and not gunicorn_threads_raw.startswith('0')
+        else 0
+    )
+    if gunicorn_threads < 16:
+        errors.append('AIDM_GUNICORN_THREADS must be an integer >= 16')
     if '*' in config.cors_allowlist or '*' in config.socketio_cors_allowlist:
         errors.append('wildcard REST or Socket.IO CORS origins are not allowed')
     if not config.security_headers_enabled or not config.content_security_policy:

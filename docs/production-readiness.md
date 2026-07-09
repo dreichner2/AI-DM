@@ -18,9 +18,11 @@ secret/env managers. Choose the matching exposure mode in
 - `AIDM_AUTO_CREATE_SCHEMA=false`
 - `AIDM_RATE_LIMIT_STORE=database`
 - `AIDM_TURN_COORDINATOR_STORE=database`
-- `AIDM_SOCKETIO_WORKER_MODEL=single`, `sticky`, or `message_queue`
-- `AIDM_SOCKETIO_MESSAGE_QUEUE=<queue-url>` when the worker model is
-  `message_queue`
+- `AIDM_SOCKETIO_WORKER_MODEL=single`; other values are rejected in hosted
+  production until presence/music state is shared across processes
+- `AIDM_SOCKETIO_ASYNC_MODE=threading`
+- `AIDM_GUNICORN_THREADS=100` (production minimum: 16)
+- `WEB_CONCURRENCY=1`
 - `AIDM_OBSERVABILITY_PROVIDER=<provider-name>`
 - `AIDM_ALERT_OWNER=<team-or-person>`
 - `AIDM_SECURITY_HEADERS_ENABLED=true`
@@ -56,7 +58,8 @@ secret/env managers. Choose the matching exposure mode in
    ```bash
    AIDM_ENV=production \
    AIDM_SOCKETIO_WORKER_MODEL=single \
-   AIDM_SOCKETIO_ASYNC_MODE=eventlet \
+   AIDM_SOCKETIO_ASYNC_MODE=threading \
+   AIDM_GUNICORN_THREADS=100 \
    WEB_CONCURRENCY=1 \
    PORT=5050 \
    scripts/run_production_server.sh
@@ -74,7 +77,7 @@ secret/env managers. Choose the matching exposure mode in
 - Backend tests: `python -m pytest`
 - PostgreSQL production rehearsal: the `postgres-integration` GitHub Actions
   job applies the migration chain, runs production bootstrap, starts the real
-  Gunicorn/eventlet entrypoint, checks live health, metrics, Prometheus output,
+  Gunicorn threaded entrypoint with `simple-websocket`, checks live health, metrics, Prometheus output,
   and security headers, exercises concurrency fencing, and runs the cookie-auth,
   forbidden-response, and export/import smokes against PostgreSQL. The job
   uploads the resulting Markdown as the `postgres-production-rehearsal`
@@ -143,12 +146,10 @@ deployments should configure the managed destination named in production env.
   `.env.local` is ignored and an explicit `AIDM_ENV_FILE` is rejected if it
   attempts to downgrade the process to a non-production environment. Use an
   explicit secret-manager export or a production-only env file.
-- For multiple backend workers, apply migrations through
-  `0028_session_turn_lock_fencing`, use database-backed turn coordination and
-  rate limiting, then choose `AIDM_SOCKETIO_WORKER_MODEL=sticky` with load
-  balancer affinity or `message_queue` with `AIDM_SOCKETIO_MESSAGE_QUEUE`, and
-  prove both stale-lease commit rejection and client event delivery in a
-  staging smoke test.
+- Multiple backend workers remain deferred. Fencing and database-backed rate
+  limits are necessary but not sufficient: presence/music state must move out
+  of process, and staging must prove both load-balancer affinity and shared
+  Socket.IO queue delivery before production accepts this topology.
 - Session storage is acceptable for local/private beta. Hosted same-origin
   deployments can use the server-issued `HttpOnly` account cookie mode,
   suppress raw account tokens in JSON responses, and rely on the companion

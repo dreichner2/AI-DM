@@ -58,7 +58,7 @@ socket_runtime = SocketRuntime(socket_state)
 
 
 def _set_socket_context(event_name: str, data: dict | None = None, turn_id: int | None = None):
-    socket_runtime.set_context(event_name, data, turn_id)
+    return socket_runtime.set_context(event_name, data, turn_id)
 
 
 def _socket_rate_limiter():

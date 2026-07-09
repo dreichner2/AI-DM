@@ -4,10 +4,9 @@
 1. Set environment variables (`AIDM_ENV`, `AIDM_DATABASE_URI`, `AIDM_AUTH_REQUIRED`, `AIDM_API_AUTH_TOKENS`, and the selected provider key such as `GOOGLE_GENAI_API_KEY`, `AIDM_DEEPSEEK_API_KEY`, or `AIDM_NVIDIA_API_KEY`).
    Choose the exposure/auth posture from `docs/auth_modes.md` before sharing a
    non-loopback URL.
-2. For local/private socket runtime, keep `AIDM_SOCKETIO_ASYNC_MODE=threading`
-   unless you intentionally switch modes, and explicitly choose
-   `AIDM_SOCKETIO_WORKER_MODEL=single`, `sticky`, or `message_queue`.
-   For hosted RC1, use the single-worker decision in
+2. Keep `AIDM_SOCKETIO_ASYNC_MODE=threading`. Hosted production requires
+   `AIDM_SOCKETIO_WORKER_MODEL=single`; the other reserved model names remain
+   deferred until shared presence/music state is implemented. See
    `docs/socketio_worker_model.md`.
 3. Install dependencies: `python3.12 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt` for local development, or use `requirements.runtime.txt` for a minimal runtime without pytest/admin UI tooling. Both paths apply `requirements.constraints.txt` for repeatable direct dependency versions; runtime dependencies include the migration CLI and PostgreSQL driver.
 4. Apply migrations: `make db-upgrade` (or run the bootstrap command below).
@@ -15,7 +14,7 @@
    - Check only: `.venv/bin/python scripts/deploy_bootstrap.py --check-only`
    - Local/private start after checks: `.venv/bin/python scripts/deploy_bootstrap.py`
    - Hosted single-worker start after checks:
-     `AIDM_ENV=production AIDM_SOCKETIO_WORKER_MODEL=single AIDM_SOCKETIO_ASYNC_MODE=eventlet WEB_CONCURRENCY=1 PORT=5050 scripts/run_production_server.sh`
+     `AIDM_ENV=production AIDM_SOCKETIO_WORKER_MODEL=single AIDM_SOCKETIO_ASYNC_MODE=threading AIDM_GUNICORN_THREADS=100 WEB_CONCURRENCY=1 PORT=5050 scripts/run_production_server.sh`
      The production launcher resolves executables from `.venv` when available
      and always runs migration/bootstrap preflight before starting Gunicorn.
 6. For local/private SQLite beta data, run `make backup-restore-drill` before real play sessions or pass `BACKUP_RESTORE_DRILL_ARGS="--database-uri sqlite:////absolute/path/to/dnd_ai_dm.db"` for a specific database. The drill creates a backup and verifies a restored copy without writing to the source DB.
@@ -124,7 +123,7 @@
 5. Treat `turn_events` as the turn transcript audit trail. `dm_turns`, `session_log_entries`, `PlayerAction`, and `SessionState` are projections or convenience tables that should agree with the event spine. Use `/api/beta/audits` as a workspace admin when investigating manual/operator changes; it includes recent session-state mutation diffs and bestiary/operator authoring actions.
 6. If a future change rewrites projection logic, verify both the event rows and the projected session log/state before assuming the UI is wrong.
 
-The per-session turn coordinator defaults to an in-memory store for local single-process play. For multi-worker deployments, set `AIDM_TURN_COORDINATOR_STORE=database` so workers share `session_turn_locks`; apply migrations through `0028_session_turn_lock_fencing`, which gives every lease owner a persistent monotonic fencing token and rejects commits after ownership changes; tune `AIDM_TURN_COORDINATOR_LOCK_TTL_SECONDS` high enough for the longest expected provider turn, and keep `AIDM_TURN_COORDINATOR_POLL_INTERVAL_MS` low enough that queued players are not left waiting after a lock releases. Multi-worker Socket.IO delivery also needs either `AIDM_SOCKETIO_WORKER_MODEL=sticky` with load balancer affinity or `AIDM_SOCKETIO_WORKER_MODEL=message_queue` plus `AIDM_SOCKETIO_MESSAGE_QUEUE`.
+The per-session turn coordinator defaults to an in-memory store for local single-process play. Hosted production uses the database store and migrations through `0028_session_turn_lock_fencing`, which gives every lease owner a persistent monotonic fencing token and rejects commits after ownership changes. Tune `AIDM_TURN_COORDINATOR_LOCK_TTL_SECONDS` high enough for the longest expected provider turn, and keep `AIDM_TURN_COORDINATOR_POLL_INTERVAL_MS` low enough that queued players are not left waiting after a lock releases. Multi-worker Socket.IO remains deferred because presence and music are process-local; future support also requires both load-balancer affinity and a shared Socket.IO message queue.
 
 ## Provider Switching
 1. Changing provider/model mid-session can alter tone, continuity, latency, and rules behavior.
@@ -157,7 +156,7 @@ The per-session turn coordinator defaults to an in-memory store for local single
 - `AIDM_RATE_LIMIT_MAX_SOCKET_MESSAGES=40`
 - `AIDM_RATE_LIMIT_STORE=memory` for local runs, or `database` when multiple workers must share one limit window.
 - `AIDM_TURN_COORDINATOR_STORE=memory` for local single-process runs, or `database` for production/multi-worker runs.
-- `AIDM_SOCKETIO_WORKER_MODEL=single` for one backend worker, `sticky` when the load balancer owns affinity, or `message_queue` when Socket.IO uses `AIDM_SOCKETIO_MESSAGE_QUEUE`.
+- `AIDM_SOCKETIO_WORKER_MODEL=single`, `WEB_CONCURRENCY=1`, and at least 16 Gunicorn threads; other worker models are rejected in hosted production today.
 - `AIDM_ACCOUNT_COOKIE_AUTH_ENABLED=true` and `AIDM_ACCOUNT_TOKEN_RESPONSE_ENABLED=false` for hosted same-origin cookie-only account auth. Unsafe REST requests then use the companion `aidm_csrf_token` cookie with `X-AIDM-CSRF-Token`.
 - `AIDM_OBSERVABILITY_PROVIDER=<provider-name>` and `AIDM_ALERT_OWNER=<team-or-person>` for production bootstrap.
 - `AIDM_TELEMETRY_ENABLED=true` (if external telemetry endpoint is available)

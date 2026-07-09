@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${PORT:-5050}"
 BIND="${AIDM_BIND:-0.0.0.0:${PORT}}"
 WEB_CONCURRENCY="${WEB_CONCURRENCY:-1}"
+GUNICORN_THREADS="${AIDM_GUNICORN_THREADS:-100}"
 GUNICORN_TIMEOUT="${AIDM_GUNICORN_TIMEOUT:-180}"
 PREFLIGHT_HOST="${AIDM_PREFLIGHT_HOST:-0.0.0.0}"
 
@@ -39,22 +40,38 @@ else
 fi
 
 export AIDM_SOCKETIO_WORKER_MODEL="${AIDM_SOCKETIO_WORKER_MODEL:-single}"
-export AIDM_SOCKETIO_ASYNC_MODE="${AIDM_SOCKETIO_ASYNC_MODE:-eventlet}"
+export AIDM_SOCKETIO_ASYNC_MODE="${AIDM_SOCKETIO_ASYNC_MODE:-threading}"
 
-if [[ "${AIDM_SOCKETIO_ASYNC_MODE}" != "eventlet" ]]; then
-  echo "AIDM_SOCKETIO_ASYNC_MODE must be eventlet for scripts/run_production_server.sh." >&2
+if [[ "${AIDM_SOCKETIO_WORKER_MODEL}" != "single" ]]; then
+  echo "scripts/run_production_server.sh currently supports only AIDM_SOCKETIO_WORKER_MODEL=single." >&2
   exit 2
 fi
 
-if [[ "${AIDM_SOCKETIO_WORKER_MODEL}" == "single" && "${WEB_CONCURRENCY}" != "1" ]]; then
+if [[ "${AIDM_SOCKETIO_ASYNC_MODE}" != "threading" ]]; then
+  echo "AIDM_SOCKETIO_ASYNC_MODE must be threading for scripts/run_production_server.sh." >&2
+  exit 2
+fi
+
+if ! [[ "${WEB_CONCURRENCY}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WEB_CONCURRENCY must be a positive integer." >&2
+  exit 2
+fi
+
+if ! [[ "${GUNICORN_THREADS}" =~ ^[1-9][0-9]*$ ]] || [[ "${GUNICORN_THREADS}" -lt 16 ]]; then
+  echo "AIDM_GUNICORN_THREADS must be an integer >= 16." >&2
+  exit 2
+fi
+
+if [[ "${WEB_CONCURRENCY}" != "1" ]]; then
   echo "AIDM_SOCKETIO_WORKER_MODEL=single requires WEB_CONCURRENCY=1." >&2
   exit 2
 fi
 
 cmd=(
   "${GUNICORN_COMMAND[@]}"
-  --worker-class eventlet
+  --worker-class gthread
   --workers "${WEB_CONCURRENCY}"
+  --threads "${GUNICORN_THREADS}"
   --bind "${BIND}"
   --timeout "${GUNICORN_TIMEOUT}"
   --access-logfile -

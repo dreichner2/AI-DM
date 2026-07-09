@@ -162,8 +162,11 @@ replace every placeholder in the deployment provider's secret/env manager.
 | `AIDM_CONTENT_SECURITY_POLICY` | Optional CSP override for hosted frontend serving. |
 | `AIDM_CORS_ALLOWLIST` | Comma-separated REST origins. |
 | `AIDM_SOCKET_CORS_ALLOWLIST` | Comma-separated Socket.IO origins. |
-| `AIDM_SOCKETIO_WORKER_MODEL` | Production worker model: `single`, `sticky`, or `message_queue`; RC1 uses the `single` decision in `docs/socketio_worker_model.md`. |
-| `AIDM_SOCKETIO_MESSAGE_QUEUE` | Socket.IO message queue URL when `AIDM_SOCKETIO_WORKER_MODEL=message_queue`. |
+| `AIDM_SOCKETIO_WORKER_MODEL` | Hosted production currently requires `single`; deferred values are documented in `docs/socketio_worker_model.md`. |
+| `AIDM_SOCKETIO_ASYNC_MODE` | Hosted production requires `threading`. |
+| `AIDM_GUNICORN_THREADS` | Gunicorn gthread capacity; defaults to 100 and production rejects values below 16. |
+| `WEB_CONCURRENCY` | Must be `1` for the supported Socket.IO production topology. |
+| `AIDM_SOCKETIO_MESSAGE_QUEUE` | Reserved for the deferred multi-worker design; not sufficient by itself to make process-local presence/music safe. |
 | `AIDM_RATE_LIMIT_STORE` | `memory` or `database`. Use `database` for multi-process deployments. |
 | `AIDM_TURN_COORDINATOR_STORE` | `memory` or `database`. Use `database` for multi-process deployments. |
 | `AIDM_OBSERVABILITY_PROVIDER` | Required by production bootstrap to name the beta metrics/logging destination. |
@@ -445,15 +448,16 @@ not necessarily what the running backend is serving.
   and an explicit `AIDM_SOCKETIO_WORKER_MODEL`.
 - For the first hosted closed beta, use the `single` worker-model decision in
   `docs/socketio_worker_model.md`: `AIDM_SOCKETIO_WORKER_MODEL=single`,
-  `AIDM_SOCKETIO_ASYNC_MODE=eventlet`, and `WEB_CONCURRENCY=1`.
+  `AIDM_SOCKETIO_ASYNC_MODE=threading`, `AIDM_GUNICORN_THREADS=100`, and
+  `WEB_CONCURRENCY=1`.
 - For hosted same-origin auth, enable `AIDM_ACCOUNT_COOKIE_AUTH_ENABLED=true`,
   keep `AIDM_ACCOUNT_COOKIE_SECURE=true`, and set
   `AIDM_ACCOUNT_TOKEN_RESPONSE_ENABLED=false` when browser JavaScript should not
   receive raw account tokens. Cookie-authenticated unsafe REST requests use the
   companion `aidm_csrf_token` cookie and `X-AIDM-CSRF-Token` header.
-- For multiple backend workers, use database-backed rate limits and turn
-  coordination, plus deployment-level Socket.IO affinity or
-  `AIDM_SOCKETIO_WORKER_MODEL=message_queue` with `AIDM_SOCKETIO_MESSAGE_QUEUE`.
+- Multiple backend workers are not yet a supported production topology. Before
+  enabling them, move presence/music state to shared storage and prove both
+  load-balancer affinity and shared Socket.IO queue delivery in staging.
 
 ## Troubleshooting
 

@@ -619,3 +619,27 @@ def test_render_issue_evidence_does_not_clear_exceptions_from_invalid_hosted_rc_
     assert '(invalid-evidence;' in preflight
     assert 'Attach live hosted/staging `/api/health` evidence' in preflight
     assert '- Remaining exceptions: None.' not in preflight
+
+
+def test_multi_worker_staging_proof_cannot_clear_rc1_single_worker_policy_exception():
+    spec = next(candidate for candidate in ISSUE_SPECS if candidate.issue_number == 7)
+
+    for worker_model in ('sticky', 'message_queue'):
+        remaining = list(spec.external_exceptions)
+        render_rc_issue_evidence._apply_hosted_rc_exception_evidence(
+            spec,
+            remaining,
+            {
+                'status': 'passed',
+                'socketio_worker_model': worker_model,
+                'socketio_staging_proof': 'https://evidence.example.test/socketio',
+                'manual_evidence': {
+                    'Hosted Socket.IO worker process proof': {
+                        'status': 'provided',
+                        'evidence': 'https://evidence.example.test/workers',
+                    }
+                },
+            },
+        )
+
+        assert render_rc_issue_evidence.HOSTED_SINGLE_WORKER_POLICY_EXCEPTION in remaining

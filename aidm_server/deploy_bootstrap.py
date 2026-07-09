@@ -23,7 +23,6 @@ from sqlalchemy import inspect
 from aidm_server.config import (
     SOCKETIO_WORKER_MODEL_MESSAGE_QUEUE,
     SOCKETIO_WORKER_MODEL_SINGLE,
-    SOCKETIO_WORKER_MODEL_STICKY,
     SUPPORTED_TURN_COORDINATOR_STORES,
     SUPPORTED_SOCKETIO_WORKER_MODELS,
     TURN_COORDINATOR_STORE_DATABASE,
@@ -182,23 +181,24 @@ def _validate_socketio_deployment_config(app, report: BootstrapReport):
         raise BootstrapError(f'Invalid AIDM_SOCKETIO_WORKER_MODEL; expected one of: {expected}.')
     if env == 'production' and not bool(app.config.get('AIDM_SOCKETIO_WORKER_MODEL_EXPLICIT', False)):
         raise BootstrapError(
-            'AIDM_ENV=production requires AIDM_SOCKETIO_WORKER_MODEL=single, sticky, or message_queue.'
+            'AIDM_ENV=production requires explicit AIDM_SOCKETIO_WORKER_MODEL=single.'
         )
-    if worker_model == SOCKETIO_WORKER_MODEL_MESSAGE_QUEUE and not message_queue:
+    if env == 'production' and worker_model != SOCKETIO_WORKER_MODEL_SINGLE:
         raise BootstrapError(
-            'AIDM_SOCKETIO_WORKER_MODEL=message_queue requires AIDM_SOCKETIO_MESSAGE_QUEUE.'
+            'Production currently supports only AIDM_SOCKETIO_WORKER_MODEL=single; '
+            'multi-worker presence and music state are not shared.'
         )
-    if message_queue and worker_model != SOCKETIO_WORKER_MODEL_MESSAGE_QUEUE:
+    if worker_model != SOCKETIO_WORKER_MODEL_SINGLE and not message_queue:
+        raise BootstrapError(
+            'Multi-worker Socket.IO requires AIDM_SOCKETIO_MESSAGE_QUEUE and load-balancer affinity.'
+        )
+    if message_queue and worker_model == SOCKETIO_WORKER_MODEL_SINGLE:
         report.warnings.append(
-            'AIDM_SOCKETIO_MESSAGE_QUEUE is configured but AIDM_SOCKETIO_WORKER_MODEL is not message_queue.'
+            'AIDM_SOCKETIO_MESSAGE_QUEUE is configured but AIDM_SOCKETIO_WORKER_MODEL is single.'
         )
     if env == 'production' and worker_model == SOCKETIO_WORKER_MODEL_SINGLE:
         report.warnings.append(
             'Production Socket.IO worker model is single; run exactly one backend worker for this deployment.'
-        )
-    if env == 'production' and worker_model == SOCKETIO_WORKER_MODEL_STICKY:
-        report.warnings.append(
-            'Production Socket.IO worker model is sticky; verify load balancer affinity in staging.'
         )
 
 

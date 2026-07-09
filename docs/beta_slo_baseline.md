@@ -27,7 +27,7 @@ make hosted-cookie-auth-smoke HOSTED_COOKIE_AUTH_SMOKE_ARGS="--evidence-report t
 make beta-slo-baseline BETA_SLO_BASELINE_ARGS="--target-url <target-url> --auth-token <token> --workspace-id <workspace-id> --release RC1 --environment staging --output tmp/release/beta-slo-baseline.md"
 ```
 
-For sticky or message-queue Socket.IO deployments, also include the staging proof
+For any future multi-worker Socket.IO deployment, also include the staging proof
 URL, log path, or runbook link passed to `--socketio-staging-proof`.
 
 The `local-beta-slo-baseline` target writes local-only release evidence from an

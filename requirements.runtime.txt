@@ -10,11 +10,11 @@ psycopg[binary]
 python-json-logger
 websocket-client
 flask-socketio
+simple-websocket
 python-socketio
 flask_sqlalchemy
 flask-cors
 requests
 appdirs
 gunicorn
-eventlet
 pywin32; sys_platform == 'win32'

@@ -14,6 +14,7 @@ from scripts.deployment_readiness_check import (
     validate_database_connectivity,
     validate_environment,
     validate_live_target,
+    validate_websocket_transport,
 )
 
 
@@ -30,8 +31,10 @@ def _ready_env(**overrides: str) -> dict[str, str]:
         'AIDM_TURN_COORDINATOR_STORE': 'database',
         'AIDM_CORS_ALLOWLIST': 'https://aidm.example.test',
         'AIDM_SOCKET_CORS_ALLOWLIST': 'https://aidm.example.test',
-        'AIDM_SOCKETIO_ASYNC_MODE': 'eventlet',
+        'AIDM_SOCKETIO_ASYNC_MODE': 'threading',
         'AIDM_SOCKETIO_WORKER_MODEL': 'single',
+        'AIDM_GUNICORN_THREADS': '100',
+        'WEB_CONCURRENCY': '1',
         'AIDM_OBSERVABILITY_PROVIDER': 'managed-prometheus',
         'AIDM_ALERT_OWNER': 'beta-oncall',
         'AIDM_TELEMETRY_ENABLED': 'true',
@@ -84,7 +87,7 @@ def test_validate_environment_accepts_hosted_closed_beta_config():
     report = validate_environment(_ready_env())
 
     assert report.ok
-    assert any('exactly one backend worker' in warning for warning in report.warnings)
+    assert report.warnings == []
 
 
 def test_validate_environment_rejects_placeholders_and_wildcard_cors():
@@ -124,14 +127,18 @@ def test_validate_environment_rejects_malformed_workspace_tokens_debug_and_async
             AIDM_API_AUTH_TOKENS='',
             AIDM_API_AUTH_TOKEN_WORKSPACES='malformed-entry',
             AIDM_DEBUG='true',
-            AIDM_SOCKETIO_ASYNC_MODE='threading',
+            AIDM_SOCKETIO_ASYNC_MODE='eventlet',
+            AIDM_GUNICORN_THREADS='1',
+            WEB_CONCURRENCY='2',
         )
     )
 
     assert not report.ok
     assert any('workspace=token' in error for error in report.errors)
     assert any('AIDM_DEBUG must be false' in error for error in report.errors)
-    assert any('AIDM_SOCKETIO_ASYNC_MODE must be eventlet' in error for error in report.errors)
+    assert any('AIDM_SOCKETIO_ASYNC_MODE must be threading' in error for error in report.errors)
+    assert any('AIDM_GUNICORN_THREADS must be an integer >= 16' in error for error in report.errors)
+    assert any('AIDM_SOCKETIO_WORKER_MODEL=single requires WEB_CONCURRENCY=1' in error for error in report.errors)
 
 
 @pytest.mark.parametrize(
@@ -184,7 +191,7 @@ def test_validate_environment_requires_cookie_auth_or_documented_exception():
     assert exception_report.ok
 
 
-def test_validate_environment_requires_socketio_proof_for_multi_worker_models():
+def test_validate_environment_rejects_deferred_multi_worker_models():
     sticky_report = validate_environment(_ready_env(AIDM_SOCKETIO_WORKER_MODEL='sticky'))
     queue_report = validate_environment(
         _ready_env(
@@ -195,8 +202,9 @@ def test_validate_environment_requires_socketio_proof_for_multi_worker_models():
     )
 
     assert not sticky_report.ok
-    assert any('sticky Socket.IO deployments require --socketio-staging-proof' in error for error in sticky_report.errors)
-    assert queue_report.ok
+    assert not queue_report.ok
+    assert any('currently supports only AIDM_SOCKETIO_WORKER_MODEL=single' in error for error in sticky_report.errors)
+    assert any('currently supports only AIDM_SOCKETIO_WORKER_MODEL=single' in error for error in queue_report.errors)
 
 
 class _FakeResponse:
@@ -284,7 +292,15 @@ def _stub_database_connectivity(monkeypatch):
     )
 
 
+def _stub_websocket_transport(monkeypatch):
+    monkeypatch.setattr(
+        'scripts.deployment_readiness_check.validate_websocket_transport',
+        lambda target_url, *, auth_token, origin, timeout_seconds: ReadinessReport(),
+    )
+
+
 def test_validate_live_target_checks_health_metrics_prometheus_and_headers(monkeypatch):
+    _stub_websocket_transport(monkeypatch)
     security_headers = {header: 'set' for header in REQUIRED_SECURITY_HEADERS}
 
     def fake_get(url, headers, timeout):
@@ -317,6 +333,7 @@ def test_validate_live_target_checks_health_metrics_prometheus_and_headers(monke
 
 
 def test_validate_live_target_rejects_unconfigured_selected_provider(monkeypatch):
+    _stub_websocket_transport(monkeypatch)
     security_headers = {header: 'set' for header in REQUIRED_SECURITY_HEADERS}
 
     def fake_get(url, headers, timeout):
@@ -349,6 +366,7 @@ def test_validate_live_target_rejects_unconfigured_selected_provider(monkeypatch
 
 
 def test_validate_live_target_rejects_missing_security_headers(monkeypatch):
+    _stub_websocket_transport(monkeypatch)
     def fake_get(url, headers, timeout):
         del headers, timeout
         if url.endswith('/api/health'):
@@ -378,6 +396,65 @@ def test_validate_live_target_rejects_missing_security_headers(monkeypatch):
     assert any('missing security headers' in error for error in report.errors)
 
 
+def test_validate_websocket_transport_forces_authenticated_upgrade_with_origin(monkeypatch):
+    calls = {}
+
+    class FakeSocketClient:
+        def __init__(self, **kwargs):
+            calls['init'] = kwargs
+
+        def connect(self, target_url, **kwargs):
+            calls['connect'] = (target_url, kwargs)
+
+        def transport(self):
+            return 'websocket'
+
+        def disconnect(self):
+            calls['disconnected'] = True
+
+    monkeypatch.setattr('scripts.deployment_readiness_check.socketio.Client', FakeSocketClient)
+
+    report = validate_websocket_transport(
+        'https://api.aidm.example.test/base/',
+        auth_token='live-token',
+        origin='https://play.aidm.example.test',
+        timeout_seconds=4,
+    )
+
+    assert report.ok
+    assert calls['init'] == {
+        'reconnection': False,
+        'request_timeout': 4,
+        'websocket_extra_options': {'origin': 'https://play.aidm.example.test'},
+    }
+    assert calls['connect'] == (
+        'https://api.aidm.example.test/base',
+        {
+            'headers': {'Authorization': 'Bearer live-token'},
+            'auth': {'workspace_token': 'live-token'},
+            'transports': ['websocket'],
+            'wait_timeout': 4,
+        },
+    )
+    assert calls['disconnected'] is True
+
+
+def test_validate_websocket_transport_reports_redacted_failure(monkeypatch):
+    class FailingSocketClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def connect(self, *_args, **_kwargs):
+            raise RuntimeError('secret live-token')
+
+    monkeypatch.setattr('scripts.deployment_readiness_check.socketio.Client', FailingSocketClient)
+
+    report = validate_websocket_transport('https://aidm.example.test', auth_token='live-token')
+
+    assert report.errors == ['Socket.IO WebSocket probe failed (RuntimeError).']
+    assert 'live-token' not in ' '.join(report.errors)
+
+
 def test_parse_env_file_rejects_invalid_lines(tmp_path: Path):
     env_file = tmp_path / '.env.production'
     env_file.write_text('AIDM_ENV production\n', encoding='utf-8')
@@ -399,8 +476,7 @@ def test_main_writes_markdown_evidence_report_for_env_check(tmp_path: Path, monk
     assert '# Deployment Readiness Evidence' in report
     assert '- Status: passed' in report
     assert f'- Env file: `{env_file}`' in report
-    assert '| Environment configuration | passed | 0 | 1 |' in report
-    assert 'AIDM_SOCKETIO_WORKER_MODEL=single requires exactly one backend worker' in report
+    assert '| Environment configuration | passed | 0 | 0 |' in report
 
 
 def test_main_writes_default_evidence_report_path(tmp_path: Path, monkeypatch):
@@ -422,6 +498,7 @@ def test_main_writes_json_evidence_report_for_live_target(tmp_path: Path, monkey
     report_path = tmp_path / 'deployment-readiness.json'
     _write_ready_env_file(env_file)
     _stub_database_connectivity(monkeypatch)
+    _stub_websocket_transport(monkeypatch)
     security_headers = {header: 'set' for header in REQUIRED_SECURITY_HEADERS}
 
     def fake_get(url, headers, timeout):
