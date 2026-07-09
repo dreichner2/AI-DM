@@ -175,7 +175,7 @@ describe('useTtsNarration streaming', () => {
       { text: 'The hallway bends sharply left, and the torchlight thins into a wavering copper line.' },
       { text: 'The hallway bends sharply left, and the torchlight thins into a wavering copper line.' },
     ])
-    expect(result.current.ttsEnabled).toBe(false)
+    await waitFor(() => expect(result.current.ttsEnabled).toBe(false))
 
     stream(78, 'A second line arrives, but narration stays paused after the hard failure.')
     await new Promise((resolve) => window.setTimeout(resolve, 20))
@@ -199,6 +199,6 @@ describe('useTtsNarration streaming', () => {
     )
     expect(pushError).toHaveBeenCalledTimes(1)
     expect(fetchHandler).toHaveBeenCalledOnce()
-    expect(result.current.ttsEnabled).toBe(false)
+    await waitFor(() => expect(result.current.ttsEnabled).toBe(false))
   })
 })
