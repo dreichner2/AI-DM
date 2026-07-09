@@ -39,9 +39,10 @@ REQUIRED_HEAD_TABLES = {
 }
 REQUIRED_HEAD_COLUMNS = {
     'dm_coherence_feedback': {'feedback_type', 'category', 'provider', 'model', 'metadata_json'},
-    'dm_turns': {'confidence', 'roll_value', 'outcome_status'},
+    'dm_turns': {'confidence', 'roll_value', 'outcome_status', 'client_message_id'},
     'operator_action_audits': {'workspace_id', 'action', 'resource_type', 'status', 'details_json'},
     'session_state_mutation_audits': {'previous_revision', 'state_revision', 'diff_json', 'metadata_json'},
+    'session_turn_locks': {'owner_token', 'fencing_token', 'acquired_at', 'expires_at'},
     'sessions': {'name', 'status', 'updated_at', 'deleted_at', 'client_session_id', 'archived_by_campaign_id'},
 }
 

@@ -14,6 +14,7 @@ from aidm_server.services.runtime_config import (
 )
 from aidm_server.telemetry import telemetry_metric
 from aidm_server.validation import coerce_bool, parse_json_body
+from aidm_server.workspace_access import current_workspace_id
 
 runtime_config_bp = Blueprint('runtime_config', __name__)
 
@@ -31,7 +32,7 @@ def _llm_config_update_authorized() -> bool:
 @runtime_config_bp.route('/llm/config', methods=['GET'])
 def llm_config():
     telemetry_metric('runtime_config.llm_config.requests_total', 1)
-    return jsonify(llm_config_payload())
+    return jsonify(llm_config_payload(workspace_id=current_workspace_id()))
 
 
 @runtime_config_bp.route('/llm/config', methods=['PATCH', 'POST'])
@@ -72,6 +73,6 @@ def update_llm_config():
         )
 
     apply_llm_runtime(provider, model, persist=persist)
-    response = llm_config_payload()
+    response = llm_config_payload(workspace_id=current_workspace_id())
     response['persisted'] = persist
     return jsonify(response)

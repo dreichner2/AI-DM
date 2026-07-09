@@ -16,6 +16,7 @@ RATE_LIMIT_STORE_MEMORY = 'memory'
 RATE_LIMIT_STORE_DATABASE = 'database'
 SUPPORTED_RATE_LIMIT_STORES = {RATE_LIMIT_STORE_MEMORY, RATE_LIMIT_STORE_DATABASE}
 MAX_BUCKET_KEY_LENGTH = 512
+POSTGRES_ADVISORY_LOCK_NAMESPACE = 'aidm-rate-limit:'
 
 
 @dataclass
@@ -38,6 +39,12 @@ def normalize_rate_limit_key(key: str) -> str:
     digest = hashlib.sha256(normalized.encode('utf-8')).hexdigest()
     prefix_length = MAX_BUCKET_KEY_LENGTH - len(digest) - 1
     return f'{normalized[:prefix_length]}:{digest}'
+
+
+def postgres_advisory_lock_key(key: str) -> int:
+    """Return a stable signed 64-bit key for PostgreSQL advisory locking."""
+    digest = hashlib.sha256(f'{POSTGRES_ADVISORY_LOCK_NAMESPACE}{key}'.encode('utf-8')).digest()
+    return int.from_bytes(digest[:8], byteorder='big', signed=True)
 
 
 def _coerce_datetime(value: datetime | str | None) -> datetime | None:
@@ -132,6 +139,12 @@ class DatabaseRateLimitStore:
             interval = self._gc_interval_seconds or window_seconds
             self._next_gc_at = now + timedelta(seconds=max(1, int(interval)))
 
+    @staticmethod
+    def _lock_bucket_for_transaction(connection, key: str) -> None:
+        if connection.dialect.name != 'postgresql':
+            return
+        connection.execute(select(func.pg_advisory_xact_lock(postgres_advisory_lock_key(key))))
+
     def hit(self, key: str, *, now: datetime, limit: int, window_seconds: int) -> RateLimitResult:
         from aidm_server.database import db
         from aidm_server.models import RateLimitEvent
@@ -141,6 +154,7 @@ class DatabaseRateLimitStore:
 
         with self._hit_lock:
             with db.engine.begin() as connection:
+                self._lock_bucket_for_transaction(connection, key)
                 self._collect_garbage(connection, table, window_start=window_start, now=now, window_seconds=window_seconds)
 
                 matching_events = table.c.bucket_key == key

@@ -42,6 +42,7 @@ DEEPGRAM_FIRST_CHUNK_LIMIT = 360
 TTS_MAX_CHARS = 6000
 BAD_TURN_CATEGORIES = {'continuity', 'rules', 'latency', 'safety', 'state', 'other'}
 TELEMETRY_INCIDENT_EVENT_NAMES = (
+    'socket.dm_provider_degraded',
     'socket.dm_generation_failed',
     'socket.dm_persist_failed',
     'socket.turn_failed',
@@ -165,7 +166,7 @@ def health_check():
             'auth_required': bool(current_app.config.get('AIDM_AUTH_REQUIRED', False)),
             'rules_engine_enabled': bool(current_app.config.get('AIDM_RULES_ENGINE_ENABLED', True)),
             'segment_evaluator_enabled': bool(current_app.config.get('AIDM_SEGMENT_EVALUATOR_ENABLED', True)),
-            'llm': current_llm_payload(),
+            'llm': current_llm_payload(include_latest_turn=False),
         }
     )
 
@@ -478,6 +479,9 @@ def _beta_summary() -> dict:
     )
     total_turns = turns_query.with_entities(func.count(DmTurn.turn_id)).scalar() or 0
     failed_turns = turns_query.filter(DmTurn.status == 'failed').with_entities(func.count(DmTurn.turn_id)).scalar() or 0
+    degraded_turns = (
+        turns_query.filter(DmTurn.status == 'degraded').with_entities(func.count(DmTurn.turn_id)).scalar() or 0
+    )
     avg_turn_latency = turns_query.with_entities(func.avg(DmTurn.latency_ms)).scalar()
 
     sessions_query = db.session.query(Session).join(Campaign, Session.campaign_id == Campaign.campaign_id).filter(
@@ -499,7 +503,8 @@ def _beta_summary() -> dict:
 
     return {
         'turn_latency_ms_avg': float(avg_turn_latency) if avg_turn_latency is not None else None,
-        'ai_failure_rate': (failed_turns / total_turns) if total_turns else 0.0,
+        'ai_failure_rate': ((failed_turns + degraded_turns) / total_turns) if total_turns else 0.0,
+        'degraded_turn_count': degraded_turns,
         'session_completion_rate': (completed_sessions / total_sessions) if total_sessions else 0.0,
         'coherence_feedback_avg': float(avg_feedback) if avg_feedback is not None else None,
         'coherence_feedback_count': feedback_count,
@@ -539,6 +544,9 @@ def _beta_slo_summary() -> dict:
     )
     total_turns = turns_query.with_entities(func.count(DmTurn.turn_id)).scalar() or 0
     failed_turns = turns_query.filter(DmTurn.status == 'failed').with_entities(func.count(DmTurn.turn_id)).scalar() or 0
+    degraded_turns = (
+        turns_query.filter(DmTurn.status == 'degraded').with_entities(func.count(DmTurn.turn_id)).scalar() or 0
+    )
     latency_values = [
         int(row[0])
         for row in turns_query.filter(DmTurn.latency_ms.isnot(None)).with_entities(DmTurn.latency_ms).all()
@@ -590,9 +598,10 @@ def _beta_slo_summary() -> dict:
     return {
         'dm_response_latency_ms_p95': _percentile(latency_values, 95),
         'dm_response_latency_sample_count': len(latency_values),
-        'ai_provider_failure_rate': (failed_turns / total_turns) if total_turns else 0.0,
+        'ai_provider_failure_rate': ((failed_turns + degraded_turns) / total_turns) if total_turns else 0.0,
         'turn_persistence_failure_rate': (failed_turns / total_turns) if total_turns else 0.0,
         'failed_turn_count': failed_turns,
+        'degraded_turn_count': degraded_turns,
         'total_turn_count': total_turns,
         'canon_job_failure_rate': (canon_job_failed_count / canon_job_count) if canon_job_count else 0.0,
         'canon_job_failed_count': canon_job_failed_count,
@@ -778,6 +787,12 @@ def _beta_incidents_payload(limit: int, *, session_id: int | None = None) -> dic
         .limit(limit)
         .all()
     )
+    degraded_turns = (
+        turns_query.filter(DmTurn.status == 'degraded')
+        .order_by(DmTurn.created_at.desc(), DmTurn.turn_id.desc())
+        .limit(limit)
+        .all()
+    )
 
     canon_jobs_query = db.session.query(CanonJob).join(Campaign, CanonJob.campaign_id == Campaign.campaign_id).filter(
         Campaign.workspace_id == workspace_id,
@@ -823,6 +838,25 @@ def _beta_incidents_payload(limit: int, *, session_id: int | None = None) -> dic
                 'created_at': _isoformat(turn.created_at),
             }
         )
+    for turn in degraded_turns:
+        metadata = safe_json_loads(turn.metadata_json, {})
+        fallback = metadata.get('llm_fallback') if isinstance(metadata, dict) else None
+        incidents.append(
+            {
+                'type': 'provider_degraded_turn',
+                'severity': 'medium',
+                'campaign_id': turn.campaign_id,
+                'session_id': turn.session_id,
+                'turn_id': turn.turn_id,
+                'provider': turn.llm_provider,
+                'model': turn.llm_model,
+                'status': turn.status,
+                'latency_ms': turn.latency_ms,
+                'fallback': fallback if isinstance(fallback, dict) else {},
+                'message': 'DM provider failed; continuity-safe narration was persisted without post-DM state or canon mutation.',
+                'created_at': _isoformat(turn.created_at),
+            }
+        )
     for job in failed_canon_jobs:
         incidents.append(
             {
@@ -864,6 +898,7 @@ def _beta_incidents_payload(limit: int, *, session_id: int | None = None) -> dic
         'incidents': incidents[:limit],
         'summary': {
             'failed_turn_count': turns_query.filter(DmTurn.status == 'failed').count(),
+            'degraded_turn_count': turns_query.filter(DmTurn.status == 'degraded').count(),
             'failed_canon_job_count': canon_jobs_query.filter(CanonJob.status == 'failed').count(),
             'bad_turn_report_count': feedback_query.filter(DmCoherenceFeedback.feedback_type == 'bad_turn').count(),
             'telemetry_incident_count': len(telemetry_incidents),
@@ -1003,11 +1038,13 @@ def _provider_model_summary(provider_model_turn_counts: list[dict]) -> str:
 
 def _beta_session_operator_summary(summary: dict, provider_model_turn_counts: list[dict]) -> dict:
     failed_turns = int(summary.get('failed_turn_count') or 0)
+    degraded_turns = int(summary.get('degraded_turn_count') or 0)
     failed_canon_jobs = int(summary.get('canon_job_failed_count') or 0)
     bad_turn_reports = int(summary.get('bad_turn_report_count') or 0)
     awaiting_clarifications = int(summary.get('awaiting_clarification_turn_count') or 0)
     review_reasons = [
         _count_label(failed_turns, 'failed turn') if failed_turns else '',
+        _count_label(degraded_turns, 'provider-degraded turn') if degraded_turns else '',
         _count_label(failed_canon_jobs, 'failed canon job') if failed_canon_jobs else '',
         _count_label(bad_turn_reports, 'bad-turn report') if bad_turn_reports else '',
         _count_label(awaiting_clarifications, 'unresolved clarification') if awaiting_clarifications else '',
@@ -1016,7 +1053,7 @@ def _beta_session_operator_summary(summary: dict, provider_model_turn_counts: li
     headline = (
         'Review recommended: ' + ', '.join(review_reasons) + '.'
         if review_reasons
-        else 'Clean session: no failed turns, canon failures, bad-turn reports, or unresolved clarifications.'
+        else 'Clean session: no failed or provider-degraded turns, canon failures, bad-turn reports, or unresolved clarifications.'
     )
     details = [
         _provider_model_summary(provider_model_turn_counts),
@@ -1048,6 +1085,9 @@ def _beta_session_quality_payload(session_obj: Session, *, limit: int = 5) -> di
         or 0
     )
     failed_turns = turns_query.filter(DmTurn.status == 'failed').with_entities(func.count(DmTurn.turn_id)).scalar() or 0
+    degraded_turns = (
+        turns_query.filter(DmTurn.status == 'degraded').with_entities(func.count(DmTurn.turn_id)).scalar() or 0
+    )
     awaiting_clarification_turns = (
         turns_query.filter(DmTurn.status == 'awaiting_clarification')
         .with_entities(func.count(DmTurn.turn_id))
@@ -1117,13 +1157,16 @@ def _beta_session_quality_payload(session_obj: Session, *, limit: int = 5) -> di
         .limit(limit)
         .all()
     )
-    review_needed = bool(failed_turns or failed_canon_jobs or bad_turn_reports or awaiting_clarification_turns)
+    review_needed = bool(
+        failed_turns or degraded_turns or failed_canon_jobs or bad_turn_reports or awaiting_clarification_turns
+    )
 
     summary = {
         'quality_status': 'review' if review_needed else 'clean',
         'total_turn_count': total_turns,
         'completed_turn_count': completed_turns,
         'failed_turn_count': failed_turns,
+        'degraded_turn_count': degraded_turns,
         'awaiting_clarification_turn_count': awaiting_clarification_turns,
         'turn_failure_rate': _rate(failed_turns, total_turns),
         'dm_response_latency_ms_avg': (sum(latency_values) / len(latency_values)) if latency_values else None,
@@ -1359,7 +1402,7 @@ def beta_support_bundle():
             'runtime': {
                 'env': current_app.config.get('AIDM_ENV', 'unknown'),
                 'auth_required': bool(current_app.config.get('AIDM_AUTH_REQUIRED', False)),
-                'llm': current_llm_payload(),
+                'llm': current_llm_payload(workspace_id=workspace_id),
             },
             'session': _support_bundle_session_payload(session_obj),
             'beta_summary': _beta_summary(),

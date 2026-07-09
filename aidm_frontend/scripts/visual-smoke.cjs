@@ -285,7 +285,14 @@ async function runVisualFlow(frontendUrl, backendUrl, ids, artifactDir) {
   const consoleErrors = []
 
   page.on('console', (message) => {
-    if (message.type() === 'error') consoleErrors.push(message.text())
+    if (message.type() !== 'error') return
+    const text = message.text()
+    const sourceUrl = message.location().url || ''
+    const isExpectedCampaignCommentaryMiss =
+      text.includes('404') &&
+      sourceUrl.includes('/api/sessions/') &&
+      sourceUrl.includes('/campaign-pack/commentary')
+    if (!isExpectedCampaignCommentaryMiss) consoleErrors.push(text)
   })
   page.on('pageerror', (error) => {
     consoleErrors.push(error.message)

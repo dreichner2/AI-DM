@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SceneMusicPlayer } from './SceneMusicPlayer'
 
@@ -106,6 +106,7 @@ describe('SceneMusicPlayer', () => {
 
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
     localStorage.clear()
@@ -236,6 +237,50 @@ describe('SceneMusicPlayer', () => {
     const callCount = onMusicControl.mock.calls.length
     fireEvent.change(screen.getByLabelText('Music volume'), { target: { value: '0' } })
     expect(onMusicControl).toHaveBeenCalledTimes(callCount)
+  })
+
+  it('keeps the sync heartbeat alive while timeupdate events advance playback', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    const onMusicControl = vi.fn()
+    const { container } = render(
+      <SceneMusicPlayer
+        sessionId={4}
+        playerId={8}
+        musicSyncState={{
+          sessionId: 4,
+          trackId: RESTORED_TRACK_ID,
+          status: 'playing',
+          position: 0,
+          updatedAtMs: Date.now(),
+          receivedAtMs: Date.now(),
+          updatedByPlayerId: 8,
+        }}
+        onMusicControl={onMusicControl}
+      />,
+    )
+    const audio = container.querySelector('audio')
+    expect(audio).not.toBeNull()
+    if (!audio) return
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    onMusicControl.mockClear()
+
+    for (let second = 1; second <= 10; second += 1) {
+      audio.currentTime = second
+      fireEvent.timeUpdate(audio)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000)
+      })
+    }
+
+    expect(onMusicControl).toHaveBeenCalledWith({
+      trackId: RESTORED_TRACK_ID,
+      status: 'playing',
+      position: 10,
+    })
   })
 
   it('ducks actual music volume during TTS without changing the saved slider volume', async () => {

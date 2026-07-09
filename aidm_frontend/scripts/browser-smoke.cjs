@@ -237,11 +237,16 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
   page.on('console', (message) => {
     if (message.type() !== 'error') return
     const text = message.text()
+    const sourceUrl = message.location().url || ''
     const isWerkzeugSocketUpgradeNoise =
       text.includes('/socket.io/') &&
       text.includes('WebSocket connection') &&
       (text.includes('Invalid frame header') || text.includes('Data frame received after close'))
-    if (!isWerkzeugSocketUpgradeNoise) consoleErrors.push(text)
+    const isExpectedCampaignCommentaryMiss =
+      text.includes('404') &&
+      sourceUrl.includes('/api/sessions/') &&
+      sourceUrl.includes('/campaign-pack/commentary')
+    if (!isWerkzeugSocketUpgradeNoise && !isExpectedCampaignCommentaryMiss) consoleErrors.push(text)
   })
   page.on('pageerror', (error) => {
     consoleErrors.push(error.message)
@@ -254,7 +259,8 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
     await expect(page).toHaveTitle(/AI-DM/)
     await expect(page.locator('vite-error-overlay')).toHaveCount(0)
 
-    await page.getByRole('button', { name: 'Add campaign' }).click()
+    await expect(page.getByRole('heading', { name: 'AI-DM' })).toBeVisible()
+    await page.getByRole('button', { name: 'New Campaign' }).click()
     const createCampaignDialog = page.getByRole('dialog', { name: 'Create New Campaign' })
     await expect(createCampaignDialog).toBeVisible()
     await createCampaignDialog.getByLabel('Campaign Name').fill('Browser Smoke Campaign')
@@ -325,7 +331,7 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
   await page.getByLabel('Segment title').fill('Smoke Gate')
   await page.getByLabel('Segment description').fill('The gatehouse is the active approach.')
   await page.getByLabel('Trigger condition').fill('When the party crosses the smoke line.')
-  await page.getByLabel('Tags').fill('gate, smoke')
+  await page.getByLabel('Tags', { exact: true }).fill('gate, smoke')
   await page.getByRole('button', { name: 'Add segment' }).click()
   await expect(page.locator('.segment-list').getByText('Smoke Gate')).toBeVisible({ timeout: 15_000 })
   await expect(page.locator('.map-meta-column').getByText(/Smoke Gate/)).toBeVisible()

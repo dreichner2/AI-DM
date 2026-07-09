@@ -41,6 +41,10 @@ def test_schema_contains_new_beta_tables(app):
     assert {'updated_at', 'status'}.issubset(campaign_cols)
     segment_cols = {col['name'] for col in inspector.get_columns('campaign_segments')}
     assert {'external_id', 'source', 'source_pack_id', 'metadata_json'}.issubset(segment_cols)
+    dm_turn_cols = {col['name'] for col in inspector.get_columns('dm_turns')}
+    assert 'client_message_id' in dm_turn_cols
+    dm_turn_indexes = {index['name']: index for index in inspector.get_indexes('dm_turns')}
+    assert bool(dm_turn_indexes['uq_dm_turns_session_player_client_message']['unique']) is True
     session_indexes = {index['name'] for index in inspector.get_indexes('sessions')}
     assert 'ix_sessions_campaign_id_status_updated_at' in session_indexes
     assert 'ix_sessions_archived_by_campaign_id' in session_indexes

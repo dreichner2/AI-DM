@@ -3,17 +3,29 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, datetime
 from dataclasses import dataclass, field
+from importlib.util import find_spec
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 from typing import Mapping
 from urllib.parse import urljoin
 
 import requests
+from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 
 
 SUPPORTED_SOCKETIO_WORKER_MODELS = {'single', 'sticky', 'message_queue'}
+SUPPORTED_HOSTED_DATABASE_DRIVER = 'postgresql+psycopg'
+SUPPORTED_READINESS_LLM_PROVIDERS = {'deepseek', 'codex_cli', 'gemini', 'nvidia', 'kimi', 'fallback'}
+PROVIDER_CREDENTIAL_KEYS = {
+    'deepseek': ('AIDM_DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY'),
+    'gemini': ('GOOGLE_GENAI_API_KEY',),
+    'nvidia': ('AIDM_NVIDIA_API_KEY', 'NVIDIA_API_KEY'),
+    'kimi': ('AIDM_NVIDIA_API_KEY', 'NVIDIA_API_KEY'),
+}
 PLACEHOLDER_MARKERS = (
     '<',
     '>',
@@ -132,6 +144,95 @@ def _validate_bool(
         report.error(message)
 
 
+def _validate_database_configuration(report: ReadinessReport, env: Mapping[str, str]) -> None:
+    database_uri = _required_value(report, env, 'AIDM_DATABASE_URI')
+    if not database_uri or _looks_placeholder(database_uri):
+        return
+
+    try:
+        database_url = make_url(database_uri)
+    except Exception:
+        report.error('AIDM_DATABASE_URI is not a valid SQLAlchemy database URL.')
+        return
+
+    if database_url.drivername != SUPPORTED_HOSTED_DATABASE_DRIVER:
+        report.error(
+            'AIDM_DATABASE_URI must use postgresql+psycopg for hosted closed-beta readiness.'
+        )
+    if not database_url.host:
+        report.error('AIDM_DATABASE_URI must include a database host.')
+    if not database_url.database:
+        report.error('AIDM_DATABASE_URI must include a database name.')
+    if find_spec('psycopg') is None:
+        report.error('The psycopg runtime driver is not installed.')
+
+
+def _parse_token_workspace_entries(report: ReadinessReport, value: str | None) -> list[tuple[str, str]]:
+    entries: list[tuple[str, str]] = []
+    malformed = False
+    for item in str(value or '').split(','):
+        raw_item = item.strip()
+        if not raw_item:
+            continue
+        if '=' not in raw_item:
+            malformed = True
+            continue
+        workspace_id, token = (part.strip() for part in raw_item.split('=', 1))
+        if not workspace_id or not token:
+            malformed = True
+            continue
+        entries.append((workspace_id, token))
+    if malformed:
+        report.error('AIDM_API_AUTH_TOKEN_WORKSPACES entries must use non-empty workspace=token values.')
+    return entries
+
+
+def _selected_provider_credential(env: Mapping[str, str], keys: tuple[str, ...]) -> tuple[str, str]:
+    for key in keys:
+        value = str(env.get(key) or '').strip()
+        if value:
+            return key, value
+    return keys[0], ''
+
+
+def _executable_available(executable: str) -> bool:
+    candidate = executable.strip() or 'codex'
+    if os.path.sep in candidate:
+        return Path(candidate).expanduser().is_file()
+    return shutil.which(candidate) is not None
+
+
+def _validate_selected_provider(
+    report: ReadinessReport,
+    env: Mapping[str, str],
+    *,
+    allow_fallback_provider: bool,
+) -> None:
+    provider = _required_value(report, env, 'AIDM_LLM_PROVIDER').lower()
+    if not provider or _looks_placeholder(provider):
+        return
+    if provider not in SUPPORTED_READINESS_LLM_PROVIDERS:
+        expected = ', '.join(sorted(SUPPORTED_READINESS_LLM_PROVIDERS))
+        report.error(f'AIDM_LLM_PROVIDER must be one of: {expected}.')
+        return
+    if provider == 'fallback':
+        if not allow_fallback_provider:
+            report.error('AIDM_LLM_PROVIDER=fallback is safe-mode only; pass --allow-fallback-provider for intentional drills.')
+        return
+    if provider == 'codex_cli':
+        executable = str(env.get('AIDM_CODEX_EXECUTABLE') or 'codex').strip()
+        if _looks_placeholder(executable) or not _executable_available(executable):
+            report.error('AIDM_LLM_PROVIDER=codex_cli requires an available AIDM_CODEX_EXECUTABLE or codex on PATH.')
+        return
+
+    credential_key, credential = _selected_provider_credential(env, PROVIDER_CREDENTIAL_KEYS[provider])
+    if not credential:
+        expected = ' or '.join(PROVIDER_CREDENTIAL_KEYS[provider])
+        report.error(f'AIDM_LLM_PROVIDER={provider} requires {expected}.')
+    elif _looks_placeholder(credential):
+        report.error(f'{credential_key} still looks like a placeholder.')
+
+
 def validate_environment(
     env: Mapping[str, str],
     *,
@@ -144,9 +245,17 @@ def validate_environment(
 
     if str(env.get('AIDM_ENV') or '').strip().lower() != 'production':
         report.error('AIDM_ENV must be production for hosted closed-beta readiness.')
+    _validate_bool(
+        report,
+        env,
+        'AIDM_DEBUG',
+        expected=False,
+        message='AIDM_DEBUG must be false for hosted closed-beta readiness.',
+    )
     _required_value(report, env, 'FLASK_SECRET_KEY')
     if len(str(env.get('FLASK_SECRET_KEY') or '')) < 32:
         report.error('FLASK_SECRET_KEY must be at least 32 characters.')
+    _validate_database_configuration(report, env)
 
     _validate_bool(
         report,
@@ -156,7 +265,7 @@ def validate_environment(
         message='AIDM_AUTH_REQUIRED must be true for hosted closed-beta readiness.',
     )
     tokens = _split_list(env.get('AIDM_API_AUTH_TOKENS'))
-    token_workspaces = _split_list(env.get('AIDM_API_AUTH_TOKEN_WORKSPACES'))
+    token_workspaces = _parse_token_workspace_entries(report, env.get('AIDM_API_AUTH_TOKEN_WORKSPACES'))
     if not tokens and not token_workspaces:
         report.error('AIDM_API_AUTH_TOKENS or AIDM_API_AUTH_TOKEN_WORKSPACES must be configured.')
     for key in ('AIDM_API_AUTH_TOKENS', 'AIDM_API_AUTH_TOKEN_WORKSPACES'):
@@ -175,6 +284,8 @@ def validate_environment(
         report.error('AIDM_RATE_LIMIT_STORE must be database for hosted/multi-worker readiness.')
     if str(env.get('AIDM_TURN_COORDINATOR_STORE') or '').strip().lower() != 'database':
         report.error('AIDM_TURN_COORDINATOR_STORE must be database for hosted/multi-worker readiness.')
+    if str(env.get('AIDM_SOCKETIO_ASYNC_MODE') or '').strip().lower() != 'eventlet':
+        report.error('AIDM_SOCKETIO_ASYNC_MODE must be eventlet for hosted closed-beta readiness.')
 
     rest_cors = _split_list(env.get('AIDM_CORS_ALLOWLIST'))
     socket_cors = _split_list(env.get('AIDM_SOCKET_CORS_ALLOWLIST'))
@@ -238,10 +349,47 @@ def validate_environment(
             'or --auth-storage-exception documenting why bearer/session storage is acceptable.'
         )
 
-    provider = str(env.get('AIDM_LLM_PROVIDER') or '').strip().lower()
-    if provider == 'fallback' and not allow_fallback_provider:
-        report.error('AIDM_LLM_PROVIDER=fallback is safe-mode only; pass --allow-fallback-provider for intentional drills.')
+    _validate_selected_provider(
+        report,
+        env,
+        allow_fallback_provider=allow_fallback_provider,
+    )
 
+    return report
+
+
+def validate_database_connectivity(
+    env: Mapping[str, str],
+    *,
+    timeout_seconds: float = 5.0,
+) -> ReadinessReport:
+    """Open the configured hosted database and run a minimal round trip."""
+    report = ReadinessReport()
+    database_uri = str(env.get('AIDM_DATABASE_URI') or '').strip()
+    if not database_uri:
+        report.error('Database connectivity check could not run because AIDM_DATABASE_URI is missing.')
+        return report
+
+    engine = None
+    try:
+        database_url = make_url(database_uri)
+        if database_url.drivername != SUPPORTED_HOSTED_DATABASE_DRIVER:
+            report.error('Database connectivity check requires postgresql+psycopg.')
+            return report
+        engine = create_engine(
+            database_uri,
+            pool_pre_ping=True,
+            connect_args={'connect_timeout': max(1, int(timeout_seconds))},
+        )
+        with engine.connect() as connection:
+            result = connection.exec_driver_sql('SELECT 1').scalar_one()
+            if result != 1:
+                report.error('Database connectivity check returned an unexpected result.')
+    except Exception as exc:
+        report.error(f'Database connectivity check failed ({type(exc).__name__}).')
+    finally:
+        if engine is not None:
+            engine.dispose()
     return report
 
 
@@ -284,6 +432,8 @@ def validate_live_target(
     llm_payload = health.get('llm') if isinstance(health.get('llm'), dict) else {}
     if str(llm_payload.get('provider') or '').lower() == 'fallback' and not allow_fallback_provider:
         report.error('GET /api/health reports the deterministic fallback provider.')
+    if llm_payload.get('configured') is not True:
+        report.error('GET /api/health reports the selected LLM provider is not configured.')
 
     missing_headers = [header for header in sorted(REQUIRED_SECURITY_HEADERS) if not health_response.headers.get(header)]
     if missing_headers:
@@ -359,6 +509,7 @@ def _options_payload(args: argparse.Namespace) -> dict[str, object]:
         'target_url': args.target_url or '',
         'auth_token_provided': bool(args.auth_token),
         'timeout_seconds': args.timeout_seconds,
+        'database_timeout_seconds': args.database_timeout_seconds,
         'same_origin_deployment': bool(args.same_origin_deployment),
         'auth_storage_exception_provided': bool(args.auth_storage_exception.strip()),
         'socketio_staging_proof_provided': bool(args.socketio_staging_proof.strip()),
@@ -425,6 +576,7 @@ def write_evidence_report(
                 f"- Env file: `{options['env_file'] or 'process environment'}`",
                 f"- Target URL: `{options['target_url'] or 'not checked'}`",
                 f"- Auth token provided: {options['auth_token_provided']}",
+                f"- Database timeout seconds: {options['database_timeout_seconds']}",
                 f"- Same-origin deployment: {options['same_origin_deployment']}",
                 f"- Auth storage exception provided: {options['auth_storage_exception_provided']}",
                 f"- Socket.IO staging proof provided: {options['socketio_staging_proof_provided']}",
@@ -457,6 +609,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--target-url', help='Optional deployed target base URL for live endpoint checks.')
     parser.add_argument('--auth-token', help='Bearer token for live target checks when auth is required.')
     parser.add_argument('--timeout-seconds', type=float, default=10.0, help='HTTP timeout for live target checks.')
+    parser.add_argument(
+        '--database-timeout-seconds',
+        type=float,
+        default=5.0,
+        help='Connection timeout for the required hosted database round trip.',
+    )
     parser.add_argument(
         '--same-origin-deployment',
         action='store_true',
@@ -512,17 +670,26 @@ def main(argv: list[str] | None = None) -> int:
             print(f'[deployment-readiness] Evidence report written to {_report_path(args.evidence_report)}.')
         return 1
 
-    sections = [
-        ReportSection(
-            'Environment configuration',
-            validate_environment(
-                env,
-                same_origin_deployment=args.same_origin_deployment,
-                auth_storage_exception=args.auth_storage_exception,
-                socketio_staging_proof=args.socketio_staging_proof,
-                allow_fallback_provider=args.allow_fallback_provider,
-            ),
+    environment_report = validate_environment(
+        env,
+        same_origin_deployment=args.same_origin_deployment,
+        auth_storage_exception=args.auth_storage_exception,
+        socketio_staging_proof=args.socketio_staging_proof,
+        allow_fallback_provider=args.allow_fallback_provider,
+    )
+    if environment_report.ok:
+        database_report = validate_database_connectivity(
+            env,
+            timeout_seconds=args.database_timeout_seconds,
         )
+    else:
+        database_report = ReadinessReport(
+            warnings=['Database connectivity was skipped because environment configuration is invalid.']
+        )
+
+    sections = [
+        ReportSection('Environment configuration', environment_report),
+        ReportSection('Database connectivity', database_report),
     ]
     if args.target_url:
         sections.append(

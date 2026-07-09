@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url'
 const projectRoot = fileURLToPath(new URL('..', import.meta.url))
 const assetsDir = join(projectRoot, 'dist', 'assets')
 
-// Keep first-load budgets strict while allowing bounded lazy chunks for dice and
-// character creation catalogs that are loaded only when those tools open.
+// Keep first-load budgets strict while allowing bounded lazy chunks for dice,
+// character creation catalogs, and modal-only management tools.
 const budgets = {
   jsRaw: 620 * 1024,
   jsGzip: 185 * 1024,

@@ -9,13 +9,15 @@
    `AIDM_SOCKETIO_WORKER_MODEL=single`, `sticky`, or `message_queue`.
    For hosted RC1, use the single-worker decision in
    `docs/socketio_worker_model.md`.
-3. Install dependencies: `python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt` for local development, or use `requirements.runtime.txt` for a minimal runtime without pytest/admin/migration UI tooling. Both paths apply `requirements.constraints.txt` for repeatable direct dependency versions.
-4. Apply migrations: `flask db upgrade` (or run bootstrap command below).
+3. Install dependencies: `python3.12 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt` for local development, or use `requirements.runtime.txt` for a minimal runtime without pytest/admin UI tooling. Both paths apply `requirements.constraints.txt` for repeatable direct dependency versions; runtime dependencies include the migration CLI and PostgreSQL driver.
+4. Apply migrations: `make db-upgrade` (or run the bootstrap command below).
 5. Bootstrap check/start command:
    - Check only: `.venv/bin/python scripts/deploy_bootstrap.py --check-only`
    - Local/private start after checks: `.venv/bin/python scripts/deploy_bootstrap.py`
    - Hosted single-worker start after checks:
-     `AIDM_SOCKETIO_WORKER_MODEL=single AIDM_SOCKETIO_ASYNC_MODE=eventlet WEB_CONCURRENCY=1 PORT=5050 scripts/run_production_server.sh`
+     `AIDM_ENV=production AIDM_SOCKETIO_WORKER_MODEL=single AIDM_SOCKETIO_ASYNC_MODE=eventlet WEB_CONCURRENCY=1 PORT=5050 scripts/run_production_server.sh`
+     The production launcher resolves executables from `.venv` when available
+     and always runs migration/bootstrap preflight before starting Gunicorn.
 6. For local/private SQLite beta data, run `make backup-restore-drill` before real play sessions or pass `BACKUP_RESTORE_DRILL_ARGS="--database-uri sqlite:////absolute/path/to/dnd_ai_dm.db"` for a specific database. The drill creates a backup and verifies a restored copy without writing to the source DB.
 7. Run `make migration-chain-drill` to prove Alembic can apply the full chain, downgrade to base, and re-apply the full chain against an isolated SQLite database.
 8. Run `make socketio-worker-model-decision` to verify the hosted RC1
@@ -122,7 +124,7 @@
 5. Treat `turn_events` as the turn transcript audit trail. `dm_turns`, `session_log_entries`, `PlayerAction`, and `SessionState` are projections or convenience tables that should agree with the event spine. Use `/api/beta/audits` as a workspace admin when investigating manual/operator changes; it includes recent session-state mutation diffs and bestiary/operator authoring actions.
 6. If a future change rewrites projection logic, verify both the event rows and the projected session log/state before assuming the UI is wrong.
 
-The per-session turn coordinator defaults to an in-memory store for local single-process play. For multi-worker deployments, set `AIDM_TURN_COORDINATOR_STORE=database` so workers share `session_turn_locks`; tune `AIDM_TURN_COORDINATOR_LOCK_TTL_SECONDS` high enough for the longest expected provider turn, and keep `AIDM_TURN_COORDINATOR_POLL_INTERVAL_MS` low enough that queued players are not left waiting after a lock releases. Multi-worker Socket.IO delivery also needs either `AIDM_SOCKETIO_WORKER_MODEL=sticky` with load balancer affinity or `AIDM_SOCKETIO_WORKER_MODEL=message_queue` plus `AIDM_SOCKETIO_MESSAGE_QUEUE`.
+The per-session turn coordinator defaults to an in-memory store for local single-process play. For multi-worker deployments, set `AIDM_TURN_COORDINATOR_STORE=database` so workers share `session_turn_locks`; apply migrations through `0028_session_turn_lock_fencing`, which gives every lease owner a persistent monotonic fencing token and rejects commits after ownership changes; tune `AIDM_TURN_COORDINATOR_LOCK_TTL_SECONDS` high enough for the longest expected provider turn, and keep `AIDM_TURN_COORDINATOR_POLL_INTERVAL_MS` low enough that queued players are not left waiting after a lock releases. Multi-worker Socket.IO delivery also needs either `AIDM_SOCKETIO_WORKER_MODEL=sticky` with load balancer affinity or `AIDM_SOCKETIO_WORKER_MODEL=message_queue` plus `AIDM_SOCKETIO_MESSAGE_QUEUE`.
 
 ## Provider Switching
 1. Changing provider/model mid-session can alter tone, continuity, latency, and rules behavior.

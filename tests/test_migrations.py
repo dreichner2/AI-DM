@@ -84,7 +84,11 @@ def test_migration_chain_upgrade_and_downgrade(tmp_path):
     entry_cols_head = {col['name'] for col in inspector.get_columns('session_log_entries')}
     assert 'metadata_json' in entry_cols_head
     dm_turn_cols_head = {col['name'] for col in inspector.get_columns('dm_turns')}
-    assert {'confidence', 'roll_value', 'outcome_status'}.issubset(dm_turn_cols_head)
+    assert {'confidence', 'roll_value', 'outcome_status', 'client_message_id'}.issubset(dm_turn_cols_head)
+    dm_turn_indexes_head = {index['name']: index for index in inspector.get_indexes('dm_turns')}
+    assert bool(dm_turn_indexes_head['uq_dm_turns_session_player_client_message']['unique']) is True
+    turn_lock_cols_head = {col['name'] for col in inspector.get_columns('session_turn_locks')}
+    assert {'owner_token', 'fencing_token', 'acquired_at', 'expires_at'}.issubset(turn_lock_cols_head)
     feedback_cols_head = {col['name'] for col in inspector.get_columns('dm_coherence_feedback')}
     assert {'feedback_type', 'category', 'provider', 'model', 'metadata_json'}.issubset(feedback_cols_head)
     campaign_cols_head = {col['name'] for col in inspector.get_columns('campaigns')}

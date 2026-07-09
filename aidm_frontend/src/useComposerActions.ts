@@ -31,7 +31,9 @@ import {
   turnControlBlockMessage,
   turnControlStatusLabel,
 } from './turnControl'
-import type { ActivePlayer, Campaign, Player, SessionState, TimelineEntry, TurnControl } from './types'
+import type { ActivePlayer, Campaign, Player, SessionState, StreamingTurn, TimelineEntry, TurnControl } from './types'
+
+export const SEND_PENDING_RECOVERY_MS = 120_000
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -123,8 +125,10 @@ type UseComposerActionsOptions = {
   selectedSessionId: number | null
   sendPending: boolean
   dmResponseBlocking: boolean
+  streamingTurn: StreamingTurn | null
   setOptimisticEntries: Dispatch<SetStateAction<TimelineEntry[]>>
   setSendPending: Dispatch<SetStateAction<boolean>>
+  setStreamingTurn: Dispatch<SetStateAction<StreamingTurn | null>>
   socketRef: RefObject<Socket | null>
   stopTtsAudio: () => void
   turnControl: TurnControl
@@ -145,8 +149,10 @@ export function useComposerActions({
   selectedSessionId,
   sendPending,
   dmResponseBlocking,
+  streamingTurn,
   setOptimisticEntries,
   setSendPending,
+  setStreamingTurn,
   socketRef,
   stopTtsAudio,
   turnControl,
@@ -177,6 +183,48 @@ export function useComposerActions({
   const typingStatusRef = useRef(false)
   const typingBindingRef = useRef<{ socket: Socket; sessionId: number; playerId: number } | null>(null)
   const typingIdleTimerRef = useRef<number | null>(null)
+  const pendingSubmissionRef = useRef<{
+    clientMessageId: string
+    message: string
+    sessionId: number
+  } | null>(null)
+
+  useEffect(() => {
+    const pendingSubmission = pendingSubmissionRef.current
+    if ((!sendPending && !dmResponseBlocking) || !pendingSubmission || pendingSubmission.sessionId !== selectedSessionId) {
+      pendingSubmissionRef.current = null
+      return
+    }
+    const timer = window.setTimeout(() => {
+      pendingSubmissionRef.current = null
+      setSendPending(false)
+      setStreamingTurn(null)
+      setOptimisticEntries((current) =>
+        current.map((entry) =>
+          entry.metadata.client_message_id === pendingSubmission.clientMessageId &&
+          entry.metadata.persistence_status === 'pending'
+            ? {
+                ...entry,
+                metadata: { ...entry.metadata, persistence_status: 'failed' },
+              }
+            : entry,
+        ),
+      )
+      setActionText((current) => current || pendingSubmission.message)
+      setQueuedActionText((current) => current || pendingSubmission.message)
+      pushError('validation', 'Realtime confirmation timed out. Your message was restored so you can retry.')
+    }, SEND_PENDING_RECOVERY_MS)
+    return () => window.clearTimeout(timer)
+  }, [
+    pushError,
+    dmResponseBlocking,
+    selectedSessionId,
+    sendPending,
+    setOptimisticEntries,
+    setSendPending,
+    setStreamingTurn,
+    streamingTurn?.text,
+  ])
 
   useEffect(() => {
     const trimmed = adminPasscode.trim()
@@ -195,7 +243,7 @@ export function useComposerActions({
       }
       const binding = typingBindingRef.current
       if (!typingStatusRef.current || !binding) return
-      if (binding.socket.connected !== false) {
+      if (binding.socket.connected === true) {
         binding.socket.emit('typing_status', {
           session_id: binding.sessionId,
           player_id: binding.playerId,
@@ -224,7 +272,7 @@ export function useComposerActions({
         : null
       : typingBindingRef.current
     if (!binding) return
-    if (binding.socket.connected === false) {
+    if (binding.socket.connected !== true) {
       if (!isTyping) {
         typingStatusRef.current = false
         typingBindingRef.current = null
@@ -329,19 +377,13 @@ export function useComposerActions({
       pushError('validation', 'Wait for the current DM response to save before sending again.')
       return
     }
-    if (
-      !socketRef.current ||
-      socketRef.current.connected === false ||
-      !selectedSessionId ||
-      !selectedCampaignId ||
-      !campaign ||
-      !selectedPlayerId
-    ) {
-      if (socketRef.current?.connected === false) {
-        pushError('validation', 'Realtime is reconnecting. Try again in a moment.')
-      } else {
-        pushError('validation', 'Choose a campaign, session, and player before sending.')
-      }
+    if (!selectedSessionId || !selectedCampaignId || !campaign || !selectedPlayerId) {
+      pushError('validation', 'Choose a campaign, session, and player before sending.')
+      return
+    }
+    const socket = socketRef.current
+    if (!socket || socket.connected !== true) {
+      pushError('validation', 'Realtime is reconnecting. Try again in a moment.')
       return
     }
     const message = (overrideMessage ?? actionText).trim()
@@ -395,6 +437,17 @@ export function useComposerActions({
       return
     }
 
+    socket.emit('send_message', {
+      session_id: selectedSessionId,
+      campaign_id: selectedCampaignId,
+      world_id: campaign.world_id,
+      player_id: selectedPlayerId,
+      message,
+      client_message_id: clientMessageId,
+      action_intent: actionIntent,
+      ...(actionIntent.kind === 'admin' ? { admin_passcode: trimmedAdminPasscode } : {}),
+    })
+    pendingSubmissionRef.current = { clientMessageId, message, sessionId: selectedSessionId }
     stopTtsAudio()
     setSendPending(true)
     setOptimisticEntries((current) => [
@@ -412,16 +465,6 @@ export function useComposerActions({
         },
       },
     ])
-    socketRef.current.emit('send_message', {
-      session_id: selectedSessionId,
-      campaign_id: selectedCampaignId,
-      world_id: campaign.world_id,
-      player_id: selectedPlayerId,
-      message,
-      client_message_id: clientMessageId,
-      action_intent: actionIntent,
-      ...(actionIntent.kind === 'admin' ? { admin_passcode: trimmedAdminPasscode } : {}),
-    })
     setActionText('')
     setQueuedActionText((current) => (current === message ? '' : current))
     emitTypingStatus(false)

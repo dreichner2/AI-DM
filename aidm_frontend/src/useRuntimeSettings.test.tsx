@@ -42,7 +42,10 @@ describe('useRuntimeSettings', () => {
   beforeEach(() => {
     vi.stubGlobal('localStorage', createStorageMock())
     vi.stubGlobal('sessionStorage', createStorageMock())
-    document.cookie = 'aidm_account_token=; Max-Age=0; Path=/; SameSite=Lax'
+    for (const cookie of document.cookie.split(';')) {
+      const name = cookie.split('=', 1)[0]?.trim()
+      if (name) document.cookie = `${name}=; Max-Age=0; Path=/; SameSite=Lax`
+    }
     window.history.replaceState(null, '', '/')
   })
 
@@ -1278,7 +1281,96 @@ describe('useRuntimeSettings', () => {
     expect(JSON.parse(String(localStorage.getItem('aidm:account'))).workspaceRole).toBe('player')
   })
 
-  it('loads and persists a backend URL from a share-link query parameter', () => {
+  it('does not hydrate or send saved credentials to a backend supplied by a share link', async () => {
+    localStorage.setItem('aidm:baseUrl', 'https://saved.example.test')
+    sessionStorage.setItem('aidm:authToken', 'saved-account-token')
+    sessionStorage.setItem('aidm:workspaceToken', 'saved-workspace-token')
+    localStorage.setItem('aidm:workspaceId', 'saved-workspace')
+    localStorage.setItem('aidm:account', JSON.stringify({
+      accountId: 1,
+      username: 'saved-user',
+      firstName: 'Saved',
+      lastName: 'User',
+      displayName: 'Saved User',
+      workspaceId: 'saved-workspace',
+      workspaceRole: 'player',
+      isWorkspaceAdmin: false,
+      requiresPasswordSetup: false,
+      workspaces: [],
+    }))
+    document.cookie = 'aidm_account_token=saved-cookie-token; Path=/; SameSite=Lax'
+    document.cookie = 'aidm_csrf_token=saved-csrf-token; Path=/; SameSite=Lax'
+    window.history.replaceState(null, '', '/?backend=https%3A%2F%2Fshared.example.test')
+
+    const requests: Array<{ headers: Headers; init: RequestInit; path: string }> = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        requests.push({ headers: new Headers(init.headers), init, path: new URL(String(input)).pathname })
+        return new Response(
+          JSON.stringify({
+            account: {
+              account_id: 2,
+              username: 'shared-user',
+              first_name: 'Shared',
+              last_name: 'User',
+              display_name: 'Shared User',
+              workspace_id: null,
+              workspace_role: null,
+              is_workspace_admin: false,
+              workspaces: [],
+            },
+            account_token: 'shared-account-token',
+            workspace_id: null,
+            workspace_role: null,
+            is_workspace_admin: false,
+            claimed_player_ids: [],
+            workspaces: [],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }),
+    )
+
+    const { result } = renderHook(() =>
+      useRuntimeSettings({
+        defaultBaseUrl: '',
+        resetRuntimeState: vi.fn(),
+        reconnectSocket: vi.fn(),
+      }),
+    )
+
+    expect(result.current.baseUrl).toBe('https://shared.example.test')
+    expect(result.current.authToken).toBe('')
+    expect(result.current.workspaceToken).toBe('')
+    expect(result.current.workspaceId).toBe('')
+    expect(result.current.runtimeAccount).toBeNull()
+    expect(localStorage.getItem('aidm:baseUrl')).toBe('https://saved.example.test')
+
+    act(() => {
+      result.current.openAuthTokenPrompt()
+      result.current.setRuntimeSettingsForm((current) => ({
+        ...current,
+        username: 'shared-user',
+        password: 'new-password',
+      }))
+    })
+    await act(async () => {
+      await result.current.submitRuntimeSettings(submitEvent())
+    })
+
+    const loginRequest = requests.find((request) => request.path === '/api/accounts/login')
+    expect(loginRequest?.headers.get('Authorization')).toBeNull()
+    expect(loginRequest?.headers.get('X-AIDM-Workspace-Token')).toBeNull()
+    expect(loginRequest?.headers.get('X-AIDM-CSRF-Token')).toBeNull()
+    expect(loginRequest?.init.credentials).toBe('omit')
+    expect(localStorage.getItem('aidm:baseUrl')).toBe('https://shared.example.test')
+    expect(sessionStorage.getItem('aidm:authToken')).toBe('shared-account-token')
+    expect(sessionStorage.getItem('aidm:workspaceToken')).toBeNull()
+    expect(result.current.runtimeAccount?.username).toBe('shared-user')
+  })
+
+  it('loads but does not trust or persist a backend URL from a share-link query parameter', () => {
     window.history.replaceState(null, '', '/?api=https%3A%2F%2Fbackend.example.test%2F')
 
     const { result } = renderHook(() =>
@@ -1291,6 +1383,6 @@ describe('useRuntimeSettings', () => {
 
     expect(result.current.baseUrl).toBe('https://backend.example.test')
     expect(result.current.runtimeSettingsForm.baseUrl).toBe('https://backend.example.test')
-    expect(localStorage.getItem('aidm:baseUrl')).toBe('https://backend.example.test')
+    expect(localStorage.getItem('aidm:baseUrl')).toBeNull()
   })
 })

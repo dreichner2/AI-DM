@@ -168,6 +168,8 @@ def dm_response_end_payload(
     ok: bool,
     error: str | None = None,
     turn_number: int | None = None,
+    degraded: bool = False,
+    fallback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = dm_response_start_payload(
         session_id=session_id,
@@ -180,6 +182,10 @@ def dm_response_end_payload(
     payload['ok'] = ok
     if error:
         payload['error'] = error
+    if degraded:
+        payload['degraded'] = True
+    if fallback:
+        payload['fallback'] = fallback
     return payload
 
 

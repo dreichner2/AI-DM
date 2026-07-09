@@ -3,7 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from aidm_server.models import Session, safe_json_dumps, safe_json_loads
+from aidm_server.models import Session, safe_json_loads
+from aidm_server.services.session_state_mutation import mutate_session_snapshot_metadata
 from aidm_server.time_utils import utc_now
 
 
@@ -122,25 +123,33 @@ def apply_session_content_settings(
     content_rating: Any = None,
     tone_tags: Any = None,
 ) -> dict[str, Any]:
-    snapshot = safe_json_loads(session_obj.state_snapshot, {})
-    if not isinstance(snapshot, dict):
-        snapshot = {}
+    def update_snapshot(_session_obj: Session, snapshot: dict[str, Any]) -> dict[str, Any]:
+        existing = content_settings_from_snapshot(snapshot)
+        next_settings = {
+            'content_rating': normalize_content_rating(
+                content_rating if content_rating is not None else existing.get('content_rating')
+            ),
+            'tone_tags': normalize_tone_tags(
+                tone_tags if tone_tags is not None else existing.get('tone_tags')
+            ),
+            'updated_at': utc_now().isoformat(),
+        }
+        snapshot['contentSettings'] = {
+            'contentRating': next_settings['content_rating'],
+            'toneTags': next_settings['tone_tags'],
+            'updatedAt': next_settings['updated_at'],
+        }
+        return {
+            'contentRating': next_settings['content_rating'],
+            'toneTags': next_settings['tone_tags'],
+        }
 
-    existing = content_settings_from_snapshot(snapshot)
-    next_settings = {
-        'content_rating': normalize_content_rating(
-            content_rating if content_rating is not None else existing.get('content_rating')
-        ),
-        'tone_tags': normalize_tone_tags(
-            tone_tags if tone_tags is not None else existing.get('tone_tags')
-        ),
-        'updated_at': utc_now().isoformat(),
-    }
-    snapshot['contentSettings'] = {
-        'contentRating': next_settings['content_rating'],
-        'toneTags': next_settings['tone_tags'],
-        'updatedAt': next_settings['updated_at'],
-    }
-    session_obj.state_snapshot = safe_json_dumps(snapshot, {})
-    session_obj.updated_at = utc_now()
-    return next_settings
+    result = mutate_session_snapshot_metadata(
+        session_obj.session_id,
+        mutate_snapshot=update_snapshot,
+        source='api.session.content_settings',
+        change_type='session.content_settings.update',
+    )
+    if result.session_obj is None:
+        raise ValueError('Session no longer exists.')
+    return content_settings_from_snapshot(result.state)

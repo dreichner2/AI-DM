@@ -14,6 +14,7 @@ def test_health_endpoint_available_without_llm_key(client):
     payload = response.get_json()
     assert payload['status'] == 'ok'
     assert 'auth_required' in payload
+    assert 'latest_turn' not in payload['llm']
 
 
 def test_non_ai_crud_works_without_llm_key(client):

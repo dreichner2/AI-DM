@@ -1,10 +1,12 @@
 -c requirements.constraints.txt
 
 flask
+Flask-Migrate
 google-genai
 python-dotenv
 SQLAlchemy
 alembic
+psycopg[binary]
 python-json-logger
 websocket-client
 flask-socketio

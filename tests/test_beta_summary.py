@@ -128,6 +128,72 @@ def test_submit_feedback_and_beta_summary(client, app):
     ]
 
 
+def test_provider_degraded_turn_counts_as_ai_failure_but_not_persistence_failure(client, app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        db.session.add_all(
+            [
+                DmTurn(
+                    session_id=ids['session_id'],
+                    campaign_id=ids['campaign_id'],
+                    player_id=ids['player_id'],
+                    player_input='I inspect the bridge.',
+                    dm_output='The bridge holds.',
+                    status='completed',
+                    latency_ms=100,
+                    llm_provider='gemini',
+                    llm_model='gemini-test',
+                ),
+                DmTurn(
+                    session_id=ids['session_id'],
+                    campaign_id=ids['campaign_id'],
+                    player_id=ids['player_id'],
+                    player_input='I inspect the gate.',
+                    dm_output='Continuity-safe narration only.',
+                    status='degraded',
+                    latency_ms=125,
+                    llm_provider='fallback',
+                    llm_model='continuity-safe-v1',
+                    metadata_json=safe_json_dumps(
+                        {
+                            'llm_fallback': {
+                                'kind': 'emergency_continuity',
+                                'error_type': 'RuntimeError',
+                                'message': 'The configured DM provider failed; continuity-safe narration was used.',
+                            }
+                        },
+                        {},
+                    ),
+                ),
+            ]
+        )
+        db.session.commit()
+
+    summary = client.get('/api/beta/summary').get_json()
+    slo = client.get('/api/beta/slo').get_json()
+    incidents = client.get('/api/beta/incidents?limit=10').get_json()
+    quality = client.get(f'/api/beta/session-quality?session_id={ids["session_id"]}').get_json()
+
+    assert summary['ai_failure_rate'] == 0.5
+    assert summary['degraded_turn_count'] == 1
+    assert slo['ai_provider_failure_rate'] == 0.5
+    assert slo['turn_persistence_failure_rate'] == 0.0
+    assert slo['failed_turn_count'] == 0
+    assert slo['degraded_turn_count'] == 1
+    assert incidents['summary']['failed_turn_count'] == 0
+    assert incidents['summary']['degraded_turn_count'] == 1
+    degraded_incident = next(
+        incident for incident in incidents['incidents'] if incident['type'] == 'provider_degraded_turn'
+    )
+    assert degraded_incident['message'] == (
+        'DM provider failed; continuity-safe narration was persisted without post-DM state or canon mutation.'
+    )
+    assert quality['summary']['quality_status'] == 'review'
+    assert quality['summary']['failed_turn_count'] == 0
+    assert quality['summary']['degraded_turn_count'] == 1
+    assert quality['operator_summary']['headline'] == 'Review recommended: 1 provider-degraded turn.'
+
+
 def test_bad_turn_feedback_and_beta_incidents(client, app):
     ids = seed_world_campaign_player_session(app)
 

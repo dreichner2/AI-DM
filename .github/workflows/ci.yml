@@ -42,6 +42,117 @@ jobs:
       - name: Check generated API types
         run: python scripts/generate_api_types.py --check
 
+  postgres-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: aidm
+          POSTGRES_USER: aidm
+          POSTGRES_PASSWORD: aidm-ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aidm -d aidm"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      AIDM_ENV: production
+      AIDM_DEBUG: 'false'
+      AIDM_DATABASE_URI: postgresql+psycopg://aidm:aidm-ci-password@127.0.0.1:5432/aidm
+      AIDM_POSTGRES_TEST_URI: postgresql+psycopg://aidm:aidm-ci-password@127.0.0.1:5432/aidm
+      AIDM_AUTO_CREATE_SCHEMA: 'false'
+      FLASK_SECRET_KEY: ci-only-production-secret-that-is-long-enough
+      AIDM_AUTH_REQUIRED: 'true'
+      AIDM_API_AUTH_TOKENS: ci-operator-token
+      AIDM_CORS_ALLOWLIST: https://aidm-ci.example.test
+      AIDM_SOCKET_CORS_ALLOWLIST: https://aidm-ci.example.test
+      AIDM_RATE_LIMIT_STORE: database
+      AIDM_TURN_COORDINATOR_STORE: database
+      AIDM_SOCKETIO_ASYNC_MODE: eventlet
+      AIDM_SOCKETIO_WORKER_MODEL: single
+      AIDM_SECURITY_HEADERS_ENABLED: 'true'
+      AIDM_OBSERVABILITY_PROVIDER: github-actions
+      AIDM_ALERT_OWNER: ci
+      AIDM_TELEMETRY_ENABLED: 'false'
+      AIDM_ACCOUNT_COOKIE_AUTH_ENABLED: 'true'
+      AIDM_ACCOUNT_COOKIE_SECURE: 'true'
+      AIDM_ACCOUNT_TOKEN_RESPONSE_ENABLED: 'false'
+      AIDM_LLM_PROVIDER: fallback
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install backend runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.runtime.txt
+          python -m pip install -c requirements.constraints.txt pytest
+      - name: Run migrations and production bootstrap against PostgreSQL
+        run: python -m aidm_server.deploy_bootstrap --check-only --host 0.0.0.0
+      - name: Verify hosted database readiness round trip
+        run: python scripts/deployment_readiness_check.py --allow-fallback-provider
+      - name: Smoke production WSGI and Gunicorn eventlet entrypoint
+        timeout-minutes: 3
+        run: |
+          log_path="$RUNNER_TEMP/aidm-production-entrypoint.log"
+          readiness_path="tmp/release/postgres-ci-readiness.md"
+          PORT=5099 scripts/run_production_server.sh >"$log_path" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            if kill -0 "$server_pid" 2>/dev/null; then
+              kill -TERM "$server_pid" 2>/dev/null || true
+            fi
+            wait "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          ready=false
+          for _attempt in $(seq 1 45); do
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              cat "$log_path"
+              exit 1
+            fi
+            if curl --fail --silent http://127.0.0.1:5099/api/health >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$ready" != "true" ]]; then
+            cat "$log_path"
+            exit 1
+          fi
+          python scripts/deployment_readiness_check.py \
+            --target-url http://127.0.0.1:5099 \
+            --auth-token ci-operator-token \
+            --allow-fallback-provider \
+            --evidence-report "$readiness_path"
+          cleanup
+          trap - EXIT
+      - name: Exercise PostgreSQL concurrency primitives
+        run: python -m pytest -q tests/test_postgres_runtime.py
+      - name: Exercise PostgreSQL auth and data-integrity smokes
+        run: |
+          python scripts/hosted_cookie_auth_smoke.py \
+            --database-uri "$AIDM_DATABASE_URI" \
+            --evidence-report tmp/release/postgres-ci-cookie-auth.md
+          python scripts/security_forbidden_smoke.py \
+            --database-uri "$AIDM_DATABASE_URI" \
+            --evidence-report tmp/release/postgres-ci-security-forbidden.md
+          python scripts/session_export_import_smoke.py \
+            --database-uri "$AIDM_DATABASE_URI" \
+            --evidence-report tmp/release/postgres-ci-export-import.md
+      - name: Upload PostgreSQL production rehearsal evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: postgres-production-rehearsal
+          path: tmp/release/postgres-ci-*.md
+          if-no-files-found: warn
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

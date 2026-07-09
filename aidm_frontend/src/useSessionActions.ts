@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent, type Dispatch, type FormEvent, type SetStateAction } from 'react'
+import { useLayoutEffect, useRef, useState, type ChangeEvent, type Dispatch, type FormEvent, type SetStateAction } from 'react'
 import {
   addCookieCsrfHeader,
   addNgrokBrowserWarningBypassHeader,
@@ -162,25 +162,42 @@ export function useSessionActions({
   const [shareSessionUrl, setShareSessionUrl] = useState('')
   const [sessionActionDialog, setSessionActionDialog] =
     useState<SessionActionDialogState>(null)
+  const selectedCampaignIdRef = useRef(selectedCampaignId)
+  const startSessionPromisesRef = useRef<Map<number, Promise<void>>>(new Map())
 
-  const startSession = async () => {
-    if (!selectedCampaignId) return
+  useLayoutEffect(() => {
+    selectedCampaignIdRef.current = selectedCampaignId
+  }, [selectedCampaignId])
+
+  const startSession = () => {
+    if (!selectedCampaignId) return Promise.resolve()
+
+    const campaignId = selectedCampaignId
+    const existingOperation = startSessionPromisesRef.current.get(campaignId)
+    if (existingOperation) return existingOperation
     const clientSessionId = createClientMessageId()
-    try {
-      const result = await apiFetch<{ session_id: number }>(
-        baseUrl,
-        '/api/sessions/start',
-        auth,
-        {
-          method: 'POST',
-          body: JSON.stringify({ campaign_id: selectedCampaignId, client_session_id: clientSessionId }),
-        },
-      )
-      setSelectedSessionId(result.session_id)
-      await refreshCampaignWorkspace(selectedCampaignId)
-    } catch (error) {
-      pushError('persistence', `Could not start session: ${error instanceof Error ? error.message : String(error)}`)
-    }
+    const operation = (async () => {
+      try {
+        const result = await apiFetch<{ session_id: number }>(
+          baseUrl,
+          '/api/sessions/start',
+          auth,
+          {
+            method: 'POST',
+            body: JSON.stringify({ campaign_id: campaignId, client_session_id: clientSessionId }),
+          },
+        )
+        if (selectedCampaignIdRef.current !== campaignId) return
+        setSelectedSessionId(result.session_id)
+        await refreshCampaignWorkspace(campaignId)
+      } catch (error) {
+        pushError('persistence', `Could not start session: ${error instanceof Error ? error.message : String(error)}`)
+      } finally {
+        startSessionPromisesRef.current.delete(campaignId)
+      }
+    })()
+    startSessionPromisesRef.current.set(campaignId, operation)
+    return operation
   }
 
   const downloadSessionJson = async () => {

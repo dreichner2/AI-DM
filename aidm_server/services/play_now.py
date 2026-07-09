@@ -18,6 +18,7 @@ from aidm_server.services.pregen_characters import (
     pregenerated_character_preset,
 )
 from aidm_server.time_utils import utc_now
+from aidm_server.turn_coordinator import session_turn_coordinator
 
 
 DEFAULT_PLAY_NOW_EXAMPLE_PACK_ID = 'original_fantasy.road_of_unremembered_kings'
@@ -72,49 +73,69 @@ def ensure_play_now_adventure(
             requested_pack_id=requested_pack_id,
             account_id=account_id,
         )
-    campaign = session_obj.campaign
-    if not campaign:
-        raise PlayNowOnboardingError('Play Now campaign could not be loaded.', error_code='play_now_campaign_missing')
 
-    imported_pack_id = imported_pack_id or _imported_pack_id(session_obj) or requested_pack_id
-    source_filename = source_filename or _play_now_metadata(session_obj).get('sourceFilename')
-    _tag_play_now_session(
-        session_obj,
-        requested_pack_id=requested_pack_id,
-        imported_pack_id=str(imported_pack_id),
-        source_filename=str(source_filename or ''),
-    )
+    def prepare_result() -> PlayNowOnboardingResult:
+        campaign = session_obj.campaign
+        if not campaign:
+            raise PlayNowOnboardingError('Play Now campaign could not be loaded.', error_code='play_now_campaign_missing')
 
-    player, created_player = _ensure_preset_player(
-        workspace_id=target_workspace_id,
-        campaign_id=campaign.campaign_id,
-        account_id=account_id,
-        preset=preset,
-    )
-    _sync_play_now_snapshot(
-        session_obj=session_obj,
-        campaign=campaign,
-        selected_player=player,
-        requested_pack_id=requested_pack_id,
-        imported_pack_id=str(imported_pack_id),
-        source_filename=str(source_filename or ''),
-    )
-
-    created = created_session or created_player
-    return PlayNowOnboardingResult(
-        payload=_play_now_payload(
+        resolved_pack_id = imported_pack_id or _imported_pack_id(session_obj) or requested_pack_id
+        resolved_source_filename = source_filename or _play_now_metadata(session_obj).get('sourceFilename')
+        player, created_player = _ensure_preset_player(
             workspace_id=target_workspace_id,
-            campaign=campaign,
+            campaign_id=campaign.campaign_id,
+            account_id=account_id,
+            preset=preset,
+        )
+        _sync_play_now_snapshot(
             session_obj=session_obj,
-            player=player,
-            preset_payload=pregenerated_character_payload(preset),
+            campaign=campaign,
+            selected_player=player,
             requested_pack_id=requested_pack_id,
-            imported_pack_id=str(imported_pack_id),
-            source_filename=str(source_filename or ''),
-            idempotent_replay=not created,
-        ),
-        status_code=201 if created else 200,
-    )
+            imported_pack_id=str(resolved_pack_id),
+            source_filename=str(resolved_source_filename or ''),
+        )
+
+        created = created_session or created_player
+        return PlayNowOnboardingResult(
+            payload=_play_now_payload(
+                workspace_id=target_workspace_id,
+                campaign=campaign,
+                session_obj=session_obj,
+                player=player,
+                preset_payload=pregenerated_character_payload(preset),
+                requested_pack_id=requested_pack_id,
+                imported_pack_id=str(resolved_pack_id),
+                source_filename=str(resolved_source_filename or ''),
+                idempotent_replay=not created,
+            ),
+            status_code=201 if created else 200,
+        )
+
+    if created_session:
+        # The imported session is still private to this transaction. Extend its
+        # initial snapshot with the selected starter hero and Play Now metadata,
+        # then publish the complete onboarding transaction atomically.
+        try:
+            result = prepare_result()
+            db.session.commit()
+            return result
+        except Exception:
+            db.session.rollback()
+            raise
+
+    # Idempotent replay may target a live table. Reload after acquiring the same
+    # coordinator used by turns and commit before releasing it so onboarding
+    # repair cannot replace a concurrent turn snapshot.
+    with session_turn_coordinator.serialized(session_obj.session_id):
+        try:
+            db.session.refresh(session_obj)
+            result = prepare_result()
+            db.session.commit()
+            return result
+        except Exception:
+            db.session.rollback()
+            raise
 
 
 def ensure_local_workspace_context(workspace_id: str) -> Workspace:
@@ -263,26 +284,6 @@ def _sync_play_now_snapshot(
         if not session_state.rolling_summary:
             session_state.rolling_summary = 'Play Now is ready. Begin from the opening scene.'
         session_state.updated_at = utc_now()
-
-
-def _tag_play_now_session(
-    session_obj: Session,
-    *,
-    requested_pack_id: str,
-    imported_pack_id: str,
-    source_filename: str,
-) -> None:
-    snapshot = safe_json_loads(session_obj.state_snapshot, {})
-    if not isinstance(snapshot, dict):
-        snapshot = {}
-    _apply_play_now_metadata(
-        snapshot,
-        requested_pack_id=requested_pack_id,
-        imported_pack_id=imported_pack_id,
-        source_filename=source_filename,
-    )
-    session_obj.state_snapshot = safe_json_dumps(snapshot, {})
-    session_obj.client_session_id = _play_now_client_session_id(imported_pack_id)
 
 
 def _apply_play_now_metadata(

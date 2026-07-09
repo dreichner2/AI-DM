@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 
 from aidm_server.database import db
@@ -127,6 +128,16 @@ def test_play_now_creates_local_workspace_and_replays_idempotently(client, app, 
 
     monkeypatch.setattr(play_now_service, 'get_example_campaign_pack', fake_get_example_campaign_pack)
     monkeypatch.setattr(play_now_service, 'import_campaign_pack', fake_import_campaign_pack)
+    coordinated_session_ids: list[int] = []
+    real_serialized = play_now_service.session_turn_coordinator.serialized
+
+    @contextmanager
+    def tracking_serialized(session_id: int):
+        coordinated_session_ids.append(session_id)
+        with real_serialized(session_id) as wait_ms:
+            yield wait_ms
+
+    monkeypatch.setattr(play_now_service.session_turn_coordinator, 'serialized', tracking_serialized)
 
     first = client.post(
         '/api/onboarding/play-now',
@@ -153,6 +164,9 @@ def test_play_now_creates_local_workspace_and_replays_idempotently(client, app, 
     }
     assert first_payload['join_context']['send_message']['payload']['campaign_id'] == first_payload['campaign_id']
     assert len(import_calls) == 1
+    # Initial creation is one uncommitted initialization transaction. Only the
+    # idempotent replay targets a visible session and therefore takes its turn lock.
+    assert coordinated_session_ids == [first_payload['session_id']]
 
     with app.app_context():
         assert db.session.get(Workspace, 'owner') is not None

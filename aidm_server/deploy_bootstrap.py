@@ -28,6 +28,8 @@ from aidm_server.config import (
     SUPPORTED_SOCKETIO_WORKER_MODELS,
     TURN_COORDINATOR_STORE_DATABASE,
     TURN_COORDINATOR_STORE_MEMORY,
+    load_config,
+    validate_production_startup_config,
 )
 from aidm_server.rate_limiter import RATE_LIMIT_STORE_DATABASE, RATE_LIMIT_STORE_MEMORY, SUPPORTED_RATE_LIMIT_STORES
 
@@ -395,6 +397,12 @@ def _validate_server_start_allowed(app):
 def bootstrap(check_only: bool, host: str, port: int):
     repo_root = _repo_root()
     report = BootstrapReport(warnings=[])
+
+    print('[bootstrap] Validating startup config before migrations...')
+    try:
+        validate_production_startup_config(load_config())
+    except ValueError as exc:
+        raise BootstrapError(str(exc)) from None
 
     print('[bootstrap] Running migrations...')
     run_migrations(repo_root)

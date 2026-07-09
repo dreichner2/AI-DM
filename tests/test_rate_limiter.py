@@ -45,6 +45,14 @@ def test_rate_limiter_factory_rejects_unknown_store():
         )
 
 
+def test_postgres_advisory_lock_key_is_stable_and_bucket_specific():
+    first = rate_limiter_module.postgres_advisory_lock_key('workspace:login')
+
+    assert first == rate_limiter_module.postgres_advisory_lock_key('workspace:login')
+    assert first != rate_limiter_module.postgres_advisory_lock_key('workspace:other')
+    assert -(2**63) <= first < 2**63
+
+
 def test_database_rate_limiter_store_is_shared_across_instances(app, monkeypatch):
     _FrozenDateTime.current = datetime(2026, 1, 1, tzinfo=timezone.utc)
     monkeypatch.setattr(rate_limiter_module, 'datetime', _FrozenDateTime)

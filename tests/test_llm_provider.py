@@ -9,6 +9,7 @@ from aidm_server.contracts import ProviderRequest
 from aidm_server import codex_runtime
 from aidm_server.llm import (
     DeepSeekChatProvider,
+    EmergencyFallbackChunk,
     GeminiProvider,
     NvidiaChatProvider,
     ProviderNotConfiguredError,
@@ -19,7 +20,7 @@ from aidm_server.llm import (
     query_dm_function_stream,
     query_gpt_stream,
 )
-from aidm_server.llm_providers import CodexCliProvider, get_helper_provider
+from aidm_server.llm_providers import CodexCliProvider, DeterministicFallbackProvider, get_helper_provider
 from aidm_server.provider_registry import provider_capabilities, provider_default_model, provider_runtime_model
 
 
@@ -1096,6 +1097,66 @@ def test_query_dm_function_stream_falls_back_to_completion_for_deepseek_stream_f
     chunks = list(query_dm_function_stream('hello', '{"campaign":"test"}'))
 
     assert ''.join(chunks) == 'Completion fallback sentence. Another fallback sentence.'
+
+
+def test_query_dm_function_stream_marks_provider_exception_fallback_and_redacts_details(monkeypatch):
+    class FailingProvider:
+        provider_name = 'gemini'
+        model_name = 'models/gemini-test'
+
+        def stream(self, _request):
+            raise RuntimeError('upstream body included secret-token-123 at https://private.example.test')
+            yield  # pragma: no cover
+
+    monkeypatch.setattr('aidm_server.llm.get_provider', lambda: FailingProvider())
+
+    chunks = list(query_dm_function_stream('open the gate', '{"campaign":"test"}'))
+
+    assert len(chunks) == 1
+    fallback = chunks[0]
+    assert isinstance(fallback, EmergencyFallbackChunk)
+    assert fallback.provider == 'fallback'
+    assert fallback.model == 'continuity-safe-v1'
+    assert fallback.failed_provider == 'gemini'
+    assert fallback.failed_model == 'models/gemini-test'
+    assert fallback.error_type == 'RuntimeError'
+    assert fallback.public_message == 'The configured DM provider failed; continuity-safe narration was used.'
+    assert 'secret-token-123' not in fallback.public_message
+    assert 'private.example.test' not in fallback.public_message
+
+
+def test_query_dm_function_stream_marks_whitespace_only_stream_as_emergency_fallback(monkeypatch):
+    class WhitespaceProvider:
+        provider_name = 'gemini'
+        model_name = 'models/gemini-empty'
+
+        def stream(self, _request):
+            yield ''
+            yield '   '
+            yield '\n\t'
+
+    monkeypatch.setattr('aidm_server.llm.get_provider', lambda: WhitespaceProvider())
+
+    chunks = list(query_dm_function_stream('open the gate', '{"campaign":"test"}'))
+
+    fallback = chunks[-1]
+    assert isinstance(fallback, EmergencyFallbackChunk)
+    assert fallback.reason == 'empty_response'
+    assert fallback.failed_provider == 'gemini'
+    assert fallback.failed_model == 'models/gemini-empty'
+    assert fallback.provider == 'fallback'
+    assert fallback.model == 'continuity-safe-v1'
+
+
+def test_intentionally_configured_deterministic_provider_is_not_emergency_fallback(monkeypatch):
+    provider = DeterministicFallbackProvider(model_name='deterministic-v1')
+    monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
+
+    chunks = list(query_dm_function_stream('open the gate', '{"campaign":"test"}'))
+
+    assert chunks
+    assert not any(isinstance(chunk, EmergencyFallbackChunk) for chunk in chunks)
+    assert 'scene advances' in ''.join(chunks).lower()
 
 
 def test_get_provider_uses_phase_timeout_env(monkeypatch):

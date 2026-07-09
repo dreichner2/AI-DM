@@ -11,7 +11,6 @@ import {
 } from 'react'
 import type { Socket } from 'socket.io-client'
 import {
-  BookOpen,
   ChevronDown,
   ExternalLink,
   Flame,
@@ -20,27 +19,20 @@ import {
   Menu,
   Minimize2,
   PanelRightOpen,
-  Play,
-  Plus,
   Radio,
   Settings,
-  Sparkles,
   Sun,
   UserCircle,
   Volume2,
   VolumeX,
   X,
 } from 'lucide-react'
-import {
-  CampaignArchiveDialog,
-  SessionArchiveDialog,
-  type CampaignArchiveDialogState,
-  type SessionArchiveDialogState,
+import type {
+  CampaignArchiveDialogState,
+  SessionArchiveDialogState,
 } from './ArchiveDialogs'
 import { StatusDot, ThinIcon } from './AppChrome'
 import { CampaignRail, type CampaignCard, type SessionCard } from './CampaignRail'
-import { CampaignChooserDialog } from './CampaignChooserDialog'
-import { CampaignPackImportDialog } from './CampaignPackImportDialog'
 import type { CampaignPackControlAction } from './CampaignPackPanel'
 import {
   InspectorPanel,
@@ -52,9 +44,6 @@ import { ApiClientError, WORKSPACE_ID_HEADER, apiFetch, storedRuntimeAccessSnaps
 import { actorCapabilitiesAllowOperatorTools } from './capabilities'
 import {
   contentSettingsFromSnapshot,
-  normalizeContentRating,
-  type ContentRating,
-  type ContentSettings,
 } from './contentSettings'
 import {
   SessionBoard,
@@ -93,6 +82,7 @@ import { subscribeToMediaQueryChange } from './mediaQuery'
 import { profileIconSrcForCharacter } from './profileIcons'
 import type { SceneDisplayState } from './sceneState'
 import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
+import { TitleScreen } from './TitleScreen'
 import { turnControlFromSnapshot, turnControlWithActiveName } from './turnControl'
 import './App.css'
 import type {
@@ -126,7 +116,9 @@ import {
 } from './useCampaignActions'
 import { useComposerActions } from './useComposerActions'
 import { usePlayerProfileActions } from './usePlayerProfileActions'
+import { usePlayNowOnboarding } from './usePlayNowOnboarding'
 import { useSessionActions, type SessionActionDialogState } from './useSessionActions'
+import { useSessionContentSettings } from './useSessionContentSettings'
 import { useSessionSocket } from './useSessionSocket'
 import { LEGACY_PASSWORD_SETUP_MESSAGE, useRuntimeSettings, type RuntimeAccount } from './useRuntimeSettings'
 import { useTtsNarration } from './useTtsNarration'
@@ -145,7 +137,6 @@ import {
 
 const DEFAULT_BASE_URL = import.meta.env.VITE_AIDM_API_BASE_URL ?? ''
 const PHONE_LAYOUT_MEDIA_QUERY = '(max-width: 760px)'
-const PLAY_NOW_SEEN_STORAGE_KEY = 'aidm:hasPlayed'
 const BOARD_VIEW_MODE_STORAGE_KEY = 'aidm:boardViewMode'
 
 const loadDiceRollDialog = () => import('./DiceRollDialog')
@@ -155,6 +146,18 @@ const PlayerEditDialog = lazy(() =>
 )
 const CreateCampaignDialog = lazy(() =>
   import('./CreateCampaignDialog').then((module) => ({ default: module.CreateCampaignDialog })),
+)
+const CampaignPackImportDialog = lazy(() =>
+  import('./CampaignPackImportDialog').then((module) => ({ default: module.CampaignPackImportDialog })),
+)
+const CampaignChooserDialog = lazy(() =>
+  import('./CampaignChooserDialog').then((module) => ({ default: module.CampaignChooserDialog })),
+)
+const CampaignArchiveDialog = lazy(() =>
+  import('./ArchiveDialogs').then((module) => ({ default: module.CampaignArchiveDialog })),
+)
+const SessionArchiveDialog = lazy(() =>
+  import('./ArchiveDialogs').then((module) => ({ default: module.SessionArchiveDialog })),
 )
 const BetaRuntimeNotesPanel = lazy(() => import('./BetaRuntimeNotesPanel'))
 function preloadDiceRollDialog() {
@@ -295,63 +298,11 @@ type SavedWorkspaceDeleteDialogState = {
   pending: boolean
 } | null
 
-type PlayNowPregeneratedCharacter = {
-  character_id: string
-  character_name: string
-  name: string
-  race: string
-  sex: string
-  class_: string
-  char_class: string
-  level: number
-  tagline: string
-  profile_image: string
-  stats: unknown
-  inventory: unknown
-  character_sheet: unknown
-}
-
-type PlayNowResponse = {
-  mode: 'play_now'
-  workspace_id: string
-  campaign_id: number
-  session_id: number
-  player_id: number
-  world_id: number
-  idempotent_replay: boolean
-  campaign: Campaign
-  session: SessionSummary
-  player: PlayerDetail
-  pregen: PlayNowPregeneratedCharacter
-  example_pack: {
-    example_pack_id: string
-    pack_id: string
-    source_filename: string | null
-    source: string
-  }
-  join_context: Record<string, unknown>
-}
-
-type SessionContentSettingsResponse = {
-  session_id: number
-  settings: ContentSettings
-  session: SessionSummary
-  state: SessionState
-}
-
 type SessionRecapResponse = {
   session_id: number
   recap: string
   generated: boolean
   source: string
-}
-
-function readPlayNowSeenFlag() {
-  try {
-    return localStorage.getItem(PLAY_NOW_SEEN_STORAGE_KEY) === 'true'
-  } catch {
-    return false
-  }
 }
 
 function readBoardViewMode(): BoardViewMode {
@@ -588,95 +539,6 @@ function avatarDataUri(seed: string, variant: 'campaign' | 'character' = 'campai
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
 }
 
-type TitleScreenProps = {
-  pending: boolean
-  canContinue: boolean
-  campaignCount: number
-  selectedCampaignTitle: string | null
-  runtimeConfigured: boolean
-  onPlayNow: () => void
-  onCreateCampaign: () => void
-  onContinue: () => void
-}
-
-function TitleScreen({
-  pending,
-  canContinue,
-  campaignCount,
-  selectedCampaignTitle,
-  runtimeConfigured,
-  onPlayNow,
-  onCreateCampaign,
-  onContinue,
-}: TitleScreenProps) {
-  const continueLabel = selectedCampaignTitle || pluralize(campaignCount, 'campaign')
-  return (
-    <section className="title-screen" aria-labelledby="title-screen-heading">
-      <div className="title-screen-stage">
-        <div className="title-screen-copy">
-          <div className="title-mark" aria-hidden="true">
-            <Flame size={34} fill="currentColor" />
-            <span>AIDM</span>
-          </div>
-          <h1 id="title-screen-heading">AI-DM</h1>
-          <p>
-            The Road of Unremembered Kings is ready with a starter hero, a live table, and an opening scene.
-          </p>
-          <div className="title-screen-actions">
-            <button
-              type="button"
-              className="title-action primary"
-              disabled={pending}
-              onClick={onPlayNow}
-            >
-              <Play size={19} fill="currentColor" />
-              <span>{pending ? 'Preparing' : 'Play Now'}</span>
-            </button>
-            <button
-              type="button"
-              className="title-action"
-              disabled={pending}
-              onClick={onCreateCampaign}
-            >
-              <Plus size={19} />
-              <span>New Campaign</span>
-            </button>
-            <button
-              type="button"
-              className="title-action"
-              disabled={pending || !canContinue}
-              onClick={onContinue}
-            >
-              <BookOpen size={19} />
-              <span>Continue</span>
-            </button>
-          </div>
-        </div>
-        <aside className="title-screen-table" aria-label="Starting table">
-          <div>
-            <Sparkles size={18} />
-            <span>Featured Table</span>
-          </div>
-          <strong>Road of Unremembered Kings</strong>
-          <p>
-            Arden Vale stands at a rain-dark mile marker where old crowns, missing names, and roadside trouble are waiting.
-          </p>
-          <dl>
-            <div>
-              <dt>Runtime</dt>
-              <dd>{runtimeConfigured ? 'Live DM' : 'Safe Mode'}</dd>
-            </div>
-            <div>
-              <dt>Continue</dt>
-              <dd>{canContinue ? continueLabel : 'None yet'}</dd>
-            </div>
-          </dl>
-        </aside>
-      </div>
-    </section>
-  )
-}
-
 function App() {
   const [health, setHealth] = useState<Health | null>(null)
   const [actorCapabilities, setActorCapabilities] = useState<ActorCapabilitiesResponse | null>(null)
@@ -734,12 +596,9 @@ function App() {
   const [campaignChooserOpen, setCampaignChooserOpen] = useState(false)
   const [campaignChooserDismissedKey, setCampaignChooserDismissedKey] = useState('')
   const [characterJoinDialogOpen, setCharacterJoinDialogOpen] = useState(false)
-  const [titleScreenDismissed, setTitleScreenDismissed] = useState(readPlayNowSeenFlag)
-  const [playNowPending, setPlayNowPending] = useState(false)
   const [boardViewMode, setBoardViewMode] = useState<BoardViewMode>(readBoardViewMode)
   const [sessionRecap, setSessionRecap] = useState('')
   const [directorCommentary, setDirectorCommentary] = useState<DirectorCommentaryPayload | null>(null)
-  const [contentSettingsPending, setContentSettingsPending] = useState(false)
   const [socketReconnectKey, setSocketReconnectKey] = useState(0)
   const [equipmentPendingItemKey, setEquipmentPendingItemKey] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
@@ -753,6 +612,10 @@ function App() {
   }, [])
   const reconnectSocket = useCallback(() => {
     setSocketReconnectKey((current) => current + 1)
+  }, [])
+  const closeMobilePanels = useCallback(() => {
+    setMobileRailOpen(false)
+    setMobileInspectorOpen(false)
   }, [])
   const {
     authToken,
@@ -806,16 +669,8 @@ function App() {
   const toggleFullscreenRef = useRef<(() => Promise<void>) | null>(null)
   const socketRef = useRef<Socket | null>(null)
   const playerRequestRef = useRef(0)
-  const playNowAutoStartRef = useRef(false)
   const sessionActionDialogRef = useRef<SessionActionDialogState>(null)
   const campaignActionDialogRef = useRef<CampaignActionDialogState>(null)
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return undefined
-
-    const timerId = window.setTimeout(preloadDiceRollDialog, 300)
-    return () => window.clearTimeout(timerId)
-  }, [])
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
@@ -937,6 +792,42 @@ function App() {
       current.filter((item) => item.category !== 'connection' && !isAuthTokenWorkspaceError(item)),
     )
   }, [])
+  const loadPlayerDetail = useCallback(async (playerId: number) => {
+    const requestId = ++playerRequestRef.current
+    const requestAuth = auth
+    const requestAccessSnapshot = storedRuntimeAccessSnapshot(requestAuth)
+    await apiFetch<PlayerDetail>(baseUrl, `/api/players/${playerId}`, requestAuth)
+      .then((detail) => {
+        if (playerRequestRef.current === requestId) {
+          setPlayerDetail(detail)
+          clearAuthTokenErrors()
+        }
+      })
+      .catch((error: unknown) => {
+        if (playerRequestRef.current === requestId) {
+          setPlayerDetail(null)
+          if (isUnauthorizedError(error)) {
+            if (requestAccessSnapshot !== storedRuntimeAccessSnapshot()) return
+            openAuthTokenPrompt()
+            clearAuthTokenErrors()
+            return
+          }
+          if (isNotFoundError(error)) {
+            setSelectedPlayerId((current) => (current === playerId ? null : current))
+            return
+          }
+          pushError('workspace', `Player load failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      })
+  }, [
+    auth,
+    baseUrl,
+    clearAuthTokenErrors,
+    openAuthTokenPrompt,
+    pushError,
+    setPlayerDetail,
+    setSelectedPlayerId,
+  ])
   const clearResolvedOperationalErrors = useCallback(() => {
     setErrors((current) =>
       current.filter((item) => {
@@ -1275,8 +1166,10 @@ function App() {
     selectedSessionId: activeSessionId,
     sendPending,
     dmResponseBlocking,
+    streamingTurn,
     setOptimisticEntries,
     setSendPending,
+    setStreamingTurn,
     socketRef,
     stopTtsAudio,
     turnControl,
@@ -2421,17 +2314,56 @@ function App() {
           ? 'Create your player account first. Password is required.'
           : 'Log in with your username. Use your password if one is set.'
       : 'Leave Backend URL blank when the frontend and backend share one origin.'
-  const showTitleScreen =
-    health?.status === 'ok' &&
-    health.auth_required === false &&
-    !runtimeSettingsOpen &&
-    !workspaceLoading &&
-    !selectedCampaignId &&
-    !selectedSessionId &&
-    !selectedPlayerId &&
-    !modalOpen &&
-    (campaigns.length === 0 || !titleScreenDismissed)
-  const titleScreenCanContinue = campaigns.length > 0
+  const {
+    createCampaignFromTitleScreen,
+    continueFromTitleScreen,
+    playNowFromTitleScreen,
+    playNowPending,
+    showTitleScreen,
+    titleScreenCanContinue,
+  } = usePlayNowOnboarding({
+    activeSessionId,
+    auth,
+    authRequired: health?.auth_required ?? null,
+    backendReady: health?.status === 'ok',
+    baseUrl,
+    campaignCount: campaigns.length,
+    closeMobilePanels,
+    modalOpen,
+    runtimeSettingsOpen,
+    selectedCampaignId,
+    selectedPlayerDetailId,
+    selectedPlayerId,
+    selectedSessionId,
+    workspaceLoading,
+    campaignUpserted,
+    sessionUpserted,
+    playerUpserted,
+    clearAuthTokenErrors,
+    loadPlayerDetail,
+    loadSessionData,
+    openCreateCampaignDialog,
+    pushError,
+    refreshCampaignWorkspace,
+    refreshRoot,
+    setClarificationRequest,
+    setLogEntries,
+    setMainTab,
+    setOptimisticEntries,
+    setPlayerDetail,
+    setSelectedCampaignId,
+    setSelectedPlayerId,
+    setSelectedSessionId,
+    setSessionState,
+    setStreamingTurn,
+    setTurnStatuses,
+    currentResponsePresent: Boolean(currentResponseEntry),
+    dmResponseBlocking,
+    sendPending,
+    socketStatus,
+    startAdventure,
+    turnRowCount,
+  })
 
   useEffect(() => {
     if (
@@ -2738,43 +2670,6 @@ function App() {
     [pushError, queueTtsNarrationRef, ttsEnabledRef],
   )
 
-  const loadPlayerDetail = useCallback(async (playerId: number) => {
-    const requestId = ++playerRequestRef.current
-    const requestAuth = auth
-    const requestAccessSnapshot = storedRuntimeAccessSnapshot(requestAuth)
-    await apiFetch<PlayerDetail>(baseUrl, `/api/players/${playerId}`, requestAuth)
-      .then((detail) => {
-        if (playerRequestRef.current === requestId) {
-          setPlayerDetail(detail)
-          clearAuthTokenErrors()
-        }
-      })
-      .catch((error: unknown) => {
-        if (playerRequestRef.current === requestId) {
-          setPlayerDetail(null)
-          if (isUnauthorizedError(error)) {
-            if (requestAccessSnapshot !== storedRuntimeAccessSnapshot()) return
-            openAuthTokenPrompt()
-            clearAuthTokenErrors()
-            return
-          }
-          if (isNotFoundError(error)) {
-            setSelectedPlayerId((current) => (current === playerId ? null : current))
-            return
-          }
-          pushError('workspace', `Player load failed: ${error instanceof Error ? error.message : String(error)}`)
-        }
-      })
-  }, [
-    auth,
-    baseUrl,
-    clearAuthTokenErrors,
-    openAuthTokenPrompt,
-    pushError,
-    setPlayerDetail,
-    setSelectedPlayerId,
-  ])
-
   useEffect(() => {
     if (!selectedPlayerDetailId) {
       playerRequestRef.current += 1
@@ -2957,107 +2852,21 @@ function App() {
     () => contentSettingsFromSnapshot(activeSessionSnapshot),
     [activeSessionSnapshot],
   )
-  const updateContentRating = useCallback(
-    async (rating: ContentRating) => {
-      if (!activeSessionId) {
-        pushError('validation', 'Choose a session before changing content rating.')
-        return
-      }
-      if (!canUseOperatorTools) {
-        pushError('validation', 'Only table operators can change content rating.')
-        return
-      }
-      const nextRating = normalizeContentRating(rating)
-      if (nextRating === contentSettings.contentRating || contentSettingsPending) return
-      setContentSettingsPending(true)
-      try {
-        const response = await apiFetch<SessionContentSettingsResponse>(
-          baseUrl,
-          `/api/sessions/${activeSessionId}/content-settings`,
-          auth,
-          {
-            method: 'PATCH',
-            body: JSON.stringify({ content_rating: nextRating }),
-          },
-        )
-        sessionUpserted(response.session)
-        setSessionState(response.state)
-        clearAuthTokenErrors()
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        pushError('persistence', `Content rating update failed: ${message}`)
-      } finally {
-        setContentSettingsPending(false)
-      }
-    },
-    [
-      activeSessionId,
-      auth,
-      baseUrl,
-      canUseOperatorTools,
-      clearAuthTokenErrors,
-      contentSettings.contentRating,
-      contentSettingsPending,
-      pushError,
-      sessionUpserted,
-      setSessionState,
-    ],
-  )
-  const updateContentToneTags = useCallback(
-    async (toneTags: string[]) => {
-      if (!activeSessionId) {
-        pushError('validation', 'Choose a session before changing tone tags.')
-        return
-      }
-      if (!canUseOperatorTools) {
-        pushError('validation', 'Only table operators can change tone tags.')
-        return
-      }
-      const nextToneTags = toneTags
-        .map((tag) => tag.trim().toLowerCase())
-        .filter((tag, index, tags) => Boolean(tag) && tags.indexOf(tag) === index)
-        .slice(0, 4)
-      if (
-        contentSettingsPending ||
-        nextToneTags.length === contentSettings.toneTags.length &&
-          nextToneTags.every((tag, index) => tag === contentSettings.toneTags[index])
-      ) {
-        return
-      }
-      setContentSettingsPending(true)
-      try {
-        const response = await apiFetch<SessionContentSettingsResponse>(
-          baseUrl,
-          `/api/sessions/${activeSessionId}/content-settings`,
-          auth,
-          {
-            method: 'PATCH',
-            body: JSON.stringify({ tone_tags: nextToneTags }),
-          },
-        )
-        sessionUpserted(response.session)
-        setSessionState(response.state)
-        clearAuthTokenErrors()
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        pushError('persistence', `Tone tag update failed: ${message}`)
-      } finally {
-        setContentSettingsPending(false)
-      }
-    },
-    [
-      activeSessionId,
-      auth,
-      baseUrl,
-      canUseOperatorTools,
-      clearAuthTokenErrors,
-      contentSettings.toneTags,
-      contentSettingsPending,
-      pushError,
-      sessionUpserted,
-      setSessionState,
-    ],
-  )
+  const {
+    contentSettingsPending,
+    updateContentRating,
+    updateContentToneTags,
+  } = useSessionContentSettings({
+    activeSessionId,
+    auth,
+    baseUrl,
+    canEditContentSettings: canUseOperatorTools,
+    contentSettings,
+    clearAuthTokenErrors,
+    pushError,
+    sessionUpserted,
+    setSessionState,
+  })
   const worldStatePanel = worldStateFromSnapshot(activeSessionSnapshot)
   const canonFacts = canonFactsFromMemorySnippets(memorySnippets, selectedSessionId)
   const visibleCanonFacts = inspectorTab === 'canon' ? canonFacts : canonFacts.slice(0, 3)
@@ -3220,130 +3029,6 @@ function App() {
     model: configuredModel || 'Unknown',
     temperature: '0.7',
   }
-  const closeMobilePanels = useCallback(() => {
-    setMobileRailOpen(false)
-    setMobileInspectorOpen(false)
-  }, [])
-  const rememberTitleScreenChoice = useCallback(() => {
-    try {
-      localStorage.setItem(PLAY_NOW_SEEN_STORAGE_KEY, 'true')
-    } catch {
-      // Ignore storage failures; the in-memory state still moves the player forward.
-    }
-    setTitleScreenDismissed(true)
-  }, [])
-  const continueFromTitleScreen = useCallback(() => {
-    rememberTitleScreenChoice()
-    closeMobilePanels()
-  }, [closeMobilePanels, rememberTitleScreenChoice])
-  const createCampaignFromTitleScreen = useCallback(() => {
-    rememberTitleScreenChoice()
-    closeMobilePanels()
-    openCreateCampaignDialog()
-  }, [closeMobilePanels, openCreateCampaignDialog, rememberTitleScreenChoice])
-  const playNowFromTitleScreen = useCallback(async () => {
-    if (playNowPending) return
-    setPlayNowPending(true)
-    try {
-      const payload = await apiFetch<PlayNowResponse>(
-        baseUrl,
-        '/api/onboarding/play-now',
-        auth,
-        {
-          method: 'POST',
-          body: JSON.stringify({}),
-        },
-      )
-      try {
-        localStorage.setItem('aidm:workspaceId', payload.workspace_id)
-      } catch {
-        // The default local workspace still works if localStorage is unavailable.
-      }
-      playNowAutoStartRef.current = payload.session.turn_count === 0
-      campaignUpserted(payload.campaign)
-      sessionUpserted(payload.session)
-      playerUpserted(payload.player)
-      setPlayerDetail(payload.player)
-      setLogEntries([])
-      setSessionState(null)
-      setOptimisticEntries([])
-      setStreamingTurn(null)
-      setTurnStatuses({})
-      setClarificationRequest(null)
-      setSelectedCampaignId(payload.campaign_id)
-      setSelectedSessionId(payload.session_id)
-      setSelectedPlayerId(payload.player_id)
-      setMainTab('turns')
-      closeMobilePanels()
-      rememberTitleScreenChoice()
-      clearAuthTokenErrors()
-      try {
-        await refreshRoot()
-        await refreshCampaignWorkspace(payload.campaign_id)
-        await loadSessionData(payload.session_id)
-        await loadPlayerDetail(payload.player_id)
-      } catch (refreshError) {
-        const message = refreshError instanceof Error ? refreshError.message : String(refreshError)
-        pushError('workspace', `Play Now opened, but refresh failed: ${message}`)
-      }
-    } catch (error) {
-      playNowAutoStartRef.current = false
-      const message = error instanceof Error ? error.message : String(error)
-      pushError('persistence', `Play Now failed: ${message}`)
-    } finally {
-      setPlayNowPending(false)
-    }
-  }, [
-    auth,
-    baseUrl,
-    campaignUpserted,
-    clearAuthTokenErrors,
-    closeMobilePanels,
-    loadPlayerDetail,
-    loadSessionData,
-    playNowPending,
-    playerUpserted,
-    pushError,
-    refreshCampaignWorkspace,
-    refreshRoot,
-    rememberTitleScreenChoice,
-    sessionUpserted,
-    setLogEntries,
-    setOptimisticEntries,
-    setPlayerDetail,
-    setSelectedCampaignId,
-    setSelectedPlayerId,
-    setSelectedSessionId,
-    setSessionState,
-    setStreamingTurn,
-  ])
-  useEffect(() => {
-    if (!playNowAutoStartRef.current) return
-    if (turnRowCount > 0 || currentResponseEntry) {
-      playNowAutoStartRef.current = false
-      return
-    }
-    if (
-      !activeSessionId ||
-      !selectedPlayerDetailId ||
-      socketStatus !== 'joined' ||
-      sendPending ||
-      dmResponseBlocking
-    ) {
-      return
-    }
-    playNowAutoStartRef.current = false
-    startAdventure()
-  }, [
-    activeSessionId,
-    currentResponseEntry,
-    dmResponseBlocking,
-    selectedPlayerDetailId,
-    sendPending,
-    socketStatus,
-    startAdventure,
-    turnRowCount,
-  ])
   const toggleCampaignRail = useCallback(() => {
     if (mobileViewport) {
       setMobileInspectorOpen(false)
@@ -4724,28 +4409,32 @@ function App() {
       ) : null}
 
       {campaignArchiveDialog ? (
-        <CampaignArchiveDialog
-          campaign={campaign}
-          dialog={campaignArchiveDialog}
-          dialogRef={modalDialogRef}
-          onArchiveSelected={() => void archiveSelectedCampaignFromManager()}
-          onClose={closeCampaignArchiveDialog}
-          onRestore={(campaignId) => void restoreCampaignFromArchive(campaignId)}
-          worldNameById={worldNameById}
-        />
+        <Suspense fallback={null}>
+          <CampaignArchiveDialog
+            campaign={campaign}
+            dialog={campaignArchiveDialog}
+            dialogRef={modalDialogRef}
+            onArchiveSelected={() => void archiveSelectedCampaignFromManager()}
+            onClose={closeCampaignArchiveDialog}
+            onRestore={(campaignId) => void restoreCampaignFromArchive(campaignId)}
+            worldNameById={worldNameById}
+          />
+        </Suspense>
       ) : null}
 
       {sessionArchiveDialog ? (
-        <SessionArchiveDialog
-          activeSession={activeSession}
-          campaign={campaign}
-          dialog={sessionArchiveDialog}
-          dialogRef={modalDialogRef}
-          onArchiveSelected={() => void archiveSelectedSessionFromManager()}
-          onClose={closeSessionArchiveDialog}
-          onRestore={(sessionId) => void restoreSessionFromArchive(sessionId)}
-          selectedCampaignId={selectedCampaignId}
-        />
+        <Suspense fallback={null}>
+          <SessionArchiveDialog
+            activeSession={activeSession}
+            campaign={campaign}
+            dialog={sessionArchiveDialog}
+            dialogRef={modalDialogRef}
+            onArchiveSelected={() => void archiveSelectedSessionFromManager()}
+            onClose={closeSessionArchiveDialog}
+            onRestore={(sessionId) => void restoreSessionFromArchive(sessionId)}
+            selectedCampaignId={selectedCampaignId}
+          />
+        </Suspense>
       ) : null}
 
       {campaignPackImportOpen ? (
@@ -4778,26 +4467,30 @@ function App() {
                 <X size={18} />
               </button>
             </header>
-            <CampaignPackImportDialog
-              auth={auth}
-              baseUrl={baseUrl}
-              onClose={closeCampaignPackImportDialog}
-              onImported={handleCampaignPackImported}
-              pushError={pushError}
-            />
+            <Suspense fallback={<div role="status">Loading campaign pack tools...</div>}>
+              <CampaignPackImportDialog
+                auth={auth}
+                baseUrl={baseUrl}
+                onClose={closeCampaignPackImportDialog}
+                onImported={handleCampaignPackImported}
+                pushError={pushError}
+              />
+            </Suspense>
           </section>
         </div>
       ) : null}
 
       {campaignChooserOpen ? (
-        <CampaignChooserDialog
-          campaigns={campaigns}
-          dialogRef={modalDialogRef}
-          onChoose={chooseCampaign}
-          onClose={closeCampaignChooserDialog}
-          onCreate={createCampaignFromChooser}
-          worldNameById={worldNameById}
-        />
+        <Suspense fallback={null}>
+          <CampaignChooserDialog
+            campaigns={campaigns}
+            dialogRef={modalDialogRef}
+            onChoose={chooseCampaign}
+            onClose={closeCampaignChooserDialog}
+            onCreate={createCampaignFromChooser}
+            worldNameById={worldNameById}
+          />
+        </Suspense>
       ) : null}
 
       {playerEditDialog ? (

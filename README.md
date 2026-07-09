@@ -177,7 +177,7 @@ replace every placeholder in the deployment provider's secret/env manager.
 
 | Command | What it does |
 | --- | --- |
-| `make install` | Create `.venv`, install Python requirements, run frontend `npm ci`. |
+| `make install` | Create `.venv` with Python 3.12, install Python requirements, run frontend `npm ci`. Override `PYTHON_BOOTSTRAP` only with another Python 3.12 executable. |
 | `make backend` | Start Flask through `scripts/run_local_backend.sh`. |
 | `make frontend` | Start Vite on `127.0.0.1` for frontend development. |
 | `make unified` | Build/reuse the frontend and serve the whole app from Flask on port 5050. |
@@ -221,7 +221,7 @@ replace every placeholder in the deployment provider's secret/env manager.
 | `make operator-signoff-status` | Render `tmp/release/operator-signoff-status.md`/`.json` from `tmp/release/operator-signoff.json`; start from `docs/rc_operator_signoff_manifest.example.json` and add `OPERATOR_SIGNOFF_STATUS_ARGS="--require-complete"` before final RC issue closure. Final signoff rejects placeholder commit/operator metadata, non-hosted or example `target_url` values, and provided evidence that still points at placeholder/example/localhost sources. |
 | `make rc-handoff-artifacts` | Build the full local RC handoff bundle: source archive, issue snippets, recommendation matrix, external proof inputs, external proof execution plan, signoff values template, signoff-from-inputs preview, operator signoff status/draft/action plan, release evidence packet, and checklist status. |
 | `make post-rc-issue-evidence` | Preview generated RC issue comments; add `POST_RC_ISSUE_EVIDENCE_ARGS="--post"` to post with `gh`. |
-| `make deployment-readiness DEPLOYMENT_READINESS_ARGS="..."` | Validate hosted closed-beta env choices and optional live `/api/health`/metrics/security-header checks; add `--evidence-report` to save a Markdown/JSON artifact. |
+| `make deployment-readiness DEPLOYMENT_READINESS_ARGS="..."` | Validate hosted closed-beta env choices, require a PostgreSQL/psycopg round trip, and optionally check live `/api/health`/metrics/security headers; add `--evidence-report` to save a Markdown/JSON artifact. |
 | `make db-upgrade` | Run Flask database migrations. |
 | `make reproject-session SESSION_ID=...` | Rebuild projections for one session. |
 | `make reproject-all` | Rebuild projections for all sessions. |

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ChangeEvent, type Dispatch, type RefObject, type SetStateAction } from 'react'
+import { lazy, Suspense, useEffect, useState, type ChangeEvent, type Dispatch, type RefObject, type SetStateAction } from 'react'
 import {
   ArrowDown,
   BookOpen,
@@ -31,10 +31,13 @@ import {
 } from './gameSelectors'
 import { NarrativeProse } from './NarrativeProse'
 import { profileIconSrcForCharacter } from './profileIcons'
-import { SceneMusicPlayer } from './SceneMusicPlayer'
 import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
 import type { SceneDisplayState } from './sceneState'
 import type { ActivePlayer, Campaign, ClarificationRequest, Player, SessionState, SessionSummary, TimelineEntry } from './types'
+
+const SceneMusicPlayer = lazy(() =>
+  import('./SceneMusicPlayer').then((module) => ({ default: module.SceneMusicPlayer })),
+)
 
 export type MainTab = 'turns' | 'dm' | 'notes'
 export type BoardViewMode = 'theater' | 'ops'
@@ -1114,15 +1117,17 @@ export function SessionBoard({
       ) : null}
 
       {showSceneMusicPlayer ? (
-        <SceneMusicPlayer
-          sessionId={sessionId}
-          playerId={playerId}
-          duckForNarration={duckMusicForNarration}
-          musicSyncState={sceneMusicSyncState}
-          sceneState={sceneState}
-          autoFollowScene
-          onMusicControl={onSceneMusicControl}
-        />
+        <Suspense fallback={null}>
+          <SceneMusicPlayer
+            sessionId={sessionId}
+            playerId={playerId}
+            duckForNarration={duckMusicForNarration}
+            musicSyncState={sceneMusicSyncState}
+            sceneState={sceneState}
+            autoFollowScene
+            onMusicControl={onSceneMusicControl}
+          />
+        </Suspense>
       ) : null}
 
       <div className="chat-reading-control">

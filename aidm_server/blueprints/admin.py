@@ -6,7 +6,15 @@ from flask_admin import AdminIndexView
 from flask_admin.contrib.sqla import ModelView
 from flask_admin.helpers import is_form_submitted
 
-from aidm_server.auth import DEFAULT_WORKSPACE_ID, request_is_authorized, request_workspace_id
+from aidm_server.auth import (
+    DEFAULT_WORKSPACE_ID,
+    account_workspace_membership,
+    is_global_operator_token,
+    request_account,
+    request_workspace_id,
+    request_workspace_token,
+    workspace_role_is_admin,
+)
 
 from aidm_server.models import (
     Campaign,
@@ -29,7 +37,16 @@ from aidm_server.models import (
 
 
 def _admin_request_authorized() -> bool:
-    return request_is_authorized() and request_workspace_id() == DEFAULT_WORKSPACE_ID
+    workspace_id = request_workspace_id()
+    if workspace_id != DEFAULT_WORKSPACE_ID:
+        return False
+
+    account = request_account()
+    if account is None:
+        return is_global_operator_token(request_workspace_token())
+
+    membership = account_workspace_membership(account, workspace_id)
+    return bool(membership and workspace_role_is_admin(membership.role))
 
 
 class ProtectedAdminMixin:
@@ -90,20 +107,20 @@ def configure_admin(app, db):
     except TypeError:
         # Flask-Admin 2.x removed `template_mode`.
         admin = Admin(app, name='AI-DM Admin', index_view=ProtectedAdminIndexView())
-    admin.add_view(ProtectedModelView(World, db.session))
-    admin.add_view(CampaignModelView(Campaign, db.session))
-    admin.add_view(PlayerModelView(Player, db.session))
-    admin.add_view(ProtectedModelView(Session, db.session))
-    admin.add_view(ProtectedModelView(SessionState, db.session))
-    admin.add_view(ProtectedModelView(DmTurn, db.session))
-    admin.add_view(NpcModelView(Npc, db.session))
-    admin.add_view(ProtectedModelView(PlayerAction, db.session))
-    admin.add_view(ProtectedModelView(Map, db.session))
-    admin.add_view(SessionLogEntryModelView(SessionLogEntry, db.session))
-    admin.add_view(ProtectedModelView(CampaignSegment, db.session))
-    admin.add_view(ProtectedModelView(StoryEntity, db.session))
-    admin.add_view(ProtectedModelView(StoryFact, db.session))
-    admin.add_view(ProtectedModelView(StoryThread, db.session))
-    admin.add_view(ProtectedModelView(TurnCanonUpdate, db.session))
-    admin.add_view(StoryEventModelView(StoryEvent, db.session))
+    admin.add_view(ProtectedModelView(World, db))
+    admin.add_view(CampaignModelView(Campaign, db))
+    admin.add_view(PlayerModelView(Player, db))
+    admin.add_view(ProtectedModelView(Session, db))
+    admin.add_view(ProtectedModelView(SessionState, db))
+    admin.add_view(ProtectedModelView(DmTurn, db))
+    admin.add_view(NpcModelView(Npc, db))
+    admin.add_view(ProtectedModelView(PlayerAction, db))
+    admin.add_view(ProtectedModelView(Map, db))
+    admin.add_view(SessionLogEntryModelView(SessionLogEntry, db))
+    admin.add_view(ProtectedModelView(CampaignSegment, db))
+    admin.add_view(ProtectedModelView(StoryEntity, db))
+    admin.add_view(ProtectedModelView(StoryFact, db))
+    admin.add_view(ProtectedModelView(StoryThread, db))
+    admin.add_view(ProtectedModelView(TurnCanonUpdate, db))
+    admin.add_view(StoryEventModelView(StoryEvent, db))
     return admin

@@ -4,6 +4,7 @@ import json
 
 from aidm_server.contracts import ProviderResponse
 from aidm_server.database import db
+from aidm_server.llm import EmergencyFallbackChunk
 import aidm_server.game_state.extraction.post_dm_outcome_extractor as post_extractor_module
 import aidm_server.game_state.extraction.pre_dm_action_extractor as pre_extractor_module
 import aidm_server.turn_events as turn_events_module
@@ -12,6 +13,7 @@ from aidm_server.turn_engine import TurnEngine, _state_application_event_details
 from aidm_server.models import (
     Campaign,
     CampaignSegment,
+    CanonJob,
     DmTurn,
     Player,
     PlayerAction,
@@ -1698,6 +1700,107 @@ def test_admin_message_rejects_invalid_passcode_before_creating_turn(app, socket
         assert DmTurn.query.filter_by(session_id=ids['session_id']).count() == 0
 
 
+def test_admin_passcode_attempts_are_rate_limited_before_verification(
+    app,
+    socketio,
+    app_runtime,
+    monkeypatch,
+):
+    app.config['AIDM_ADMIN_PASSCODE'] = 'letmein'
+    app.config['AIDM_RATE_LIMIT_MAX_SOCKET_MESSAGES'] = 1
+    app.config['AIDM_RATE_LIMIT_WINDOW_SECONDS'] = 30
+    socketio_module = app_runtime['modules']['socketio_events']
+    passcode_checks = 0
+
+    def reject_passcode(_data):
+        nonlocal passcode_checks
+        passcode_checks += 1
+        return False
+
+    monkeypatch.setattr(socketio_module, '_admin_passcode_is_valid', reject_passcode)
+    ids = seed_world_campaign_player_session(app)
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+
+    payload = {
+        'session_id': ids['session_id'],
+        'campaign_id': ids['campaign_id'],
+        'player_id': ids['player_id'],
+        'message': '[ADMIN] Open the sealed vault.',
+        'action_intent': {
+            'kind': 'admin',
+            'source': 'composer',
+            'text': 'Open the sealed vault.',
+        },
+        'admin_passcode': 'wrong',
+    }
+    client.emit('send_message', payload)
+    first_error = _event_payload(client.get_received(), 'error')
+    client.emit('send_message', payload)
+    second_error = _event_payload(client.get_received(), 'error')
+
+    assert first_error['error_code'] == 'admin_unauthorized'
+    assert second_error['error_code'] == 'rate_limited'
+    assert passcode_checks == 1
+    with app.app_context():
+        assert DmTurn.query.filter_by(session_id=ids['session_id']).count() == 0
+
+
+def test_admin_passcode_rate_limit_cannot_be_bypassed_by_rotating_players(
+    app,
+    socketio,
+    app_runtime,
+    monkeypatch,
+):
+    app.config['AIDM_ADMIN_PASSCODE'] = 'letmein'
+    app.config['AIDM_RATE_LIMIT_MAX_SOCKET_MESSAGES'] = 1
+    app.config['AIDM_RATE_LIMIT_WINDOW_SECONDS'] = 30
+    socketio_module = app_runtime['modules']['socketio_events']
+    passcode_checks = 0
+
+    def reject_passcode(_data):
+        nonlocal passcode_checks
+        passcode_checks += 1
+        return False
+
+    monkeypatch.setattr(socketio_module, '_admin_passcode_is_valid', reject_passcode)
+    ids = seed_world_campaign_player_session(app)
+    second_player_id = _seed_second_player(app, ids['campaign_id'])
+    first_client = socketio.test_client(app, flask_test_client=app.test_client())
+    second_client = socketio.test_client(app, flask_test_client=app.test_client())
+    first_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    second_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': second_player_id})
+    first_client.get_received()
+    second_client.get_received()
+
+    def payload(player_id, client_message_id):
+        return {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'player_id': player_id,
+            'message': '[ADMIN] Open the sealed vault.',
+            'client_message_id': client_message_id,
+            'action_intent': {
+                'kind': 'admin',
+                'source': 'composer',
+                'text': 'Open the sealed vault.',
+            },
+            'admin_passcode': 'wrong',
+        }
+
+    first_client.emit('send_message', payload(ids['player_id'], 'admin-attempt-1'))
+    first_error = _event_payload(first_client.get_received(), 'error')
+    second_client.emit('send_message', payload(second_player_id, 'admin-attempt-2'))
+    second_error = _event_payload(second_client.get_received(), 'error')
+
+    assert first_error['error_code'] == 'admin_unauthorized'
+    assert second_error['error_code'] == 'rate_limited'
+    assert passcode_checks == 1
+    with app.app_context():
+        assert DmTurn.query.filter_by(session_id=ids['session_id']).count() == 0
+
+
 def test_admin_like_prefix_without_admin_intent_is_rejected_before_creating_turn(app, socketio):
     app.config['AIDM_ADMIN_PASSCODE'] = 'letmein'
     ids = seed_world_campaign_player_session(app)
@@ -1921,7 +2024,373 @@ def test_send_message_ignores_duplicate_client_message_id(app, socketio, app_run
     assert _event_payload(received, 'turn_duplicate') is not None
     assert calls['count'] == 1
     with app.app_context():
-        assert DmTurn.query.count() == 1
+        turns = DmTurn.query.all()
+        assert len(turns) == 1
+        assert turns[0].client_message_id == 'duplicate-1'
+
+
+def test_structured_turn_retry_is_reconciled_before_turn_order_check(app, socketio, app_runtime, monkeypatch):
+    socketio_module = app_runtime['modules']['socketio_events']
+    calls = {'stream': 0}
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player, rules_hint
+        calls['stream'] += 1
+        yield 'The plan moves forward once.'
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    ids = seed_world_campaign_player_session(app)
+    second_player_id = _seed_second_player(app, ids['campaign_id'])
+    first_client = socketio.test_client(app, flask_test_client=app.test_client())
+    second_client = socketio.test_client(app, flask_test_client=app.test_client())
+    first_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    second_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': second_player_id})
+    first_client.get_received()
+    second_client.get_received()
+    first_client.emit(
+        'set_turn_control',
+        {
+            'session_id': ids['session_id'],
+            'player_id': ids['player_id'],
+            'mode': 'structured',
+            'active_player_id': ids['player_id'],
+        },
+    )
+    first_client.get_received()
+    second_client.get_received()
+
+    payload = {
+        'session_id': ids['session_id'],
+        'campaign_id': ids['campaign_id'],
+        'world_id': ids['world_id'],
+        'player_id': ids['player_id'],
+        'message': 'I hold position and signal the next player.',
+        'client_message_id': 'structured-retry-1',
+    }
+    first_client.emit('send_message', payload)
+    first_client.get_received()
+    second_client.get_received()
+    first_client.emit('send_message', payload)
+    received = first_client.get_received()
+
+    duplicate = _event_payload(received, 'turn_duplicate')
+    assert duplicate is not None
+    assert duplicate['client_message_id'] == 'structured-retry-1'
+    assert _event_payload(received, 'error') is None
+    assert calls['stream'] == 1
+    with app.app_context():
+        session = db.session.get(Session, ids['session_id'])
+        turn_control = turn_control_module.turn_control_from_session(session)
+        assert turn_control['activePlayerId'] == second_player_id
+        assert DmTurn.query.filter_by(session_id=ids['session_id']).count() == 1
+
+
+def test_send_message_uniqueness_race_emits_duplicate_instead_of_persistence_error(
+    app,
+    socketio,
+    app_runtime,
+    monkeypatch,
+):
+    socketio_module = app_runtime['modules']['socketio_events']
+    calls = {'stream': 0, 'duplicate_lookup': 0}
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player, rules_hint
+        calls['stream'] += 1
+        yield 'Committed once.'
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    ids = seed_world_campaign_player_session(app)
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    payload = {
+        'session_id': ids['session_id'],
+        'campaign_id': ids['campaign_id'],
+        'player_id': ids['player_id'],
+        'message': 'I proceed through the arch.',
+        'client_message_id': 'constraint-race-1',
+    }
+    client.emit('send_message', payload)
+    first_received = client.get_received()
+    assert _event_payload(first_received, 'error') is None
+
+    original_lookup = socketio_module.TurnEngine._find_duplicate_turn
+
+    def stale_then_current(command):
+        calls['duplicate_lookup'] += 1
+        if calls['duplicate_lookup'] == 1:
+            # Simulate a stale preflight read. The database constraint is the
+            # authoritative second line of defense.
+            return None
+        return original_lookup(command)
+
+    monkeypatch.setattr(socketio_module.TurnEngine, '_find_duplicate_turn', staticmethod(stale_then_current))
+    client.emit('send_message', payload)
+    received = client.get_received()
+
+    duplicate = _event_payload(received, 'turn_duplicate')
+    assert duplicate is not None
+    assert duplicate['client_message_id'] == 'constraint-race-1'
+    assert _event_payload(received, 'error') is None
+    assert calls == {'stream': 1, 'duplicate_lookup': 2}
+    with app.app_context():
+        turns = DmTurn.query.filter_by(session_id=ids['session_id']).all()
+        assert len(turns) == 1
+        assert duplicate['turn_id'] == turns[0].turn_id
+
+
+def test_send_message_idempotency_finds_legacy_metadata_only_turn(app, socketio, app_runtime, monkeypatch):
+    socketio_module = app_runtime['modules']['socketio_events']
+
+    def should_not_stream(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError('Legacy duplicate should be rejected before narration.')
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', should_not_stream)
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        legacy_turn = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='Legacy action',
+            status='completed',
+            metadata_json=safe_json_dumps({'client_message_id': 'legacy-client-1'}, {}),
+        )
+        db.session.add(legacy_turn)
+        db.session.commit()
+        legacy_turn_id = legacy_turn.turn_id
+
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'player_id': ids['player_id'],
+            'message': 'Legacy action',
+            'client_message_id': 'legacy-client-1',
+        },
+    )
+    received = client.get_received()
+
+    duplicate = _event_payload(received, 'turn_duplicate')
+    assert duplicate == {
+        'session_id': ids['session_id'],
+        'turn_id': legacy_turn_id,
+        'client_message_id': 'legacy-client-1',
+    }
+    assert _event_payload(received, 'error') is None
+    with app.app_context():
+        assert DmTurn.query.filter_by(session_id=ids['session_id']).count() == 1
+
+
+def test_provider_exception_fallback_is_persisted_as_degraded_and_skips_mutation_pipelines(
+    app,
+    socketio,
+    app_runtime,
+    monkeypatch,
+):
+    socketio_module = app_runtime['modules']['socketio_events']
+    turn_engine_module = app_runtime['modules']['turn_engine']
+    calls = {'post_dm_pipeline': 0, 'canon_enqueue': 0}
+
+    def emergency_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player, rules_hint
+        yield EmergencyFallbackChunk(
+            'Continuity-safe narration only.',
+            error=RuntimeError('secret upstream response body'),
+            failed_provider='gemini',
+            failed_model='models/gemini-private',
+        )
+
+    def unexpected_post_pipeline(*args, **kwargs):
+        del args, kwargs
+        calls['post_dm_pipeline'] += 1
+        raise AssertionError('Emergency narration must not enter the post-DM state pipeline.')
+
+    def unexpected_canon_enqueue(*args, **kwargs):
+        del args, kwargs
+        calls['canon_enqueue'] += 1
+        raise AssertionError('Emergency narration must not enqueue canon mutation.')
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', emergency_stream)
+    monkeypatch.setattr(turn_engine_module, 'post_dm_pipeline', unexpected_post_pipeline)
+    monkeypatch.setattr(turn_engine_module, 'enqueue_canon_job', unexpected_canon_enqueue)
+    app.config['AIDM_LLM_PROVIDER'] = 'gemini'
+    app.config['AIDM_LLM_MODEL'] = 'models/gemini-private'
+
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        player.inventory = safe_json_dumps(
+            [{'id': 'great', 'name': 'Greatsword', 'quantity': 1, 'type': 'weapon', 'subtype': 'greatsword'}],
+            [],
+        )
+        db.session.commit()
+    segment_id = seed_segment(
+        app,
+        campaign_id=ids['campaign_id'],
+        trigger_condition='{"type":"keywords","keywords":["altar"],"match":"any"}',
+    )
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'player_id': ids['player_id'],
+            'message': 'I equip my greatsword at the altar.',
+            'client_message_id': 'provider-degraded-1',
+            'action_intent': {
+                'kind': 'item',
+                'source': 'composer',
+                'text': 'I equip my greatsword at the altar.',
+                'inventory_action': 'equip',
+                'item': {'name': 'Greatsword', 'quantity': 1},
+            },
+        },
+    )
+    received = client.get_received()
+
+    end_payload = _event_payload(received, 'dm_response_end')
+    assert end_payload['ok'] is True
+    assert end_payload['degraded'] is True
+    assert end_payload['fallback']['error_type'] == 'RuntimeError'
+    assert end_payload['fallback']['message'] == (
+        'The configured DM provider failed; continuity-safe narration was used.'
+    )
+    assert 'secret upstream response body' not in json.dumps(end_payload)
+    assert _event_payload(received, 'error') is None
+    assert calls == {'post_dm_pipeline': 0, 'canon_enqueue': 0}
+
+    with app.app_context():
+        turn = DmTurn.query.filter_by(session_id=ids['session_id']).one()
+        metadata = safe_json_loads(turn.metadata_json, {})
+        assert turn.status == 'degraded'
+        assert turn.llm_provider == 'fallback'
+        assert turn.llm_model == 'continuity-safe-v1'
+        assert turn.client_message_id == 'provider-degraded-1'
+        assert metadata['llm_fallback']['configured_provider'] == 'gemini'
+        assert metadata['llm_fallback']['configured_model'] == 'models/gemini-private'
+        fallback = metadata['llm_fallback']
+        assert 'state_mutation_skipped' not in fallback
+        assert fallback['post_dm_state_mutation_skipped'] is True
+        effects = fallback['pre_narration_effects']
+        assert effects['state_change_count'] >= 1
+        assert 'inventory.equip' in effects['state_change_types']
+        assert effects['triggered_segment_count'] == 1
+        assert effects['triggered_segment_ids'] == [segment_id]
+        assert metadata['llm_fallback']['canon_mutation_skipped'] is True
+        player = db.session.get(Player, ids['player_id'])
+        inventory = {item['id']: item for item in safe_json_loads(player.inventory, [])}
+        assert inventory['great']['equipped'] is True
+        assert db.session.get(CampaignSegment, segment_id).is_triggered is True
+        assert 'secret upstream response body' not in turn.metadata_json
+        assert CanonJob.query.filter_by(turn_id=turn.turn_id).count() == 0
+        counters = app.extensions['aidm_telemetry'].snapshot()['counters']
+        assert counters['socket.dm_provider_failure_total|model=models/gemini-private,provider=gemini'] == 1
+        assert counters['socket.send_message.degraded_total|model=continuity-safe-v1,provider=fallback'] == 1
+        assert counters['event.socket.dm_provider_degraded'] == 1
+        assert counters.get('socket.send_message.success_total', 0) == 0
+
+
+def test_intentional_fallback_provider_turn_remains_a_normal_success(app, socketio, app_runtime, monkeypatch):
+    import aidm_server.llm as llm_module
+    from aidm_server.llm_providers import DeterministicFallbackProvider
+
+    socketio_module = app_runtime['modules']['socketio_events']
+    monkeypatch.setattr(
+        llm_module,
+        'get_provider',
+        lambda: DeterministicFallbackProvider(model_name='deterministic-v1'),
+    )
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', llm_module.query_dm_function_stream)
+    app.config['AIDM_LLM_PROVIDER'] = 'fallback'
+    app.config['AIDM_LLM_MODEL'] = 'deterministic-v1'
+
+    ids = seed_world_campaign_player_session(app)
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'player_id': ids['player_id'],
+            'message': 'I wait and listen.',
+            'client_message_id': 'intentional-fallback-1',
+        },
+    )
+    received = client.get_received()
+
+    end_payload = _event_payload(received, 'dm_response_end')
+    assert end_payload['ok'] is True
+    assert 'degraded' not in end_payload
+    assert _event_payload(received, 'error') is None
+    with app.app_context():
+        turn = DmTurn.query.filter_by(session_id=ids['session_id']).one()
+        metadata = safe_json_loads(turn.metadata_json, {})
+        assert turn.status == 'completed'
+        assert turn.llm_provider == 'fallback'
+        assert turn.llm_model == 'deterministic-v1'
+        assert 'llm_fallback' not in metadata
+
+
+def test_late_persistence_error_does_not_relabel_degraded_fallback_as_completed(
+    app,
+    socketio,
+    app_runtime,
+    monkeypatch,
+):
+    socketio_module = app_runtime['modules']['socketio_events']
+    turn_engine_module = app_runtime['modules']['turn_engine']
+    original_commit_with_retry = turn_engine_module.commit_with_retry
+
+    def emergency_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player, rules_hint
+        yield EmergencyFallbackChunk(
+            'Continuity-safe narration only.',
+            error=RuntimeError('provider unavailable'),
+            failed_provider='gemini',
+            failed_model='models/gemini-test',
+        )
+
+    def fail_only_final_save(*, label='database write', **kwargs):
+        if label == 'post-turn final save':
+            raise RuntimeError('late save failure')
+        return original_commit_with_retry(label=label, **kwargs)
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', emergency_stream)
+    monkeypatch.setattr(turn_engine_module, 'commit_with_retry', fail_only_final_save)
+    ids = seed_world_campaign_player_session(app)
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'player_id': ids['player_id'],
+            'message': 'I listen at the door.',
+            'client_message_id': 'degraded-late-save-1',
+        },
+    )
+    received = client.get_received()
+
+    assert _event_payload(received, 'error')['error_code'] == 'turn_persist_failed'
+    with app.app_context():
+        turn = DmTurn.query.filter_by(session_id=ids['session_id']).one()
+        assert turn.dm_output == 'Continuity-safe narration only.'
+        assert turn.status == 'degraded'
+        assert safe_json_loads(turn.metadata_json, {})['llm_fallback']['kind'] == 'emergency_continuity'
 
 
 def test_dm_response_is_saved_when_canon_extraction_fails(app, socketio, app_runtime, monkeypatch):

@@ -15,14 +15,17 @@ from aidm_server.auth import (
     account_requires_password_setup,
     claim_legacy_players_for_account,
     ensure_account_workspace_membership,
+    is_global_operator_token,
     request_account,
     request_account_cookie_csrf_valid,
     request_uses_account_cookie_auth,
     request_account_token,
     request_workspace_id,
+    request_workspace_token,
     workspace_role_is_admin,
 )
 from aidm_server.canon_jobs import start_canon_job_worker
+from aidm_server.capabilities import capability_forbidden_response, required_http_capability
 from aidm_server.config import load_config
 from aidm_server.database import db, ensure_schema, init_db
 from aidm_server.errors import error_response
@@ -235,40 +238,6 @@ def create_app() -> Flask:
                 status=403,
             )
 
-        if request.path.startswith('/api/accounts'):
-            return None
-
-        account_token = request_account_token()
-        account = request_account()
-        if account_requires_password_setup(account):
-            return error_response(
-                code='legacy_password_setup_required',
-                message=LEGACY_PASSWORD_SETUP_MESSAGE,
-                status=401,
-            )
-        workspace_id = request_workspace_id()
-        if app.config.get('AIDM_AUTH_REQUIRED') and not workspace_id:
-            telemetry_event(
-                'api.unauthorized',
-                payload={'path': route_key, 'method': request.method, 'remote_addr': request.remote_addr},
-                severity='warning',
-            )
-            return error_response(
-                code='unauthorized',
-                message='Missing or invalid workspace token.',
-                status=401,
-            )
-        membership = ensure_account_workspace_membership(account, workspace_id) if account and workspace_id else None
-        if membership:
-            claim_legacy_players_for_account(account, workspace_id)
-            db.session.commit()
-        g.aidm_account = account
-        g.aidm_account_id = account.account_id if account else None
-        g.aidm_auth_token_present = bool(account_token)
-        g.aidm_workspace_id = workspace_id or DEFAULT_WORKSPACE_ID
-        g.aidm_workspace_role = membership.role if membership else None
-        g.aidm_workspace_admin = workspace_role_is_admin(membership.role if membership else None)
-
         limiter: FixedWindowRateLimiter = app.extensions['aidm_api_limiter']
         client_ip = request.remote_addr or 'unknown'
         key = f'{client_ip}:{route_key}'
@@ -290,6 +259,63 @@ def create_app() -> Flask:
                 status=429,
                 details={'reset_in_seconds': result.reset_in_seconds},
             )
+
+        # Account and workspace credential handlers authenticate themselves, but
+        # must still be throttled before password/token verification above.
+        if request.path.startswith('/api/accounts'):
+            return None
+
+        account_token = request_account_token()
+        account = request_account()
+        if account_requires_password_setup(account):
+            return error_response(
+                code='legacy_password_setup_required',
+                message=LEGACY_PASSWORD_SETUP_MESSAGE,
+                status=401,
+            )
+        workspace_token = request_workspace_token(account_token)
+        workspace_id = request_workspace_id()
+        if app.config.get('AIDM_AUTH_REQUIRED') and not workspace_id:
+            telemetry_event(
+                'api.unauthorized',
+                payload={'path': route_key, 'method': request.method, 'remote_addr': request.remote_addr},
+                severity='warning',
+            )
+            return error_response(
+                code='unauthorized',
+                message='Missing or invalid workspace token.',
+                status=401,
+            )
+        membership = ensure_account_workspace_membership(account, workspace_id) if account and workspace_id else None
+        g.aidm_account = account
+        g.aidm_account_id = account.account_id if account else None
+        credential_token = workspace_token or account_token
+        g.aidm_auth_token_present = bool(credential_token)
+        g.aidm_global_operator_token = bool(
+            account is None and is_global_operator_token(credential_token)
+        )
+        g.aidm_workspace_id = workspace_id or DEFAULT_WORKSPACE_ID
+        g.aidm_workspace_role = membership.role if membership else None
+        g.aidm_workspace_admin = workspace_role_is_admin(membership.role if membership else None)
+
+        required_capability = required_http_capability(request.endpoint, request.method)
+        if required_capability:
+            forbidden = capability_forbidden_response(required_capability)
+            if forbidden:
+                telemetry_event(
+                    'api.capability_forbidden',
+                    payload={
+                        'path': route_key,
+                        'method': request.method,
+                        'required_capability': required_capability,
+                    },
+                    severity='warning',
+                )
+                return forbidden
+
+        if membership:
+            claim_legacy_players_for_account(account, workspace_id)
+            db.session.commit()
 
         return None
 

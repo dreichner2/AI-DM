@@ -5,6 +5,7 @@ Decision: single-worker hosted closed beta.
 For RC1 and the first hosted closed-beta target, run exactly one backend worker:
 
 ```bash
+AIDM_ENV=production
 AIDM_SOCKETIO_WORKER_MODEL=single
 AIDM_SOCKETIO_ASYNC_MODE=eventlet
 WEB_CONCURRENCY=1
@@ -26,6 +27,9 @@ Hosted RC evidence required for this model:
 
 Deferred multi-worker models:
 
+- Both models require migrations through `0028_session_turn_lock_fencing` and
+  database-backed coordination so a worker that loses its lease generation
+  cannot commit stale turn state.
 - `AIDM_SOCKETIO_WORKER_MODEL=sticky` requires load-balancer affinity and `--socketio-staging-proof`.
 - `AIDM_SOCKETIO_WORKER_MODEL=message_queue` requires `AIDM_SOCKETIO_MESSAGE_QUEUE`, database-backed turn coordination, and `--socketio-staging-proof`.
 - Do not use sticky or message-queue mode for RC1 unless staging proof shows Socket.IO client event delivery and turn persistence under the actual deployment topology.

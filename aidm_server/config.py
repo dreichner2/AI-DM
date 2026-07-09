@@ -6,10 +6,16 @@ import os
 import pathlib
 import secrets
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Mapping
+
+from sqlalchemy.engine import make_url
 
 from aidm_server.provider_registry import SUPPORTED_LLM_PROVIDERS, normalize_provider_model_id, provider_default_model
-from aidm_server.rate_limiter import SUPPORTED_RATE_LIMIT_STORES, RATE_LIMIT_STORE_MEMORY
+from aidm_server.rate_limiter import (
+    RATE_LIMIT_STORE_DATABASE,
+    RATE_LIMIT_STORE_MEMORY,
+    SUPPORTED_RATE_LIMIT_STORES,
+)
 
 TURN_COORDINATOR_STORE_MEMORY = 'memory'
 TURN_COORDINATOR_STORE_DATABASE = 'database'
@@ -154,6 +160,62 @@ def _resolve_secret_key(env: str, configured_value: str | None) -> str:
     if env == 'production':
         raise ValueError('FLASK_SECRET_KEY is required when AIDM_ENV=production.')
     return secrets.token_hex(32)
+
+
+def validate_production_startup_config(
+    config: AppConfig,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Reject unsafe production settings before a WSGI worker starts serving."""
+    if config.env != 'production':
+        return
+
+    runtime_env = environ if environ is not None else os.environ
+    errors: list[str] = []
+
+    database_uri = str(runtime_env.get('AIDM_DATABASE_URI') or '').strip()
+    if not database_uri:
+        errors.append('AIDM_DATABASE_URI must be explicitly configured')
+    else:
+        try:
+            database_driver = make_url(database_uri).drivername
+        except Exception:
+            errors.append('AIDM_DATABASE_URI must be a valid SQLAlchemy database URL')
+        else:
+            if database_driver != 'postgresql+psycopg':
+                errors.append('AIDM_DATABASE_URI must use postgresql+psycopg in production')
+    if config.debug:
+        errors.append('AIDM_DEBUG must be false')
+    if config.auto_create_schema:
+        errors.append('AIDM_AUTO_CREATE_SCHEMA must be false')
+    if config.admin_enabled:
+        errors.append('AIDM_ADMIN_ENABLED must be false in production')
+    if not config.auth_required:
+        errors.append('AIDM_AUTH_REQUIRED must be true')
+    if not config.api_auth_tokens and not config.api_auth_token_workspaces:
+        errors.append('at least one API auth token must be configured')
+    if config.rate_limit_store != RATE_LIMIT_STORE_DATABASE:
+        errors.append('AIDM_RATE_LIMIT_STORE must be database')
+    if config.turn_coordinator_store != TURN_COORDINATOR_STORE_DATABASE:
+        errors.append('AIDM_TURN_COORDINATOR_STORE must be database')
+    if not config.socketio_worker_model_explicit:
+        errors.append('AIDM_SOCKETIO_WORKER_MODEL must be explicitly configured')
+    if config.socketio_async_mode != 'eventlet':
+        errors.append('AIDM_SOCKETIO_ASYNC_MODE must be eventlet')
+    if config.socketio_worker_model == SOCKETIO_WORKER_MODEL_MESSAGE_QUEUE and not config.socketio_message_queue:
+        errors.append('AIDM_SOCKETIO_MESSAGE_QUEUE is required for the message_queue worker model')
+    if '*' in config.cors_allowlist or '*' in config.socketio_cors_allowlist:
+        errors.append('wildcard REST or Socket.IO CORS origins are not allowed')
+    if not config.security_headers_enabled or not config.content_security_policy:
+        errors.append('security headers and a content security policy must be enabled')
+    if not config.observability_provider or not config.alert_owner:
+        errors.append('AIDM_OBSERVABILITY_PROVIDER and AIDM_ALERT_OWNER must be configured')
+    if config.account_cookie_auth_enabled and not config.account_cookie_secure:
+        errors.append('AIDM_ACCOUNT_COOKIE_SECURE must be true when account cookie auth is enabled')
+
+    if errors:
+        raise ValueError(f"Unsafe production startup configuration: {'; '.join(errors)}.")
 
 
 def load_config() -> AppConfig:

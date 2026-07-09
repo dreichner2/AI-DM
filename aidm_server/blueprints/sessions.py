@@ -6,6 +6,7 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
 from aidm_server.action_intent import ACTION_ID_RE
+from aidm_server.capabilities import current_actor_has_capability
 from aidm_server.database import db
 from aidm_server.errors import error_response
 from aidm_server.llm import query_gpt
@@ -55,7 +56,6 @@ from aidm_server.turn_events import SESSION_ENDED_EVENT, SESSION_RECAP_EVENT, SE
 from aidm_server.validation import coerce_int, missing_fields, optional_text, parse_json_body, positive_int, required_text
 from aidm_server.workspace_access import (
     current_account_id,
-    current_account_is_workspace_admin,
     current_workspace_id,
     get_campaign as workspace_campaign,
     get_session as workspace_session,
@@ -134,15 +134,18 @@ def _include_archived() -> bool:
 
 
 def _campaign_pack_operator_view() -> bool:
-    return current_account_id() is None or current_account_is_workspace_admin()
+    return current_actor_has_capability('dm_runtime_control')
 
 
 def _campaign_pack_progress_actor() -> str:
-    account_id = current_account_id()
-    if account_id is None:
+    if current_actor_has_capability('local_operator_only'):
         return 'operator'
-    role = 'admin' if current_account_is_workspace_admin() else 'player'
-    return f'account:{account_id}:{role}'
+    account_id = current_account_id()
+    if account_id is not None:
+        return f'account:{account_id}:admin'
+    if current_actor_has_capability('dm_runtime_control'):
+        return 'operator'
+    return 'unknown-actor'
 
 
 def _session_export_log_entries(session_id: int) -> tuple[list[dict], bool]:

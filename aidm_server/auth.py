@@ -112,6 +112,23 @@ def _configured_tokens() -> set[str]:
     return configured
 
 
+def is_global_operator_token(token: str | None) -> bool:
+    """Return whether a credential is an unscoped bootstrap/operator token.
+
+    Workspace mappings take precedence when a token appears in both settings,
+    preventing a workspace-scoped credential from inheriting operator powers.
+    """
+    raw_token = str(token or "").strip()
+    if not raw_token or raw_token in _configured_token_workspaces():
+        return False
+    configured = current_app.config.get("AIDM_API_AUTH_TOKENS", [])
+    return raw_token in {
+        value.strip()
+        for value in configured
+        if isinstance(value, str) and value.strip()
+    }
+
+
 def auth_required() -> bool:
     return bool(current_app.config.get("AIDM_AUTH_REQUIRED", False))
 

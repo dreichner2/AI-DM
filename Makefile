@@ -1,10 +1,16 @@
 PYTHON := .venv/bin/python
+PYTHON_BOOTSTRAP ?= python3.12
 FRONTEND_DIR := aidm_frontend
 
 .PHONY: install backend frontend unified test lint typecheck build bundle-budget smoke scenario-regression socket-concurrency-smoke hosted-cookie-auth-smoke security-forbidden-smoke session-export-import-smoke hosted-rc-evidence hosted-rc-plan export-support-bundle beta-slo-baseline local-beta-slo-baseline backup-restore-drill migration-chain-drill browser-smoke visual-smoke visual-smoke-review frontend-npm-ci-evidence packaging-cleanup-evidence github-actions-rc-plan github-actions-evidence clean clean-deps source-archive rc-issue-evidence rc-issue-closure-evidence release-evidence-packet release-artifact-consistency release-checklist-status rc-recommendation-matrix external-proof-inputs external-proof-execution-plan operator-signoff-values-template external-proof-values-merge external-proof-values-check operator-signoff-from-inputs operator-signoff-draft operator-signoff-action-plan operator-signoff-status rc-finalize-signoff rc-handoff-artifacts post-rc-issue-evidence db-upgrade health secrets api-types request-json-parsing state-writers socketio-worker-model-decision dev-check closed-beta-rc closed-beta-rc-fast deployment-readiness observability-check reproject-session reproject-all
 
 install:
-	python3 -m venv .venv
+	@command -v $(PYTHON_BOOTSTRAP) >/dev/null 2>&1 || { \
+		echo "$(PYTHON_BOOTSTRAP) was not found. Install Python 3.12 or set PYTHON_BOOTSTRAP to a Python 3.12 executable." >&2; \
+		exit 1; \
+	}
+	@$(PYTHON_BOOTSTRAP) -c 'import sys; expected=(3, 12); actual=sys.version_info[:2]; actual == expected or sys.exit(f"Python 3.12 is required; found {actual[0]}.{actual[1]} via $(PYTHON_BOOTSTRAP).")'
+	$(PYTHON_BOOTSTRAP) -m venv .venv
 	$(PYTHON) -m pip install -r requirements.txt
 	cd $(FRONTEND_DIR) && npm ci
 
@@ -189,7 +195,7 @@ post-rc-issue-evidence:
 	$(PYTHON) scripts/post_rc_issue_evidence.py $(POST_RC_ISSUE_EVIDENCE_ARGS)
 
 db-upgrade:
-	FLASK_APP=aidm_server.main:create_app flask db upgrade
+	FLASK_APP=aidm_server.main:create_app $(PYTHON) -m flask db upgrade
 
 health:
 	./scripts/check_local_health.sh

@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from flask import current_app, request
 
+from aidm_server.capabilities import Capability, actor_capabilities
 from aidm_server.auth import (
     DEFAULT_WORKSPACE_ID,
     account_for_token,
@@ -16,6 +17,7 @@ from aidm_server.auth import (
     extract_socket_token,
     extract_socket_workspace_id,
     extract_socket_workspace_token,
+    is_global_operator_token,
     is_token_authorized,
     workspace_id_for_workspace_token,
     workspace_role_is_admin,
@@ -122,6 +124,33 @@ class SocketRuntime:
         if account_requires_password_setup(account):
             return None
         return ensure_account_workspace_membership(account, workspace_id)
+
+    def credential_present_for_auth(
+        self,
+        auth_payload: dict | None = None,
+        data_payload: dict | None = None,
+    ) -> bool:
+        """Report credential presence without retaining a raw token in socket state."""
+        return bool(extract_socket_token(auth_payload=auth_payload, data_payload=data_payload))
+
+    def global_operator_for_auth(
+        self,
+        auth_payload: dict | None = None,
+        data_payload: dict | None = None,
+    ) -> bool:
+        token = extract_socket_token(auth_payload=auth_payload, data_payload=data_payload)
+        return is_global_operator_token(token)
+
+    def connection_has_capability(self, sid: str, capability: Capability) -> bool:
+        existing = self.state.connection(sid) or {}
+        account_id = coerce_int(existing.get('account_id'))
+        capabilities = actor_capabilities(
+            account_id=account_id,
+            is_workspace_admin=workspace_role_is_admin(str(existing.get('workspace_role') or '')),
+            credential_present=bool(existing.get('credential_present')),
+            global_operator=bool(existing.get('global_operator')),
+        )
+        return capability in capabilities
 
     def connection_account_context(self, sid: str) -> tuple[int | None, bool]:
         existing = self.state.connection(sid) or {}

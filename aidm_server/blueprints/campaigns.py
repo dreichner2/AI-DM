@@ -7,6 +7,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 
 from aidm_server.canon_jobs import canon_job_status_counts
+from aidm_server.capabilities import current_actor_has_capability
 from aidm_server.creatures.campaign_pack import generate_campaign_pack_bestiary
 from aidm_server.creatures.repository import save_bestiary_entry
 from aidm_server.database import db
@@ -16,7 +17,6 @@ from aidm_server.models import (
     CampaignPack,
     CampaignPackRecord,
     CampaignPackSession,
-    Session,
     StoryEntity,
     StoryFact,
     StoryThread,
@@ -58,7 +58,6 @@ from aidm_server.validation import (
 from aidm_server.workspace_access import (
     campaign_query,
     current_account_id,
-    current_account_is_workspace_admin,
     current_workspace_id,
     get_campaign as workspace_campaign,
     get_world as workspace_world,
@@ -631,7 +630,7 @@ def create_campaign():
 
 
 def _include_hidden_session_state() -> bool:
-    return current_account_id() is None or current_account_is_workspace_admin()
+    return current_actor_has_capability('dm_authoring')
 
 
 @campaigns_bp.route('', methods=['GET'])

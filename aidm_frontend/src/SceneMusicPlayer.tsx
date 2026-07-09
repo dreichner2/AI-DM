@@ -302,6 +302,7 @@ export function SceneMusicPlayer({
   const manualOverrideLocationRef = useRef<string | null>(null)
   const lastSceneLocationRef = useRef<string | null>(null)
   const lastAutoSceneTrackRef = useRef<string | null>(null)
+  const currentTimeRef = useRef(0)
   const [storedPreferences] = useState(() => initialMusicState())
   const [loadedPanelLayout] = useState(() => loadMusicLayout())
   const [panelLayout, setPanelLayout] = useState(loadedPanelLayout.layout)
@@ -322,6 +323,10 @@ export function SceneMusicPlayer({
     SCENE_MUSIC_TRACKS.find((track) => track.id === currentTrackId) ?? SCENE_MUSIC_TRACKS[0]
   const syncEnabled = Boolean(sessionId && playerId && onMusicControl)
   const currentSceneLocationKey = sceneLocationKey(sceneState)
+
+  useEffect(() => {
+    currentTimeRef.current = currentTime
+  }, [currentTime])
 
   const markManualMusicOverride = useCallback(() => {
     if (currentSceneLocationKey) {
@@ -606,12 +611,11 @@ export function SceneMusicPlayer({
     if (!isPlaying || !syncEnabled || musicSyncState?.updatedByPlayerId !== playerId) return
     const timer = window.setInterval(() => {
       const audio = audioRef.current
-      broadcastMusicControl(currentTrack.id, 'playing', audio?.currentTime ?? currentTime)
+      broadcastMusicControl(currentTrack.id, 'playing', audio?.currentTime ?? currentTimeRef.current)
     }, MUSIC_SYNC_HEARTBEAT_MS)
     return () => window.clearInterval(timer)
   }, [
     broadcastMusicControl,
-    currentTime,
     currentTrack.id,
     isPlaying,
     musicSyncState?.updatedByPlayerId,

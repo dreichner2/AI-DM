@@ -5,7 +5,22 @@ import importlib
 from aidm_server.auth import generate_account_token, hash_secret, normalize_username
 from aidm_server.blueprints.accounts import LEGACY_PASSWORD_SETUP_MESSAGE
 from aidm_server.database import db
-from aidm_server.models import Account, AccountWorkspaceMembership, Campaign, Player, Workspace, World
+from aidm_server.models import (
+    Account,
+    AccountWorkspaceMembership,
+    Campaign,
+    CampaignPack,
+    CampaignPackCheckpointProgress,
+    CampaignPackProgressEvent,
+    CampaignPackRecord,
+    CampaignPackSession,
+    InstalledCampaignPack,
+    OperatorActionAudit,
+    Player,
+    Session,
+    Workspace,
+    World,
+)
 
 
 def _build_account_runtime(tmp_path, monkeypatch, extra_env: dict[str, str] | None = None):
@@ -117,7 +132,8 @@ def test_account_login_issues_session_token_and_uses_password_plus_workspace_tok
         'X-AIDM-Workspace-Token': 'owner-token',
     }
     worlds_response = client.post('/api/worlds', headers=account_headers, json={'name': 'Account World'})
-    assert worlds_response.status_code == 201
+    assert worlds_response.status_code == 403
+    assert worlds_response.get_json()['details']['required_capability'] == 'dm_authoring'
 
     missing_workspace = client.get('/api/campaigns', headers={'Authorization': f"Bearer {session_token}"})
     assert missing_workspace.status_code == 401
@@ -217,7 +233,8 @@ def test_cookie_auth_can_run_account_and_workspace_flow_without_token_response(t
         headers={**csrf_headers, 'X-AIDM-Workspace-Token': 'owner-token'},
         json={'name': 'Cookie Auth World'},
     )
-    assert worlds_response.status_code == 201
+    assert worlds_response.status_code == 403
+    assert worlds_response.get_json()['details']['required_capability'] == 'dm_authoring'
 
     logout = client.delete('/api/accounts/session', headers=csrf_headers)
     assert logout.status_code == 200
@@ -332,6 +349,78 @@ def test_account_can_create_password_table_and_join_by_name_password(tmp_path, m
             character_name='Maya',
         )
         db.session.add(table_player)
+        table_session = Session(campaign_id=table_campaign.campaign_id, state_snapshot='{}')
+        db.session.add(table_session)
+        installed_pack = InstalledCampaignPack(
+            workspace_id='Friday_Night',
+            pack_id='friday-pack',
+            title='Friday Pack',
+            pack_version='1.0.0',
+            schema_version='1',
+            pack_hash='a' * 64,
+            manifest_json='{}',
+        )
+        db.session.add(installed_pack)
+        db.session.flush()
+        campaign_pack = CampaignPack(
+            workspace_id='Friday_Night',
+            installed_pack_id=installed_pack.installed_pack_id,
+            pack_id='friday-pack',
+            title='Friday Pack',
+            pack_version='1.0.0',
+            schema_version='1',
+            pack_hash='a' * 64,
+            manifest_json='{}',
+        )
+        db.session.add(campaign_pack)
+        db.session.flush()
+        db.session.add(
+            CampaignPackRecord(
+                campaign_pack_id=campaign_pack.campaign_pack_id,
+                workspace_id='Friday_Night',
+                pack_id='friday-pack',
+                record_type='location',
+                record_id='friday-inn',
+                record_json='{}',
+            )
+        )
+        campaign_pack_session = CampaignPackSession(
+            campaign_pack_id=campaign_pack.campaign_pack_id,
+            installed_pack_id=installed_pack.installed_pack_id,
+            session_id=table_session.session_id,
+            campaign_id=table_campaign.campaign_id,
+            workspace_id='Friday_Night',
+            pack_id='friday-pack',
+        )
+        db.session.add(campaign_pack_session)
+        db.session.flush()
+        db.session.add(
+            CampaignPackCheckpointProgress(
+                campaign_pack_session_id=campaign_pack_session.campaign_pack_session_id,
+                checkpoint_id='arrival',
+            )
+        )
+        db.session.add(
+            CampaignPackProgressEvent(
+                campaign_pack_session_id=campaign_pack_session.campaign_pack_session_id,
+                session_id=table_session.session_id,
+                campaign_id=table_campaign.campaign_id,
+                event_type='checkpoint',
+                action='activate',
+                payload_json='{}',
+            )
+        )
+        db.session.add(
+            OperatorActionAudit(
+                workspace_id='Friday_Night',
+                action='legacy.private_action',
+                resource_type='workspace',
+                resource_id='Friday_Night',
+                actor='deleted-workspace-admin',
+                actor_role='admin',
+                details_json='{"private": "old workspace data"}',
+            )
+        )
         db.session.commit()
 
     remove_saved_table = client.delete(
@@ -361,6 +450,34 @@ def test_account_can_create_password_table_and_join_by_name_password(tmp_path, m
         assert World.query.filter_by(workspace_id='Friday_Night').count() == 0
         assert Campaign.query.filter_by(workspace_id='Friday_Night').count() == 0
         assert Player.query.filter_by(workspace_id='Friday_Night').count() == 0
+        assert InstalledCampaignPack.query.filter_by(workspace_id='Friday_Night').count() == 0
+        assert CampaignPack.query.filter_by(workspace_id='Friday_Night').count() == 0
+        assert CampaignPackRecord.query.filter_by(workspace_id='Friday_Night').count() == 0
+        assert CampaignPackSession.query.filter_by(workspace_id='Friday_Night').count() == 0
+        assert CampaignPackCheckpointProgress.query.count() == 0
+        assert CampaignPackProgressEvent.query.count() == 0
+        assert OperatorActionAudit.query.filter_by(workspace_id='Friday_Night').count() == 0
+
+    recreate_table = client.post(
+        '/api/accounts/workspaces',
+        headers={'Authorization': f'Bearer {owner_token}'},
+        json={
+            'table_name': 'Friday Night',
+            'access_mode': 'password',
+            'table_password': 'replacement-secret',
+        },
+    )
+    assert recreate_table.status_code == 201
+    reused_workspace_audits = client.get(
+        '/api/beta/audits',
+        headers={
+            'Authorization': f'Bearer {owner_token}',
+            'X-AIDM-Workspace-Id': 'Friday_Night',
+        },
+    )
+    assert reused_workspace_audits.status_code == 200
+    assert reused_workspace_audits.get_json()['summary']['operator_action_count'] == 0
+    assert reused_workspace_audits.get_json()['operator_actions'] == []
 
 
 def test_account_can_create_generated_token_table_and_token_is_one_time(tmp_path, monkeypatch):

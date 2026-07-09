@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from flask import current_app
+from sqlalchemy.exc import IntegrityError
 
 from aidm_server.action_intent import apply_action_intent_to_rule_hint, strip_reserved_admin_prefix
 from aidm_server.canon_jobs import enqueue_canon_job, process_canon_job
@@ -31,7 +32,7 @@ from aidm_server.game_state.orchestration.turn_pipeline import (
     post_dm_pipeline,
     pre_dm_pipeline,
 )
-from aidm_server.llm import CONTEXT_VERSION, build_dm_context
+from aidm_server.llm import CONTEXT_VERSION, EmergencyFallbackChunk, build_dm_context
 from aidm_server.logging_context import set_logging_context
 from aidm_server.models import Campaign, CampaignSegment, DmTurn, Player, Session, safe_json_dumps, safe_json_loads
 from aidm_server.rules import RuleHint, classify_player_action
@@ -55,7 +56,12 @@ from aidm_server.socket_contracts import (
 from aidm_server.telemetry import telemetry_event, telemetry_metric, telemetry_timing
 from aidm_server.text_sanitization import ReasoningBlockFilter, strip_reasoning_blocks
 from aidm_server.time_utils import utc_now
-from aidm_server.turn_control import advance_structured_turn, turn_control_from_session, turn_control_update_payload
+from aidm_server.turn_control import (
+    advance_structured_turn,
+    conduct_turn_submission,
+    turn_control_from_session,
+    turn_control_update_payload,
+)
 from aidm_server.turn_coordinator import session_turn_coordinator
 from aidm_server.turn_events import (
     DM_RESPONSE_EVENT,
@@ -191,6 +197,33 @@ def _state_application_event_details(
     return details
 
 
+def _pre_narration_effects(pre_pipeline_result: dict, triggered_segments: list[dict]) -> dict:
+    applied_changes = [
+        change
+        for key in ('immediateAppliedChanges', 'combatAppliedChanges')
+        for change in (pre_pipeline_result.get(key) or [])
+        if isinstance(change, dict)
+    ]
+    change_ids = [str(change['id']) for change in applied_changes if change.get('id') is not None]
+    change_types = [
+        str(change['type'])
+        for change in applied_changes
+        if str(change.get('type') or '').strip()
+    ]
+    segment_ids = [
+        int(segment['segment_id'])
+        for segment in triggered_segments
+        if isinstance(segment, dict) and _coerce_player_id(segment.get('segment_id')) is not None
+    ]
+    return {
+        'state_change_count': len(applied_changes),
+        'state_change_ids': change_ids,
+        'state_change_types': change_types,
+        'triggered_segment_count': len(segment_ids),
+        'triggered_segment_ids': segment_ids,
+    }
+
+
 @dataclass
 class TurnCommand:
     sid: str
@@ -203,6 +236,15 @@ class TurnCommand:
     action_intent: dict | None = None
     client_message_id: str | None = None
     state_pipeline_override: dict | None = None
+
+
+@dataclass(frozen=True)
+class NarrationResult:
+    text: str
+    stream_error: str | None
+    provider: str | None
+    model: str | None
+    emergency_fallback: dict | None = None
 
 
 class TurnEngine:
@@ -234,6 +276,133 @@ class TurnEngine:
     @staticmethod
     def _is_admin_override(action_intent: dict | None) -> bool:
         return isinstance(action_intent, dict) and action_intent.get('kind') == 'admin'
+
+    @staticmethod
+    def _find_duplicate_turn(command: TurnCommand) -> DmTurn | None:
+        if not command.client_message_id:
+            return None
+
+        duplicate_turn = (
+            DmTurn.query.filter(
+                DmTurn.session_id == command.session_id,
+                DmTurn.player_id == command.player_id,
+                DmTurn.client_message_id == command.client_message_id,
+            )
+            .order_by(DmTurn.turn_id.desc())
+            .first()
+        )
+        if duplicate_turn:
+            return duplicate_turn
+
+        # Rows created before migration 0027 only carry the idempotency key in
+        # metadata. Keep that compatibility path scoped to rows without the
+        # dedicated column; all new writes are protected by the unique index.
+        legacy_candidates = (
+            DmTurn.query.filter(
+                DmTurn.session_id == command.session_id,
+                DmTurn.player_id == command.player_id,
+                DmTurn.client_message_id.is_(None),
+                DmTurn.metadata_json.contains(command.client_message_id),
+            )
+            .order_by(DmTurn.turn_id.desc())
+            .all()
+        )
+        for candidate in legacy_candidates:
+            metadata = safe_json_loads(candidate.metadata_json, {})
+            if isinstance(metadata, dict) and metadata.get('client_message_id') == command.client_message_id:
+                return candidate
+        return None
+
+    def _emit_duplicate_turn(self, command: TurnCommand, duplicate_turn: DmTurn, *, detected_by: str) -> None:
+        if not command.client_message_id:
+            return
+        self.emit(
+            'turn_duplicate',
+            turn_duplicate_payload(
+                command.session_id,
+                duplicate_turn.turn_id,
+                command.client_message_id,
+            ),
+        )
+        self.emit(
+            'session_log_update',
+            session_log_update_payload(command.session_id, duplicate_turn.turn_id),
+            room=str(command.session_id),
+        )
+        telemetry_event(
+            'socket.send_message.duplicate_ignored',
+            payload={
+                'sid': command.sid,
+                'session_id': command.session_id,
+                'player_id': command.player_id,
+                'client_message_id': command.client_message_id,
+                'detected_by': detected_by,
+            },
+        )
+
+    def _conduct_turn_submission(self, command: TurnCommand, session_obj: Session) -> bool:
+        action_kind = (
+            str(command.action_intent.get('kind')).strip()
+            if isinstance(command.action_intent, dict) and command.action_intent.get('kind') is not None
+            else ''
+        )
+        has_pending_roll = (
+            action_kind == 'roll'
+            and self.latest_pending_turn(command.session_id, command.player_id) is not None
+        )
+        active_player_ids = []
+        if self.active_player_ids:
+            active_player_ids = [
+                int(player_id)
+                for player_id in self.active_player_ids(command.session_id)
+                if player_id
+            ]
+        allowed, block_reason, turn_control, changed, decision = conduct_turn_submission(
+            session_obj,
+            player_id=command.player_id,
+            message=command.user_input,
+            action_intent=command.action_intent,
+            has_pending_roll=has_pending_roll,
+            active_player_ids=active_player_ids,
+        )
+        if not allowed:
+            self.emit(
+                'error',
+                socket_error(
+                    'turn_out_of_order',
+                    block_reason or 'It is not your turn to act.',
+                    {'turn_control': turn_control},
+                ),
+            )
+            telemetry_event(
+                'socket.send_message.turn_out_of_order',
+                payload={
+                    'sid': command.sid,
+                    'session_id': command.session_id,
+                    'player_id': command.player_id,
+                    'turn_control': turn_control,
+                },
+                severity='warning',
+            )
+            return False
+        if changed:
+            commit_with_retry(label='turn conductor decision')
+            self.emit(
+                'turn_control_updated',
+                turn_control_update_payload(command.session_id, turn_control),
+                room=str(command.session_id),
+            )
+            telemetry_event(
+                'socket.turn_conductor.decision_applied',
+                payload={
+                    'sid': command.sid,
+                    'session_id': command.session_id,
+                    'player_id': command.player_id,
+                    'decision': decision,
+                    'turn_control': turn_control,
+                },
+            )
+        return True
 
     @staticmethod
     def _admin_model_input(user_input: str) -> str:
@@ -1070,6 +1239,15 @@ class TurnEngine:
             )
             return
 
+        if command.client_message_id:
+            duplicate_turn = self._find_duplicate_turn(command)
+            if duplicate_turn:
+                self._emit_duplicate_turn(command, duplicate_turn, detected_by='preflight')
+                return
+
+        if not self._conduct_turn_submission(command, session_obj):
+            return
+
         if not self._prepare_interaction_target(command, campaign, session_obj):
             return
         if not self._validate_character_limits(command, player):
@@ -1096,41 +1274,6 @@ class TurnEngine:
         rule_hint = apply_action_intent_to_rule_hint(command.action_intent, rule_hint)
         rule_hint = apply_character_dc_adjustment(rule_hint, player)
         rule_hint = self._apply_pvp_rule_hint(rule_hint, pvp_payload)
-
-        if command.client_message_id:
-            duplicate_turn = (
-                DmTurn.query.filter(
-                    DmTurn.session_id == command.session_id,
-                    DmTurn.player_id == command.player_id,
-                    DmTurn.metadata_json.contains(f'"client_message_id": "{command.client_message_id}"'),
-                )
-                .order_by(DmTurn.turn_id.desc())
-                .first()
-            )
-            if duplicate_turn:
-                self.emit(
-                    'turn_duplicate',
-                    turn_duplicate_payload(
-                        command.session_id,
-                        duplicate_turn.turn_id,
-                        command.client_message_id,
-                    ),
-                )
-                self.emit(
-                    'session_log_update',
-                    session_log_update_payload(command.session_id, duplicate_turn.turn_id),
-                    room=str(command.session_id),
-                )
-                telemetry_event(
-                    'socket.send_message.duplicate_ignored',
-                    payload={
-                        'sid': command.sid,
-                        'session_id': command.session_id,
-                        'player_id': command.player_id,
-                        'client_message_id': command.client_message_id,
-                    },
-                )
-                return
 
         roll_target_pending_turn_id = None
         if command.action_intent and command.action_intent.get('kind') == 'roll':
@@ -1321,6 +1464,7 @@ class TurnEngine:
             rules_hint=safe_json_dumps(rules_hint_payload, {}),
             context_version=CONTEXT_VERSION,
             status='processing',
+            client_message_id=command.client_message_id,
             metadata_json=safe_json_dumps(
                 {
                     'speaker': player_label,
@@ -1474,7 +1618,7 @@ class TurnEngine:
         for segment_payload in triggered_segments:
             self.emit('segment_triggered', segment_payload, room=str(command.session_id))
 
-        dm_response_text, stream_error = self._narrate_turn(
+        narration_result = self._narrate_turn(
             turn=turn,
             campaign=campaign,
             player_label=player_label,
@@ -1483,6 +1627,7 @@ class TurnEngine:
             model_user_input=self._model_input_for_action(command.user_input, command.action_intent, player_label, pvp_target),
             rules_hint_payload=rules_hint_payload,
             resolved_turn_id=resolved_turn_id,
+            pre_narration_effects=_pre_narration_effects(pre_pipeline_result, triggered_segments),
         )
 
         # Keep the per-session coordinator locked until the DM response has a
@@ -1495,8 +1640,11 @@ class TurnEngine:
             command=command,
             player_label=player_label,
             rules_hint_payload=rules_hint_payload,
-            dm_response_text=dm_response_text,
-            stream_error=stream_error,
+            dm_response_text=narration_result.text,
+            stream_error=narration_result.stream_error,
+            narration_provider=narration_result.provider,
+            narration_model=narration_result.model,
+            emergency_fallback=narration_result.emergency_fallback,
             triggered_segments=triggered_segments,
             start_time=start_time,
         )
@@ -1520,6 +1668,9 @@ class TurnEngine:
         rules_hint_payload: dict,
         dm_response_text: str,
         stream_error: str | None,
+        narration_provider: str | None,
+        narration_model: str | None,
+        emergency_fallback: dict | None,
         triggered_segments: list[dict],
         start_time: float,
     ):
@@ -1537,6 +1688,9 @@ class TurnEngine:
                 rules_hint_payload=rules_hint_payload,
                 dm_response_text=dm_response_text,
                 stream_error=stream_error,
+                narration_provider=narration_provider,
+                narration_model=narration_model,
+                emergency_fallback=emergency_fallback,
                 triggered_segments=triggered_segments,
                 start_time=start_time,
             )
@@ -1821,6 +1975,25 @@ class TurnEngine:
                 }
 
             return run_with_commit_retry(_save_incoming_turn, label='incoming player turn')
+        except IntegrityError as exc:
+            db.session.rollback()
+            duplicate_turn = self._find_duplicate_turn(command)
+            if duplicate_turn:
+                logger.info(
+                    'Database idempotency constraint rejected duplicate client message %s for session %s.',
+                    command.client_message_id,
+                    command.session_id,
+                )
+                self._emit_duplicate_turn(command, duplicate_turn, detected_by='unique_constraint')
+                return {'ok': False, 'duplicate': True, 'turn_id': duplicate_turn.turn_id}
+            logger.error('Failed to persist incoming player turn due to an integrity error: %s', str(exc))
+            self.emit('error', socket_error('turn_persist_failed', 'Failed to persist player action.'))
+            telemetry_event(
+                'socket.send_message.turn_persist_failed',
+                payload={'sid': command.sid, 'session_id': command.session_id, 'error_type': 'integrity_error'},
+                severity='error',
+            )
+            return {'ok': False}
         except Exception as exc:
             db.session.rollback()
             logger.error('Failed to persist incoming player turn: %s', str(exc))
@@ -1963,7 +2136,8 @@ class TurnEngine:
         model_user_input: str,
         rules_hint_payload: dict,
         resolved_turn_id: int | None,
-    ) -> tuple[str, str | None]:
+        pre_narration_effects: dict,
+    ) -> NarrationResult:
         context_started = time.perf_counter()
         active_player_ids = []
         if self.active_player_ids:
@@ -2009,6 +2183,11 @@ class TurnEngine:
 
         dm_response_text = ''
         stream_error = None
+        configured_provider = str(current_app.config.get('AIDM_LLM_PROVIDER') or 'unknown')
+        configured_model = str(current_app.config.get('AIDM_LLM_MODEL') or 'unknown')
+        narration_provider: str | None = configured_provider
+        narration_model: str | None = configured_model
+        emergency_fallback: dict | None = None
         reasoning_filter = ReasoningBlockFilter()
         provider_started = time.perf_counter()
         first_token_recorded = False
@@ -2021,6 +2200,38 @@ class TurnEngine:
             ):
                 if not chunk:
                     continue
+                if isinstance(chunk, EmergencyFallbackChunk):
+                    narration_provider = chunk.provider
+                    narration_model = chunk.model
+                    if emergency_fallback is None:
+                        emergency_fallback = {
+                            'kind': 'emergency_continuity',
+                            'reason': chunk.reason,
+                            'configured_provider': configured_provider,
+                            'configured_model': configured_model,
+                            'failed_provider': chunk.failed_provider,
+                            'failed_model': chunk.failed_model,
+                            'error_type': chunk.error_type,
+                            'message': chunk.public_message,
+                            'post_dm_state_mutation_skipped': True,
+                            'canon_mutation_skipped': True,
+                            'pre_narration_effects': pre_narration_effects,
+                        }
+                        telemetry_metric(
+                            'socket.dm_provider_failure_total',
+                            1,
+                            tags={'provider': chunk.failed_provider, 'model': chunk.failed_model or 'unknown'},
+                        )
+                        telemetry_event(
+                            'socket.dm_provider_degraded',
+                            payload={
+                                'session_id': turn.session_id,
+                                'campaign_id': campaign.campaign_id,
+                                'turn_id': turn.turn_id,
+                                **emergency_fallback,
+                            },
+                            severity='warning',
+                        )
                 if not first_token_recorded:
                     self._record_phase_timing(
                         'provider_time_to_first_token',
@@ -2129,6 +2340,8 @@ class TurnEngine:
                 ok=stream_error is None,
                 error=stream_error[:500] if stream_error else None,
                 turn_number=rules_hint_payload.get('turn_number'),
+                degraded=emergency_fallback is not None,
+                fallback=emergency_fallback,
             ),
             room=str(turn.session_id),
         )
@@ -2138,12 +2351,23 @@ class TurnEngine:
             campaign_id=campaign.campaign_id,
             session_id=turn.session_id,
         )
-        self._emit_turn_status(turn.session_id, turn.turn_id, 'response_complete', {'ok': stream_error is None})
+        self._emit_turn_status(
+            turn.session_id,
+            turn.turn_id,
+            'response_complete',
+            {'ok': stream_error is None, 'degraded': emergency_fallback is not None},
+        )
         # Yield so the dm_response_end event is flushed to clients immediately,
         # before the heavy post-turn processing (DB writes, canon extraction,
         # session projection) that can take 30-120+ seconds.
         self.socketio.sleep(0)
-        return dm_response_text, stream_error
+        return NarrationResult(
+            text=dm_response_text,
+            stream_error=stream_error,
+            provider=narration_provider,
+            model=narration_model,
+            emergency_fallback=emergency_fallback,
+        )
 
     def _background_canon_job(self, app, job_id: int):
         with app.app_context():
@@ -2215,6 +2439,9 @@ class TurnEngine:
         rules_hint_payload: dict,
         dm_response_text: str,
         stream_error: str | None,
+        narration_provider: str | None,
+        narration_model: str | None,
+        emergency_fallback: dict | None,
         triggered_segments: list[dict],
         start_time: float,
     ) -> list[dict]:
@@ -2222,35 +2449,39 @@ class TurnEngine:
         try:
             db_save_started = time.perf_counter()
             dm_response_text = strip_reasoning_blocks(dm_response_text).strip()
-            dm_succeeded = bool(dm_response_text) and stream_error is None
+            dm_succeeded = bool(dm_response_text) and stream_error is None and emergency_fallback is None
             turn_obj = db.session.get(DmTurn, turn.turn_id)
             if turn_obj:
                 turn_obj.completed_at = utc_now()
                 turn_obj.latency_ms = int((time.perf_counter() - start_time) * 1000)
-                turn_obj.llm_provider = current_app.config.get('AIDM_LLM_PROVIDER')
-                turn_obj.llm_model = current_app.config.get('AIDM_LLM_MODEL')
+                turn_obj.llm_provider = narration_provider
+                turn_obj.llm_model = narration_model
                 set_logging_context(turn_id=turn.turn_id)
 
                 if dm_response_text:
                     turn_obj.dm_output = dm_response_text
-                    turn_obj.status = 'failed' if stream_error else 'completed'
+                    turn_obj.status = 'failed' if stream_error else ('degraded' if emergency_fallback else 'completed')
                 else:
                     turn_obj.status = 'failed' if stream_error else 'completed'
-                    metadata_payload = safe_json_loads(turn_obj.metadata_json, {})
-                    if stream_error:
-                        metadata_payload['error'] = stream_error
-                    turn_obj.metadata_json = safe_json_dumps(metadata_payload, {})
+                metadata_payload = safe_json_loads(turn_obj.metadata_json, {})
+                metadata_payload = metadata_payload if isinstance(metadata_payload, dict) else {}
+                if stream_error:
+                    metadata_payload['error'] = stream_error
+                if emergency_fallback:
+                    metadata_payload['llm_fallback'] = emergency_fallback
+                turn_obj.metadata_json = safe_json_dumps(metadata_payload, {})
 
                 dm_explains_no_roll = (
                     stream_error is None
+                    and emergency_fallback is None
                     and turn_obj.roll_value is None
                     and self._dm_response_explains_no_roll_needed(dm_response_text)
                     and not self._dm_response_requests_roll(dm_response_text)
                 )
-                roll_gate_payload = None if dm_explains_no_roll else self._roll_gate_for_turn(
-                    turn_obj,
-                    campaign,
-                    dm_response_text,
+                roll_gate_payload = (
+                    None
+                    if dm_explains_no_roll or emergency_fallback
+                    else self._roll_gate_for_turn(turn_obj, campaign, dm_response_text)
                 )
                 if dm_explains_no_roll and turn_obj.requires_roll:
                     turn_obj.requires_roll = False
@@ -2340,6 +2571,9 @@ class TurnEngine:
                             'remaining_player_ids': rules_hint_payload.get('remaining_player_ids'),
                             'action_intent': command.action_intent,
                             'client_message_id': command.client_message_id,
+                            'llm_provider': narration_provider,
+                            'llm_model': narration_model,
+                            'llm_fallback': emergency_fallback,
                         },
                     },
                 )
@@ -2515,12 +2749,18 @@ class TurnEngine:
             commit_with_retry(label='post-turn final save')
             self._emit_turn_status(turn.session_id, turn.turn_id, 'saved', {'stage': 'post_turn'})
 
-            if dm_response_text:
+            if dm_succeeded:
                 telemetry_metric('socket.send_message.success_total', 1)
                 telemetry_timing(
                     'socket.turn_latency_ms',
                     float((time.perf_counter() - start_time) * 1000),
                     tags={'campaign_id': campaign.campaign_id, 'session_id': turn.session_id},
+                )
+            elif emergency_fallback:
+                telemetry_metric(
+                    'socket.send_message.degraded_total',
+                    1,
+                    tags={'provider': narration_provider or 'unknown', 'model': narration_model or 'unknown'},
                 )
             elif stream_error:
                 telemetry_event(
@@ -2539,7 +2779,7 @@ class TurnEngine:
                 metadata_payload['canon_status'] = 'failed'
                 failed_turn.metadata_json = safe_json_dumps(metadata_payload, {})
                 if failed_turn.dm_output:
-                    failed_turn.status = 'completed'
+                    failed_turn.status = 'degraded' if metadata_payload.get('llm_fallback') else 'completed'
                 commit_with_retry(label='post-turn failure metadata')
             self._emit_turn_status(turn.session_id, turn.turn_id, 'failed', {'stage': 'post_turn', 'error': str(exc)})
             self.socketio.emit(

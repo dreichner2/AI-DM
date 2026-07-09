@@ -1,4 +1,6 @@
-export type ContentRating = 'standard' | 'mature' | 'unrestricted'
+import type { ContentRating } from './apiContract.generated'
+
+export type { ContentRating } from './apiContract.generated'
 
 export type ContentSettings = {
   contentRating: ContentRating

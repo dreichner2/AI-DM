@@ -29,6 +29,7 @@ import type {
 
 const socketMock = vi.hoisted(() => {
   const socket = {
+    connected: true,
     emit: vi.fn(),
     on: vi.fn(),
     disconnect: vi.fn(),
@@ -1517,7 +1518,10 @@ describe('App user workflow regressions', () => {
     })
     localStorage.clear()
     sessionStorage.clear()
-    document.cookie = 'aidm_account_token=; Max-Age=0; Path=/; SameSite=Lax'
+    for (const cookie of document.cookie.split(';')) {
+      const name = cookie.split('=', 1)[0]?.trim()
+      if (name) document.cookie = `${name}=; Max-Age=0; Path=/; SameSite=Lax`
+    }
     if (health.llm) {
       health.llm.provider = 'deepseek'
       health.llm.model = 'deepseek-v4-pro'
@@ -3462,7 +3466,7 @@ describe('App user workflow regressions', () => {
     expect(shareButton).toHaveFocus()
   })
 
-  it('uses a backend URL from a share link without leaving it in the address bar', async () => {
+  it('uses an untrusted backend URL from a share link without persisting it or leaving it in the address bar', async () => {
     window.history.replaceState(
       null,
       '',
@@ -3471,7 +3475,7 @@ describe('App user workflow regressions', () => {
 
     await renderLoadedApp()
 
-    expect(localStorage.getItem('aidm:baseUrl')).toBe('https://backend-tunnel.ngrok-free.app')
+    expect(localStorage.getItem('aidm:baseUrl')).toBeNull()
     expect(fetchCalls).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -4377,9 +4381,8 @@ describe('App user workflow regressions', () => {
     expect(screen.getAllByText(/Native fullscreen was blocked/i).length).toBeGreaterThan(0)
   })
 
-  it('starts TTS from streamed DM chunks before the response ends', async () => {
+  it('connects streamed socket chunks to TTS before the response ends', async () => {
     await renderLoadedApp()
-
     ttsFetchHandler = vi.fn(async () => jsonResponse({ error: 'stream probe' }, { status: 400 }))
 
     fireEvent.click(screen.getByRole('button', { name: 'Turn TTS on' }))
@@ -4393,306 +4396,11 @@ describe('App user workflow regressions', () => {
       })
     })
 
-    await waitFor(() => expect(ttsFetchHandler).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(ttsFetchHandler).toHaveBeenCalledOnce())
     expect(fetchCalls.filter((call) => call.method === 'POST' && call.path === '/api/tts/stream')).toEqual([
       expect.objectContaining({
         body: { text: 'The first torch gutters out, and a cold draft rolls over the stone.' },
       }),
     ])
-  })
-
-  it('prefetches the next queued TTS sentence while current audio is playing', async () => {
-    await renderLoadedApp()
-
-    let objectUrlIndex = 0
-    Object.defineProperty(URL, 'createObjectURL', {
-      configurable: true,
-      value: vi.fn(() => `blob:tts-${++objectUrlIndex}`),
-    })
-    Object.defineProperty(URL, 'revokeObjectURL', {
-      configurable: true,
-      value: vi.fn(),
-    })
-
-    const audioInstances: Array<{
-      onended: (() => void) | null
-      onerror: ((event: Event) => void) | null
-      onpause: (() => void) | null
-      play: () => Promise<void>
-      pause: () => void
-      preload: string
-      src: string
-    }> = []
-
-    vi.stubGlobal(
-      'Audio',
-      vi.fn(function MockAudio(this: (typeof audioInstances)[number], src: string) {
-        this.src = src
-        this.preload = ''
-        this.onended = null
-        this.onerror = null
-        this.onpause = null
-        this.play = vi.fn(() => Promise.resolve())
-        this.pause = vi.fn()
-        audioInstances.push(this)
-      }),
-    )
-    ttsFetchHandler = vi.fn(async () =>
-      new Response(new Blob(['audio'], { type: 'audio/mpeg' }), {
-        status: 200,
-        headers: { 'Content-Type': 'audio/mpeg' },
-      }),
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: 'Turn TTS on' }))
-    await screen.findByRole('button', { name: 'Turn TTS off' })
-
-    await act(async () => {
-      socketHandler<{ turn_id: number }>('dm_response_start')({ turn_id: 82 })
-      socketHandler<{ turn_id: number; chunk: string }>('dm_chunk')({
-        turn_id: 82,
-        chunk:
-          'First sentence carries enough detail to cross the playback threshold. ' +
-          'Second sentence follows with another complete narration beat for prefetch.',
-      })
-    })
-
-    await waitFor(() => expect(ttsFetchHandler).toHaveBeenCalledTimes(2))
-    expect(audioInstances).toHaveLength(1)
-    expect(fetchCalls.filter((call) => call.method === 'POST' && call.path === '/api/tts/stream').map((call) => call.body))
-      .toEqual([
-        { text: 'First sentence carries enough detail to cross the playback threshold.' },
-        { text: 'Second sentence follows with another complete narration beat for prefetch.' },
-      ])
-
-    await act(async () => {
-      audioInstances[0].onended?.()
-    })
-    await waitFor(() => expect(audioInstances).toHaveLength(2))
-  })
-
-  it('stops queued TTS without fan-out when the first audio request fails', async () => {
-    await renderLoadedApp()
-
-    ttsFetchHandler = vi.fn(async () => {
-      throw new TypeError('Failed to fetch')
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: 'Turn TTS on' }))
-    await screen.findByRole('button', { name: 'Turn TTS off' })
-
-    const streamChunk =
-      'The hallway bends sharply left, and the torchlight thins into a wavering copper line. ' +
-      'Somewhere below, a chain drags once across stone. ' +
-      'The silence after it feels deliberate, like something is waiting for your next breath.'
-
-    await act(async () => {
-      socketHandler<{
-        turn_id: number
-        requires_roll?: boolean
-        rules_hint?: Record<string, never>
-      }>('dm_response_start')({
-        turn_id: 77,
-      })
-      socketHandler<{
-        turn_id: number
-        chunk: string
-        requires_roll?: boolean
-        rules_hint?: Record<string, never>
-      }>('dm_chunk')({
-        turn_id: 77,
-        chunk: streamChunk,
-      })
-      socketHandler<void>('dm_response_end')()
-    })
-
-    await waitFor(() => expect(screen.getAllByText(/TTS failed: Failed to fetch/i).length).toBeGreaterThan(0))
-
-    const ttsCalls = fetchCalls.filter((call) => call.method === 'POST' && call.path.startsWith('/api/tts/'))
-    expect(ttsCalls).toEqual([
-      expect.objectContaining({
-        method: 'POST',
-        path: '/api/tts/stream',
-        body: { text: 'The hallway bends sharply left, and the torchlight thins into a wavering copper line.' },
-      }),
-      expect.objectContaining({
-        method: 'POST',
-        path: '/api/tts/stream',
-        body: { text: 'The hallway bends sharply left, and the torchlight thins into a wavering copper line.' },
-      }),
-    ])
-  })
-
-  it('pauses TTS after a hard request failure so later DM responses do not retry', async () => {
-    const rendered = await renderLoadedApp()
-
-    ttsFetchHandler = vi.fn(async () => {
-      throw new TypeError('Failed to fetch')
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: 'Turn TTS on' }))
-    await screen.findByRole('button', { name: 'Turn TTS off' })
-
-    await act(async () => {
-      socketHandler<{ turn_id: number }>('dm_response_start')({ turn_id: 80 })
-      socketHandler<{ turn_id: number; chunk: string }>('dm_chunk')({
-        turn_id: 80,
-        chunk: 'The cinders brighten along the archway as a low voice echoes from the vault.',
-      })
-      socketHandler<void>('dm_response_end')()
-    })
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Turn TTS on' })).toHaveAttribute('aria-pressed', 'false')
-    })
-
-    await act(async () => {
-      socketHandler<{ turn_id: number }>('dm_response_start')({ turn_id: 81 })
-      socketHandler<{ turn_id: number; chunk: string }>('dm_chunk')({
-        turn_id: 81,
-        chunk: 'A second line of narration arrives, but TTS should stay paused after the first failure.',
-      })
-      socketHandler<void>('dm_response_end')()
-    })
-
-    const errorItems = [...rendered.container.querySelectorAll('.rail-error-history li')]
-    expect(errorItems.map((item) => item.textContent)).toEqual([
-      expect.stringContaining('TTS failed: Failed to fetch'),
-    ])
-    expect(ttsFetchHandler).toHaveBeenCalledTimes(2)
-    expect(fetchCalls.filter((call) => call.method === 'POST' && call.path === '/api/tts/stream')).toHaveLength(2)
-  })
-
-  it('suppresses remaining streamed TTS chunks after playback fails', async () => {
-    await renderLoadedApp()
-
-    let objectUrlIndex = 0
-    Object.defineProperty(URL, 'createObjectURL', {
-      configurable: true,
-      value: vi.fn(() => `blob:tts-${++objectUrlIndex}`),
-    })
-    Object.defineProperty(URL, 'revokeObjectURL', {
-      configurable: true,
-      value: vi.fn(),
-    })
-    vi.stubGlobal(
-      'Audio',
-      vi.fn(function MockAudio(this: {
-        onended: (() => void) | null
-        onerror: ((event: Event) => void) | null
-        onpause: (() => void) | null
-        play: () => Promise<void>
-        pause: () => void
-        preload: string
-        src: string
-      }, src: string) {
-        this.src = src
-        this.preload = ''
-        this.onended = null
-        this.onerror = null
-        this.onpause = null
-        this.play = vi.fn(() => Promise.reject(new Error('Audio error')))
-        this.pause = vi.fn()
-      }),
-    )
-    ttsFetchHandler = vi.fn(async () =>
-      new Response(new Blob(['audio'], { type: 'audio/mpeg' }), {
-        status: 200,
-        headers: { 'Content-Type': 'audio/mpeg' },
-      }),
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: 'Turn TTS on' }))
-    await screen.findByRole('button', { name: 'Turn TTS off' })
-
-    await act(async () => {
-      socketHandler<{ turn_id: number }>('dm_response_start')({ turn_id: 78 })
-      socketHandler<{ turn_id: number; chunk: string }>('dm_chunk')({
-        turn_id: 78,
-        chunk: 'The first torch gutters out, and a cold draft rolls over the stone.',
-      })
-    })
-
-    await waitFor(() =>
-      expect(screen.getAllByText(/TTS playback failed: Audio error/i).length).toBeGreaterThan(0),
-    )
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Turn TTS on' })).toHaveAttribute('aria-pressed', 'false')
-    })
-
-    await act(async () => {
-      socketHandler<{ turn_id: number; chunk: string }>('dm_chunk')({
-        turn_id: 78,
-        chunk: ' The second torch dies, and the chamber answers with a hollow metallic knock.',
-      })
-      socketHandler<void>('dm_response_end')()
-    })
-
-    expect(ttsFetchHandler).toHaveBeenCalledTimes(1)
-    expect(fetchCalls.filter((call) => call.method === 'POST' && call.path === '/api/tts/stream')).toHaveLength(1)
-  })
-
-  it('reports one TTS failure when multiple chunks are queued before playback fails', async () => {
-    const rendered = await renderLoadedApp()
-
-    let objectUrlIndex = 0
-    Object.defineProperty(URL, 'createObjectURL', {
-      configurable: true,
-      value: vi.fn(() => `blob:tts-${++objectUrlIndex}`),
-    })
-    Object.defineProperty(URL, 'revokeObjectURL', {
-      configurable: true,
-      value: vi.fn(),
-    })
-    vi.stubGlobal(
-      'Audio',
-      vi.fn(function MockAudio(this: {
-        onended: (() => void) | null
-        onerror: ((event: Event) => void) | null
-        onpause: (() => void) | null
-        play: () => Promise<void>
-        pause: () => void
-        preload: string
-        src: string
-      }, src: string) {
-        this.src = src
-        this.preload = ''
-        this.onended = null
-        this.onerror = null
-        this.onpause = null
-        this.play = vi.fn(() => Promise.reject(new Error('Audio error')))
-        this.pause = vi.fn()
-      }),
-    )
-    ttsFetchHandler = vi.fn(async () =>
-      new Response(new Blob(['audio'], { type: 'audio/mpeg' }), {
-        status: 200,
-        headers: { 'Content-Type': 'audio/mpeg' },
-      }),
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: 'Turn TTS on' }))
-    await screen.findByRole('button', { name: 'Turn TTS off' })
-
-    await act(async () => {
-      socketHandler<{ turn_id: number }>('dm_response_start')({ turn_id: 79 })
-      socketHandler<{ turn_id: number; chunk: string }>('dm_chunk')({
-        turn_id: 79,
-        chunk:
-          'The first torch gutters out, and a cold draft rolls over the stone. ' +
-          'The second torch dies, and the chamber answers with a hollow metallic knock.',
-      })
-      socketHandler<void>('dm_response_end')()
-    })
-
-    await waitFor(() => {
-      const errorItems = [...rendered.container.querySelectorAll('.rail-error-history li')]
-      expect(errorItems.map((item) => item.textContent)).toEqual([
-        expect.stringContaining('TTS playback failed: Audio error'),
-      ])
-    })
-
-    expect(ttsFetchHandler).toHaveBeenCalledTimes(1)
-    expect(fetchCalls.filter((call) => call.method === 'POST' && call.path === '/api/tts/stream')).toHaveLength(1)
   })
 })

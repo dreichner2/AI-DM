@@ -41,6 +41,11 @@ from aidm_server.models import (
     AccountWorkspaceMembership,
     BestiaryEntry,
     Campaign,
+    CampaignPack,
+    CampaignPackCheckpointProgress,
+    CampaignPackProgressEvent,
+    CampaignPackRecord,
+    CampaignPackSession,
     CampaignSegment,
     CanonJob,
     CombatDebugEvent,
@@ -48,8 +53,10 @@ from aidm_server.models import (
     CustomRace,
     DmCoherenceFeedback,
     DmTurn,
+    InstalledCampaignPack,
     Map,
     Npc,
+    OperatorActionAudit,
     Player,
     PlayerAction,
     Session,
@@ -261,6 +268,7 @@ def _ids(query) -> list[int]:
 
 
 def _delete_workspace_rows(workspace_id: str) -> None:
+    OperatorActionAudit.query.filter_by(workspace_id=workspace_id).delete(synchronize_session=False)
     world_ids = _ids(World.query.with_entities(World.world_id).filter_by(workspace_id=workspace_id))
     campaign_ids = _ids(Campaign.query.with_entities(Campaign.campaign_id).filter_by(workspace_id=workspace_id))
     session_ids = (
@@ -279,6 +287,38 @@ def _delete_workspace_rows(workspace_id: str) -> None:
         if campaign_ids
         else []
     )
+    campaign_pack_ids = _ids(
+        CampaignPack.query.with_entities(CampaignPack.campaign_pack_id).filter_by(workspace_id=workspace_id)
+    )
+    campaign_pack_session_ids = _ids(
+        CampaignPackSession.query.with_entities(CampaignPackSession.campaign_pack_session_id).filter_by(
+            workspace_id=workspace_id
+        )
+    )
+
+    if campaign_pack_session_ids:
+        CampaignPackProgressEvent.query.filter(
+            CampaignPackProgressEvent.campaign_pack_session_id.in_(campaign_pack_session_ids)
+        ).delete(synchronize_session=False)
+        CampaignPackCheckpointProgress.query.filter(
+            CampaignPackCheckpointProgress.campaign_pack_session_id.in_(campaign_pack_session_ids)
+        ).delete(synchronize_session=False)
+        CampaignPackSession.query.filter(
+            CampaignPackSession.campaign_pack_session_id.in_(campaign_pack_session_ids)
+        ).delete(synchronize_session=False)
+    if campaign_pack_ids:
+        CampaignPackRecord.query.filter(
+            or_(
+                CampaignPackRecord.workspace_id == workspace_id,
+                CampaignPackRecord.campaign_pack_id.in_(campaign_pack_ids),
+            )
+        ).delete(synchronize_session=False)
+        CampaignPack.query.filter(CampaignPack.campaign_pack_id.in_(campaign_pack_ids)).delete(
+            synchronize_session=False
+        )
+    else:
+        CampaignPackRecord.query.filter_by(workspace_id=workspace_id).delete(synchronize_session=False)
+    InstalledCampaignPack.query.filter_by(workspace_id=workspace_id).delete(synchronize_session=False)
 
     CustomRace.query.filter_by(workspace_id=workspace_id).delete(synchronize_session=False)
     BestiaryEntry.query.filter_by(workspace_id=workspace_id).delete(synchronize_session=False)

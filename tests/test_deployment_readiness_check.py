@@ -7,9 +7,11 @@ import pytest
 
 from scripts.deployment_readiness_check import (
     REQUIRED_SECURITY_HEADERS,
+    ReadinessReport,
     main,
     merged_env,
     parse_env_file,
+    validate_database_connectivity,
     validate_environment,
     validate_live_target,
 )
@@ -18,7 +20,9 @@ from scripts.deployment_readiness_check import (
 def _ready_env(**overrides: str) -> dict[str, str]:
     env = {
         'AIDM_ENV': 'production',
+        'AIDM_DEBUG': 'false',
         'FLASK_SECRET_KEY': 'a' * 40,
+        'AIDM_DATABASE_URI': 'postgresql+psycopg://aidm:secret@db.example.test:5432/aidm',
         'AIDM_AUTH_REQUIRED': 'true',
         'AIDM_API_AUTH_TOKENS': 'closed-beta-token',
         'AIDM_AUTO_CREATE_SCHEMA': 'false',
@@ -26,6 +30,7 @@ def _ready_env(**overrides: str) -> dict[str, str]:
         'AIDM_TURN_COORDINATOR_STORE': 'database',
         'AIDM_CORS_ALLOWLIST': 'https://aidm.example.test',
         'AIDM_SOCKET_CORS_ALLOWLIST': 'https://aidm.example.test',
+        'AIDM_SOCKETIO_ASYNC_MODE': 'eventlet',
         'AIDM_SOCKETIO_WORKER_MODEL': 'single',
         'AIDM_OBSERVABILITY_PROVIDER': 'managed-prometheus',
         'AIDM_ALERT_OWNER': 'beta-oncall',
@@ -36,6 +41,7 @@ def _ready_env(**overrides: str) -> dict[str, str]:
         'AIDM_ACCOUNT_COOKIE_SECURE': 'true',
         'AIDM_ACCOUNT_TOKEN_RESPONSE_ENABLED': 'false',
         'AIDM_LLM_PROVIDER': 'gemini',
+        'GOOGLE_GENAI_API_KEY': 'test-provider-key',
     }
     env.update(overrides)
     return env
@@ -97,6 +103,65 @@ def test_validate_environment_rejects_placeholders_and_wildcard_cors():
     assert any('AIDM_OBSERVABILITY_PROVIDER still looks like a placeholder' in error for error in report.errors)
 
 
+def test_validate_environment_requires_supported_hosted_database():
+    missing_database = _ready_env()
+    missing_database.pop('AIDM_DATABASE_URI')
+
+    missing_report = validate_environment(missing_database)
+    sqlite_report = validate_environment(_ready_env(AIDM_DATABASE_URI='sqlite:////tmp/aidm.db'))
+    legacy_driver_report = validate_environment(
+        _ready_env(AIDM_DATABASE_URI='postgresql://aidm:secret@db.example.test:5432/aidm')
+    )
+
+    assert any('AIDM_DATABASE_URI is required' in error for error in missing_report.errors)
+    assert any('must use postgresql+psycopg' in error for error in sqlite_report.errors)
+    assert any('must use postgresql+psycopg' in error for error in legacy_driver_report.errors)
+
+
+def test_validate_environment_rejects_malformed_workspace_tokens_debug_and_async_mode():
+    report = validate_environment(
+        _ready_env(
+            AIDM_API_AUTH_TOKENS='',
+            AIDM_API_AUTH_TOKEN_WORKSPACES='malformed-entry',
+            AIDM_DEBUG='true',
+            AIDM_SOCKETIO_ASYNC_MODE='threading',
+        )
+    )
+
+    assert not report.ok
+    assert any('workspace=token' in error for error in report.errors)
+    assert any('AIDM_DEBUG must be false' in error for error in report.errors)
+    assert any('AIDM_SOCKETIO_ASYNC_MODE must be eventlet' in error for error in report.errors)
+
+
+@pytest.mark.parametrize(
+    ('provider', 'overrides', 'credential_name'),
+    [
+        ('gemini', {'GOOGLE_GENAI_API_KEY': ''}, 'GOOGLE_GENAI_API_KEY'),
+        (
+            'deepseek',
+            {'AIDM_DEEPSEEK_API_KEY': '', 'DEEPSEEK_API_KEY': ''},
+            'AIDM_DEEPSEEK_API_KEY',
+        ),
+        (
+            'nvidia',
+            {'AIDM_NVIDIA_API_KEY': '', 'NVIDIA_API_KEY': ''},
+            'AIDM_NVIDIA_API_KEY',
+        ),
+        (
+            'kimi',
+            {'AIDM_NVIDIA_API_KEY': '', 'NVIDIA_API_KEY': ''},
+            'AIDM_NVIDIA_API_KEY',
+        ),
+    ],
+)
+def test_validate_environment_requires_selected_provider_credentials(provider, overrides, credential_name):
+    report = validate_environment(_ready_env(AIDM_LLM_PROVIDER=provider, **overrides))
+
+    assert not report.ok
+    assert any(credential_name in error for error in report.errors)
+
+
 def test_validate_environment_requires_cookie_auth_or_documented_exception():
     missing_cookie_report = validate_environment(
         _ready_env(
@@ -147,6 +212,78 @@ class _FakeResponse:
         return None
 
 
+class _FakeDatabaseResult:
+    def scalar_one(self):
+        return 1
+
+
+class _FakeDatabaseConnection:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        del exc_type, exc, traceback
+
+    def exec_driver_sql(self, statement):
+        assert statement == 'SELECT 1'
+        return _FakeDatabaseResult()
+
+
+class _FakeDatabaseEngine:
+    def __init__(self):
+        self.disposed = False
+
+    def connect(self):
+        return _FakeDatabaseConnection()
+
+    def dispose(self):
+        self.disposed = True
+
+
+def test_validate_database_connectivity_runs_round_trip_and_disposes(monkeypatch):
+    engine = _FakeDatabaseEngine()
+
+    def fake_create_engine(uri, **kwargs):
+        assert uri == _ready_env()['AIDM_DATABASE_URI']
+        assert kwargs == {'pool_pre_ping': True, 'connect_args': {'connect_timeout': 3}}
+        return engine
+
+    monkeypatch.setattr('scripts.deployment_readiness_check.create_engine', fake_create_engine)
+
+    report = validate_database_connectivity(_ready_env(), timeout_seconds=3)
+
+    assert report.ok
+    assert engine.disposed is True
+
+
+def test_validate_database_connectivity_redacts_connection_details(monkeypatch):
+    class FailingEngine:
+        disposed = False
+
+        def connect(self):
+            raise RuntimeError('could not connect using aidm:secret@db.example.test')
+
+        def dispose(self):
+            self.disposed = True
+
+    engine = FailingEngine()
+    monkeypatch.setattr('scripts.deployment_readiness_check.create_engine', lambda *_args, **_kwargs: engine)
+
+    report = validate_database_connectivity(_ready_env())
+
+    assert not report.ok
+    assert report.errors == ['Database connectivity check failed (RuntimeError).']
+    assert 'secret' not in ' '.join(report.errors)
+    assert engine.disposed is True
+
+
+def _stub_database_connectivity(monkeypatch):
+    monkeypatch.setattr(
+        'scripts.deployment_readiness_check.validate_database_connectivity',
+        lambda env, *, timeout_seconds: ReadinessReport(),
+    )
+
+
 def test_validate_live_target_checks_health_metrics_prometheus_and_headers(monkeypatch):
     security_headers = {header: 'set' for header in REQUIRED_SECURITY_HEADERS}
 
@@ -159,7 +296,7 @@ def test_validate_live_target_checks_health_metrics_prometheus_and_headers(monke
                     'status': 'ok',
                     'env': 'production',
                     'auth_required': True,
-                    'llm': {'provider': 'gemini'},
+                    'llm': {'provider': 'gemini', 'configured': True},
                 },
                 headers=security_headers,
             )
@@ -179,6 +316,38 @@ def test_validate_live_target_checks_health_metrics_prometheus_and_headers(monke
     assert report.ok
 
 
+def test_validate_live_target_rejects_unconfigured_selected_provider(monkeypatch):
+    security_headers = {header: 'set' for header in REQUIRED_SECURITY_HEADERS}
+
+    def fake_get(url, headers, timeout):
+        del headers, timeout
+        if url.endswith('/api/health'):
+            return _FakeResponse(
+                payload={
+                    'status': 'ok',
+                    'env': 'production',
+                    'auth_required': True,
+                    'llm': {'provider': 'gemini', 'configured': False},
+                },
+                headers=security_headers,
+            )
+        if url.endswith('/api/metrics'):
+            return _FakeResponse(payload={'counters': {}, 'timings': {}, 'beta': {}})
+        if url.endswith('/api/metrics/prometheus'):
+            return _FakeResponse(
+                text='# TYPE aidm_telemetry_enabled gauge\naidm_telemetry_enabled 1\naidm_beta_bad_turn_reports 0\n',
+                headers={'Content-Type': 'text/plain; version=0.0.4'},
+            )
+        raise AssertionError(url)
+
+    monkeypatch.setattr('scripts.deployment_readiness_check.requests.get', fake_get)
+
+    report = validate_live_target('https://aidm.example.test')
+
+    assert not report.ok
+    assert any('selected LLM provider is not configured' in error for error in report.errors)
+
+
 def test_validate_live_target_rejects_missing_security_headers(monkeypatch):
     def fake_get(url, headers, timeout):
         del headers, timeout
@@ -188,7 +357,7 @@ def test_validate_live_target_rejects_missing_security_headers(monkeypatch):
                     'status': 'ok',
                     'env': 'production',
                     'auth_required': True,
-                    'llm': {'provider': 'gemini'},
+                    'llm': {'provider': 'gemini', 'configured': True},
                 },
                 headers={},
             )
@@ -217,10 +386,11 @@ def test_parse_env_file_rejects_invalid_lines(tmp_path: Path):
         parse_env_file(env_file)
 
 
-def test_main_writes_markdown_evidence_report_for_env_check(tmp_path: Path):
+def test_main_writes_markdown_evidence_report_for_env_check(tmp_path: Path, monkeypatch):
     env_file = tmp_path / '.env.production'
     report_path = tmp_path / 'deployment-readiness.md'
     _write_ready_env_file(env_file)
+    _stub_database_connectivity(monkeypatch)
 
     exit_code = main(['--env-file', str(env_file), '--evidence-report', str(report_path)])
 
@@ -237,6 +407,7 @@ def test_main_writes_default_evidence_report_path(tmp_path: Path, monkeypatch):
     env_file = tmp_path / '.env.production'
     _write_ready_env_file(env_file)
     monkeypatch.setattr('scripts.deployment_readiness_check.REPO_ROOT', tmp_path)
+    _stub_database_connectivity(monkeypatch)
 
     exit_code = main(['--env-file', str(env_file), '--evidence-report'])
 
@@ -250,6 +421,7 @@ def test_main_writes_json_evidence_report_for_live_target(tmp_path: Path, monkey
     env_file = tmp_path / '.env.production'
     report_path = tmp_path / 'deployment-readiness.json'
     _write_ready_env_file(env_file)
+    _stub_database_connectivity(monkeypatch)
     security_headers = {header: 'set' for header in REQUIRED_SECURITY_HEADERS}
 
     def fake_get(url, headers, timeout):
@@ -261,7 +433,7 @@ def test_main_writes_json_evidence_report_for_live_target(tmp_path: Path, monkey
                     'status': 'ok',
                     'env': 'production',
                     'auth_required': True,
-                    'llm': {'provider': 'gemini'},
+                    'llm': {'provider': 'gemini', 'configured': True},
                 },
                 headers=security_headers,
             )
@@ -297,8 +469,9 @@ def test_main_writes_json_evidence_report_for_live_target(tmp_path: Path, monkey
     assert payload['options']['auth_token_provided'] is True
     assert payload['options']['target_url'] == 'https://aidm.example.test'
     assert payload['sections'][0]['label'] == 'Environment configuration'
-    assert payload['sections'][1]['label'] == 'Live target checks'
-    assert payload['sections'][1]['status'] == 'passed'
+    assert payload['sections'][1]['label'] == 'Database connectivity'
+    assert payload['sections'][2]['label'] == 'Live target checks'
+    assert payload['sections'][2]['status'] == 'passed'
 
 
 def test_main_writes_evidence_report_when_env_file_is_invalid(tmp_path: Path):

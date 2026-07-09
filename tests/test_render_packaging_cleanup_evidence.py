@@ -25,6 +25,7 @@ def test_build_evidence_verifies_cleanup_coverage_and_archive_exclusions(tmp_pat
                 '$ROOT_DIR/.git',
                 '$ROOT_DIR/.pytest_cache',
                 '$ROOT_DIR/tmp',
+                '! -name "release"',
                 '$ROOT_DIR/aidm_server/:memory:',
                 '$ROOT_DIR/aidm_frontend/.vite',
                 '$ROOT_DIR/aidm_frontend/dist',
@@ -62,7 +63,7 @@ def test_build_evidence_verifies_cleanup_coverage_and_archive_exclusions(tmp_pat
 def test_build_evidence_fails_when_archive_contains_forbidden_paths(tmp_path):
     cleanup = tmp_path / 'cleanup_artifacts.sh'
     cleanup.write_text(
-        '$ROOT_DIR/.git\n$ROOT_DIR/.pytest_cache\n$ROOT_DIR/tmp\n$ROOT_DIR/aidm_server/:memory:\n'
+        '$ROOT_DIR/.git\n$ROOT_DIR/.pytest_cache\n$ROOT_DIR/tmp\n! -name "release"\n$ROOT_DIR/aidm_server/:memory:\n'
         '$ROOT_DIR/aidm_frontend/.vite\n$ROOT_DIR/aidm_frontend/dist\n__pycache__\n.DS_Store\n',
         encoding='utf-8',
     )
@@ -87,7 +88,7 @@ def test_build_evidence_fails_when_archive_contains_large_non_lfs_file(tmp_path,
     monkeypatch.setattr(render_rc_issue_evidence, 'LARGE_ARCHIVE_MEMBER_THRESHOLD_BYTES', 1)
     cleanup = tmp_path / 'cleanup_artifacts.sh'
     cleanup.write_text(
-        '$ROOT_DIR/.git\n$ROOT_DIR/.pytest_cache\n$ROOT_DIR/tmp\n$ROOT_DIR/aidm_server/:memory:\n'
+        '$ROOT_DIR/.git\n$ROOT_DIR/.pytest_cache\n$ROOT_DIR/tmp\n! -name "release"\n$ROOT_DIR/aidm_server/:memory:\n'
         '$ROOT_DIR/aidm_frontend/.vite\n$ROOT_DIR/aidm_frontend/dist\n__pycache__\n.DS_Store\n',
         encoding='utf-8',
     )
@@ -111,7 +112,7 @@ def test_build_evidence_fails_when_archive_contains_large_non_lfs_file(tmp_path,
 def test_main_writes_markdown_and_json(tmp_path):
     cleanup = tmp_path / 'cleanup_artifacts.sh'
     cleanup.write_text(
-        '$ROOT_DIR/.git\n$ROOT_DIR/.pytest_cache\n$ROOT_DIR/tmp\n$ROOT_DIR/aidm_server/:memory:\n'
+        '$ROOT_DIR/.git\n$ROOT_DIR/.pytest_cache\n$ROOT_DIR/tmp\n! -name "release"\n$ROOT_DIR/aidm_server/:memory:\n'
         '$ROOT_DIR/aidm_frontend/.vite\n$ROOT_DIR/aidm_frontend/dist\n__pycache__\n.DS_Store\n',
         encoding='utf-8',
     )
