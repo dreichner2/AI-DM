@@ -9,6 +9,7 @@ import type {
   SessionLogResponse,
   SessionState,
 } from './types'
+import { ApiClientError } from './api'
 import { useWorkspaceQueries } from './useWorkspaceQueries'
 
 const apiFetchMock = vi.hoisted(() => vi.fn())
@@ -220,6 +221,42 @@ describe('useWorkspaceQueries request ownership', () => {
     await act(async () => oldRequest)
 
     expect(callbacks.rootCampaignsLoaded).toHaveBeenCalledTimes(1)
+    expect(result.current.workspaceLoading).toBe(false)
+  })
+
+  it('loads campaigns and worlds when admin-only root data is forbidden', async () => {
+    const visibleCampaign = campaign(1)
+    const visibleWorld = {
+      world_id: 1,
+      name: 'Shared World',
+      description: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: null,
+    }
+    const forbidden = new ApiClientError('Forbidden', 403, { error_code: 'forbidden' })
+    apiFetchMock.mockImplementation((_baseUrl: string, path: string) => {
+      if (path === '/api/health') {
+        return Promise.resolve({ status: 'ok', service: 'test', env: 'test', auth_required: true, rules_engine_enabled: true, segment_evaluator_enabled: true })
+      }
+      if (path === '/api/campaigns') return Promise.resolve([visibleCampaign])
+      if (path === '/api/worlds?limit=200') return Promise.resolve([visibleWorld])
+      if (path === '/api/beta/summary' || path === '/api/llm/config' || path === '/api/tts/config') {
+        return Promise.reject(forbidden)
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const callbacks = createCallbacks()
+    const { result } = renderHook(() => useQueryHarness(defaultScope, callbacks))
+
+    await act(async () => {
+      await result.current.queries.refreshRoot()
+    })
+
+    expect(callbacks.rootCampaignsLoaded).toHaveBeenCalledWith([visibleCampaign])
+    expect(callbacks.setWorlds).toHaveBeenCalledWith([visibleWorld])
+    expect(callbacks.setMetrics).toHaveBeenCalledWith(null)
+    expect(callbacks.pushError).not.toHaveBeenCalled()
+    expect(callbacks.onUnauthorized).not.toHaveBeenCalled()
     expect(result.current.workspaceLoading).toBe(false)
   })
 
