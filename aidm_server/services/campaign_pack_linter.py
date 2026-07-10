@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from aidm_server.services.campaign_pack import CampaignPackImportError, import_campaign_pack
+
+
+logger = logging.getLogger(__name__)
 
 AUTHORING_COLLECTIONS = (
     'locations',
@@ -58,16 +62,17 @@ def lint_campaign_pack_manifest(pack: dict[str, Any], *, workspace_id: str = 'li
                 severity='error',
                 code=exc.error_code,
                 path='campaign pack',
-                message=str(exc),
+                message=exc.public_message,
             )
         )
     except Exception as exc:  # pragma: no cover - defensive CLI boundary
+        logger.exception('Unexpected campaign pack lint failure: %s', str(exc))
         issues.append(
             CampaignPackLintIssue(
                 severity='error',
                 code='campaign_pack_lint_failed',
                 path='campaign pack',
-                message=str(exc),
+                message='Campaign pack lint failed.',
             )
         )
 

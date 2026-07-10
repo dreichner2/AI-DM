@@ -9,7 +9,12 @@ import aidm_server.game_state.extraction.post_dm_outcome_extractor as post_extra
 import aidm_server.game_state.extraction.pre_dm_action_extractor as pre_extractor_module
 import aidm_server.turn_events as turn_events_module
 import aidm_server.turn_control as turn_control_module
-from aidm_server.turn_engine import TurnEngine, _state_application_event_details
+from aidm_server.turn_engine import (
+    DM_GENERATION_FAILED_MESSAGE,
+    POST_TURN_PERSIST_FAILED_MESSAGE,
+    TurnEngine,
+    _state_application_event_details,
+)
 from aidm_server.models import (
     Campaign,
     CampaignSegment,
@@ -1513,7 +1518,7 @@ def test_turn_pipeline_does_not_consume_potion_when_dm_generation_fails(app, soc
 
     def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
         del user_input, context, speaking_player, rules_hint
-        raise RuntimeError('provider unavailable')
+        raise RuntimeError('provider unavailable token=secret-upstream-token')
         yield ''
 
     monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
@@ -1554,6 +1559,17 @@ def test_turn_pipeline_does_not_consume_potion_when_dm_generation_fails(app, soc
     statuses = [event['args'][0]['status'] for event in received if event['name'] == 'turn_status']
     assert 'state_applied' not in statuses
     assert 'canon_pending' not in statuses
+    serialized_events = json.dumps(received)
+    assert 'secret-upstream-token' not in serialized_events
+    error_payload = _event_payload(received, 'error')
+    assert error_payload == {
+        'error': DM_GENERATION_FAILED_MESSAGE,
+        'error_code': 'dm_generation_failed',
+        'details': {},
+    }
+    end_payload = _event_payload(received, 'dm_response_end')
+    assert end_payload['ok'] is False
+    assert end_payload['error'] == DM_GENERATION_FAILED_MESSAGE
     with app.app_context():
         player = db.session.get(Player, ids['player_id'])
         assert safe_json_loads(player.inventory, [])[0]['name'] == 'Minor Healing Potion'
@@ -1561,6 +1577,8 @@ def test_turn_pipeline_does_not_consume_potion_when_dm_generation_fails(app, soc
         assert stats['current_hp'] == 10
         turn = DmTurn.query.order_by(DmTurn.turn_id.desc()).first()
         metadata = safe_json_loads(turn.metadata_json, {})
+        assert metadata['error'] == DM_GENERATION_FAILED_MESSAGE
+        assert 'secret-upstream-token' not in json.dumps(metadata)
         pipeline = metadata['state_pipeline']
         assert pipeline['immediateAppliedChanges'] == []
         assert pipeline['pendingImmediateChanges'][0]['type'] == 'inventory.remove'
@@ -2364,7 +2382,7 @@ def test_late_persistence_error_does_not_relabel_degraded_fallback_as_completed(
 
     def fail_only_final_save(*, label='database write', **kwargs):
         if label == 'post-turn final save':
-            raise RuntimeError('late save failure')
+            raise RuntimeError('late save failure token=secret-database-token')
         return original_commit_with_retry(label=label, **kwargs)
 
     monkeypatch.setattr(socketio_module, 'query_dm_function_stream', emergency_stream)
@@ -2386,11 +2404,21 @@ def test_late_persistence_error_does_not_relabel_degraded_fallback_as_completed(
     received = client.get_received()
 
     assert _event_payload(received, 'error')['error_code'] == 'turn_persist_failed'
+    assert 'secret-database-token' not in json.dumps(received)
+    post_turn_failures = [
+        payload
+        for payload in _turn_status_payloads(received, 'failed')
+        if payload.get('details', {}).get('stage') == 'post_turn'
+    ]
+    assert post_turn_failures[0]['details']['error'] == POST_TURN_PERSIST_FAILED_MESSAGE
     with app.app_context():
         turn = DmTurn.query.filter_by(session_id=ids['session_id']).one()
         assert turn.dm_output == 'Continuity-safe narration only.'
         assert turn.status == 'degraded'
-        assert safe_json_loads(turn.metadata_json, {})['llm_fallback']['kind'] == 'emergency_continuity'
+        metadata = safe_json_loads(turn.metadata_json, {})
+        assert metadata['llm_fallback']['kind'] == 'emergency_continuity'
+        assert metadata['post_turn_error'] == POST_TURN_PERSIST_FAILED_MESSAGE
+        assert 'secret-database-token' not in json.dumps(metadata)
 
 
 def test_dm_response_is_saved_when_canon_extraction_fails(app, socketio, app_runtime, monkeypatch):

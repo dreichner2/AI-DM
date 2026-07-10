@@ -25,7 +25,7 @@ const CSRF_COOKIE_NAME = 'aidm_csrf_token'
 const ACCOUNT_TOKEN_COOKIE_NAME = 'aidm_account_token'
 const SAVED_BASE_URL_KEY = 'aidm:baseUrl'
 const ACTIVE_BASE_URL_KEY = 'aidm:activeBaseUrl'
-const TRUSTED_BACKEND_ORIGINS_KEY = 'aidm:trustedBackendOrigins'
+const REMEMBERED_BACKEND_ORIGINS_KEY = 'aidm:trustedBackendOrigins'
 const LEGACY_CREDENTIAL_ORIGIN_KEY = 'aidm:credentialOrigin'
 const LEGACY_CSRF_ORIGIN_KEY = 'aidm:csrfOrigin'
 const ORIGIN_SCOPED_CREDENTIAL_KEYS = [
@@ -55,10 +55,10 @@ export function backendOriginsMatch(left: string, right: string) {
   return Boolean(leftOrigin) && leftOrigin === normalizedBackendOrigin(right)
 }
 
-function trustedBackendOrigins() {
+function rememberedBackendOrigins() {
   if (typeof localStorage === 'undefined') return new Set<string>()
   try {
-    const parsed = JSON.parse(localStorage.getItem(TRUSTED_BACKEND_ORIGINS_KEY) ?? '[]') as unknown
+    const parsed = JSON.parse(localStorage.getItem(REMEMBERED_BACKEND_ORIGINS_KEY) ?? '[]') as unknown
     if (!Array.isArray(parsed)) return new Set<string>()
     return new Set(parsed.filter((value): value is string => typeof value === 'string' && Boolean(value)))
   } catch {
@@ -69,9 +69,9 @@ function trustedBackendOrigins() {
 export function trustBackendOrigin(baseUrl: string) {
   const origin = normalizedBackendOrigin(baseUrl)
   if (!origin || typeof localStorage === 'undefined') return
-  const trustedOrigins = trustedBackendOrigins()
-  trustedOrigins.add(origin)
-  localStorage.setItem(TRUSTED_BACKEND_ORIGINS_KEY, JSON.stringify([...trustedOrigins].sort()))
+  const rememberedOrigins = rememberedBackendOrigins()
+  rememberedOrigins.add(origin)
+  localStorage.setItem(REMEMBERED_BACKEND_ORIGINS_KEY, JSON.stringify([...rememberedOrigins].sort()))
 }
 
 export function isBackendOriginTrusted(baseUrl: string) {
@@ -80,7 +80,7 @@ export function isBackendOriginTrusted(baseUrl: string) {
   if (origin === browserLocationOrigin()) return true
 
   const savedBaseUrl = typeof localStorage === 'undefined' ? '' : localStorage.getItem(SAVED_BASE_URL_KEY) ?? ''
-  return backendOriginsMatch(origin, savedBaseUrl) || trustedBackendOrigins().has(origin)
+  return backendOriginsMatch(origin, savedBaseUrl) || rememberedBackendOrigins().has(origin)
 }
 
 export function bindLegacyCredentialsToBackend(baseUrl: string) {

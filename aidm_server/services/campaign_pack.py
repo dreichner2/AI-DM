@@ -45,6 +45,7 @@ CAMPAIGN_PACK_SCHEMA_PATH = Path(__file__).resolve().parents[2] / 'docs' / 'camp
 class CampaignPackImportError(ValueError):
     def __init__(self, message: str, *, error_code: str = 'validation_error', status_code: int = 400):
         super().__init__(message)
+        self.public_message = message
         self.error_code = error_code
         self.status_code = status_code
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 
 import aidm_server.blueprints.system as system_blueprint
+import requests
 
 
 def test_tts_config_reports_missing_key(client):
@@ -22,6 +23,55 @@ def test_tts_speak_requires_api_key(client):
 
     assert response.status_code == 503
     assert response.get_json()['error_code'] == 'tts_not_configured'
+
+
+def test_tts_speak_does_not_expose_transport_exception_details(client, app, monkeypatch):
+    app.config['AIDM_DEEPGRAM_API_KEY'] = 'test-key'
+    internal_detail = 'proxy=corp.internal token=secret-upstream-token'
+
+    def fail_request(*args, **kwargs):
+        del args, kwargs
+        raise requests.ConnectionError(internal_detail)
+
+    monkeypatch.setattr(system_blueprint, '_deepgram_tts_request', fail_request)
+
+    response = client.post('/api/tts/speak', json={'text': 'The torches flicker.'})
+    payload = response.get_json()
+
+    assert response.status_code == 502
+    assert payload['error_code'] == 'tts_request_failed'
+    assert payload['error'] == system_blueprint.TTS_REQUEST_FAILED_MESSAGE
+    assert internal_detail not in str(payload)
+
+
+def test_tts_speak_does_not_expose_upstream_error_body(client, app, monkeypatch):
+    app.config['AIDM_DEEPGRAM_API_KEY'] = 'test-key'
+    internal_detail = 'upstream credential=secret-upstream-token'
+
+    class FakeFailureResponse:
+        ok = False
+        status_code = 503
+        text = internal_detail
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        system_blueprint,
+        '_deepgram_tts_request',
+        lambda *args, **kwargs: FakeFailureResponse(),
+    )
+
+    response = client.post('/api/tts/speak', json={'text': 'The torches flicker.'})
+    payload = response.get_json()
+
+    assert response.status_code == 502
+    assert payload == {
+        'error': system_blueprint.TTS_REQUEST_FAILED_MESSAGE,
+        'error_code': 'tts_request_failed',
+        'details': {'status_code': 503},
+    }
+    assert internal_detail not in str(payload)
 
 
 def test_deepgram_tts_request_uses_shared_http_client_and_phase_timeout(app, monkeypatch):

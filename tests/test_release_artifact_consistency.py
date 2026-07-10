@@ -10,7 +10,7 @@ from scripts.check_release_artifact_consistency import build_report, main
 def _write_archive(path: Path, data: bytes = b'archive bytes') -> str:
     path.write_bytes(data)
     sha256 = hashlib.sha256(data).hexdigest()
-    path.with_name(path.name + '.sha256').write_text(f'{sha256}  {path}\n', encoding='utf-8')
+    path.with_name(path.name + '.sha256').write_text(f'{sha256}  {path.name}\n', encoding='utf-8')
     return sha256
 
 
@@ -110,6 +110,26 @@ def test_build_report_rejects_stale_packet_archive_sha(tmp_path):
     assert report['status'] == 'failed'
     assert any(actual_sha256 in error and packet_sha256 in error for error in report['errors'])
     assert any('sidecar sha256' in error for error in report['errors'])
+
+
+def test_build_report_rejects_nonportable_absolute_sidecar_target(tmp_path):
+    archive = tmp_path / 'aidm-source.tar.gz'
+    sha256 = _write_archive(archive)
+    archive.with_name(archive.name + '.sha256').write_text(f'{sha256}  {archive}\n', encoding='utf-8')
+    packet = _packet(tmp_path, sha256=sha256, archive=archive)
+    packet_path = tmp_path / 'release-evidence-packet.json'
+    packet_markdown = tmp_path / 'release-evidence-packet.md'
+    packet_path.write_text(json.dumps(packet), encoding='utf-8')
+    _write_text_artifact(packet_markdown, sha256)
+
+    report = build_report(
+        packet_json=packet_path,
+        release_packet_markdown=packet_markdown,
+        generated_at='2026-06-19T00:00:00+00:00',
+    )
+
+    assert report['status'] == 'failed'
+    assert any('portable and relative' in error for error in report['errors'])
 
 
 def test_main_writes_markdown_and_json(tmp_path):

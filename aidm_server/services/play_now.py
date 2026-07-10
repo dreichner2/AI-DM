@@ -28,6 +28,7 @@ PLAY_NOW_VERSION = 1
 class PlayNowOnboardingError(ValueError):
     def __init__(self, message: str, *, error_code: str = 'validation_error', status_code: int = 400):
         super().__init__(message)
+        self.public_message = message
         self.error_code = error_code
         self.status_code = status_code
 

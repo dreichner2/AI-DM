@@ -347,7 +347,7 @@ def forge_campaign_pack_manifest_endpoint():
         return jsonify(result), 200
     except CampaignPackForgeError as exc:
         db.session.rollback()
-        return error_response(exc.error_code, str(exc), exc.status_code)
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to forge campaign pack: %s', str(exc))
@@ -435,7 +435,7 @@ def import_example_campaign_pack(pack_id):
         return jsonify(result.payload), 201
     except CampaignPackImportError as exc:
         db.session.rollback()
-        return error_response(exc.error_code, str(exc), exc.status_code)
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to import example campaign pack: %s', str(exc))
@@ -510,7 +510,7 @@ def import_installed_campaign_pack(installed_pack_id):
         return jsonify(result.payload), 201
     except CampaignPackImportError as exc:
         db.session.rollback()
-        return error_response(exc.error_code, str(exc), exc.status_code)
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to import installed campaign pack: %s', str(exc))
@@ -551,7 +551,7 @@ def import_campaign_pack_manifest():
         return jsonify(result.payload), 201
     except CampaignPackImportError as exc:
         db.session.rollback()
-        return error_response(exc.error_code, str(exc), exc.status_code)
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to import campaign pack: %s', str(exc))

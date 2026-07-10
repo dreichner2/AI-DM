@@ -188,6 +188,57 @@ def test_custom_race_generation_save_and_versioning(client):
     assert full_response.get_json()['version'] == 2
 
 
+def test_custom_race_returns_only_explicit_public_validation_message(client, monkeypatch):
+    import aidm_server.blueprints.races as races_blueprint
+    from aidm_server.race_system import RaceValidationError
+
+    internal_detail = '/srv/private/races.json token=secret-race-token'
+
+    class HostileRaceValidationError(RaceValidationError):
+        def __str__(self):
+            return internal_detail
+
+    def fail_normalization(*args, **kwargs):
+        del args, kwargs
+        raise HostileRaceValidationError('Race definition is invalid.')
+
+    monkeypatch.setattr(races_blueprint, 'normalize_race_definition', fail_normalization)
+
+    response = client.post('/api/custom-races', json={'raceDefinition': {}})
+    payload = response.get_json()
+
+    assert response.status_code == 400
+    assert payload['error_code'] == 'validation_error'
+    assert payload['error'] == 'Race definition is invalid.'
+    assert internal_detail not in str(payload)
+
+
+def test_custom_race_rejects_malformed_numeric_fields_as_public_validation_errors(client):
+    for field in ('version', 'baseSpeed'):
+        response = client.post(
+            '/api/custom-races',
+            json={'raceDefinition': {'name': 'Malformed Numerics', field: 'not-an-integer'}},
+        )
+        payload = response.get_json()
+
+        assert response.status_code == 400
+        assert response.content_type == 'application/json'
+        assert payload['error_code'] == 'validation_error'
+        assert payload['error'] == f'raceDefinition.{field} must be an integer.'
+
+        overflow_response = client.post(
+            '/api/custom-races',
+            data=f'{{"raceDefinition":{{"name":"Overflow Numerics","{field}":1e400}}}}',
+            content_type='application/json',
+        )
+        overflow_payload = overflow_response.get_json()
+
+        assert overflow_response.status_code == 400
+        assert overflow_response.content_type == 'application/json'
+        assert overflow_payload['error_code'] == 'validation_error'
+        assert overflow_payload['error'] == f'raceDefinition.{field} must be an integer.'
+
+
 def test_custom_race_catalog_is_scoped_to_request_workspace(client, app):
     app.config['AIDM_AUTH_REQUIRED'] = True
     app.config['AIDM_API_AUTH_TOKENS'] = ['attacker-token', 'victim-token']

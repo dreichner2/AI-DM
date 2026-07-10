@@ -26,8 +26,8 @@ def socket_message_rate_key(workspace_id: str, session_id: int, player_id: int) 
     return f'{workspace_id}:{session_id}:{player_id}'
 
 
-def admin_passcode_rate_key(workspace_id: str, remote_address: str | None) -> str:
-    """Return a player-independent bucket for privileged passcode attempts."""
+def admin_attempt_bucket_key(workspace_id: str, remote_address: str | None) -> str:
+    """Bucket privileged attempts by workspace and address without including credentials."""
     normalized_remote_address = str(remote_address or 'unknown').strip()
     return f'admin-passcode:{workspace_id}:{normalized_remote_address}'
 
@@ -58,7 +58,7 @@ def authorize_admin_socket_action(
             message=ADMIN_NOT_CONFIGURED_MESSAGE,
         )
 
-    limit_result = allow_rate_key(admin_passcode_rate_key(workspace_id, remote_address))
+    limit_result = allow_rate_key(admin_attempt_bucket_key(workspace_id, remote_address))
     if not limit_result.allowed:
         return AdminSocketAuthorization(
             allowed=False,

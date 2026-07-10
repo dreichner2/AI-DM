@@ -69,10 +69,10 @@ def play_now():
         return jsonify(result.payload), result.status_code
     except PlayNowOnboardingError as exc:
         db.session.rollback()
-        return error_response(exc.error_code, str(exc), exc.status_code)
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
     except CampaignPackImportError as exc:
         db.session.rollback()
-        return error_response(exc.error_code, str(exc), exc.status_code)
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
     except Exception as exc:
         db.session.rollback()
         logger.exception('Failed to prepare Play Now onboarding: %s', str(exc))

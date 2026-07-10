@@ -1298,8 +1298,8 @@ describe('useRuntimeSettings', () => {
       requiresPasswordSetup: false,
       workspaces: [],
     }))
-    document.cookie = 'aidm_account_token=saved-cookie-token; Path=/; SameSite=Lax'
-    document.cookie = 'aidm_csrf_token=saved-csrf-token; Path=/; SameSite=Lax'
+    document.cookie = 'aidm_account_token=saved-cookie-token; Path=/; SameSite=Lax; Secure'
+    document.cookie = 'aidm_csrf_token=saved-csrf-token; Path=/; SameSite=Lax; Secure'
     window.history.replaceState(null, '', '/?backend=https%3A%2F%2Fshared.example.test')
 
     const requests: Array<{ headers: Headers; init: RequestInit; path: string }> = []

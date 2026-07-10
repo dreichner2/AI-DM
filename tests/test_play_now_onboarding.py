@@ -6,6 +6,7 @@ import json
 from aidm_server.database import db
 from aidm_server.models import Campaign, Player, Session, SessionState, Workspace, World
 from aidm_server.services.campaign_pack import CampaignPackImportResult
+from aidm_server.services.play_now import PlayNowOnboardingError
 
 
 def test_pregenerated_character_library_exposes_four_playable_presets(client):
@@ -37,6 +38,30 @@ def test_play_now_is_forbidden_when_auth_required(client, app):
 
     assert response.status_code == 403
     assert response.get_json()['error_code'] == 'play_now_auth_required'
+
+
+def test_play_now_returns_only_explicit_public_validation_message(client, monkeypatch):
+    import aidm_server.blueprints.onboarding as onboarding_blueprint
+
+    internal_detail = 'postgresql://internal-user:secret@database.internal/aidm'
+
+    class HostilePlayNowError(PlayNowOnboardingError):
+        def __str__(self):
+            return internal_detail
+
+    def fail_play_now(**kwargs):
+        del kwargs
+        raise HostilePlayNowError('The selected adventure is unavailable.', error_code='play_now_unavailable')
+
+    monkeypatch.setattr(onboarding_blueprint, 'ensure_play_now_adventure', fail_play_now)
+
+    response = client.post('/api/onboarding/play-now', json={})
+    payload = response.get_json()
+
+    assert response.status_code == 400
+    assert payload['error_code'] == 'play_now_unavailable'
+    assert payload['error'] == 'The selected adventure is unavailable.'
+    assert internal_detail not in str(payload)
 
 
 def test_play_now_creates_local_workspace_and_replays_idempotently(client, app, monkeypatch):

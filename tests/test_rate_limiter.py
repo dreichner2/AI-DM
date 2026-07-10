@@ -45,6 +45,18 @@ def test_rate_limiter_factory_rejects_unknown_store():
         )
 
 
+def test_rate_limit_key_hashing_only_compacts_oversized_bucket_identifiers():
+    assert rate_limiter_module.normalize_rate_limit_key('workspace:login') == 'workspace:login'
+
+    first = rate_limiter_module.normalize_rate_limit_key('workspace:' + ('a' * 600))
+    repeated = rate_limiter_module.normalize_rate_limit_key('workspace:' + ('a' * 600))
+    different = rate_limiter_module.normalize_rate_limit_key('workspace:' + ('a' * 599) + 'b')
+
+    assert len(first) == rate_limiter_module.MAX_BUCKET_KEY_LENGTH
+    assert first == repeated
+    assert first != different
+
+
 def test_postgres_advisory_lock_key_is_stable_and_bucket_specific():
     first = rate_limiter_module.postgres_advisory_lock_key('workspace:login')
 

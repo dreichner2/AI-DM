@@ -84,6 +84,8 @@ from aidm_server.turn_rules import (
 
 
 logger = logging.getLogger(__name__)
+DM_GENERATION_FAILED_MESSAGE = 'The DM response could not be generated. Please retry.'
+POST_TURN_PERSIST_FAILED_MESSAGE = 'The DM response could not be fully saved. Please retry.'
 
 _HARMFUL_PVP_RE = re.compile(
     r'\b(?:attack|attacks|attacked|behead\w*|choke\w*|cut|cuts|decapitat\w*|execute\w*|'
@@ -2276,12 +2278,16 @@ class TurnEngine:
                 self.socketio.sleep(0)
                 dm_response_text += final_chunk
         except Exception as exc:
-            stream_error = str(exc)
-            logger.error('Error generating streamed DM response: %s', stream_error)
-            self.emit('error', socket_error('dm_generation_failed', 'Error generating DM response', {'detail': stream_error}))
+            stream_error = DM_GENERATION_FAILED_MESSAGE
+            logger.exception('Error generating streamed DM response')
+            self.emit('error', socket_error('dm_generation_failed', DM_GENERATION_FAILED_MESSAGE))
             telemetry_event(
                 'socket.dm_generation_failed',
-                payload={'session_id': turn.session_id, 'turn_id': turn.turn_id, 'error': stream_error},
+                payload={
+                    'session_id': turn.session_id,
+                    'turn_id': turn.turn_id,
+                    'error_type': type(exc).__name__,
+                },
                 severity='error',
             )
         finally:
@@ -2771,17 +2777,22 @@ class TurnEngine:
             return post_turn_segments
         except Exception as exc:
             db.session.rollback()
-            logger.error('Failed to persist DM response state: %s', str(exc))
+            logger.exception('Failed to persist DM response state')
             failed_turn = db.session.get(DmTurn, turn.turn_id)
             if failed_turn:
                 metadata_payload = safe_json_loads(failed_turn.metadata_json, {})
-                metadata_payload['post_turn_error'] = str(exc)
+                metadata_payload['post_turn_error'] = POST_TURN_PERSIST_FAILED_MESSAGE
                 metadata_payload['canon_status'] = 'failed'
                 failed_turn.metadata_json = safe_json_dumps(metadata_payload, {})
                 if failed_turn.dm_output:
                     failed_turn.status = 'degraded' if metadata_payload.get('llm_fallback') else 'completed'
                 commit_with_retry(label='post-turn failure metadata')
-            self._emit_turn_status(turn.session_id, turn.turn_id, 'failed', {'stage': 'post_turn', 'error': str(exc)})
+            self._emit_turn_status(
+                turn.session_id,
+                turn.turn_id,
+                'failed',
+                {'stage': 'post_turn', 'error': POST_TURN_PERSIST_FAILED_MESSAGE},
+            )
             self.socketio.emit(
                 'error',
                 socket_error(
@@ -2793,7 +2804,11 @@ class TurnEngine:
             )
             telemetry_event(
                 'socket.dm_persist_failed',
-                payload={'session_id': turn.session_id, 'turn_id': turn.turn_id, 'error': str(exc)},
+                payload={
+                    'session_id': turn.session_id,
+                    'turn_id': turn.turn_id,
+                    'error_type': type(exc).__name__,
+                },
                 severity='error',
             )
             return []

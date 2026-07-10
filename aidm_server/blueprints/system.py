@@ -40,6 +40,7 @@ DEEPGRAM_SPEAK_URL = 'https://api.deepgram.com/v1/speak'
 DEEPGRAM_CHUNK_LIMIT = 2000
 DEEPGRAM_FIRST_CHUNK_LIMIT = 360
 TTS_MAX_CHARS = 6000
+TTS_REQUEST_FAILED_MESSAGE = 'Deepgram TTS is temporarily unavailable. Please retry.'
 BAD_TURN_CATEGORIES = {'continuity', 'rules', 'latency', 'safety', 'state', 'other'}
 TELEMETRY_INCIDENT_EVENT_NAMES = (
     'socket.dm_provider_degraded',
@@ -301,44 +302,44 @@ def _deepgram_tts_request_in_app(app, api_key: str, model: str, text: str) -> re
 def _log_tts_chunk_failure(
     *,
     model: str,
-    error: str | None = None,
+    error_type: str | None = None,
     upstream: requests.Response | None = None,
 ) -> None:
     telemetry_metric('system.tts_speak.chunk_failures_total', 1)
     if upstream is not None:
-        detail = upstream.text[:500] if upstream.text else ''
         telemetry_event(
             'system.tts_speak.chunk_failed_after_stream_start',
             payload={
                 'model': model,
                 'status_code': upstream.status_code,
-                'detail': detail,
             },
             severity='error',
         )
         current_app.logger.warning(
-            'Deepgram TTS chunk failed while streaming: status=%s detail=%s',
+            'Deepgram TTS chunk failed while streaming: status=%s',
             upstream.status_code,
-            detail,
         )
         return
 
     telemetry_event(
         'system.tts_speak.chunk_failed_after_stream_start',
-        payload={'model': model, 'error': error or 'Unknown error'},
+        payload={'model': model, 'error_type': error_type or 'UnknownError'},
         severity='error',
     )
-    current_app.logger.warning('Deepgram TTS chunk request failed while streaming: %s', error or 'Unknown error')
+    current_app.logger.warning(
+        'Deepgram TTS chunk request failed while streaming: error_type=%s',
+        error_type or 'UnknownError',
+    )
 
 
 def _resolve_prefetched_tts_chunk(future: Future, *, model: str) -> requests.Response | None:
     try:
         upstream = future.result()
     except requests.RequestException as exc:
-        _log_tts_chunk_failure(model=model, error=str(exc))
+        _log_tts_chunk_failure(model=model, error_type=type(exc).__name__)
         return None
     except Exception as exc:  # pragma: no cover - defensive boundary for worker failures
-        _log_tts_chunk_failure(model=model, error=str(exc))
+        _log_tts_chunk_failure(model=model, error_type=type(exc).__name__)
         return None
     if not upstream.ok:
         _log_tts_chunk_failure(model=model, upstream=upstream)
@@ -435,17 +436,18 @@ def speak_text():
         first_upstream = _deepgram_tts_request(api_key, model, chunks[0], stream=True)
     except requests.RequestException as exc:
         _record_tts_phase_timing('request', tts_request_started, model=model)
-        return error_response('tts_request_failed', f'Deepgram TTS request failed: {exc}', 502)
+        current_app.logger.warning('Deepgram TTS request failed: error_type=%s', type(exc).__name__)
+        return error_response('tts_request_failed', TTS_REQUEST_FAILED_MESSAGE, 502)
     _record_tts_phase_timing('request', tts_request_started, model=model)
 
     if not first_upstream.ok:
-        detail = first_upstream.text[:500] if first_upstream.text else f'HTTP {first_upstream.status_code}'
+        status_code = first_upstream.status_code
         first_upstream.close()
         return error_response(
             'tts_request_failed',
-            f'Deepgram TTS request failed (HTTP {first_upstream.status_code}): {detail}',
+            TTS_REQUEST_FAILED_MESSAGE,
             502,
-            {'status_code': first_upstream.status_code, 'detail': detail},
+            {'status_code': status_code},
         )
 
     content_type = first_upstream.headers.get('Content-Type') or 'audio/mpeg'

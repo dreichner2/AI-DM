@@ -459,10 +459,10 @@ def import_session():
         db.session.rollback()
         telemetry_event(
             'sessions.import.validation_error',
-            payload={'error_code': exc.error_code, 'message': str(exc)},
+            payload={'error_code': exc.error_code, 'message': exc.public_message},
             severity='warning',
         )
-        return error_response(exc.error_code, str(exc), exc.status_code)
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to import session: %s', str(exc))
@@ -753,7 +753,7 @@ def get_session_campaign_pack_progress(session_id):
     try:
         return jsonify(campaign_pack_progress_payload(session_id=session_id, include_hidden=_campaign_pack_operator_view()))
     except CampaignPackProgressError as exc:
-        return error_response(exc.error_code, str(exc), exc.status_code)
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
 
 
 @sessions_bp.route('/<int:session_id>/campaign-pack/commentary', methods=['GET'])
@@ -827,7 +827,7 @@ def update_session_campaign_pack_progress(session_id):
         )
     except CampaignPackProgressError as exc:
         db.session.rollback()
-        return error_response(exc.error_code, str(exc), exc.status_code)
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to update campaign pack progress: %s', str(exc))

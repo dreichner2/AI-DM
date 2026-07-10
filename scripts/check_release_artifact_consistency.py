@@ -138,8 +138,14 @@ def _check_source_archive(packet: dict[str, Any], checks: list[dict[str, str]]) 
     else:
         _add_check(checks, 'source_archive_sidecar_sha256', 'passed', _relative_or_absolute(sidecar_path))
     if sidecar_target:
-        resolved_target = _resolved_sidecar_target(sidecar_target, sidecar_path=sidecar_path)
-        if resolved_target.resolve() != archive_path.resolve():
+        if pathlib.Path(sidecar_target).is_absolute():
+            _add_check(
+                checks,
+                'source_archive_sidecar_path',
+                'failed',
+                f'sidecar target must be portable and relative, not absolute: {sidecar_target}',
+            )
+        elif _resolved_sidecar_target(sidecar_target, sidecar_path=sidecar_path).resolve() != archive_path.resolve():
             _add_check(
                 checks,
                 'source_archive_sidecar_path',
