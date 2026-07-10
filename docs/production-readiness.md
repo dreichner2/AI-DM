@@ -37,8 +37,8 @@ secret/env managers. Choose the matching exposure mode in
 
 ## Startup
 
-1. Install runtime dependencies from `requirements.runtime.txt` with
-   `requirements.constraints.txt`.
+1. Install runtime dependencies with
+   `python -m pip install --require-hashes -r requirements.runtime.lock.txt`.
 2. Apply migrations with `make db-upgrade`.
 3. Run `.venv/bin/python scripts/deploy_bootstrap.py --check-only`.
 4. Run deployment readiness against the target environment and, when available,
@@ -72,7 +72,7 @@ secret/env managers. Choose the matching exposure mode in
 ## CI Gates
 
 - Secret scan: `python scripts/scan_secrets.py`
-- Python dependency audit: `python -m pip_audit -r requirements.runtime.txt`
+- Python dependency audit: `python -m pip_audit -r requirements.runtime.lock.txt`
 - Python correctness lint: `python -m ruff check --select E9,F63,F7,F82 aidm_server tests scripts`
 - Backend tests: `python -m pytest`
 - PostgreSQL production rehearsal: the `postgres-integration` GitHub Actions
@@ -86,6 +86,8 @@ secret/env managers. Choose the matching exposure mode in
   providers.
 - Backup/restore drill for local/private SQLite beta data:
   `python scripts/backup_restore_drill.py --database-uri sqlite:////absolute/path/to/dnd_ai_dm.db`
+- Guarded PostgreSQL custom-archive restore drill against a separately supplied
+  empty database: `make postgres-backup-restore-drill POSTGRES_BACKUP_RESTORE_DRILL_ARGS="--source-uri-file /secure/source-uri --empty-target-uri-file /secure/empty-target-uri"`
 - Migration chain drill:
   `python scripts/migration_chain_drill.py`
 - Hosted cookie-only account auth smoke:

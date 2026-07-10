@@ -8,7 +8,7 @@
    `AIDM_SOCKETIO_WORKER_MODEL=single`; the other reserved model names remain
    deferred until shared presence/music state is implemented. See
    `docs/socketio_worker_model.md`.
-3. Install dependencies: `python3.12 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt` for local development, or use `requirements.runtime.txt` for a minimal runtime without pytest/admin UI tooling. Both paths apply `requirements.constraints.txt` for repeatable direct dependency versions; runtime dependencies include the migration CLI and PostgreSQL driver.
+3. Install dependencies: `python3.14 -m venv .venv && .venv/bin/python -m pip install -c requirements.constraints.txt --upgrade pip && .venv/bin/python -m pip install --require-hashes -r requirements-dev.lock.txt` for local development, or use `requirements.runtime.lock.txt` for a minimal runtime without pytest/admin UI tooling. The lockfiles pin and hash every transitive package; runtime dependencies include the migration CLI and PostgreSQL driver.
 4. Apply migrations: `make db-upgrade` (or run the bootstrap command below).
 5. Bootstrap check/start command:
    - Check only: `.venv/bin/python scripts/deploy_bootstrap.py --check-only`

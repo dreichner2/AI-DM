@@ -34,9 +34,9 @@ Updated for the current codebase in June 2026.
 
 Prerequisites:
 
-- Python 3.12, matching `.python-version`
-- Node.js 24, matching `.nvmrc`
-- npm
+- Python 3.14.6, matching `.python-version`
+- Node.js 24.18.0 LTS, matching `.nvmrc`
+- npm 12.0.0, matching `aidm_frontend/package.json`
 - macOS or another Unix-like shell environment
 
 Install everything:
@@ -198,7 +198,8 @@ checklist; it expires on 2026-08-10 or before exposure expands.
 
 | Command | What it does |
 | --- | --- |
-| `make install` | Create `.venv` with Python 3.12, install Python requirements, run frontend `npm ci`. Override `PYTHON_BOOTSTRAP` only with another Python 3.12 executable. |
+| `make install` | Create `.venv` with Python 3.14.6, upgrade to the constrained pip version, install the hash-locked development dependencies, and run frontend `npm ci`. Override `PYTHON_BOOTSTRAP` only with a Python 3.14.6 executable. |
+| `make lock` | Regenerate the hash-locked Python runtime/development requirements and the npm lockfile from the declared inputs. |
 | `make backend` | Start Flask through `scripts/run_local_backend.sh`. |
 | `make frontend` | Start Vite on `127.0.0.1` for frontend development. |
 | `make unified` | Build/reuse the frontend and serve the whole app from Flask on port 5050. |
@@ -395,7 +396,7 @@ make browser-smoke
 make visual-smoke
 make visual-smoke-review
 make secrets
-pip-audit -r requirements.txt
+pip-audit -r requirements-dev.lock.txt
 ```
 
 Before a beta or public playtest, also run:
