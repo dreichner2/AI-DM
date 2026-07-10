@@ -771,6 +771,7 @@ class CodexCliProvider(BaseLLMProvider):
         workdir: str | None = None,
         timeout_seconds: int = 180,
         reasoning_effort: str = 'low',
+        service_tier: str = 'default',
         ignore_rules: bool = True,
         prompt_role: str = 'helper',
         display_model_name: str | None = None,
@@ -781,6 +782,7 @@ class CodexCliProvider(BaseLLMProvider):
         self.workdir = str(workdir or os.getcwd()).strip()
         self.timeout_seconds = max(1, int(timeout_seconds))
         self.reasoning_effort = str(reasoning_effort or 'low').strip().lower()
+        self.service_tier = str(service_tier or 'default').strip().lower()
         # Gameplay prompts are untrusted. Project and user execution rules must
         # never be allowed to expand the narrator's runtime capabilities.
         self.ignore_rules = True
@@ -914,6 +916,8 @@ class CodexCliProvider(BaseLLMProvider):
             'tools.experimental_request_user_input.enabled=false',
             '-c',
             f'model_reasoning_effort={json.dumps(self.reasoning_effort)}',
+            '-c',
+            f'service_tier={json.dumps(self.service_tier)}',
         ]
         for feature in self._DISABLED_FEATURES:
             command.extend(['--disable', feature])
@@ -1209,6 +1213,65 @@ HELPER_MODEL_PROFILES: dict[str, dict[str, Any]] = {
         'CODEX_REASONING_EFFORT': 'medium',
         'CODEX_IGNORE_RULES': 'true',
     },
+    'codex_56_sol_medium': {
+        'LLM_PROVIDER': 'codex_cli',
+        'LLM_MODEL': 'gpt-5.6-sol',
+        'CODEX_TIMEOUT_SECONDS': 240,
+        'CODEX_REASONING_EFFORT': 'medium',
+        'CODEX_IGNORE_RULES': 'true',
+    },
+    'codex_56_sol_high': {
+        'LLM_PROVIDER': 'codex_cli',
+        'LLM_MODEL': 'gpt-5.6-sol',
+        'CODEX_TIMEOUT_SECONDS': 300,
+        'CODEX_REASONING_EFFORT': 'high',
+        'CODEX_IGNORE_RULES': 'true',
+    },
+    'codex_56_terra_medium': {
+        'LLM_PROVIDER': 'codex_cli',
+        'LLM_MODEL': 'gpt-5.6-terra',
+        'CODEX_TIMEOUT_SECONDS': 240,
+        'CODEX_REASONING_EFFORT': 'medium',
+        'CODEX_IGNORE_RULES': 'true',
+    },
+    'codex_56_terra_medium_fast': {
+        'LLM_PROVIDER': 'codex_cli',
+        'LLM_MODEL': 'gpt-5.6-terra',
+        'CODEX_TIMEOUT_SECONDS': 240,
+        'CODEX_REASONING_EFFORT': 'medium',
+        'CODEX_SERVICE_TIER': 'priority',
+        'CODEX_IGNORE_RULES': 'true',
+    },
+    'codex_56_terra_light_fast': {
+        'LLM_PROVIDER': 'codex_cli',
+        'LLM_MODEL': 'gpt-5.6-terra',
+        'CODEX_TIMEOUT_SECONDS': 180,
+        'CODEX_REASONING_EFFORT': 'low',
+        'CODEX_SERVICE_TIER': 'priority',
+        'CODEX_IGNORE_RULES': 'true',
+    },
+    'codex_56_luna_medium': {
+        'LLM_PROVIDER': 'codex_cli',
+        'LLM_MODEL': 'gpt-5.6-luna',
+        'CODEX_TIMEOUT_SECONDS': 240,
+        'CODEX_REASONING_EFFORT': 'medium',
+        'CODEX_IGNORE_RULES': 'true',
+    },
+    'codex_56_luna_high': {
+        'LLM_PROVIDER': 'codex_cli',
+        'LLM_MODEL': 'gpt-5.6-luna',
+        'CODEX_TIMEOUT_SECONDS': 300,
+        'CODEX_REASONING_EFFORT': 'high',
+        'CODEX_IGNORE_RULES': 'true',
+    },
+    'codex_56_luna_high_fast': {
+        'LLM_PROVIDER': 'codex_cli',
+        'LLM_MODEL': 'gpt-5.6-luna',
+        'CODEX_TIMEOUT_SECONDS': 300,
+        'CODEX_REASONING_EFFORT': 'high',
+        'CODEX_SERVICE_TIER': 'priority',
+        'CODEX_IGNORE_RULES': 'true',
+    },
     'codex_high': {
         'LLM_PROVIDER': 'codex_cli',
         'LLM_MODEL': 'gpt-5.5',
@@ -1227,13 +1290,13 @@ HELPER_MODEL_PROFILES: dict[str, dict[str, Any]] = {
 
 
 HELPER_TASK_PROFILE: dict[str, str] = {
-    'custom_race': 'codex_medium',
-    'sentient_enemy_brain': 'codex_medium',
-    'enemy_tactics_planner': 'codex_medium',
+    'custom_race': 'codex_56_sol_medium',
+    'sentient_enemy_brain': 'codex_56_sol_medium',
+    'enemy_tactics_planner': 'codex_56_sol_medium',
     'enemy_tactics_compiler': 'fast',
-    'boss_tactics': 'codex_medium',
-    'boss_tactics_planner': 'codex_medium',
-    'creature_generation': 'codex_medium',
+    'boss_tactics': 'codex_56_sol_medium',
+    'boss_tactics_planner': 'codex_56_sol_medium',
+    'creature_generation': 'codex_56_sol_medium',
 }
 
 
@@ -1527,6 +1590,7 @@ def get_provider() -> BaseLLMProvider:
             workdir=str(_cfg('AIDM_CODEX_WORKDIR', str(REPO_ROOT))),
             timeout_seconds=_int_env('AIDM_CODEX_TIMEOUT_SECONDS', 240),
             reasoning_effort=reasoning_effort,
+            service_tier=str(_cfg('AIDM_CODEX_SERVICE_TIER', 'default')),
             ignore_rules=str(_cfg('AIDM_CODEX_IGNORE_RULES', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'},
             prompt_role='dm',
             display_model_name=selected_model,
@@ -1613,6 +1677,7 @@ def get_helper_provider(task: str | None = None) -> BaseLLMProvider:
             workdir=str(_helper_cfg(task, 'CODEX_WORKDIR', _cfg('AIDM_CODEX_WORKDIR', str(REPO_ROOT)))),
             timeout_seconds=_helper_int(task, 'CODEX_TIMEOUT_SECONDS', 180),
             reasoning_effort=str(_helper_cfg(task, 'CODEX_REASONING_EFFORT', 'low')),
+            service_tier=str(_helper_cfg(task, 'CODEX_SERVICE_TIER', 'default')),
             ignore_rules=_helper_bool(task, 'CODEX_IGNORE_RULES', True),
         )
 

@@ -28,8 +28,14 @@ PROVIDER_CATALOG: dict[str, dict] = {
     'codex_cli': {
         'id': 'codex_cli',
         'label': 'Codex',
-        'default_model': 'gpt-5.5-medium',
+        'default_model': 'gpt-5.6-sol-medium',
         'models': [
+            {
+                'id': 'gpt-5.6-sol-medium',
+                'label': 'GPT-5.6 Sol Medium',
+                'runtime_model': 'gpt-5.6-sol',
+                'reasoning_effort': 'medium',
+            },
             {'id': 'gpt-5.5-low', 'label': 'GPT-5.5 Low', 'runtime_model': 'gpt-5.5', 'reasoning_effort': 'low'},
             {'id': 'gpt-5.5-medium', 'label': 'GPT-5.5 Medium', 'runtime_model': 'gpt-5.5', 'reasoning_effort': 'medium'},
             {'id': 'gpt-5.5-high', 'label': 'GPT-5.5 High', 'runtime_model': 'gpt-5.5', 'reasoning_effort': 'high'},
@@ -113,6 +119,8 @@ SUPPORTED_LLM_PROVIDERS = set(PROVIDER_CATALOG)
 MODEL_ID_ALIASES: dict[tuple[str, str], str] = {
     ('codex_cli', 'gpt-5.5'): 'gpt-5.5-medium',
     ('codex', 'gpt-5.5'): 'gpt-5.5-medium',
+    ('codex_cli', 'gpt-5.6-sol'): 'gpt-5.6-sol-medium',
+    ('codex', 'gpt-5.6-sol'): 'gpt-5.6-sol-medium',
 }
 
 

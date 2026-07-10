@@ -185,7 +185,8 @@ def _clear_helper_env(monkeypatch):
 def test_provider_registry_defines_defaults_and_capabilities():
     assert provider_default_model('deepseek') == 'deepseek-v4-pro'
     assert provider_default_model('nvidia') == 'moonshotai/kimi-k2.5'
-    assert provider_default_model('codex_cli') == 'gpt-5.5-medium'
+    assert provider_default_model('codex_cli') == 'gpt-5.6-sol-medium'
+    assert provider_runtime_model('codex_cli', 'gpt-5.6-sol-medium') == 'gpt-5.6-sol'
     assert provider_runtime_model('codex_cli', 'gpt-5.5-xhigh') == 'gpt-5.5'
     deepseek_capabilities = provider_capabilities('deepseek')
     nvidia_capabilities = provider_capabilities('nvidia')
@@ -381,6 +382,22 @@ def test_get_provider_supports_codex_cli_medium(monkeypatch):
     assert provider.prompt_role == 'dm'
 
 
+def test_get_provider_supports_gpt_56_sol_medium(monkeypatch):
+    monkeypatch.setenv('AIDM_LLM_PROVIDER', 'codex_cli')
+    monkeypatch.setenv('AIDM_LLM_MODEL', 'gpt-5.6-sol-medium')
+    monkeypatch.setenv('AIDM_CODEX_EXECUTABLE', '/usr/local/bin/codex')
+    monkeypatch.setenv('AIDM_CODEX_REASONING_EFFORT', 'high')
+
+    provider = get_provider()
+
+    assert isinstance(provider, CodexCliProvider)
+    assert provider.model_name == 'gpt-5.6-sol'
+    assert provider.display_model_name == 'gpt-5.6-sol-medium'
+    assert provider.reasoning_effort == 'medium'
+    assert provider.timeout_seconds == 240
+    assert provider.prompt_role == 'dm'
+
+
 def test_get_provider_supports_codex_cli_xhigh(monkeypatch):
     monkeypatch.setenv('AIDM_LLM_PROVIDER', 'codex_cli')
     monkeypatch.setenv('AIDM_LLM_MODEL', 'gpt-5.5-xhigh')
@@ -458,36 +475,36 @@ def test_get_helper_provider_defaults_to_fast_state_helper(monkeypatch):
     assert provider.read_timeout_seconds == 30.0
 
 
-def _assert_codex_medium_helper(provider):
+def _assert_codex_56_sol_medium_helper(provider):
     assert isinstance(provider, CodexCliProvider)
-    assert provider.model_name == 'gpt-5.5'
+    assert provider.model_name == 'gpt-5.6-sol'
     assert provider.timeout_seconds == 240
     assert provider.reasoning_effort == 'medium'
     assert provider.ignore_rules is True
 
 
-def test_get_helper_provider_uses_codex_medium_for_custom_races(monkeypatch):
+def test_get_helper_provider_uses_gpt_56_sol_medium_for_custom_races(monkeypatch):
     _clear_helper_env(monkeypatch)
 
     provider = get_helper_provider(task='custom_race')
 
-    _assert_codex_medium_helper(provider)
+    _assert_codex_56_sol_medium_helper(provider)
 
 
-def test_get_helper_provider_uses_codex_medium_for_sentient_enemy_brain(monkeypatch):
+def test_get_helper_provider_uses_gpt_56_sol_medium_for_sentient_enemy_brain(monkeypatch):
     _clear_helper_env(monkeypatch)
 
     provider = get_helper_provider(task='sentient_enemy_brain')
 
-    _assert_codex_medium_helper(provider)
+    _assert_codex_56_sol_medium_helper(provider)
 
 
-def test_get_helper_provider_uses_codex_medium_for_enemy_tactics_planner(monkeypatch):
+def test_get_helper_provider_uses_gpt_56_sol_medium_for_enemy_tactics_planner(monkeypatch):
     _clear_helper_env(monkeypatch)
 
     provider = get_helper_provider(task='enemy_tactics_planner')
 
-    _assert_codex_medium_helper(provider)
+    _assert_codex_56_sol_medium_helper(provider)
 
 
 def test_get_helper_provider_uses_fast_deepseek_for_enemy_tactics_compiler(monkeypatch):
@@ -507,20 +524,20 @@ def test_get_helper_provider_uses_fast_deepseek_for_enemy_tactics_compiler(monke
     assert provider.read_timeout_seconds == 30.0
 
 
-def test_get_helper_provider_uses_codex_medium_for_boss_tactics(monkeypatch):
+def test_get_helper_provider_uses_gpt_56_sol_medium_for_boss_tactics(monkeypatch):
     _clear_helper_env(monkeypatch)
 
     provider = get_helper_provider(task='boss_tactics')
 
-    _assert_codex_medium_helper(provider)
+    _assert_codex_56_sol_medium_helper(provider)
 
 
-def test_get_helper_provider_uses_codex_medium_for_boss_tactics_planner(monkeypatch):
+def test_get_helper_provider_uses_gpt_56_sol_medium_for_boss_tactics_planner(monkeypatch):
     _clear_helper_env(monkeypatch)
 
     provider = get_helper_provider(task='boss_tactics_planner')
 
-    _assert_codex_medium_helper(provider)
+    _assert_codex_56_sol_medium_helper(provider)
 
 
 def test_get_helper_provider_can_route_task_back_to_deepseek_pro_profile(monkeypatch):
@@ -538,12 +555,12 @@ def test_get_helper_provider_can_route_task_back_to_deepseek_pro_profile(monkeyp
     assert provider.reasoning_effort == 'medium'
 
 
-def test_get_helper_provider_uses_codex_medium_for_creature_generation(monkeypatch):
+def test_get_helper_provider_uses_gpt_56_sol_medium_for_creature_generation(monkeypatch):
     _clear_helper_env(monkeypatch)
 
     provider = get_helper_provider(task='creature_generation')
 
-    _assert_codex_medium_helper(provider)
+    _assert_codex_56_sol_medium_helper(provider)
 
 
 def test_get_helper_provider_can_route_creature_generation_to_fast_profile(monkeypatch):
@@ -578,6 +595,40 @@ def test_get_helper_provider_routes_task_profile_to_codex(monkeypatch):
     assert provider.workdir == '/tmp/aidm-codex-workdir'
     assert provider.timeout_seconds == 240
     assert provider.reasoning_effort == 'medium'
+
+
+def test_get_helper_provider_routes_task_profile_to_gpt_56_sol_medium(monkeypatch):
+    _clear_helper_env(monkeypatch)
+    monkeypatch.setenv('AIDM_HELPER_PROFILE_SENTIENT_ENEMY_BRAIN', 'codex_56_sol_medium')
+    monkeypatch.setenv('AIDM_CODEX_EXECUTABLE', '/usr/local/bin/codex')
+
+    provider = get_helper_provider(task='sentient_enemy_brain')
+
+    assert isinstance(provider, CodexCliProvider)
+    assert provider.model_name == 'gpt-5.6-sol'
+    assert provider.timeout_seconds == 240
+    assert provider.reasoning_effort == 'medium'
+
+
+@pytest.mark.parametrize(
+    ('profile', 'reasoning_effort'),
+    [
+        ('codex_56_terra_medium_fast', 'medium'),
+        ('codex_56_terra_light_fast', 'low'),
+        ('codex_56_luna_high_fast', 'high'),
+    ],
+)
+def test_get_helper_provider_routes_codex_fast_profiles(monkeypatch, profile, reasoning_effort):
+    _clear_helper_env(monkeypatch)
+    monkeypatch.setenv('AIDM_HELPER_PROFILE_ENEMY_TACTICS_COMPILER', profile)
+
+    provider = get_helper_provider(task='enemy_tactics_compiler')
+
+    assert isinstance(provider, CodexCliProvider)
+    expected_model = 'gpt-5.6-luna' if 'luna' in profile else 'gpt-5.6-terra'
+    assert provider.model_name == expected_model
+    assert provider.reasoning_effort == reasoning_effort
+    assert provider.service_tier == 'priority'
 
 
 def test_task_specific_provider_override_beats_profile(monkeypatch):
@@ -665,6 +716,7 @@ def test_codex_cli_provider_generate_uses_isolated_tool_free_exec(monkeypatch, t
         workdir=str(tmp_path),
         timeout_seconds=12,
         reasoning_effort='low',
+        service_tier='priority',
     )
     response = provider.generate(ProviderRequest(prompt='Return selector JSON.', system_message='Return JSON only.'))
 
@@ -683,6 +735,7 @@ def test_codex_cli_provider_generate_uses_isolated_tool_free_exec(monkeypatch, t
     assert '--sandbox' not in command
     assert command[command.index('--model') + 1] == 'gpt-5.5'
     assert 'model_reasoning_effort="low"' in command
+    assert 'service_tier="priority"' in command
     config_overrides = {
         command[index + 1]
         for index, value in enumerate(command[:-1])

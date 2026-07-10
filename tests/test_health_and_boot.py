@@ -228,14 +228,15 @@ def test_llm_config_exposes_provider_capabilities(client, monkeypatch, tmp_path)
     assert providers['deepseek']['capabilities']['thinking_control'] is True
     assert providers['deepseek']['configured'] is False
     assert providers['codex_cli']['label'] == 'Codex'
-    assert providers['codex_cli']['default_model'] == 'gpt-5.5-medium'
+    assert providers['codex_cli']['default_model'] == 'gpt-5.6-sol-medium'
     assert [model['id'] for model in codex_models] == [
+        'gpt-5.6-sol-medium',
         'gpt-5.5-low',
         'gpt-5.5-medium',
         'gpt-5.5-high',
         'gpt-5.5-xhigh',
     ]
-    assert [model['reasoning_effort'] for model in codex_models] == ['low', 'medium', 'high', 'xhigh']
+    assert [model['reasoning_effort'] for model in codex_models] == ['medium', 'low', 'medium', 'high', 'xhigh']
     assert providers['codex_cli']['configured'] is True
     assert providers['codex_cli']['capabilities']['streaming'] is True
     assert providers['codex_cli']['capabilities']['progressive_streaming'] is False
