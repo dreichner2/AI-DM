@@ -73,6 +73,22 @@ def test_ci_workflows_pin_upgraded_toolchains_and_dependencies():
     missing = [fragment for fragment in required_fragments if fragment not in combined]
     assert not missing, f'CI toolchain contract is missing: {missing}'
 
+    ci_workflow = workflow_paths[0].read_text(encoding='utf-8')
+    backend_job = ci_workflow.split('  backend:', 1)[1].split('\n  postgres-integration:', 1)[0]
+    backend_toolchain_fragments = (
+        'actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0',
+        'node-version-file: .nvmrc',
+        'npm install --global npm@12.0.0',
+        'test "$(npm --version)" = "12.0.0"',
+    )
+    missing_backend_toolchain = [
+        fragment for fragment in backend_toolchain_fragments if fragment not in backend_job
+    ]
+    assert not missing_backend_toolchain, (
+        'Backend CI must provision the exact frontend toolchain used by the full pytest suite: '
+        f'{missing_backend_toolchain}'
+    )
+
 
 def test_dependabot_tracks_github_actions():
     dependabot = (REPO_ROOT / '.github' / 'dependabot.yml').read_text(encoding='utf-8')
