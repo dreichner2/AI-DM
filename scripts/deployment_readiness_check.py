@@ -7,7 +7,6 @@ from importlib.util import find_spec
 import json
 import os
 from pathlib import Path
-import shutil
 import sys
 from typing import Mapping
 from urllib.parse import urljoin, urlsplit
@@ -16,6 +15,11 @@ import requests
 import socketio
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+
+from aidm_server.codex_runtime import codex_executable_configured  # noqa: E402
 
 
 SUPPORTED_SOCKETIO_WORKER_MODELS = {'single', 'sticky', 'message_queue'}
@@ -45,9 +49,6 @@ REQUIRED_SECURITY_HEADERS = {
     'Referrer-Policy',
     'Permissions-Policy',
 }
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
-
 @dataclass(frozen=True)
 class ReportSection:
     label: str
@@ -196,13 +197,6 @@ def _selected_provider_credential(env: Mapping[str, str], keys: tuple[str, ...])
     return keys[0], ''
 
 
-def _executable_available(executable: str) -> bool:
-    candidate = executable.strip() or 'codex'
-    if os.path.sep in candidate:
-        return Path(candidate).expanduser().is_file()
-    return shutil.which(candidate) is not None
-
-
 def _validate_selected_provider(
     report: ReadinessReport,
     env: Mapping[str, str],
@@ -222,7 +216,7 @@ def _validate_selected_provider(
         return
     if provider == 'codex_cli':
         executable = str(env.get('AIDM_CODEX_EXECUTABLE') or 'codex').strip()
-        if _looks_placeholder(executable) or not _executable_available(executable):
+        if _looks_placeholder(executable) or not codex_executable_configured(executable):
             report.error('AIDM_LLM_PROVIDER=codex_cli requires an available AIDM_CODEX_EXECUTABLE or codex on PATH.')
         return
 

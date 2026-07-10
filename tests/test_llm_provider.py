@@ -39,6 +39,33 @@ def test_codex_executable_resolves_mac_app_bundle(monkeypatch, tmp_path):
     assert provider._resolved_executable() == str(app_executable)
 
 
+def test_codex_executable_resolves_render_node_runtime(monkeypatch, tmp_path):
+    node_root = tmp_path / 'nodes'
+    old_node_executable = node_root / 'node-9.0.0' / 'bin' / 'codex'
+    node_executable = node_root / 'node-24.18.0' / 'bin' / 'codex'
+    non_executable = node_root / 'node-25.0.0' / 'bin' / 'codex'
+    for executable in (old_node_executable, node_executable):
+        executable.parent.mkdir(parents=True)
+        executable.write_text('#!/bin/sh\n', encoding='utf-8')
+        executable.chmod(0o755)
+        node_runtime = executable.parent / 'node'
+        node_runtime.write_text('#!/bin/sh\n', encoding='utf-8')
+        node_runtime.chmod(0o755)
+    non_executable.parent.mkdir(parents=True)
+    non_executable.write_text('#!/bin/sh\n', encoding='utf-8')
+    non_executable.chmod(0o644)
+    monkeypatch.delenv('AIDM_CODEX_EXECUTABLE', raising=False)
+    monkeypatch.setenv('AIDM_CODEX_NODE_ROOT', str(node_root))
+    monkeypatch.setattr(codex_runtime.shutil, 'which', lambda executable: None)
+    monkeypatch.setattr(codex_runtime, 'DEFAULT_CODEX_APP_EXECUTABLES', ())
+    monkeypatch.setattr(codex_runtime, 'DEFAULT_CODEX_NODE_ROOTS', ())
+
+    provider = CodexCliProvider(executable='codex')
+
+    assert codex_runtime.resolve_codex_executable('codex') == str(node_executable)
+    assert provider._resolved_executable() == str(node_executable)
+
+
 def _clear_helper_env(monkeypatch):
     for key in (
         'AIDM_HELPER_LLM_PROVIDER',

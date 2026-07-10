@@ -30,6 +30,24 @@ if ! "${RESOLVED_PYTHON_BIN}" -c 'import sys; raise SystemExit(0 if sys.version_
   exit 2
 fi
 
+if [[ "${AIDM_LLM_PROVIDER:-}" == "codex_cli" || "${AIDM_LLM_PROVIDER:-}" == "codex" ]]; then
+  REQUESTED_CODEX_EXECUTABLE="${AIDM_CODEX_EXECUTABLE:-codex}"
+  RESOLVED_CODEX_EXECUTABLE="$(
+    PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" "${RESOLVED_PYTHON_BIN}" -c \
+      'import sys; from aidm_server.codex_runtime import resolve_codex_executable; print(resolve_codex_executable(sys.argv[1]) or "")' \
+      "${REQUESTED_CODEX_EXECUTABLE}"
+  )"
+  if [[ -z "${RESOLVED_CODEX_EXECUTABLE}" ]]; then
+    echo "AIDM_LLM_PROVIDER=${AIDM_LLM_PROVIDER} requires an available Codex executable." >&2
+    exit 127
+  fi
+  CODEX_BIN_DIR="$(dirname "${RESOLVED_CODEX_EXECUTABLE}")"
+  if [[ -x "${CODEX_BIN_DIR}/node" ]]; then
+    export PATH="${CODEX_BIN_DIR}:${PATH}"
+  fi
+  export AIDM_CODEX_EXECUTABLE="${RESOLVED_CODEX_EXECUTABLE}"
+fi
+
 if [[ -n "${GUNICORN_BIN:-}" ]]; then
   GUNICORN_COMMAND=("${GUNICORN_BIN}")
 elif "${RESOLVED_PYTHON_BIN}" -c 'import gunicorn' >/dev/null 2>&1; then
