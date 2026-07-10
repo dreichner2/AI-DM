@@ -141,6 +141,17 @@ def build_command_plan(
         RcCommand('State snapshot writer inventory', (python_executable, 'scripts/check_state_snapshot_writers.py')),
         RcCommand('Socket.IO worker model decision', (python_executable, 'scripts/check_socketio_worker_model_decision.py')),
         RcCommand('API type drift check', (python_executable, 'scripts/generate_api_types.py', '--check')),
+        RcCommand(
+            'Frontend toolchain preflight',
+            (
+                'node',
+                '-e',
+                'const {execFileSync}=require("node:child_process");'
+                'const npm=execFileSync("npm",["--version"],{encoding:"utf8"}).trim();'
+                'if(process.versions.node!=="24.18.0"||npm!=="12.0.0")process.exit(1);',
+            ),
+            cwd=FRONTEND_DIR,
+        ),
         RcCommand('Frontend tests', ('npm', 'test'), cwd=FRONTEND_DIR),
         RcCommand('Frontend build', ('npm', 'run', 'build'), cwd=FRONTEND_DIR),
         RcCommand('Frontend bundle budget', ('npm', 'run', 'bundle:budget'), cwd=FRONTEND_DIR),
@@ -153,7 +164,10 @@ def build_command_plan(
         )
         commands.insert(
             secret_scan_index + 1,
-            RcCommand('Python dependency audit', (python_executable, '-m', 'pip_audit', '-r', 'requirements.runtime.txt')),
+            RcCommand(
+                'Python dependency audit',
+                (python_executable, '-m', 'pip_audit', '-r', 'requirements.runtime.lock.txt'),
+            ),
         )
         api_type_index = next(
             index

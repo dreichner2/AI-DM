@@ -168,6 +168,8 @@ def dm_response_end_payload(
     ok: bool,
     error: str | None = None,
     turn_number: int | None = None,
+    degraded: bool = False,
+    fallback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = dm_response_start_payload(
         session_id=session_id,
@@ -180,7 +182,26 @@ def dm_response_end_payload(
     payload['ok'] = ok
     if error:
         payload['error'] = error
+    if degraded:
+        payload['degraded'] = True
+    if fallback:
+        payload['fallback'] = fallback
     return payload
+
+
+def scene_state_payload(scene_state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'session_id': scene_state.get('session_id'),
+        'location_id': scene_state.get('location_id'),
+        'location_name': scene_state.get('location_name') or 'Unknown location',
+        'scene_type': scene_state.get('scene_type') or 'scene',
+        'mood': scene_state.get('mood'),
+        'danger_level': scene_state.get('danger_level') or 0,
+        'combat_state': scene_state.get('combat_state') or 'none',
+        'in_combat': bool(scene_state.get('in_combat')),
+        'music_tag': scene_state.get('music_tag') or 'calm',
+        'acting_player_id': scene_state.get('acting_player_id'),
+    }
 
 
 def segment_triggered_payload(

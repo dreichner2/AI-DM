@@ -50,8 +50,9 @@ Send testers:
 ## Known Limitations
 
 - Hosted beta is not a public SaaS launch.
-- Single-worker Socket.IO is the recommended first hosted beta model; sticky or
-  message-queue multi-worker delivery requires separate staging proof.
+- Hosted beta is single-worker only. Sticky and message-queue worker models are
+  unsupported for RC1 even with staging proof because presence and music state
+  remain process-local.
 - Cookie-only account auth is the hosted default, but the real hosted browser
   flow still needs target-specific proof for domain, HTTPS, SameSite, and secure
   cookie behavior.

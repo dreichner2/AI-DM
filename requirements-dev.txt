@@ -1,7 +1,7 @@
 -r requirements.runtime.txt
 
-Flask-Migrate
 flask-admin
 pip-audit
+pip-tools
 pytest>=9.1.1
 ruff

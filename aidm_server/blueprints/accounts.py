@@ -36,11 +36,18 @@ from aidm_server.auth import (
 )
 from aidm_server.database import db
 from aidm_server.errors import error_response
+from aidm_server.rate_limiter import FixedWindowRateLimiter, privacy_safe_preauth_bucket
+from aidm_server.telemetry import telemetry_event
 from aidm_server.models import (
     Account,
     AccountWorkspaceMembership,
     BestiaryEntry,
     Campaign,
+    CampaignPack,
+    CampaignPackCheckpointProgress,
+    CampaignPackProgressEvent,
+    CampaignPackRecord,
+    CampaignPackSession,
     CampaignSegment,
     CanonJob,
     CombatDebugEvent,
@@ -48,8 +55,10 @@ from aidm_server.models import (
     CustomRace,
     DmCoherenceFeedback,
     DmTurn,
+    InstalledCampaignPack,
     Map,
     Npc,
+    OperatorActionAudit,
     Player,
     PlayerAction,
     Session,
@@ -80,6 +89,45 @@ ACCOUNT_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
 
 def _legacy_password_setup_required_response():
     return error_response('legacy_password_setup_required', LEGACY_PASSWORD_SETUP_MESSAGE, 401)
+
+
+def _preauth_rate_limit_response(*, action: str, normalized_target: str):
+    """Consume compound, IP-wide, and target-wide credential-attempt buckets."""
+    client_ip = request.remote_addr or 'unknown'
+    secret_key = current_app.secret_key
+    limiter_specs: tuple[tuple[str, str, str], ...] = (
+        ('ip-target', 'aidm_preauth_ip_target_limiter', normalized_target),
+        ('ip', 'aidm_preauth_ip_limiter', '*'),
+        ('target', 'aidm_preauth_target_limiter', normalized_target),
+    )
+    for dimension, extension_name, target in limiter_specs:
+        limiter: FixedWindowRateLimiter = current_app.extensions[extension_name]
+        bucket = privacy_safe_preauth_bucket(
+            secret_key=secret_key,
+            dimension=dimension,
+            action=action,
+            client_ip=client_ip if dimension != 'target' else '*',
+            normalized_target=target,
+        )
+        result = limiter.allow(bucket)
+        if result.allowed:
+            continue
+        telemetry_event(
+            'auth.preauth_rate_limited',
+            payload={
+                'action': action,
+                'dimension': dimension,
+                'reset_in_seconds': result.reset_in_seconds,
+            },
+            severity='warning',
+        )
+        return error_response(
+            'rate_limited',
+            'Authentication attempt limit exceeded. Retry later.',
+            429,
+            {'reset_in_seconds': result.reset_in_seconds},
+        )
+    return None
 
 
 def _workspace_access_mode(workspace: Workspace | None) -> str:
@@ -261,6 +309,7 @@ def _ids(query) -> list[int]:
 
 
 def _delete_workspace_rows(workspace_id: str) -> None:
+    OperatorActionAudit.query.filter_by(workspace_id=workspace_id).delete(synchronize_session=False)
     world_ids = _ids(World.query.with_entities(World.world_id).filter_by(workspace_id=workspace_id))
     campaign_ids = _ids(Campaign.query.with_entities(Campaign.campaign_id).filter_by(workspace_id=workspace_id))
     session_ids = (
@@ -279,6 +328,38 @@ def _delete_workspace_rows(workspace_id: str) -> None:
         if campaign_ids
         else []
     )
+    campaign_pack_ids = _ids(
+        CampaignPack.query.with_entities(CampaignPack.campaign_pack_id).filter_by(workspace_id=workspace_id)
+    )
+    campaign_pack_session_ids = _ids(
+        CampaignPackSession.query.with_entities(CampaignPackSession.campaign_pack_session_id).filter_by(
+            workspace_id=workspace_id
+        )
+    )
+
+    if campaign_pack_session_ids:
+        CampaignPackProgressEvent.query.filter(
+            CampaignPackProgressEvent.campaign_pack_session_id.in_(campaign_pack_session_ids)
+        ).delete(synchronize_session=False)
+        CampaignPackCheckpointProgress.query.filter(
+            CampaignPackCheckpointProgress.campaign_pack_session_id.in_(campaign_pack_session_ids)
+        ).delete(synchronize_session=False)
+        CampaignPackSession.query.filter(
+            CampaignPackSession.campaign_pack_session_id.in_(campaign_pack_session_ids)
+        ).delete(synchronize_session=False)
+    if campaign_pack_ids:
+        CampaignPackRecord.query.filter(
+            or_(
+                CampaignPackRecord.workspace_id == workspace_id,
+                CampaignPackRecord.campaign_pack_id.in_(campaign_pack_ids),
+            )
+        ).delete(synchronize_session=False)
+        CampaignPack.query.filter(CampaignPack.campaign_pack_id.in_(campaign_pack_ids)).delete(
+            synchronize_session=False
+        )
+    else:
+        CampaignPackRecord.query.filter_by(workspace_id=workspace_id).delete(synchronize_session=False)
+    InstalledCampaignPack.query.filter_by(workspace_id=workspace_id).delete(synchronize_session=False)
 
     CustomRace.query.filter_by(workspace_id=workspace_id).delete(synchronize_session=False)
     BestiaryEntry.query.filter_by(workspace_id=workspace_id).delete(synchronize_session=False)
@@ -426,8 +507,23 @@ def login_or_create_account():
     account_intent, account_intent_error = _account_intent_from_payload(payload)
     if account_intent_error:
         return error_response('validation_error', account_intent_error, 400)
+    account_login_limited = account_intent == 'login'
+    if account_login_limited:
+        limited_response = _preauth_rate_limit_response(
+            action='account-login',
+            normalized_target=username,
+        )
+        if limited_response:
+            return limited_response
 
     workspace_token = _workspace_token_from_payload(payload)
+    if workspace_token:
+        limited_response = _preauth_rate_limit_response(
+            action='workspace-token',
+            normalized_target=workspace_token,
+        )
+        if limited_response:
+            return limited_response
     workspace_id = _validate_workspace_token(payload) if workspace_token else None
     if workspace_token and not workspace_id:
         return error_response('unauthorized', 'Missing or invalid workspace token.', 401)
@@ -474,11 +570,21 @@ def login_or_create_account():
             if account_intent == 'signup' and account_has_password:
                 return error_response('username_taken', 'Username is already taken. Please sign in.', 409)
             token_is_valid_for_account = bool(token_account and token_account.account_id == account.account_id)
-            password_is_valid = password_matches(account, password)
             if not account_has_password:
-                legacy_identity_claim_allowed = (
-                    _legacy_claim_requested(payload) or account_intent == 'signup'
-                ) and _legacy_claim_identity_matches(account, first_name, last_name)
+                legacy_claim_requested = _legacy_claim_requested(payload) or account_intent == 'signup'
+                legacy_identity_claim_allowed = False
+                if legacy_claim_requested and not token_is_valid_for_account:
+                    limited_response = _preauth_rate_limit_response(
+                        action='account-legacy-claim',
+                        normalized_target=username,
+                    )
+                    if limited_response:
+                        return limited_response
+                    legacy_identity_claim_allowed = _legacy_claim_identity_matches(
+                        account,
+                        first_name,
+                        last_name,
+                    )
                 password_setup_allowed = bool(password) and (
                     token_is_valid_for_account
                     or legacy_identity_claim_allowed
@@ -491,6 +597,14 @@ def login_or_create_account():
                 else:
                     return _legacy_password_setup_required_response()
             else:
+                if not account_login_limited:
+                    limited_response = _preauth_rate_limit_response(
+                        action='account-login',
+                        normalized_target=username,
+                    )
+                    if limited_response:
+                        return limited_response
+                password_is_valid = password_matches(account, password)
                 if not password_is_valid:
                     return error_response('unauthorized', 'Invalid account password.', 401)
                 if not token_is_valid_for_account:
@@ -529,6 +643,13 @@ def join_account_workspace():
         return error_response('validation_error', 'Expected JSON request body.', 400)
 
     workspace_token = _workspace_token_from_payload(payload)
+    if workspace_token:
+        limited_response = _preauth_rate_limit_response(
+            action='workspace-token',
+            normalized_target=workspace_token,
+        )
+        if limited_response:
+            return limited_response
     workspace_id = _validate_workspace_token(payload) if workspace_token else None
     if workspace_token and not workspace_id:
         return error_response('unauthorized', 'Missing or invalid workspace token.', 401)
@@ -544,6 +665,16 @@ def join_account_workspace():
         workspace = Workspace.query.filter_by(name_key=normalize_workspace_name_key(workspace_name)).first()
         if workspace is None:
             workspace = Workspace.query.filter_by(workspace_id=normalize_workspace_id(workspace_name)).first()
+        limited_response = _preauth_rate_limit_response(
+            action='workspace-password',
+            normalized_target=(
+                workspace.workspace_id
+                if workspace is not None
+                else normalize_workspace_name_key(workspace_name)
+            ),
+        )
+        if limited_response:
+            return limited_response
         if not workspace or not password_hash_matches(workspace.password_hash, workspace_password):
             return error_response('unauthorized', 'Missing or invalid table password.', 401)
         workspace_id = workspace.workspace_id

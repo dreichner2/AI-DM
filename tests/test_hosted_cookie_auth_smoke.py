@@ -109,3 +109,82 @@ def test_hosted_cookie_auth_smoke_rejects_database_uri_with_target_url():
         )
 
     assert exc_info.value.code == 2
+
+
+def test_live_socket_cookie_auth_reuses_http_session_and_forces_websocket(monkeypatch):
+    captured = {}
+
+    class FakeSocketClient:
+        connected = True
+
+        def __init__(self, **kwargs):
+            captured['client_kwargs'] = kwargs
+
+        def on(self, _event_name):
+            return lambda callback: callback
+
+        def connect(self, url, **kwargs):
+            captured['connect_url'] = url
+            captured['connect_kwargs'] = kwargs
+
+        def emit(self, event_name, payload):
+            captured['emit'] = (event_name, payload)
+
+        def sleep(self, seconds):
+            captured['sleep'] = seconds
+
+        def disconnect(self):
+            self.connected = False
+
+    class FakeHttp:
+        base_url = 'https://aidm.example.test/'
+        session = object()
+
+        @staticmethod
+        def cookie_header():
+            return 'aidm_account_session=cookie-value; aidm_csrf_token=csrf-value'
+
+    seeded = hosted_cookie_auth_smoke.SeededHostedAuthRuntime(
+        workspace_id='workspace-one',
+        world_id=1,
+        campaign_id=2,
+        session_id=3,
+        player_id=4,
+    )
+    monkeypatch.setattr(hosted_cookie_auth_smoke, 'HostedSocketClient', FakeSocketClient)
+
+    hosted_cookie_auth_smoke._assert_live_socket_cookie_auth(
+        FakeHttp(),
+        seeded,
+        socketio_path='socket.io',
+        timeout_seconds=5,
+    )
+
+    assert captured['client_kwargs']['http_session'] is FakeHttp.session
+    assert captured['connect_url'] == FakeHttp.base_url
+    assert captured['connect_kwargs']['transports'] == ['websocket']
+    assert 'headers' not in captured['connect_kwargs']
+    assert captured['emit'][0] == 'join_session'
+
+
+def test_hosted_socket_client_waits_before_namespace_connect(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        hosted_cookie_auth_smoke.time,
+        'sleep',
+        lambda seconds: calls.append(('sleep', seconds)),
+    )
+    monkeypatch.setattr(
+        hosted_cookie_auth_smoke.socketio.Client,
+        '_handle_eio_connect',
+        lambda _client: calls.append(('connect', None)),
+    )
+    client = object.__new__(hosted_cookie_auth_smoke.HostedSocketClient)
+
+    client._handle_eio_connect()
+
+    assert calls == [
+        ('sleep', hosted_cookie_auth_smoke.LIVE_SOCKET_NAMESPACE_SETTLE_SECONDS),
+        ('connect', None),
+    ]

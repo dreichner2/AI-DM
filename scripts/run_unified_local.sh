@@ -8,7 +8,7 @@ NODE_MODULES_LOCK="${FRONTEND_DIR}/node_modules/.package-lock.json"
 BACKEND_PORT="${AIDM_BACKEND_PORT:-5050}"
 FRONTEND_BUILD_MODE="${AIDM_FRONTEND_BUILD_MODE:-auto}"
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+export PATH="${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 frontend_dist_ready() {
   [[ -f "${FRONTEND_DIST_INDEX}" ]] || return 1
@@ -37,18 +37,18 @@ frontend_dist_stale() {
 }
 
 ensure_npm() {
-  if command -v npm >/dev/null 2>&1; then
-    return 0
-  fi
-
-  export NVM_DIR="${NVM_DIR:-${HOME}/.nvm}"
-  if [[ -s "${NVM_DIR}/nvm.sh" ]]; then
-    # shellcheck disable=SC1091
-    . "${NVM_DIR}/nvm.sh"
-    nvm use --silent default >/dev/null 2>&1 || nvm use --silent node >/dev/null 2>&1 || true
+  if ! command -v npm >/dev/null 2>&1; then
+    export NVM_DIR="${NVM_DIR:-${HOME}/.nvm}"
+    if [[ -s "${NVM_DIR}/nvm.sh" ]]; then
+      # shellcheck disable=SC1091
+      . "${NVM_DIR}/nvm.sh"
+      nvm use --silent "$(<"${REPO_ROOT}/.nvmrc")" >/dev/null 2>&1 || true
+    fi
   fi
 
   command -v npm >/dev/null 2>&1
+  node -e 'process.exit(process.versions.node === "24.18.0" ? 0 : 1)'
+  [[ "$(npm --version)" == "12.0.0" ]]
 }
 
 frontend_dependencies_stale() {

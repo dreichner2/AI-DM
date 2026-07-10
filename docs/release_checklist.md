@@ -10,7 +10,7 @@
 - [ ] `.venv/bin/python scripts/scenario_regression.py` passes and records provider/model for each scenario.
 - [ ] If live/local validation is needed, `.venv/bin/python scripts/smoke_beta_flow.py --use-local-env` is run intentionally against the target database/provider.
 - [ ] `GET /api/health` confirms expected flags.
-- [ ] `flask db upgrade` applies cleanly.
+- [ ] `make db-upgrade` applies cleanly.
 - [ ] GitHub Actions `AIDM CI` passes backend tests, frontend checks, bundle budget, and browser smoke.
 - [ ] GitHub Actions `Closed Beta RC` passes before tagging an RC build.
 - [ ] GitHub Actions `Closed Beta RC` uploads the `closed-beta-rc-evidence` artifact containing `tmp/release/rc-evidence.md`, issue snippets, the release evidence packet, source archive plus `.sha256`, security/export-import evidence, visual-smoke screenshots/review evidence, and GitHub Actions run URL evidence when produced.
@@ -64,6 +64,8 @@
 - [ ] `make security-forbidden-smoke` proves non-admin accounts are rejected by combat operator, bestiary authoring/save, and beta operator endpoints.
 - [ ] `make security-forbidden-smoke SECURITY_FORBIDDEN_SMOKE_ARGS="--target-url <target-url> --account-token <non-admin-token> --workspace-id <workspace-id> --campaign-id <campaign-id> --session-id <session-id> --evidence-report tmp/release/security-forbidden-evidence.md"` passes against hosted/staging before closing the security gate.
 - [ ] Security headers are enabled, including `Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, and `Permissions-Policy`.
+- [ ] The authentication/security owner and release owner sign the closed-beta-only Low/P3 acceptance for open findings `preauth-target-lockout-legacy-claim` and `preauth-target-lockout-workspace-password`. The acceptance expires on 2026-08-10 or before exposure expands, whichever comes first; neither finding is marked fixed or closed.
+- [ ] Hosted telemetry routes every `auth.preauth_rate_limited` event with `dimension=target` and action `account-legacy-claim` or `workspace-password` to `AIDM_ALERT_OWNER`, and the release evidence records that the renewable target-lockout response in `docs/beta_runbook.md` was reviewed.
 
 ## Data Integrity
 - [ ] Database backup taken before deployment.
@@ -82,11 +84,10 @@
 - [ ] Socket message stream includes `turn_id`, `requires_roll`, `rules_hint`, `context_version`.
 - [ ] Typed `action_intent` metadata persists for roll/ability/item actions.
 - [ ] `turn_status` events progress through narration, save, canon, and failure states.
-- [ ] `AIDM_SOCKETIO_WORKER_MODEL` is explicitly set to `single`, `sticky`, or `message_queue`.
+- [ ] `AIDM_SOCKETIO_WORKER_MODEL` is explicitly set to `single`; hosted production rejects deferred multi-worker models.
 - [ ] `make socketio-worker-model-decision` passes and `docs/socketio_worker_model.md` records the RC1 hosted worker-model decision.
-- [ ] Hosted single-worker beta start command is `scripts/run_production_server.sh` with `AIDM_SOCKETIO_ASYNC_MODE=eventlet`, `AIDM_SOCKETIO_WORKER_MODEL=single`, and `WEB_CONCURRENCY=1`; `scripts/run_production_server.sh --print` shows the exact Gunicorn command.
-- [ ] Multi-worker deployments set `AIDM_TURN_COORDINATOR_STORE=database`, have migration `0011_session_turn_locks` applied, and prove sticky-session affinity or Socket.IO message-queue delivery in staging.
-- [ ] Sticky or message-queue Socket.IO deployments provide `--socketio-staging-proof` to the deployment-readiness gate.
+- [ ] Hosted single-worker beta start command is `scripts/run_production_server.sh` with `AIDM_ENV=production`, `AIDM_SOCKETIO_ASYNC_MODE=threading`, `AIDM_SOCKETIO_WORKER_MODEL=single`, `AIDM_GUNICORN_THREADS=100`, and `WEB_CONCURRENCY=1`; `scripts/run_production_server.sh --print` shows the exact Gunicorn gthread command.
+- [ ] Deployment evidence proves exactly one backend process/replica; process-local presence/music makes multi-worker production unsafe even with turn fencing.
 - [ ] Campaign-pack progress service calls are serialized through the reentrant session turn coordinator, including nested calls from active turn processing.
 - [ ] `make socket-concurrency-smoke` proves same-session queue locking and different-session socket turn persistence.
 - [ ] Beta runtime notices are visible for deterministic fallback, missing live provider configuration, local/private auth-disabled mode, unavailable TTS, and process-local provider changes.

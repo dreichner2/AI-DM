@@ -6,9 +6,16 @@ import {
   type SetStateAction,
 } from 'react'
 import { io, type Socket } from 'socket.io-client'
-import { ngrokBrowserWarningBypassHeaders, normalizeBaseUrl, storedWorkspaceId, storedWorkspaceToken } from './api'
+import {
+  isBackendOriginTrusted,
+  ngrokBrowserWarningBypassHeaders,
+  normalizeBaseUrl,
+  storedWorkspaceId,
+  storedWorkspaceToken,
+} from './api'
 import { stringValue, turnStatusAllowsNextSend } from './gameSelectors'
 import type { SceneMusicSyncState } from './SceneMusicPlayer'
+import { normalizeSceneState, type SceneDisplayState, type SceneStatePayload } from './sceneState'
 import { normalizeTurnControl } from './turnControl'
 import type {
   ActivePlayer,
@@ -88,6 +95,7 @@ type UseSessionSocketOptions = {
   setTurnStatuses: Dispatch<SetStateAction<Record<number, string>>>
   setClarificationRequest: Dispatch<SetStateAction<ClarificationRequest | null>>
   setSceneMusicSyncState: Dispatch<SetStateAction<SceneMusicSyncState | null>>
+  setSceneState: Dispatch<SetStateAction<SceneDisplayState | null>>
   spokenTextLengthRef: MutableRefObject<number>
   speakableStreamingTextRef: MutableRefObject<string>
   queueTtsNarrationRef: MutableRefObject<((text: string) => void) | null>
@@ -183,6 +191,43 @@ function timelineEntryFromNewMessage(payload: NewMessagePayload): TimelineEntry 
   }
 }
 
+export function buildSessionSocketConnection(baseUrl: string, auth: string) {
+  const socketBaseUrl = normalizeBaseUrl(baseUrl)
+  const trustedBackend = isBackendOriginTrusted(socketBaseUrl)
+  const ngrokBypassHeaders = socketBaseUrl ? ngrokBrowserWarningBypassHeaders(socketBaseUrl) : undefined
+  const workspaceToken = trustedBackend ? storedWorkspaceToken(socketBaseUrl).trim() : ''
+  const workspaceId = trustedBackend ? storedWorkspaceId(socketBaseUrl).trim() : ''
+  const accountToken = trustedBackend ? auth.trim() : ''
+  const socketAuth =
+    accountToken || workspaceToken || workspaceId
+      ? {
+          ...(accountToken ? { account_token: accountToken } : {}),
+          ...(workspaceToken ? { workspace_token: workspaceToken } : {}),
+          ...(!workspaceToken && workspaceId ? { workspace_id: workspaceId } : {}),
+          ...(!accountToken && workspaceToken ? { token: workspaceToken } : {}),
+        }
+      : undefined
+  const socketOptions = {
+    auth: socketAuth,
+    transports: ['websocket', 'polling'],
+    ...(!trustedBackend ? { withCredentials: false } : {}),
+    ...(ngrokBypassHeaders
+      ? {
+          extraHeaders: ngrokBypassHeaders,
+          transportOptions: {
+            polling: {
+              extraHeaders: ngrokBypassHeaders,
+            },
+            websocket: {
+              extraHeaders: ngrokBypassHeaders,
+            },
+          },
+        }
+      : {}),
+  }
+  return { socketBaseUrl, socketOptions }
+}
+
 export function useSessionSocket({
   auth,
   baseUrl,
@@ -206,6 +251,7 @@ export function useSessionSocket({
   setTurnStatuses,
   setClarificationRequest,
   setSceneMusicSyncState,
+  setSceneState,
   spokenTextLengthRef,
   speakableStreamingTextRef,
   queueTtsNarrationRef,
@@ -226,42 +272,15 @@ export function useSessionSocket({
       lastWorldSnapshotRefreshRef.current = null
       setActivePlayers([])
       setSceneMusicSyncState(null)
+      setSceneState(null)
       setSocketStatus('idle')
       return
     }
 
     lastWorldSnapshotRefreshRef.current = null
     setSceneMusicSyncState(null)
-    const socketBaseUrl = normalizeBaseUrl(baseUrl)
-    const ngrokBypassHeaders = socketBaseUrl ? ngrokBrowserWarningBypassHeaders(socketBaseUrl) : undefined
-    const workspaceToken = storedWorkspaceToken().trim()
-    const workspaceId = storedWorkspaceId().trim()
-    const socketAuth =
-      auth || workspaceToken || workspaceId
-        ? {
-            ...(auth ? { account_token: auth } : {}),
-            ...(workspaceToken ? { workspace_token: workspaceToken } : {}),
-            ...(!workspaceToken && workspaceId ? { workspace_id: workspaceId } : {}),
-            ...(!auth && workspaceToken ? { token: workspaceToken } : {}),
-          }
-        : undefined
-    const socketOptions = {
-      auth: socketAuth,
-      transports: ['websocket', 'polling'],
-      ...(ngrokBypassHeaders
-        ? {
-            extraHeaders: ngrokBypassHeaders,
-            transportOptions: {
-              polling: {
-                extraHeaders: ngrokBypassHeaders,
-              },
-              websocket: {
-                extraHeaders: ngrokBypassHeaders,
-              },
-            },
-          }
-        : {}),
-    }
+    setSceneState(null)
+    const { socketBaseUrl, socketOptions } = buildSessionSocketConnection(baseUrl, auth)
     const socket = socketBaseUrl ? io(socketBaseUrl, socketOptions) : io(socketOptions)
     socketRef.current = socket
     setSocketStatus('connecting')
@@ -312,6 +331,13 @@ export function useSessionSocket({
       const musicState = normalizeMusicState(payload)
       if (!musicState || musicState.sessionId !== selectedSessionId) return
       setSceneMusicSyncState(musicState)
+    })
+
+    socket.on('scene_state', (payload: SceneStatePayload) => {
+      if (!payload || typeof payload !== 'object') return
+      const nextSceneState = normalizeSceneState(payload)
+      if (!nextSceneState || nextSceneState.sessionId !== selectedSessionId) return
+      setSceneState(nextSceneState)
     })
 
     socket.on('new_message', (payload: NewMessagePayload) => {
@@ -538,6 +564,7 @@ export function useSessionSocket({
       setStreamingTurn(null)
       setActivePlayers([])
       setSceneMusicSyncState(null)
+      setSceneState(null)
       setSocketStatus('offline')
     })
 
@@ -552,6 +579,7 @@ export function useSessionSocket({
       }
       setActivePlayers([])
       setSceneMusicSyncState(null)
+      setSceneState(null)
     }
   }, [
     auth,
@@ -572,6 +600,7 @@ export function useSessionSocket({
     setOptimisticEntries,
     setClarificationRequest,
     setSceneMusicSyncState,
+    setSceneState,
     setSendPending,
     setSessionState,
     setSocketStatus,

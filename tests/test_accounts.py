@@ -1,11 +1,29 @@
 from __future__ import annotations
 
 import importlib
+from unittest.mock import Mock
+
+from sqlalchemy import event
 
 from aidm_server.auth import generate_account_token, hash_secret, normalize_username
 from aidm_server.blueprints.accounts import LEGACY_PASSWORD_SETUP_MESSAGE
 from aidm_server.database import db
-from aidm_server.models import Account, AccountWorkspaceMembership, Campaign, Player, Workspace, World
+from aidm_server.models import (
+    Account,
+    AccountWorkspaceMembership,
+    Campaign,
+    CampaignPack,
+    CampaignPackCheckpointProgress,
+    CampaignPackProgressEvent,
+    CampaignPackRecord,
+    CampaignPackSession,
+    InstalledCampaignPack,
+    OperatorActionAudit,
+    Player,
+    Session,
+    Workspace,
+    World,
+)
 
 
 def _build_account_runtime(tmp_path, monkeypatch, extra_env: dict[str, str] | None = None):
@@ -21,6 +39,9 @@ def _build_account_runtime(tmp_path, monkeypatch, extra_env: dict[str, str] | No
     monkeypatch.setenv('AIDM_TELEMETRY_ENABLED', 'false')
     monkeypatch.setenv('AIDM_RATE_LIMIT_MAX_API_REQUESTS', '1000')
     monkeypatch.setenv('AIDM_RATE_LIMIT_MAX_SOCKET_MESSAGES', '1000')
+    monkeypatch.setenv('AIDM_PREAUTH_RATE_LIMIT_MAX_IP_TARGET_ATTEMPTS', '1000')
+    monkeypatch.setenv('AIDM_PREAUTH_RATE_LIMIT_MAX_IP_ATTEMPTS', '1000')
+    monkeypatch.setenv('AIDM_PREAUTH_RATE_LIMIT_MAX_TARGET_ATTEMPTS', '1000')
     for key, value in (extra_env or {}).items():
         monkeypatch.setenv(key, value)
 
@@ -73,6 +94,16 @@ def _create_legacy_passwordless_account(app, *, username: str, first_name: str, 
     return token
 
 
+def _strict_preauth_env(*, trusted_proxy_count: int = 0) -> dict[str, str]:
+    return {
+        'AIDM_PREAUTH_RATE_LIMIT_WINDOW_SECONDS': '60',
+        'AIDM_PREAUTH_RATE_LIMIT_MAX_IP_TARGET_ATTEMPTS': '1',
+        'AIDM_PREAUTH_RATE_LIMIT_MAX_IP_ATTEMPTS': '20',
+        'AIDM_PREAUTH_RATE_LIMIT_MAX_TARGET_ATTEMPTS': '20',
+        'AIDM_TRUSTED_PROXY_COUNT': str(trusted_proxy_count),
+    }
+
+
 def _csrf_header_from_response(response) -> dict[str, str]:
     csrf_cookie = next(
         value
@@ -80,6 +111,486 @@ def _csrf_header_from_response(response) -> dict[str, str]:
         if value.startswith('aidm_csrf_token=')
     )
     return {'X-AIDM-CSRF-Token': csrf_cookie.split(';', 1)[0].split('=', 1)[1]}
+
+
+def test_account_login_is_rate_limited_before_second_password_verification(
+    tmp_path,
+    monkeypatch,
+):
+    app = _build_account_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env=_strict_preauth_env(),
+    )
+    client = app.test_client()
+    signup = _login(
+        client,
+        username='Danny',
+        first_name='Danny',
+        last_name='Reichner',
+        password='secret',
+        intent='signup',
+    )
+    assert signup.status_code == 201
+
+    verifier = Mock(return_value=False)
+    monkeypatch.setattr('aidm_server.blueprints.accounts.password_matches', verifier)
+    first = client.post(
+        '/api/accounts/login',
+        headers={'X-Forwarded-For': '198.51.100.10'},
+        json={'username': 'Danny', 'password': 'wrong', 'intent': 'login'},
+    )
+    second = client.post(
+        '/api/accounts/login',
+        headers={'X-Forwarded-For': '203.0.113.20'},
+        json={'username': ' danny ', 'password': 'wrong-again', 'intent': 'login'},
+    )
+
+    assert first.status_code == 401
+    assert second.status_code == 429
+    assert second.get_json()['error_code'] == 'rate_limited'
+    verifier.assert_called_once()
+
+
+def test_unknown_account_login_is_rate_limited_before_second_lookup(tmp_path, monkeypatch):
+    app = _build_account_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env=_strict_preauth_env(),
+    )
+    client = app.test_client()
+    account_selects: list[str] = []
+
+    def capture_account_select(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if 'from accounts' in statement.casefold():
+            account_selects.append(statement)
+
+    with app.app_context():
+        event.listen(db.engine, 'before_cursor_execute', capture_account_select)
+
+    try:
+        first = _login(
+            client,
+            username='Missing_User',
+            first_name='',
+            last_name='',
+            password='wrong',
+            intent='login',
+        )
+        second = _login(
+            client,
+            username=' missing_user ',
+            first_name='',
+            last_name='',
+            password='wrong-again',
+            intent='login',
+        )
+    finally:
+        with app.app_context():
+            event.remove(db.engine, 'before_cursor_execute', capture_account_select)
+
+    assert first.status_code == 404
+    assert first.get_json()['error_code'] == 'username_not_found'
+    assert second.status_code == 429
+    assert second.get_json()['error_code'] == 'rate_limited'
+    assert len(account_selects) == 1
+
+
+def test_account_login_uses_trusted_proxy_ip_for_preauth_buckets(tmp_path, monkeypatch):
+    app = _build_account_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env=_strict_preauth_env(trusted_proxy_count=1),
+    )
+    client = app.test_client()
+    signup = _login(
+        client,
+        username='Danny',
+        first_name='Danny',
+        last_name='Reichner',
+        password='secret',
+        intent='signup',
+    )
+    assert signup.status_code == 201
+
+    verifier = Mock(return_value=False)
+    monkeypatch.setattr('aidm_server.blueprints.accounts.password_matches', verifier)
+    first = client.post(
+        '/api/accounts/login',
+        headers={'X-Forwarded-For': '198.51.100.10'},
+        json={'username': 'Danny', 'password': 'wrong', 'intent': 'login'},
+    )
+    second = client.post(
+        '/api/accounts/login',
+        headers={'X-Forwarded-For': '203.0.113.20'},
+        json={'username': 'Danny', 'password': 'wrong', 'intent': 'login'},
+    )
+    repeated_ip = client.post(
+        '/api/accounts/login',
+        headers={'X-Forwarded-For': '203.0.113.20'},
+        json={'username': 'Danny', 'password': 'wrong', 'intent': 'login'},
+    )
+
+    assert first.status_code == 401
+    assert second.status_code == 401
+    assert repeated_ip.status_code == 429
+    assert verifier.call_count == 2
+
+
+def test_account_login_ip_bucket_blocks_username_spraying(tmp_path, monkeypatch):
+    app = _build_account_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={
+            **_strict_preauth_env(),
+            'AIDM_PREAUTH_RATE_LIMIT_MAX_IP_TARGET_ATTEMPTS': '20',
+            'AIDM_PREAUTH_RATE_LIMIT_MAX_IP_ATTEMPTS': '1',
+        },
+    )
+    client = app.test_client()
+
+    first = _login(
+        client,
+        username='Missing_One',
+        first_name='',
+        last_name='',
+        password='wrong',
+        intent='login',
+    )
+    rotated_target = _login(
+        client,
+        username='Missing_Two',
+        first_name='',
+        last_name='',
+        password='wrong',
+        intent='login',
+    )
+
+    assert first.status_code == 404
+    assert rotated_target.status_code == 429
+
+
+def test_account_login_target_bucket_blocks_distributed_attempts(tmp_path, monkeypatch):
+    app = _build_account_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={
+            **_strict_preauth_env(trusted_proxy_count=1),
+            'AIDM_PREAUTH_RATE_LIMIT_MAX_IP_TARGET_ATTEMPTS': '20',
+            'AIDM_PREAUTH_RATE_LIMIT_MAX_TARGET_ATTEMPTS': '1',
+        },
+    )
+    client = app.test_client()
+    payload = {
+        'username': 'Missing_User',
+        'first_name': '',
+        'last_name': '',
+        'password': 'wrong',
+        'intent': 'login',
+    }
+
+    first = client.post(
+        '/api/accounts/login',
+        headers={'X-Forwarded-For': '198.51.100.10'},
+        json=payload,
+    )
+    rotated_ip = client.post(
+        '/api/accounts/login',
+        headers={'X-Forwarded-For': '203.0.113.20'},
+        json=payload,
+    )
+
+    assert first.status_code == 404
+    assert rotated_ip.status_code == 429
+
+
+def test_legacy_claim_is_rate_limited_before_second_identity_verification(
+    tmp_path,
+    monkeypatch,
+):
+    app = _build_account_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env=_strict_preauth_env(),
+    )
+    client = app.test_client()
+    _create_legacy_passwordless_account(
+        app,
+        username='Maya',
+        first_name='Maya',
+        last_name='Stone',
+    )
+
+    verifier = Mock(return_value=False)
+    monkeypatch.setattr(
+        'aidm_server.blueprints.accounts._legacy_claim_identity_matches',
+        verifier,
+    )
+    first = _login(
+        client,
+        username='Maya',
+        first_name='Mara',
+        last_name='Stone',
+        password='new-secret',
+        intent='signup',
+    )
+    second = _login(
+        client,
+        username='Maya',
+        first_name='Maya',
+        last_name='Stone',
+        password='new-secret',
+        intent='signup',
+    )
+
+    assert first.status_code == 401
+    assert second.status_code == 429
+    verifier.assert_called_once()
+
+
+def test_saved_token_legacy_setup_bypasses_saturated_weak_claim_target(
+    tmp_path,
+    monkeypatch,
+):
+    app = _build_account_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env=_strict_preauth_env(trusted_proxy_count=1),
+    )
+    client = app.test_client()
+    maya_token = _create_legacy_passwordless_account(
+        app,
+        username='Maya',
+        first_name='Maya',
+        last_name='Stone',
+    )
+    other_account_token = _create_legacy_passwordless_account(
+        app,
+        username='Nora',
+        first_name='Nora',
+        last_name='Vale',
+    )
+    telemetry = Mock()
+    monkeypatch.setattr('aidm_server.blueprints.accounts.telemetry_event', telemetry)
+
+    weak_claim = {
+        'username': 'Maya',
+        'first_name': 'Mallory',
+        'last_name': 'Stone',
+        'password': 'dummy-attacker-selected-password',
+        'intent': 'signup',
+        'legacy_claim': True,
+    }
+    attacker_responses = [
+        client.post(
+            '/api/accounts/login',
+            headers={'X-Forwarded-For': f'198.51.100.{index}'},
+            json=weak_claim,
+        )
+        for index in range(1, 21)
+    ]
+    assert [response.status_code for response in attacker_responses] == [401] * 20
+
+    blocked_claim_headers = [
+        {'X-Forwarded-For': '203.0.113.1'},
+        {
+            'Authorization': 'Bearer stale-account-token',
+            'X-Forwarded-For': '203.0.113.2',
+        },
+        {
+            'Authorization': f'Bearer {other_account_token}',
+            'X-Forwarded-For': '203.0.113.3',
+        },
+    ]
+    blocked_responses = [
+        client.post(
+            '/api/accounts/login',
+            headers=headers,
+            json={
+                **weak_claim,
+                'first_name': 'Maya',
+                'password': 'owner-new-password',
+            },
+        )
+        for headers in blocked_claim_headers
+    ]
+    assert [response.status_code for response in blocked_responses] == [429] * 3
+    assert {response.get_json()['error_code'] for response in blocked_responses} == {'rate_limited'}
+
+    saved_token_setup = client.post(
+        '/api/accounts/login',
+        headers={
+            'Authorization': f'Bearer {maya_token}',
+            'X-Forwarded-For': '203.0.113.4',
+        },
+        json={
+            'username': 'Maya',
+            'first_name': 'Maya',
+            'last_name': 'Stone',
+            'password': 'owner-new-password',
+            'intent': 'login',
+            'legacy_claim': True,
+        },
+    )
+    assert saved_token_setup.status_code == 200
+    assert saved_token_setup.get_json()['account_token'] == maya_token
+    with app.app_context():
+        account = Account.query.filter_by(username='maya').one()
+        assert account.password_hash is not None
+
+    assert telemetry.call_count == 3
+    for telemetry_call in telemetry.call_args_list:
+        assert telemetry_call.args == ('auth.preauth_rate_limited',)
+        assert telemetry_call.kwargs['severity'] == 'warning'
+        payload = telemetry_call.kwargs['payload']
+        assert set(payload) == {'action', 'dimension', 'reset_in_seconds'}
+        assert payload['action'] == 'account-legacy-claim'
+        assert payload['dimension'] == 'target'
+        assert 1 <= payload['reset_in_seconds'] <= 60
+    rendered_telemetry = repr(telemetry.call_args_list)
+    for raw_value in ('Maya', 'maya', maya_token, other_account_token, 'stale-account-token'):
+        assert raw_value not in rendered_telemetry
+
+
+def test_workspace_password_is_rate_limited_before_second_hash_verification(
+    tmp_path,
+    monkeypatch,
+):
+    app = _build_account_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env=_strict_preauth_env(),
+    )
+    client = app.test_client()
+    signup = _login(
+        client,
+        username='Maya',
+        first_name='Maya',
+        last_name='Stone',
+        password='secret',
+        intent='signup',
+    )
+    assert signup.status_code == 201
+    account_token = signup.get_json()['account_token']
+    headers = {'Authorization': f'Bearer {account_token}'}
+    create_workspace = client.post(
+        '/api/accounts/workspaces',
+        headers=headers,
+        json={
+            'table_name': 'Friday Night',
+            'table_password': 'table-secret',
+            'access_mode': 'password',
+        },
+    )
+    assert create_workspace.status_code == 201
+
+    verifier = Mock(return_value=False)
+    monkeypatch.setattr('aidm_server.blueprints.accounts.password_hash_matches', verifier)
+    first = client.post(
+        '/api/accounts/workspace',
+        headers=headers,
+        json={'table_name': 'Friday Night', 'table_password': 'wrong'},
+    )
+    second = client.post(
+        '/api/accounts/workspace',
+        headers=headers,
+        json={'table_name': 'Friday_Night', 'table_password': 'wrong-again'},
+    )
+
+    assert first.status_code == 401
+    assert second.status_code == 429
+    verifier.assert_called_once()
+
+
+def test_invalid_workspace_token_is_rate_limited_before_second_lookup(
+    tmp_path,
+    monkeypatch,
+):
+    app = _build_account_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env=_strict_preauth_env(),
+    )
+    client = app.test_client()
+    signup = _login(
+        client,
+        username='Aidan',
+        first_name='Aidan',
+        last_name='Fernandez',
+        password='secret',
+        intent='signup',
+    )
+    assert signup.status_code == 201
+    headers = {'Authorization': f"Bearer {signup.get_json()['account_token']}"}
+
+    verifier = Mock(return_value=None)
+    monkeypatch.setattr('aidm_server.blueprints.accounts._validate_workspace_token', verifier)
+    first = client.post(
+        '/api/accounts/workspace',
+        headers=headers,
+        json={'workspace_token': 'raw-invalid-workspace-token'},
+    )
+    second = client.post(
+        '/api/accounts/workspace',
+        headers=headers,
+        json={'workspace_token': 'raw-invalid-workspace-token'},
+    )
+
+    assert first.status_code == 401
+    assert second.status_code == 429
+    verifier.assert_called_once()
+    bucket_keys = {
+        key
+        for extension_name in (
+            'aidm_preauth_ip_target_limiter',
+            'aidm_preauth_ip_limiter',
+            'aidm_preauth_target_limiter',
+        )
+        for key in app.extensions[extension_name]._events
+    }
+    assert bucket_keys
+    assert all('raw-invalid-workspace-token' not in key for key in bucket_keys)
+    assert all('127.0.0.1' not in key for key in bucket_keys)
+
+
+def test_preauth_limiters_use_the_configured_database_store(tmp_path, monkeypatch):
+    from aidm_server.rate_limiter import DatabaseRateLimitStore
+
+    app = _build_account_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={
+            **_strict_preauth_env(),
+            'AIDM_RATE_LIMIT_STORE': 'database',
+        },
+    )
+
+    for extension_name in (
+        'aidm_preauth_ip_target_limiter',
+        'aidm_preauth_ip_limiter',
+        'aidm_preauth_target_limiter',
+    ):
+        assert isinstance(app.extensions[extension_name].store, DatabaseRateLimitStore)
+
+    client = app.test_client()
+    first = _login(
+        client,
+        username='Missing_User',
+        first_name='',
+        last_name='',
+        password='wrong',
+        intent='login',
+    )
+    second = _login(
+        client,
+        username='Missing_User',
+        first_name='',
+        last_name='',
+        password='wrong-again',
+        intent='login',
+    )
+    assert first.status_code == 404
+    assert second.status_code == 429
 
 
 def test_account_login_issues_session_token_and_uses_password_plus_workspace_token(tmp_path, monkeypatch):
@@ -117,7 +628,8 @@ def test_account_login_issues_session_token_and_uses_password_plus_workspace_tok
         'X-AIDM-Workspace-Token': 'owner-token',
     }
     worlds_response = client.post('/api/worlds', headers=account_headers, json={'name': 'Account World'})
-    assert worlds_response.status_code == 201
+    assert worlds_response.status_code == 403
+    assert worlds_response.get_json()['details']['required_capability'] == 'dm_authoring'
 
     missing_workspace = client.get('/api/campaigns', headers={'Authorization': f"Bearer {session_token}"})
     assert missing_workspace.status_code == 401
@@ -217,7 +729,8 @@ def test_cookie_auth_can_run_account_and_workspace_flow_without_token_response(t
         headers={**csrf_headers, 'X-AIDM-Workspace-Token': 'owner-token'},
         json={'name': 'Cookie Auth World'},
     )
-    assert worlds_response.status_code == 201
+    assert worlds_response.status_code == 403
+    assert worlds_response.get_json()['details']['required_capability'] == 'dm_authoring'
 
     logout = client.delete('/api/accounts/session', headers=csrf_headers)
     assert logout.status_code == 200
@@ -332,6 +845,78 @@ def test_account_can_create_password_table_and_join_by_name_password(tmp_path, m
             character_name='Maya',
         )
         db.session.add(table_player)
+        table_session = Session(campaign_id=table_campaign.campaign_id, state_snapshot='{}')
+        db.session.add(table_session)
+        installed_pack = InstalledCampaignPack(
+            workspace_id='Friday_Night',
+            pack_id='friday-pack',
+            title='Friday Pack',
+            pack_version='1.0.0',
+            schema_version='1',
+            pack_hash='a' * 64,
+            manifest_json='{}',
+        )
+        db.session.add(installed_pack)
+        db.session.flush()
+        campaign_pack = CampaignPack(
+            workspace_id='Friday_Night',
+            installed_pack_id=installed_pack.installed_pack_id,
+            pack_id='friday-pack',
+            title='Friday Pack',
+            pack_version='1.0.0',
+            schema_version='1',
+            pack_hash='a' * 64,
+            manifest_json='{}',
+        )
+        db.session.add(campaign_pack)
+        db.session.flush()
+        db.session.add(
+            CampaignPackRecord(
+                campaign_pack_id=campaign_pack.campaign_pack_id,
+                workspace_id='Friday_Night',
+                pack_id='friday-pack',
+                record_type='location',
+                record_id='friday-inn',
+                record_json='{}',
+            )
+        )
+        campaign_pack_session = CampaignPackSession(
+            campaign_pack_id=campaign_pack.campaign_pack_id,
+            installed_pack_id=installed_pack.installed_pack_id,
+            session_id=table_session.session_id,
+            campaign_id=table_campaign.campaign_id,
+            workspace_id='Friday_Night',
+            pack_id='friday-pack',
+        )
+        db.session.add(campaign_pack_session)
+        db.session.flush()
+        db.session.add(
+            CampaignPackCheckpointProgress(
+                campaign_pack_session_id=campaign_pack_session.campaign_pack_session_id,
+                checkpoint_id='arrival',
+            )
+        )
+        db.session.add(
+            CampaignPackProgressEvent(
+                campaign_pack_session_id=campaign_pack_session.campaign_pack_session_id,
+                session_id=table_session.session_id,
+                campaign_id=table_campaign.campaign_id,
+                event_type='checkpoint',
+                action='activate',
+                payload_json='{}',
+            )
+        )
+        db.session.add(
+            OperatorActionAudit(
+                workspace_id='Friday_Night',
+                action='legacy.private_action',
+                resource_type='workspace',
+                resource_id='Friday_Night',
+                actor='deleted-workspace-admin',
+                actor_role='admin',
+                details_json='{"private": "old workspace data"}',
+            )
+        )
         db.session.commit()
 
     remove_saved_table = client.delete(
@@ -361,6 +946,34 @@ def test_account_can_create_password_table_and_join_by_name_password(tmp_path, m
         assert World.query.filter_by(workspace_id='Friday_Night').count() == 0
         assert Campaign.query.filter_by(workspace_id='Friday_Night').count() == 0
         assert Player.query.filter_by(workspace_id='Friday_Night').count() == 0
+        assert InstalledCampaignPack.query.filter_by(workspace_id='Friday_Night').count() == 0
+        assert CampaignPack.query.filter_by(workspace_id='Friday_Night').count() == 0
+        assert CampaignPackRecord.query.filter_by(workspace_id='Friday_Night').count() == 0
+        assert CampaignPackSession.query.filter_by(workspace_id='Friday_Night').count() == 0
+        assert CampaignPackCheckpointProgress.query.count() == 0
+        assert CampaignPackProgressEvent.query.count() == 0
+        assert OperatorActionAudit.query.filter_by(workspace_id='Friday_Night').count() == 0
+
+    recreate_table = client.post(
+        '/api/accounts/workspaces',
+        headers={'Authorization': f'Bearer {owner_token}'},
+        json={
+            'table_name': 'Friday Night',
+            'access_mode': 'password',
+            'table_password': 'replacement-secret',
+        },
+    )
+    assert recreate_table.status_code == 201
+    reused_workspace_audits = client.get(
+        '/api/beta/audits',
+        headers={
+            'Authorization': f'Bearer {owner_token}',
+            'X-AIDM-Workspace-Id': 'Friday_Night',
+        },
+    )
+    assert reused_workspace_audits.status_code == 200
+    assert reused_workspace_audits.get_json()['summary']['operator_action_count'] == 0
+    assert reused_workspace_audits.get_json()['operator_actions'] == []
 
 
 def test_account_can_create_generated_token_table_and_token_is_one_time(tmp_path, monkeypatch):

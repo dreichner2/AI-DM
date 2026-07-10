@@ -125,9 +125,12 @@ ITEM_SPECS: tuple[SignoffItemSpec, ...] = (
     ),
     SignoffItemSpec(
         'multi_worker_socketio_staging',
-        'Multi-worker Socket.IO staging proof',
+        'Single-worker Socket.IO topology enforcement',
         '#7',
-        'Sticky-session or message-queue staging proof when the target is not RC1 single-worker mode.',
+        (
+            'Must be not_applicable with platform evidence confirming the supported RC1 '
+            'single-worker topology. Multi-worker staging proof cannot satisfy this release gate.'
+        ),
         allow_not_applicable=True,
     ),
     SignoffItemSpec(
@@ -295,9 +298,9 @@ ACTION_SPECS: dict[str, SignoffActionSpec] = {
     'multi_worker_socketio_staging': SignoffActionSpec(
         key='multi_worker_socketio_staging',
         category='Manual hosted proof',
-        next_action='Mark not applicable only after worker-process proof confirms RC1 single-worker mode; otherwise attach sticky/message-queue staging proof.',
-        command='For multi-worker targets, rerun deployment readiness with --socketio-staging-proof <link-or-path>.',
-        evidence_to_record='Single-worker proof or sticky/message-queue staging proof.',
+        next_action='Confirm the hosted target uses the supported single-worker topology, then mark this item not applicable.',
+        command='Attach platform process/config evidence showing exactly one backend process/replica; do not deploy sticky or message_queue mode for RC1.',
+        evidence_to_record='Single-worker process/replica proof. Future multi-worker research does not satisfy RC1 sign-off.',
         required_inputs=('<link-or-path>',),
     ),
     'hosted_beta_slo_baseline': SignoffActionSpec(
@@ -766,6 +769,11 @@ def _item_status(
         errors.append('provided status requires evidence')
     elif status == 'provided':
         errors.extend(_evidence_errors(evidence))
+        if spec.key == 'multi_worker_socketio_staging':
+            errors.append(
+                'multi-worker Socket.IO is unsupported for hosted production in RC1; '
+                'use single-worker mode and mark this item not_applicable with worker-process evidence'
+            )
         if manifest_path is not None:
             if spec.key == 'clean_signed_off_worktree':
                 errors.extend(_clean_signed_off_evidence_errors(evidence, manifest_path=manifest_path))
@@ -924,7 +932,8 @@ def example_manifest() -> dict[str, Any]:
                 'status': 'not_applicable' if spec.allow_not_applicable else 'pending',
                 'evidence': '',
                 'notes': (
-                    'Set to provided with sticky/message-queue proof if the target is not single-worker.'
+                    'RC1 production is single-worker only. Keep this not_applicable and attach '
+                    'the hosted worker-process proof; multi-worker staging evidence is future-only.'
                     if spec.allow_not_applicable
                     else spec.details
                 ),
@@ -969,8 +978,8 @@ def draft_manifest_from_packet(
         'multi_worker_socketio_staging',
         status='pending',
         notes=(
-            'Pending until hosted Socket.IO worker-process proof confirms RC1 single-worker mode '
-            'or supplies sticky/message-queue staging evidence.'
+            'Pending until hosted Socket.IO worker-process proof confirms the supported RC1 '
+            'single-worker topology. Multi-worker evidence cannot satisfy this release gate.'
         ),
     )
 
@@ -1141,13 +1150,15 @@ def draft_manifest_from_packet(
             evidence=worker_process,
             notes='Hosted worker-process proof confirms RC1 single-worker mode.',
         )
-    elif worker_process and _real_text(hosted_rc_metadata.get('socket_io_staging_proof')):
+    elif worker_model and worker_model != 'single':
         _set_item(
             manifest,
             'multi_worker_socketio_staging',
-            status='provided',
-            evidence=_real_text(hosted_rc_metadata.get('socket_io_staging_proof')),
-            notes='Hosted worker proof supplied sticky/message-queue staging evidence.',
+            status='pending',
+            notes=(
+                f'Hosted evidence reports unsupported Socket.IO worker model {worker_model!r}. '
+                'Redeploy with single-worker mode; staging proof cannot satisfy RC1 sign-off.'
+            ),
         )
 
     return manifest

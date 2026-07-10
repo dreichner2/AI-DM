@@ -5,7 +5,9 @@ import pathlib
 import subprocess
 import sys
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
+
+from aidm_server.migration_compat import ALEMBIC_VERSION_COLUMN_LENGTH
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -27,6 +29,15 @@ def _inspect_db(db_uri: str):
     engine = create_engine(db_uri)
     try:
         return inspect(engine)
+    finally:
+        engine.dispose()
+
+
+def _current_revision(db_uri: str) -> str | None:
+    engine = create_engine(db_uri)
+    try:
+        with engine.connect() as connection:
+            return connection.execute(text('SELECT version_num FROM alembic_version')).scalar()
     finally:
         engine.dispose()
 
@@ -84,7 +95,16 @@ def test_migration_chain_upgrade_and_downgrade(tmp_path):
     entry_cols_head = {col['name'] for col in inspector.get_columns('session_log_entries')}
     assert 'metadata_json' in entry_cols_head
     dm_turn_cols_head = {col['name'] for col in inspector.get_columns('dm_turns')}
-    assert {'confidence', 'roll_value', 'outcome_status'}.issubset(dm_turn_cols_head)
+    assert {'confidence', 'roll_value', 'outcome_status', 'client_message_id'}.issubset(dm_turn_cols_head)
+    dm_turn_indexes_head = {index['name']: index for index in inspector.get_indexes('dm_turns')}
+    assert bool(dm_turn_indexes_head['uq_dm_turns_session_player_client_message']['unique']) is True
+    turn_lock_cols_head = {col['name'] for col in inspector.get_columns('session_turn_locks')}
+    assert {'owner_token', 'fencing_token', 'acquired_at', 'expires_at'}.issubset(turn_lock_cols_head)
+    version_column = next(
+        column for column in inspector.get_columns('alembic_version') if column['name'] == 'version_num'
+    )
+    assert version_column['type'].length >= ALEMBIC_VERSION_COLUMN_LENGTH
+    assert _current_revision(db_uri) == '0029_players_account_fk'
     feedback_cols_head = {col['name'] for col in inspector.get_columns('dm_coherence_feedback')}
     assert {'feedback_type', 'category', 'provider', 'model', 'metadata_json'}.issubset(feedback_cols_head)
     campaign_cols_head = {col['name'] for col in inspector.get_columns('campaigns')}
@@ -102,6 +122,7 @@ def test_migration_chain_upgrade_and_downgrade(tmp_path):
     assert _fk_ondelete(inspector, 'canon_jobs', 'turn_id') == 'CASCADE'
     assert _fk_ondelete(inspector, 'canon_jobs', 'session_id') == 'CASCADE'
     assert _fk_ondelete(inspector, 'sessions', 'archived_by_campaign_id') == 'SET NULL'
+    assert _fk_ondelete(inspector, 'players', 'account_id') == 'SET NULL'
     session_indexes_head = {index['name'] for index in inspector.get_indexes('sessions')}
     assert 'ix_sessions_campaign_id_status_updated_at' in session_indexes_head
     assert 'ix_sessions_archived_by_campaign_id' in session_indexes_head
@@ -236,3 +257,25 @@ def test_migration_chain_downgrade_to_base_and_reupgrade(tmp_path):
     assert {'name', 'status', 'updated_at', 'deleted_at', 'client_session_id', 'archived_by_campaign_id'}.issubset(
         session_cols
     )
+
+
+def test_migration_current_does_not_create_version_table_on_empty_database(tmp_path):
+    db_path = tmp_path / 'migration_current_read_only.db'
+    db_uri = f'sqlite:///{db_path}'
+    env = os.environ.copy()
+    env.update(
+        {
+            'FLASK_APP': 'aidm_server.main:create_app',
+            'PYTHONPATH': str(REPO_ROOT),
+            'AIDM_ENV': 'test',
+            'AIDM_DEBUG': 'false',
+            'AIDM_SOCKETIO_ASYNC_MODE': 'threading',
+            'AIDM_AUTO_CREATE_SCHEMA': 'false',
+            'AIDM_DATABASE_URI': db_uri,
+            'AIDM_TELEMETRY_ENABLED': 'false',
+        }
+    )
+
+    _run_flask_db(['current'], env)
+
+    assert set(_inspect_db(db_uri).get_table_names()) == set()

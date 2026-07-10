@@ -6,10 +6,16 @@ import os
 import pathlib
 import secrets
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Mapping
+
+from sqlalchemy.engine import make_url
 
 from aidm_server.provider_registry import SUPPORTED_LLM_PROVIDERS, normalize_provider_model_id, provider_default_model
-from aidm_server.rate_limiter import SUPPORTED_RATE_LIMIT_STORES, RATE_LIMIT_STORE_MEMORY
+from aidm_server.rate_limiter import (
+    RATE_LIMIT_STORE_DATABASE,
+    RATE_LIMIT_STORE_MEMORY,
+    SUPPORTED_RATE_LIMIT_STORES,
+)
 
 TURN_COORDINATOR_STORE_MEMORY = 'memory'
 TURN_COORDINATOR_STORE_DATABASE = 'database'
@@ -132,6 +138,10 @@ class AppConfig:
     rate_limit_window_seconds: int
     rate_limit_max_api_requests: int
     rate_limit_max_socket_messages: int
+    preauth_rate_limit_window_seconds: int
+    preauth_rate_limit_max_ip_target_attempts: int
+    preauth_rate_limit_max_ip_attempts: int
+    preauth_rate_limit_max_target_attempts: int
     rate_limit_store: str
     trusted_proxy_count: int
     turn_coordinator_store: str
@@ -154,6 +164,84 @@ def _resolve_secret_key(env: str, configured_value: str | None) -> str:
     if env == 'production':
         raise ValueError('FLASK_SECRET_KEY is required when AIDM_ENV=production.')
     return secrets.token_hex(32)
+
+
+def validate_production_startup_config(
+    config: AppConfig,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Reject unsafe production settings before a WSGI worker starts serving."""
+    if config.env != 'production':
+        return
+
+    runtime_env = environ if environ is not None else os.environ
+    errors: list[str] = []
+
+    database_uri = str(runtime_env.get('AIDM_DATABASE_URI') or '').strip()
+    if not database_uri:
+        errors.append('AIDM_DATABASE_URI must be explicitly configured')
+    else:
+        try:
+            database_driver = make_url(database_uri).drivername
+        except Exception:
+            errors.append('AIDM_DATABASE_URI must be a valid SQLAlchemy database URL')
+        else:
+            if database_driver != 'postgresql+psycopg':
+                errors.append('AIDM_DATABASE_URI must use postgresql+psycopg in production')
+    if config.debug:
+        errors.append('AIDM_DEBUG must be false')
+    if config.auto_create_schema:
+        errors.append('AIDM_AUTO_CREATE_SCHEMA must be false')
+    if config.admin_enabled:
+        errors.append('AIDM_ADMIN_ENABLED must be false in production')
+    if not config.auth_required:
+        errors.append('AIDM_AUTH_REQUIRED must be true')
+    if not config.api_auth_tokens and not config.api_auth_token_workspaces:
+        errors.append('at least one API auth token must be configured')
+    if config.rate_limit_store != RATE_LIMIT_STORE_DATABASE:
+        errors.append('AIDM_RATE_LIMIT_STORE must be database')
+    if config.turn_coordinator_store != TURN_COORDINATOR_STORE_DATABASE:
+        errors.append('AIDM_TURN_COORDINATOR_STORE must be database')
+    if not config.socketio_worker_model_explicit:
+        errors.append('AIDM_SOCKETIO_WORKER_MODEL must be explicitly configured')
+    if config.socketio_worker_model != SOCKETIO_WORKER_MODEL_SINGLE:
+        errors.append('production currently supports only AIDM_SOCKETIO_WORKER_MODEL=single')
+    if config.socketio_async_mode != 'threading':
+        errors.append('AIDM_SOCKETIO_ASYNC_MODE must be threading')
+    web_concurrency_raw = str(runtime_env.get('WEB_CONCURRENCY') or '1').strip()
+    web_concurrency = (
+        int(web_concurrency_raw)
+        if web_concurrency_raw.isascii()
+        and web_concurrency_raw.isdigit()
+        and not web_concurrency_raw.startswith('0')
+        else 0
+    )
+    if web_concurrency < 1:
+        errors.append('WEB_CONCURRENCY must be a positive integer')
+    elif config.socketio_worker_model == SOCKETIO_WORKER_MODEL_SINGLE and web_concurrency != 1:
+        errors.append('AIDM_SOCKETIO_WORKER_MODEL=single requires WEB_CONCURRENCY=1')
+    gunicorn_threads_raw = str(runtime_env.get('AIDM_GUNICORN_THREADS') or '100').strip()
+    gunicorn_threads = (
+        int(gunicorn_threads_raw)
+        if gunicorn_threads_raw.isascii()
+        and gunicorn_threads_raw.isdigit()
+        and not gunicorn_threads_raw.startswith('0')
+        else 0
+    )
+    if gunicorn_threads < 16:
+        errors.append('AIDM_GUNICORN_THREADS must be an integer >= 16')
+    if '*' in config.cors_allowlist or '*' in config.socketio_cors_allowlist:
+        errors.append('wildcard REST or Socket.IO CORS origins are not allowed')
+    if not config.security_headers_enabled or not config.content_security_policy:
+        errors.append('security headers and a content security policy must be enabled')
+    if not config.observability_provider or not config.alert_owner:
+        errors.append('AIDM_OBSERVABILITY_PROVIDER and AIDM_ALERT_OWNER must be configured')
+    if config.account_cookie_auth_enabled and not config.account_cookie_secure:
+        errors.append('AIDM_ACCOUNT_COOKIE_SECURE must be true when account cookie auth is enabled')
+
+    if errors:
+        raise ValueError(f"Unsafe production startup configuration: {'; '.join(errors)}.")
 
 
 def load_config() -> AppConfig:
@@ -256,6 +344,22 @@ def load_config() -> AppConfig:
         rate_limit_window_seconds=_to_int(os.getenv('AIDM_RATE_LIMIT_WINDOW_SECONDS'), default=30),
         rate_limit_max_api_requests=_to_int(os.getenv('AIDM_RATE_LIMIT_MAX_API_REQUESTS'), default=120),
         rate_limit_max_socket_messages=_to_int(os.getenv('AIDM_RATE_LIMIT_MAX_SOCKET_MESSAGES'), default=40),
+        preauth_rate_limit_window_seconds=max(
+            1,
+            _to_int(os.getenv('AIDM_PREAUTH_RATE_LIMIT_WINDOW_SECONDS'), default=60),
+        ),
+        preauth_rate_limit_max_ip_target_attempts=max(
+            1,
+            _to_int(os.getenv('AIDM_PREAUTH_RATE_LIMIT_MAX_IP_TARGET_ATTEMPTS'), default=5),
+        ),
+        preauth_rate_limit_max_ip_attempts=max(
+            1,
+            _to_int(os.getenv('AIDM_PREAUTH_RATE_LIMIT_MAX_IP_ATTEMPTS'), default=20),
+        ),
+        preauth_rate_limit_max_target_attempts=max(
+            1,
+            _to_int(os.getenv('AIDM_PREAUTH_RATE_LIMIT_MAX_TARGET_ATTEMPTS'), default=20),
+        ),
         rate_limit_store=rate_limit_store,
         trusted_proxy_count=max(0, _to_int(os.getenv('AIDM_TRUSTED_PROXY_COUNT'), default=0)),
         turn_coordinator_store=turn_coordinator_store,

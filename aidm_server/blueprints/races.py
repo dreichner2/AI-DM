@@ -18,6 +18,7 @@ from aidm_server.race_system import (
     CUSTOM_RACE_APPROVAL_STATUSES,
     CURATED_RACE_BY_ID,
     DAMAGE_TYPES,
+    RaceValidationError,
     RACE_TAGS,
     RACE_TRAIT_CATEGORIES,
     TRAIT_COST_GUIDE,
@@ -364,8 +365,8 @@ def generate_custom_race():
             generation_mode=generation_mode,
             source_race=source_race,
         )
-    except ValueError as exc:
-        return error_response('validation_error', str(exc), 400)
+    except RaceValidationError as exc:
+        return error_response('validation_error', exc.public_message, 400)
     balance = analyze_race_balance(draft)
     draft['balance'] = balance
     draft['approvalStatus'] = approval_status_for_balance(balance)
@@ -387,8 +388,8 @@ def create_custom_race():
         return error_response('validation_error', 'Expected JSON request body.', 400)
     try:
         race = normalize_race_definition(payload.get('raceDefinition'), source='custom')
-    except ValueError as exc:
-        return error_response('validation_error', str(exc), 400)
+    except RaceValidationError as exc:
+        return error_response('validation_error', exc.public_message, 400)
     approval_status = payload.get('approvalStatus') or race.get('approvalStatus') or approval_status_for_balance(race['balance'])
     if approval_status not in CUSTOM_RACE_APPROVAL_STATUSES:
         return error_response('validation_error', 'approvalStatus is not supported.', 400)
@@ -450,8 +451,8 @@ def update_custom_race(race_id):
         merged = {**current, **{key: value for key, value in payload.items() if key in editable_keys}}
     try:
         race = normalize_race_definition(merged, source='custom')
-    except ValueError as exc:
-        return error_response('validation_error', str(exc), 400)
+    except RaceValidationError as exc:
+        return error_response('validation_error', exc.public_message, 400)
     race['id'] = row.race_id
     race['version'] = row.version + 1
     approval_status = payload.get('approvalStatus') or race.get('approvalStatus') or approval_status_for_balance(race['balance'])

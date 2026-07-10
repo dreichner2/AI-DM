@@ -83,7 +83,7 @@
     },
     "multi_worker_socketio_staging": {
       "evidence": "",
-      "notes": "Keep not_applicable only when hosted_socketio_worker_process proves RC1 single-worker mode. Set to provided with sticky/message-queue proof otherwise.",
+      "notes": "RC1 production is single-worker only. Keep not_applicable and attach hosted_socketio_worker_process evidence proving exactly one backend process/replica; multi-worker staging proof cannot satisfy this gate.",
       "status": "not_applicable"
     },
     "rc_issue_closure_review": {

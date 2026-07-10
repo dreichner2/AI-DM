@@ -210,6 +210,96 @@ def test_build_status_report_separates_local_passes_from_external_proof(tmp_path
     assert '## Remaining Items' in markdown
 
 
+def test_build_status_report_maps_database_upgrade_and_single_worker_process_proof(tmp_path):
+    checklist = tmp_path / 'release_checklist.md'
+    checklist.write_text(
+        '\n'.join(
+            [
+                '## Preflight',
+                '- [ ] `make db-upgrade` applies cleanly.',
+                '## Runtime Quality',
+                '- [ ] Deployment evidence proves exactly one backend process/replica; process-local state remains single-worker.',
+                '',
+            ]
+        ),
+        encoding='utf-8',
+    )
+    packet_path = _write_packet(tmp_path / 'packet.json', hosted_ready=False)
+    packet = json.loads(packet_path.read_text(encoding='utf-8'))
+    packet['rc_evidence']['commands'].append({'label': 'Migration chain drill', 'status': 'passed'})
+    packet_path.write_text(json.dumps(packet), encoding='utf-8')
+
+    pending_report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-06-19T00:00:00+00:00',
+    )
+
+    assert pending_report['items'][0]['status'] == 'passed'
+    assert pending_report['items'][0]['evidence'] == 'RC evidence gates passed: Migration chain drill'
+    assert pending_report['items'][1]['status'] == 'external-required'
+    assert pending_report['counts'] == {'passed': 1, 'external-required': 1}
+
+    packet = json.loads(packet_path.read_text(encoding='utf-8'))
+    packet['hosted_rc_evidence'].update(
+        {
+            'status': 'passed',
+            'manual_evidence': [
+                {
+                    'label': 'Hosted Socket.IO worker process proof',
+                    'status': 'provided',
+                    'evidence': 'https://ops.closedbeta.dev/processes/worker-single',
+                }
+            ],
+        }
+    )
+    packet_path.write_text(json.dumps(packet), encoding='utf-8')
+
+    unbound_report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-06-19T00:00:00+00:00',
+    )
+    assert unbound_report['items'][1]['status'] == 'external-required'
+
+    packet['hosted_rc_evidence'].update(
+        {
+            'target_url': 'https://aidm.closedbeta.dev',
+            'generator_freshness': 'current',
+        }
+    )
+    packet_path.write_text(json.dumps(packet), encoding='utf-8')
+
+    passed_report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-06-19T00:00:00+00:00',
+    )
+
+    assert passed_report['counts'] == {'passed': 2}
+    assert 'aidm.closedbeta.dev' in passed_report['items'][1]['evidence']
+    assert 'worker-single' in passed_report['items'][1]['evidence']
+
+    packet['hosted_rc_evidence']['generator_freshness'] = 'stale'
+    packet_path.write_text(json.dumps(packet), encoding='utf-8')
+    stale_report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-06-19T00:00:00+00:00',
+    )
+    assert stale_report['items'][1]['status'] == 'external-required'
+
+    packet['hosted_rc_evidence']['generator_freshness'] = 'current'
+    packet['hosted_rc_evidence']['metadata']['socket_io_worker_model'] = 'message_queue'
+    packet_path.write_text(json.dumps(packet), encoding='utf-8')
+    unsupported_report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-06-19T00:00:00+00:00',
+    )
+    assert unsupported_report['items'][1]['status'] == 'failed'
+
+
 def test_build_status_report_fails_mismatched_source_archive_sidecar(tmp_path):
     checklist = tmp_path / 'release_checklist.md'
     checklist.write_text(
@@ -554,7 +644,7 @@ def test_build_status_report_uses_socketio_worker_model_decision_gate(tmp_path):
     assert 'worker model decision gate' in report['items'][0]['evidence']
 
 
-def test_build_status_report_requires_socketio_proof_for_multi_worker_modes(tmp_path):
+def test_build_status_report_rejects_non_single_worker_modes_even_with_proof(tmp_path):
     checklist = tmp_path / 'release_checklist.md'
     checklist.write_text(
         '\n'.join(
@@ -567,27 +657,23 @@ def test_build_status_report_requires_socketio_proof_for_multi_worker_modes(tmp_
         ),
         encoding='utf-8',
     )
-    packet_path = _write_packet(tmp_path / 'packet-sticky.json', hosted_ready=False)
-    packet = json.loads(packet_path.read_text(encoding='utf-8'))
-    packet['hosted_rc_evidence']['metadata']['socket_io_worker_model'] = 'sticky'
-    packet_path.write_text(json.dumps(packet), encoding='utf-8')
+    for worker_model in ('sticky', 'message_queue', 'future_model'):
+        packet_path = _write_packet(tmp_path / f'packet-{worker_model}.json', hosted_ready=False)
+        packet = json.loads(packet_path.read_text(encoding='utf-8'))
+        packet['hosted_rc_evidence']['metadata']['socket_io_worker_model'] = worker_model
 
-    missing_proof_report = build_status_report(
-        checklist_path=checklist,
-        packet_path=packet_path,
-        generated_at='2026-06-19T00:00:00+00:00',
-    )
-    assert [item['status'] for item in missing_proof_report['items']] == ['external-required', 'external-required']
-    assert all('staging proof' in item['remaining_action'] for item in missing_proof_report['items'])
+        for staging_proof_provided in ('False', 'True'):
+            packet['deployment_readiness']['metadata']['socket_io_staging_proof_provided'] = staging_proof_provided
+            packet_path.write_text(json.dumps(packet), encoding='utf-8')
+            report = build_status_report(
+                checklist_path=checklist,
+                packet_path=packet_path,
+                generated_at='2026-06-19T00:00:00+00:00',
+            )
 
-    packet['deployment_readiness']['metadata']['socket_io_staging_proof_provided'] = 'True'
-    packet_path.write_text(json.dumps(packet), encoding='utf-8')
-    proof_report = build_status_report(
-        checklist_path=checklist,
-        packet_path=packet_path,
-        generated_at='2026-06-19T00:00:00+00:00',
-    )
-    assert [item['status'] for item in proof_report['items']] == ['passed', 'passed']
+            assert [item['status'] for item in report['items']] == ['failed', 'failed']
+            assert all('unsupported for hosted production' in item['evidence'] for item in report['items'])
+            assert all('AIDM_SOCKETIO_WORKER_MODEL=single' in item['remaining_action'] for item in report['items'])
 
 
 def test_build_status_report_flags_stale_hosted_rc_evidence(tmp_path):

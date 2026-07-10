@@ -840,9 +840,12 @@ def _hosted_signoff_checklist(packet: dict[str, Any]) -> list[dict[str, str]]:
         },
         {
             'issues': '#7',
-            'evidence': 'Sticky/message-queue staging proof when not single-worker',
-            'command': 'Attach load-balancer affinity or message-queue delivery proof if the target does not use `AIDM_SOCKETIO_WORKER_MODEL=single`.',
-            'artifact': 'staging proof link',
+            'evidence': 'Single-worker-only Socket.IO topology enforcement',
+            'command': (
+                'Confirm `AIDM_SOCKETIO_WORKER_MODEL=single`, `WEB_CONCURRENCY=1`, and exactly one '
+                'backend process/replica. Multi-worker staging proof is future-only and cannot satisfy RC1.'
+            ),
+            'artifact': 'platform process screenshot/log/config link',
         },
         {
             'issues': '#8',

@@ -35,6 +35,7 @@ CANON_JOB_TERMINAL_STATUSES = {'succeeded', 'failed', 'cancelled'}
 DEFAULT_CANON_JOB_MAX_ATTEMPTS = 1
 DEFAULT_CANON_JOB_RETRY_DELAY_SECONDS = 30
 DEFAULT_CANON_JOB_STALE_LOCK_SECONDS = 15 * 60
+CANON_JOB_FAILED_MESSAGE = 'Canon processing failed. The DM response remains saved.'
 
 TurnStatusEmitter = Callable[[int, int | None, str, dict | None], None]
 SegmentEmitter = Callable[[int, dict], None]
@@ -507,8 +508,13 @@ def process_canon_job(
         telemetry_metric('memory.canon_job.succeeded_total', 1)
         return job
     except Exception as exc:
-        logger.error('Canon job failed: %s', str(exc))
-        return _mark_job_failed(job_id, str(exc), emit_turn_status=emit_turn_status)
+        logger.exception('Canon job failed')
+        telemetry_event(
+            'memory.canon_job_internal_error',
+            payload={'job_id': job_id, 'error_type': type(exc).__name__},
+            severity='error',
+        )
+        return _mark_job_failed(job_id, CANON_JOB_FAILED_MESSAGE, emit_turn_status=emit_turn_status)
 
 
 def process_due_canon_jobs(

@@ -6,7 +6,7 @@ from pathlib import Path
 from aidm_server.codex_runtime import codex_executable_configured
 from flask import current_app, has_app_context
 
-from aidm_server.models import DmTurn
+from aidm_server.models import Campaign, DmTurn
 from aidm_server.provider_registry import (
     SUPPORTED_LLM_PROVIDERS,
     normalize_provider_model_id,
@@ -34,12 +34,13 @@ def _config_value(name: str) -> str | None:
     return os.getenv(name)
 
 
-def latest_llm_turn_payload() -> dict | None:
-    latest_llm_turn = (
-        DmTurn.query.filter(DmTurn.llm_provider.isnot(None), DmTurn.llm_model.isnot(None))
-        .order_by(DmTurn.turn_id.desc())
-        .first()
-    )
+def latest_llm_turn_payload(*, workspace_id: str | None = None) -> dict | None:
+    query = DmTurn.query.filter(DmTurn.llm_provider.isnot(None), DmTurn.llm_model.isnot(None))
+    if workspace_id is not None:
+        query = query.join(Campaign, DmTurn.campaign_id == Campaign.campaign_id).filter(
+            Campaign.workspace_id == workspace_id,
+        )
+    latest_llm_turn = query.order_by(DmTurn.turn_id.desc()).first()
     if not latest_llm_turn:
         return None
     return {
@@ -70,20 +71,22 @@ def provider_configured(provider_id: str) -> bool:
     return False
 
 
-def current_llm_payload() -> dict:
+def current_llm_payload(*, include_latest_turn: bool = True, workspace_id: str | None = None) -> dict:
     fallback_models = current_app.config.get('AIDM_LLM_FALLBACK_MODELS', []) or []
     provider = str(current_app.config.get('AIDM_LLM_PROVIDER', 'unknown'))
     model = normalize_provider_model_id(provider, str(current_app.config.get('AIDM_LLM_MODEL', 'unknown')))
-    return {
+    payload = {
         'provider': provider,
         'model': model,
         'fallback_models': list(fallback_models),
         'configured': provider_configured(provider),
-        'latest_turn': latest_llm_turn_payload(),
     }
+    if include_latest_turn:
+        payload['latest_turn'] = latest_llm_turn_payload(workspace_id=workspace_id)
+    return payload
 
 
-def llm_config_payload() -> dict:
+def llm_config_payload(*, workspace_id: str | None = None) -> dict:
     providers = []
     for option in provider_catalog_payload():
         providers.append(
@@ -93,7 +96,7 @@ def llm_config_payload() -> dict:
             }
         )
     return {
-        'current': current_llm_payload(),
+        'current': current_llm_payload(workspace_id=workspace_id),
         'providers': providers,
         'persisted': False,
         'runtime_scope': 'process',

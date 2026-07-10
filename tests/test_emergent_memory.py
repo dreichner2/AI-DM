@@ -1487,6 +1487,48 @@ def test_build_emergent_context_prioritizes_relevant_older_canon(app):
     assert 'Captain Liora Vale' in fact_subjects
 
 
+def test_build_emergent_context_hybrid_embedding_recalls_semantic_match(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        db.session.add_all(
+            [
+                StoryEntity(
+                    campaign_id=ids['campaign_id'],
+                    session_id=ids['session_id'],
+                    entity_type='item',
+                    name='Moon Key',
+                    summary='An old artifact tied to sealed doors.',
+                    status='active',
+                ),
+                StoryEntity(
+                    campaign_id=ids['campaign_id'],
+                    session_id=ids['session_id'],
+                    entity_type='npc',
+                    name='Market Clerk',
+                    summary='A recent vendor counting sacks at a noisy stall.',
+                    status='active',
+                ),
+            ]
+        )
+        db.session.commit()
+
+        context = build_emergent_context(
+            campaign_id=ids['campaign_id'],
+            session_id=ids['session_id'],
+            query_text='I study the lunar sigil on the threshold.',
+            current_location='Old Ruins',
+            entity_limit=1,
+            fact_limit=1,
+            thread_limit=1,
+        )
+
+    assert context['entities'][0]['name'] == 'Moon Key'
+    assert context['retrieval']['mode'] == 'hybrid_lexical_local_embedding'
+    assert context['retrieval']['embedding']['provider'] == 'local_hash_v1'
+    assert 'lunar' in context['retrieval']['embedding']['semantic_terms']
+
+
 def test_build_emergent_context_caps_candidate_pools(app, monkeypatch):
     ids = seed_world_campaign_player_session(app)
     import aidm_server.emergent_memory as emergent_memory

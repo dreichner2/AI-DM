@@ -92,6 +92,37 @@ def test_deploy_bootstrap_fails_when_auth_required_without_tokens(tmp_path):
     assert 'AIDM_AUTH_REQUIRED=true but no AIDM_API_AUTH_TOKENS are configured' in result.stdout
 
 
+def test_deploy_bootstrap_rejects_invalid_production_config_before_migrations(tmp_path):
+    db_path = tmp_path / 'must-not-be-created.db'
+
+    result = _run_bootstrap(
+        {
+            'AIDM_ENV': 'production',
+            'AIDM_DEBUG': 'false',
+            'AIDM_DATABASE_URI': f'sqlite:///{db_path}',
+            'AIDM_AUTO_CREATE_SCHEMA': 'false',
+            'FLASK_SECRET_KEY': 's' * 40,
+            'AIDM_AUTH_REQUIRED': 'true',
+            'AIDM_API_AUTH_TOKENS': 'operator-token',
+            'AIDM_RATE_LIMIT_STORE': 'database',
+            'AIDM_TURN_COORDINATOR_STORE': 'database',
+            'AIDM_SOCKETIO_ASYNC_MODE': 'threading',
+            'AIDM_SOCKETIO_WORKER_MODEL': 'single',
+            'AIDM_CORS_ALLOWLIST': 'https://aidm.example.test',
+            'AIDM_SOCKET_CORS_ALLOWLIST': 'https://aidm.example.test',
+            'AIDM_SECURITY_HEADERS_ENABLED': 'true',
+            'AIDM_OBSERVABILITY_PROVIDER': 'managed-prometheus',
+            'AIDM_ALERT_OWNER': 'beta-oncall',
+            'AIDM_LLM_PROVIDER': 'fallback',
+        }
+    )
+
+    assert result.returncode == 1
+    assert 'must use postgresql+psycopg in production' in result.stdout
+    assert '[bootstrap] Running migrations...' not in result.stdout
+    assert not db_path.exists()
+
+
 def test_deploy_bootstrap_fails_when_existing_schema_is_partial(tmp_path):
     db_path = tmp_path / 'bootstrap_partial.db'
 
@@ -272,10 +303,20 @@ def test_validate_socketio_deployment_config_accepts_production_single_worker(ap
     assert 'run exactly one backend worker' in report.warnings[0]
 
 
-def test_validate_socketio_deployment_config_requires_message_queue_url(app):
+def test_validate_socketio_deployment_config_rejects_multi_worker_in_production(app):
     app.config['AIDM_ENV'] = 'production'
     app.config['AIDM_SOCKETIO_WORKER_MODEL'] = 'message_queue'
     app.config['AIDM_SOCKETIO_WORKER_MODEL_EXPLICIT'] = True
+    app.config['AIDM_SOCKETIO_MESSAGE_QUEUE'] = 'redis://redis.example:6379/0'
+    report = BootstrapReport(warnings=[])
+
+    with pytest.raises(BootstrapError, match='currently supports only AIDM_SOCKETIO_WORKER_MODEL=single'):
+        _validate_socketio_deployment_config(app, report)
+
+
+def test_validate_socketio_deployment_config_requires_queue_for_nonproduction_multi_worker(app):
+    app.config['AIDM_ENV'] = 'development'
+    app.config['AIDM_SOCKETIO_WORKER_MODEL'] = 'message_queue'
     app.config['AIDM_SOCKETIO_MESSAGE_QUEUE'] = ''
     report = BootstrapReport(warnings=[])
 

@@ -8,6 +8,7 @@ import pathlib
 import secrets
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from urllib.parse import urljoin
 
@@ -40,6 +41,18 @@ RUNTIME_ENV_OVERRIDES = {
     'AIDM_RATE_LIMIT_MAX_API_REQUESTS': '1000',
     'AIDM_RATE_LIMIT_MAX_SOCKET_MESSAGES': '1000',
 }
+LIVE_SOCKET_NAMESPACE_SETTLE_SECONDS = 0.1
+
+
+class HostedSocketClient(socketio.Client):
+    """Avoid a hosted direct-WebSocket namespace handshake false negative."""
+
+    def _handle_eio_connect(self):
+        # python-engineio invokes this callback before its direct-WebSocket
+        # read/write loops start. Live Render probes showed the namespace
+        # packet can otherwise time out before the app's connect handler.
+        time.sleep(LIVE_SOCKET_NAMESPACE_SETTLE_SECONDS)
+        super()._handle_eio_connect()
 
 
 @dataclass(frozen=True)
@@ -422,7 +435,11 @@ def _assert_live_socket_cookie_auth(http: RequestsHttpClient, seeded: SeededHost
     if ACCOUNT_COOKIE_NAME not in cookie_header:
         raise AssertionError('Live target HTTP session does not have an account session cookie for Socket.IO.')
     errors: list[object] = []
-    sio = socketio.Client(reconnection=False, request_timeout=timeout_seconds)
+    sio = HostedSocketClient(
+        reconnection=False,
+        request_timeout=timeout_seconds,
+        http_session=http.session,
+    )
 
     @sio.on('error')
     def on_error(data):
@@ -430,8 +447,8 @@ def _assert_live_socket_cookie_auth(http: RequestsHttpClient, seeded: SeededHost
 
     sio.connect(
         http.base_url,
-        headers={'Cookie': cookie_header},
         auth={'workspace_id': seeded.workspace_id},
+        transports=['websocket'],
         socketio_path=socketio_path,
         wait_timeout=timeout_seconds,
     )
@@ -527,12 +544,16 @@ def _assert_live_logout_clears_session(
         expected=401,
     )
 
-    sio = socketio.Client(reconnection=False, request_timeout=timeout_seconds)
+    sio = HostedSocketClient(
+        reconnection=False,
+        request_timeout=timeout_seconds,
+        http_session=http.session,
+    )
     try:
         sio.connect(
             http.base_url,
-            headers={'Cookie': http.cookie_header()},
             auth={'workspace_id': seeded.workspace_id},
+            transports=['websocket'],
             socketio_path=socketio_path,
             wait_timeout=timeout_seconds,
         )
@@ -586,6 +607,12 @@ def run_live_target_smoke(
         headers=_workspace_headers(workspace_id, csrf_headers),
         expected=200,
     )
+    _delete(
+        http,
+        f'/api/accounts/workspaces/{workspace_id}',
+        headers=_workspace_headers(workspace_id, csrf_headers),
+        expected=200,
+    )
     _assert_live_logout_clears_session(
         http,
         seeded,
@@ -596,7 +623,7 @@ def run_live_target_smoke(
 
     print(
         'Hosted cookie auth live-target smoke passed: cookie-only login, CSRF, '
-        'Socket.IO cookie auth, session cleanup, and logout cleanup verified.'
+        'Socket.IO cookie auth, workspace cleanup, and logout cleanup verified.'
     )
     return _evidence_payload(
         mode='live-target',
@@ -610,7 +637,7 @@ def run_live_target_smoke(
             'Unsafe workspace creation required X-AIDM-CSRF-Token',
             'Workspace owner capabilities included admin/debug access before downgrade checks',
             'Socket.IO accepted cookie-authenticated session join',
-            'Smoke-created session cleanup completed',
+            'Smoke-created session and workspace cleanup completed',
             'Logout cleared account and CSRF cookies and rejected later API/socket access',
         ],
     )

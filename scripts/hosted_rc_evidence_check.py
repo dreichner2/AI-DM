@@ -255,6 +255,7 @@ def build_command_plan(args: argparse.Namespace) -> list[HostedCheck]:
         _append_if(command, '--env-file', args.env_file)
         _append_if(command, '--target-url', args.target_url)
         _append_if(command, '--auth-token', args.auth_token)
+        _append_if(command, '--socketio-origin', args.socketio_origin)
         _append_if(command, '--timeout-seconds', args.timeout_seconds)
         _append_if(command, '--auth-storage-exception', args.auth_storage_exception)
         _append_if(command, '--socketio-staging-proof', args.socketio_staging_proof)
@@ -715,16 +716,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--cookie-password', default='')
     parser.add_argument('--cookie-workspace-name', default='Hosted RC Cookie Smoke')
     parser.add_argument('--socketio-path', default='socket.io')
+    parser.add_argument(
+        '--socketio-origin',
+        default='',
+        help='Origin header for the deployment-readiness forced WebSocket probe.',
+    )
     parser.add_argument('--keep-imported-session', action='store_true')
     parser.add_argument('--same-origin-deployment', action='store_true')
     parser.add_argument('--auth-storage-exception', default='')
-    parser.add_argument('--socketio-staging-proof', default='')
+    parser.add_argument(
+        '--socketio-staging-proof',
+        default='',
+        help='Future-only research context; cannot satisfy hosted RC1 single-worker sign-off.',
+    )
     parser.add_argument('--allow-fallback-provider', action='store_true')
     parser.add_argument('--allow-non-production-target', action='store_true')
     parser.add_argument('--release', default='RC1')
     parser.add_argument('--commit-sha', default='')
     parser.add_argument('--environment', default='staging')
-    parser.add_argument('--socketio-worker-model', default='')
+    parser.add_argument('--socketio-worker-model', choices=('single',), default='')
     parser.add_argument('--database', default='')
     parser.add_argument('--llm-provider-model', default='')
     parser.add_argument('--observability-provider', default='')

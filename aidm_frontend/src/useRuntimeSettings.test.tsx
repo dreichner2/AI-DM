@@ -2,7 +2,12 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import type { FormEvent } from 'react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { LEGACY_PASSWORD_SETUP_MESSAGE, useRuntimeSettings } from './useRuntimeSettings'
+import { normalizedBackendOrigin, originScopedStorageKey } from './api'
+import {
+  LEGACY_PASSWORD_SETUP_MESSAGE,
+  useRuntimeSettings,
+  useShareBackendTrust,
+} from './useRuntimeSettings'
 
 function submitEvent() {
   return {
@@ -42,7 +47,10 @@ describe('useRuntimeSettings', () => {
   beforeEach(() => {
     vi.stubGlobal('localStorage', createStorageMock())
     vi.stubGlobal('sessionStorage', createStorageMock())
-    document.cookie = 'aidm_account_token=; Max-Age=0; Path=/; SameSite=Lax'
+    for (const cookie of document.cookie.split(';')) {
+      const name = cookie.split('=', 1)[0]?.trim()
+      if (name) document.cookie = `${name}=; Max-Age=0; Path=/; SameSite=Lax`
+    }
     window.history.replaceState(null, '', '/')
   })
 
@@ -1278,19 +1286,188 @@ describe('useRuntimeSettings', () => {
     expect(JSON.parse(String(localStorage.getItem('aidm:account'))).workspaceRole).toBe('player')
   })
 
-  it('loads and persists a backend URL from a share-link query parameter', () => {
-    window.history.replaceState(null, '', '/?api=https%3A%2F%2Fbackend.example.test%2F')
+  it('does not activate an untrusted share-link backend when the runtime hook mounts directly', () => {
+    localStorage.setItem('aidm:baseUrl', 'https://saved.example.test')
+    window.history.replaceState(null, '', '/?backend=https%3A%2F%2Fshared.example.test')
 
     const { result } = renderHook(() =>
       useRuntimeSettings({
-        defaultBaseUrl: 'http://127.0.0.1:5050',
+        defaultBaseUrl: '',
         resetRuntimeState: vi.fn(),
         reconnectSocket: vi.fn(),
       }),
     )
 
-    expect(result.current.baseUrl).toBe('https://backend.example.test')
-    expect(result.current.runtimeSettingsForm.baseUrl).toBe('https://backend.example.test')
-    expect(localStorage.getItem('aidm:baseUrl')).toBe('https://backend.example.test')
+    expect(result.current.baseUrl).toBe('https://saved.example.test')
+    expect(result.current.authToken).toBe('')
+    expect(result.current.workspaceToken).toBe('')
+    expect(result.current.workspaceId).toBe('')
+    expect(result.current.runtimeAccount).toBeNull()
+    expect(localStorage.getItem('aidm:baseUrl')).toBe('https://saved.example.test')
+  })
+
+  it('records explicit trust before activating a normalized share-link backend', () => {
+    window.history.replaceState(
+      null,
+      '',
+      '/?campaign=10&session=20&api=https%3A%2F%2FBackend.Example.Test%2F',
+    )
+
+    const { result } = renderHook(() => useShareBackendTrust(''))
+
+    expect(result.current.pendingBackendTrust).toEqual({
+      baseUrl: 'https://Backend.Example.Test',
+      origin: 'https://backend.example.test',
+    })
+    expect(localStorage.getItem('aidm:baseUrl')).toBeNull()
+
+    act(() => {
+      result.current.confirmPendingBackendTrust()
+    })
+
+    expect(result.current.pendingBackendTrust).toBeNull()
+    expect(localStorage.getItem('aidm:baseUrl')).toBe('https://Backend.Example.Test')
+    expect(JSON.parse(String(localStorage.getItem('aidm:trustedBackendOrigins')))).toContain(
+      'https://backend.example.test',
+    )
+    expect(window.location.search).toBe('?campaign=10&session=20')
+  })
+
+  it('rejects a share-link backend without losing the shared campaign and session', () => {
+    window.history.replaceState(
+      null,
+      '',
+      '/?campaign=10&session=20&backend=https%3A%2F%2Fbackend.example.test',
+    )
+
+    const { result } = renderHook(() => useShareBackendTrust(''))
+
+    act(() => {
+      result.current.rejectPendingBackendTrust()
+    })
+
+    expect(result.current.pendingBackendTrust).toBeNull()
+    expect(localStorage.getItem('aidm:baseUrl')).toBeNull()
+    expect(localStorage.getItem('aidm:trustedBackendOrigins')).toBeNull()
+    expect(window.location.search).toBe('?campaign=10&session=20')
+  })
+
+  it('keeps saved and same-origin share-link backends seamless', () => {
+    localStorage.setItem('aidm:baseUrl', 'https://saved.example.test')
+    window.history.replaceState(
+      null,
+      '',
+      '/?backend=https%3A%2F%2Fsaved.example.test%2Fshared-api',
+    )
+
+    const saved = renderHook(() => useShareBackendTrust(''))
+    expect(saved.result.current.pendingBackendTrust).toBeNull()
+    saved.unmount()
+
+    localStorage.clear()
+    window.history.replaceState(
+      null,
+      '',
+      `/?backend=${encodeURIComponent(`${window.location.origin}/shared-api`)}`,
+    )
+    const sameOrigin = renderHook(() => useShareBackendTrust(''))
+    expect(sameOrigin.result.current.pendingBackendTrust).toBeNull()
+  })
+
+  it('binds no-marker legacy credentials to the saved owner before confirming another origin', () => {
+    const savedBaseUrl = 'https://saved.example.test/api'
+    const confirmedBaseUrl = 'https://confirmed.example.test/api'
+    localStorage.setItem('aidm:baseUrl', savedBaseUrl)
+    sessionStorage.setItem('aidm:authToken', 'legacy-account-token')
+    sessionStorage.setItem('aidm:workspaceToken', 'legacy-workspace-token')
+    window.history.replaceState(
+      null,
+      '',
+      `/?backend=${encodeURIComponent(confirmedBaseUrl)}`,
+    )
+
+    const { result } = renderHook(() => useShareBackendTrust('https://default.example.test'))
+
+    act(() => {
+      result.current.confirmPendingBackendTrust()
+    })
+
+    expect(localStorage.getItem('aidm:credentialOrigin')).toBe(normalizedBackendOrigin(savedBaseUrl))
+    expect(sessionStorage.getItem(originScopedStorageKey('aidm:authToken', savedBaseUrl))).toBe(
+      'legacy-account-token',
+    )
+    expect(sessionStorage.getItem(originScopedStorageKey('aidm:workspaceToken', savedBaseUrl))).toBe(
+      'legacy-workspace-token',
+    )
+    expect(sessionStorage.getItem(originScopedStorageKey('aidm:authToken', confirmedBaseUrl))).toBeNull()
+    expect(sessionStorage.getItem(originScopedStorageKey('aidm:workspaceToken', confirmedBaseUrl))).toBeNull()
+    expect(localStorage.getItem('aidm:baseUrl')).toBe(confirmedBaseUrl)
+  })
+
+  it.each([
+    {
+      label: 'saved',
+      savedBaseUrl: 'https://saved.example.test/api',
+      defaultBaseUrl: 'https://default.example.test/api',
+      expectedBaseUrl: 'https://saved.example.test/api',
+    },
+    {
+      label: 'default',
+      savedBaseUrl: '',
+      defaultBaseUrl: 'https://default.example.test/api',
+      expectedBaseUrl: 'https://default.example.test/api',
+    },
+  ])('preserves normal $label-backend legacy credential migration', async ({
+    savedBaseUrl,
+    defaultBaseUrl,
+    expectedBaseUrl,
+  }) => {
+    if (savedBaseUrl) localStorage.setItem('aidm:baseUrl', savedBaseUrl)
+    sessionStorage.setItem('aidm:authToken', 'legacy-account-token')
+    sessionStorage.setItem('aidm:workspaceToken', 'legacy-workspace-token')
+    const fetchMock = vi.fn<
+      (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+    >(async () =>
+      new Response(
+        JSON.stringify({
+          account_id: 1,
+          username: 'legacy-user',
+          first_name: 'Legacy',
+          last_name: 'User',
+          display_name: 'Legacy User',
+          workspace_id: 'owner',
+          workspace_role: 'player',
+          is_workspace_admin: false,
+          requires_password_setup: false,
+          workspaces: [],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() =>
+      useRuntimeSettings({
+        defaultBaseUrl,
+        resetRuntimeState: vi.fn(),
+        reconnectSocket: vi.fn(),
+      }),
+    )
+
+    expect(result.current.baseUrl).toBe(expectedBaseUrl)
+    expect(result.current.authToken).toBe('legacy-account-token')
+    expect(result.current.workspaceToken).toBe('legacy-workspace-token')
+    expect(sessionStorage.getItem(originScopedStorageKey('aidm:authToken', expectedBaseUrl))).toBe(
+      'legacy-account-token',
+    )
+    expect(sessionStorage.getItem(originScopedStorageKey('aidm:workspaceToken', expectedBaseUrl))).toBe(
+      'legacy-workspace-token',
+    )
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+    const [requestUrl, requestInit] = fetchMock.mock.calls[0]
+    expect(String(requestUrl)).toBe(`${expectedBaseUrl}/api/accounts/me`)
+    const headers = new Headers(requestInit?.headers)
+    expect(headers.get('Authorization')).toBe('Bearer legacy-account-token')
+    expect(headers.get('X-AIDM-Workspace-Token')).toBe('legacy-workspace-token')
   })
 })

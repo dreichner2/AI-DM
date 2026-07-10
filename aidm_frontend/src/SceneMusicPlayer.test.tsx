@@ -1,8 +1,13 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SceneMusicPlayer } from './SceneMusicPlayer'
+
+const RESTORED_TRACK_ID = 'dnd-calm-fantasy-adventure-exploration'
+const RESTORED_TRACK_TITLE = 'DnD Calm Fantasy Music for Adventure and Exploration'
+const RESTORED_TRACK_META =
+  /Everrune \/ Calm \/ Combat \/ Discovery \/ Dungeon \/ Forest \/ Mystery \/ Tension \/ Town \/ Travel \/ 3:04:55/i
 
 function createStorageMock(): Storage {
   const store = new Map<string, string>()
@@ -101,6 +106,7 @@ describe('SceneMusicPlayer', () => {
 
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
     localStorage.clear()
@@ -112,21 +118,19 @@ describe('SceneMusicPlayer', () => {
     const nowPlaying = screen.getByLabelText('Scene music player').querySelector('.scene-music-now')
     expect(nowPlaying).not.toBeNull()
     expect(
-      within(nowPlaying as HTMLElement).getByText('DnD Calm Fantasy Music for Adventure and Exploration'),
+      within(nowPlaying as HTMLElement).getByText(RESTORED_TRACK_TITLE),
     ).toBeInTheDocument()
-    expect(screen.getByText(/Everrune \/ Calm \/ Travel \/ Discovery/i)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Battle' })).not.toBeInTheDocument()
+    expect(screen.getByText(RESTORED_TRACK_META)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Combat' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Travel' }))
 
     await waitFor(() =>
       expect(
-        within(nowPlaying as HTMLElement).getByText('DnD Calm Fantasy Music for Adventure and Exploration'),
+        within(nowPlaying as HTMLElement).getByText(RESTORED_TRACK_TITLE),
       ).toBeInTheDocument(),
     )
-    expect(screen.getByRole('combobox', { name: 'Music track' })).toHaveValue(
-      'dnd-calm-fantasy-adventure-exploration',
-    )
+    expect(screen.getByRole('combobox', { name: 'Music track' })).toHaveValue(RESTORED_TRACK_ID)
     expect(screen.getByRole('button', { name: 'Move music player' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Resize music player' })).toBeInTheDocument()
   })
@@ -137,12 +141,12 @@ describe('SceneMusicPlayer', () => {
     expect(audio).not.toBeNull()
     if (!audio) return
 
-    Object.defineProperty(audio, 'duration', { configurable: true, value: 11095.235 })
+    Object.defineProperty(audio, 'duration', { configurable: true, value: 4 })
     audio.currentTime = 42
     fireEvent.loadedMetadata(audio)
     const progress = container.querySelector('.scene-music-progress')
     expect(progress).not.toBeNull()
-    expect(within(progress as HTMLElement).getByText('3:04:55')).toBeInTheDocument()
+    expect(within(progress as HTMLElement).getAllByText('0:04')).toHaveLength(2)
 
     fireEvent.click(screen.getByRole('button', { name: 'Play music' }))
 
@@ -154,10 +158,57 @@ describe('SceneMusicPlayer', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Next music track' }))
     expect(audio.currentTime).toBe(0)
-    expect(screen.getAllByText('DnD Calm Fantasy Music for Adventure and Exploration').length).toBeGreaterThan(0)
+    expect(screen.getAllByText(RESTORED_TRACK_TITLE).length).toBeGreaterThan(0)
 
     fireEvent.click(screen.getByRole('button', { name: 'Pause music' }))
     expect(pauseMock).toHaveBeenCalled()
+  })
+
+  it('auto-follows scene music tags without swapping away from the restored MP3', async () => {
+    const onMusicControl = vi.fn()
+    const sceneState = {
+      sessionId: 4,
+      locationId: 'old-road',
+      locationName: 'Old Road',
+      sceneType: 'travel',
+      mood: null,
+      dangerLevel: 2,
+      combatState: 'none',
+      inCombat: false,
+      musicTag: 'travel' as const,
+      actingPlayerId: 8,
+    }
+    const { rerender } = render(
+      <SceneMusicPlayer
+        sessionId={4}
+        playerId={8}
+        sceneState={sceneState}
+        onMusicControl={onMusicControl}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByLabelText('Scene music filters: Travel')).toBeInTheDocument())
+    expect(screen.getByRole('combobox', { name: 'Music track' })).toHaveValue(RESTORED_TRACK_ID)
+    expect(onMusicControl).not.toHaveBeenCalled()
+
+    rerender(
+      <SceneMusicPlayer
+        sessionId={4}
+        playerId={8}
+        sceneState={{
+          ...sceneState,
+          dangerLevel: 9,
+          combatState: 'active',
+          inCombat: true,
+          musicTag: 'tension',
+        }}
+        onMusicControl={onMusicControl}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByLabelText('Scene music filters: Combat')).toBeInTheDocument())
+    expect(screen.getByRole('combobox', { name: 'Music track' })).toHaveValue(RESTORED_TRACK_ID)
+    expect(onMusicControl).not.toHaveBeenCalled()
   })
 
   it('emits synced transport controls without sharing volume', async () => {
@@ -169,7 +220,7 @@ describe('SceneMusicPlayer', () => {
     expect(audio).not.toBeNull()
     if (!audio) return
 
-    Object.defineProperty(audio, 'duration', { configurable: true, value: 11095.235 })
+    Object.defineProperty(audio, 'duration', { configurable: true, value: 4 })
     audio.currentTime = 42
     fireEvent.loadedMetadata(audio)
 
@@ -177,7 +228,7 @@ describe('SceneMusicPlayer', () => {
     await waitFor(() => expect(playMock).toHaveBeenCalled())
 
     expect(onMusicControl).toHaveBeenCalledWith({
-      trackId: 'dnd-calm-fantasy-adventure-exploration',
+      trackId: RESTORED_TRACK_ID,
       status: 'playing',
       position: 42,
     })
@@ -186,6 +237,50 @@ describe('SceneMusicPlayer', () => {
     const callCount = onMusicControl.mock.calls.length
     fireEvent.change(screen.getByLabelText('Music volume'), { target: { value: '0' } })
     expect(onMusicControl).toHaveBeenCalledTimes(callCount)
+  })
+
+  it('keeps the sync heartbeat alive while timeupdate events advance playback', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    const onMusicControl = vi.fn()
+    const { container } = render(
+      <SceneMusicPlayer
+        sessionId={4}
+        playerId={8}
+        musicSyncState={{
+          sessionId: 4,
+          trackId: RESTORED_TRACK_ID,
+          status: 'playing',
+          position: 0,
+          updatedAtMs: Date.now(),
+          receivedAtMs: Date.now(),
+          updatedByPlayerId: 8,
+        }}
+        onMusicControl={onMusicControl}
+      />,
+    )
+    const audio = container.querySelector('audio')
+    expect(audio).not.toBeNull()
+    if (!audio) return
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    onMusicControl.mockClear()
+
+    for (let second = 1; second <= 10; second += 1) {
+      audio.currentTime = second
+      fireEvent.timeUpdate(audio)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000)
+      })
+    }
+
+    expect(onMusicControl).toHaveBeenCalledWith({
+      trackId: RESTORED_TRACK_ID,
+      status: 'playing',
+      position: 10,
+    })
   })
 
   it('ducks actual music volume during TTS without changing the saved slider volume', async () => {
@@ -292,7 +387,7 @@ describe('SceneMusicPlayer', () => {
   it('applies remote session music state while keeping local volume independent', async () => {
     const syncState = {
       sessionId: 4,
-      trackId: 'dnd-calm-fantasy-adventure-exploration',
+      trackId: RESTORED_TRACK_ID,
       status: 'playing' as const,
       position: 60,
       updatedAtMs: Date.now(),
@@ -304,7 +399,7 @@ describe('SceneMusicPlayer', () => {
     expect(audio).not.toBeNull()
     if (!audio) return
 
-    Object.defineProperty(audio, 'duration', { configurable: true, value: 11095.235 })
+    Object.defineProperty(audio, 'duration', { configurable: true, value: 120 })
     fireEvent.loadedMetadata(audio)
     fireEvent.change(screen.getByLabelText('Music volume'), { target: { value: '0.25' } })
 
@@ -319,7 +414,7 @@ describe('SceneMusicPlayer', () => {
     playMock.mockRejectedValue(new Error('blocked'))
     const playingState = {
       sessionId: 4,
-      trackId: 'dnd-calm-fantasy-adventure-exploration',
+      trackId: RESTORED_TRACK_ID,
       status: 'playing' as const,
       position: 90,
       updatedAtMs: Date.now(),
@@ -338,7 +433,7 @@ describe('SceneMusicPlayer', () => {
     expect(audio).not.toBeNull()
     if (!audio) return
 
-    Object.defineProperty(audio, 'duration', { configurable: true, value: 11095.235 })
+    Object.defineProperty(audio, 'duration', { configurable: true, value: 120 })
     fireEvent.loadedMetadata(audio)
 
     rerender(<SceneMusicPlayer sessionId={4} playerId={8} musicSyncState={playingState} />)

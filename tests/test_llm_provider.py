@@ -9,6 +9,7 @@ from aidm_server.contracts import ProviderRequest
 from aidm_server import codex_runtime
 from aidm_server.llm import (
     DeepSeekChatProvider,
+    EmergencyFallbackChunk,
     GeminiProvider,
     NvidiaChatProvider,
     ProviderNotConfiguredError,
@@ -19,7 +20,7 @@ from aidm_server.llm import (
     query_dm_function_stream,
     query_gpt_stream,
 )
-from aidm_server.llm_providers import CodexCliProvider, get_helper_provider
+from aidm_server.llm_providers import CodexCliProvider, DeterministicFallbackProvider, get_helper_provider
 from aidm_server.provider_registry import provider_capabilities, provider_default_model, provider_runtime_model
 
 
@@ -36,6 +37,33 @@ def test_codex_executable_resolves_mac_app_bundle(monkeypatch, tmp_path):
 
     assert codex_runtime.resolve_codex_executable('codex') == str(app_executable)
     assert provider._resolved_executable() == str(app_executable)
+
+
+def test_codex_executable_resolves_render_node_runtime(monkeypatch, tmp_path):
+    node_root = tmp_path / 'nodes'
+    old_node_executable = node_root / 'node-9.0.0' / 'bin' / 'codex'
+    node_executable = node_root / 'node-24.18.0' / 'bin' / 'codex'
+    non_executable = node_root / 'node-25.0.0' / 'bin' / 'codex'
+    for executable in (old_node_executable, node_executable):
+        executable.parent.mkdir(parents=True)
+        executable.write_text('#!/bin/sh\n', encoding='utf-8')
+        executable.chmod(0o755)
+        node_runtime = executable.parent / 'node'
+        node_runtime.write_text('#!/bin/sh\n', encoding='utf-8')
+        node_runtime.chmod(0o755)
+    non_executable.parent.mkdir(parents=True)
+    non_executable.write_text('#!/bin/sh\n', encoding='utf-8')
+    non_executable.chmod(0o644)
+    monkeypatch.delenv('AIDM_CODEX_EXECUTABLE', raising=False)
+    monkeypatch.setenv('AIDM_CODEX_NODE_ROOT', str(node_root))
+    monkeypatch.setattr(codex_runtime.shutil, 'which', lambda executable: None)
+    monkeypatch.setattr(codex_runtime, 'DEFAULT_CODEX_APP_EXECUTABLES', ())
+    monkeypatch.setattr(codex_runtime, 'DEFAULT_CODEX_NODE_ROOTS', ())
+
+    provider = CodexCliProvider(executable='codex')
+
+    assert codex_runtime.resolve_codex_executable('codex') == str(node_executable)
+    assert provider._resolved_executable() == str(node_executable)
 
 
 def _clear_helper_env(monkeypatch):
@@ -1096,6 +1124,66 @@ def test_query_dm_function_stream_falls_back_to_completion_for_deepseek_stream_f
     chunks = list(query_dm_function_stream('hello', '{"campaign":"test"}'))
 
     assert ''.join(chunks) == 'Completion fallback sentence. Another fallback sentence.'
+
+
+def test_query_dm_function_stream_marks_provider_exception_fallback_and_redacts_details(monkeypatch):
+    class FailingProvider:
+        provider_name = 'gemini'
+        model_name = 'models/gemini-test'
+
+        def stream(self, _request):
+            raise RuntimeError('upstream body included secret-token-123 at https://private.example.test')
+            yield  # pragma: no cover
+
+    monkeypatch.setattr('aidm_server.llm.get_provider', lambda: FailingProvider())
+
+    chunks = list(query_dm_function_stream('open the gate', '{"campaign":"test"}'))
+
+    assert len(chunks) == 1
+    fallback = chunks[0]
+    assert isinstance(fallback, EmergencyFallbackChunk)
+    assert fallback.provider == 'fallback'
+    assert fallback.model == 'continuity-safe-v1'
+    assert fallback.failed_provider == 'gemini'
+    assert fallback.failed_model == 'models/gemini-test'
+    assert fallback.error_type == 'RuntimeError'
+    assert fallback.public_message == 'The configured DM provider failed; continuity-safe narration was used.'
+    assert 'secret-token-123' not in fallback.public_message
+    assert 'private.example.test' not in fallback.public_message
+
+
+def test_query_dm_function_stream_marks_whitespace_only_stream_as_emergency_fallback(monkeypatch):
+    class WhitespaceProvider:
+        provider_name = 'gemini'
+        model_name = 'models/gemini-empty'
+
+        def stream(self, _request):
+            yield ''
+            yield '   '
+            yield '\n\t'
+
+    monkeypatch.setattr('aidm_server.llm.get_provider', lambda: WhitespaceProvider())
+
+    chunks = list(query_dm_function_stream('open the gate', '{"campaign":"test"}'))
+
+    fallback = chunks[-1]
+    assert isinstance(fallback, EmergencyFallbackChunk)
+    assert fallback.reason == 'empty_response'
+    assert fallback.failed_provider == 'gemini'
+    assert fallback.failed_model == 'models/gemini-empty'
+    assert fallback.provider == 'fallback'
+    assert fallback.model == 'continuity-safe-v1'
+
+
+def test_intentionally_configured_deterministic_provider_is_not_emergency_fallback(monkeypatch):
+    provider = DeterministicFallbackProvider(model_name='deterministic-v1')
+    monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
+
+    chunks = list(query_dm_function_stream('open the gate', '{"campaign":"test"}'))
+
+    assert chunks
+    assert not any(isinstance(chunk, EmergencyFallbackChunk) for chunk in chunks)
+    assert 'scene advances' in ''.join(chunks).lower()
 
 
 def test_get_provider_uses_phase_timeout_env(monkeypatch):

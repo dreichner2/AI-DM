@@ -39,11 +39,10 @@ Archived review material lives in:
 - Modal accessibility regressions cover focus placement, Escape close, focus
   trapping, danger confirmation cancellation, and dialog descriptions.
 - Production bootstrap now requires declared observability ownership
-  (`AIDM_OBSERVABILITY_PROVIDER`, `AIDM_ALERT_OWNER`) and an explicit Socket.IO
-  worker model (`single`, `sticky`, or `message_queue`).
-- Socket.IO can be configured with a shared message queue through
-  `AIDM_SOCKETIO_MESSAGE_QUEUE` when the production worker model is
-  `message_queue`.
+  (`AIDM_OBSERVABILITY_PROVIDER`, `AIDM_ALERT_OWNER`) and the supported
+  `AIDM_SOCKETIO_WORKER_MODEL=single` topology.
+- Multi-worker Socket.IO is deferred until presence/music state is shared and
+  both affinity and shared-queue delivery are proven under the real topology.
 - Hosted same-origin account auth can use server-issued `HttpOnly` account
   cookies, suppress raw account tokens in JSON responses, and enforce a
   companion CSRF token on unsafe cookie-authenticated REST requests.
@@ -80,8 +79,8 @@ Archived review material lives in:
 - Hosted closed-beta deployment readiness has an executable gate:
   `scripts/deployment_readiness_check.py` validates production env choices,
   required security/auth/observability settings, optional live health/metrics
-  endpoints, required security headers, and documented Socket.IO staging proof
-  for sticky or message-queue worker models.
+  endpoints, required security headers, and a forced WebSocket upgrade through
+  the deployed edge. Unsupported multi-worker models fail this gate.
 - The local Prometheus/Grafana observability bundle has an executable validator
   (`scripts/check_observability_bundle.py`) that checks required files,
   dashboard metrics, provisioning paths, and optionally `docker compose config`
@@ -97,10 +96,8 @@ Archived review material lives in:
   metrics/alert ingestion in staging.
 - For hosted RC1, use the `single` worker-model decision in
   `docs/socketio_worker_model.md`, then attach hosted process evidence showing
-  exactly one backend worker. If the target intentionally overrides that
-  decision, run a staging smoke test that proves client event delivery under the
-  selected model and pass the proof note or URL to `--socketio-staging-proof`
-  for sticky or message-queue deployments.
+  exactly one backend process/replica. Do not override this decision until the
+  shared-state and multi-worker work recorded in that decision document lands.
 - Enable `AIDM_ACCOUNT_COOKIE_AUTH_ENABLED=true` and
   `AIDM_ACCOUNT_TOKEN_RESPONSE_ENABLED=false` for hosted same-origin cookie-only
   auth when the deployment threat model calls for it.

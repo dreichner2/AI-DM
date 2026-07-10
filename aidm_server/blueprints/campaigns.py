@@ -7,6 +7,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 
 from aidm_server.canon_jobs import canon_job_status_counts
+from aidm_server.capabilities import current_actor_has_capability
 from aidm_server.creatures.campaign_pack import generate_campaign_pack_bestiary
 from aidm_server.creatures.repository import save_bestiary_entry
 from aidm_server.database import db
@@ -16,7 +17,6 @@ from aidm_server.models import (
     CampaignPack,
     CampaignPackRecord,
     CampaignPackSession,
-    Session,
     StoryEntity,
     StoryFact,
     StoryThread,
@@ -43,6 +43,8 @@ from aidm_server.services.campaign_lifecycle import (
     delete_campaign_record,
     restore_campaign_record,
 )
+from aidm_server.services.chronicle_export import chronicle_html_response, export_campaign_chronicle_html
+from aidm_server.services.pack_forge import CampaignPackForgeError, forge_campaign_pack
 from aidm_server.services.workspace import campaign_workspace_payload
 from aidm_server.time_utils import utc_now
 from aidm_server.validation import (
@@ -56,7 +58,6 @@ from aidm_server.validation import (
 from aidm_server.workspace_access import (
     campaign_query,
     current_account_id,
-    current_account_is_workspace_admin,
     current_workspace_id,
     get_campaign as workspace_campaign,
     get_world as workspace_world,
@@ -329,6 +330,30 @@ def lint_campaign_pack_manifest_endpoint():
         return error_response('campaign_pack_lint_failed', 'Failed to lint campaign pack.', 400)
 
 
+@campaigns_bp.route('/pack-tools/forge', methods=['POST'])
+def forge_campaign_pack_manifest_endpoint():
+    if not _include_hidden_session_state():
+        return error_response(
+            'forbidden',
+            'Only workspace admins can forge campaign packs.',
+            403,
+        )
+    payload = parse_json_body(request)
+    if payload is None:
+        return error_response('validation_error', 'Expected JSON request body.', 400)
+    try:
+        result = forge_campaign_pack(payload, workspace_id=current_workspace_id())
+        db.session.rollback()
+        return jsonify(result), 200
+    except CampaignPackForgeError as exc:
+        db.session.rollback()
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
+    except Exception as exc:
+        db.session.rollback()
+        logger.error('Failed to forge campaign pack: %s', str(exc))
+        return error_response('campaign_pack_forge_failed', 'Failed to forge campaign pack.', 400)
+
+
 @campaigns_bp.route('/installed-packs', methods=['GET'])
 def list_installed_campaign_packs():
     if not _include_hidden_session_state():
@@ -410,7 +435,7 @@ def import_example_campaign_pack(pack_id):
         return jsonify(result.payload), 201
     except CampaignPackImportError as exc:
         db.session.rollback()
-        return error_response(exc.error_code, str(exc), exc.status_code)
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to import example campaign pack: %s', str(exc))
@@ -485,7 +510,7 @@ def import_installed_campaign_pack(installed_pack_id):
         return jsonify(result.payload), 201
     except CampaignPackImportError as exc:
         db.session.rollback()
-        return error_response(exc.error_code, str(exc), exc.status_code)
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to import installed campaign pack: %s', str(exc))
@@ -526,7 +551,7 @@ def import_campaign_pack_manifest():
         return jsonify(result.payload), 201
     except CampaignPackImportError as exc:
         db.session.rollback()
-        return error_response(exc.error_code, str(exc), exc.status_code)
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to import campaign pack: %s', str(exc))
@@ -605,7 +630,7 @@ def create_campaign():
 
 
 def _include_hidden_session_state() -> bool:
-    return current_account_id() is None or current_account_is_workspace_admin()
+    return current_actor_has_capability('dm_authoring')
 
 
 @campaigns_bp.route('', methods=['GET'])
@@ -797,6 +822,16 @@ def get_campaign_workspace(campaign_id):
             include_hidden_state=_include_hidden_session_state(),
         )
     )
+
+
+@campaigns_bp.route('/<int:campaign_id>/chronicle', methods=['GET'])
+def export_campaign_chronicle(campaign_id):
+    campaign = workspace_campaign(campaign_id)
+    if not campaign:
+        return error_response('campaign_not_found', 'Campaign not found.', 404)
+
+    export = export_campaign_chronicle_html(campaign, include_archived_sessions=_include_archived())
+    return chronicle_html_response(export)
 
 
 @campaigns_bp.route('/<int:campaign_id>/canon', methods=['GET'])

@@ -21,13 +21,14 @@ def _write_minimal_valid_files(root: Path) -> DecisionPaths:
         '\n'.join(
             [
                 'Decision: single-worker hosted closed beta.',
+                'Production policy: single-worker only.',
                 'AIDM_SOCKETIO_WORKER_MODEL=single',
-                'AIDM_SOCKETIO_ASYNC_MODE=eventlet',
+                'AIDM_SOCKETIO_ASYNC_MODE=threading',
+                'AIDM_GUNICORN_THREADS=100',
                 'WEB_CONCURRENCY=1',
                 'scripts/run_production_server.sh --print',
-                '--socketio-staging-proof',
-                'AIDM_SOCKETIO_WORKER_MODEL=sticky',
-                'AIDM_SOCKETIO_WORKER_MODEL=message_queue',
+                'shared presence/music state',
+                'Both affinity and queueing are required',
             ]
         ),
         encoding='utf-8',
@@ -36,7 +37,9 @@ def _write_minimal_valid_files(root: Path) -> DecisionPaths:
         '\n'.join(
             [
                 'AIDM_SOCKETIO_WORKER_MODEL=single',
-                'AIDM_SOCKETIO_ASYNC_MODE=eventlet',
+                'AIDM_SOCKETIO_ASYNC_MODE=threading',
+                'AIDM_GUNICORN_THREADS=100',
+                'WEB_CONCURRENCY=1',
                 'AIDM_RATE_LIMIT_STORE=database',
                 'AIDM_TURN_COORDINATOR_STORE=database',
             ]
@@ -48,7 +51,12 @@ def _write_minimal_valid_files(root: Path) -> DecisionPaths:
             [
                 'WEB_CONCURRENCY="${WEB_CONCURRENCY:-1}"',
                 'export AIDM_SOCKETIO_WORKER_MODEL="${AIDM_SOCKETIO_WORKER_MODEL:-single}"',
-                'export AIDM_SOCKETIO_ASYNC_MODE="${AIDM_SOCKETIO_ASYNC_MODE:-eventlet}"',
+                'export AIDM_SOCKETIO_ASYNC_MODE="${AIDM_SOCKETIO_ASYNC_MODE:-threading}"',
+                'GUNICORN_THREADS="${AIDM_GUNICORN_THREADS:-100}"',
+                '--worker-class gthread',
+                '--threads "${GUNICORN_THREADS}"',
+                'currently supports only AIDM_SOCKETIO_WORKER_MODEL=single',
+                'AIDM_GUNICORN_THREADS must be an integer >= 16.',
                 'AIDM_SOCKETIO_WORKER_MODEL=single requires WEB_CONCURRENCY=1.',
             ]
         ),
@@ -57,7 +65,7 @@ def _write_minimal_valid_files(root: Path) -> DecisionPaths:
     for path in (paths.production_readiness_doc, paths.beta_runbook):
         path.write_text(
             'AIDM_SOCKETIO_WORKER_MODEL=single\n'
-            'AIDM_SOCKETIO_ASYNC_MODE=eventlet\n'
+            'AIDM_SOCKETIO_ASYNC_MODE=threading\n'
             'WEB_CONCURRENCY=1\n'
             'scripts/run_production_server.sh\n',
             encoding='utf-8',
@@ -72,14 +80,32 @@ def test_validate_socketio_worker_model_decision_accepts_current_repo():
 def test_validate_socketio_worker_model_decision_reports_mismatched_env_example(tmp_path):
     paths = _write_minimal_valid_files(tmp_path)
     paths.env_example.write_text(
-        'AIDM_SOCKETIO_WORKER_MODEL=single\nAIDM_SOCKETIO_ASYNC_MODE=threading\n',
+        'AIDM_SOCKETIO_WORKER_MODEL=single\nAIDM_SOCKETIO_ASYNC_MODE=eventlet\n',
         encoding='utf-8',
     )
 
     errors = validate_decision(paths)
 
-    assert any('.env.production.example must include `AIDM_SOCKETIO_ASYNC_MODE=eventlet`' in error for error in errors)
-    assert any('.env.production.example must include `AIDM_RATE_LIMIT_STORE=database`' in error for error in errors)
+    assert any('.env.production.example must set `AIDM_SOCKETIO_ASYNC_MODE=threading`' in error for error in errors)
+    assert any('.env.production.example must set `AIDM_RATE_LIMIT_STORE=database`' in error for error in errors)
+
+
+def test_validate_socketio_worker_model_decision_ignores_commented_env_assignments(tmp_path):
+    paths = _write_minimal_valid_files(tmp_path)
+    paths.env_example.write_text(
+        '# AIDM_SOCKETIO_ASYNC_MODE=threading\n'
+        'AIDM_SOCKETIO_ASYNC_MODE=eventlet\n'
+        'AIDM_SOCKETIO_WORKER_MODEL=single\n'
+        'AIDM_GUNICORN_THREADS=100\n'
+        'WEB_CONCURRENCY=1\n'
+        'AIDM_RATE_LIMIT_STORE=database\n'
+        'AIDM_TURN_COORDINATOR_STORE=database\n',
+        encoding='utf-8',
+    )
+
+    errors = validate_decision(paths)
+
+    assert any('must set `AIDM_SOCKETIO_ASYNC_MODE=threading`' in error for error in errors)
 
 
 def test_socketio_worker_model_decision_main_passes_for_current_repo(capsys):

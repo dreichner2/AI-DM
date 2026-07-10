@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
 from aidm_server.canon_jobs import (
+    CANON_JOB_FAILED_MESSAGE,
     enqueue_canon_job,
     process_canon_job,
     reset_stale_canon_jobs,
@@ -112,15 +113,17 @@ def test_canon_job_processes_and_exposes_status_counts(client, app, monkeypatch)
     assert payload['summary']['canon_job_counts'] == {'succeeded': 1}
 
 
-def test_canon_job_failure_is_durable_and_retryable(app, monkeypatch):
+def test_canon_job_failure_is_durable_retryable_and_does_not_expose_internal_error(app, monkeypatch):
     import aidm_server.canon_jobs as canon_jobs_module
 
     ids = seed_world_campaign_player_session(app)
     turn_id = _seed_completed_turn(app, ids)
+    internal_detail = 'postgresql://internal-user:secret@database.internal/aidm /srv/private/state.json'
+    emitted_statuses: list[dict] = []
 
     def fail_extract(*args, **kwargs):
         del args, kwargs
-        raise RuntimeError('extractor unavailable')
+        raise RuntimeError(internal_detail)
 
     monkeypatch.setattr(canon_jobs_module, 'extract_canon_patch', fail_extract)
 
@@ -136,12 +139,29 @@ def test_canon_job_failure_is_durable_and_retryable(app, monkeypatch):
         db.session.commit()
         job_id = job.job_id
 
-        process_canon_job(job_id)
+        process_canon_job(
+            job_id,
+            emit_turn_status=lambda session_id, emitted_turn_id, status, details=None: emitted_statuses.append(
+                {
+                    'session_id': session_id,
+                    'turn_id': emitted_turn_id,
+                    'status': status,
+                    'details': details or {},
+                }
+            ),
+        )
         job = db.session.get(CanonJob, job_id)
         turn = db.session.get(DmTurn, turn_id)
         assert job.status == 'failed'
-        assert job.error_text == 'extractor unavailable'
-        assert safe_json_loads(turn.metadata_json, {})['canon_status'] == 'failed'
+        assert job.error_text == CANON_JOB_FAILED_MESSAGE
+        metadata = safe_json_loads(turn.metadata_json, {})
+        assert metadata['canon_status'] == 'failed'
+        assert metadata['canon_error'] == CANON_JOB_FAILED_MESSAGE
+        assert internal_detail not in str(metadata)
+
+    failed_status = next(status for status in emitted_statuses if status['status'] == 'failed')
+    assert failed_status['details'] == {'stage': 'canon_job', 'error': CANON_JOB_FAILED_MESSAGE}
+    assert internal_detail not in str(emitted_statuses)
 
     monkeypatch.setattr(canon_jobs_module, 'extract_canon_patch', lambda *args, **kwargs: (_empty_patch(), 'retry-ok'))
 

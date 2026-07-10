@@ -1,17 +1,24 @@
-import { useState, type ChangeEvent, type Dispatch, type RefObject, type SetStateAction } from 'react'
+import { lazy, Suspense, useEffect, useState, type ChangeEvent, type Dispatch, type RefObject, type SetStateAction } from 'react'
 import {
   ArrowDown,
+  BookOpen,
   ChevronDown,
   ClipboardList,
   Download,
   MoreHorizontal,
   Share2,
+  SlidersHorizontal,
   Sparkles,
   Trash2,
   Upload,
+  Volume2,
 } from 'lucide-react'
 import { ActionComposer, type ActionComposerProps } from './ActionComposer'
 import { ThinIcon, ToolbarButton } from './AppChrome'
+import {
+  type ContentRating,
+  type ContentSettings,
+} from './contentSettings'
 import {
   type PendingRollNotice,
   speakerDetail,
@@ -19,12 +26,34 @@ import {
   turnNumber,
   turnPersistenceLabel,
 } from './gameSelectors'
-import { profileIconSrcForCharacter } from './profileIcons'
-import { SceneMusicPlayer } from './SceneMusicPlayer'
+import { NarrativeProse } from './NarrativeProse'
 import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
-import type { ActivePlayer, Campaign, ClarificationRequest, Player, SessionState, SessionSummary, TimelineEntry } from './types'
+import {
+  DirectorCommentaryPanel,
+  OperatorDrawer,
+  type BoardViewMode,
+  type CanonFact,
+  type DmExecutionStats,
+} from './SessionDirectorPanels'
+import { SessionPresenceStrip } from './SessionPresenceStrip'
+import type { SceneDisplayState } from './sceneState'
+import type {
+  ActivePlayer,
+  Campaign,
+  CampaignPackCommentaryResponse,
+  ClarificationRequest,
+  Player,
+  SessionState,
+  SessionSummary,
+  TimelineEntry,
+} from './types'
+
+const SceneMusicPlayer = lazy(() =>
+  import('./SceneMusicPlayer').then((module) => ({ default: module.SceneMusicPlayer })),
+)
 
 export type MainTab = 'turns' | 'dm' | 'notes'
+export type { BoardViewMode } from './SessionDirectorPanels'
 export type TurnQualityScores = {
   coherence: number
   fun: number
@@ -39,16 +68,8 @@ type ChatTextSettings = {
   font: ChatTextFont
 }
 
-type DmExecutionStats = {
-  tokens: number | string
-  time: string
-  model: string
-  temperature: string
-}
-
-type CanonFact = [fact: string, source: string]
-
 const CHAT_TEXT_SETTINGS_STORAGE_KEY = 'aidm:chatTextSettings'
+const BOARD_VIEW_MODE_STORAGE_KEY = 'aidm:boardViewMode'
 const QUALITY_SCORE_OPTIONS = [1, 2, 3, 4, 5] as const
 const DEFAULT_TURN_QUALITY_SCORES: TurnQualityScores = {
   coherence: 4,
@@ -90,6 +111,23 @@ function saveChatTextSettings(settings: ChatTextSettings) {
   }
 }
 
+function loadBoardViewMode(): BoardViewMode {
+  try {
+    const rawValue = localStorage.getItem(BOARD_VIEW_MODE_STORAGE_KEY)
+    return rawValue === 'ops' || rawValue === 'theater' ? rawValue : 'ops'
+  } catch {
+    return 'ops'
+  }
+}
+
+function saveBoardViewMode(mode: BoardViewMode) {
+  try {
+    localStorage.setItem(BOARD_VIEW_MODE_STORAGE_KEY, mode)
+  } catch {
+    // The current page can still switch modes if storage is unavailable.
+  }
+}
+
 type SessionBoardProps = {
   activeSessionTitle: string
   campaignTitle: string
@@ -98,13 +136,25 @@ type SessionBoardProps = {
   showSceneMusicPlayer: boolean
   duckMusicForNarration: boolean
   sceneMusicSyncState: SceneMusicSyncState | null
+  sceneState: SceneDisplayState | null
   onSceneMusicControl: (payload: SceneMusicControlPayload) => void
+  contentSettings: ContentSettings
+  contentSettingsPending: boolean
+  canEditContentSettings: boolean
+  onContentRatingChange: (rating: ContentRating) => void
+  onContentToneTagsChange: (toneTags: string[]) => void
+  onBoardViewModeChange?: (mode: BoardViewMode) => void
+  directorCommentary: CampaignPackCommentaryResponse | null
+  sessionRecap: string
+  onSpeakSessionRecap: (text: string) => void
   workspaceLoading: boolean
   sessionLoading: boolean
   mainTab: MainTab
   setMainTab: Dispatch<SetStateAction<MainTab>>
   showMobilePresenceStrip: boolean
   activePlayers: ActivePlayer[]
+  downloadCampaignChronicle: () => Promise<void>
+  downloadSessionChronicle: () => Promise<void>
   downloadSessionJson: () => Promise<void>
   sessionImportPending: boolean
   sessionImportInputRef: RefObject<HTMLInputElement | null>
@@ -224,84 +274,42 @@ function RollWaitBanner({ notice }: { notice: PendingRollNotice }) {
   )
 }
 
-function activePlayerAvatarSrc(player: ActivePlayer) {
+function SceneHeader({ sceneState }: { sceneState: SceneDisplayState | null }) {
+  if (!sceneState) return null
   return (
-    player.profile_image ||
-    profileIconSrcForCharacter({ race: player.race, sex: player.sex }) ||
-    '/profile-icons/human_male.png'
+    <div className="scene-state-header" aria-label="Current scene">
+      <span>{sceneState.locationName}</span>
+      <small>
+        {sceneState.sceneType}
+        {sceneState.mood ? ` / ${sceneState.mood}` : ''}
+        {sceneState.inCombat ? ' / combat' : ` / danger ${sceneState.dangerLevel}`}
+      </small>
+    </div>
   )
 }
 
-function activePlayerInitial(player: ActivePlayer) {
-  return (player.character_name || player.name || '?').slice(0, 1).toUpperCase()
-}
-
-function MobilePresenceStrip({
-  activePlayers,
-  selectedPlayerId,
-  selectedPlayerHasTurn,
-  turnControlStatusLabel,
+function PreviouslyOnCard({
+  onSpeak,
+  text,
+  updatedAt,
 }: {
-  activePlayers: ActivePlayer[]
-  selectedPlayerId: number | null
-  selectedPlayerHasTurn: boolean
-  turnControlStatusLabel: string
+  onSpeak: (text: string) => void
+  text: string
+  updatedAt: string | null
 }) {
-  const typingPlayers = activePlayers.filter(
-    (player) => player.id !== selectedPlayerId && player.is_typing,
-  )
-  const typingLabel = typingPlayers.length
-    ? `${typingPlayers.slice(0, 2).map((player) => player.character_name).join(', ')}${typingPlayers.length > 2 ? ` +${typingPlayers.length - 2}` : ''} typing`
-    : activePlayers.length ? 'Watching table' : 'No friends online'
-
+  const recapText = text.trim()
+  if (!recapText) return null
   return (
-    <section className="mobile-presence-strip" aria-label="Mobile active players">
-      <div className={`mobile-presence-summary ${selectedPlayerHasTurn ? 'open' : 'locked'}`}>
-        <span>{activePlayers.length ? `${activePlayers.length} online` : 'Solo'}</span>
-        <strong>{typingLabel}</strong>
+    <aside className="previously-on-card" aria-label="Previously On">
+      <div>
+        <span>Previously On</span>
+        {updatedAt ? <time>{formatDateTime(updatedAt)}</time> : null}
+        <button type="button" aria-label="Play recap" title="Play recap" onClick={() => onSpeak(recapText)}>
+          <Volume2 size={15} />
+        </button>
       </div>
-      {activePlayers.length ? (
-        <ul className="mobile-presence-list" aria-label="Active players on mobile">
-          {activePlayers.map((player) => {
-            const isSelectedPlayer = player.id === selectedPlayerId
-            const isOtherPlayerTyping = !isSelectedPlayer && player.is_typing
-            const health = player.health
-            return (
-              <li
-                key={player.id}
-                className={`${isSelectedPlayer ? 'selected' : ''} ${isOtherPlayerTyping ? 'typing' : ''}`}
-              >
-                <span className="mobile-presence-avatar" aria-hidden="true">
-                  <img src={activePlayerAvatarSrc(player)} alt="" />
-                  <span>{activePlayerInitial(player)}</span>
-                  {health ? <span className={`mobile-health-dot mobile-health-dot-${health.tone}`} /> : null}
-                </span>
-                <span className="mobile-presence-copy">
-                  <strong>{player.character_name}</strong>
-                  <small>{isSelectedPlayer ? 'You' : player.name}</small>
-                </span>
-                {health ? (
-                  <span
-                    className="mobile-health-label"
-                    aria-label={`${player.character_name} health: ${health.label}`}
-                    title={`${health.label}: ${health.currentHp}/${health.maxHp} HP`}
-                  >
-                    {health.label}
-                  </span>
-                ) : null}
-                {isOtherPlayerTyping ? (
-                  <span className="mobile-typing-badge" aria-label={`${player.character_name} is typing`}>
-                    Typing
-                  </span>
-                ) : null}
-              </li>
-            )
-          })}
-        </ul>
-      ) : (
-        <div className="mobile-presence-empty">{turnControlStatusLabel}</div>
-      )}
-    </section>
+      <NarrativeProse text={recapText} />
+    </aside>
   )
 }
 
@@ -313,13 +321,25 @@ export function SessionBoard({
   showSceneMusicPlayer,
   duckMusicForNarration,
   sceneMusicSyncState,
+  sceneState,
   onSceneMusicControl,
+  contentSettings,
+  contentSettingsPending,
+  canEditContentSettings,
+  onContentRatingChange,
+  onContentToneTagsChange,
+  onBoardViewModeChange,
+  directorCommentary,
+  sessionRecap,
+  onSpeakSessionRecap,
   workspaceLoading,
   sessionLoading,
   mainTab,
   setMainTab,
   showMobilePresenceStrip,
   activePlayers,
+  downloadCampaignChronicle,
+  downloadSessionChronicle,
   downloadSessionJson,
   sessionImportPending,
   sessionImportInputRef,
@@ -369,23 +389,42 @@ export function SessionBoard({
 }: SessionBoardProps) {
   const loading = workspaceLoading || sessionLoading
   const [chatTextSettings, setChatTextSettings] = useState(loadChatTextSettings)
+  const [boardViewMode, setBoardViewMode] = useState<BoardViewMode>(loadBoardViewMode)
   const [chatTextMenuOpen, setChatTextMenuOpen] = useState(false)
+  const [directorCommentaryOpen, setDirectorCommentaryOpen] = useState(false)
   const [qualityDrafts, setQualityDrafts] = useState<Record<number, TurnQualityScores>>({})
   const streamLabel =
     currentResponseEntry && turnPersistenceLabel(currentResponseEntry)
       ? turnPersistenceLabel(currentResponseEntry)
       : sendPending || streamingTurnActive ? 'Streaming...' : 'Ready'
   const chatTextClassName = `chat-text-size-${chatTextSettings.size} chat-text-font-${chatTextSettings.font}`
+  const theaterMode = boardViewMode === 'theater'
   const rollWaitBanner = pendingRollNotice ? <RollWaitBanner notice={pendingRollNotice} /> : null
   const showStartAdventure =
     Boolean(activeSession) && !loading && turnRows.length === 0 && !currentResponseEntry
   const startAdventureDisabled =
     sendPending || streamingTurnActive || !sessionId || !actionComposerProps.selectedPlayerId
+  const previouslyOnText =
+    sessionRecap.trim() ||
+    sessionState?.rolling_summary?.trim() ||
+    activeSession?.latest_summary?.trim() ||
+    (activeSession ? 'No recap recorded yet.' : welcomeText)
+  const previouslyOnUpdatedAt =
+    sessionState?.updated_at ?? activeSession?.latest_activity_at ?? activeSession?.updated_at ?? null
 
   const updateChatTextSettings = (nextSettings: ChatTextSettings) => {
     setChatTextSettings(nextSettings)
     saveChatTextSettings(nextSettings)
   }
+
+  const updateBoardViewMode = (nextMode: BoardViewMode) => {
+    setBoardViewMode(nextMode)
+    saveBoardViewMode(nextMode)
+  }
+
+  useEffect(() => {
+    onBoardViewModeChange?.(boardViewMode)
+  }, [boardViewMode, onBoardViewModeChange])
 
   const toggleTurnExpanded = (turnId: string) => {
     setExpandedTurnIds((current) => {
@@ -489,8 +528,27 @@ export function SessionBoard({
     )
   }
 
+  const renderTurnCopy = (turn: TimelineEntry, expanded: boolean) => {
+    const text = theaterMode && turn.role === 'dm'
+      ? turn.text
+      : expanded
+        ? turn.text
+        : truncateText(turn.text, 180)
+    if (theaterMode && turn.role === 'dm') {
+      return <NarrativeProse text={text} />
+    }
+    return <p>{text}</p>
+  }
+
+  const renderDmResponseCopy = (text: string) => (
+    theaterMode ? <NarrativeProse text={text} /> : <p>{text}</p>
+  )
+
   return (
-    <main className="session-board">
+    <main
+      className={`session-board session-board-${boardViewMode}`}
+      data-scene-mood={sceneState?.musicTag ?? 'calm'}
+    >
       <section className="session-header">
         <div>
           <h1>
@@ -500,8 +558,16 @@ export function SessionBoard({
             </span>
           </h1>
           <p>{campaignTitle}</p>
+          <SceneHeader sceneState={sceneState} />
         </div>
         <div className="session-actions">
+          <ToolbarButton
+            icon={theaterMode ? <SlidersHorizontal size={17} /> : <BookOpen size={17} />}
+            onClick={() => updateBoardViewMode(theaterMode ? 'ops' : 'theater')}
+            title={theaterMode ? 'Operator view' : 'Theater view'}
+          >
+            {theaterMode ? 'Ops' : 'Theater'}
+          </ToolbarButton>
           <ToolbarButton
             icon={<ClipboardList size={17} />}
             onClick={() => setMainTab('notes')}
@@ -510,11 +576,28 @@ export function SessionBoard({
             Summary
           </ToolbarButton>
           <ToolbarButton
+            ariaControls="director-commentary-panel"
+            ariaExpanded={directorCommentaryOpen}
+            icon={<Sparkles size={17} />}
+            onClick={() => setDirectorCommentaryOpen((current) => !current)}
+            title="Director Commentary"
+          >
+            Director
+          </ToolbarButton>
+          <ToolbarButton
             icon={<Download size={17} />}
             onClick={() => void downloadSessionJson()}
             title="Export"
           >
             Export
+          </ToolbarButton>
+          <ToolbarButton
+            disabled={!activeSession}
+            icon={<BookOpen size={17} />}
+            onClick={() => void downloadSessionChronicle()}
+            title="Download session Chronicle"
+          >
+            Chronicle
           </ToolbarButton>
           <ToolbarButton
             disabled={sessionImportPending}
@@ -555,6 +638,12 @@ export function SessionBoard({
               >
                 <button type="button" role="menuitem" onClick={() => void refreshCurrentWorkspace()}>
                   Refresh session
+                </button>
+                <button type="button" role="menuitem" disabled={!activeSession} onClick={() => void downloadSessionChronicle()}>
+                  Download session Chronicle
+                </button>
+                <button type="button" role="menuitem" disabled={!campaign} onClick={() => void downloadCampaignChronicle()}>
+                  Download campaign Chronicle
                 </button>
                 <button type="button" role="menuitem" disabled={!activeSession} onClick={openRenameSessionDialog}>
                   Rename session
@@ -599,7 +688,7 @@ export function SessionBoard({
       </div>
 
       {showMobilePresenceStrip ? (
-        <MobilePresenceStrip
+        <SessionPresenceStrip
           activePlayers={activePlayers}
           selectedPlayerId={actionComposerProps.selectedPlayerId}
           selectedPlayerHasTurn={actionComposerProps.selectedPlayerHasTurn}
@@ -608,13 +697,17 @@ export function SessionBoard({
       ) : null}
 
       {showSceneMusicPlayer ? (
-        <SceneMusicPlayer
-          sessionId={sessionId}
-          playerId={playerId}
-          duckForNarration={duckMusicForNarration}
-          musicSyncState={sceneMusicSyncState}
-          onMusicControl={onSceneMusicControl}
-        />
+        <Suspense fallback={null}>
+          <SceneMusicPlayer
+            sessionId={sessionId}
+            playerId={playerId}
+            duckForNarration={duckMusicForNarration}
+            musicSyncState={sceneMusicSyncState}
+            sceneState={sceneState}
+            autoFollowScene
+            onMusicControl={onSceneMusicControl}
+          />
+        </Suspense>
       ) : null}
 
       <div className="chat-reading-control">
@@ -669,6 +762,34 @@ export function SessionBoard({
         ) : null}
       </div>
 
+      <OperatorDrawer
+        boardViewMode={boardViewMode}
+        canEditContentSettings={canEditContentSettings}
+        contentSettings={contentSettings}
+        contentSettingsPending={contentSettingsPending}
+        dmExecutionStats={dmExecutionStats}
+        onBoardViewModeChange={updateBoardViewMode}
+        onContentRatingChange={onContentRatingChange}
+        onContentToneTagsChange={onContentToneTagsChange}
+      />
+
+      {directorCommentaryOpen ? (
+        <DirectorCommentaryPanel
+          activeSessionTitle={activeSessionTitle}
+          canonFacts={canonFacts}
+          commentary={directorCommentary}
+          contentSettings={contentSettings}
+          currentResponseEntry={currentResponseEntry}
+          dmExecutionStats={dmExecutionStats}
+          latestDmText={latestDmText}
+          onClose={() => setDirectorCommentaryOpen(false)}
+          questTitle={questTitle}
+          sceneState={sceneState}
+          sessionState={sessionState}
+          streamLabel={streamLabel}
+        />
+      ) : null}
+
       {mainTab === 'turns' ? (
         <>
           <section
@@ -677,6 +798,11 @@ export function SessionBoard({
             onScroll={updateJumpToLatestVisibility}
           >
             {rollWaitBanner}
+            <PreviouslyOnCard
+              text={previouslyOnText}
+              updatedAt={previouslyOnUpdatedAt}
+              onSpeak={onSpeakSessionRecap}
+            />
             {loading ? (
               <div className="panel-loading-strip" role="status">
                 {sessionLoading ? 'Loading session history...' : 'Loading campaign workspace...'}
@@ -700,7 +826,11 @@ export function SessionBoard({
                 return (
                   <article className="turn-row" key={turn.id}>
                     <div className="turn-number">{turnNumber(turn, index)}</div>
-                    <div className={`turn-card ${expanded ? 'expanded' : ''}`}>
+                    <div
+                      className={`turn-card ${expanded ? 'expanded' : ''} ${
+                        theaterMode && turn.role === 'dm' ? 'dm-theater-card' : ''
+                      }`}
+                    >
                       <div className="turn-speaker">
                         <strong>{turn.speaker}</strong>
                         <span>{speakerDetail(turn, selectedPlayer)}</span>
@@ -708,7 +838,7 @@ export function SessionBoard({
                       {turnPersistenceLabel(turn) ? (
                         <span className="turn-status-label">{turnPersistenceLabel(turn)}</span>
                       ) : null}
-                      <p>{expanded ? turn.text : truncateText(turn.text, 180)}</p>
+                      {renderTurnCopy(turn, expanded)}
                       <time>{formatClock(turn.timestamp)}</time>
                       <div className={`turn-actions ${dismissible ? 'has-dismiss' : ''} ${reportable ? 'has-report' : ''}`}>
                         {renderReportButton(turn)}
@@ -766,17 +896,12 @@ export function SessionBoard({
                   </div>
                   <div className="dm-response-actions">{renderReportButton(currentResponseEntry)}</div>
                   <div className="response-copy">
-                    <p>{latestDmText}</p>
+                    {renderDmResponseCopy(latestDmText)}
                   </div>
                   {renderQualityPrompt(currentResponseEntry)}
                   <div className={`stream-state ${sendPending || streamingTurnActive ? 'streaming' : ''}`}>
                     <span />
                     {streamLabel}
-                  </div>
-                  <div className="execution-footer">
-                    Tokens: {dmExecutionStats.tokens} <span>|</span> Time: {dmExecutionStats.time}{' '}
-                    <span>|</span> Model: {dmExecutionStats.model} <span>|</span> Temp:{' '}
-                    {dmExecutionStats.temperature}
                   </div>
                 </div>
               </article>
@@ -814,17 +939,12 @@ export function SessionBoard({
               </div>
               <div className="dm-response-actions">{renderReportButton(currentResponseEntry)}</div>
               <div className="response-copy">
-                <p>{latestDmText}</p>
+                {renderDmResponseCopy(latestDmText)}
               </div>
               {renderQualityPrompt(currentResponseEntry)}
               <div className={`stream-state ${sendPending || streamingTurnActive ? 'streaming' : ''}`}>
                 <span />
                 {streamLabel}
-              </div>
-              <div className="execution-footer">
-                Tokens: {dmExecutionStats.tokens} <span>|</span> Time: {dmExecutionStats.time}{' '}
-                <span>|</span> Model: {dmExecutionStats.model} <span>|</span> Temp:{' '}
-                {dmExecutionStats.temperature}
               </div>
             </div>
           </article>

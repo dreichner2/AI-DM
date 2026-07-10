@@ -1,5 +1,20 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { addCookieCsrfHeader, addNgrokBrowserWarningBypassHeader, normalizeBaseUrl } from './api'
+import {
+  addCookieCsrfHeader,
+  addNgrokBrowserWarningBypassHeader,
+  activateBackendCredentialScope,
+  backendOriginsMatch,
+  backendOwnsLegacyCredentials,
+  bindLegacyCredentialsToBackend,
+  isBackendOriginTrusted,
+  normalizeBaseUrl,
+  normalizedBackendOrigin,
+  readOriginScopedStorage,
+  removeOriginScopedStorage,
+  setActiveRuntimeBaseUrl,
+  trustBackendOrigin,
+  writeOriginScopedStorage,
+} from './api'
 import type { Account, AccountSession, AccountWorkspace } from './types'
 
 export type RuntimeSettingsForm = {
@@ -65,47 +80,63 @@ function clearCookie(name: string) {
   document.cookie = `${encodeURIComponent(name)}=; Max-Age=0; Path=/; SameSite=Lax`
 }
 
-function loadSessionAuthToken() {
-  const sessionToken = sessionStorage.getItem('aidm:authToken')
+function accountTokenCookieName(baseUrl: string) {
+  return `${ACCOUNT_TOKEN_COOKIE}:${normalizedBackendOrigin(baseUrl)}`
+}
+
+function loadSessionAuthToken(baseUrl: string) {
+  const sessionToken = readOriginScopedStorage(sessionStorage, 'aidm:authToken', baseUrl)
   if (sessionToken !== null) return sessionToken
-  const cookieToken = decodeURIComponent(readCookie(ACCOUNT_TOKEN_COOKIE))
+  const scopedCookieToken = decodeURIComponent(readCookie(accountTokenCookieName(baseUrl)))
+  const legacyCookieToken = backendOwnsLegacyCredentials(baseUrl)
+    ? decodeURIComponent(readCookie(ACCOUNT_TOKEN_COOKIE))
+    : ''
+  const cookieToken = scopedCookieToken || legacyCookieToken
   if (cookieToken) {
-    sessionStorage.setItem('aidm:authToken', cookieToken)
+    writeOriginScopedStorage(sessionStorage, 'aidm:authToken', cookieToken, baseUrl)
     return cookieToken
   }
-  const legacyToken = localStorage.getItem('aidm:authToken') ?? ''
+  const legacyToken = readOriginScopedStorage(localStorage, 'aidm:authToken', baseUrl) ?? ''
   if (legacyToken) {
-    sessionStorage.setItem('aidm:authToken', legacyToken)
-    localStorage.removeItem('aidm:authToken')
+    writeOriginScopedStorage(sessionStorage, 'aidm:authToken', legacyToken, baseUrl)
+    removeOriginScopedStorage(localStorage, 'aidm:authToken', baseUrl)
     writeCookie(ACCOUNT_TOKEN_COOKIE, legacyToken, ACCOUNT_TOKEN_COOKIE_MAX_AGE)
+    writeCookie(accountTokenCookieName(baseUrl), legacyToken, ACCOUNT_TOKEN_COOKIE_MAX_AGE)
   }
   return legacyToken
 }
 
-function storeSessionAuthToken(value: string) {
+function storeSessionAuthToken(value: string, baseUrl: string) {
   const token = value.trim()
+  removeOriginScopedStorage(localStorage, 'aidm:authToken', baseUrl)
   localStorage.removeItem('aidm:authToken')
   if (token) {
-    sessionStorage.setItem('aidm:authToken', token)
+    writeOriginScopedStorage(sessionStorage, 'aidm:authToken', token, baseUrl)
     writeCookie(ACCOUNT_TOKEN_COOKIE, token, ACCOUNT_TOKEN_COOKIE_MAX_AGE)
+    writeCookie(accountTokenCookieName(baseUrl), token, ACCOUNT_TOKEN_COOKIE_MAX_AGE)
   } else {
-    sessionStorage.removeItem('aidm:authToken')
-    clearCookie(ACCOUNT_TOKEN_COOKIE)
+    removeOriginScopedStorage(sessionStorage, 'aidm:authToken', baseUrl)
+    clearCookie(accountTokenCookieName(baseUrl))
+    if (backendOwnsLegacyCredentials(baseUrl)) {
+      clearCookie(ACCOUNT_TOKEN_COOKIE)
+    }
   }
 }
 
-function loadAccountTokenTransport() {
-  return sessionStorage.getItem(ACCOUNT_TOKEN_TRANSPORT_KEY) ?? localStorage.getItem(ACCOUNT_TOKEN_TRANSPORT_KEY) ?? ''
+function loadAccountTokenTransport(baseUrl: string) {
+  return readOriginScopedStorage(sessionStorage, ACCOUNT_TOKEN_TRANSPORT_KEY, baseUrl)
+    ?? readOriginScopedStorage(localStorage, ACCOUNT_TOKEN_TRANSPORT_KEY, baseUrl)
+    ?? ''
 }
 
-function storeAccountTokenTransport(value: string | null | undefined) {
+function storeAccountTokenTransport(value: string | null | undefined, baseUrl: string) {
   const transport = String(value || '').trim()
   if (transport) {
-    sessionStorage.setItem(ACCOUNT_TOKEN_TRANSPORT_KEY, transport)
-    localStorage.setItem(ACCOUNT_TOKEN_TRANSPORT_KEY, transport)
+    writeOriginScopedStorage(sessionStorage, ACCOUNT_TOKEN_TRANSPORT_KEY, transport, baseUrl)
+    writeOriginScopedStorage(localStorage, ACCOUNT_TOKEN_TRANSPORT_KEY, transport, baseUrl)
   } else {
-    sessionStorage.removeItem(ACCOUNT_TOKEN_TRANSPORT_KEY)
-    localStorage.removeItem(ACCOUNT_TOKEN_TRANSPORT_KEY)
+    removeOriginScopedStorage(sessionStorage, ACCOUNT_TOKEN_TRANSPORT_KEY, baseUrl)
+    removeOriginScopedStorage(localStorage, ACCOUNT_TOKEN_TRANSPORT_KEY, baseUrl)
   }
 }
 
@@ -117,44 +148,48 @@ function hasCookieAccountSession(transport: string) {
   return transport === HTTP_ONLY_COOKIE_TRANSPORT
 }
 
-function loadSessionWorkspaceToken() {
-  const sessionToken = sessionStorage.getItem('aidm:workspaceToken')
+function loadSessionWorkspaceToken(baseUrl: string) {
+  const sessionToken = readOriginScopedStorage(sessionStorage, 'aidm:workspaceToken', baseUrl)
   if (sessionToken !== null) return sessionToken
-  const legacyToken = localStorage.getItem('aidm:workspaceToken') ?? ''
+  const legacyToken = readOriginScopedStorage(localStorage, 'aidm:workspaceToken', baseUrl) ?? ''
   if (legacyToken) {
-    sessionStorage.setItem('aidm:workspaceToken', legacyToken)
-    localStorage.removeItem('aidm:workspaceToken')
+    writeOriginScopedStorage(sessionStorage, 'aidm:workspaceToken', legacyToken, baseUrl)
+    removeOriginScopedStorage(localStorage, 'aidm:workspaceToken', baseUrl)
   }
   return legacyToken
 }
 
-function storeSessionWorkspaceToken(value: string) {
+function storeSessionWorkspaceToken(value: string, baseUrl: string) {
   const token = value.trim()
+  removeOriginScopedStorage(localStorage, 'aidm:workspaceToken', baseUrl)
   localStorage.removeItem('aidm:workspaceToken')
   if (token) {
-    sessionStorage.setItem('aidm:workspaceToken', token)
+    writeOriginScopedStorage(sessionStorage, 'aidm:workspaceToken', token, baseUrl)
   } else {
-    sessionStorage.removeItem('aidm:workspaceToken')
+    removeOriginScopedStorage(sessionStorage, 'aidm:workspaceToken', baseUrl)
   }
 }
 
-function loadStoredWorkspaceId() {
-  return localStorage.getItem('aidm:workspaceId') ?? sessionStorage.getItem('aidm:workspaceId') ?? ''
+function loadStoredWorkspaceId(baseUrl: string) {
+  return readOriginScopedStorage(localStorage, 'aidm:workspaceId', baseUrl)
+    ?? readOriginScopedStorage(sessionStorage, 'aidm:workspaceId', baseUrl)
+    ?? ''
 }
 
-function storeWorkspaceId(value: string | null | undefined) {
+function storeWorkspaceId(value: string | null | undefined, baseUrl: string) {
   const workspaceId = String(value || '').trim()
   if (workspaceId) {
-    localStorage.setItem('aidm:workspaceId', workspaceId)
-    sessionStorage.setItem('aidm:workspaceId', workspaceId)
+    writeOriginScopedStorage(localStorage, 'aidm:workspaceId', workspaceId, baseUrl)
+    writeOriginScopedStorage(sessionStorage, 'aidm:workspaceId', workspaceId, baseUrl)
   } else {
-    localStorage.removeItem('aidm:workspaceId')
-    sessionStorage.removeItem('aidm:workspaceId')
+    removeOriginScopedStorage(localStorage, 'aidm:workspaceId', baseUrl)
+    removeOriginScopedStorage(sessionStorage, 'aidm:workspaceId', baseUrl)
   }
 }
 
-function loadSessionAccount(): RuntimeAccount {
-  const raw = sessionStorage.getItem('aidm:account') ?? localStorage.getItem('aidm:account')
+function loadSessionAccount(baseUrl: string): RuntimeAccount {
+  const raw = readOriginScopedStorage(sessionStorage, 'aidm:account', baseUrl)
+    ?? readOriginScopedStorage(localStorage, 'aidm:account', baseUrl)
   if (!raw) return null
   try {
     const parsed = JSON.parse(raw) as Partial<NonNullable<RuntimeAccount>>
@@ -177,15 +212,15 @@ function loadSessionAccount(): RuntimeAccount {
   }
 }
 
-function storeSessionAccount(value: RuntimeAccount) {
+function storeSessionAccount(value: RuntimeAccount, baseUrl: string) {
   if (!value) {
-    sessionStorage.removeItem('aidm:account')
-    localStorage.removeItem('aidm:account')
+    removeOriginScopedStorage(sessionStorage, 'aidm:account', baseUrl)
+    removeOriginScopedStorage(localStorage, 'aidm:account', baseUrl)
     return
   }
   const serialized = JSON.stringify(value)
-  sessionStorage.setItem('aidm:account', serialized)
-  localStorage.setItem('aidm:account', serialized)
+  writeOriginScopedStorage(sessionStorage, 'aidm:account', serialized, baseUrl)
+  writeOriginScopedStorage(localStorage, 'aidm:account', serialized, baseUrl)
 }
 
 function isHttpBaseUrl(value: string) {
@@ -204,13 +239,71 @@ function queryRuntimeBaseUrl() {
   return baseUrl && isHttpBaseUrl(baseUrl) ? baseUrl : ''
 }
 
-function loadInitialBaseUrl(defaultBaseUrl: string) {
-  const queryBaseUrl = queryRuntimeBaseUrl()
-  if (queryBaseUrl) {
-    localStorage.setItem('aidm:baseUrl', queryBaseUrl)
-    return queryBaseUrl
+export type PendingBackendTrust = {
+  baseUrl: string
+  origin: string
+}
+
+function removeRuntimeBackendQuery() {
+  const params = new URLSearchParams(window.location.search)
+  params.delete('backend')
+  params.delete('api')
+  const query = params.toString()
+  window.history.replaceState(
+    null,
+    '',
+    `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`,
+  )
+}
+
+export function useShareBackendTrust(defaultBaseUrl: string) {
+  const [pendingBackendTrust, setPendingBackendTrust] = useState<PendingBackendTrust | null>(() => {
+    const baseUrl = queryRuntimeBaseUrl()
+    const origin = normalizedBackendOrigin(baseUrl)
+    if (!baseUrl || !origin || isBackendOriginTrusted(baseUrl)) return null
+    return { baseUrl, origin }
+  })
+
+  const rejectPendingBackendTrust = useCallback(() => {
+    removeRuntimeBackendQuery()
+    setPendingBackendTrust(null)
+  }, [])
+
+  const confirmPendingBackendTrust = useCallback(() => {
+    if (!pendingBackendTrust) return
+    const savedBaseUrl = normalizeBaseUrl(localStorage.getItem('aidm:baseUrl') ?? '')
+    const legacyCredentialOwnerBaseUrl = savedBaseUrl || normalizeBaseUrl(defaultBaseUrl)
+    trustBackendOrigin(legacyCredentialOwnerBaseUrl)
+    bindLegacyCredentialsToBackend(legacyCredentialOwnerBaseUrl)
+    trustBackendOrigin(pendingBackendTrust.baseUrl)
+    localStorage.setItem('aidm:baseUrl', pendingBackendTrust.baseUrl)
+    removeRuntimeBackendQuery()
+    setPendingBackendTrust(null)
+  }, [defaultBaseUrl, pendingBackendTrust])
+
+  return {
+    confirmPendingBackendTrust,
+    pendingBackendTrust,
+    rejectPendingBackendTrust,
   }
-  return normalizeBaseUrl(localStorage.getItem('aidm:baseUrl') ?? defaultBaseUrl)
+}
+
+function loadInitialBaseUrl(defaultBaseUrl: string) {
+  const normalizedDefaultBaseUrl = normalizeBaseUrl(defaultBaseUrl)
+  trustBackendOrigin(normalizedDefaultBaseUrl)
+  const savedBaseUrl = normalizeBaseUrl(localStorage.getItem('aidm:baseUrl') ?? '')
+  const queryBaseUrl = queryRuntimeBaseUrl()
+  const trustedQueryBaseUrl = queryBaseUrl && isBackendOriginTrusted(queryBaseUrl) ? queryBaseUrl : ''
+  const initialBaseUrl = trustedQueryBaseUrl || savedBaseUrl || normalizedDefaultBaseUrl
+  const legacyCredentialBaseUrl = savedBaseUrl || (!trustedQueryBaseUrl ? normalizedDefaultBaseUrl : '')
+  if (savedBaseUrl || !trustedQueryBaseUrl) {
+    bindLegacyCredentialsToBackend(legacyCredentialBaseUrl)
+  }
+  if (isBackendOriginTrusted(initialBaseUrl)) {
+    activateBackendCredentialScope(initialBaseUrl)
+  }
+  setActiveRuntimeBaseUrl(initialBaseUrl)
+  return initialBaseUrl
 }
 
 function accountFromSession(session: AccountSession): NonNullable<RuntimeAccount> {
@@ -291,15 +384,17 @@ async function submitAccountSession(
   options: { intent: RuntimeAuthIntent; legacyClaim?: boolean },
 ) {
   const headers = new Headers({ 'Content-Type': 'application/json' })
-  if (accountToken.trim()) {
+  const trustedBackend = isBackendOriginTrusted(baseUrl)
+  if (trustedBackend && accountToken.trim()) {
     headers.set('Authorization', `Bearer ${accountToken.trim()}`)
   }
-  addCookieCsrfHeader(headers)
+  addCookieCsrfHeader(headers, baseUrl)
   addNgrokBrowserWarningBypassHeader(headers, baseUrl)
 
   const response = await fetch(`${normalizeBaseUrl(baseUrl)}${'/api/accounts/login'}`, {
     method: 'POST',
     headers,
+    ...(!trustedBackend ? { credentials: 'omit' as const } : {}),
     body: JSON.stringify({
       username: form.username.trim(),
       password: form.password,
@@ -323,16 +418,20 @@ async function submitAccountSession(
 
 async function fetchAccountSnapshot(baseUrl: string, accountToken: string, workspaceToken: string) {
   const headers = new Headers()
-  if (accountToken.trim()) {
+  const trustedBackend = isBackendOriginTrusted(baseUrl)
+  if (trustedBackend && accountToken.trim()) {
     headers.set('Authorization', `Bearer ${accountToken.trim()}`)
   }
-  if (workspaceToken.trim()) {
+  if (trustedBackend && workspaceToken.trim()) {
     headers.set('X-AIDM-Workspace-Token', workspaceToken.trim())
   }
-  addCookieCsrfHeader(headers)
+  addCookieCsrfHeader(headers, baseUrl)
   addNgrokBrowserWarningBypassHeader(headers, baseUrl)
 
-  const response = await fetch(`${normalizeBaseUrl(baseUrl)}${'/api/accounts/me'}`, { headers })
+  const response = await fetch(`${normalizeBaseUrl(baseUrl)}${'/api/accounts/me'}`, {
+    headers,
+    ...(!trustedBackend ? { credentials: 'omit' as const } : {}),
+  })
   const text = await response.text()
   const payload = text ? JSON.parse(text) as unknown : null
   if (!response.ok) {
@@ -347,18 +446,20 @@ async function submitWorkspaceSession(
   payload: { workspace_token?: string; table_name?: string; table_password?: string },
 ) {
   const headers = new Headers({ 'Content-Type': 'application/json' })
-  if (accountToken.trim()) {
+  const trustedBackend = isBackendOriginTrusted(baseUrl)
+  if (trustedBackend && accountToken.trim()) {
     headers.set('Authorization', `Bearer ${accountToken.trim()}`)
   }
-  if (payload.workspace_token?.trim()) {
+  if (trustedBackend && payload.workspace_token?.trim()) {
     headers.set('X-AIDM-Workspace-Token', payload.workspace_token.trim())
   }
-  addCookieCsrfHeader(headers)
+  addCookieCsrfHeader(headers, baseUrl)
   addNgrokBrowserWarningBypassHeader(headers, baseUrl)
 
   const response = await fetch(`${normalizeBaseUrl(baseUrl)}${'/api/accounts/workspace'}`, {
     method: 'POST',
     headers,
+    ...(!trustedBackend ? { credentials: 'omit' as const } : {}),
     body: JSON.stringify(payload),
   })
   const text = await response.text()
@@ -375,15 +476,17 @@ async function createWorkspaceSession(
   payload: { table_name: string; access_mode: RuntimeWorkspaceCreateAccessMode; table_password?: string },
 ) {
   const headers = new Headers({ 'Content-Type': 'application/json' })
-  if (accountToken.trim()) {
+  const trustedBackend = isBackendOriginTrusted(baseUrl)
+  if (trustedBackend && accountToken.trim()) {
     headers.set('Authorization', `Bearer ${accountToken.trim()}`)
   }
-  addCookieCsrfHeader(headers)
+  addCookieCsrfHeader(headers, baseUrl)
   addNgrokBrowserWarningBypassHeader(headers, baseUrl)
 
   const response = await fetch(`${normalizeBaseUrl(baseUrl)}${'/api/accounts/workspaces'}`, {
     method: 'POST',
     headers,
+    ...(!trustedBackend ? { credentials: 'omit' as const } : {}),
     body: JSON.stringify(payload),
   })
   const text = await response.text()
@@ -396,15 +499,17 @@ async function createWorkspaceSession(
 
 async function selectWorkspaceSession(baseUrl: string, workspaceId: string, accountToken: string) {
   const headers = new Headers({ 'Content-Type': 'application/json' })
-  if (accountToken.trim()) {
+  const trustedBackend = isBackendOriginTrusted(baseUrl)
+  if (trustedBackend && accountToken.trim()) {
     headers.set('Authorization', `Bearer ${accountToken.trim()}`)
   }
-  addCookieCsrfHeader(headers)
+  addCookieCsrfHeader(headers, baseUrl)
   addNgrokBrowserWarningBypassHeader(headers, baseUrl)
 
   const response = await fetch(`${normalizeBaseUrl(baseUrl)}${'/api/accounts/workspace/select'}`, {
     method: 'POST',
     headers,
+    ...(!trustedBackend ? { credentials: 'omit' as const } : {}),
     body: JSON.stringify({
       workspace_id: workspaceId.trim(),
     }),
@@ -419,10 +524,11 @@ async function selectWorkspaceSession(baseUrl: string, workspaceId: string, acco
 
 async function deleteWorkspaceSession(baseUrl: string, workspaceId: string, accountToken: string) {
   const headers = new Headers()
-  if (accountToken.trim()) {
+  const trustedBackend = isBackendOriginTrusted(baseUrl)
+  if (trustedBackend && accountToken.trim()) {
     headers.set('Authorization', `Bearer ${accountToken.trim()}`)
   }
-  addCookieCsrfHeader(headers)
+  addCookieCsrfHeader(headers, baseUrl)
   addNgrokBrowserWarningBypassHeader(headers, baseUrl)
 
   const response = await fetch(
@@ -430,6 +536,7 @@ async function deleteWorkspaceSession(baseUrl: string, workspaceId: string, acco
     {
       method: 'DELETE',
       headers,
+      ...(!trustedBackend ? { credentials: 'omit' as const } : {}),
     },
   )
   const text = await response.text()
@@ -452,10 +559,11 @@ async function deleteWorkspaceSession(baseUrl: string, workspaceId: string, acco
 async function deleteAccountSessionCookie(baseUrl: string) {
   const headers = new Headers()
   addNgrokBrowserWarningBypassHeader(headers, baseUrl)
-  addCookieCsrfHeader(headers)
+  addCookieCsrfHeader(headers, baseUrl)
   await fetch(`${normalizeBaseUrl(baseUrl)}${'/api/accounts/session'}`, {
     method: 'DELETE',
     headers,
+    ...(!isBackendOriginTrusted(baseUrl) ? { credentials: 'omit' as const } : {}),
   })
 }
 
@@ -470,18 +578,31 @@ export function useRuntimeSettings({
   resetRuntimeState,
   reconnectSocket,
 }: UseRuntimeSettingsOptions) {
-  const [baseUrl, setBaseUrl] = useState(() => loadInitialBaseUrl(defaultBaseUrl))
-  const [authToken, setAuthToken] = useState(() => loadSessionAuthToken())
-  const [accountTokenTransport, setAccountTokenTransport] = useState(() => loadAccountTokenTransport())
+  const [initialRuntime] = useState(() => {
+    const initialBaseUrl = loadInitialBaseUrl(defaultBaseUrl)
+    return {
+      account: loadSessionAccount(initialBaseUrl),
+      accountTokenTransport: loadAccountTokenTransport(initialBaseUrl),
+      authToken: loadSessionAuthToken(initialBaseUrl),
+      baseUrl: initialBaseUrl,
+      workspaceId: loadStoredWorkspaceId(initialBaseUrl),
+      workspaceToken: loadSessionWorkspaceToken(initialBaseUrl),
+    }
+  })
+  const [baseUrl, setBaseUrl] = useState(initialRuntime.baseUrl)
+  const [authToken, setAuthToken] = useState(initialRuntime.authToken)
+  const [accountTokenTransport, setAccountTokenTransport] = useState(initialRuntime.accountTokenTransport)
   const [pendingAuthToken, setPendingAuthToken] = useState('')
-  const [workspaceToken, setWorkspaceToken] = useState(() => loadSessionWorkspaceToken())
-  const [workspaceId, setWorkspaceId] = useState(() => loadStoredWorkspaceId())
-  const [runtimeAccount, setRuntimeAccount] = useState<RuntimeAccount>(() => loadSessionAccount())
+  const [workspaceToken, setWorkspaceToken] = useState(initialRuntime.workspaceToken)
+  const [workspaceId, setWorkspaceId] = useState(initialRuntime.workspaceId)
+  const [runtimeAccount, setRuntimeAccount] = useState<RuntimeAccount>(initialRuntime.account)
   const [runtimeSettingsOpen, setRuntimeSettingsOpen] = useState(false)
   const [runtimeSettingsMode, setRuntimeSettingsMode] = useState<RuntimeSettingsMode>('settings')
   const [runtimeAuthIntent, setRuntimeAuthIntent] = useState<RuntimeAuthIntent>('login')
   const [runtimeAuthStep, setRuntimeAuthStep] = useState<RuntimeAuthStep>(() =>
-    loadSessionAuthToken() || hasCookieAccountSession(loadAccountTokenTransport()) ? 'workspace' : 'account',
+    initialRuntime.authToken || hasCookieAccountSession(initialRuntime.accountTokenTransport)
+      ? 'workspace'
+      : 'account',
   )
   const [runtimeWorkspaceAction, setRuntimeWorkspaceAction] = useState<RuntimeWorkspaceAction>('join')
   const [runtimeWorkspaceJoinMethod, setRuntimeWorkspaceJoinMethod] = useState<RuntimeWorkspaceJoinMethod>('token')
@@ -492,15 +613,19 @@ export function useRuntimeSettings({
   const [legacyPasswordSetupRequired, setLegacyPasswordSetupRequired] = useState(false)
   const accountRefreshTokenRef = useRef('')
   const [runtimeSettingsForm, setRuntimeSettingsForm] = useState<RuntimeSettingsForm>(() => ({
-    baseUrl: loadInitialBaseUrl(defaultBaseUrl),
-    workspaceToken: loadSessionWorkspaceToken(),
+    baseUrl: initialRuntime.baseUrl,
+    workspaceToken: initialRuntime.workspaceToken,
     workspaceName: '',
     workspacePassword: '',
-    username: loadSessionAccount()?.username ?? '',
+    username: initialRuntime.account?.username ?? '',
     firstName: '',
     lastName: '',
     password: '',
   }))
+
+  useEffect(() => {
+    setActiveRuntimeBaseUrl(baseUrl)
+  }, [baseUrl])
 
   const promptForLegacyPasswordSetup = useCallback((account?: NonNullable<RuntimeAccount>) => {
     setRuntimeSettingsForm((current) => ({
@@ -521,35 +646,42 @@ export function useRuntimeSettings({
 
   const refreshRuntimeAccount = useCallback(
     async (options: { reportError?: boolean } = {}) => {
-      const accountStepToken = pendingAuthToken.trim() || authToken.trim() || loadSessionAuthToken().trim()
-      const cookieAuthAvailable = hasCookieAccountSession(accountTokenTransport || loadAccountTokenTransport())
+      const nextBaseUrl = normalizeBaseUrl(runtimeSettingsForm.baseUrl || baseUrl)
+      const sameBackend = backendOriginsMatch(nextBaseUrl, baseUrl)
+      const accountStepToken = (
+        sameBackend ? pendingAuthToken.trim() || authToken.trim() : loadSessionAuthToken(nextBaseUrl).trim()
+      ) || loadSessionAuthToken(nextBaseUrl).trim()
+      const nextAccountTokenTransport = sameBackend
+        ? accountTokenTransport || loadAccountTokenTransport(nextBaseUrl)
+        : loadAccountTokenTransport(nextBaseUrl)
+      const cookieAuthAvailable = hasCookieAccountSession(nextAccountTokenTransport)
       if (!accountStepToken && !cookieAuthAvailable) return null
 
       try {
-        const nextBaseUrl = normalizeBaseUrl(runtimeSettingsForm.baseUrl || baseUrl)
-        const accountSnapshot = await fetchAccountSnapshot(nextBaseUrl, accountStepToken, workspaceToken)
+        const nextWorkspaceToken = sameBackend ? workspaceToken : loadSessionWorkspaceToken(nextBaseUrl)
+        const accountSnapshot = await fetchAccountSnapshot(nextBaseUrl, accountStepToken, nextWorkspaceToken)
         const account = mergeAccountWorkspaceState(accountSnapshot, runtimeAccount, workspaceId)
-        storeSessionAuthToken(accountStepToken)
+        storeSessionAuthToken(accountStepToken, nextBaseUrl)
         if (cookieAuthAvailable) {
-          storeAccountTokenTransport(HTTP_ONLY_COOKIE_TRANSPORT)
+          storeAccountTokenTransport(HTTP_ONLY_COOKIE_TRANSPORT, nextBaseUrl)
           setAccountTokenTransport(HTTP_ONLY_COOKIE_TRANSPORT)
         }
-        storeSessionAccount(account)
+        storeSessionAccount(account, nextBaseUrl)
         setRuntimeAccount(account)
         setRuntimeSettingsForm((current) => ({
           ...current,
           username: account.username || current.username,
         }))
         if (account.requiresPasswordSetup) {
-          storeSessionWorkspaceToken('')
-          storeWorkspaceId('')
+          storeSessionWorkspaceToken('', nextBaseUrl)
+          storeWorkspaceId('', nextBaseUrl)
           setWorkspaceToken('')
           setWorkspaceId('')
           promptForLegacyPasswordSetup(account)
           return account
         }
         if (account.workspaceId) {
-          storeWorkspaceId(account.workspaceId)
+          storeWorkspaceId(account.workspaceId, nextBaseUrl)
           setWorkspaceId(account.workspaceId)
         }
         return account
@@ -645,11 +777,40 @@ export function useRuntimeSettings({
     setLegacyPasswordSetupRequired(false)
   }, [])
 
+  const activateBackendCredentials = useCallback((nextBaseUrl: string) => {
+    activateBackendCredentialScope(nextBaseUrl)
+    const nextAuthToken = loadSessionAuthToken(nextBaseUrl)
+    const nextAccountTokenTransport = loadAccountTokenTransport(nextBaseUrl)
+    const nextWorkspaceToken = loadSessionWorkspaceToken(nextBaseUrl)
+    const nextWorkspaceId = loadStoredWorkspaceId(nextBaseUrl)
+    const nextAccount = loadSessionAccount(nextBaseUrl)
+    accountRefreshTokenRef.current = ''
+    setBaseUrl(nextBaseUrl)
+    setAuthToken(nextAuthToken)
+    setAccountTokenTransport(nextAccountTokenTransport)
+    setPendingAuthToken('')
+    setWorkspaceToken(nextWorkspaceToken)
+    setWorkspaceId(nextWorkspaceId)
+    setRuntimeAccount(nextAccount)
+    setRuntimeAuthStep(
+      nextAuthToken || hasCookieAccountSession(nextAccountTokenTransport) ? 'workspace' : 'account',
+    )
+    setRuntimeSettingsForm((current) => ({
+      ...current,
+      baseUrl: nextBaseUrl,
+      workspaceToken: nextWorkspaceToken,
+      username: nextAccount?.username ?? '',
+    }))
+  }, [])
+
   const submitRuntimeSettings = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault()
       const nextBaseUrl = normalizeBaseUrl(runtimeSettingsForm.baseUrl)
-      const nextAuthToken = authToken.trim()
+      const sameBackend = backendOriginsMatch(nextBaseUrl, baseUrl)
+      const nextAuthToken = (
+        sameBackend ? authToken : loadSessionAuthToken(nextBaseUrl)
+      ).trim()
       const nextWorkspaceToken = runtimeSettingsForm.workspaceToken.trim()
 
       if (nextBaseUrl && !isHttpBaseUrl(nextBaseUrl)) {
@@ -685,16 +846,17 @@ export function useRuntimeSettings({
           const accountToken = accountSession.account_token.trim()
           const tokenTransport = accountSessionTokenTransport(accountSession)
           const account = accountFromSession(accountSession)
+          trustBackendOrigin(nextBaseUrl)
           if (nextBaseUrl) {
             localStorage.setItem('aidm:baseUrl', nextBaseUrl)
           } else {
             localStorage.removeItem('aidm:baseUrl')
           }
-          storeSessionAuthToken(accountToken)
-          storeAccountTokenTransport(tokenTransport)
-          storeSessionWorkspaceToken('')
-          storeWorkspaceId(account.workspaceId)
-          storeSessionAccount(account)
+          storeSessionAuthToken(accountToken, nextBaseUrl)
+          storeAccountTokenTransport(tokenTransport, nextBaseUrl)
+          storeSessionWorkspaceToken('', nextBaseUrl)
+          storeWorkspaceId(account.workspaceId, nextBaseUrl)
+          storeSessionAccount(account, nextBaseUrl)
           setBaseUrl(nextBaseUrl)
           setAccountTokenTransport(tokenTransport)
           setPendingAuthToken(accountToken)
@@ -730,7 +892,10 @@ export function useRuntimeSettings({
           return
         }
         const accountStepToken = pendingAuthToken.trim() || nextAuthToken
-        const cookieAuthAvailable = hasCookieAccountSession(accountTokenTransport)
+        const nextAccountTokenTransport = sameBackend
+          ? accountTokenTransport
+          : loadAccountTokenTransport(nextBaseUrl)
+        const cookieAuthAvailable = hasCookieAccountSession(nextAccountTokenTransport)
         if (!accountStepToken && !cookieAuthAvailable) {
           setRuntimeSettingsError('Log in or sign up before joining a table.')
           setRuntimeAuthStep('account')
@@ -783,18 +948,19 @@ export function useRuntimeSettings({
             })
           }
           const accountToken = accountSession.account_token.trim()
-          const tokenTransport = accountSessionTokenTransport(accountSession) || accountTokenTransport
+          const tokenTransport = accountSessionTokenTransport(accountSession) || nextAccountTokenTransport
           const account = accountFromSession(accountSession)
+          trustBackendOrigin(nextBaseUrl)
           if (nextBaseUrl) {
             localStorage.setItem('aidm:baseUrl', nextBaseUrl)
           } else {
             localStorage.removeItem('aidm:baseUrl')
           }
-          storeSessionAuthToken(accountToken)
-          storeAccountTokenTransport(tokenTransport)
-          storeSessionWorkspaceToken(storedWorkspaceToken)
-          storeWorkspaceId(account.workspaceId)
-          storeSessionAccount(account)
+          storeSessionAuthToken(accountToken, nextBaseUrl)
+          storeAccountTokenTransport(tokenTransport, nextBaseUrl)
+          storeSessionWorkspaceToken(storedWorkspaceToken, nextBaseUrl)
+          storeWorkspaceId(account.workspaceId, nextBaseUrl)
+          storeSessionAccount(account, nextBaseUrl)
           setBaseUrl(nextBaseUrl)
           setAuthToken(accountToken)
           setAccountTokenTransport(tokenTransport)
@@ -838,7 +1004,7 @@ export function useRuntimeSettings({
       if (!nextBaseUrl) {
         localStorage.removeItem('aidm:baseUrl')
 
-        setBaseUrl('')
+        activateBackendCredentials('')
         resetRuntimeState()
         reconnectSocket()
         setRuntimeSettingsOpen(false)
@@ -853,9 +1019,10 @@ export function useRuntimeSettings({
         return
       }
 
+      trustBackendOrigin(nextBaseUrl)
       localStorage.setItem('aidm:baseUrl', nextBaseUrl)
 
-      setBaseUrl(nextBaseUrl)
+      activateBackendCredentials(nextBaseUrl)
       resetRuntimeState()
       reconnectSocket()
       setRuntimeSettingsOpen(false)
@@ -865,7 +1032,9 @@ export function useRuntimeSettings({
     },
     [
       accountTokenTransport,
+      activateBackendCredentials,
       authToken,
+      baseUrl,
       pendingAuthToken,
       reconnectSocket,
       resetRuntimeState,
@@ -887,11 +1056,11 @@ export function useRuntimeSettings({
     if (hasCookieAccountSession(accountTokenTransport)) {
       void deleteAccountSessionCookie(baseUrl).catch(() => undefined)
     }
-    storeSessionAuthToken('')
-    storeAccountTokenTransport('')
-    storeSessionWorkspaceToken('')
-    storeWorkspaceId('')
-    storeSessionAccount(null)
+    storeSessionAuthToken('', baseUrl)
+    storeAccountTokenTransport('', baseUrl)
+    storeSessionWorkspaceToken('', baseUrl)
+    storeWorkspaceId('', baseUrl)
+    storeSessionAccount(null, baseUrl)
     accountRefreshTokenRef.current = ''
     setAuthToken('')
     setAccountTokenTransport('')
@@ -918,8 +1087,15 @@ export function useRuntimeSettings({
   const selectSavedWorkspace = useCallback(
     async (nextWorkspaceId: string) => {
       const cleanWorkspaceId = nextWorkspaceId.trim()
-      const accountStepToken = pendingAuthToken.trim() || authToken.trim()
-      const cookieAuthAvailable = hasCookieAccountSession(accountTokenTransport)
+      const nextBaseUrl = normalizeBaseUrl(runtimeSettingsForm.baseUrl)
+      const sameBackend = backendOriginsMatch(nextBaseUrl, baseUrl)
+      const accountStepToken = sameBackend
+        ? pendingAuthToken.trim() || authToken.trim()
+        : loadSessionAuthToken(nextBaseUrl).trim()
+      const nextAccountTokenTransport = sameBackend
+        ? accountTokenTransport
+        : loadAccountTokenTransport(nextBaseUrl)
+      const cookieAuthAvailable = hasCookieAccountSession(nextAccountTokenTransport)
       if (!accountStepToken && !cookieAuthAvailable) {
         setRuntimeSettingsError('Log in or sign up before choosing a workspace.')
         setRuntimeAuthStep('account')
@@ -930,25 +1106,25 @@ export function useRuntimeSettings({
         return
       }
       try {
-        const nextBaseUrl = normalizeBaseUrl(runtimeSettingsForm.baseUrl)
         if (nextBaseUrl && !isHttpBaseUrl(nextBaseUrl)) {
           setRuntimeSettingsError('Backend URL must start with http:// or https://.')
           return
         }
         const accountSession = await selectWorkspaceSession(nextBaseUrl, cleanWorkspaceId, accountStepToken)
         const accountToken = accountSession.account_token.trim()
-        const tokenTransport = accountSessionTokenTransport(accountSession) || accountTokenTransport
+        const tokenTransport = accountSessionTokenTransport(accountSession) || nextAccountTokenTransport
         const account = accountFromSession(accountSession)
+        trustBackendOrigin(nextBaseUrl)
         if (nextBaseUrl) {
           localStorage.setItem('aidm:baseUrl', nextBaseUrl)
         } else {
           localStorage.removeItem('aidm:baseUrl')
         }
-        storeSessionAuthToken(accountToken)
-        storeAccountTokenTransport(tokenTransport)
-        storeSessionWorkspaceToken('')
-        storeWorkspaceId(account.workspaceId)
-        storeSessionAccount(account)
+        storeSessionAuthToken(accountToken, nextBaseUrl)
+        storeAccountTokenTransport(tokenTransport, nextBaseUrl)
+        storeSessionWorkspaceToken('', nextBaseUrl)
+        storeWorkspaceId(account.workspaceId, nextBaseUrl)
+        storeSessionAccount(account, nextBaseUrl)
         setBaseUrl(nextBaseUrl)
         setAuthToken(accountToken)
         setAccountTokenTransport(tokenTransport)
@@ -975,6 +1151,7 @@ export function useRuntimeSettings({
     [
       accountTokenTransport,
       authToken,
+      baseUrl,
       pendingAuthToken,
       promptForLegacyPasswordSetup,
       reconnectSocket,
@@ -987,8 +1164,15 @@ export function useRuntimeSettings({
   const deleteSavedWorkspace = useCallback(
     async (nextWorkspaceId: string): Promise<DeleteSavedWorkspaceResult> => {
       const cleanWorkspaceId = nextWorkspaceId.trim()
-      const accountStepToken = pendingAuthToken.trim() || authToken.trim()
-      const cookieAuthAvailable = hasCookieAccountSession(accountTokenTransport)
+      const nextBaseUrl = normalizeBaseUrl(runtimeSettingsForm.baseUrl)
+      const sameBackend = backendOriginsMatch(nextBaseUrl, baseUrl)
+      const accountStepToken = sameBackend
+        ? pendingAuthToken.trim() || authToken.trim()
+        : loadSessionAuthToken(nextBaseUrl).trim()
+      const nextAccountTokenTransport = sameBackend
+        ? accountTokenTransport
+        : loadAccountTokenTransport(nextBaseUrl)
+      const cookieAuthAvailable = hasCookieAccountSession(nextAccountTokenTransport)
       if (!accountStepToken && !cookieAuthAvailable) {
         const message = 'Log in or sign up before deleting a saved table.'
         setRuntimeSettingsError(message)
@@ -1001,7 +1185,6 @@ export function useRuntimeSettings({
         return { ok: false, error: message }
       }
       try {
-        const nextBaseUrl = normalizeBaseUrl(runtimeSettingsForm.baseUrl)
         if (nextBaseUrl && !isHttpBaseUrl(nextBaseUrl)) {
           const message = 'Backend URL must start with http:// or https://.'
           setRuntimeSettingsError(message)
@@ -1009,23 +1192,24 @@ export function useRuntimeSettings({
         }
         const accountSession = await deleteWorkspaceSession(nextBaseUrl, cleanWorkspaceId, accountStepToken)
         const accountToken = accountSession.account_token.trim()
-        const tokenTransport = accountSessionTokenTransport(accountSession) || accountTokenTransport
+        const tokenTransport = accountSessionTokenTransport(accountSession) || nextAccountTokenTransport
         const removedCurrentWorkspace =
           cleanWorkspaceId === workspaceId.trim() || cleanWorkspaceId === runtimeAccount?.workspaceId
         const account = removedCurrentWorkspace
           ? accountFromSession(accountSession)
           : mergeAccountWorkspaceState(accountFromSession(accountSession), runtimeAccount, workspaceId)
         const nextWorkspaceToken = removedCurrentWorkspace ? '' : workspaceToken
+        trustBackendOrigin(nextBaseUrl)
         if (nextBaseUrl) {
           localStorage.setItem('aidm:baseUrl', nextBaseUrl)
         } else {
           localStorage.removeItem('aidm:baseUrl')
         }
-        storeSessionAuthToken(accountToken)
-        storeAccountTokenTransport(tokenTransport)
-        storeSessionWorkspaceToken(nextWorkspaceToken)
-        storeWorkspaceId(account.workspaceId)
-        storeSessionAccount(account)
+        storeSessionAuthToken(accountToken, nextBaseUrl)
+        storeAccountTokenTransport(tokenTransport, nextBaseUrl)
+        storeSessionWorkspaceToken(nextWorkspaceToken, nextBaseUrl)
+        storeWorkspaceId(account.workspaceId, nextBaseUrl)
+        storeSessionAccount(account, nextBaseUrl)
         setBaseUrl(nextBaseUrl)
         setAuthToken(accountToken)
         setAccountTokenTransport(tokenTransport)
@@ -1053,6 +1237,7 @@ export function useRuntimeSettings({
     [
       accountTokenTransport,
       authToken,
+      baseUrl,
       pendingAuthToken,
       promptForLegacyPasswordSetup,
       reconnectSocket,

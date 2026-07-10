@@ -231,18 +231,14 @@ def _apply_top_level_values(manifest: dict[str, Any], values_payload: dict[str, 
 def _multi_worker_status(values: dict[str, str]) -> tuple[str, str, str]:
     worker_model = values.get('socketio_worker_model', '').lower()
     worker_evidence = values.get('hosted_worker_process_evidence', '')
-    staging_proof = values.get('socketio_staging_proof', '')
     single_worker_evidence = worker_evidence or values.get('multi_worker_socketio_staging_evidence', '')
-    not_applicable = values.get('multi_worker_socketio_staging_not_applicable', '').lower() in {'1', 'true', 'yes'}
-    if worker_model in {'sticky', 'message_queue'}:
-        if staging_proof:
-            return 'provided', staging_proof, 'Sticky/message-queue staging proof supplied for a multi-worker target.'
+    if worker_model and worker_model != 'single':
         return (
             'pending',
             '',
-            f'{worker_model} Socket.IO mode requires sticky-session or message-queue staging proof.',
+            f'{worker_model} Socket.IO mode is unsupported for hosted production in this release; use single.',
         )
-    if worker_model == 'single' or not_applicable:
+    if worker_model == 'single':
         if single_worker_evidence:
             notes = 'RC1 target uses single-worker mode; sticky/message-queue staging proof is not applicable.'
             return 'not_applicable', single_worker_evidence, notes
@@ -251,7 +247,7 @@ def _multi_worker_status(values: dict[str, str]) -> tuple[str, str, str]:
             '',
             'Single-worker mode still needs hosted worker-process evidence before multi-worker proof is not applicable.',
         )
-    return 'pending', '', 'Set socketio_worker_model=single or provide socketio_staging_proof for multi-worker mode.'
+    return 'pending', '', 'Set socketio_worker_model=single and provide hosted worker-process evidence.'
 
 
 def build_manifest_from_values(
@@ -269,6 +265,12 @@ def build_manifest_from_values(
         )
     manifest = json.loads(json.dumps(draft_manifest or example_manifest()))
     values = _values_from_payload(values_payload)
+    worker_model = values.get('socketio_worker_model', '').strip().lower()
+    if worker_model and worker_model != 'single':
+        raise ValueError(
+            'socketio_worker_model must be single for hosted production in this release; '
+            f'{worker_model} is unsupported even when Socket.IO staging proof is supplied.'
+        )
     _apply_top_level_values(manifest, values_payload, values, generated_at)
 
     for spec in ITEM_SPECS:

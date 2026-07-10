@@ -44,6 +44,9 @@ tar -czf "$ARCHIVE_PATH" -C "$PARENT_DIR" \
   "$BASE_DIR"
 
 echo "Created source archive: $ARCHIVE_PATH"
-shasum -a 256 "$ARCHIVE_PATH" > "$ARCHIVE_PATH.sha256"
+(
+  cd "$ARCHIVE_DIR"
+  shasum -a 256 "$(basename "$ARCHIVE_PATH")" > "$(basename "$ARCHIVE_PATH").sha256"
+)
 echo "SHA256: $(cut -d ' ' -f 1 "$ARCHIVE_PATH.sha256")"
 du -sh "$ARCHIVE_PATH"

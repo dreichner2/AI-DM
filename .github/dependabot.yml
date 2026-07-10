@@ -23,3 +23,23 @@ updates:
       frontend-runtime:
         patterns:
           - '*'
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '10:00'
+    open-pull-requests-limit: 5
+    groups:
+      workflow-actions:
+        patterns:
+          - '*'
+
+  - package-ecosystem: docker
+    directory: /observability
+    schedule:
+      interval: weekly
+      day: monday
+      time: '10:30'
+    open-pull-requests-limit: 5

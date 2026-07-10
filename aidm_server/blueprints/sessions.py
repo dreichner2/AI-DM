@@ -6,6 +6,7 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
 from aidm_server.action_intent import ACTION_ID_RE
+from aidm_server.capabilities import current_actor_has_capability
 from aidm_server.database import db
 from aidm_server.errors import error_response
 from aidm_server.llm import query_gpt
@@ -39,6 +40,13 @@ from aidm_server.services.campaign_pack_progress import (
     campaign_pack_progress_payload,
     control_campaign_pack_progress,
 )
+from aidm_server.services.campaign_commentary import campaign_pack_commentary_payload, session_recap_payload
+from aidm_server.services.chronicle_export import chronicle_html_response, export_session_chronicle_html
+from aidm_server.services.content_settings import (
+    apply_session_content_settings,
+    content_settings_payload,
+    session_content_settings,
+)
 from aidm_server.services.session_import import SessionImportError, import_session_export
 from aidm_server.services.workspace import list_campaign_session_payloads
 from aidm_server.telemetry import telemetry_event, telemetry_metric
@@ -48,7 +56,6 @@ from aidm_server.turn_events import SESSION_ENDED_EVENT, SESSION_RECAP_EVENT, SE
 from aidm_server.validation import coerce_int, missing_fields, optional_text, parse_json_body, positive_int, required_text
 from aidm_server.workspace_access import (
     current_account_id,
-    current_account_is_workspace_admin,
     current_workspace_id,
     get_campaign as workspace_campaign,
     get_session as workspace_session,
@@ -127,15 +134,18 @@ def _include_archived() -> bool:
 
 
 def _campaign_pack_operator_view() -> bool:
-    return current_account_id() is None or current_account_is_workspace_admin()
+    return current_actor_has_capability('dm_runtime_control')
 
 
 def _campaign_pack_progress_actor() -> str:
-    account_id = current_account_id()
-    if account_id is None:
+    if current_actor_has_capability('local_operator_only'):
         return 'operator'
-    role = 'admin' if current_account_is_workspace_admin() else 'player'
-    return f'account:{account_id}:{role}'
+    account_id = current_account_id()
+    if account_id is not None:
+        return f'account:{account_id}:admin'
+    if current_actor_has_capability('dm_runtime_control'):
+        return 'operator'
+    return 'unknown-actor'
 
 
 def _session_export_log_entries(session_id: int) -> tuple[list[dict], bool]:
@@ -395,6 +405,19 @@ def end_game_session(session_id):
         return error_response('session_end_failed', 'Failed to end session.', 400)
 
 
+@sessions_bp.route('/<int:session_id>/recap', methods=['GET'])
+def get_session_recap(session_id):
+    telemetry_metric('sessions.recap.requests_total', 1)
+    session_obj = workspace_session(session_id)
+    if not session_obj:
+        telemetry_event('sessions.recap.session_not_found', payload={'session_id': session_id}, severity='warning')
+        return error_response('session_not_found', 'Session not found.', 404)
+
+    payload = session_recap_payload(session_obj)
+    telemetry_metric('sessions.recap.success_total', 1)
+    return jsonify(payload)
+
+
 @sessions_bp.route('/campaigns/<int:campaign_id>/sessions', methods=['GET'])
 def list_campaign_sessions(campaign_id):
     telemetry_metric('sessions.list.requests_total', 1)
@@ -423,11 +446,14 @@ def import_session():
         return error_response('validation_error', 'Expected JSON request body.', 400)
 
     try:
+        operator_view = _campaign_pack_operator_view()
+        account_id = current_account_id()
         result = import_session_export(
             payload,
             workspace_id=current_workspace_id(),
-            include_hidden_state=_campaign_pack_operator_view(),
-            allow_campaign_pack_state=_campaign_pack_operator_view(),
+            include_hidden_state=operator_view,
+            allow_campaign_pack_state=operator_view,
+            required_player_account_id=(account_id if account_id is not None and not operator_view else None),
         )
         db.session.commit()
         telemetry_metric('sessions.import.success_total', 1)
@@ -436,10 +462,10 @@ def import_session():
         db.session.rollback()
         telemetry_event(
             'sessions.import.validation_error',
-            payload={'error_code': exc.error_code, 'message': str(exc)},
+            payload={'error_code': exc.error_code, 'message': exc.public_message},
             severity='warning',
         )
-        return error_response(exc.error_code, str(exc), exc.status_code)
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to import session: %s', str(exc))
@@ -459,6 +485,16 @@ def export_session(session_id):
     payload = _session_export_payload(session_obj, selected_player_id=selected_player_id)
     telemetry_metric('sessions.export.success_total', 1)
     return jsonify(payload)
+
+
+@sessions_bp.route('/<int:session_id>/chronicle', methods=['GET'])
+def export_session_chronicle(session_id):
+    session_obj = workspace_session(session_id)
+    if not session_obj:
+        return error_response('session_not_found', 'Session not found.', 404)
+
+    export = export_session_chronicle_html(session_obj)
+    return chronicle_html_response(export)
 
 
 @sessions_bp.route('/<int:session_id>', methods=['PATCH'])
@@ -657,6 +693,61 @@ def get_session_state(session_id):
     )
 
 
+@sessions_bp.route('/<int:session_id>/content-settings', methods=['GET'])
+def get_session_content_settings(session_id):
+    session_obj = workspace_session(session_id)
+    if not session_obj:
+        return error_response('session_not_found', 'Session not found.', 404)
+    return jsonify(
+        {
+            'session_id': session_id,
+            'settings': content_settings_payload(session_content_settings(session_obj)),
+        }
+    )
+
+
+@sessions_bp.route('/<int:session_id>/content-settings', methods=['PATCH', 'POST'])
+def update_session_content_settings(session_id):
+    session_obj = workspace_session(session_id)
+    if not session_obj:
+        return error_response('session_not_found', 'Session not found.', 404)
+    if not _campaign_pack_operator_view():
+        return error_response(
+            'forbidden',
+            'Only workspace admins can change session content settings.',
+            403,
+        )
+    payload = parse_json_body(request)
+    if payload is None:
+        return error_response('validation_error', 'Expected JSON request body.', 400)
+    content_rating = payload.get('content_rating') if 'content_rating' in payload else payload.get('contentRating')
+    tone_tags = payload.get('tone_tags') if 'tone_tags' in payload else payload.get('toneTags')
+    try:
+        settings = apply_session_content_settings(
+            session_obj,
+            content_rating=content_rating,
+            tone_tags=tone_tags,
+        )
+        session_state = SessionState.query.filter_by(session_id=session_id).first()
+        db.session.commit()
+        return jsonify(
+            {
+                'session_id': session_id,
+                'settings': content_settings_payload(settings),
+                'session': session_payload(session_obj, include_hidden_state=_campaign_pack_operator_view()),
+                'state': session_state_payload(
+                    session_obj,
+                    session_state,
+                    include_hidden_state=_campaign_pack_operator_view(),
+                ),
+            }
+        )
+    except Exception as exc:
+        db.session.rollback()
+        logger.error('Failed to update session content settings: %s', str(exc))
+        return error_response('content_settings_update_failed', 'Failed to update content settings.', 400)
+
+
 @sessions_bp.route('/<int:session_id>/campaign-pack/progress', methods=['GET'])
 def get_session_campaign_pack_progress(session_id):
     session_obj = workspace_session(session_id)
@@ -665,7 +756,25 @@ def get_session_campaign_pack_progress(session_id):
     try:
         return jsonify(campaign_pack_progress_payload(session_id=session_id, include_hidden=_campaign_pack_operator_view()))
     except CampaignPackProgressError as exc:
-        return error_response(exc.error_code, str(exc), exc.status_code)
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
+
+
+@sessions_bp.route('/<int:session_id>/campaign-pack/commentary', methods=['GET'])
+def get_session_campaign_pack_commentary(session_id):
+    session_obj = workspace_session(session_id)
+    if not session_obj:
+        return error_response('session_not_found', 'Session not found.', 404)
+    if not _campaign_pack_operator_view():
+        return error_response(
+            'forbidden',
+            'Only workspace admins can inspect director commentary.',
+            403,
+        )
+
+    payload = campaign_pack_commentary_payload(session_obj)
+    if not payload.get('enabled'):
+        return error_response('campaign_pack_not_found', 'Session does not have an imported campaign pack.', 404)
+    return jsonify(payload)
 
 
 @sessions_bp.route('/<int:session_id>/campaign-pack/progress', methods=['POST'])
@@ -721,7 +830,7 @@ def update_session_campaign_pack_progress(session_id):
         )
     except CampaignPackProgressError as exc:
         db.session.rollback()
-        return error_response(exc.error_code, str(exc), exc.status_code)
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to update campaign pack progress: %s', str(exc))

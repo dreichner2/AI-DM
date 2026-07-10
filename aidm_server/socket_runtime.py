@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from threading import RLock
 from typing import Any, Callable
 
 from flask import current_app, request
 
+from aidm_server.capabilities import Capability, actor_capabilities
 from aidm_server.auth import (
     DEFAULT_WORKSPACE_ID,
     account_for_token,
@@ -16,6 +18,7 @@ from aidm_server.auth import (
     extract_socket_token,
     extract_socket_workspace_id,
     extract_socket_workspace_token,
+    is_global_operator_token,
     is_token_authorized,
     workspace_id_for_workspace_token,
     workspace_role_is_admin,
@@ -33,9 +36,10 @@ class SocketRuntime:
     def __init__(self, state: SocketState):
         self.state = state
         self._limiter: FixedWindowRateLimiter | None = None
-        self._limiter_config: tuple[int, int, str] | None = None
+        self._limiter_config: tuple[int, int, str, int] | None = None
+        self._limiter_lock = RLock()
 
-    def set_context(self, event_name: str, data: dict | None = None, turn_id: int | None = None) -> None:
+    def set_context(self, event_name: str, data: dict | None = None, turn_id: int | None = None) -> str:
         sid = getattr(request, 'sid', 'unknown')
         connection = self.state.connection(sid) or {}
         correlation_id = (
@@ -47,23 +51,43 @@ class SocketRuntime:
 
         set_logging_context(correlation_id=correlation_id, session_id=session_id, turn_id=turn_id)
         if sid:
-            connection['correlation_id'] = correlation_id
-            self.state.set_connection(sid, connection)
+            self.state.update_connection_if_present(sid, correlation_id=correlation_id)
+        return correlation_id
 
     def rate_limiter(self) -> FixedWindowRateLimiter:
         limit = int(current_app.config.get('AIDM_RATE_LIMIT_MAX_SOCKET_MESSAGES', 40))
         window_seconds = int(current_app.config.get('AIDM_RATE_LIMIT_WINDOW_SECONDS', 30))
-        store_name = str(current_app.config.get('AIDM_RATE_LIMIT_STORE', 'memory')).strip().lower()
-        limiter_config = (limit, window_seconds, store_name)
-
-        if self._limiter is None or self._limiter_config != limiter_config:
-            self._limiter = build_rate_limiter(
-                limit=limit,
-                window_seconds=window_seconds,
-                store_name=store_name,
+        preauth_window_seconds = int(current_app.config.get('AIDM_PREAUTH_RATE_LIMIT_WINDOW_SECONDS', 60))
+        configured_retention_seconds = int(
+            current_app.config.get(
+                'AIDM_RATE_LIMIT_RETENTION_WINDOW_SECONDS',
+                max(1, window_seconds, preauth_window_seconds),
             )
-            self._limiter_config = limiter_config
-        return self._limiter
+        )
+        store_name = str(current_app.config.get('AIDM_RATE_LIMIT_STORE', 'memory')).strip().lower()
+        minimum_retention_seconds = max(
+            1,
+            window_seconds,
+            preauth_window_seconds,
+        )
+        if store_name == 'database' and configured_retention_seconds < minimum_retention_seconds:
+            raise ValueError(
+                'Configured rate-limit retention is shorter than an active Socket.IO or '
+                'pre-authentication window.'
+            )
+        retention_window_seconds = configured_retention_seconds
+        limiter_config = (limit, window_seconds, store_name, retention_window_seconds)
+
+        with self._limiter_lock:
+            if self._limiter is None or self._limiter_config != limiter_config:
+                self._limiter = build_rate_limiter(
+                    limit=limit,
+                    window_seconds=window_seconds,
+                    store_name=store_name,
+                    retention_window_seconds=retention_window_seconds,
+                )
+                self._limiter_config = limiter_config
+            return self._limiter
 
     def auth_required(self) -> bool:
         try:
@@ -123,6 +147,33 @@ class SocketRuntime:
             return None
         return ensure_account_workspace_membership(account, workspace_id)
 
+    def credential_present_for_auth(
+        self,
+        auth_payload: dict | None = None,
+        data_payload: dict | None = None,
+    ) -> bool:
+        """Report credential presence without retaining a raw token in socket state."""
+        return bool(extract_socket_token(auth_payload=auth_payload, data_payload=data_payload))
+
+    def global_operator_for_auth(
+        self,
+        auth_payload: dict | None = None,
+        data_payload: dict | None = None,
+    ) -> bool:
+        token = extract_socket_token(auth_payload=auth_payload, data_payload=data_payload)
+        return is_global_operator_token(token)
+
+    def connection_has_capability(self, sid: str, capability: Capability) -> bool:
+        existing = self.state.connection(sid) or {}
+        account_id = coerce_int(existing.get('account_id'))
+        capabilities = actor_capabilities(
+            account_id=account_id,
+            is_workspace_admin=workspace_role_is_admin(str(existing.get('workspace_role') or '')),
+            credential_present=bool(existing.get('credential_present')),
+            global_operator=bool(existing.get('global_operator')),
+        )
+        return capability in capabilities
+
     def connection_account_context(self, sid: str) -> tuple[int | None, bool]:
         existing = self.state.connection(sid) or {}
         account_id = coerce_int(existing.get('account_id'))
@@ -151,7 +202,7 @@ class SocketRuntime:
         leave_room_fn: LeaveRoomFn,
         emit_fn: EmitFn,
     ) -> dict[str, Any] | None:
-        connection_record = self.state.connection(sid)
+        connection_record = self.state.unbind_connection(sid)
         if not connection_record:
             return None
 
@@ -167,9 +218,7 @@ class SocketRuntime:
                 emit_fn('active_players', self.active_player_payloads(session_id), room=str(session_id))
             elif was_typing != self.player_is_typing(session_id, player_id):
                 emit_fn('active_players', self.active_player_payloads(session_id), room=str(session_id))
-        connection_record['session_id'] = None
-        connection_record['player_id'] = None
-        return connection_record
+        return self.state.connection(sid)
 
     def release_disconnect(self, sid: str, *, emit_fn: EmitFn) -> dict[str, Any] | None:
         connection_info = self.state.pop_connection(sid)

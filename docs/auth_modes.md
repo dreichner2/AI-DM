@@ -13,6 +13,65 @@ loopback, prefer the stricter setting if there is any uncertainty.
 | Hosted cross-origin closed beta | Public HTTPS frontend and API on different origins | `AIDM_AUTH_REQUIRED=true`; strong API/admin tokens; document why cross-origin is needed. | Prefer HTTP-only cookie auth only when cookie domain/SameSite rules are proven; otherwise document bearer-token exception. | Exact frontend/API origins only; no wildcard. | Run deployment-readiness with the documented exception flags when applicable. |
 | API/operator automation | CLI, CI, or admin-only scripts | `AIDM_AUTH_REQUIRED=true`; scoped token or workspace token mapping. | Bearer token from secret manager, not browser storage. | Not browser-facing unless explicitly needed. | Keep operator capabilities narrower than normal player/session actions. |
 
+## Capability Enforcement Matrix
+
+`aidm_server/capabilities.py` is the executable source of truth. The REST guard
+uses Flask endpoint names plus HTTP methods, and the Socket.IO guard uses event
+names. Tests fail if a new unsafe world, campaign, session, map, or segment route
+is added without an explicit matrix entry.
+
+| Surface | Operations | Required capability |
+| --- | --- | --- |
+| Worlds | Create, update, delete | `dm_authoring` |
+| Campaigns | Create, update, archive, restore, delete | `dm_authoring` |
+| Campaign packs | Lint, forge, import, list/get installed packs | `dm_authoring` |
+| Sessions | Start, end, rename, archive, restore, delete | `dm_runtime_control` |
+| Session imports | Import player-owned saved data; hidden operator state is stripped | `player_action` |
+| Session controls | Update content settings or campaign-pack progress | `dm_runtime_control` |
+| Director commentary | Read hidden campaign-pack commentary | `debug_read` |
+| Maps | Create or update | `dm_authoring` |
+| Segments | Create, update, delete | `dm_authoring` |
+| Segments | Activate for the live session | `dm_runtime_control` |
+| Bestiary | Create entries or generate-and-save packs | `dm_authoring` |
+| Combat | Start, plan, mutate, end, or inspect debug state | `dm_runtime_control` |
+| Telemetry | Read JSON, Prometheus, beta summary, or beta SLO metrics | `debug_read` |
+| Beta operations | Read incidents, session quality, audits, or support bundles | `debug_read` |
+| Socket.IO | Join/read a session | `player_read` |
+| Socket.IO | Send turns, typing/music updates, leave, resolve clarification | `player_action` |
+| Socket.IO | Change turn-control mode or active player | `dm_runtime_control` |
+
+Workspace-admin accounts and unscoped bootstrap/operator tokens listed only in
+`AIDM_API_AUTH_TOKENS` receive DM authoring, runtime-control, debug, and
+workspace-administration capabilities. Operator tokens do not receive
+`local_operator_only`. Player accounts, dynamic workspace tokens, and tokens
+listed in `AIDM_API_AUTH_TOKEN_WORKSPACES` receive only player read/action
+capabilities; a workspace mapping takes precedence if a token is present in
+both settings. When authentication is disabled, a credential-free local
+request keeps the full local-operator capability set.
+
+All `/api/accounts/*` requests pass through the general API limiter. Account
+login, legacy-identity claims, workspace-password joins, and workspace-token
+checks additionally consume opaque HMAC pre-auth buckets before credential
+verification: 5 attempts per IP+target and 20 attempts per IP or target over
+the default 60-second window. The IP-wide bucket blocks target rotation; the
+target-wide bucket blocks distributed attempts. Production persists all three
+through `AIDM_RATE_LIMIT_STORE=database`. Socket admin-mode messages pass
+through the per-player/session Socket.IO limiter before the admin-passcode
+comparison.
+
+The target-wide bucket deliberately trades legitimate availability for
+distributed-guess resistance. Saturation occurs before weak legacy identity or
+workspace-password verification, so distributed callers can temporarily reject
+a correct tokenless legacy claim or a different account's correct new workspace
+join. Each bucket window expires, but continued traffic can renew the delay. A
+valid saved account token is a high-entropy owner proof and bypasses the weak
+legacy-claim bucket; saved workspace membership uses the separate selection
+path. The tokenless legacy-claim and new workspace-password-join cases remain
+open Low/P3 findings. Closed-beta operation requires the authentication/security
+and release owners to sign the time-bounded acceptance in the release checklist;
+it expires on 2026-08-10 or before exposure expands. Threshold or window tuning
+changes cost and duration but does not close either finding.
+
 ## Baseline Env By Exposure
 
 ### Loopback-only development

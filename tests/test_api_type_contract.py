@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from aidm_server.api_type_contract import API_TYPE_CONTRACT_BY_NAME
 from aidm_server.database import db
-from aidm_server.models import CampaignSegment, Map
+from aidm_server.models import CampaignSegment, Map, Session, safe_json_dumps
 from scripts.generate_api_types import OUTPUT, main as generate_api_types_main, render_types
 from tests.helpers import seed_world_campaign_player_session
 
@@ -12,7 +12,11 @@ def _contract_keys(type_name: str) -> set[str]:
 
 
 def _assert_contract_payload(type_name: str, payload: dict) -> None:
-    assert set(payload) == _contract_keys(type_name)
+    contract = API_TYPE_CONTRACT_BY_NAME[type_name]
+    payload_keys = set(payload)
+    required_keys = {field.name for field in contract.fields if not field.optional}
+    assert required_keys <= payload_keys
+    assert payload_keys <= _contract_keys(type_name)
 
 
 def _contract_field_type(type_name: str, field_name: str) -> str:
@@ -72,6 +76,44 @@ def test_frontend_api_contract_matches_backend_endpoint_payloads(client, app):
             is_triggered=False,
         )
         db.session.add_all([map_obj, segment])
+        session = db.session.get(Session, ids['session_id'])
+        session.state_snapshot = safe_json_dumps(
+            {
+                'recap': 'The party reached the contract gate.',
+                'flags': {
+                    'campaignPackActiveCheckpointId': 'cp_route',
+                    'campaignPackCompletedCheckpointIds': ['cp_start'],
+                },
+                'campaignPack': {
+                    'packId': 'contract_pack',
+                    'title': 'Contract Pack',
+                    'version': '1.0.0',
+                    'schemaVersion': '1',
+                    'checkpoints': [
+                        {
+                            'id': 'cp_start',
+                            'title': 'Contract Gate',
+                            'nextCheckpointIds': ['cp_route'],
+                            'alternateCheckpointIds': ['cp_branch'],
+                        },
+                        {'id': 'cp_route', 'title': 'Contract Route', 'terminal': True},
+                        {'id': 'cp_branch', 'title': 'Contract Branch', 'terminal': True},
+                    ],
+                    'catalog': {
+                        'lore': [
+                            {
+                                'id': 'lore_contract',
+                                'title': 'Contract Secret',
+                                'summary': 'A hidden contract record.',
+                                'hiddenToPlayers': True,
+                                'checkpointIds': ['cp_branch'],
+                            }
+                        ]
+                    },
+                },
+            },
+            {},
+        )
         db.session.commit()
         map_id = map_obj.map_id
         segment_id = segment.segment_id
@@ -79,6 +121,22 @@ def test_frontend_api_contract_matches_backend_endpoint_payloads(client, app):
     _assert_contract_payload('World', client.get(f"/api/worlds/{ids['world_id']}").get_json())
     _assert_contract_payload('Campaign', client.get(f"/api/campaigns/{ids['campaign_id']}").get_json())
     _assert_contract_payload('SessionState', client.get(f"/api/sessions/{ids['session_id']}/state").get_json())
+    recap = client.get(f"/api/sessions/{ids['session_id']}/recap").get_json()
+    _assert_contract_payload('SessionRecapResponse', recap)
+    _assert_contract_payload('SessionRecapState', recap['state'])
+
+    commentary = client.get(f"/api/sessions/{ids['session_id']}/campaign-pack/commentary").get_json()
+    _assert_contract_payload('CampaignPackCommentaryResponse', commentary)
+    _assert_contract_payload('CampaignPackCommentaryPack', commentary['pack'])
+    _assert_contract_payload('CampaignPackCommentaryProgress', commentary['progress'])
+    _assert_contract_payload('CampaignPackCommentaryGraph', commentary['graph'])
+    _assert_contract_payload('CampaignPackCommentaryGraphNode', commentary['graph']['nodes'][0])
+    _assert_contract_payload('CampaignPackCommentaryGraphEdge', commentary['graph']['edges'][0])
+    _assert_contract_payload('CampaignPackCommentarySummary', commentary['summary'])
+    _assert_contract_payload('CampaignPackCommentaryRecord', commentary['undiscoveredRecords']['lore'][0])
+    _assert_contract_payload('CampaignPackCommentaryCheckpoint', commentary['routeTaken'][0])
+    _assert_contract_payload('CampaignPackCommentaryCheckpoint', commentary['roadsNotTaken'][0])
+    _assert_contract_payload('CampaignPackCommentaryCheckpoint', commentary['alternateEndings'][0])
     _assert_contract_payload('PlayerDetail', client.get(f"/api/players/{ids['player_id']}").get_json())
     _assert_contract_payload('MapItem', client.get(f'/api/maps/{map_id}').get_json())
     _assert_contract_payload('CampaignSegment', client.get(f'/api/segments/{segment_id}').get_json())

@@ -3,10 +3,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import {
   SCENE_MUSIC_TAGS,
   SCENE_MUSIC_TRACKS,
+  isSceneMusicTag,
   type SceneMusicTag,
   type SceneMusicTrack,
 } from './musicLibrary'
 import { subscribeToMediaQueryChange } from './mediaQuery'
+import type { SceneDisplayState } from './sceneState'
 
 type MusicFilter = SceneMusicTag | 'all'
 
@@ -68,6 +70,8 @@ type SceneMusicPlayerProps = {
   playerId?: number | null
   duckForNarration?: boolean
   musicSyncState?: SceneMusicSyncState | null
+  sceneState?: SceneDisplayState | null
+  autoFollowScene?: boolean
   onMusicControl?: (payload: SceneMusicControlPayload) => void
 }
 
@@ -262,6 +266,11 @@ function tracksForFilter(filter: MusicFilter) {
     : SCENE_MUSIC_TRACKS.filter((track) => track.tags.includes(filter))
 }
 
+function sceneLocationKey(sceneState: SceneDisplayState | null) {
+  if (!sceneState) return ''
+  return `${sceneState.sessionId}:${sceneState.locationId || sceneState.locationName || 'unknown'}`
+}
+
 function initialMusicState() {
   const storedPreferences = loadMusicPreferences()
   const selectedTag = storedPreferences.selectedTag ?? 'all'
@@ -282,12 +291,18 @@ export function SceneMusicPlayer({
   playerId = null,
   duckForNarration = false,
   musicSyncState = null,
+  sceneState = null,
+  autoFollowScene = true,
   onMusicControl,
 }: SceneMusicPlayerProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const dragStateRef = useRef<MusicPanelDragState | null>(null)
   const pendingRemoteSyncRef = useRef<SceneMusicSyncState | null>(null)
   const lastAppliedSyncRef = useRef<number | null>(null)
+  const manualOverrideLocationRef = useRef<string | null>(null)
+  const lastSceneLocationRef = useRef<string | null>(null)
+  const lastAutoSceneTrackRef = useRef<string | null>(null)
+  const currentTimeRef = useRef(0)
   const [storedPreferences] = useState(() => initialMusicState())
   const [loadedPanelLayout] = useState(() => loadMusicLayout())
   const [panelLayout, setPanelLayout] = useState(loadedPanelLayout.layout)
@@ -307,6 +322,17 @@ export function SceneMusicPlayer({
   const currentTrack =
     SCENE_MUSIC_TRACKS.find((track) => track.id === currentTrackId) ?? SCENE_MUSIC_TRACKS[0]
   const syncEnabled = Boolean(sessionId && playerId && onMusicControl)
+  const currentSceneLocationKey = sceneLocationKey(sceneState)
+
+  useEffect(() => {
+    currentTimeRef.current = currentTime
+  }, [currentTime])
+
+  const markManualMusicOverride = useCallback(() => {
+    if (currentSceneLocationKey) {
+      manualOverrideLocationRef.current = currentSceneLocationKey
+    }
+  }, [currentSceneLocationKey])
 
   useEffect(() => {
     saveMusicPreferences({ selectedTag, trackId: currentTrackId, volume })
@@ -404,6 +430,14 @@ export function SceneMusicPlayer({
   )
 
   const resetTrackProgress = useCallback(() => {
+    const audio = audioRef.current
+    if (audio) {
+      try {
+        audio.currentTime = 0
+      } catch {
+        // Some browsers reject currentTime updates before metadata is loaded.
+      }
+    }
     setCurrentTime(0)
     setDuration(0)
     setPlaybackError('')
@@ -509,6 +543,61 @@ export function SceneMusicPlayer({
   ])
 
   useEffect(() => {
+    if (!autoFollowScene || !sceneState) return
+    const nextLocationKey = sceneLocationKey(sceneState)
+    if (!nextLocationKey) return
+
+    if (lastSceneLocationRef.current !== nextLocationKey) {
+      lastSceneLocationRef.current = nextLocationKey
+      manualOverrideLocationRef.current = null
+      lastAutoSceneTrackRef.current = null
+    }
+    if (manualOverrideLocationRef.current === nextLocationKey) return
+
+    const desiredTag: SceneMusicTag =
+      sceneState.inCombat || sceneState.combatState === 'active' ? 'combat' : sceneState.musicTag
+    if (!isSceneMusicTag(desiredTag)) return
+
+    const matchingTracks = tracksForFilter(desiredTag)
+    const nextTrack = currentTrack.tags.includes(desiredTag) ? currentTrack : matchingTracks[0]
+    if (!nextTrack) return
+
+    const autoKey = [
+      nextLocationKey,
+      sceneState.combatState,
+      desiredTag,
+      nextTrack.id,
+      isPlaying ? 'playing' : 'paused',
+    ].join(':')
+    if (lastAutoSceneTrackRef.current === autoKey) return
+    lastAutoSceneTrackRef.current = autoKey
+
+    const nextTrackId = nextTrack.id
+    const currentTrackIdForScene = currentTrack.id
+    const nextStatus = isPlaying ? 'playing' : 'paused'
+    const shouldBroadcast = Boolean(sceneState.actingPlayerId && sceneState.actingPlayerId === playerId)
+    const autoFollowTimer = window.setTimeout(() => {
+      setSelectedTag(desiredTag)
+      if (nextTrackId === currentTrackIdForScene) return
+
+      resetTrackProgress()
+      setCurrentTrackId(nextTrackId)
+      if (shouldBroadcast) {
+        broadcastMusicControl(nextTrackId, nextStatus, 0)
+      }
+    }, 0)
+    return () => window.clearTimeout(autoFollowTimer)
+  }, [
+    autoFollowScene,
+    broadcastMusicControl,
+    currentTrack,
+    isPlaying,
+    playerId,
+    resetTrackProgress,
+    sceneState,
+  ])
+
+  useEffect(() => {
     const pendingSync = pendingRemoteSyncRef.current
     const audio = audioRef.current
     if (!pendingSync || pendingSync.trackId !== currentTrack.id || !audio || audio.readyState < 1) return
@@ -522,12 +611,11 @@ export function SceneMusicPlayer({
     if (!isPlaying || !syncEnabled || musicSyncState?.updatedByPlayerId !== playerId) return
     const timer = window.setInterval(() => {
       const audio = audioRef.current
-      broadcastMusicControl(currentTrack.id, 'playing', audio?.currentTime ?? currentTime)
+      broadcastMusicControl(currentTrack.id, 'playing', audio?.currentTime ?? currentTimeRef.current)
     }, MUSIC_SYNC_HEARTBEAT_MS)
     return () => window.clearInterval(timer)
   }, [
     broadcastMusicControl,
-    currentTime,
     currentTrack.id,
     isPlaying,
     musicSyncState?.updatedByPlayerId,
@@ -536,6 +624,7 @@ export function SceneMusicPlayer({
   ])
 
   const updateMusicFilter = (nextFilter: MusicFilter) => {
+    markManualMusicOverride()
     const nextTracks = tracksForFilter(nextFilter)
     setSelectedTag(nextFilter)
     if (nextTracks.some((track) => track.id === currentTrack.id)) return
@@ -546,6 +635,7 @@ export function SceneMusicPlayer({
   }
 
   const selectTrack = (trackId: string) => {
+    markManualMusicOverride()
     resetTrackProgress()
     setCurrentTrackId(trackId)
     broadcastMusicControl(trackId, isPlaying ? 'playing' : 'paused', 0)
@@ -553,6 +643,7 @@ export function SceneMusicPlayer({
 
   const skipBy = useCallback(
     (offset: number) => {
+      markManualMusicOverride()
       const currentIndex = activeTracks.findIndex((track) => track.id === currentTrack.id)
       const safeIndex = currentIndex >= 0 ? currentIndex : 0
       const nextTrack = activeTracks[(safeIndex + offset + activeTracks.length) % activeTracks.length]
@@ -574,10 +665,11 @@ export function SceneMusicPlayer({
       setCurrentTrackId(nextTrack.id)
       broadcastMusicControl(nextTrack.id, isPlaying ? 'playing' : 'paused', 0)
     },
-    [activeTracks, broadcastMusicControl, currentTrack.id, isPlaying, resetTrackProgress],
+    [activeTracks, broadcastMusicControl, currentTrack.id, isPlaying, markManualMusicOverride, resetTrackProgress],
   )
 
   const rewindCurrentTrack = () => {
+    markManualMusicOverride()
     const audio = audioRef.current
     if (!audio) return
     const nextTime = Math.max(0, audio.currentTime - REWIND_SECONDS)
@@ -587,6 +679,7 @@ export function SceneMusicPlayer({
   }
 
   const togglePlayback = () => {
+    markManualMusicOverride()
     if (isPlaying) {
       audioRef.current?.pause()
       setIsPlaying(false)
@@ -629,6 +722,7 @@ export function SceneMusicPlayer({
   }
 
   const seekTrack = (value: string) => {
+    markManualMusicOverride()
     const audio = audioRef.current
     if (!audio) return
     const nextTime = Math.min(duration || 0, Math.max(0, Number(value)))
@@ -672,6 +766,7 @@ export function SceneMusicPlayer({
     >
       <audio
         ref={audioRef}
+        loop={currentTrack.loop}
         preload="metadata"
         src={currentTrack.src}
         onEnded={() => skipBy(1)}

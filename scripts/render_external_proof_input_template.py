@@ -180,10 +180,13 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     ),
     FieldSpec(
         key='socketio_staging_proof',
-        label='Socket.IO sticky/message-queue staging proof',
-        placeholder='sticky-session or message-queue staging proof link',
+        label='Future multi-worker Socket.IO staging research',
+        placeholder='future affinity-and-shared-queue research link (not valid for RC1 sign-off)',
         required_for=('multi_worker_socketio_staging',),
-        notes='Only required when the hosted target does not use RC1 single-worker mode.',
+        notes=(
+            'Future-only context. Hosted RC1 requires single-worker mode; this field cannot '
+            'make sticky or message_queue production acceptable.'
+        ),
         conditional=True,
     ),
     FieldSpec(

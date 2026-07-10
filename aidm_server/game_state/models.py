@@ -91,7 +91,11 @@ def stable_item_id(name: Any, *, prefix: str = 'itm') -> str:
 
 
 def stable_change_id(*parts: Any) -> str:
+    """Return the compatibility-stable ledger ID for a logical state change."""
     source = '|'.join(str(part or '') for part in parts)
+    # This SHA-1 output is a persisted, non-secret identifier. Changing it in place
+    # would break retry deduplication for state-change ledgers created before upgrade.
+    # codeql[py/weak-sensitive-data-hashing]
     digest = hashlib.sha1(source.encode('utf-8')).hexdigest()[:16]
     return f'chg_{digest}'
 

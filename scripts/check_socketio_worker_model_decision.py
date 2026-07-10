@@ -30,6 +30,27 @@ def _require(text: str, needle: str, label: str, errors: list[str]) -> None:
         errors.append(f'{label} must include `{needle}`.')
 
 
+def _active_env_values(text: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if line.startswith('export '):
+            line = line[len('export ') :].strip()
+        if '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _require_env_value(values: dict[str, str], key: str, expected: str, label: str, errors: list[str]) -> None:
+    actual = values.get(key)
+    if actual != expected:
+        errors.append(f'{label} must set `{key}={expected}` (found {actual!r}).')
+
+
 def validate_decision(paths: DecisionPaths = DecisionPaths()) -> list[str]:
     errors: list[str] = []
     decision = _read(paths.decision_doc, errors)
@@ -37,20 +58,24 @@ def validate_decision(paths: DecisionPaths = DecisionPaths()) -> list[str]:
     production_server = _read(paths.production_server_script, errors)
     production_readiness = _read(paths.production_readiness_doc, errors)
     beta_runbook = _read(paths.beta_runbook, errors)
+    env_values = _active_env_values(env_example)
 
     _require(decision, 'Decision: single-worker hosted closed beta.', str(paths.decision_doc), errors)
+    _require(decision, 'Production policy: single-worker only.', str(paths.decision_doc), errors)
     _require(decision, 'AIDM_SOCKETIO_WORKER_MODEL=single', str(paths.decision_doc), errors)
-    _require(decision, 'AIDM_SOCKETIO_ASYNC_MODE=eventlet', str(paths.decision_doc), errors)
+    _require(decision, 'AIDM_SOCKETIO_ASYNC_MODE=threading', str(paths.decision_doc), errors)
+    _require(decision, 'AIDM_GUNICORN_THREADS=100', str(paths.decision_doc), errors)
     _require(decision, 'WEB_CONCURRENCY=1', str(paths.decision_doc), errors)
     _require(decision, 'scripts/run_production_server.sh --print', str(paths.decision_doc), errors)
-    _require(decision, '--socketio-staging-proof', str(paths.decision_doc), errors)
-    _require(decision, 'AIDM_SOCKETIO_WORKER_MODEL=sticky', str(paths.decision_doc), errors)
-    _require(decision, 'AIDM_SOCKETIO_WORKER_MODEL=message_queue', str(paths.decision_doc), errors)
+    _require(decision, 'shared presence/music state', str(paths.decision_doc), errors)
+    _require(decision, 'Both affinity and queueing are required', str(paths.decision_doc), errors)
 
-    _require(env_example, 'AIDM_SOCKETIO_WORKER_MODEL=single', str(paths.env_example), errors)
-    _require(env_example, 'AIDM_SOCKETIO_ASYNC_MODE=eventlet', str(paths.env_example), errors)
-    _require(env_example, 'AIDM_RATE_LIMIT_STORE=database', str(paths.env_example), errors)
-    _require(env_example, 'AIDM_TURN_COORDINATOR_STORE=database', str(paths.env_example), errors)
+    _require_env_value(env_values, 'AIDM_SOCKETIO_WORKER_MODEL', 'single', str(paths.env_example), errors)
+    _require_env_value(env_values, 'AIDM_SOCKETIO_ASYNC_MODE', 'threading', str(paths.env_example), errors)
+    _require_env_value(env_values, 'AIDM_GUNICORN_THREADS', '100', str(paths.env_example), errors)
+    _require_env_value(env_values, 'WEB_CONCURRENCY', '1', str(paths.env_example), errors)
+    _require_env_value(env_values, 'AIDM_RATE_LIMIT_STORE', 'database', str(paths.env_example), errors)
+    _require_env_value(env_values, 'AIDM_TURN_COORDINATOR_STORE', 'database', str(paths.env_example), errors)
 
     _require(
         production_server,
@@ -60,11 +85,26 @@ def validate_decision(paths: DecisionPaths = DecisionPaths()) -> list[str]:
     )
     _require(
         production_server,
-        'export AIDM_SOCKETIO_ASYNC_MODE="${AIDM_SOCKETIO_ASYNC_MODE:-eventlet}"',
+        'export AIDM_SOCKETIO_ASYNC_MODE="${AIDM_SOCKETIO_ASYNC_MODE:-threading}"',
         str(paths.production_server_script),
         errors,
     )
     _require(production_server, 'WEB_CONCURRENCY="${WEB_CONCURRENCY:-1}"', str(paths.production_server_script), errors)
+    _require(production_server, 'GUNICORN_THREADS="${AIDM_GUNICORN_THREADS:-100}"', str(paths.production_server_script), errors)
+    _require(production_server, '--worker-class gthread', str(paths.production_server_script), errors)
+    _require(production_server, '--threads "${GUNICORN_THREADS}"', str(paths.production_server_script), errors)
+    _require(
+        production_server,
+        'currently supports only AIDM_SOCKETIO_WORKER_MODEL=single',
+        str(paths.production_server_script),
+        errors,
+    )
+    _require(
+        production_server,
+        'AIDM_GUNICORN_THREADS must be an integer >= 16.',
+        str(paths.production_server_script),
+        errors,
+    )
     _require(
         production_server,
         'AIDM_SOCKETIO_WORKER_MODEL=single requires WEB_CONCURRENCY=1.',
@@ -77,7 +117,7 @@ def validate_decision(paths: DecisionPaths = DecisionPaths()) -> list[str]:
         (paths.beta_runbook, beta_runbook),
     ):
         _require(text, 'AIDM_SOCKETIO_WORKER_MODEL=single', str(path), errors)
-        _require(text, 'AIDM_SOCKETIO_ASYNC_MODE=eventlet', str(path), errors)
+        _require(text, 'AIDM_SOCKETIO_ASYNC_MODE=threading', str(path), errors)
         _require(text, 'WEB_CONCURRENCY=1', str(path), errors)
         _require(text, 'scripts/run_production_server.sh', str(path), errors)
 
@@ -91,7 +131,7 @@ def main() -> int:
         for error in errors:
             print(f'- {error}', file=sys.stderr)
         return 1
-    print('[socketio-worker-model] Decision verified: single worker, eventlet, WEB_CONCURRENCY=1.')
+    print('[socketio-worker-model] Decision verified: single worker, threading/gthread, WEB_CONCURRENCY=1.')
     return 0
 
 

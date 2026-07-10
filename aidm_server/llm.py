@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import logging
 import math
+import json
+
+from flask import current_app, has_app_context
 
 from aidm_server.contracts import ProviderRequest, ProviderResponse
 from aidm_server.llm_context import CONTEXT_VERSION, build_dm_context
@@ -23,10 +26,96 @@ from aidm_server.llm_providers import (
     get_provider,
 )
 from aidm_server.prompt_templates import DM_SYSTEM_MESSAGE, build_dm_generate_request, build_dm_stream_request
+from aidm_server.services.content_settings import content_settings_from_snapshot
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 
 
+__all__ = [
+    'CONTEXT_VERSION',
+    'DEFAULT_DEEPSEEK_MODEL',
+    'DEFAULT_GEMINI_MODEL',
+    'DEFAULT_NVIDIA_MODEL',
+    'DeepSeekChatProvider',
+    'DeterministicFallbackProvider',
+    'EmergencyFallbackChunk',
+    'GeminiProvider',
+    'LLM_RATE_LIMIT_COOLDOWN_SECONDS',
+    'LLM_RATE_LIMIT_THRESHOLD',
+    'NvidiaChatProvider',
+    'ProviderHTTPError',
+    'ProviderNotConfiguredError',
+    'ProviderResponse',
+    'build_dm_context',
+    'estimate_text_tokens',
+    'get_provider',
+    'query_dm_function',
+    'query_dm_function_stream',
+    'query_gpt',
+    'query_gpt_stream',
+]
+
+
 logger = logging.getLogger(__name__)
+
+CONTINUITY_FALLBACK_PROVIDER = 'fallback'
+CONTINUITY_FALLBACK_MODEL = 'continuity-safe-v1'
+
+
+class EmergencyFallbackChunk(str):
+    """Narration text that was produced only because the selected provider failed.
+
+    The type remains string-compatible for Socket.IO streaming while carrying
+    enough provenance for the turn engine to avoid treating emergency narration
+    as a successful response from the configured provider.
+    """
+
+    def __new__(
+        cls,
+        value: str,
+        *,
+        error: Exception | str,
+        failed_provider: str,
+        failed_model: str | None,
+        reason: str = 'provider_exception',
+    ):
+        instance = super().__new__(cls, value)
+        instance.error_type = error.__class__.__name__ if isinstance(error, Exception) else 'ProviderError'
+        instance.public_message = 'The configured DM provider failed; continuity-safe narration was used.'
+        instance.failed_provider = str(failed_provider or 'unknown')
+        instance.failed_model = str(failed_model) if failed_model else None
+        instance.reason = reason
+        instance.provider = CONTINUITY_FALLBACK_PROVIDER
+        instance.model = CONTINUITY_FALLBACK_MODEL
+        return instance
+
+
+def _provider_identity(provider: BaseLLMProvider | None) -> tuple[str, str | None]:
+    if provider is None:
+        if has_app_context():
+            provider_name = str(current_app.config.get('AIDM_LLM_PROVIDER') or 'unknown')
+            model_name = current_app.config.get('AIDM_LLM_MODEL')
+            return provider_name, str(model_name) if model_name else None
+        return 'unknown', None
+    provider_name = str(getattr(provider, 'provider_name', provider.__class__.__name__) or 'unknown')
+    model_name = getattr(provider, 'display_model_name', None) or getattr(provider, 'model_name', None)
+    return provider_name, str(model_name) if model_name else None
+
+
+def _emergency_fallback_chunk(
+    user_input: str,
+    *,
+    provider: BaseLLMProvider | None,
+    error: Exception | str,
+    reason: str = 'provider_exception',
+) -> EmergencyFallbackChunk:
+    provider_name, model_name = _provider_identity(provider)
+    return EmergencyFallbackChunk(
+        _fallback_dm_response(user_input),
+        error=error,
+        failed_provider=provider_name,
+        failed_model=model_name,
+        reason=reason,
+    )
 
 
 def estimate_text_tokens(value: str | None) -> int:
@@ -61,6 +150,17 @@ def _record_prompt_context_estimate(operation: str, request: ProviderRequest, co
 
 def _system_message_for_dm():
     return DM_SYSTEM_MESSAGE
+
+
+def _content_settings_for_context(context: str | None) -> dict:
+    try:
+        payload = json.loads(str(context or '{}'))
+    except (TypeError, ValueError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    settings = payload.get('content_settings')
+    return content_settings_from_snapshot(settings if isinstance(settings, dict) else {})
 
 
 def _fallback_dm_response(user_input: str) -> str:
@@ -109,35 +209,49 @@ def _completion_chunks_for_stream(provider: BaseLLMProvider, request: ProviderRe
     if text:
         yield from _chunk_text_for_stream(text)
         return
-    yield _fallback_dm_response(user_input)
+    raise RuntimeError('Provider returned an empty DM response')
 
 
 def query_dm_function(user_input, context, speaking_player_id=None, rules_hint: dict | None = None):
-    request = build_dm_generate_request(user_input=str(user_input), context=str(context), rules_hint=rules_hint)
+    content_settings = _content_settings_for_context(str(context))
+    request = build_dm_generate_request(
+        user_input=str(user_input),
+        context=str(context),
+        rules_hint=rules_hint,
+        content_rating=content_settings.get('content_rating', 'standard'),
+        tone_tags=content_settings.get('tone_tags', []),
+    )
     _record_prompt_context_estimate('dm_generate', request, context)
 
-    provider = get_provider()
+    provider = None
     try:
+        provider = get_provider()
         response = provider.generate(request)
         text = response.text.strip()
-        return text if text else _fallback_dm_response(user_input)
+        if not text:
+            raise RuntimeError('Provider returned an empty DM response')
+        return text
     except Exception as exc:
         logger.warning('DM provider failure in query_dm_function: %s', str(exc))
         telemetry_event('llm.query_dm_function.failed', payload={'error': str(exc)}, severity='warning')
-        return _fallback_dm_response(user_input)
+        return _emergency_fallback_chunk(user_input, provider=provider, error=exc)
 
 
 def query_dm_function_stream(user_input, context, speaking_player=None, rules_hint: dict | None = None):
+    content_settings = _content_settings_for_context(str(context))
     request = build_dm_stream_request(
         user_input=str(user_input),
         context=str(context),
         speaking_player=speaking_player,
         rules_hint=rules_hint,
+        content_rating=content_settings.get('content_rating', 'standard'),
+        tone_tags=content_settings.get('tone_tags', []),
     )
     _record_prompt_context_estimate('dm_stream', request, context)
 
-    provider = get_provider()
+    provider = None
     try:
+        provider = get_provider()
         if type(provider) is NvidiaChatProvider:
             # NVIDIA/Kimi's SSE path has been materially less reliable than
             # single-shot generation for large campaign prompts. For gameplay,
@@ -147,10 +261,13 @@ def query_dm_function_stream(user_input, context, speaking_player=None, rules_hi
             return
 
         yielded = False
+        yielded_meaningful_text = False
         try:
             for chunk in provider.stream(request):
                 yielded = True
                 if chunk:
+                    if str(chunk).strip():
+                        yielded_meaningful_text = True
                     yield chunk
         except Exception:
             if yielded or not isinstance(provider, NvidiaChatProvider):
@@ -162,15 +279,26 @@ def query_dm_function_stream(user_input, context, speaking_player=None, rules_hi
             )
             yield from _completion_chunks_for_stream(provider, request, str(user_input))
             return
-        if not yielded:
-            if isinstance(provider, NvidiaChatProvider):
+        if not yielded_meaningful_text:
+            if not yielded and isinstance(provider, NvidiaChatProvider):
                 yield from _completion_chunks_for_stream(provider, request, str(user_input))
                 return
-            yield _fallback_dm_response(user_input)
+            empty_error = RuntimeError('Provider returned an empty DM stream')
+            telemetry_event(
+                'llm.query_dm_stream.failed',
+                payload={'error': str(empty_error), 'reason': 'empty_response'},
+                severity='warning',
+            )
+            yield _emergency_fallback_chunk(
+                str(user_input),
+                provider=provider,
+                error=empty_error,
+                reason='empty_response',
+            )
     except Exception as exc:
         logger.warning('DM provider failure in stream: %s', str(exc))
         telemetry_event('llm.query_dm_stream.failed', payload={'error': str(exc)}, severity='warning')
-        yield _fallback_dm_response(user_input)
+        yield _emergency_fallback_chunk(str(user_input), provider=provider, error=exc)
 
 
 def query_gpt(prompt, system_message=None):

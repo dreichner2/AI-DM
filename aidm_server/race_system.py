@@ -10,6 +10,14 @@ from uuid import uuid4
 from aidm_server.profile_icons import RACE_ALIASES, profile_icon_race_for_character
 
 
+class RaceValidationError(ValueError):
+    """Validation failure whose message is safe to return to an API client."""
+
+    def __init__(self, public_message: str):
+        super().__init__(public_message)
+        self.public_message = public_message
+
+
 RACE_TAGS = {
     'beginner_friendly',
     'martial',
@@ -1256,12 +1264,28 @@ def _normalize_trait(raw_trait: Any, prefix: str) -> dict[str, Any] | None:
     }
 
 
+def _bounded_race_integer(
+    value: Any,
+    *,
+    field: str,
+    default: int,
+    minimum: int,
+    maximum: int | None = None,
+) -> int:
+    try:
+        parsed = int(value or default)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RaceValidationError(f'{field} must be an integer.') from exc
+    parsed = max(minimum, parsed)
+    return min(maximum, parsed) if maximum is not None else parsed
+
+
 def normalize_race_definition(raw_race: Any, *, source: str | None = None) -> dict[str, Any]:
     if not isinstance(raw_race, dict):
-        raise ValueError('raceDefinition must be an object.')
+        raise RaceValidationError('raceDefinition must be an object.')
     name = _clean_text(raw_race.get('name'), max_length=80)
     if not name:
-        raise ValueError('raceDefinition.name is required.')
+        raise RaceValidationError('raceDefinition.name is required.')
     race_source = _slug(str(source or raw_race.get('source') or 'custom'))
     if race_source not in RACE_SOURCES:
         race_source = 'custom'
@@ -1279,7 +1303,12 @@ def normalize_race_definition(raw_race: Any, *, source: str | None = None) -> di
 
     race = {
         'id': race_id,
-        'version': max(1, int(raw_race.get('version', 1) or 1)),
+        'version': _bounded_race_integer(
+            raw_race.get('version'),
+            field='raceDefinition.version',
+            default=1,
+            minimum=1,
+        ),
         'name': name,
         'source': race_source,
         **({'parentRaceId': _clean_text(raw_race.get('parentRaceId'), max_length=120)} if raw_race.get('parentRaceId') else {}),
@@ -1296,7 +1325,13 @@ def normalize_race_definition(raw_race: Any, *, source: str | None = None) -> di
         'aliases': _string_list(raw_race.get('aliases'), max_items=10),
         'tags': _tags(raw_race.get('tags')),
         'size': _slug(str(raw_race.get('size') or 'medium')) if _slug(str(raw_race.get('size') or 'medium')) in RACE_SIZES else 'medium',
-        'baseSpeed': max(0, min(60, int(raw_race.get('baseSpeed', 30) or 30))),
+        'baseSpeed': _bounded_race_integer(
+            raw_race.get('baseSpeed'),
+            field='raceDefinition.baseSpeed',
+            default=30,
+            minimum=0,
+            maximum=60,
+        ),
         'visual': {
             'portraitKey': _clean_text(visual.get('portraitKey'), fallback='human', max_length=80),
             'iconKey': _clean_text(visual.get('iconKey'), fallback='custom', max_length=80),
@@ -1405,7 +1440,7 @@ def normalize_character_race_selection(value: Any, *, fallback_race: str | None 
     if value is None:
         return resolve_legacy_race(fallback_race)
     if not isinstance(value, dict):
-        raise ValueError('race_selection must be an object.')
+        raise RaceValidationError('race_selection must be an object.')
     race_id = _clean_text(value.get('raceId', value.get('race_id')), max_length=120)
     race_name = _clean_text(value.get('raceName', value.get('race_name')), max_length=80)
     source = _slug(str(value.get('source') or 'curated'))
@@ -1543,7 +1578,7 @@ def _has_keyword(text: str, keywords: list[str]) -> bool:
 def generate_custom_race_draft(prompt: str, *, strictness: str = 'standard') -> dict[str, Any]:
     text = _clean_text(prompt, max_length=2000)
     if not text:
-        raise ValueError('prompt is required.')
+        raise RaceValidationError('prompt is required.')
     lower = text.lower()
     name = _infer_custom_name(text)
     race_id = f'custom_{_slug(name)}_{uuid4().hex[:6]}'

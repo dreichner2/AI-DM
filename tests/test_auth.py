@@ -19,8 +19,10 @@ from aidm_server.models import (
     DmTurn,
     OperatorActionAudit,
     Player,
+    PlayerAction,
     Session,
     TurnEvent,
+    Workspace,
     World,
     safe_json_dumps,
     safe_json_loads,
@@ -63,6 +65,14 @@ def _build_auth_runtime(tmp_path, monkeypatch, extra_env: dict[str, str] | None 
     return app, socketio
 
 
+def _socket_event_payload(events: list[dict], event_name: str):
+    event = next((item for item in events if item.get('name') == event_name), None)
+    if not event:
+        return None
+    args = event.get('args') or []
+    return args[0] if args else None
+
+
 def test_rest_auth_required(tmp_path, monkeypatch):
     app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
     client = app.test_client()
@@ -73,12 +83,21 @@ def test_rest_auth_required(tmp_path, monkeypatch):
     unauthorized = client.post('/api/worlds', json={'name': 'NoAuth'})
     assert unauthorized.status_code == 401
 
-    authorized = client.post(
+    global_operator = client.post(
         '/api/worlds',
         json={'name': 'Authorized World', 'description': 'auth ok'},
         headers={'Authorization': 'Bearer token-123'},
     )
-    assert authorized.status_code == 201
+    assert global_operator.status_code == 201
+
+    capabilities = client.get(
+        '/api/capabilities',
+        headers={'Authorization': 'Bearer token-123'},
+    ).get_json()['capabilities']
+    assert 'dm_authoring' in capabilities
+    assert 'dm_runtime_control' in capabilities
+    assert 'debug_read' in capabilities
+    assert 'local_operator_only' not in capabilities
 
 
 def test_capabilities_endpoint_reports_account_role_capabilities(tmp_path, monkeypatch):
@@ -173,6 +192,290 @@ def test_workspace_bearer_token_has_player_capabilities_and_cannot_author_bestia
     assert authoring_response.get_json()['details']['required_capability'] == 'dm_authoring'
 
 
+def test_dynamic_workspace_header_token_has_player_capabilities(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+    with app.app_context():
+        db.session.add(
+            Workspace(
+                workspace_id='dynamic_table',
+                name='Dynamic Table',
+                name_key='dynamic table',
+                token_hash=hash_secret('dynamic-workspace-token'),
+            )
+        )
+        db.session.commit()
+
+    headers = {'X-AIDM-Workspace-Token': 'dynamic-workspace-token'}
+    capabilities_response = client.get('/api/capabilities', headers=headers)
+    authoring_response = client.post('/api/worlds', headers=headers, json={'name': 'Blocked dynamic world'})
+
+    assert capabilities_response.status_code == 200
+    assert capabilities_response.get_json()['capabilities'] == ['player_action', 'player_read']
+    assert authoring_response.status_code == 403
+    assert authoring_response.get_json()['details']['required_capability'] == 'dm_authoring'
+
+
+def test_player_account_cannot_mutate_dm_resources_but_admin_can(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+    with app.app_context():
+        player_account = Account(
+            username='boundary-player',
+            first_name='Boundary',
+            last_name='Player',
+            password_hash='configured',
+            account_token_hash=hash_secret('boundary-player-token'),
+        )
+        admin_account = Account(
+            username='boundary-admin',
+            first_name='Boundary',
+            last_name='Admin',
+            password_hash='configured',
+            account_token_hash=hash_secret('boundary-admin-token'),
+        )
+        db.session.add_all([player_account, admin_account])
+        db.session.flush()
+        db.session.add_all(
+            [
+                AccountWorkspaceMembership(account_id=player_account.account_id, workspace_id='owner', role='player'),
+                AccountWorkspaceMembership(account_id=admin_account.account_id, workspace_id='owner', role='admin'),
+            ]
+        )
+        world = World(name='Boundary World', description='capability boundary')
+        db.session.add(world)
+        db.session.flush()
+        campaign = Campaign(title='Boundary Campaign', world_id=world.world_id, workspace_id='owner')
+        db.session.add(campaign)
+        db.session.flush()
+        session = Session(campaign_id=campaign.campaign_id)
+        db.session.add(session)
+        db.session.commit()
+        ids = {
+            'world_id': world.world_id,
+            'campaign_id': campaign.campaign_id,
+            'session_id': session.session_id,
+        }
+
+    player_headers = {
+        'Authorization': 'Bearer boundary-player-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+    checks = [
+        ('post', '/api/worlds', {'name': 'Player-authored world'}, 'dm_authoring'),
+        ('patch', f"/api/campaigns/{ids['campaign_id']}", {'title': 'Player rename'}, 'dm_authoring'),
+        ('post', '/api/sessions/start', {'campaign_id': ids['campaign_id']}, 'dm_runtime_control'),
+        ('post', '/api/maps', {'title': 'Player map', 'campaign_id': ids['campaign_id']}, 'dm_authoring'),
+        (
+            'post',
+            '/api/segments',
+            {'campaign_id': ids['campaign_id'], 'title': 'Player segment'},
+            'dm_authoring',
+        ),
+    ]
+    for method, path, payload, capability in checks:
+        response = getattr(client, method)(path, headers=player_headers, json=payload)
+        assert response.status_code == 403, path
+        assert response.get_json()['details']['required_capability'] == capability
+
+    admin_response = client.post(
+        '/api/worlds',
+        headers={
+            'Authorization': 'Bearer boundary-admin-token',
+            'X-AIDM-Workspace-Id': 'owner',
+        },
+        json={'name': 'Admin-authored world'},
+    )
+    assert admin_response.status_code == 201
+    admin_metrics = client.get(
+        '/api/metrics',
+        headers={
+            'Authorization': 'Bearer boundary-admin-token',
+            'X-AIDM-Workspace-Id': 'owner',
+        },
+    )
+    assert admin_metrics.status_code == 200
+
+
+def test_workspace_bearer_token_cannot_use_campaign_pack_or_metrics_operator_paths(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={
+            'AIDM_API_AUTH_TOKENS': 'owner-token',
+            'AIDM_API_AUTH_TOKEN_WORKSPACES': 'owner=owner-token',
+        },
+    )
+    client = app.test_client()
+    headers = {'Authorization': 'Bearer owner-token'}
+
+    checks = [
+        ('get', '/api/campaigns/installed-packs', None, 'dm_authoring'),
+        ('post', '/api/campaigns/pack-tools/lint', {}, 'dm_authoring'),
+        ('post', '/api/campaigns/example-packs/bleakmoor_intro/import', {}, 'dm_authoring'),
+        ('get', '/api/metrics', None, 'debug_read'),
+        ('get', '/api/metrics/prometheus', None, 'debug_read'),
+        ('get', '/api/beta/summary', None, 'debug_read'),
+        ('get', '/api/beta/slo', None, 'debug_read'),
+    ]
+    for method, path, payload, capability in checks:
+        response = getattr(client, method)(path, headers=headers, json=payload)
+        assert response.status_code == 403, path
+        assert response.get_json()['details']['required_capability'] == capability
+
+
+def test_account_login_is_rate_limited_before_password_verification(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={'AIDM_RATE_LIMIT_MAX_API_REQUESTS': '1'},
+    )
+    client = app.test_client()
+    with app.app_context():
+        account = Account(
+            username='limited-login',
+            first_name='Limited',
+            last_name='Login',
+            password_hash='configured',
+            account_token_hash=hash_secret('limited-login-token'),
+        )
+        db.session.add(account)
+        db.session.commit()
+
+    import aidm_server.blueprints.accounts as accounts_module
+
+    password_checks = 0
+
+    def reject_password(_account, _password):
+        nonlocal password_checks
+        password_checks += 1
+        return False
+
+    monkeypatch.setattr(accounts_module, 'password_matches', reject_password)
+    payload = {'intent': 'login', 'username': 'limited-login', 'password': 'wrong'}
+    first = client.post('/api/accounts/login', json=payload)
+    second = client.post('/api/accounts/login', json=payload)
+
+    assert first.status_code == 401
+    assert second.status_code == 429
+    assert second.get_json()['error_code'] == 'rate_limited'
+    assert password_checks == 1
+
+
+def test_socket_turn_control_requires_runtime_control_capability(tmp_path, monkeypatch):
+    app, socketio = _build_auth_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={
+            'AIDM_API_AUTH_TOKENS': 'global-operator-token,workspace-player-token',
+            'AIDM_API_AUTH_TOKEN_WORKSPACES': 'owner=workspace-player-token',
+        },
+    )
+    with app.app_context():
+        player_account = Account(
+            username='socket-boundary-player',
+            first_name='Socket',
+            last_name='Player',
+            password_hash='configured',
+            account_token_hash=hash_secret('socket-boundary-player-token'),
+        )
+        admin_account = Account(
+            username='socket-boundary-admin',
+            first_name='Socket',
+            last_name='Admin',
+            password_hash='configured',
+            account_token_hash=hash_secret('socket-boundary-admin-token'),
+        )
+        db.session.add_all([player_account, admin_account])
+        db.session.flush()
+        db.session.add_all(
+            [
+                AccountWorkspaceMembership(account_id=player_account.account_id, workspace_id='owner', role='player'),
+                AccountWorkspaceMembership(account_id=admin_account.account_id, workspace_id='owner', role='admin'),
+            ]
+        )
+        world = World(name='Socket Boundary World', description='socket capability boundary')
+        db.session.add(world)
+        db.session.flush()
+        campaign = Campaign(title='Socket Boundary Campaign', world_id=world.world_id, workspace_id='owner')
+        db.session.add(campaign)
+        db.session.flush()
+        player = Player(
+            campaign_id=campaign.campaign_id,
+            workspace_id='owner',
+            account_id=player_account.account_id,
+            name='Socket Player',
+            character_name='Socket Hero',
+        )
+        session = Session(campaign_id=campaign.campaign_id)
+        db.session.add_all([player, session])
+        db.session.commit()
+        player_id = player.player_id
+        session_id = session.session_id
+
+    player_client = socketio.test_client(
+        app,
+        flask_test_client=app.test_client(),
+        auth={'account_token': 'socket-boundary-player-token', 'workspace_id': 'owner'},
+    )
+    assert player_client.is_connected()
+    player_client.emit('join_session', {'session_id': session_id, 'player_id': player_id})
+    player_client.get_received()
+    player_client.emit(
+        'set_turn_control',
+        {'session_id': session_id, 'player_id': player_id, 'mode': 'structured'},
+    )
+    forbidden = _socket_event_payload(player_client.get_received(), 'error')
+    assert forbidden['error_code'] == 'forbidden'
+    assert forbidden['details']['required_capability'] == 'dm_runtime_control'
+
+    workspace_token_client = socketio.test_client(
+        app,
+        flask_test_client=app.test_client(),
+        auth={'token': 'workspace-player-token'},
+    )
+    assert workspace_token_client.is_connected()
+    workspace_token_client.emit('join_session', {'session_id': session_id, 'player_id': player_id})
+    workspace_token_client.get_received()
+    workspace_token_client.emit(
+        'set_turn_control',
+        {'session_id': session_id, 'player_id': player_id, 'mode': 'structured'},
+    )
+    token_forbidden = _socket_event_payload(workspace_token_client.get_received(), 'error')
+    assert token_forbidden['error_code'] == 'forbidden'
+    assert token_forbidden['details']['required_capability'] == 'dm_runtime_control'
+
+    global_operator_client = socketio.test_client(
+        app,
+        flask_test_client=app.test_client(),
+        auth={'token': 'global-operator-token'},
+    )
+    assert global_operator_client.is_connected()
+    global_operator_client.emit('join_session', {'session_id': session_id, 'player_id': player_id})
+    global_operator_client.get_received()
+    global_operator_client.emit(
+        'set_turn_control',
+        {'session_id': session_id, 'player_id': player_id, 'mode': 'spotlight'},
+    )
+    operator_update = _socket_event_payload(global_operator_client.get_received(), 'turn_control_updated')
+    assert operator_update['turn_control']['mode'] == 'spotlight'
+
+    admin_client = socketio.test_client(
+        app,
+        flask_test_client=app.test_client(),
+        auth={'account_token': 'socket-boundary-admin-token', 'workspace_id': 'owner'},
+    )
+    assert admin_client.is_connected()
+    admin_client.emit('join_session', {'session_id': session_id, 'player_id': player_id})
+    admin_client.get_received()
+    admin_client.emit(
+        'set_turn_control',
+        {'session_id': session_id, 'player_id': player_id, 'mode': 'structured'},
+    )
+    updated = _socket_event_payload(admin_client.get_received(), 'turn_control_updated')
+    assert updated['turn_control']['mode'] == 'structured'
+
+
 def test_beta_incidents_require_workspace_admin_account_but_players_can_report(tmp_path, monkeypatch):
     app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
     client = app.test_client()
@@ -211,10 +514,34 @@ def test_beta_incidents_require_workspace_admin_account_but_players_can_report(t
             llm_model='deterministic-v1',
         )
         db.session.add(turn)
+        other_world = World(name='Other Workspace Incident World', workspace_id='friend')
+        db.session.add(other_world)
+        db.session.flush()
+        other_campaign = Campaign(
+            title='Other Workspace Incident Campaign',
+            world_id=other_world.world_id,
+            workspace_id='friend',
+        )
+        db.session.add(other_campaign)
+        db.session.flush()
+        other_session = Session(campaign_id=other_campaign.campaign_id)
+        db.session.add(other_session)
+        db.session.flush()
+        other_turn = DmTurn(
+            session_id=other_session.session_id,
+            campaign_id=other_campaign.campaign_id,
+            player_input='This newer turn belongs to another workspace.',
+            dm_output='Private other-workspace diagnostics.',
+            status='completed',
+            llm_provider='gemini',
+            llm_model='gemini-2.5-pro',
+        )
+        db.session.add(other_turn)
         db.session.commit()
         account_id = account.account_id
         session_id = session.session_id
         turn_id = turn.turn_id
+        other_turn_id = other_turn.turn_id
 
     headers = {'Authorization': 'Bearer incident-token', 'X-AIDM-Workspace-Id': 'owner'}
     report_response = client.post(
@@ -244,12 +571,17 @@ def test_beta_incidents_require_workspace_admin_account_but_players_can_report(t
     assert payload['summary']['failed_turn_count'] == 1
 
     admin_bundle = client.get(f'/api/beta/support-bundle?session_id={session_id}', headers=headers)
+    admin_llm_config = client.get('/api/llm/config', headers=headers)
     assert admin_bundle.status_code == 200
+    assert admin_llm_config.status_code == 200
     bundle_payload = admin_bundle.get_json()
     assert bundle_payload['session']['session_id'] == session_id
     assert bundle_payload['incidents']['summary']['bad_turn_report_count'] == 1
     assert bundle_payload['incidents']['summary']['failed_turn_count'] == 1
     assert bundle_payload['recent_turns'][0]['turn_id'] == turn_id
+    assert bundle_payload['runtime']['llm']['latest_turn']['turn_id'] == turn_id
+    assert bundle_payload['runtime']['llm']['latest_turn']['turn_id'] != other_turn_id
+    assert admin_llm_config.get_json()['current']['latest_turn']['turn_id'] == turn_id
 
 
 def test_auth_required_allows_cors_preflight_without_token(tmp_path, monkeypatch):
@@ -340,14 +672,16 @@ def test_socket_auth_required(tmp_path, monkeypatch):
     )
     assert not query_auth_client.is_connected()
 
+    import aidm_server.blueprints.socketio_events as socketio_events_module
+
+    assert socketio_events_module.socketio_connections == {}
+
     auth_client = socketio.test_client(
         app,
         flask_test_client=app.test_client(),
         auth={'token': 'token-123'},
     )
     assert auth_client.is_connected()
-
-    import aidm_server.blueprints.socketio_events as socketio_events_module
 
     assert socketio_events_module.socketio_connections
     assert all('token' not in connection for connection in socketio_events_module.socketio_connections.values())
@@ -380,7 +714,19 @@ def test_auth_tokens_are_scoped_to_campaign_workspaces(tmp_path, monkeypatch):
             character_name='Owner Hero',
         )
         owner_session = Session(campaign_id=owner_campaign.campaign_id)
-        db.session.add_all([owner_player, owner_session])
+        friend_world = World(
+            workspace_id='aidan_test',
+            name='Aidan Test World',
+            description='Friend-only world',
+        )
+        db.session.add(friend_world)
+        db.session.flush()
+        friend_campaign = Campaign(
+            title='Aidan Test Campaign',
+            world_id=friend_world.world_id,
+            workspace_id='aidan_test',
+        )
+        db.session.add_all([owner_player, owner_session, friend_campaign])
         db.session.commit()
         ids = {
             'world_id': world.world_id,
@@ -399,11 +745,11 @@ def test_auth_tokens_are_scoped_to_campaign_workspaces(tmp_path, monkeypatch):
 
     friend_campaigns = client.get('/api/campaigns', headers=friend_headers)
     assert friend_campaigns.status_code == 200
-    assert friend_campaigns.get_json() == []
+    assert [campaign['title'] for campaign in friend_campaigns.get_json()] == ['Aidan Test Campaign']
 
     friend_worlds = client.get('/api/worlds', headers=friend_headers)
     assert friend_worlds.status_code == 200
-    assert friend_worlds.get_json() == []
+    assert [world['name'] for world in friend_worlds.get_json()] == ['Aidan Test World']
     assert client.get(f"/api/worlds/{ids['world_id']}", headers=friend_headers).status_code == 404
 
     hidden_paths = [
@@ -421,32 +767,16 @@ def test_auth_tokens_are_scoped_to_campaign_workspaces(tmp_path, monkeypatch):
         headers=friend_headers,
         json={'title': 'Aidan Test Campaign', 'world_id': ids['world_id']},
     )
-    assert blocked_campaign.status_code == 404
-    assert blocked_campaign.get_json()['error_code'] == 'world_not_found'
+    assert blocked_campaign.status_code == 403
+    assert blocked_campaign.get_json()['details']['required_capability'] == 'dm_authoring'
 
-    friend_world = client.post(
+    blocked_world = client.post(
         '/api/worlds',
         headers=friend_headers,
-        json={'name': 'Aidan Test World', 'description': 'Friend-only world'},
+        json={'name': 'Another Aidan Test World', 'description': 'Friend-only world'},
     )
-    assert friend_world.status_code == 201
-    friend_world_id = friend_world.get_json()['world_id']
-
-    created = client.post(
-        '/api/campaigns',
-        headers=friend_headers,
-        json={'title': 'Aidan Test Campaign', 'world_id': friend_world_id},
-    )
-    assert created.status_code == 201
-    friend_campaign_id = created.get_json()['campaign_id']
-
-    with app.app_context():
-        friend_world_obj = db.session.get(World, friend_world_id)
-        assert friend_world_obj is not None
-        assert friend_world_obj.workspace_id == 'aidan_test'
-        friend_campaign = db.session.get(Campaign, friend_campaign_id)
-        assert friend_campaign is not None
-        assert friend_campaign.workspace_id == 'aidan_test'
+    assert blocked_world.status_code == 403
+    assert blocked_world.get_json()['details']['required_capability'] == 'dm_authoring'
 
     friend_campaigns = client.get('/api/campaigns', headers=friend_headers)
     assert [campaign['title'] for campaign in friend_campaigns.get_json()] == ['Aidan Test Campaign']
@@ -464,12 +794,12 @@ def test_auth_tokens_are_scoped_to_campaign_workspaces(tmp_path, monkeypatch):
     friend_socket.disconnect()
 
 
-def test_llm_config_update_requires_owner_workspace_token(tmp_path, monkeypatch):
+def test_llm_config_requires_global_operator_instead_of_workspace_scoped_tokens(tmp_path, monkeypatch):
     app, _socketio = _build_auth_runtime(
         tmp_path,
         monkeypatch,
         extra_env={
-            'AIDM_API_AUTH_TOKENS': 'owner-token,tenant-token',
+            'AIDM_API_AUTH_TOKENS': 'global-operator-token,owner-token,tenant-token',
             'AIDM_API_AUTH_TOKEN_WORKSPACES': 'owner=owner-token,tenant_b=tenant-token',
             'AIDM_LLM_PROVIDER': 'gemini',
             'AIDM_LLM_MODEL': 'gemini-2.5-pro',
@@ -486,18 +816,27 @@ def test_llm_config_update_requires_owner_workspace_token(tmp_path, monkeypatch)
     )
 
     assert tenant_patch.status_code == 403
-    assert tenant_patch.get_json()['error_code'] == 'runtime_config_admin_required'
+    assert tenant_patch.get_json()['error_code'] == 'forbidden'
+    assert tenant_patch.get_json()['details']['required_capability'] == 'admin_workspace'
     assert app.config['AIDM_LLM_PROVIDER'] == 'gemini'
     assert os.environ['AIDM_LLM_PROVIDER'] == 'gemini'
 
-    owner_patch = client.patch(
+    owner_workspace_patch = client.patch(
         '/api/llm/config',
         headers={'Authorization': 'Bearer owner-token'},
         json={'provider': 'fallback', 'model': 'deterministic-v1', 'persist': False},
     )
+    assert owner_workspace_patch.status_code == 403
+    assert owner_workspace_patch.get_json()['details']['required_capability'] == 'admin_workspace'
 
-    assert owner_patch.status_code == 200
-    assert owner_patch.get_json()['current']['provider'] == 'fallback'
+    global_operator_patch = client.patch(
+        '/api/llm/config',
+        headers={'Authorization': 'Bearer global-operator-token'},
+        json={'provider': 'fallback', 'model': 'deterministic-v1', 'persist': False},
+    )
+
+    assert global_operator_patch.status_code == 200
+    assert global_operator_patch.get_json()['current']['provider'] == 'fallback'
     assert app.config['AIDM_LLM_PROVIDER'] == 'fallback'
     assert os.environ['AIDM_LLM_PROVIDER'] == 'fallback'
 
@@ -527,19 +866,37 @@ def test_llm_config_update_requires_owner_account_admin_role(tmp_path, monkeypat
         db.session.add(account)
         db.session.flush()
         membership = AccountWorkspaceMembership(account_id=account.account_id, workspace_id='owner', role='player')
-        db.session.add(membership)
+        tenant_membership = AccountWorkspaceMembership(
+            account_id=account.account_id,
+            workspace_id='tenant_b',
+            role='admin',
+        )
+        db.session.add_all([membership, tenant_membership])
         db.session.commit()
         account_id = account.account_id
 
     account_headers = {'Authorization': 'Bearer account-token', 'X-AIDM-Workspace-Id': 'owner'}
+    player_get = client.get('/api/llm/config', headers=account_headers)
     player_patch = client.patch(
         '/api/llm/config',
         headers=account_headers,
         json={'provider': 'fallback', 'model': 'deterministic-v1', 'persist': False},
     )
 
+    assert player_get.status_code == 403
+    assert player_get.get_json()['details']['required_capability'] == 'debug_read'
     assert player_patch.status_code == 403
-    assert player_patch.get_json()['error_code'] == 'runtime_config_admin_required'
+    assert player_patch.get_json()['error_code'] == 'forbidden'
+    assert player_patch.get_json()['details']['required_capability'] == 'admin_workspace'
+    assert app.config['AIDM_LLM_PROVIDER'] == 'gemini'
+
+    tenant_admin_patch = client.patch(
+        '/api/llm/config',
+        headers={'Authorization': 'Bearer account-token', 'X-AIDM-Workspace-Id': 'tenant_b'},
+        json={'provider': 'fallback', 'model': 'deterministic-v1', 'persist': False},
+    )
+    assert tenant_admin_patch.status_code == 403
+    assert tenant_admin_patch.get_json()['error_code'] == 'runtime_config_admin_required'
     assert app.config['AIDM_LLM_PROVIDER'] == 'gemini'
 
     with app.app_context():
@@ -1087,6 +1444,182 @@ def test_session_import_strips_campaign_pack_state_for_non_admin_account(tmp_pat
     assert 'campaignPack' not in response.get_json()['session']['state_snapshot']
 
 
+def test_session_import_non_admin_cannot_attribute_actions_to_other_players(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+    with app.app_context():
+        attacker = Account(
+            username='session-import-attacker',
+            first_name='Session',
+            last_name='Attacker',
+            password_hash='configured',
+            account_token_hash=hash_secret('session-import-attacker-token'),
+        )
+        victim = Account(
+            username='session-import-victim',
+            first_name='Session',
+            last_name='Victim',
+            password_hash='configured',
+            account_token_hash=hash_secret('session-import-victim-token'),
+        )
+        db.session.add_all([attacker, victim])
+        db.session.flush()
+        db.session.add_all(
+            [
+                AccountWorkspaceMembership(account_id=attacker.account_id, workspace_id='owner', role='player'),
+                AccountWorkspaceMembership(account_id=victim.account_id, workspace_id='owner', role='player'),
+            ]
+        )
+        world = World(name='Session Import Attribution World', description='auth import attribution')
+        db.session.add(world)
+        db.session.flush()
+        target_campaign = Campaign(
+            title='Session Import Attribution Target',
+            world_id=world.world_id,
+            workspace_id='owner',
+        )
+        other_campaign = Campaign(
+            title='Session Import Attribution Other',
+            world_id=world.world_id,
+            workspace_id='owner',
+        )
+        db.session.add_all([target_campaign, other_campaign])
+        db.session.flush()
+        attacker_player = Player(
+            campaign_id=target_campaign.campaign_id,
+            workspace_id='owner',
+            account_id=attacker.account_id,
+            name='Session Attacker',
+            character_name='Attacker Hero',
+        )
+        victim_same_campaign = Player(
+            campaign_id=target_campaign.campaign_id,
+            workspace_id='owner',
+            account_id=victim.account_id,
+            name='Session Victim',
+            character_name='Victim Same Hero',
+        )
+        victim_other_campaign = Player(
+            campaign_id=other_campaign.campaign_id,
+            workspace_id='owner',
+            account_id=victim.account_id,
+            name='Session Victim',
+            character_name='Victim Other Hero',
+        )
+        db.session.add_all([attacker_player, victim_same_campaign, victim_other_campaign])
+        db.session.commit()
+        ids = {
+            'world_id': world.world_id,
+            'target_campaign_id': target_campaign.campaign_id,
+            'other_campaign_id': other_campaign.campaign_id,
+            'attacker_player_id': attacker_player.player_id,
+            'victim_same_campaign_id': victim_same_campaign.player_id,
+            'victim_other_campaign_id': victim_other_campaign.player_id,
+        }
+
+    headers = {
+        'Authorization': 'Bearer session-import-attacker-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+
+    def import_player_event(label: str, player_id: int, *, request_headers: dict[str, str] | None = None):
+        return client.post(
+            '/api/sessions/import',
+            headers=request_headers or headers,
+            json={
+                'campaign_id': ids['target_campaign_id'],
+                'name': f'Session attribution {label}',
+                'turnEvents': [
+                    {
+                        'event_type': 'player_message',
+                        'player_id': player_id,
+                        'payload': {'speaker': label, 'message': f'ATTRIBUTION_MARKER_{label}'},
+                        'created_at': '2099-01-01T00:00:00+00:00',
+                    }
+                ],
+            },
+        )
+
+    own_response = import_player_event('OWN', ids['attacker_player_id'])
+    same_campaign_response = import_player_event('SAME_CAMPAIGN_VICTIM', ids['victim_same_campaign_id'])
+    other_campaign_response = import_player_event('OTHER_CAMPAIGN_VICTIM', ids['victim_other_campaign_id'])
+
+    assert own_response.status_code == 201
+    assert same_campaign_response.status_code == 201
+    assert other_campaign_response.status_code == 201
+    own_session_id = own_response.get_json()['session_id']
+    same_campaign_session_id = same_campaign_response.get_json()['session_id']
+    other_campaign_session_id = other_campaign_response.get_json()['session_id']
+
+    with app.app_context():
+        own_event = TurnEvent.query.filter_by(session_id=own_session_id).one()
+        same_campaign_event = TurnEvent.query.filter_by(session_id=same_campaign_session_id).one()
+        other_campaign_event = TurnEvent.query.filter_by(session_id=other_campaign_session_id).one()
+
+        assert own_event.player_id == ids['attacker_player_id']
+        assert PlayerAction.query.filter_by(
+            session_id=own_session_id,
+            player_id=ids['attacker_player_id'],
+        ).count() == 1
+        assert same_campaign_event.player_id is None
+        assert other_campaign_event.player_id is None
+        assert PlayerAction.query.filter(
+            PlayerAction.session_id.in_([same_campaign_session_id, other_campaign_session_id])
+        ).count() == 0
+
+        from aidm_server.llm_context import build_dm_context
+
+        same_campaign_context = json.loads(
+            build_dm_context(
+                ids['world_id'],
+                ids['target_campaign_id'],
+                active_player_ids=[ids['victim_same_campaign_id']],
+                current_player_id=ids['victim_same_campaign_id'],
+            )
+        )
+        other_campaign_context = json.loads(
+            build_dm_context(
+                ids['world_id'],
+                ids['other_campaign_id'],
+                active_player_ids=[ids['victim_other_campaign_id']],
+                current_player_id=ids['victim_other_campaign_id'],
+            )
+        )
+        same_victim = same_campaign_context['active_players'][0]
+        other_victim = other_campaign_context['active_players'][0]
+
+    assert 'ATTRIBUTION_MARKER_SAME_CAMPAIGN_VICTIM' not in same_victim['recent_actions']
+    assert 'ATTRIBUTION_MARKER_OTHER_CAMPAIGN_VICTIM' not in other_victim['recent_actions']
+
+    operator_headers = {'Authorization': 'Bearer token-123'}
+    operator_same_campaign_response = import_player_event(
+        'OPERATOR_SAME_CAMPAIGN',
+        ids['victim_same_campaign_id'],
+        request_headers=operator_headers,
+    )
+    operator_other_campaign_response = import_player_event(
+        'OPERATOR_OTHER_CAMPAIGN',
+        ids['victim_other_campaign_id'],
+        request_headers=operator_headers,
+    )
+
+    assert operator_same_campaign_response.status_code == 201
+    assert operator_other_campaign_response.status_code == 201
+    operator_same_session_id = operator_same_campaign_response.get_json()['session_id']
+    operator_other_session_id = operator_other_campaign_response.get_json()['session_id']
+    with app.app_context():
+        operator_same_event = TurnEvent.query.filter_by(session_id=operator_same_session_id).one()
+        operator_other_event = TurnEvent.query.filter_by(session_id=operator_other_session_id).one()
+
+        assert operator_same_event.player_id == ids['victim_same_campaign_id']
+        assert PlayerAction.query.filter_by(
+            session_id=operator_same_session_id,
+            player_id=ids['victim_same_campaign_id'],
+        ).count() == 1
+        assert operator_other_event.player_id is None
+        assert PlayerAction.query.filter_by(session_id=operator_other_session_id).count() == 0
+
+
 def test_socket_token_extraction_ignores_query_and_event_payloads(tmp_path, monkeypatch):
     app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
 
@@ -1166,8 +1699,8 @@ def test_admin_requires_auth_when_enabled(tmp_path, monkeypatch):
         monkeypatch,
         extra_env={
             'AIDM_ADMIN_ENABLED': 'true',
-            'AIDM_API_AUTH_TOKENS': 'token-123,friend-token',
-            'AIDM_API_AUTH_TOKEN_WORKSPACES': 'aidan_test=friend-token',
+            'AIDM_API_AUTH_TOKENS': 'token-123,friend-token,owner-player-token',
+            'AIDM_API_AUTH_TOKEN_WORKSPACES': 'aidan_test=friend-token,owner=owner-player-token',
         },
     )
     client = app.test_client()
@@ -1184,8 +1717,75 @@ def test_admin_requires_auth_when_enabled(tmp_path, monkeypatch):
     friend_token = client.get('/admin/', headers={'Authorization': 'Bearer friend-token'})
     assert friend_token.status_code == 401
 
+    owner_workspace_token = client.get('/admin/', headers={'Authorization': 'Bearer owner-player-token'})
+    assert owner_workspace_token.status_code == 401
+
     without_bearer_after_success = client.get('/admin/')
     assert without_bearer_after_success.status_code == 401
+
+
+def test_admin_allows_owner_workspace_admin_account_but_not_player_account(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={'AIDM_ADMIN_ENABLED': 'true'},
+    )
+    client = app.test_client()
+    with app.app_context():
+        player_account = Account(
+            username='admin-ui-player',
+            first_name='Admin UI',
+            last_name='Player',
+            password_hash='configured',
+            account_token_hash=hash_secret('admin-ui-player-token'),
+        )
+        admin_account = Account(
+            username='admin-ui-admin',
+            first_name='Admin UI',
+            last_name='Admin',
+            password_hash='configured',
+            account_token_hash=hash_secret('admin-ui-admin-token'),
+        )
+        db.session.add_all([player_account, admin_account])
+        db.session.flush()
+        db.session.add_all(
+            [
+                AccountWorkspaceMembership(
+                    account_id=player_account.account_id,
+                    workspace_id='owner',
+                    role='player',
+                ),
+                AccountWorkspaceMembership(
+                    account_id=admin_account.account_id,
+                    workspace_id='owner',
+                    role='admin',
+                ),
+            ]
+        )
+        db.session.commit()
+
+    player_headers = {
+        'Authorization': 'Bearer admin-ui-player-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+    admin_headers = {
+        'Authorization': 'Bearer admin-ui-admin-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+
+    player_index = client.get('/admin/', headers=player_headers)
+    player_create = client.post(
+        '/admin/world/new/',
+        headers=player_headers,
+        data={'name': 'Player Escalation World', 'description': 'must not be created'},
+    )
+    admin_index = client.get('/admin/', headers=admin_headers)
+
+    assert player_index.status_code == 401
+    assert player_create.status_code == 401
+    assert admin_index.status_code == 200
+    with app.app_context():
+        assert World.query.filter_by(name='Player Escalation World').count() == 0
 
 
 def test_admin_rejects_cookie_signed_with_old_default_secret(tmp_path, monkeypatch):
@@ -1237,8 +1837,8 @@ def test_api_rate_limit_ignores_spoofed_forwarded_for(tmp_path, monkeypatch):
     client = app.test_client()
     headers = {'Authorization': 'Bearer token-123'}
 
-    first = client.get('/api/metrics', headers={**headers, 'X-Forwarded-For': '1.1.1.1'})
-    second = client.get('/api/metrics', headers={**headers, 'X-Forwarded-For': '2.2.2.2'})
+    first = client.get('/api/capabilities', headers={**headers, 'X-Forwarded-For': '1.1.1.1'})
+    second = client.get('/api/capabilities', headers={**headers, 'X-Forwarded-For': '2.2.2.2'})
 
     assert first.status_code == 200
     assert second.status_code == 429
@@ -1256,8 +1856,8 @@ def test_api_rate_limit_can_use_database_store(tmp_path, monkeypatch):
     client = app.test_client()
     headers = {'Authorization': 'Bearer token-123'}
 
-    first = client.get('/api/metrics', headers=headers)
-    second = client.get('/api/metrics', headers=headers)
+    first = client.get('/api/capabilities', headers=headers)
+    second = client.get('/api/capabilities', headers=headers)
 
     assert app.config['AIDM_RATE_LIMIT_STORE'] == 'database'
     assert first.status_code == 200

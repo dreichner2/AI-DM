@@ -23,6 +23,7 @@ from aidm_server.models import Player, safe_json_dumps, safe_json_loads
 from aidm_server.pagination import jsonify_page, limited_page
 from aidm_server.response_dtos import player_detail_payload, player_summary_payload
 from aidm_server.race_system import (
+    RaceValidationError,
     normalize_character_race_selection,
     race_selection_to_json,
 )
@@ -86,8 +87,8 @@ def _race_selection_payload(payload: dict, fallback_race: str | None):
         return None, None
     try:
         selection = normalize_character_race_selection(payload.get('race_selection'), fallback_race=fallback_race)
-    except ValueError as exc:
-        return None, str(exc)
+    except RaceValidationError as exc:
+        return None, exc.public_message
     return selection, None
 
 

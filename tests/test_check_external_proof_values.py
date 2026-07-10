@@ -535,23 +535,29 @@ def test_complete_values_reject_clean_worktree_evidence_commit_mismatch(tmp_path
     assert any('does not match signed_off_commit_sha abc123' in error for error in report['invalid_errors'])
 
 
-def test_sticky_socketio_requires_conditional_staging_proof(tmp_path):
-    values = _complete_values()
-    values['values']['socketio_worker_model'] = 'sticky'
-    _write_rc_evidence(tmp_path / 'rc-evidence.md')
-    _write_operator_signoff_status(tmp_path / 'operator-signoff-status.md')
+def test_non_single_socketio_models_are_invalid_even_with_staging_proof(tmp_path):
+    for worker_model in ('sticky', 'message_queue', 'future_model'):
+        values = _complete_values()
+        values['values']['socketio_worker_model'] = worker_model
+        values['values']['socketio_staging_proof'] = 'https://platform.aidm.closedbeta.dev/socketio-proof'
+        _write_rc_evidence(tmp_path / 'rc-evidence.md')
+        _write_operator_signoff_status(tmp_path / 'operator-signoff-status.md')
 
-    report = build_report(
-        external_inputs=_external_inputs(),
-        values_payload=values,
-        values_present=True,
-        values_path=tmp_path / 'external-proof-values.json',
-        external_inputs_path=tmp_path / 'external-proof-inputs.json',
-        generated_at='2026-06-19T00:00:00+00:00',
-    )
+        report = build_report(
+            external_inputs=_external_inputs(),
+            values_payload=values,
+            values_present=True,
+            values_path=tmp_path / 'external-proof-values.json',
+            external_inputs_path=tmp_path / 'external-proof-inputs.json',
+            generated_at='2026-06-19T00:00:00+00:00',
+        )
 
-    assert report['status'] == 'incomplete'
-    assert report['missing_required_fields'] == ['socketio_staging_proof']
+        assert report['status'] == 'invalid'
+        assert report['missing_required_fields'] == []
+        assert any(
+            f'{worker_model} is unsupported even when Socket.IO staging proof is provided' in error
+            for error in report['invalid_errors']
+        )
 
 
 def test_main_rejects_persisted_sensitive_value(tmp_path):

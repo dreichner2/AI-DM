@@ -35,6 +35,7 @@ CLEAN_SCRIPT_NEEDLES: tuple[tuple[str, str], ...] = (
     ('git metadata preserved', '$ROOT_DIR/.git'),
     ('pytest cache', '$ROOT_DIR/.pytest_cache'),
     ('runtime tmp directory', '$ROOT_DIR/tmp'),
+    ('release evidence preserved', '! -name "release"'),
     ('backend memory artifact', '$ROOT_DIR/aidm_server/:memory:'),
     ('frontend vite cache', '$ROOT_DIR/aidm_frontend/.vite'),
     ('frontend dist build output', '$ROOT_DIR/aidm_frontend/dist'),

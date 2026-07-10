@@ -6,6 +6,7 @@ from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY, STATE_PIPELINE_V
 from aidm_server.game_state.application.applier import apply_state_changes, persist_state_to_database
 import aidm_server.game_state.extraction.post_dm_outcome_extractor as post_extractor_module
 import aidm_server.game_state.extraction.pre_dm_action_extractor as pre_extractor_module
+import aidm_server.game_state.orchestration.combat_resolution as combat_resolution_module
 import aidm_server.game_state.orchestration.turn_pipeline as turn_pipeline_module
 from aidm_server.game_state.extraction.post_dm_outcome_extractor import extract_post_dm_outcomes
 from aidm_server.game_state.extraction.pre_dm_action_extractor import extract_pre_dm_actions
@@ -546,7 +547,7 @@ def test_enemy_attack_rejects_unbounded_inferred_damage_dice():
     assert resolved['damageDice'] == '1d6+2'
     assert resolved['damageRolls'] == [1]
     assert resolved['damageTotal'] == 3
-    assert turn_pipeline_module.TEXT_DAMAGE_PATTERN.search('deals 1000000d1 fire damage') is None
+    assert combat_resolution_module.TEXT_DAMAGE_PATTERN.search('deals 1000000d1 fire damage') is None
 
 
 def test_enemy_attack_rejects_unbounded_damage_dice_without_rolling():

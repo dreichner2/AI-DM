@@ -30,7 +30,7 @@ def _create_minimal_head_schema(db_uri: str) -> None:
     try:
         with engine.begin() as conn:
             conn.execute(text('CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)'))
-            conn.execute(text("INSERT INTO alembic_version (version_num) VALUES ('0026_operator_action_audits')"))
+            conn.execute(text("INSERT INTO alembic_version (version_num) VALUES ('0028_session_turn_lock_fencing')"))
             for table in sorted(REQUIRED_HEAD_TABLES):
                 if table in REQUIRED_HEAD_COLUMNS:
                     columns = ', '.join(f'{column} TEXT' for column in sorted(REQUIRED_HEAD_COLUMNS[table]))
@@ -47,7 +47,7 @@ def test_verify_head_schema_accepts_required_tables_and_columns(tmp_path: Path):
 
     snapshot = _verify_head_schema(db_uri)
 
-    assert snapshot.revision == '0026_operator_action_audits'
+    assert snapshot.revision == '0028_session_turn_lock_fencing'
     assert REQUIRED_HEAD_TABLES.issubset(snapshot.tables)
 
 
@@ -57,7 +57,7 @@ def test_verify_head_schema_rejects_missing_required_table(tmp_path: Path):
     try:
         with engine.begin() as conn:
             conn.execute(text('CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)'))
-            conn.execute(text("INSERT INTO alembic_version (version_num) VALUES ('0026_operator_action_audits')"))
+            conn.execute(text("INSERT INTO alembic_version (version_num) VALUES ('0028_session_turn_lock_fencing')"))
     finally:
         engine.dispose()
 

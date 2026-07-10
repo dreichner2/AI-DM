@@ -540,6 +540,35 @@ def test_campaign_pack_lint_endpoint_returns_authoring_issues(client):
     assert any(issue['code'] == 'hidden_record_visible_at_start' for issue in payload['issues'])
 
 
+def test_campaign_pack_forge_endpoint_returns_importable_manifest(client):
+    response = client.post(
+        '/api/campaigns/pack-tools/forge',
+        json={
+            'title': 'Lanterns Under Blackwater',
+            'prompt': 'Harbor intrigue, a drowned archive, and a guide with divided loyalties.',
+            'tone': 'noir mystery',
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['ok'] is True
+    assert payload['sourceFilename'].endswith('.json')
+    assert payload['pack']['packId'].startswith('forge_lanterns_under_blackwater_')
+    assert payload['lint']['ok'] is True
+    assert payload['lint']['authoring_report']['checkpoints']['reachable'] == 4
+    assert payload['lint']['preview']['preview']['starting_location'] == 'The Breakwater Gate'
+    assert json.loads(payload['manifestText']) == payload['payload']
+
+    dry_run = client.post('/api/campaigns/import-pack?dry_run=true', json=payload['payload'])
+
+    assert dry_run.status_code == 200
+    dry_run_payload = dry_run.get_json()
+    assert dry_run_payload['dry_run'] is True
+    assert dry_run_payload['pack_id'] == payload['pack']['packId']
+    assert dry_run_payload['counts']['checkpoints'] == 4
+
+
 def test_import_campaign_pack_dry_run_previews_without_creating_records(client, app):
     response = client.post(
         '/api/campaigns/import-pack?dry_run=true',

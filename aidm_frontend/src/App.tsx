@@ -28,25 +28,37 @@ import {
   X,
 } from 'lucide-react'
 import {
-  CampaignArchiveDialog,
-  SessionArchiveDialog,
-  type CampaignArchiveDialogState,
-  type SessionArchiveDialogState,
+  CampaignActionDialog,
+  SessionActionDialog,
+} from './CampaignSessionActionDialogs'
+import type {
+  CampaignArchiveDialogState,
+  SessionArchiveDialogState,
 } from './ArchiveDialogs'
 import { StatusDot, ThinIcon } from './AppChrome'
 import { CampaignRail, type CampaignCard, type SessionCard } from './CampaignRail'
-import { CampaignChooserDialog } from './CampaignChooserDialog'
-import { CampaignPackImportDialog } from './CampaignPackImportDialog'
 import type { CampaignPackControlAction } from './CampaignPackPanel'
 import {
   InspectorPanel,
   type InspectorTab,
 } from './InspectorPanel'
 import { PlayerDeleteDialog } from './PlayerDeleteDialog'
+import {
+  CharacterJoinDialog,
+  ProfileSettingsDialog,
+} from './ProfileCharacterDialogs'
 import { useModalFocusTrap } from './useModalFocusTrap'
 import { ApiClientError, WORKSPACE_ID_HEADER, apiFetch, storedRuntimeAccessSnapshot } from './api'
 import { actorCapabilitiesAllowOperatorTools } from './capabilities'
-import { SessionBoard, type MainTab, type TurnQualityScores } from './SessionBoard'
+import {
+  contentSettingsFromSnapshot,
+} from './contentSettings'
+import {
+  SessionBoard,
+  type BoardViewMode,
+  type MainTab,
+  type TurnQualityScores,
+} from './SessionBoard'
 import {
   abilityOptionsFromStatBlock,
   buildMapMeta,
@@ -75,7 +87,10 @@ import {
 } from './gameSelectors'
 import { subscribeToMediaQueryChange } from './mediaQuery'
 import { profileIconSrcForCharacter } from './profileIcons'
+import { BackendTrustDialog, RuntimeSettingsDialog } from './RuntimeSettingsDialog'
+import type { SceneDisplayState } from './sceneState'
 import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
+import { TitleScreen } from './TitleScreen'
 import { turnControlFromSnapshot, turnControlWithActiveName } from './turnControl'
 import './App.css'
 import type {
@@ -87,6 +102,7 @@ import type {
   BadTurnFeedbackResponse,
   BetaSummary,
   Campaign,
+  CampaignPackCommentaryResponse,
   ClarificationRequest,
   CoherenceFeedbackResponse,
   Health,
@@ -94,6 +110,7 @@ import type {
   Player,
   PlayerDetail,
   PlayerEquipmentUpdateResponse,
+  SessionRecapResponse,
   SessionState,
   SessionSummary,
   StreamingTurn,
@@ -109,13 +126,21 @@ import {
 } from './useCampaignActions'
 import { useComposerActions } from './useComposerActions'
 import { usePlayerProfileActions } from './usePlayerProfileActions'
+import { usePlayNowOnboarding } from './usePlayNowOnboarding'
 import { useSessionActions, type SessionActionDialogState } from './useSessionActions'
+import { useSessionContentSettings } from './useSessionContentSettings'
 import { useSessionSocket } from './useSessionSocket'
-import { LEGACY_PASSWORD_SETUP_MESSAGE, useRuntimeSettings, type RuntimeAccount } from './useRuntimeSettings'
+import { useRuntimeSettings, useShareBackendTrust, type RuntimeAccount } from './useRuntimeSettings'
 import { useTtsNarration } from './useTtsNarration'
 import { useWorldMapSegmentActions } from './useWorldMapSegmentActions'
 import { useWorkspaceQueries, type CampaignSessionMeta } from './useWorkspaceQueries'
 import { useWorkspaceStore } from './useWorkspaceStore'
+import {
+  SavedWorkspaceDeleteDialog,
+  ShareSessionDialog,
+  type SavedWorkspaceDeleteDialogState,
+} from './WorkspaceDialogs'
+import { savedWorkspaceDisplayName } from './workspaceLabels'
 import {
   WorldDeleteDialog,
   WorldManagerDialog,
@@ -128,6 +153,7 @@ import {
 
 const DEFAULT_BASE_URL = import.meta.env.VITE_AIDM_API_BASE_URL ?? ''
 const PHONE_LAYOUT_MEDIA_QUERY = '(max-width: 760px)'
+const BOARD_VIEW_MODE_STORAGE_KEY = 'aidm:boardViewMode'
 
 const loadDiceRollDialog = () => import('./DiceRollDialog')
 const DiceRollDialog = lazy(loadDiceRollDialog)
@@ -136,6 +162,18 @@ const PlayerEditDialog = lazy(() =>
 )
 const CreateCampaignDialog = lazy(() =>
   import('./CreateCampaignDialog').then((module) => ({ default: module.CreateCampaignDialog })),
+)
+const CampaignPackImportDialog = lazy(() =>
+  import('./CampaignPackImportDialog').then((module) => ({ default: module.CampaignPackImportDialog })),
+)
+const CampaignChooserDialog = lazy(() =>
+  import('./CampaignChooserDialog').then((module) => ({ default: module.CampaignChooserDialog })),
+)
+const CampaignArchiveDialog = lazy(() =>
+  import('./ArchiveDialogs').then((module) => ({ default: module.CampaignArchiveDialog })),
+)
+const SessionArchiveDialog = lazy(() =>
+  import('./ArchiveDialogs').then((module) => ({ default: module.SessionArchiveDialog })),
 )
 const BetaRuntimeNotesPanel = lazy(() => import('./BetaRuntimeNotesPanel'))
 function preloadDiceRollDialog() {
@@ -270,11 +308,13 @@ type UiError = {
   createdAt: number
 }
 
-type SavedWorkspaceDeleteDialogState = {
-  workspace: AccountWorkspace
-  error: string
-  pending: boolean
-} | null
+function readBoardViewMode(): BoardViewMode {
+  try {
+    return localStorage.getItem(BOARD_VIEW_MODE_STORAGE_KEY) === 'theater' ? 'theater' : 'ops'
+  } catch {
+    return 'ops'
+  }
+}
 
 function isUnauthorizedError(error: unknown) {
   return error instanceof ApiClientError && error.status === 401
@@ -305,17 +345,6 @@ function formatShortAge(value: string | null) {
   if (weeks < 5) return `${weeks}w ago`
   const months = Math.floor(days / 30)
   return `${Math.max(1, months)}mo ago`
-}
-
-function savedWorkspaceRoleLabel(workspace: AccountWorkspace) {
-  if (workspace.is_workspace_admin && workspace.workspace_role !== 'admin') {
-    return `${workspace.workspace_role} / admin`
-  }
-  return workspace.workspace_role
-}
-
-function savedWorkspaceDisplayName(workspace: AccountWorkspace) {
-  return workspace.table_name || workspace.workspace_name || workspace.workspace_id
 }
 
 const OWNER_WORKSPACE_ID = 'owner'
@@ -502,7 +531,20 @@ function avatarDataUri(seed: string, variant: 'campaign' | 'character' = 'campai
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
 }
 
-function App() {
+function characterPortraitSrc(player: Player) {
+  const characterName = player.character_name || player.name || `Player ${player.player_id}`
+  return (
+    player.profile_image ||
+    profileIconSrcForCharacter({
+      race: player.race,
+      sex: player.sex,
+      seed: characterName,
+    }) ||
+    avatarDataUri(characterName, 'character')
+  )
+}
+
+function AIDMApp() {
   const [health, setHealth] = useState<Health | null>(null)
   const [actorCapabilities, setActorCapabilities] = useState<ActorCapabilitiesResponse | null>(null)
   const [llmConfig, setLlmConfig] = useState<LlmRuntimeConfig | null>(null)
@@ -515,6 +557,7 @@ function App() {
   const [socketStatus, setSocketStatus] = useState('idle')
   const [activePlayers, setActivePlayers] = useState<ActivePlayer[]>([])
   const [sceneMusicSyncState, setSceneMusicSyncState] = useState<SceneMusicSyncState | null>(null)
+  const [sceneState, setSceneState] = useState<SceneDisplayState | null>(null)
   const [sendPending, setSendPending] = useState(false)
   const [errors, setErrors] = useState<UiError[]>([])
   const [optimisticEntries, setOptimisticEntries] = useState<TimelineEntry[]>([])
@@ -558,6 +601,9 @@ function App() {
   const [campaignChooserOpen, setCampaignChooserOpen] = useState(false)
   const [campaignChooserDismissedKey, setCampaignChooserDismissedKey] = useState('')
   const [characterJoinDialogOpen, setCharacterJoinDialogOpen] = useState(false)
+  const [boardViewMode, setBoardViewMode] = useState<BoardViewMode>(readBoardViewMode)
+  const [sessionRecap, setSessionRecap] = useState('')
+  const [directorCommentary, setDirectorCommentary] = useState<CampaignPackCommentaryResponse | null>(null)
   const [socketReconnectKey, setSocketReconnectKey] = useState(0)
   const [equipmentPendingItemKey, setEquipmentPendingItemKey] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
@@ -571,6 +617,10 @@ function App() {
   }, [])
   const reconnectSocket = useCallback(() => {
     setSocketReconnectKey((current) => current + 1)
+  }, [])
+  const closeMobilePanels = useCallback(() => {
+    setMobileRailOpen(false)
+    setMobileInspectorOpen(false)
   }, [])
   const {
     authToken,
@@ -626,13 +676,6 @@ function App() {
   const playerRequestRef = useRef(0)
   const sessionActionDialogRef = useRef<SessionActionDialogState>(null)
   const campaignActionDialogRef = useRef<CampaignActionDialogState>(null)
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return undefined
-
-    const timerId = window.setTimeout(preloadDiceRollDialog, 300)
-    return () => window.clearTimeout(timerId)
-  }, [])
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
@@ -754,6 +797,42 @@ function App() {
       current.filter((item) => item.category !== 'connection' && !isAuthTokenWorkspaceError(item)),
     )
   }, [])
+  const loadPlayerDetail = useCallback(async (playerId: number) => {
+    const requestId = ++playerRequestRef.current
+    const requestAuth = auth
+    const requestAccessSnapshot = storedRuntimeAccessSnapshot(requestAuth)
+    await apiFetch<PlayerDetail>(baseUrl, `/api/players/${playerId}`, requestAuth)
+      .then((detail) => {
+        if (playerRequestRef.current === requestId) {
+          setPlayerDetail(detail)
+          clearAuthTokenErrors()
+        }
+      })
+      .catch((error: unknown) => {
+        if (playerRequestRef.current === requestId) {
+          setPlayerDetail(null)
+          if (isUnauthorizedError(error)) {
+            if (requestAccessSnapshot !== storedRuntimeAccessSnapshot()) return
+            openAuthTokenPrompt()
+            clearAuthTokenErrors()
+            return
+          }
+          if (isNotFoundError(error)) {
+            setSelectedPlayerId((current) => (current === playerId ? null : current))
+            return
+          }
+          pushError('workspace', `Player load failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      })
+  }, [
+    auth,
+    baseUrl,
+    clearAuthTokenErrors,
+    openAuthTokenPrompt,
+    pushError,
+    setPlayerDetail,
+    setSelectedPlayerId,
+  ])
   const clearResolvedOperationalErrors = useCallback(() => {
     setErrors((current) =>
       current.filter((item) => {
@@ -894,6 +973,7 @@ function App() {
   const turnRows = currentResponseEntry
     ? timeline.filter((entry) => entry.id !== currentResponseEntry.id)
     : timeline
+  const turnRowCount = turnRows.length
   const speakableDmEntry =
     currentResponseEntry?.role === 'dm' && !currentResponseEntry.streaming
       ? currentResponseEntry
@@ -1091,8 +1171,10 @@ function App() {
     selectedSessionId: activeSessionId,
     sendPending,
     dmResponseBlocking,
+    streamingTurn,
     setOptimisticEntries,
     setSendPending,
+    setStreamingTurn,
     socketRef,
     stopTtsAudio,
     turnControl,
@@ -1298,6 +1380,8 @@ function App() {
     closeShareSessionDialog,
     closeSessionActionDialog,
     copyShareSessionUrl,
+    downloadCampaignChronicle,
+    downloadSessionChronicle,
     downloadSessionJson,
     importSessionJson,
     openDeleteSessionDialog,
@@ -2204,37 +2288,56 @@ function App() {
     onClose: closeCurrentDialog,
     returnFocusRef: dialogReturnFocusRef,
   })
-  const runtimeSettingsIsAuthPrompt = runtimeSettingsMode === 'auth'
-  const runtimeSettingsIsAccountStep = runtimeSettingsIsAuthPrompt && runtimeAuthStep === 'account'
-  const runtimeSettingsIsWorkspaceStep = runtimeSettingsIsAuthPrompt && runtimeAuthStep === 'workspace'
-  const runtimeSettingsEyebrow = runtimeSettingsIsAuthPrompt ? 'Access' : 'Runtime'
-  const runtimeSettingsTitle = runtimeSettingsIsWorkspaceStep
-    ? runtimeCreatedWorkspaceToken
-      ? 'Save Table Token'
-      : runtimeWorkspaceAction === 'create'
-        ? 'Create Table'
-        : 'Join Table'
-    : runtimeSettingsIsAccountStep
-      ? runtimeAuthIntent === 'signup' ? 'Sign Up' : 'Log In'
-      : 'Backend Settings'
-  const runtimeSettingsCloseLabel = runtimeSettingsIsAuthPrompt
-    ? 'Close account prompt'
-    : 'Close backend settings'
-  const runtimeSettingsHelpText = runtimeSettingsIsWorkspaceStep
-    ? runtimeCreatedWorkspaceToken
-      ? 'Save this token now. You will not be able to view it after you leave this page.'
-      : runtimeWorkspaceAction === 'create'
-        ? 'Create a table with a shared password or a generated token.'
-        : runtimeWorkspaceJoinMethod === 'password'
-          ? 'Enter the table name and password.'
-          : 'Enter the table token for the table you want to join.'
-    : runtimeSettingsIsAccountStep
-      ? legacyPasswordSetupRequired
-        ? LEGACY_PASSWORD_SETUP_MESSAGE
-        : runtimeAuthIntent === 'signup'
-          ? 'Create your player account first. Password is required.'
-          : 'Log in with your username. Use your password if one is set.'
-      : 'Leave Backend URL blank when the frontend and backend share one origin.'
+  const {
+    createCampaignFromTitleScreen,
+    continueFromTitleScreen,
+    playNowFromTitleScreen,
+    playNowPending,
+    showTitleScreen,
+    titleScreenCanContinue,
+  } = usePlayNowOnboarding({
+    activeSessionId,
+    auth,
+    authRequired: health?.auth_required ?? null,
+    backendReady: health?.status === 'ok',
+    baseUrl,
+    campaignCount: campaigns.length,
+    closeMobilePanels,
+    modalOpen,
+    runtimeSettingsOpen,
+    selectedCampaignId,
+    selectedPlayerDetailId,
+    selectedPlayerId,
+    selectedSessionId,
+    workspaceLoading,
+    campaignUpserted,
+    sessionUpserted,
+    playerUpserted,
+    clearAuthTokenErrors,
+    loadPlayerDetail,
+    loadSessionData,
+    openCreateCampaignDialog,
+    pushError,
+    refreshCampaignWorkspace,
+    refreshRoot,
+    setClarificationRequest,
+    setLogEntries,
+    setMainTab,
+    setOptimisticEntries,
+    setPlayerDetail,
+    setSelectedCampaignId,
+    setSelectedPlayerId,
+    setSelectedSessionId,
+    setSessionState,
+    setStreamingTurn,
+    setTurnStatuses,
+    currentResponsePresent: Boolean(currentResponseEntry),
+    dmResponseBlocking,
+    sendPending,
+    socketStatus,
+    startAdventure,
+    turnRowCount,
+  })
 
   useEffect(() => {
     if (
@@ -2269,6 +2372,7 @@ function App() {
       selectedPlayerId ||
       workspaceLoading ||
       loadingCampaignId === selectedCampaignId ||
+      showTitleScreen ||
       modalOpen
     ) {
       return
@@ -2282,11 +2386,12 @@ function App() {
     modalOpen,
     selectedCampaignId,
     selectedPlayerId,
+    showTitleScreen,
     workspaceLoading,
   ])
 
   useEffect(() => {
-    if (modalOpen || diceRoll) return undefined
+    if (showTitleScreen || modalOpen || diceRoll) return undefined
     const handleKeyDown = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase()
       const modifier = event.metaKey || event.ctrlKey
@@ -2337,6 +2442,7 @@ function App() {
     modalOpen,
     refreshCurrentWorkspace,
     scrollTurnFeedToLatest,
+    showTitleScreen,
     stopTtsAudio,
   ])
 
@@ -2444,6 +2550,8 @@ function App() {
   useEffect(() => {
     if (!activeSessionId) {
       clearSessionData()
+      setSessionRecap('')
+      setDirectorCommentary(null)
       setTurnStatuses({})
       setClarificationRequest(null)
       return
@@ -2471,42 +2579,70 @@ function App() {
     setSessionLogHasMore,
   ])
 
-  const loadPlayerDetail = useCallback(async (playerId: number) => {
-    const requestId = ++playerRequestRef.current
-    const requestAuth = auth
-    const requestAccessSnapshot = storedRuntimeAccessSnapshot(requestAuth)
-    await apiFetch<PlayerDetail>(baseUrl, `/api/players/${playerId}`, requestAuth)
-      .then((detail) => {
-        if (playerRequestRef.current === requestId) {
-          setPlayerDetail(detail)
-          clearAuthTokenErrors()
+  useEffect(() => {
+    if (!activeSessionId) {
+      setSessionRecap('')
+      return undefined
+    }
+    let cancelled = false
+    setSessionRecap('')
+    apiFetch<SessionRecapResponse>(baseUrl, `/api/sessions/${activeSessionId}/recap`, auth)
+      .then((payload) => {
+        if (!cancelled) {
+          setSessionRecap(payload.recap || '')
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSessionRecap('')
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [activeSessionId, auth, baseUrl])
+
+  useEffect(() => {
+    if (!activeSessionId || !canUseOperatorTools) {
+      setDirectorCommentary(null)
+      return undefined
+    }
+    let cancelled = false
+    setDirectorCommentary(null)
+    apiFetch<CampaignPackCommentaryResponse>(
+      baseUrl,
+      `/api/sessions/${activeSessionId}/campaign-pack/commentary`,
+      auth,
+    )
+      .then((payload) => {
+        if (!cancelled) {
+          setDirectorCommentary(payload.enabled ? payload : null)
         }
       })
       .catch((error: unknown) => {
-        if (playerRequestRef.current === requestId) {
-          setPlayerDetail(null)
-          if (isUnauthorizedError(error)) {
-            if (requestAccessSnapshot !== storedRuntimeAccessSnapshot()) return
-            openAuthTokenPrompt()
-            clearAuthTokenErrors()
-            return
-          }
-          if (isNotFoundError(error)) {
-            setSelectedPlayerId((current) => (current === playerId ? null : current))
-            return
-          }
-          pushError('workspace', `Player load failed: ${error instanceof Error ? error.message : String(error)}`)
+        if (cancelled) return
+        if (error instanceof ApiClientError && (error.status === 403 || error.status === 404)) {
+          setDirectorCommentary(null)
+          return
         }
+        setDirectorCommentary(null)
       })
-  }, [
-    auth,
-    baseUrl,
-    clearAuthTokenErrors,
-    openAuthTokenPrompt,
-    pushError,
-    setPlayerDetail,
-    setSelectedPlayerId,
-  ])
+    return () => {
+      cancelled = true
+    }
+  }, [activeSessionId, auth, baseUrl, canUseOperatorTools])
+
+  const speakSessionRecap = useCallback(
+    (text: string) => {
+      if (!text.trim()) return
+      if (!ttsEnabledRef.current || !queueTtsNarrationRef.current) {
+        pushError('tts', 'Turn TTS on to hear recap narration.')
+        return
+      }
+      queueTtsNarrationRef.current(text)
+    },
+    [pushError, queueTtsNarrationRef, ttsEnabledRef],
+  )
 
   useEffect(() => {
     if (!selectedPlayerDetailId) {
@@ -2599,6 +2735,7 @@ function App() {
     setTurnStatuses,
     setClarificationRequest,
     setSceneMusicSyncState,
+    setSceneState,
     spokenTextLengthRef,
     speakableStreamingTextRef,
     queueTtsNarrationRef,
@@ -2685,6 +2822,25 @@ function App() {
   const activeSessionSnapshot = isRecord(sessionState?.state_snapshot)
     ? sessionState.state_snapshot
     : snapshotRecord(activeSession)
+  const contentSettings = useMemo(
+    () => contentSettingsFromSnapshot(activeSessionSnapshot),
+    [activeSessionSnapshot],
+  )
+  const {
+    contentSettingsPending,
+    updateContentRating,
+    updateContentToneTags,
+  } = useSessionContentSettings({
+    activeSessionId,
+    auth,
+    baseUrl,
+    canEditContentSettings: canUseOperatorTools,
+    contentSettings,
+    clearAuthTokenErrors,
+    pushError,
+    sessionUpserted,
+    setSessionState,
+  })
   const worldStatePanel = worldStateFromSnapshot(activeSessionSnapshot)
   const canonFacts = canonFactsFromMemorySnippets(memorySnippets, selectedSessionId)
   const visibleCanonFacts = inspectorTab === 'canon' ? canonFacts : canonFacts.slice(0, 3)
@@ -2847,10 +3003,6 @@ function App() {
     model: configuredModel || 'Unknown',
     temperature: '0.7',
   }
-  const closeMobilePanels = useCallback(() => {
-    setMobileRailOpen(false)
-    setMobileInspectorOpen(false)
-  }, [])
   const toggleCampaignRail = useCallback(() => {
     if (mobileViewport) {
       setMobileInspectorOpen(false)
@@ -2898,6 +3050,9 @@ function App() {
     fullscreenActive ? 'fullscreen-active' : '',
     safeModeActive ? 'safe-mode-active' : '',
     betaRuntimeNotices.length ? 'runtime-notices-active' : '',
+    showTitleScreen ? 'title-screen-active' : '',
+    boardViewMode === 'theater' && !showTitleScreen ? 'theater-shell' : '',
+    boardViewMode === 'theater' && !showTitleScreen ? 'theater-mode-active' : '',
     mobileRailOpen ? 'mobile-rail-open' : '',
     mobileInspectorOpen ? 'mobile-inspector-open' : '',
   ].filter(Boolean).join(' ')
@@ -3187,6 +3342,19 @@ function App() {
         </Suspense>
       ) : null}
 
+      {showTitleScreen ? (
+        <TitleScreen
+          pending={playNowPending}
+          canContinue={titleScreenCanContinue}
+          campaignCount={campaigns.length}
+          selectedCampaignTitle={campaign?.title ?? null}
+          runtimeConfigured={Boolean(runtime?.configured)}
+          onPlayNow={() => void playNowFromTitleScreen()}
+          onCreateCampaign={createCampaignFromTitleScreen}
+          onContinue={continueFromTitleScreen}
+        />
+      ) : null}
+
       <button
         type="button"
         className="mobile-panel-scrim"
@@ -3254,13 +3422,25 @@ function App() {
         showSceneMusicPlayer={showSceneMusicPlayer}
         duckMusicForNarration={ttsSpeaking}
         sceneMusicSyncState={sceneMusicSyncState}
+        sceneState={sceneState}
         onSceneMusicControl={updateSceneMusicControl}
+        contentSettings={contentSettings}
+        contentSettingsPending={contentSettingsPending}
+        canEditContentSettings={canUseOperatorTools}
+        onContentRatingChange={updateContentRating}
+        onContentToneTagsChange={updateContentToneTags}
+        onBoardViewModeChange={setBoardViewMode}
+        directorCommentary={directorCommentary}
+        sessionRecap={sessionRecap}
+        onSpeakSessionRecap={speakSessionRecap}
         workspaceLoading={workspaceLoading}
         sessionLoading={sessionLoading}
         mainTab={mainTab}
         setMainTab={setMainTab}
         showMobilePresenceStrip={mobileViewport}
         activePlayers={activePlayersWithHealth}
+        downloadCampaignChronicle={downloadCampaignChronicle}
+        downloadSessionChronicle={downloadSessionChronicle}
         downloadSessionJson={downloadSessionJson}
         sessionImportPending={sessionImportPending}
         sessionImportInputRef={sessionImportInputRef}
@@ -3472,759 +3652,129 @@ function App() {
         </div>
       ) : null}
 
-      {runtimeSettingsOpen ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeRuntimeSettingsDialog()
-            }
-          }}
-        >
-          <section
-            ref={modalDialogRef}
-            className="campaign-dialog runtime-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="runtime-settings-title"
-          >
-            <header>
-              <div>
-                <span>{runtimeSettingsEyebrow}</span>
-                <h2 id="runtime-settings-title">{runtimeSettingsTitle}</h2>
-              </div>
-              <button
-                type="button"
-                aria-label={runtimeSettingsCloseLabel}
-                onClick={closeRuntimeSettingsDialog}
-              >
-                <X size={18} />
-              </button>
-            </header>
-            <form onSubmit={submitRuntimeSettings}>
-              {runtimeSettingsIsAuthPrompt ? null : (
-                <label>
-                  Backend URL
-                  <input
-                    autoFocus={!runtimeSettingsIsAuthPrompt}
-                    data-autofocus={!runtimeSettingsIsAuthPrompt ? true : undefined}
-                    value={runtimeSettingsForm.baseUrl}
-                    onChange={(event) =>
-                      setRuntimeSettingsForm((current) => ({
-                        ...current,
-                        baseUrl: event.target.value,
-                      }))
-                    }
-                    placeholder="Leave blank for same origin"
-                  />
-                </label>
-              )}
-              {runtimeSettingsIsAccountStep ? (
-                <>
-                  <div className="runtime-auth-choice" role="group" aria-label="Account action">
-                    <button
-                      type="button"
-                      aria-pressed={runtimeAuthIntent === 'login'}
-                      onClick={() => {
-                        setRuntimeAuthIntent('login')
-                        setLegacyPasswordSetupRequired(false)
-                        setRuntimeSettingsError('')
-                      }}
-                    >
-                      Log In
-                    </button>
-                    <button
-                      type="button"
-                      aria-pressed={runtimeAuthIntent === 'signup'}
-                      onClick={() => {
-                        setRuntimeAuthIntent('signup')
-                        setLegacyPasswordSetupRequired(legacyPasswordSetupRequired)
-                        setRuntimeSettingsError(legacyPasswordSetupRequired ? LEGACY_PASSWORD_SETUP_MESSAGE : '')
-                      }}
-                    >
-                      Sign Up
-                    </button>
-                  </div>
-                  <div className="dialog-grid two">
-                    <label>
-                      Username
-                      <input
-                        autoFocus
-                        data-autofocus
-                        value={runtimeSettingsForm.username}
-                        onChange={(event) => {
-                          setRuntimeSettingsForm((current) => ({
-                            ...current,
-                            username: event.target.value,
-                          }))
-                          if (legacyPasswordSetupRequired) {
-                            setLegacyPasswordSetupRequired(false)
-                            setRuntimeSettingsError('')
-                          }
-                        }}
-                        placeholder="Username"
-                        autoComplete="username"
-                      />
-                    </label>
-                    <label>
-                      {legacyPasswordSetupRequired ? 'New Password' : 'Password'}
-                      <input
-                        value={runtimeSettingsForm.password}
-                        onChange={(event) =>
-                          setRuntimeSettingsForm((current) => ({
-                            ...current,
-                            password: event.target.value,
-                          }))
-                        }
-                        placeholder="Password"
-                        type="password"
-                        autoComplete={runtimeAuthIntent === 'signup' || legacyPasswordSetupRequired ? 'new-password' : 'current-password'}
-                      />
-                    </label>
-                  </div>
-                  {runtimeAuthIntent === 'signup' ? (
-                    <div className="dialog-grid two">
-                      <label>
-                        First Name
-                        <input
-                          value={runtimeSettingsForm.firstName}
-                          onChange={(event) =>
-                            setRuntimeSettingsForm((current) => ({
-                              ...current,
-                              firstName: event.target.value,
-                            }))
-                          }
-                          autoComplete="given-name"
-                        />
-                      </label>
-                      <label>
-                        Last Name
-                        <input
-                          value={runtimeSettingsForm.lastName}
-                          onChange={(event) =>
-                            setRuntimeSettingsForm((current) => ({
-                              ...current,
-                              lastName: event.target.value,
-                            }))
-                          }
-                          autoComplete="family-name"
-                        />
-                      </label>
-                    </div>
-                  ) : null}
-                </>
-              ) : null}
-              {runtimeSettingsIsWorkspaceStep ? (
-                <>
-                  {runtimeCreatedWorkspaceToken ? (
-                    <div className="dialog-warning">
-                      <strong>Save this table token now.</strong>
-                      <input
-                        aria-label="Generated table token"
-                        readOnly
-                        value={runtimeCreatedWorkspaceToken}
-                        onFocus={(event) => event.currentTarget.select()}
-                      />
-                      <span>You will not be able to view it after you leave this page.</span>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="runtime-auth-choice" role="group" aria-label="Table action">
-                        <button
-                          type="button"
-                          aria-pressed={runtimeWorkspaceAction === 'join'}
-                          onClick={() => {
-                            setRuntimeWorkspaceAction('join')
-                            setRuntimeSettingsError('')
-                          }}
-                        >
-                          Join
-                        </button>
-                        <button
-                          type="button"
-                          aria-pressed={runtimeWorkspaceAction === 'create'}
-                          onClick={() => {
-                            setRuntimeWorkspaceAction('create')
-                            setRuntimeSettingsError('')
-                          }}
-                        >
-                          Create
-                        </button>
-                      </div>
-                      {runtimeWorkspaceAction === 'join' && runtimeAccount?.workspaces.length ? (
-                        <div className="saved-workspace-list" role="group" aria-label="Saved tables">
-                          <span>Saved Tables</span>
-                          {runtimeAccount.workspaces.map((workspace) => {
-                            const tableName = savedWorkspaceDisplayName(workspace)
-                            const deletesTable = workspace.is_workspace_admin && workspace.access_mode !== 'configured'
-                            return (
-                              <div className="saved-workspace-row" key={workspace.workspace_id}>
-                                <button
-                                  type="button"
-                                  className="saved-workspace-option"
-                                  aria-label={`${tableName} ${savedWorkspaceRoleLabel(workspace)}`}
-                                  aria-pressed={workspace.workspace_id === workspaceId}
-                                  onClick={() => void selectSavedWorkspace(workspace.workspace_id)}
-                                >
-                                  <strong>{tableName}</strong>
-                                  <span>{savedWorkspaceRoleLabel(workspace)}</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  className="saved-workspace-delete"
-                                  aria-label={`${deletesTable ? 'Delete' : 'Remove'} ${tableName}`}
-                                  onClick={() => openSavedWorkspaceDeleteDialog(workspace)}
-                                >
-                                  {deletesTable ? 'Delete' : 'Remove'}
-                                </button>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      ) : null}
-                      {runtimeWorkspaceAction === 'join' ? (
-                        <>
-                          <div className="runtime-auth-choice" role="group" aria-label="Join method">
-                            <button
-                              type="button"
-                              aria-pressed={runtimeWorkspaceJoinMethod === 'token'}
-                              onClick={() => {
-                                setRuntimeWorkspaceJoinMethod('token')
-                                setRuntimeSettingsError('')
-                              }}
-                            >
-                              Token
-                            </button>
-                            <button
-                              type="button"
-                              aria-pressed={runtimeWorkspaceJoinMethod === 'password'}
-                              onClick={() => {
-                                setRuntimeWorkspaceJoinMethod('password')
-                                setRuntimeSettingsError('')
-                              }}
-                            >
-                              Password
-                            </button>
-                          </div>
-                          {runtimeWorkspaceJoinMethod === 'password' ? (
-                            <div className="dialog-grid two">
-                              <label>
-                                Table Name
-                                <input
-                                  autoFocus={!runtimeAccount?.workspaces.length}
-                                  data-autofocus={!runtimeAccount?.workspaces.length ? true : undefined}
-                                  value={runtimeSettingsForm.workspaceName}
-                                  onChange={(event) =>
-                                    setRuntimeSettingsForm((current) => ({
-                                      ...current,
-                                      workspaceName: event.target.value,
-                                    }))
-                                  }
-                                  autoComplete="off"
-                                />
-                              </label>
-                              <label>
-                                Table Password
-                                <input
-                                  value={runtimeSettingsForm.workspacePassword}
-                                  onChange={(event) =>
-                                    setRuntimeSettingsForm((current) => ({
-                                      ...current,
-                                      workspacePassword: event.target.value,
-                                    }))
-                                  }
-                                  type="password"
-                                  autoComplete="off"
-                                />
-                              </label>
-                            </div>
-                          ) : (
-                            <label>
-                              Table Token
-                              <input
-                                autoFocus={!runtimeAccount?.workspaces.length}
-                                data-autofocus={!runtimeAccount?.workspaces.length ? true : undefined}
-                                value={runtimeSettingsForm.workspaceToken}
-                                onChange={(event) =>
-                                  setRuntimeSettingsForm((current) => ({
-                                    ...current,
-                                    workspaceToken: event.target.value,
-                                  }))
-                                }
-                                placeholder="Token for a table"
-                                type="password"
-                                autoComplete="off"
-                              />
-                            </label>
-                          )}
-                        </>
-                      ) : (
-                        <>
-                          <label>
-                            Table Name
-                            <input
-                              autoFocus
-                              data-autofocus
-                              value={runtimeSettingsForm.workspaceName}
-                              onChange={(event) =>
-                                setRuntimeSettingsForm((current) => ({
-                                  ...current,
-                                  workspaceName: event.target.value,
-                                }))
-                              }
-                              autoComplete="off"
-                            />
-                          </label>
-                          <div className="runtime-auth-choice" role="group" aria-label="Table access">
-                            <button
-                              type="button"
-                              aria-pressed={runtimeWorkspaceCreateAccessMode === 'password'}
-                              onClick={() => {
-                                setRuntimeWorkspaceCreateAccessMode('password')
-                                setRuntimeSettingsError('')
-                              }}
-                            >
-                              Password
-                            </button>
-                            <button
-                              type="button"
-                              aria-pressed={runtimeWorkspaceCreateAccessMode === 'token'}
-                              onClick={() => {
-                                setRuntimeWorkspaceCreateAccessMode('token')
-                                setRuntimeSettingsError('')
-                              }}
-                            >
-                              Token
-                            </button>
-                          </div>
-                          {runtimeWorkspaceCreateAccessMode === 'password' ? (
-                            <label>
-                              Table Password
-                              <input
-                                value={runtimeSettingsForm.workspacePassword}
-                                onChange={(event) =>
-                                  setRuntimeSettingsForm((current) => ({
-                                    ...current,
-                                    workspacePassword: event.target.value,
-                                  }))
-                                }
-                                type="password"
-                                autoComplete="new-password"
-                              />
-                            </label>
-                          ) : null}
-                        </>
-                      )}
-                    </>
-                  )}
-                </>
-              ) : null}
-              <p>{runtimeSettingsHelpText}</p>
-              {runtimeSettingsError ? (
-                <div className="dialog-error">{runtimeSettingsError}</div>
-              ) : null}
-              <footer>
-                {runtimeSettingsIsAuthPrompt ? null : (
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() =>
-                      setRuntimeSettingsForm({
-                        baseUrl: DEFAULT_BASE_URL,
-                        workspaceToken: '',
-                        workspaceName: '',
-                        workspacePassword: '',
-                        username: '',
-                        firstName: '',
-                        lastName: '',
-                        password: '',
-                      })
-                    }
-                  >
-                    Reset
-                  </button>
-                )}
-                {runtimeSettingsIsWorkspaceStep && !runtimeCreatedWorkspaceToken ? (
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => {
-                      setRuntimeAuthStep('account')
-                      setRuntimeSettingsError('')
-                    }}
-                  >
-                    Back
-                  </button>
-                ) : null}
-                <button type="button" className="secondary" onClick={closeRuntimeSettingsDialog}>
-                  Cancel
-                </button>
-                <button type="submit">
-                  {runtimeSettingsIsWorkspaceStep
-                    ? runtimeCreatedWorkspaceToken
-                      ? 'Done'
-                      : runtimeWorkspaceAction === 'create'
-                        ? 'Create Table'
-                        : 'Join Table'
-                    : runtimeSettingsIsAccountStep
-                      ? 'Continue'
-                      : 'Save Settings'}
-                </button>
-              </footer>
-            </form>
-          </section>
-        </div>
-      ) : null}
+      <RuntimeSettingsDialog
+        defaultBaseUrl={DEFAULT_BASE_URL}
+        dialogRef={modalDialogRef}
+        error={runtimeSettingsError}
+        form={runtimeSettingsForm}
+        legacyPasswordSetupRequired={legacyPasswordSetupRequired}
+        mode={runtimeSettingsMode}
+        onAuthIntentChange={setRuntimeAuthIntent}
+        onAuthStepChange={setRuntimeAuthStep}
+        onClose={closeRuntimeSettingsDialog}
+        onErrorChange={setRuntimeSettingsError}
+        onFormChange={setRuntimeSettingsForm}
+        onLegacyPasswordSetupRequiredChange={setLegacyPasswordSetupRequired}
+        onOpenSavedWorkspaceDelete={openSavedWorkspaceDeleteDialog}
+        onSelectSavedWorkspace={selectSavedWorkspace}
+        onSubmit={submitRuntimeSettings}
+        onWorkspaceActionChange={setRuntimeWorkspaceAction}
+        onWorkspaceCreateAccessModeChange={setRuntimeWorkspaceCreateAccessMode}
+        onWorkspaceJoinMethodChange={setRuntimeWorkspaceJoinMethod}
+        open={runtimeSettingsOpen}
+        runtimeAccount={runtimeAccount}
+        runtimeAuthIntent={runtimeAuthIntent}
+        runtimeAuthStep={runtimeAuthStep}
+        runtimeCreatedWorkspaceToken={runtimeCreatedWorkspaceToken}
+        runtimeWorkspaceAction={runtimeWorkspaceAction}
+        runtimeWorkspaceCreateAccessMode={runtimeWorkspaceCreateAccessMode}
+        runtimeWorkspaceJoinMethod={runtimeWorkspaceJoinMethod}
+        workspaceId={workspaceId}
+      />
 
       {savedWorkspaceDeleteDialog ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeSavedWorkspaceDeleteDialog()
-            }
-          }}
-        >
-          <section
-            ref={modalDialogRef}
-            className="campaign-dialog saved-workspace-delete-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="saved-workspace-delete-title"
-          >
-            <header>
-              <div>
-                <span>{savedWorkspaceDeleteDialogDeletesTable ? 'Delete' : 'Remove'}</span>
-                <h2 id="saved-workspace-delete-title">
-                  {savedWorkspaceDeleteDialogDeletesTable ? 'Delete Table' : 'Remove Saved Table'}
-                </h2>
-              </div>
-              <button
-                type="button"
-                aria-label="Close saved table delete"
-                onClick={closeSavedWorkspaceDeleteDialog}
-                disabled={savedWorkspaceDeleteDialog.pending}
-              >
-                <X size={18} />
-              </button>
-            </header>
-            <div className="dialog-body">
-              <div className="dialog-warning">
-                <strong>{savedWorkspaceDisplayName(savedWorkspaceDeleteDialog.workspace)}</strong>
-                <span>
-                  {savedWorkspaceDeleteDialogDeletesTable
-                    ? 'This permanently deletes the table for everyone. This cannot be undone.'
-                    : 'This removes the table from your saved tables only.'}
-                </span>
-              </div>
-              {savedWorkspaceDeleteDialog.error ? (
-                <div className="dialog-error">{savedWorkspaceDeleteDialog.error}</div>
-              ) : null}
-              <footer>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={closeSavedWorkspaceDeleteDialog}
-                  disabled={savedWorkspaceDeleteDialog.pending}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className={savedWorkspaceDeleteDialogDeletesTable ? 'danger' : undefined}
-                  onClick={() => void submitSavedWorkspaceDeleteDialog()}
-                  disabled={savedWorkspaceDeleteDialog.pending}
-                >
-                  {savedWorkspaceDeleteDialog.pending
-                    ? savedWorkspaceDeleteDialogDeletesTable ? 'Deleting...' : 'Removing...'
-                    : savedWorkspaceDeleteDialogDeletesTable ? 'Delete Table' : 'Remove'}
-                </button>
-              </footer>
-            </div>
-          </section>
-        </div>
+        <SavedWorkspaceDeleteDialog
+          deletesTable={savedWorkspaceDeleteDialogDeletesTable}
+          dialog={savedWorkspaceDeleteDialog}
+          dialogRef={modalDialogRef}
+          onClose={closeSavedWorkspaceDeleteDialog}
+          onConfirm={() => void submitSavedWorkspaceDeleteDialog()}
+        />
       ) : null}
 
       {shareSessionUrl ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeShareSessionDialog()
-            }
-          }}
-        >
-          <section
-            ref={modalDialogRef}
-            className="campaign-dialog share-session-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="share-session-title"
-            aria-describedby="share-session-description"
-          >
-            <header>
-              <div>
-                <span>Table Link</span>
-                <h2 id="share-session-title">Share Session</h2>
-              </div>
-              <button
-                type="button"
-                aria-label="Close share session"
-                onClick={closeShareSessionDialog}
-              >
-                <X size={18} />
-              </button>
-            </header>
-            <label>
-              Session Link
-              <input
-                data-autofocus
-                readOnly
-                aria-label="Session share link"
-                value={shareSessionUrl}
-                onFocus={(event) => event.currentTarget.select()}
-              />
-            </label>
-            <p id="share-session-description">
-              Send this to someone who can open this frontend and reach this backend.
-              They can choose or create their own character after it opens.
-            </p>
-            <footer>
-              <button type="button" className="secondary" onClick={closeShareSessionDialog}>
-                Close
-              </button>
-              <button type="button" onClick={copyShareSessionUrl}>
-                Copy Link
-              </button>
-            </footer>
-          </section>
-        </div>
+        <ShareSessionDialog
+          dialogRef={modalDialogRef}
+          onClose={closeShareSessionDialog}
+          onCopy={copyShareSessionUrl}
+          url={shareSessionUrl}
+        />
       ) : null}
 
-      {profileSettingsOpen ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeProfileSettingsDialog()
-            }
-          }}
-        >
-          <section
-            ref={modalDialogRef}
-            className="campaign-dialog profile-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="profile-settings-title"
-          >
-            <header>
-              <div>
-                <span>Profile</span>
-                <h2 id="profile-settings-title">Profile Settings</h2>
-              </div>
-              <button
-                type="button"
-                aria-label="Close profile settings"
-                onClick={closeProfileSettingsDialog}
-              >
-                <X size={18} />
-              </button>
-            </header>
-            <div className="profile-dialog-body">
-              <dl className="profile-summary-grid">
-                <div>
-                  <dt>Account</dt>
-                  <dd>{runtimeAccount?.displayName ?? selectedPlayer?.name ?? 'No account connected'}</dd>
-                </div>
-                <div>
-                  <dt>Table</dt>
-                  <dd>
-                    {runtimeAccount?.workspaceId
-                      ? `${runtimeAccount.workspaceId}${runtimeAccount.workspaceRole ? ` / ${runtimeAccount.workspaceRole}` : ''}`
-                      : workspaceId
-                        ? workspaceId
-                      : workspaceToken
-                        ? 'Token set'
-                        : 'No table token'}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Character</dt>
-                  <dd>{displayCharacter.name}</dd>
-                </div>
-                <div>
-                  <dt>Campaign</dt>
-                  <dd>{campaign?.title ?? 'No campaign selected'}</dd>
-                </div>
-                <div>
-                  <dt>Session</dt>
-                  <dd>{activeSessionName}</dd>
-                </div>
-                <div>
-                  <dt>Backend</dt>
-                  <dd>{backendDisplayUrl}</dd>
-                </div>
-                <div>
-                  <dt>Narration</dt>
-                  <dd>{ttsStatusLabel}{ttsLatencyLabel ? ` / ${ttsLatencyLabel}` : ''}</dd>
-                </div>
-              </dl>
-              <div className="profile-action-list">
-                <button type="button" onClick={openPlayerEditDialog} disabled={!selectedPlayer}>
-                  Edit character
-                </button>
-                <button type="button" onClick={openCharacterJoinDialog} disabled={!selectedCampaignId}>
-                  Switch character
-                </button>
-                <button type="button" onClick={() => void refreshCurrentWorkspace()}>
-                  Refresh workspace
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSocketReconnectKey((current) => current + 1)
-                    closeProfileSettingsDialog()
-                  }}
-                >
-                  Reconnect realtime
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProfileSettingsOpen(false)
-                    openRuntimeSettingsDialog()
-                  }}
-                >
-                  Backend settings
-                </button>
-                {authToken ? (
-                  <button type="button" onClick={clearAuthToken}>
-                    Sign out
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          </section>
-        </div>
-      ) : null}
+      <ProfileSettingsDialog
+        canEditCharacter={Boolean(selectedPlayer)}
+        canSwitchCharacter={Boolean(selectedCampaignId)}
+        dialogRef={modalDialogRef}
+        onBackendSettings={() => {
+          setProfileSettingsOpen(false)
+          openRuntimeSettingsDialog()
+        }}
+        onClose={closeProfileSettingsDialog}
+        onEditCharacter={openPlayerEditDialog}
+        onReconnectRealtime={() => {
+          setSocketReconnectKey((current) => current + 1)
+          closeProfileSettingsDialog()
+        }}
+        onRefreshWorkspace={() => void refreshCurrentWorkspace()}
+        onSignOut={clearAuthToken}
+        onSwitchCharacter={openCharacterJoinDialog}
+        open={profileSettingsOpen}
+        signedIn={Boolean(authToken)}
+        summary={{
+          account: runtimeAccount?.displayName ?? selectedPlayer?.name ?? 'No account connected',
+          table: runtimeAccount?.workspaceId
+            ? `${runtimeAccount.workspaceId}${runtimeAccount.workspaceRole ? ` / ${runtimeAccount.workspaceRole}` : ''}`
+            : workspaceId
+              ? workspaceId
+              : workspaceToken
+                ? 'Token set'
+                : 'No table token',
+          character: displayCharacter.name,
+          campaign: campaign?.title ?? 'No campaign selected',
+          session: activeSessionName,
+          backend: backendDisplayUrl,
+          narration: `${ttsStatusLabel}${ttsLatencyLabel ? ` / ${ttsLatencyLabel}` : ''}`,
+        }}
+      />
 
-      {characterJoinDialogOpen ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeCharacterJoinDialog()
-            }
-          }}
-        >
-          <section
-            ref={modalDialogRef}
-            className="campaign-dialog character-join-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="character-join-title"
-          >
-            <header>
-              <div>
-                <span>Character</span>
-                <h2 id="character-join-title">Join Campaign</h2>
-              </div>
-              <button type="button" aria-label="Close character chooser" onClick={closeCharacterJoinDialog}>
-                <X size={18} />
-              </button>
-            </header>
-            <div className="character-join-body">
-              <p>
-                {campaign?.title
-                  ? `Choose who you are playing in ${campaign.title}.`
-                  : 'Choose who you are playing.'}
-              </p>
-              {players.length ? (
-                <div className="character-choice-list" aria-label="Existing characters">
-                  {players.map((player) => {
-                    const characterName = player.character_name || player.name || `Player ${player.player_id}`
-                    const playerName = player.name || 'Unknown player'
-                    const characterClass = player.char_class || player.class_ || 'Adventurer'
-                    const characterPortraitSrc =
-                      player.profile_image ||
-                      profileIconSrcForCharacter({
-                        race: player.race,
-                        sex: player.sex,
-                        seed: characterName,
-                      }) ||
-                      avatarDataUri(characterName, 'character')
-                    return (
-                      <button
-                        key={player.player_id}
-                        type="button"
-                        className="character-choice-card"
-                        aria-label={`Join as ${characterName}`}
-                        onClick={() => joinAsExistingPlayer(player)}
-                      >
-                        <img
-                          className="character-choice-portrait"
-                          src={characterPortraitSrc}
-                          alt=""
-                          aria-hidden="true"
-                        />
-                        <span>
-                          <strong>{characterName}</strong>
-                          <small>
-                            {playerName} / Level {player.level} {characterClass}
-                          </small>
-                        </span>
-                        <em>Join</em>
-                      </button>
-                    )
-                  })}
-                </div>
-              ) : (
-                <div className="dialog-warning">
-                  <strong>No characters yet.</strong>
-                  <span>Create the first character for this campaign.</span>
-                </div>
-              )}
-              <footer>
-                <button type="button" className="secondary" onClick={closeCharacterJoinDialog}>
-                  Cancel
-                </button>
-                <button type="button" onClick={createCharacterFromJoinDialog}>
-                  Create Character
-                </button>
-              </footer>
-            </div>
-          </section>
-        </div>
-      ) : null}
+      <CharacterJoinDialog
+        campaignTitle={campaign?.title ?? null}
+        dialogRef={modalDialogRef}
+        onClose={closeCharacterJoinDialog}
+        onCreateCharacter={createCharacterFromJoinDialog}
+        onJoinPlayer={joinAsExistingPlayer}
+        open={characterJoinDialogOpen}
+        players={players}
+        portraitSrcForPlayer={characterPortraitSrc}
+      />
 
       {campaignArchiveDialog ? (
-        <CampaignArchiveDialog
-          campaign={campaign}
-          dialog={campaignArchiveDialog}
-          dialogRef={modalDialogRef}
-          onArchiveSelected={() => void archiveSelectedCampaignFromManager()}
-          onClose={closeCampaignArchiveDialog}
-          onRestore={(campaignId) => void restoreCampaignFromArchive(campaignId)}
-          worldNameById={worldNameById}
-        />
+        <Suspense fallback={null}>
+          <CampaignArchiveDialog
+            campaign={campaign}
+            dialog={campaignArchiveDialog}
+            dialogRef={modalDialogRef}
+            onArchiveSelected={() => void archiveSelectedCampaignFromManager()}
+            onClose={closeCampaignArchiveDialog}
+            onRestore={(campaignId) => void restoreCampaignFromArchive(campaignId)}
+            worldNameById={worldNameById}
+          />
+        </Suspense>
       ) : null}
 
       {sessionArchiveDialog ? (
-        <SessionArchiveDialog
-          activeSession={activeSession}
-          campaign={campaign}
-          dialog={sessionArchiveDialog}
-          dialogRef={modalDialogRef}
-          onArchiveSelected={() => void archiveSelectedSessionFromManager()}
-          onClose={closeSessionArchiveDialog}
-          onRestore={(sessionId) => void restoreSessionFromArchive(sessionId)}
-          selectedCampaignId={selectedCampaignId}
-        />
+        <Suspense fallback={null}>
+          <SessionArchiveDialog
+            activeSession={activeSession}
+            campaign={campaign}
+            dialog={sessionArchiveDialog}
+            dialogRef={modalDialogRef}
+            onArchiveSelected={() => void archiveSelectedSessionFromManager()}
+            onClose={closeSessionArchiveDialog}
+            onRestore={(sessionId) => void restoreSessionFromArchive(sessionId)}
+            selectedCampaignId={selectedCampaignId}
+          />
+        </Suspense>
       ) : null}
 
       {campaignPackImportOpen ? (
@@ -4257,26 +3807,30 @@ function App() {
                 <X size={18} />
               </button>
             </header>
-            <CampaignPackImportDialog
-              auth={auth}
-              baseUrl={baseUrl}
-              onClose={closeCampaignPackImportDialog}
-              onImported={handleCampaignPackImported}
-              pushError={pushError}
-            />
+            <Suspense fallback={<div role="status">Loading campaign pack tools...</div>}>
+              <CampaignPackImportDialog
+                auth={auth}
+                baseUrl={baseUrl}
+                onClose={closeCampaignPackImportDialog}
+                onImported={handleCampaignPackImported}
+                pushError={pushError}
+              />
+            </Suspense>
           </section>
         </div>
       ) : null}
 
       {campaignChooserOpen ? (
-        <CampaignChooserDialog
-          campaigns={campaigns}
-          dialogRef={modalDialogRef}
-          onChoose={chooseCampaign}
-          onClose={closeCampaignChooserDialog}
-          onCreate={createCampaignFromChooser}
-          worldNameById={worldNameById}
-        />
+        <Suspense fallback={null}>
+          <CampaignChooserDialog
+            campaigns={campaigns}
+            dialogRef={modalDialogRef}
+            onChoose={chooseCampaign}
+            onClose={closeCampaignChooserDialog}
+            onCreate={createCampaignFromChooser}
+            worldNameById={worldNameById}
+          />
+        </Suspense>
       ) : null}
 
       {playerEditDialog ? (
@@ -4303,222 +3857,36 @@ function App() {
       ) : null}
 
       {campaignActionDialog ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeCampaignActionDialog()
-            }
-          }}
-        >
-          <section
-            ref={modalDialogRef}
-            className="campaign-dialog campaign-action-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="campaign-action-title"
-          >
-            <header>
-              <div>
-                <span>Campaign</span>
-                <h2 id="campaign-action-title">
-                  {campaignActionDialog.mode === 'rename'
-                    ? 'Rename Campaign'
-                    : campaignActionDialog.mode === 'archive'
-                      ? 'Archive Campaign'
-                      : campaignActionDialog.mode === 'restore'
-                        ? 'Restore Campaign'
-                        : 'Delete Campaign'}
-                </h2>
-              </div>
-              <button
-                type="button"
-                aria-label="Close campaign action"
-                onClick={closeCampaignActionDialog}
-                disabled={campaignActionDialog.pending}
-              >
-                <X size={18} />
-              </button>
-            </header>
-            <form onSubmit={(event) => void submitCampaignActionDialog(event)}>
-              {campaignActionDialog.mode === 'rename' ? (
-                <>
-                  <label>
-                    Campaign Name
-                    <input
-                      autoFocus
-                      data-autofocus
-                      value={campaignActionDialog.title}
-                      onChange={(event) =>
-                        setCampaignActionDialog((current) =>
-                          current
-                            ? { ...current, title: event.target.value, error: '' }
-                            : current,
-                        )
-                      }
-                      disabled={campaignActionDialog.pending}
-                    />
-                  </label>
-                  <label>
-                    Description
-                    <textarea
-                      value={campaignActionDialog.description}
-                      onChange={(event) =>
-                        setCampaignActionDialog((current) =>
-                          current
-                            ? { ...current, description: event.target.value, error: '' }
-                            : current,
-                        )
-                      }
-                      disabled={campaignActionDialog.pending}
-                    />
-                  </label>
-                </>
-              ) : (
-                <div className="dialog-warning">
-                  <strong>{campaignActionDialog.title}</strong>
-                  <span>
-                    {campaignActionDialog.mode === 'archive'
-                      ? 'Archiving hides this campaign and its sessions from the normal workspace list without destroying saved history.'
-                      : campaignActionDialog.mode === 'restore'
-                        ? 'Restoring makes this campaign and sessions archived with it available for normal play again.'
-                        : 'This permanently deletes the campaign, its sessions, maps, and campaign notes from this workspace. Characters stay in the workspace but are detached from it.'}
-                  </span>
-                </div>
-              )}
-              {campaignActionDialog.error ? (
-                <div className="dialog-error">{campaignActionDialog.error}</div>
-              ) : null}
-              <footer>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={closeCampaignActionDialog}
-                  disabled={campaignActionDialog.pending}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className={
-                    campaignActionDialog.mode === 'archive' || campaignActionDialog.mode === 'delete'
-                      ? 'danger'
-                      : undefined
-                  }
-                  disabled={campaignActionDialog.pending}
-                >
-                  {campaignActionDialog.pending
-                    ? campaignActionDialog.mode === 'rename'
-                      ? 'Saving...'
-                      : campaignActionDialog.mode === 'archive'
-                        ? 'Archiving...'
-                        : campaignActionDialog.mode === 'restore'
-                          ? 'Restoring...'
-                          : 'Deleting...'
-                    : campaignActionDialog.mode === 'rename'
-                      ? 'Save Campaign'
-                      : campaignActionDialog.mode === 'archive'
-                        ? 'Archive Campaign'
-                        : campaignActionDialog.mode === 'restore'
-                          ? 'Restore Campaign'
-                          : 'Delete Campaign'}
-                </button>
-              </footer>
-            </form>
-          </section>
-        </div>
+        <CampaignActionDialog
+          dialog={campaignActionDialog}
+          dialogRef={modalDialogRef}
+          onClose={closeCampaignActionDialog}
+          onDescriptionChange={(description) =>
+            setCampaignActionDialog((current) =>
+              current ? { ...current, description, error: '' } : current,
+            )
+          }
+          onSubmit={(event) => void submitCampaignActionDialog(event)}
+          onTitleChange={(title) =>
+            setCampaignActionDialog((current) =>
+              current ? { ...current, title, error: '' } : current,
+            )
+          }
+        />
       ) : null}
 
       {sessionActionDialog ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeSessionActionDialog()
-            }
-          }}
-        >
-          <section
-            ref={modalDialogRef}
-            className="campaign-dialog session-action-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="session-action-title"
-          >
-            <header>
-              <div>
-                <span>Session</span>
-                <h2 id="session-action-title">
-                  {sessionActionDialog.mode === 'rename' ? 'Rename Session' : 'Delete Session'}
-                </h2>
-              </div>
-              <button
-                type="button"
-                aria-label="Close session action"
-                onClick={closeSessionActionDialog}
-                disabled={sessionActionDialog.pending}
-              >
-                <X size={18} />
-              </button>
-            </header>
-            <form onSubmit={(event) => void submitSessionActionDialog(event)}>
-              {sessionActionDialog.mode === 'rename' ? (
-                <label>
-                  Session Name
-                  <input
-                    autoFocus
-                    data-autofocus
-                    value={sessionActionDialog.name}
-                    onChange={(event) =>
-                      setSessionActionDialog((current) =>
-                        current
-                          ? { ...current, name: event.target.value, error: '' }
-                          : current,
-                      )
-                    }
-                    disabled={sessionActionDialog.pending}
-                  />
-                </label>
-              ) : (
-                <div className="dialog-warning">
-                  <strong>{sessionActionDialog.name}</strong>
-                  <span>
-                    This permanently deletes this session and its saved turn history. Use
-                    the archive button if you only want to hide it.
-                  </span>
-                </div>
-              )}
-              {sessionActionDialog.error ? (
-                <div className="dialog-error">{sessionActionDialog.error}</div>
-              ) : null}
-              <footer>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={closeSessionActionDialog}
-                  disabled={sessionActionDialog.pending}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className={sessionActionDialog.mode === 'delete' ? 'danger' : undefined}
-                  disabled={sessionActionDialog.pending}
-                >
-                  {sessionActionDialog.pending
-                    ? sessionActionDialog.mode === 'rename'
-                      ? 'Renaming...'
-                      : 'Deleting...'
-                    : sessionActionDialog.mode === 'rename'
-                      ? 'Rename Session'
-                      : 'Delete Session'}
-                </button>
-              </footer>
-            </form>
-          </section>
-        </div>
+        <SessionActionDialog
+          dialog={sessionActionDialog}
+          dialogRef={modalDialogRef}
+          onClose={closeSessionActionDialog}
+          onNameChange={(name) =>
+            setSessionActionDialog((current) =>
+              current ? { ...current, name, error: '' } : current,
+            )
+          }
+          onSubmit={(event) => void submitSessionActionDialog(event)}
+        />
       ) : null}
 
       {worldManagerOpen ? (
@@ -4565,6 +3933,36 @@ function App() {
       ) : null}
     </div>
   )
+}
+
+function App() {
+  const {
+    confirmPendingBackendTrust,
+    pendingBackendTrust,
+    rejectPendingBackendTrust,
+  } = useShareBackendTrust(DEFAULT_BASE_URL)
+  const dialogRef = useRef<HTMLElement | null>(null)
+  const returnFocusRef = useRef<HTMLElement | null>(null)
+
+  useModalFocusTrap({
+    activeKey: pendingBackendTrust ? 'backend-trust' : null,
+    dialogRef,
+    onClose: rejectPendingBackendTrust,
+    returnFocusRef,
+  })
+
+  if (pendingBackendTrust) {
+    return (
+      <BackendTrustDialog
+        backend={pendingBackendTrust}
+        dialogRef={dialogRef}
+        onConfirm={confirmPendingBackendTrust}
+        onReject={rejectPendingBackendTrust}
+      />
+    )
+  }
+
+  return <AIDMApp />
 }
 
 export default App

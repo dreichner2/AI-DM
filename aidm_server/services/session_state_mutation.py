@@ -13,7 +13,7 @@ from aidm_server.errors import error_response
 from aidm_server.game_state.application.applier import apply_state_changes, persist_state_to_database
 from aidm_server.game_state.models import state_snapshot_for_session
 from aidm_server.game_state.validation.validator import validate_state_changes, validated_changes_for_application
-from aidm_server.models import Campaign, Player, Session, SessionStateMutationAudit, safe_json_loads
+from aidm_server.models import Campaign, Player, Session, SessionStateMutationAudit, safe_json_dumps, safe_json_loads
 from aidm_server.time_utils import utc_now
 from aidm_server.turn_coordinator import session_turn_coordinator
 from aidm_server.workspace_access import current_account_id, current_account_is_workspace_admin
@@ -44,18 +44,31 @@ class SessionStateMutationResult:
     conflict: bool = False
 
 
+@dataclass
+class SessionSnapshotMetadataMutationResult:
+    session_obj: Session | None
+    state: dict[str, Any]
+    metadata: dict[str, Any]
+    wait_ms: float
+    previous_revision: int
+    state_revision: int
+    changed: bool = False
+
+
 MutationBuilder = Callable[[Session, dict[str, Any]], SessionStateMutationPlan | Sequence[Any]]
+SnapshotMetadataMutator = Callable[[Session, dict[str, Any]], dict[str, Any] | None]
 AfterPersistHook = Callable[[SessionStateMutationResult], None]
 ProgressRefresher = Callable[[Session], dict[str, Any] | None]
 
 
 def expected_state_revision_from_payload(payload: dict[str, Any]) -> int | None:
-    raw_value = (
-        payload.get('expectedStateRevision')
-        or payload.get('expected_state_revision')
-        or payload.get('stateRevision')
-        or payload.get('state_revision')
-    )
+    raw_value = None
+    for key in ('expectedStateRevision', 'expected_state_revision', 'stateRevision', 'state_revision'):
+        candidate = payload.get(key)
+        if candidate in (None, ''):
+            continue
+        raw_value = candidate
+        break
     if raw_value in (None, ''):
         return None
     try:
@@ -86,7 +99,10 @@ def _campaign_players(campaign: Campaign) -> list[Player]:
 
 
 def _state_revision(state: dict[str, Any]) -> int:
-    return max(0, int_or_default(state.get('stateRevision') or state.get('state_revision'), default=0))
+    raw_value = state.get('stateRevision')
+    if raw_value in (None, ''):
+        raw_value = state.get('state_revision')
+    return max(0, int_or_default(raw_value, default=0))
 
 
 def _mutation_actor() -> str:
@@ -249,6 +265,100 @@ def _normalize_plan(plan: SessionStateMutationPlan | Sequence[Any]) -> SessionSt
     if isinstance(plan, SessionStateMutationPlan):
         return plan
     return SessionStateMutationPlan(changes=list(plan))
+
+
+def mutate_session_snapshot_metadata(
+    session_id: int,
+    *,
+    mutate_snapshot: SnapshotMetadataMutator,
+    source: str,
+    change_type: str,
+    actor: str | None = None,
+) -> SessionSnapshotMetadataMutationResult:
+    """Serialize and audit a non-gameplay mutation of the live session snapshot.
+
+    Metadata such as session content settings is not represented by the gameplay
+    state-change schema, but it still shares the same snapshot and revision
+    stream.  This boundary reloads the snapshot after acquiring the turn lock,
+    commits before releasing it, and records the same revision/audit evidence as
+    gameplay mutations so a concurrent turn cannot be lost.
+    """
+
+    with session_turn_coordinator.serialized(session_id) as wait_ms:
+        try:
+            session_obj = db.session.get(Session, session_id)
+            if session_obj is None:
+                return SessionSnapshotMetadataMutationResult(
+                    session_obj=None,
+                    state={},
+                    metadata={},
+                    wait_ms=wait_ms,
+                    previous_revision=0,
+                    state_revision=0,
+                )
+
+            # The endpoint may have loaded this identity before waiting for an
+            # active turn. Refresh inside the coordinator to prevent a stale
+            # read/modify/write from replacing that turn's committed snapshot.
+            db.session.refresh(session_obj)
+            state = safe_json_loads(session_obj.state_snapshot, {})
+            state = state if isinstance(state, dict) else {}
+            before_state = deepcopy(state)
+            previous_revision = _state_revision(state)
+            metadata = mutate_snapshot(session_obj, state) or {}
+            changed = state != before_state
+            state_revision = previous_revision
+
+            if changed:
+                state_revision = previous_revision + 1
+                applied_changes = [
+                    {
+                        'id': f'{change_type}.{state_revision}',
+                        'type': change_type,
+                    }
+                ]
+                diff_state = deepcopy(state)
+                actor_label = actor or _mutation_actor()
+                _stamp_mutation_audit(
+                    state,
+                    source=source,
+                    actor=actor_label,
+                    previous_revision=previous_revision,
+                    next_revision=state_revision,
+                    applied_changes=applied_changes,
+                    rejected_count=0,
+                    wait_ms=wait_ms,
+                )
+                session_obj.state_snapshot = safe_json_dumps(state, {})
+                session_obj.updated_at = utc_now()
+                record_session_state_mutation_audit(
+                    session_obj=session_obj,
+                    before_state=before_state,
+                    after_state=diff_state,
+                    source=source,
+                    actor=actor_label,
+                    previous_revision=previous_revision,
+                    state_revision=state_revision,
+                    applied_changes=applied_changes,
+                    rejected_count=0,
+                    metadata=metadata,
+                )
+
+            # The database commit is part of the coordination boundary. Releasing
+            # the lock first would let the next request read the old snapshot.
+            db.session.commit()
+            return SessionSnapshotMetadataMutationResult(
+                session_obj=session_obj,
+                state=state,
+                metadata=metadata,
+                wait_ms=wait_ms,
+                previous_revision=previous_revision,
+                state_revision=state_revision,
+                changed=changed,
+            )
+        except Exception:
+            db.session.rollback()
+            raise
 
 
 def mutate_session_state(

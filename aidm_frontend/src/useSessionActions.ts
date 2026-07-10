@@ -1,5 +1,11 @@
-import { useState, type ChangeEvent, type Dispatch, type FormEvent, type SetStateAction } from 'react'
-import { apiFetch } from './api'
+import { useLayoutEffect, useRef, useState, type ChangeEvent, type Dispatch, type FormEvent, type SetStateAction } from 'react'
+import {
+  addCookieCsrfHeader,
+  addNgrokBrowserWarningBypassHeader,
+  addWorkspaceTokenHeader,
+  apiFetch,
+  normalizeBaseUrl,
+} from './api'
 import { createClientMessageId } from './gameActions'
 import type { MainTab } from './SessionBoard'
 import type {
@@ -78,6 +84,46 @@ function readFileText(file: File): Promise<string> {
   })
 }
 
+function filenameFromDisposition(disposition: string | null, fallback: string) {
+  const match = disposition?.match(/filename\*=UTF-8''([^;]+)|filename="?([^"]+)"?/i)
+  const encodedName = match?.[1] || match?.[2]
+  if (!encodedName) return fallback
+  try {
+    return decodeURIComponent(encodedName)
+  } catch {
+    return encodedName
+  }
+}
+
+async function downloadHtmlResource(
+  baseUrl: string,
+  path: string,
+  token: string,
+  fallbackFilename: string,
+) {
+  const headers = new Headers()
+  if (token.trim()) {
+    headers.set('Authorization', `Bearer ${token.trim()}`)
+  }
+  addWorkspaceTokenHeader(headers)
+  addCookieCsrfHeader(headers)
+  addNgrokBrowserWarningBypassHeader(headers, baseUrl)
+
+  const response = await fetch(`${normalizeBaseUrl(baseUrl)}${path}`, { headers })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(text || `Download failed with status ${response.status}`)
+  }
+
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filenameFromDisposition(response.headers.get('Content-Disposition'), fallbackFilename)
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 export function useSessionActions({
   auth,
   baseUrl,
@@ -116,25 +162,42 @@ export function useSessionActions({
   const [shareSessionUrl, setShareSessionUrl] = useState('')
   const [sessionActionDialog, setSessionActionDialog] =
     useState<SessionActionDialogState>(null)
+  const selectedCampaignIdRef = useRef(selectedCampaignId)
+  const startSessionPromisesRef = useRef<Map<number, Promise<void>>>(new Map())
 
-  const startSession = async () => {
-    if (!selectedCampaignId) return
+  useLayoutEffect(() => {
+    selectedCampaignIdRef.current = selectedCampaignId
+  }, [selectedCampaignId])
+
+  const startSession = () => {
+    if (!selectedCampaignId) return Promise.resolve()
+
+    const campaignId = selectedCampaignId
+    const existingOperation = startSessionPromisesRef.current.get(campaignId)
+    if (existingOperation) return existingOperation
     const clientSessionId = createClientMessageId()
-    try {
-      const result = await apiFetch<{ session_id: number }>(
-        baseUrl,
-        '/api/sessions/start',
-        auth,
-        {
-          method: 'POST',
-          body: JSON.stringify({ campaign_id: selectedCampaignId, client_session_id: clientSessionId }),
-        },
-      )
-      setSelectedSessionId(result.session_id)
-      await refreshCampaignWorkspace(selectedCampaignId)
-    } catch (error) {
-      pushError('persistence', `Could not start session: ${error instanceof Error ? error.message : String(error)}`)
-    }
+    const operation = (async () => {
+      try {
+        const result = await apiFetch<{ session_id: number }>(
+          baseUrl,
+          '/api/sessions/start',
+          auth,
+          {
+            method: 'POST',
+            body: JSON.stringify({ campaign_id: campaignId, client_session_id: clientSessionId }),
+          },
+        )
+        if (selectedCampaignIdRef.current !== campaignId) return
+        setSelectedSessionId(result.session_id)
+        await refreshCampaignWorkspace(campaignId)
+      } catch (error) {
+        pushError('persistence', `Could not start session: ${error instanceof Error ? error.message : String(error)}`)
+      } finally {
+        startSessionPromisesRef.current.delete(campaignId)
+      }
+    })()
+    startSessionPromisesRef.current.set(campaignId, operation)
+    return operation
   }
 
   const downloadSessionJson = async () => {
@@ -193,6 +256,40 @@ export function useSessionActions({
     URL.revokeObjectURL(url)
     if (warnings.length) {
       pushError('workspace', `Export completed with missing live data: ${warnings.join('; ')}`)
+    }
+  }
+
+  const downloadSessionChronicle = async () => {
+    if (!selectedSessionId) {
+      pushError('workspace', 'Choose a session before exporting a Chronicle.')
+      return
+    }
+    try {
+      await downloadHtmlResource(
+        baseUrl,
+        `/api/sessions/${selectedSessionId}/chronicle`,
+        auth,
+        `aidm-session-${selectedSessionId}-chronicle.html`,
+      )
+    } catch (error) {
+      pushError('persistence', `Chronicle export failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  const downloadCampaignChronicle = async () => {
+    if (!selectedCampaignId) {
+      pushError('workspace', 'Choose a campaign before exporting a campaign Chronicle.')
+      return
+    }
+    try {
+      await downloadHtmlResource(
+        baseUrl,
+        `/api/campaigns/${selectedCampaignId}/chronicle`,
+        auth,
+        `aidm-campaign-${selectedCampaignId}-chronicle.html`,
+      )
+    } catch (error) {
+      pushError('persistence', `Campaign Chronicle export failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -387,6 +484,8 @@ export function useSessionActions({
     closeShareSessionDialog,
     closeSessionActionDialog,
     copyShareSessionUrl,
+    downloadCampaignChronicle,
+    downloadSessionChronicle,
     downloadSessionJson,
     importSessionJson,
     openDeleteSessionDialog,

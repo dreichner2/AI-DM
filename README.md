@@ -34,9 +34,9 @@ Updated for the current codebase in June 2026.
 
 Prerequisites:
 
-- Python 3.12, matching `.python-version`
-- Node.js 24, matching `.nvmrc`
-- npm
+- Python 3.14.6, matching `.python-version`
+- Node.js 24.18.0 LTS, matching `.nvmrc`
+- npm 12.0.0, matching `aidm_frontend/package.json`
 - macOS or another Unix-like shell environment
 
 Install everything:
@@ -162,9 +162,16 @@ replace every placeholder in the deployment provider's secret/env manager.
 | `AIDM_CONTENT_SECURITY_POLICY` | Optional CSP override for hosted frontend serving. |
 | `AIDM_CORS_ALLOWLIST` | Comma-separated REST origins. |
 | `AIDM_SOCKET_CORS_ALLOWLIST` | Comma-separated Socket.IO origins. |
-| `AIDM_SOCKETIO_WORKER_MODEL` | Production worker model: `single`, `sticky`, or `message_queue`; RC1 uses the `single` decision in `docs/socketio_worker_model.md`. |
-| `AIDM_SOCKETIO_MESSAGE_QUEUE` | Socket.IO message queue URL when `AIDM_SOCKETIO_WORKER_MODEL=message_queue`. |
-| `AIDM_RATE_LIMIT_STORE` | `memory` or `database`. Use `database` for multi-process deployments. |
+| `AIDM_SOCKETIO_WORKER_MODEL` | Hosted production currently requires `single`; deferred values are documented in `docs/socketio_worker_model.md`. |
+| `AIDM_SOCKETIO_ASYNC_MODE` | Hosted production requires `threading`. |
+| `AIDM_GUNICORN_THREADS` | Gunicorn gthread capacity; defaults to 100 and production rejects values below 16. |
+| `WEB_CONCURRENCY` | Must be `1` for the supported Socket.IO production topology. |
+| `AIDM_SOCKETIO_MESSAGE_QUEUE` | Reserved for the deferred multi-worker design; not sufficient by itself to make process-local presence/music safe. |
+| `AIDM_RATE_LIMIT_STORE` | `memory` or `database`; applies to general, Socket.IO, and pre-auth limiters. Production requires `database`. |
+| `AIDM_PREAUTH_RATE_LIMIT_WINDOW_SECONDS` | Credential-verification window in seconds; defaults to `60`. |
+| `AIDM_PREAUTH_RATE_LIMIT_MAX_IP_TARGET_ATTEMPTS` | Credential attempts allowed for one IP+normalized account/workspace/token target per window; defaults to `5`. |
+| `AIDM_PREAUTH_RATE_LIMIT_MAX_IP_ATTEMPTS` | Credential attempts allowed from one IP across targets per window; defaults to `20`. |
+| `AIDM_PREAUTH_RATE_LIMIT_MAX_TARGET_ATTEMPTS` | Credential attempts allowed against one normalized target across IPs per window; defaults to `20`. |
 | `AIDM_TURN_COORDINATOR_STORE` | `memory` or `database`. Use `database` for multi-process deployments. |
 | `AIDM_OBSERVABILITY_PROVIDER` | Required by production bootstrap to name the beta metrics/logging destination. |
 | `AIDM_ALERT_OWNER` | Required by production bootstrap to name the beta alert owner. |
@@ -173,11 +180,26 @@ replace every placeholder in the deployment provider's secret/env manager.
 | `AIDM_ADMIN_ENABLED` | Enables Flask-Admin in local/dev contexts. |
 | `FLASK_SECRET_KEY` | Required when `AIDM_ENV=production`. |
 
+Pre-auth buckets are HMAC-derived from `FLASK_SECRET_KEY`; stored rate-limit
+rows never contain raw IPs, usernames, workspace names, or tokens. The default
+target-wide ceiling deliberately trades availability for distributed-guess
+resistance. Four correctly attributed IPs can contribute 20 attempts against
+one target in the default 60-second window. Saturation is checked before weak
+legacy identity or workspace-password verification, so it can reject a correct
+tokenless legacy claim or a correct new workspace join. Each exhaustion window
+expires, but sustained distributed traffic can renew the delay. A valid saved
+account token bypasses the weak legacy-claim bucket, and saved workspace members
+can use workspace selection. The remaining tokenless-claim and new-join cases
+stay open as Low/P3 risks. Closed-beta operation requires the authentication/
+security and release owners to sign the time-bounded acceptance in the release
+checklist; it expires on 2026-08-10 or before exposure expands.
+
 ## Common Commands
 
 | Command | What it does |
 | --- | --- |
-| `make install` | Create `.venv`, install Python requirements, run frontend `npm ci`. |
+| `make install` | Create `.venv` with Python 3.14.6, upgrade to the constrained pip version, install the hash-locked development dependencies, and run frontend `npm ci`. Override `PYTHON_BOOTSTRAP` only with a Python 3.14.6 executable. |
+| `make lock` | Regenerate the hash-locked Python runtime/development requirements and the npm lockfile from the declared inputs. |
 | `make backend` | Start Flask through `scripts/run_local_backend.sh`. |
 | `make frontend` | Start Vite on `127.0.0.1` for frontend development. |
 | `make unified` | Build/reuse the frontend and serve the whole app from Flask on port 5050. |
@@ -221,7 +243,7 @@ replace every placeholder in the deployment provider's secret/env manager.
 | `make operator-signoff-status` | Render `tmp/release/operator-signoff-status.md`/`.json` from `tmp/release/operator-signoff.json`; start from `docs/rc_operator_signoff_manifest.example.json` and add `OPERATOR_SIGNOFF_STATUS_ARGS="--require-complete"` before final RC issue closure. Final signoff rejects placeholder commit/operator metadata, non-hosted or example `target_url` values, and provided evidence that still points at placeholder/example/localhost sources. |
 | `make rc-handoff-artifacts` | Build the full local RC handoff bundle: source archive, issue snippets, recommendation matrix, external proof inputs, external proof execution plan, signoff values template, signoff-from-inputs preview, operator signoff status/draft/action plan, release evidence packet, and checklist status. |
 | `make post-rc-issue-evidence` | Preview generated RC issue comments; add `POST_RC_ISSUE_EVIDENCE_ARGS="--post"` to post with `gh`. |
-| `make deployment-readiness DEPLOYMENT_READINESS_ARGS="..."` | Validate hosted closed-beta env choices and optional live `/api/health`/metrics/security-header checks; add `--evidence-report` to save a Markdown/JSON artifact. |
+| `make deployment-readiness DEPLOYMENT_READINESS_ARGS="..."` | Validate hosted closed-beta env choices, require a PostgreSQL/psycopg round trip, and optionally check live `/api/health`/metrics/security headers; add `--evidence-report` to save a Markdown/JSON artifact. |
 | `make db-upgrade` | Run Flask database migrations. |
 | `make reproject-session SESSION_ID=...` | Rebuild projections for one session. |
 | `make reproject-all` | Rebuild projections for all sessions. |
@@ -374,7 +396,7 @@ make browser-smoke
 make visual-smoke
 make visual-smoke-review
 make secrets
-pip-audit -r requirements.txt
+pip-audit -r requirements-dev.lock.txt
 ```
 
 Before a beta or public playtest, also run:
@@ -445,15 +467,16 @@ not necessarily what the running backend is serving.
   and an explicit `AIDM_SOCKETIO_WORKER_MODEL`.
 - For the first hosted closed beta, use the `single` worker-model decision in
   `docs/socketio_worker_model.md`: `AIDM_SOCKETIO_WORKER_MODEL=single`,
-  `AIDM_SOCKETIO_ASYNC_MODE=eventlet`, and `WEB_CONCURRENCY=1`.
+  `AIDM_SOCKETIO_ASYNC_MODE=threading`, `AIDM_GUNICORN_THREADS=100`, and
+  `WEB_CONCURRENCY=1`.
 - For hosted same-origin auth, enable `AIDM_ACCOUNT_COOKIE_AUTH_ENABLED=true`,
   keep `AIDM_ACCOUNT_COOKIE_SECURE=true`, and set
   `AIDM_ACCOUNT_TOKEN_RESPONSE_ENABLED=false` when browser JavaScript should not
   receive raw account tokens. Cookie-authenticated unsafe REST requests use the
   companion `aidm_csrf_token` cookie and `X-AIDM-CSRF-Token` header.
-- For multiple backend workers, use database-backed rate limits and turn
-  coordination, plus deployment-level Socket.IO affinity or
-  `AIDM_SOCKETIO_WORKER_MODEL=message_queue` with `AIDM_SOCKETIO_MESSAGE_QUEUE`.
+- Multiple backend workers are not yet a supported production topology. Before
+  enabling them, move presence/music state to shared storage and prove both
+  load-balancer affinity and shared Socket.IO queue delivery in staging.
 
 ## Troubleshooting
 

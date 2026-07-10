@@ -11,17 +11,23 @@ secret/env managers. Choose the matching exposure mode in
 
 - `AIDM_ENV=production`
 - `FLASK_SECRET_KEY=<strong explicit secret>`
+- `AIDM_DATABASE_URI=postgresql+psycopg://...` with a reachable PostgreSQL
+  database; hosted readiness rejects implicit or SQLite databases
 - `AIDM_AUTH_REQUIRED=true`
 - `AIDM_API_AUTH_TOKENS` or `AIDM_API_AUTH_TOKEN_WORKSPACES` configured
 - `AIDM_AUTO_CREATE_SCHEMA=false`
 - `AIDM_RATE_LIMIT_STORE=database`
 - `AIDM_TURN_COORDINATOR_STORE=database`
-- `AIDM_SOCKETIO_WORKER_MODEL=single`, `sticky`, or `message_queue`
-- `AIDM_SOCKETIO_MESSAGE_QUEUE=<queue-url>` when the worker model is
-  `message_queue`
+- `AIDM_SOCKETIO_WORKER_MODEL=single`; other values are rejected in hosted
+  production until presence/music state is shared across processes
+- `AIDM_SOCKETIO_ASYNC_MODE=threading`
+- `AIDM_GUNICORN_THREADS=100` (production minimum: 16)
+- `WEB_CONCURRENCY=1`
 - `AIDM_OBSERVABILITY_PROVIDER=<provider-name>`
 - `AIDM_ALERT_OWNER=<team-or-person>`
 - `AIDM_SECURITY_HEADERS_ENABLED=true`
+- `AIDM_ADMIN_ENABLED=false`; the Flask-Admin model UI is local/development
+  tooling and is not part of the hosted production surface
 - Explicit REST and Socket.IO CORS allowlists, unless same-origin deployment
   intentionally leaves them empty
 - For hosted cookie-only account auth:
@@ -31,10 +37,10 @@ secret/env managers. Choose the matching exposure mode in
 
 ## Startup
 
-1. Install runtime dependencies from `requirements.runtime.txt` with
-   `requirements.constraints.txt`.
-2. Apply migrations.
-3. Run `python scripts/deploy_bootstrap.py --check-only`.
+1. Install runtime dependencies with
+   `python -m pip install --require-hashes -r requirements.runtime.lock.txt`.
+2. Apply migrations with `make db-upgrade`.
+3. Run `.venv/bin/python scripts/deploy_bootstrap.py --check-only`.
 4. Run deployment readiness against the target environment and, when available,
    the deployed target URL:
    `make deployment-readiness DEPLOYMENT_READINESS_ARGS="--env-file /path/to/env --target-url https://aidm.example.com --auth-token <token> --evidence-report tmp/release/deployment-readiness-evidence.md"`.
@@ -42,30 +48,46 @@ secret/env managers. Choose the matching exposure mode in
    `--socketio-staging-proof` only when those deployment choices are
    intentionally documented. Use `.json` as the evidence report suffix when a
    structured artifact is better for CI or release automation.
+   The environment check opens `AIDM_DATABASE_URI` and runs `SELECT 1`; a
+   syntactically valid but unreachable database does not pass readiness.
 5. Start AIDM with a production Socket.IO-capable server. Do not use
    `deploy_bootstrap.py` as the production server process. For the first
    closed-beta single-worker deployment, use the decision in
    `docs/socketio_worker_model.md`:
 
    ```bash
+   AIDM_ENV=production \
    AIDM_SOCKETIO_WORKER_MODEL=single \
-   AIDM_SOCKETIO_ASYNC_MODE=eventlet \
+   AIDM_SOCKETIO_ASYNC_MODE=threading \
+   AIDM_GUNICORN_THREADS=100 \
    WEB_CONCURRENCY=1 \
    PORT=5050 \
    scripts/run_production_server.sh
    ```
 
    To inspect the exact Gunicorn command without starting a server, run
-   `scripts/run_production_server.sh --print`.
+   `scripts/run_production_server.sh --print`. A real start always runs
+   migrations and the deployment bootstrap preflight before Gunicorn execs.
 
 ## CI Gates
 
 - Secret scan: `python scripts/scan_secrets.py`
-- Python dependency audit: `python -m pip_audit -r requirements.runtime.txt`
+- Python dependency audit: `python -m pip_audit -r requirements.runtime.lock.txt`
 - Python correctness lint: `python -m ruff check --select E9,F63,F7,F82 aidm_server tests scripts`
 - Backend tests: `python -m pytest`
+- PostgreSQL production rehearsal: the `postgres-integration` GitHub Actions
+  job applies the migration chain, runs production bootstrap, starts the real
+  Gunicorn threaded entrypoint with `simple-websocket`, checks live health, metrics, Prometheus output,
+  and security headers, exercises concurrency fencing, and runs the cookie-auth,
+  forbidden-response, and export/import smokes against PostgreSQL. The job
+  uploads the resulting Markdown as the `postgres-production-rehearsal`
+  artifact. This remote rehearsal complements, but does not replace, proof
+  against the actual hosted staging target and its managed backup/telemetry
+  providers.
 - Backup/restore drill for local/private SQLite beta data:
   `python scripts/backup_restore_drill.py --database-uri sqlite:////absolute/path/to/dnd_ai_dm.db`
+- Guarded PostgreSQL custom-archive restore drill against a separately supplied
+  empty database: `make postgres-backup-restore-drill POSTGRES_BACKUP_RESTORE_DRILL_ARGS="--source-uri-file /secure/source-uri --empty-target-uri-file /secure/empty-target-uri"`
 - Migration chain drill:
   `python scripts/migration_chain_drill.py`
 - Hosted cookie-only account auth smoke:
@@ -119,11 +141,17 @@ deployments should configure the managed destination named in production env.
 
 - SQLite, disabled auth, wildcard CORS, in-memory rate limiting, in-memory turn
   coordination, local `.env.local` writes, and module-global Socket.IO state are
-  local/private deployment conveniences.
-- For multiple backend workers, use database-backed turn coordination and rate
-  limiting, then choose `AIDM_SOCKETIO_WORKER_MODEL=sticky` with load balancer
-  affinity or `message_queue` with `AIDM_SOCKETIO_MESSAGE_QUEUE`, and prove that
-  model with a staging smoke test.
+  local/private deployment conveniences. Hosted production uses an explicit
+  `postgresql+psycopg` URI.
+- `scripts/run_production_server.sh` requires `AIDM_ENV=production`. When that
+  boundary is already present in the process environment, repo-local
+  `.env.local` is ignored and an explicit `AIDM_ENV_FILE` is rejected if it
+  attempts to downgrade the process to a non-production environment. Use an
+  explicit secret-manager export or a production-only env file.
+- Multiple backend workers remain deferred. Fencing and database-backed rate
+  limits are necessary but not sufficient: presence/music state must move out
+  of process, and staging must prove both load-balancer affinity and shared
+  Socket.IO queue delivery before production accepts this topology.
 - Session storage is acceptable for local/private beta. Hosted same-origin
   deployments can use the server-issued `HttpOnly` account cookie mode,
   suppress raw account tokens in JSON responses, and rely on the companion

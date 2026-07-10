@@ -31,6 +31,7 @@ CAMPAIGN_PACK_METADATA_FLAG = 'campaignPackStateStripped'
 class SessionImportError(ValueError):
     def __init__(self, message: str, *, error_code: str = 'validation_error', status_code: int = 400):
         super().__init__(message)
+        self.public_message = message
         self.error_code = error_code
         self.status_code = status_code
 
@@ -46,6 +47,7 @@ def import_session_export(
     workspace_id: str | None = None,
     include_hidden_state: bool = True,
     allow_campaign_pack_state: bool = True,
+    required_player_account_id: int | None = None,
 ) -> SessionImportResult:
     if not isinstance(payload, dict):
         raise SessionImportError('Expected JSON request body.')
@@ -94,6 +96,7 @@ def import_session_export(
         campaign,
         _list(payload.get('turnEvents'))[:MAX_IMPORTED_EVENTS],
         allow_campaign_pack_events=allow_campaign_pack_state,
+        required_player_account_id=required_player_account_id,
     )
     log_entries_imported = 0
     if events_imported == 0:
@@ -244,6 +247,7 @@ def _import_turn_events(
     events: list[Any],
     *,
     allow_campaign_pack_events: bool = True,
+    required_player_account_id: int | None = None,
 ) -> tuple[int, int]:
     imported = 0
     projected_log_entries = 0
@@ -261,7 +265,11 @@ def _import_turn_events(
             session_id=session_obj.session_id,
             campaign_id=campaign.campaign_id,
             turn_id=None,
-            player_id=_campaign_player_id(event_record.get('player_id'), campaign.campaign_id),
+            player_id=_campaign_player_id(
+                event_record.get('player_id'),
+                campaign,
+                required_player_account_id=required_player_account_id,
+            ),
             event_type=event_type,
             payload_json=safe_json_dumps(payload, {}),
             created_at=created_at,
@@ -309,17 +317,21 @@ def _import_log_entries(session_obj: Session, entries: list[Any]) -> int:
     return imported
 
 
-def _campaign_player_id(value: Any, campaign_id: int) -> int | None:
+def _campaign_player_id(
+    value: Any,
+    campaign: Campaign,
+    *,
+    required_player_account_id: int | None = None,
+) -> int | None:
     player_id = _coerce_positive(value)
     if player_id is None:
         return None
     player = db.session.get(Player, player_id)
-    campaign = db.session.get(Campaign, campaign_id)
-    if not player or not campaign:
+    if not player:
         return None
-    if player.workspace_id:
-        return player.player_id if player.workspace_id == campaign.workspace_id else None
-    if player.campaign_id != campaign_id:
+    if player.workspace_id != campaign.workspace_id or player.campaign_id != campaign.campaign_id:
+        return None
+    if required_player_account_id is not None and player.account_id != required_player_account_id:
         return None
     return player.player_id
 

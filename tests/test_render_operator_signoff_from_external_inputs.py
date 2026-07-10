@@ -199,11 +199,38 @@ def test_build_manifest_requires_worker_evidence_before_multi_worker_not_applica
     assert any(item['key'] == 'multi_worker_socketio_staging' and not item['complete'] for item in report['items'])
 
 
-def test_build_manifest_requires_staging_proof_for_explicit_multi_worker_model(tmp_path):
+def test_build_manifest_rejects_sticky_model_without_staging_proof(tmp_path):
     payload = _complete_values_payload()
     payload['values']['socketio_worker_model'] = 'sticky'
     payload['values']['multi_worker_socketio_staging_not_applicable'] = 'true'
     payload['values'].pop('socketio_staging_proof', None)
+
+    with pytest.raises(ValueError, match='socketio_worker_model must be single.*sticky is unsupported'):
+        build_manifest_from_values(
+            draft_manifest=example_manifest(),
+            values_payload=payload,
+            generated_at='2026-06-19T00:01:00+00:00',
+        )
+
+
+def test_build_manifest_rejects_message_queue_model_even_with_staging_proof():
+    payload = _complete_values_payload()
+    payload['values']['socketio_worker_model'] = 'message_queue'
+    payload['values']['multi_worker_socketio_staging_not_applicable'] = 'true'
+    payload['values']['socketio_staging_proof'] = 'https://platform.aidm.closedbeta.dev/socketio-message-queue-proof'
+
+    with pytest.raises(ValueError, match='socketio_worker_model must be single.*message_queue is unsupported'):
+        build_manifest_from_values(
+            draft_manifest=example_manifest(),
+            values_payload=payload,
+            generated_at='2026-06-19T00:01:00+00:00',
+        )
+
+
+def test_build_manifest_does_not_treat_not_applicable_as_single_worker_proof():
+    payload = _complete_values_payload()
+    payload['values'].pop('socketio_worker_model')
+    payload['values']['multi_worker_socketio_staging_not_applicable'] = 'true'
 
     manifest = build_manifest_from_values(
         draft_manifest=example_manifest(),
@@ -214,25 +241,7 @@ def test_build_manifest_requires_staging_proof_for_explicit_multi_worker_model(t
 
     assert item['status'] == 'pending'
     assert item['evidence'] == ''
-    assert 'sticky Socket.IO mode requires' in item['notes']
-
-
-def test_build_manifest_accepts_staging_proof_for_explicit_multi_worker_model():
-    payload = _complete_values_payload()
-    payload['values']['socketio_worker_model'] = 'message_queue'
-    payload['values']['multi_worker_socketio_staging_not_applicable'] = 'true'
-    payload['values']['socketio_staging_proof'] = 'https://platform.aidm.closedbeta.dev/socketio-message-queue-proof'
-
-    manifest = build_manifest_from_values(
-        draft_manifest=example_manifest(),
-        values_payload=payload,
-        generated_at='2026-06-19T00:01:00+00:00',
-    )
-    item = manifest['items']['multi_worker_socketio_staging']
-
-    assert item['status'] == 'provided'
-    assert item['evidence'] == 'https://platform.aidm.closedbeta.dev/socketio-message-queue-proof'
-    assert 'staging proof supplied' in item['notes']
+    assert 'Set socketio_worker_model=single' in item['notes']
 
 
 def test_main_writes_values_template_and_signoff_preview(tmp_path):
@@ -484,10 +493,13 @@ def test_main_uses_current_packet_context_for_default_draft(tmp_path):
 
 
 def test_main_existing_incomplete_values_file_stays_invalid(tmp_path):
+    draft = tmp_path / 'operator-signoff.draft.json'
     values = tmp_path / 'external-proof-values.json'
     packet = tmp_path / 'release-evidence-packet.json'
     output = tmp_path / 'operator-signoff.from-inputs.json'
+    status_output = tmp_path / 'operator-signoff.from-inputs-status.md'
     status_json = tmp_path / 'operator-signoff.from-inputs-status.json'
+    draft.write_text(json.dumps(example_manifest()), encoding='utf-8')
     packet.write_text('{}', encoding='utf-8')
     values.write_text(
         json.dumps({'values': {'aidm_ci_run_url': 'https://github.com/dreichner2/AIDM-main/actions/runs/111'}}),
@@ -496,12 +508,16 @@ def test_main_existing_incomplete_values_file_stays_invalid(tmp_path):
 
     exit_code = main(
         [
+            '--draft',
+            str(draft),
             '--values',
             str(values),
             '--packet-json',
             str(packet),
             '--output',
             str(output),
+            '--status-output',
+            str(status_output),
             '--status-json-output',
             str(status_json),
             '--generated-at',

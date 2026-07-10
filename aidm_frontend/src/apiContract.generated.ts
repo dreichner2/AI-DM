@@ -292,6 +292,131 @@ export type SessionState = {
   updated_at: string | null
 }
 
+export type SessionRecapSource = 'state_snapshot' | 'session_state' | 'recent_turns' | 'empty'
+
+export type SessionRecapState = {
+  rolling_summary: string
+  current_location: string
+  current_quest: string
+  updated_at: string | null
+}
+
+export type SessionRecapResponse = {
+  session_id: number
+  campaign_id: number
+  sessionId: number
+  campaignId: number
+  recap: string
+  source: SessionRecapSource
+  generated: boolean
+  state: SessionRecapState
+}
+
+export type CampaignPackCommentaryPack = {
+  packId: string
+  title: string
+  version: string
+  schemaVersion: string
+}
+
+export type CampaignPackCommentaryProgress = {
+  activeCheckpointId: string | null
+  completedCheckpointIds: string[]
+  skippedCheckpointIds: string[]
+  failedCheckpointIds: string[]
+  statusByCheckpointId: Record<string, string>
+  progressRevision: number
+}
+
+export type CampaignPackCommentaryGraphNode = {
+  id: string
+  title: string
+  terminal: boolean
+  sortOrder: number
+}
+
+export type CampaignPackCommentaryGraphEdge = {
+  from: string
+  to: string
+  type: string
+}
+
+export type CampaignPackCommentaryGraph = {
+  startCheckpointId: string | null
+  nodes: CampaignPackCommentaryGraphNode[]
+  nodeIds: string[]
+  edges: CampaignPackCommentaryGraphEdge[]
+  reachable: string[]
+}
+
+export type CampaignPackCommentaryCheckpoint = {
+  id: string
+  checkpointId: string
+  title: string
+  summary: string
+  status?: string
+  reason?: string | null
+  edgeType?: string
+  fromCheckpointId?: string
+  fromTitle?: string
+}
+
+export type CampaignPackCommentaryRecord = {
+  id: string
+  title: string
+  summary: string
+  hidden: boolean
+  checkpointIds: string[]
+}
+
+export type CampaignPackCommentarySummary = {
+  routeTakenCount: number
+  roadsNotTakenCount: number
+  alternateEndingsCount: number
+  undiscoveredRecordsCount: number
+}
+
+export type CampaignPackCommentaryResponse = {
+  enabled: boolean
+  sessionId: number
+  campaignId: number
+  pack: CampaignPackCommentaryPack
+  progress: CampaignPackCommentaryProgress
+  graph: CampaignPackCommentaryGraph
+  routeTaken: CampaignPackCommentaryCheckpoint[]
+  roadsNotTaken: CampaignPackCommentaryCheckpoint[]
+  alternateEndings: CampaignPackCommentaryCheckpoint[]
+  undiscoveredRecords: Record<string, CampaignPackCommentaryRecord[]>
+  summary: CampaignPackCommentarySummary
+  commentary: string[]
+}
+
+export type ContentRating = 'standard' | 'mature' | 'unrestricted'
+
+export type SessionContentSettings = {
+  content_rating: ContentRating
+  contentRating: ContentRating
+  tone_tags: string[]
+  toneTags: string[]
+  updated_at: string | null
+  updatedAt: string | null
+  ratings: ContentRating[]
+  available_tone_tags: string[]
+  availableToneTags: string[]
+}
+
+export type SessionContentSettingsResponse = {
+  session_id: number
+  settings: SessionContentSettings
+}
+
+export type SessionContentSettingsUpdateResponse = {
+  session_id: number
+  settings: SessionContentSettings
+  session: SessionSummary
+  state: SessionState
+}
+
 export type Player = {
   player_id: number
   workspace_id: string
@@ -332,6 +457,69 @@ export type PlayerDetail = {
   inventory: unknown
   character_sheet: unknown
   derived?: JsonRecord
+}
+
+export type PlayNowPregeneratedCharacter = {
+  character_id: string
+  character_name: string
+  name: string
+  race: string
+  sex: string
+  class_: string
+  char_class: string
+  level: number
+  tagline: string
+  profile_image: string
+  stats: unknown
+  inventory: unknown
+  character_sheet: unknown
+}
+
+export type PlayNowExamplePack = {
+  example_pack_id: string
+  pack_id: string
+  source_filename: string | null
+  source: string
+}
+
+export type PlayNowJoinSessionPayload = {
+  workspace_id: string
+  session_id: number
+  player_id: number
+}
+
+export type PlayNowSendMessagePayload = {
+  workspace_id: string
+  session_id: number
+  campaign_id: number
+  world_id: number
+  player_id: number
+}
+
+export type PlayNowJoinContext = {
+  workspace_id: string
+  campaign_id: number
+  session_id: number
+  player_id: number
+  world_id: number
+  socket: { event: 'join_session'; payload: PlayNowJoinSessionPayload }
+  send_message: { event: 'send_message'; payload: PlayNowSendMessagePayload }
+}
+
+export type PlayNowResponse = {
+  mode: 'play_now'
+  workspace_id: string
+  campaign_id: number
+  session_id: number
+  player_id: number
+  world_id: number
+  idempotent_replay: boolean
+  campaign: Campaign
+  session: SessionSummary
+  player: PlayerDetail
+  pregen: PlayNowPregeneratedCharacter
+  example_pack: PlayNowExamplePack
+  join_context: PlayNowJoinContext
 }
 
 export type PlayerEquipmentUpdateResponse = PlayerDetail & { snapshot_changed: boolean; equipment_update: JsonRecord }

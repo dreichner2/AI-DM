@@ -595,6 +595,15 @@ class CampaignSegment(db.Model):
 
 class DmTurn(db.Model):
     __tablename__ = 'dm_turns'
+    __table_args__ = (
+        db.Index(
+            'uq_dm_turns_session_player_client_message',
+            'session_id',
+            'player_id',
+            'client_message_id',
+            unique=True,
+        ),
+    )
 
     turn_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     session_id = db.Column(db.Integer, db.ForeignKey('sessions.session_id', ondelete='CASCADE'), nullable=False, index=True)
@@ -616,6 +625,7 @@ class DmTurn(db.Model):
     latency_ms = db.Column(db.Integer)
     llm_provider = db.Column(db.String)
     llm_model = db.Column(db.String)
+    client_message_id = db.Column(db.String(80), nullable=True)
     metadata_json = db.Column(db.Text)
 
     created_at = db.Column(db.DateTime, default=utc_now)
@@ -887,6 +897,7 @@ class SessionTurnLock(db.Model):
         primary_key=True,
     )
     owner_token = db.Column(db.String(64), nullable=False)
+    fencing_token = db.Column(db.BigInteger, nullable=False, default=0, server_default='0')
     acquired_at = db.Column(db.DateTime, default=utc_now, nullable=False)
     expires_at = db.Column(db.DateTime, nullable=False)
     updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now, nullable=False)
