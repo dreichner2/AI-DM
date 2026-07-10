@@ -36,7 +36,7 @@ updates:
         patterns:
           - '*'
 
-  - package-ecosystem: docker
+  - package-ecosystem: docker-compose
     directory: /observability
     schedule:
       interval: weekly

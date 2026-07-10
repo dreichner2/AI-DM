@@ -90,7 +90,9 @@ def test_ci_workflows_pin_upgraded_toolchains_and_dependencies():
     )
 
 
-def test_dependabot_tracks_github_actions():
+def test_dependabot_tracks_github_actions_and_docker_compose():
     dependabot = (REPO_ROOT / '.github' / 'dependabot.yml').read_text(encoding='utf-8')
 
     assert 'package-ecosystem: github-actions' in dependabot
+    assert 'package-ecosystem: docker-compose' in dependabot
+    assert 'package-ecosystem: docker\n' not in dependabot
