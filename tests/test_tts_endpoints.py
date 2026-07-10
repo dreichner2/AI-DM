@@ -25,6 +25,25 @@ def test_tts_speak_requires_api_key(client):
     assert response.get_json()['error_code'] == 'tts_not_configured'
 
 
+def test_tts_speak_rejects_oversized_raw_text_before_sanitizing(client, monkeypatch):
+    def unexpected_sanitizer_call(value):
+        raise AssertionError(f'oversized text reached sanitizer: {len(value)} characters')
+
+    monkeypatch.setattr(system_blueprint, 'normalize_tts_text', unexpected_sanitizer_call)
+
+    response = client.post(
+        '/api/tts/speak',
+        json={'text': '[x' * ((system_blueprint.TTS_MAX_INPUT_CHARS // 2) + 1)},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {
+        'error': f'Text input must be {system_blueprint.TTS_MAX_INPUT_CHARS} characters or fewer.',
+        'error_code': 'validation_error',
+        'details': {'max_input_chars': system_blueprint.TTS_MAX_INPUT_CHARS},
+    }
+
+
 def test_tts_speak_does_not_expose_transport_exception_details(client, app, monkeypatch):
     app.config['AIDM_DEEPGRAM_API_KEY'] = 'test-key'
     internal_detail = 'proxy=corp.internal token=secret-upstream-token'

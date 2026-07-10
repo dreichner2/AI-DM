@@ -40,6 +40,7 @@ DEEPGRAM_SPEAK_URL = 'https://api.deepgram.com/v1/speak'
 DEEPGRAM_CHUNK_LIMIT = 2000
 DEEPGRAM_FIRST_CHUNK_LIMIT = 360
 TTS_MAX_CHARS = 6000
+TTS_MAX_INPUT_CHARS = TTS_MAX_CHARS * 4
 TTS_REQUEST_FAILED_MESSAGE = 'Deepgram TTS is temporarily unavailable. Please retry.'
 BAD_TURN_CATEGORIES = {'continuity', 'rules', 'latency', 'safety', 'state', 'other'}
 TELEMETRY_INCIDENT_EVENT_NAMES = (
@@ -412,7 +413,16 @@ def speak_text():
     if payload is None:
         return error_response('validation_error', 'Expected JSON request body.', 400)
 
-    text = normalize_tts_text(str(payload.get('text') or ''))
+    raw_text = str(payload.get('text') or '')
+    if len(raw_text) > TTS_MAX_INPUT_CHARS:
+        return error_response(
+            'validation_error',
+            f'Text input must be {TTS_MAX_INPUT_CHARS} characters or fewer.',
+            400,
+            {'max_input_chars': TTS_MAX_INPUT_CHARS},
+        )
+
+    text = normalize_tts_text(raw_text)
     if not text:
         return error_response('validation_error', 'Text is required.', 400)
     if len(text) > TTS_MAX_CHARS:
