@@ -89,7 +89,7 @@ Choose one provider:
 
 | Provider | Minimal local configuration |
 | --- | --- |
-| Codex CLI | `AIDM_LLM_PROVIDER=codex_cli` with Codex installed and signed in |
+| Codex CLI | `AIDM_LLM_PROVIDER=codex_cli` with Codex installed and a dedicated signed-in `AIDM_CODEX_HOME`; AIDM runs it as a host-isolated narrator |
 | Gemini | `GOOGLE_GENAI_API_KEY=...` |
 | DeepSeek | `AIDM_DEEPSEEK_API_KEY=...` |
 | NVIDIA / Kimi | `AIDM_NVIDIA_API_KEY=...` |
@@ -102,6 +102,16 @@ provider capabilities are defined in
 
 Never commit `.env.local` or paste real credentials into logs, issues, or
 screenshots.
+
+The Codex adapter does not expose the repository, service environment, shell,
+network, web search, apps, plugins, skills, MCP, or host configuration to
+gameplay prompts. Each turn runs in an empty read-only disposable workspace.
+The pinned CLI can still offer a small set of built-in local utility tools;
+filesystem permissions confine them to that empty workspace and required
+runtime files, while AIDM rejects any structured tool event present in Codex's
+JSONL output. Saved-login deployments must use a persistent, AIDM-only
+`AIDM_CODEX_HOME` so token refreshes persist without loading a user's Codex
+configuration or history.
 
 ## Development
 

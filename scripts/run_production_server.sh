@@ -41,6 +41,12 @@ if [[ "${AIDM_LLM_PROVIDER:-}" == "codex_cli" || "${AIDM_LLM_PROVIDER:-}" == "co
     echo "AIDM_LLM_PROVIDER=${AIDM_LLM_PROVIDER} requires an available Codex executable." >&2
     exit 127
   fi
+  if [[ -z "${AIDM_CODEX_ACCESS_TOKEN:-${CODEX_ACCESS_TOKEN:-}}" ]]; then
+    if [[ -z "${AIDM_CODEX_HOME:-}" || ! -f "${AIDM_CODEX_HOME}/auth.json" ]]; then
+      echo "AIDM_LLM_PROVIDER=${AIDM_LLM_PROVIDER} requires a dedicated signed-in AIDM_CODEX_HOME or AIDM_CODEX_ACCESS_TOKEN." >&2
+      exit 2
+    fi
+  fi
   CODEX_BIN_DIR="$(dirname "${RESOLVED_CODEX_EXECUTABLE}")"
   if [[ -x "${CODEX_BIN_DIR}/node" ]]; then
     export PATH="${CODEX_BIN_DIR}:${PATH}"

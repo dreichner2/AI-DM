@@ -70,6 +70,31 @@ def test_production_server_command_rejects_invalid_thread_count():
     assert 'AIDM_GUNICORN_THREADS must be an integer >= 16.' in result.stderr
 
 
+def test_production_server_command_rejects_codex_without_dedicated_auth(tmp_path: Path):
+    codex_executable = tmp_path / 'codex'
+    codex_executable.write_text('#!/bin/sh\n', encoding='utf-8')
+    codex_executable.chmod(0o755)
+    env = _production_env(
+        AIDM_LLM_PROVIDER='codex_cli',
+        AIDM_CODEX_EXECUTABLE=str(codex_executable),
+        AIDM_CODEX_HOME='',
+        AIDM_CODEX_ACCESS_TOKEN='',
+        CODEX_ACCESS_TOKEN='',
+    )
+
+    result = subprocess.run(
+        ['bash', 'scripts/run_production_server.sh', '--print'],
+        cwd=os.getcwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert 'dedicated signed-in AIDM_CODEX_HOME' in result.stderr
+
+
 def test_production_server_command_rejects_noncanonical_or_deferred_worker_models():
     for worker_model in ('SINGLE', 'single ', 'sticky', 'message_queue'):
         result = subprocess.run(
@@ -174,11 +199,15 @@ def test_production_server_command_propagates_render_codex_runtime(tmp_path: Pat
     )
     python_bin.chmod(0o755)
     gunicorn_bin.chmod(0o755)
+    codex_home = tmp_path / 'aidm-codex-home'
+    codex_home.mkdir()
+    (codex_home / 'auth.json').write_text('{"auth":"test"}', encoding='utf-8')
     env = _production_env(
         PYTHON_BIN=str(python_bin),
         GUNICORN_BIN=str(gunicorn_bin),
         AIDM_LLM_PROVIDER='codex_cli',
         AIDM_CODEX_EXECUTABLE='codex',
+        AIDM_CODEX_HOME=str(codex_home),
         AIDM_TEST_CODEX_EXECUTABLE=str(codex_bin),
         AIDM_TEST_COMMAND_LOG=str(log_path),
         PATH='/usr/bin:/bin',

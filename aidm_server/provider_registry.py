@@ -37,7 +37,11 @@ PROVIDER_CATALOG: dict[str, dict] = {
         ],
         'capabilities': {
             'streaming': True,
+            'progressive_streaming': False,
             'oauth_cli': True,
+            'isolated_runtime': True,
+            'host_tool_access': False,
+            'tool_event_policy': 'fail_closed',
             'thinking_control': True,
             'default_timeout_seconds': 240,
             'default_temperature': 0.0,

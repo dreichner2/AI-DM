@@ -6,13 +6,12 @@ from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
-import queue
+import signal
 import subprocess
 import tempfile
-from threading import Lock, Thread
+from threading import Lock
 import time
 from typing import Any, Generator
-from uuid import uuid4
 
 from flask import current_app, has_app_context
 import requests
@@ -760,6 +759,10 @@ class DeepSeekChatProvider(NvidiaChatProvider):
 
 class CodexCliProvider(BaseLLMProvider):
     provider_name = 'codex_cli'
+    # Render is deliberately single-process, but its gthread worker can invoke
+    # multiple providers concurrently. Codex rotates saved OAuth refresh tokens,
+    # so saved-login invocations must not race within that process.
+    _saved_auth_lock = Lock()
 
     def __init__(
         self,
@@ -778,7 +781,9 @@ class CodexCliProvider(BaseLLMProvider):
         self.workdir = str(workdir or os.getcwd()).strip()
         self.timeout_seconds = max(1, int(timeout_seconds))
         self.reasoning_effort = str(reasoning_effort or 'low').strip().lower()
-        self.ignore_rules = bool(ignore_rules)
+        # Gameplay prompts are untrusted. Project and user execution rules must
+        # never be allowed to expand the narrator's runtime capabilities.
+        self.ignore_rules = True
         self.prompt_role = str(prompt_role or 'helper').strip().lower()
 
     def _resolved_executable(self) -> str:
@@ -816,322 +821,333 @@ class CodexCliProvider(BaseLLMProvider):
         sections.append(f'TASK INPUT:\n{request.prompt}')
         return '\n\n'.join(sections)
 
-    def _command(self, output_path: str | None = None, *, json_output: bool = False) -> list[str]:
+    _DISABLED_FEATURES = (
+        'apps',
+        'browser_use',
+        'browser_use_external',
+        'browser_use_full_cdp_access',
+        'code_mode_host',
+        'computer_use',
+        'hooks',
+        'image_generation',
+        'in_app_browser',
+        'multi_agent',
+        'plugins',
+        'remote_plugin',
+        'shell_snapshot',
+        'shell_tool',
+        'unified_exec',
+        'workspace_dependencies',
+    )
+    _SAFE_ENV_COPY_KEYS = (
+        'LANG',
+        'LC_ALL',
+        'NODE_EXTRA_CA_CERTS',
+        'PATH',
+        'SSL_CERT_DIR',
+        'SSL_CERT_FILE',
+        'SYSTEMROOT',
+        'WINDIR',
+    )
+    _ALLOWED_EXEC_EVENT_TYPES = {
+        'item.completed',
+        'thread.started',
+        'turn.completed',
+        'turn.started',
+    }
+    _ALLOWED_EXEC_ITEM_TYPES = {'agent_message', 'reasoning'}
+    _PERMISSION_PROFILE_OVERRIDE = (
+        'permissions.aidm_narrator={'
+        'description="AIDM host-isolated narrator",'
+        'extends=":read-only",'
+        'filesystem={":root"="deny",":minimal"="read",'
+        '":workspace_roots"={"."="read"}},'
+        'network={enabled=false}'
+        '}'
+    )
+
+    def _command(self, runtime_workdir: str) -> list[str]:
         command = [
             self._resolved_executable(),
             'exec',
+            '--json',
+            '--ephemeral',
+            '--ignore-user-config',
+            '--ignore-rules',
+            '--strict-config',
+            '--skip-git-repo-check',
+            '-C',
+            runtime_workdir,
+            '--model',
+            self.model_name,
+            '-c',
+            'default_permissions="aidm_narrator"',
+            '-c',
+            'approval_policy="never"',
+            '-c',
+            'allow_login_shell=false',
+            '-c',
+            'web_search="disabled"',
+            '-c',
+            self._PERMISSION_PROFILE_OVERRIDE,
+            '-c',
+            'shell_environment_policy.inherit="none"',
+            '-c',
+            'shell_environment_policy.experimental_use_profile=false',
+            '-c',
+            'skills.bundled.enabled=false',
+            '-c',
+            'skills.include_instructions=false',
+            '-c',
+            'orchestrator.skills.enabled=false',
+            '-c',
+            'orchestrator.mcp.enabled=false',
+            '-c',
+            'include_apps_instructions=false',
+            '-c',
+            'include_collaboration_mode_instructions=false',
+            '-c',
+            'include_environment_context=false',
+            '-c',
+            'include_permissions_instructions=true',
+            '-c',
+            'tools.experimental_request_user_input.enabled=false',
+            '-c',
+            f'model_reasoning_effort={json.dumps(self.reasoning_effort)}',
         ]
-        if json_output:
-            command.append('--json')
-        command.extend(
-            [
-                '--ephemeral',
-                '--sandbox',
-                'read-only',
-                '-C',
-                self.workdir,
-                '--model',
-                self.model_name,
-                '-c',
-                f'model_reasoning_effort="{self.reasoning_effort}"',
-            ]
-        )
-        if output_path:
-            command.extend(['-o', output_path])
-        if self.ignore_rules:
-            command.insert(3, '--ignore-rules')
+        for feature in self._DISABLED_FEATURES:
+            command.extend(['--disable', feature])
         command.append('-')
         return command
 
     @staticmethod
-    def _toml_string(value: str) -> str:
-        return json.dumps(str(value or ''))
+    def _source_codex_home() -> Path:
+        configured = str(_cfg('AIDM_CODEX_HOME', os.getenv('CODEX_HOME')) or '').strip()
+        return Path(configured).expanduser() if configured else Path.home() / '.codex'
 
-    def _app_server_command(self) -> list[str]:
-        return [
-            self._resolved_executable(),
-            'app-server',
-            '--stdio',
-            '-c',
-            f'model={self._toml_string(self.model_name)}',
-            '-c',
-            f'model_reasoning_effort={self._toml_string(self.reasoning_effort)}',
-            '-c',
-            'approval_policy="never"',
-            '-c',
-            'sandbox_mode="read-only"',
-        ]
+    def _runtime_env(self, runtime_root: Path) -> dict[str, str]:
+        runtime_home = runtime_root / 'home'
+        runtime_tmp = runtime_root / 'tmp'
+        for path in (runtime_home, runtime_tmp):
+            path.mkdir(mode=0o700)
 
-    def _env(self) -> dict[str, str]:
-        env = os.environ.copy()
+        env = {
+            key: value
+            for key in self._SAFE_ENV_COPY_KEYS
+            if (value := os.getenv(key))
+        }
+        env.setdefault('PATH', os.defpath)
+        env.update(
+            {
+                'HOME': str(runtime_home),
+                'TEMP': str(runtime_tmp),
+                'TMP': str(runtime_tmp),
+                'TMPDIR': str(runtime_tmp),
+            }
+        )
         access_token = _cfg('AIDM_CODEX_ACCESS_TOKEN', os.getenv('CODEX_ACCESS_TOKEN'))
-        if access_token and not env.get('CODEX_ACCESS_TOKEN'):
+        if access_token:
+            runtime_codex_home = runtime_root / 'codex-home'
+            runtime_codex_home.mkdir(mode=0o700)
+            env['CODEX_HOME'] = str(runtime_codex_home)
             env['CODEX_ACCESS_TOKEN'] = str(access_token)
+        else:
+            # Keep Codex pointed at its real auth store so OAuth refresh-token
+            # rotation is persisted. --ignore-user-config plus explicit CLI
+            # overrides prevents this directory from contributing behavior,
+            # and the permissions profile denies the model access to it.
+            source_codex_home = self._source_codex_home()
+            if not (source_codex_home / 'auth.json').is_file():
+                raise ProviderNotConfiguredError(
+                    'Codex saved authentication is missing; configure AIDM_CODEX_HOME '
+                    'or AIDM_CODEX_ACCESS_TOKEN'
+                )
+            env['CODEX_HOME'] = str(source_codex_home)
         return env
 
-    @staticmethod
-    def _error_preview(value: str) -> str:
-        return str(value or '').strip()[-1200:]
+    def _parse_exec_output(self, stdout: str) -> str:
+        accumulated_text = ''
+        lifecycle_state = 'await_thread'
+        for raw_line in str(stdout or '').splitlines():
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            invalid_json = False
+            try:
+                event = json.loads(raw_line)
+            except json.JSONDecodeError:
+                invalid_json = True
+                event = None
+            if invalid_json:
+                raise RuntimeError('Codex CLI provider returned invalid structured output')
+            if not isinstance(event, dict):
+                raise RuntimeError('Codex CLI provider returned invalid structured output')
 
-    @staticmethod
-    def _send_app_server_message(process: subprocess.Popen, message: dict[str, Any]):
-        if process.stdin is None:
-            raise RuntimeError('Codex app-server stdin is unavailable')
-        process.stdin.write(json.dumps(message, separators=(',', ':')) + '\n')
-        process.stdin.flush()
+            event_type = event.get('type')
+            if event_type not in self._ALLOWED_EXEC_EVENT_TYPES:
+                raise RuntimeError('Codex CLI provider returned an unexpected event')
 
-    @staticmethod
-    def _pipe_reader(name: str, pipe, output_queue: queue.Queue):
-        try:
-            for line in pipe:
-                output_queue.put((name, line))
-        finally:
-            output_queue.put((name, None))
+            if event_type == 'thread.started':
+                thread_id = event.get('thread_id')
+                if (
+                    lifecycle_state != 'await_thread'
+                    or not isinstance(thread_id, str)
+                    or not thread_id.strip()
+                ):
+                    raise RuntimeError('Codex CLI provider returned invalid lifecycle output')
+                lifecycle_state = 'await_turn'
+                continue
+            if event_type == 'turn.started':
+                if lifecycle_state != 'await_turn':
+                    raise RuntimeError('Codex CLI provider returned invalid lifecycle output')
+                lifecycle_state = 'in_turn'
+                continue
+            if event_type == 'turn.completed':
+                if lifecycle_state != 'in_turn':
+                    raise RuntimeError('Codex CLI provider returned invalid lifecycle output')
+                lifecycle_state = 'completed'
+                continue
+            if lifecycle_state != 'in_turn':
+                raise RuntimeError('Codex CLI provider returned invalid lifecycle output')
 
-    @staticmethod
-    def _event_message_text(event: dict[str, Any]) -> tuple[str | None, bool]:
-        event_type = str(event.get('type') or event.get('method') or '')
-        if event_type in {'item.delta', 'item.agent_message.delta', 'item/agentMessage/delta'}:
-            delta = event.get('delta')
-            if isinstance(delta, str):
-                return delta, True
-            if isinstance(delta, dict):
-                text = delta.get('text') or delta.get('content')
-                return (str(text), True) if text else (None, True)
-            params = event.get('params')
-            if isinstance(params, dict):
-                text = params.get('delta') or params.get('text') or params.get('content')
-                if isinstance(text, dict):
-                    text = text.get('text') or text.get('content')
-                return (str(text), True) if text else (None, True)
-            return None, True
-        if event_type in {'item.completed', 'item/completed'}:
-            params = event.get('params') if isinstance(event.get('params'), dict) else {}
-            item = event.get('item') or params.get('item')
-            if isinstance(item, dict) and item.get('type') in {'agent_message', 'agentMessage'}:
+            item = event.get('item')
+            if not isinstance(item, dict):
+                raise RuntimeError('Codex CLI provider returned invalid structured output')
+            item_type = item.get('type')
+            if not isinstance(item_type, str) or not item_type:
+                raise RuntimeError('Codex CLI provider returned invalid structured output')
+            if item_type not in self._ALLOWED_EXEC_ITEM_TYPES:
+                raise RuntimeError('Codex CLI provider attempted a disabled tool')
+            if item_type == 'agent_message':
                 text = item.get('text')
-                return (str(text), False) if text else (None, False)
-        return None, False
+                if not isinstance(text, str) or not text.strip():
+                    raise RuntimeError('Codex CLI provider returned invalid structured output')
+                accumulated_text += text
+
+        if lifecycle_state != 'completed':
+            raise RuntimeError('Codex CLI provider did not complete the turn')
+        if not accumulated_text.strip():
+            raise RuntimeError('Codex CLI provider returned an empty response')
+        return accumulated_text.strip()
+
+    @staticmethod
+    def _terminate_process_tree(process: subprocess.Popen):
+        if os.name == 'posix':
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                process.kill()
+        else:
+            process.kill()
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+
+    @classmethod
+    def _run_process(
+        cls,
+        command,
+        *,
+        input,
+        capture_output,
+        text,
+        timeout,
+        cwd,
+        env,
+        check,
+    ):
+        if not capture_output:
+            raise ValueError('Codex CLI provider requires captured output')
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=text,
+            cwd=cwd,
+            env=env,
+            start_new_session=os.name == 'posix',
+        )
+        try:
+            stdout, stderr = process.communicate(input=input, timeout=timeout)
+        except BaseException:
+            cls._terminate_process_tree(process)
+            raise
+        completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        if check:
+            completed.check_returncode()
+        return completed
+
+    def _invoke(self, prompt: str) -> str:
+        try:
+            with tempfile.TemporaryDirectory(prefix='aidm-codex-runtime-') as runtime_dir:
+                runtime_root = Path(runtime_dir)
+                runtime_workdir = runtime_root / 'workspace'
+                runtime_workdir.mkdir(mode=0o700)
+                runtime_env = self._runtime_env(runtime_root)
+                deadline = time.monotonic() + self.timeout_seconds
+
+                def run_codex(timeout_seconds):
+                    return self._run_process(
+                        self._command(str(runtime_workdir)),
+                        input=prompt,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_seconds,
+                        cwd=str(runtime_workdir),
+                        env=runtime_env,
+                        check=False,
+                    )
+
+                if 'CODEX_ACCESS_TOKEN' in runtime_env:
+                    completed = run_codex(self.timeout_seconds)
+                else:
+                    acquired = self._saved_auth_lock.acquire(timeout=self.timeout_seconds)
+                    if not acquired:
+                        raise subprocess.TimeoutExpired(self.executable, self.timeout_seconds)
+                    try:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(self.executable, self.timeout_seconds)
+                        completed = run_codex(remaining)
+                    finally:
+                        self._saved_auth_lock.release()
+                if completed.returncode != 0:
+                    raise RuntimeError(f'Codex CLI provider failed (exit {completed.returncode})')
+                return self._parse_exec_output(completed.stdout)
+        except subprocess.TimeoutExpired as exc:
+            exc.output = None
+            exc.stderr = None
+            raise RuntimeError(f'Codex CLI provider timed out after {self.timeout_seconds} seconds') from None
+        except OSError:
+            raise RuntimeError('Codex CLI provider failed to start') from None
+        except RuntimeError:
+            raise
+        except Exception:
+            raise RuntimeError('Codex CLI provider failed') from None
 
     def generate(self, request: ProviderRequest) -> ProviderResponse:
-        prompt = self._build_prompt(request)
-        output_file = tempfile.NamedTemporaryFile(prefix='aidm-codex-', suffix='.txt', delete=False)
-        output_path = output_file.name
-        output_file.close()
-        try:
-            completed = subprocess.run(
-                self._command(output_path),
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
-                cwd=self.workdir,
-                env=self._env(),
-                check=False,
-            )
-            if completed.returncode != 0:
-                raise RuntimeError(
-                    'Codex CLI provider failed '
-                    f'(exit {completed.returncode}): {self._error_preview(completed.stderr or completed.stdout)}'
-                )
-            text = Path(output_path).read_text(encoding='utf-8').strip()
-            if not text:
-                text = str(completed.stdout or '').strip()
-            if not text:
-                raise RuntimeError('Codex CLI provider returned an empty response')
-            telemetry_metric(
-                'llm.generate.success_total',
-                1,
-                tags={'provider': self.provider_name, 'model': self.display_model_name},
-            )
-            return ProviderResponse(text=text, provider=self.provider_name, model=self.display_model_name)
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(f'Codex CLI provider timed out after {self.timeout_seconds} seconds') from exc
-        finally:
-            try:
-                Path(output_path).unlink(missing_ok=True)
-            except OSError:
-                pass
+        text = self._invoke(self._build_prompt(request))
+        telemetry_metric(
+            'llm.generate.success_total',
+            1,
+            tags={'provider': self.provider_name, 'model': self.display_model_name},
+        )
+        return ProviderResponse(text=text, provider=self.provider_name, model=self.display_model_name)
 
     def stream(self, request: ProviderRequest) -> Generator[str, None, None]:
-        prompt = self._build_prompt(request)
-        command = self._app_server_command()
-        try:
-            process = subprocess.Popen(
-                command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=self.workdir,
-                env=self._env(),
-            )
-        except OSError as exc:
-            raise RuntimeError(f'Codex app-server provider failed to start: {self._error_preview(str(exc))}') from exc
-
-        output_queue: queue.Queue = queue.Queue()
-        for name, pipe in (('stdout', process.stdout), ('stderr', process.stderr)):
-            if pipe is not None:
-                Thread(target=self._pipe_reader, args=(name, pipe, output_queue), daemon=True).start()
-
-        stderr_parts: list[str] = []
-        stdout_parts: list[str] = []
-        accumulated_text = ''
-        yielded_text = False
-        deadline = time.monotonic() + self.timeout_seconds
-        initialize_id = uuid4().hex
-        thread_start_id = uuid4().hex
-        turn_start_id = uuid4().hex
-        thread_id: str | None = None
-        initialized = False
-        turn_started = False
-        turn_completed = False
-
-        try:
-            self._send_app_server_message(
-                process,
-                {
-                    'id': initialize_id,
-                    'method': 'initialize',
-                    'params': {
-                        'clientInfo': {
-                            'name': 'aidm-codex-provider',
-                            'title': 'AIDM Codex Provider',
-                            'version': '0.1.0',
-                        },
-                        'capabilities': {
-                            'experimentalApi': True,
-                            'optOutNotificationMethods': [
-                                'command/exec/outputDelta',
-                                'item/fileChange/outputDelta',
-                                'item/plan/delta',
-                                'item/reasoning/summaryTextDelta',
-                                'item/reasoning/textDelta',
-                            ],
-                        },
-                    },
-                },
-            )
-
-            while not turn_completed:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    process.kill()
-                    raise RuntimeError(f'Codex app-server provider timed out after {self.timeout_seconds} seconds')
-                try:
-                    source, line = output_queue.get(timeout=min(0.25, remaining))
-                except queue.Empty:
-                    if process.poll() is not None:
-                        preview = self._error_preview(''.join(stderr_parts) or '\n'.join(stdout_parts))
-                        raise RuntimeError(f'Codex app-server provider exited before turn completion: {preview}')
-                    continue
-                if line is None:
-                    if source == 'stdout' and not turn_completed:
-                        preview = self._error_preview(''.join(stderr_parts) or '\n'.join(stdout_parts))
-                        raise RuntimeError(f'Codex app-server provider closed stdout before turn completion: {preview}')
-                    continue
-                if source == 'stderr':
-                    stderr_parts.append(str(line))
-                    continue
-
-                raw_line = str(line).strip()
-                if not raw_line:
-                    continue
-                stdout_parts.append(raw_line)
-                try:
-                    event = json.loads(raw_line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(event.get('error'), dict):
-                    error = event['error']
-                    message = error.get('message') or error
-                    raise RuntimeError(f'Codex app-server provider error: {message}')
-
-                event_id = str(event.get('id') or '')
-                result = event.get('result') if isinstance(event.get('result'), dict) else {}
-                method = str(event.get('method') or '')
-
-                if event_id == initialize_id and not initialized:
-                    initialized = True
-                    self._send_app_server_message(process, {'method': 'initialized', 'params': {}})
-                    self._send_app_server_message(
-                        process,
-                        {
-                            'id': thread_start_id,
-                            'method': 'thread/start',
-                            'params': {
-                                'model': self.model_name,
-                                'cwd': self.workdir,
-                                'ephemeral': True,
-                                'approvalPolicy': 'never',
-                                'sandbox': 'read-only',
-                            },
-                        },
-                    )
-                    continue
-
-                if event_id == thread_start_id and not thread_id:
-                    thread = result.get('thread') if isinstance(result.get('thread'), dict) else {}
-                    thread_id = str(thread.get('id') or '')
-                    if not thread_id:
-                        raise RuntimeError('Codex app-server provider did not return a thread id')
-                    self._send_app_server_message(
-                        process,
-                        {
-                            'id': turn_start_id,
-                            'method': 'turn/start',
-                            'params': {
-                                'threadId': thread_id,
-                                'input': [{'type': 'text', 'text': prompt}],
-                                'model': self.model_name,
-                                'effort': self.reasoning_effort,
-                                'cwd': self.workdir,
-                                'approvalPolicy': 'never',
-                                'sandboxPolicy': {'type': 'readOnly', 'networkAccess': False},
-                            },
-                        },
-                    )
-                    continue
-
-                if event_id == turn_start_id:
-                    turn_started = True
-
-                text, is_delta = self._event_message_text(event)
-                if not text:
-                    if method == 'turn/completed':
-                        turn_completed = True
-                    continue
-                if is_delta:
-                    accumulated_text += text
-                    yielded_text = True
-                    yield text
-                elif not yielded_text:
-                    accumulated_text = text
-                    yielded_text = True
-                    yield text
-                elif text.startswith(accumulated_text):
-                    suffix = text[len(accumulated_text) :]
-                    if suffix:
-                        accumulated_text = text
-                        yield suffix
-
-                if method == 'turn/completed':
-                    turn_completed = True
-
-            if not turn_started:
-                preview = self._error_preview(''.join(stderr_parts) or '\n'.join(stdout_parts))
-                raise RuntimeError(f'Codex app-server provider did not start a turn: {preview}')
-            if not yielded_text:
-                preview = self._error_preview(''.join(stderr_parts) or '\n'.join(stdout_parts))
-                raise RuntimeError(f'Codex app-server provider returned no agent message events: {preview}')
-            telemetry_metric(
-                'llm.stream.success_total',
-                1,
-                tags={'provider': self.provider_name, 'model': self.display_model_name},
-            )
-        finally:
-            if process.poll() is None:
-                process.kill()
+        text = self._invoke(self._build_prompt(request))
+        telemetry_metric(
+            'llm.stream.success_total',
+            1,
+            tags={'provider': self.provider_name, 'model': self.display_model_name},
+        )
+        if text:
+            yield text
 
 
 def _cfg(key: str, default=None):
