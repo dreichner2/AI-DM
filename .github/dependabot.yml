@@ -11,6 +11,12 @@ updates:
       python-runtime:
         patterns:
           - '*'
+    ignore:
+      # pydantic 2.13.4 requires pydantic-core==2.46.4 exactly. Revisit this
+      # transitive hold when a stable pydantic release can move the pair.
+      - dependency-name: pydantic-core
+        versions:
+          - '>2.46.4'
 
   - package-ecosystem: npm
     directory: /aidm_frontend
@@ -23,6 +29,11 @@ updates:
       frontend-runtime:
         patterns:
           - '*'
+    ignore:
+      # Runtime and type declarations intentionally share the Node 24 API.
+      - dependency-name: '@types/node'
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /

@@ -90,9 +90,15 @@ def test_ci_workflows_pin_upgraded_toolchains_and_dependencies():
     )
 
 
-def test_dependabot_tracks_github_actions_and_docker_compose():
+def test_dependabot_tracks_supported_ecosystems_and_compatibility_holds():
     dependabot = (REPO_ROOT / '.github' / 'dependabot.yml').read_text(encoding='utf-8')
 
     assert 'package-ecosystem: github-actions' in dependabot
     assert 'package-ecosystem: docker-compose' in dependabot
     assert 'package-ecosystem: docker\n' not in dependabot
+    assert """- dependency-name: pydantic-core
+        versions:
+          - '>2.46.4'""" in dependabot
+    assert """- dependency-name: '@types/node'
+        update-types:
+          - version-update:semver-major""" in dependabot
