@@ -64,6 +64,8 @@
 - [ ] `make security-forbidden-smoke` proves non-admin accounts are rejected by combat operator, bestiary authoring/save, and beta operator endpoints.
 - [ ] `make security-forbidden-smoke SECURITY_FORBIDDEN_SMOKE_ARGS="--target-url <target-url> --account-token <non-admin-token> --workspace-id <workspace-id> --campaign-id <campaign-id> --session-id <session-id> --evidence-report tmp/release/security-forbidden-evidence.md"` passes against hosted/staging before closing the security gate.
 - [ ] Security headers are enabled, including `Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, and `Permissions-Policy`.
+- [ ] The authentication/security owner and release owner sign the closed-beta-only Low/P3 acceptance for open findings `preauth-target-lockout-legacy-claim` and `preauth-target-lockout-workspace-password`. The acceptance expires on 2026-08-10 or before exposure expands, whichever comes first; neither finding is marked fixed or closed.
+- [ ] Hosted telemetry routes every `auth.preauth_rate_limited` event with `dimension=target` and action `account-legacy-claim` or `workspace-password` to `AIDM_ALERT_OWNER`, and the release evidence records that the renewable target-lockout response in `docs/beta_runbook.md` was reviewed.
 
 ## Data Integrity
 - [ ] Database backup taken before deployment.

@@ -8,6 +8,7 @@ import { X } from 'lucide-react'
 import type { AccountWorkspace } from './types'
 import {
   LEGACY_PASSWORD_SETUP_MESSAGE,
+  type PendingBackendTrust,
   type RuntimeAccount,
   type RuntimeAuthIntent,
   type RuntimeAuthStep,
@@ -17,7 +18,57 @@ import {
   type RuntimeWorkspaceCreateAccessMode,
   type RuntimeWorkspaceJoinMethod,
 } from './useRuntimeSettings'
+import { ModalShell } from './ModalShell'
 import { savedWorkspaceDisplayName, savedWorkspaceRoleLabel } from './workspaceLabels'
+
+type BackendTrustDialogProps = {
+  backend: PendingBackendTrust
+  dialogRef: RefObject<HTMLElement | null>
+  onConfirm: () => void
+  onReject: () => void
+}
+
+export function BackendTrustDialog({
+  backend,
+  dialogRef,
+  onConfirm,
+  onReject,
+}: BackendTrustDialogProps) {
+  return (
+    <ModalShell
+      className="campaign-dialog runtime-dialog"
+      describedBy="backend-trust-description"
+      dialogRef={dialogRef}
+      labelledBy="backend-trust-title"
+      onClose={onReject}
+    >
+      <header>
+        <div>
+          <span>Security Check</span>
+          <h2 id="backend-trust-title">Connect to Shared Backend</h2>
+        </div>
+        <button type="button" aria-label="Reject shared backend" onClick={onReject}>
+          <X size={18} />
+        </button>
+      </header>
+      <div className="dialog-warning">
+        <strong>{backend.origin}</strong>
+        {backend.baseUrl !== backend.origin ? <span>Backend URL: {backend.baseUrl}</span> : null}
+      </div>
+      <p id="backend-trust-description">
+        Only continue if you recognize and trust this backend. AIDM will not contact it before you confirm.
+      </p>
+      <footer>
+        <button type="button" className="secondary" data-autofocus onClick={onReject}>
+          Cancel
+        </button>
+        <button type="button" onClick={onConfirm}>
+          Trust and Connect
+        </button>
+      </footer>
+    </ModalShell>
+  )
+}
 
 export type RuntimeSettingsDialogProps = {
   defaultBaseUrl: string

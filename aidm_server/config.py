@@ -138,6 +138,10 @@ class AppConfig:
     rate_limit_window_seconds: int
     rate_limit_max_api_requests: int
     rate_limit_max_socket_messages: int
+    preauth_rate_limit_window_seconds: int
+    preauth_rate_limit_max_ip_target_attempts: int
+    preauth_rate_limit_max_ip_attempts: int
+    preauth_rate_limit_max_target_attempts: int
     rate_limit_store: str
     trusted_proxy_count: int
     turn_coordinator_store: str
@@ -340,6 +344,22 @@ def load_config() -> AppConfig:
         rate_limit_window_seconds=_to_int(os.getenv('AIDM_RATE_LIMIT_WINDOW_SECONDS'), default=30),
         rate_limit_max_api_requests=_to_int(os.getenv('AIDM_RATE_LIMIT_MAX_API_REQUESTS'), default=120),
         rate_limit_max_socket_messages=_to_int(os.getenv('AIDM_RATE_LIMIT_MAX_SOCKET_MESSAGES'), default=40),
+        preauth_rate_limit_window_seconds=max(
+            1,
+            _to_int(os.getenv('AIDM_PREAUTH_RATE_LIMIT_WINDOW_SECONDS'), default=60),
+        ),
+        preauth_rate_limit_max_ip_target_attempts=max(
+            1,
+            _to_int(os.getenv('AIDM_PREAUTH_RATE_LIMIT_MAX_IP_TARGET_ATTEMPTS'), default=5),
+        ),
+        preauth_rate_limit_max_ip_attempts=max(
+            1,
+            _to_int(os.getenv('AIDM_PREAUTH_RATE_LIMIT_MAX_IP_ATTEMPTS'), default=20),
+        ),
+        preauth_rate_limit_max_target_attempts=max(
+            1,
+            _to_int(os.getenv('AIDM_PREAUTH_RATE_LIMIT_MAX_TARGET_ATTEMPTS'), default=20),
+        ),
         rate_limit_store=rate_limit_store,
         trusted_proxy_count=max(0, _to_int(os.getenv('AIDM_TRUSTED_PROXY_COUNT'), default=0)),
         turn_coordinator_store=turn_coordinator_store,

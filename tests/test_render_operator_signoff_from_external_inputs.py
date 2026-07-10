@@ -493,10 +493,13 @@ def test_main_uses_current_packet_context_for_default_draft(tmp_path):
 
 
 def test_main_existing_incomplete_values_file_stays_invalid(tmp_path):
+    draft = tmp_path / 'operator-signoff.draft.json'
     values = tmp_path / 'external-proof-values.json'
     packet = tmp_path / 'release-evidence-packet.json'
     output = tmp_path / 'operator-signoff.from-inputs.json'
+    status_output = tmp_path / 'operator-signoff.from-inputs-status.md'
     status_json = tmp_path / 'operator-signoff.from-inputs-status.json'
+    draft.write_text(json.dumps(example_manifest()), encoding='utf-8')
     packet.write_text('{}', encoding='utf-8')
     values.write_text(
         json.dumps({'values': {'aidm_ci_run_url': 'https://github.com/dreichner2/AIDM-main/actions/runs/111'}}),
@@ -505,12 +508,16 @@ def test_main_existing_incomplete_values_file_stays_invalid(tmp_path):
 
     exit_code = main(
         [
+            '--draft',
+            str(draft),
             '--values',
             str(values),
             '--packet-json',
             str(packet),
             '--output',
             str(output),
+            '--status-output',
+            str(status_output),
             '--status-json-output',
             str(status_json),
             '--generated-at',

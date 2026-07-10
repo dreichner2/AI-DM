@@ -26,8 +26,14 @@ from aidm_server.auth import (
     workspace_role_is_admin,
 )
 from aidm_server.canon_jobs import start_canon_job_worker
-from aidm_server.capabilities import capability_forbidden_response, required_http_capability
-from aidm_server.config import load_config
+from aidm_server.capabilities import (
+    Capability,
+    capability_forbidden_response,
+    explicit_http_access,
+    required_http_capability,
+    validate_http_capability_inventory,
+)
+from aidm_server.config import load_config, validate_production_startup_config
 from aidm_server.database import db, ensure_schema, init_db
 from aidm_server.errors import error_response
 from aidm_server.logging_context import (
@@ -113,6 +119,14 @@ def configure_frontend_routes(app: Flask, dist_dir: Path):
 
 def create_app() -> Flask:
     config = load_config()
+    validate_production_startup_config(config)
+    # The general window is shared by HTTP and Socket.IO. Database-backed
+    # cleanup must preserve rows for the longest active limiter policy.
+    rate_limit_retention_window_seconds = max(
+        1,
+        int(config.rate_limit_window_seconds),
+        int(config.preauth_rate_limit_window_seconds),
+    )
 
     app = Flask(__name__)
     app.secret_key = config.secret_key
@@ -139,8 +153,17 @@ def create_app() -> Flask:
         AIDM_RULES_ENGINE_ENABLED=config.rules_engine_enabled,
         AIDM_SEGMENT_EVALUATOR_ENABLED=config.segment_evaluator_enabled,
         AIDM_RATE_LIMIT_WINDOW_SECONDS=config.rate_limit_window_seconds,
+        AIDM_RATE_LIMIT_RETENTION_WINDOW_SECONDS=rate_limit_retention_window_seconds,
         AIDM_RATE_LIMIT_MAX_API_REQUESTS=config.rate_limit_max_api_requests,
         AIDM_RATE_LIMIT_MAX_SOCKET_MESSAGES=config.rate_limit_max_socket_messages,
+        AIDM_PREAUTH_RATE_LIMIT_WINDOW_SECONDS=config.preauth_rate_limit_window_seconds,
+        AIDM_PREAUTH_RATE_LIMIT_MAX_IP_TARGET_ATTEMPTS=(
+            config.preauth_rate_limit_max_ip_target_attempts
+        ),
+        AIDM_PREAUTH_RATE_LIMIT_MAX_IP_ATTEMPTS=config.preauth_rate_limit_max_ip_attempts,
+        AIDM_PREAUTH_RATE_LIMIT_MAX_TARGET_ATTEMPTS=(
+            config.preauth_rate_limit_max_target_attempts
+        ),
         AIDM_RATE_LIMIT_STORE=config.rate_limit_store,
         AIDM_TURN_COORDINATOR_STORE=config.turn_coordinator_store,
         AIDM_TURN_COORDINATOR_LOCK_TTL_SECONDS=config.turn_coordinator_lock_ttl_seconds,
@@ -198,8 +221,41 @@ def create_app() -> Flask:
         limit=config.rate_limit_max_api_requests,
         window_seconds=config.rate_limit_window_seconds,
         store_name=config.rate_limit_store,
+        retention_window_seconds=rate_limit_retention_window_seconds,
     )
     app.extensions['aidm_api_limiter'] = api_limiter
+    app.extensions['aidm_preauth_ip_target_limiter'] = build_rate_limiter(
+        limit=config.preauth_rate_limit_max_ip_target_attempts,
+        window_seconds=config.preauth_rate_limit_window_seconds,
+        store_name=config.rate_limit_store,
+        retention_window_seconds=rate_limit_retention_window_seconds,
+    )
+    app.extensions['aidm_preauth_ip_limiter'] = build_rate_limiter(
+        limit=config.preauth_rate_limit_max_ip_attempts,
+        window_seconds=config.preauth_rate_limit_window_seconds,
+        store_name=config.rate_limit_store,
+        retention_window_seconds=rate_limit_retention_window_seconds,
+    )
+    app.extensions['aidm_preauth_target_limiter'] = build_rate_limiter(
+        limit=config.preauth_rate_limit_max_target_attempts,
+        window_seconds=config.preauth_rate_limit_window_seconds,
+        store_name=config.rate_limit_store,
+        retention_window_seconds=rate_limit_retention_window_seconds,
+    )
+
+    def _capability_guard(capability: Capability, route_key: str):
+        forbidden = capability_forbidden_response(capability)
+        if forbidden:
+            telemetry_event(
+                'api.capability_forbidden',
+                payload={
+                    'path': route_key,
+                    'method': request.method,
+                    'required_capability': capability,
+                },
+                severity='warning',
+            )
+        return forbidden
 
     @app.before_request
     def _apply_api_guards():
@@ -216,10 +272,18 @@ def create_app() -> Flask:
         route_key = request_route_key()
         telemetry_metric('api.requests_total', 1, tags={'path': route_key, 'method': request.method})
 
-        if request.path == '/api/health':
+        # Only Flask's generated preflight response bypasses the application
+        # capability pipeline. Explicit OPTIONS handlers execute application
+        # code and must be inventoried and authorized like any other method.
+        if request.method == 'OPTIONS' and (
+            request.url_rule is None
+            or bool(getattr(request.url_rule, 'provide_automatic_options', False))
+        ):
             return None
 
-        if request.method == 'OPTIONS':
+        if request.path == '/api/health':
+            if explicit_http_access(request.endpoint, request.method) != 'public':
+                return _capability_guard('server_internal', route_key)
             return None
 
         if (
@@ -264,6 +328,10 @@ def create_app() -> Flask:
         # Account and workspace credential handlers authenticate themselves, but
         # must still be throttled before password/token verification above.
         if request.path.startswith('/api/accounts'):
+            if request.endpoint in {None, 'frontend_app'}:
+                return None
+            if explicit_http_access(request.endpoint, request.method) != 'self_service':
+                return _capability_guard('server_internal', route_key)
             return None
 
         account_token = request_account_token()
@@ -299,19 +367,15 @@ def create_app() -> Flask:
         g.aidm_workspace_role = membership.role if membership else None
         g.aidm_workspace_admin = workspace_role_is_admin(membership.role if membership else None)
 
+        # The same-origin frontend catch-all rejects reserved /api paths with a
+        # 404; it is not an API handler that needs a capability classification.
+        if request.endpoint == 'frontend_app':
+            return None
+
         required_capability = required_http_capability(request.endpoint, request.method)
         if required_capability:
-            forbidden = capability_forbidden_response(required_capability)
+            forbidden = _capability_guard(required_capability, route_key)
             if forbidden:
-                telemetry_event(
-                    'api.capability_forbidden',
-                    payload={
-                        'path': route_key,
-                        'method': request.method,
-                        'required_capability': required_capability,
-                    },
-                    severity='warning',
-                )
                 return forbidden
 
         if membership:
@@ -353,6 +417,7 @@ def create_app() -> Flask:
     app.register_blueprint(onboarding_bp, url_prefix='/api/onboarding')
     app.register_blueprint(runtime_config_bp, url_prefix='/api')
     app.register_blueprint(system_bp, url_prefix='/api')
+    validate_http_capability_inventory(app)
 
     if config.admin_enabled:
         from aidm_server.blueprints.admin import configure_admin

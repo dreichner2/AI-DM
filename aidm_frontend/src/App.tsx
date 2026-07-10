@@ -87,7 +87,7 @@ import {
 } from './gameSelectors'
 import { subscribeToMediaQueryChange } from './mediaQuery'
 import { profileIconSrcForCharacter } from './profileIcons'
-import { RuntimeSettingsDialog } from './RuntimeSettingsDialog'
+import { BackendTrustDialog, RuntimeSettingsDialog } from './RuntimeSettingsDialog'
 import type { SceneDisplayState } from './sceneState'
 import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
 import { TitleScreen } from './TitleScreen'
@@ -130,7 +130,7 @@ import { usePlayNowOnboarding } from './usePlayNowOnboarding'
 import { useSessionActions, type SessionActionDialogState } from './useSessionActions'
 import { useSessionContentSettings } from './useSessionContentSettings'
 import { useSessionSocket } from './useSessionSocket'
-import { useRuntimeSettings, type RuntimeAccount } from './useRuntimeSettings'
+import { useRuntimeSettings, useShareBackendTrust, type RuntimeAccount } from './useRuntimeSettings'
 import { useTtsNarration } from './useTtsNarration'
 import { useWorldMapSegmentActions } from './useWorldMapSegmentActions'
 import { useWorkspaceQueries, type CampaignSessionMeta } from './useWorkspaceQueries'
@@ -544,7 +544,7 @@ function characterPortraitSrc(player: Player) {
   )
 }
 
-function App() {
+function AIDMApp() {
   const [health, setHealth] = useState<Health | null>(null)
   const [actorCapabilities, setActorCapabilities] = useState<ActorCapabilitiesResponse | null>(null)
   const [llmConfig, setLlmConfig] = useState<LlmRuntimeConfig | null>(null)
@@ -3933,6 +3933,36 @@ function App() {
       ) : null}
     </div>
   )
+}
+
+function App() {
+  const {
+    confirmPendingBackendTrust,
+    pendingBackendTrust,
+    rejectPendingBackendTrust,
+  } = useShareBackendTrust(DEFAULT_BASE_URL)
+  const dialogRef = useRef<HTMLElement | null>(null)
+  const returnFocusRef = useRef<HTMLElement | null>(null)
+
+  useModalFocusTrap({
+    activeKey: pendingBackendTrust ? 'backend-trust' : null,
+    dialogRef,
+    onClose: rejectPendingBackendTrust,
+    returnFocusRef,
+  })
+
+  if (pendingBackendTrust) {
+    return (
+      <BackendTrustDialog
+        backend={pendingBackendTrust}
+        dialogRef={dialogRef}
+        onConfirm={confirmPendingBackendTrust}
+        onReject={rejectPendingBackendTrust}
+      />
+    )
+  }
+
+  return <AIDMApp />
 }
 
 export default App

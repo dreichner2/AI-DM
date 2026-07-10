@@ -154,13 +154,49 @@ The per-session turn coordinator defaults to an in-memory store for local single
 - `AIDM_RATE_LIMIT_WINDOW_SECONDS=30`
 - `AIDM_RATE_LIMIT_MAX_API_REQUESTS=120`
 - `AIDM_RATE_LIMIT_MAX_SOCKET_MESSAGES=40`
+- `AIDM_PREAUTH_RATE_LIMIT_WINDOW_SECONDS=60`
+- `AIDM_PREAUTH_RATE_LIMIT_MAX_IP_TARGET_ATTEMPTS=5`
+- `AIDM_PREAUTH_RATE_LIMIT_MAX_IP_ATTEMPTS=20`
+- `AIDM_PREAUTH_RATE_LIMIT_MAX_TARGET_ATTEMPTS=20`
 - `AIDM_RATE_LIMIT_STORE=memory` for local runs, or `database` when multiple workers must share one limit window.
 - `AIDM_TURN_COORDINATOR_STORE=memory` for local single-process runs, or `database` for production/multi-worker runs.
 - `AIDM_SOCKETIO_WORKER_MODEL=single`, `WEB_CONCURRENCY=1`, and at least 16 Gunicorn threads; other worker models are rejected in hosted production today.
 - `AIDM_ACCOUNT_COOKIE_AUTH_ENABLED=true` and `AIDM_ACCOUNT_TOKEN_RESPONSE_ENABLED=false` for hosted same-origin cookie-only account auth. Unsafe REST requests then use the companion `aidm_csrf_token` cookie with `X-AIDM-CSRF-Token`.
 - `AIDM_OBSERVABILITY_PROVIDER=<provider-name>` and `AIDM_ALERT_OWNER=<team-or-person>` for production bootstrap.
-- `AIDM_TELEMETRY_ENABLED=true` (if external telemetry endpoint is available)
+- `AIDM_TELEMETRY_ENABLED=true` with a working external endpoint while the temporary
+  target-lockout acceptance below is active. The acceptance cannot be signed without
+  delivery evidence for the required target-denial alerts.
 - `AIDM_SECURITY_HEADERS_ENABLED=true` so Flask-served responses include CSP and standard browser hardening headers.
+
+## Proposed Pre-Auth Target-Lockout Acceptance
+
+The closed beta may temporarily accept two open Low/P3 availability findings
+only after the authentication/security owner and release owner sign the release
+checklist. The proposed acceptance expires on 2026-08-10:
+`preauth-target-lockout-legacy-claim` and
+`preauth-target-lockout-workspace-password`. Four correctly attributed source
+IPs can contribute the default 20 target attempts in 60 seconds. A full target
+bucket can reject a correct tokenless legacy claim or a correct new
+workspace-password join before verification. Events age out, but sustained
+distributed traffic can renew the delay. Signing does not close either finding,
+and the decision must be re-reviewed before tester or network exposure expands.
+
+If the owners sign the acceptance:
+
+- Route any `auth.preauth_rate_limited` event with `dimension=target` and action
+  `account-legacy-claim` or `workspace-password` to `AIDM_ALERT_OWNER`.
+- Treat any such event in the closed beta as an abuse or legitimate-availability
+  signal requiring same-day review; preserve only the privacy-safe action,
+  dimension, and reset fields already emitted by the server.
+- Confirm whether the affected user has a valid saved account token or saved
+  workspace membership. Those strong existing proofs use paths that are not
+  blocked by the weak legacy-claim or workspace-password target bucket.
+- Do not raise thresholds, shorten windows, disable target protection, or move
+  weak verification after saturation without authentication/security-owner
+  approval; each choice changes guessing or hash-work exposure.
+- Record the event and disposition in release evidence, and reopen the findings
+  immediately if saturation repeats, affected-user prevalence is material, or
+  closed-beta exposure changes.
 
 ## Local-Only Boundaries
 - `.env.local` writes from `/api/llm/config` are for local runtime switching.

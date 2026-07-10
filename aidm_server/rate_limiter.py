@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,7 @@ RATE_LIMIT_STORE_DATABASE = 'database'
 SUPPORTED_RATE_LIMIT_STORES = {RATE_LIMIT_STORE_MEMORY, RATE_LIMIT_STORE_DATABASE}
 MAX_BUCKET_KEY_LENGTH = 512
 POSTGRES_ADVISORY_LOCK_NAMESPACE = 'aidm-rate-limit:'
+PREAUTH_RATE_LIMIT_NAMESPACE = 'aidm-preauth-rate-limit:v1'
 
 
 @dataclass
@@ -39,6 +41,42 @@ def normalize_rate_limit_key(key: str) -> str:
     digest = hashlib.sha256(normalized.encode('utf-8')).hexdigest()
     prefix_length = MAX_BUCKET_KEY_LENGTH - len(digest) - 1
     return f'{normalized[:prefix_length]}:{digest}'
+
+
+def privacy_safe_preauth_bucket(
+    *,
+    secret_key: str | bytes,
+    dimension: str,
+    action: str,
+    client_ip: str,
+    normalized_target: str,
+) -> str:
+    """Build a stable opaque pre-auth bucket without persisting credentials.
+
+    ``FLASK_SECRET_KEY`` is shared by production workers, so the HMAC remains
+    stable across processes while usernames, workspace names, tokens, and IP
+    addresses never appear in the database-backed bucket key.
+    """
+    if isinstance(secret_key, bytes):
+        key_bytes = secret_key
+    else:
+        key_bytes = str(secret_key or '').encode('utf-8')
+    if not key_bytes:
+        raise ValueError('A non-empty secret key is required for pre-auth rate limiting.')
+
+    normalized_dimension = str(dimension or 'compound').strip().casefold() or 'compound'
+    normalized_action = str(action or 'credential').strip().casefold() or 'credential'
+    message = '\x00'.join(
+        (
+            PREAUTH_RATE_LIMIT_NAMESPACE,
+            normalized_dimension,
+            normalized_action,
+            str(client_ip or 'unknown').strip().casefold() or 'unknown',
+            str(normalized_target or 'unknown').strip().casefold() or 'unknown',
+        )
+    ).encode('utf-8')
+    digest = hmac.new(key_bytes, message, hashlib.sha256).hexdigest()
+    return f'preauth:{normalized_dimension}:{normalized_action}:{digest}'
 
 
 def postgres_advisory_lock_key(key: str) -> int:
@@ -123,19 +161,42 @@ class InMemoryRateLimitStore:
 class DatabaseRateLimitStore:
     """Store rate-limit events in the configured SQLAlchemy database."""
 
-    def __init__(self, *, gc_interval_seconds: int | None = None):
+    def __init__(
+        self,
+        *,
+        retention_window_seconds: int,
+        gc_interval_seconds: int | None = None,
+    ):
+        try:
+            retention_window_seconds = int(retention_window_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('Database rate-limit retention must be a positive number of seconds.') from exc
+        if retention_window_seconds < 1:
+            raise ValueError('Database rate-limit retention must be a positive number of seconds.')
+
+        self.retention_window_seconds = retention_window_seconds
         self._gc_interval_seconds = gc_interval_seconds
         self._next_gc_at = datetime.min.replace(tzinfo=timezone.utc)
         self._gc_lock = Lock()
         self._hit_lock = Lock()
 
-    def _collect_garbage(self, connection, table, *, window_start: datetime, now: datetime, window_seconds: int):
+    def _validate_window_seconds(self, window_seconds: int) -> int:
+        normalized_window_seconds = max(1, int(window_seconds))
+        if normalized_window_seconds > self.retention_window_seconds:
+            raise ValueError(
+                f'Rate-limit window ({normalized_window_seconds} seconds) exceeds database '
+                f'retention horizon ({self.retention_window_seconds} seconds).'
+            )
+        return normalized_window_seconds
+
+    def _collect_garbage(self, connection, table, *, now: datetime, window_seconds: int):
         if now < self._next_gc_at:
             return
         with self._gc_lock:
             if now < self._next_gc_at:
                 return
-            connection.execute(delete(table).where(table.c.created_at < window_start))
+            retention_start = now - timedelta(seconds=self.retention_window_seconds)
+            connection.execute(delete(table).where(table.c.created_at < retention_start))
             interval = self._gc_interval_seconds or window_seconds
             self._next_gc_at = now + timedelta(seconds=max(1, int(interval)))
 
@@ -149,13 +210,14 @@ class DatabaseRateLimitStore:
         from aidm_server.database import db
         from aidm_server.models import RateLimitEvent
 
+        window_seconds = self._validate_window_seconds(window_seconds)
         window_start = now - timedelta(seconds=window_seconds)
         table = RateLimitEvent.__table__
 
         with self._hit_lock:
             with db.engine.begin() as connection:
                 self._lock_bucket_for_transaction(connection, key)
-                self._collect_garbage(connection, table, window_start=window_start, now=now, window_seconds=window_seconds)
+                self._collect_garbage(connection, table, now=now, window_seconds=window_seconds)
 
                 matching_events = table.c.bucket_key == key
                 within_window = table.c.created_at >= window_start
@@ -186,12 +248,15 @@ def build_rate_limiter(
     limit: int,
     window_seconds: int,
     store_name: str = RATE_LIMIT_STORE_MEMORY,
+    retention_window_seconds: int | None = None,
 ) -> FixedWindowRateLimiter:
     normalized_store = str(store_name or RATE_LIMIT_STORE_MEMORY).strip().lower()
     if normalized_store == RATE_LIMIT_STORE_MEMORY:
         store: RateLimitStore = InMemoryRateLimitStore()
     elif normalized_store == RATE_LIMIT_STORE_DATABASE:
-        store = DatabaseRateLimitStore()
+        if retention_window_seconds is None:
+            raise ValueError('Database rate-limit stores require a retention window.')
+        store = DatabaseRateLimitStore(retention_window_seconds=retention_window_seconds)
     else:
         expected = ', '.join(sorted(SUPPORTED_RATE_LIMIT_STORES))
         raise ValueError(f'Unsupported rate-limit store "{normalized_store}". Expected one of: {expected}.')
@@ -204,6 +269,8 @@ class FixedWindowRateLimiter:
         self.limit = max(1, int(limit))
         self.window_seconds = max(1, int(window_seconds))
         self.store = store or InMemoryRateLimitStore()
+        if isinstance(self.store, DatabaseRateLimitStore):
+            self.store._validate_window_seconds(self.window_seconds)
         if isinstance(self.store, InMemoryRateLimitStore):
             self._events = self.store._events
 

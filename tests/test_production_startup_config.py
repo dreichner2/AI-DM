@@ -173,6 +173,41 @@ str(select(Account).filter_by(account_token_hash='probe'))
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_direct_app_factory_rejects_unsafe_production_config_before_database_init():
+    env = {
+        **os.environ,
+        'AIDM_SKIP_REPO_ENV_LOCAL': '1',
+        'AIDM_ENV': 'production',
+        'AIDM_DEBUG': 'false',
+        'AIDM_DATABASE_URI': 'sqlite:////tmp/unsafe-direct-app-factory.sqlite',
+        'AIDM_AUTO_CREATE_SCHEMA': 'false',
+        'FLASK_SECRET_KEY': 's' * 40,
+        'AIDM_AUTH_REQUIRED': 'false',
+        'AIDM_RATE_LIMIT_STORE': 'memory',
+        'AIDM_TURN_COORDINATOR_STORE': 'memory',
+        'AIDM_SOCKETIO_ASYNC_MODE': 'threading',
+        'AIDM_SOCKETIO_WORKER_MODEL': 'single',
+        'AIDM_OBSERVABILITY_PROVIDER': 'test-observability',
+        'AIDM_ALERT_OWNER': 'test-owner',
+    }
+
+    result = subprocess.run(
+        [sys.executable, '-c', 'from aidm_server.main import create_app; create_app()'],
+        cwd=os.getcwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert 'Unsafe production startup configuration' in output
+    assert 'AIDM_AUTH_REQUIRED must be true' in output
+    assert 'AIDM_RATE_LIMIT_STORE must be database' in output
+    assert 'Database initialized' not in output
+
+
 def test_wsgi_import_fails_before_building_unsafe_production_runtime():
     env = {
         **os.environ,

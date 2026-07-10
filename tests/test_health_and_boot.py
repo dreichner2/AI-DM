@@ -376,9 +376,11 @@ def test_main_module_stays_factory_only():
     assert not hasattr(main_module, 'socketio')
 
 
-def test_production_auto_create_schema_defaults_off_and_cannot_be_forced(tmp_path, monkeypatch):
-    db_path = tmp_path / 'prod_schema.db'
-    monkeypatch.setenv('AIDM_DATABASE_URI', f'sqlite:///{db_path}')
+def test_production_auto_create_schema_defaults_off_and_cannot_be_forced(monkeypatch):
+    monkeypatch.setenv(
+        'AIDM_DATABASE_URI',
+        'postgresql+psycopg://aidm:secret@database.internal:5432/aidm',
+    )
     monkeypatch.setenv('AIDM_ENV', 'production')
     monkeypatch.setenv('AIDM_DEBUG', 'false')
     monkeypatch.setenv('FLASK_SECRET_KEY', 'prod-secret-for-test')
@@ -386,6 +388,13 @@ def test_production_auto_create_schema_defaults_off_and_cannot_be_forced(tmp_pat
     monkeypatch.setenv('AIDM_API_AUTH_TOKENS', 'token-123')
     monkeypatch.setenv('AIDM_CORS_ALLOWLIST', 'https://example.com')
     monkeypatch.setenv('AIDM_SOCKET_CORS_ALLOWLIST', 'https://example.com')
+    monkeypatch.setenv('AIDM_RATE_LIMIT_STORE', 'database')
+    monkeypatch.setenv('AIDM_TURN_COORDINATOR_STORE', 'database')
+    monkeypatch.setenv('AIDM_SOCKETIO_WORKER_MODEL', 'single')
+    monkeypatch.setenv('AIDM_GUNICORN_THREADS', '100')
+    monkeypatch.setenv('WEB_CONCURRENCY', '1')
+    monkeypatch.setenv('AIDM_OBSERVABILITY_PROVIDER', 'test-observability')
+    monkeypatch.setenv('AIDM_ALERT_OWNER', 'test-owner')
     monkeypatch.setenv('AIDM_TELEMETRY_ENABLED', 'false')
     monkeypatch.delenv('AIDM_AUTO_CREATE_SCHEMA', raising=False)
 
@@ -399,7 +408,7 @@ def test_production_auto_create_schema_defaults_off_and_cannot_be_forced(tmp_pat
     main_module = importlib.reload(main_module)
     try:
         main_module.build_runtime()
-    except RuntimeError as exc:
-        assert 'AIDM_AUTO_CREATE_SCHEMA must be false in production' in str(exc)
+    except ValueError as exc:
+        assert 'AIDM_AUTO_CREATE_SCHEMA must be false' in str(exc)
     else:
         raise AssertionError('Production runtime should reject auto schema creation.')

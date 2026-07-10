@@ -167,7 +167,11 @@ replace every placeholder in the deployment provider's secret/env manager.
 | `AIDM_GUNICORN_THREADS` | Gunicorn gthread capacity; defaults to 100 and production rejects values below 16. |
 | `WEB_CONCURRENCY` | Must be `1` for the supported Socket.IO production topology. |
 | `AIDM_SOCKETIO_MESSAGE_QUEUE` | Reserved for the deferred multi-worker design; not sufficient by itself to make process-local presence/music safe. |
-| `AIDM_RATE_LIMIT_STORE` | `memory` or `database`. Use `database` for multi-process deployments. |
+| `AIDM_RATE_LIMIT_STORE` | `memory` or `database`; applies to general, Socket.IO, and pre-auth limiters. Production requires `database`. |
+| `AIDM_PREAUTH_RATE_LIMIT_WINDOW_SECONDS` | Credential-verification window in seconds; defaults to `60`. |
+| `AIDM_PREAUTH_RATE_LIMIT_MAX_IP_TARGET_ATTEMPTS` | Credential attempts allowed for one IP+normalized account/workspace/token target per window; defaults to `5`. |
+| `AIDM_PREAUTH_RATE_LIMIT_MAX_IP_ATTEMPTS` | Credential attempts allowed from one IP across targets per window; defaults to `20`. |
+| `AIDM_PREAUTH_RATE_LIMIT_MAX_TARGET_ATTEMPTS` | Credential attempts allowed against one normalized target across IPs per window; defaults to `20`. |
 | `AIDM_TURN_COORDINATOR_STORE` | `memory` or `database`. Use `database` for multi-process deployments. |
 | `AIDM_OBSERVABILITY_PROVIDER` | Required by production bootstrap to name the beta metrics/logging destination. |
 | `AIDM_ALERT_OWNER` | Required by production bootstrap to name the beta alert owner. |
@@ -175,6 +179,20 @@ replace every placeholder in the deployment provider's secret/env manager.
 | `AIDM_SEGMENT_EVALUATOR_ENABLED` | Enables authored segment trigger evaluation. |
 | `AIDM_ADMIN_ENABLED` | Enables Flask-Admin in local/dev contexts. |
 | `FLASK_SECRET_KEY` | Required when `AIDM_ENV=production`. |
+
+Pre-auth buckets are HMAC-derived from `FLASK_SECRET_KEY`; stored rate-limit
+rows never contain raw IPs, usernames, workspace names, or tokens. The default
+target-wide ceiling deliberately trades availability for distributed-guess
+resistance. Four correctly attributed IPs can contribute 20 attempts against
+one target in the default 60-second window. Saturation is checked before weak
+legacy identity or workspace-password verification, so it can reject a correct
+tokenless legacy claim or a correct new workspace join. Each exhaustion window
+expires, but sustained distributed traffic can renew the delay. A valid saved
+account token bypasses the weak legacy-claim bucket, and saved workspace members
+can use workspace selection. The remaining tokenless-claim and new-join cases
+stay open as Low/P3 risks. Closed-beta operation requires the authentication/
+security and release owners to sign the time-bounded acceptance in the release
+checklist; it expires on 2026-08-10 or before exposure expands.
 
 ## Common Commands
 

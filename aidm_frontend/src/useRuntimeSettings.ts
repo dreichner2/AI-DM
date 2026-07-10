@@ -239,14 +239,64 @@ function queryRuntimeBaseUrl() {
   return baseUrl && isHttpBaseUrl(baseUrl) ? baseUrl : ''
 }
 
+export type PendingBackendTrust = {
+  baseUrl: string
+  origin: string
+}
+
+function removeRuntimeBackendQuery() {
+  const params = new URLSearchParams(window.location.search)
+  params.delete('backend')
+  params.delete('api')
+  const query = params.toString()
+  window.history.replaceState(
+    null,
+    '',
+    `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`,
+  )
+}
+
+export function useShareBackendTrust(defaultBaseUrl: string) {
+  const [pendingBackendTrust, setPendingBackendTrust] = useState<PendingBackendTrust | null>(() => {
+    const baseUrl = queryRuntimeBaseUrl()
+    const origin = normalizedBackendOrigin(baseUrl)
+    if (!baseUrl || !origin || isBackendOriginTrusted(baseUrl)) return null
+    return { baseUrl, origin }
+  })
+
+  const rejectPendingBackendTrust = useCallback(() => {
+    removeRuntimeBackendQuery()
+    setPendingBackendTrust(null)
+  }, [])
+
+  const confirmPendingBackendTrust = useCallback(() => {
+    if (!pendingBackendTrust) return
+    const savedBaseUrl = normalizeBaseUrl(localStorage.getItem('aidm:baseUrl') ?? '')
+    const legacyCredentialOwnerBaseUrl = savedBaseUrl || normalizeBaseUrl(defaultBaseUrl)
+    trustBackendOrigin(legacyCredentialOwnerBaseUrl)
+    bindLegacyCredentialsToBackend(legacyCredentialOwnerBaseUrl)
+    trustBackendOrigin(pendingBackendTrust.baseUrl)
+    localStorage.setItem('aidm:baseUrl', pendingBackendTrust.baseUrl)
+    removeRuntimeBackendQuery()
+    setPendingBackendTrust(null)
+  }, [defaultBaseUrl, pendingBackendTrust])
+
+  return {
+    confirmPendingBackendTrust,
+    pendingBackendTrust,
+    rejectPendingBackendTrust,
+  }
+}
+
 function loadInitialBaseUrl(defaultBaseUrl: string) {
   const normalizedDefaultBaseUrl = normalizeBaseUrl(defaultBaseUrl)
   trustBackendOrigin(normalizedDefaultBaseUrl)
   const savedBaseUrl = normalizeBaseUrl(localStorage.getItem('aidm:baseUrl') ?? '')
   const queryBaseUrl = queryRuntimeBaseUrl()
-  const initialBaseUrl = queryBaseUrl || savedBaseUrl || normalizedDefaultBaseUrl
-  const legacyCredentialBaseUrl = savedBaseUrl || (!queryBaseUrl ? normalizedDefaultBaseUrl : '')
-  if (savedBaseUrl || !queryBaseUrl) {
+  const trustedQueryBaseUrl = queryBaseUrl && isBackendOriginTrusted(queryBaseUrl) ? queryBaseUrl : ''
+  const initialBaseUrl = trustedQueryBaseUrl || savedBaseUrl || normalizedDefaultBaseUrl
+  const legacyCredentialBaseUrl = savedBaseUrl || (!trustedQueryBaseUrl ? normalizedDefaultBaseUrl : '')
+  if (savedBaseUrl || !trustedQueryBaseUrl) {
     bindLegacyCredentialsToBackend(legacyCredentialBaseUrl)
   }
   if (isBackendOriginTrusted(initialBaseUrl)) {

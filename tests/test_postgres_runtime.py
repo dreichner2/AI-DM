@@ -161,8 +161,16 @@ def postgres_app(monkeypatch):
 
 def test_postgres_rate_limiter_is_atomic_across_store_instances(postgres_app):
     bucket_key = f'postgres-concurrency-{uuid4().hex}'
-    first = FixedWindowRateLimiter(limit=1, window_seconds=60, store=DatabaseRateLimitStore())
-    second = FixedWindowRateLimiter(limit=1, window_seconds=60, store=DatabaseRateLimitStore())
+    first = FixedWindowRateLimiter(
+        limit=1,
+        window_seconds=60,
+        store=DatabaseRateLimitStore(retention_window_seconds=60),
+    )
+    second = FixedWindowRateLimiter(
+        limit=1,
+        window_seconds=60,
+        store=DatabaseRateLimitStore(retention_window_seconds=60),
+    )
     start = threading.Barrier(2)
 
     with postgres_app.app_context():

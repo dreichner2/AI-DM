@@ -33,11 +33,11 @@ const socketMock = vi.hoisted(() => {
     disconnect: vi.fn(),
   }
   socket.on.mockImplementation(() => socket)
-  return { socket }
+  return { io: vi.fn<(url?: string) => typeof socket>(() => socket), socket }
 })
 
 vi.mock('socket.io-client', () => ({
-  io: vi.fn(() => socketMock.socket),
+  io: socketMock.io,
 }))
 
 vi.mock('./DiceRollDialog', () => ({
@@ -1573,6 +1573,7 @@ export const appTestState = {
 }
 
 export function setupAppTest() {
+  socketMock.io.mockClear()
   socketMock.socket.emit.mockClear()
   socketMock.socket.on.mockClear()
   socketMock.socket.disconnect.mockClear()

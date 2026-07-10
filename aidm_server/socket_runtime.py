@@ -36,7 +36,7 @@ class SocketRuntime:
     def __init__(self, state: SocketState):
         self.state = state
         self._limiter: FixedWindowRateLimiter | None = None
-        self._limiter_config: tuple[int, int, str] | None = None
+        self._limiter_config: tuple[int, int, str, int] | None = None
         self._limiter_lock = RLock()
 
     def set_context(self, event_name: str, data: dict | None = None, turn_id: int | None = None) -> str:
@@ -57,8 +57,26 @@ class SocketRuntime:
     def rate_limiter(self) -> FixedWindowRateLimiter:
         limit = int(current_app.config.get('AIDM_RATE_LIMIT_MAX_SOCKET_MESSAGES', 40))
         window_seconds = int(current_app.config.get('AIDM_RATE_LIMIT_WINDOW_SECONDS', 30))
+        preauth_window_seconds = int(current_app.config.get('AIDM_PREAUTH_RATE_LIMIT_WINDOW_SECONDS', 60))
+        configured_retention_seconds = int(
+            current_app.config.get(
+                'AIDM_RATE_LIMIT_RETENTION_WINDOW_SECONDS',
+                max(1, window_seconds, preauth_window_seconds),
+            )
+        )
         store_name = str(current_app.config.get('AIDM_RATE_LIMIT_STORE', 'memory')).strip().lower()
-        limiter_config = (limit, window_seconds, store_name)
+        minimum_retention_seconds = max(
+            1,
+            window_seconds,
+            preauth_window_seconds,
+        )
+        if store_name == 'database' and configured_retention_seconds < minimum_retention_seconds:
+            raise ValueError(
+                'Configured rate-limit retention is shorter than an active Socket.IO or '
+                'pre-authentication window.'
+            )
+        retention_window_seconds = configured_retention_seconds
+        limiter_config = (limit, window_seconds, store_name, retention_window_seconds)
 
         with self._limiter_lock:
             if self._limiter is None or self._limiter_config != limiter_config:
@@ -66,6 +84,7 @@ class SocketRuntime:
                     limit=limit,
                     window_seconds=window_seconds,
                     store_name=store_name,
+                    retention_window_seconds=retention_window_seconds,
                 )
                 self._limiter_config = limiter_config
             return self._limiter

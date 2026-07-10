@@ -1,12 +1,14 @@
 /// <reference types="node" />
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { originScopedStorageKey } from './api'
 import { actorCapabilitiesAllowOperatorTools } from './capabilities'
 import type { ClarificationRequest, PlayerDetail } from './types'
 import {
   appTestState,
+  App,
   contrastRatio,
   fixedNow,
   installLegacyMatchMediaMock,
@@ -1586,7 +1588,80 @@ describe('App user workflow regressions', () => {
     expect(shareButton).toHaveFocus()
   })
 
-  it('uses an untrusted backend URL from a share link without persisting it or leaving it in the address bar', async () => {
+  it('requires explicit origin confirmation before a share-link backend receives any request', async () => {
+    sessionStorage.setItem('aidm:authToken', 'legacy-account-token')
+    sessionStorage.setItem('aidm:workspaceToken', 'legacy-workspace-token')
+    window.history.replaceState(
+      null,
+      '',
+      '/?campaign=10&session=20&backend=https%3A%2F%2Fbackend-tunnel.ngrok-free.app',
+    )
+
+    render(<App />)
+
+    const dialog = await screen.findByRole('dialog', { name: 'Connect to Shared Backend' })
+    expect(dialog).toHaveAccessibleDescription(
+      'Only continue if you recognize and trust this backend. AIDM will not contact it before you confirm.',
+    )
+    expect(within(dialog).getByText('https://backend-tunnel.ngrok-free.app')).toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Username')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Password')).not.toBeInTheDocument()
+    expect(appTestState.fetchCalls.some((call) => call.origin === 'https://backend-tunnel.ngrok-free.app')).toBe(false)
+    expect(
+      socketMock.io.mock.calls.some(([url]) => url === 'https://backend-tunnel.ngrok-free.app'),
+    ).toBe(false)
+    expect(window.location.search).toBe(
+      '?campaign=10&session=20&backend=https%3A%2F%2Fbackend-tunnel.ngrok-free.app',
+    )
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Trust and Connect' }))
+
+    await screen.findByRole('heading', { name: /Session Alpha/i })
+    await waitFor(() =>
+      expect(appTestState.fetchCalls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            method: 'GET',
+            path: '/api/health',
+            origin: 'https://backend-tunnel.ngrok-free.app',
+          }),
+        ]),
+      ),
+    )
+
+    expect(localStorage.getItem('aidm:baseUrl')).toBe('https://backend-tunnel.ngrok-free.app')
+    expect(sessionStorage.getItem(originScopedStorageKey('aidm:authToken', ''))).toBe(
+      'legacy-account-token',
+    )
+    expect(sessionStorage.getItem(originScopedStorageKey('aidm:workspaceToken', ''))).toBe(
+      'legacy-workspace-token',
+    )
+    expect(
+      sessionStorage.getItem(
+        originScopedStorageKey('aidm:authToken', 'https://backend-tunnel.ngrok-free.app'),
+      ),
+    ).toBeNull()
+    expect(
+      sessionStorage.getItem(
+        originScopedStorageKey('aidm:workspaceToken', 'https://backend-tunnel.ngrok-free.app'),
+      ),
+    ).toBeNull()
+    const confirmedBackendRequests = appTestState.fetchCalls.filter(
+      (call) => call.origin === 'https://backend-tunnel.ngrok-free.app',
+    )
+    expect(confirmedBackendRequests.length).toBeGreaterThan(0)
+    expect(
+      confirmedBackendRequests.every(
+        (call) => call.authorization === null && call.workspaceToken === null,
+      ),
+    ).toBe(true)
+    await waitFor(() => {
+      expect(window.location.search).toBe('?campaign=10&session=20')
+    })
+  })
+
+  it('opens a previously trusted share-link backend without another confirmation', async () => {
+    localStorage.setItem('aidm:baseUrl', 'https://backend-tunnel.ngrok-free.app')
     window.history.replaceState(
       null,
       '',
@@ -1595,7 +1670,7 @@ describe('App user workflow regressions', () => {
 
     await renderLoadedApp()
 
-    expect(localStorage.getItem('aidm:baseUrl')).toBeNull()
+    expect(screen.queryByRole('dialog', { name: 'Connect to Shared Backend' })).not.toBeInTheDocument()
     expect(appTestState.fetchCalls).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1605,9 +1680,6 @@ describe('App user workflow regressions', () => {
         }),
       ]),
     )
-    await waitFor(() => {
-      expect(window.location.search).toBe('?campaign=10&session=20')
-    })
   })
 
   it('lets first-time campaign visitors join as an existing character', async () => {

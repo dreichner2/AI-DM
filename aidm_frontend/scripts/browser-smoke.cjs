@@ -260,6 +260,18 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
     await expect(page.locator('vite-error-overlay')).toHaveCount(0)
 
     await expect(page.getByRole('heading', { name: 'AI-DM' })).toBeVisible()
+
+    const playNowPage = await browser.newPage({ viewport: { width: 1440, height: 900 } })
+    playNowPage.on('pageerror', (error) => {
+      consoleErrors.push(`Play Now: ${error.message}`)
+    })
+    await playNowPage.goto(frontendUrl, { waitUntil: 'domcontentloaded' })
+    await playNowPage.locator('.prototype-shell').waitFor({ state: 'visible', timeout: 20_000 })
+    await playNowPage.getByRole('button', { name: 'Play Now', exact: true }).click()
+    await expect(playNowPage.getByLabel(/Your Action/i)).toBeVisible({ timeout: 30_000 })
+    await waitForRouteIds(playNowPage)
+    await playNowPage.close()
+
     await page.getByRole('button', { name: 'New Campaign' }).click()
     const createCampaignDialog = page.getByRole('dialog', { name: 'Create New Campaign' })
     await expect(createCampaignDialog).toBeVisible()
