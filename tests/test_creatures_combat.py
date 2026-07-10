@@ -13,7 +13,7 @@ import aidm_server.combat.intent_planner as intent_planner_module
 import aidm_server.creatures.resolver as resolver_module
 from aidm_server.combat.end_conditions import check_combat_end
 import aidm_server.combat.enemy_brain as enemy_brain_module
-from aidm_server.combat.evaluation import run_combat_helper_evaluation, summarize_combat_helper_plan
+from aidm_server.combat.evaluation import decision_record_from_intent, run_combat_helper_evaluation, summarize_combat_helper_plan
 from aidm_server.combat.intent_planner import plan_enemy_intents
 from aidm_server.combat.pipeline import (
     DIRECT_HOSTILE_ACTION_PATTERN,
@@ -1766,6 +1766,34 @@ def test_combat_helper_evaluation_summarizes_candidate_decisions():
     assert summary['records'][0]['actor_id'] == 'bandit_1'
     assert summary['records'][0]['fallback_candidate_id'] == plan['intentCandidates']['bandit_1'][0]['candidateId']
     assert summary['records'][0]['executed_candidate_id'] == plan['intents'][0]['candidateId']
+
+
+def test_combat_helper_evaluation_counts_compiled_freeform_tactics_as_helper_assisted():
+    intent = {
+        'candidateId': 'candidate_freeform',
+        'selectionMethod': 'freeform_tactics_compiler',
+        'tacticsCompilation': {'plannerModel': 'gpt-5.5', 'compilerModel': 'deepseek-v4-flash'},
+        'resolutionValidation': {'can_resolve_now': True},
+    }
+    candidates = [
+        {'candidateId': 'candidate_baseline', 'deterministicRank': 1, 'isFallbackCandidate': True},
+        {
+            'candidateId': 'candidate_freeform',
+            'deterministicRank': 2,
+            'tacticsCompilation': {'plannerModel': 'gpt-5.5', 'compilerModel': 'deepseek-v4-flash'},
+        },
+    ]
+
+    result = decision_record_from_intent(
+        round_number=2,
+        actor_id='enemy_1',
+        intent=intent,
+        candidates=candidates,
+    )
+
+    assert result['helper_selected_candidate_id'] == 'candidate_freeform'
+    assert result['helper_changed_baseline'] is True
+    assert result['freeform_tactics_compiled'] is True
 
 
 def test_combat_helper_evaluation_runs_fixed_snapshots():
