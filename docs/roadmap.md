@@ -5,6 +5,22 @@ session, world, map, Socket.IO, state pipeline, canon memory, and metrics
 surfaces exist. The highest-return work is reducing security, runtime, and
 maintenance risk before expanding gameplay scope.
 
+## Current Status - 2026-07-10
+
+- The current `main` implementation includes the closed-beta gameplay surface,
+  executable release/readiness evidence, hosted cookie authentication, the
+  single-worker production topology, and PostgreSQL-backed production guards.
+- The dated technology upgrade report records a completed hosted-staging
+  PostgreSQL 17-to-18 upgrade with rollback and forward-restore evidence. The
+  repository cannot re-verify that external state, and a production database
+  cutover remains a separate maintenance and operator-signoff decision.
+- The provider registry currently supports DeepSeek, Codex CLI, Gemini,
+  NVIDIA/Kimi, and the deterministic fallback. Codex CLI routes its current
+  default selection through GPT-5.6 Sol Medium and runs without host tool
+  access; tool events fail closed.
+- Release state is determined by `docs/release_checklist.md` and generated RC
+  evidence, not by the Done list in this roadmap.
+
 Archived review material lives in:
 
 - `docs/archive/improvements_suggestions_legacy.md`
@@ -20,8 +36,11 @@ Archived review material lives in:
 - Frontend TypeScript strictness, split CSS files, extracted hooks/components,
   browser smoke tests, bundle budget checks, and generated API contract usage.
 - Account login hardening for passwordless legacy accounts: existing accounts
-  now require a valid saved account token, a stored password match, or an
-  explicit legacy claim that sets a password immediately.
+  now require a valid saved account token or a high-entropy operator-issued
+  replacement to set a password; names alone are not account-recovery proof.
+- Workspace-password target limiting now isolates the cross-IP ceiling by
+  authenticated account and canonical workspace while retaining IP+workspace
+  and IP-wide abuse controls.
 - Read-only player detail fetches: starting inventory/spell repair now lives
   behind an explicit repair endpoint instead of writing during `GET`.
 - Session start idempotency validation rejects overlong client keys instead of
@@ -50,8 +69,9 @@ Archived review material lives in:
 ## Beta Hardening
 
 - Keep account recovery explicit. If a legacy account has no password and the
-  saved account token is gone, use the legacy claim path only when identity
-  details match and a password is being set.
+  saved account token is gone, verify the requester out of band and issue a
+  replacement with `scripts/issue_legacy_recovery_code.py`. Never treat names
+  alone as recovery authority or send the raw code through issue trackers/logs.
 - Keep mutating repair behavior behind explicit commands or POST endpoints.
   Avoid hidden writes in diagnostics, browser refreshes, and smoke tests.
 - Keep CI drift checks active: generated API types, backend tests, frontend
@@ -88,6 +108,18 @@ Archived review material lives in:
 - Local/private SQLite beta data now has an executable backup/restore drill
   (`scripts/backup_restore_drill.py`, `make backup-restore-drill`) that creates
   a backup and verifies a restored copy without mutating the source database.
+- Hosted PostgreSQL data has a separate guarded custom-archive drill
+  (`scripts/postgres_backup_restore_drill.py`,
+  `make postgres-backup-restore-drill`) that requires a distinct, explicitly
+  supplied empty target and compares restored schema/data evidence.
+- The Codex CLI provider uses isolated, tool-free execution, dedicated saved
+  authentication or an access token, bounded timeouts, validated event order,
+  and deployment-readiness checks.
+- Fixed-input model evaluation is available through
+  `scripts/compare_helper_profiles.py`,
+  `scripts/compare_tactics_compilers.py`, and
+  `scripts/evaluate_combat_helpers.py`; these tools compare helper/compiler
+  profiles without changing runtime defaults.
 
 ## Deployment Actions
 
@@ -102,8 +134,12 @@ Archived review material lives in:
   `AIDM_ACCOUNT_TOKEN_RESPONSE_ENABLED=false` for hosted same-origin cookie-only
   auth when the deployment threat model calls for it.
 - For hosted databases, document and rehearse the provider-specific
-  backup/restore path; the bundled drill is intentionally limited to
-  file-backed SQLite used by local/private beta runs.
+  snapshot/PITR path in addition to the guarded PostgreSQL custom-archive
+  drill. A local or staging restore comparison does not replace provider-level
+  production recovery proof.
+- Before changing helper or compiler model defaults, run the fixed-input
+  comparison tools, preserve their JSON evidence, and review quality, latency,
+  parse failures, and cost outside this roadmap.
 
 ## Not Now
 

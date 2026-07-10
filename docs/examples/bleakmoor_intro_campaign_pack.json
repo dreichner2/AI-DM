@@ -144,6 +144,7 @@
       "objectiveIds": ["obj_question_veyra"],
       "segmentIds": ["seg_question_veyra"],
       "nextCheckpointIds": ["cp_old_road"],
+      "rejoinTargetCheckpointId": "cp_gate",
       "completeWhen": {
         "objectiveIds": ["obj_question_veyra"]
       }

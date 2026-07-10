@@ -1,36 +1,51 @@
 # PostgreSQL 18 Upgrade Runbook
 
-This runbook upgrades AIDM from PostgreSQL 17 to PostgreSQL 18 without treating
-an in-place major upgrade as a reversible operation. Keep writes paused until
-every post-upgrade check passes. PostgreSQL major-version downgrades are not
-supported; rollback means reconnecting AIDM to an untouched PostgreSQL 17
-database or restoring a PostgreSQL 17-native backup into a new PostgreSQL 17
-database.
+This is the future production procedure for an AIDM database that is still on
+PostgreSQL 17 and is being upgraded to PostgreSQL 18. It does not describe the
+current hosted staging baseline. Keep writes paused until every post-upgrade
+check passes. PostgreSQL major-version downgrades are not supported; rollback
+means reconnecting AIDM to an untouched PostgreSQL 17 database or restoring a
+PostgreSQL 17-native backup into a new PostgreSQL 17 database.
+
+`docs/technology_upgrade_report.md` records a dated, externally attested staging
+cutover from PostgreSQL 17.10 to 18.4. That staging exercise used an explicitly
+approved local-restore alternative instead of a paid managed clone. It is
+historical evidence for that target, not proof of the current production
+database version and not automatic approval to skip a provider-level rehearsal
+for a future production cutover.
 
 ## Current baseline
 
-- Hosted staging database: PostgreSQL 17.10.
-- Target: PostgreSQL 18.4.
-- Alembic revision: `0029_players_account_fk`.
-- Baseline schema: 37 public tables, standard `plpgsql` extension only.
+- Repository migration head: `0029_players_account_fk`.
+- Repository CI rehearsal target: PostgreSQL 18.4.
 - The application uses psycopg 3.3.4 and SQLAlchemy 2.0.51 and enables
   `pool_pre_ping` for PostgreSQL connections.
+- The current production database version, schema counts, extension set,
+  provider recovery posture, and network allowlist are not tracked in this
+  repository. Record them from the provider immediately before approving a
+  production maintenance window.
 
-Record a new baseline immediately before the maintenance window. Do not rely on
-the counts above if the database has received additional writes.
+The dated staging report recorded 37 public tables at Alembic head before its
+cutover. Do not reuse those counts for production or a later staging run.
+Record a new source version, Alembic revision, table/row counts, extensions,
+sequence state, invalid indexes, and unvalidated constraints immediately before
+the maintenance window.
 
 ## Preconditions
 
 1. The exact application commit intended for release has passed backend,
    frontend, migration, security, browser, and production-startup checks against
    PostgreSQL 18.4.
-2. The managed provider reports the PostgreSQL 17 database healthy and confirms
+2. The managed provider reports the source PostgreSQL 17 database healthy and confirms
    point-in-time recovery or a restorable snapshot is available.
-3. A PostgreSQL 18 clone rehearsal has passed. Creating a paid managed clone
-   requires explicit cost approval; local restore evidence does not replace this
-   final provider-level rehearsal.
-4. No Alembic migration is pending and `flask db check` reports no metadata
-   drift.
+3. A PostgreSQL 18 managed clone rehearsal has passed, or the release owner and
+   database owner have explicitly approved and recorded an equivalent isolated
+   restore rehearsal because the provider clone is unavailable or separately
+   billed. A local restore proves archive portability and application
+   compatibility; it does not prove the provider's in-place upgrade controls.
+4. No Alembic migration is pending and
+   `.venv/bin/python -m flask --app aidm_server.main:create_app db check`
+   reports no metadata drift.
 5. The operator has a tested way to pause all application writes and a tested
    PostgreSQL 17 rollback database or snapshot.
 
@@ -84,22 +99,32 @@ snapshot between inspection and `pg_dump`, restores in one transaction, and
 compares tables, row counts, sequence state, migrations, invalid indexes, and
 unvalidated constraints. Preserve its mode-`0600` Markdown and JSON evidence.
 
-## Managed clone rehearsal
+## Managed clone or approved equivalent rehearsal
 
-1. Clone the PostgreSQL 17 database using the provider's supported snapshot or
-   recovery workflow.
-2. Upgrade only the clone to PostgreSQL 18.
+1. Prefer cloning the PostgreSQL 17 database using the provider's supported
+   snapshot or recovery workflow. If an approved equivalent is used, restore
+   the frozen source archive into a separate PostgreSQL 18 target and retain the
+   approval with the evidence.
+2. Upgrade only the clone to PostgreSQL 18, or use the already-18 restore target
+   for the approved equivalent rehearsal.
 3. Confirm the server reports the expected 18.x version.
 4. Point a non-public AIDM staging instance at the clone.
 5. Run:
 
    ```bash
-   python -m flask --app aidm_server.main:create_app db upgrade
-   python -m flask --app aidm_server.main:create_app db check
-   python scripts/deployment_readiness_check.py --allow-fallback-provider
-   make hosted-cookie-auth-smoke HOSTED_COOKIE_AUTH_SMOKE_ARGS="..."
-   make security-forbidden-smoke SECURITY_FORBIDDEN_SMOKE_ARGS="..."
-   make session-export-import-smoke SESSION_EXPORT_IMPORT_SMOKE_ARGS="..."
+   .venv/bin/python -m flask --app aidm_server.main:create_app db upgrade
+   .venv/bin/python -m flask --app aidm_server.main:create_app db check
+   .venv/bin/python scripts/deployment_readiness_check.py --allow-fallback-provider
+   : "${TARGET_URL:?set the isolated staging URL}"
+   : "${NON_ADMIN_TOKEN:?set a staging-only non-admin token}"
+   : "${OPERATOR_TOKEN:?set a staging-only operator token}"
+   : "${WORKSPACE_ID:?set the staging workspace ID}"
+   : "${CAMPAIGN_ID:?set the staging campaign ID}"
+   : "${SESSION_ID:?set the staging session ID}"
+   : "${PLAYER_ID:?set the staging player ID}"
+   make hosted-cookie-auth-smoke HOSTED_COOKIE_AUTH_SMOKE_ARGS="--target-url $TARGET_URL --account-intent signup --evidence-report tmp/release/hosted-cookie-auth-evidence.md"
+   make security-forbidden-smoke SECURITY_FORBIDDEN_SMOKE_ARGS="--target-url $TARGET_URL --account-token $NON_ADMIN_TOKEN --workspace-id $WORKSPACE_ID --campaign-id $CAMPAIGN_ID --session-id $SESSION_ID --evidence-report tmp/release/security-forbidden-evidence.md"
+   make session-export-import-smoke SESSION_EXPORT_IMPORT_SMOKE_ARGS="--target-url $TARGET_URL --auth-token $OPERATOR_TOKEN --workspace-id $WORKSPACE_ID --session-id $SESSION_ID --player-id $PLAYER_ID --evidence-report tmp/release/export-import-evidence.md"
    ```
 
 6. Verify health, metrics, security headers, authentication, WebSocket delivery,
@@ -128,7 +153,9 @@ unvalidated constraints. Preserve its mode-`0600` Markdown and JSON evidence.
 ## Post-upgrade validation
 
 - Server version is PostgreSQL 18 and matches the approved target release.
-- Alembic is at the expected head and `flask db check` is clean.
+- Alembic is at the expected head and
+  `.venv/bin/python -m flask --app aidm_server.main:create_app db check` is
+  clean.
 - Public table set and row counts match the final PostgreSQL 17 baseline.
 - Sequence configuration and last-value/called state match.
 - No unexpected invalid indexes or unvalidated constraints exist.

@@ -1,7 +1,13 @@
 # Playable Beta Release Checklist
 
+This file defines reusable release criteria; unchecked boxes are not a claim
+about the current candidate. Generate candidate-specific status from the latest,
+same-commit evidence with `make release-checklist-status`, and treat ignored
+`tmp/release/` artifacts as stale whenever `HEAD` has advanced since their RC
+report.
+
 ## Preflight
-- [ ] `make closed-beta-rc` passes, or each equivalent gate below is recorded separately. For shareable local evidence, run `scripts/closed_beta_rc_check.py --evidence-report tmp/release/rc-evidence.md`.
+- [ ] `make closed-beta-rc` passes, or each equivalent gate below is recorded separately. The full gate verifies exact Python 3.14.6, Node 24.18.0, and npm 12.0.0 toolchains. For shareable local evidence, run `.venv/bin/python scripts/closed_beta_rc_check.py --evidence-report tmp/release/rc-evidence.md`.
 - [ ] RC evidence is generated from a clean signed-off commit/worktree before final issue closure.
 - [ ] `.venv/bin/python scripts/deploy_bootstrap.py --check-only` passes.
 - [ ] `make request-json-parsing` confirms backend routes use shared JSON request parsing helpers instead of direct `request.get_json(silent=True)`.
@@ -9,14 +15,14 @@
 - [ ] `.venv/bin/python scripts/smoke_beta_flow.py` passes in isolated fallback mode.
 - [ ] `.venv/bin/python scripts/scenario_regression.py` passes and records provider/model for each scenario.
 - [ ] If live/local validation is needed, `.venv/bin/python scripts/smoke_beta_flow.py --use-local-env` is run intentionally against the target database/provider.
-- [ ] `GET /api/health` confirms expected flags.
+- [ ] `GET /api/health` confirms the expected environment/auth flags and reports the selected provider/model as configured; deterministic fallback is accepted only for an explicitly documented safe-mode drill.
 - [ ] `make db-upgrade` applies cleanly.
 - [ ] GitHub Actions `AIDM CI` passes backend tests, frontend checks, bundle budget, and browser smoke.
 - [ ] GitHub Actions `Closed Beta RC` passes before tagging an RC build.
 - [ ] GitHub Actions `Closed Beta RC` uploads the `closed-beta-rc-evidence` artifact containing `tmp/release/rc-evidence.md`, issue snippets, the release evidence packet, source archive plus `.sha256`, security/export-import evidence, visual-smoke screenshots/review evidence, and GitHub Actions run URL evidence when produced.
 - [ ] `make github-actions-rc-plan` records local GitHub Actions readiness for the signed-off commit and, when intentionally run with `GITHUB_ACTIONS_RC_PLAN_ARGS="--dispatch-closed-beta-rc"`, dispatches the manual `Closed Beta RC` workflow only after the candidate is clean unless `--allow-dirty` is explicitly provided.
 - [ ] `make github-actions-evidence GITHUB_ACTIONS_EVIDENCE_ARGS="--auto-gh --include-gh-details --verify-closed-beta-rc-artifact-contents"` or manual URL input records the successful `AIDM CI` run URL, `Closed Beta RC` run URL, and downloaded `closed-beta-rc-evidence` artifact content proof for the signed-off commit in `tmp/release/github-actions-evidence.md`.
-- [ ] `make deployment-readiness DEPLOYMENT_READINESS_ARGS="--env-file <target-env> --target-url <target-url> --auth-token <token> --evidence-report tmp/release/deployment-readiness-evidence.md"` passes for the hosted/staging target, with documented flags for same-origin CORS, bearer-token auth exceptions, or Socket.IO staging proof when applicable.
+- [ ] `make deployment-readiness DEPLOYMENT_READINESS_ARGS="--env-file <target-env> --target-url <target-url> --auth-token <token> --evidence-report tmp/release/deployment-readiness-evidence.md"` passes for the hosted/staging target, with documented flags for same-origin CORS, bearer-token auth exceptions, or Socket.IO staging proof when applicable. When `AIDM_SERVE_FRONTEND=true`, separately verify `GET /` and one built `/assets/*` file through the deployed edge because deployment readiness currently checks the API/WebSocket surface, not the SPA build.
 - [ ] `make hosted-rc-evidence HOSTED_RC_EVIDENCE_ARGS="--target-url <target-url> --auth-token <operator-token> --workspace-id <workspace-id> --non-admin-token <token> --campaign-id <campaign-id> --session-id <session-id> --player-id <player-id> --env-file <target-env>"` runs the hosted deployment-readiness, cookie-auth, non-admin forbidden, export/import, and beta SLO evidence plan. It must not report `manual-evidence-required`; provide `--hosted-backup-restore-evidence`, `--hosted-worker-process-evidence`, `--source-archive-attachment-evidence`, and `--external-telemetry-receipt` when those manual proofs are ready.
 - [ ] `make rc-issue-evidence` renders issue-ready Markdown under `tmp/release/issue-evidence/` from the latest RC evidence report and source archive scan.
 - [ ] `make rc-issue-closure-evidence` writes read-only closure/comment evidence for RC gate issues `#3`-`#9` before final issue closure.
@@ -42,7 +48,7 @@
 - [ ] `cd aidm_frontend && npm test` passes typecheck, lint, and unit tests.
 - [ ] `cd aidm_frontend && npm run lint` passes.
 - [ ] `cd aidm_frontend && npm run typecheck` passes.
-- [ ] `cd aidm_frontend && npm run build` passes.
+- [ ] With Node 24.18.0 and npm 12.0.0, `cd aidm_frontend && npm run build` passes and produces `aidm_frontend/dist/index.html` for deployments using `AIDM_SERVE_FRONTEND=true`.
 - [ ] `cd aidm_frontend && npm run bundle:budget` passes after build.
 - [ ] RC browser smoke runs the built single-origin frontend and verifies required security headers and CSP on the UI response.
 - [ ] RC visual smoke captures desktop, short-height, and mobile screenshots without console errors, horizontal overflow, or clipped core panels.
@@ -56,7 +62,7 @@
 - [ ] `AIDM_AUTH_REQUIRED=true` in deployed environment.
 - [ ] Strong token configured in `AIDM_API_AUTH_TOKENS`.
 - [ ] CORS allowlists are explicit (no wildcard in production).
-- [ ] `docs/auth_modes.md` matches the intended exposure mode and any bearer-token browser exception is documented.
+- [ ] `docs/auth_modes.md` and `docs/production-readiness.md` match the intended exposure/provider mode, and any bearer-token browser exception or provider-specific runtime requirement is documented.
 - [ ] Hosted same-origin deployments either enable HTTP-only account cookies or document why bearer/session storage remains acceptable.
 - [ ] If cookie auth is enabled, `AIDM_ACCOUNT_COOKIE_SECURE=true`; if cookie-only browser auth is required, `AIDM_ACCOUNT_TOKEN_RESPONSE_ENABLED=false`.
 - [ ] `make hosted-cookie-auth-smoke` writes `tmp/release/hosted-cookie-auth-evidence.md` during the local RC gate and proves cookie-only account login, no raw account-token JSON response, CSRF enforcement on unsafe REST, logout cleanup, workspace role downgrade refresh, and Socket.IO cookie auth.
@@ -64,8 +70,9 @@
 - [ ] `make security-forbidden-smoke` proves non-admin accounts are rejected by combat operator, bestiary authoring/save, and beta operator endpoints.
 - [ ] `make security-forbidden-smoke SECURITY_FORBIDDEN_SMOKE_ARGS="--target-url <target-url> --account-token <non-admin-token> --workspace-id <workspace-id> --campaign-id <campaign-id> --session-id <session-id> --evidence-report tmp/release/security-forbidden-evidence.md"` passes against hosted/staging before closing the security gate.
 - [ ] Security headers are enabled, including `Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, and `Permissions-Policy`.
-- [ ] The authentication/security owner and release owner sign the closed-beta-only Low/P3 acceptance for open findings `preauth-target-lockout-legacy-claim` and `preauth-target-lockout-workspace-password`. The acceptance expires on 2026-08-10 or before exposure expands, whichever comes first; neither finding is marked fixed or closed.
-- [ ] Hosted telemetry routes every `auth.preauth_rate_limited` event with `dimension=target` and action `account-legacy-claim` or `workspace-password` to `AIDM_ALERT_OWNER`, and the release evidence records that the renewable target-lockout response in `docs/beta_runbook.md` was reviewed.
+- [ ] Passwordless legacy recovery requires a valid saved or operator-issued high-entropy account token; matching username/first/last-name fields alone cannot set a password, and an operator-issued code is rotated after successful recovery.
+- [ ] Workspace-password target limiting is scoped per authenticated account and canonical workspace while IP+workspace and IP-wide limits remain active; focused regression coverage proves one account cannot consume another account's cross-IP target bucket, while same-source IP saturation can still reject both.
+- [ ] Hosted telemetry routes `auth.preauth_rate_limited` target events for `account-legacy-claim` and `workspace-password` to `AIDM_ALERT_OWNER` as abuse signals; for workspace passwords, `dimension=target` now represents an account-scoped canonical-workspace bucket.
 
 ## Data Integrity
 - [ ] Database backup taken before deployment.
@@ -103,7 +110,7 @@
 - [ ] Deployment readiness live checks pass for `/api/health`, `/api/metrics`, `/api/metrics/prometheus`, and required security headers.
 - [ ] `/api/beta/support-bundle` and `make export-support-bundle` export session quality, incidents, audits, recent turns, canon jobs, session logs, turn events, and relevant telemetry counters for workspace admins.
 - [ ] The Beta feedback prompt records per-turn coherence, fun, and rules scores, and coherence submissions feed `/api/beta/slo` plus session-quality summaries.
-- [ ] `make observability-check` validates the bundled Prometheus/Grafana files; on Docker-capable release machines, `make observability-check OBSERVABILITY_CHECK_ARGS="--check-docker-compose --require-docker"` also validates `docker compose config`.
+- [ ] `make observability-check` validates the bundled Prometheus/Grafana files; on Docker-capable release machines, `make observability-check OBSERVABILITY_CHECK_ARGS="--check-docker-compose --require-docker"` also validates `docker compose config`. `docs/observability.md` confirms the bundled ports, anonymous access, and default credentials remain trusted-local only.
 - [ ] `make local-beta-slo-baseline` writes local-only SLO evidence and raw `tmp/release/beta-slo*.json` artifacts as part of the RC gate.
 - [ ] External telemetry endpoint receives events when enabled.
 - [ ] `make beta-slo-baseline BETA_SLO_BASELINE_ARGS="--target-url <target-url> --auth-token <token> --workspace-id <workspace-id> --release RC1 --environment staging --output tmp/release/beta-slo-baseline.md"` writes `tmp/release/beta-slo-baseline.md` with target-environment metrics before tester expansion.
@@ -119,4 +126,4 @@
 - [ ] `make rc-issue-evidence` records the source archive path and clean archive scan in `tmp/release/issue-evidence/issue-09-packaging.md`.
 - [ ] The manual `Closed Beta RC` workflow artifact includes the generated source archive for reviewer download before tagging a hosted RC.
 - [ ] Release archive does not include `.venv`, `aidm_frontend/node_modules`, `aidm_frontend/dist`, local SQLite data, logs, or `.env.local`.
-- [ ] `docs/beta_tester_onboarding.md` is reviewed and linked for invited testers.
+- [ ] `docs/beta_tester_onboarding.md`, `docs/beta_runbook.md`, `docs/production-readiness.md`, and `docs/observability.md` are reviewed for the signed-off target and linked where relevant for invited testers/operators.

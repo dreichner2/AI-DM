@@ -3,6 +3,13 @@
 Use this as the closed-beta deployment checklist. Local launcher behavior is
 useful for development, but it is not the production boundary.
 
+The tracked repository defines the application entrypoint, environment
+contract, migrations, CI rehearsals, and release-evidence tooling. It does not
+contain a provider-specific application deployment manifest (for example a
+Render service blueprint), so dashboard build/start commands, replica count,
+network allowlists, managed backups, and telemetry destinations must be
+captured as external release evidence rather than inferred from this document.
+
 ## Required Configuration
 
 Use `.env.production.example` as the placeholder template for deployment
@@ -10,6 +17,7 @@ secret/env managers. Choose the matching exposure mode in
 `docs/auth_modes.md` before finalizing auth, cookie, and CORS settings.
 
 - `AIDM_ENV=production`
+- `AIDM_DEBUG=false`
 - `FLASK_SECRET_KEY=<strong explicit secret>`
 - `AIDM_DATABASE_URI=postgresql+psycopg://...` with a reachable PostgreSQL
   database; hosted readiness rejects implicit or SQLite databases
@@ -30,6 +38,12 @@ secret/env managers. Choose the matching exposure mode in
   tooling and is not part of the hosted production surface
 - Explicit REST and Socket.IO CORS allowlists, unless same-origin deployment
   intentionally leaves them empty
+- `AIDM_LLM_PROVIDER=<configured-live-provider>` plus the provider-specific
+  credential/runtime settings described below; deterministic `fallback` is an
+  explicit safe-mode exception, not hosted release proof
+- `AIDM_SERVE_FRONTEND=true` only when the production build includes
+  `aidm_frontend/dist`; otherwise serve the frontend separately and leave it
+  false
 - For hosted cookie-only account auth:
   `AIDM_ACCOUNT_COOKIE_AUTH_ENABLED=true`,
   `AIDM_ACCOUNT_COOKIE_SECURE=true`, and
@@ -37,11 +51,28 @@ secret/env managers. Choose the matching exposure mode in
 
 ## Startup
 
-1. Install runtime dependencies with
-   `python -m pip install --require-hashes -r requirements.runtime.lock.txt`.
-2. Apply migrations with `make db-upgrade`.
-3. Run `.venv/bin/python scripts/deploy_bootstrap.py --check-only`.
-4. Run deployment readiness against the target environment and, when available,
+1. Provision exact Python 3.14.6. For the repository-managed virtual
+   environment, create it and install the constrained, hash-locked runtime:
+
+   ```bash
+   python3.14 -m venv .venv
+   .venv/bin/python -m pip install --constraint requirements.constraints.txt --upgrade pip
+   .venv/bin/python -m pip install --require-hashes -r requirements.runtime.lock.txt
+   ```
+
+   `make install` installs the larger development/test environment instead.
+2. When `AIDM_SERVE_FRONTEND=true`, provision Node 24.18.0 and npm 12.0.0,
+   then build the tracked frontend:
+
+   ```bash
+   (cd aidm_frontend && npm ci && npm run build)
+   ```
+
+   The default served directory is `aidm_frontend/dist`. Set
+   `AIDM_FRONTEND_DIST_DIR` only when the deployment copies the build elsewhere.
+3. Apply migrations with `make db-upgrade`.
+4. Run `.venv/bin/python scripts/deploy_bootstrap.py --check-only`.
+5. Run deployment readiness against the target environment and, when available,
    the deployed target URL:
    `make deployment-readiness DEPLOYMENT_READINESS_ARGS="--env-file /path/to/env --target-url https://aidm.example.com --auth-token <token> --evidence-report tmp/release/deployment-readiness-evidence.md"`.
    Add `--same-origin-deployment`, `--auth-storage-exception`, or
@@ -50,7 +81,7 @@ secret/env managers. Choose the matching exposure mode in
    structured artifact is better for CI or release automation.
    The environment check opens `AIDM_DATABASE_URI` and runs `SELECT 1`; a
    syntactically valid but unreachable database does not pass readiness.
-5. Start AIDM with a production Socket.IO-capable server. Do not use
+6. Start AIDM with a production Socket.IO-capable server. Do not use
    `deploy_bootstrap.py` as the production server process. For the first
    closed-beta single-worker deployment, use the decision in
    `docs/socketio_worker_model.md`:
@@ -68,13 +99,40 @@ secret/env managers. Choose the matching exposure mode in
    To inspect the exact Gunicorn command without starting a server, run
    `scripts/run_production_server.sh --print`. A real start always runs
    migrations and the deployment bootstrap preflight before Gunicorn execs.
+7. After startup, verify `GET /api/health`, authenticated metrics, and the forced
+   WebSocket probe through `make deployment-readiness`. When
+   `AIDM_SERVE_FRONTEND=true`, also verify `GET /` returns the built SPA rather
+   than `frontend_not_built`, and request one emitted `/assets/*` file through
+   the deployed edge. The current deployment-readiness script does not perform
+   these two frontend checks.
+
+## LLM Provider Requirements
+
+- `gemini` uses `GOOGLE_GENAI_API_KEY`; `deepseek` uses
+  `AIDM_DEEPSEEK_API_KEY`; `nvidia` and `kimi` use `AIDM_NVIDIA_API_KEY` with
+  their configured OpenAI-compatible endpoint.
+- `codex_cli` requires an available Codex executable and either a dedicated
+  persistent, AIDM-only `AIDM_CODEX_HOME` containing `auth.json` or
+  `AIDM_CODEX_ACCESS_TOKEN`. The production launcher rejects startup when these
+  prerequisites are missing. Gameplay calls run in a disposable empty,
+  read-only, network-disabled, tool-free workspace; do not point
+  `AIDM_CODEX_HOME` at an operator's general-purpose Codex profile.
+- `fallback` is deterministic and requires no key. Deployment readiness rejects
+  it unless `--allow-fallback-provider` is passed for an intentional safe-mode
+  drill.
+
+Provider/model availability and third-party service guarantees are external
+facts. Record the selected provider/model from `/api/health` and retain the
+provider-specific deployment evidence for the signed-off commit.
 
 ## CI Gates
 
-- Secret scan: `python scripts/scan_secrets.py`
-- Python dependency audit: `python -m pip_audit -r requirements.runtime.lock.txt`
-- Python correctness lint: `python -m ruff check --select E9,F63,F7,F82 aidm_server tests scripts`
-- Backend tests: `python -m pytest`
+- Secret scan: `.venv/bin/python scripts/scan_secrets.py`
+- Python dependency audit:
+  `.venv/bin/python -m pip_audit -r requirements.runtime.lock.txt`
+- Python correctness lint:
+  `.venv/bin/python -m ruff check --select E9,F63,F7,F82 aidm_server tests scripts`
+- Backend tests: `.venv/bin/python -m pytest`
 - PostgreSQL production rehearsal: the `postgres-integration` GitHub Actions
   job applies the migration chain, runs production bootstrap, starts the real
   Gunicorn threaded entrypoint with `simple-websocket`, checks live health, metrics, Prometheus output,
@@ -85,38 +143,38 @@ secret/env managers. Choose the matching exposure mode in
   against the actual hosted staging target and its managed backup/telemetry
   providers.
 - Backup/restore drill for local/private SQLite beta data:
-  `python scripts/backup_restore_drill.py --database-uri sqlite:////absolute/path/to/dnd_ai_dm.db`
+  `.venv/bin/python scripts/backup_restore_drill.py --database-uri sqlite:////absolute/path/to/dnd_ai_dm.db`
 - Guarded PostgreSQL custom-archive restore drill against a separately supplied
   empty database: `make postgres-backup-restore-drill POSTGRES_BACKUP_RESTORE_DRILL_ARGS="--source-uri-file /secure/source-uri --empty-target-uri-file /secure/empty-target-uri"`
 - Migration chain drill:
-  `python scripts/migration_chain_drill.py`
+  `.venv/bin/python scripts/migration_chain_drill.py`
 - Hosted cookie-only account auth smoke:
-  `python scripts/hosted_cookie_auth_smoke.py --evidence-report tmp/release/hosted-cookie-auth-evidence.md`
+  `.venv/bin/python scripts/hosted_cookie_auth_smoke.py --evidence-report tmp/release/hosted-cookie-auth-evidence.md`
 - Hosted cookie-only account auth smoke against the deployed target:
   `make hosted-cookie-auth-smoke HOSTED_COOKIE_AUTH_SMOKE_ARGS="--target-url https://aidm.example.com --account-intent signup --evidence-report tmp/release/hosted-cookie-auth-evidence.md"`
 - Non-admin forbidden-response smoke:
-  `python scripts/security_forbidden_smoke.py --evidence-report tmp/release/security-forbidden-evidence.md`
+  `.venv/bin/python scripts/security_forbidden_smoke.py --evidence-report tmp/release/security-forbidden-evidence.md`
 - Non-admin forbidden-response smoke against the deployed target:
   `make security-forbidden-smoke SECURITY_FORBIDDEN_SMOKE_ARGS="--target-url https://aidm.example.com --account-token <non-admin-token> --workspace-id <workspace-id> --campaign-id <campaign-id> --session-id <session-id> --evidence-report tmp/release/security-forbidden-evidence.md"`
 - Session export/import smoke:
-  `python scripts/session_export_import_smoke.py --evidence-report tmp/release/export-import-evidence.md`
+  `.venv/bin/python scripts/session_export_import_smoke.py --evidence-report tmp/release/export-import-evidence.md`
 - Session export/import smoke against the deployed target:
   `make session-export-import-smoke SESSION_EXPORT_IMPORT_SMOKE_ARGS="--target-url https://aidm.example.com --auth-token <operator-token> --workspace-id <workspace-id> --session-id <session-id> --player-id <player-id> --evidence-report tmp/release/export-import-evidence.md"`
-- API type drift: `python scripts/generate_api_types.py` plus a clean
+- API type drift: `.venv/bin/python scripts/generate_api_types.py` plus a clean
   `git diff --exit-code aidm_frontend/src/apiContract.generated.ts`
 - Frontend tests, build, bundle budget, single-origin browser smoke against the built frontend, visual smoke screenshots, and visual-smoke review evidence
 - Hosted RC evidence via `make hosted-rc-evidence` against the target URL, including deployment readiness, hosted cookie auth, non-admin forbidden responses, session export/import, beta SLO baseline, and the manual backup/restore, worker-process, and source-archive attachment proof flags needed to avoid `manual-evidence-required`
 - Final operator sign-off via `make rc-finalize-signoff` after filling and merging `tmp/release/external-proof-values.json` with GitHub Actions URLs, hosted proof links, target env evidence, backup/restore proof, worker-process proof, telemetry receipt, source-archive attachment, issue-closure review, and packaging command evidence. Manual signoff edits still need `make operator-signoff-status OPERATOR_SIGNOFF_STATUS_ARGS="--require-complete"` before issue closure.
 - Socket.IO worker-model decision:
-  `python scripts/check_socketio_worker_model_decision.py`
+  `.venv/bin/python scripts/check_socketio_worker_model_decision.py`
 - Observability bundle:
-  `python scripts/check_observability_bundle.py`, plus
-  `python scripts/check_observability_bundle.py --check-docker-compose --require-docker`
+  `.venv/bin/python scripts/check_observability_bundle.py`, plus
+  `.venv/bin/python scripts/check_observability_bundle.py --check-docker-compose --require-docker`
   on machines that should prove Docker Compose config
 - Local beta SLO renderer proof:
   `make local-beta-slo-baseline`
 - Deployment readiness:
-  `python scripts/deployment_readiness_check.py --env-file /path/to/env --evidence-report tmp/release/deployment-readiness-evidence.md`
+  `.venv/bin/python scripts/deployment_readiness_check.py --env-file /path/to/env --evidence-report tmp/release/deployment-readiness-evidence.md`
 - Beta SLO baseline:
   `make beta-slo-baseline BETA_SLO_BASELINE_ARGS="--target-url https://aidm.example.com --auth-token <token> --workspace-id <workspace-id> --release RC1 --environment staging --output tmp/release/beta-slo-baseline.md"`
 
@@ -136,9 +194,16 @@ Alert thresholds are owned by `AIDM_ALERT_OWNER` in the chosen
 `AIDM_OBSERVABILITY_PROVIDER`. The local Prometheus/Grafana bundle under
 `observability/` is useful for development and smoke testing; hosted beta
 deployments should configure the managed destination named in production env.
+See `docs/observability.md` for the bundle's trusted-local assumptions and
+insecure development defaults.
 
 ## Operational Notes
 
+- Passwordless legacy recovery is operator-mediated. Verify the requester out
+  of band, then run `.venv/bin/python scripts/issue_legacy_recovery_code.py
+  --username <username> --confirm-production` in an authorized target shell.
+  The command rotates the stored account-token hash and prints the raw recovery
+  code once; deliver it privately and never retain it in tickets or logs.
 - SQLite, disabled auth, wildcard CORS, in-memory rate limiting, in-memory turn
   coordination, local `.env.local` writes, and module-global Socket.IO state are
   local/private deployment conveniences. Hosted production uses an explicit

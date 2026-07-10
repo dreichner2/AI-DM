@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import pathlib
 import subprocess
 import sys
 
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import create_engine, inspect, text
 
 from aidm_server.migration_compat import ALEMBIC_VERSION_COLUMN_LENGTH
@@ -213,6 +216,157 @@ def test_migration_chain_upgrade_and_downgrade(tmp_path):
     assert {'name', 'status', 'updated_at', 'deleted_at', 'client_session_id', 'archived_by_campaign_id'}.issubset(
         session_cols_after_reupgrade
     )
+
+
+def test_players_account_fk_migration_preserves_referenced_players(tmp_path):
+    db_path = tmp_path / 'migration_players_account_fk_with_data.db'
+    db_uri = f'sqlite:///{db_path}'
+
+    env = os.environ.copy()
+    env.update(
+        {
+            'FLASK_APP': 'aidm_server.main:create_app',
+            'PYTHONPATH': str(REPO_ROOT),
+            'PYTHON_DOTENV_DISABLED': '1',
+            'AIDM_ENV': 'test',
+            'AIDM_DEBUG': 'false',
+            'AIDM_SOCKETIO_ASYNC_MODE': 'threading',
+            'AIDM_AUTO_CREATE_SCHEMA': 'false',
+            'AIDM_DATABASE_URI': db_uri,
+            'AIDM_TELEMETRY_ENABLED': 'false',
+        }
+    )
+
+    _run_flask_db(['upgrade', '0028_session_turn_lock_fencing'], env)
+
+    engine = create_engine(db_uri)
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql('PRAGMA foreign_keys=ON')
+            connection.execute(text("INSERT INTO worlds (world_id, name) VALUES (1, 'World')"))
+            connection.execute(
+                text("INSERT INTO campaigns (campaign_id, title, world_id) VALUES (1, 'Campaign', 1)")
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO accounts (account_id, username, first_name, last_name) "
+                    "VALUES (1, 'owner', 'Test', 'Owner')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO players "
+                    "(player_id, campaign_id, name, character_name, account_id) "
+                    "VALUES (1, 1, 'Player', 'Hero', 1)"
+                )
+            )
+            connection.execute(
+                text("INSERT INTO sessions (session_id, campaign_id) VALUES (1, 1)")
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO dm_turns "
+                    "(turn_id, session_id, campaign_id, player_id, player_input) "
+                    "VALUES (1, 1, 1, 1, 'Look around')"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    _run_flask_db(['upgrade', 'head'], env)
+
+    engine = create_engine(db_uri)
+    try:
+        inspector = inspect(engine)
+        assert _current_revision(db_uri) == '0029_players_account_fk'
+        assert _fk_ondelete(inspector, 'players', 'account_id') == 'SET NULL'
+        with engine.connect() as connection:
+            assert connection.execute(text('SELECT count(*) FROM players')).scalar_one() == 1
+            assert connection.execute(text('SELECT count(*) FROM dm_turns')).scalar_one() == 1
+            assert connection.exec_driver_sql('PRAGMA foreign_key_check').all() == []
+    finally:
+        engine.dispose()
+
+    _run_flask_db(['downgrade', '0028_session_turn_lock_fencing'], env)
+    engine = create_engine(db_uri)
+    try:
+        inspector = inspect(engine)
+        assert _current_revision(db_uri) == '0028_session_turn_lock_fencing'
+        assert _fk_ondelete(inspector, 'players', 'account_id') is None
+        with engine.connect() as connection:
+            assert connection.execute(text('SELECT count(*) FROM players')).scalar_one() == 1
+            assert connection.execute(text('SELECT count(*) FROM dm_turns')).scalar_one() == 1
+            assert connection.exec_driver_sql('PRAGMA foreign_key_check').all() == []
+    finally:
+        engine.dispose()
+
+    _run_flask_db(['upgrade', 'head'], env)
+    inspector = _inspect_db(db_uri)
+    assert _current_revision(db_uri) == '0029_players_account_fk'
+    assert _fk_ondelete(inspector, 'players', 'account_id') == 'SET NULL'
+
+
+def test_players_account_fk_migration_restores_sqlite_foreign_keys_in_process(tmp_path):
+    migration_path = REPO_ROOT / 'migrations' / 'versions' / '0029_players_account_fk.py'
+    spec = importlib.util.spec_from_file_location('migration_0029_players_account_fk', migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    db_path = tmp_path / 'migration_players_account_fk_same_connection.db'
+    engine = create_engine(f'sqlite:///{db_path}')
+    try:
+        with engine.connect() as connection:
+            connection.exec_driver_sql('PRAGMA foreign_keys=ON')
+            connection.exec_driver_sql('CREATE TABLE accounts (account_id INTEGER PRIMARY KEY)')
+            connection.exec_driver_sql(
+                'CREATE TABLE players ('
+                'player_id INTEGER PRIMARY KEY, '
+                'account_id INTEGER'
+                ')'
+            )
+            connection.exec_driver_sql(
+                'CREATE TABLE dm_turns ('
+                'turn_id INTEGER PRIMARY KEY, '
+                'player_id INTEGER REFERENCES players(player_id)'
+                ')'
+            )
+            connection.exec_driver_sql('INSERT INTO accounts (account_id) VALUES (1)')
+            connection.exec_driver_sql('INSERT INTO players (player_id, account_id) VALUES (1, 1)')
+            connection.exec_driver_sql('INSERT INTO dm_turns (turn_id, player_id) VALUES (1, 1)')
+            connection.commit()
+
+            context = MigrationContext.configure(
+                connection,
+                opts={'transaction_per_migration': True},
+            )
+            migration.op = Operations(context)
+            with context.begin_transaction(_per_migration=True):
+                migration.upgrade()
+                assert connection.exec_driver_sql('PRAGMA foreign_keys').scalar_one() == 1
+
+            inspector = inspect(connection)
+            assert _fk_ondelete(inspector, 'players', 'account_id') == 'SET NULL'
+            assert connection.exec_driver_sql('PRAGMA foreign_key_check').all() == []
+            assert connection.execute(text('SELECT count(*) FROM players')).scalar_one() == 1
+            assert connection.execute(text('SELECT count(*) FROM dm_turns')).scalar_one() == 1
+            connection.commit()
+
+            context = MigrationContext.configure(
+                connection,
+                opts={'transaction_per_migration': True},
+            )
+            migration.op = Operations(context)
+            with context.begin_transaction(_per_migration=True):
+                migration.downgrade()
+                assert connection.exec_driver_sql('PRAGMA foreign_keys').scalar_one() == 1
+
+            assert _fk_ondelete(inspect(connection), 'players', 'account_id') is None
+            assert connection.exec_driver_sql('PRAGMA foreign_key_check').all() == []
+            assert connection.execute(text('SELECT count(*) FROM players')).scalar_one() == 1
+            assert connection.execute(text('SELECT count(*) FROM dm_turns')).scalar_one() == 1
+    finally:
+        engine.dispose()
 
 
 def test_migration_chain_downgrade_to_base_and_reupgrade(tmp_path):

@@ -205,8 +205,9 @@ describe('App runtime and workspace access', () => {
 
     const dialog = await screen.findByRole('dialog', { name: 'Sign Up' })
     expect(within(dialog).getAllByText(LEGACY_PASSWORD_SETUP_MESSAGE)).not.toHaveLength(0)
-    expect(within(dialog).getByLabelText('First Name')).toBeInTheDocument()
-    expect(within(dialog).getByLabelText('Last Name')).toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('First Name')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Last Name')).not.toBeInTheDocument()
+    expect(within(dialog).getByLabelText('Recovery Code')).toBeInTheDocument()
     expect(within(dialog).getByLabelText('New Password')).toBeInTheDocument()
     expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
     await waitFor(() => expect(sessionStorage.getItem('aidm:workspaceToken')).toBeNull())

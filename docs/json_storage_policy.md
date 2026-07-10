@@ -2,22 +2,46 @@
 
 ## Current Decision
 
-AIDM keeps structured payload columns as JSON-encoded `Text` while SQLite remains a supported local/runtime database. This applies to fields such as player `stats`, `inventory`, `character_sheet`, map `map_data`, `metadata_json`, turn `rules_hint`, and session `state_snapshot`.
+AIDM stores structured payload columns as JSON-encoded `Text`. Production now
+requires PostgreSQL through `postgresql+psycopg`, while SQLite remains a
+supported local and test adapter. The text representation is retained so both
+adapters share the same schema semantics and so session replay, export/import,
+and legacy-data recovery continue to use the same application validation path.
 
-This is intentional rather than accidental schema debt: SQLite is the default local store, source archives should remain easy to run without a managed database, and the app already normalizes structured writes through validation helpers plus `safe_json_dumps` / `safe_json_loads`.
+Examples include player `stats`, `inventory`, and `character_sheet`; map
+`map_data` and `metadata_json`; turn `rules_hint`; and session
+`state_snapshot`. Structured writes are normalized by DTO or domain validators
+and serialized with `safe_json_dumps`; reads use `safe_json_loads` or a
+domain-specific equivalent.
+
+This is a deliberate cross-adapter compatibility decision, not a claim that
+database-native JSON has no value.
 
 ## Rules
 
-- Write routes must validate structured payload shape before persisting.
-- Reads must tolerate malformed legacy JSON and return safe defaults.
-- New structured fields should use explicit DTO/validation helpers rather than ad hoc `json.loads`.
-- Do not migrate an existing JSON-text column to native `db.JSON` unless the deployment target is known to support the same behavior across local, test, and production databases.
+- Validate the structured payload shape before persisting it.
+- Tolerate malformed legacy JSON on reads and return an explicit safe default or
+  validation error appropriate to the caller.
+- Use existing DTO, schema, and normalization helpers rather than route-local
+  `json.loads`/`json.dumps` calls.
+- Preserve deterministic serialization where hashes, snapshots, replay,
+  fixtures, or exported artifacts depend on stable output.
+- Do not change an existing JSON-text column to native `db.JSON` in isolation.
+  The migration must cover PostgreSQL production, SQLite local/test behavior,
+  exports, imports, snapshots, and rollback.
 
 ## Native JSON Migration Trigger
 
-Revisit native SQLAlchemy JSON columns when AIDM has a primary production database target such as Postgres and SQLite is only a test/development adapter. At that point, prefer a migration that:
+Reconsider native JSON only when a concrete feature needs database-side JSON
+queries, indexes, or constraints that cannot be provided safely through the
+current model. PostgreSQL adoption by itself is no longer the trigger.
 
-- Adds native JSON columns beside the existing text columns.
-- Backfills by parsing existing text values through the same safe JSON helpers.
-- Updates write/read code behind DTO helpers first.
-- Removes old text columns only after export/import, session replay, and frontend DTO tests pass against both old and new data.
+Any proposal must include:
+
+- the query, index, or integrity requirement that justifies the change;
+- an explicit SQLite strategy for local and test runs;
+- side-by-side columns or another reversible backfill path that parses existing
+  values through current safe JSON helpers;
+- DTO and write-path changes before old columns are removed; and
+- replay, export/import, snapshot, migration, and frontend contract tests across
+  the supported adapters.

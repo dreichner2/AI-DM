@@ -5,8 +5,19 @@ title: "[Bug]: "
 labels: bug
 ---
 
-## What happened
+> Remove tokens, credentials, private game text, and personal data from logs or
+> screenshots before attaching them.
 
+## Summary
+
+What happened, and which user or operator workflow was affected?
+
+## Environment
+
+- Commit/RC:
+- Local, staging, or hosted target:
+- Browser/client and OS:
+- Database/provider when relevant:
 
 ## Reproduction
 
@@ -17,15 +28,25 @@ labels: bug
 ## Expected behavior
 
 
-## Evidence
+## Actual behavior
 
-- Campaign/session/player IDs:
-- Logs/screenshots:
-- Browser/backend:
+
+## Sanitized evidence
+
+- Campaign/session/player/turn IDs:
+- Error/correlation IDs or log timestamps:
+- Screenshots, response status/body, or generated evidence path:
 
 ## Impact
 
-- [ ] Blocks play
-- [ ] State/data drift
-- [ ] Security/privacy
-- [ ] Visual/UI
+- [ ] Blocks or degrades play
+- [ ] State/data drift or loss risk
+- [ ] Authentication/security/privacy
+- [ ] Deployment/operations
+- [ ] Visual/accessibility
+- [ ] Documentation/tooling only
+
+## Regression target
+
+- Suggested test or validation command:
+- Related issue/document:

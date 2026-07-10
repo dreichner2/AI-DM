@@ -1,3 +1,10 @@
+> **Historical audit ledger:** Each dated section below records the repository
+> state and verification results at that time. Older findings, commands, file
+> sizes, and release status may have been superseded. Use `docs/index.md`,
+> `docs/roadmap.md`, and the generated release-checklist status for current
+> guidance; preserve these entries as evidence rather than silently rewriting
+> them.
+
 # Daily AIDM Codebase Improvement Audit - 2026-06-28 06:04 MDT
 
 Automation ID: `daily-aidm-codebase-improvement-audit`
