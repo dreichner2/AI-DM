@@ -410,13 +410,13 @@ export function useWorkspaceQueries({
     rootLoadingRequestRef.current = requestId
     setWorkspaceLoading(true)
     try {
-      const [healthResult, workspaceResult, llmResult] = await Promise.allSettled([
+      const [healthResult, workspaceResult, metricsResult, llmResult] = await Promise.allSettled([
         apiFetch<Health>(requestBaseUrl, '/api/health', requestAuth),
         Promise.all([
           apiFetch<Campaign[]>(requestBaseUrl, '/api/campaigns', requestAuth),
-          apiFetch<BetaSummary>(requestBaseUrl, '/api/beta/summary', requestAuth),
           apiFetch<World[]>(requestBaseUrl, '/api/worlds?limit=200', requestAuth),
         ]),
+        apiFetch<BetaSummary>(requestBaseUrl, '/api/beta/summary', requestAuth),
         apiFetch<LlmRuntimeConfig>(requestBaseUrl, '/api/llm/config', requestAuth, {
           headers: runtimeConfigHeaders,
         }),
@@ -448,10 +448,15 @@ export function useWorkspaceQueries({
         setLlmConfig(null)
       }
 
+      if (metricsResult.status === 'fulfilled') {
+        setMetrics(metricsResult.value)
+      } else {
+        setMetrics(null)
+      }
+
       if (workspaceResult.status === 'fulfilled') {
-        const [campaignData, metricData, worldData] = workspaceResult.value
+        const [campaignData, worldData] = workspaceResult.value
         rootCampaignsLoaded(campaignData)
-        setMetrics(metricData)
         setWorlds(worldData)
         setCampaignSessionMeta(
           Object.fromEntries(
