@@ -337,6 +337,7 @@ def test_import_session_from_export_restores_state_events_and_projected_log(clie
 
         events = TurnEvent.query.filter_by(session_id=imported_session_id).order_by(TurnEvent.event_id.asc()).all()
         assert [event.event_type for event in events] == [PLAYER_MESSAGE_EVENT, DM_RESPONSE_EVENT]
+        assert [event.player_id for event in events] == [ids['player_id'], ids['player_id']]
         player_event_payload = json.loads(events[0].payload_json)
         assert player_event_payload['metadata']['imported_from_turn_id'] == 77
         assert player_event_payload['metadata']['imported_from_event_id'] == 101

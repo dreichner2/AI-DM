@@ -446,11 +446,14 @@ def import_session():
         return error_response('validation_error', 'Expected JSON request body.', 400)
 
     try:
+        operator_view = _campaign_pack_operator_view()
+        account_id = current_account_id()
         result = import_session_export(
             payload,
             workspace_id=current_workspace_id(),
-            include_hidden_state=_campaign_pack_operator_view(),
-            allow_campaign_pack_state=_campaign_pack_operator_view(),
+            include_hidden_state=operator_view,
+            allow_campaign_pack_state=operator_view,
+            required_player_account_id=(account_id if account_id is not None and not operator_view else None),
         )
         db.session.commit()
         telemetry_metric('sessions.import.success_total', 1)

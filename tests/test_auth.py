@@ -19,6 +19,7 @@ from aidm_server.models import (
     DmTurn,
     OperatorActionAudit,
     Player,
+    PlayerAction,
     Session,
     TurnEvent,
     Workspace,
@@ -1441,6 +1442,182 @@ def test_session_import_strips_campaign_pack_state_for_non_admin_account(tmp_pat
     assert snapshot['importMetadata']['campaignPackStateStripped'] is True
     assert imported_pack_events == 0
     assert 'campaignPack' not in response.get_json()['session']['state_snapshot']
+
+
+def test_session_import_non_admin_cannot_attribute_actions_to_other_players(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+    with app.app_context():
+        attacker = Account(
+            username='session-import-attacker',
+            first_name='Session',
+            last_name='Attacker',
+            password_hash='configured',
+            account_token_hash=hash_secret('session-import-attacker-token'),
+        )
+        victim = Account(
+            username='session-import-victim',
+            first_name='Session',
+            last_name='Victim',
+            password_hash='configured',
+            account_token_hash=hash_secret('session-import-victim-token'),
+        )
+        db.session.add_all([attacker, victim])
+        db.session.flush()
+        db.session.add_all(
+            [
+                AccountWorkspaceMembership(account_id=attacker.account_id, workspace_id='owner', role='player'),
+                AccountWorkspaceMembership(account_id=victim.account_id, workspace_id='owner', role='player'),
+            ]
+        )
+        world = World(name='Session Import Attribution World', description='auth import attribution')
+        db.session.add(world)
+        db.session.flush()
+        target_campaign = Campaign(
+            title='Session Import Attribution Target',
+            world_id=world.world_id,
+            workspace_id='owner',
+        )
+        other_campaign = Campaign(
+            title='Session Import Attribution Other',
+            world_id=world.world_id,
+            workspace_id='owner',
+        )
+        db.session.add_all([target_campaign, other_campaign])
+        db.session.flush()
+        attacker_player = Player(
+            campaign_id=target_campaign.campaign_id,
+            workspace_id='owner',
+            account_id=attacker.account_id,
+            name='Session Attacker',
+            character_name='Attacker Hero',
+        )
+        victim_same_campaign = Player(
+            campaign_id=target_campaign.campaign_id,
+            workspace_id='owner',
+            account_id=victim.account_id,
+            name='Session Victim',
+            character_name='Victim Same Hero',
+        )
+        victim_other_campaign = Player(
+            campaign_id=other_campaign.campaign_id,
+            workspace_id='owner',
+            account_id=victim.account_id,
+            name='Session Victim',
+            character_name='Victim Other Hero',
+        )
+        db.session.add_all([attacker_player, victim_same_campaign, victim_other_campaign])
+        db.session.commit()
+        ids = {
+            'world_id': world.world_id,
+            'target_campaign_id': target_campaign.campaign_id,
+            'other_campaign_id': other_campaign.campaign_id,
+            'attacker_player_id': attacker_player.player_id,
+            'victim_same_campaign_id': victim_same_campaign.player_id,
+            'victim_other_campaign_id': victim_other_campaign.player_id,
+        }
+
+    headers = {
+        'Authorization': 'Bearer session-import-attacker-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+
+    def import_player_event(label: str, player_id: int, *, request_headers: dict[str, str] | None = None):
+        return client.post(
+            '/api/sessions/import',
+            headers=request_headers or headers,
+            json={
+                'campaign_id': ids['target_campaign_id'],
+                'name': f'Session attribution {label}',
+                'turnEvents': [
+                    {
+                        'event_type': 'player_message',
+                        'player_id': player_id,
+                        'payload': {'speaker': label, 'message': f'ATTRIBUTION_MARKER_{label}'},
+                        'created_at': '2099-01-01T00:00:00+00:00',
+                    }
+                ],
+            },
+        )
+
+    own_response = import_player_event('OWN', ids['attacker_player_id'])
+    same_campaign_response = import_player_event('SAME_CAMPAIGN_VICTIM', ids['victim_same_campaign_id'])
+    other_campaign_response = import_player_event('OTHER_CAMPAIGN_VICTIM', ids['victim_other_campaign_id'])
+
+    assert own_response.status_code == 201
+    assert same_campaign_response.status_code == 201
+    assert other_campaign_response.status_code == 201
+    own_session_id = own_response.get_json()['session_id']
+    same_campaign_session_id = same_campaign_response.get_json()['session_id']
+    other_campaign_session_id = other_campaign_response.get_json()['session_id']
+
+    with app.app_context():
+        own_event = TurnEvent.query.filter_by(session_id=own_session_id).one()
+        same_campaign_event = TurnEvent.query.filter_by(session_id=same_campaign_session_id).one()
+        other_campaign_event = TurnEvent.query.filter_by(session_id=other_campaign_session_id).one()
+
+        assert own_event.player_id == ids['attacker_player_id']
+        assert PlayerAction.query.filter_by(
+            session_id=own_session_id,
+            player_id=ids['attacker_player_id'],
+        ).count() == 1
+        assert same_campaign_event.player_id is None
+        assert other_campaign_event.player_id is None
+        assert PlayerAction.query.filter(
+            PlayerAction.session_id.in_([same_campaign_session_id, other_campaign_session_id])
+        ).count() == 0
+
+        from aidm_server.llm_context import build_dm_context
+
+        same_campaign_context = json.loads(
+            build_dm_context(
+                ids['world_id'],
+                ids['target_campaign_id'],
+                active_player_ids=[ids['victim_same_campaign_id']],
+                current_player_id=ids['victim_same_campaign_id'],
+            )
+        )
+        other_campaign_context = json.loads(
+            build_dm_context(
+                ids['world_id'],
+                ids['other_campaign_id'],
+                active_player_ids=[ids['victim_other_campaign_id']],
+                current_player_id=ids['victim_other_campaign_id'],
+            )
+        )
+        same_victim = same_campaign_context['active_players'][0]
+        other_victim = other_campaign_context['active_players'][0]
+
+    assert 'ATTRIBUTION_MARKER_SAME_CAMPAIGN_VICTIM' not in same_victim['recent_actions']
+    assert 'ATTRIBUTION_MARKER_OTHER_CAMPAIGN_VICTIM' not in other_victim['recent_actions']
+
+    operator_headers = {'Authorization': 'Bearer token-123'}
+    operator_same_campaign_response = import_player_event(
+        'OPERATOR_SAME_CAMPAIGN',
+        ids['victim_same_campaign_id'],
+        request_headers=operator_headers,
+    )
+    operator_other_campaign_response = import_player_event(
+        'OPERATOR_OTHER_CAMPAIGN',
+        ids['victim_other_campaign_id'],
+        request_headers=operator_headers,
+    )
+
+    assert operator_same_campaign_response.status_code == 201
+    assert operator_other_campaign_response.status_code == 201
+    operator_same_session_id = operator_same_campaign_response.get_json()['session_id']
+    operator_other_session_id = operator_other_campaign_response.get_json()['session_id']
+    with app.app_context():
+        operator_same_event = TurnEvent.query.filter_by(session_id=operator_same_session_id).one()
+        operator_other_event = TurnEvent.query.filter_by(session_id=operator_other_session_id).one()
+
+        assert operator_same_event.player_id == ids['victim_same_campaign_id']
+        assert PlayerAction.query.filter_by(
+            session_id=operator_same_session_id,
+            player_id=ids['victim_same_campaign_id'],
+        ).count() == 1
+        assert operator_other_event.player_id is None
+        assert PlayerAction.query.filter_by(session_id=operator_other_session_id).count() == 0
 
 
 def test_socket_token_extraction_ignores_query_and_event_payloads(tmp_path, monkeypatch):
