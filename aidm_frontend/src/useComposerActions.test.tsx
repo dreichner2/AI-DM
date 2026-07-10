@@ -76,6 +76,24 @@ describe('useComposerActions realtime delivery recovery', () => {
     )
   })
 
+  it('keeps the admin passcode in memory only and clears legacy storage on lock', () => {
+    sessionStorage.setItem('aidm:adminPasscode', 'legacy-secret')
+    const socket = socketWithConnection(true)
+    const { result } = renderHook(() => useComposerHarness(socket, vi.fn()))
+
+    expect(result.current.actions.adminPasscode).toBe('')
+    expect(sessionStorage.getItem('aidm:adminPasscode')).toBeNull()
+
+    act(() => result.current.actions.setAdminPasscode('current-secret'))
+    expect(result.current.actions.adminPasscode).toBe('current-secret')
+    expect(sessionStorage.getItem('aidm:adminPasscode')).toBeNull()
+
+    act(() => result.current.actions.toggleAdminTools())
+    expect(result.current.actions.adminToolsUnlocked).toBe(true)
+    act(() => result.current.actions.toggleAdminTools())
+    expect(result.current.actions.adminPasscode).toBe('')
+  })
+
   it('unlocks, marks the local entry failed, and restores text when no terminal event arrives', async () => {
     const socket = socketWithConnection(true)
     const pushError = vi.fn()

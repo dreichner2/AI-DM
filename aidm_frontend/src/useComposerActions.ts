@@ -175,7 +175,7 @@ export function useComposerActions({
   const [spellName, setSpellName] = useState('')
   const [selectedInteractionType, setSelectedInteractionType] = useState<InteractionType>('speak_to')
   const [rawSelectedInteractionTargetId, setSelectedInteractionTargetId] = useState('')
-  const [adminPasscode, setAdminPasscode] = useState(() => sessionStorage.getItem('aidm:adminPasscode') ?? '')
+  const [adminPasscode, setAdminPasscode] = useState('')
   const [adminToolsUnlocked, setAdminToolsUnlocked] = useState(false)
   const [queuedActionText, setQueuedActionText] = useState('')
   const [diceRoll, setDiceRoll] = useState<DiceRollState | null>(null)
@@ -227,13 +227,8 @@ export function useComposerActions({
   ])
 
   useEffect(() => {
-    const trimmed = adminPasscode.trim()
-    if (trimmed) {
-      sessionStorage.setItem('aidm:adminPasscode', trimmed)
-    } else {
-      sessionStorage.removeItem('aidm:adminPasscode')
-    }
-  }, [adminPasscode])
+    sessionStorage.removeItem('aidm:adminPasscode')
+  }, [])
 
   useEffect(() => {
     return () => {
@@ -365,6 +360,7 @@ export function useComposerActions({
   const toggleAdminTools = () => {
     if (adminToolsUnlocked) {
       setAdminToolsUnlocked(false)
+      setAdminPasscode('')
       setComposerMode((current) => (current === 'admin' ? 'action' : current))
       setActionText((current) => stripComposerCommand(current))
       return
@@ -447,6 +443,7 @@ export function useComposerActions({
       action_intent: actionIntent,
       ...(actionIntent.kind === 'admin' ? { admin_passcode: trimmedAdminPasscode } : {}),
     })
+    if (actionIntent.kind === 'admin') setAdminPasscode('')
     pendingSubmissionRef.current = { clientMessageId, message, sessionId: selectedSessionId }
     stopTtsAudio()
     setSendPending(true)

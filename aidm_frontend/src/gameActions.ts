@@ -261,7 +261,13 @@ export function createClientMessageId() {
   if (typeof cryptoSource?.randomUUID === 'function') {
     return cryptoSource.randomUUID()
   }
-  return `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+  if (typeof cryptoSource?.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16)
+    cryptoSource.getRandomValues(bytes)
+    const randomSuffix = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+    return `local-${randomSuffix}`
+  }
+  throw new Error('Secure client ID generation requires the Web Crypto API.')
 }
 
 export function rollDie(die: string) {
