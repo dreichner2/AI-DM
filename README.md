@@ -221,6 +221,6 @@ defaults as an internet-safe deployment configuration.
 Bugs and focused feedback are welcome through
 [GitHub Issues](https://github.com/dreichner2/AI-DM/issues).
 
-Copyright © 2026 Danny Reichner. This repository is public for visibility and
+Copyright © 2026 Daniel Reichner. This repository is public for visibility and
 closed-beta collaboration; it is **not released under an open-source license**.
 See [LICENSE](LICENSE) for the full terms.
