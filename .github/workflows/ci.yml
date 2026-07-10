@@ -20,20 +20,18 @@ permissions:
 
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.6'
       - name: Install backend dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+        run: python -m pip install --require-hashes --constraint requirements.constraints.txt -r requirements-dev.lock.txt
       - name: Secret scan
         run: python scripts/scan_secrets.py
       - name: Python dependency audit
-        run: python -m pip_audit -r requirements.runtime.txt
+        run: python -m pip_audit -r requirements.runtime.lock.txt
       - name: Python lint
         run: python -m ruff check --select E9,F63,F7,F82 aidm_server tests scripts
       - name: Run backend tests
@@ -46,10 +44,10 @@ jobs:
         run: python scripts/generate_api_types.py --check
 
   postgres-integration:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:17
+        image: postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818
         env:
           POSTGRES_DB: aidm
           POSTGRES_USER: aidm
@@ -86,15 +84,28 @@ jobs:
       AIDM_ACCOUNT_TOKEN_RESPONSE_ENABLED: 'false'
       AIDM_LLM_PROVIDER: fallback
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.6'
       - name: Install backend runtime dependencies
+        run: python -m pip install --require-hashes --constraint requirements.constraints.txt -r requirements-dev.lock.txt
+      - name: Verify PostgreSQL server version
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.runtime.txt
-          python -m pip install -c requirements.constraints.txt pytest
+          python - <<'PY'
+          import os
+
+          import psycopg
+
+          database_uri = os.environ['AIDM_DATABASE_URI'].replace(
+              'postgresql+psycopg://', 'postgresql://', 1
+          )
+          with psycopg.connect(database_uri) as connection:
+              server_version = connection.execute('SHOW server_version').fetchone()[0]
+          print(f'PostgreSQL server version: {server_version}')
+          if not server_version.startswith('18.4'):
+              raise SystemExit(f'Expected PostgreSQL 18.4, got {server_version!r}.')
+          PY
       - name: Run migrations and production bootstrap against PostgreSQL
         run: python -m aidm_server.deploy_bootstrap --check-only --host 0.0.0.0
       - name: Verify migrated schema matches runtime metadata
@@ -261,36 +272,38 @@ jobs:
             --evidence-report tmp/release/postgres-ci-export-import.md
       - name: Upload PostgreSQL production rehearsal evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: postgres-production-rehearsal
           path: tmp/release/postgres-ci-*.md
           if-no-files-found: warn
 
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: aidm_frontend
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: '24'
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: aidm_frontend/package-lock.json
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.6'
+      - name: Install and verify npm 12.0.0
+        run: |
+          npm install --global npm@12.0.0
+          test "$(npm --version)" = "12.0.0"
       - name: Install frontend dependencies
         run: npm ci
       - name: Production dependency audit
         run: npm audit --omit=dev
       - name: Install backend dependencies for browser smoke
         working-directory: .
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+        run: python -m pip install --require-hashes --constraint requirements.constraints.txt -r requirements-dev.lock.txt
       - name: Test frontend
         run: npm test
       - name: Build
@@ -306,34 +319,36 @@ jobs:
             echo "Using system Chrome for browser smoke."
             export PLAYWRIGHT_CHROMIUM_CHANNEL=chrome
           else
-            npx playwright install chromium
+            npx --no-install playwright install chromium
           fi
           export PYTHON="$(python -c 'import sys; print(sys.executable)')"
           npm run smoke:browser
 
   visual-smoke:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'schedule' || github.event.inputs.run_visual_smoke == 'true'
     defaults:
       run:
         working-directory: aidm_frontend
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: '24'
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: aidm_frontend/package-lock.json
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.6'
+      - name: Install and verify npm 12.0.0
+        run: |
+          npm install --global npm@12.0.0
+          test "$(npm --version)" = "12.0.0"
       - name: Install frontend dependencies
         run: npm ci
       - name: Install backend dependencies
         working-directory: .
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+        run: python -m pip install --require-hashes --constraint requirements.constraints.txt -r requirements-dev.lock.txt
       - name: Visual smoke screenshots
         timeout-minutes: 20
         env:
@@ -343,13 +358,13 @@ jobs:
             echo "Using system Chrome for visual smoke."
             export PLAYWRIGHT_CHROMIUM_CHANNEL=chrome
           else
-            npx playwright install chromium
+            npx --no-install playwright install chromium
           fi
           export PYTHON="$(python -c 'import sys; print(sys.executable)')"
           npm run smoke:visual
       - name: Upload visual smoke artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: visual-smoke
           path: tmp/verification_artifacts/visual-smoke

@@ -3,6 +3,6 @@ repos:
     hooks:
       - id: aidm-secret-scan
         name: AIDM secret scan
-        entry: python3 scripts/scan_secrets.py
+        entry: .venv/bin/python scripts/scan_secrets.py
         language: system
         pass_filenames: false
