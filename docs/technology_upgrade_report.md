@@ -55,7 +55,7 @@ declared/toolchain version and every resolved package whose version changed.
 | `wheel` | Not present in the old environment inventory | 0.47.0 | Explicitly locked build tool |
 | `dnspython` | 2.8.0 stale local install | Removed from clean environment | No declared dependency after threading-only Socket.IO |
 | `eventlet` | 0.41.0 stale local install | Removed from clean environment | Threading is the supported production async mode |
-| `greenlet` | 3.5.3 stale local install | Removed from clean environment | No longer selected by the clean lock |
+| `greenlet` | 3.5.3 transitive install | 3.5.3 explicitly locked | Required by SQLAlchemy on Linux x86-64; explicit inclusion makes the cross-platform hash lock complete |
 
 The following direct Python dependencies were verified current and remain
 unchanged: Alembic 1.18.5, Flask 3.1.3, Flask-Admin 2.2.0, flask-cors 6.0.5,

@@ -3,6 +3,7 @@
 flask
 Flask-Migrate
 google-genai
+greenlet
 python-dotenv
 SQLAlchemy
 alembic
