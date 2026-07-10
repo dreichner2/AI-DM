@@ -7,18 +7,20 @@ FRONTEND_PORT="${AIDM_FRONTEND_PORT:-5173}"
 BACKEND_PORT="${AIDM_BACKEND_PORT:-5050}"
 FRONTEND_BACKEND_URL="${VITE_AIDM_API_BASE_URL:-http://127.0.0.1:${BACKEND_PORT}}"
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+export PATH="${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 if ! command -v npm >/dev/null 2>&1; then
   export NVM_DIR="${NVM_DIR:-${HOME}/.nvm}"
   if [[ -s "${NVM_DIR}/nvm.sh" ]]; then
     # shellcheck disable=SC1091
     . "${NVM_DIR}/nvm.sh"
-    nvm use --silent default >/dev/null 2>&1 || nvm use --silent node >/dev/null 2>&1 || true
+    nvm use --silent "$(<"${REPO_ROOT}/.nvmrc")" >/dev/null 2>&1 || true
   fi
 fi
 
 command -v npm >/dev/null 2>&1
+node -e 'process.exit(process.versions.node === "24.18.0" ? 0 : 1)'
+[[ "$(npm --version)" == "12.0.0" ]]
 
 if [[ ! -d "${FRONTEND_DIR}/node_modules" ]]; then
   echo "[frontend-service] Installing frontend dependencies"

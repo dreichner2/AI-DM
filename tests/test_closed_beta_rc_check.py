@@ -37,6 +37,7 @@ def test_closed_beta_rc_plan_includes_release_gate_commands(tmp_path):
         'Socket.IO worker model decision',
         'API type drift check',
         'Frontend npm ci evidence',
+        'Frontend toolchain preflight',
         'Frontend tests',
         'Frontend build',
         'Frontend bundle budget',

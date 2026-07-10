@@ -60,3 +60,18 @@ def test_main_writes_markdown_and_json(tmp_path):
     assert '# Frontend npm ci Evidence' in output.read_text(encoding='utf-8')
     payload = json.loads(json_output.read_text(encoding='utf-8'))
     assert payload['status'] == 'passed'
+
+
+def test_default_npm_command_records_exact_toolchain(tmp_path):
+    frontend = _frontend_dir(tmp_path)
+
+    evidence = build_evidence(
+        frontend_dir=frontend,
+        command=['npm', 'ci', '--ignore-scripts'],
+        generated_at='2026-07-10T00:00:00+00:00',
+        run=True,
+    )
+
+    assert evidence['status'] == 'passed'
+    assert evidence['node_version'] == '24.18.0'
+    assert evidence['npm_version'] == '12.0.0'
