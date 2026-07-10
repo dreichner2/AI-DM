@@ -8,6 +8,7 @@ from uuid import uuid4
 from flask import Flask, abort, g, request, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO
+from sqlalchemy.orm import configure_mappers
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from aidm_server.auth import (
@@ -357,6 +358,12 @@ def create_app() -> Flask:
         from aidm_server.blueprints.admin import configure_admin
 
         configure_admin(app, db)
+
+    # Production disables Flask-Admin, so no extension implicitly finishes ORM
+    # relationship setup before Gunicorn and the canon worker start threads.
+    # Configure synchronously to keep the first authenticated request from
+    # encountering a partially initialized StrategizedProperty.
+    configure_mappers()
 
     return app
 

@@ -106,6 +106,38 @@ jobs:
         run: |
           log_path="$RUNNER_TEMP/aidm-production-entrypoint.log"
           readiness_path="tmp/release/postgres-ci-readiness.md"
+          python - <<'PY'
+          from aidm_server.auth import hash_secret
+          from aidm_server.database import db
+          from aidm_server.main import create_app
+          from aidm_server.models import Account, AccountWorkspaceMembership
+
+          app = create_app()
+          with app.app_context():
+              account = Account.query.filter_by(username='ci-mapper-probe').first()
+              if account is None:
+                  account = Account(
+                      username='ci-mapper-probe',
+                      first_name='CI',
+                      last_name='Mapper Probe',
+                  )
+                  db.session.add(account)
+                  db.session.flush()
+              account.password_hash = 'configured-for-ci-only'
+              account.account_token_hash = hash_secret('ci-account-token')
+              membership = AccountWorkspaceMembership.query.filter_by(
+                  account_id=account.account_id,
+                  workspace_id='owner',
+              ).first()
+              if membership is None:
+                  membership = AccountWorkspaceMembership(
+                      account_id=account.account_id,
+                      workspace_id='owner',
+                  )
+                  db.session.add(membership)
+              membership.role = 'admin'
+              db.session.commit()
+          PY
           PORT=5099 scripts/run_production_server.sh >"$log_path" 2>&1 &
           server_pid=$!
           cleanup() {
@@ -132,22 +164,63 @@ jobs:
             exit 1
           fi
           python - <<'PY'
+          from concurrent.futures import ThreadPoolExecutor
+          from threading import Barrier
+
           import requests
           import socketio
 
           target_url = 'http://127.0.0.1:5099'
+          account_probe_count = 16
+          account_probe_barrier = Barrier(account_probe_count)
+
+          def probe_account_metrics(index):
+              account_probe_barrier.wait(timeout=5)
+              metrics_path = '/api/metrics/prometheus' if index % 2 else '/api/metrics'
+              response = requests.get(
+                  f'{target_url}{metrics_path}',
+                  headers={
+                      'Authorization': 'Bearer ci-account-token',
+                      'X-AIDM-Workspace-Id': 'owner',
+                  },
+                  timeout=5,
+              )
+              response.raise_for_status()
+              return response.status_code
+
           clients = []
           try:
+              with ThreadPoolExecutor(max_workers=account_probe_count) as executor:
+                  account_probe_statuses = list(
+                      executor.map(probe_account_metrics, range(account_probe_count))
+                  )
+              if account_probe_statuses != [200] * account_probe_count:
+                  raise RuntimeError(
+                      f'Unexpected account metrics statuses: {account_probe_statuses!r}.'
+                  )
+
               for _index in range(4):
                   client = socketio.Client(
                       reconnection=False,
                       request_timeout=5,
                       websocket_extra_options={'origin': 'https://aidm-ci.example.test'},
                   )
+                  if _index == 0:
+                      headers = {
+                          'Authorization': 'Bearer ci-account-token',
+                          'X-AIDM-Workspace-Id': 'owner',
+                      }
+                      auth = {
+                          'account_token': 'ci-account-token',
+                          'workspace_id': 'owner',
+                      }
+                  else:
+                      headers = {'Authorization': 'Bearer ci-operator-token'}
+                      auth = {'workspace_token': 'ci-operator-token'}
                   client.connect(
                       target_url,
-                      headers={'Authorization': 'Bearer ci-operator-token'},
-                      auth={'workspace_token': 'ci-operator-token'},
+                      headers=headers,
+                      auth=auth,
                       transports=['websocket'],
                       wait_timeout=5,
                   )

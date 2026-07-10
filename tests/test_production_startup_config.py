@@ -113,6 +113,66 @@ def test_non_production_wsgi_config_keeps_local_defaults(monkeypatch):
     validate_production_startup_config(load_config())
 
 
+def test_production_app_factory_eagerly_configures_account_mapper():
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith('AIDM_') and key not in {'FLASK_SECRET_KEY', 'WEB_CONCURRENCY'}
+    }
+    env.update(
+        {
+            'AIDM_SKIP_REPO_ENV_LOCAL': '1',
+            'AIDM_ENV': 'production',
+            'AIDM_DEBUG': 'false',
+            'AIDM_DATABASE_URI': 'postgresql+psycopg://aidm:secret@db.internal:5432/aidm',
+            'AIDM_AUTO_CREATE_SCHEMA': 'false',
+            'FLASK_SECRET_KEY': 's' * 40,
+            'AIDM_AUTH_REQUIRED': 'true',
+            'AIDM_API_AUTH_TOKENS': 'operator-token',
+            'AIDM_RATE_LIMIT_STORE': 'database',
+            'AIDM_TURN_COORDINATOR_STORE': 'database',
+            'AIDM_SOCKETIO_ASYNC_MODE': 'threading',
+            'AIDM_SOCKETIO_WORKER_MODEL': 'single',
+            'AIDM_GUNICORN_THREADS': '100',
+            'WEB_CONCURRENCY': '1',
+            'AIDM_CORS_ALLOWLIST': 'https://aidm.example.test',
+            'AIDM_SOCKET_CORS_ALLOWLIST': 'https://aidm.example.test',
+            'AIDM_SECURITY_HEADERS_ENABLED': 'true',
+            'AIDM_OBSERVABILITY_PROVIDER': 'managed-prometheus',
+            'AIDM_ALERT_OWNER': 'beta-oncall',
+            'AIDM_LLM_PROVIDER': 'fallback',
+        }
+    )
+    probe = """
+from sqlalchemy import select
+
+from aidm_server.models import Account
+
+assert Account.__mapper__.configured is False
+assert any(not hasattr(prop, 'strategy') for prop in Account.__mapper__.iterate_properties)
+
+from aidm_server.main import create_app
+
+create_app()
+
+assert Account.__mapper__.configured is True
+assert all(mapper.configured for mapper in Account.registry.mappers)
+assert all(hasattr(prop, 'strategy') for prop in Account.__mapper__.iterate_properties)
+str(select(Account).filter_by(account_token_hash='probe'))
+"""
+
+    result = subprocess.run(
+        [sys.executable, '-c', probe],
+        cwd=os.getcwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_wsgi_import_fails_before_building_unsafe_production_runtime():
     env = {
         **os.environ,
