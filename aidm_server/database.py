@@ -191,11 +191,20 @@ def engine_options_for_database_uri(database_uri: str) -> dict:
     }
 
 
+def _database_driver_name(database_uri: str) -> str:
+    try:
+        return make_url(database_uri).drivername or 'unknown'
+    except Exception:
+        return 'unknown'
+
+
 def init_db(app):
     """Initialize database and migrations for the Flask app."""
+    database_driver = 'unknown'
     try:
         configured_uri = app.config.get('SQLALCHEMY_DATABASE_URI', 'sqlite:///instance/dnd_ai_dm.db')
         database_uri = _resolve_sqlite_uri(configured_uri, app.root_path)
+        database_driver = _database_driver_name(database_uri)
         harden_sqlite_permissions(database_uri)
 
         app.config['SQLALCHEMY_DATABASE_URI'] = database_uri
@@ -205,9 +214,13 @@ def init_db(app):
         db.init_app(app)
         migrate.init_app(app, db, render_as_batch=True)
 
-        logger.info('Database initialized: %s', database_uri)
+        logger.info('Database initialized (driver=%s).', database_driver)
     except Exception as exc:
-        logger.error('Error initializing database: %s', str(exc))
+        logger.error(
+            'Error initializing database (driver=%s, error_type=%s).',
+            database_driver,
+            type(exc).__name__,
+        )
         raise
 
 

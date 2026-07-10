@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
+
+from flask import Flask
 
 from aidm_server.config import default_sqlite_uri
 from aidm_server.database import _resolve_sqlite_uri
-from aidm_server.database import engine_options_for_database_uri, ensure_schema
+from aidm_server.database import engine_options_for_database_uri, ensure_schema, init_db
 
 
 def test_health_endpoint_available_without_llm_key(client):
@@ -347,6 +350,21 @@ def test_database_engine_options_are_sqlite_specific():
     assert sqlite_options['connect_args']['check_same_thread'] is False
     assert sqlite_options['connect_args']['timeout'] == 30
     assert postgres_options == {}
+
+
+def test_database_initialization_log_redacts_connection_uri(caplog):
+    app = Flask(__name__)
+    credential_marker = 'database-credential-must-not-be-logged'
+    app.config['SQLALCHEMY_DATABASE_URI'] = (
+        f'postgresql+psycopg://aidm:{credential_marker}@database.internal/aidm_staging'
+    )
+
+    with caplog.at_level(logging.INFO, logger='aidm_server.database'):
+        init_db(app)
+
+    assert 'Database initialized (driver=postgresql+psycopg).' in caplog.text
+    assert credential_marker not in caplog.text
+    assert 'database.internal' not in caplog.text
 
 
 def test_main_module_stays_factory_only():
