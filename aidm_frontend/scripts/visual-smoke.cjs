@@ -371,6 +371,7 @@ async function main() {
         PYTHONPATH: REPO_ROOT,
         FLASK_APP: 'aidm_server.main:create_app',
         AIDM_ENV: 'test',
+        AIDM_DEBUG: 'false',
         AIDM_DATABASE_URI: `sqlite:///${dbPath}`,
         AIDM_AUTO_CREATE_SCHEMA: 'true',
         AIDM_LLM_PROVIDER: 'fallback',
