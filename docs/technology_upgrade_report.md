@@ -5,8 +5,9 @@ Date: 2026-07-10
 Status: repository implementation, GitHub CI/CodeQL, full RC, hash-locked hosted
 redeployment, and the managed staging PostgreSQL 17-to-18 upgrade are complete.
 The staging cutover was performed under maintenance mode only after two fresh,
-verified rollback/forward backups were created. Production release signoff and
-merge remain separate from this staging validation.
+verified rollback/forward backups were created. The upgrade is merged to
+`main`; production release signoff remains separate from this staging
+validation.
 
 The complete resolved dependency inventories are
 `requirements.runtime.lock.txt`, `requirements-dev.lock.txt`, and
@@ -194,7 +195,13 @@ cutover, validation, and rollback sequence.
 - Node 26 is a Current release, not LTS. Production remains on the newest Node
   24 LTS release, following Node's production guidance.
 - `@types/node` intentionally tracks Node 24 rather than the numerically newest
-  Node 26 types.
+  Node 26 types. Dependabot continues to offer Node 24 minor/patch updates but
+  ignores type-definition major updates until the production runtime moves.
+- `pydantic-core` 2.47.0 is intentionally not installed independently because
+  the newest stable Pydantic, 2.13.4, requires `pydantic-core==2.46.4` exactly.
+  All hash-locked CI install jobs correctly rejected that isolated update, so
+  Dependabot ignores newer standalone core updates until a matching stable
+  Pydantic release is available and the pair can move together.
 - TypeScript 7 is the compiler, but typescript-eslint still imports the official
   TypeScript 6 compatibility API package. Removing that bridge before upstream
   support would break linting.
