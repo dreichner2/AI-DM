@@ -343,13 +343,15 @@ def test_default_sqlite_uri_uses_local_data_dir(tmp_path, monkeypatch):
     assert default_sqlite_uri() == f"sqlite:///{local_data_dir / 'dnd_ai_dm.db'}"
 
 
-def test_database_engine_options_are_sqlite_specific():
+def test_database_engine_options_match_database_driver():
     sqlite_options = engine_options_for_database_uri('sqlite:///local.db')
-    postgres_options = engine_options_for_database_uri('postgresql://user:pass@example.test/db')
+    postgres_options = engine_options_for_database_uri('postgresql+psycopg://user:pass@example.test/db')
+    unknown_options = engine_options_for_database_uri('mysql://user:pass@example.test/db')
 
     assert sqlite_options['connect_args']['check_same_thread'] is False
     assert sqlite_options['connect_args']['timeout'] == 30
-    assert postgres_options == {}
+    assert postgres_options == {'pool_pre_ping': True}
+    assert unknown_options == {}
 
 
 def test_database_initialization_log_redacts_connection_uri(caplog):

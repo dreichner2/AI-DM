@@ -18,6 +18,7 @@ BACKEND_PLIST="${HOME}/Library/LaunchAgents/local.aidm.backend.plist"
 VENV_DIR="${REPO_ROOT}/.venv"
 VENV_PYTHON="${VENV_DIR}/bin/python"
 REQUIREMENTS_STAMP="${VENV_DIR}/.aidm_requirements.stamp"
+PYTHON_BOOTSTRAP="${AIDM_PYTHON_BOOTSTRAP:-python3.14}"
 FRONTEND_DIR="${REPO_ROOT}/aidm_frontend"
 FRONTEND_DIST_INDEX="${FRONTEND_DIR}/dist/index.html"
 NODE_MODULES_LOCK="${FRONTEND_DIR}/node_modules/.package-lock.json"
@@ -28,7 +29,7 @@ TAILSCALE_STATE_DIR="${HOME}/.local/share/tailscale"
 TAILSCALE_SOCKET_PATH="${HOME}/.local/share/tailscale/tailscaled.sock"
 TAILSCALE_PLIST="${HOME}/Library/LaunchAgents/local.aidm.tailscaled.plist"
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+export PATH="${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 mkdir -p "${LOG_DIR}"
 bash "${REPO_ROOT}/scripts/prune_launcher_logs.sh" "${LOG_DIR}" >/dev/null 2>&1 || true
@@ -352,7 +353,10 @@ requirements_stale() {
     "${REPO_ROOT}/requirements.txt" \
     "${REPO_ROOT}/requirements-dev.txt" \
     "${REPO_ROOT}/requirements.runtime.txt" \
-    "${REPO_ROOT}/requirements.constraints.txt"; do
+    "${REPO_ROOT}/requirements.constraints.txt" \
+    "${REPO_ROOT}/requirements-dev.lock.txt" \
+    "${REPO_ROOT}/requirements.runtime.lock.txt" \
+    "${REPO_ROOT}/.python-version"; do
     [[ -f "${file}" && "${file}" -nt "${REQUIREMENTS_STAMP}" ]] && return 0
   done
 
@@ -360,16 +364,22 @@ requirements_stale() {
 }
 
 ensure_backend_dependencies() {
+  if [[ -x "${VENV_PYTHON}" ]] && ! "${VENV_PYTHON}" -c 'import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 14, 6) else 1)'; then
+    log "Recreating backend virtualenv for Python 3.14.6."
+    rm -rf "${VENV_DIR}"
+  fi
+
   if [[ ! -x "${VENV_PYTHON}" ]]; then
     log "Creating backend virtualenv."
-    command -v python3 >/dev/null 2>&1
-    python3 -m venv "${VENV_DIR}"
-    "${VENV_PYTHON}" -m pip install --upgrade pip
+    command -v "${PYTHON_BOOTSTRAP}" >/dev/null 2>&1
+    "${PYTHON_BOOTSTRAP}" -c 'import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 14, 6) else 1)'
+    "${PYTHON_BOOTSTRAP}" -m venv "${VENV_DIR}"
+    "${VENV_PYTHON}" -m pip install --constraint "${REPO_ROOT}/requirements.constraints.txt" --upgrade pip
   fi
 
   if requirements_stale; then
     log "Installing updated backend dependencies."
-    "${VENV_PYTHON}" -m pip install -r "${REPO_ROOT}/requirements.txt"
+    "${VENV_PYTHON}" -m pip install --require-hashes -r "${REPO_ROOT}/requirements-dev.lock.txt"
     touch "${REQUIREMENTS_STAMP}"
   fi
 }
@@ -401,18 +411,18 @@ frontend_dist_stale() {
 }
 
 ensure_npm() {
-  if command -v npm >/dev/null 2>&1; then
-    return 0
-  fi
-
-  export NVM_DIR="${NVM_DIR:-${HOME}/.nvm}"
-  if [[ -s "${NVM_DIR}/nvm.sh" ]]; then
-    # shellcheck disable=SC1091
-    . "${NVM_DIR}/nvm.sh"
-    nvm use --silent default >/dev/null 2>&1 || nvm use --silent node >/dev/null 2>&1 || true
+  if ! command -v npm >/dev/null 2>&1; then
+    export NVM_DIR="${NVM_DIR:-${HOME}/.nvm}"
+    if [[ -s "${NVM_DIR}/nvm.sh" ]]; then
+      # shellcheck disable=SC1091
+      . "${NVM_DIR}/nvm.sh"
+      nvm use --silent "$(<"${REPO_ROOT}/.nvmrc")" >/dev/null 2>&1 || true
+    fi
   fi
 
   command -v npm >/dev/null 2>&1
+  node -e 'process.exit(process.versions.node === "24.18.0" ? 0 : 1)' || fail "Node.js 24.18.0 is required."
+  [[ "$(npm --version)" == "12.0.0" ]] || fail "npm 12.0.0 is required."
 }
 
 frontend_dependencies_stale() {

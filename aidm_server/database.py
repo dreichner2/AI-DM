@@ -180,15 +180,17 @@ def engine_options_for_database_uri(database_uri: str) -> dict:
         url = make_url(database_uri)
     except Exception:
         return {}
-    if not url.drivername.startswith('sqlite'):
-        return {}
-    return {
-        'poolclass': NullPool,
-        'connect_args': {
-            'check_same_thread': False,
-            'timeout': 30,
-        },
-    }
+    if url.drivername.startswith('sqlite'):
+        return {
+            'poolclass': NullPool,
+            'connect_args': {
+                'check_same_thread': False,
+                'timeout': 30,
+            },
+        }
+    if url.drivername.startswith('postgresql'):
+        return {'pool_pre_ping': True}
+    return {}
 
 
 def _database_driver_name(database_uri: str) -> str:

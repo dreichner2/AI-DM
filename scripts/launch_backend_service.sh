@@ -6,8 +6,9 @@ VENV_DIR="${REPO_ROOT}/.venv"
 VENV_PYTHON="${REPO_ROOT}/.venv/bin/python"
 REQUIREMENTS_STAMP="${REPO_ROOT}/.venv/.aidm_requirements.stamp"
 BACKEND_PORT="${AIDM_BACKEND_PORT:-5050}"
+PYTHON_BOOTSTRAP="${AIDM_PYTHON_BOOTSTRAP:-python3.14}"
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+export PATH="${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 requirements_stale() {
   [[ -f "${REQUIREMENTS_STAMP}" ]] || return 0
@@ -17,23 +18,32 @@ requirements_stale() {
     "${REPO_ROOT}/requirements.txt" \
     "${REPO_ROOT}/requirements-dev.txt" \
     "${REPO_ROOT}/requirements.runtime.txt" \
-    "${REPO_ROOT}/requirements.constraints.txt"; do
+    "${REPO_ROOT}/requirements.constraints.txt" \
+    "${REPO_ROOT}/requirements-dev.lock.txt" \
+    "${REPO_ROOT}/requirements.runtime.lock.txt" \
+    "${REPO_ROOT}/.python-version"; do
     [[ -f "${file}" && "${file}" -nt "${REQUIREMENTS_STAMP}" ]] && return 0
   done
 
   return 1
 }
 
+if [[ -x "${VENV_PYTHON}" ]] && ! "${VENV_PYTHON}" -c 'import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 14, 6) else 1)'; then
+  echo "[backend-service] Recreating backend virtualenv for Python 3.14.6"
+  rm -rf "${VENV_DIR}"
+fi
+
 if [[ ! -x "${VENV_PYTHON}" ]]; then
   echo "[backend-service] Creating backend virtualenv"
-  command -v python3 >/dev/null 2>&1
-  python3 -m venv "${VENV_DIR}"
-  "${VENV_PYTHON}" -m pip install --upgrade pip
+  command -v "${PYTHON_BOOTSTRAP}" >/dev/null 2>&1
+  "${PYTHON_BOOTSTRAP}" -c 'import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 14, 6) else 1)'
+  "${PYTHON_BOOTSTRAP}" -m venv "${VENV_DIR}"
+  "${VENV_PYTHON}" -m pip install --constraint "${REPO_ROOT}/requirements.constraints.txt" --upgrade pip
 fi
 
 if requirements_stale; then
   echo "[backend-service] Installing backend dependencies"
-  "${VENV_PYTHON}" -m pip install -r "${REPO_ROOT}/requirements.txt"
+  "${VENV_PYTHON}" -m pip install --require-hashes -r "${REPO_ROOT}/requirements-dev.lock.txt"
   touch "${REQUIREMENTS_STAMP}"
 fi
 

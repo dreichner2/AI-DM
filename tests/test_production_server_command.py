@@ -3,10 +3,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 
 def _production_env(**overrides: str) -> dict[str, str]:
-    return {**os.environ, 'AIDM_ENV': 'production', **overrides}
+    return {**os.environ, 'AIDM_ENV': 'production', 'PYTHON_BIN': sys.executable, **overrides}
 
 
 def test_production_server_command_prints_single_worker_threaded_command():

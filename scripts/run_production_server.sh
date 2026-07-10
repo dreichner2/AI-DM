@@ -18,15 +18,15 @@ if [[ -n "${PYTHON_BIN:-}" ]]; then
   RESOLVED_PYTHON_BIN="${PYTHON_BIN}"
 elif [[ -x "${ROOT_DIR}/.venv/bin/python" ]]; then
   RESOLVED_PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
-elif command -v python3.12 >/dev/null 2>&1; then
-  RESOLVED_PYTHON_BIN="$(command -v python3.12)"
+elif command -v python3.14 >/dev/null 2>&1; then
+  RESOLVED_PYTHON_BIN="$(command -v python3.14)"
 else
-  echo "Python 3.12 was not found. Create .venv with make install or set PYTHON_BIN." >&2
+  echo "Python 3.14 was not found. Create .venv with make install or set PYTHON_BIN." >&2
   exit 127
 fi
 
-if ! "${RESOLVED_PYTHON_BIN}" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)'; then
-  echo "scripts/run_production_server.sh requires Python 3.12." >&2
+if ! "${RESOLVED_PYTHON_BIN}" -c 'import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 14, 6) else 1)'; then
+  echo "scripts/run_production_server.sh requires Python 3.14.6." >&2
   exit 2
 fi
 
