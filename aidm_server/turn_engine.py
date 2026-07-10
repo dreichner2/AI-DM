@@ -31,16 +31,13 @@ from aidm_server.game_state.orchestration.turn_pipeline import (
     post_dm_pipeline,
     pre_dm_pipeline,
 )
-from aidm_server.llm import CONTEXT_VERSION, EmergencyFallbackChunk, build_dm_context
+from aidm_server.llm import CONTEXT_VERSION, build_dm_context
 from aidm_server.logging_context import set_logging_context
 from aidm_server.models import Campaign, CampaignSegment, DmTurn, Player, Session, safe_json_dumps, safe_json_loads
 from aidm_server.rules import RuleHint, classify_player_action
 from aidm_server.services.campaign_pack_progress import update_campaign_pack_progress
 from aidm_server.services.scene_state import scene_state_for_session
 from aidm_server.socket_contracts import (
-    dm_chunk_payload,
-    dm_response_end_payload,
-    dm_response_start_payload,
     new_message_payload,
     roll_required_payload,
     scene_state_payload,
@@ -50,7 +47,7 @@ from aidm_server.socket_contracts import (
     turn_status_payload,
 )
 from aidm_server.telemetry import telemetry_event, telemetry_metric, telemetry_timing
-from aidm_server.text_sanitization import ReasoningBlockFilter, strip_reasoning_blocks
+from aidm_server.text_sanitization import strip_reasoning_blocks
 from aidm_server.time_utils import utc_now
 from aidm_server.turn_action_policy import TurnActionPolicy
 from aidm_server.turn_control import (
@@ -65,6 +62,13 @@ from aidm_server.turn_events import (
     PLAYER_MESSAGE_EVENT,
     ROLL_RESOLVED_EVENT,
     record_turn_event,
+)
+from aidm_server.turn_narration import (
+    DM_GENERATION_FAILED_MESSAGE as DM_GENERATION_FAILED_MESSAGE,
+    NarrationRequest,
+    NarrationResult,
+    TurnNarrationDependencies,
+    TurnNarrationService,
 )
 from aidm_server.turn_rules import (
     apply_pending_resolution_hint as default_apply_pending_resolution_hint,
@@ -82,7 +86,6 @@ from aidm_server.turn_segments import SegmentEvaluationRequest, TurnSegmentServi
 
 
 logger = logging.getLogger(__name__)
-DM_GENERATION_FAILED_MESSAGE = 'The DM response could not be generated. Please retry.'
 POST_TURN_PERSIST_FAILED_MESSAGE = 'The DM response could not be fully saved. Please retry.'
 
 
@@ -204,15 +207,6 @@ class TurnCommand:
     action_intent: dict | None = None
     client_message_id: str | None = None
     state_pipeline_override: dict | None = None
-
-
-@dataclass(frozen=True)
-class NarrationResult:
-    text: str
-    stream_error: str | None
-    provider: str | None
-    model: str | None
-    emergency_fallback: dict | None = None
 
 
 class TurnEngine:
@@ -1688,239 +1682,43 @@ class TurnEngine:
         resolved_turn_id: int | None,
         pre_narration_effects: dict,
     ) -> NarrationResult:
-        context_started = time.perf_counter()
-        active_player_ids = []
-        if self.active_player_ids:
-            active_player_ids = [player_id for player_id in self.active_player_ids(turn.session_id) if player_id]
-        context = build_dm_context(
-            world_id,
-            campaign.campaign_id,
-            turn.session_id,
-            query_text=user_input,
-            active_player_ids=active_player_ids,
-            current_player_id=turn.player_id,
-        )
-        self._record_phase_timing(
-            'context_build',
-            context_started,
-            campaign_id=campaign.campaign_id,
-            session_id=turn.session_id,
-        )
-        self._emit_turn_status(turn.session_id, turn.turn_id, 'narrating')
-        telemetry_event(
-            'socket.dm_stream_started',
-            payload={
-                'session_id': turn.session_id,
-                'campaign_id': campaign.campaign_id,
-                'turn_id': turn.turn_id,
-                'provider': current_app.config.get('AIDM_LLM_PROVIDER'),
-                'model': current_app.config.get('AIDM_LLM_MODEL'),
-                'context_version': CONTEXT_VERSION,
-            },
-        )
-        self.emit(
-            'dm_response_start',
-            dm_response_start_payload(
-                session_id=turn.session_id,
-                turn_id=turn.turn_id,
-                requires_roll=turn.requires_roll,
-                rules_hint=rules_hint_payload,
-                context_version=CONTEXT_VERSION,
-                turn_number=rules_hint_payload.get('turn_number'),
-            ),
-            room=str(turn.session_id),
-        )
-
-        dm_response_text = ''
-        stream_error = None
-        configured_provider = str(current_app.config.get('AIDM_LLM_PROVIDER') or 'unknown')
-        configured_model = str(current_app.config.get('AIDM_LLM_MODEL') or 'unknown')
-        narration_provider: str | None = configured_provider
-        narration_model: str | None = configured_model
-        emergency_fallback: dict | None = None
-        reasoning_filter = ReasoningBlockFilter()
-        provider_started = time.perf_counter()
-        first_token_recorded = False
-        try:
-            for chunk in self.stream_fn(
-                model_user_input,
-                context,
-                speaking_player={'character_name': player_label, 'player_id': str(turn.player_id)},
-                rules_hint=rules_hint_payload,
-            ):
-                if not chunk:
-                    continue
-                if isinstance(chunk, EmergencyFallbackChunk):
-                    narration_provider = chunk.provider
-                    narration_model = chunk.model
-                    if emergency_fallback is None:
-                        emergency_fallback = {
-                            'kind': 'emergency_continuity',
-                            'reason': chunk.reason,
-                            'configured_provider': configured_provider,
-                            'configured_model': configured_model,
-                            'failed_provider': chunk.failed_provider,
-                            'failed_model': chunk.failed_model,
-                            'error_type': chunk.error_type,
-                            'message': chunk.public_message,
-                            'post_dm_state_mutation_skipped': True,
-                            'canon_mutation_skipped': True,
-                            'pre_narration_effects': pre_narration_effects,
-                        }
-                        telemetry_metric(
-                            'socket.dm_provider_failure_total',
-                            1,
-                            tags={'provider': chunk.failed_provider, 'model': chunk.failed_model or 'unknown'},
-                        )
-                        telemetry_event(
-                            'socket.dm_provider_degraded',
-                            payload={
-                                'session_id': turn.session_id,
-                                'campaign_id': campaign.campaign_id,
-                                'turn_id': turn.turn_id,
-                                **emergency_fallback,
-                            },
-                            severity='warning',
-                        )
-                if not first_token_recorded:
-                    self._record_phase_timing(
-                        'provider_time_to_first_token',
-                        provider_started,
-                        campaign_id=campaign.campaign_id,
-                        session_id=turn.session_id,
-                    )
-                    first_token_recorded = True
-                chunk = reasoning_filter.filter(chunk)
-                if not chunk:
-                    continue
-                self.emit(
-                    'dm_chunk',
-                    dm_chunk_payload(
-                        chunk=chunk,
-                        session_id=turn.session_id,
-                        turn_id=turn.turn_id,
-                        requires_roll=turn.requires_roll,
-                        rules_hint=rules_hint_payload,
-                        context_version=CONTEXT_VERSION,
-                        turn_number=rules_hint_payload.get('turn_number'),
-                    ),
-                    room=str(turn.session_id),
-                )
-                self.socketio.sleep(0)
-                dm_response_text += chunk
-            final_chunk = reasoning_filter.finish()
-            if final_chunk:
-                self.emit(
-                    'dm_chunk',
-                    dm_chunk_payload(
-                        chunk=final_chunk,
-                        session_id=turn.session_id,
-                        turn_id=turn.turn_id,
-                        requires_roll=turn.requires_roll,
-                        rules_hint=rules_hint_payload,
-                        context_version=CONTEXT_VERSION,
-                        turn_number=rules_hint_payload.get('turn_number'),
-                    ),
-                    room=str(turn.session_id),
-                )
-                self.socketio.sleep(0)
-                dm_response_text += final_chunk
-        except Exception as exc:
-            stream_error = DM_GENERATION_FAILED_MESSAGE
-            logger.exception('Error generating streamed DM response')
-            self.emit('error', socket_error('dm_generation_failed', DM_GENERATION_FAILED_MESSAGE))
-            telemetry_event(
-                'socket.dm_generation_failed',
-                payload={
-                    'session_id': turn.session_id,
-                    'turn_id': turn.turn_id,
-                    'error_type': type(exc).__name__,
-                },
-                severity='error',
+        service = TurnNarrationService(
+            TurnNarrationDependencies(
+                emit=self.emit,
+                sleep=self.socketio.sleep,
+                stream=self.stream_fn,
+                build_context=build_dm_context,
+                active_player_ids=self.active_player_ids,
+                record_phase_timing=self._record_phase_timing,
+                emit_turn_status=self._emit_turn_status,
+                build_roll_prompt=self.build_roll_prompt,
+                response_requests_roll=self._dm_response_requests_roll,
+                response_explains_no_roll_needed=self._dm_response_explains_no_roll_needed,
+                telemetry_event=telemetry_event,
+                telemetry_metric=telemetry_metric,
+                config_get=lambda key: current_app.config.get(key),
+                logger=logger,
             )
-        finally:
-            self._record_phase_timing(
-                'provider_total',
-                provider_started,
+        )
+        return service.narrate(
+            NarrationRequest(
+                session_id=turn.session_id,
                 campaign_id=campaign.campaign_id,
-                session_id=turn.session_id,
-            )
-
-        if (
-            turn.requires_roll
-            and turn.roll_value is None
-            and not self._dm_response_requests_roll(dm_response_text)
-            and not self._dm_response_explains_no_roll_needed(dm_response_text)
-        ):
-            injected_prompt = self.build_roll_prompt(
-                RuleHint(
-                    requires_roll=True,
-                    roll_type=turn.rule_type,
-                    dc_hint=safe_json_loads(turn.rules_hint, {}).get('dc_hint'),
-                    reason='Roll prompt injected',
-                    confidence=turn.confidence or 1.0,
-                    roll_value=None,
-                    outcome_deferred=True,
-                ),
-                pending_turn_id=resolved_turn_id,
-            )
-            injected_chunk = f'\n\n{injected_prompt}' if dm_response_text.strip() else injected_prompt
-            self.emit(
-                'dm_chunk',
-                dm_chunk_payload(
-                    chunk=injected_chunk,
-                    session_id=turn.session_id,
-                    turn_id=turn.turn_id,
-                    requires_roll=turn.requires_roll,
-                    rules_hint=rules_hint_payload,
-                    context_version=CONTEXT_VERSION,
-                    turn_number=rules_hint_payload.get('turn_number'),
-                ),
-                room=str(turn.session_id),
-            )
-            self.socketio.sleep(0)
-            dm_response_text += injected_chunk
-            telemetry_metric('socket.roll_prompt_injected_total', 1)
-
-        response_emit_started = time.perf_counter()
-        self.emit(
-            'dm_response_end',
-            dm_response_end_payload(
-                session_id=turn.session_id,
                 turn_id=turn.turn_id,
+                player_id=turn.player_id,
                 requires_roll=turn.requires_roll,
-                rules_hint=rules_hint_payload,
-                context_version=CONTEXT_VERSION,
-                ok=stream_error is None,
-                error=stream_error[:500] if stream_error else None,
-                turn_number=rules_hint_payload.get('turn_number'),
-                degraded=emergency_fallback is not None,
-                fallback=emergency_fallback,
-            ),
-            room=str(turn.session_id),
-        )
-        self._record_phase_timing(
-            'dm_response_emit',
-            response_emit_started,
-            campaign_id=campaign.campaign_id,
-            session_id=turn.session_id,
-        )
-        self._emit_turn_status(
-            turn.session_id,
-            turn.turn_id,
-            'response_complete',
-            {'ok': stream_error is None, 'degraded': emergency_fallback is not None},
-        )
-        # Yield so the dm_response_end event is flushed to clients immediately,
-        # before the heavy post-turn processing (DB writes, canon extraction,
-        # session projection) that can take 30-120+ seconds.
-        self.socketio.sleep(0)
-        return NarrationResult(
-            text=dm_response_text,
-            stream_error=stream_error,
-            provider=narration_provider,
-            model=narration_model,
-            emergency_fallback=emergency_fallback,
+                roll_value=turn.roll_value,
+                rule_type=turn.rule_type,
+                confidence=turn.confidence,
+                serialized_rules_hint=turn.rules_hint,
+                player_label=player_label,
+                world_id=world_id,
+                user_input=user_input,
+                model_user_input=model_user_input,
+                rules_hint_payload=rules_hint_payload,
+                resolved_turn_id=resolved_turn_id,
+                pre_narration_effects=pre_narration_effects,
+            )
         )
 
     def _background_canon_job(self, app, job_id: int):

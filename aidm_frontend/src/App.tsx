@@ -27,6 +27,10 @@ import {
   VolumeX,
   X,
 } from 'lucide-react'
+import {
+  CampaignActionDialog,
+  SessionActionDialog,
+} from './CampaignSessionActionDialogs'
 import type {
   CampaignArchiveDialogState,
   SessionArchiveDialogState,
@@ -39,6 +43,10 @@ import {
   type InspectorTab,
 } from './InspectorPanel'
 import { PlayerDeleteDialog } from './PlayerDeleteDialog'
+import {
+  CharacterJoinDialog,
+  ProfileSettingsDialog,
+} from './ProfileCharacterDialogs'
 import { useModalFocusTrap } from './useModalFocusTrap'
 import { ApiClientError, WORKSPACE_ID_HEADER, apiFetch, storedRuntimeAccessSnapshot } from './api'
 import { actorCapabilitiesAllowOperatorTools } from './capabilities'
@@ -127,6 +135,11 @@ import { useTtsNarration } from './useTtsNarration'
 import { useWorldMapSegmentActions } from './useWorldMapSegmentActions'
 import { useWorkspaceQueries, type CampaignSessionMeta } from './useWorkspaceQueries'
 import { useWorkspaceStore } from './useWorkspaceStore'
+import {
+  SavedWorkspaceDeleteDialog,
+  ShareSessionDialog,
+  type SavedWorkspaceDeleteDialogState,
+} from './WorkspaceDialogs'
 import { savedWorkspaceDisplayName } from './workspaceLabels'
 import {
   WorldDeleteDialog,
@@ -294,12 +307,6 @@ type UiError = {
   message: string
   createdAt: number
 }
-
-type SavedWorkspaceDeleteDialogState = {
-  workspace: AccountWorkspace
-  error: string
-  pending: boolean
-} | null
 
 function readBoardViewMode(): BoardViewMode {
   try {
@@ -522,6 +529,19 @@ function avatarDataUri(seed: string, variant: 'campaign' | 'character' = 'campai
     </svg>
   `
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
+}
+
+function characterPortraitSrc(player: Player) {
+  const characterName = player.character_name || player.name || `Player ${player.player_id}`
+  return (
+    player.profile_image ||
+    profileIconSrcForCharacter({
+      race: player.race,
+      sex: player.sex,
+      seed: characterName,
+    }) ||
+    avatarDataUri(characterName, 'character')
+  )
 }
 
 function App() {
@@ -3663,329 +3683,70 @@ function App() {
       />
 
       {savedWorkspaceDeleteDialog ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeSavedWorkspaceDeleteDialog()
-            }
-          }}
-        >
-          <section
-            ref={modalDialogRef}
-            className="campaign-dialog saved-workspace-delete-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="saved-workspace-delete-title"
-          >
-            <header>
-              <div>
-                <span>{savedWorkspaceDeleteDialogDeletesTable ? 'Delete' : 'Remove'}</span>
-                <h2 id="saved-workspace-delete-title">
-                  {savedWorkspaceDeleteDialogDeletesTable ? 'Delete Table' : 'Remove Saved Table'}
-                </h2>
-              </div>
-              <button
-                type="button"
-                aria-label="Close saved table delete"
-                onClick={closeSavedWorkspaceDeleteDialog}
-                disabled={savedWorkspaceDeleteDialog.pending}
-              >
-                <X size={18} />
-              </button>
-            </header>
-            <div className="dialog-body">
-              <div className="dialog-warning">
-                <strong>{savedWorkspaceDisplayName(savedWorkspaceDeleteDialog.workspace)}</strong>
-                <span>
-                  {savedWorkspaceDeleteDialogDeletesTable
-                    ? 'This permanently deletes the table for everyone. This cannot be undone.'
-                    : 'This removes the table from your saved tables only.'}
-                </span>
-              </div>
-              {savedWorkspaceDeleteDialog.error ? (
-                <div className="dialog-error">{savedWorkspaceDeleteDialog.error}</div>
-              ) : null}
-              <footer>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={closeSavedWorkspaceDeleteDialog}
-                  disabled={savedWorkspaceDeleteDialog.pending}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className={savedWorkspaceDeleteDialogDeletesTable ? 'danger' : undefined}
-                  onClick={() => void submitSavedWorkspaceDeleteDialog()}
-                  disabled={savedWorkspaceDeleteDialog.pending}
-                >
-                  {savedWorkspaceDeleteDialog.pending
-                    ? savedWorkspaceDeleteDialogDeletesTable ? 'Deleting...' : 'Removing...'
-                    : savedWorkspaceDeleteDialogDeletesTable ? 'Delete Table' : 'Remove'}
-                </button>
-              </footer>
-            </div>
-          </section>
-        </div>
+        <SavedWorkspaceDeleteDialog
+          deletesTable={savedWorkspaceDeleteDialogDeletesTable}
+          dialog={savedWorkspaceDeleteDialog}
+          dialogRef={modalDialogRef}
+          onClose={closeSavedWorkspaceDeleteDialog}
+          onConfirm={() => void submitSavedWorkspaceDeleteDialog()}
+        />
       ) : null}
 
       {shareSessionUrl ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeShareSessionDialog()
-            }
-          }}
-        >
-          <section
-            ref={modalDialogRef}
-            className="campaign-dialog share-session-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="share-session-title"
-            aria-describedby="share-session-description"
-          >
-            <header>
-              <div>
-                <span>Table Link</span>
-                <h2 id="share-session-title">Share Session</h2>
-              </div>
-              <button
-                type="button"
-                aria-label="Close share session"
-                onClick={closeShareSessionDialog}
-              >
-                <X size={18} />
-              </button>
-            </header>
-            <label>
-              Session Link
-              <input
-                data-autofocus
-                readOnly
-                aria-label="Session share link"
-                value={shareSessionUrl}
-                onFocus={(event) => event.currentTarget.select()}
-              />
-            </label>
-            <p id="share-session-description">
-              Send this to someone who can open this frontend and reach this backend.
-              They can choose or create their own character after it opens.
-            </p>
-            <footer>
-              <button type="button" className="secondary" onClick={closeShareSessionDialog}>
-                Close
-              </button>
-              <button type="button" onClick={copyShareSessionUrl}>
-                Copy Link
-              </button>
-            </footer>
-          </section>
-        </div>
+        <ShareSessionDialog
+          dialogRef={modalDialogRef}
+          onClose={closeShareSessionDialog}
+          onCopy={copyShareSessionUrl}
+          url={shareSessionUrl}
+        />
       ) : null}
 
-      {profileSettingsOpen ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeProfileSettingsDialog()
-            }
-          }}
-        >
-          <section
-            ref={modalDialogRef}
-            className="campaign-dialog profile-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="profile-settings-title"
-          >
-            <header>
-              <div>
-                <span>Profile</span>
-                <h2 id="profile-settings-title">Profile Settings</h2>
-              </div>
-              <button
-                type="button"
-                aria-label="Close profile settings"
-                onClick={closeProfileSettingsDialog}
-              >
-                <X size={18} />
-              </button>
-            </header>
-            <div className="profile-dialog-body">
-              <dl className="profile-summary-grid">
-                <div>
-                  <dt>Account</dt>
-                  <dd>{runtimeAccount?.displayName ?? selectedPlayer?.name ?? 'No account connected'}</dd>
-                </div>
-                <div>
-                  <dt>Table</dt>
-                  <dd>
-                    {runtimeAccount?.workspaceId
-                      ? `${runtimeAccount.workspaceId}${runtimeAccount.workspaceRole ? ` / ${runtimeAccount.workspaceRole}` : ''}`
-                      : workspaceId
-                        ? workspaceId
-                      : workspaceToken
-                        ? 'Token set'
-                        : 'No table token'}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Character</dt>
-                  <dd>{displayCharacter.name}</dd>
-                </div>
-                <div>
-                  <dt>Campaign</dt>
-                  <dd>{campaign?.title ?? 'No campaign selected'}</dd>
-                </div>
-                <div>
-                  <dt>Session</dt>
-                  <dd>{activeSessionName}</dd>
-                </div>
-                <div>
-                  <dt>Backend</dt>
-                  <dd>{backendDisplayUrl}</dd>
-                </div>
-                <div>
-                  <dt>Narration</dt>
-                  <dd>{ttsStatusLabel}{ttsLatencyLabel ? ` / ${ttsLatencyLabel}` : ''}</dd>
-                </div>
-              </dl>
-              <div className="profile-action-list">
-                <button type="button" onClick={openPlayerEditDialog} disabled={!selectedPlayer}>
-                  Edit character
-                </button>
-                <button type="button" onClick={openCharacterJoinDialog} disabled={!selectedCampaignId}>
-                  Switch character
-                </button>
-                <button type="button" onClick={() => void refreshCurrentWorkspace()}>
-                  Refresh workspace
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSocketReconnectKey((current) => current + 1)
-                    closeProfileSettingsDialog()
-                  }}
-                >
-                  Reconnect realtime
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProfileSettingsOpen(false)
-                    openRuntimeSettingsDialog()
-                  }}
-                >
-                  Backend settings
-                </button>
-                {authToken ? (
-                  <button type="button" onClick={clearAuthToken}>
-                    Sign out
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          </section>
-        </div>
-      ) : null}
+      <ProfileSettingsDialog
+        canEditCharacter={Boolean(selectedPlayer)}
+        canSwitchCharacter={Boolean(selectedCampaignId)}
+        dialogRef={modalDialogRef}
+        onBackendSettings={() => {
+          setProfileSettingsOpen(false)
+          openRuntimeSettingsDialog()
+        }}
+        onClose={closeProfileSettingsDialog}
+        onEditCharacter={openPlayerEditDialog}
+        onReconnectRealtime={() => {
+          setSocketReconnectKey((current) => current + 1)
+          closeProfileSettingsDialog()
+        }}
+        onRefreshWorkspace={() => void refreshCurrentWorkspace()}
+        onSignOut={clearAuthToken}
+        onSwitchCharacter={openCharacterJoinDialog}
+        open={profileSettingsOpen}
+        signedIn={Boolean(authToken)}
+        summary={{
+          account: runtimeAccount?.displayName ?? selectedPlayer?.name ?? 'No account connected',
+          table: runtimeAccount?.workspaceId
+            ? `${runtimeAccount.workspaceId}${runtimeAccount.workspaceRole ? ` / ${runtimeAccount.workspaceRole}` : ''}`
+            : workspaceId
+              ? workspaceId
+              : workspaceToken
+                ? 'Token set'
+                : 'No table token',
+          character: displayCharacter.name,
+          campaign: campaign?.title ?? 'No campaign selected',
+          session: activeSessionName,
+          backend: backendDisplayUrl,
+          narration: `${ttsStatusLabel}${ttsLatencyLabel ? ` / ${ttsLatencyLabel}` : ''}`,
+        }}
+      />
 
-      {characterJoinDialogOpen ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeCharacterJoinDialog()
-            }
-          }}
-        >
-          <section
-            ref={modalDialogRef}
-            className="campaign-dialog character-join-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="character-join-title"
-          >
-            <header>
-              <div>
-                <span>Character</span>
-                <h2 id="character-join-title">Join Campaign</h2>
-              </div>
-              <button type="button" aria-label="Close character chooser" onClick={closeCharacterJoinDialog}>
-                <X size={18} />
-              </button>
-            </header>
-            <div className="character-join-body">
-              <p>
-                {campaign?.title
-                  ? `Choose who you are playing in ${campaign.title}.`
-                  : 'Choose who you are playing.'}
-              </p>
-              {players.length ? (
-                <div className="character-choice-list" aria-label="Existing characters">
-                  {players.map((player) => {
-                    const characterName = player.character_name || player.name || `Player ${player.player_id}`
-                    const playerName = player.name || 'Unknown player'
-                    const characterClass = player.char_class || player.class_ || 'Adventurer'
-                    const characterPortraitSrc =
-                      player.profile_image ||
-                      profileIconSrcForCharacter({
-                        race: player.race,
-                        sex: player.sex,
-                        seed: characterName,
-                      }) ||
-                      avatarDataUri(characterName, 'character')
-                    return (
-                      <button
-                        key={player.player_id}
-                        type="button"
-                        className="character-choice-card"
-                        aria-label={`Join as ${characterName}`}
-                        onClick={() => joinAsExistingPlayer(player)}
-                      >
-                        <img
-                          className="character-choice-portrait"
-                          src={characterPortraitSrc}
-                          alt=""
-                          aria-hidden="true"
-                        />
-                        <span>
-                          <strong>{characterName}</strong>
-                          <small>
-                            {playerName} / Level {player.level} {characterClass}
-                          </small>
-                        </span>
-                        <em>Join</em>
-                      </button>
-                    )
-                  })}
-                </div>
-              ) : (
-                <div className="dialog-warning">
-                  <strong>No characters yet.</strong>
-                  <span>Create the first character for this campaign.</span>
-                </div>
-              )}
-              <footer>
-                <button type="button" className="secondary" onClick={closeCharacterJoinDialog}>
-                  Cancel
-                </button>
-                <button type="button" onClick={createCharacterFromJoinDialog}>
-                  Create Character
-                </button>
-              </footer>
-            </div>
-          </section>
-        </div>
-      ) : null}
+      <CharacterJoinDialog
+        campaignTitle={campaign?.title ?? null}
+        dialogRef={modalDialogRef}
+        onClose={closeCharacterJoinDialog}
+        onCreateCharacter={createCharacterFromJoinDialog}
+        onJoinPlayer={joinAsExistingPlayer}
+        open={characterJoinDialogOpen}
+        players={players}
+        portraitSrcForPlayer={characterPortraitSrc}
+      />
 
       {campaignArchiveDialog ? (
         <Suspense fallback={null}>
@@ -4096,222 +3857,36 @@ function App() {
       ) : null}
 
       {campaignActionDialog ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeCampaignActionDialog()
-            }
-          }}
-        >
-          <section
-            ref={modalDialogRef}
-            className="campaign-dialog campaign-action-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="campaign-action-title"
-          >
-            <header>
-              <div>
-                <span>Campaign</span>
-                <h2 id="campaign-action-title">
-                  {campaignActionDialog.mode === 'rename'
-                    ? 'Rename Campaign'
-                    : campaignActionDialog.mode === 'archive'
-                      ? 'Archive Campaign'
-                      : campaignActionDialog.mode === 'restore'
-                        ? 'Restore Campaign'
-                        : 'Delete Campaign'}
-                </h2>
-              </div>
-              <button
-                type="button"
-                aria-label="Close campaign action"
-                onClick={closeCampaignActionDialog}
-                disabled={campaignActionDialog.pending}
-              >
-                <X size={18} />
-              </button>
-            </header>
-            <form onSubmit={(event) => void submitCampaignActionDialog(event)}>
-              {campaignActionDialog.mode === 'rename' ? (
-                <>
-                  <label>
-                    Campaign Name
-                    <input
-                      autoFocus
-                      data-autofocus
-                      value={campaignActionDialog.title}
-                      onChange={(event) =>
-                        setCampaignActionDialog((current) =>
-                          current
-                            ? { ...current, title: event.target.value, error: '' }
-                            : current,
-                        )
-                      }
-                      disabled={campaignActionDialog.pending}
-                    />
-                  </label>
-                  <label>
-                    Description
-                    <textarea
-                      value={campaignActionDialog.description}
-                      onChange={(event) =>
-                        setCampaignActionDialog((current) =>
-                          current
-                            ? { ...current, description: event.target.value, error: '' }
-                            : current,
-                        )
-                      }
-                      disabled={campaignActionDialog.pending}
-                    />
-                  </label>
-                </>
-              ) : (
-                <div className="dialog-warning">
-                  <strong>{campaignActionDialog.title}</strong>
-                  <span>
-                    {campaignActionDialog.mode === 'archive'
-                      ? 'Archiving hides this campaign and its sessions from the normal workspace list without destroying saved history.'
-                      : campaignActionDialog.mode === 'restore'
-                        ? 'Restoring makes this campaign and sessions archived with it available for normal play again.'
-                        : 'This permanently deletes the campaign, its sessions, maps, and campaign notes from this workspace. Characters stay in the workspace but are detached from it.'}
-                  </span>
-                </div>
-              )}
-              {campaignActionDialog.error ? (
-                <div className="dialog-error">{campaignActionDialog.error}</div>
-              ) : null}
-              <footer>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={closeCampaignActionDialog}
-                  disabled={campaignActionDialog.pending}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className={
-                    campaignActionDialog.mode === 'archive' || campaignActionDialog.mode === 'delete'
-                      ? 'danger'
-                      : undefined
-                  }
-                  disabled={campaignActionDialog.pending}
-                >
-                  {campaignActionDialog.pending
-                    ? campaignActionDialog.mode === 'rename'
-                      ? 'Saving...'
-                      : campaignActionDialog.mode === 'archive'
-                        ? 'Archiving...'
-                        : campaignActionDialog.mode === 'restore'
-                          ? 'Restoring...'
-                          : 'Deleting...'
-                    : campaignActionDialog.mode === 'rename'
-                      ? 'Save Campaign'
-                      : campaignActionDialog.mode === 'archive'
-                        ? 'Archive Campaign'
-                        : campaignActionDialog.mode === 'restore'
-                          ? 'Restore Campaign'
-                          : 'Delete Campaign'}
-                </button>
-              </footer>
-            </form>
-          </section>
-        </div>
+        <CampaignActionDialog
+          dialog={campaignActionDialog}
+          dialogRef={modalDialogRef}
+          onClose={closeCampaignActionDialog}
+          onDescriptionChange={(description) =>
+            setCampaignActionDialog((current) =>
+              current ? { ...current, description, error: '' } : current,
+            )
+          }
+          onSubmit={(event) => void submitCampaignActionDialog(event)}
+          onTitleChange={(title) =>
+            setCampaignActionDialog((current) =>
+              current ? { ...current, title, error: '' } : current,
+            )
+          }
+        />
       ) : null}
 
       {sessionActionDialog ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeSessionActionDialog()
-            }
-          }}
-        >
-          <section
-            ref={modalDialogRef}
-            className="campaign-dialog session-action-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="session-action-title"
-          >
-            <header>
-              <div>
-                <span>Session</span>
-                <h2 id="session-action-title">
-                  {sessionActionDialog.mode === 'rename' ? 'Rename Session' : 'Delete Session'}
-                </h2>
-              </div>
-              <button
-                type="button"
-                aria-label="Close session action"
-                onClick={closeSessionActionDialog}
-                disabled={sessionActionDialog.pending}
-              >
-                <X size={18} />
-              </button>
-            </header>
-            <form onSubmit={(event) => void submitSessionActionDialog(event)}>
-              {sessionActionDialog.mode === 'rename' ? (
-                <label>
-                  Session Name
-                  <input
-                    autoFocus
-                    data-autofocus
-                    value={sessionActionDialog.name}
-                    onChange={(event) =>
-                      setSessionActionDialog((current) =>
-                        current
-                          ? { ...current, name: event.target.value, error: '' }
-                          : current,
-                      )
-                    }
-                    disabled={sessionActionDialog.pending}
-                  />
-                </label>
-              ) : (
-                <div className="dialog-warning">
-                  <strong>{sessionActionDialog.name}</strong>
-                  <span>
-                    This permanently deletes this session and its saved turn history. Use
-                    the archive button if you only want to hide it.
-                  </span>
-                </div>
-              )}
-              {sessionActionDialog.error ? (
-                <div className="dialog-error">{sessionActionDialog.error}</div>
-              ) : null}
-              <footer>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={closeSessionActionDialog}
-                  disabled={sessionActionDialog.pending}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className={sessionActionDialog.mode === 'delete' ? 'danger' : undefined}
-                  disabled={sessionActionDialog.pending}
-                >
-                  {sessionActionDialog.pending
-                    ? sessionActionDialog.mode === 'rename'
-                      ? 'Renaming...'
-                      : 'Deleting...'
-                    : sessionActionDialog.mode === 'rename'
-                      ? 'Rename Session'
-                      : 'Delete Session'}
-                </button>
-              </footer>
-            </form>
-          </section>
-        </div>
+        <SessionActionDialog
+          dialog={sessionActionDialog}
+          dialogRef={modalDialogRef}
+          onClose={closeSessionActionDialog}
+          onNameChange={(name) =>
+            setSessionActionDialog((current) =>
+              current ? { ...current, name, error: '' } : current,
+            )
+          }
+          onSubmit={(event) => void submitSessionActionDialog(event)}
+        />
       ) : null}
 
       {worldManagerOpen ? (

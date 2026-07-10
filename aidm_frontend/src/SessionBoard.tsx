@@ -12,13 +12,10 @@ import {
   Trash2,
   Upload,
   Volume2,
-  X,
 } from 'lucide-react'
 import { ActionComposer, type ActionComposerProps } from './ActionComposer'
 import { ThinIcon, ToolbarButton } from './AppChrome'
 import {
-  CONTENT_RATING_OPTIONS,
-  CONTENT_TONE_TAG_OPTIONS,
   type ContentRating,
   type ContentSettings,
 } from './contentSettings'
@@ -30,14 +27,19 @@ import {
   turnPersistenceLabel,
 } from './gameSelectors'
 import { NarrativeProse } from './NarrativeProse'
-import { profileIconSrcForCharacter } from './profileIcons'
 import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
+import {
+  DirectorCommentaryPanel,
+  OperatorDrawer,
+  type BoardViewMode,
+  type CanonFact,
+  type DmExecutionStats,
+} from './SessionDirectorPanels'
+import { SessionPresenceStrip } from './SessionPresenceStrip'
 import type { SceneDisplayState } from './sceneState'
 import type {
   ActivePlayer,
   Campaign,
-  CampaignPackCommentaryCheckpoint,
-  CampaignPackCommentaryRecord,
   CampaignPackCommentaryResponse,
   ClarificationRequest,
   Player,
@@ -51,7 +53,7 @@ const SceneMusicPlayer = lazy(() =>
 )
 
 export type MainTab = 'turns' | 'dm' | 'notes'
-export type BoardViewMode = 'theater' | 'ops'
+export type { BoardViewMode } from './SessionDirectorPanels'
 export type TurnQualityScores = {
   coherence: number
   fun: number
@@ -65,15 +67,6 @@ type ChatTextSettings = {
   size: ChatTextSize
   font: ChatTextFont
 }
-
-type DmExecutionStats = {
-  tokens: number | string
-  time: string
-  model: string
-  temperature: string
-}
-
-type CanonFact = [fact: string, source: string]
 
 const CHAT_TEXT_SETTINGS_STORAGE_KEY = 'aidm:chatTextSettings'
 const BOARD_VIEW_MODE_STORAGE_KEY = 'aidm:boardViewMode'
@@ -295,116 +288,6 @@ function SceneHeader({ sceneState }: { sceneState: SceneDisplayState | null }) {
   )
 }
 
-function OperatorDrawer({
-  boardViewMode,
-  canEditContentSettings,
-  contentSettings,
-  contentSettingsPending,
-  dmExecutionStats,
-  onBoardViewModeChange,
-  onContentRatingChange,
-  onContentToneTagsChange,
-}: {
-  boardViewMode: BoardViewMode
-  canEditContentSettings: boolean
-  contentSettings: ContentSettings
-  contentSettingsPending: boolean
-  dmExecutionStats: DmExecutionStats
-  onBoardViewModeChange: (mode: BoardViewMode) => void
-  onContentRatingChange: (rating: ContentRating) => void
-  onContentToneTagsChange: (toneTags: string[]) => void
-}) {
-  const toneTagSet = new Set(contentSettings.toneTags)
-  const toggleToneTag = (tag: string) => {
-    const nextTags = toneTagSet.has(tag)
-      ? contentSettings.toneTags.filter((item) => item !== tag)
-      : [...contentSettings.toneTags, tag].slice(0, 4)
-    onContentToneTagsChange(nextTags)
-  }
-  return (
-    <details className="operator-drawer">
-      <summary>
-        <SlidersHorizontal size={15} />
-        Operator
-      </summary>
-      <div className="operator-drawer-body">
-        <div className="operator-mode-toggle" role="group" aria-label="Board view mode">
-          <button
-            type="button"
-            aria-pressed={boardViewMode === 'theater'}
-            onClick={() => onBoardViewModeChange('theater')}
-          >
-            Theater
-          </button>
-          <button
-            type="button"
-            aria-pressed={boardViewMode === 'ops'}
-            onClick={() => onBoardViewModeChange('ops')}
-          >
-            Ops
-          </button>
-        </div>
-        <div className="operator-rating-toggle" role="group" aria-label="Content rating">
-          {CONTENT_RATING_OPTIONS.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              aria-pressed={contentSettings.contentRating === option.value}
-              disabled={!canEditContentSettings || contentSettingsPending}
-              onClick={() => onContentRatingChange(option.value)}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-        <div className="operator-tone-toggle" role="group" aria-label="Tone tags">
-          {CONTENT_TONE_TAG_OPTIONS.map((tag) => (
-            <button
-              key={tag}
-              type="button"
-              aria-pressed={toneTagSet.has(tag)}
-              disabled={!canEditContentSettings || contentSettingsPending}
-              onClick={() => toggleToneTag(tag)}
-            >
-              {formatDirectorStatus(tag)}
-            </button>
-          ))}
-        </div>
-        <dl>
-          <div>
-            <dt>Rating</dt>
-            <dd>{CONTENT_RATING_OPTIONS.find((option) => option.value === contentSettings.contentRating)?.label}</dd>
-          </div>
-          <div>
-            <dt>Tokens</dt>
-            <dd>{dmExecutionStats.tokens}</dd>
-          </div>
-          <div>
-            <dt>Time</dt>
-            <dd>{dmExecutionStats.time}</dd>
-          </div>
-          <div>
-            <dt>Model</dt>
-            <dd>{dmExecutionStats.model}</dd>
-          </div>
-          <div>
-            <dt>Temp</dt>
-            <dd>{dmExecutionStats.temperature}</dd>
-          </div>
-          <div>
-            <dt>Tone</dt>
-            <dd>{contentSettings.toneTags.length ? contentSettings.toneTags.join(', ') : 'Default'}</dd>
-          </div>
-        </dl>
-      </div>
-    </details>
-  )
-}
-
-function contentRatingLabel(contentSettings: ContentSettings) {
-  return CONTENT_RATING_OPTIONS.find((option) => option.value === contentSettings.contentRating)?.label ?? 'Not set'
-}
-
 function PreviouslyOnCard({
   onSpeak,
   text,
@@ -427,282 +310,6 @@ function PreviouslyOnCard({
       </div>
       <NarrativeProse text={recapText} />
     </aside>
-  )
-}
-
-function formatDirectorStatus(status: string | undefined) {
-  if (!status) return ''
-  return status.replace(/[_-]+/g, ' ').replace(/\b\w/g, (match) => match.toUpperCase())
-}
-
-function DirectorCheckpointList({
-  emptyText,
-  items,
-}: {
-  emptyText: string
-  items: CampaignPackCommentaryCheckpoint[]
-}) {
-  if (!items.length) return <p>{emptyText}</p>
-  return (
-    <ol className="director-checkpoint-list">
-      {items.slice(0, 5).map((item) => (
-        <li key={`${item.fromCheckpointId ?? 'route'}:${item.checkpointId}:${item.edgeType ?? item.status ?? ''}`}>
-          <strong>{item.title || item.checkpointId}</strong>
-          <span>
-            {item.edgeType ? `${formatDirectorStatus(item.edgeType)} from ${item.fromTitle || item.fromCheckpointId}` : formatDirectorStatus(item.status)}
-          </span>
-        </li>
-      ))}
-    </ol>
-  )
-}
-
-function DirectorUndiscoveredList({ records }: { records: Record<string, CampaignPackCommentaryRecord[]> }) {
-  const groups = Object.entries(records)
-    .map(([collection, items]) => ({ collection, items }))
-    .filter((group) => group.items.length)
-    .slice(0, 4)
-  if (!groups.length) return <p>No hidden campaign-pack records remain.</p>
-  return (
-    <div className="director-record-groups">
-      {groups.map((group) => (
-        <div key={group.collection}>
-          <strong>{formatDirectorStatus(group.collection)}</strong>
-          <span>{group.items.slice(0, 3).map((item) => item.title || item.id).join(', ')}</span>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function DirectorCommentaryPanel({
-  activeSessionTitle,
-  canonFacts,
-  commentary,
-  contentSettings,
-  currentResponseEntry,
-  dmExecutionStats,
-  latestDmText,
-  onClose,
-  questTitle,
-  sceneState,
-  sessionState,
-  streamLabel,
-}: {
-  activeSessionTitle: string
-  canonFacts: CanonFact[]
-  commentary: CampaignPackCommentaryResponse | null
-  contentSettings: ContentSettings
-  currentResponseEntry: TimelineEntry | null
-  dmExecutionStats: DmExecutionStats
-  latestDmText: string
-  onClose: () => void
-  questTitle: string
-  sceneState: SceneDisplayState | null
-  sessionState: SessionState | null
-  streamLabel: string
-}) {
-  const sceneName = sceneState?.locationName || sessionState?.current_location || 'Scene unset'
-  const sceneDetail = sceneState
-    ? `${sceneState.sceneType}${sceneState.mood ? ` / ${sceneState.mood}` : ''}${
-        sceneState.inCombat ? ' / combat' : ` / danger ${sceneState.dangerLevel}`
-      }`
-    : questTitle
-  const latestResponseLabel = currentResponseEntry?.streaming
-    ? 'Streaming'
-    : currentResponseEntry
-      ? 'Latest response ready'
-      : 'Awaiting response'
-  const responseSummary = latestDmText.trim()
-    ? truncateText(latestDmText, 156)
-    : 'No DM prose recorded yet.'
-  const memoryHighlights = canonFacts.slice(0, 3)
-  const packTitle = commentary?.pack?.title || commentary?.pack?.packId || ''
-  const commentaryNotes = commentary?.commentary.slice(0, 3) ?? []
-
-  return (
-    <section
-      id="director-commentary-panel"
-      className="director-commentary-panel"
-      aria-labelledby="director-commentary-title"
-    >
-      <div className="director-commentary-heading">
-        <div>
-          <span>{activeSessionTitle}</span>
-          <h2 id="director-commentary-title">Director Commentary</h2>
-        </div>
-        <button
-          type="button"
-          aria-label="Close Director Commentary"
-          title="Close Director Commentary"
-          onClick={onClose}
-        >
-          <X size={17} />
-        </button>
-      </div>
-      <dl className="director-commentary-list">
-        {commentary?.enabled ? (
-          <div>
-            <dt>Pack</dt>
-            <dd>
-              <strong>{packTitle}</strong>
-              <span>
-                {commentary.summary.routeTakenCount} reached / {commentary.summary.roadsNotTakenCount} branch
-                {commentary.summary.roadsNotTakenCount === 1 ? '' : 'es'} missed /{' '}
-                {commentary.summary.undiscoveredRecordsCount} hidden
-              </span>
-            </dd>
-          </div>
-        ) : null}
-        <div>
-          <dt>Scene</dt>
-          <dd>
-            <strong>{sceneName}</strong>
-            <span>{sceneDetail}</span>
-          </dd>
-        </div>
-        <div>
-          <dt>Pacing</dt>
-          <dd>
-            <strong>{latestResponseLabel}</strong>
-            <span>
-              {streamLabel} / {dmExecutionStats.time} / {dmExecutionStats.tokens} tokens
-            </span>
-          </dd>
-        </div>
-        <div>
-          <dt>Tone</dt>
-          <dd>
-            <strong>{contentRatingLabel(contentSettings)}</strong>
-            <span>{dmExecutionStats.model} at temp {dmExecutionStats.temperature}</span>
-          </dd>
-        </div>
-        <div>
-          <dt>Latest Beat</dt>
-          <dd>
-            <span>{responseSummary}</span>
-          </dd>
-        </div>
-      </dl>
-      {commentary?.enabled ? (
-        <div className="director-pack-grid" aria-label="Campaign pack director notes">
-          <section>
-            <span>Route Taken</span>
-            <DirectorCheckpointList emptyText="No checkpoints reached yet." items={commentary.routeTaken} />
-          </section>
-          <section>
-            <span>Roads Not Taken</span>
-            <DirectorCheckpointList emptyText="No alternate branches recorded yet." items={commentary.roadsNotTaken} />
-          </section>
-          <section>
-            <span>Undiscovered</span>
-            <DirectorUndiscoveredList records={commentary.undiscoveredRecords} />
-          </section>
-          {commentaryNotes.length ? (
-            <section>
-              <span>Notes</span>
-              {commentaryNotes.map((note) => (
-                <p key={note}>{note}</p>
-              ))}
-            </section>
-          ) : null}
-        </div>
-      ) : null}
-      <div className="director-memory-strip" aria-label="Director memory">
-        <span>Memory</span>
-        {memoryHighlights.length ? (
-          memoryHighlights.map(([fact, source]) => (
-            <p key={`${fact}-${source}`}>
-              {fact}
-              <small>{source}</small>
-            </p>
-          ))
-        ) : (
-          <p>No memory snippets recorded yet.</p>
-        )}
-      </div>
-    </section>
-  )
-}
-
-function activePlayerAvatarSrc(player: ActivePlayer) {
-  return (
-    player.profile_image ||
-    profileIconSrcForCharacter({ race: player.race, sex: player.sex }) ||
-    '/profile-icons/human_male.png'
-  )
-}
-
-function activePlayerInitial(player: ActivePlayer) {
-  return (player.character_name || player.name || '?').slice(0, 1).toUpperCase()
-}
-
-function MobilePresenceStrip({
-  activePlayers,
-  selectedPlayerId,
-  selectedPlayerHasTurn,
-  turnControlStatusLabel,
-}: {
-  activePlayers: ActivePlayer[]
-  selectedPlayerId: number | null
-  selectedPlayerHasTurn: boolean
-  turnControlStatusLabel: string
-}) {
-  const typingPlayers = activePlayers.filter(
-    (player) => player.id !== selectedPlayerId && player.is_typing,
-  )
-  const typingLabel = typingPlayers.length
-    ? `${typingPlayers.slice(0, 2).map((player) => player.character_name).join(', ')}${typingPlayers.length > 2 ? ` +${typingPlayers.length - 2}` : ''} typing`
-    : activePlayers.length ? 'Watching table' : 'No friends online'
-
-  return (
-    <section className="mobile-presence-strip" aria-label="Mobile active players">
-      <div className={`mobile-presence-summary ${selectedPlayerHasTurn ? 'open' : 'locked'}`}>
-        <span>{activePlayers.length ? `${activePlayers.length} online` : 'Solo'}</span>
-        <strong>{typingLabel}</strong>
-      </div>
-      {activePlayers.length ? (
-        <ul className="mobile-presence-list" aria-label="Active players on mobile">
-          {activePlayers.map((player) => {
-            const isSelectedPlayer = player.id === selectedPlayerId
-            const isOtherPlayerTyping = !isSelectedPlayer && player.is_typing
-            const health = player.health
-            return (
-              <li
-                key={player.id}
-                className={`${isSelectedPlayer ? 'selected' : ''} ${isOtherPlayerTyping ? 'typing' : ''}`}
-              >
-                <span className="mobile-presence-avatar" aria-hidden="true">
-                  <img src={activePlayerAvatarSrc(player)} alt="" />
-                  <span>{activePlayerInitial(player)}</span>
-                  {health ? <span className={`mobile-health-dot mobile-health-dot-${health.tone}`} /> : null}
-                </span>
-                <span className="mobile-presence-copy">
-                  <strong>{player.character_name}</strong>
-                  <small>{isSelectedPlayer ? 'You' : player.name}</small>
-                </span>
-                {health ? (
-                  <span
-                    className="mobile-health-label"
-                    aria-label={`${player.character_name} health: ${health.label}`}
-                    title={`${health.label}: ${health.currentHp}/${health.maxHp} HP`}
-                  >
-                    {health.label}
-                  </span>
-                ) : null}
-                {isOtherPlayerTyping ? (
-                  <span className="mobile-typing-badge" aria-label={`${player.character_name} is typing`}>
-                    Typing
-                  </span>
-                ) : null}
-              </li>
-            )
-          })}
-        </ul>
-      ) : (
-        <div className="mobile-presence-empty">{turnControlStatusLabel}</div>
-      )}
-    </section>
   )
 }
 
@@ -1081,7 +688,7 @@ export function SessionBoard({
       </div>
 
       {showMobilePresenceStrip ? (
-        <MobilePresenceStrip
+        <SessionPresenceStrip
           activePlayers={activePlayers}
           selectedPlayerId={actionComposerProps.selectedPlayerId}
           selectedPlayerHasTurn={actionComposerProps.selectedPlayerHasTurn}
