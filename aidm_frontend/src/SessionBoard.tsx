@@ -33,7 +33,18 @@ import { NarrativeProse } from './NarrativeProse'
 import { profileIconSrcForCharacter } from './profileIcons'
 import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
 import type { SceneDisplayState } from './sceneState'
-import type { ActivePlayer, Campaign, ClarificationRequest, Player, SessionState, SessionSummary, TimelineEntry } from './types'
+import type {
+  ActivePlayer,
+  Campaign,
+  CampaignPackCommentaryCheckpoint,
+  CampaignPackCommentaryRecord,
+  CampaignPackCommentaryResponse,
+  ClarificationRequest,
+  Player,
+  SessionState,
+  SessionSummary,
+  TimelineEntry,
+} from './types'
 
 const SceneMusicPlayer = lazy(() =>
   import('./SceneMusicPlayer').then((module) => ({ default: module.SceneMusicPlayer })),
@@ -45,44 +56,6 @@ export type TurnQualityScores = {
   coherence: number
   fun: number
   rules: number
-}
-
-export type DirectorCommentaryCheckpoint = {
-  checkpointId: string
-  title: string
-  status?: string
-  summary?: string
-  edgeType?: string
-  fromCheckpointId?: string
-  fromTitle?: string
-}
-
-export type DirectorCommentaryRecord = {
-  id: string
-  title: string
-  summary?: string
-  hidden?: boolean
-  checkpointIds?: string[]
-}
-
-export type DirectorCommentaryPayload = {
-  enabled: boolean
-  pack: {
-    packId: string
-    title: string
-    version?: string
-  } | null
-  routeTaken: DirectorCommentaryCheckpoint[]
-  roadsNotTaken: DirectorCommentaryCheckpoint[]
-  alternateEndings: DirectorCommentaryCheckpoint[]
-  undiscoveredRecords: Record<string, DirectorCommentaryRecord[]>
-  summary: {
-    routeTakenCount: number
-    roadsNotTakenCount: number
-    alternateEndingsCount: number
-    undiscoveredRecordsCount: number
-  }
-  commentary: string[]
 }
 
 type ChatTextSize = 'default' | 'large' | 'extra'
@@ -178,7 +151,7 @@ type SessionBoardProps = {
   onContentRatingChange: (rating: ContentRating) => void
   onContentToneTagsChange: (toneTags: string[]) => void
   onBoardViewModeChange?: (mode: BoardViewMode) => void
-  directorCommentary: DirectorCommentaryPayload | null
+  directorCommentary: CampaignPackCommentaryResponse | null
   sessionRecap: string
   onSpeakSessionRecap: (text: string) => void
   workspaceLoading: boolean
@@ -467,7 +440,7 @@ function DirectorCheckpointList({
   items,
 }: {
   emptyText: string
-  items: DirectorCommentaryCheckpoint[]
+  items: CampaignPackCommentaryCheckpoint[]
 }) {
   if (!items.length) return <p>{emptyText}</p>
   return (
@@ -484,7 +457,7 @@ function DirectorCheckpointList({
   )
 }
 
-function DirectorUndiscoveredList({ records }: { records: Record<string, DirectorCommentaryRecord[]> }) {
+function DirectorUndiscoveredList({ records }: { records: Record<string, CampaignPackCommentaryRecord[]> }) {
   const groups = Object.entries(records)
     .map(([collection, items]) => ({ collection, items }))
     .filter((group) => group.items.length)
@@ -518,7 +491,7 @@ function DirectorCommentaryPanel({
 }: {
   activeSessionTitle: string
   canonFacts: CanonFact[]
-  commentary: DirectorCommentaryPayload | null
+  commentary: CampaignPackCommentaryResponse | null
   contentSettings: ContentSettings
   currentResponseEntry: TimelineEntry | null
   dmExecutionStats: DmExecutionStats

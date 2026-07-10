@@ -1,0 +1,386 @@
+// @vitest-environment jsdom
+import '@testing-library/jest-dom/vitest'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { LEGACY_PASSWORD_SETUP_MESSAGE } from './useRuntimeSettings'
+import {
+  App,
+  appTestState,
+  installMatchMediaMock,
+  renderLoadedApp,
+  setupAppTest,
+  teardownAppTest,
+} from './App.testHarness'
+
+describe('App runtime and workspace access', () => {
+  beforeEach(setupAppTest)
+  afterEach(teardownAppTest)
+
+  it('opens table settings from the mobile top bar gear', async () => {
+    installMatchMediaMock(true)
+    await renderLoadedApp()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open table settings' }))
+
+    const dialog = await screen.findByRole('dialog', { name: 'Log In' })
+    expect(within(dialog).getByText('Access')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open table settings' })).toBeInTheDocument()
+  })
+
+  it('does not show the mobile table settings gear on desktop', async () => {
+    await renderLoadedApp()
+
+    expect(screen.queryByRole('button', { name: 'Open table settings' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Change table access' })).toBeInTheDocument()
+  })
+  it('prompts for an account when the public app requires a table token', async () => {
+    appTestState.requiredAuthToken = 'shared-token'
+    localStorage.setItem('aidm:selectedPlayerId', '30')
+
+    render(<App />)
+
+    let dialog = await screen.findByRole('dialog', { name: 'Log In' })
+    expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Table Token')).not.toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Sign Up' }))
+
+    const usernameInput = within(dialog).getByLabelText('Username')
+    await waitFor(() => expect(usernameInput).toHaveFocus())
+    fireEvent.change(usernameInput, { target: { value: 'Danny' } })
+    fireEvent.change(within(dialog).getByLabelText('First Name'), { target: { value: 'Danny' } })
+    fireEvent.change(within(dialog).getByLabelText('Last Name'), { target: { value: 'Reichner' } })
+    fireEvent.change(within(dialog).getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
+
+    dialog = await screen.findByRole('dialog', { name: 'Join Table' })
+    expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Username')).not.toBeInTheDocument()
+    fireEvent.change(within(dialog).getByLabelText('Table Token'), { target: { value: 'shared-token' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Join Table' }))
+
+    await screen.findByRole('heading', { name: /Session Alpha/i })
+    expect(await screen.findByLabelText('Scene music player')).toBeInTheDocument()
+    expect(sessionStorage.getItem('aidm:authToken')).toBe('account-token')
+    expect(sessionStorage.getItem('aidm:workspaceToken')).toBe('shared-token')
+    expect(screen.queryByRole('dialog', { name: 'Join Table' })).not.toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.queryByText('Table token required. Enter the table token to connect.')).not.toBeInTheDocument(),
+    )
+    expect(screen.queryByText('Player load failed: Missing or invalid workspace token.')).not.toBeInTheDocument()
+    expect(appTestState.fetchCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: 'GET',
+          path: '/api/campaigns',
+        }),
+        expect.objectContaining({
+          method: 'GET',
+          path: '/api/campaigns/10/workspace',
+        }),
+        expect.objectContaining({
+          method: 'GET',
+          path: '/api/players/30',
+        }),
+      ]),
+    )
+  })
+
+  it('switches global providers from another table for owner admins', async () => {
+    appTestState.requiredAuthToken = 'owner-token'
+    sessionStorage.setItem('aidm:authToken', 'account-token')
+    localStorage.setItem('aidm:workspaceId', 'friend')
+
+    render(<App />)
+
+    const providerSelect = await screen.findByTitle('Current runtime provider')
+    await waitFor(() => expect(providerSelect).toBeEnabled())
+
+    fireEvent.change(providerSelect, { target: { value: 'fallback' } })
+
+    await waitFor(() => expect(providerSelect).toHaveValue('fallback'))
+    expect(
+      await screen.findByText('Fallback provider active.'),
+    ).toBeInTheDocument()
+    expect(appTestState.fetchCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: 'PATCH',
+          path: '/api/llm/config',
+          authorization: 'Bearer account-token',
+          workspaceToken: null,
+          workspaceIdHeader: 'owner',
+          body: {
+            provider: 'fallback',
+            model: 'deterministic-v1',
+            persist: true,
+          },
+        }),
+      ]),
+    )
+    expect(screen.queryByText(/Runtime switch failed/i)).not.toBeInTheDocument()
+  })
+
+  it('surfaces beta runtime notices for local private mode', async () => {
+    await renderLoadedApp()
+
+    const notices = await screen.findByLabelText('Beta runtime notices')
+    expect(within(notices).getByText('Local/Private')).toBeInTheDocument()
+    expect(within(notices).getByText('Auth disabled.')).toBeInTheDocument()
+  })
+
+  it('opens known beta limitations from runtime notices', async () => {
+    await renderLoadedApp()
+
+    const notesToggle = await screen.findByRole('button', { name: 'Beta Notes' })
+    expect(notesToggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(notesToggle)
+
+    const notes = await screen.findByRole('note', { name: 'Known beta limitations' })
+    expect(notesToggle).toHaveAttribute('aria-expanded', 'true')
+    expect(within(notes).getByText('Known Limitations')).toBeInTheDocument()
+    expect(
+      within(notes).getByText(/Closed beta is for controlled playtests/i),
+    ).toBeInTheDocument()
+    expect(
+      within(notes).getByText(/Hosted cookie auth, CSRF, Socket.IO, and restore behavior/i),
+    ).toBeInTheDocument()
+
+    fireEvent.click(within(notes).getByRole('button', { name: 'Close beta notes' }))
+
+    await waitFor(() => expect(screen.queryByRole('note', { name: 'Known beta limitations' })).not.toBeInTheDocument())
+    expect(notesToggle).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('surfaces unavailable TTS in beta runtime notices', async () => {
+    appTestState.ttsConfig.configured = false
+
+    await renderLoadedApp()
+
+    const notices = await screen.findByLabelText('Beta runtime notices')
+    expect(within(notices).getByText('TTS')).toBeInTheDocument()
+    expect(
+      within(notices).getByText('Deepgram TTS unavailable.'),
+    ).toBeInTheDocument()
+  })
+
+  it('surfaces missing live provider configuration in beta runtime notices', async () => {
+    if (appTestState.health.llm) {
+      appTestState.health.llm.configured = false
+    }
+
+    await renderLoadedApp()
+
+    const notices = await screen.findByLabelText('Beta runtime notices')
+    expect(within(notices).getByText('Provider Key')).toBeInTheDocument()
+    expect(
+      within(notices).getByText('Live DM responses need a configured provider key.'),
+    ).toBeInTheDocument()
+  })
+
+  it('surfaces process-local provider scope in beta runtime notices', async () => {
+    appTestState.runtime.runtime_scope = 'process'
+    appTestState.runtime.restart_required_for_other_workers = true
+
+    await renderLoadedApp()
+
+    const notices = await screen.findByLabelText('Beta runtime notices')
+    expect(within(notices).getByText('Process-Local')).toBeInTheDocument()
+    expect(
+      within(notices).getByText('Restart other workers to match.'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Process-local')).toHaveAttribute(
+      'title',
+      'Provider changes apply to this backend process; restart other workers to match.',
+    )
+  })
+
+  it('keeps restored legacy passwordless sessions in password setup', async () => {
+    appTestState.requiredAuthToken = 'owner-token'
+    sessionStorage.setItem('aidm:authToken', 'legacy-account-token')
+    sessionStorage.setItem('aidm:workspaceToken', 'owner-token')
+    localStorage.setItem('aidm:workspaceId', 'owner')
+
+    render(<App />)
+
+    const dialog = await screen.findByRole('dialog', { name: 'Sign Up' })
+    expect(within(dialog).getAllByText(LEGACY_PASSWORD_SETUP_MESSAGE)).not.toHaveLength(0)
+    expect(within(dialog).getByLabelText('First Name')).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('Last Name')).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('New Password')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
+    await waitFor(() => expect(sessionStorage.getItem('aidm:workspaceToken')).toBeNull())
+    expect(localStorage.getItem('aidm:workspaceId')).toBeNull()
+  })
+
+  it('opens account auth from the backend gear when no account is active', async () => {
+    await renderLoadedApp()
+    expect(screen.getByLabelText('Scene music player')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change table access' }))
+
+    const dialog = await screen.findByRole('dialog', { name: 'Log In' })
+    expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Table Token')).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Sign Up' })).toBeInTheDocument()
+  })
+
+  it('opens table auth from the backend gear when an account is active', async () => {
+    sessionStorage.setItem('aidm:authToken', 'account-token')
+    sessionStorage.setItem('aidm:workspaceToken', 'old-workspace')
+    sessionStorage.setItem(
+      'aidm:account',
+      JSON.stringify({
+        accountId: 1,
+        username: 'danny',
+        displayName: 'Danny Reichner',
+        workspaceId: 'owner',
+        workspaceRole: 'admin',
+        isWorkspaceAdmin: true,
+        workspaces: [
+          {
+            workspace_id: 'owner',
+            workspace_role: 'admin',
+            is_workspace_admin: true,
+            created_at: null,
+            updated_at: null,
+          },
+        ],
+      }),
+    )
+    localStorage.setItem('aidm:workspaceId', 'owner')
+    window.history.replaceState(null, '', '/?campaign=10&session=20')
+
+    render(<App />)
+    await screen.findByRole('button', { name: 'Change table access' })
+    await screen.findByText('Test')
+    expect(screen.getByText('Table')).toBeInTheDocument()
+    expect(screen.queryByText('Same origin')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change table access' }))
+
+    const dialog = await screen.findByRole('dialog', { name: 'Join Table' })
+    expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('group', { name: 'Saved tables' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Test admin' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Delete Test' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Remove Friend Table' })).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('Table Token')).toHaveValue('old-workspace')
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove Friend Table' }))
+    let confirmDialog = await screen.findByRole('dialog', { name: 'Remove Saved Table' })
+    expect(within(confirmDialog).getByText('Friend Table')).toBeInTheDocument()
+    expect(within(confirmDialog).getByText('This removes the table from your saved tables only.')).toBeInTheDocument()
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Remove' }))
+    await waitFor(() =>
+      expect(appTestState.fetchCalls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            method: 'DELETE',
+            path: '/api/accounts/workspaces/friend',
+          }),
+        ]),
+      ),
+    )
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove Saved Table' })).not.toBeInTheDocument())
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete Test' }))
+    confirmDialog = await screen.findByRole('dialog', { name: 'Delete Table' })
+    expect(within(confirmDialog).getByText('Test')).toBeInTheDocument()
+    expect(
+      within(confirmDialog).getByText('This permanently deletes the table for everyone. This cannot be undone.'),
+    ).toBeInTheDocument()
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Delete Table' }))
+    await waitFor(() =>
+      expect(appTestState.fetchCalls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            method: 'DELETE',
+            path: '/api/accounts/workspaces/owner',
+          }),
+        ]),
+      ),
+    )
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete Table' })).not.toBeInTheDocument())
+  })
+
+  it('creates a token table and warns that the generated token is only shown once', async () => {
+    sessionStorage.setItem('aidm:authToken', 'account-token')
+    sessionStorage.setItem(
+      'aidm:account',
+      JSON.stringify({
+        accountId: 1,
+        username: 'danny',
+        displayName: 'Danny Reichner',
+        workspaceId: 'owner',
+        workspaceRole: 'admin',
+        isWorkspaceAdmin: true,
+        workspaces: [
+          {
+            workspace_id: 'owner',
+            workspace_role: 'admin',
+            is_workspace_admin: true,
+            created_at: null,
+            updated_at: null,
+          },
+        ],
+      }),
+    )
+    localStorage.setItem('aidm:workspaceId', 'owner')
+
+    render(<App />)
+    await screen.findByRole('button', { name: 'Change table access' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change table access' }))
+    let dialog = await screen.findByRole('dialog', { name: 'Join Table' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+
+    dialog = await screen.findByRole('dialog', { name: 'Create Table' })
+    fireEvent.change(within(dialog).getByLabelText('Table Name'), { target: { value: 'Token Table' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Token' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create Table' }))
+
+    dialog = await screen.findByRole('dialog', { name: 'Save Table Token' })
+    expect(within(dialog).getByLabelText('Generated table token')).toHaveValue('generated-token-for-Token_Table')
+    expect(within(dialog).getByText('You will not be able to view it after you leave this page.')).toBeInTheDocument()
+    expect(sessionStorage.getItem('aidm:workspaceToken')).toBeNull()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Save Table Token' })).not.toBeInTheDocument())
+  })
+  it('clears stale owner selections after connecting to an empty auth workspace', async () => {
+    appTestState.requiredAuthToken = 'aidan_test'
+    appTestState.campaigns = []
+    appTestState.worlds = []
+    appTestState.sessionsByCampaign = {}
+    appTestState.playersByCampaign = {}
+    appTestState.mapsByCampaign = {}
+    appTestState.segmentsByCampaign = {}
+    appTestState.sessionLogs = {}
+    appTestState.sessionStates = {}
+    appTestState.playerDetails = {}
+
+    render(<App />)
+
+    let dialog = await screen.findByRole('dialog', { name: 'Log In' })
+    fireEvent.change(within(dialog).getByLabelText('Username'), { target: { value: 'Aidan' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
+
+    dialog = await screen.findByRole('dialog', { name: 'Join Table' })
+    fireEvent.change(within(dialog).getByLabelText('Table Token'), { target: { value: 'aidan_test' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Join Table' }))
+
+    await screen.findByText('No campaigns match.')
+    await waitFor(() => {
+      expect(screen.queryByText(/Workspace load failed:/)).not.toBeInTheDocument()
+      expect(screen.queryByText(/Session refresh failed:/)).not.toBeInTheDocument()
+      expect(screen.queryByText(/Player load failed:/)).not.toBeInTheDocument()
+    })
+    await waitFor(() => {
+      const params = new URLSearchParams(window.location.search)
+      expect(params.has('campaign')).toBe(false)
+      expect(params.has('session')).toBe(false)
+    })
+  })
+})

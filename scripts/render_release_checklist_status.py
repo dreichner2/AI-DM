@@ -777,6 +777,7 @@ def _classify_command_item(text: str, packet: dict[str, Any]) -> ChecklistStatus
         (('smoke_beta_flow.py',), ('Isolated beta smoke flow',)),
         (('scenario_regression.py',), ('Scenario quality regressions',)),
         (('flask db upgrade',), ('Migration chain drill',)),
+        (('make db-upgrade',), ('Migration chain drill',)),
         (('npm test',), ('Frontend tests',)),
         (('npm run lint',), ('Frontend tests',)),
         (('npm run typecheck',), ('Frontend tests',)),
@@ -1109,6 +1110,53 @@ def classify_item(item: ChecklistItem, packet: dict[str, Any]) -> ChecklistStatu
                 'external-required',
                 'Socket.IO worker model decision gate is missing or failed',
                 'run make socketio-worker-model-decision',
+            ),
+        )
+
+    if 'exactly one backend process/replica' in lowered:
+        worker_model = _socketio_worker_model(packet)
+        if worker_model and worker_model != 'single':
+            return _with_item(
+                item,
+                _status(
+                    'failed',
+                    f'hosted evidence records unsupported {worker_model} Socket.IO worker model',
+                    'set AIDM_SOCKETIO_WORKER_MODEL=single and attach hosted process/replica proof',
+                ),
+            )
+
+        hosted = packet.get('hosted_rc_evidence') or {}
+        process_evidence = next(
+            (
+                entry
+                for entry in hosted.get('manual_evidence') or []
+                if isinstance(entry, dict) and entry.get('label') == 'Hosted Socket.IO worker process proof'
+            ),
+            {},
+        )
+        evidence_value = str(process_evidence.get('evidence') or '').strip()
+        if (
+            worker_model == 'single'
+            and hosted.get('status') == 'passed'
+            and _hosted_rc_usable(packet)
+            and process_evidence.get('status') == 'provided'
+            and evidence_value
+        ):
+            target_url = str(hosted.get('target_url') or '').strip()
+            return _with_item(
+                item,
+                _status(
+                    'passed',
+                    f'hosted single-worker process/replica proof for {target_url}: {evidence_value}',
+                    '',
+                ),
+            )
+        return _with_item(
+            item,
+            _status(
+                'external-required',
+                'hosted single-worker process/replica proof has not been supplied',
+                'attach platform evidence proving exactly one backend process/replica',
             ),
         )
 

@@ -48,7 +48,6 @@ import {
 import {
   SessionBoard,
   type BoardViewMode,
-  type DirectorCommentaryPayload,
   type MainTab,
   type TurnQualityScores,
 } from './SessionBoard'
@@ -80,6 +79,7 @@ import {
 } from './gameSelectors'
 import { subscribeToMediaQueryChange } from './mediaQuery'
 import { profileIconSrcForCharacter } from './profileIcons'
+import { RuntimeSettingsDialog } from './RuntimeSettingsDialog'
 import type { SceneDisplayState } from './sceneState'
 import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
 import { TitleScreen } from './TitleScreen'
@@ -94,6 +94,7 @@ import type {
   BadTurnFeedbackResponse,
   BetaSummary,
   Campaign,
+  CampaignPackCommentaryResponse,
   ClarificationRequest,
   CoherenceFeedbackResponse,
   Health,
@@ -101,6 +102,7 @@ import type {
   Player,
   PlayerDetail,
   PlayerEquipmentUpdateResponse,
+  SessionRecapResponse,
   SessionState,
   SessionSummary,
   StreamingTurn,
@@ -120,11 +122,12 @@ import { usePlayNowOnboarding } from './usePlayNowOnboarding'
 import { useSessionActions, type SessionActionDialogState } from './useSessionActions'
 import { useSessionContentSettings } from './useSessionContentSettings'
 import { useSessionSocket } from './useSessionSocket'
-import { LEGACY_PASSWORD_SETUP_MESSAGE, useRuntimeSettings, type RuntimeAccount } from './useRuntimeSettings'
+import { useRuntimeSettings, type RuntimeAccount } from './useRuntimeSettings'
 import { useTtsNarration } from './useTtsNarration'
 import { useWorldMapSegmentActions } from './useWorldMapSegmentActions'
 import { useWorkspaceQueries, type CampaignSessionMeta } from './useWorkspaceQueries'
 import { useWorkspaceStore } from './useWorkspaceStore'
+import { savedWorkspaceDisplayName } from './workspaceLabels'
 import {
   WorldDeleteDialog,
   WorldManagerDialog,
@@ -298,13 +301,6 @@ type SavedWorkspaceDeleteDialogState = {
   pending: boolean
 } | null
 
-type SessionRecapResponse = {
-  session_id: number
-  recap: string
-  generated: boolean
-  source: string
-}
-
 function readBoardViewMode(): BoardViewMode {
   try {
     return localStorage.getItem(BOARD_VIEW_MODE_STORAGE_KEY) === 'theater' ? 'theater' : 'ops'
@@ -342,17 +338,6 @@ function formatShortAge(value: string | null) {
   if (weeks < 5) return `${weeks}w ago`
   const months = Math.floor(days / 30)
   return `${Math.max(1, months)}mo ago`
-}
-
-function savedWorkspaceRoleLabel(workspace: AccountWorkspace) {
-  if (workspace.is_workspace_admin && workspace.workspace_role !== 'admin') {
-    return `${workspace.workspace_role} / admin`
-  }
-  return workspace.workspace_role
-}
-
-function savedWorkspaceDisplayName(workspace: AccountWorkspace) {
-  return workspace.table_name || workspace.workspace_name || workspace.workspace_id
 }
 
 const OWNER_WORKSPACE_ID = 'owner'
@@ -598,7 +583,7 @@ function App() {
   const [characterJoinDialogOpen, setCharacterJoinDialogOpen] = useState(false)
   const [boardViewMode, setBoardViewMode] = useState<BoardViewMode>(readBoardViewMode)
   const [sessionRecap, setSessionRecap] = useState('')
-  const [directorCommentary, setDirectorCommentary] = useState<DirectorCommentaryPayload | null>(null)
+  const [directorCommentary, setDirectorCommentary] = useState<CampaignPackCommentaryResponse | null>(null)
   const [socketReconnectKey, setSocketReconnectKey] = useState(0)
   const [equipmentPendingItemKey, setEquipmentPendingItemKey] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
@@ -2283,37 +2268,6 @@ function App() {
     onClose: closeCurrentDialog,
     returnFocusRef: dialogReturnFocusRef,
   })
-  const runtimeSettingsIsAuthPrompt = runtimeSettingsMode === 'auth'
-  const runtimeSettingsIsAccountStep = runtimeSettingsIsAuthPrompt && runtimeAuthStep === 'account'
-  const runtimeSettingsIsWorkspaceStep = runtimeSettingsIsAuthPrompt && runtimeAuthStep === 'workspace'
-  const runtimeSettingsEyebrow = runtimeSettingsIsAuthPrompt ? 'Access' : 'Runtime'
-  const runtimeSettingsTitle = runtimeSettingsIsWorkspaceStep
-    ? runtimeCreatedWorkspaceToken
-      ? 'Save Table Token'
-      : runtimeWorkspaceAction === 'create'
-        ? 'Create Table'
-        : 'Join Table'
-    : runtimeSettingsIsAccountStep
-      ? runtimeAuthIntent === 'signup' ? 'Sign Up' : 'Log In'
-      : 'Backend Settings'
-  const runtimeSettingsCloseLabel = runtimeSettingsIsAuthPrompt
-    ? 'Close account prompt'
-    : 'Close backend settings'
-  const runtimeSettingsHelpText = runtimeSettingsIsWorkspaceStep
-    ? runtimeCreatedWorkspaceToken
-      ? 'Save this token now. You will not be able to view it after you leave this page.'
-      : runtimeWorkspaceAction === 'create'
-        ? 'Create a table with a shared password or a generated token.'
-        : runtimeWorkspaceJoinMethod === 'password'
-          ? 'Enter the table name and password.'
-          : 'Enter the table token for the table you want to join.'
-    : runtimeSettingsIsAccountStep
-      ? legacyPasswordSetupRequired
-        ? LEGACY_PASSWORD_SETUP_MESSAGE
-        : runtimeAuthIntent === 'signup'
-          ? 'Create your player account first. Password is required.'
-          : 'Log in with your username. Use your password if one is set.'
-      : 'Leave Backend URL blank when the frontend and backend share one origin.'
   const {
     createCampaignFromTitleScreen,
     continueFromTitleScreen,
@@ -2635,7 +2589,7 @@ function App() {
     }
     let cancelled = false
     setDirectorCommentary(null)
-    apiFetch<DirectorCommentaryPayload>(
+    apiFetch<CampaignPackCommentaryResponse>(
       baseUrl,
       `/api/sessions/${activeSessionId}/campaign-pack/commentary`,
       auth,
@@ -3678,410 +3632,35 @@ function App() {
         </div>
       ) : null}
 
-      {runtimeSettingsOpen ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeRuntimeSettingsDialog()
-            }
-          }}
-        >
-          <section
-            ref={modalDialogRef}
-            className="campaign-dialog runtime-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="runtime-settings-title"
-          >
-            <header>
-              <div>
-                <span>{runtimeSettingsEyebrow}</span>
-                <h2 id="runtime-settings-title">{runtimeSettingsTitle}</h2>
-              </div>
-              <button
-                type="button"
-                aria-label={runtimeSettingsCloseLabel}
-                onClick={closeRuntimeSettingsDialog}
-              >
-                <X size={18} />
-              </button>
-            </header>
-            <form onSubmit={submitRuntimeSettings}>
-              {runtimeSettingsIsAuthPrompt ? null : (
-                <label>
-                  Backend URL
-                  <input
-                    autoFocus={!runtimeSettingsIsAuthPrompt}
-                    data-autofocus={!runtimeSettingsIsAuthPrompt ? true : undefined}
-                    value={runtimeSettingsForm.baseUrl}
-                    onChange={(event) =>
-                      setRuntimeSettingsForm((current) => ({
-                        ...current,
-                        baseUrl: event.target.value,
-                      }))
-                    }
-                    placeholder="Leave blank for same origin"
-                  />
-                </label>
-              )}
-              {runtimeSettingsIsAccountStep ? (
-                <>
-                  <div className="runtime-auth-choice" role="group" aria-label="Account action">
-                    <button
-                      type="button"
-                      aria-pressed={runtimeAuthIntent === 'login'}
-                      onClick={() => {
-                        setRuntimeAuthIntent('login')
-                        setLegacyPasswordSetupRequired(false)
-                        setRuntimeSettingsError('')
-                      }}
-                    >
-                      Log In
-                    </button>
-                    <button
-                      type="button"
-                      aria-pressed={runtimeAuthIntent === 'signup'}
-                      onClick={() => {
-                        setRuntimeAuthIntent('signup')
-                        setLegacyPasswordSetupRequired(legacyPasswordSetupRequired)
-                        setRuntimeSettingsError(legacyPasswordSetupRequired ? LEGACY_PASSWORD_SETUP_MESSAGE : '')
-                      }}
-                    >
-                      Sign Up
-                    </button>
-                  </div>
-                  <div className="dialog-grid two">
-                    <label>
-                      Username
-                      <input
-                        autoFocus
-                        data-autofocus
-                        value={runtimeSettingsForm.username}
-                        onChange={(event) => {
-                          setRuntimeSettingsForm((current) => ({
-                            ...current,
-                            username: event.target.value,
-                          }))
-                          if (legacyPasswordSetupRequired) {
-                            setLegacyPasswordSetupRequired(false)
-                            setRuntimeSettingsError('')
-                          }
-                        }}
-                        placeholder="Username"
-                        autoComplete="username"
-                      />
-                    </label>
-                    <label>
-                      {legacyPasswordSetupRequired ? 'New Password' : 'Password'}
-                      <input
-                        value={runtimeSettingsForm.password}
-                        onChange={(event) =>
-                          setRuntimeSettingsForm((current) => ({
-                            ...current,
-                            password: event.target.value,
-                          }))
-                        }
-                        placeholder="Password"
-                        type="password"
-                        autoComplete={runtimeAuthIntent === 'signup' || legacyPasswordSetupRequired ? 'new-password' : 'current-password'}
-                      />
-                    </label>
-                  </div>
-                  {runtimeAuthIntent === 'signup' ? (
-                    <div className="dialog-grid two">
-                      <label>
-                        First Name
-                        <input
-                          value={runtimeSettingsForm.firstName}
-                          onChange={(event) =>
-                            setRuntimeSettingsForm((current) => ({
-                              ...current,
-                              firstName: event.target.value,
-                            }))
-                          }
-                          autoComplete="given-name"
-                        />
-                      </label>
-                      <label>
-                        Last Name
-                        <input
-                          value={runtimeSettingsForm.lastName}
-                          onChange={(event) =>
-                            setRuntimeSettingsForm((current) => ({
-                              ...current,
-                              lastName: event.target.value,
-                            }))
-                          }
-                          autoComplete="family-name"
-                        />
-                      </label>
-                    </div>
-                  ) : null}
-                </>
-              ) : null}
-              {runtimeSettingsIsWorkspaceStep ? (
-                <>
-                  {runtimeCreatedWorkspaceToken ? (
-                    <div className="dialog-warning">
-                      <strong>Save this table token now.</strong>
-                      <input
-                        aria-label="Generated table token"
-                        readOnly
-                        value={runtimeCreatedWorkspaceToken}
-                        onFocus={(event) => event.currentTarget.select()}
-                      />
-                      <span>You will not be able to view it after you leave this page.</span>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="runtime-auth-choice" role="group" aria-label="Table action">
-                        <button
-                          type="button"
-                          aria-pressed={runtimeWorkspaceAction === 'join'}
-                          onClick={() => {
-                            setRuntimeWorkspaceAction('join')
-                            setRuntimeSettingsError('')
-                          }}
-                        >
-                          Join
-                        </button>
-                        <button
-                          type="button"
-                          aria-pressed={runtimeWorkspaceAction === 'create'}
-                          onClick={() => {
-                            setRuntimeWorkspaceAction('create')
-                            setRuntimeSettingsError('')
-                          }}
-                        >
-                          Create
-                        </button>
-                      </div>
-                      {runtimeWorkspaceAction === 'join' && runtimeAccount?.workspaces.length ? (
-                        <div className="saved-workspace-list" role="group" aria-label="Saved tables">
-                          <span>Saved Tables</span>
-                          {runtimeAccount.workspaces.map((workspace) => {
-                            const tableName = savedWorkspaceDisplayName(workspace)
-                            const deletesTable = workspace.is_workspace_admin && workspace.access_mode !== 'configured'
-                            return (
-                              <div className="saved-workspace-row" key={workspace.workspace_id}>
-                                <button
-                                  type="button"
-                                  className="saved-workspace-option"
-                                  aria-label={`${tableName} ${savedWorkspaceRoleLabel(workspace)}`}
-                                  aria-pressed={workspace.workspace_id === workspaceId}
-                                  onClick={() => void selectSavedWorkspace(workspace.workspace_id)}
-                                >
-                                  <strong>{tableName}</strong>
-                                  <span>{savedWorkspaceRoleLabel(workspace)}</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  className="saved-workspace-delete"
-                                  aria-label={`${deletesTable ? 'Delete' : 'Remove'} ${tableName}`}
-                                  onClick={() => openSavedWorkspaceDeleteDialog(workspace)}
-                                >
-                                  {deletesTable ? 'Delete' : 'Remove'}
-                                </button>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      ) : null}
-                      {runtimeWorkspaceAction === 'join' ? (
-                        <>
-                          <div className="runtime-auth-choice" role="group" aria-label="Join method">
-                            <button
-                              type="button"
-                              aria-pressed={runtimeWorkspaceJoinMethod === 'token'}
-                              onClick={() => {
-                                setRuntimeWorkspaceJoinMethod('token')
-                                setRuntimeSettingsError('')
-                              }}
-                            >
-                              Token
-                            </button>
-                            <button
-                              type="button"
-                              aria-pressed={runtimeWorkspaceJoinMethod === 'password'}
-                              onClick={() => {
-                                setRuntimeWorkspaceJoinMethod('password')
-                                setRuntimeSettingsError('')
-                              }}
-                            >
-                              Password
-                            </button>
-                          </div>
-                          {runtimeWorkspaceJoinMethod === 'password' ? (
-                            <div className="dialog-grid two">
-                              <label>
-                                Table Name
-                                <input
-                                  autoFocus={!runtimeAccount?.workspaces.length}
-                                  data-autofocus={!runtimeAccount?.workspaces.length ? true : undefined}
-                                  value={runtimeSettingsForm.workspaceName}
-                                  onChange={(event) =>
-                                    setRuntimeSettingsForm((current) => ({
-                                      ...current,
-                                      workspaceName: event.target.value,
-                                    }))
-                                  }
-                                  autoComplete="off"
-                                />
-                              </label>
-                              <label>
-                                Table Password
-                                <input
-                                  value={runtimeSettingsForm.workspacePassword}
-                                  onChange={(event) =>
-                                    setRuntimeSettingsForm((current) => ({
-                                      ...current,
-                                      workspacePassword: event.target.value,
-                                    }))
-                                  }
-                                  type="password"
-                                  autoComplete="off"
-                                />
-                              </label>
-                            </div>
-                          ) : (
-                            <label>
-                              Table Token
-                              <input
-                                autoFocus={!runtimeAccount?.workspaces.length}
-                                data-autofocus={!runtimeAccount?.workspaces.length ? true : undefined}
-                                value={runtimeSettingsForm.workspaceToken}
-                                onChange={(event) =>
-                                  setRuntimeSettingsForm((current) => ({
-                                    ...current,
-                                    workspaceToken: event.target.value,
-                                  }))
-                                }
-                                placeholder="Token for a table"
-                                type="password"
-                                autoComplete="off"
-                              />
-                            </label>
-                          )}
-                        </>
-                      ) : (
-                        <>
-                          <label>
-                            Table Name
-                            <input
-                              autoFocus
-                              data-autofocus
-                              value={runtimeSettingsForm.workspaceName}
-                              onChange={(event) =>
-                                setRuntimeSettingsForm((current) => ({
-                                  ...current,
-                                  workspaceName: event.target.value,
-                                }))
-                              }
-                              autoComplete="off"
-                            />
-                          </label>
-                          <div className="runtime-auth-choice" role="group" aria-label="Table access">
-                            <button
-                              type="button"
-                              aria-pressed={runtimeWorkspaceCreateAccessMode === 'password'}
-                              onClick={() => {
-                                setRuntimeWorkspaceCreateAccessMode('password')
-                                setRuntimeSettingsError('')
-                              }}
-                            >
-                              Password
-                            </button>
-                            <button
-                              type="button"
-                              aria-pressed={runtimeWorkspaceCreateAccessMode === 'token'}
-                              onClick={() => {
-                                setRuntimeWorkspaceCreateAccessMode('token')
-                                setRuntimeSettingsError('')
-                              }}
-                            >
-                              Token
-                            </button>
-                          </div>
-                          {runtimeWorkspaceCreateAccessMode === 'password' ? (
-                            <label>
-                              Table Password
-                              <input
-                                value={runtimeSettingsForm.workspacePassword}
-                                onChange={(event) =>
-                                  setRuntimeSettingsForm((current) => ({
-                                    ...current,
-                                    workspacePassword: event.target.value,
-                                  }))
-                                }
-                                type="password"
-                                autoComplete="new-password"
-                              />
-                            </label>
-                          ) : null}
-                        </>
-                      )}
-                    </>
-                  )}
-                </>
-              ) : null}
-              <p>{runtimeSettingsHelpText}</p>
-              {runtimeSettingsError ? (
-                <div className="dialog-error">{runtimeSettingsError}</div>
-              ) : null}
-              <footer>
-                {runtimeSettingsIsAuthPrompt ? null : (
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() =>
-                      setRuntimeSettingsForm({
-                        baseUrl: DEFAULT_BASE_URL,
-                        workspaceToken: '',
-                        workspaceName: '',
-                        workspacePassword: '',
-                        username: '',
-                        firstName: '',
-                        lastName: '',
-                        password: '',
-                      })
-                    }
-                  >
-                    Reset
-                  </button>
-                )}
-                {runtimeSettingsIsWorkspaceStep && !runtimeCreatedWorkspaceToken ? (
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => {
-                      setRuntimeAuthStep('account')
-                      setRuntimeSettingsError('')
-                    }}
-                  >
-                    Back
-                  </button>
-                ) : null}
-                <button type="button" className="secondary" onClick={closeRuntimeSettingsDialog}>
-                  Cancel
-                </button>
-                <button type="submit">
-                  {runtimeSettingsIsWorkspaceStep
-                    ? runtimeCreatedWorkspaceToken
-                      ? 'Done'
-                      : runtimeWorkspaceAction === 'create'
-                        ? 'Create Table'
-                        : 'Join Table'
-                    : runtimeSettingsIsAccountStep
-                      ? 'Continue'
-                      : 'Save Settings'}
-                </button>
-              </footer>
-            </form>
-          </section>
-        </div>
-      ) : null}
+      <RuntimeSettingsDialog
+        defaultBaseUrl={DEFAULT_BASE_URL}
+        dialogRef={modalDialogRef}
+        error={runtimeSettingsError}
+        form={runtimeSettingsForm}
+        legacyPasswordSetupRequired={legacyPasswordSetupRequired}
+        mode={runtimeSettingsMode}
+        onAuthIntentChange={setRuntimeAuthIntent}
+        onAuthStepChange={setRuntimeAuthStep}
+        onClose={closeRuntimeSettingsDialog}
+        onErrorChange={setRuntimeSettingsError}
+        onFormChange={setRuntimeSettingsForm}
+        onLegacyPasswordSetupRequiredChange={setLegacyPasswordSetupRequired}
+        onOpenSavedWorkspaceDelete={openSavedWorkspaceDeleteDialog}
+        onSelectSavedWorkspace={selectSavedWorkspace}
+        onSubmit={submitRuntimeSettings}
+        onWorkspaceActionChange={setRuntimeWorkspaceAction}
+        onWorkspaceCreateAccessModeChange={setRuntimeWorkspaceCreateAccessMode}
+        onWorkspaceJoinMethodChange={setRuntimeWorkspaceJoinMethod}
+        open={runtimeSettingsOpen}
+        runtimeAccount={runtimeAccount}
+        runtimeAuthIntent={runtimeAuthIntent}
+        runtimeAuthStep={runtimeAuthStep}
+        runtimeCreatedWorkspaceToken={runtimeCreatedWorkspaceToken}
+        runtimeWorkspaceAction={runtimeWorkspaceAction}
+        runtimeWorkspaceCreateAccessMode={runtimeWorkspaceCreateAccessMode}
+        runtimeWorkspaceJoinMethod={runtimeWorkspaceJoinMethod}
+        workspaceId={workspaceId}
+      />
 
       {savedWorkspaceDeleteDialog ? (
         <div

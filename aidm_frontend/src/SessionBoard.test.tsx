@@ -118,22 +118,48 @@ function sessionBoardProps(overrides: Partial<SessionBoardProps> = {}): SessionB
     onBoardViewModeChange: vi.fn(),
     directorCommentary: {
       enabled: true,
+      sessionId: 20,
+      campaignId: 10,
       pack: {
         packId: 'branching_pack',
         title: 'The Branching Pack',
         version: '1.0.0',
+        schemaVersion: '1',
+      },
+      progress: {
+        activeCheckpointId: 'cp_watchtower',
+        completedCheckpointIds: ['cp_gate'],
+        skippedCheckpointIds: [],
+        failedCheckpointIds: [],
+        statusByCheckpointId: { cp_gate: 'completed', cp_watchtower: 'active' },
+        progressRevision: 2,
+      },
+      graph: {
+        startCheckpointId: 'cp_gate',
+        nodes: [
+          { id: 'cp_gate', title: 'Rain Gate', terminal: false, sortOrder: 0 },
+          { id: 'cp_watchtower', title: 'Abandoned Watchtower', terminal: false, sortOrder: 1 },
+        ],
+        nodeIds: ['cp_gate', 'cp_watchtower'],
+        edges: [{ from: 'cp_gate', to: 'cp_watchtower', type: 'alternate' }],
+        reachable: ['cp_gate', 'cp_watchtower'],
       },
       routeTaken: [
         {
+          id: 'cp_gate',
           checkpointId: 'cp_gate',
           title: 'Rain Gate',
+          summary: '',
           status: 'completed',
+          reason: null,
         },
       ],
       roadsNotTaken: [
         {
+          id: 'cp_watchtower',
           checkpointId: 'cp_watchtower',
           title: 'Abandoned Watchtower',
+          summary: '',
           edgeType: 'alternate',
           fromCheckpointId: 'cp_gate',
           fromTitle: 'Rain Gate',
@@ -145,7 +171,9 @@ function sessionBoardProps(overrides: Partial<SessionBoardProps> = {}): SessionB
           {
             id: 'loc_watchtower',
             title: 'Abandoned Watchtower',
+            summary: '',
             hidden: true,
+            checkpointIds: ['cp_watchtower'],
           },
         ],
       },

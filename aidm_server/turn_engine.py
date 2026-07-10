@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import time
 from dataclasses import dataclass
 from typing import Callable
@@ -9,7 +8,7 @@ from typing import Callable
 from flask import current_app
 from sqlalchemy.exc import IntegrityError
 
-from aidm_server.action_intent import apply_action_intent_to_rule_hint, strip_reserved_admin_prefix
+from aidm_server.action_intent import apply_action_intent_to_rule_hint
 from aidm_server.canon_jobs import enqueue_canon_job, process_canon_job
 from aidm_server.character_state import (
     apply_character_dc_adjustment,
@@ -36,8 +35,6 @@ from aidm_server.llm import CONTEXT_VERSION, EmergencyFallbackChunk, build_dm_co
 from aidm_server.logging_context import set_logging_context
 from aidm_server.models import Campaign, CampaignSegment, DmTurn, Player, Session, safe_json_dumps, safe_json_loads
 from aidm_server.rules import RuleHint, classify_player_action
-from aidm_server.segment_triggers import evaluate_segment_trigger, parse_trigger_spec
-from aidm_server.segment_state import build_segment_state_payload
 from aidm_server.services.campaign_pack_progress import update_campaign_pack_progress
 from aidm_server.services.scene_state import scene_state_for_session
 from aidm_server.socket_contracts import (
@@ -46,7 +43,6 @@ from aidm_server.socket_contracts import (
     dm_response_start_payload,
     new_message_payload,
     roll_required_payload,
-    segment_triggered_payload,
     scene_state_payload,
     session_log_update_payload,
     socket_error_payload as socket_error,
@@ -56,6 +52,7 @@ from aidm_server.socket_contracts import (
 from aidm_server.telemetry import telemetry_event, telemetry_metric, telemetry_timing
 from aidm_server.text_sanitization import ReasoningBlockFilter, strip_reasoning_blocks
 from aidm_server.time_utils import utc_now
+from aidm_server.turn_action_policy import TurnActionPolicy
 from aidm_server.turn_control import (
     advance_structured_turn,
     conduct_turn_submission,
@@ -67,7 +64,6 @@ from aidm_server.turn_events import (
     DM_RESPONSE_EVENT,
     PLAYER_MESSAGE_EVENT,
     ROLL_RESOLVED_EVENT,
-    SEGMENT_TRIGGERED_EVENT,
     record_turn_event,
 )
 from aidm_server.turn_rules import (
@@ -81,43 +77,13 @@ from aidm_server.turn_rules import (
     pending_turn_resolved_player_ids,
     response_mentions_roll_request as default_response_mentions_roll_request,
 )
+from aidm_server.turn_roll_policy import TurnRollPolicy
+from aidm_server.turn_segments import SegmentEvaluationRequest, TurnSegmentService, default_turn_segment_service
 
 
 logger = logging.getLogger(__name__)
 DM_GENERATION_FAILED_MESSAGE = 'The DM response could not be generated. Please retry.'
 POST_TURN_PERSIST_FAILED_MESSAGE = 'The DM response could not be fully saved. Please retry.'
-
-_HARMFUL_PVP_RE = re.compile(
-    r'\b(?:attack|attacks|attacked|behead\w*|choke\w*|cut|cuts|decapitat\w*|execute\w*|'
-    r'hit|hits|kick\w*|kill\w*|maim\w*|murder\w*|punch\w*|shoot\w*|slash\w*|slice\w*|'
-    r'slit|smite\w*|stab\w*|strike\w*)\b|\bhead\s+off\b',
-    re.IGNORECASE,
-)
-_GENERIC_PLAYER_RACE_LABELS = {'human', 'elf', 'dwarf', 'gnome', 'halfling'}
-_INTERACTION_TARGET_CUE_RE = re.compile(
-    r'\b(?:to|at|toward|towards|with|from)\s+(?:the\s+)?(?P<target>[A-Za-z][A-Za-z0-9\'\-\s]{1,80}?)(?:\s*:|[.!?]|$)',
-    re.IGNORECASE,
-)
-_NO_ROLL_NEEDED_RE = re.compile(
-    r"\bno\s+(?:a\s+)?(?:roll|check)s?\s+(?:(?:is|are|was|were)\s+)?(?:needed|required|necessary)\b|"
-    r"\b(?:roll|check)s?\s+(?:is|are|was|were)\s+not\s+(?:needed|required|necessary)\b|"
-    r"\bwithout\s+(?:requiring\s+)?(?:a\s+)?(?:roll|check)\b|"
-    r"\b(?:doesn't|does not|don't|do not)\s+(?:need|require)\s+(?:a\s+)?(?:roll|check)\b|"
-    r"\b(?:don't|do not)\s+roll\b",
-    re.IGNORECASE,
-)
-_GROUP_ROLL_MARKER_RE = re.compile(
-    r'\b(?:both of you|you both|all of you|everyone|each of you|every player|all players|the party)\b',
-    re.IGNORECASE,
-)
-_GROUP_ROLL_REQUEST_RE = re.compile(
-    r'\b(?:please\s+)?roll\b|'
-    r'\b(?:must|should|need(?:s)? to|have to|has to)\s+(?:all\s+)?(?:roll|make)\b|'
-    r'\bmake\s+(?:an?\s+)?[a-z][a-z \'-]{0,60}\s+(?:check|saving\s+throw|save)\b|'
-    r'\bsaving\s+throw\b|'
-    r'\binitiative\b',
-    re.IGNORECASE,
-)
 
 
 def _coerce_player_id(value) -> int | None:
@@ -263,6 +229,7 @@ class TurnEngine:
         build_roll_prompt_fn: Callable[[RuleHint, int | None], str] | None = None,
         response_mentions_roll_request_fn: Callable[[str], bool] | None = None,
         active_player_ids_fn: Callable[[int], list[int]] | None = None,
+        segment_service: TurnSegmentService | None = None,
     ):
         self.socketio = socketio
         self.emit = emit_fn
@@ -274,10 +241,7 @@ class TurnEngine:
         self.build_roll_prompt = build_roll_prompt_fn or default_build_roll_prompt
         self.response_mentions_roll_request = response_mentions_roll_request_fn or default_response_mentions_roll_request
         self.active_player_ids = active_player_ids_fn
-
-    @staticmethod
-    def _is_admin_override(action_intent: dict | None) -> bool:
-        return isinstance(action_intent, dict) and action_intent.get('kind') == 'admin'
+        self.segment_service = segment_service or default_turn_segment_service(logger=logger)
 
     @staticmethod
     def _find_duplicate_turn(command: TurnCommand) -> DmTurn | None:
@@ -406,177 +370,6 @@ class TurnEngine:
             )
         return True
 
-    @staticmethod
-    def _admin_model_input(user_input: str) -> str:
-        clean = strip_reserved_admin_prefix(user_input)
-        return (
-            'ADMIN OVERRIDE (authenticated):\n'
-            f'{clean}\n\n'
-            'This is an out-of-character table administrator directive. Make it happen in the next DM response. '
-            'Do not ask for a roll, do not defer the outcome, and do not refuse due to normal story uncertainty. '
-            'If the directive changes established state, make the change true and give a concise in-world explanation.'
-        )
-
-    @staticmethod
-    def _interaction_model_input(user_input: str, action_intent: dict | None, actor_label: str) -> str:
-        if not isinstance(action_intent, dict) or action_intent.get('kind') != 'interact':
-            return user_input
-        interaction = action_intent.get('interaction') if isinstance(action_intent.get('interaction'), dict) else {}
-        target = action_intent.get('target') if isinstance(action_intent.get('target'), dict) else {}
-        target_character = str(target.get('character_name') or 'another player character').strip()
-        target_player = str(target.get('player_name') or '').strip()
-        target_kind = str(target.get('kind') or 'player').strip().lower()
-        interaction_type = str(interaction.get('type') or 'act_on').strip()
-        interaction_labels = {
-            'speak_to': 'speak to the target',
-            'act_on': 'take an action directed at the target',
-            'give_to': 'give something to the target',
-            'take_from': 'try to take something from the target',
-        }
-        clean_input = str(user_input or '').strip()
-        target_player_line = f'\nTarget account/profile label (not a character): {target_player}' if target_player else ''
-        if target_kind == 'npc':
-            return (
-                'PLAYER-TO-NPC INTERACTION:\n'
-                f'Acting character: {actor_label}\n'
-                f'Target NPC: {target_character}'
-                f'{target_player_line}\n'
-                f'Interaction intent: {interaction_labels.get(interaction_type, "interact with the target")}\n\n'
-                'Player message:\n'
-                f'{clean_input}\n\n'
-                'DM handling: Resolve this as an interaction with a current-scene NPC. Ask for a roll when the '
-                'action needs one, and only apply inventory, relationship, health, or scene changes when the outcome is clear.'
-            )
-        return (
-            'PLAYER-TO-PLAYER INTERACTION:\n'
-            f'Acting character: {actor_label}\n'
-            f'Target character: {target_character}'
-            f'{target_player_line}\n'
-            f'Interaction intent: {interaction_labels.get(interaction_type, "interact with the target")}\n\n'
-            'Player message:\n'
-            f'{clean_input}\n\n'
-            'DM handling: Treat the target as a player character in this campaign, even if they have not spoken in '
-            'the current chat log yet. Keep the acting character and target character distinct. Resolve the speech '
-            'or action as directed at the target, ask for a roll when the action needs one, and do not narrate the '
-            "target player's voluntary response for them."
-        )
-
-    @staticmethod
-    def _item_model_input(user_input: str, action_intent: dict | None, actor_label: str) -> str:
-        if not isinstance(action_intent, dict) or action_intent.get('kind') != 'item':
-            return user_input
-        item = action_intent.get('item') if isinstance(action_intent.get('item'), dict) else {}
-        item_name = str(item.get('name') or 'item').strip()
-        quantity = item.get('quantity') or 1
-        inventory_action = str(action_intent.get('inventory_action') or 'use').strip()
-        cost_gold = action_intent.get('cost_gold')
-        cost_line = f'\nKnown price/value: {cost_gold} gold' if cost_gold else ''
-        action_labels = {
-            'pick_up': 'pick up',
-            'buy': 'buy',
-            'use': 'use',
-            'drop': 'drop',
-            'give': 'give',
-            'sell': 'sell',
-            'equip': 'equip',
-            'unequip': 'unequip',
-        }
-        return (
-            'PLAYER INVENTORY INTENT:\n'
-            f'Acting character: {actor_label}\n'
-            f'Attempted action: {action_labels.get(inventory_action, inventory_action)}\n'
-            f'Item: {item_name} x{quantity}'
-            f'{cost_line}\n\n'
-            'Player message:\n'
-            f'{str(user_input or "").strip()}\n\n'
-            'DM handling: Treat this as an attempted inventory action, not an automatic state change. '
-            'Narrate whether it actually succeeds. If it succeeds, explicitly say the character picks up, buys, '
-            'drops, gives, sells, consumes, uses up, equips, or unequips the named item so the state pipeline can update inventory. '
-            'If it fails, explicitly say why it fails.'
-        )
-
-    @staticmethod
-    def _pvp_model_input(user_input: str, actor_label: str, target_player: Player) -> str:
-        target_label = target_player.character_name or target_player.name or f'Player {target_player.player_id}'
-        return (
-            'PLAYER-VS-PLAYER ACTION (ALLOWED):\n'
-            f'Acting character: {actor_label}\n'
-            f'Target player character: {target_label}\n\n'
-            'Player message:\n'
-            f'{str(user_input or "").strip()}\n\n'
-            'DM handling: Allow PvP as an attempted action. Do not reject the attempt just because it targets '
-            'another player character. Do not narrate final injury, death, incapacitation, theft, forced movement, '
-            'or loss of agency yet. Ask for the appropriate attack roll, opposed check, saving throw, or contested '
-            'rolls from the involved players, then defer the final outcome until the required rolls are recorded.'
-        )
-
-    @classmethod
-    def _model_input_for_action(
-        cls,
-        user_input: str,
-        action_intent: dict | None,
-        actor_label: str,
-        pvp_target: Player | None = None,
-    ) -> str:
-        if pvp_target:
-            return cls._pvp_model_input(user_input, actor_label, pvp_target)
-        if cls._is_admin_override(action_intent):
-            return cls._admin_model_input(user_input)
-        if isinstance(action_intent, dict) and action_intent.get('kind') == 'item':
-            return cls._item_model_input(user_input, action_intent, actor_label)
-        if isinstance(action_intent, dict) and action_intent.get('kind') == 'interact':
-            return cls._interaction_model_input(user_input, action_intent, actor_label)
-        return user_input
-
-    @staticmethod
-    def _player_is_available_for_campaign(player: Player | None, campaign: Campaign) -> bool:
-        return bool(
-            player
-            and player.workspace_id == campaign.workspace_id
-            and player.campaign_id == campaign.campaign_id
-        )
-
-    @staticmethod
-    def _target_label_regex(label: str) -> str:
-        words = [re.escape(part) for part in re.findall(r'[a-z0-9]+', str(label or '').lower())]
-        if not words:
-            return ''
-        return r'\b' + r'[\W_]+'.join(words) + r"(?:'s|s)?\b"
-
-    @classmethod
-    def _player_target_labels(cls, player: Player) -> list[str]:
-        labels: list[str] = []
-        for value in (player.character_name, player.name):
-            text = str(value or '').strip()
-            if text and text.lower() not in {label.lower() for label in labels}:
-                labels.append(text)
-        race = str(player.race or '').strip().lower()
-        if race and (race not in _GENERIC_PLAYER_RACE_LABELS or race == 'orc'):
-            labels.extend([race, f'the {race}'])
-        return labels
-
-    @classmethod
-    def _harmful_text_targets_player(cls, text: str, player: Player) -> bool:
-        if not _HARMFUL_PVP_RE.search(text or ''):
-            return False
-        normalized = str(text or '').lower()
-        harmful_pattern = f'(?:{_HARMFUL_PVP_RE.pattern})'
-        for label in cls._player_target_labels(player):
-            label_pattern = cls._target_label_regex(label)
-            if not label_pattern:
-                continue
-            harm_then_label = re.compile(
-                rf'{harmful_pattern}(?:\W+\w+){{0,8}}\W+{label_pattern}',
-                re.IGNORECASE,
-            )
-            label_then_harm = re.compile(
-                rf'{label_pattern}(?:\W+\w+){{0,8}}\W+{harmful_pattern}',
-                re.IGNORECASE,
-            )
-            if harm_then_label.search(normalized) or label_then_harm.search(normalized):
-                return True
-        return False
-
     def _active_player_ids_for_session(self, session_id: int) -> set[int]:
         if not self.active_player_ids:
             return set()
@@ -611,57 +404,22 @@ class TurnEngine:
 
     @staticmethod
     def _dm_response_sentences(text: str) -> list[str]:
-        return [
-            chunk.strip()
-            for chunk in re.split(r'(?<=[.!?;])\s+|\n+', text or '')
-            if chunk.strip()
-        ]
+        return TurnRollPolicy.response_sentences(text)
 
     @staticmethod
     def _dm_response_explains_no_roll_needed(text: str) -> bool:
-        return any(
-            _NO_ROLL_NEEDED_RE.search(sentence)
-            for sentence in TurnEngine._dm_response_sentences(text)
-        )
+        return TurnRollPolicy.response_explains_no_roll_needed(text)
 
     @staticmethod
     def _dm_response_requests_group_roll(text: str) -> bool:
-        for sentence in TurnEngine._dm_response_sentences(text):
-            if _NO_ROLL_NEEDED_RE.search(sentence):
-                continue
-            if not _GROUP_ROLL_MARKER_RE.search(sentence):
-                continue
-            if _GROUP_ROLL_REQUEST_RE.search(sentence):
-                return True
-        return False
+        return TurnRollPolicy.response_requests_group_roll(text)
 
     def _dm_response_requests_roll(self, text: str) -> bool:
         return self.response_mentions_roll_request(text) or self._dm_response_requests_group_roll(text)
 
     @staticmethod
     def _roll_type_from_dm_response(text: str, fallback: str | None = None) -> str:
-        candidate = (text or '').lower()
-        if re.search(r'\binitiative\b', candidate):
-            return 'initiative'
-        if re.search(
-            r'\bspell\b|\bmagic\b|\bcast\b|\bconjure\b|\bsummon\b|\bsorcery\b|'
-            r'\bsorcerous\b|\btelekinesis\b|\blevitat\w*\b|\bwild magic\b',
-            candidate,
-        ):
-            return 'spell'
-        if re.search(r'\battack\b|\bweapon\b', candidate):
-            return 'attack'
-        if re.search(r'\bstealth\b|\bsneak\b|\bhide\b', candidate):
-            return 'stealth'
-        if re.search(r'\bpersuasion\b|\bdeception\b|\bintimidation\b|\bcharisma\b', candidate):
-            return 'social'
-        if re.search(r'\binvestigation\b|\barcana\b|\bhistory\b|\bintelligence\b', candidate):
-            return 'lore'
-        if re.search(r'\bathletics\b|\bstrength\b', candidate):
-            return 'athletics'
-        if re.search(r'\bacrobatics\b|\bdexterity\b', candidate):
-            return 'mobility'
-        return fallback or 'check'
+        return TurnRollPolicy.roll_type_from_response(text, fallback)
 
     def _candidate_roll_gate_player_ids(self, session_id: int, campaign: Campaign, fallback_player_id: int | None) -> list[int]:
         active_ids = []
@@ -672,50 +430,28 @@ class TurnEngine:
 
         query = Player.query.filter_by(workspace_id=campaign.workspace_id)
         players = query.order_by(Player.created_at.asc(), Player.player_id.asc()).limit(12).all()
-        player_ids = [player.player_id for player in players if self._player_is_available_for_campaign(player, campaign)]
+        player_ids = [
+            player.player_id
+            for player in players
+            if TurnActionPolicy.player_is_available_for_campaign(player, campaign)
+        ]
         if player_ids:
             return list(dict.fromkeys(player_ids))
         return [fallback_player_id] if fallback_player_id else []
 
     def _roll_gate_for_turn(self, turn: DmTurn, campaign: Campaign, dm_response_text: str) -> dict | None:
         dm_requested_roll = self._dm_response_requests_roll(dm_response_text)
-        if not ((turn.requires_roll and turn.outcome_status == 'deferred') or dm_requested_roll):
-            return None
-        if turn.roll_value is not None:
-            return None
-        roll_type = self._roll_type_from_dm_response(dm_response_text, turn.rule_type)
-        rules_hint = safe_json_loads(turn.rules_hint, {})
-        rules_hint = rules_hint if isinstance(rules_hint, dict) else {}
-        pvp_payload = rules_hint.get('pvp') if isinstance(rules_hint.get('pvp'), dict) else {}
-        pvp_target_player_id = _coerce_player_id(pvp_payload.get('target_player_id')) if pvp_payload else None
-        if pvp_target_player_id:
-            required_player_ids = list(dict.fromkeys([player_id for player_id in [turn.player_id, pvp_target_player_id] if player_id]))
-            resolved_player_ids = [turn.player_id] if turn.roll_value is not None and turn.player_id else []
-            remaining_player_ids = [player_id for player_id in required_player_ids if player_id not in set(resolved_player_ids)]
-            return {
-                'scope': 'pvp_contest',
-                'rule_type': roll_type,
-                'required_player_ids': required_player_ids,
-                'resolved_player_ids': resolved_player_ids,
-                'remaining_player_ids': remaining_player_ids,
-                'target_player_id': pvp_target_player_id,
-            }
-        required_player_ids = [turn.player_id] if turn.player_id else []
-        scope = 'single_player'
-        if self._dm_response_requests_group_roll(dm_response_text):
-            group_ids = self._candidate_roll_gate_player_ids(turn.session_id, campaign, turn.player_id)
-            if len(group_ids) > 1:
-                required_player_ids = group_ids
-                scope = 'group'
-        if not required_player_ids:
-            return None
-        return {
-            'scope': scope,
-            'rule_type': roll_type,
-            'required_player_ids': required_player_ids,
-            'resolved_player_ids': [],
-            'remaining_player_ids': required_player_ids,
-        }
+        group_player_ids = (
+            self._candidate_roll_gate_player_ids(turn.session_id, campaign, turn.player_id)
+            if self._dm_response_requests_group_roll(dm_response_text)
+            else []
+        )
+        return TurnRollPolicy.build_roll_gate(
+            turn=turn,
+            dm_response_text=dm_response_text,
+            response_requests_roll=dm_requested_roll,
+            group_player_ids=group_player_ids,
+        )
 
     @staticmethod
     def _player_names_by_id(player_ids: list[int]) -> dict[int, str]:
@@ -757,108 +493,11 @@ class TurnEngine:
 
     @staticmethod
     def _current_scene_npc_target(session_obj: Session, target: dict) -> dict | None:
-        snapshot = safe_json_loads(session_obj.state_snapshot, {})
-        if not isinstance(snapshot, dict):
-            return None
-        scene = snapshot.get('currentScene') if isinstance(snapshot.get('currentScene'), dict) else {}
-        active_npc_ids = {
-            str(value).strip()
-            for value in scene.get('activeNpcIds', [])
-            if str(value or '').strip()
-        } if isinstance(scene.get('activeNpcIds'), list) else set()
-        scene_location_id = str(scene.get('locationId') or '').strip()
-        target_npc_id = str(target.get('npc_id') or target.get('npcId') or '').strip()
-        target_name = str(target.get('character_name') or target.get('name') or '').strip().lower()
-        npc_records = []
-        for key in ('knownNpcs', 'partyNpcs'):
-            value = snapshot.get(key)
-            if isinstance(value, list):
-                npc_records.extend([record for record in value if isinstance(record, dict)])
-        for npc in npc_records:
-            npc_id = str(npc.get('id') or npc.get('npcId') or '').strip()
-            npc_name = str(npc.get('name') or '').strip()
-            if target_npc_id and npc_id != target_npc_id:
-                continue
-            if not target_npc_id and target_name and npc_name.lower() != target_name:
-                continue
-            if not npc_id and not npc_name:
-                continue
-            if active_npc_ids and npc_id not in active_npc_ids:
-                continue
-            npc_location_id = str(npc.get('locationId') or '').strip()
-            if not active_npc_ids and npc_location_id and scene_location_id and npc_location_id != scene_location_id:
-                continue
-            return {
-                'npc_id': npc_id or target_npc_id,
-                'character_name': npc_name or target.get('character_name') or 'Scene NPC',
-                'player_name': str(npc.get('role') or npc.get('disposition') or 'Current scene NPC').strip(),
-            }
-        return None
+        return TurnActionPolicy.current_scene_npc_target(session_obj, target)
 
     @classmethod
     def _current_scene_npc_target_from_text(cls, session_obj: Session, text: str) -> dict | None:
-        snapshot = safe_json_loads(session_obj.state_snapshot, {})
-        if not isinstance(snapshot, dict):
-            return None
-        scene = snapshot.get('currentScene') if isinstance(snapshot.get('currentScene'), dict) else {}
-        active_npc_ids = {
-            str(value).strip()
-            for value in scene.get('activeNpcIds', [])
-            if str(value or '').strip()
-        } if isinstance(scene.get('activeNpcIds'), list) else set()
-        scene_location_id = str(scene.get('locationId') or '').strip()
-        npc_records: list[dict] = []
-        for key in ('knownNpcs', 'partyNpcs'):
-            value = snapshot.get(key)
-            if isinstance(value, list):
-                npc_records.extend([record for record in value if isinstance(record, dict)])
-        if not npc_records:
-            return None
-
-        normalized_text = str(text or '').lower()
-        explicit_target_terms = {normalized_text}
-        for match in _INTERACTION_TARGET_CUE_RE.finditer(text or ''):
-            target = str(match.group('target') or '').strip().lower()
-            if target:
-                explicit_target_terms.add(target)
-
-        matches: list[tuple[int, dict]] = []
-        for npc in npc_records:
-            npc_id = str(npc.get('id') or npc.get('npcId') or '').strip()
-            npc_name = str(npc.get('name') or '').strip()
-            if not npc_id or not npc_name:
-                continue
-            if active_npc_ids and npc_id not in active_npc_ids:
-                continue
-            npc_location_id = str(npc.get('locationId') or '').strip()
-            if not active_npc_ids and npc_location_id and scene_location_id and npc_location_id != scene_location_id:
-                continue
-            labels = [npc_name, npc_id.replace('_', ' ')]
-            aliases = npc.get('aliases') if isinstance(npc.get('aliases'), list) else []
-            labels.extend(str(alias) for alias in aliases if str(alias or '').strip())
-            best_score = 0
-            for label in labels:
-                label_text = str(label or '').strip().lower()
-                if not label_text:
-                    continue
-                label_pattern = cls._target_label_regex(label_text)
-                if label_pattern and re.search(label_pattern, normalized_text, re.IGNORECASE):
-                    best_score = max(best_score, 100 + len(label_text))
-                    continue
-                if any(label_text == term or label_text in term or term in label_text for term in explicit_target_terms):
-                    best_score = max(best_score, 50 + len(label_text))
-            if best_score:
-                matches.append((best_score, npc))
-
-        if not matches:
-            return None
-        matches.sort(key=lambda item: item[0], reverse=True)
-        npc = matches[0][1]
-        return {
-            'npc_id': str(npc.get('id') or npc.get('npcId') or '').strip(),
-            'character_name': str(npc.get('name') or 'Scene NPC').strip(),
-            'player_name': str(npc.get('role') or npc.get('disposition') or 'Current scene NPC').strip(),
-        }
+        return TurnActionPolicy.current_scene_npc_target_from_text(session_obj, text)
 
     def _prepare_interaction_target(self, command: TurnCommand, campaign: Campaign, session_obj: Session) -> bool:
         action_intent = command.action_intent
@@ -920,7 +559,7 @@ class TurnEngine:
 
         target_player_id = target.get('player_id') if isinstance(target, dict) else None
         target_player = db.session.get(Player, target_player_id) if isinstance(target_player_id, int) else None
-        if not self._player_is_available_for_campaign(target_player, campaign):
+        if not TurnActionPolicy.player_is_available_for_campaign(target_player, campaign):
             self.emit(
                 'error',
                 socket_error(
@@ -1026,10 +665,10 @@ class TurnEngine:
         return True
 
     def _harmful_pvp_target(self, command: TurnCommand, campaign: Campaign) -> Player | None:
-        if self._is_admin_override(command.action_intent):
+        if TurnActionPolicy.is_admin_override(command.action_intent):
             return None
         text = str(command.user_input or '')
-        if not _HARMFUL_PVP_RE.search(text):
+        if not TurnActionPolicy.contains_harmful_pvp_action(text):
             return None
         active_ids = self._active_player_ids_for_session(command.session_id)
         query = Player.query.filter_by(workspace_id=campaign.workspace_id, campaign_id=campaign.campaign_id)
@@ -1046,33 +685,17 @@ class TurnEngine:
             if target_player:
                 return target_player
         for player in candidates:
-            if self._harmful_text_targets_player(text, player):
+            if TurnActionPolicy.harmful_text_targets_player(text, player):
                 return player
         return None
 
     @staticmethod
     def _pvp_rules_payload(target_player: Player | None) -> dict | None:
-        if not target_player:
-            return None
-        return {
-            'allowed': True,
-            'requires_contested_resolution': True,
-            'target_player_id': target_player.player_id,
-            'target_character_name': target_player.character_name or target_player.name or f'Player {target_player.player_id}',
-        }
+        return TurnActionPolicy.pvp_rules_payload(target_player)
 
     @staticmethod
     def _apply_pvp_rule_hint(rule_hint: RuleHint, pvp_payload: dict | None) -> RuleHint:
-        if not pvp_payload:
-            return rule_hint
-        rule_hint.requires_roll = True
-        if not rule_hint.roll_type or rule_hint.roll_type == 'check':
-            rule_hint.roll_type = 'attack'
-        rule_hint.dc_hint = rule_hint.dc_hint or 'contested by target player or DM-set defense'
-        rule_hint.reason = f"Harmful PvP action targeting {pvp_payload['target_character_name']}; contested resolution required"
-        rule_hint.confidence = max(rule_hint.confidence or 0.0, 0.97)
-        rule_hint.outcome_deferred = True
-        return rule_hint
+        return TurnActionPolicy.apply_pvp_rule_hint(rule_hint, pvp_payload)
 
     @staticmethod
     def _pre_dm_roll_veto(pre_pipeline_result: dict, rules_hint_payload: dict) -> dict | None:
@@ -1232,7 +855,7 @@ class TurnEngine:
             )
             return
 
-        if not self._player_is_available_for_campaign(player, campaign):
+        if not TurnActionPolicy.player_is_available_for_campaign(player, campaign):
             self.emit('error', socket_error('campaign_mismatch', 'Player is not available in this campaign'))
             telemetry_event(
                 'socket.send_message.campaign_mismatch',
@@ -1258,7 +881,7 @@ class TurnEngine:
         pvp_payload = self._pvp_rules_payload(pvp_target)
 
         player_label = player.character_name
-        is_admin_override = self._is_admin_override(command.action_intent)
+        is_admin_override = TurnActionPolicy.is_admin_override(command.action_intent)
         rules_engine_enabled = bool(current_app.config.get('AIDM_RULES_ENGINE_ENABLED', True))
         rule_hint: RuleHint = (
             classify_player_action(command.user_input)
@@ -1626,7 +1249,12 @@ class TurnEngine:
             player_label=player_label,
             world_id=campaign.world_id,
             user_input=command.user_input,
-            model_user_input=self._model_input_for_action(command.user_input, command.action_intent, player_label, pvp_target),
+            model_user_input=TurnActionPolicy.model_input_for_action(
+                command.user_input,
+                command.action_intent,
+                player_label,
+                pvp_target,
+            ),
             rules_hint_payload=rules_hint_payload,
             resolved_turn_id=resolved_turn_id,
             pre_narration_effects=_pre_narration_effects(pre_pipeline_result, triggered_segments),
@@ -2008,7 +1636,7 @@ class TurnEngine:
             return {'ok': False}
 
     def _segment_state_payload(self, session_id: int, campaign: Campaign) -> tuple[dict, dict]:
-        return build_segment_state_payload(session_id, campaign)
+        return self.segment_service.segment_state_payload(session_id, campaign)
 
     def _activate_segments(
         self,
@@ -2017,24 +1645,11 @@ class TurnEngine:
         session_id: int,
         segments_to_activate: list[tuple[CampaignSegment, dict]],
     ) -> list[dict]:
-        triggered_segments: list[dict] = []
-        for seg, payload in segments_to_activate:
-            seg.is_triggered = True
-            triggered_segments.append(payload)
-            record_turn_event(
-                session_id=session_id,
-                campaign_id=turn.campaign_id,
-                turn_id=turn.turn_id,
-                player_id=turn.player_id,
-                event_type=SEGMENT_TRIGGERED_EVENT,
-                payload={
-                    'title': seg.title,
-                    'reason': payload.get('reason'),
-                    'segment_id': seg.segment_id,
-                    'metadata': {'turn_id': turn.turn_id, 'reason': payload.get('reason')},
-                },
-            )
-        return triggered_segments
+        return self.segment_service.activate_segments(
+            turn=turn,
+            session_id=session_id,
+            segments_to_activate=segments_to_activate,
+        )
 
     def _evaluate_segments(
         self,
@@ -2045,87 +1660,20 @@ class TurnEngine:
         allowed_trigger_types: set[str] | None,
         include_manual: bool,
     ) -> list[dict]:
-        triggered_segments: list[dict] = []
-        automatic_enabled = bool(current_app.config.get('AIDM_SEGMENT_EVALUATOR_ENABLED', True))
-        if not (automatic_enabled or (include_manual and command.manual_segment_ids)):
-            return triggered_segments
-
-        try:
-            segments_to_activate: list[tuple[CampaignSegment, dict]] = []
-            if automatic_enabled:
-                session_state_payload, campaign_state = self._segment_state_payload(command.session_id, campaign)
-                untriggered_segments = CampaignSegment.query.filter_by(
-                    campaign_id=command.campaign_id,
-                    is_triggered=False,
-                ).all()
-
-                for seg in untriggered_segments:
-                    trigger_type = parse_trigger_spec(seg.trigger_condition).trigger_type
-                    if trigger_type == 'manual':
-                        continue
-                    if allowed_trigger_types is not None and trigger_type not in allowed_trigger_types:
-                        continue
-                    matched, reason, trigger_spec = evaluate_segment_trigger(
-                        trigger_condition=seg.trigger_condition,
-                        player_message=command.user_input,
-                        session_state=session_state_payload,
-                        campaign_state=campaign_state,
-                    )
-                    if not matched:
-                        continue
-
-                    payload = segment_triggered_payload(
-                        segment_id=seg.segment_id,
-                        title=seg.title,
-                        description=seg.description,
-                        reason=reason,
-                        trigger_spec=trigger_spec,
-                    )
-                    segments_to_activate.append((seg, payload))
-
-            if include_manual and command.manual_segment_ids:
-                manual_segments = (
-                    CampaignSegment.query.filter(
-                        CampaignSegment.campaign_id == command.campaign_id,
-                        CampaignSegment.segment_id.in_(command.manual_segment_ids),
-                        CampaignSegment.is_triggered.is_(False),
-                    ).all()
-                )
-                for seg in manual_segments:
-                    payload = segment_triggered_payload(
-                        segment_id=seg.segment_id,
-                        title=seg.title,
-                        description=seg.description,
-                        reason='manual_override',
-                        trigger_spec={'trigger_type': 'manual', 'raw': {'source': 'client_override'}},
-                    )
-                    if not any(existing.segment_id == seg.segment_id for existing, _payload in segments_to_activate):
-                        segments_to_activate.append((seg, payload))
-
-            triggered_segments = self._activate_segments(
-                turn=turn,
-                session_id=command.session_id,
-                segments_to_activate=segments_to_activate,
-            )
-            update_campaign_pack_progress(
+        return self.segment_service.evaluate_segments(
+            turn=turn,
+            campaign=campaign,
+            request=SegmentEvaluationRequest(
                 session_id=command.session_id,
                 campaign_id=command.campaign_id,
-                triggered_segments=triggered_segments,
-            )
-            commit_with_retry(label='segment evaluation')
-            if triggered_segments:
-                telemetry_metric('socket.segment_triggered_total', len(triggered_segments))
-        except Exception as exc:
-            db.session.rollback()
-            logger.error('Segment evaluation failed: %s', str(exc))
-            telemetry_event(
-                'socket.segment_evaluation_failed',
-                payload={'session_id': command.session_id, 'campaign_id': command.campaign_id, 'error': str(exc)},
-                severity='error',
-            )
-            return []
-
-        return triggered_segments
+                player_message=command.user_input,
+                manual_segment_ids=frozenset(command.manual_segment_ids),
+            ),
+            allowed_trigger_types=allowed_trigger_types,
+            include_manual=include_manual,
+            state_payload_fn=self._segment_state_payload,
+            activate_segments_fn=self._activate_segments,
+        )
 
     def _narrate_turn(
         self,
@@ -2401,7 +1949,7 @@ class TurnEngine:
         return isinstance(remaining_player_ids, list) and bool(remaining_player_ids)
 
     def _advance_structured_turn_if_ready(self, *, turn_obj: DmTurn, action_intent: dict | None) -> None:
-        if self._is_admin_override(action_intent):
+        if TurnActionPolicy.is_admin_override(action_intent):
             return
         if self._turn_has_unresolved_roll_gate(turn_obj):
             return

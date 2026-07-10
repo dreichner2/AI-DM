@@ -7,7 +7,6 @@ from flask_socketio import emit
 
 from aidm_server.capabilities import required_socket_capability
 from aidm_server.llm import query_dm_function_stream
-from aidm_server.logging_context import clear_logging_context, set_logging_context
 from aidm_server.database import db
 from aidm_server.models import DmTurn
 from aidm_server.socket_access import (
@@ -20,6 +19,7 @@ from aidm_server.socket_clarification import (
     register_socket_clarification_events,
 )
 from aidm_server.socket_contracts import socket_error_payload as socket_error, validate_send_message_payload
+from aidm_server.socket_message import SocketMessageDependencies, register_socket_message_events
 from aidm_server.socket_music import (
     MUSIC_MAX_POSITION_SECONDS,
     MUSIC_TRACK_ID_RE,
@@ -32,16 +32,17 @@ from aidm_server.socket_music import (
 from aidm_server.socket_presence import SocketPresenceDependencies, register_socket_presence_events
 from aidm_server.socket_runtime import SocketRuntime
 from aidm_server.socket_state import SocketState
-from aidm_server.telemetry import telemetry_event, telemetry_metric
+from aidm_server.socket_turn_control import (
+    SocketTurnControlDependencies,
+    register_socket_turn_control_events,
+)
 from aidm_server.socket_typing import SocketTypingDependencies, register_socket_typing_events
+from aidm_server.telemetry import telemetry_event
 from aidm_server.turn_control import (
-    TURN_CONTROL_MODES,
-    TURN_CONTROL_SOURCES,
     set_session_turn_control,
     turn_control_update_payload,
 )
-from aidm_server.turn_engine import TurnCommand, TurnEngine
-from aidm_server.validation import coerce_int
+from aidm_server.turn_engine import TurnEngine
 from aidm_server.workspace_access import get_player as workspace_player, get_session as workspace_session
 
 
@@ -204,130 +205,22 @@ def register_socketio_events(socketio):
         ),
     )
 
-    @socketio.on('set_turn_control')
-    def handle_set_turn_control(data):
-        _set_socket_context('set_turn_control', data if isinstance(data, dict) else None)
-        try:
-            workspace_id = _socket_workspace_id(data_payload=data)
-            if not workspace_id:
-                emit('error', socket_error('unauthorized', 'Missing or invalid workspace token.'))
-                telemetry_event('socket.turn_control.unauthorized', payload={'sid': request.sid}, severity='warning')
-                return
-            if not isinstance(data, dict):
-                emit('error', socket_error('validation_error', 'Expected object payload for set_turn_control.'))
-                telemetry_event('socket.turn_control.validation_error', payload={'sid': request.sid}, severity='warning')
-                return
-
-            if _socket_capability_forbidden('set_turn_control'):
-                return
-
-            session_id = coerce_int(data.get('session_id') or data.get('sessionId'))
-            player_id = coerce_int(data.get('player_id') or data.get('playerId'))
-            mode = str(data.get('mode') or 'free').strip().lower()
-            source = str(data.get('source') or 'manual').strip().lower()
-            active_player_id = coerce_int(data.get('active_player_id') or data.get('activePlayerId'))
-            set_logging_context(session_id=session_id)
-
-            if not session_id or not player_id:
-                emit('error', socket_error('validation_error', 'session_id and player_id are required.'))
-                telemetry_event('socket.turn_control.validation_error', payload={'sid': request.sid}, severity='warning')
-                return
-
-            connection_record = socket_state.connection(request.sid)
-            bound_session_id = coerce_int(connection_record.get('session_id')) if connection_record else None
-            bound_player_id = coerce_int(connection_record.get('player_id')) if connection_record else None
-            if bound_session_id != session_id or bound_player_id != player_id:
-                emit(
-                    'error',
-                    socket_error(
-                        'player_identity_mismatch',
-                        'This socket can only change turn control for the player and session it joined with.',
-                    ),
-                )
-                telemetry_event(
-                    'socket.turn_control.player_identity_mismatch',
-                    payload={
-                        'sid': request.sid,
-                        'session_id': session_id,
-                        'player_id': player_id,
-                        'bound_session_id': bound_session_id,
-                        'bound_player_id': bound_player_id,
-                    },
-                    severity='warning',
-                )
-                return
-
-            session_obj = workspace_session(session_id, workspace_id)
-            if not session_obj:
-                emit('error', socket_error('session_not_found', 'Session not found.'))
-                telemetry_event(
-                    'socket.turn_control.session_not_found',
-                    payload={'sid': request.sid, 'session_id': session_id},
-                    severity='warning',
-                )
-                return
-
-            player = _workspace_player_for_socket(player_id, workspace_id)
-            if not player or player.campaign_id != session_obj.campaign_id:
-                emit('error', socket_error('invalid_player', 'Invalid player ID.'))
-                telemetry_event(
-                    'socket.turn_control.invalid_player',
-                    payload={'sid': request.sid, 'session_id': session_id, 'player_id': player_id},
-                    severity='warning',
-                )
-                return
-
-            if mode not in TURN_CONTROL_MODES:
-                emit('error', socket_error('validation_error', 'Turn mode must be free, spotlight, or structured.'))
-                telemetry_event(
-                    'socket.turn_control.invalid_mode',
-                    payload={'sid': request.sid, 'session_id': session_id, 'mode': mode},
-                    severity='warning',
-                )
-                return
-
-            if source not in TURN_CONTROL_SOURCES or source in {'ai', 'system'}:
-                emit('error', socket_error('validation_error', 'Turn control source must be auto, manual, or admin.'))
-                telemetry_event(
-                    'socket.turn_control.invalid_source',
-                    payload={'sid': request.sid, 'session_id': session_id, 'source': source},
-                    severity='warning',
-                )
-                return
-
-            if mode != 'free':
-                active_player_id = active_player_id or player_id
-                active_player = _workspace_player_for_socket(active_player_id, workspace_id)
-                if not active_player or active_player.campaign_id != session_obj.campaign_id:
-                    emit('error', socket_error('invalid_player', 'Active turn player does not belong to this campaign.'))
-                    telemetry_event(
-                        'socket.turn_control.invalid_active_player',
-                        payload={
-                            'sid': request.sid,
-                            'session_id': session_id,
-                            'active_player_id': active_player_id,
-                        },
-                        severity='warning',
-                    )
-                    return
-
-            turn_control = set_session_turn_control(
-                session_obj,
-                mode=mode,
-                active_player_id=active_player_id,
-                updated_by_player_id=player_id,
-                source=source,
-            )
-            db.session.commit()
-            emit('turn_control_updated', turn_control_update_payload(session_id, turn_control), room=str(session_id))
-            telemetry_metric('socket.turn_control.updated_total', 1)
-        except Exception as exc:
-            db.session.rollback()
-            logger.exception('Turn control update failed: %s', str(exc))
-            emit('error', socket_error('server_error', 'Failed to update turn control.'))
-            telemetry_event('socket.turn_control.error', payload={'sid': request.sid, 'error': str(exc)}, severity='error')
-        finally:
-            clear_logging_context()
+    register_socket_turn_control_events(
+        socketio,
+        SocketTurnControlDependencies(
+            state=socket_state,
+            logger=logger,
+            set_socket_context=lambda *args, **kwargs: _set_socket_context(*args, **kwargs),
+            socket_workspace_id=lambda *args, **kwargs: _socket_workspace_id(*args, **kwargs),
+            socket_capability_forbidden=lambda event_name: _socket_capability_forbidden(event_name),
+            workspace_session=lambda session_id, workspace_id: workspace_session(session_id, workspace_id),
+            workspace_player=lambda player_id, workspace_id: _workspace_player_for_socket(player_id, workspace_id),
+            set_turn_control=set_session_turn_control,
+            turn_control_payload=turn_control_update_payload,
+            commit=lambda: db.session.commit(),
+            rollback=lambda: db.session.rollback(),
+        ),
+    )
 
     register_socket_music_events(
         socketio,
@@ -373,151 +266,44 @@ def register_socketio_events(socketio):
         ),
     )
 
-    @socketio.on('send_message')
-    def handle_send_message(data):
-        _set_socket_context('send_message', data if isinstance(data, dict) else None)
-        try:
-            telemetry_metric('socket.messages_total', 1)
-            workspace_id = _socket_workspace_id(data_payload=data)
-            if not workspace_id:
-                emit('error', socket_error('unauthorized', 'Missing or invalid workspace token.'))
-                telemetry_event('socket.send_message.unauthorized', payload={'sid': request.sid}, severity='warning')
-                return
-
-            if _socket_capability_forbidden('send_message'):
-                return
-
-            message_payload, contract_error = validate_send_message_payload(data)
-            if contract_error:
-                emit(
-                    'error',
-                    socket_error(
-                        contract_error.error_code,
-                        contract_error.message,
-                        contract_error.details,
-                    ),
-                )
-                telemetry_event(
-                    f'socket.send_message.{contract_error.telemetry_suffix}',
-                    payload={'sid': request.sid, **contract_error.telemetry_payload},
-                    severity='warning',
-                )
-                return
-            if message_payload is None:
-                emit('error', socket_error('validation_error', 'Invalid message payload types.'))
-                telemetry_event('socket.send_message.validation_error', payload={'sid': request.sid}, severity='warning')
-                return
-
-            session_id = message_payload.session_id
-            campaign_id = message_payload.campaign_id
-            player_id = message_payload.player_id
-            set_logging_context(session_id=session_id)
-
-            connection_record = socket_state.connection(request.sid)
-            bound_session_id = coerce_int(connection_record.get('session_id')) if connection_record else None
-            bound_player_id = coerce_int(connection_record.get('player_id')) if connection_record else None
-            if bound_session_id != session_id or bound_player_id != player_id:
-                emit(
-                    'error',
-                    socket_error(
-                        'player_identity_mismatch',
-                        'This socket can only submit turns for the player and session it joined with.',
-                        {
-                            'bound_session_id': bound_session_id,
-                            'bound_player_id': bound_player_id,
-                        },
-                    ),
-                )
-                telemetry_event(
-                    'socket.send_message.player_identity_mismatch',
-                    payload={
-                        'sid': request.sid,
-                        'session_id': session_id,
-                        'player_id': player_id,
-                        'bound_session_id': bound_session_id,
-                        'bound_player_id': bound_player_id,
-                    },
-                    severity='warning',
-                )
-                return
-
-            if _set_player_typing(session_id, player_id, request.sid, False):
-                emit('active_players', _active_player_payloads(session_id), room=str(session_id))
-
-            session_obj = workspace_session(session_id, workspace_id)
-            if not session_obj or session_obj.campaign_id != campaign_id:
-                emit('error', socket_error('session_not_found', 'Session not found.'))
-                telemetry_event(
-                    'socket.send_message.session_not_found',
-                    payload={'sid': request.sid, 'session_id': session_id, 'campaign_id': campaign_id},
-                    severity='warning',
-                )
-                return
-
-            player = _workspace_player_for_socket(player_id, workspace_id)
-            if not player:
-                emit('error', socket_error('invalid_player', 'Invalid player ID'))
-                telemetry_event(
-                    'socket.send_message.invalid_player',
-                    payload={'sid': request.sid, 'player_id': player_id, 'campaign_id': campaign_id},
-                    severity='warning',
-                )
-                return
-            if player.campaign_id != campaign_id:
-                emit('error', socket_error('campaign_mismatch', 'Player does not belong to this campaign.'))
-                telemetry_event(
-                    'socket.send_message.campaign_mismatch',
-                    payload={'sid': request.sid, 'player_id': player_id, 'campaign_id': campaign_id},
-                    severity='warning',
-                )
-                return
-
-            limit_result = _socket_rate_limiter().allow(_socket_rate_key(workspace_id, session_id, player_id))
-            if not limit_result.allowed:
-                _emit_socket_rate_limited('socket.send_message', session_id, limit_result.reset_in_seconds)
-                return
-
-            if message_payload.action_intent and message_payload.action_intent.get('kind') == 'admin':
-                admin_authorization = authorize_admin_socket_action(
-                    configured_passcode=current_app.config.get('AIDM_ADMIN_PASSCODE'),
-                    data=data,
-                    workspace_id=workspace_id,
-                    remote_address=request.remote_addr or request.environ.get('REMOTE_ADDR') or 'unknown',
-                    allow_rate_key=_socket_rate_limiter().allow,
-                    passcode_validator=_admin_passcode_is_valid,
-                )
-                if admin_authorization.error_code == 'rate_limited':
-                    _emit_socket_rate_limited(
-                        'socket.send_message.admin_passcode',
-                        session_id,
-                        admin_authorization.reset_in_seconds or 0,
-                    )
-                    return
-                if not admin_authorization.allowed:
-                    emit('error', socket_error(admin_authorization.error_code, admin_authorization.message))
-                    telemetry_event(
-                        f'socket.send_message.{admin_authorization.error_code}',
-                        payload={'sid': request.sid},
-                        severity='warning',
-                    )
-                    return
-
-            engine = _new_turn_engine(socketio)
-            engine.process(
-                TurnCommand(
-                    sid=request.sid,
-                    session_id=session_id,
-                    campaign_id=campaign_id,
-                    world_id=message_payload.world_id,
-                    player_id=player_id,
-                    user_input=message_payload.user_input,
-                    manual_segment_ids=message_payload.manual_segment_ids,
-                    action_intent=message_payload.action_intent,
-                    client_message_id=message_payload.client_message_id,
-                )
-            )
-        finally:
-            clear_logging_context()
+    register_socket_message_events(
+        socketio,
+        SocketMessageDependencies(
+            state=socket_state,
+            set_socket_context=lambda *args, **kwargs: _set_socket_context(*args, **kwargs),
+            socket_workspace_id=lambda *args, **kwargs: _socket_workspace_id(*args, **kwargs),
+            socket_capability_forbidden=lambda event_name: _socket_capability_forbidden(event_name),
+            validate_payload=validate_send_message_payload,
+            set_player_typing=lambda session_id, player_id, sid, is_typing: _set_player_typing(
+                session_id,
+                player_id,
+                sid,
+                is_typing,
+            ),
+            emit_active_players=lambda session_id: emit(
+                'active_players',
+                _active_player_payloads(session_id),
+                room=str(session_id),
+            ),
+            workspace_session=lambda session_id, workspace_id: workspace_session(session_id, workspace_id),
+            workspace_player=lambda player_id, workspace_id: _workspace_player_for_socket(player_id, workspace_id),
+            rate_key=lambda workspace_id, session_id, player_id: _socket_rate_key(
+                workspace_id,
+                session_id,
+                player_id,
+            ),
+            allow_rate_key=lambda key: _socket_rate_limiter().allow(key),
+            emit_rate_limited=lambda telemetry_prefix, session_id, reset_in_seconds: _emit_socket_rate_limited(
+                telemetry_prefix,
+                session_id,
+                reset_in_seconds,
+            ),
+            configured_admin_passcode=lambda: current_app.config.get('AIDM_ADMIN_PASSCODE'),
+            authorize_admin_action=authorize_admin_socket_action,
+            passcode_validator=lambda data: _admin_passcode_is_valid(data),
+            process_turn=lambda command: _new_turn_engine(socketio).process(command),
+        ),
+    )
 
     register_socket_clarification_events(
         socketio,
