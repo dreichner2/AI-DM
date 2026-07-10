@@ -214,6 +214,7 @@ def test_llm_config_exposes_provider_capabilities(client, monkeypatch, tmp_path)
     codex_executable.write_text('#!/bin/sh\n', encoding='utf-8')
     codex_executable.chmod(0o755)
     monkeypatch.setenv('AIDM_CODEX_EXECUTABLE', str(codex_executable))
+    monkeypatch.setenv('AIDM_CODEX_ACCESS_TOKEN', 'codex-test-token')
     monkeypatch.delenv('AIDM_DEEPSEEK_API_KEY', raising=False)
     monkeypatch.delenv('DEEPSEEK_API_KEY', raising=False)
 
@@ -237,6 +238,10 @@ def test_llm_config_exposes_provider_capabilities(client, monkeypatch, tmp_path)
     assert [model['reasoning_effort'] for model in codex_models] == ['low', 'medium', 'high', 'xhigh']
     assert providers['codex_cli']['configured'] is True
     assert providers['codex_cli']['capabilities']['streaming'] is True
+    assert providers['codex_cli']['capabilities']['progressive_streaming'] is False
+    assert providers['codex_cli']['capabilities']['isolated_runtime'] is True
+    assert providers['codex_cli']['capabilities']['host_tool_access'] is False
+    assert providers['codex_cli']['capabilities']['tool_event_policy'] == 'fail_closed'
     assert providers['codex_cli']['capabilities']['oauth_cli'] is True
     assert providers['nvidia']['configured'] is True
     assert providers['nvidia']['capabilities']['default_timeout_seconds'] >= 1
@@ -252,6 +257,7 @@ def test_llm_config_marks_codex_configured_from_mac_app_bundle(client, monkeypat
     app_executable.write_text('#!/bin/sh\n', encoding='utf-8')
     app_executable.chmod(0o755)
     monkeypatch.delenv('AIDM_CODEX_EXECUTABLE', raising=False)
+    monkeypatch.setenv('AIDM_CODEX_ACCESS_TOKEN', 'codex-test-token')
     monkeypatch.setattr(codex_runtime.shutil, 'which', lambda executable: None)
     monkeypatch.setattr(codex_runtime, 'DEFAULT_CODEX_APP_EXECUTABLES', (app_executable,))
 
@@ -268,6 +274,7 @@ def test_llm_config_update_accepts_codex_reasoning_effort_model(client, monkeypa
     codex_executable.write_text('#!/bin/sh\n', encoding='utf-8')
     codex_executable.chmod(0o755)
     monkeypatch.setenv('AIDM_CODEX_EXECUTABLE', str(codex_executable))
+    monkeypatch.setenv('AIDM_CODEX_ACCESS_TOKEN', 'codex-test-token')
     monkeypatch.delenv('AIDM_CODEX_REASONING_EFFORT', raising=False)
     monkeypatch.delenv('AIDM_CODEX_TIMEOUT_SECONDS', raising=False)
 
@@ -290,6 +297,7 @@ def test_llm_config_update_normalizes_legacy_codex_model(client, monkeypatch, tm
     codex_executable.write_text('#!/bin/sh\n', encoding='utf-8')
     codex_executable.chmod(0o755)
     monkeypatch.setenv('AIDM_CODEX_EXECUTABLE', str(codex_executable))
+    monkeypatch.setenv('AIDM_CODEX_ACCESS_TOKEN', 'codex-test-token')
 
     response = client.patch(
         '/api/llm/config',

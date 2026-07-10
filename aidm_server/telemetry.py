@@ -18,10 +18,56 @@ from flask import current_app, has_app_context
 logger = logging.getLogger(__name__)
 _PROMETHEUS_NAME_RE = re.compile(r'[^a-zA-Z0-9_:]')
 _PROMETHEUS_LABEL_RE = re.compile(r'[^a-zA-Z0-9_]')
+_EXTERNAL_EVENT_NAME = 'auth.preauth_rate_limited'
+_EXTERNAL_EVENT_SEVERITIES = frozenset({'info', 'warning', 'error'})
+_EXTERNAL_ENVIRONMENTS = frozenset({'local', 'development', 'test', 'staging', 'production'})
+_EXTERNAL_PAYLOAD_FIELDS = frozenset({'action', 'dimension', 'reset_in_seconds'})
+_PREAUTH_ACTIONS = frozenset(
+    {
+        'account-legacy-claim',
+        'account-login',
+        'workspace-password',
+        'workspace-token',
+    }
+)
+_PREAUTH_DIMENSIONS = frozenset({'ip-target', 'ip', 'target'})
+_MAX_EXTERNAL_RESET_SECONDS = 24 * 60 * 60
+_EXTERNAL_MAX_ATTEMPTS = 3
+_EXTERNAL_RETRY_BACKOFF_SECONDS = 0.1
+_EXTERNAL_RETRY_STATUS_CODES = frozenset({408, 425, 429})
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _privacy_safe_preauth_payload(payload: object) -> tuple[dict[str, object] | None, int]:
+    """Return the complete allowlist-only pre-auth event payload or reject it."""
+    if not isinstance(payload, dict):
+        return None, 0
+    dropped_fields = len(set(payload).difference(_EXTERNAL_PAYLOAD_FIELDS))
+    action = payload.get('action')
+    dimension = payload.get('dimension')
+    reset_in_seconds = payload.get('reset_in_seconds')
+    if not (isinstance(action, str) and action in _PREAUTH_ACTIONS):
+        return None, dropped_fields
+    if not (isinstance(dimension, str) and dimension in _PREAUTH_DIMENSIONS):
+        return None, dropped_fields
+    if not (
+        isinstance(reset_in_seconds, int)
+        and not isinstance(reset_in_seconds, bool)
+        and 1 <= reset_in_seconds <= _MAX_EXTERNAL_RESET_SECONDS
+    ):
+        return None, dropped_fields
+    return {
+        'action': action,
+        'dimension': dimension,
+        'reset_in_seconds': reset_in_seconds,
+    }, dropped_fields
+
+
+def _retryable_external_status(status_code: int) -> bool:
+    return status_code in _EXTERNAL_RETRY_STATUS_CODES or 500 <= status_code < 600
 
 
 def _prometheus_name(value: str) -> str:
@@ -144,12 +190,14 @@ class TelemetryClient:
         api_key: str | None,
         timeout_seconds: int,
         max_queue_size: int,
+        environment: str | None = None,
     ):
         self.enabled = bool(enabled)
         self.endpoint = (endpoint or '').strip()
         self.api_key = (api_key or '').strip() or None
         self.timeout_seconds = max(1, int(timeout_seconds))
         self.max_queue_size = max(1, int(max_queue_size))
+        self.environment = (environment or '').strip().lower()
 
         self._lock = Lock()
         self._counters = Counter()
@@ -187,6 +235,22 @@ class TelemetryClient:
         if not (self.enabled and self.endpoint):
             return
 
+        if event_name != _EXTERNAL_EVENT_NAME:
+            self.record_metric('telemetry.external.filtered', 1)
+            return
+
+        safe_payload, dropped_fields = _privacy_safe_preauth_payload(payload)
+        if dropped_fields:
+            self.record_metric('telemetry.external.fields_dropped', dropped_fields)
+        if (
+            safe_payload is None
+            or not isinstance(severity, str)
+            or severity not in _EXTERNAL_EVENT_SEVERITIES
+        ):
+            self.record_metric('telemetry.external.rejected', 1)
+            logger.warning('Telemetry event rejected by outbound privacy policy')
+            return
+
         headers = {'Content-Type': 'application/json'}
         if self.api_key:
             headers['Authorization'] = f'Bearer {self.api_key}'
@@ -194,9 +258,10 @@ class TelemetryClient:
         event_body = {
             'event': event_name,
             'severity': severity,
-            'payload': payload,
+            'payload': safe_payload,
             'ts': _utc_now_iso(),
             'service': 'ai-dm',
+            'env': self.environment if self.environment in _EXTERNAL_ENVIRONMENTS else 'unknown',
         }
 
         if self._delivery_queue is None:
@@ -247,8 +312,8 @@ class TelemetryClient:
     def shutdown(self, timeout_seconds: float | None = None):
         if self._delivery_queue is None or self._delivery_thread is None:
             return
-        self.flush(timeout_seconds=timeout_seconds)
         self._stop_event.set()
+        self.flush(timeout_seconds=timeout_seconds)
         self._delivery_thread.join(timeout=timeout_seconds)
 
     @staticmethod
@@ -272,22 +337,49 @@ class TelemetryClient:
                 self._delivery_queue.task_done()
 
     def _deliver_event(self, *, event_name: str, event_body: dict, headers: dict[str, str]):
-        try:
-            response = requests.post(
-                self.endpoint,
-                json=event_body,
-                headers=headers,
-                timeout=self.timeout_seconds,
-            )
-            status_code = int(getattr(response, 'status_code', 0) or 0)
-            if 200 <= status_code < 300:
-                self.record_metric('telemetry.external.sent', 1)
+        for attempt in range(1, _EXTERNAL_MAX_ATTEMPTS + 1):
+            if attempt > 1:
+                self.record_metric('telemetry.external.retries', 1)
+            retryable = False
+            try:
+                response = requests.post(
+                    self.endpoint,
+                    json=event_body,
+                    headers=headers,
+                    timeout=self.timeout_seconds,
+                )
+                status_code = int(getattr(response, 'status_code', 0) or 0)
+                if 200 <= status_code < 300:
+                    self.record_metric('telemetry.external.sent', 1)
+                    return
+                retryable = _retryable_external_status(status_code)
+                logger.warning(
+                    'Telemetry delivery failed for event=%s: status=%s attempt=%s/%s',
+                    event_name,
+                    status_code,
+                    attempt,
+                    _EXTERNAL_MAX_ATTEMPTS,
+                )
+            except Exception:
+                retryable = True
+                logger.warning(
+                    'Telemetry delivery failed for event=%s: request exception attempt=%s/%s',
+                    event_name,
+                    attempt,
+                    _EXTERNAL_MAX_ATTEMPTS,
+                )
+
+            if not retryable or attempt == _EXTERNAL_MAX_ATTEMPTS:
+                self.record_metric('telemetry.external.failed', 1)
+                if retryable:
+                    self.record_metric('telemetry.external.retry_exhausted', 1)
                 return
-            self.record_metric('telemetry.external.failed', 1)
-            logger.warning('Telemetry delivery failed for event=%s: status=%s', event_name, status_code)
-        except Exception as exc:
-            self.record_metric('telemetry.external.failed', 1)
-            logger.warning('Telemetry delivery failed for event=%s: %s', event_name, str(exc))
+
+            backoff_seconds = _EXTERNAL_RETRY_BACKOFF_SECONDS * attempt
+            if self._stop_event.wait(backoff_seconds):
+                self.record_metric('telemetry.external.retry_cancelled', 1)
+                self.record_metric('telemetry.external.failed', 1)
+                return
 
 
 def init_telemetry(app):
@@ -297,6 +389,7 @@ def init_telemetry(app):
         api_key=app.config.get('AIDM_TELEMETRY_API_KEY'),
         timeout_seconds=app.config.get('AIDM_TELEMETRY_TIMEOUT_SECONDS', 2),
         max_queue_size=app.config.get('AIDM_TELEMETRY_MAX_QUEUE_SIZE', 1000),
+        environment=app.config.get('AIDM_ENV'),
     )
 
 

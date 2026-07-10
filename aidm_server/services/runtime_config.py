@@ -34,6 +34,14 @@ def _config_value(name: str) -> str | None:
     return os.getenv(name)
 
 
+def _codex_auth_configured() -> bool:
+    if _config_value('AIDM_CODEX_ACCESS_TOKEN') or os.getenv('CODEX_ACCESS_TOKEN'):
+        return True
+    configured_home = _config_value('AIDM_CODEX_HOME') or os.getenv('CODEX_HOME')
+    codex_home = Path(configured_home).expanduser() if configured_home else Path.home() / '.codex'
+    return (codex_home / 'auth.json').is_file()
+
+
 def latest_llm_turn_payload(*, workspace_id: str | None = None) -> dict | None:
     query = DmTurn.query.filter(DmTurn.llm_provider.isnot(None), DmTurn.llm_model.isnot(None))
     if workspace_id is not None:
@@ -67,7 +75,7 @@ def provider_configured(provider_id: str) -> bool:
         return True
     if provider_id in {'codex', 'codex_cli'}:
         executable = _config_value('AIDM_CODEX_EXECUTABLE') or 'codex'
-        return codex_executable_configured(executable)
+        return codex_executable_configured(executable) and _codex_auth_configured()
     return False
 
 

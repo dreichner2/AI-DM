@@ -218,6 +218,26 @@ def _validate_selected_provider(
         executable = str(env.get('AIDM_CODEX_EXECUTABLE') or 'codex').strip()
         if _looks_placeholder(executable) or not codex_executable_configured(executable):
             report.error('AIDM_LLM_PROVIDER=codex_cli requires an available AIDM_CODEX_EXECUTABLE or codex on PATH.')
+        access_token_key, access_token = _selected_provider_credential(
+            env,
+            ('AIDM_CODEX_ACCESS_TOKEN', 'CODEX_ACCESS_TOKEN'),
+        )
+        if access_token:
+            if _looks_placeholder(access_token):
+                report.error(f'{access_token_key} still looks like a placeholder.')
+        else:
+            codex_home_raw = str(env.get('AIDM_CODEX_HOME') or '').strip()
+            if not codex_home_raw:
+                report.error(
+                    'AIDM_LLM_PROVIDER=codex_cli requires AIDM_CODEX_ACCESS_TOKEN or a dedicated '
+                    'persistent AIDM_CODEX_HOME containing auth.json.'
+                )
+            elif _looks_placeholder(codex_home_raw):
+                report.error('AIDM_CODEX_HOME still looks like a placeholder.')
+            else:
+                codex_home = Path(codex_home_raw).expanduser()
+                if not codex_home.is_absolute():
+                    report.error('AIDM_CODEX_HOME must be an absolute path.')
         return
 
     credential_key, credential = _selected_provider_credential(env, PROVIDER_CREDENTIAL_KEYS[provider])

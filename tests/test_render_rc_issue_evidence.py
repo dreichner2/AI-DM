@@ -203,6 +203,7 @@ def test_inspect_source_archive_tracks_large_lfs_members(tmp_path, monkeypatch):
     assert result['status'] == 'passed'
     assert result['large_member_count'] == 1
     assert result['large_untracked'] == []
+    assert result['large_members'][0]['project_path'] == 'aidm_frontend/public/music/theme.mp3'
     assert result['large_members'][0]['lfs_tracked'] is True
 
 

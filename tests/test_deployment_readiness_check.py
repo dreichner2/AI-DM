@@ -169,6 +169,49 @@ def test_validate_environment_requires_selected_provider_credentials(provider, o
     assert any(credential_name in error for error in report.errors)
 
 
+def test_validate_environment_requires_codex_runtime_and_dedicated_auth(tmp_path):
+    codex_executable = tmp_path / 'codex'
+    codex_executable.write_text('#!/bin/sh\n', encoding='utf-8')
+    codex_executable.chmod(0o755)
+    codex_home = tmp_path / 'aidm-codex'
+    codex_home.mkdir()
+    (codex_home / 'auth.json').write_text('{"auth":"test"}', encoding='utf-8')
+
+    ready_report = validate_environment(
+        _ready_env(
+            AIDM_LLM_PROVIDER='codex_cli',
+            AIDM_CODEX_EXECUTABLE=str(codex_executable),
+            AIDM_CODEX_HOME=str(codex_home),
+        )
+    )
+    missing_home_report = validate_environment(
+        _ready_env(
+            AIDM_LLM_PROVIDER='codex_cli',
+            AIDM_CODEX_EXECUTABLE=str(codex_executable),
+            AIDM_CODEX_HOME='',
+        )
+    )
+    relative_home_report = validate_environment(
+        _ready_env(
+            AIDM_LLM_PROVIDER='codex_cli',
+            AIDM_CODEX_EXECUTABLE=str(codex_executable),
+            AIDM_CODEX_HOME='relative/codex-home',
+        )
+    )
+    access_token_report = validate_environment(
+        _ready_env(
+            AIDM_LLM_PROVIDER='codex_cli',
+            AIDM_CODEX_EXECUTABLE=str(codex_executable),
+            AIDM_CODEX_ACCESS_TOKEN='dedicated-test-token',
+        )
+    )
+
+    assert ready_report.ok
+    assert any('dedicated persistent AIDM_CODEX_HOME' in error for error in missing_home_report.errors)
+    assert any('must be an absolute path' in error for error in relative_home_report.errors)
+    assert access_token_report.ok
+
+
 def test_validate_environment_requires_cookie_auth_or_documented_exception():
     missing_cookie_report = validate_environment(
         _ready_env(

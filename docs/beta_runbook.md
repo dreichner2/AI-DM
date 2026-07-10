@@ -166,6 +166,23 @@ The per-session turn coordinator defaults to an in-memory store for local single
 - `AIDM_TELEMETRY_ENABLED=true` with a working external endpoint while the temporary
   target-lockout acceptance below is active. The acceptance cannot be signed without
   delivery evidence for the required target-denial alerts.
+- Only `auth.preauth_rate_limited` events leave the process. They retain the stable
+  `event`, `severity`, nested `payload`, `ts`, and `service` fields, add `env`, and
+  require a complete privacy-safe payload containing only action, dimension, and
+  bounded reset seconds. Extra fields are stripped; missing or invalid required fields
+  reject delivery. Every other event remains local and increments
+  `telemetry.external.filtered`, so raw IPs, request/socket/record IDs, previews,
+  exception text, and caller-controlled request IDs are never sent externally.
+- Delivery retries at most twice after request exceptions, HTTP 408/425/429, or 5xx
+  responses using short shutdown-aware backoff. Other 4xx responses are not retried,
+  and logs never include response bodies, authorization tokens, or exception text.
+- For Better Stack HTTP Logs, use the source's ingest-host root as
+  `AIDM_TELEMETRY_ENDPOINT` and its dedicated source token as
+  `AIDM_TELEMETRY_API_KEY`. Alert on
+  `event="auth.preauth_rate_limited"`, `payload.dimension="target"`, and either
+  `payload.action="account-legacy-claim"` or
+  `payload.action="workspace-password"`. Route any match to the named alert owner
+  and retain the source receipt plus alert-test evidence with the release packet.
 - `AIDM_SECURITY_HEADERS_ENABLED=true` so Flask-served responses include CSP and standard browser hardening headers.
 
 ## Proposed Pre-Auth Target-Lockout Acceptance
