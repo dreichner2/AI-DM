@@ -24,6 +24,13 @@ def test_reasoning_block_filter_handles_tags_split_across_chunks():
 
 
 def test_normalize_tts_text_removes_reasoning_and_markdown():
-    text = '# Scene\nVisible **words** and [label](https://example.test). <think>hidden</think>'
+    text = '# Scene\n![map](https://example.test/map.png)\nVisible **words** and [label](https://example.test). <think>hidden</think>'
 
     assert normalize_tts_text(text) == 'Scene Visible words and label.'
+
+
+def test_normalize_tts_text_handles_long_unclosed_markdown_candidates():
+    for fragment in ('[x', '!['):
+        text = fragment * 20_000
+
+        assert normalize_tts_text(text) == text

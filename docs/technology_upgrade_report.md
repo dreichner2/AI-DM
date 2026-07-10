@@ -112,6 +112,12 @@ globals 17.7.0, and jsdom 29.1.1.
 - Updated npm's lockfile and explicitly approved only the two required macOS
   `fsevents` install scripts.
 - Added PostgreSQL connection liveness checks with SQLAlchemy `pool_pre_ping`.
+- Replaced the TTS Markdown link/image regexes with a linear scanner and added
+  a pre-sanitization input bound, closing an authenticated CPU-denial path.
+- Removed plaintext admin-passcode persistence from browser session storage;
+  the optional passcode now remains only in memory and clears after use/lock.
+- Removed the non-cryptographic client-id fallback and fail closed if Web
+  Crypto is unavailable.
 - Added a credential-safe PostgreSQL custom-archive drill with exact source,
   target, and client major-version guards, read-only exported snapshots,
   twice-checked empty targets, checksum/list validation, transactional restore,
@@ -186,9 +192,10 @@ cutover, validation, and rollback sequence.
 - Before and after the managed PostgreSQL 18 cutover, hosted readiness,
   cookie/CSRF/WebSocket auth, non-admin forbidden behavior, session
   export/import, beta SLO, metadata drift, restart, and health checks passed.
-- Six approved CodeQL false positives were dismissed with documented rationale;
-  the aggregate CodeQL and pull-request checks remained green after the stack
-  upgrade.
+- Default-branch CodeQL findings were traced source-to-sink: valid TTS
+  availability and browser credential-retention weaknesses were fixed, the
+  client-id fallback was hardened, and only documented false positives in the
+  cookie/CSRF design were dismissed.
 
 ## Intentionally not upgraded or not yet applied
 

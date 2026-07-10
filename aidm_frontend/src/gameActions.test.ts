@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   INITIATIVE_ROLL_REASON,
   abilityActionText,
   buildActionIntent,
   composerTextForMode,
+  createClientMessageId,
   diceRollMessage,
   hasReservedAdminPrefix,
   itemActionText,
@@ -35,6 +36,22 @@ const potion: ItemOption = {
 }
 
 describe('game action helpers', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('uses Web Crypto for client IDs and fails closed when it is unavailable', () => {
+    vi.stubGlobal('crypto', {
+      getRandomValues: (values: Uint8Array) => {
+        values.set(Array.from({ length: values.length }, (_, index) => index))
+        return values
+      },
+    })
+
+    expect(createClientMessageId()).toBe('local-000102030405060708090a0b0c0d0e0f')
+
+    vi.stubGlobal('crypto', undefined)
+    expect(() => createClientMessageId()).toThrow('Secure client ID generation requires the Web Crypto API.')
+  })
+
   it('rewrites composer prefixes without stacking old modes', () => {
     expect(composerTextForMode('ooc', 'I roll a d20: test', 'Ember', 'd20')).toBe('[OOC] test')
     expect(composerTextForMode('ooc', 'I roll a d20+3 for STR check: test', 'Ember', 'd20')).toBe(

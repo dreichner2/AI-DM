@@ -995,7 +995,7 @@ describe('App user workflow regressions', () => {
 
     await renderLoadedApp()
 
-    expect(screen.getByText('Abilities & Traits (2)')).toBeInTheDocument()
+    expect(await screen.findByText('Abilities & Traits (2)')).toBeInTheDocument()
     expect(screen.getByText('Aura of Desire')).toBeInTheDocument()
     expect(screen.getByText(/Race \/ Himeros \/ Action \/ Long Rest/)).toBeInTheDocument()
 
