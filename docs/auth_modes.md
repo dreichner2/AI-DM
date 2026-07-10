@@ -17,8 +17,9 @@ loopback, prefer the stricter setting if there is any uncertainty.
 
 `aidm_server/capabilities.py` is the executable source of truth. The REST guard
 uses Flask endpoint names plus HTTP methods, and the Socket.IO guard uses event
-names. Tests fail if a new unsafe world, campaign, session, map, or segment route
-is added without an explicit matrix entry.
+names. Application construction fails when any `/api` method is unclassified or
+when the inventory contains a stale method; tests also cover the application
+Socket.IO event inventory.
 
 | Surface | Operations | Required capability |
 | --- | --- | --- |
@@ -49,30 +50,48 @@ capabilities; a workspace mapping takes precedence if a token is present in
 both settings. When authentication is disabled, a credential-free local
 request keeps the full local-operator capability set.
 
-All `/api/accounts/*` requests pass through the general API limiter. Account
-login, legacy-identity claims, workspace-password joins, and workspace-token
-checks additionally consume opaque HMAC pre-auth buckets before credential
-verification: 5 attempts per IP+target and 20 attempts per IP or target over
-the default 60-second window. The IP-wide bucket blocks target rotation; the
-target-wide bucket blocks distributed attempts. Production persists all three
-through `AIDM_RATE_LIMIT_STORE=database`. Socket admin-mode messages pass
-through the per-player/session Socket.IO limiter before the admin-passcode
-comparison.
+The frontend namespaces stored account/workspace credentials by configured
+backend origin and attaches them only to that origin. Cookie-authenticated
+unsafe REST calls copy the companion CSRF cookie into `X-AIDM-CSRF-Token`.
+Changing this origin-scoping is an authentication-boundary change, not a
+general fetch refactor.
 
-The target-wide bucket deliberately trades legitimate availability for
-distributed-guess resistance. Saturation occurs before weak legacy identity or
-workspace-password verification, so distributed callers can temporarily reject
-a correct tokenless legacy claim or a different account's correct new workspace
-join. Each bucket window expires, but continued traffic can renew the delay. A
-valid saved account token is a high-entropy owner proof and bypasses the weak
-legacy-claim bucket; saved workspace membership uses the separate selection
-path. The tokenless legacy-claim and new workspace-password-join cases remain
-open Low/P3 findings. Closed-beta operation requires the authentication/security
-and release owners to sign the time-bounded acceptance in the release checklist;
-it expires on 2026-08-10 or before exposure expands. Threshold or window tuning
-changes cost and duration but does not close either finding.
+All `/api/accounts/*` requests pass through the general API limiter. Account
+login, invalid legacy-recovery attempts, workspace-password joins, and
+workspace-token checks additionally consume opaque HMAC pre-auth buckets: 5
+attempts per IP+target and 20 attempts per IP or target over the default
+60-second window. The IP-wide bucket blocks target rotation. Production
+persists all limiter types through `AIDM_RATE_LIMIT_STORE=database`. Socket
+admin-mode messages pass through the per-player/session Socket.IO limiter
+before the admin-passcode comparison.
+
+Passwordless legacy accounts require a saved account token or a high-entropy
+replacement issued with `scripts/issue_legacy_recovery_code.py`; first/last
+names are no longer authority to claim an account. A valid recovery code
+bypasses invalid weak-claim saturation and is rotated after password setup.
+The operator must verify the requester out of band before issuing it, and the
+raw code must be delivered privately because only its hash is stored.
+
+For workspace-password joins, only the target-wide bucket is scoped to the
+authenticated account plus canonical workspace. IP+workspace and IP-wide
+buckets remain unchanged. One account can exhaust its own cross-IP allowance
+but cannot consume a different account's cross-IP target allowance. A correct
+join from the same saturated source IP can still return 429 because the shared
+IP+workspace and IP-wide protections intentionally remain active. Account
+rotation can distribute guessing across more principals; keep signup exposure
+and privacy-safe `workspace-password` target telemetry under review before
+public exposure. Saved workspace membership continues to use the separate
+selection path.
 
 ## Baseline Env By Exposure
+
+The production snippets below are exposure-specific overlays, not complete
+standalone environments. Start from `.env.production.example`, replace every
+placeholder in the deployment provider's secret/env manager, and then apply the
+matching auth/CORS choices below. Production startup also requires the explicit
+PostgreSQL, migration, database-backed rate-limit/turn-coordinator,
+single-worker Socket.IO, security-header, and observability settings documented
+in `docs/production-readiness.md`.
 
 ### Loopback-only development
 
@@ -85,6 +104,10 @@ AIDM_SOCKET_CORS_ALLOWLIST=http://127.0.0.1:5173,http://localhost:5173
 
 ### Tailscale or LAN closed beta
 
+Apply these values on top of the production template. A Tailscale Funnel is
+public exposure, not tailnet-only exposure, so use the exact public UI origin
+when Funnel is enabled.
+
 ```bash
 AIDM_ENV=production
 AIDM_AUTH_REQUIRED=true
@@ -95,6 +118,10 @@ AIDM_SECURITY_HEADERS_ENABLED=true
 ```
 
 ### Hosted same-origin closed beta
+
+Apply these values on top of the production template. Empty CORS allowlists are
+valid only when the browser UI and API are intentionally served from the same
+origin; otherwise set both allowlists to the exact UI origin.
 
 ```bash
 AIDM_ENV=production

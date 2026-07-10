@@ -2,7 +2,7 @@
 
 Campaign packs are structured adventure modules that seed an AIDM campaign with authored locations, NPCs, quests, enemies, encounters, segments, checkpoints, clues, factions, maps, handouts, lore, and director rules.
 
-The current contract is version `1`. The JSON Schema lives at [campaign_pack.schema.json](campaign_pack.schema.json), and runnable examples live in [examples/](examples/).
+The current contract is version `1`. The JSON Schema lives at [campaign_pack.schema.json](campaign_pack.schema.json), and bundled examples live in [examples/](examples/). The backend loads both the schema and every `docs/examples/*.json` file at runtime, so changes to these files can change validation, the campaign picker, or Play Now behavior; they are executable product assets rather than illustrative snippets.
 
 Current example packs:
 
@@ -10,6 +10,11 @@ Current example packs:
 - [examples/shadow_over_the_greenway_campaign_pack.json](examples/shadow_over_the_greenway_campaign_pack.json): larger checkpoint-spine campaign with branches and encounter pressure.
 - [examples/shadow_under_eryn_luin_campaign_pack.json](examples/shadow_under_eryn_luin_campaign_pack.json): larger multi-location campaign with hidden lore and finale state.
 - [examples/the_road_of_unremembered_kings_campaign.json](examples/the_road_of_unremembered_kings_campaign.json): original full campaign with soft checkpoint pathing, redundant clues, factions, maps, handouts, lore, and multiple ending states.
+
+`The Road of Unremembered Kings` is the default pack used by
+`POST /api/onboarding/play-now`. The Bleakmoor fixture is intentionally omitted
+from the player-facing bundled-pack list because its metadata marks it internal
+and test-only.
 
 ## Import Flow
 
@@ -28,6 +33,22 @@ Successful import creates:
 - an `installed_campaign_packs` library record with pack version, schema version, source filename, hash, importer, manifest, and validation time
 - durable `campaign_packs`, `campaign_pack_records`, `campaign_pack_sessions`, `campaign_pack_checkpoint_progress`, and `campaign_pack_progress_events` rows
 - `Session.state_snapshot.campaignPack`, a compact runtime mirror containing the hidden pack catalog, director rules, progress, version metadata, shared-group key, and GM-only notes
+
+## Bundled Example Library
+
+`GET /api/campaigns/example-packs` returns player-visible summaries for bundled
+packs. It requires `player_read`; it does not return the full hidden manifest.
+
+Workspace admins can import a bundled pack with:
+
+```text
+POST /api/campaigns/example-packs/<pack_id>/import
+```
+
+The request body is optional. It can supply `world_id`/`worldId` and
+`session_name`/`sessionName`; `dry_run`/`dryRun` can be supplied in the body or
+query string. Import requires `dm_authoring`. The server resolves the pack by
+its manifest `packId`, not by its filename.
 
 ## Compatibility
 
@@ -142,11 +163,11 @@ Run the local pack tool before importing or publishing a pack:
 
 ```bash
 PACK=docs/examples/the_road_of_unremembered_kings_campaign.json
-python scripts/aidm_pack.py lint "$PACK"
-python scripts/aidm_pack.py report "$PACK"
-python scripts/aidm_pack.py preview "$PACK"
-python scripts/aidm_pack.py graph "$PACK"
-python scripts/aidm_pack.py test-checkpoints "$PACK"
+.venv/bin/python scripts/aidm_pack.py lint "$PACK"
+.venv/bin/python scripts/aidm_pack.py report "$PACK"
+.venv/bin/python scripts/aidm_pack.py preview "$PACK"
+.venv/bin/python scripts/aidm_pack.py graph "$PACK"
+.venv/bin/python scripts/aidm_pack.py test-checkpoints "$PACK"
 ```
 
 The linter uses the same import dry-run validator as the API, then adds authoring checks for unreachable checkpoints, missing completion cues, hidden records visible at start, large prompt-budget records, dependency declarations, and `pack_only` checkpoints without rejoin targets.
@@ -156,6 +177,15 @@ The `report` command prints an author-facing validation summary for starting ref
 The frontend import dialog exposes the same lint, graph, and authoring report preview so authors can edit JSON and inspect warnings before creating a campaign.
 
 The API endpoint `POST /api/campaigns/pack-tools/lint` returns `ok`, `issues`, `summary`, `preview`, `graph`, and `authoring_report`. Warnings do not block import; errors do.
+
+`POST /api/campaigns/pack-tools/forge` creates a deterministic version-1 draft
+from a required `title` plus optional `prompt`, `tone`, and `packId`. It returns
+the draft pack, wrapped import payload, serialized manifest text, and lint
+result; it does not import or persist the draft. Both pack-tool endpoints
+require `dm_authoring`.
+
+All bundled example packs, including the internal Bleakmoor fixture, lint
+without warnings.
 
 ## Installed Pack Library
 

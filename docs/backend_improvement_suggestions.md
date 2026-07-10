@@ -1,44 +1,75 @@
-# Backend Improvement Suggestions
+# Backend Improvement Status and Candidates
 
-Review date: 2026-06-03
+Review renewed: 2026-07-10
 
-This pass intentionally avoided large rewrites. The items below are the changes I would consider next if we decide to spend real engineering time on the backend.
+This document replaces the 2026-06-03 snapshot with a verified status check.
+It is deliberately narrow: completed recommendations are recorded so they are
+not proposed again, and the active list contains only structural work still
+visible in the current implementation. Product behavior should not change as a
+side effect of these refactors.
 
-## Highest-value rework candidates
+## Original Recommendations Now Implemented
 
-1. Split `aidm_server/emergent_memory.py` into smaller modules.
-   - Current size: roughly 1,500 lines.
-   - Suggested boundaries: extraction prompts, heuristic extraction, patch validation, patch application, inventory helpers, and retrieval/context building.
-   - Why: it owns too many responsibilities, making post-turn bugs hard to isolate and test. The current file mixes LLM calls, string heuristics, DB writes, ranking, and inventory mutation.
+| Original recommendation | Current implementation |
+| --- | --- |
+| Move canon extraction off the visible gameplay response path. | `aidm_server/canon_jobs.py` provides durable queued/running/terminal jobs, retry and stale-job recovery, and background processing. A saved visible response is not erased by a later canon failure. |
+| Centralize provider IDs, labels, models, defaults, and capabilities. | `aidm_server/provider_registry.py` is shared by configuration, runtime provider creation, and the runtime-config API. |
+| Reduce `aidm_server/llm.py` provider-specific fallback duplication. | `aidm_server/llm.py` is now a 333-line narration facade; provider implementations and model fallback live in `aidm_server/llm_providers.py`, while shared HTTP timeout/session behavior lives in `aidm_server/http_client.py`. |
+| Put hard limits around canon context retrieval. | `aidm_server/canon_retrieval.py` applies bounded entity, fact, and thread candidate queries before hybrid lexical/local-embedding ranking and reports the active limits in retrieval metadata. |
+| Centralize object-only JSON request parsing. | Write endpoints use `aidm_server.validation.parse_json_body`; `scripts/check_request_json_parsing.py` guards against direct silent parsing outside shared helpers. |
+| Restrict persistent provider changes outside local/test use. | Runtime provider mutation has its own blueprint/service, is limited to the owner/default workspace admin or an unscoped bootstrap operator credential, and rejects API persistence outside development, local, or test environments. |
+| Keep generated/runtime content out of release archives. | Cleanup, source-archive, packaging-evidence, secret-scan, checksum, and release-artifact-consistency tooling enforce the handoff boundary. |
 
-2. Move canon extraction off the critical gameplay response path.
-   - Current behavior: after narration, `extract_canon_patch(...)` can make a second provider call before the turn fully persists.
-   - Suggested direction: persist the DM response first, mark canon extraction as pending, and process extraction in a background worker or bounded follow-up step.
-   - Why: the user-facing failure mode is bad: the DM can answer, then the save/canon step can stall or fail. This has been one of the most important runtime risks in local gameplay.
+## Verified Current Candidates
 
-3. Refactor provider fallback logic in `aidm_server/llm.py`.
-   - Current size: roughly 1,000 lines.
-   - Suggested direction: share model normalization, fallback iteration, telemetry, and OpenAI-compatible chat behavior between NVIDIA/Kimi and DeepSeek. Keep Gemini separate only where the SDK behavior differs.
-   - Why: the provider classes currently duplicate the same candidate model and fallback pattern, which makes future provider tuning riskier.
+### 1. Continue decomposing the turn engine by owned phase
 
-4. Centralize LLM provider catalog/defaults.
-   - Current behavior: provider IDs, labels, default models, base URLs, and supported models are spread across `config.py`, `llm.py`, and `blueprints/system.py`.
-   - Suggested direction: a single provider registry that powers config validation, runtime provider creation, and `/api/llm/config`.
-   - Why: this reduces drift between UI-visible model choices and backend runtime behavior.
+`aidm_server/turn_engine.py` remains about 2,160 lines after action, roll,
+narration, segment, Socket.IO, and combat responsibilities were extracted. It
+still coordinates submission/idempotency, interaction targeting, character and
+PvP validation, roll gates, persistence, narration, post-turn work, and canon
+dispatch.
 
-5. Split `aidm_server/turn_engine.py` by phase.
-   - Current size: roughly 800 lines.
-   - Suggested boundaries: turn validation, roll resolution, narration streaming, segment evaluation, persistence, and post-turn canon/projection.
-   - Why: the transaction and socket-emission order is subtle. Smaller phase objects would make it easier to test failures at each boundary.
+Keep `TurnEngine` as the transaction/order coordinator, but move cohesive
+helpers behind phase interfaces only when focused tests can preserve emission,
+commit, and failure ordering. The next safe seams are interaction-target
+preparation and roll-gate lifecycle; avoid a broad rewrite.
 
-6. Put hard budgets and telemetry around context assembly.
-   - Current behavior: `build_emergent_context(...)` loads and ranks all entities, facts, and threads in Python before slicing.
-   - Suggested direction: add count/latency metrics, cap candidate pools, and eventually push more filtering into SQL or a small retrieval index.
-   - Why: this is fine for small saves, but will get expensive as campaigns accumulate canon.
+### 2. Finish separating canon extraction, validation, and persistence
 
-## Smaller follow-ups
+`aidm_server/emergent_memory.py` is about 1,143 lines. Inventory parsing,
+location inference, projection, text normalization, and retrieval have already
+moved to focused modules, but this file still combines provider extraction,
+heuristic patches, entity/fact resolution, patch validation, and database
+application.
 
-- Add one common `require_json_body(request)` helper and use it across all write endpoints.
-- Add tests for malformed provider canon JSON at the Socket.IO turn level, not only at the patch-validation unit level.
-- Gate persistent provider changes from `/api/llm/config` carefully in production. Writing `.env.local` from an API route is convenient locally, but should remain clearly local/admin-only.
-- Keep generated files out of release archives. This checkout contains ignored runtime artifacts such as `__pycache__`, logs, and local DB backups; they are ignored by `.gitignore`, but archives should be pruned before sharing.
+Extract one boundary at a time, beginning with entity/fact persistence helpers
+or patch normalization/validation. Keep `extract_canon_patch`,
+`validate_canon_patch`, and `apply_canon_patch` as stable entry points until
+canon-job and Socket.IO failure regressions prove an equivalent replacement.
+
+### 3. Split provider implementations from helper-profile configuration
+
+`aidm_server/llm_providers.py` is about 1,680 lines and owns Gemini,
+OpenAI-compatible, Codex CLI, deterministic fallback, provider factories, and
+task-specific helper profile resolution. The provider registry has removed
+catalog drift, but implementation and helper-policy concerns still share one
+module.
+
+A low-risk split would keep the public provider/factory imports stable while
+moving helper profile selection and task overrides to a focused module. Any
+change must preserve provider fallback telemetry, timeout behavior, Codex
+tool-event fail-closed handling, and the fixed-input helper comparison tools.
+
+## Guardrails for This Work
+
+- Prefer bounded extractions with focused regression tests over line-count-only
+  rewrites.
+- Preserve the turn event spine, transaction boundaries, status-event order,
+  and saved-response behavior.
+- Keep provider/model metadata owned by `provider_registry.py`.
+- Run backend tests relevant to the extracted boundary plus
+  `scripts/check_request_json_parsing.py` and
+  `scripts/check_state_snapshot_writers.py` when those surfaces are touched.
+- Record newly discovered product requirements separately; a refactor document
+  must not silently redefine gameplay or release policy.

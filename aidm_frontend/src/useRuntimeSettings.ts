@@ -26,6 +26,7 @@ export type RuntimeSettingsForm = {
   firstName: string
   lastName: string
   password: string
+  recoveryCode: string
 }
 
 export type RuntimeSettingsMode = 'settings' | 'auth'
@@ -59,7 +60,7 @@ const ACCOUNT_TOKEN_TRANSPORT_KEY = 'aidm:accountTokenTransport'
 const HTTP_ONLY_COOKIE_TRANSPORT = 'http_only_cookie'
 const LEGACY_PASSWORD_SETUP_ERROR_CODE = 'legacy_password_setup_required'
 export const LEGACY_PASSWORD_SETUP_MESSAGE =
-  'Legacy account found. Use Sign Up with this username, the exact first and last name originally used, and a new password.'
+  'Legacy account found. Use the saved account session or ask the AIDM operator for a recovery code, then set a new password.'
 
 function readCookie(name: string) {
   const prefix = `${encodeURIComponent(name)}=`
@@ -385,8 +386,10 @@ async function submitAccountSession(
 ) {
   const headers = new Headers({ 'Content-Type': 'application/json' })
   const trustedBackend = isBackendOriginTrusted(baseUrl)
-  if (trustedBackend && accountToken.trim()) {
-    headers.set('Authorization', `Bearer ${accountToken.trim()}`)
+  const recoveryCode = options.legacyClaim ? form.recoveryCode.trim() : ''
+  const accountCredential = recoveryCode || accountToken.trim()
+  if (trustedBackend && accountCredential) {
+    headers.set('Authorization', `Bearer ${accountCredential}`)
   }
   addCookieCsrfHeader(headers, baseUrl)
   addNgrokBrowserWarningBypassHeader(headers, baseUrl)
@@ -399,13 +402,18 @@ async function submitAccountSession(
       username: form.username.trim(),
       password: form.password,
       intent: options.intent,
-      ...(options.intent === 'signup' || options.legacyClaim
+      ...(options.intent === 'signup' && !options.legacyClaim
         ? {
             first_name: form.firstName.trim(),
             last_name: form.lastName.trim(),
           }
         : {}),
-      ...(options.legacyClaim ? { legacy_claim: true } : {}),
+      ...(options.legacyClaim
+        ? {
+            legacy_claim: true,
+            ...(recoveryCode ? { legacy_recovery: true } : {}),
+          }
+        : {}),
     }),
   })
   const text = await response.text()
@@ -621,6 +629,7 @@ export function useRuntimeSettings({
     firstName: '',
     lastName: '',
     password: '',
+    recoveryCode: '',
   }))
 
   useEffect(() => {
@@ -634,6 +643,7 @@ export function useRuntimeSettings({
       firstName: account?.firstName || current.firstName,
       lastName: account?.lastName || current.lastName,
       password: '',
+      recoveryCode: '',
     }))
     setRuntimeAuthIntent('signup')
     setRuntimeAuthStep('account')
@@ -735,6 +745,7 @@ export function useRuntimeSettings({
       firstName: current.firstName,
       lastName: current.lastName,
       password: '',
+      recoveryCode: '',
     }))
     setRuntimeWorkspaceAction('join')
     setRuntimeWorkspaceJoinMethod('token')
@@ -775,6 +786,7 @@ export function useRuntimeSettings({
     setRuntimeSettingsError('')
     setRuntimeCreatedWorkspaceToken('')
     setLegacyPasswordSetupRequired(false)
+    setRuntimeSettingsForm((current) => ({ ...current, recoveryCode: '' }))
   }, [])
 
   const activateBackendCredentials = useCallback((nextBaseUrl: string) => {
@@ -823,12 +835,16 @@ export function useRuntimeSettings({
           setRuntimeSettingsError('Username is required.')
           return
         }
-        const legacyPasswordSetupAttempt = runtimeAuthIntent === 'login' && legacyPasswordSetupRequired
+        const legacyPasswordSetupAttempt = legacyPasswordSetupRequired
         if (legacyPasswordSetupAttempt && !runtimeSettingsForm.password.trim()) {
           setRuntimeSettingsError(LEGACY_PASSWORD_SETUP_MESSAGE)
           return
         }
-        if (runtimeAuthIntent === 'signup' && (!runtimeSettingsForm.firstName.trim() || !runtimeSettingsForm.lastName.trim())) {
+        if (
+          runtimeAuthIntent === 'signup'
+          && !legacyPasswordSetupAttempt
+          && (!runtimeSettingsForm.firstName.trim() || !runtimeSettingsForm.lastName.trim())
+        ) {
           setRuntimeSettingsError('First and last name are required.')
           return
         }
@@ -863,7 +879,12 @@ export function useRuntimeSettings({
           setWorkspaceToken('')
           setWorkspaceId(account.workspaceId ?? '')
           setRuntimeAccount(account)
-          setRuntimeSettingsForm((current) => ({ ...current, workspaceToken: '', workspacePassword: '' }))
+          setRuntimeSettingsForm((current) => ({
+            ...current,
+            workspaceToken: '',
+            workspacePassword: '',
+            recoveryCode: '',
+          }))
           setRuntimeAuthStep('workspace')
           setLegacyPasswordSetupRequired(false)
           setRuntimeSettingsError('')
@@ -872,7 +893,7 @@ export function useRuntimeSettings({
           const runtimeError = error as RuntimeApiError
           if (runtimeAuthIntent === 'login' && runtimeError.errorCode === LEGACY_PASSWORD_SETUP_ERROR_CODE) {
             setRuntimeAuthIntent('signup')
-            setRuntimeSettingsForm((current) => ({ ...current, password: '' }))
+            setRuntimeSettingsForm((current) => ({ ...current, password: '', recoveryCode: '' }))
             setLegacyPasswordSetupRequired(true)
             setRuntimeSettingsError(LEGACY_PASSWORD_SETUP_MESSAGE)
             return
@@ -1080,6 +1101,7 @@ export function useRuntimeSettings({
       workspaceToken: '',
       workspacePassword: '',
       password: '',
+      recoveryCode: '',
     }))
     reconnectSocket()
   }, [accountTokenTransport, baseUrl, reconnectSocket])

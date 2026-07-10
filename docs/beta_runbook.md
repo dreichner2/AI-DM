@@ -1,7 +1,7 @@
 # AI-DM Beta Runbook
 
 ## Startup
-1. Set environment variables (`AIDM_ENV`, `AIDM_DATABASE_URI`, `AIDM_AUTH_REQUIRED`, `AIDM_API_AUTH_TOKENS`, and the selected provider key such as `GOOGLE_GENAI_API_KEY`, `AIDM_DEEPSEEK_API_KEY`, or `AIDM_NVIDIA_API_KEY`).
+1. Set environment variables (`AIDM_ENV`, `AIDM_DATABASE_URI`, `AIDM_AUTH_REQUIRED`, `AIDM_API_AUTH_TOKENS`, and the selected provider configuration). Supported provider choices are `gemini`, `deepseek`, `nvidia`, `kimi`, `codex_cli`, and the deterministic local `fallback`; use the matching key such as `GOOGLE_GENAI_API_KEY`, `AIDM_DEEPSEEK_API_KEY`, or `AIDM_NVIDIA_API_KEY` when the provider requires one.
    Choose the exposure/auth posture from `docs/auth_modes.md` before sharing a
    non-loopback URL.
 2. Keep `AIDM_SOCKETIO_ASYNC_MODE=threading`. Hosted production requires
@@ -18,11 +18,12 @@
      The production launcher resolves executables from `.venv` when available
      and always runs migration/bootstrap preflight before starting Gunicorn.
 6. For local/private SQLite beta data, run `make backup-restore-drill` before real play sessions or pass `BACKUP_RESTORE_DRILL_ARGS="--database-uri sqlite:////absolute/path/to/dnd_ai_dm.db"` for a specific database. The drill creates a backup and verifies a restored copy without writing to the source DB.
-7. Run `make migration-chain-drill` to prove Alembic can apply the full chain, downgrade to base, and re-apply the full chain against an isolated SQLite database.
-8. Run `make socketio-worker-model-decision` to verify the hosted RC1
+7. For PostgreSQL, use the guarded custom-archive drill with a separately supplied empty target: `make postgres-backup-restore-drill POSTGRES_BACKUP_RESTORE_DRILL_ARGS="--source-uri-file /secure/source-uri --empty-target-uri-file /secure/empty-target-uri"`. The target must be disposable and empty; never point both inputs at the same database. Provider-managed backup/PITR evidence remains a separate deployment requirement.
+8. Run `make migration-chain-drill` to prove Alembic can apply the full chain, downgrade to base, and re-apply the full chain against an isolated SQLite database.
+9. Run `make socketio-worker-model-decision` to verify the hosted RC1
    worker-model decision, production env template, production server command,
    and docs agree.
-9. For a release-candidate rehearsal, run `make closed-beta-rc`. For local iteration without browser/dependency gates, run `make closed-beta-rc-fast`. To save gate evidence for an issue or release note, run the checker directly with `--evidence-report` or a specific path such as `tmp/release/rc-evidence.md`. The manual GitHub Actions `Closed Beta RC` workflow uploads the `closed-beta-rc-evidence` artifact with the RC report, issue snippets, release evidence packet, source archive, security/export-import evidence, visual-smoke screenshots/review evidence, and GitHub Actions run URL evidence when available. Before dispatching the manual workflow, run `make github-actions-rc-plan`; after the signed-off candidate is clean, use `GITHUB_ACTIONS_RC_PLAN_ARGS="--dispatch-closed-beta-rc"` to dispatch from the same helper. The `make rc-handoff-artifacts` target refreshes GitHub Actions evidence with read-only `gh` discovery; after CI or the manual RC workflow changes, rerun `make github-actions-evidence GITHUB_ACTIONS_EVIDENCE_ARGS="--auto-gh --include-gh-details --verify-closed-beta-rc-artifact-contents"` directly or pass the run URLs manually. Use `docs/rc_issue_evidence_template.md` when closing gate issues.
+10. For a release-candidate rehearsal, run `make closed-beta-rc`. For local iteration without browser/dependency gates, run `make closed-beta-rc-fast`. To save gate evidence for an issue or release note, run the checker directly with `--evidence-report` or a specific path such as `tmp/release/rc-evidence.md`. The manual GitHub Actions `Closed Beta RC` workflow uploads the `closed-beta-rc-evidence` artifact with the RC report, issue snippets, release evidence packet, source archive, security/export-import evidence, visual-smoke screenshots/review evidence, and GitHub Actions run URL evidence when available. Before dispatching the manual workflow, run `make github-actions-rc-plan`; after the signed-off candidate is clean, use `GITHUB_ACTIONS_RC_PLAN_ARGS="--dispatch-closed-beta-rc"` to dispatch from the same helper. The `make rc-handoff-artifacts` target refreshes GitHub Actions evidence with read-only `gh` discovery; after CI or the manual RC workflow changes, rerun `make github-actions-evidence GITHUB_ACTIONS_EVIDENCE_ARGS="--auto-gh --include-gh-details --verify-closed-beta-rc-artifact-contents"` directly or pass the run URLs manually. Use `docs/rc_issue_evidence_template.md` when closing gate issues.
    For hosted/staging sign-off, run `make hosted-rc-evidence` with
    `HOSTED_RC_EVIDENCE_ARGS` set for the target URL, env file, operator token,
    workspace/session/player IDs, and non-admin token. The report at
@@ -83,14 +84,25 @@
    commit SHA, operator name, and ISO timestamp; placeholder or example values
    are treated as invalid. Provided evidence rows are also rejected when they
    still point at placeholder, example, localhost, or isolated-runtime sources.
-10. For operator incident evidence, review the selected-session Session Quality card
+11. For operator incident evidence, review the selected-session Session Quality card
    in the Ops tab or request `/api/beta/session-quality?session_id=<session-id>`,
    then export a support bundle from the Ops tab or run:
    `make export-support-bundle EXPORT_SUPPORT_BUNDLE_ARGS="--target-url <target-url> --auth-token <token> --workspace-id <workspace-id> --session-id <session-id>"`
    The session-quality response and support bundle include an
    `operator_summary` headline/details block for quick incident handoff.
-11. Verify health: `GET /api/health`.
-12. For the canonical local UI, start `aidm_frontend` with `VITE_AIDM_API_BASE_URL` pointed at the backend.
+12. Verify health: `GET /api/health`.
+13. For the canonical local UI, start `aidm_frontend` with `VITE_AIDM_API_BASE_URL` pointed at the backend.
+
+For `AIDM_LLM_PROVIDER=codex_cli`, install a compatible Codex executable and
+provide either a dedicated persistent, AIDM-only `AIDM_CODEX_HOME` containing
+`auth.json` or `AIDM_CODEX_ACCESS_TOKEN`. The production launcher rejects Codex
+startup when neither authentication source is present. The default catalog
+selection is `AIDM_LLM_MODEL=gpt-5.6-sol-medium`; that display profile routes to
+the `gpt-5.6-sol` runtime model with medium reasoning. AIDM ignores the requested
+Codex workdir for gameplay calls and invokes Codex in a disposable empty
+workspace with read-only minimal filesystem access, network/search, shell,
+apps, plugins, skills, MCP, computer/browser use, and multi-agent features
+disabled. Unexpected tool events or malformed structured output fail closed.
 
 ## Optional TTS
 1. Set `AIDM_DEEPGRAM_API_KEY`.
@@ -117,11 +129,12 @@
 
 ## Turn Lifecycle
 1. The socket receives `send_message` and records the player action in `dm_turns` plus the `turn_events` event spine.
-2. Narration streams through `dm_response_start`, one or more `dm_chunk` events, and `dm_response_end`.
-3. After visible narration finishes, post-turn work persists `dm_output`, records the `dm_response` event, extracts/validates canon, applies canon tables, refreshes `SessionState`, and emits `session_log_update`.
-4. Watch `turn_status` events for `received`, `narrating`, `response_complete`, `saving`, `saved`, `canon_pending`, `canon_applied`, and `failed`. A canon failure should not erase a saved visible DM response.
-5. Treat `turn_events` as the turn transcript audit trail. `dm_turns`, `session_log_entries`, `PlayerAction`, and `SessionState` are projections or convenience tables that should agree with the event spine. Use `/api/beta/audits` as a workspace admin when investigating manual/operator changes; it includes recent session-state mutation diffs and bestiary/operator authoring actions.
-6. If a future change rewrites projection logic, verify both the event rows and the projected session log/state before assuming the UI is wrong.
+2. Narration streams through `dm_response_start`, one or more `dm_chunk` events, and `dm_response_end`; `response_complete` means visible streaming ended, not that persistence or canon work finished.
+3. The per-session coordinator remains locked while post-turn processing first persists `dm_output` and the `dm_response` timeline event, then emits `saved` with `stage=dm_response`. It continues through immediate validated state changes and durable canon-job enqueue, emits a second `saved` with `stage=post_turn`, and finally emits `session_log_update` after returning from post-turn persistence.
+4. Outside tests, canon extraction/validation/application and projection refresh run in a background task from the durable canon job. Watch `canon_pending`, `canon_applied`, or `failed` independently of the already-saved narration. Tests process the job inline for deterministic assertions. A canon failure should not erase a saved visible DM response.
+5. Watch `turn_status` events for `received`, `narrating`, `response_complete`, `saving`, `saved`, `canon_pending`, `canon_applied`, and `failed`. `canon_applied` can also carry immediate state-application details before the background canon extraction completes, so inspect its detail payload and the canon-job status during incident review.
+6. Treat `turn_events` as the turn transcript audit trail. `dm_turns`, `session_log_entries`, `PlayerAction`, and `SessionState` are projections or convenience tables that should agree with the event spine. Use `/api/beta/audits` as a workspace admin when investigating manual/operator changes; it includes recent session-state mutation diffs and bestiary/operator authoring actions.
+7. If a future change rewrites projection logic, verify both the event rows and the projected session log/state before assuming the UI is wrong.
 
 The per-session turn coordinator defaults to an in-memory store for local single-process play. Hosted production uses the database store and migrations through `0028_session_turn_lock_fencing`, which gives every lease owner a persistent monotonic fencing token and rejects commits after ownership changes. Tune `AIDM_TURN_COORDINATOR_LOCK_TTL_SECONDS` high enough for the longest expected provider turn, and keep `AIDM_TURN_COORDINATOR_POLL_INTERVAL_MS` low enough that queued players are not left waiting after a lock releases. Multi-worker Socket.IO remains deferred because presence and music are process-local; future support also requires both load-balancer affinity and a shared Socket.IO message queue.
 
@@ -158,14 +171,13 @@ The per-session turn coordinator defaults to an in-memory store for local single
 - `AIDM_PREAUTH_RATE_LIMIT_MAX_IP_TARGET_ATTEMPTS=5`
 - `AIDM_PREAUTH_RATE_LIMIT_MAX_IP_ATTEMPTS=20`
 - `AIDM_PREAUTH_RATE_LIMIT_MAX_TARGET_ATTEMPTS=20`
-- `AIDM_RATE_LIMIT_STORE=memory` for local runs, or `database` when multiple workers must share one limit window.
+- `AIDM_RATE_LIMIT_STORE=memory` for local/private runs. Production requires `database` even for the supported single-worker topology.
 - `AIDM_TURN_COORDINATOR_STORE=memory` for local single-process runs, or `database` for production/multi-worker runs.
 - `AIDM_SOCKETIO_WORKER_MODEL=single`, `WEB_CONCURRENCY=1`, and at least 16 Gunicorn threads; other worker models are rejected in hosted production today.
 - `AIDM_ACCOUNT_COOKIE_AUTH_ENABLED=true` and `AIDM_ACCOUNT_TOKEN_RESPONSE_ENABLED=false` for hosted same-origin cookie-only account auth. Unsafe REST requests then use the companion `aidm_csrf_token` cookie with `X-AIDM-CSRF-Token`.
 - `AIDM_OBSERVABILITY_PROVIDER=<provider-name>` and `AIDM_ALERT_OWNER=<team-or-person>` for production bootstrap.
-- `AIDM_TELEMETRY_ENABLED=true` with a working external endpoint while the temporary
-  target-lockout acceptance below is active. The acceptance cannot be signed without
-  delivery evidence for the required target-denial alerts.
+- `AIDM_TELEMETRY_ENABLED=true` with a working external endpoint so privacy-safe
+  pre-auth abuse signals reach the named alert owner.
 - Only `auth.preauth_rate_limited` events leave the process. They retain the stable
   `event`, `severity`, nested `payload`, `ts`, and `service` fields, add `env`, and
   require a complete privacy-safe payload containing only action, dimension, and
@@ -185,41 +197,52 @@ The per-session turn coordinator defaults to an in-memory store for local single
   and retain the source receipt plus alert-test evidence with the release packet.
 - `AIDM_SECURITY_HEADERS_ENABLED=true` so Flask-served responses include CSP and standard browser hardening headers.
 
-## Proposed Pre-Auth Target-Lockout Acceptance
+## Legacy Recovery And Workspace Target Isolation
 
-The closed beta may temporarily accept two open Low/P3 availability findings
-only after the authentication/security owner and release owner sign the release
-checklist. The proposed acceptance expires on 2026-08-10:
-`preauth-target-lockout-legacy-claim` and
-`preauth-target-lockout-workspace-password`. Four correctly attributed source
-IPs can contribute the default 20 target attempts in 60 seconds. A full target
-bucket can reject a correct tokenless legacy claim or a correct new
-workspace-password join before verification. Events age out, but sustained
-distributed traffic can renew the delay. Signing does not close either finding,
-and the decision must be re-reviewed before tester or network exposure expands.
+First/last-name matching is not account-recovery proof. A passwordless legacy
+account can set its password only with its saved high-entropy account token or a
+replacement issued by an operator. If the saved token is gone:
 
-If the owners sign the acceptance:
+1. Verify the requester through an approved out-of-band channel. The repository
+   does not provide email/phone identity proof, so do not infer ownership from
+   names, character knowledge, or possession of a username.
+2. In an authorized shell using the target environment/database, run:
 
-- Route any `auth.preauth_rate_limited` event with `dimension=target` and action
-  `account-legacy-claim` or `workspace-password` to `AIDM_ALERT_OWNER`.
-- Treat any such event in the closed beta as an abuse or legitimate-availability
-  signal requiring same-day review; preserve only the privacy-safe action,
-  dimension, and reset fields already emitted by the server.
-- Confirm whether the affected user has a valid saved account token or saved
-  workspace membership. Those strong existing proofs use paths that are not
-  blocked by the weak legacy-claim or workspace-password target bucket.
-- Do not raise thresholds, shorten windows, disable target protection, or move
-  weak verification after saturation without authentication/security-owner
-  approval; each choice changes guessing or hash-work exposure.
-- Record the event and disposition in release evidence, and reopen the findings
-  immediately if saturation repeats, affected-user prevalence is material, or
-  closed-beta exposure changes.
+   ```bash
+   .venv/bin/python scripts/issue_legacy_recovery_code.py --username <username>
+   ```
+
+   Add `--confirm-production` when `AIDM_ENV=production`. The command replaces
+   the old account-token hash and prints the new raw code once.
+3. Deliver the code privately. Do not paste it into a ticket, chat transcript,
+   telemetry payload, command log, or tracked file.
+4. The user enters the code in the recovery field with a new password. The
+   frontend sends the code only as the bearer credential, never in the JSON
+   body or browser storage. Successful setup rotates it to a fresh account
+   session token; cookie-only deployments return only the HttpOnly cookie.
+
+Workspace-password joins retain the IP+workspace and IP-wide hard limits. The
+cross-IP target bucket is scoped to authenticated account plus canonical
+workspace, so one account can exhaust only its own join allowance. A different
+account's correct password from a source with available IP buckets is still
+verified and can create membership. Users sharing a saturated source IP can
+still receive 429 because the IP+workspace and IP-wide protections remain
+shared. Rotating both accounts and IPs can spread guessing across more
+principals; keep signup exposure controlled and review repeated
+`workspace-password` target events before any public expansion.
+
+Continue routing privacy-safe `auth.preauth_rate_limited` events with
+`dimension=target` and action `account-legacy-claim` or `workspace-password` to
+`AIDM_ALERT_OWNER`. The legacy action now represents recovery traffic without
+valid account proof. The workspace action represents an account-scoped
+canonical-workspace bucket. These are abuse signals, not evidence that another
+user's recovery or join was locked out.
 
 ## Local-Only Boundaries
 - `.env.local` writes from `/api/llm/config` are for local runtime switching.
 - `AIDM_AUTH_REQUIRED=false`, wildcard CORS, SQLite, Flask admin, in-memory rate limiting, the in-memory turn coordinator, and module-global socket state are local/private deployment conveniences.
 - SQLite databases/backups are developer runtime data. Local defaults use `~/.aidm/`; keep real DBs and backups outside `aidm_server/instance/` before packaging or sharing.
-- `scripts/backup_restore_drill.py` supports file-backed SQLite. Hosted databases need a provider-specific backup/restore runbook and restore proof before wider beta.
+- `scripts/backup_restore_drill.py` supports file-backed SQLite. `scripts/postgres_backup_restore_drill.py` creates and verifies a guarded PostgreSQL custom archive against a distinct empty target, but hosted databases still need provider-specific backup/PITR evidence and restore proof before wider beta.
 - Structured JSON-like fields intentionally remain JSON text while SQLite is supported; see `docs/json_storage_policy.md` before changing these columns to native JSON.
 - Browser QA screenshots and traces should be written under ignored paths such as `tmp/verification_artifacts/` and cleaned with `scripts/cleanup_artifacts.sh`.
 - Production bootstrap rejects wildcard CORS and requires auth, declared observability ownership, an explicit Socket.IO worker model, database-backed rate limiting and turn coordination, security headers, and secure cookie settings when cookie auth is enabled.

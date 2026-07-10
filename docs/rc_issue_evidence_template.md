@@ -14,8 +14,23 @@ make release-evidence-packet
 ```
 
 The generated snippets are written to `tmp/release/issue-evidence/issue-*.md`.
-They intentionally keep hosted/GitHub/manual proof as remaining exceptions until
-those external artifacts are attached.
+The four commands above produce local evidence only. They intentionally keep
+hosted/GitHub/manual proof as remaining exceptions until those external
+artifacts are attached.
+
+For a final candidate handoff, prefer the complete same-commit refresh after the
+local RC passes:
+
+```bash
+make rc-handoff-artifacts
+make release-checklist-status
+make operator-signoff-status OPERATOR_SIGNOFF_STATUS_ARGS="--require-complete"
+```
+
+If `HEAD` changes after the RC report, regenerate the RC and handoff artifacts.
+Do not close issues from an older ignored `tmp/release/` bundle merely because
+the files still exist. Final signoff also requires the external proof values and
+`make rc-finalize-signoff` workflow documented in `docs/beta_runbook.md`.
 
 The generated release packet is written to
 `tmp/release/release-evidence-packet.md`. Use it as the short RC handoff index:

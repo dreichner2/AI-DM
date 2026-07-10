@@ -13,8 +13,14 @@ all attached to the release evidence.
   provider restore proof.
 - Confirm hosted auth mode from `docs/auth_modes.md`.
 - Confirm `AIDM_ALERT_OWNER` and `AIDM_OBSERVABILITY_PROVIDER` are set.
-- Confirm `/api/health`, `/api/metrics`, and `/api/metrics/prometheus` respond
-  on the target environment.
+- Confirm `/api/health` reports the intended environment and a configured
+  provider/model. Deterministic fallback must be an explicit safe-mode choice,
+  not an unnoticed hosted default.
+- With operator authentication, confirm `/api/metrics` and
+  `/api/metrics/prometheus` respond on the target environment.
+- When the backend serves the frontend, confirm `/` and one built `/assets/*`
+  file load through the deployed edge; the API deployment-readiness probe does
+  not validate the SPA build.
 
 ## Tester Invite Template
 
@@ -53,9 +59,10 @@ Send testers:
 - Hosted beta is single-worker only. Sticky and message-queue worker models are
   unsupported for RC1 even with staging proof because presence and music state
   remain process-local.
-- Cookie-only account auth is the hosted default, but the real hosted browser
-  flow still needs target-specific proof for domain, HTTPS, SameSite, and secure
-  cookie behavior.
+- Cookie-only account auth is the hosted default. Domain, HTTPS, SameSite, and
+  secure-cookie behavior must be re-proven for the signed-off target whenever
+  its origin, proxy, cookie configuration, or release candidate changes; local
+  request/socket smokes are not browser proof.
 - The deterministic fallback provider is for safety/testing, not final DM
   quality.
 - TTS depends on provider configuration and browser autoplay behavior.

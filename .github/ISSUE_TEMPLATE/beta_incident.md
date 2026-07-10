@@ -5,28 +5,53 @@ title: "[Beta Incident]: "
 labels: beta, incident
 ---
 
-## Session
+> Do not paste tokens, credentials, private game text, or unsanitized support
+> bundles into a public issue.
+
+## Runtime context
+
+- Observed at (include timezone):
+- Commit/RC:
+- Environment/target:
+- Browser/client:
+- Provider/model:
+
+## Session references
 
 - Workspace:
 - Campaign:
 - Session:
-- Provider/model:
+- Player/turn IDs:
 
-## Incident
+## Incident and player-visible impact
 
+Describe what failed or degraded, what the player saw, and whether play could
+continue.
 
-## Player-visible impact
+## Reproduction or timeline
 
+1.
+2.
+3.
 
-## Evidence
+## Sanitized evidence
 
-- Turn IDs:
-- Error IDs/logs:
-- Export/import status:
+- Error/correlation IDs or log timestamps:
+- Session Quality or support-bundle reference:
+- Screenshot/video:
+- Export/import or state/audit status:
+
+## Containment and recovery
+
+- Immediate action taken:
+- Data repair required:
+- Tester notified:
 
 ## Follow-up
 
+- [ ] Owner and severity assigned
 - [ ] Root cause identified
-- [ ] Repair completed
-- [ ] Regression added
-- [ ] Release notes updated
+- [ ] Repair or mitigation completed
+- [ ] Regression coverage added or reason documented
+- [ ] Related security/state/release gate reviewed
+- [ ] Changelog, runbook, or known limitation updated when needed

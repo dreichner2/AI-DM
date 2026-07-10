@@ -5,7 +5,13 @@ from unittest.mock import Mock
 
 from sqlalchemy import event
 
-from aidm_server.auth import generate_account_token, hash_secret, normalize_username
+from aidm_server.auth import (
+    generate_account_token,
+    hash_secret,
+    issue_legacy_recovery_token,
+    normalize_username,
+    password_hash_matches,
+)
 from aidm_server.blueprints.accounts import LEGACY_PASSWORD_SETUP_MESSAGE
 from aidm_server.database import db
 from aidm_server.models import (
@@ -20,6 +26,7 @@ from aidm_server.models import (
     InstalledCampaignPack,
     OperatorActionAudit,
     Player,
+    RateLimitEvent,
     Session,
     Workspace,
     World,
@@ -304,14 +311,11 @@ def test_account_login_target_bucket_blocks_distributed_attempts(tmp_path, monke
     assert rotated_ip.status_code == 429
 
 
-def test_legacy_claim_is_rate_limited_before_second_identity_verification(
-    tmp_path,
-    monkeypatch,
-):
+def test_name_only_legacy_claim_is_not_account_recovery_proof(tmp_path, monkeypatch):
     app = _build_account_runtime(
         tmp_path,
         monkeypatch,
-        extra_env=_strict_preauth_env(),
+        extra_env=_strict_preauth_env(trusted_proxy_count=1),
     )
     client = app.test_client()
     _create_legacy_passwordless_account(
@@ -321,55 +325,49 @@ def test_legacy_claim_is_rate_limited_before_second_identity_verification(
         last_name='Stone',
     )
 
-    verifier = Mock(return_value=False)
-    monkeypatch.setattr(
-        'aidm_server.blueprints.accounts._legacy_claim_identity_matches',
-        verifier,
-    )
-    first = _login(
-        client,
-        username='Maya',
-        first_name='Mara',
-        last_name='Stone',
-        password='new-secret',
-        intent='signup',
-    )
-    second = _login(
-        client,
-        username='Maya',
-        first_name='Maya',
-        last_name='Stone',
-        password='new-secret',
-        intent='signup',
+    response = client.post(
+        '/api/accounts/login',
+        headers={'X-Forwarded-For': '198.51.100.10'},
+        json={
+            'username': 'Maya',
+            'first_name': 'Maya',
+            'last_name': 'Stone',
+            'password': 'new-secret',
+            'intent': 'signup',
+            'legacy_claim': True,
+        },
     )
 
-    assert first.status_code == 401
-    assert second.status_code == 429
-    verifier.assert_called_once()
+    assert response.status_code == 401
+    assert response.get_json()['error_code'] == 'legacy_password_setup_required'
+    with app.app_context():
+        account = Account.query.filter_by(username='maya').one()
+        assert account.password_hash is None
 
 
-def test_saved_token_legacy_setup_bypasses_saturated_weak_claim_target(
+def test_operator_issued_legacy_recovery_bypasses_saturated_weak_claim_target(
     tmp_path,
     monkeypatch,
 ):
     app = _build_account_runtime(
         tmp_path,
         monkeypatch,
-        extra_env=_strict_preauth_env(trusted_proxy_count=1),
+        extra_env={
+            **_strict_preauth_env(trusted_proxy_count=1),
+            'AIDM_PREAUTH_RATE_LIMIT_MAX_IP_TARGET_ATTEMPTS': '5',
+        },
     )
     client = app.test_client()
-    maya_token = _create_legacy_passwordless_account(
+    stale_maya_token = _create_legacy_passwordless_account(
         app,
         username='Maya',
         first_name='Maya',
         last_name='Stone',
     )
-    other_account_token = _create_legacy_passwordless_account(
-        app,
-        username='Nora',
-        first_name='Nora',
-        last_name='Vale',
-    )
+    with app.app_context():
+        account = Account.query.filter_by(username='maya').one()
+        recovery_code = issue_legacy_recovery_token(account)
+        db.session.commit()
     telemetry = Mock()
     monkeypatch.setattr('aidm_server.blueprints.accounts.telemetry_event', telemetry)
 
@@ -381,64 +379,53 @@ def test_saved_token_legacy_setup_bypasses_saturated_weak_claim_target(
         'intent': 'signup',
         'legacy_claim': True,
     }
-    attacker_responses = [
-        client.post(
-            '/api/accounts/login',
-            headers={'X-Forwarded-For': f'198.51.100.{index}'},
-            json=weak_claim,
+    attacker_responses = []
+    for source_index in range(1, 5):
+        attacker_responses.extend(
+            client.post(
+                '/api/accounts/login',
+                headers={'X-Forwarded-For': f'198.51.100.{source_index}'},
+                json=weak_claim,
+            )
+            for _ in range(5)
         )
-        for index in range(1, 21)
-    ]
     assert [response.status_code for response in attacker_responses] == [401] * 20
 
-    blocked_claim_headers = [
-        {'X-Forwarded-For': '203.0.113.1'},
-        {
-            'Authorization': 'Bearer stale-account-token',
-            'X-Forwarded-For': '203.0.113.2',
+    blocked_name_claim = client.post(
+        '/api/accounts/login',
+        headers={'X-Forwarded-For': '203.0.113.1'},
+        json={
+            **weak_claim,
+            'first_name': 'Maya',
+            'password': 'owner-new-password',
         },
-        {
-            'Authorization': f'Bearer {other_account_token}',
-            'X-Forwarded-For': '203.0.113.3',
-        },
-    ]
-    blocked_responses = [
-        client.post(
-            '/api/accounts/login',
-            headers=headers,
-            json={
-                **weak_claim,
-                'first_name': 'Maya',
-                'password': 'owner-new-password',
-            },
-        )
-        for headers in blocked_claim_headers
-    ]
-    assert [response.status_code for response in blocked_responses] == [429] * 3
-    assert {response.get_json()['error_code'] for response in blocked_responses} == {'rate_limited'}
+    )
+    assert blocked_name_claim.status_code == 429
+    assert blocked_name_claim.get_json()['error_code'] == 'rate_limited'
 
-    saved_token_setup = client.post(
+    recovery = client.post(
         '/api/accounts/login',
         headers={
-            'Authorization': f'Bearer {maya_token}',
-            'X-Forwarded-For': '203.0.113.4',
+            'Authorization': f'Bearer {recovery_code}',
+            'X-Forwarded-For': '203.0.113.2',
         },
         json={
             'username': 'Maya',
-            'first_name': 'Maya',
-            'last_name': 'Stone',
             'password': 'owner-new-password',
-            'intent': 'login',
-            'legacy_claim': True,
+            'intent': 'signup',
+            'legacy_recovery': True,
         },
     )
-    assert saved_token_setup.status_code == 200
-    assert saved_token_setup.get_json()['account_token'] == maya_token
+    assert recovery.status_code == 200
+    replacement_token = recovery.get_json()['account_token']
+    assert replacement_token
+    assert replacement_token not in {recovery_code, stale_maya_token}
     with app.app_context():
         account = Account.query.filter_by(username='maya').one()
         assert account.password_hash is not None
+        assert account.account_token_hash == hash_secret(replacement_token)
 
-    assert telemetry.call_count == 3
+    assert telemetry.call_count == 1
     for telemetry_call in telemetry.call_args_list:
         assert telemetry_call.args == ('auth.preauth_rate_limited',)
         assert telemetry_call.kwargs['severity'] == 'warning'
@@ -448,8 +435,15 @@ def test_saved_token_legacy_setup_bypasses_saturated_weak_claim_target(
         assert payload['dimension'] == 'target'
         assert 1 <= payload['reset_in_seconds'] <= 60
     rendered_telemetry = repr(telemetry.call_args_list)
-    for raw_value in ('Maya', 'maya', maya_token, other_account_token, 'stale-account-token'):
+    for raw_value in ('Maya', 'maya', recovery_code, stale_maya_token, replacement_token):
         assert raw_value not in rendered_telemetry
+
+    replay = client.post(
+        '/api/accounts/login',
+        headers={'Authorization': f'Bearer {recovery_code}'},
+        json={'username': 'Maya', 'password': 'wrong-password', 'intent': 'login'},
+    )
+    assert replay.status_code == 401
 
 
 def test_workspace_password_is_rate_limited_before_second_hash_verification(
@@ -500,6 +494,121 @@ def test_workspace_password_is_rate_limited_before_second_hash_verification(
     assert first.status_code == 401
     assert second.status_code == 429
     verifier.assert_called_once()
+
+
+def test_workspace_password_target_limit_is_isolated_per_account(tmp_path, monkeypatch):
+    app = _build_account_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={
+            'AIDM_PREAUTH_RATE_LIMIT_WINDOW_SECONDS': '60',
+            'AIDM_PREAUTH_RATE_LIMIT_MAX_IP_TARGET_ATTEMPTS': '5',
+            'AIDM_PREAUTH_RATE_LIMIT_MAX_IP_ATTEMPTS': '20',
+            'AIDM_PREAUTH_RATE_LIMIT_MAX_TARGET_ATTEMPTS': '20',
+            'AIDM_RATE_LIMIT_STORE': 'database',
+            'AIDM_TRUSTED_PROXY_COUNT': '1',
+        },
+    )
+    client = app.test_client()
+    owner = _login(
+        client,
+        username='Owner',
+        first_name='Table',
+        last_name='Owner',
+        password='owner-secret',
+        intent='signup',
+    )
+    attacker = _login(
+        client,
+        username='Attacker',
+        first_name='Table',
+        last_name='Attacker',
+        password='attacker-secret',
+        intent='signup',
+    )
+    victim = _login(
+        client,
+        username='Victim',
+        first_name='Table',
+        last_name='Victim',
+        password='victim-secret',
+        intent='signup',
+    )
+    assert {owner.status_code, attacker.status_code, victim.status_code} == {201}
+
+    create_workspace = client.post(
+        '/api/accounts/workspaces',
+        headers={'Authorization': f"Bearer {owner.get_json()['account_token']}"},
+        json={
+            'table_name': 'Friday Night',
+            'table_password': 'table-secret',
+            'access_mode': 'password',
+        },
+    )
+    assert create_workspace.status_code == 201
+    workspace_id = create_workspace.get_json()['workspace_id']
+    attacker_headers = {'Authorization': f"Bearer {attacker.get_json()['account_token']}"}
+    victim_headers = {'Authorization': f"Bearer {victim.get_json()['account_token']}"}
+
+    verifier = Mock(side_effect=password_hash_matches)
+    monkeypatch.setattr('aidm_server.blueprints.accounts.password_hash_matches', verifier)
+    attacker_responses = []
+    for source_index in range(1, 5):
+        for attempt_index in range(5):
+            attacker_responses.append(
+                client.post(
+                    '/api/accounts/workspace',
+                    headers={
+                        **attacker_headers,
+                        'X-Forwarded-For': f'198.51.100.{source_index}',
+                    },
+                    json={
+                        'table_name': 'Friday Night' if attempt_index % 2 == 0 else workspace_id,
+                        'table_password': 'wrong-password',
+                    },
+                )
+            )
+    assert [response.status_code for response in attacker_responses] == [401] * 20
+    assert verifier.call_count == 20
+
+    attacker_blocked = client.post(
+        '/api/accounts/workspace',
+        headers={**attacker_headers, 'X-Forwarded-For': '203.0.113.10'},
+        json={'table_name': workspace_id, 'table_password': 'still-wrong'},
+    )
+    assert attacker_blocked.status_code == 429
+    assert verifier.call_count == 20
+
+    victim_join = client.post(
+        '/api/accounts/workspace',
+        headers={**victim_headers, 'X-Forwarded-For': '203.0.113.20'},
+        json={'table_name': 'Friday Night', 'table_password': 'table-secret'},
+    )
+    assert victim_join.status_code == 200
+    assert verifier.call_count == 21
+    with app.app_context():
+        victim_account = Account.query.filter_by(username='victim').one()
+        assert AccountWorkspaceMembership.query.filter_by(
+            account_id=victim_account.account_id,
+            workspace_id=workspace_id,
+        ).one_or_none() is not None
+        bucket_keys = {
+            row.bucket_key
+            for row in RateLimitEvent.query.all()
+            if row.bucket_key.startswith('preauth:')
+        }
+    rendered_keys = repr(bucket_keys)
+    for raw_value in (
+        'Friday Night',
+        workspace_id,
+        'wrong-password',
+        'table-secret',
+        attacker.get_json()['account_token'],
+        victim.get_json()['account_token'],
+        '198.51.100.1',
+        '203.0.113.20',
+    ):
+        assert raw_value not in rendered_keys
 
 
 def test_invalid_workspace_token_is_rate_limited_before_second_lookup(
@@ -738,6 +847,54 @@ def test_cookie_auth_can_run_account_and_workspace_flow_without_token_response(t
 
     after_logout = client.get('/api/accounts/me')
     assert after_logout.status_code == 401
+
+
+def test_operator_recovery_code_becomes_rotated_http_only_cookie_session(tmp_path, monkeypatch):
+    app = _build_account_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={
+            'AIDM_ACCOUNT_COOKIE_AUTH_ENABLED': 'true',
+            'AIDM_ACCOUNT_COOKIE_SECURE': 'false',
+            'AIDM_ACCOUNT_TOKEN_RESPONSE_ENABLED': 'false',
+        },
+    )
+    client = app.test_client()
+    _create_legacy_passwordless_account(
+        app,
+        username='Maya',
+        first_name='Maya',
+        last_name='Stone',
+    )
+    with app.app_context():
+        account = Account.query.filter_by(username='maya').one()
+        recovery_code = issue_legacy_recovery_token(account)
+        db.session.commit()
+
+    recovery = client.post(
+        '/api/accounts/login',
+        headers={'Authorization': f'Bearer {recovery_code}'},
+        json={
+            'username': 'Maya',
+            'password': 'new-secret',
+            'intent': 'signup',
+            'legacy_recovery': True,
+        },
+    )
+    assert recovery.status_code == 200
+    assert recovery.get_json()['account_token'] == ''
+    assert recovery.get_json()['account_token_transport'] == 'http_only_cookie'
+    assert 'aidm_account_session=' in recovery.headers.get('Set-Cookie', '')
+    assert 'HttpOnly' in recovery.headers.get('Set-Cookie', '')
+    assert client.get('/api/accounts/me').status_code == 200
+
+    replay_client = app.test_client()
+    replay = replay_client.post(
+        '/api/accounts/login',
+        headers={'Authorization': f'Bearer {recovery_code}'},
+        json={'username': 'Maya', 'password': 'wrong-password', 'intent': 'login'},
+    )
+    assert replay.status_code == 401
 
 
 def test_account_can_create_password_table_and_join_by_name_password(tmp_path, monkeypatch):
@@ -1166,11 +1323,11 @@ def test_existing_password_account_requires_password_even_with_saved_session(tmp
     assert saved_token_with_password.get_json()['account_token'] == session_token
 
 
-def test_signup_sets_password_for_legacy_passwordless_account_with_original_name(tmp_path, monkeypatch):
+def test_signup_sets_password_for_legacy_passwordless_account_with_saved_token(tmp_path, monkeypatch):
     app = _build_account_runtime(tmp_path, monkeypatch)
     client = app.test_client()
 
-    _create_legacy_passwordless_account(
+    saved_token = _create_legacy_passwordless_account(
         app,
         username='Maya',
         first_name='Maya',
@@ -1203,17 +1360,18 @@ def test_signup_sets_password_for_legacy_passwordless_account_with_original_name
         account = Account.query.filter_by(username='maya').one()
         assert account.password_hash is None
 
-    signup = _login(
-        client,
-        username='Maya',
-        first_name='Maya',
-        last_name='Stone',
-        password='new-secret',
-        intent='signup',
+    signup = client.post(
+        '/api/accounts/login',
+        headers={'Authorization': f'Bearer {saved_token}'},
+        json={
+            'username': 'Maya',
+            'password': 'new-secret',
+            'intent': 'signup',
+        },
     )
     assert signup.status_code == 200
     signup_token = signup.get_json()['account_token']
-    assert signup_token
+    assert signup_token == saved_token
 
     with app.app_context():
         account = Account.query.filter_by(username='maya').one()
@@ -1363,7 +1521,7 @@ def test_passwordless_saved_account_cannot_join_workspace_or_use_api(tmp_path, m
     assert campaigns.get_json()['error_code'] == 'legacy_password_setup_required'
 
 
-def test_legacy_claim_sets_password_once_for_passwordless_account(tmp_path, monkeypatch):
+def test_operator_recovery_token_rotates_without_relying_on_client_flag(tmp_path, monkeypatch):
     app = _build_account_runtime(tmp_path, monkeypatch)
     client = app.test_client()
 
@@ -1373,6 +1531,10 @@ def test_legacy_claim_sets_password_once_for_passwordless_account(tmp_path, monk
         first_name='Maya',
         last_name='Stone',
     )
+    with app.app_context():
+        account = Account.query.filter_by(username='maya').one()
+        recovery_code = issue_legacy_recovery_token(account)
+        db.session.commit()
 
     mismatch_claim = client.post(
         '/api/accounts/login',
@@ -1417,17 +1579,16 @@ def test_legacy_claim_sets_password_once_for_passwordless_account(tmp_path, monk
 
     claim = client.post(
         '/api/accounts/login',
+        headers={'Authorization': f'Bearer {recovery_code}'},
         json={
             'username': 'Maya',
-            'first_name': 'Maya',
-            'last_name': 'Stone',
             'password': 'new-secret',
-            'legacy_claim': True,
+            'intent': 'signup',
         },
     )
     assert claim.status_code == 200
     claim_token = claim.get_json()['account_token']
-    assert claim_token
+    assert claim_token and claim_token != recovery_code
 
     with app.app_context():
         account = Account.query.filter_by(username='maya').one()

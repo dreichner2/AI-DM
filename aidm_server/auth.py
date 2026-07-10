@@ -15,6 +15,7 @@ WORKSPACE_TOKEN_HEADER = "X-AIDM-Workspace-Token"
 WORKSPACE_ID_HEADER = "X-AIDM-Workspace-Id"
 CSRF_HEADER = "X-AIDM-CSRF-Token"
 ACCOUNT_TOKEN_BYTES = 32
+LEGACY_RECOVERY_TOKEN_PREFIX = "aidm-recovery-"
 DEFAULT_ACCOUNT_COOKIE_NAME = "aidm_account_session"
 DEFAULT_ACCOUNT_CSRF_COOKIE_NAME = "aidm_csrf_token"
 _WORKSPACE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -60,6 +61,10 @@ def generate_account_token() -> str:
     return secrets.token_urlsafe(ACCOUNT_TOKEN_BYTES)
 
 
+def is_legacy_recovery_token(value: str | None) -> bool:
+    return str(value or "").strip().startswith(LEGACY_RECOVERY_TOKEN_PREFIX)
+
+
 def generate_workspace_token() -> str:
     return secrets.token_urlsafe(ACCOUNT_TOKEN_BYTES)
 
@@ -83,6 +88,21 @@ def password_matches(account, password: str | None) -> bool:
 
 def account_requires_password_setup(account) -> bool:
     return bool(account) and not bool(str(getattr(account, "password_hash", "") or "").strip())
+
+
+def issue_legacy_recovery_token(account) -> str:
+    """Rotate a passwordless account to a strong, operator-issued recovery token.
+
+    The caller owns the transaction and must deliver the raw token out of band.
+    Only its SHA-256 hash is retained by the account record.
+    """
+    if not account:
+        raise ValueError("Legacy account not found.")
+    if not account_requires_password_setup(account):
+        raise ValueError("Recovery tokens can only be issued for passwordless legacy accounts.")
+    token = f"{LEGACY_RECOVERY_TOKEN_PREFIX}{generate_account_token()}"
+    account.account_token_hash = hash_secret(token)
+    return token
 
 
 def account_for_token(token: str | None):

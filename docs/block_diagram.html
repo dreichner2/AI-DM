@@ -164,7 +164,7 @@
   <main>
     <header>
       <h1>AIDM Block Diagram</h1>
-      <p class="lede">High-level runtime map for the AIDM app: where the UI runs, where the APIs run, what database is used, and which outside services the backend can call.</p>
+      <p class="lede">Standalone browser mirror of the canonical <a href="block_diagram.md">Markdown block diagram</a>. It maps the UI, access policy, APIs, realtime turn flow, data stores, and outside services.</p>
     </header>
 
     <section>
@@ -174,21 +174,21 @@
     user["Players / DM&lt;br/&gt;Browser"]
     client["React + Vite frontend&lt;br/&gt;aidm_frontend&lt;br/&gt;Dev: 127.0.0.1:5173&lt;br/&gt;Unified: served by Flask"]
     backend["Flask app&lt;br/&gt;aidm_server/main.py&lt;br/&gt;Default local port: 5050"]
-    guards["Request guards&lt;br/&gt;CORS, bearer auth, rate limits,&lt;br/&gt;request size, correlation IDs"]
-    api["REST API blueprints&lt;br/&gt;/api/campaigns&lt;br/&gt;/api/worlds&lt;br/&gt;/api/players&lt;br/&gt;/api/sessions&lt;br/&gt;/api/maps&lt;br/&gt;/api/segments&lt;br/&gt;/api/llm/config&lt;br/&gt;/api/tts/*&lt;br/&gt;/api/metrics*"]
-    socket["Flask-SocketIO&lt;br/&gt;/socket.io&lt;br/&gt;connect, join_session,&lt;br/&gt;send_message"]
-    turn["Turn engine&lt;br/&gt;rules, roll hints,&lt;br/&gt;state pipeline,&lt;br/&gt;streamed DM output"]
+    guards["Request policy&lt;br/&gt;origin-scoped credentials, CORS,&lt;br/&gt;auth/workspace, capabilities, CSRF,&lt;br/&gt;rate/request limits, security headers"]
+    api["REST blueprints&lt;br/&gt;accounts, worlds, campaigns/packs,&lt;br/&gt;players/races/onboarding, sessions,&lt;br/&gt;maps/segments, creatures/combat,&lt;br/&gt;LLM config, TTS, metrics/beta"]
+    socket["Flask-SocketIO&lt;br/&gt;/socket.io&lt;br/&gt;presence, actions, typing, music,&lt;br/&gt;turn control, clarification"]
+    turn["Turn engine&lt;br/&gt;rules and roll policy,&lt;br/&gt;narration, state pipeline,&lt;br/&gt;combat and segment projection"]
     canon["Canon worker&lt;br/&gt;canon_jobs&lt;br/&gt;memory extraction&lt;br/&gt;session projection"]
-    db[("SQLAlchemy database&lt;br/&gt;Default SQLite:&lt;br/&gt;~/.aidm/dnd_ai_dm.db&lt;br/&gt;Override: AIDM_DATABASE_URI")]
-    llm["LLM provider&lt;br/&gt;Gemini, NVIDIA/Kimi,&lt;br/&gt;DeepSeek, or local fallback"]
-    tts["Deepgram TTS&lt;br/&gt;/api/tts/speak&lt;br/&gt;/api/tts/stream"]
-    obs["Optional observability&lt;br/&gt;/api/metrics/prometheus&lt;br/&gt;Prometheus: 9090&lt;br/&gt;Grafana: 3001"]
-    tunnel["Optional public access&lt;br/&gt;ngrok, Cloudflare Tunnel,&lt;br/&gt;or hosted backend"]
+    db[("SQLAlchemy + Alembic&lt;br/&gt;Local/test: SQLite&lt;br/&gt;Production: PostgreSQL+psycopg&lt;br/&gt;AIDM_DATABASE_URI")]
+    llm["LLM providers&lt;br/&gt;Gemini, DeepSeek, NVIDIA/Kimi,&lt;br/&gt;isolated Codex CLI, fallback"]
+    tts["Optional Deepgram TTS&lt;br/&gt;/api/tts/speak&lt;br/&gt;/api/tts/stream"]
+    obs["Operational evidence&lt;br/&gt;metrics and beta APIs&lt;br/&gt;optional Prometheus/Grafana&lt;br/&gt;optional external telemetry"]
+    tunnel["Optional public access&lt;br/&gt;HTTPS tunnel or&lt;br/&gt;hosted backend"]
 
     user --&gt; client
     user -.-&gt; tunnel
     tunnel -.-&gt; backend
-    client --&gt;|REST fetch /api/*| backend
+    client --&gt;|REST /api/*| backend
     client &lt;--&gt;|Socket.IO /socket.io| socket
     backend --&gt; guards
     guards --&gt; api
@@ -211,14 +211,17 @@
           <tr><th>Block</th><th>Runs Where</th><th>Main Files / Commands</th></tr>
         </thead>
         <tbody>
-          <tr><td>Frontend UI</td><td>Browser, usually from Vite during development or from Flask in unified mode</td><td><code>aidm_frontend/src</code>, <code>npm run dev</code>, <code>make frontend</code></td></tr>
-          <tr><td>Backend API</td><td>Local Python Flask process, default launcher port <code>5050</code></td><td><code>aidm_server/main.py</code>, <code>scripts/run_local_backend.sh</code>, <code>make backend</code></td></tr>
-          <tr><td>Unified app</td><td>One Flask origin serving both built React assets and <code>/api/*</code></td><td><code>scripts/run_unified_local.sh</code>, <code>make unified</code></td></tr>
-          <tr><td>Realtime gameplay</td><td>Same backend process through Flask-SocketIO</td><td><code>aidm_server/blueprints/socketio_events.py</code>, <code>/socket.io</code></td></tr>
-          <tr><td>Database</td><td>SQLite by default in the user home folder; can be changed with <code>AIDM_DATABASE_URI</code></td><td><code>aidm_server/database.py</code>, <code>aidm_server/models.py</code>, <code>migrations/</code></td></tr>
-          <tr><td>AI model calls</td><td>External provider API or deterministic local fallback</td><td><code>aidm_server/llm_providers.py</code>, <code>aidm_server/provider_registry.py</code></td></tr>
+          <tr><td>Frontend UI</td><td>Browser, from Vite during development or Flask in unified mode</td><td><code>aidm_frontend/src</code>, <code>make frontend</code>, <code>make unified</code></td></tr>
+          <tr><td>Backend API</td><td>Python Flask process; local launchers default to port <code>5050</code></td><td><code>aidm_server/main.py</code>, <code>scripts/run_local_backend.sh</code>, <code>make backend</code></td></tr>
+          <tr><td>Unified app</td><td>One Flask origin serving built React assets, <code>/api/*</code>, and <code>/socket.io</code></td><td><code>scripts/run_unified_local.sh</code>, <code>make unified</code></td></tr>
+          <tr><td>HTTP authorization</td><td>Flask request pipeline, before classified view execution</td><td><code>aidm_server/capabilities.py</code>, <code>aidm_server/auth.py</code>, <code>aidm_server/workspace_access.py</code></td></tr>
+          <tr><td>Realtime gameplay</td><td>Same backend process through Flask-SocketIO</td><td><code>aidm_server/blueprints/socketio_events.py</code>, <code>aidm_server/socket_*.py</code></td></tr>
+          <tr><td>Turn and state pipeline</td><td>Backend process, serialized by the turn coordinator</td><td><code>aidm_server/turn_engine.py</code>, <code>aidm_server/game_state/</code>, <code>aidm_server/turn_events.py</code></td></tr>
+          <tr><td>Canon work</td><td>Background thread in the single backend worker</td><td><code>aidm_server/canon_jobs.py</code>, <code>aidm_server/canon_projection.py</code></td></tr>
+          <tr><td>Database</td><td>SQLite for local/test; PostgreSQL with psycopg is required in production</td><td><code>aidm_server/database.py</code>, <code>aidm_server/models.py</code>, <code>migrations/</code></td></tr>
+          <tr><td>AI model calls</td><td>External provider API/CLI or deterministic local fallback</td><td><code>aidm_server/llm_providers.py</code>, <code>aidm_server/provider_registry.py</code></td></tr>
           <tr><td>TTS</td><td>External Deepgram API when configured</td><td><code>aidm_server/blueprints/system.py</code>, <code>/api/tts/*</code></td></tr>
-          <tr><td>Metrics</td><td>Backend memory snapshot, optional Prometheus/Grafana stack</td><td><code>/api/metrics</code>, <code>/api/metrics/prometheus</code>, <code>observability/</code></td></tr>
+          <tr><td>Metrics and beta evidence</td><td>Backend metrics/audit data; optional Prometheus/Grafana stack</td><td><code>/api/metrics*</code>, <code>/api/beta/*</code>, <code>observability/</code></td></tr>
         </tbody>
       </table>
     </section>
@@ -230,17 +233,19 @@
           <tr><th>Area</th><th>REST Paths</th></tr>
         </thead>
         <tbody>
-          <tr><td>System / health</td><td><code>GET /api/health</code>, <code>GET /api/metrics</code>, <code>GET /api/metrics/prometheus</code></td></tr>
-          <tr><td>Runtime AI config</td><td><code>GET /api/llm/config</code>, <code>PATCH /api/llm/config</code>, <code>POST /api/llm/config</code></td></tr>
-          <tr><td>Worlds</td><td><code>POST /api/worlds</code>, <code>GET /api/worlds</code>, <code>GET/PATCH/DELETE /api/worlds/&lt;world_id&gt;</code></td></tr>
-          <tr><td>Campaigns</td><td><code>POST /api/campaigns</code>, <code>GET /api/campaigns</code>, <code>GET/PATCH/DELETE /api/campaigns/&lt;campaign_id&gt;</code>, archive/restore/workspace/canon endpoints</td></tr>
-          <tr><td>Players</td><td><code>GET/POST /api/players/campaigns/&lt;campaign_id&gt;/players</code>, <code>GET/PATCH/DELETE /api/players/&lt;player_id&gt;</code></td></tr>
-          <tr><td>Sessions</td><td><code>POST /api/sessions/start</code>, <code>POST /api/sessions/&lt;session_id&gt;/end</code>, session list/import/archive/restore/delete/log/events/state endpoints</td></tr>
-          <tr><td>Maps</td><td><code>POST /api/maps</code>, <code>GET /api/maps</code>, <code>GET/PUT/PATCH /api/maps/&lt;map_id&gt;</code></td></tr>
-          <tr><td>Segments</td><td><code>POST /api/segments</code>, <code>GET /api/segments</code>, <code>POST /api/segments/activate</code>, <code>GET/PUT/PATCH/DELETE /api/segments/&lt;segment_id&gt;</code></td></tr>
-          <tr><td>TTS / feedback / beta</td><td><code>GET /api/tts/config</code>, <code>POST /api/tts/speak</code>, <code>POST /api/tts/stream</code>, <code>POST /api/feedback/coherence</code>, <code>GET /api/beta/summary</code></td></tr>
+          <tr><td>Accounts / workspaces</td><td><code>/api/accounts/login</code>, <code>/api/accounts/workspace</code>, <code>/api/accounts/workspaces</code>, <code>/api/accounts/workspace/select</code>, <code>/api/accounts/me</code>, <code>/api/accounts/session</code></td></tr>
+          <tr><td>System / health</td><td>Public <code>GET /api/health</code>; classified <code>/api/capabilities</code>, <code>/api/metrics*</code>, and <code>/api/beta/*</code></td></tr>
+          <tr><td>Worlds / campaigns</td><td>CRUD under <code>/api/worlds</code> and <code>/api/campaigns</code>, plus archive/restore/workspace/chronicle/canon</td></tr>
+          <tr><td>Campaign packs</td><td><code>/api/campaigns/pack-tools/*</code>, <code>/api/campaigns/example-packs*</code>, <code>/api/campaigns/installed-packs*</code>, <code>/api/campaigns/import-pack</code></td></tr>
+          <tr><td>Players / races / onboarding</td><td><code>/api/players/*</code>, <code>/api/races*</code>, <code>/api/custom-races*</code>, <code>/api/onboarding/*</code></td></tr>
+          <tr><td>Sessions</td><td><code>/api/sessions/start</code>, lifecycle, import/export, log/events/state, content settings, and pack progress</td></tr>
+          <tr><td>Maps / segments</td><td>CRUD/update paths under <code>/api/maps</code> and <code>/api/segments</code>, including segment activation</td></tr>
+          <tr><td>Bestiary / creatures / combat</td><td><code>/api/bestiary/*</code>, campaign/region bestiaries, <code>/api/creatures/*</code>, and <code>/api/sessions/&lt;session_id&gt;/combat/*</code></td></tr>
+          <tr><td>Runtime AI config</td><td><code>GET/PATCH/POST /api/llm/config</code></td></tr>
+          <tr><td>TTS / feedback</td><td><code>/api/tts/*</code>, <code>/api/feedback/coherence</code>, <code>/api/feedback/bad-turn</code></td></tr>
         </tbody>
       </table>
+      <p>See <a href="api_surface.md">API surface</a> for ownership, access classifications, error envelopes, and incoming/outgoing Socket.IO events.</p>
     </section>
 
     <section>
@@ -250,41 +255,44 @@
     participant Browser
     participant Socket as Flask-SocketIO
     participant Engine as TurnEngine
-    participant DB as SQLite / SQLAlchemy
-    participant LLM as LLM Provider
-    participant Canon as Canon Worker
+    participant DB as SQLAlchemy store
+    participant LLM as LLM provider
+    participant Canon as Canon worker
 
-    Browser-&gt;&gt;Socket: connect(auth token)
+    Browser-&gt;&gt;Socket: connect(auth token or account session)
     Browser-&gt;&gt;Socket: join_session(session_id, player_id)
-    Socket-&gt;&gt;DB: verify session/player/workspace
-    Socket--&gt;&gt;Browser: active_players and join messages
+    Socket-&gt;&gt;DB: verify session, player, workspace, capability
+    Socket--&gt;&gt;Browser: active_players / player_joined
     Browser-&gt;&gt;Socket: send_message(player input)
-    Socket-&gt;&gt;Engine: build TurnCommand
-    Engine-&gt;&gt;DB: serialize turn and write player event
-    Engine-&gt;&gt;LLM: stream DM prompt/context
-    LLM--&gt;&gt;Engine: streamed DM chunks
-    Engine--&gt;&gt;Browser: dm_response_start, dm_chunk, dm_response_end
-    Engine-&gt;&gt;DB: save turn, log entries, state/events
+    Socket-&gt;&gt;Engine: build validated TurnCommand
+    Engine-&gt;&gt;DB: coordinate turn and write durable player event
+    Engine-&gt;&gt;LLM: generate DM prompt/context
+    LLM--&gt;&gt;Engine: provider response or progressive chunks
+    Engine--&gt;&gt;Browser: dm_response_start / dm_chunk / dm_response_end
+    Engine-&gt;&gt;DB: persist logs, events, state, and mutation audit
     Engine-&gt;&gt;Canon: enqueue canon extraction job
     Canon-&gt;&gt;DB: update story memory and projections</pre>
       </div>
+      <p>Codex CLI is the exception to progressive provider streaming: its completed response is emitted only after the isolated CLI invocation succeeds.</p>
     </section>
 
     <section>
       <h2>Database Map</h2>
-      <p>The backend uses SQLAlchemy models and Alembic migrations. The default local database is:</p>
+      <p>SQLAlchemy models and Alembic migrations own the schema. The default local database is:</p>
       <pre class="code">~/.aidm/dnd_ai_dm.db</pre>
-      <p>The database can be redirected with:</p>
-      <pre class="code">AIDM_DATABASE_URI</pre>
+      <p><code>AIDM_DATABASE_URI</code> selects another database. Production validation requires a <code>postgresql+psycopg</code> URI; SQLite remains supported for local and test runs.</p>
       <table>
         <thead>
           <tr><th>Group</th><th>Tables</th></tr>
         </thead>
         <tbody>
-          <tr><td>Core campaign content</td><td><code>worlds</code>, <code>campaigns</code>, <code>maps</code>, <code>players</code>, <code>sessions</code>, <code>npcs</code>, <code>campaign_segments</code>, <code>story_events</code></td></tr>
-          <tr><td>Play history and session state</td><td><code>player_actions</code>, <code>session_log_entries</code>, <code>dm_turns</code>, <code>turn_events</code>, <code>session_states</code></td></tr>
+          <tr><td>Accounts and tenancy</td><td><code>accounts</code>, <code>workspaces</code>, <code>account_workspace_memberships</code></td></tr>
+          <tr><td>Core campaign content</td><td><code>worlds</code>, <code>campaigns</code>, <code>maps</code>, <code>players</code>, <code>custom_races</code>, <code>npcs</code>, <code>campaign_segments</code>, <code>story_events</code></td></tr>
+          <tr><td>Campaign packs</td><td><code>installed_campaign_packs</code>, <code>campaign_packs</code>, <code>campaign_pack_records</code>, <code>campaign_pack_sessions</code>, <code>campaign_pack_checkpoint_progress</code>, <code>campaign_pack_progress_events</code></td></tr>
+          <tr><td>Bestiary and combat</td><td><code>bestiary_entries</code>, <code>combat_encounters</code>, <code>combat_debug_events</code></td></tr>
+          <tr><td>Play history and live/projection state</td><td><code>sessions</code>, <code>player_actions</code>, <code>session_log_entries</code>, <code>dm_turns</code>, <code>turn_events</code>, <code>session_states</code></td></tr>
           <tr><td>Canon memory</td><td><code>story_entities</code>, <code>story_facts</code>, <code>story_threads</code>, <code>turn_canon_updates</code>, <code>canon_jobs</code></td></tr>
-          <tr><td>Operations and safety</td><td><code>rate_limit_events</code>, <code>dm_coherence_feedback</code>, <code>session_turn_locks</code></td></tr>
+          <tr><td>Operations, audit, and safety</td><td><code>session_state_mutation_audits</code>, <code>operator_action_audits</code>, <code>rate_limit_events</code>, <code>dm_coherence_feedback</code>, <code>session_turn_locks</code></td></tr>
         </tbody>
       </table>
     </section>
@@ -299,7 +307,8 @@
           <tr><td>Gemini</td><td>DM narration/model generation</td><td><code>AIDM_LLM_PROVIDER=gemini</code>, <code>GOOGLE_GENAI_API_KEY</code>, <code>AIDM_LLM_MODEL</code>, <code>AIDM_LLM_FALLBACK_MODELS</code></td></tr>
           <tr><td>NVIDIA / Kimi</td><td>OpenAI-compatible model generation</td><td><code>AIDM_LLM_PROVIDER=nvidia</code> or <code>kimi</code>, <code>AIDM_NVIDIA_API_KEY</code>, <code>AIDM_NVIDIA_INVOKE_URL</code>, <code>AIDM_LLM_MODEL</code></td></tr>
           <tr><td>DeepSeek</td><td>OpenAI-compatible model generation</td><td><code>AIDM_LLM_PROVIDER=deepseek</code>, <code>AIDM_DEEPSEEK_API_KEY</code>, <code>AIDM_DEEPSEEK_BASE_URL</code>, <code>AIDM_LLM_MODEL</code></td></tr>
-          <tr><td>Local fallback</td><td>Deterministic no-key development mode</td><td><code>AIDM_LLM_PROVIDER=fallback</code>, <code>AIDM_LLM_MODEL=deterministic-v1</code></td></tr>
+          <tr><td>Codex CLI</td><td>Isolated CLI-backed generation</td><td><code>AIDM_LLM_PROVIDER=codex_cli</code>, <code>AIDM_CODEX_EXECUTABLE</code>, <code>AIDM_CODEX_HOME</code>, <code>AIDM_CODEX_ACCESS_TOKEN</code>, <code>AIDM_LLM_MODEL</code></td></tr>
+          <tr><td>Local fallback</td><td>Deterministic no-key local/test mode</td><td><code>AIDM_LLM_PROVIDER=fallback</code>, <code>AIDM_LLM_MODEL=deterministic-v1</code></td></tr>
           <tr><td>Deepgram</td><td>Text-to-speech audio</td><td><code>AIDM_DEEPGRAM_API_KEY</code>, <code>AIDM_DEEPGRAM_TTS_MODEL</code></td></tr>
           <tr><td>External telemetry</td><td>Optional event delivery outside the process</td><td><code>AIDM_TELEMETRY_ENABLED</code>, <code>AIDM_TELEMETRY_ENDPOINT</code>, <code>AIDM_TELEMETRY_API_KEY</code></td></tr>
           <tr><td>Auth and sharing</td><td>Protect public or tunneled play sessions</td><td><code>AIDM_AUTH_REQUIRED</code>, <code>AIDM_API_AUTH_TOKENS</code>, <code>AIDM_API_AUTH_TOKEN_WORKSPACES</code></td></tr>
@@ -308,28 +317,29 @@
     </section>
 
     <section>
-      <h2>Local Deployment Choices</h2>
+      <h2>Deployment Shapes</h2>
       <div class="diagram">
         <pre class="mermaid">flowchart TB
-    separate["Separate dev mode"]
+    separate["Separate development mode"]
     vite["Vite frontend&lt;br/&gt;127.0.0.1:5173"]
     flask["Flask backend&lt;br/&gt;127.0.0.1:5050"]
-    unified["Unified mode"]
-    oneOrigin["Flask serves built React app&lt;br/&gt;and /api/* from 127.0.0.1:5050"]
-    remote["Remote multiplayer"]
-    tunnel["Expose only port 5050&lt;br/&gt;through HTTPS tunnel or deployment"]
+    unified["Unified local mode"]
+    oneOrigin["Flask serves built React app,&lt;br/&gt;/api/*, and /socket.io&lt;br/&gt;127.0.0.1:5050"]
+    hosted["Production / hosted"]
+    proxy["HTTPS reverse proxy or platform&lt;br/&gt;explicit origins and secure cookies"]
+    worker["One threaded Socket.IO worker&lt;br/&gt;PostgreSQL, DB rate limit,&lt;br/&gt;DB turn coordinator"]
 
     separate --&gt; vite
     separate --&gt; flask
     vite --&gt;|Vite proxy /api and /socket.io| flask
     unified --&gt; oneOrigin
-    remote --&gt; tunnel
-    tunnel --&gt; oneOrigin</pre>
+    hosted --&gt; proxy
+    proxy --&gt; worker</pre>
       </div>
     </section>
 
     <section class="summary">
-      <p><strong>Cousin-level summary:</strong> the browser runs the React game UI, Flask runs the APIs and realtime socket server, SQLite stores the campaign/session/story state locally by default, and the backend calls external AI/TTS providers only when those API keys are configured.</p>
+      <p><strong>In short:</strong> the browser runs the React UI; Flask owns REST, realtime access, turns, and background canon work; SQLAlchemy stores durable state; and the backend calls configured AI/TTS providers. Local runs can use SQLite, while production uses PostgreSQL and the validated single-worker Socket.IO model.</p>
       <p class="note">This HTML uses Mermaid from a public CDN, so the diagrams need an internet connection to render. The text and tables still display without it.</p>
     </section>
   </main>

@@ -21,6 +21,7 @@ from aidm_server.auth import (
     generate_account_token,
     generate_workspace_token,
     hash_secret,
+    is_legacy_recovery_token,
     normalize_workspace_name,
     normalize_workspace_name_key,
     normalize_workspace_id,
@@ -80,8 +81,8 @@ from aidm_server.validation import optional_text as _optional_text, parse_json_b
 logger = logging.getLogger(__name__)
 accounts_bp = Blueprint('accounts', __name__)
 LEGACY_PASSWORD_SETUP_MESSAGE = (
-    'Legacy account found. Use Sign Up with this username, the exact first and last name originally used, '
-    'and a new password.'
+    'Legacy account found. Use the saved account session or ask the AIDM operator for a recovery code, '
+    'then set a new password.'
 )
 WORKSPACE_NAME_TAKEN_MESSAGE = 'table/ workspace name already in use'
 ACCOUNT_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
@@ -91,14 +92,22 @@ def _legacy_password_setup_required_response():
     return error_response('legacy_password_setup_required', LEGACY_PASSWORD_SETUP_MESSAGE, 401)
 
 
-def _preauth_rate_limit_response(*, action: str, normalized_target: str):
+def _preauth_rate_limit_response(
+    *,
+    action: str,
+    normalized_target: str,
+    target_bucket_scope: str | None = None,
+):
     """Consume compound, IP-wide, and target-wide credential-attempt buckets."""
     client_ip = request.remote_addr or 'unknown'
     secret_key = current_app.secret_key
+    target_bucket_target = normalized_target
+    if target_bucket_scope is not None:
+        target_bucket_target = f'{normalized_target}\x00scope:{target_bucket_scope}'
     limiter_specs: tuple[tuple[str, str, str], ...] = (
         ('ip-target', 'aidm_preauth_ip_target_limiter', normalized_target),
         ('ip', 'aidm_preauth_ip_limiter', '*'),
-        ('target', 'aidm_preauth_target_limiter', normalized_target),
+        ('target', 'aidm_preauth_target_limiter', target_bucket_target),
     )
     for dimension, extension_name, target in limiter_specs:
         limiter: FixedWindowRateLimiter = current_app.extensions[extension_name]
@@ -241,20 +250,6 @@ def _truthy_payload_flag(value) -> bool:
 
 def _legacy_claim_requested(payload: dict) -> bool:
     return _truthy_payload_flag(payload.get('legacy_claim') or payload.get('legacyClaim'))
-
-
-def _legacy_claim_identity_matches(account: Account, first_name: str | None, last_name: str | None) -> bool:
-    existing_first = str(account.first_name or '').strip().casefold()
-    existing_last = str(account.last_name or '').strip().casefold()
-    supplied_first = str(first_name or '').strip().casefold()
-    supplied_last = str(last_name or '').strip().casefold()
-    return bool(existing_first and existing_last and supplied_first and supplied_last) and (
-        existing_first,
-        existing_last,
-    ) == (
-        supplied_first,
-        supplied_last,
-    )
 
 
 def _account_intent_from_payload(payload: dict) -> tuple[str | None, str | None]:
@@ -572,7 +567,6 @@ def login_or_create_account():
             token_is_valid_for_account = bool(token_account and token_account.account_id == account.account_id)
             if not account_has_password:
                 legacy_claim_requested = _legacy_claim_requested(payload) or account_intent == 'signup'
-                legacy_identity_claim_allowed = False
                 if legacy_claim_requested and not token_is_valid_for_account:
                     limited_response = _preauth_rate_limit_response(
                         action='account-legacy-claim',
@@ -580,17 +574,10 @@ def login_or_create_account():
                     )
                     if limited_response:
                         return limited_response
-                    legacy_identity_claim_allowed = _legacy_claim_identity_matches(
-                        account,
-                        first_name,
-                        last_name,
-                    )
-                password_setup_allowed = bool(password) and (
-                    token_is_valid_for_account
-                    or legacy_identity_claim_allowed
-                )
+                password_setup_allowed = bool(password) and token_is_valid_for_account
                 if password_setup_allowed:
-                    if not token_is_valid_for_account:
+                    # Recovery tokens are marked at issuance; rotation never depends on a client flag.
+                    if is_legacy_recovery_token(token):
                         token = generate_account_token()
                     account.account_token_hash = hash_secret(token)
                     account.password_hash = password_hash_for(password)
@@ -672,6 +659,7 @@ def join_account_workspace():
                 if workspace is not None
                 else normalize_workspace_name_key(workspace_name)
             ),
+            target_bucket_scope=f'account:{account.account_id}',
         )
         if limited_response:
             return limited_response

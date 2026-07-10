@@ -23,7 +23,7 @@ deciding whether to invite more testers.
 make closed-beta-rc
 make local-beta-slo-baseline
 make deployment-readiness DEPLOYMENT_READINESS_ARGS="--env-file <target-env> --target-url <target-url> --auth-token <token> --evidence-report tmp/release/deployment-readiness-evidence.md"
-make hosted-cookie-auth-smoke HOSTED_COOKIE_AUTH_SMOKE_ARGS="--evidence-report tmp/release/hosted-cookie-auth-evidence.md"
+make hosted-cookie-auth-smoke HOSTED_COOKIE_AUTH_SMOKE_ARGS="--target-url <target-url> --account-intent signup --evidence-report tmp/release/hosted-cookie-auth-evidence.md"
 make beta-slo-baseline BETA_SLO_BASELINE_ARGS="--target-url <target-url> --auth-token <token> --workspace-id <workspace-id> --release RC1 --environment staging --output tmp/release/beta-slo-baseline.md"
 ```
 
@@ -37,6 +37,11 @@ target-environment evidence for inviting more testers.
 The `beta-slo-baseline` target writes `tmp/release/beta-slo-baseline.md` from
 the hosted target. It can also render from saved evidence with `--slo-json` and
 `--incidents-json`.
+
+The repository defines the measurements but does not define universal pass/fail
+thresholds for every deployment. Record the release owner's thresholds and the
+named alert owner in the decision copy; the presence of a rendered baseline is
+not by itself approval to expand the tester group.
 
 ## Baseline Metrics
 

@@ -1,5 +1,10 @@
 # Organized AIDM Improvement Suggestions
 
+> **Archived historical review:** This organized copy preserves findings from
+> an earlier repository state. Its present-tense descriptions, paths, commands,
+> and open-item labels are not current guidance. Check `../index.md`,
+> `../roadmap.md`, and the current implementation before acting on an item.
+
 This is a sorted copy of `docs/archive/improvements_suggestions_legacy.md`. The original recommendation and finding text is preserved verbatim, with only organization headings and source labels added here.
 
 ## Table of Contents

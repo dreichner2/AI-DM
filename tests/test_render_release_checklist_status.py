@@ -416,6 +416,61 @@ def test_build_status_report_marks_hosted_items_passed_when_packet_is_complete(t
     assert report['counts'] == {'passed': 6}
 
 
+def test_security_recovery_and_workspace_isolation_rows_require_current_clean_rc(
+    tmp_path,
+    monkeypatch,
+):
+    checklist = tmp_path / 'release_checklist.md'
+    checklist.write_text(
+        '\n'.join(
+            [
+                '## Security',
+                '- [ ] Passwordless legacy recovery requires a valid saved or operator-issued high-entropy account token.',
+                '- [ ] Workspace-password target limiting is scoped per authenticated account and canonical workspace.',
+                '',
+            ]
+        ),
+        encoding='utf-8',
+    )
+    packet_path = _write_packet(tmp_path / 'packet-security-regressions.json', hosted_ready=True)
+    monkeypatch.setattr(checklist_status, '_current_git_snapshot', lambda: ('abc123', True))
+
+    report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-07-10T00:00:00+00:00',
+    )
+
+    assert report['counts'] == {'passed': 2}
+    assert all('regression' in item['evidence'] for item in report['items'])
+
+
+def test_security_regression_rows_do_not_reuse_stale_rc_packet(tmp_path, monkeypatch):
+    checklist = tmp_path / 'release_checklist.md'
+    checklist.write_text(
+        '\n'.join(
+            [
+                '## Security',
+                '- [ ] Passwordless legacy recovery requires a valid saved or operator-issued high-entropy account token.',
+                '- [ ] Workspace-password target limiting is scoped per authenticated account and canonical workspace.',
+                '',
+            ]
+        ),
+        encoding='utf-8',
+    )
+    packet_path = _write_packet(tmp_path / 'packet-stale-security-regressions.json', hosted_ready=True)
+    monkeypatch.setattr(checklist_status, '_current_git_snapshot', lambda: ('def456', True))
+
+    report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-07-10T00:00:00+00:00',
+    )
+
+    assert report['counts'] == {'external-required': 2}
+    assert all('not current' in item['evidence'] for item in report['items'])
+
+
 def test_build_status_report_uses_hosted_rc_aggregate_checks(tmp_path):
     checklist = tmp_path / 'release_checklist.md'
     checklist.write_text(

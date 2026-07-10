@@ -1,5 +1,10 @@
 # AIDM Improvement Suggestions
 
+> **Archived historical review:** This document preserves findings from an
+> earlier repository state. Its present-tense descriptions, paths, commands,
+> and open-item labels are not current guidance. Check `../index.md`,
+> `../roadmap.md`, and the current implementation before acting on an item.
+
 This file captures repo-wide cleanup and product improvement notes from the current frontend/backend pass. Items marked "fixed in this pass" were addressed directly; larger items are intentionally left as suggestions so they can be planned without a risky overhaul.
 
 ## Navigation

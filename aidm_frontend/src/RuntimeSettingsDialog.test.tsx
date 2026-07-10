@@ -22,6 +22,7 @@ function dialogProps(overrides: Partial<RuntimeSettingsDialogProps> = {}): Runti
       firstName: '',
       lastName: '',
       password: '',
+      recoveryCode: '',
     },
     legacyPasswordSetupRequired: false,
     mode: 'settings',
@@ -79,6 +80,7 @@ describe('RuntimeSettingsDialog', () => {
       firstName: '',
       lastName: '',
       password: '',
+      recoveryCode: '',
     })
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save Settings' }))
@@ -107,8 +109,9 @@ describe('RuntimeSettingsDialog', () => {
     expect(within(dialog).getByRole('button', { name: 'Close account prompt' })).toBeInTheDocument()
     expect(within(dialog).getAllByText(LEGACY_PASSWORD_SETUP_MESSAGE)).not.toHaveLength(0)
     expect(within(dialog).getByLabelText('New Password')).toHaveAttribute('autocomplete', 'new-password')
-    expect(within(dialog).getByLabelText('First Name')).toBeInTheDocument()
-    expect(within(dialog).getByLabelText('Last Name')).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('Recovery Code')).toHaveAttribute('autocomplete', 'one-time-code')
+    expect(within(dialog).queryByLabelText('First Name')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Last Name')).not.toBeInTheDocument()
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Log In' }))
     expect(props.onAuthIntentChange).toHaveBeenCalledWith('login')

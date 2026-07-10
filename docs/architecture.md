@@ -1,71 +1,134 @@
 # AIDM Architecture
 
-This document is the current high-level map. It is intentionally shorter than
-the archived review notes and should stay focused on where behavior lives.
+This document is the current high-level map of the application. Detailed route,
+provider, and state contracts live in [API surface](api_surface.md),
+[LLM provider routing](llm_provider_routing.md), and
+[runtime state boundaries](runtime_state_boundaries.md).
 
-## Runtime
+## Application Composition
 
-- `aidm_server/main.py` builds the Flask app, middleware stack, auth/workspace
-  context, CORS, rate limiter, telemetry, schema guardrails, and Socket.IO
-  runtime.
-- `aidm_server/config.py` owns environment parsing. Production rejects an
-  ephemeral `FLASK_SECRET_KEY` and rejects `AIDM_AUTO_CREATE_SCHEMA=true`.
-- `aidm_server/deploy_bootstrap.py` is a preflight runner. It runs migrations,
-  validates config and endpoints, checks Socket.IO auth behavior, hardens local
-  file permissions, and may serve local/test runs. Production must use
-  `--check-only` and then a production Socket.IO server.
+- `aidm_server/main.py` builds the Flask application, request middleware,
+  authentication and workspace context, CORS, rate limiting, telemetry, schema
+  guardrails, blueprints, and Socket.IO runtime.
+- `aidm_server/config.py` owns environment parsing and deployment validation.
+  Production rejects an ephemeral `FLASK_SECRET_KEY`, automatic schema creation,
+  and other unsafe runtime combinations.
+- `aidm_server/deploy_bootstrap.py` runs preflight checks and migrations. It may
+  serve local or test runs, but production uses `--check-only` before starting
+  the production Socket.IO server.
+- The React/Vite frontend lives in `aidm_frontend/`. Development normally uses a
+  Vite origin with API and Socket.IO proxies; unified builds are served by Flask
+  from one origin.
 
-## Auth And Workspaces
+## Access Control And Workspaces
 
 - Account sessions use bearer account tokens stored as hashes server-side.
 - Workspace access can come from configured workspace tokens or saved account
-  workspace membership.
+  workspace membership. Browser credentials are attached only to the configured
+  backend origin.
+- `aidm_server/capabilities.py` is the fail-closed authorization inventory for
+  HTTP methods and incoming Socket.IO events. It separates player reads/actions,
+  DM authoring/runtime control, debug reads, and workspace administration.
+- The application validates the HTTP capability inventory during construction;
+  a newly exposed route must be classified as public, self-service, or assigned
+  a capability.
 - Existing accounts with no password hash are legacy accounts. They cannot log
-  in by username alone; they need a valid saved account token or an explicit
-  legacy claim that sets a password immediately.
+  in or set a password from username/name fields alone. Password setup requires
+  a valid saved account token or a high-entropy replacement issued by the
+  operator; recovery use rotates that token after the password is set.
 - Player visibility flows through workspace and account helpers rather than
-  route-local ad hoc filters.
+  route-local filters.
 
-## Gameplay State
+## HTTP And Realtime Boundaries
 
-- Player turns enter through Socket.IO contracts, then flow through turn
-  coordination, persistence, DM generation, state extraction/validation,
-  application, and canon queueing.
-- `aidm_server/game_state/` owns structured state changes, validation, action
-  extraction, and application.
-- `aidm_server/turn_events.py` is the durable event spine for user-visible and
-  system-visible session events.
-- `aidm_server/canon_jobs.py` owns queued/running/terminal canon extraction
-  work and projection refresh.
+- REST blueprints are registered in `aidm_server/main.py`; response DTOs are
+  declared in `aidm_server/api_type_contract.py` and built through
+  `aidm_server/response_dtos.py`.
+- `scripts/generate_api_types.py` generates
+  `aidm_frontend/src/apiContract.generated.ts`. `make api-types` refreshes it,
+  and `make dev-check` verifies that it is current.
+- GET endpoints are read-only. Repair, import, lifecycle, and other mutations use
+  explicit write endpoints, migrations, or operator tools.
+- `aidm_server/blueprints/socketio_events.py` wires the Socket.IO handlers.
+  Presence, typing, music, turn control, player messages, and clarifications are
+  implemented in the split `aidm_server/socket_*.py` modules.
+- `aidm_server/socket_contracts.py` parses incoming payloads.
+  `aidm_server/socket_runtime.py` resolves authenticated account/workspace
+  context and connection capabilities; `aidm_server/blueprints/socketio_events.py`
+  wires the capability and workspace checks into each event handler.
 
-## REST Boundaries
+## Gameplay And Runtime State
 
-- GET endpoints should be read-only. Legacy repair behavior belongs in explicit
-  POST endpoints, CLI tools, migrations, or local-only startup repair.
-- Player starting inventory/spell repair is exposed as:
-  `POST /api/players/<player_id>/repair-starting-loadout`.
-- Session start idempotency accepts `client_session_id` or `idempotency_key`
-  up to 80 supported characters and rejects longer values rather than
-  truncating.
+- Player turns enter through Socket.IO, then flow through turn coordination,
+  durable player events, rules and roll policy, DM generation, state extraction,
+  validation, application, and canon queueing.
+- `aidm_server/turn_engine.py` orchestrates a turn. Supporting behavior is split
+  across `turn_coordinator.py`, `turn_rules.py`, `turn_roll_policy.py`,
+  `turn_narration.py`, `turn_segments.py`, and `turn_events.py`.
+- `aidm_server/game_state/` owns structured action/state schemas, extraction,
+  validation, application, combat resolution, and state-change logging.
+- `Session.state_snapshot` is live runtime truth once present. Projection,
+  authored-content, campaign-pack, and long-term canon tables have distinct
+  responsibilities documented in [runtime state boundaries](runtime_state_boundaries.md).
+- `aidm_server/canon_jobs.py` owns queued, running, and terminal canon extraction
+  jobs. `canon_projection.py` and related canon modules refresh durable story
+  memory and projections.
+
+## Authored Content And Lifecycle Services
+
+- Campaign-pack manifests are linted, forged, imported, stored, projected into
+  a session snapshot, and advanced by the modules under
+  `aidm_server/services/campaign_pack*.py` and the runtime schema in
+  `docs/campaign_pack.schema.json`.
+- Campaign-pack database records and progress events are durable authored and
+  progress data; the snapshot `campaignPack` object is the runtime mirror used
+  while playing.
+- Campaign, player, and session archive/restore/delete behavior is implemented
+  in `aidm_server/services/campaign_lifecycle.py`,
+  `player_lifecycle.py`, and `session_lifecycle.py`.
+- Bestiary, creature generation, combat state, enemy planning, morale, and
+  encounter resolution are owned by `aidm_server/creatures/`,
+  `aidm_server/combat/`, the creature REST blueprint, and the game-state combat
+  orchestration layer.
+
+## LLM And TTS Integrations
+
+- `aidm_server/provider_registry.py` is the configured provider/model catalog;
+  `aidm_server/llm_providers.py` implements Gemini, DeepSeek, NVIDIA/Kimi,
+  isolated Codex CLI, and deterministic fallback providers.
+- The main narration provider and task-specific helper providers are configured
+  separately. Helper routing uses task defaults, named profiles, and scoped
+  environment overrides; see [LLM provider routing](llm_provider_routing.md).
+- Codex CLI execution uses a disposable isolated workspace, a constrained
+  environment, and fail-closed structured-event handling. It does not expose the
+  repository or host tools to model-generated commands.
+- Deepgram TTS is optional and is exposed through the system blueprint when its
+  API key is configured.
 
 ## Frontend
 
-- `aidm_frontend/src/App.tsx` still orchestrates broad runtime state and some
-  dialogs. Continue extracting dialog components until App is mostly shell,
-  selected campaign/session/player state, socket lifecycle, and layout.
+- `aidm_frontend/src/App.tsx` remains the top-level shell for selected
+  campaign/session/player state, socket lifecycle, layout, and some dialogs.
 - Extracted dialogs share `aidm_frontend/src/ModalShell.tsx` and
-  `aidm_frontend/src/useModalFocusTrap.ts` for backdrop, dialog semantics,
-  initial focus, Escape close, Tab looping, and focus return.
-- API DTO types are generated from `aidm_server/api_type_contract.py` into
-  `aidm_frontend/src/apiContract.generated.ts`. CI verifies this file is fresh.
+  `aidm_frontend/src/useModalFocusTrap.ts` for dialog semantics, focus movement,
+  Escape close, Tab looping, and focus return.
+- API requests are centralized in `aidm_frontend/src/api.ts`; realtime behavior
+  is split across the socket hooks and event-contract code under
+  `aidm_frontend/src`.
 - CSS is split by surface under `aidm_frontend/src/styles/`; responsive changes
-  should preserve desktop behavior unless the task explicitly targets desktop.
+  should preserve desktop behavior unless a change explicitly targets desktop.
 
-## Data Integrity
+## Persistence And Deployment
 
-- Session archive/restore/delete behavior already has a service module in
-  `aidm_server/services/session_lifecycle.py`.
-- Campaign and player lifecycle behavior should follow that service-layer
-  pattern before more route-level deletion logic is added.
-- Destructive flows need tests that verify archive preservation, restore scope,
-  force-delete cleanup, and turn-history readability after player deletion.
+- SQLAlchemy models are declared in `aidm_server/models.py`; Alembic migrations
+  under `migrations/` are the schema history. Local and test runs support SQLite,
+  with the default local database at `~/.aidm/dnd_ai_dm.db`.
+- Production configuration requires a `postgresql+psycopg` database URI,
+  database-backed rate limiting and turn coordination, one threaded Socket.IO
+  worker, an explicit CORS policy (exact allowlists or an intentionally empty
+  same-origin policy), security headers, and configured observability ownership.
+- Production schema changes are applied with migrations before startup;
+  `AIDM_AUTO_CREATE_SCHEMA=true` is rejected.
+- Destructive lifecycle flows are covered by tests for archive preservation,
+  restore scope, force-delete cleanup, and turn-history readability after player
+  deletion.

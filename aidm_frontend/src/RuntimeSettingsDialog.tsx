@@ -244,6 +244,7 @@ export function RuntimeSettingsDialog({
                       onFormChange((current) => ({
                         ...current,
                         username: event.target.value,
+                        recoveryCode: '',
                       }))
                       if (legacyPasswordSetupRequired) {
                         onLegacyPasswordSetupRequiredChange(false)
@@ -274,7 +275,7 @@ export function RuntimeSettingsDialog({
                   />
                 </label>
               </div>
-              {runtimeAuthIntent === 'signup' ? (
+              {runtimeAuthIntent === 'signup' && !legacyPasswordSetupRequired ? (
                 <div className="dialog-grid two">
                   <label>
                     First Name
@@ -303,6 +304,23 @@ export function RuntimeSettingsDialog({
                     />
                   </label>
                 </div>
+              ) : null}
+              {legacyPasswordSetupRequired ? (
+                <label>
+                  Recovery Code
+                  <input
+                    value={form.recoveryCode}
+                    onChange={(event) =>
+                      onFormChange((current) => ({
+                        ...current,
+                        recoveryCode: event.target.value,
+                      }))
+                    }
+                    placeholder="Operator-issued recovery code"
+                    type="password"
+                    autoComplete="one-time-code"
+                  />
+                </label>
               ) : null}
             </>
           ) : null}
@@ -529,6 +547,7 @@ export function RuntimeSettingsDialog({
                     firstName: '',
                     lastName: '',
                     password: '',
+                    recoveryCode: '',
                   })
                 }
               >

@@ -23,6 +23,7 @@ const emptyAccountFields = {
   firstName: '',
   lastName: '',
   password: '',
+  recoveryCode: '',
 }
 
 function createStorageMock(): Storage {
@@ -232,6 +233,7 @@ describe('useRuntimeSettings', () => {
         firstName: 'Danny',
         lastName: 'Reichner',
         password: 'secret',
+        recoveryCode: '',
       })
     })
     await act(async () => {
@@ -363,6 +365,7 @@ describe('useRuntimeSettings', () => {
         firstName: 'Cookie',
         lastName: 'Player',
         password: 'secret',
+        recoveryCode: '',
       })
     })
     await act(async () => {
@@ -450,6 +453,7 @@ describe('useRuntimeSettings', () => {
         firstName: '',
         lastName: '',
         password: 'secret',
+        recoveryCode: '',
       })
     })
     await act(async () => {
@@ -475,6 +479,7 @@ describe('useRuntimeSettings', () => {
         firstName: 'Danny',
         lastName: 'Reichner',
         password: 'secret',
+        recoveryCode: '',
       })
     })
     await act(async () => {
@@ -490,14 +495,16 @@ describe('useRuntimeSettings', () => {
     expect(result.current.runtimeSettingsError).toBe('Username is already taken. Please sign in.')
   })
 
-  it('prompts legacy passwordless accounts to use Sign Up and save a password', async () => {
+  it('uses an out-of-band recovery code without placing it in the request body or storage', async () => {
     const requestBodies: Array<Record<string, unknown>> = []
+    const requestHeaders: Headers[] = []
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const path = new URL(String(input), 'http://localhost').pathname
         const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {}
         requestBodies.push(body)
+        requestHeaders.push(new Headers(init?.headers))
         if (path === '/api/accounts/login' && body.intent === 'login') {
           return new Response(
             JSON.stringify({
@@ -551,6 +558,7 @@ describe('useRuntimeSettings', () => {
         firstName: '',
         lastName: '',
         password: '',
+        recoveryCode: '',
       })
     })
 
@@ -572,9 +580,8 @@ describe('useRuntimeSettings', () => {
     act(() => {
       result.current.setRuntimeSettingsForm((current) => ({
         ...current,
-        firstName: 'Danny',
-        lastName: 'Reichner',
         password: 'new-secret',
+        recoveryCode: 'operator-recovery-code',
       }))
     })
     await act(async () => {
@@ -583,13 +590,26 @@ describe('useRuntimeSettings', () => {
 
     expect(requestBodies[1]).toMatchObject({
       username: 'Danny',
-      first_name: 'Danny',
-      last_name: 'Reichner',
       password: 'new-secret',
       intent: 'signup',
+      legacy_claim: true,
+      legacy_recovery: true,
     })
-    expect(requestBodies[1]).not.toHaveProperty('legacy_claim')
+    expect(requestBodies[1]).not.toHaveProperty('first_name')
+    expect(requestBodies[1]).not.toHaveProperty('last_name')
+    expect(requestBodies[1]).not.toHaveProperty('recovery_code')
+    expect(JSON.stringify(requestBodies)).not.toContain('operator-recovery-code')
+    expect(requestHeaders[1].get('Authorization')).toBe('Bearer operator-recovery-code')
     expect(sessionStorage.getItem('aidm:authToken')).toBe('upgraded-account-token')
+    expect(sessionStorage.setItem).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('operator-recovery-code'),
+    )
+    expect(localStorage.setItem).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('operator-recovery-code'),
+    )
+    expect(result.current.runtimeSettingsForm.recoveryCode).toBe('')
     expect(result.current.legacyPasswordSetupRequired).toBe(false)
     expect(result.current.runtimeSettingsError).toBe('')
     expect(result.current.runtimeAuthStep).toBe('workspace')
@@ -836,6 +856,7 @@ describe('useRuntimeSettings', () => {
         firstName: '',
         lastName: '',
         password: '',
+        recoveryCode: '',
       })
     })
     await act(async () => {

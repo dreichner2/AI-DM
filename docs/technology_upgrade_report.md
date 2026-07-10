@@ -2,12 +2,72 @@
 
 Date: 2026-07-10
 
-Status: repository implementation, GitHub CI/CodeQL, full RC, hash-locked hosted
-redeployment, and the managed staging PostgreSQL 17-to-18 upgrade are complete.
-The staging cutover was performed under maintenance mode only after two fresh,
-verified rollback/forward backups were created. The upgrade is merged to
+Evidence snapshot: the full local RC result below belongs to commit `f68a3dd`;
+the cited GitHub CI, CodeQL, hosted deployment, and Closed Beta RC evidence
+belongs to the exact commits and run IDs recorded in this report. Later commits
+exist. The test counts, clean-worktree state, deployment result, and RC pass in
+this document do not certify a newer `HEAD`; regenerate same-commit evidence
+before using it for release signoff.
+
+Snapshot status: repository implementation, the cited GitHub CI/CodeQL runs,
+the cited full RC, the cited hash-locked hosted redeployment, and the managed
+staging PostgreSQL 17-to-18 upgrade were recorded as complete. The staging
+cutover was recorded as running under maintenance mode only after two fresh,
+verified rollback/forward backups were created. The upgrade was merged to
 `main`; production release signoff remains separate from this staging
 validation.
+
+Hosted database versions/counts, provider backup retention, Render build and
+deploy IDs, CodeQL results, and network controls remain external facts. The
+dated refresh below was verified through authenticated read-only GitHub and
+Render interfaces; it is not reproducible from the tracked repository because
+the repository does not contain provider dashboard state or a provider-specific
+application deployment manifest. Recheck these facts for release signoff rather
+than treating this snapshot as permanent.
+
+## Live external refresh — 2026-07-10 20:34–21:00 UTC
+
+This refresh supersedes only the volatile hosted facts below; the dependency
+and upgrade narrative in the rest of this report remains tied to its recorded
+commits and artifacts.
+
+- Local `HEAD`, `origin/main`, and the live Render deploy all resolved to
+  `2af959fe939dca22fa697906da6974ee02c81c6c`. Render deploy
+  `dep-d98klt67r5hc7390f6dg` was live on service
+  `srv-d9861cnavr4c738vc6g0` with exactly one active instance.
+- GitHub AIDM CI run `29118862917` passed backend, PostgreSQL integration, and
+  frontend jobs on that commit. CodeQL run `29118862604` passed Actions,
+  Python, and JavaScript/TypeScript analysis. GitHub reported zero open code
+  scanning alerts and zero open Dependabot alerts.
+- Closed Beta RC run `29122025283` was dispatched with browser smoke and
+  dependency audits enabled and passed on that same commit. Evidence artifact
+  `8239016562` is retained by GitHub through 2026-08-09.
+- Render PostgreSQL `dpg-d985kvq8qa3s73eu4mug-a` was available on exact server
+  version 18.4 and Alembic revision `0029_players_account_fk`. The Basic 256 MB
+  staging database had a 1 GB disk, no HA, and no read replicas.
+- The authenticated Render Recovery view advertised point-in-time recovery for
+  the previous three days and logical exports retained for at least seven days.
+  The post-upgrade PostgreSQL 18.4 restore drill separately matched 37 tables,
+  57 rows, 34 sequences, Alembic head, indexes, and constraints.
+- Render's database-specific networking view reported external database traffic
+  blocked and disabled the external URL/PSQL paths. The web service itself is
+  intentionally public. Do not interpret workspace-level `0.0.0.0/0` HTTP
+  ingress as database internet access.
+- Hosted configuration used secure cookie-only account auth with
+  `SameSite=Lax`, no explicit cookie domain, raw account-token responses
+  disabled, one threaded Gunicorn worker, database-backed rate limiting/turn
+  coordination, and explicit staging/custom-domain CORS origins. A fresh live
+  hosted smoke on current `main` passed login, CSRF rejection, cookie-authenticated
+  Socket.IO, workspace/session cleanup, logout cookie clearing, and post-logout
+  rejection.
+- External telemetry was enabled with a Better Stack HTTPS ingestion
+  destination, an API credential, Render as the observability provider, and
+  `staging-operator` as alert owner. Render logs showed no delivery-failed,
+  queue-full, rejected-event, or disabled-telemetry messages after the current
+  deploy. An authenticated Better Stack query then confirmed two received
+  sanitized `auth.preauth_rate_limited` target events; its telemetry alert
+  opened incident `988754897`, delivered notification, observed recovery, and
+  auto-resolved.
 
 The complete resolved dependency inventories are
 `requirements.runtime.lock.txt`, `requirements-dev.lock.txt`, and
@@ -162,7 +222,7 @@ requires a fresh encrypted/off-site backup set as required by the runbook.
 See `docs/postgresql18_upgrade_runbook.md` for the provider clone, maintenance,
 cutover, validation, and rollback sequence.
 
-## Validation completed
+## Validation completed for this snapshot
 
 - Clean Python 3.14.6 environment installed entirely from the hashed
   development lock; Linux CPython 3.14 wheels were also resolved successfully.
@@ -217,9 +277,16 @@ cutover, validation, and rollback sequence.
   staging cutover used repeated local PostgreSQL 18 forward rehearsals, two
   PostgreSQL 17-native rollback restores, a final maintenance-mode write freeze,
   and exact pre/post data comparison. An in-place downgrade remains impossible.
-- Docker is not installed on this Mac, so Prometheus/Grafana image references
-  and configuration were statically validated but the upgraded images were not
-  pulled and started locally.
+- Colima 0.10.3, Docker CLI 29.6.1, and Docker Compose 5.3.1 were installed on
+  this Mac. The Docker-required observability check passed; the pinned
+  Prometheus 3.13.1 and Grafana 13.1.0 services reached their health endpoints,
+  the provisioned dashboard and datasource were healthy, and Prometheus
+  reported `up{job="aidm-backend"}=1` while scraping a temporary isolated AIDM
+  instance. The temporary application/database and the Compose containers,
+  network, and volumes were then removed. Separately, the standalone
+  block-diagram HTML was loaded through local HTTP in real Chrome: Mermaid
+  11.16.0 rendered all three diagrams with nonzero geometry and no Mermaid
+  errors.
 - Browser/visual smoke can log a false WebSocket HTTP 500 when Werkzeug's
   development server tears down a healthy upgraded socket. Production uses
   Gunicorn `gthread`, and forced production WebSocket checks pass. The harnesses
@@ -227,19 +294,28 @@ cutover, validation, and rollback sequence.
   no production dependency was rolled back for this upstream development-server
   issue.
 
-## Remaining gates and risks
+## Post-snapshot Low/P3 remediation — 2026-07-10
 
-1. Obtain the external telemetry receipt required by the existing release
-   signoff; no endpoint/key is currently configured, so this proof cannot be
-   fabricated.
-2. Obtain authentication/security-owner and release-owner signoff for the two
-   open Low/P3 target-lockout acceptances,
-   `preauth-target-lockout-legacy-claim` and
-   `preauth-target-lockout-workspace-password`. Neither finding is fixed or
-   closed; the acceptance expires on 2026-08-10 or earlier if exposure expands.
-3. Preserve the PostgreSQL 17 rollback target and all three verified archives
+The working tree after the external snapshot removes the two target-lockout
+acceptance gates. Name-only legacy recovery was retired in favor of a saved or
+operator-issued high-entropy account token that is rotated after recovery.
+Workspace-password target limiting now scopes the cross-IP ceiling to the
+authenticated account plus canonical workspace while retaining IP+workspace
+and IP-wide limits. Focused exploit regressions prove invalid distributed
+traffic cannot prevent strong legacy recovery or consume a different account's
+cross-IP target bucket. Shared-source IP limits intentionally remain capable of
+rejecting both accounts when that source is saturated.
+
+This is working-tree evidence, not a retroactive change to the cited commit,
+GitHub runs, or live Render deployment. A new clean commit, CI/CodeQL run,
+hosted deployment, and target smoke are still required before release evidence
+can claim that the hosted service contains the remediation.
+
+## Remaining gates and risks recorded for this snapshot
+
+1. Preserve the PostgreSQL 17 rollback target and all three verified archives
    through the PostgreSQL 18 observation window. A production database upgrade
    still requires its own fresh backups and maintenance/cutover approval.
-4. The database currently permits external connections from `0.0.0.0/0`.
-   Restrict the provider allowlist after the operator's required access paths
-   are known and verified.
+2. Staging intentionally has one web instance and a non-HA database with no
+   read replicas. Do not reuse that topology as an unstated production
+   availability guarantee.

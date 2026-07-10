@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import argparse
 import pathlib
 import sys
+from collections.abc import Sequence
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -11,10 +13,14 @@ from aidm_server.env_loader import load_runtime_env
 from aidm_server.contracts import ProviderRequest
 from aidm_server.llm import get_provider
 
-load_runtime_env(REPO_ROOT)
 
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description='Send one live connectivity-check prompt to the configured LLM provider.',
+    )
+    parser.parse_args(argv)
 
-def main() -> int:
+    load_runtime_env(REPO_ROOT)
     try:
         provider = get_provider()
         response = provider.generate(

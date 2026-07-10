@@ -5,6 +5,7 @@ import argparse
 import json
 import pathlib
 import re
+import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -97,6 +98,35 @@ def _command_status(packet: dict[str, Any], label: str) -> str:
 
 def _commands_passed(packet: dict[str, Any], labels: tuple[str, ...]) -> bool:
     return all(_command_status(packet, label) == 'passed' for label in labels)
+
+
+def _current_git_snapshot() -> tuple[str | None, bool | None]:
+    try:
+        head = subprocess.run(
+            ['git', 'rev-parse', 'HEAD'],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ['git', 'status', '--porcelain', '--untracked-files=all'],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None, None
+    return head or None, not bool(status.strip())
+
+
+def _commits_match(left: str, right: str) -> bool:
+    clean_left = left.strip().lower()
+    clean_right = right.strip().lower()
+    return bool(clean_left and clean_right) and (
+        clean_left.startswith(clean_right) or clean_right.startswith(clean_left)
+    )
 
 
 def _artifact_status(packet: dict[str, Any], key: str) -> str:
@@ -769,6 +799,39 @@ def _passed_when_gates(packet: dict[str, Any], labels: tuple[str, ...], evidence
     return _status('external-required', f"Missing/failed RC gates: {', '.join(missing)}", 'rerun make closed-beta-rc')
 
 
+def _passed_when_current_rc_gates(
+    packet: dict[str, Any],
+    labels: tuple[str, ...],
+    evidence_label: str,
+) -> ChecklistStatus:
+    gate_status = _passed_when_gates(packet, labels, evidence_label)
+    if gate_status.status != 'passed':
+        return gate_status
+
+    rc_evidence = packet.get('rc_evidence') or {}
+    signed_off = packet.get('signed_off_worktree') or {}
+    packet_commit = str(rc_evidence.get('commit') or signed_off.get('commit') or '').strip()
+    current_commit, current_clean = _current_git_snapshot()
+    if (
+        str(signed_off.get('status') or '') != 'passed'
+        or not packet_commit
+        or not current_commit
+        or not _commits_match(packet_commit, current_commit)
+        or current_clean is not True
+    ):
+        current_label = current_commit[:12] if current_commit else 'unavailable'
+        packet_label = packet_commit or 'missing'
+        return _status(
+            'external-required',
+            (
+                f'RC regression evidence is not current for this worktree '
+                f'(packet {packet_label}; current {current_label}; clean={current_clean})'
+            ),
+            'commit the remediation and rerun make closed-beta-rc plus make release-evidence-packet',
+        )
+    return gate_status
+
+
 def _classify_command_item(text: str, packet: dict[str, Any]) -> ChecklistStatus | None:
     command_rules: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
         (('closed-beta-rc',), tuple(label for label in (command.get('label') for command in (packet.get('rc_evidence') or {}).get('commands') or []) if label)),
@@ -1087,6 +1150,26 @@ def classify_item(item: ChecklistItem, packet: dict[str, Any]) -> ChecklistStatu
         if path.exists():
             return _with_item(item, _status('passed', _relative_or_absolute(path), ''))
         return _with_item(item, _status('external-required', 'docs/auth_modes.md missing', 'document auth-mode matrix'))
+
+    if 'passwordless legacy recovery requires' in lowered:
+        return _with_item(
+            item,
+            _passed_when_current_rc_gates(
+                packet,
+                ('Backend tests', 'Frontend tests'),
+                'legacy recovery backend and frontend regressions',
+            ),
+        )
+
+    if 'workspace-password target limiting is scoped' in lowered:
+        return _with_item(
+            item,
+            _passed_when_current_rc_gates(
+                packet,
+                ('Backend tests',),
+                'workspace-password account-isolation regression',
+            ),
+        )
 
     if 'run_production_server.sh' in lowered:
         path = REPO_ROOT / 'scripts' / 'run_production_server.sh'
