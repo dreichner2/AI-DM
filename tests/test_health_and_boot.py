@@ -274,6 +274,7 @@ def test_llm_config_update_accepts_codex_reasoning_effort_model(client, monkeypa
     codex_executable.write_text('#!/bin/sh\n', encoding='utf-8')
     codex_executable.chmod(0o755)
     monkeypatch.setenv('AIDM_CODEX_EXECUTABLE', str(codex_executable))
+    monkeypatch.setenv('AIDM_CODEX_ACCESS_TOKEN', 'codex-test-token')
     monkeypatch.delenv('AIDM_CODEX_REASONING_EFFORT', raising=False)
     monkeypatch.delenv('AIDM_CODEX_TIMEOUT_SECONDS', raising=False)
 
@@ -296,6 +297,7 @@ def test_llm_config_update_normalizes_legacy_codex_model(client, monkeypatch, tm
     codex_executable.write_text('#!/bin/sh\n', encoding='utf-8')
     codex_executable.chmod(0o755)
     monkeypatch.setenv('AIDM_CODEX_EXECUTABLE', str(codex_executable))
+    monkeypatch.setenv('AIDM_CODEX_ACCESS_TOKEN', 'codex-test-token')
 
     response = client.patch(
         '/api/llm/config',
