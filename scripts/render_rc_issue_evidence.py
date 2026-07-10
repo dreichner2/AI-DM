@@ -611,7 +611,12 @@ def _load_lfs_patterns(path: pathlib.Path = DEFAULT_GITATTRIBUTES) -> list[str]:
 
 def _archive_project_path(member_name: str) -> str:
     parts = tuple(part for part in pathlib.PurePosixPath(member_name.strip('/')).parts if part not in {'', '.'})
-    if parts and parts[0] == REPO_ROOT.name:
+    # Source archives are wrapped in the checkout directory name. That name can
+    # differ from the current checkout after a repository rename or when an
+    # artifact is inspected on another machine, so do not key solely on
+    # REPO_ROOT.name. Preserve genuinely unwrapped project paths whose first
+    # component exists at the repository root.
+    if len(parts) > 1 and (parts[0] == REPO_ROOT.name or not (REPO_ROOT / parts[0]).exists()):
         parts = parts[1:]
     return '/'.join(parts)
 

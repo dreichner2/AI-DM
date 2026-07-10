@@ -102,6 +102,7 @@ def test_closed_beta_rc_plan_supports_fast_local_iteration(tmp_path):
 
 
 def test_closed_beta_rc_frontend_commands_run_from_frontend_dir(tmp_path):
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
     plan = build_command_plan(
         python_executable='python-test',
         include_browser_smoke=True,
@@ -122,11 +123,11 @@ def test_closed_beta_rc_frontend_commands_run_from_frontend_dir(tmp_path):
     assert set(frontend_commands.values()) == {'aidm_frontend'}
 
     visual_review = next(command for command in plan if command.label == 'Visual smoke artifact review')
-    assert pathlib.Path(visual_review.cwd).name == 'AIDM-main'
+    assert pathlib.Path(visual_review.cwd) == repo_root
     assert visual_review.args[:2] == ('python-test', 'scripts/review_visual_smoke_artifacts.py')
 
     npm_ci_evidence = next(command for command in plan if command.label == 'Frontend npm ci evidence')
-    assert pathlib.Path(npm_ci_evidence.cwd).name == 'AIDM-main'
+    assert pathlib.Path(npm_ci_evidence.cwd) == repo_root
     assert npm_ci_evidence.args == ('python-test', 'scripts/render_frontend_npm_ci_evidence.py')
 
 
