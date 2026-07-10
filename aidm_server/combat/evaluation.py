@@ -42,9 +42,12 @@ def decision_record_from_intent(
     candidates: list[dict[str, Any]],
 ) -> dict[str, Any]:
     metadata = _selection_metadata(intent)
+    tactics_compilation = intent.get('tacticsCompilation') if isinstance(intent.get('tacticsCompilation'), dict) else {}
     fallback_id = _fallback_candidate_id(candidates)
     selected_id = metadata.get('selectedCandidateId') or intent.get('candidateId')
     executed_id = metadata.get('resolvedCandidateId') or intent.get('candidateId')
+    helper_selected_id = selected_id if metadata or tactics_compilation else None
+    deterministic_top_id = _deterministic_top_candidate_id(candidates)
     resolution_validation = intent.get('resolutionValidation') if isinstance(intent.get('resolutionValidation'), dict) else {}
     resolution_source = intent.get('resolutionSource')
     fallback_used = resolution_source in {'backup_candidate', 'deterministic_resolution_fallback', 'no_legal_candidate'}
@@ -54,11 +57,18 @@ def decision_record_from_intent(
         'selection_method': intent.get('selectionMethod'),
         'candidate_count': len(candidates),
         'fallback_candidate_id': fallback_id,
-        'deterministic_top_candidate_id': _deterministic_top_candidate_id(candidates),
-        'helper_selected_candidate_id': selected_id if metadata else None,
+        'deterministic_top_candidate_id': deterministic_top_id,
+        'helper_selected_candidate_id': helper_selected_id,
         'executed_candidate_id': executed_id,
-        'helper_changed_baseline': bool(metadata.get('changedDeterministicBaseline')),
-        'selected_non_fallback': bool(selected_id and fallback_id and selected_id != fallback_id),
+        'helper_changed_baseline': bool(metadata.get('changedDeterministicBaseline'))
+        or bool(tactics_compilation and selected_id and selected_id != deterministic_top_id),
+        'selected_non_fallback': bool(helper_selected_id and fallback_id and helper_selected_id != fallback_id),
+        'freeform_tactics_compiled': bool(tactics_compilation),
+        'advisory_planner_applied': any(
+            isinstance(candidate.get('bossPlanner'), dict)
+            for candidate in candidates
+            if isinstance(candidate, dict)
+        ),
         'valid_on_first_pass': bool(resolution_validation.get('can_resolve_now', True)) and not fallback_used,
         'resolution_stale': bool(metadata.get('resolutionStale') or resolution_validation.get('staleCandidateVersion')),
         'fallback_used': fallback_used,
@@ -79,6 +89,8 @@ def summarize_decision_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             'fallback_used_rate': 0.0,
             'resolution_stale_rate': 0.0,
             'average_candidate_count': 0.0,
+            'freeform_tactics_compiled': 0,
+            'advisory_planner_applied': 0,
         }
     helper_records = [record for record in records if record.get('helper_selected_candidate_id')]
     return {
@@ -89,6 +101,8 @@ def summarize_decision_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         'fallback_used_rate': round(sum(1 for record in records if record.get('fallback_used')) / total, 3),
         'resolution_stale_rate': round(sum(1 for record in records if record.get('resolution_stale')) / total, 3),
         'average_candidate_count': round(mean(record.get('candidate_count') or 0 for record in records), 2),
+        'freeform_tactics_compiled': sum(1 for record in records if record.get('freeform_tactics_compiled')),
+        'advisory_planner_applied': sum(1 for record in records if record.get('advisory_planner_applied')),
     }
 
 

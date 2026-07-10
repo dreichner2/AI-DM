@@ -7,6 +7,7 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import time
 from typing import Any
@@ -35,6 +36,7 @@ from aidm_server.creatures.schemas import normalize_creature_definition  # noqa:
 from aidm_server.env_loader import load_runtime_env  # noqa: E402
 from aidm_server.game_state.extraction.schemas import extract_json_object  # noqa: E402
 import aidm_server.llm_providers as llm_provider_module  # noqa: E402
+from aidm_server.prompt_templates import build_dm_generate_request  # noqa: E402
 
 
 PROFILE_TASK_ENV = {
@@ -43,6 +45,7 @@ PROFILE_TASK_ENV = {
     'boss_tactics_planner': 'AIDM_HELPER_PROFILE_BOSS_TACTICS_PLANNER',
     'boss_tactics': 'AIDM_HELPER_PROFILE_BOSS_TACTICS',
     'sentient_enemy_brain': 'AIDM_HELPER_PROFILE_SENTIENT_ENEMY_BRAIN',
+    'enemy_tactics_planner': 'AIDM_HELPER_PROFILE_ENEMY_TACTICS_PLANNER',
 }
 
 OLD_DEFAULT_TASK_PROFILES = {
@@ -278,7 +281,48 @@ def built_in_snapshots() -> list[dict[str, Any]]:
         },
     }
 
-    return [boss_snapshot, sentient_snapshot]
+    freeform_enemy = _creature(
+        'goblin_skirmisher',
+        'enemy_goblin_planner_1',
+        hp_current=7,
+        behavior={
+            'primaryGoal': 'protect_location',
+            'intelligenceProfile': 'trained',
+            'combatRole': 'skirmisher',
+            'targetPriority': ['wounded', 'spellcaster'],
+        },
+    )
+    freeform_snapshot = {
+        'status': 'active',
+        'round': 4,
+        'participants': [
+            _player(1, 'Loki', hp=11, armor_class=13, role='warlock'),
+            _player(2, 'Himeros', hp=20, armor_class=15, role='cleric'),
+            freeform_enemy,
+        ],
+        'battlefield': {
+            'environmentType': 'ruined_courtyard',
+            'lighting': 'dim',
+            'visibility': 'clear',
+            'cover': [{'id': 'thorn_wall', 'name': 'Thorn Wall', 'coverType': 'three_quarters'}],
+            'exits': [{'id': 'collapsed_arch', 'name': 'Collapsed Arch', 'blocked': False}],
+            'hazards': [{'id': 'loose_masonry', 'name': 'Loose Masonry'}],
+        },
+        'flags': {
+            'combatDifficultyAI': {
+                'tacticalLevel': 'smart',
+                'allowBossTacticsHelper': False,
+                'allowSentientEnemyBrain': True,
+                'allowFreeformEnemyTactics': True,
+                'forceFreeformEnemyTactics': True,
+                'forceSentientEnemyBrain': False,
+                'maxLlmCallsPerRound': 2,
+                'skipLlmWhenTopCandidateMarginExceeds': 0,
+            }
+        },
+    }
+
+    return [boss_snapshot, sentient_snapshot, freeform_snapshot]
 
 
 def _load_snapshots(path: Path | None) -> list[dict[str, Any]]:
@@ -302,11 +346,70 @@ def _profile_environment(profile: str):
         profile_name = profile.strip().lower()
         if profile_name == 'old_defaults':
             for task, key in PROFILE_TASK_ENV.items():
-                os.environ[key] = OLD_DEFAULT_TASK_PROFILES[task]
+                old_profile = OLD_DEFAULT_TASK_PROFILES.get(task)
+                if old_profile:
+                    os.environ[key] = old_profile
         elif profile_name not in {'current_defaults', 'default', 'current'}:
             for key in keys:
                 os.environ[key] = profile_name
         yield
+    finally:
+        for key, value in old_values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+@contextmanager
+def _dm_profile_environment(profile: str):
+    """Route the DM through the same single-model profile when one exists."""
+
+    profile_name = profile.strip().lower()
+    if profile_name in {'current_defaults', 'default', 'current'}:
+        yield True
+        return
+
+    profile_config = llm_provider_module.HELPER_MODEL_PROFILES.get(profile_name)
+    if not profile_config:
+        yield False
+        return
+
+    provider = str(profile_config.get('LLM_PROVIDER') or '').strip().lower()
+    model = str(profile_config.get('LLM_MODEL') or '').strip()
+    if not provider or not model:
+        yield False
+        return
+
+    updates = {
+        'AIDM_LLM_PROVIDER': provider,
+        'AIDM_LLM_MODEL': model,
+        'AIDM_LLM_FALLBACK_MODELS': '',
+    }
+    if provider in {'codex', 'codex_cli'}:
+        updates.update(
+            {
+                'AIDM_CODEX_TIMEOUT_SECONDS': str(profile_config.get('CODEX_TIMEOUT_SECONDS') or 240),
+                'AIDM_CODEX_REASONING_EFFORT': str(profile_config.get('CODEX_REASONING_EFFORT') or 'medium'),
+                'AIDM_CODEX_SERVICE_TIER': str(profile_config.get('CODEX_SERVICE_TIER') or 'default'),
+            }
+        )
+    elif provider == 'deepseek':
+        for suffix in (
+            'LLM_MAX_TOKENS',
+            'LLM_TEMPERATURE',
+            'LLM_TOP_P',
+            'DEEPSEEK_TIMEOUT_SECONDS',
+            'DEEPSEEK_THINKING',
+            'DEEPSEEK_REASONING_EFFORT',
+        ):
+            if suffix in profile_config:
+                updates[f'AIDM_{suffix}'] = str(profile_config[suffix])
+
+    old_values = {key: os.environ.get(key) for key in updates}
+    try:
+        os.environ.update(updates)
+        yield True
     finally:
         for key, value in old_values.items():
             if value is None:
@@ -517,6 +620,439 @@ def _generation_task_average(generation_tasks: list[dict[str, Any]]) -> float:
     return round(sum(float(task.get('score') or 0.0) for task in generation_tasks) / len(generation_tasks), 2)
 
 
+def _dm_cases() -> list[dict[str, Any]]:
+    return [
+        {
+            'name': 'missing_inventory_item',
+            'user_input': 'I drink a healing potion from my pack.',
+            'context': {
+                'active_players': [
+                    {
+                        'id': 'ember',
+                        'character_name': 'Ember',
+                        'inventory': [],
+                        'hp': {'current': 9, 'max': 20},
+                        'position': {'location': 'Ruined Observatory', 'zone': 'chart_room'},
+                    }
+                ],
+                'pending_checks': [],
+                'live_world_state': {'location': 'Ruined Observatory', 'scene': 'chart_room'},
+                'content_settings': {'content_rating': 'standard', 'tone_tags': ['mystery']},
+            },
+            'rules_hint': {
+                'requires_roll': False,
+                'reason': 'The requested item is not present in the character inventory.',
+            },
+        },
+        {
+            'name': 'pending_group_roll_gate',
+            'user_input': 'I hold position and wait to see whether the rune gate opens.',
+            'context': {
+                'active_players': [
+                    {'id': 'ember', 'character_name': 'Ember', 'position': {'zone': 'rune_gate'}},
+                    {'id': 'mira', 'character_name': 'Mira', 'position': {'zone': 'rune_gate'}},
+                ],
+                'pending_checks': [
+                    {
+                        'id': 'rune_gate_group_arcana',
+                        'type': 'roll_gate',
+                        'skill': 'Arcana',
+                        'dc': 15,
+                        'required_player_ids': ['ember', 'mira'],
+                        'rolls': {'ember': 17},
+                        'unresolved_player_ids': ['mira'],
+                        'outcome': 'The rune gate opens only after every required roll is recorded.',
+                    }
+                ],
+                'live_world_state': {'location': 'Moonfall Vault', 'rune_gate': 'sealed'},
+                'content_settings': {'content_rating': 'standard', 'tone_tags': ['tense']},
+            },
+            'rules_hint': {
+                'requires_roll': True,
+                'rule_type': 'Arcana',
+                'dc_hint': 15,
+                'resolved_player_ids': ['ember'],
+                'unresolved_player_ids': ['mira'],
+                'reason': 'Do not resolve the group gate until Mira rolls.',
+            },
+        },
+        {
+            'name': 'spatial_player_agency',
+            'user_input': 'I grab Mira and pull her outside beside me.',
+            'context': {
+                'active_players': [
+                    {
+                        'id': 'ember',
+                        'character_name': 'Ember',
+                        'position': {'location': 'Ash Tower', 'zone': 'courtyard_outside'},
+                    },
+                    {
+                        'id': 'mira',
+                        'character_name': 'Mira',
+                        'position': {'location': 'Ash Tower', 'zone': 'locked_archive_inside'},
+                    },
+                ],
+                'spatial_state': {
+                    'boundaries': [
+                        {
+                            'between': ['courtyard_outside', 'locked_archive_inside'],
+                            'state': 'locked solid door',
+                            'line_of_sight': False,
+                            'physical_reach': False,
+                        }
+                    ]
+                },
+                'pending_checks': [],
+                'content_settings': {'content_rating': 'standard', 'tone_tags': ['adventure']},
+            },
+            'rules_hint': {
+                'requires_roll': False,
+                'reason': 'Ember cannot physically reach Mira through the locked door.',
+            },
+        },
+        {
+            'name': 'resolved_roll_progression',
+            'user_input': 'My Perception total is 18.',
+            'context': {
+                'active_players': [
+                    {
+                        'id': 'ember',
+                        'character_name': 'Ember',
+                        'position': {'location': 'Ruined Observatory', 'zone': 'lens_gallery'},
+                    }
+                ],
+                'pending_checks': [
+                    {
+                        'turn_id': 41,
+                        'type': 'Perception',
+                        'dc': 14,
+                        'status': 'resolved',
+                        'roll_value': 18,
+                        'success_reveal': 'A hair-thin silver wire runs from the blue lantern to the western astrolabe.',
+                    }
+                ],
+                'live_world_state': {'location': 'Ruined Observatory', 'scene': 'lens_gallery'},
+                'content_settings': {'content_rating': 'standard', 'tone_tags': ['mystery']},
+            },
+            'rules_hint': {
+                'requires_roll': True,
+                'resolved_turn_id': 41,
+                'roll_value': 18,
+                'rule_type': 'Perception',
+                'dc_hint': 14,
+                'reason': 'The resolved success reveals the silver wire leading to the western astrolabe.',
+            },
+        },
+        {
+            'name': 'narrative_scene_progression',
+            'user_input': 'I kneel beside the blue lantern and study it carefully without touching it.',
+            'context': {
+                'active_players': [
+                    {
+                        'id': 'ember',
+                        'character_name': 'Ember',
+                        'position': {'location': 'Ruined Observatory', 'zone': 'lens_gallery'},
+                    }
+                ],
+                'current_scene': {
+                    'location': 'Ruined Observatory',
+                    'zone': 'lens_gallery',
+                    'features': ['cold blue lantern', 'cracked star lenses', 'dusty western arch'],
+                    'automatic_observation': (
+                        'Without touching the lantern, Ember can see a crescent sigil etched beneath its glass '
+                        'and a narrow beam pointing west toward the dusty arch.'
+                    ),
+                },
+                'pending_checks': [],
+                'story_threads': [
+                    {'title': 'The Missing Astronomer', 'status': 'open', 'summary': 'Their final notes mention a crescent mark.'}
+                ],
+                'content_settings': {'content_rating': 'standard', 'tone_tags': ['mystery', 'adventure']},
+            },
+            'rules_hint': {
+                'requires_roll': False,
+                'reason': 'Careful visual inspection automatically reveals the crescent sigil and west-pointing beam.',
+            },
+        },
+    ]
+
+
+def _matches_any(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL) for pattern in patterns)
+
+
+def _dm_contract_checks(case_name: str, text: str) -> list[dict[str, Any]]:
+    lowered = str(text or '').strip().lower()
+    checks: list[tuple[str, bool]]
+    if case_name == 'missing_inventory_item':
+        checks = [
+            (
+                'acknowledges_missing_potion',
+                _matches_any(
+                    lowered,
+                    (
+                        r'\bno (?:healing )?potion\b',
+                        r'\bdo(?:es)?n[\'’]?t have\b.{0,50}\bpotion\b',
+                        r'\bdo not have\b.{0,50}\bpotion\b',
+                        r'\bwithout\b.{0,40}\bpotion\b',
+                        r'\binventory\b.{0,40}\bempty\b',
+                        r'\black\b.{0,40}\bpotion\b',
+                    ),
+                ),
+            ),
+            (
+                'does_not_invent_consumption_or_healing',
+                not _matches_any(
+                    lowered,
+                    (
+                        r'\b(?:you|ember)\s+(?:drink|quaff|swallow)(?:s|ed)?\b',
+                        r'\b(?:you|ember)\s+(?:regain|recover|heal)(?:s|ed)?\b',
+                        r'\brestore(?:s|d)?\s+\d+\s*(?:hp|hit points)\b',
+                    ),
+                ),
+            ),
+            (
+                'does_not_claim_an_inventory_or_hp_change',
+                not _matches_any(
+                    lowered,
+                    (
+                        r'\b(?:remove|consume|spend)(?:s|ed)? (?:one |the )?(?:healing )?potion\b',
+                        r'\b(?:hp|hit points?) (?:increase|rise|return)(?:s|ed)?\b',
+                    ),
+                ),
+            ),
+        ]
+    elif case_name == 'pending_group_roll_gate':
+        checks = [
+            (
+                'asks_only_for_miras_missing_check',
+                _matches_any(lowered, (r'\bmira\b.{0,60}\b(?:roll|check)\b', r'\b(?:roll|check)\b.{0,60}\bmira\b')),
+            ),
+            (
+                'keeps_gate_unresolved',
+                _matches_any(
+                    lowered,
+                    (
+                        r'\b(?:does not|doesn[\'’]?t|will not|won[\'’]?t) open\b',
+                        r'\bremains? (?:sealed|closed|shut)\b',
+                        r'\bremains? locked\b',
+                        r'\bremains? fixed\b',
+                        r'\bstays? (?:sealed|closed|shut)\b',
+                        r'\bpattern is still incomplete\b',
+                        r'\bpattern remains? incomplete\b',
+                        r'\bstone does not move\b',
+                        r'\bgate awaits? mira\b',
+                        r'\buntil mira\b',
+                        r'\bwaiting (?:on|for) mira\b',
+                        r'\bonly after mira\b',
+                    ),
+                ),
+            ),
+            (
+                'does_not_request_embers_roll_again',
+                not _matches_any(
+                    lowered,
+                    (
+                        r'\bember\b.{0,30}\b(?:must|needs? to|should|please)\s+roll\b',
+                        r'\broll\b.{0,25}\bember\b.{0,15}\bagain\b',
+                    ),
+                ),
+            ),
+        ]
+    elif case_name == 'spatial_player_agency':
+        checks = [
+            (
+                'enforces_spatial_boundary',
+                _matches_any(
+                    lowered,
+                    (
+                        r'\bcan(?:not|[\'’]?t)\b',
+                        r'\bout of reach\b',
+                        r'\blocked (?:solid )?door\b',
+                        r'\bno line of sight\b',
+                        r'\bseparat(?:e|ed)\b',
+                    ),
+                ),
+            ),
+            (
+                'does_not_move_mira_without_authority',
+                not _matches_any(
+                    lowered,
+                    (
+                        r'\byou pull mira (?:out|outside)\b',
+                        r'\bmira (?:is pulled|stumbles|steps|comes|moves) (?:out|outside)\b',
+                        r'\bmira is now (?:beside you|outside)\b',
+                    ),
+                ),
+            ),
+            (
+                'offers_a_reachable_next_action',
+                '?' in lowered
+                or _matches_any(
+                    lowered,
+                    (
+                        r'\binstead\b',
+                        r'\bunlock\b',
+                        r'\bopen the door\b',
+                        r'\bdoor must be opened\b',
+                        r'\bbypass(?:ed|ing)?\b',
+                        r'\bcall (?:to|for) mira\b',
+                    ),
+                ),
+            ),
+        ]
+    elif case_name == 'resolved_roll_progression':
+        checks = [
+            ('reveals_the_silver_wire', 'silver wire' in lowered),
+            ('connects_clue_to_western_astrolabe', 'western astrolabe' in lowered),
+            (
+                'does_not_request_the_resolved_roll_again',
+                not _matches_any(
+                    lowered,
+                    (
+                        r'\broll again\b',
+                        r'\bplease roll\b',
+                        r'\bmake (?:another|a) (?:perception )?(?:check|roll)\b',
+                    ),
+                ),
+            ),
+            (
+                'advances_with_a_concrete_discovery',
+                _matches_any(
+                    lowered,
+                    (r'\bspot\b', r'\bnotice\b', r'\breveal\b', r'\btrace\b', r'\bfind\b', r'\bsee\b', r'\bcatches?\b', r'\beyes? adjust\b'),
+                ),
+            ),
+        ]
+    elif case_name == 'narrative_scene_progression':
+        checks = [
+            ('reveals_the_crescent_sigil', 'crescent sigil' in lowered),
+            (
+                'points_the_clue_west',
+                _matches_any(
+                    lowered,
+                    (
+                        r'\bpoint(?:s|ing)? (?:due )?west\b',
+                        r'\bwestward\b',
+                        r'\bwestern? (?:arch|side|wall)\b',
+                    ),
+                ),
+            ),
+            (
+                'preserves_no_touch_player_agency',
+                not _matches_any(
+                    lowered,
+                    (
+                        r'\b(?:you|ember) (?:touch|lift|move|open|pick up|grasp)(?:s|ed)? the (?:blue )?lantern\b',
+                    ),
+                ),
+            ),
+            (
+                'does_not_request_an_unneeded_roll',
+                not _matches_any(
+                    lowered,
+                    (
+                        r'\bplease roll\b',
+                        r'\broll (?:perception|investigation|a d20)\b',
+                        r'\bmake (?:a|an) .{0,20}check\b',
+                    ),
+                ),
+            ),
+            (
+                'uses_concrete_sensory_detail',
+                sum(
+                    term in lowered
+                    for term in ('blue', 'cold', 'glass', 'dust', 'light', 'shadow', 'glow', 'hum', 'flicker', 'silver')
+                )
+                >= 2,
+            ),
+        ]
+    else:
+        checks = [('returned_nonempty_narration', bool(lowered))]
+    return [{'id': check_id, 'passed': passed} for check_id, passed in checks]
+
+
+def _evaluate_dm_case(
+    case: dict[str, Any],
+    *,
+    recorder: HelperOutputRecorder | None = None,
+) -> dict[str, Any]:
+    request = build_dm_generate_request(
+        user_input=str(case['user_input']),
+        context=json.dumps(case['context'], separators=(',', ':'), sort_keys=True),
+        rules_hint=case.get('rules_hint'),
+        content_rating='standard',
+        tone_tags=case.get('context', {}).get('content_settings', {}).get('tone_tags', []),
+    )
+    provider = llm_provider_module.get_provider()
+    active_provider = RecordingProvider(provider, task=f"dm:{case['name']}", recorder=recorder) if recorder else provider
+    started = time.perf_counter()
+    try:
+        response = active_provider.generate(request)
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+        text = str(response.text or '').strip()
+        if not text:
+            raise ValueError('DM returned empty narration')
+        checks = _dm_contract_checks(str(case['name']), text)
+        passed = sum(1 for check in checks if check['passed'])
+        preview, truncated = _maybe_truncate(text, 1600)
+        return {
+            'case': case['name'],
+            'valid': True,
+            'provider': response.provider,
+            'model': response.model,
+            'elapsed_ms': elapsed_ms,
+            'score': round((passed / max(1, len(checks))) * 100, 2),
+            'passed_checks': passed,
+            'total_checks': len(checks),
+            'checks': checks,
+            'word_count': len(text.split()),
+            'output_preview': preview,
+            'output_preview_truncated': truncated,
+        }
+    except Exception as exc:
+        return {
+            'case': case['name'],
+            'valid': False,
+            'provider': getattr(provider, 'provider_name', None),
+            'model': getattr(provider, 'display_model_name', None) or getattr(provider, 'model_name', None),
+            'elapsed_ms': round((time.perf_counter() - started) * 1000, 1),
+            'score': 0.0,
+            'error': str(exc)[:500],
+        }
+
+
+def _evaluate_dm_profile(
+    profile: str,
+    *,
+    progress: bool = False,
+    recorder: HelperOutputRecorder | None = None,
+) -> dict[str, Any]:
+    with _dm_profile_environment(profile) as supported:
+        if not supported:
+            return {'skipped': True, 'reason': 'profile does not resolve to one DM model'}
+        started = time.perf_counter()
+        cases = []
+        for case in _dm_cases():
+            _progress(progress, f"  DM case {case['name']} start")
+            result = _evaluate_dm_case(case, recorder=recorder)
+            cases.append(result)
+            _progress(
+                progress,
+                f"  DM case {case['name']} done {result.get('elapsed_ms')}ms score={result.get('score')}",
+            )
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+    score = round(sum(float(case.get('score') or 0.0) for case in cases) / max(1, len(cases)), 2)
+    return {
+        'skipped': False,
+        'elapsed_ms': elapsed_ms,
+        'contract_score': score,
+        'valid_cases': sum(1 for case in cases if case.get('valid')),
+        'case_count': len(cases),
+        'cases': cases,
+    }
+
+
 def _record_preview(result: dict[str, Any], limit: int = 8) -> list[dict[str, Any]]:
     records = []
     for run in result.get('runs') or []:
@@ -532,6 +1068,8 @@ def _record_preview(result: dict[str, Any], limit: int = 8) -> list[dict[str, An
                     'fallback_used': record.get('fallback_used'),
                     'stale': record.get('resolution_stale'),
                     'confidence': record.get('confidence'),
+                    'freeform_compiled': record.get('freeform_tactics_compiled'),
+                    'advisory_planner_applied': record.get('advisory_planner_applied'),
                 }
             )
     return records[:limit]
@@ -541,6 +1079,7 @@ def evaluate_profile(
     profile: str,
     snapshots: list[dict[str, Any]],
     *,
+    include_dm: bool = False,
     progress: bool = False,
     recorder: HelperOutputRecorder | None = None,
 ) -> dict[str, Any]:
@@ -555,10 +1094,21 @@ def evaluate_profile(
             _evaluate_custom_race(progress=progress, recorder=recorder),
             _evaluate_creature_generation(progress=progress, recorder=recorder),
         ]
+        dm = (
+            _evaluate_dm_profile(profile, progress=progress, recorder=recorder)
+            if include_dm
+            else None
+        )
     elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
     metrics = result.get('metrics') or {}
     combat_score = _quality_score(metrics)
     generation_score = _generation_task_average(generation_tasks)
+    helper_quality_score = round((combat_score * 0.6) + (generation_score * 0.4), 2)
+    dm_contract_score = None
+    combined_quality_score = None
+    if dm and not dm.get('skipped'):
+        dm_contract_score = float(dm.get('contract_score') or 0.0)
+        combined_quality_score = round((helper_quality_score * 0.5) + (dm_contract_score * 0.5), 2)
     return {
         'profile': profile,
         'elapsed_ms': elapsed_ms,
@@ -570,7 +1120,10 @@ def evaluate_profile(
         },
         'generation_tasks': generation_tasks,
         'generation_quality_score': generation_score,
-        'quality_score': round((combat_score * 0.6) + (generation_score * 0.4), 2),
+        'quality_score': helper_quality_score,
+        'dm': dm,
+        'dm_contract_score': dm_contract_score,
+        'combined_quality_score': combined_quality_score,
     }
 
 
@@ -585,6 +1138,11 @@ def main() -> int:
     parser.add_argument('--indent', type=int, default=2, help='JSON indentation for output.')
     parser.add_argument('--no-env', action='store_true', help='Do not load .env/.env.local before running.')
     parser.add_argument('--quiet-progress', action='store_true', help='Suppress per-profile progress logs on stderr.')
+    parser.add_argument(
+        '--include-dm',
+        action='store_true',
+        help='Also compare fixed DM narration contract cases for profiles that resolve to one model.',
+    )
     parser.add_argument('--save-outputs', type=Path, help='Save raw helper outputs and parsed JSON to this file.')
     parser.add_argument(
         '--raw-output-max-chars',
@@ -605,7 +1163,13 @@ def main() -> int:
         for profile in profiles:
             _progress(not args.quiet_progress, f'profile {profile} start')
             try:
-                result = evaluate_profile(profile, snapshots, progress=not args.quiet_progress, recorder=recorder)
+                result = evaluate_profile(
+                    profile,
+                    snapshots,
+                    include_dm=args.include_dm,
+                    progress=not args.quiet_progress,
+                    recorder=recorder,
+                )
                 results.append(result)
                 _progress(
                     not args.quiet_progress,
@@ -618,12 +1182,24 @@ def main() -> int:
     successful = [result for result in results if not result.get('error')]
     fastest = min(successful, key=lambda item: item['elapsed_ms'])['profile'] if successful else None
     best_quality = max(successful, key=lambda item: item['quality_score'])['profile'] if successful else None
+    combined_candidates = [result for result in successful if result.get('combined_quality_score') is not None]
+    best_combined = (
+        max(combined_candidates, key=lambda item: item['combined_quality_score'])['profile']
+        if combined_candidates
+        else None
+    )
     payload = {
         'snapshot_count': len(snapshots),
         'profiles': results,
         'winner_by_speed': fastest,
         'winner_by_quality': best_quality,
+        'winner_by_combined_quality': best_combined,
         'quality_score_note': 'Contract-focused score: 60% combat helper metrics, 40% custom race/creature schema-contract validation.',
+        'combined_quality_score_note': (
+            'When --include-dm is used: 50% helper quality score and 50% fixed DM contract score. '
+            'DM cases cover inventory truth, group-roll gating, spatial/player agency, resolved-roll progression, '
+            'and narrative scene progression.'
+        ),
     }
     if args.save_outputs:
         payload['raw_outputs_file'] = str(args.save_outputs)
