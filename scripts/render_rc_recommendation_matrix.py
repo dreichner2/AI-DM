@@ -261,11 +261,26 @@ def build_matrix(*, repo_root: pathlib.Path, packet: dict[str, Any], checklist: 
             'known_limitations_ui',
             'Tester operations',
             _bool_status(
-                _path_exists(repo_root, 'aidm_frontend/src/BetaRuntimeNotesPanel.tsx')
-                and _file_contains(repo_root, 'aidm_frontend/src/App.test.tsx', 'Known beta limitations')
+                _file_contains_all(
+                    repo_root,
+                    'aidm_frontend/src/BetaRuntimeNotesPanel.tsx',
+                    (
+                        'Beta information',
+                        'Current player-impacting problems appear as alerts.',
+                        'Its current availability appears in the narration controls.',
+                    ),
+                )
+                and _file_contains_all(
+                    repo_root,
+                    'aidm_frontend/src/App.runtimeAccess.test.tsx',
+                    (
+                        'keeps beta information available from the account menu without stale operator guidance',
+                        'Beta information',
+                    ),
+                )
             ),
-            'Expose known beta limitations in the UI.',
-            'BetaRuntimeNotesPanel and frontend test coverage are present.',
+            'Keep compact Beta information available from the account menu.',
+            'Beta information routes player-impacting outages to alerts and optional narration status to its control, with frontend coverage.',
             '',
         ),
         _row(
@@ -277,27 +292,26 @@ def build_matrix(*, repo_root: pathlib.Path, packet: dict[str, Any], checklist: 
                     'aidm_frontend/src/App.tsx',
                     (
                         'Beta runtime notices',
-                        'Fallback provider active.',
-                        'Live DM responses need a configured provider key.',
-                        'Deepgram TTS unavailable.',
-                        'Auth disabled.',
-                        'Restart other workers to match.',
+                        'Fallback DM active. Ask the table operator to restore the live provider.',
+                        'Live DM is unavailable. Ask the table operator to configure the selected provider.',
+                        'Narration unavailable; Deepgram is not configured',
+                        'showProcessLocalDiagnostic',
+                        'Process-local · restart workers',
                     ),
                 )
                 and _file_contains_all(
                     repo_root,
-                    'aidm_frontend/src/App.test.tsx',
+                    'aidm_frontend/src/App.runtimeAccess.test.tsx',
                     (
-                        'surfaces beta runtime notices for local private mode',
-                        'opens known beta limitations from runtime notices',
-                        'surfaces unavailable TTS in beta runtime notices',
-                        'surfaces missing live provider configuration in beta runtime notices',
-                        'surfaces process-local provider scope in beta runtime notices',
+                        'keeps unavailable TTS in its accessible control instead of the global alert bar',
+                        'hides process-local instructions for a single worker',
+                        'shows process-local synchronization only to workspace admins when multiple workers need it',
+                        'hides process-local synchronization from non-admin players',
                     ),
                 )
             ),
-            'Expose beta runtime notices for degraded or local/private operating modes.',
-            'Runtime notices cover fallback provider, missing provider keys, unavailable TTS, auth-disabled local/private mode, and process-local provider scope.',
+            'Expose actionable player alerts and keep optional/operator state in the relevant controls.',
+            'Global notices cover player-impacting provider outages; narration availability and multi-worker synchronization are control-local with role and worker-count coverage.',
             '',
         ),
         _row(

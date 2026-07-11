@@ -7,6 +7,7 @@ import sys
 
 import pytest
 from flask import Flask
+from sqlalchemy import event
 
 from aidm_server.auth import extract_socket_token, hash_secret
 from aidm_server.database import db
@@ -151,6 +152,163 @@ def test_capabilities_endpoint_reports_account_role_capabilities(tmp_path, monke
     assert 'dm_authoring' in admin_payload['capabilities']
     assert 'dm_runtime_control' in admin_payload['capabilities']
     assert admin_payload['descriptions']['dm_runtime_control']
+
+
+def test_api_guard_resolves_account_and_membership_once_without_noop_commit(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+    with app.app_context():
+        account = Account(
+            username='query-count-player',
+            first_name='Query',
+            last_name='Player',
+            password_hash='configured',
+            account_token_hash=hash_secret('query-count-token'),
+        )
+        db.session.add(account)
+        db.session.flush()
+        db.session.add(
+            AccountWorkspaceMembership(
+                account_id=account.account_id,
+                workspace_id='owner',
+                role='player',
+            )
+        )
+        db.session.commit()
+        engine = db.engine
+
+    statements: list[str] = []
+    commits: list[bool] = []
+
+    def record_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(' '.join(str(statement).lower().split()))
+
+    def record_commit(_conn):
+        commits.append(True)
+
+    event.listen(engine, 'before_cursor_execute', record_statement)
+    event.listen(engine, 'commit', record_commit)
+    try:
+        response = client.get(
+            '/api/capabilities',
+            headers={
+                'Authorization': 'Bearer query-count-token',
+                'X-AIDM-Workspace-Id': 'owner',
+            },
+        )
+    finally:
+        event.remove(engine, 'before_cursor_execute', record_statement)
+        event.remove(engine, 'commit', record_commit)
+
+    select_statements = [statement for statement in statements if statement.startswith('select ')]
+    assert response.status_code == 200
+    assert response.get_json()['capabilities'] == ['player_action', 'player_read']
+    assert sum(' from accounts ' in statement for statement in select_statements) == 1
+    assert sum(' from account_workspace_memberships ' in statement for statement in select_statements) == 1
+    assert commits == []
+
+
+def test_workspace_token_membership_cache_is_request_local_and_preserves_role_changes(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+    with app.app_context():
+        account = Account(
+            username='token-role-player',
+            first_name='Token',
+            last_name='Role',
+            password_hash='configured',
+            account_token_hash=hash_secret('token-role-account-token'),
+        )
+        workspace = Workspace(
+            workspace_id='token_role_table',
+            name='Token Role Table',
+            name_key='token role table',
+            token_hash=hash_secret('test-key-token-role-workspace'),
+        )
+        db.session.add_all([account, workspace])
+        db.session.commit()
+        account_id = account.account_id
+        engine = db.engine
+
+    headers = {
+        'Authorization': 'Bearer token-role-account-token',
+        'X-AIDM-Workspace-Token': 'test-key-token-role-workspace',
+    }
+    initial = client.get('/api/capabilities', headers=headers)
+
+    assert initial.status_code == 200
+    assert initial.get_json()['capabilities'] == ['player_action', 'player_read']
+    with app.app_context():
+        membership = AccountWorkspaceMembership.query.filter_by(
+            account_id=account_id,
+            workspace_id='token_role_table',
+        ).one()
+        membership.role = 'admin'
+        db.session.commit()
+
+    statements: list[str] = []
+
+    def record_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(' '.join(str(statement).lower().split()))
+
+    event.listen(engine, 'before_cursor_execute', record_statement)
+    try:
+        updated = client.get('/api/capabilities', headers=headers)
+    finally:
+        event.remove(engine, 'before_cursor_execute', record_statement)
+
+    select_statements = [statement for statement in statements if statement.startswith('select ')]
+    assert updated.status_code == 200
+    assert updated.get_json()['is_workspace_admin'] is True
+    assert 'dm_authoring' in updated.get_json()['capabilities']
+    assert sum(' from accounts ' in statement for statement in select_statements) == 1
+    assert sum(' from workspaces ' in statement for statement in select_statements) == 1
+    assert sum(' from account_workspace_memberships ' in statement for statement in select_statements) == 1
+
+
+def test_api_guard_still_commits_a_matching_legacy_player_claim(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+    with app.app_context():
+        account = Account(
+            username='legacy-guard',
+            first_name='Legacy',
+            last_name='Guard',
+            password_hash='configured',
+            account_token_hash=hash_secret('legacy-guard-token'),
+        )
+        db.session.add(account)
+        db.session.flush()
+        db.session.add(
+            AccountWorkspaceMembership(
+                account_id=account.account_id,
+                workspace_id='owner',
+                role='player',
+            )
+        )
+        legacy_player = Player(
+            workspace_id='owner',
+            name=' Legacy Guard ',
+            character_name='Recovered Hero',
+        )
+        db.session.add(legacy_player)
+        db.session.commit()
+        account_id = account.account_id
+        legacy_player_id = legacy_player.player_id
+
+    response = client.get(
+        '/api/capabilities',
+        headers={
+            'Authorization': 'Bearer legacy-guard-token',
+            'X-AIDM-Workspace-Id': 'owner',
+        },
+    )
+
+    assert response.status_code == 200
+    with app.app_context():
+        claimed_player = db.session.get(Player, legacy_player_id)
+        assert claimed_player.account_id == account_id
+        assert claimed_player.name == 'Legacy Guard'
 
 
 def test_workspace_bearer_token_has_player_capabilities_and_cannot_author_bestiary(tmp_path, monkeypatch):

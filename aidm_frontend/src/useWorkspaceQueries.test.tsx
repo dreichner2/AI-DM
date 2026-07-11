@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, renderHook } from '@testing-library/react'
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
@@ -110,6 +110,7 @@ function logResponse(sessionId: number, entries: SessionLogEntry[]): SessionLogR
 type ScopeProps = {
   auth: string
   baseUrl: string
+  operatorDataEnabled: boolean
   selectedCampaignId: number | null
   selectedSessionId: number | null
   sessionLogCursor: number | null
@@ -137,6 +138,7 @@ function createCallbacks() {
     setSessionState: vi.fn(),
     setStreamingTurn: vi.fn(),
     setTtsConfig: vi.fn(),
+    setTtsConfigLoadFailed: vi.fn(),
     setWorlds: vi.fn(),
   }
 }
@@ -159,6 +161,7 @@ function useQueryHarness(scope: ScopeProps, callbacks: ReturnType<typeof createC
 const defaultScope: ScopeProps = {
   auth: 'token-a',
   baseUrl: 'https://old.example.test',
+  operatorDataEnabled: false,
   selectedCampaignId: 1,
   selectedSessionId: 1,
   sessionLogCursor: null,
@@ -224,7 +227,7 @@ describe('useWorkspaceQueries request ownership', () => {
     expect(result.current.workspaceLoading).toBe(false)
   })
 
-  it('loads campaigns and worlds when admin-only root data is forbidden', async () => {
+  it('loads campaigns and worlds without requesting operator-only root data', async () => {
     const visibleCampaign = campaign(1)
     const visibleWorld = {
       world_id: 1,
@@ -240,7 +243,7 @@ describe('useWorkspaceQueries request ownership', () => {
       }
       if (path === '/api/campaigns') return Promise.resolve([visibleCampaign])
       if (path === '/api/worlds?limit=200') return Promise.resolve([visibleWorld])
-      if (path === '/api/beta/summary' || path === '/api/llm/config' || path === '/api/tts/config') {
+      if (path === '/api/tts/config') {
         return Promise.reject(forbidden)
       }
       throw new Error(`Unexpected request: ${path}`)
@@ -255,9 +258,90 @@ describe('useWorkspaceQueries request ownership', () => {
     expect(callbacks.rootCampaignsLoaded).toHaveBeenCalledWith([visibleCampaign])
     expect(callbacks.setWorlds).toHaveBeenCalledWith([visibleWorld])
     expect(callbacks.setMetrics).toHaveBeenCalledWith(null)
+    expect(apiFetchMock).not.toHaveBeenCalledWith(
+      expect.any(String),
+      '/api/beta/summary',
+      expect.any(String),
+    )
+    expect(apiFetchMock).not.toHaveBeenCalledWith(
+      expect.any(String),
+      '/api/llm/config',
+      expect.any(String),
+      expect.anything(),
+    )
     expect(callbacks.pushError).not.toHaveBeenCalled()
     expect(callbacks.onUnauthorized).not.toHaveBeenCalled()
     expect(result.current.workspaceLoading).toBe(false)
+  })
+
+  it('loads enabled operator data independently from essential workspace data', async () => {
+    const metricsResult = deferred<{
+      turn_latency_ms_avg: number | null
+      ai_failure_rate: number
+      session_completion_rate: number
+      coherence_feedback_avg: number | null
+      coherence_feedback_count: number
+      total_turns: number
+      total_sessions: number
+    }>()
+    const llmResult = deferred<{
+      current: { provider: string; model: string; fallback_models: string[]; latest_turn: null }
+      providers: never[]
+      persisted: boolean
+    }>()
+    apiFetchMock.mockImplementation((_baseUrl: string, path: string) => {
+      if (path === '/api/health') {
+        return Promise.resolve({ status: 'ok', service: 'test', env: 'test', auth_required: true, rules_engine_enabled: true, segment_evaluator_enabled: true })
+      }
+      if (path === '/api/campaigns') return Promise.resolve([campaign(1)])
+      if (path === '/api/worlds?limit=200') return Promise.resolve([])
+      if (path === '/api/tts/config') {
+        return Promise.resolve({ provider: 'deepgram', configured: true, model: 'aura-2-draco-en' })
+      }
+      if (path === '/api/beta/summary') return metricsResult.promise
+      if (path === '/api/llm/config') return llmResult.promise
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const callbacks = createCallbacks()
+    const { result, rerender } = renderHook(
+      (scope: ScopeProps) => useQueryHarness(scope, callbacks),
+      { initialProps: defaultScope },
+    )
+
+    await act(async () => {
+      await result.current.queries.refreshRoot()
+    })
+
+    expect(callbacks.rootCampaignsLoaded).toHaveBeenCalledWith([campaign(1)])
+    expect(apiFetchMock.mock.calls.some(([, path]) => path === '/api/beta/summary')).toBe(false)
+    expect(apiFetchMock.mock.calls.some(([, path]) => path === '/api/llm/config')).toBe(false)
+
+    rerender({ ...defaultScope, operatorDataEnabled: true })
+    await waitFor(() => {
+      expect(apiFetchMock.mock.calls.some(([, path]) => path === '/api/beta/summary')).toBe(true)
+      expect(apiFetchMock.mock.calls.some(([, path]) => path === '/api/llm/config')).toBe(true)
+    })
+
+    const llmConfig = {
+      current: { provider: 'test', model: 'test', fallback_models: [], latest_turn: null },
+      providers: [],
+      persisted: false,
+    }
+    llmResult.resolve(llmConfig)
+    await waitFor(() => expect(callbacks.setLlmConfig).toHaveBeenCalledWith(llmConfig))
+    expect(callbacks.setMetrics).not.toHaveBeenCalledWith(expect.objectContaining({ total_turns: 7 }))
+
+    const metrics = {
+      turn_latency_ms_avg: null,
+      ai_failure_rate: 0,
+      session_completion_rate: 1,
+      coherence_feedback_avg: null,
+      coherence_feedback_count: 0,
+      total_turns: 7,
+      total_sessions: 2,
+    }
+    metricsResult.resolve(metrics)
+    await waitFor(() => expect(callbacks.setMetrics).toHaveBeenCalledWith(metrics))
   })
 
   it('lets only the newest campaign workspace response update the selection', async () => {

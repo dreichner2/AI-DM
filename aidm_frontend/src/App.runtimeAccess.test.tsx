@@ -100,7 +100,7 @@ describe('App runtime and workspace access', () => {
 
     await waitFor(() => expect(providerSelect).toHaveValue('fallback'))
     expect(
-      await screen.findByText('Fallback provider active.'),
+      await screen.findByText('Fallback DM active. Ask the table operator to restore the live provider.'),
     ).toBeInTheDocument()
     expect(appTestState.fetchCalls).toEqual(
       expect.arrayContaining([
@@ -121,47 +121,79 @@ describe('App runtime and workspace access', () => {
     expect(screen.queryByText(/Runtime switch failed/i)).not.toBeInTheDocument()
   })
 
-  it('surfaces beta runtime notices for local private mode', async () => {
+  it('keeps non-actionable local private status out of the player alert bar', async () => {
     await renderLoadedApp()
 
-    const notices = await screen.findByLabelText('Beta runtime notices')
-    expect(within(notices).getByText('Local/Private')).toBeInTheDocument()
-    expect(within(notices).getByText('Auth disabled.')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Beta runtime notices')).not.toBeInTheDocument()
+    expect(screen.queryByText('Local/Private')).not.toBeInTheDocument()
+    expect(screen.queryByText('Auth disabled.')).not.toBeInTheDocument()
   })
 
-  it('opens known beta limitations from runtime notices', async () => {
+  it('keeps beta information available from the account menu without stale operator guidance', async () => {
     await renderLoadedApp()
 
-    const notesToggle = await screen.findByRole('button', { name: 'Beta Notes' })
+    fireEvent.click(screen.getByRole('button', { name: 'Account' }))
+    const accountMenu = await screen.findByRole('menu', { name: 'Account options' })
+    const notesToggle = within(accountMenu).getByRole('menuitem', { name: 'Beta information' })
     expect(notesToggle).toHaveAttribute('aria-expanded', 'false')
+    expect(notesToggle).toHaveAttribute('aria-controls', 'beta-runtime-information')
     fireEvent.click(notesToggle)
 
-    const notes = await screen.findByRole('note', { name: 'Known beta limitations' })
+    const notes = await screen.findByRole('region', { name: 'Beta information' })
     expect(notesToggle).toHaveAttribute('aria-expanded', 'true')
-    expect(within(notes).getByText('Known Limitations')).toBeInTheDocument()
+    expect(within(notes).getByRole('heading', { name: 'Beta information' })).toBeInTheDocument()
     expect(
-      within(notes).getByText(/Closed beta is for controlled playtests/i),
+      within(notes).getByText(/Live DM availability depends on the provider configured for the table/i),
     ).toBeInTheDocument()
-    expect(
-      within(notes).getByText(/Hosted cookie auth, CSRF, Socket.IO, and restore behavior/i),
-    ).toBeInTheDocument()
+    expect(within(notes).queryByText(/Hosted cookie auth, CSRF, Socket.IO, and restore behavior/i)).not.toBeInTheDocument()
+    expect(within(notes).queryByText(/hidden authored content/i)).not.toBeInTheDocument()
+    expect(within(notes).queryByText(/support bundles can expose/i)).not.toBeInTheDocument()
 
-    fireEvent.click(within(notes).getByRole('button', { name: 'Close beta notes' }))
+    fireEvent.click(within(notes).getByRole('button', { name: 'Close beta information' }))
 
-    await waitFor(() => expect(screen.queryByRole('note', { name: 'Known beta limitations' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Beta information' })).not.toBeInTheDocument())
     expect(notesToggle).toHaveAttribute('aria-expanded', 'false')
+    await waitFor(() => expect(notesToggle).toHaveFocus())
   })
 
-  it('surfaces unavailable TTS in beta runtime notices', async () => {
+  it('keeps unavailable TTS in its accessible control instead of the global alert bar', async () => {
     appTestState.ttsConfig.configured = false
 
     await renderLoadedApp()
 
-    const notices = await screen.findByLabelText('Beta runtime notices')
-    expect(within(notices).getByText('TTS')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Beta runtime notices')).not.toBeInTheDocument()
+    const narrationControl = screen.getByRole('button', {
+      name: 'Narration unavailable; Deepgram is not configured',
+    })
+    expect(narrationControl).toHaveAttribute('aria-pressed', 'false')
+    expect(narrationControl).toHaveAttribute('data-tts-configuration', 'unavailable')
+    expect(narrationControl).toHaveAttribute(
+      'title',
+      'Unavailable: Deepgram narration is unavailable because the backend is not configured',
+    )
+    fireEvent.click(narrationControl)
+    expect(screen.getAllByText('Deepgram TTS is not configured on the backend.').length).toBeGreaterThan(0)
+  })
+
+  it('distinguishes a failed TTS configuration check from loading and credential absence', async () => {
+    appTestState.ttsConfigFetchError = 'Temporary configuration lookup failure.'
+
+    await renderLoadedApp()
+
+    expect(screen.queryByLabelText('Beta runtime notices')).not.toBeInTheDocument()
+    const narrationControl = screen.getByRole('button', {
+      name: 'Narration status unavailable; configuration check failed',
+    })
+    expect(narrationControl).toHaveAttribute('aria-pressed', 'false')
+    expect(narrationControl).toHaveAttribute('data-tts-configuration', 'error')
+    expect(narrationControl).toHaveAttribute(
+      'title',
+      'Status unavailable: Could not check Deepgram narration configuration; refresh to retry',
+    )
+    fireEvent.click(narrationControl)
     expect(
-      within(notices).getByText('Deepgram TTS unavailable.'),
-    ).toBeInTheDocument()
+      screen.getAllByText('Narration configuration could not be checked. Refresh to retry.').length,
+    ).toBeGreaterThan(0)
   })
 
   it('surfaces missing live provider configuration in beta runtime notices', async () => {
@@ -174,25 +206,68 @@ describe('App runtime and workspace access', () => {
     const notices = await screen.findByLabelText('Beta runtime notices')
     expect(within(notices).getByText('Provider Key')).toBeInTheDocument()
     expect(
-      within(notices).getByText('Live DM responses need a configured provider key.'),
+      within(notices).getByText(
+        'Live DM is unavailable. Ask the table operator to configure the selected provider.',
+      ),
     ).toBeInTheDocument()
   })
 
-  it('surfaces process-local provider scope in beta runtime notices', async () => {
+  it('hides process-local instructions for a single worker', async () => {
     appTestState.runtime.runtime_scope = 'process'
+    appTestState.runtime.worker_count = 1
     appTestState.runtime.restart_required_for_other_workers = true
 
     await renderLoadedApp()
 
-    const notices = await screen.findByLabelText('Beta runtime notices')
-    expect(within(notices).getByText('Process-Local')).toBeInTheDocument()
-    expect(
-      within(notices).getByText('Restart other workers to match.'),
-    ).toBeInTheDocument()
-    expect(screen.getByText('Process-local')).toHaveAttribute(
+    expect(screen.queryByText(/Process-local/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/restart workers/i)).not.toBeInTheDocument()
+  })
+
+  it('shows process-local synchronization only to workspace admins when multiple workers need it', async () => {
+    appTestState.runtime.runtime_scope = 'process'
+    appTestState.runtime.worker_count = 2
+    appTestState.runtime.restart_required_for_other_workers = true
+
+    await renderLoadedApp()
+
+    expect(screen.queryByLabelText('Beta runtime notices')).not.toBeInTheDocument()
+    expect(screen.getByText('Process-local · restart workers')).toHaveAttribute(
       'title',
-      'Provider changes apply to this backend process; restart other workers to match.',
+      'Provider changes apply to this backend process; restart the other workers to synchronize them.',
     )
+  })
+
+  it('hides process-local synchronization from non-admin players', async () => {
+    appTestState.health.auth_required = true
+    appTestState.requiredAuthToken = 'player-token'
+    appTestState.runtime.runtime_scope = 'process'
+    appTestState.runtime.worker_count = 2
+    appTestState.runtime.restart_required_for_other_workers = true
+    sessionStorage.setItem('aidm:authToken', 'player-token')
+    localStorage.setItem('aidm:workspaceId', 'owner')
+
+    render(<App />)
+
+    await waitFor(() =>
+      expect(appTestState.fetchCalls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ method: 'GET', path: '/api/capabilities' }),
+          expect.objectContaining({ method: 'GET', path: '/api/campaigns' }),
+        ]),
+      ),
+    )
+
+    expect(screen.queryByText('Process-local · restart workers')).not.toBeInTheDocument()
+    expect(
+      appTestState.fetchCalls.some(
+        (call) => call.method === 'GET' && call.path === '/api/llm/config',
+      ),
+    ).toBe(false)
+    expect(
+      appTestState.fetchCalls.some(
+        (call) => call.method === 'GET' && call.path === '/api/beta/summary',
+      ),
+    ).toBe(false)
   })
 
   it('keeps restored legacy passwordless sessions in password setup', async () => {

@@ -3,17 +3,18 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any
+from typing import Any, Callable
 
 from flask import Blueprint, current_app, g, jsonify, request
 
 from aidm_server.auth import account_display_name
 from aidm_server.contracts import ProviderRequest
-from aidm_server.database import db
+from aidm_server.database import db, release_clean_scoped_session
 from aidm_server.errors import error_response
 from aidm_server.game_state.extraction.schemas import extract_json_object
 from aidm_server.llm_providers import get_helper_provider, helper_provider_name
 from aidm_server.models import CustomRace, safe_json_dumps, safe_json_loads
+from aidm_server.provider_priority import foreground_provider_reservation
 from aidm_server.race_system import (
     CUSTOM_RACE_APPROVAL_STATUSES,
     CURATED_RACE_BY_ID,
@@ -195,31 +196,39 @@ def _generate_custom_race_draft(
     strictness: str,
     generation_mode: str = 'canon',
     source_race: dict[str, Any] | None = None,
+    before_provider_call: Callable[[], None] | None = None,
 ) -> tuple[dict[str, Any], str]:
     fallback = generate_custom_race_draft(prompt, strictness=strictness)
     if not _custom_race_helper_enabled():
         return fallback, 'deterministic'
 
-    try:
-        response = get_helper_provider(task=CUSTOM_RACE_HELPER_TASK).generate(
-            ProviderRequest(
-                prompt=_build_custom_race_prompt(prompt, strictness, generation_mode, source_race),
-                system_message=CUSTOM_RACE_SYSTEM_MESSAGE,
+    with foreground_provider_reservation() as activate_provider:
+        # Keep the transaction boundary outside the provider fallback below.
+        # Releasing a dirty session must fail loudly instead of being mistaken
+        # for a provider failure and hidden behind deterministic generation.
+        if before_provider_call:
+            before_provider_call()
+        activate_provider()
+        try:
+            response = get_helper_provider(task=CUSTOM_RACE_HELPER_TASK).generate(
+                ProviderRequest(
+                    prompt=_build_custom_race_prompt(prompt, strictness, generation_mode, source_race),
+                    system_message=CUSTOM_RACE_SYSTEM_MESSAGE,
+                )
             )
-        )
-        payload = extract_json_object(response.text)
-        if not payload:
-            raise ValueError('helper returned invalid JSON')
-        draft = _race_payload_from_helper(payload, prompt)
-        telemetry_metric('race.custom_helper.success_total', 1, tags={'model': response.model})
-        return draft, response.model
-    except Exception as exc:
-        telemetry_event(
-            'race.custom_helper.failed',
-            payload={'error': str(exc)[:300]},
-            severity='warning',
-        )
-        return fallback, 'deterministic_fallback'
+            payload = extract_json_object(response.text)
+            if not payload:
+                raise ValueError('helper returned invalid JSON')
+            draft = _race_payload_from_helper(payload, prompt)
+            telemetry_metric('race.custom_helper.success_total', 1, tags={'model': response.model})
+            return draft, response.model
+        except Exception as exc:
+            telemetry_event(
+                'race.custom_helper.failed',
+                payload={'error': str(exc)[:300]},
+                severity='warning',
+            )
+            return fallback, 'deterministic_fallback'
 
 
 def _strip_null_metadata(value: Any) -> Any:
@@ -364,6 +373,9 @@ def generate_custom_race():
             strictness=strictness,
             generation_mode=generation_mode,
             source_race=source_race,
+            before_provider_call=lambda: release_clean_scoped_session(
+                boundary='custom race provider'
+            ),
         )
     except RaceValidationError as exc:
         return error_response('validation_error', exc.public_message, 400)

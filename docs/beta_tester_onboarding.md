@@ -66,14 +66,9 @@ Send testers:
 - The deterministic fallback provider is for safety/testing, not final DM
   quality.
 - TTS depends on provider configuration and browser autoplay behavior.
-- The top runtime notice strip calls out fallback provider use, missing provider
-  keys, unavailable TTS, local/private auth-disabled mode, and process-local
-  provider changes. Use its Beta Notes control for the current in-app known
-  limitations list.
-- Campaign packs can contain hidden authored content; players should not assume
-  all authored NPCs, locations, or branches are visible at session start.
-- Operator tools and support bundles are admin-only and may expose session IDs,
-  provider/model metadata, and audit references.
+- The top runtime notice strip is reserved for current player-impacting
+  provider outages. Optional narration availability appears with the TTS
+  control, and the account menu contains a compact Beta information disclosure.
 
 ## Operator Follow-Up After Each Session
 
@@ -84,6 +79,9 @@ Send testers:
   latency, failed turns, canon failures, reports, clarification, and audit counts.
 - Export a session support bundle from the operator Ops tab, or request
   `/api/beta/support-bundle?session_id=<id>`, for sessions with reported issues.
+  Review the export confirmation before continuing: bundles can contain session
+  IDs, provider/model metadata, and audit references and must be handled as
+  operator data.
   For hosted/operator automation, use `make export-support-bundle
   EXPORT_SUPPORT_BUNDLE_ARGS="--target-url <target-url> --auth-token <token>
   --workspace-id <workspace-id> --session-id <session-id>"`.

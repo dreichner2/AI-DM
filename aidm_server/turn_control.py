@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import timezone
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
 from flask import current_app, has_app_context
 
@@ -12,6 +12,7 @@ from aidm_server.database import db
 from aidm_server.game_state.extraction.schemas import extract_json_object
 from aidm_server.llm_providers import get_helper_provider
 from aidm_server.models import Player, Session, safe_json_dumps, safe_json_loads
+from aidm_server.provider_priority import foreground_provider_reservation
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 from aidm_server.time_utils import utc_now
 
@@ -344,36 +345,47 @@ def _ai_turn_conductor_decision(
     message: str,
     action_intent: dict | None,
     active_player_ids: list[int],
+    before_provider_call: Callable[[], None] | None = None,
 ) -> dict | None:
     if not _turn_conductor_helper_enabled():
         return None
     try:
-        response = get_helper_provider().generate(
-            ProviderRequest(
-                prompt=_build_turn_conductor_prompt(
-                    turn_control=turn_control,
-                    player_id=player_id,
-                    message=message,
-                    action_intent=action_intent,
-                    active_player_ids=active_player_ids,
-                ),
-                system_message=TURN_CONDUCTOR_SYSTEM_MESSAGE,
-            )
-        )
-        telemetry_metric('socket.turn_conductor.helper_total', 1)
-        payload = extract_json_object(response.text)
-        decision = _normalize_conductor_decision(payload, player_id=player_id, active_player_ids=active_player_ids)
-        if decision:
-            decision['provider'] = response.provider
-            decision['model'] = response.model
-            return decision
-        telemetry_event(
-            'socket.turn_conductor.helper_invalid',
-            payload={'raw_preview': str(response.text or '')[:500]},
-            severity='warning',
+        prompt = _build_turn_conductor_prompt(
+            turn_control=turn_control,
+            player_id=player_id,
+            message=message,
+            action_intent=action_intent,
+            active_player_ids=active_player_ids,
         )
     except Exception as exc:
         telemetry_event('socket.turn_conductor.helper_failed', payload={'error': str(exc)}, severity='warning')
+        return None
+
+    with foreground_provider_reservation() as activate_provider:
+        if before_provider_call:
+            before_provider_call()
+        try:
+            activate_provider()
+            response = get_helper_provider().generate(
+                ProviderRequest(
+                    prompt=prompt,
+                    system_message=TURN_CONDUCTOR_SYSTEM_MESSAGE,
+                )
+            )
+            telemetry_metric('socket.turn_conductor.helper_total', 1)
+            payload = extract_json_object(response.text)
+            decision = _normalize_conductor_decision(payload, player_id=player_id, active_player_ids=active_player_ids)
+            if decision:
+                decision['provider'] = response.provider
+                decision['model'] = response.model
+                return decision
+            telemetry_event(
+                'socket.turn_conductor.helper_invalid',
+                payload={'raw_preview': str(response.text or '')[:500]},
+                severity='warning',
+            )
+        except Exception as exc:
+            telemetry_event('socket.turn_conductor.helper_failed', payload={'error': str(exc)}, severity='warning')
     return None
 
 
@@ -566,8 +578,17 @@ def conduct_turn_submission(
     action_intent: dict | None,
     has_pending_roll: bool = False,
     active_player_ids: list[int] | None = None,
+    before_helper_call: Callable[[], None] | None = None,
+    reload_session_after_helper: Callable[[], Session | None] | None = None,
 ) -> tuple[bool, str | None, dict, bool, dict]:
     turn_control = turn_control_from_session(session_obj)
+    expected_session_state = (
+        session_obj.session_id,
+        session_obj.campaign_id,
+        session_obj.status,
+        session_obj.state_snapshot,
+        session_obj.deleted_at,
+    )
     kind = _action_kind(action_intent)
     if kind == 'admin':
         return True, None, turn_control, False, {'decision': 'allow_admin'}
@@ -589,13 +610,45 @@ def conduct_turn_submission(
     if not active_ids and player_id:
         active_ids = [player_id]
 
+    helper_session_released = False
+
+    def _before_provider_call() -> None:
+        nonlocal helper_session_released
+        if before_helper_call:
+            before_helper_call()
+            helper_session_released = True
+
     ai_decision = _ai_turn_conductor_decision(
         turn_control=turn_control,
         player_id=player_id,
         message=message,
         action_intent=action_intent,
         active_player_ids=active_ids,
+        before_provider_call=_before_provider_call if before_helper_call else None,
     )
+    if helper_session_released:
+        reloaded_session = reload_session_after_helper() if reload_session_after_helper else None
+        if reloaded_session is None:
+            return (
+                False,
+                'The session changed while table flow was being evaluated. Please retry.',
+                turn_control,
+                False,
+                {'decision': 'session_changed'},
+            )
+        current_session_state = (
+            reloaded_session.session_id,
+            reloaded_session.campaign_id,
+            reloaded_session.status,
+            reloaded_session.state_snapshot,
+            reloaded_session.deleted_at,
+        )
+        session_obj = reloaded_session
+        turn_control = turn_control_from_session(session_obj)
+        if current_session_state != expected_session_state:
+            # The helper response was based on stale table flow. Ignore it and
+            # run the deterministic policy against the freshly loaded session.
+            ai_decision = None
     if ai_decision:
         ai_result = _apply_ai_conductor_decision(
             session_obj,

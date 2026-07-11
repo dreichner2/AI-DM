@@ -6,7 +6,7 @@ import hashlib
 import re
 import secrets
 
-from flask import current_app, request
+from flask import current_app, g, has_request_context, request
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
@@ -231,7 +231,14 @@ def request_account_cookie_csrf_valid() -> bool:
 
 
 def request_account():
-    return account_for_token(request_account_token())
+    if has_request_context() and getattr(g, '_aidm_request_account_resolved', False):
+        return getattr(g, '_aidm_request_account', None)
+
+    account = account_for_token(request_account_token())
+    if has_request_context():
+        g._aidm_request_account = account
+        g._aidm_request_account_resolved = True
+    return account
 
 
 def request_workspace_token(account_token: str | None = None) -> str | None:
@@ -244,7 +251,15 @@ def request_workspace_token(account_token: str | None = None) -> str | None:
         return None
 
     checked_account_token = account_token if account_token is not None else bearer_token
-    if checked_account_token and account_for_token(checked_account_token):
+    if checked_account_token:
+        account = (
+            request_account()
+            if checked_account_token == request_account_token()
+            else account_for_token(checked_account_token)
+        )
+    else:
+        account = None
+    if account:
         return None
     return bearer_token
 
@@ -255,20 +270,30 @@ def _request_workspace_id_header() -> str | None:
 
 
 def request_workspace_id() -> str | None:
+    if has_request_context() and getattr(g, '_aidm_request_workspace_id_resolved', False):
+        return getattr(g, '_aidm_request_workspace_id', None)
+
     workspace_token = request_workspace_token()
     if workspace_token:
-        return workspace_id_for_workspace_token(workspace_token)
+        workspace_id = workspace_id_for_workspace_token(workspace_token)
+    else:
+        selected_workspace_id = _request_workspace_id_header()
+        if selected_workspace_id:
+            account = request_account()
+            workspace_id = (
+                selected_workspace_id
+                if account_workspace_membership(account, selected_workspace_id)
+                else None
+            )
+        elif auth_required():
+            workspace_id = None
+        else:
+            workspace_id = DEFAULT_WORKSPACE_ID
 
-    selected_workspace_id = _request_workspace_id_header()
-    if selected_workspace_id:
-        account = request_account()
-        if account_workspace_membership(account, selected_workspace_id):
-            return selected_workspace_id
-        return None
-
-    if auth_required():
-        return None
-    return DEFAULT_WORKSPACE_ID
+    if has_request_context():
+        g._aidm_request_workspace_id = workspace_id
+        g._aidm_request_workspace_id_resolved = True
+    return workspace_id
 
 
 def account_workspace_membership(account, workspace_id: str | None):
@@ -276,10 +301,23 @@ def account_workspace_membership(account, workspace_id: str | None):
         return None
     from aidm_server.models import AccountWorkspaceMembership
 
-    return AccountWorkspaceMembership.query.filter_by(
+    cache_key = (int(account.account_id), str(workspace_id))
+    request_cache = None
+    if has_request_context():
+        request_cache = getattr(g, '_aidm_request_memberships', None)
+        if request_cache is None:
+            request_cache = {}
+            g._aidm_request_memberships = request_cache
+        if cache_key in request_cache:
+            return request_cache[cache_key]
+
+    membership = AccountWorkspaceMembership.query.filter_by(
         account_id=account.account_id,
         workspace_id=workspace_id,
     ).first()
+    if request_cache is not None:
+        request_cache[cache_key] = membership
+    return membership
 
 
 def ensure_account_workspace_membership(account, workspace_id: str | None):
@@ -299,6 +337,12 @@ def ensure_account_workspace_membership(account, workspace_id: str | None):
     )
     db.session.add(membership)
     db.session.flush()
+    if has_request_context():
+        request_cache = getattr(g, '_aidm_request_memberships', None)
+        if request_cache is None:
+            request_cache = {}
+            g._aidm_request_memberships = request_cache
+        request_cache[(int(account.account_id), str(workspace_id))] = membership
     return membership
 
 

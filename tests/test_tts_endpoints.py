@@ -3,7 +3,11 @@ from __future__ import annotations
 import threading
 
 import aidm_server.blueprints.system as system_blueprint
+from flask import request
 import requests
+from sqlalchemy import text
+
+from aidm_server.database import db
 
 
 def test_tts_config_reports_missing_key(client):
@@ -169,6 +173,45 @@ def test_tts_speak_proxies_deepgram_audio(client, app, monkeypatch):
     ]
     assert any('phase=request' in key for key in phase_keys)
     assert any('phase=first_audio_byte' in key for key in phase_keys)
+
+
+def test_tts_speak_releases_request_database_connection_before_upstream(
+    client,
+    app,
+    monkeypatch,
+):
+    app.config['AIDM_DEEPGRAM_API_KEY'] = 'test-key'
+
+    class FakeDeepgramResponse:
+        ok = True
+        status_code = 200
+        headers = {'Content-Type': 'audio/mpeg'}
+
+        @staticmethod
+        def iter_content(chunk_size=1024):
+            del chunk_size
+            yield b'audio'
+
+        @staticmethod
+        def close():
+            return None
+
+    @app.before_request
+    def open_read_transaction_before_tts():
+        if request.path == '/api/tts/speak':
+            db.session.execute(text('SELECT 1'))
+            assert db.session().in_transaction() is True
+
+    def fake_tts_request(*_args, **_kwargs):
+        assert db.session.registry.has() is False
+        return FakeDeepgramResponse()
+
+    monkeypatch.setattr(system_blueprint, '_deepgram_tts_request', fake_tts_request)
+
+    response = client.post('/api/tts/speak', json={'text': 'Release the connection.'})
+
+    assert response.status_code == 200
+    assert response.data == b'audio'
 
 
 def test_tts_speak_strips_reasoning_tags_before_proxying(client, app, monkeypatch):

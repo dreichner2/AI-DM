@@ -3,14 +3,21 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from threading import Barrier, Lock
+
+import pytest
 
 from aidm_server.canon_jobs import (
+    CANON_JOB_WORKER_EXTENSION,
     CANON_JOB_FAILED_MESSAGE,
     enqueue_canon_job,
     process_canon_job,
     reset_stale_canon_jobs,
     retry_canon_job,
+    start_canon_job_worker,
+    stop_canon_job_worker,
 )
+from aidm_server.contracts import ProviderResponse
 from aidm_server.database import db
 from aidm_server.models import (
     CanonJob,
@@ -76,6 +83,20 @@ def test_canon_job_processes_and_exposes_status_counts(client, app, monkeypatch)
 
     monkeypatch.setattr(canon_jobs_module, 'extract_canon_patch', fake_extract)
 
+    def capture_status(session_id, emitted_turn_id, status, details=None):
+        if status == 'canon_pending':
+            assert db.session.registry.has() is False
+        durable_job = CanonJob.query.filter_by(turn_id=emitted_turn_id).one()
+        emitted_statuses.append(
+            {
+                'session_id': session_id,
+                'turn_id': emitted_turn_id,
+                'status': status,
+                'details': details or {},
+                'durable_job_status': durable_job.status,
+            }
+        )
+
     with app.app_context():
         turn = db.session.get(DmTurn, turn_id)
         campaign = db.session.get(Campaign, ids['campaign_id'])
@@ -90,9 +111,7 @@ def test_canon_job_processes_and_exposes_status_counts(client, app, monkeypatch)
 
         process_canon_job(
             job_id,
-            emit_turn_status=lambda session_id, turn_id, status, details=None: emitted_statuses.append(
-                {'session_id': session_id, 'turn_id': turn_id, 'status': status, 'details': details or {}}
-            ),
+            emit_turn_status=capture_status,
         )
 
         job = db.session.get(CanonJob, job_id)
@@ -108,9 +127,37 @@ def test_canon_job_processes_and_exposes_status_counts(client, app, monkeypatch)
         assert safe_json_loads(turn.metadata_json, {})['canon_status'] == 'applied'
         assert 'silver key' in state.rolling_summary
         assert [status['status'] for status in emitted_statuses] == ['canon_pending', 'canon_applied']
+        assert [status['durable_job_status'] for status in emitted_statuses] == ['running', 'succeeded']
 
     payload = client.get(f"/api/campaigns/{ids['campaign_id']}/canon").get_json()
     assert payload['summary']['canon_job_counts'] == {'succeeded': 1}
+
+
+def test_canon_provider_wait_has_no_active_database_transaction(app, monkeypatch):
+    import aidm_server.llm as llm_module
+
+    ids = seed_world_campaign_player_session(app)
+    turn_id = _seed_completed_turn(app, ids)
+    provider_transaction_states: list[bool] = []
+
+    class InspectingProvider:
+        @staticmethod
+        def generate(_request):
+            provider_transaction_states.append(bool(db.session().in_transaction()))
+            return ProviderResponse(text='{}', provider='test', model='transaction-probe')
+
+    monkeypatch.setattr(llm_module, 'get_provider', lambda: InspectingProvider())
+
+    with app.app_context():
+        turn = db.session.get(DmTurn, turn_id)
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        job = enqueue_canon_job(turn=turn, campaign=campaign, speaking_player_name='Seraphina')
+        db.session.commit()
+
+        processed = process_canon_job(job.job_id)
+        assert processed.status == 'succeeded'
+
+    assert provider_transaction_states == [False]
 
 
 def test_canon_job_failure_is_durable_retryable_and_does_not_expose_internal_error(app, monkeypatch):
@@ -214,6 +261,28 @@ def test_canon_job_claim_is_atomic_across_concurrent_workers(app, monkeypatch):
         assert job.attempts == 1
 
 
+def test_concurrent_enqueue_reconciles_to_one_durable_job(app):
+    ids = seed_world_campaign_player_session(app)
+    turn_id = _seed_completed_turn(app, ids)
+    ready = Barrier(2)
+
+    def enqueue_once():
+        with app.app_context():
+            turn = db.session.get(DmTurn, turn_id)
+            campaign = db.session.get(Campaign, ids['campaign_id'])
+            ready.wait(timeout=2)
+            job = enqueue_canon_job(turn=turn, campaign=campaign, speaking_player_name='Seraphina')
+            db.session.commit()
+            return job.job_id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        job_ids = list(executor.map(lambda _index: enqueue_once(), range(2)))
+
+    assert job_ids[0] == job_ids[1]
+    with app.app_context():
+        assert CanonJob.query.filter_by(turn_id=turn_id).count() == 1
+
+
 def test_stale_running_canon_job_resets_to_queued(app):
     ids = seed_world_campaign_player_session(app)
     turn_id = _seed_completed_turn(app, ids)
@@ -238,3 +307,138 @@ def test_stale_running_canon_job_resets_to_queued(app):
         assert job.status == 'queued'
         assert job.locked_at is None
         assert job.error_text == 'Reset after stale running lock.'
+
+
+def test_retry_does_not_requeue_live_or_succeeded_jobs(app):
+    ids = seed_world_campaign_player_session(app)
+    turn_id = _seed_completed_turn(app, ids)
+
+    with app.app_context():
+        turn = db.session.get(DmTurn, turn_id)
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        job = enqueue_canon_job(turn=turn, campaign=campaign, speaking_player_name='Seraphina')
+        job.status = 'running'
+        job.attempts = 1
+        db.session.commit()
+        job_id = job.job_id
+
+        assert retry_canon_job(job_id).status == 'running'
+        job = db.session.get(CanonJob, job_id)
+        assert job.status == 'running'
+        assert job.attempts == 1
+
+        job.status = 'succeeded'
+        db.session.commit()
+        assert retry_canon_job(job_id).status == 'succeeded'
+        assert db.session.get(CanonJob, job_id).status == 'succeeded'
+
+
+def test_stale_extraction_failure_cannot_fail_a_newer_attempt(app, monkeypatch):
+    import aidm_server.canon_jobs as canon_jobs_module
+
+    ids = seed_world_campaign_player_session(app)
+    turn_id = _seed_completed_turn(app, ids)
+
+    with app.app_context():
+        turn = db.session.get(DmTurn, turn_id)
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        job = enqueue_canon_job(turn=turn, campaign=campaign, speaking_player_name='Seraphina')
+        db.session.commit()
+        job_id = job.job_id
+
+    def supersede_then_fail(*args, **kwargs):
+        del args, kwargs
+        job = db.session.get(CanonJob, job_id)
+        job.status = 'running'
+        job.attempts = 2
+        db.session.commit()
+        raise RuntimeError('attempt one finished late')
+
+    monkeypatch.setattr(canon_jobs_module, 'extract_canon_patch', supersede_then_fail)
+
+    with app.app_context():
+        result = process_canon_job(job_id)
+        assert result.status == 'running'
+        job = db.session.get(CanonJob, job_id)
+        assert job.status == 'running'
+        assert job.attempts == 2
+        assert job.error_text is None
+
+
+def test_worker_is_single_wakeable_and_drains_burst_serially(app, socketio, monkeypatch):
+    import aidm_server.canon_jobs as canon_jobs_module
+
+    ids = seed_world_campaign_player_session(app)
+    job_ids: list[int] = []
+    with app.app_context():
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        for index in range(5):
+            turn_id = _seed_completed_turn(app, ids, dm_output=f'Canon burst result {index}.')
+            turn = db.session.get(DmTurn, turn_id)
+            job = enqueue_canon_job(turn=turn, campaign=campaign, speaking_player_name='Seraphina')
+            db.session.commit()
+            job_ids.append(job.job_id)
+
+    active = 0
+    max_active = 0
+    extraction_calls: list[int] = []
+    activity_lock = Lock()
+
+    def serial_extract(*args, **kwargs):
+        nonlocal active, max_active
+        del args, kwargs
+        with activity_lock:
+            active += 1
+            max_active = max(max_active, active)
+            extraction_calls.append(active)
+        time.sleep(0.01)
+        with activity_lock:
+            active -= 1
+        return _empty_patch(), 'burst-test'
+
+    monkeypatch.setattr(canon_jobs_module, 'extract_canon_patch', serial_extract)
+    original_start = socketio.start_background_task
+    worker_starts = 0
+
+    def track_start(*args, **kwargs):
+        nonlocal worker_starts
+        worker_starts += 1
+        return original_start(*args, **kwargs)
+
+    monkeypatch.setattr(socketio, 'start_background_task', track_start)
+    app.config.update(TESTING=False, AIDM_ENV='development')
+
+    assert start_canon_job_worker(app, socketio, interval_seconds=30, batch_limit=2) is True
+    assert start_canon_job_worker(app, socketio, interval_seconds=30, batch_limit=2) is False
+
+    deadline = time.monotonic() + 5
+    statuses: list[str] = []
+    while time.monotonic() < deadline:
+        with app.app_context():
+            statuses = [db.session.get(CanonJob, job_id).status for job_id in job_ids]
+            db.session.remove()
+        if statuses == ['succeeded'] * len(job_ids):
+            break
+        time.sleep(0.02)
+
+    assert statuses == ['succeeded'] * len(job_ids)
+    assert worker_starts == 1
+    assert len(extraction_calls) == len(job_ids)
+    assert max_active == 1
+    assert stop_canon_job_worker(app) is True
+    state = app.extensions[CANON_JOB_WORKER_EXTENSION]
+    if hasattr(state.task, 'join'):
+        state.task.join(timeout=2)
+
+
+def test_worker_start_failure_does_not_poison_restart_state(app):
+    class FailingSocket:
+        @staticmethod
+        def start_background_task(*args, **kwargs):
+            del args, kwargs
+            raise RuntimeError('thread unavailable')
+
+    app.config.update(TESTING=False, AIDM_ENV='development')
+    with pytest.raises(RuntimeError, match='thread unavailable'):
+        start_canon_job_worker(app, FailingSocket())
+    assert CANON_JOB_WORKER_EXTENSION not in app.extensions

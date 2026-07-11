@@ -7,7 +7,7 @@ import {
   pointBuyStatsPayload,
   type PointBuyScores,
 } from './characterStats'
-import { playableRaceFromValue } from './raceCatalog'
+import type { PlayableRace } from './raceCatalog'
 import type { CharacterRaceSelection, Player, PlayerDetail } from './types'
 
 type ValueUpdater<T> = T | ((current: T) => T)
@@ -145,7 +145,16 @@ export function usePlayerProfileActions({
       )
       return
     }
-    const playableRace = playableRaceFromValue(playerEditDialog.race)
+    let playableRace: PlayableRace | null
+    try {
+      const { playableRaceFromValue } = await import('./raceCatalog')
+      playableRace = playableRaceFromValue(playerEditDialog.race)
+    } catch {
+      setPlayerEditDialog((current) =>
+        current ? { ...current, error: 'Race options could not be loaded. Try again.' } : current,
+      )
+      return
+    }
     const raceSelection =
       playerEditDialog.raceSelection ??
       (playableRace

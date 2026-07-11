@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 
 import pytest
+from sqlalchemy import event, text
 from sqlalchemy.exc import IntegrityError
 
 import aidm_server.blueprints.sessions as sessions_blueprint
@@ -31,6 +34,29 @@ from aidm_server.turn_events import (
     record_turn_event,
 )
 from tests.helpers import seed_world_campaign_player_session
+
+
+def _pool_checkout_probe(engine):
+    lock = threading.Lock()
+    active = 0
+
+    def checkout(*_args):
+        nonlocal active
+        with lock:
+            active += 1
+
+    def checkin(*_args):
+        nonlocal active
+        with lock:
+            active -= 1
+
+    def snapshot() -> int:
+        with lock:
+            return active
+
+    event.listen(engine, 'checkout', checkout)
+    event.listen(engine, 'checkin', checkin)
+    return snapshot, checkout, checkin
 
 
 def test_session_state_and_log_endpoints(client, app):
@@ -156,6 +182,80 @@ def test_end_session_recap_uses_bounded_recent_log_and_summary(client, app, monk
     assert 'Campaign summary before the bounded batch.' in captured['prompt']
     assert 'recent-log-79' in captured['prompt']
     assert 'ancient-log-0' not in captured['prompt']
+
+
+def test_end_session_recap_releases_database_connection_during_provider_and_persists(
+    client,
+    app,
+    monkeypatch,
+):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        engine = db.engine
+    snapshot, checkout, checkin = _pool_checkout_probe(engine)
+
+    def fake_query_gpt(_prompt=None, _system_message=None, **_kwargs):
+        assert db.session().in_transaction() is False
+        assert snapshot() == 0
+        time.sleep(0.01)
+        assert db.session().in_transaction() is False
+        assert snapshot() == 0
+        return 'Provider-boundary recap.'
+
+    monkeypatch.setattr(sessions_blueprint, 'query_gpt', fake_query_gpt)
+
+    try:
+        response = client.post(f"/api/sessions/{ids['session_id']}/end")
+    finally:
+        event.remove(engine, 'checkout', checkout)
+        event.remove(engine, 'checkin', checkin)
+
+    assert response.status_code == 200
+    assert response.get_json() == {'recap': 'Provider-boundary recap.'}
+    with app.app_context():
+        session_obj = db.session.get(Session, ids['session_id'])
+        session_state = SessionState.query.filter_by(session_id=ids['session_id']).one()
+        assert json.loads(session_obj.state_snapshot)['recap'] == 'Provider-boundary recap.'
+        assert session_state.rolling_summary == 'Provider-boundary recap.'
+        assert [
+            event_type
+            for (event_type,) in db.session.query(TurnEvent.event_type)
+            .filter_by(session_id=ids['session_id'])
+            .order_by(TurnEvent.event_id.asc())
+            .all()
+        ] == [SESSION_ENDED_EVENT, SESSION_RECAP_EVENT]
+
+
+def test_end_session_recap_rejects_provider_time_context_drift_without_writes(
+    client,
+    app,
+    monkeypatch,
+):
+    ids = seed_world_campaign_player_session(app)
+    newer_snapshot = json.dumps({'newer': {'must_survive': True}})
+
+    def fake_query_gpt(_prompt=None, _system_message=None, **_kwargs):
+        assert db.session().in_transaction() is False
+        with db.engine.begin() as connection:
+            connection.execute(
+                text('UPDATE sessions SET state_snapshot = :snapshot WHERE session_id = :session_id'),
+                {'snapshot': newer_snapshot, 'session_id': ids['session_id']},
+            )
+        return 'Stale recap that must be discarded.'
+
+    monkeypatch.setattr(sessions_blueprint, 'query_gpt', fake_query_gpt)
+
+    response = client.post(f"/api/sessions/{ids['session_id']}/end")
+
+    assert response.status_code == 409
+    assert response.get_json()['error_code'] == 'session_context_conflict'
+    with app.app_context():
+        session_obj = db.session.get(Session, ids['session_id'])
+        assert session_obj.state_snapshot == newer_snapshot
+        assert SessionState.query.filter_by(session_id=ids['session_id']).first() is None
+        assert TurnEvent.query.filter_by(session_id=ids['session_id']).count() == 0
+        assert SessionLogEntry.query.filter_by(session_id=ids['session_id']).count() == 0
 
 
 def test_start_session_adds_welcome_log(client, app):

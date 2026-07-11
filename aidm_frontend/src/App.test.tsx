@@ -256,6 +256,136 @@ describe('App user workflow regressions', () => {
     )
   })
 
+  it('renders two incremental DM chunks before reconciling to authoritative completion text', async () => {
+    const rendered = await renderLoadedApp()
+    const currentResponseCopy = () =>
+      rendered.container.querySelector<HTMLElement>('.turn-row.current .response-copy')
+
+    await act(async () => {
+      socketHandler<{ turn_id: number; turn_number?: number }>('dm_response_start')({
+        turn_id: 79,
+        turn_number: 5,
+      })
+    })
+
+    await act(async () => {
+      socketHandler<{ turn_id: number; chunk: string }>('dm_chunk')({
+        turn_id: 79,
+        chunk: 'The bronze door opens ',
+      })
+    })
+    await waitFor(() => expect(currentResponseCopy()).toHaveTextContent('The bronze door opens'))
+    const firstSnapshot = currentResponseCopy()?.textContent
+    expect(firstSnapshot).not.toContain('onto a moonlit bridge')
+
+    await act(async () => {
+      socketHandler<{ turn_id: number; chunk: string }>('dm_chunk')({
+        turn_id: 79,
+        chunk: 'onto a moonlit bridge.',
+      })
+    })
+    await waitFor(() =>
+      expect(currentResponseCopy()).toHaveTextContent('The bronze door opens onto a moonlit bridge.'),
+    )
+    expect(currentResponseCopy()?.textContent).not.toBe(firstSnapshot)
+    expect(within(rendered.container.querySelector('.turn-row.current') as HTMLElement).getByText('Streaming'))
+      .toBeInTheDocument()
+
+    await act(async () => {
+      socketHandler<{ turn_id: number; text: string; ok: boolean }>('dm_response_end')({
+        turn_id: 79,
+        text: 'The bronze door opens onto a moonlit bridge beneath a clear sky.',
+        ok: true,
+      })
+    })
+
+    await waitFor(() =>
+      expect(currentResponseCopy()?.textContent).toBe(
+        'The bronze door opens onto a moonlit bridge beneath a clear sky.',
+      ),
+    )
+    expect(within(rendered.container.querySelector('.turn-row.current') as HTMLElement).getByText('Latest Response'))
+      .toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText(/Your Action/i), { target: { value: 'I step onto the bridge.' } })
+    expect(screen.getByRole('button', { name: /Send/i })).toBeEnabled()
+  })
+
+  it('uses completed response text even when start and chunk events were missed', async () => {
+    const rendered = await renderLoadedApp()
+
+    await act(async () => {
+      socketHandler<{ turn_id: number; turn_number: number; text: string; ok: boolean }>('dm_response_end')({
+        turn_id: 80,
+        turn_number: 6,
+        text: 'A complete response arrives after the client reconnects.',
+        ok: true,
+      })
+    })
+
+    await waitFor(() =>
+      expect(
+        rendered.container.querySelector<HTMLElement>('.turn-row.current .response-copy')?.textContent,
+      ).toBe('A complete response arrives after the client reconnects.'),
+    )
+    fireEvent.change(screen.getByLabelText(/Your Action/i), { target: { value: 'I answer the call.' } })
+    expect(screen.getByRole('button', { name: /Send/i })).toBeEnabled()
+  })
+
+  it('preserves received partial text when a DM stream fails', async () => {
+    const rendered = await renderLoadedApp()
+
+    await act(async () => {
+      socketHandler<{ turn_id: number }>('dm_response_start')({ turn_id: 81 })
+      socketHandler<{ turn_id: number; chunk: string }>('dm_chunk')({
+        turn_id: 81,
+        chunk: 'The warning bell rings once before',
+      })
+    })
+    await waitFor(() =>
+      expect(rendered.container.querySelector('.turn-row.current .response-copy'))
+        .toHaveTextContent('The warning bell rings once before'),
+    )
+
+    await act(async () => {
+      socketHandler<{ turn_id: number; text: string; ok: boolean; error: string }>('dm_response_end')({
+        turn_id: 81,
+        text: 'The warning bell rings once before the socket falls silent.',
+        ok: false,
+        error: 'Generation stopped.',
+      })
+    })
+
+    await waitFor(() =>
+      expect(
+        rendered.container.querySelector<HTMLElement>('.turn-row.current .response-copy')?.textContent,
+      ).toBe('The warning bell rings once before the socket falls silent.'),
+    )
+    expect(screen.getAllByText('DM response failed: Generation stopped.').length).toBeGreaterThan(0)
+    fireEvent.change(screen.getByLabelText(/Your Action/i), { target: { value: 'I try again carefully.' } })
+    expect(screen.getByRole('button', { name: /Send/i })).toBeEnabled()
+  })
+
+  it('reloads persisted session data after the same socket automatically reconnects', async () => {
+    await renderLoadedApp()
+    const initialLogFetchCount = appTestState.fetchCalls.filter(
+      (call) => call.method === 'GET' && call.path === '/api/sessions/20/log',
+    ).length
+
+    await act(async () => {
+      socketHandler<void>('connect')()
+      socketHandler<void>('disconnect')()
+      socketHandler<void>('connect')()
+    })
+
+    await waitFor(() =>
+      expect(
+        appTestState.fetchCalls.filter(
+          (call) => call.method === 'GET' && call.path === '/api/sessions/20/log',
+        ).length,
+      ).toBeGreaterThan(initialLogFetchCount),
+    )
+  })
+
   it('lets users dismiss a stuck pending local message from history', async () => {
     await renderLoadedApp()
 
@@ -2438,7 +2568,35 @@ describe('App user workflow regressions', () => {
     })
     const downloadClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'Export support bundle for session 20' })[0])
+    const supportBundleExport = screen.getAllByRole('button', {
+      name: 'Export support bundle for session 20',
+    })[0]
+    fireEvent.click(supportBundleExport)
+    const supportBundleDialog = screen.getByRole('dialog', {
+      name: 'Confirm support bundle export',
+    })
+    expect(supportBundleDialog).toHaveAccessibleDescription(
+      /bundle can contain session IDs, provider\/model metadata, and audit references and should be handled as operator data/i,
+    )
+    await waitFor(() =>
+      expect(within(supportBundleDialog).getByRole('button', { name: 'Cancel' })).toHaveFocus(),
+    )
+    expect(
+      appTestState.fetchCalls.some((call) => call.path === '/api/beta/support-bundle'),
+    ).toBe(false)
+
+    fireEvent.click(within(supportBundleDialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Confirm support bundle export' })).not.toBeInTheDocument(),
+    )
+    expect(supportBundleExport).toHaveFocus()
+
+    fireEvent.click(supportBundleExport)
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: 'Confirm support bundle export' })).getByRole('button', {
+        name: 'Download bundle',
+      }),
+    )
 
     await waitFor(() => expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob)))
     expect(downloadClick).toHaveBeenCalled()
@@ -2564,9 +2722,9 @@ describe('App user workflow regressions', () => {
   it('toggles TTS and falls back when browser fullscreen is blocked', async () => {
     await renderLoadedApp()
 
-    const ttsButton = screen.getByRole('button', { name: 'Turn TTS on' })
+    const ttsButton = screen.getByRole('button', { name: /Turn TTS on; Deepgram is configured/i })
     fireEvent.click(ttsButton)
-    expect(await screen.findByRole('button', { name: 'Turn TTS off' })).toHaveAttribute('aria-pressed', 'true')
+    expect(await screen.findByRole('button', { name: /Turn TTS off; Deepgram is configured/i })).toHaveAttribute('aria-pressed', 'true')
 
     fireEvent.click(screen.getByRole('button', { name: 'Enter fullscreen' }))
     expect(await screen.findByRole('button', { name: 'Exit fullscreen' })).toHaveAttribute('aria-pressed', 'true')
@@ -2577,8 +2735,8 @@ describe('App user workflow regressions', () => {
     await renderLoadedApp()
     appTestState.ttsFetchHandler = vi.fn(async () => jsonResponse({ error: 'stream probe' }, { status: 400 }))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Turn TTS on' }))
-    await screen.findByRole('button', { name: 'Turn TTS off' })
+    fireEvent.click(screen.getByRole('button', { name: /Turn TTS on; Deepgram is configured/i }))
+    await screen.findByRole('button', { name: /Turn TTS off; Deepgram is configured/i })
 
     await act(async () => {
       socketHandler<{ turn_id: number }>('dm_response_start')({ turn_id: 76 })

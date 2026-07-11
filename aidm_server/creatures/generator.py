@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import os
+from collections.abc import Callable
 from typing import Any
 
 from flask import current_app, has_app_context
@@ -12,6 +12,7 @@ from aidm_server.creatures.schemas import normalize_creature_definition
 from aidm_server.game_state.extraction.schemas import extract_json_object
 from aidm_server.game_state.models import stable_slug
 from aidm_server.llm_providers import get_helper_provider, helper_provider_name
+from aidm_server.provider_priority import foreground_provider_reservation
 from aidm_server.services.runtime_config import provider_configured
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 
@@ -205,36 +206,48 @@ def deterministic_generated_creature(input_payload: dict[str, Any]) -> dict[str,
     return creature
 
 
-def generate_new_creature(input_payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
+def generate_new_creature(
+    input_payload: dict[str, Any],
+    *,
+    before_provider_call: Callable[[], None] | None = None,
+) -> tuple[dict[str, Any], str]:
     fallback = deterministic_generated_creature(input_payload)
     if not creature_helper_enabled():
         return fallback, 'deterministic'
-    try:
-        response = get_helper_provider(task=CREATURE_HELPER_TASK).generate(
-            ProviderRequest(
-                prompt=build_creature_generation_prompt(input_payload),
-                system_message=CREATURE_SYSTEM_MESSAGE,
+    prompt = build_creature_generation_prompt(input_payload)
+    with foreground_provider_reservation() as activate_provider:
+        # Keep this callback outside the provider fallback below. A failed
+        # transaction boundary is a correctness failure, not a reason to
+        # silently generate a deterministic creature in a dirty transaction.
+        if before_provider_call:
+            before_provider_call()
+        activate_provider()
+        try:
+            response = get_helper_provider(task=CREATURE_HELPER_TASK).generate(
+                ProviderRequest(
+                    prompt=prompt,
+                    system_message=CREATURE_SYSTEM_MESSAGE,
+                )
             )
-        )
-        payload = extract_json_object(response.text)
-        if not payload:
-            raise ValueError('helper returned invalid JSON')
-        creature = normalize_creature_definition(payload, source='generated')
-        party_level = max(1, int(input_payload.get('partyLevel') or input_payload.get('party_level') or creature.get('level') or 1))
-        party_size = max(1, int(input_payload.get('partySize') or input_payload.get('party_size') or 4))
-        difficulty = str(input_payload.get('difficulty') or creature.get('challengeTier') or 'standard')
-        analysis = analyze_creature_balance(creature, party_level=party_level, party_size=party_size, target_difficulty=difficulty)
-        creature['balance'] = analysis
-        if analysis['estimatedTier'] == 'overpowered' or analysis.get('warnings'):
-            creature = auto_scale_creature(
-                creature,
-                analysis,
-                target_difficulty=difficulty,
-                party_level=party_level,
-                party_size=party_size,
-            )
-        telemetry_metric('creature.helper.success_total', 1, tags={'model': response.model})
-        return creature, response.model
-    except Exception as exc:
-        telemetry_event('creature.helper.failed', payload={'error': str(exc)[:300]}, severity='warning')
-        return fallback, 'deterministic_fallback'
+            payload = extract_json_object(response.text)
+            if not payload:
+                raise ValueError('helper returned invalid JSON')
+            creature = normalize_creature_definition(payload, source='generated')
+            party_level = max(1, int(input_payload.get('partyLevel') or input_payload.get('party_level') or creature.get('level') or 1))
+            party_size = max(1, int(input_payload.get('partySize') or input_payload.get('party_size') or 4))
+            difficulty = str(input_payload.get('difficulty') or creature.get('challengeTier') or 'standard')
+            analysis = analyze_creature_balance(creature, party_level=party_level, party_size=party_size, target_difficulty=difficulty)
+            creature['balance'] = analysis
+            if analysis['estimatedTier'] == 'overpowered' or analysis.get('warnings'):
+                creature = auto_scale_creature(
+                    creature,
+                    analysis,
+                    target_difficulty=difficulty,
+                    party_level=party_level,
+                    party_size=party_size,
+                )
+            telemetry_metric('creature.helper.success_total', 1, tags={'model': response.model})
+            return creature, response.model
+        except Exception as exc:
+            telemetry_event('creature.helper.failed', payload={'error': str(exc)[:300]}, severity='warning')
+            return fallback, 'deterministic_fallback'

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
 from aidm_server.llm import EmergencyFallbackChunk
+from aidm_server.provider_priority import background_provider_slot
 from aidm_server.turn_narration import (
     DM_GENERATION_FAILED_MESSAGE,
     NarrationRequest,
@@ -45,6 +49,7 @@ def _service(stream):
     telemetry_events: list[tuple[str, dict]] = []
     telemetry_metrics: list[tuple[str, int, dict]] = []
     sleeps: list[float] = []
+    lifecycle: list[str] = []
     context_builder = Mock(return_value='compact-context')
     roll_prompt_builder = Mock(return_value='Roll Dexterity.')
     logger = Mock()
@@ -69,6 +74,7 @@ def _service(stream):
             sleep=sleeps.append,
             stream=stream,
             build_context=context_builder,
+            release_session=lambda: lifecycle.append('session_released'),
             active_player_ids=lambda session_id: [2, 0, 3] if session_id == 7 else [],
             record_phase_timing=record_phase_timing,
             emit_turn_status=lambda *args: statuses.append(args),
@@ -92,6 +98,7 @@ def _service(stream):
         roll_prompt_builder=roll_prompt_builder,
         logger=logger,
         config=config,
+        lifecycle=lifecycle,
     )
     return service, evidence
 
@@ -102,6 +109,7 @@ def _events(evidence, event_name):
 
 def test_narration_streams_visible_chunks_and_preserves_event_lifecycle():
     def stream(user_input, context, *, speaking_player, rules_hint):
+        evidence.lifecycle.append('provider_started')
         assert user_input == 'Aria: I open the door.'
         assert context == 'compact-context'
         assert speaking_player == {'character_name': 'Aria', 'player_id': '3'}
@@ -124,6 +132,7 @@ def test_narration_streams_visible_chunks_and_preserves_event_lifecycle():
         'dm_response_end',
     ]
     assert ''.join(payload['chunk'] for payload in _events(evidence, 'dm_chunk')) == result.text
+    assert _events(evidence, 'dm_response_end')[0]['text'] == result.text
     assert all(kwargs == {'room': '7'} for name, _payload, kwargs in evidence.emitted if name != 'error')
     assert evidence.statuses == [
         (7, 11, 'narrating'),
@@ -144,6 +153,7 @@ def test_narration_streams_visible_chunks_and_preserves_event_lifecycle():
         current_player_id=3,
     )
     assert evidence.sleeps == [0, 0, 0]
+    assert evidence.lifecycle == ['session_released', 'provider_started']
 
 
 def test_narration_reads_provider_identity_after_context_construction():
@@ -169,16 +179,59 @@ def test_narration_reads_provider_identity_after_context_construction():
     assert started_event[1]['payload']['model'] == 'nemotron-live'
 
 
-def test_narration_propagates_context_failure_before_starting_socket_lifecycle():
+def test_narration_releases_session_before_waiting_for_active_background_provider():
+    session_released = threading.Event()
+    provider_started = threading.Event()
+    completed = threading.Event()
+    failures: list[BaseException] = []
+
+    def stream(*_args, **_kwargs):
+        provider_started.set()
+        yield 'Ready.'
+
+    service, _evidence = _service(stream)
+    service.dependencies = replace(
+        service.dependencies,
+        release_session=session_released.set,
+    )
+
+    def run_narration():
+        try:
+            service.narrate(_request())
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion below.
+            failures.append(exc)
+        finally:
+            completed.set()
+
+    with background_provider_slot():
+        worker = threading.Thread(target=run_narration)
+        worker.start()
+        assert session_released.wait(timeout=1.0)
+        time.sleep(0.02)
+        assert provider_started.is_set() is False
+        assert completed.is_set() is False
+
+    worker.join(timeout=1.0)
+    assert worker.is_alive() is False
+    assert failures == []
+    assert provider_started.is_set() is True
+    assert completed.is_set() is True
+
+
+def test_narration_returns_public_failure_when_context_build_fails():
     service, evidence = _service(lambda *args, **kwargs: iter(['unused']))
     evidence.context_builder.side_effect = RuntimeError('context unavailable')
 
-    with pytest.raises(RuntimeError, match='context unavailable'):
-        service.narrate(_request())
+    result = service.narrate(_request())
 
-    assert evidence.emitted == []
-    assert evidence.statuses == []
-    assert evidence.timings == []
+    assert result.text == ''
+    assert result.stream_error == DM_GENERATION_FAILED_MESSAGE
+    assert [event[0] for event in evidence.emitted] == ['error']
+    assert evidence.emitted[0][1]['error_code'] == 'dm_context_failed'
+    assert evidence.statuses == [(7, 11, 'failed', {'stage': 'context_build'})]
+    assert evidence.timings == ['context_build']
+    assert evidence.lifecycle == ['session_released']
+    assert evidence.telemetry_events[-1][0] == 'socket.dm_context_failed'
 
 
 def test_narration_injects_required_roll_prompt_with_pending_turn_id():
@@ -281,7 +334,11 @@ def test_narration_stream_failure_returns_public_error_and_retains_partial_text(
 
     assert result.text == 'A partial response.'
     assert result.stream_error == DM_GENERATION_FAILED_MESSAGE
-    assert evidence.logger.exception.call_count == 1
+    evidence.logger.error.assert_called_once_with(
+        'Error generating streamed DM response error_type=%s',
+        'RuntimeError',
+    )
+    assert 'secret provider credential' not in json.dumps(evidence.logger.mock_calls)
     error_events = _events(evidence, 'error')
     assert error_events == [
         {
@@ -292,6 +349,7 @@ def test_narration_stream_failure_returns_public_error_and_retains_partial_text(
     ]
     end_payload = _events(evidence, 'dm_response_end')[0]
     assert end_payload['ok'] is False
+    assert end_payload['text'] == 'A partial response.'
     assert end_payload['error'] == DM_GENERATION_FAILED_MESSAGE
     assert 'secret provider credential' not in json.dumps(evidence.emitted)
     assert 'provider_total' in evidence.timings

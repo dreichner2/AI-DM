@@ -166,6 +166,7 @@ def dm_response_end_payload(
     rules_hint: dict[str, Any],
     context_version: str,
     ok: bool,
+    text: str | None = None,
     error: str | None = None,
     turn_number: int | None = None,
     degraded: bool = False,
@@ -180,6 +181,8 @@ def dm_response_end_payload(
         turn_number=turn_number,
     )
     payload['ok'] = ok
+    if text is not None:
+        payload['text'] = text
     if error:
         payload['error'] = error
     if degraded:

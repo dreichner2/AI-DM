@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Callable
 
 from flask import current_app, has_app_context
 
@@ -12,6 +12,7 @@ from aidm_server.game_state.extraction.prompts import POST_DM_SYSTEM_MESSAGE, bu
 from aidm_server.game_state.extraction.schemas import extract_json_object, normalize_post_extraction
 from aidm_server.game_state.models import normalize_item_name, stable_change_id, stable_slug
 from aidm_server.llm_providers import get_helper_provider
+from aidm_server.provider_priority import foreground_provider_reservation
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 
 
@@ -2695,6 +2696,7 @@ def extract_post_dm_outcomes(
     recent_timeline: list[dict[str, Any]],
     actor_id: str,
     turn_id: int,
+    before_provider_call: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     helper_payload: dict[str, Any] | None = None
     helper_attempted = False
@@ -2709,40 +2711,44 @@ def extract_post_dm_outcomes(
     if helper_enabled and dm_response.strip():
         helper_attempted = True
         fallback_reason = 'helper_not_attempted'
-        prompt = build_post_dm_prompt(
-            state_before_dm=state_before_dm,
-            player_message=player_message,
-            validated_actions=validated_actions,
-            already_applied_changes=already_applied_changes,
-            dm_response=dm_response,
-            recent_timeline=recent_timeline,
-        )
-        try:
-            response = get_helper_provider().generate(
-                ProviderRequest(prompt=prompt, system_message=POST_DM_SYSTEM_MESSAGE)
-            )
-            helper_model = response.model
-            helper_raw_text = str(response.text or '')
-            helper_raw_preview = helper_raw_text[:HELPER_RAW_PREVIEW_LIMIT]
-            helper_payload = extract_json_object(response.text)
-            helper_schema_valid = _post_payload_schema_valid(helper_payload)
-            if helper_schema_valid:
-                telemetry_metric('state_pipeline.post_dm_helper.success_total', 1, tags={'model': response.model})
-            else:
-                fallback_reason = 'helper_json_invalid' if helper_payload is None else 'helper_schema_invalid'
+        with foreground_provider_reservation() as activate_provider:
+            if before_provider_call:
+                before_provider_call()
+            try:
+                prompt = build_post_dm_prompt(
+                    state_before_dm=state_before_dm,
+                    player_message=player_message,
+                    validated_actions=validated_actions,
+                    already_applied_changes=already_applied_changes,
+                    dm_response=dm_response,
+                    recent_timeline=recent_timeline,
+                )
+                activate_provider()
+                response = get_helper_provider().generate(
+                    ProviderRequest(prompt=prompt, system_message=POST_DM_SYSTEM_MESSAGE)
+                )
+                helper_model = response.model
+                helper_raw_text = str(response.text or '')
+                helper_raw_preview = helper_raw_text[:HELPER_RAW_PREVIEW_LIMIT]
+                helper_payload = extract_json_object(response.text)
+                helper_schema_valid = _post_payload_schema_valid(helper_payload)
+                if helper_schema_valid:
+                    telemetry_metric('state_pipeline.post_dm_helper.success_total', 1, tags={'model': response.model})
+                else:
+                    fallback_reason = 'helper_json_invalid' if helper_payload is None else 'helper_schema_invalid'
+                    telemetry_event(
+                        'state_pipeline.post_dm_helper.invalid_json',
+                        payload={'model': response.model, 'reason': fallback_reason},
+                        severity='warning',
+                    )
+            except Exception as exc:
+                fallback_reason = 'helper_error'
+                helper_error = str(exc)[:300]
                 telemetry_event(
-                    'state_pipeline.post_dm_helper.invalid_json',
-                    payload={'model': response.model, 'reason': fallback_reason},
+                    'state_pipeline.post_dm_helper.failed',
+                    payload={'error': helper_error},
                     severity='warning',
                 )
-        except Exception as exc:
-            fallback_reason = 'helper_error'
-            helper_error = str(exc)[:300]
-            telemetry_event(
-                'state_pipeline.post_dm_helper.failed',
-                payload={'error': helper_error},
-                severity='warning',
-            )
 
     helper_debug = {
         'source': 'helper' if helper_schema_valid else 'heuristic',

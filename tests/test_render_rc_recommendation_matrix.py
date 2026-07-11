@@ -27,17 +27,20 @@ def _seed_recommendation_files(root):
     _write(root / 'scripts' / 'export_support_bundle.py')
     _write(root / 'scripts' / 'run_production_server.sh')
     _write(root / 'Makefile', 'rc-handoff-artifacts')
-    _write(root / 'aidm_frontend' / 'src' / 'BetaRuntimeNotesPanel.tsx')
+    _write(
+        root / 'aidm_frontend' / 'src' / 'BetaRuntimeNotesPanel.tsx',
+        '\n'.join(
+            [
+                'Beta information',
+                'Current player-impacting problems appear as alerts.',
+                'Its current availability appears in the narration controls.',
+            ]
+        ),
+    )
     _write(
         root / 'aidm_frontend' / 'src' / 'App.test.tsx',
         "\n".join(
             [
-                'Known beta limitations',
-                'surfaces beta runtime notices for local private mode',
-                'opens known beta limitations from runtime notices',
-                'surfaces unavailable TTS in beta runtime notices',
-                'surfaces missing live provider configuration in beta runtime notices',
-                'surfaces process-local provider scope in beta runtime notices',
                 "it('closes the character delete confirmation with Escape without deleting', () => {})",
                 "it('traps modal focus and returns focus to the opener when closed', () => {})",
                 "findByRole('dialog', { name: 'Create New Campaign' })",
@@ -46,6 +49,19 @@ def _seed_recommendation_files(root):
                 'expect(closeButton).toHaveFocus()',
                 'expect(dialog).toHaveAccessibleDescription(/permanently removes/)',
                 "if (method === 'DELETE') return {}",
+            ]
+        ),
+    )
+    _write(
+        root / 'aidm_frontend' / 'src' / 'App.runtimeAccess.test.tsx',
+        '\n'.join(
+            [
+                'Beta information',
+                'keeps beta information available from the account menu without stale operator guidance',
+                'keeps unavailable TTS in its accessible control instead of the global alert bar',
+                'hides process-local instructions for a single worker',
+                'shows process-local synchronization only to workspace admins when multiple workers need it',
+                'hides process-local synchronization from non-admin players',
             ]
         ),
     )
@@ -58,11 +74,11 @@ def _seed_recommendation_files(root):
             [
                 'fun_score',
                 'Beta runtime notices',
-                'Fallback provider active.',
-                'Live DM responses need a configured provider key.',
-                'Deepgram TTS unavailable.',
-                'Auth disabled.',
-                'Restart other workers to match.',
+                'Fallback DM active. Ask the table operator to restore the live provider.',
+                'Live DM is unavailable. Ask the table operator to configure the selected provider.',
+                'Narration unavailable; Deepgram is not configured',
+                'showProcessLocalDiagnostic',
+                'Process-local · restart workers',
             ]
         ),
     )

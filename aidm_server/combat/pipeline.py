@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 import re
-from typing import Any
+from typing import Any, Callable
 
 from aidm_server.combat.difficulty import normalize_combat_difficulty_ai
 from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
@@ -17,11 +18,18 @@ from aidm_server.combat.state import (
     player_combat_participant,
 )
 from aidm_server.creatures.repository import record_combat_debug_event
-from aidm_server.creatures.resolver import default_request_from_session, resolve_creatures_for_encounter
+from aidm_server.creatures.resolver import (
+    CreatureResolutionPlan,
+    default_request_from_session,
+    persist_creature_resolution_plan,
+    plan_creatures_for_encounter,
+    resolve_creatures_for_encounter,  # noqa: F401 - compatibility monkeypatch seam
+)
 from aidm_server.database import db
 from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start
 from aidm_server.game_state.models import display_actor_id, stable_change_id, stable_slug
 from aidm_server.models import Campaign, CombatEncounter, DmTurn, Session, safe_json_dumps
+from aidm_server.provider_priority import foreground_provider_reservation
 from aidm_server.time_utils import utc_now
 
 
@@ -50,6 +58,428 @@ DM_COMBAT_NEGATION_PATTERN = re.compile(
     r'no immediate threat|harmless|backs away|lowers? (?:its|their|his|her) weapon)\b',
     re.IGNORECASE,
 )
+
+
+CombatOrmReloader = Callable[
+    [int, int, int],
+    tuple[Session | None, Campaign | None, DmTurn | None],
+]
+
+
+@dataclass(frozen=True)
+class _IntentPlanningBoundaryResult:
+    intent_plan: dict[str, Any] | None
+    session_obj: Session
+    campaign: Campaign
+    turn: DmTurn
+    session_release_attempted: bool = False
+    session_released: bool = False
+    deterministic_fallback_used: bool = False
+    stale: bool = False
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class _CreaturePlanningBoundaryResult:
+    resolution_plan: CreatureResolutionPlan | None
+    session_obj: Session
+    campaign: Campaign
+    turn: DmTurn
+    session_release_attempted: bool = False
+    session_released: bool = False
+    stale: bool = False
+    error: str | None = None
+
+
+@dataclass
+class CombatPrepareFinalization:
+    """Database writes deferred until an exact prepared change is applied."""
+
+    change_ids: tuple[str, ...]
+    resolution_plan: CreatureResolutionPlan | None = None
+    finalized: bool = False
+    combat_encounter_id: int | None = None
+
+
+_COMBAT_FINALIZATION_KEY = '_combatPrepareFinalization'
+
+
+def _defer_combat_prepare_finalization(
+    prepare_result: dict[str, Any],
+    *,
+    resolution_plan: CreatureResolutionPlan | None = None,
+) -> dict[str, Any]:
+    change_ids = tuple(
+        str(change.get('id') or '').strip()
+        for change in (prepare_result.get('changes') or [])
+        if isinstance(change, dict) and str(change.get('id') or '').strip()
+    )
+    if change_ids:
+        prepare_result[_COMBAT_FINALIZATION_KEY] = CombatPrepareFinalization(
+            change_ids=change_ids,
+            resolution_plan=resolution_plan,
+        )
+    return prepare_result
+
+
+def finalize_combat_prepare(
+    *,
+    session_obj: Session,
+    campaign: Campaign,
+    prepare_result: dict[str, Any],
+    applied_changes: list[dict[str, Any]],
+    final_state: dict[str, Any],
+) -> CombatEncounter | None:
+    """Persist a prepared combat only after its exact change survived validation.
+
+    The caller owns the surrounding transaction. Any bestiary flush, encounter
+    synchronization, snapshot persistence, debug event, and audit row therefore
+    commit or roll back together.
+    """
+
+    finalization = prepare_result.get(_COMBAT_FINALIZATION_KEY)
+    if not isinstance(finalization, CombatPrepareFinalization):
+        return None
+    if finalization.finalized:
+        if finalization.combat_encounter_id is None:
+            return None
+        return db.session.get(CombatEncounter, finalization.combat_encounter_id)
+
+    applied_ids = {
+        str(change.get('id') or '').strip()
+        for change in applied_changes
+        if isinstance(change, dict) and str(change.get('id') or '').strip()
+    }
+    if not applied_ids.intersection(finalization.change_ids):
+        return None
+
+    if finalization.resolution_plan is not None:
+        persisted_resolution = persist_creature_resolution_plan(
+            finalization.resolution_plan
+        )
+        debug = prepare_result.get('debug')
+        if isinstance(debug, dict):
+            debug['resolver'] = persisted_resolution
+
+    combat = final_state.get('combat') if isinstance(final_state.get('combat'), dict) else {}
+    encounter = sync_combat_encounter_record(
+        session_obj=session_obj,
+        campaign=campaign,
+        combat=combat,
+    )
+    finalization.finalized = True
+    if encounter is not None:
+        finalization.combat_encounter_id = encounter.combat_encounter_id
+        debug = prepare_result.get('debug')
+        if isinstance(debug, dict):
+            debug['combatEncounterId'] = encounter.combat_encounter_id
+    return encounter
+
+
+def _combat_orm_token(
+    *,
+    session_obj: Session,
+    campaign: Campaign,
+    turn: DmTurn,
+) -> tuple[Any, ...]:
+    """Capture the rows an intent plan is allowed to accompany into persistence."""
+
+    return (
+        (
+            session_obj.session_id,
+            session_obj.campaign_id,
+            session_obj.status,
+            session_obj.state_snapshot,
+            session_obj.updated_at,
+            session_obj.deleted_at,
+        ),
+        (
+            campaign.campaign_id,
+            campaign.workspace_id,
+            campaign.world_id,
+            campaign.status,
+            campaign.current_quest,
+            campaign.plot_points,
+            campaign.active_npcs,
+            campaign.location,
+            campaign.updated_at,
+        ),
+        (
+            turn.turn_id,
+            turn.session_id,
+            turn.campaign_id,
+            turn.player_id,
+            turn.status,
+            turn.dm_output,
+            turn.requires_roll,
+            turn.roll_value,
+            turn.rule_type,
+            turn.outcome_status,
+            turn.rules_hint,
+            turn.metadata_json,
+            turn.completed_at,
+        ),
+    )
+
+
+def _reload_combat_orm(
+    session_id: int,
+    campaign_id: int,
+    turn_id: int,
+) -> tuple[Session | None, Campaign | None, DmTurn | None]:
+    return (
+        db.session.get(Session, session_id),
+        db.session.get(Campaign, campaign_id),
+        db.session.get(DmTurn, turn_id),
+    )
+
+
+def _reload_validated_combat_orm(
+    expected_token: tuple[Any, ...],
+    reloader: CombatOrmReloader | None,
+    *,
+    phase: str,
+) -> tuple[Session, Campaign, DmTurn]:
+    reload_models = reloader or _reload_combat_orm
+    try:
+        loaded_session, loaded_campaign, loaded_turn = reload_models(
+            int(expected_token[0][0]),
+            int(expected_token[1][0]),
+            int(expected_token[2][0]),
+        )
+    except Exception as exc:
+        raise RuntimeError(f'Combat ORM reload failed after {phase}: {exc}') from exc
+    if not all((loaded_session, loaded_campaign, loaded_turn)):
+        raise RuntimeError(f'Combat ORM rows disappeared during {phase}.')
+    assert loaded_session is not None
+    assert loaded_campaign is not None
+    assert loaded_turn is not None
+    current_token = _combat_orm_token(
+        session_obj=loaded_session,
+        campaign=loaded_campaign,
+        turn=loaded_turn,
+    )
+    if current_token != expected_token:
+        raise RuntimeError(f'Combat state changed during {phase}.')
+    return loaded_session, loaded_campaign, loaded_turn
+
+
+def _deterministic_enemy_intent_plan(combat: dict[str, Any]) -> dict[str, Any]:
+    deterministic_combat = deepcopy(combat)
+    flags = (
+        dict(deterministic_combat.get('flags'))
+        if isinstance(deterministic_combat.get('flags'), dict)
+        else {}
+    )
+    settings = normalize_combat_difficulty_ai(
+        flags.get('combatDifficultyAI') or flags.get('combat_difficulty_ai')
+    )
+    settings.update(
+        {
+            'allowBossTacticsHelper': False,
+            'allowSentientEnemyBrain': False,
+            'allowFreeformEnemyTactics': False,
+            'allowBossWarmPlanner': False,
+            'forceSentientEnemyBrain': False,
+            'forceFreeformEnemyTactics': False,
+            'maxLlmCallsPerRound': 0,
+        }
+    )
+    flags['combatDifficultyAI'] = settings
+    deterministic_combat['flags'] = flags
+    return plan_enemy_intents(deterministic_combat)
+
+
+def _plan_enemy_intents_at_provider_boundary(
+    combat: dict[str, Any],
+    *,
+    session_obj: Session,
+    campaign: Campaign,
+    turn: DmTurn,
+    before_intent_provider_call: Callable[[], None] | None,
+    reload_orm_after_intent_provider_call: CombatOrmReloader | None,
+) -> _IntentPlanningBoundaryResult:
+    """Plan from plain data, then revalidate ORM rows before any persistence.
+
+    Foreground demand is registered before the caller releases its scoped
+    session, so a queued canon job cannot win the provider slot in between.
+    """
+
+    expected_token = _combat_orm_token(
+        session_obj=session_obj,
+        campaign=campaign,
+        turn=turn,
+    )
+    session_release_attempted = False
+    session_released = False
+    deterministic_fallback_used = False
+    intent_plan: dict[str, Any] | None = None
+    planning_error: str | None = None
+
+    with foreground_provider_reservation() as activate_provider:
+        if before_intent_provider_call:
+            session_release_attempted = True
+            try:
+                before_intent_provider_call()
+                session_released = True
+            except Exception as exc:
+                planning_error = f'Database session release failed: {exc}'
+        if planning_error is None:
+            activate_provider()
+            try:
+                intent_plan = plan_enemy_intents(combat)
+            except Exception as exc:
+                planning_error = f'Enemy intent planning failed: {exc}'
+                try:
+                    intent_plan = _deterministic_enemy_intent_plan(combat)
+                    deterministic_fallback_used = True
+                except Exception as fallback_exc:
+                    planning_error = (
+                        f'{planning_error}; deterministic fallback failed: {fallback_exc}'
+                    )
+
+    reloaded_session = session_obj
+    reloaded_campaign = campaign
+    reloaded_turn = turn
+    stale = False
+    if session_release_attempted:
+        try:
+            reloaded_session, reloaded_campaign, reloaded_turn = (
+                _reload_validated_combat_orm(
+                    expected_token,
+                    reload_orm_after_intent_provider_call,
+                    phase='enemy intent planning',
+                )
+            )
+        except Exception as exc:
+            stale = True
+            planning_error = (
+                f'{planning_error + "; " if planning_error else ""}'
+                f'{exc}'
+            )
+
+    if stale or intent_plan is None:
+        intent_plan = None
+
+    return _IntentPlanningBoundaryResult(
+        intent_plan=intent_plan,
+        session_obj=reloaded_session,
+        campaign=reloaded_campaign,
+        turn=reloaded_turn,
+        session_release_attempted=session_release_attempted,
+        session_released=session_released,
+        deterministic_fallback_used=deterministic_fallback_used,
+        stale=stale,
+        error=planning_error,
+    )
+
+
+def _record_intent_boundary_debug(
+    debug: dict[str, Any],
+    boundary: _IntentPlanningBoundaryResult,
+) -> None:
+    debug['ormSessionReleaseAttempted'] = bool(
+        debug.get('ormSessionReleaseAttempted') or boundary.session_release_attempted
+    )
+    debug['ormSessionReleased'] = bool(
+        debug.get('ormSessionReleased') or boundary.session_released
+    )
+    debug['intentOrmSessionReleaseAttempted'] = boundary.session_release_attempted
+    debug['intentOrmSessionReleased'] = boundary.session_released
+    debug['intentPlanningFallbackUsed'] = boundary.deterministic_fallback_used
+    debug['intentPlanningStale'] = boundary.stale
+    if boundary.error:
+        debug['intentPlanningError'] = boundary.error
+
+
+def _plan_creatures_at_provider_boundary(
+    request: dict[str, Any],
+    *,
+    workspace_id: str,
+    session_obj: Session,
+    campaign: Campaign,
+    turn: DmTurn,
+    before_creature_provider_call: Callable[[], None] | None,
+    reload_orm_after_creature_provider_call: CombatOrmReloader | None,
+) -> _CreaturePlanningBoundaryResult:
+    expected_token = _combat_orm_token(
+        session_obj=session_obj,
+        campaign=campaign,
+        turn=turn,
+    )
+    session_release_attempted = False
+    session_released = False
+    stale = False
+    planning_error: str | None = None
+    reloaded_session = session_obj
+    reloaded_campaign = campaign
+    reloaded_turn = turn
+
+    def before_provider() -> None:
+        nonlocal session_release_attempted, session_released
+        session_release_attempted = True
+        assert before_creature_provider_call is not None
+        before_creature_provider_call()
+        session_released = True
+
+    def after_provider() -> None:
+        nonlocal reloaded_session, reloaded_campaign, reloaded_turn, stale, planning_error
+        try:
+            reloaded_session, reloaded_campaign, reloaded_turn = (
+                _reload_validated_combat_orm(
+                    expected_token,
+                    reload_orm_after_creature_provider_call,
+                    phase='creature encounter planning',
+                )
+            )
+        except Exception as exc:
+            stale = True
+            planning_error = str(exc)
+            raise
+
+    try:
+        resolution_plan = plan_creatures_for_encounter(
+            request,
+            workspace_id=workspace_id,
+            before_provider_call=(
+                before_provider if before_creature_provider_call else None
+            ),
+            after_provider_call=(
+                after_provider if before_creature_provider_call else None
+            ),
+        )
+    except Exception as exc:
+        resolution_plan = None
+        if planning_error is None:
+            planning_error = f'Creature encounter planning failed: {exc}'
+
+    return _CreaturePlanningBoundaryResult(
+        resolution_plan=resolution_plan,
+        session_obj=reloaded_session,
+        campaign=reloaded_campaign,
+        turn=reloaded_turn,
+        session_release_attempted=session_release_attempted,
+        session_released=session_released,
+        stale=stale,
+        error=planning_error,
+    )
+
+
+def _record_creature_boundary_debug(
+    debug: dict[str, Any],
+    boundary: _CreaturePlanningBoundaryResult,
+) -> None:
+    debug['ormSessionReleaseAttempted'] = bool(
+        debug.get('ormSessionReleaseAttempted') or boundary.session_release_attempted
+    )
+    debug['ormSessionReleased'] = bool(
+        debug.get('ormSessionReleased') or boundary.session_released
+    )
+    debug['creatureOrmSessionReleaseAttempted'] = boundary.session_release_attempted
+    debug['creatureOrmSessionReleased'] = boundary.session_released
+    debug['creaturePlanningStale'] = boundary.stale
+    if boundary.error:
+        debug['creaturePlanningError'] = boundary.error
 
 
 def _living_enemies(combat: dict[str, Any]) -> list[dict[str, Any]]:
@@ -394,6 +824,8 @@ def _prepare_campaign_pack_combat_start(
     combat_started_by: str,
     initiative_required: bool,
     reason: str,
+    before_intent_provider_call: Callable[[], None] | None,
+    reload_orm_after_intent_provider_call: CombatOrmReloader | None,
 ) -> dict[str, Any] | None:
     scene = working_state.get('currentScene') if isinstance(working_state.get('currentScene'), dict) else {}
     enemy_position = _scene_position_for_actor(working_state, actor_record) if actor_record else {'rangeBand': 'near'}
@@ -446,9 +878,34 @@ def _prepare_campaign_pack_combat_start(
     combat_payload['flags'] = flags
     combat_payload = normalize_combat_state(combat_payload, scene)
     turn_context = _sync_combat_turn_context(combat_payload, submitted_actor_id=submitted_actor_id, active_actor_id=submitted_actor_id)
-    intent_plan = plan_enemy_intents(combat_payload)
+    intent_boundary = _plan_enemy_intents_at_provider_boundary(
+        combat_payload,
+        session_obj=session_obj,
+        campaign=campaign,
+        turn=turn,
+        before_intent_provider_call=before_intent_provider_call,
+        reload_orm_after_intent_provider_call=reload_orm_after_intent_provider_call,
+    )
+    boundary_debug: dict[str, Any] = {}
+    _record_intent_boundary_debug(boundary_debug, intent_boundary)
+    if intent_boundary.intent_plan is None:
+        return {
+            'changes': [],
+            'debug': {
+                'triggered': True,
+                'resolver': _campaign_pack_resolution_summary(combat_payload, enemies),
+                'intentPlan': None,
+                'combatSummary': None,
+                'combatEncounterId': None,
+                'turnContext': turn_context,
+                'campaignPackEncounterId': flags.get('campaignPackEncounterId'),
+                **boundary_debug,
+            },
+            'combatContext': None,
+        }
+    turn = intent_boundary.turn
+    intent_plan = intent_boundary.intent_plan
     combat_payload = attach_intents_to_combat(combat_payload, intent_plan)
-    encounter = _ensure_encounter_record(session_obj=session_obj, campaign=campaign, combat=combat_payload)
     materialized['combat'] = combat_payload
     materialized['id'] = stable_change_id(
         turn.turn_id,
@@ -459,19 +916,20 @@ def _prepare_campaign_pack_combat_start(
     materialized['reason'] = reason
     materialized['visible'] = False
     resolution = _campaign_pack_resolution_summary(combat_payload, enemies)
-    return {
+    return _defer_combat_prepare_finalization({
         'changes': [materialized],
         'debug': {
             'triggered': True,
             'resolver': resolution,
             'intentPlan': intent_plan,
             'combatSummary': combat_summary_for_dm(combat_payload),
-            'combatEncounterId': encounter.combat_encounter_id,
+            'combatEncounterId': None,
             'turnContext': turn_context,
             'campaignPackEncounterId': flags.get('campaignPackEncounterId'),
+            **boundary_debug,
         },
         'combatContext': combat_summary_for_dm(combat_payload),
-    }
+    })
 
 
 def _ensure_encounter_record(
@@ -590,6 +1048,10 @@ def prepare_combat_for_turn(
     turn: DmTurn,
     player_message: str,
     workspace_id: str,
+    before_intent_provider_call: Callable[[], None] | None = None,
+    reload_orm_after_intent_provider_call: CombatOrmReloader | None = None,
+    before_creature_provider_call: Callable[[], None] | None = None,
+    reload_orm_after_creature_provider_call: CombatOrmReloader | None = None,
 ) -> dict[str, Any]:
     working_state = deepcopy(state)
     combat = ensure_combat_state(working_state)
@@ -617,12 +1079,27 @@ def prepare_combat_for_turn(
             }
 
     if _combat_is_active(combat):
-        intent_plan = plan_enemy_intents(combat)
+        intent_boundary = _plan_enemy_intents_at_provider_boundary(
+            combat,
+            session_obj=session_obj,
+            campaign=campaign,
+            turn=turn,
+            before_intent_provider_call=before_intent_provider_call,
+            reload_orm_after_intent_provider_call=reload_orm_after_intent_provider_call,
+        )
+        _record_intent_boundary_debug(debug, intent_boundary)
+        if intent_boundary.intent_plan is None:
+            debug['combatSummary'] = combat_summary_for_dm(combat)
+            return {
+                'changes': [],
+                'debug': debug,
+                'combatContext': debug['combatSummary'],
+            }
+        turn = intent_boundary.turn
+        intent_plan = intent_boundary.intent_plan
         combat_with_intents = attach_intents_to_combat(combat, intent_plan)
         debug['intentPlan'] = intent_plan
         debug['combatSummary'] = combat_summary_for_dm(combat_with_intents)
-        encounter = _ensure_encounter_record(session_obj=session_obj, campaign=campaign, combat=combat_with_intents)
-        debug['combatEncounterId'] = encounter.combat_encounter_id
         turn_update_change = _combat_turn_update_change(
             turn_id=turn.turn_id,
             combat=combat,
@@ -632,11 +1109,11 @@ def prepare_combat_for_turn(
         changes = _intent_changes(turn.turn_id, combat_with_intents, intent_plan)
         if turn_update_change:
             changes = [turn_update_change, *changes]
-        return {
+        return _defer_combat_prepare_finalization({
             'changes': changes,
             'debug': debug,
             'combatContext': debug['combatSummary'],
-        }
+        })
 
     if not _should_start_combat(working_state, player_message):
         return {'changes': [], 'debug': debug, 'combatContext': None}
@@ -660,6 +1137,8 @@ def prepare_combat_for_turn(
         combat_started_by='player_hostile_action',
         initiative_required=True,
         reason='Campaign pack combat started from player hostile action.',
+        before_intent_provider_call=before_intent_provider_call,
+        reload_orm_after_intent_provider_call=reload_orm_after_intent_provider_call,
     )
     if pack_start:
         return pack_start
@@ -670,7 +1149,23 @@ def prepare_combat_for_turn(
         state=working_state,
         player_message=player_message,
     )
-    encounter_resolution = resolve_creatures_for_encounter(request, workspace_id=workspace_id)
+    creature_boundary = _plan_creatures_at_provider_boundary(
+        request,
+        workspace_id=workspace_id,
+        session_obj=session_obj,
+        campaign=campaign,
+        turn=turn,
+        before_creature_provider_call=before_creature_provider_call,
+        reload_orm_after_creature_provider_call=reload_orm_after_creature_provider_call,
+    )
+    _record_creature_boundary_debug(debug, creature_boundary)
+    if creature_boundary.resolution_plan is None:
+        return {'changes': [], 'debug': debug, 'combatContext': None}
+    session_obj = creature_boundary.session_obj
+    campaign = creature_boundary.campaign
+    turn = creature_boundary.turn
+    creature_plan = creature_boundary.resolution_plan
+    encounter_resolution = creature_plan.result
     enemy_position = _scene_position_for_actor(working_state, actor_record) if actor_record else {'rangeBand': 'near'}
     enemies = _instantiate_enemy_groups(encounter_resolution, turn_id=turn.turn_id, position=enemy_position)
     participants = [*_player_participants(working_state), *enemies]
@@ -692,15 +1187,27 @@ def prepare_combat_for_turn(
         },
     }
     _sync_combat_turn_context(combat_payload, submitted_actor_id=submitted_actor_id, active_actor_id=submitted_actor_id)
-    intent_plan = plan_enemy_intents(combat_payload)
+    intent_boundary = _plan_enemy_intents_at_provider_boundary(
+        combat_payload,
+        session_obj=session_obj,
+        campaign=campaign,
+        turn=turn,
+        before_intent_provider_call=before_intent_provider_call,
+        reload_orm_after_intent_provider_call=reload_orm_after_intent_provider_call,
+    )
+    _record_intent_boundary_debug(debug, intent_boundary)
+    if intent_boundary.intent_plan is None:
+        debug['resolver'] = encounter_resolution
+        return {'changes': [], 'debug': debug, 'combatContext': None}
+    turn = intent_boundary.turn
+    intent_plan = intent_boundary.intent_plan
     combat_payload = attach_intents_to_combat(combat_payload, intent_plan)
-    encounter = _ensure_encounter_record(session_obj=session_obj, campaign=campaign, combat=combat_payload)
     debug.update(
         {
             'resolver': encounter_resolution,
             'intentPlan': intent_plan,
             'combatSummary': combat_summary_for_dm(combat_payload),
-            'combatEncounterId': encounter.combat_encounter_id,
+            'combatEncounterId': None,
         }
     )
     changes = [
@@ -713,7 +1220,10 @@ def prepare_combat_for_turn(
             'visible': False,
         }
     ]
-    return {'changes': changes, 'debug': debug, 'combatContext': debug['combatSummary']}
+    return _defer_combat_prepare_finalization(
+        {'changes': changes, 'debug': debug, 'combatContext': debug['combatSummary']},
+        resolution_plan=creature_plan,
+    )
 
 
 def prepare_combat_from_dm_response(
@@ -725,6 +1235,10 @@ def prepare_combat_from_dm_response(
     player_message: str,
     dm_response: str,
     workspace_id: str,
+    before_intent_provider_call: Callable[[], None] | None = None,
+    reload_orm_after_intent_provider_call: CombatOrmReloader | None = None,
+    before_creature_provider_call: Callable[[], None] | None = None,
+    reload_orm_after_creature_provider_call: CombatOrmReloader | None = None,
 ) -> dict[str, Any]:
     working_state = deepcopy(state)
     ensure_combat_state(working_state)
@@ -760,6 +1274,8 @@ def prepare_combat_from_dm_response(
         combat_started_by='post_dm_adjudicator',
         initiative_required=bool(re.search(r'\binitiative\b', dm_response or '', re.IGNORECASE)),
         reason='Campaign pack combat started from DM response.',
+        before_intent_provider_call=before_intent_provider_call,
+        reload_orm_after_intent_provider_call=reload_orm_after_intent_provider_call,
     )
     if pack_start:
         pack_start['debug']['adjudicationSource'] = 'post_dm_response'
@@ -771,7 +1287,23 @@ def prepare_combat_from_dm_response(
         state=working_state,
         player_message=f"{player_message}\n\nDM response: {dm_response}",
     )
-    encounter_resolution = resolve_creatures_for_encounter(request, workspace_id=workspace_id)
+    creature_boundary = _plan_creatures_at_provider_boundary(
+        request,
+        workspace_id=workspace_id,
+        session_obj=session_obj,
+        campaign=campaign,
+        turn=turn,
+        before_creature_provider_call=before_creature_provider_call,
+        reload_orm_after_creature_provider_call=reload_orm_after_creature_provider_call,
+    )
+    _record_creature_boundary_debug(debug, creature_boundary)
+    if creature_boundary.resolution_plan is None:
+        return {'changes': [], 'debug': debug, 'combatContext': None}
+    session_obj = creature_boundary.session_obj
+    campaign = creature_boundary.campaign
+    turn = creature_boundary.turn
+    creature_plan = creature_boundary.resolution_plan
+    encounter_resolution = creature_plan.result
     enemy_position = _scene_position_for_actor(working_state, actor_record) if actor_record else {'rangeBand': 'near'}
     enemies = _instantiate_enemy_groups(encounter_resolution, turn_id=turn.turn_id, position=enemy_position)
     participants = [*_player_participants(working_state), *enemies]
@@ -793,15 +1325,27 @@ def prepare_combat_from_dm_response(
         },
     }
     debug['turnContext'] = _sync_combat_turn_context(combat_payload, submitted_actor_id=submitted_actor_id, active_actor_id=submitted_actor_id)
-    intent_plan = plan_enemy_intents(combat_payload)
+    intent_boundary = _plan_enemy_intents_at_provider_boundary(
+        combat_payload,
+        session_obj=session_obj,
+        campaign=campaign,
+        turn=turn,
+        before_intent_provider_call=before_intent_provider_call,
+        reload_orm_after_intent_provider_call=reload_orm_after_intent_provider_call,
+    )
+    _record_intent_boundary_debug(debug, intent_boundary)
+    if intent_boundary.intent_plan is None:
+        debug['resolver'] = encounter_resolution
+        return {'changes': [], 'debug': debug, 'combatContext': None}
+    turn = intent_boundary.turn
+    intent_plan = intent_boundary.intent_plan
     combat_payload = attach_intents_to_combat(combat_payload, intent_plan)
-    encounter = _ensure_encounter_record(session_obj=session_obj, campaign=campaign, combat=combat_payload)
     debug.update(
         {
             'resolver': encounter_resolution,
             'intentPlan': intent_plan,
             'combatSummary': combat_summary_for_dm(combat_payload),
-            'combatEncounterId': encounter.combat_encounter_id,
+            'combatEncounterId': None,
         }
     )
     changes = [
@@ -814,7 +1358,10 @@ def prepare_combat_from_dm_response(
             'visible': False,
         }
     ]
-    return {'changes': changes, 'debug': debug, 'combatContext': debug['combatSummary']}
+    return _defer_combat_prepare_finalization(
+        {'changes': changes, 'debug': debug, 'combatContext': debug['combatSummary']},
+        resolution_plan=creature_plan,
+    )
 
 
 def record_combat_debug_from_prepare(

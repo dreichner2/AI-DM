@@ -45,6 +45,12 @@ def test_metrics_endpoint_exposes_counters(client):
     counters = payload['counters']
     assert counters.get('system.health.requests_total', 0) >= 1
     assert payload['enabled'] is False
+    assert payload['canon_queue'] == {
+        'failed_count': 0,
+        'oldest_queued_age_seconds': 0.0,
+        'queued_count': 0,
+        'running_count': 0,
+    }
 
 
 def test_prometheus_metrics_endpoint_exposes_counters_and_beta_gauges(client):
@@ -59,6 +65,8 @@ def test_prometheus_metrics_endpoint_exposes_counters_and_beta_gauges(client):
     assert 'aidm_system_metrics_prometheus_requests_total 1' in body
     assert 'aidm_api_requests_total{method="GET",path="/api/health"}' in body
     assert 'aidm_beta_ai_failure_rate 0' in body
+    assert 'aidm_canon_job_queue_depth 0' in body
+    assert 'aidm_canon_job_oldest_queued_age_seconds 0' in body
 
 
 def test_prometheus_text_sanitizes_metric_and_label_names():

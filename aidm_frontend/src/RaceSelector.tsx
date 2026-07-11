@@ -611,7 +611,12 @@ export function RaceSelector({
                   disabled={pending}
                 >
                   <span className="race-card-art">
-                    <img src={profileIconSrcForRace(race.key, selected ? selectedSexKey : 'male')} alt="" />
+                    <img
+                      src={profileIconSrcForRace(race.key, selected ? selectedSexKey : 'male')}
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                    />
                     <span>{race.name}</span>
                   </span>
                   <span className="race-card-copy">

@@ -126,6 +126,7 @@ export type LlmRuntimeConfig = {
   persisted: boolean
   runtime_scope?: 'process'
   restart_required_for_other_workers?: boolean
+  worker_count?: number
 }
 
 export type TtsRuntimeConfig = {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 
 from flask import Blueprint, jsonify, request
@@ -7,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 
 from aidm_server.action_intent import ACTION_ID_RE
 from aidm_server.capabilities import current_actor_has_capability
-from aidm_server.database import db
+from aidm_server.database import db, release_clean_scoped_session
 from aidm_server.errors import error_response
 from aidm_server.llm import query_gpt
 from aidm_server.models import (
@@ -28,6 +29,7 @@ from aidm_server.response_dtos import (
     session_state_payload,
     turn_event_payload,
 )
+from aidm_server.provider_priority import foreground_provider_reservation
 from aidm_server.services.session_lifecycle import (
     archive_session_record,
     delete_session_record,
@@ -69,6 +71,28 @@ RECAP_SOURCE_CHAR_BUDGET = 12_000
 SESSION_IDEMPOTENCY_KEY_MAX_LENGTH = 80
 SESSION_EXPORT_MAX_LOG_ENTRIES = 1000
 SESSION_EXPORT_MAX_TURN_EVENTS = 1000
+
+
+@dataclass(frozen=True)
+class _SessionRecapContext:
+    session_id: int
+    campaign_id: int
+    session_status: str | None
+    state_snapshot: str | None
+    session_updated_at: object
+    session_deleted_at: object
+    campaign_workspace_id: str | None
+    campaign_location: str | None
+    campaign_current_quest: str | None
+    campaign_updated_at: object
+    session_state_id: int | None
+    rolling_summary: str | None
+    current_location: str | None
+    current_quest: str | None
+    active_segments: str | None
+    memory_snippets: str | None
+    session_state_updated_at: object
+    recap_source: str
 
 
 def _state_snapshot_dict(raw_snapshot) -> dict:
@@ -246,6 +270,48 @@ def _bounded_session_recap_source(session_id: int, session_state: SessionState |
     return "\n\n".join(parts) or 'No session log entries have been recorded for this session.'
 
 
+def _session_recap_context(
+    session_obj: Session,
+    session_state: SessionState | None,
+    *,
+    recap_source: str,
+) -> _SessionRecapContext:
+    campaign = session_obj.campaign
+    return _SessionRecapContext(
+        session_id=session_obj.session_id,
+        campaign_id=session_obj.campaign_id,
+        session_status=session_obj.status,
+        state_snapshot=session_obj.state_snapshot,
+        session_updated_at=session_obj.updated_at,
+        session_deleted_at=session_obj.deleted_at,
+        campaign_workspace_id=campaign.workspace_id,
+        campaign_location=campaign.location,
+        campaign_current_quest=campaign.current_quest,
+        campaign_updated_at=campaign.updated_at,
+        session_state_id=session_state.state_id if session_state else None,
+        rolling_summary=session_state.rolling_summary if session_state else None,
+        current_location=session_state.current_location if session_state else None,
+        current_quest=session_state.current_quest if session_state else None,
+        active_segments=session_state.active_segments if session_state else None,
+        memory_snippets=session_state.memory_snippets if session_state else None,
+        session_state_updated_at=session_state.updated_at if session_state else None,
+        recap_source=recap_source,
+    )
+
+
+def _session_recap_conflict(captured: _SessionRecapContext, current: _SessionRecapContext | None):
+    return error_response(
+        'session_context_conflict',
+        'Session changed while the recap was being prepared. Refresh and retry.',
+        409,
+        {
+            'session_id': captured.session_id,
+            'expected_updated_at': isoformat(captured.session_updated_at),
+            'actual_updated_at': isoformat(current.session_updated_at) if current else None,
+        },
+    )
+
+
 @sessions_bp.route('/start', methods=['POST'])
 def start_new_session():
     telemetry_metric('sessions.start.requests_total', 1)
@@ -335,74 +401,104 @@ def start_new_session():
 @sessions_bp.route('/<int:session_id>/end', methods=['POST'])
 def end_game_session(session_id):
     telemetry_metric('sessions.end.requests_total', 1)
-    session_obj = workspace_session(session_id)
-    if not session_obj:
-        telemetry_event('sessions.end.session_not_found', payload={'session_id': session_id}, severity='warning')
-        return error_response('session_not_found', 'Session not found.', 404)
+    with session_turn_coordinator.serialized(session_id):
+        session_obj = workspace_session(session_id)
+        if not session_obj:
+            telemetry_event('sessions.end.session_not_found', payload={'session_id': session_id}, severity='warning')
+            return error_response('session_not_found', 'Session not found.', 404)
 
-    session_state = get_or_create_session_state(session_id, session_obj.campaign)
-    recap_source = _bounded_session_recap_source(session_id, session_state)
-    recap_prompt = (
-        'Please provide a concise summary of this D&D session, highlighting key events, '
-        'important decisions, and significant character developments. Use the existing '
-        'rolling summary for continuity and the bounded recent log for latest events:\n\n'
-        f'{recap_source}'
-    )
-
-    recap = query_gpt(prompt=recap_prompt, system_message='You are a D&D session summarizer.')
-
-    try:
-        ended_at = utc_now()
-        snapshot = _merge_state_snapshot(
-            session_obj.state_snapshot,
-            {
-                'recap': recap,
-                'ended_at': ended_at.isoformat(),
-            },
+        session_state = SessionState.query.filter_by(session_id=session_id).first()
+        recap_source = _bounded_session_recap_source(session_id, session_state)
+        captured_context = _session_recap_context(
+            session_obj,
+            session_state,
+            recap_source=recap_source,
         )
-        session_obj.state_snapshot = safe_json_dumps(snapshot, {})
+        recap_prompt = (
+            'Please provide a concise summary of this D&D session, highlighting key events, '
+            'important decisions, and significant character developments. Use the existing '
+            'rolling summary for continuity and the bounded recent log for latest events:\n\n'
+            f'{recap_source}'
+        )
 
-        session_state.rolling_summary = recap
-        session_state.current_location = (session_state.current_location or session_obj.campaign.location)
-        session_state.current_quest = (session_state.current_quest or session_obj.campaign.current_quest)
-        session_state.updated_at = ended_at
-        record_turn_event(
-            session_id=session_id,
-            campaign_id=session_obj.campaign_id,
-            event_type=SESSION_ENDED_EVENT,
-            payload={
-                'message': '**Session ended.**',
-                'metadata': {
-                    'kind': 'session_ended',
+        with foreground_provider_reservation() as activate_provider:
+            release_clean_scoped_session(boundary='session recap provider')
+            activate_provider()
+            recap = query_gpt(prompt=recap_prompt, system_message='You are a D&D session summarizer.')
+
+        try:
+            session_obj = workspace_session(session_id)
+            if not session_obj:
+                db.session.rollback()
+                telemetry_metric('sessions.end.context_conflict_total', 1)
+                return _session_recap_conflict(captured_context, None)
+
+            session_state = SessionState.query.filter_by(session_id=session_id).first()
+            current_recap_source = _bounded_session_recap_source(session_id, session_state)
+            current_context = _session_recap_context(
+                session_obj,
+                session_state,
+                recap_source=current_recap_source,
+            )
+            if current_context != captured_context:
+                db.session.rollback()
+                telemetry_metric('sessions.end.context_conflict_total', 1)
+                return _session_recap_conflict(captured_context, current_context)
+
+            if session_state is None:
+                session_state = get_or_create_session_state(session_id, session_obj.campaign)
+
+            ended_at = utc_now()
+            snapshot = _merge_state_snapshot(
+                session_obj.state_snapshot,
+                {
+                    'recap': recap,
                     'ended_at': ended_at.isoformat(),
                 },
-            },
-        )
-        record_turn_event(
-            session_id=session_id,
-            campaign_id=session_obj.campaign_id,
-            event_type=SESSION_RECAP_EVENT,
-            payload={
-                'recap': recap,
-                'metadata': {
-                    'kind': 'session_recap',
-                    'ended_at': ended_at.isoformat(),
-                },
-            },
-        )
+            )
+            session_obj.state_snapshot = safe_json_dumps(snapshot, {})
 
-        db.session.commit()
-        telemetry_metric('sessions.end.success_total', 1)
-        return jsonify({'recap': recap})
-    except Exception as exc:
-        db.session.rollback()
-        logger.error('Failed to end session: %s', str(exc))
-        telemetry_event(
-            'sessions.end.failed',
-            payload={'session_id': session_id, 'error': str(exc)},
-            severity='error',
-        )
-        return error_response('session_end_failed', 'Failed to end session.', 400)
+            session_state.rolling_summary = recap
+            session_state.current_location = (session_state.current_location or session_obj.campaign.location)
+            session_state.current_quest = (session_state.current_quest or session_obj.campaign.current_quest)
+            session_state.updated_at = ended_at
+            record_turn_event(
+                session_id=session_id,
+                campaign_id=session_obj.campaign_id,
+                event_type=SESSION_ENDED_EVENT,
+                payload={
+                    'message': '**Session ended.**',
+                    'metadata': {
+                        'kind': 'session_ended',
+                        'ended_at': ended_at.isoformat(),
+                    },
+                },
+            )
+            record_turn_event(
+                session_id=session_id,
+                campaign_id=session_obj.campaign_id,
+                event_type=SESSION_RECAP_EVENT,
+                payload={
+                    'recap': recap,
+                    'metadata': {
+                        'kind': 'session_recap',
+                        'ended_at': ended_at.isoformat(),
+                    },
+                },
+            )
+
+            db.session.commit()
+            telemetry_metric('sessions.end.success_total', 1)
+            return jsonify({'recap': recap})
+        except Exception as exc:
+            db.session.rollback()
+            logger.error('Failed to end session: %s', str(exc))
+            telemetry_event(
+                'sessions.end.failed',
+                payload={'session_id': session_id, 'error': str(exc)},
+                severity='error',
+            )
+            return error_response('session_end_failed', 'Failed to end session.', 400)
 
 
 @sessions_bp.route('/<int:session_id>/recap', methods=['GET'])

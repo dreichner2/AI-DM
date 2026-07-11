@@ -75,19 +75,26 @@ def test_ci_workflows_pin_upgraded_toolchains_and_dependencies():
 
     ci_workflow = workflow_paths[0].read_text(encoding='utf-8')
     backend_job = ci_workflow.split('  backend:', 1)[1].split('\n  postgres-integration:', 1)[0]
+    frontend_job = ci_workflow.split('  frontend:', 1)[1].split('\n  visual-smoke:', 1)[0]
     backend_toolchain_fragments = (
         'actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0',
         'node-version-file: .nvmrc',
         'npm install --global npm@12.0.0',
         'test "$(npm --version)" = "12.0.0"',
     )
-    missing_backend_toolchain = [
-        fragment for fragment in backend_toolchain_fragments if fragment not in backend_job
+    unexpected_backend_toolchain = [
+        fragment for fragment in backend_toolchain_fragments if fragment in backend_job
     ]
-    assert not missing_backend_toolchain, (
-        'Backend CI must provision the exact frontend toolchain used by the full pytest suite: '
-        f'{missing_backend_toolchain}'
+    assert not unexpected_backend_toolchain, (
+        'Backend CI should not duplicate the frontend toolchain: '
+        f'{unexpected_backend_toolchain}'
     )
+    assert '-m "not frontend_toolchain"' in backend_job
+    assert all(fragment in frontend_job for fragment in backend_toolchain_fragments)
+    assert (
+        'python -m pytest -q -m frontend_toolchain '
+        'tests/test_render_frontend_npm_ci_evidence.py'
+    ) in frontend_job
 
 
 def test_dependabot_tracks_supported_ecosystems_and_compatibility_holds():

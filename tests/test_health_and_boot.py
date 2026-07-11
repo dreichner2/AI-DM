@@ -209,6 +209,7 @@ def test_llm_config_update_requires_json_body(client):
 
 
 def test_llm_config_exposes_provider_capabilities(client, monkeypatch, tmp_path):
+    monkeypatch.setenv('WEB_CONCURRENCY', '1')
     monkeypatch.setenv('AIDM_NVIDIA_API_KEY', 'nvapi-test')
     codex_executable = tmp_path / 'codex'
     codex_executable.write_text('#!/bin/sh\n', encoding='utf-8')
@@ -246,8 +247,65 @@ def test_llm_config_exposes_provider_capabilities(client, monkeypatch, tmp_path)
     assert providers['codex_cli']['capabilities']['oauth_cli'] is True
     assert providers['nvidia']['configured'] is True
     assert providers['nvidia']['capabilities']['default_timeout_seconds'] >= 1
+    assert providers['nvidia']['capabilities']['progressive_streaming'] is False
     assert payload['runtime_scope'] == 'process'
+    assert payload['worker_count'] == 1
+    assert payload['restart_required_for_other_workers'] is False
+
+
+def test_llm_runtime_change_does_not_request_restart_for_single_worker(client, app, monkeypatch):
+    monkeypatch.setenv('WEB_CONCURRENCY', '1')
+    app.config.update(
+        AIDM_LLM_PROVIDER='gemini',
+        AIDM_LLM_MODEL='models/gemini-3-flash-preview',
+        AIDM_LLM_FALLBACK_MODELS=[],
+        AIDM_LLM_RUNTIME_CHANGED=False,
+    )
+
+    response = client.patch(
+        '/api/llm/config',
+        json={'provider': 'fallback', 'model': 'deterministic-v1', 'persist': False},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['current']['provider'] == 'fallback'
+    assert payload['worker_count'] == 1
+    assert payload['restart_required_for_other_workers'] is False
+
+
+def test_llm_runtime_change_requests_restart_only_after_multi_worker_change(client, app, monkeypatch):
+    monkeypatch.setenv('WEB_CONCURRENCY', '3')
+    app.config.update(
+        AIDM_LLM_PROVIDER='gemini',
+        AIDM_LLM_MODEL='models/gemini-3-flash-preview',
+        AIDM_LLM_FALLBACK_MODELS=[],
+        AIDM_LLM_RUNTIME_CHANGED=False,
+    )
+
+    before = client.get('/api/llm/config').get_json()
+    assert before['worker_count'] == 3
+    assert before['restart_required_for_other_workers'] is False
+
+    response = client.patch(
+        '/api/llm/config',
+        json={'provider': 'fallback', 'model': 'deterministic-v1', 'persist': False},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['worker_count'] == 3
     assert payload['restart_required_for_other_workers'] is True
+
+    subsequent_get = client.get('/api/llm/config').get_json()
+    assert subsequent_get['restart_required_for_other_workers'] is False
+
+    unchanged_response = client.patch(
+        '/api/llm/config',
+        json={'provider': 'fallback', 'model': 'deterministic-v1', 'persist': False},
+    )
+    assert unchanged_response.status_code == 200
+    assert unchanged_response.get_json()['restart_required_for_other_workers'] is False
 
 
 def test_llm_config_marks_codex_configured_from_mac_app_bundle(client, monkeypatch, tmp_path):

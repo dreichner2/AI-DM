@@ -145,6 +145,7 @@ def test_outgoing_turn_payload_contracts_are_stable():
         rules_hint=rules_hint,
         context_version='v2',
         ok=False,
+        text='A partial answer.',
         error='stream failed',
     ) == {
         'session_id': 1,
@@ -153,6 +154,7 @@ def test_outgoing_turn_payload_contracts_are_stable():
         'rules_hint': rules_hint,
         'context_version': 'v2',
         'ok': False,
+        'text': 'A partial answer.',
         'error': 'stream failed',
     }
 
