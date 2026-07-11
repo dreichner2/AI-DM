@@ -206,6 +206,44 @@ class DatabaseRateLimitStore:
             return
         connection.execute(select(func.pg_advisory_xact_lock(postgres_advisory_lock_key(key))))
 
+    def _hit_in_transaction(
+        self,
+        engine,
+        table,
+        key: str,
+        *,
+        now: datetime,
+        limit: int,
+        window_seconds: int,
+        window_start: datetime,
+    ) -> RateLimitResult:
+        with engine.begin() as connection:
+            self._lock_bucket_for_transaction(connection, key)
+            self._collect_garbage(connection, table, now=now, window_seconds=window_seconds)
+
+            matching_events = table.c.bucket_key == key
+            within_window = table.c.created_at >= window_start
+            current_count = connection.execute(
+                select(func.count()).select_from(table).where(matching_events, within_window)
+            ).scalar_one()
+
+            if current_count >= limit:
+                oldest = connection.execute(
+                    select(func.min(table.c.created_at)).where(matching_events, within_window)
+                ).scalar_one()
+                return RateLimitResult(
+                    allowed=False,
+                    remaining=0,
+                    reset_in_seconds=_reset_seconds_from_oldest(oldest, now=now, window_seconds=window_seconds),
+                )
+
+            connection.execute(insert(table).values(bucket_key=key, created_at=now))
+            return RateLimitResult(
+                allowed=True,
+                remaining=max(0, limit - int(current_count) - 1),
+                reset_in_seconds=window_seconds,
+            )
+
     def hit(self, key: str, *, now: datetime, limit: int, window_seconds: int) -> RateLimitResult:
         from aidm_server.database import db
         from aidm_server.models import RateLimitEvent
@@ -213,34 +251,27 @@ class DatabaseRateLimitStore:
         window_seconds = self._validate_window_seconds(window_seconds)
         window_start = now - timedelta(seconds=window_seconds)
         table = RateLimitEvent.__table__
+        engine = db.engine
 
+        def execute_hit() -> RateLimitResult:
+            return self._hit_in_transaction(
+                engine,
+                table,
+                key,
+                now=now,
+                limit=limit,
+                window_seconds=window_seconds,
+                window_start=window_start,
+            )
+
+        # PostgreSQL already serializes only matching buckets through the
+        # transaction-scoped advisory lock above. A process-wide lock would
+        # unnecessarily block unrelated accounts. SQLite still needs the
+        # process lock because it has no equivalent per-bucket primitive.
+        if engine.dialect.name == 'postgresql':
+            return execute_hit()
         with self._hit_lock:
-            with db.engine.begin() as connection:
-                self._lock_bucket_for_transaction(connection, key)
-                self._collect_garbage(connection, table, now=now, window_seconds=window_seconds)
-
-                matching_events = table.c.bucket_key == key
-                within_window = table.c.created_at >= window_start
-                current_count = connection.execute(
-                    select(func.count()).select_from(table).where(matching_events, within_window)
-                ).scalar_one()
-
-                if current_count >= limit:
-                    oldest = connection.execute(
-                        select(func.min(table.c.created_at)).where(matching_events, within_window)
-                    ).scalar_one()
-                    return RateLimitResult(
-                        allowed=False,
-                        remaining=0,
-                        reset_in_seconds=_reset_seconds_from_oldest(oldest, now=now, window_seconds=window_seconds),
-                    )
-
-                connection.execute(insert(table).values(bucket_key=key, created_at=now))
-                return RateLimitResult(
-                    allowed=True,
-                    remaining=max(0, limit - int(current_count) - 1),
-                    reset_in_seconds=window_seconds,
-                )
+            return execute_hit()
 
 
 def build_rate_limiter(

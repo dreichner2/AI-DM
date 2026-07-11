@@ -55,9 +55,23 @@ class SessionSnapshotMetadataMutationResult:
     changed: bool = False
 
 
+@dataclass(frozen=True)
+class SessionStateBeforePersistContext:
+    """Validated mutation state available immediately before database writes."""
+
+    session_obj: Session
+    campaign: Campaign
+    before_state: dict[str, Any]
+    next_state: dict[str, Any]
+    validation: dict[str, Any]
+    applied_changes: list[dict[str, Any]]
+    metadata: dict[str, Any]
+
+
 MutationBuilder = Callable[[Session, dict[str, Any]], SessionStateMutationPlan | Sequence[Any]]
 SnapshotMetadataMutator = Callable[[Session, dict[str, Any]], dict[str, Any] | None]
 AfterPersistHook = Callable[[SessionStateMutationResult], None]
+BeforePersistHook = Callable[[SessionStateBeforePersistContext], None]
 ProgressRefresher = Callable[[Session], dict[str, Any] | None]
 
 
@@ -370,6 +384,7 @@ def mutate_session_state(
     actor: str | None = None,
     sync_combat: bool = False,
     refresh_progress: ProgressRefresher | None = None,
+    before_persist: BeforePersistHook | None = None,
     after_persist: AfterPersistHook | None = None,
     reject_on_validation_error: bool = False,
 ) -> SessionStateMutationResult:
@@ -436,19 +451,35 @@ def mutate_session_state(
             rejected_count=rejected_count,
             wait_ms=wait_ms,
         )
+        metadata = dict(plan.metadata)
+        if before_persist:
+            try:
+                before_persist(
+                    SessionStateBeforePersistContext(
+                        session_obj=session_obj,
+                        campaign=campaign,
+                        before_state=before_state,
+                        next_state=next_state,
+                        validation=validation,
+                        applied_changes=applied_changes,
+                        metadata=metadata,
+                    )
+                )
+            except Exception:
+                db.session.rollback()
+                raise
         persist_state_to_database(
             session_obj=session_obj,
             state=next_state,
             players_by_id={player.player_id: player for player in players},
         )
-        if sync_combat:
+        if sync_combat and applied_changes:
             sync_combat_encounter_record(
                 session_obj=session_obj,
                 campaign=campaign,
                 combat=next_state.get('combat') if isinstance(next_state.get('combat'), dict) else {},
             )
         progress = refresh_progress(session_obj) if refresh_progress else None
-        metadata = dict(plan.metadata)
         if progress is not None:
             metadata['campaignPackProgress'] = progress
         record_session_state_mutation_audit(
@@ -476,6 +507,10 @@ def mutate_session_state(
             state_revision=_state_revision(final_state),
         )
         if after_persist:
-            after_persist(result)
+            try:
+                after_persist(result)
+            except Exception:
+                db.session.rollback()
+                raise
         db.session.commit()
         return result

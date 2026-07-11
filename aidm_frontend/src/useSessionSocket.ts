@@ -39,6 +39,7 @@ type DmResponseEndPayload = {
   session_id?: number
   turn_id?: number
   turn_number?: number | null
+  text?: string
   requires_roll?: boolean
   rules_hint?: RulesHint
   ok?: boolean
@@ -284,14 +285,25 @@ export function useSessionSocket({
     const socket = socketBaseUrl ? io(socketBaseUrl, socketOptions) : io(socketOptions)
     socketRef.current = socket
     setSocketStatus('connecting')
+    let hasConnected = false
 
     socket.on('connect', () => {
+      const isAutomaticReconnect = hasConnected
+      hasConnected = true
       setSendPending(false)
       setSocketStatus('joining')
       socket.emit('join_session', {
         session_id: selectedSessionId,
         player_id: selectedPlayerId,
       })
+      if (isAutomaticReconnect) {
+        void loadSessionData(selectedSessionId).catch((error: unknown) => {
+          pushError(
+            'workspace',
+            `Session refresh after reconnect failed: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        })
+      }
     })
 
     socket.on('connect_error', (error) => {
@@ -415,59 +427,49 @@ export function useSessionSocket({
 
     socket.on('dm_response_end', (payload: DmResponseEndPayload = {}) => {
       const ok = payload.ok !== false
-      if (!ok) {
-        setSendPending(false)
-        setStreamingTurn((current) => {
-          if (current) {
-            const failedEntry: TimelineEntry = {
-              id: `stream-failed-${current.turnId}`,
-              role: 'dm',
-              speaker: 'DM',
-              text: current.text || 'The DM response failed before completing.',
-              timestamp: null,
-              metadata: {
-                turn_id: current.turnId,
-                turn_number: current.turnNumber ?? null,
-                requires_roll: current.requiresRoll,
-                stream_status: 'failed',
-                error: payload.error ?? null,
-                ...current.rulesHint,
-              },
-              streaming: false,
-            }
-            setOptimisticEntries((opt) => [...opt, failedEntry])
-          }
-          if (ttsPartialFlushTimerRef.current !== null) {
-            window.clearTimeout(ttsPartialFlushTimerRef.current)
-            ttsPartialFlushTimerRef.current = null
-          }
-          spokenTextLengthRef.current = 0
-          speakableStreamingTextRef.current = ''
-          return null
-        })
-        pushError('connection', payload.error ? `DM response failed: ${payload.error}` : 'DM response failed.')
-        return
-      }
+      setSendPending(false)
       setStreamingTurn((current) => {
-        if (current) {
-          const syntheticEntry: TimelineEntry = {
-            id: `stream-${current.turnId}`,
+        const payloadTurnId = Number(payload.turn_id)
+        const turnId = Number.isInteger(payloadTurnId) && payloadTurnId > 0
+          ? payloadTurnId
+          : current?.turnId ?? null
+        const payloadText = typeof payload.text === 'string' ? payload.text : null
+        const completedText = ok
+          ? payloadText ?? current?.text ?? ''
+          : payloadText || current?.text || 'The DM response failed before completing.'
+        const turnNumber = typeof payload.turn_number === 'number'
+          ? payload.turn_number
+          : current?.turnNumber ?? null
+        const requiresRoll = payload.requires_roll ?? current?.requiresRoll ?? false
+        const rulesHint = payload.rules_hint ?? current?.rulesHint ?? {}
+
+        if (turnId !== null) {
+          const completedEntry: TimelineEntry = {
+            id: ok ? `stream-${turnId}` : `stream-failed-${turnId}`,
             role: 'dm',
             speaker: 'DM',
-            text: current.text,
+            text: completedText,
             timestamp: null,
             metadata: {
-              turn_id: current.turnId,
-              turn_number: current.turnNumber ?? null,
-              requires_roll: current.requiresRoll,
-              ...current.rulesHint,
+              turn_id: turnId,
+              turn_number: turnNumber,
+              requires_roll: requiresRoll,
+              ...(!ok ? { stream_status: 'failed', error: payload.error ?? null } : {}),
+              ...rulesHint,
             },
             streaming: false,
           }
-          setOptimisticEntries((opt) => [...opt, syntheticEntry])
+          setOptimisticEntries((optimistic) => {
+            const existingIndex = optimistic.findIndex(
+              (entry) => entry.role === 'dm' && Number(entry.metadata.turn_id) === turnId,
+            )
+            if (existingIndex < 0) return [...optimistic, completedEntry]
+            return optimistic.map((entry, index) => (index === existingIndex ? completedEntry : entry))
+          })
 
-          if (current.text) {
-            const cleanText = current.text.replace(/<thought>[\s\S]*?(?:<\/thought>|$)/gi, '')
+          if (ok && completedText) {
+            if (!current) spokenTextLengthRef.current = 0
+            const cleanText = completedText.replace(/<thought>[\s\S]*?(?:<\/thought>|$)/gi, '')
             const remaining = cleanText.slice(spokenTextLengthRef.current).trim()
             if (
               remaining &&
@@ -477,10 +479,10 @@ export function useSessionSocket({
             ) {
               queueTtsNarrationRef.current?.(remaining)
             }
-            lastSpokenDmEntryRef.current = syntheticEntry.id
-            lastSpokenTurnIdRef.current = current.turnId
-            lastSpokenTextRef.current = current.text
-            rememberStreamedTtsTurn(current.turnId, current.text)
+            lastSpokenDmEntryRef.current = completedEntry.id
+            lastSpokenTurnIdRef.current = turnId
+            lastSpokenTextRef.current = completedText
+            rememberStreamedTtsTurn(turnId, completedText)
           }
         }
         if (ttsPartialFlushTimerRef.current !== null) {
@@ -491,6 +493,9 @@ export function useSessionSocket({
         speakableStreamingTextRef.current = ''
         return null
       })
+      if (!ok) {
+        pushError('connection', payload.error ? `DM response failed: ${payload.error}` : 'DM response failed.')
+      }
     })
 
     socket.on('session_log_update', (payload: { session_id?: number }) => {

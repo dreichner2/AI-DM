@@ -4,6 +4,7 @@ from collections import Counter
 from collections import defaultdict
 import json
 import re
+import time
 from typing import Any
 
 from sqlalchemy import func
@@ -20,18 +21,21 @@ from aidm_server.canon_inventory import (
     clean_inventory_item_name as _clean_inventory_item_name,
     extract_explicit_inventory_state_changes_from_text as _extract_explicit_inventory_state_changes_from_text,
     extract_inventory_changes_from_text as _extract_inventory_changes_from_text,
-    inventory_payload,
+    inventory_payload,  # noqa: F401 - compatibility re-export.
     looks_like_inventory_item as _looks_like_inventory_item,
 )
 from aidm_server.canon_location import infer_location_update
-from aidm_server.canon_projection import append_session_memory, refresh_session_projection
+from aidm_server.canon_projection import (
+    append_session_memory,  # noqa: F401 - compatibility re-export.
+    refresh_session_projection,  # noqa: F401 - compatibility re-export.
+)
 from aidm_server.canon_text import (
     normalized_name as _normalized_name,
     optional_float as _optional_float,
     positive_int as _positive_int,
 )
 from aidm_server.character_state import apply_character_state_changes as _apply_character_state_changes
-from aidm_server.database import db
+from aidm_server.database import db, release_clean_scoped_session
 from aidm_server.models import (
     Campaign,
     DmTurn,
@@ -44,7 +48,8 @@ from aidm_server.models import (
     safe_json_loads,
 )
 from aidm_server.prompt_templates import build_canon_extraction_request
-from aidm_server.telemetry import telemetry_event, telemetry_metric
+from aidm_server.provider_priority import background_provider_slot
+from aidm_server.telemetry import telemetry_event, telemetry_metric, telemetry_timing
 from aidm_server.time_utils import utc_now
 
 
@@ -364,7 +369,16 @@ def _extract_with_provider(
 ) -> tuple[dict | None, str | None]:
     from aidm_server.llm import get_provider
 
-    context = build_emergent_context(campaign.campaign_id, session_id=turn.session_id, entity_limit=8, fact_limit=12, thread_limit=8)
+    campaign_id = campaign.campaign_id
+    turn_id = turn.turn_id
+    session_id = turn.session_id
+    context = build_emergent_context(
+        campaign_id,
+        session_id=session_id,
+        entity_limit=8,
+        fact_limit=12,
+        thread_limit=8,
+    )
     provider = get_provider()
 
     request = build_canon_extraction_request(
@@ -376,12 +390,29 @@ def _extract_with_provider(
         triggered_segments=triggered_segments,
     )
 
+    # Canon retrieval uses the scoped session, but the provider wait must not
+    # retain its checked-out connection. process_canon_job reloads and
+    # revalidates the durable job/turn/campaign before applying this result.
+    release_clean_scoped_session(boundary='canon extraction')
     try:
-        response = provider.generate(request)
+        provider_wait_started = time.perf_counter()
+        with background_provider_slot():
+            telemetry_timing(
+                'memory.canon_job.provider_gate_wait_ms',
+                float((time.perf_counter() - provider_wait_started) * 1000),
+            )
+            provider_started = time.perf_counter()
+            try:
+                response = provider.generate(request)
+            finally:
+                telemetry_timing(
+                    'memory.canon_job.provider_runtime_ms',
+                    float((time.perf_counter() - provider_started) * 1000),
+                )
     except Exception as exc:
         telemetry_event(
             'memory.extract.provider_failed',
-            payload={'campaign_id': campaign.campaign_id, 'turn_id': turn.turn_id, 'error': str(exc)},
+            payload={'campaign_id': campaign_id, 'turn_id': turn_id, 'error': str(exc)},
             severity='warning',
         )
         return None, None

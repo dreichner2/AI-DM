@@ -281,3 +281,30 @@ def test_database_rate_limiter_serializes_concurrent_hits(app, monkeypatch):
 
     assert results.count(True) == 1
     assert results.count(False) == 4
+
+
+def test_database_rate_limiter_skips_process_lock_for_postgres(app, monkeypatch):
+    class RecordingLock:
+        def __init__(self):
+            self.entries = 0
+
+        def __enter__(self):
+            self.entries += 1
+
+        def __exit__(self, _exc_type, _exc, _traceback):
+            return False
+
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = rate_limiter_module.DatabaseRateLimitStore(retention_window_seconds=10)
+    recording_lock = RecordingLock()
+    monkeypatch.setattr(store, '_hit_lock', recording_lock)
+
+    with app.app_context():
+        from aidm_server.database import db
+
+        monkeypatch.setattr(db.engine.dialect, 'name', 'postgresql')
+        monkeypatch.setattr(store, '_lock_bucket_for_transaction', lambda _connection, _key: None)
+        result = store.hit('postgres-bucket', now=now, limit=2, window_seconds=10)
+
+    assert result.allowed is True
+    assert recording_lock.entries == 0

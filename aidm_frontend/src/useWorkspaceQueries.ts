@@ -36,6 +36,7 @@ type OlderLogLoadingScope = {
 type UseWorkspaceQueriesOptions = {
   auth: string
   baseUrl: string
+  operatorDataEnabled: boolean
   runtimeConfigHeaders?: HeadersInit
   sessions: SessionSummary[]
   selectedCampaignId: number | null
@@ -46,6 +47,7 @@ type UseWorkspaceQueriesOptions = {
   setMetrics: Dispatch<SetStateAction<BetaSummary | null>>
   setLlmConfig: Dispatch<SetStateAction<LlmRuntimeConfig | null>>
   setTtsConfig: Dispatch<SetStateAction<TtsRuntimeConfig | null>>
+  setTtsConfigLoadFailed: Dispatch<SetStateAction<boolean>>
   setWorlds: Dispatch<SetStateAction<World[]>>
   setCampaignSessionMeta: Dispatch<SetStateAction<Record<number, CampaignSessionMeta>>>
   setSelectedCampaignId: (value: ValueUpdater<number | null>) => void
@@ -100,6 +102,7 @@ function sessionMetaFromCampaign(campaign: Campaign): CampaignSessionMeta {
 export function useWorkspaceQueries({
   auth,
   baseUrl,
+  operatorDataEnabled,
   runtimeConfigHeaders,
   sessions,
   selectedCampaignId,
@@ -110,6 +113,7 @@ export function useWorkspaceQueries({
   setMetrics,
   setLlmConfig,
   setTtsConfig,
+  setTtsConfigLoadFailed,
   setWorlds,
   setCampaignSessionMeta,
   setSelectedCampaignId,
@@ -131,6 +135,8 @@ export function useWorkspaceQueries({
   onUnauthorized,
 }: UseWorkspaceQueriesOptions) {
   const rootRequestRef = useRef(0)
+  const operatorRequestRef = useRef(0)
+  const operatorDataEnabledRef = useRef(operatorDataEnabled)
   const workspaceRequestRef = useRef(0)
   const sessionRequestRef = useRef(0)
   const olderLogRequestRef = useRef(0)
@@ -151,6 +157,7 @@ export function useWorkspaceQueries({
   useEffect(() => {
     runtimeScopeRef.current = { auth, baseUrl }
     rootRequestRef.current += 1
+    operatorRequestRef.current += 1
     workspaceRequestRef.current += 1
     const invalidatedSessionRequestId = ++sessionRequestRef.current
     olderLogRequestRef.current += 1
@@ -402,6 +409,70 @@ export function useWorkspaceQueries({
     setSessionLogHasMore,
   ])
 
+  const refreshOperatorData = useCallback(async () => {
+    if (!operatorDataEnabledRef.current) return
+
+    const requestId = ++operatorRequestRef.current
+    const requestAuth = auth
+    const requestBaseUrl = baseUrl
+    const requestAccessSnapshot = storedRuntimeAccessSnapshot(requestAuth)
+    const requestIsCurrent = () => (
+      operatorDataEnabledRef.current &&
+      isCurrentRequest(
+        operatorRequestRef,
+        requestId,
+        requestAuth,
+        requestBaseUrl,
+        requestAccessSnapshot,
+      )
+    )
+
+    const metricsRequest = apiFetch<BetaSummary>(
+      requestBaseUrl,
+      '/api/beta/summary',
+      requestAuth,
+    ).then((metrics) => {
+      if (requestIsCurrent()) setMetrics(metrics)
+    }).catch(() => {
+      if (requestIsCurrent()) setMetrics(null)
+    })
+    const llmRequest = apiFetch<LlmRuntimeConfig>(
+      requestBaseUrl,
+      '/api/llm/config',
+      requestAuth,
+      { headers: runtimeConfigHeaders },
+    ).then((config) => {
+      if (requestIsCurrent()) setLlmConfig(config)
+    }).catch(() => {
+      if (requestIsCurrent()) setLlmConfig(null)
+    })
+
+    await Promise.allSettled([metricsRequest, llmRequest])
+  }, [
+    auth,
+    baseUrl,
+    isCurrentRequest,
+    runtimeConfigHeaders,
+    setLlmConfig,
+    setMetrics,
+  ])
+
+  useEffect(() => {
+    operatorDataEnabledRef.current = operatorDataEnabled
+    if (!operatorDataEnabled) {
+      operatorRequestRef.current += 1
+      setMetrics(null)
+      setLlmConfig(null)
+      return
+    }
+    void refreshOperatorData()
+  }, [
+    operatorDataEnabled,
+    refreshOperatorData,
+    setLlmConfig,
+    setMetrics,
+  ])
+
   const refreshRoot = useCallback(async () => {
     const requestId = ++rootRequestRef.current
     const requestAuth = auth
@@ -410,16 +481,12 @@ export function useWorkspaceQueries({
     rootLoadingRequestRef.current = requestId
     setWorkspaceLoading(true)
     try {
-      const [healthResult, workspaceResult, metricsResult, llmResult] = await Promise.allSettled([
+      const [healthResult, workspaceResult] = await Promise.allSettled([
         apiFetch<Health>(requestBaseUrl, '/api/health', requestAuth),
         Promise.all([
           apiFetch<Campaign[]>(requestBaseUrl, '/api/campaigns', requestAuth),
           apiFetch<World[]>(requestBaseUrl, '/api/worlds?limit=200', requestAuth),
         ]),
-        apiFetch<BetaSummary>(requestBaseUrl, '/api/beta/summary', requestAuth),
-        apiFetch<LlmRuntimeConfig>(requestBaseUrl, '/api/llm/config', requestAuth, {
-          headers: runtimeConfigHeaders,
-        }),
       ])
 
       if (!isCurrentRequest(
@@ -433,6 +500,7 @@ export function useWorkspaceQueries({
       if (healthResult.status === 'fulfilled') {
         const healthData = healthResult.value
         setHealth(healthData)
+        if (operatorDataEnabledRef.current) void refreshOperatorData()
       } else {
         setHealth(null)
         pushError(
@@ -440,18 +508,6 @@ export function useWorkspaceQueries({
           `Connection failed: ${healthResult.reason instanceof Error ? healthResult.reason.message : String(healthResult.reason)}`,
         )
         return
-      }
-
-      if (llmResult.status === 'fulfilled') {
-        setLlmConfig(llmResult.value)
-      } else {
-        setLlmConfig(null)
-      }
-
-      if (metricsResult.status === 'fulfilled') {
-        setMetrics(metricsResult.value)
-      } else {
-        setMetrics(null)
       }
 
       if (workspaceResult.status === 'fulfilled') {
@@ -463,6 +519,8 @@ export function useWorkspaceQueries({
             campaignData.map((item) => [item.campaign_id, sessionMetaFromCampaign(item)]),
           ),
         )
+        setTtsConfig(null)
+        setTtsConfigLoadFailed(false)
         void apiFetch<TtsRuntimeConfig>(requestBaseUrl, '/api/tts/config', requestAuth)
           .then((ttsConfig) => {
             if (isCurrentRequest(
@@ -471,7 +529,10 @@ export function useWorkspaceQueries({
               requestAuth,
               requestBaseUrl,
               requestAccessSnapshot,
-            )) setTtsConfig(ttsConfig)
+            )) {
+              setTtsConfig(ttsConfig)
+              setTtsConfigLoadFailed(false)
+            }
           })
           .catch(() => {
             if (isCurrentRequest(
@@ -480,7 +541,10 @@ export function useWorkspaceQueries({
               requestAuth,
               requestBaseUrl,
               requestAccessSnapshot,
-            )) setTtsConfig({ provider: 'deepgram', configured: false, model: 'aura-2-draco-en' })
+            )) {
+              setTtsConfig(null)
+              setTtsConfigLoadFailed(true)
+            }
           })
         setSelectedCampaignId((current) => {
           if (campaignData.some((item) => item.campaign_id === current)) {
@@ -512,15 +576,14 @@ export function useWorkspaceQueries({
     isCurrentRequest,
     onUnauthorized,
     pushError,
+    refreshOperatorData,
     rootCampaignsLoaded,
-    runtimeConfigHeaders,
     setCampaignSessionMeta,
     setHealth,
-    setLlmConfig,
-    setMetrics,
     setSelectedCampaignId,
     setSelectedSessionId,
     setTtsConfig,
+    setTtsConfigLoadFailed,
     setWorkspaceLoading,
     setWorlds,
   ])

@@ -26,6 +26,20 @@ docker compose up
 
 Grafana provisions the `AIDM Beta Overview` dashboard automatically.
 
+## Canon queue pressure
+
+The Prometheus endpoint exposes current durable canon queue gauges:
+
+- `aidm_canon_job_queue_depth`
+- `aidm_canon_job_running`
+- `aidm_canon_job_failed`
+- `aidm_canon_job_oldest_queued_age_seconds`
+
+An increasing oldest-queued age with foreground-pressure counters indicates
+intentional foreground narration preference is starving background canon work.
+The worker remains durable and wakeable; investigate sustained pressure rather
+than weakening narration priority.
+
 ## Scrape target
 
 `prometheus.yml` uses `host.docker.internal:5050`, which works with Docker Desktop on macOS.

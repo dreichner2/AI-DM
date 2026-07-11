@@ -172,6 +172,7 @@ let fetchCalls: Array<{
   workspaceIdHeader: string | null
 }>
 let ttsFetchHandler: ((path: string, body: unknown) => Promise<Response>) | null
+let ttsConfigFetchError: string | null
 let requiredAuthToken: string | null
 
 const previousLongDmText =
@@ -354,6 +355,7 @@ function resetApiData() {
   }
   fetchCalls = []
   ttsFetchHandler = null
+  ttsConfigFetchError = null
   requiredAuthToken = null
 }
 
@@ -924,7 +926,11 @@ function installFetchMock() {
           persisted: runtimeBody.persist !== false,
         })
       }
-      if (method === 'GET' && path === '/api/tts/config') return jsonResponse(ttsConfig)
+      if (method === 'GET' && path === '/api/tts/config') {
+        return ttsConfigFetchError
+          ? jsonResponse({ error: ttsConfigFetchError }, { status: 503 })
+          : jsonResponse(ttsConfig)
+      }
       if (method === 'POST' && (path === '/api/tts/stream' || path === '/api/tts/speak')) {
         if (ttsFetchHandler) return ttsFetchHandler(path, body)
         return new Response(new Blob(['audio'], { type: 'audio/mpeg' }), {
@@ -1564,6 +1570,12 @@ export const appTestState = {
   set ttsFetchHandler(value: ((path: string, body: unknown) => Promise<Response>) | null) {
     ttsFetchHandler = value
   },
+  get ttsConfigFetchError() {
+    return ttsConfigFetchError
+  },
+  set ttsConfigFetchError(value: string | null) {
+    ttsConfigFetchError = value
+  },
   get requiredAuthToken() {
     return requiredAuthToken
   },
@@ -1597,10 +1609,12 @@ export function setupAppTest() {
     health.llm.configured = true
     health.llm.latest_turn = null
   }
+  health.auth_required = false
   runtime.current = health.llm!
   runtime.persisted = true
   delete runtime.runtime_scope
   delete runtime.restart_required_for_other_workers
+  delete runtime.worker_count
   ttsConfig.configured = true
   ttsConfig.model = 'aura-2-draco-en'
   localStorage.setItem('aidm:selectedCampaignId', '10')

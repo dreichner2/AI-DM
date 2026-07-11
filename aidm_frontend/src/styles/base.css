@@ -247,34 +247,6 @@ select:focus-visible {
   color: #aed2d7;
 }
 
-.beta-runtime-notes-toggle {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 6px;
-  min-height: 26px;
-  padding: 3px 8px;
-  border: 1px solid rgba(116, 188, 198, 0.32);
-  border-radius: 7px;
-  color: #d7f8fb;
-  background: rgba(20, 49, 54, 0.42);
-  font: inherit;
-  cursor: pointer;
-}
-
-.beta-runtime-notes-toggle span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.beta-runtime-notes-toggle:hover,
-.beta-runtime-notes-toggle:focus-visible {
-  border-color: rgba(116, 188, 198, 0.58);
-  background: rgba(20, 49, 54, 0.62);
-}
-
 .beta-runtime-notes-panel {
   position: fixed;
   top: 88px;
@@ -301,7 +273,8 @@ select:focus-visible {
   min-width: 0;
 }
 
-.beta-runtime-notes-panel strong {
+.beta-runtime-notes-panel h2 {
+  margin: 0;
   color: var(--heading);
   font-size: 0.82rem;
   font-weight: 650;
@@ -325,6 +298,13 @@ select:focus-visible {
   gap: 5px;
   margin: 0;
   padding-left: 18px;
+}
+
+.beta-runtime-notes-panel p {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.76rem;
+  line-height: 1.4;
 }
 
 .beta-runtime-notes-panel li {

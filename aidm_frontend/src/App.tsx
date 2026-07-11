@@ -370,6 +370,17 @@ function formatDurationFrom(value: string | null, nowMs: number) {
   return `${minutes}m ${String(remainingSeconds).padStart(2, '0')}s`
 }
 
+function SessionDuration({ startedAt }: { startedAt: string | null }) {
+  const [nowMs, setNowMs] = useState(() => Date.now())
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  return <>{formatDurationFrom(startedAt, nowMs)}</>
+}
+
 function snapshotRecord(session: SessionSummary | null | undefined) {
   return isRecord(session?.state_snapshot) ? session.state_snapshot : {}
 }
@@ -549,6 +560,7 @@ function AIDMApp() {
   const [actorCapabilities, setActorCapabilities] = useState<ActorCapabilitiesResponse | null>(null)
   const [llmConfig, setLlmConfig] = useState<LlmRuntimeConfig | null>(null)
   const [ttsConfig, setTtsConfig] = useState<TtsRuntimeConfig | null>(null)
+  const [ttsConfigLoadFailed, setTtsConfigLoadFailed] = useState(false)
   const [runtimePending, setRuntimePending] = useState(false)
   const [campaignSessionMeta, setCampaignSessionMeta] = useState<
     Record<number, CampaignSessionMeta>
@@ -606,12 +618,12 @@ function AIDMApp() {
   const [directorCommentary, setDirectorCommentary] = useState<CampaignPackCommentaryResponse | null>(null)
   const [socketReconnectKey, setSocketReconnectKey] = useState(0)
   const [equipmentPendingItemKey, setEquipmentPendingItemKey] = useState<string | null>(null)
-  const [nowMs, setNowMs] = useState(() => Date.now())
   const resetRuntimeState = useCallback(() => {
     setHealth(null)
     setActorCapabilities(null)
     setLlmConfig(null)
     setTtsConfig(null)
+    setTtsConfigLoadFailed(false)
     setMetrics(null)
     setWorlds([])
   }, [])
@@ -661,6 +673,7 @@ function AIDMApp() {
   })
   const rootRef = useRef<HTMLDivElement | null>(null)
   const accountMenuRef = useRef<HTMLDivElement | null>(null)
+  const betaNotesToggleRef = useRef<HTMLButtonElement | null>(null)
   const sessionMenuRef = useRef<HTMLDivElement | null>(null)
   const sessionImportInputRef = useRef<HTMLInputElement | null>(null)
   const modalDialogRef = useRef<HTMLElement | null>(null)
@@ -673,6 +686,10 @@ function AIDMApp() {
   const submitActionRef = useRef<(() => void) | null>(null)
   const toggleFullscreenRef = useRef<(() => Promise<void>) | null>(null)
   const socketRef = useRef<Socket | null>(null)
+  const closeBetaNotes = useCallback(() => {
+    setBetaNotesOpen(false)
+    window.requestAnimationFrame(() => betaNotesToggleRef.current?.focus())
+  }, [])
   const playerRequestRef = useRef(0)
   const sessionActionDialogRef = useRef<SessionActionDialogState>(null)
   const campaignActionDialogRef = useRef<CampaignActionDialogState>(null)
@@ -707,6 +724,13 @@ function AIDMApp() {
   const canUseOperatorTools = activeActorCapabilities
     ? actorCapabilitiesAllowOperatorTools(activeActorCapabilities.capabilities)
     : health?.auth_required === false || runtimeAccount?.isWorkspaceAdmin === true
+  const currentUserIsWorkspaceAdmin = activeActorCapabilities
+    ? activeActorCapabilities.is_workspace_admin
+    : health?.auth_required === false || runtimeAccount?.isWorkspaceAdmin === true
+  const operatorDataEnabled = health?.auth_required === false || Boolean(
+    activeActorCapabilities &&
+    actorCapabilitiesAllowOperatorTools(activeActorCapabilities.capabilities),
+  )
   const runtimeConfigHeaders = useMemo<HeadersInit | undefined>(
     () => (canUseOwnerRuntimeConfig ? { [WORKSPACE_ID_HEADER]: OWNER_WORKSPACE_ID } : undefined),
     [canUseOwnerRuntimeConfig],
@@ -1097,6 +1121,7 @@ function AIDMApp() {
     auth,
     baseUrl,
     ttsConfig,
+    ttsConfigLoadFailed,
     selectedSessionId,
     sendPending,
     streamingTurn,
@@ -1250,6 +1275,7 @@ function AIDMApp() {
   } = useWorkspaceQueries({
     auth,
     baseUrl,
+    operatorDataEnabled,
     runtimeConfigHeaders,
     sessions,
     selectedCampaignId,
@@ -1260,6 +1286,7 @@ function AIDMApp() {
     setMetrics,
     setLlmConfig,
     setTtsConfig,
+    setTtsConfigLoadFailed,
     setWorlds,
     setCampaignSessionMeta,
     setSelectedCampaignId,
@@ -2112,11 +2139,6 @@ function AIDMApp() {
   }, [refreshRoot])
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [])
-
-  useEffect(() => {
     localStorage.setItem('aidm:theme', theme)
   }, [theme])
 
@@ -2480,6 +2502,7 @@ function AIDMApp() {
       if (!(target instanceof Node)) return
       if (accountMenuOpen && !accountMenuRef.current?.contains(target)) {
         setAccountMenuOpen(false)
+        setBetaNotesOpen(false)
       }
       if (sessionMenuOpen && !sessionMenuRef.current?.contains(target)) {
         setSessionMenuOpen(false)
@@ -2487,6 +2510,10 @@ function AIDMApp() {
     }
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (betaNotesOpen) {
+          closeBetaNotes()
+          return
+        }
         setAccountMenuOpen(false)
         setSessionMenuOpen(false)
       }
@@ -2498,7 +2525,7 @@ function AIDMApp() {
       document.removeEventListener('pointerdown', handlePointerDown)
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [accountMenuOpen, sessionMenuOpen])
+  }, [accountMenuOpen, betaNotesOpen, closeBetaNotes, sessionMenuOpen])
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -2897,9 +2924,6 @@ function AIDMApp() {
       }
     })
   const lastSync = sessionState?.updated_at ?? activeSession?.created_at ?? null
-  const sessionDuration = activeSession
-    ? formatDurationFrom(activeSession.created_at, nowMs)
-    : 'No session'
   const runtime = llmConfig?.current ?? health?.llm ?? null
   const latestRuntime = runtime?.latest_turn ?? null
   const configuredProvider = stringValue(runtime?.provider, 'Unknown')
@@ -2912,13 +2936,14 @@ function AIDMApp() {
   const runtimeModels = selectedProviderOption?.models ?? [
     { id: configuredModel, label: configuredModel },
   ]
-  const runtimeScopeLabel =
-    llmConfig?.runtime_scope === 'process'
-      ? 'Process-local'
-      : 'Runtime'
-  const runtimeScopeTitle = llmConfig?.restart_required_for_other_workers
-    ? 'Provider changes apply to this backend process; restart other workers to match.'
-    : 'Current runtime scope'
+  const showProcessLocalDiagnostic = Boolean(
+    llmConfig?.runtime_scope === 'process' &&
+    (llmConfig.worker_count ?? 1) > 1 &&
+    llmConfig.restart_required_for_other_workers &&
+    currentUserIsWorkspaceAdmin,
+  )
+  const runtimeScopeTitle =
+    'Provider changes apply to this backend process; restart the other workers to synchronize them.'
   const backendStatusLabel =
     health === null ? 'Checking' : health.status === 'ok' ? 'Connected' : 'Offline'
   const backendStatusTone =
@@ -2936,6 +2961,30 @@ function AIDMApp() {
         : 'Offline'
   const runtimeTone =
     runtimePending || health === null ? 'neutral' : runtime?.configured ? 'good' : 'warn'
+  const ttsConfigurationStatus = ttsConfigLoadFailed
+    ? 'Status unavailable'
+    : ttsConfig === null
+      ? 'Checking'
+      : ttsConfig.configured ? 'Configured' : 'Unavailable'
+  const ttsConfigurationDataStatus = ttsConfigLoadFailed
+    ? 'error'
+    : ttsConfig === null
+      ? 'checking'
+      : ttsConfig.configured ? 'configured' : 'unavailable'
+  const ttsControlLabel = ttsConfigLoadFailed
+    ? 'Narration status unavailable; configuration check failed'
+    : ttsConfig === null
+      ? 'Narration availability is still being checked'
+      : ttsConfig.configured
+        ? `${ttsEnabled ? 'Turn TTS off' : 'Turn TTS on'}; Deepgram is configured`
+        : 'Narration unavailable; Deepgram is not configured'
+  const ttsControlTitle = ttsConfigLoadFailed
+    ? 'Could not check Deepgram narration configuration; refresh to retry'
+    : ttsConfig === null
+      ? 'Checking Deepgram narration availability'
+      : ttsConfig.configured
+        ? `Deepgram narration configured: ${ttsConfig.model} (${ttsStatusLabel})`
+        : 'Deepgram narration is unavailable because the backend is not configured'
   const betaRuntimeNotices: Array<{
     id: string
     title: string
@@ -2946,39 +2995,15 @@ function AIDMApp() {
     betaRuntimeNotices.push({
       id: 'fallback-provider',
       title: 'Safe Mode',
-      message: 'Fallback provider active.',
+      message: 'Fallback DM active. Ask the table operator to restore the live provider.',
       tone: 'warn',
     })
   } else if (health?.status === 'ok' && runtime && !runtime.configured) {
     betaRuntimeNotices.push({
       id: 'missing-provider-key',
       title: 'Provider Key',
-      message: 'Live DM responses need a configured provider key.',
+      message: 'Live DM is unavailable. Ask the table operator to configure the selected provider.',
       tone: 'warn',
-    })
-  }
-  if (ttsConfig && !ttsConfig.configured) {
-    betaRuntimeNotices.push({
-      id: 'tts-unavailable',
-      title: 'TTS',
-      message: 'Deepgram TTS unavailable.',
-      tone: 'info',
-    })
-  }
-  if (health?.auth_required === false) {
-    betaRuntimeNotices.push({
-      id: 'local-auth-disabled',
-      title: 'Local/Private',
-      message: 'Auth disabled.',
-      tone: 'info',
-    })
-  }
-  if (llmConfig?.restart_required_for_other_workers) {
-    betaRuntimeNotices.push({
-      id: 'process-local-runtime',
-      title: 'Process-Local',
-      message: 'Restart other workers to match.',
-      tone: 'info',
     })
   }
   const loadedTextLength = timeline.reduce((total, entry) => total + entry.text.length, 0)
@@ -3136,7 +3161,11 @@ function AIDMApp() {
             </span>
           </div>
           <StatusDot label={runtimeLabel} tone={runtimeTone} />
-          <span title={runtimeScopeTitle}>{runtimeScopeLabel}</span>
+          {showProcessLocalDiagnostic ? (
+            <span className="runtime-scope-diagnostic" title={runtimeScopeTitle}>
+              Process-local · restart workers
+            </span>
+          ) : null}
         </div>
         <div className="ops-segment compact">
           <div>
@@ -3172,7 +3201,14 @@ function AIDMApp() {
         </div>
         <div className="ops-segment mini-stat">
           <strong>Session</strong>
-          <span>{sessionDuration}</span>
+          <span>
+            {activeSession ? (
+              <SessionDuration
+                key={activeSession.session_id}
+                startedAt={activeSession.created_at}
+              />
+            ) : 'No session'}
+          </span>
         </div>
         <div className="ops-segment mini-stat">
           <Lock size={18} />
@@ -3188,13 +3224,10 @@ function AIDMApp() {
           <button
             type="button"
             className={`top-icon ${ttsEnabled ? 'selected' : ''} ${ttsSpeaking ? 'speaking' : ''}`}
-            aria-label={ttsEnabled ? 'Turn TTS off' : 'Turn TTS on'}
+            aria-label={ttsControlLabel}
             aria-pressed={ttsEnabled}
-            title={
-              ttsConfig?.configured
-                ? `Deepgram narration: ${ttsConfig.model} (${ttsStatusLabel})`
-                : 'Deepgram narration is not configured'
-            }
+            data-tts-configuration={ttsConfigurationDataStatus}
+            title={`${ttsConfigurationStatus}: ${ttsControlTitle}`}
             onClick={toggleTts}
           >
             {ttsEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
@@ -3250,7 +3283,10 @@ function AIDMApp() {
               aria-label="Account"
               aria-expanded={accountMenuOpen}
               aria-controls="account-menu"
-              onClick={() => setAccountMenuOpen((current) => !current)}
+              onClick={() => {
+                setBetaNotesOpen(false)
+                setAccountMenuOpen((current) => !current)
+              }}
             >
               <UserCircle size={19} />
             </button>
@@ -3260,7 +3296,10 @@ function AIDMApp() {
               aria-label="More account options"
               aria-expanded={accountMenuOpen}
               aria-controls="account-menu"
-              onClick={() => setAccountMenuOpen((current) => !current)}
+              onClick={() => {
+                setBetaNotesOpen(false)
+                setAccountMenuOpen((current) => !current)
+              }}
             >
               <ChevronDown size={16} />
             </button>
@@ -3296,12 +3335,27 @@ function AIDMApp() {
                 <button type="button" role="menuitem" onClick={openRuntimeSettingsDialog}>
                   Runtime settings
                 </button>
+                <button
+                  ref={betaNotesToggleRef}
+                  type="button"
+                  role="menuitem"
+                  aria-expanded={betaNotesOpen}
+                  aria-controls="beta-runtime-information"
+                  onClick={() => setBetaNotesOpen((current) => !current)}
+                >
+                  Beta information
+                </button>
                 {authToken ? (
                   <button type="button" role="menuitem" onClick={clearAuthToken}>
                     Sign out
                   </button>
                 ) : null}
               </div>
+            ) : null}
+            {accountMenuOpen && betaNotesOpen ? (
+              <Suspense fallback={null}>
+                <BetaRuntimeNotesPanel onClose={closeBetaNotes} />
+              </Suspense>
             ) : null}
           </div>
         </div>
@@ -3323,23 +3377,7 @@ function AIDMApp() {
               <span>{notice.message}</span>
             </div>
           ))}
-          <button
-            type="button"
-            className="beta-runtime-notes-toggle"
-            aria-expanded={betaNotesOpen}
-            aria-controls="beta-runtime-known-limitations"
-            onClick={() => setBetaNotesOpen((current) => !current)}
-          >
-            <ThinIcon name="book" size={14} />
-            <span>Beta Notes</span>
-          </button>
         </div>
-      ) : null}
-
-      {betaRuntimeNotices.length && betaNotesOpen ? (
-        <Suspense fallback={null}>
-          <BetaRuntimeNotesPanel onClose={() => setBetaNotesOpen(false)} />
-        </Suspense>
       ) : null}
 
       {showTitleScreen ? (

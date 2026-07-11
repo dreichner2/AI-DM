@@ -94,7 +94,16 @@ def current_llm_payload(*, include_latest_turn: bool = True, workspace_id: str |
     return payload
 
 
-def llm_config_payload(*, workspace_id: str | None = None) -> dict:
+def runtime_worker_count() -> int:
+    raw_value = str(os.getenv('WEB_CONCURRENCY') or '1').strip()
+    try:
+        worker_count = int(raw_value)
+    except (TypeError, ValueError):
+        return 1
+    return worker_count if worker_count > 0 else 1
+
+
+def llm_config_payload(*, workspace_id: str | None = None, runtime_change_applied: bool = False) -> dict:
     providers = []
     for option in provider_catalog_payload():
         providers.append(
@@ -103,12 +112,14 @@ def llm_config_payload(*, workspace_id: str | None = None) -> dict:
                 'configured': provider_configured(option['id']),
             }
         )
+    worker_count = runtime_worker_count()
     return {
         'current': current_llm_payload(workspace_id=workspace_id),
         'providers': providers,
         'persisted': False,
         'runtime_scope': 'process',
-        'restart_required_for_other_workers': True,
+        'worker_count': worker_count,
+        'restart_required_for_other_workers': bool(runtime_change_applied) and worker_count > 1,
     }
 
 
@@ -177,6 +188,11 @@ def validate_provider_model(provider: str, model: str) -> tuple[str, str]:
 
 
 def apply_llm_runtime(provider: str, model: str, *, persist: bool = True):
+    runtime_changed = (
+        str(current_app.config.get('AIDM_LLM_PROVIDER') or '').strip().lower() != provider
+        or str(current_app.config.get('AIDM_LLM_MODEL') or '').strip() != model
+        or bool(current_app.config.get('AIDM_LLM_FALLBACK_MODELS') or [])
+    )
     updates = {
         'AIDM_LLM_PROVIDER': provider,
         'AIDM_LLM_MODEL': model,
@@ -221,6 +237,7 @@ def apply_llm_runtime(provider: str, model: str, *, persist: bool = True):
 
     if persist:
         persist_env_updates(updates)
+    return runtime_changed
 
 
 def llm_config_persistence_allowed() -> bool:

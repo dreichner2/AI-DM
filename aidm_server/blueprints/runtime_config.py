@@ -72,7 +72,10 @@ def update_llm_config():
             400,
         )
 
-    apply_llm_runtime(provider, model, persist=persist)
-    response = llm_config_payload(workspace_id=current_workspace_id())
+    runtime_changed = apply_llm_runtime(provider, model, persist=persist)
+    response = llm_config_payload(
+        workspace_id=current_workspace_id(),
+        runtime_change_applied=runtime_changed,
+    )
     response['persisted'] = persist
     return jsonify(response)

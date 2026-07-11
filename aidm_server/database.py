@@ -10,6 +10,7 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.exc import OperationalError
 from sqlalchemy import MetaData, event, inspect, text
 from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.orm import Session as SqlAlchemySession
 from sqlalchemy.pool import NullPool
 
 from aidm_server.logging_context import configure_logging
@@ -36,6 +37,19 @@ convention = {
 metadata = MetaData(naming_convention=convention)
 db = SQLAlchemy(metadata=metadata)
 migrate = Migrate()
+_PENDING_FLUSHED_WRITES_KEY = 'aidm_pending_flushed_writes'
+
+
+@event.listens_for(SqlAlchemySession, 'before_flush')
+def _track_flushed_writes(session: SqlAlchemySession, _flush_context, _instances) -> None:
+    if session.new or session.dirty or session.deleted:
+        session.info[_PENDING_FLUSHED_WRITES_KEY] = True
+
+
+@event.listens_for(SqlAlchemySession, 'after_transaction_end')
+def _clear_flushed_write_tracking(session: SqlAlchemySession, transaction) -> None:
+    if transaction.parent is None:
+        session.info.pop(_PENDING_FLUSHED_WRITES_KEY, None)
 
 
 @event.listens_for(Engine, 'connect')
@@ -79,6 +93,23 @@ def commit_with_retry(
                 delay,
             )
             time.sleep(delay)
+
+
+def release_clean_scoped_session(*, boundary: str = 'provider') -> None:
+    """Return a read-only scoped session without discarding pending writes."""
+
+    session = db.session()
+    has_pending_writes = bool(
+        session.new
+        or session.dirty
+        or session.deleted
+        or session.info.get(_PENDING_FLUSHED_WRITES_KEY)
+    )
+    if has_pending_writes:
+        raise RuntimeError(
+            f'Refusing to release a database session with pending {boundary} boundary writes.'
+        )
+    db.session.remove()
 
 
 def run_with_commit_retry(

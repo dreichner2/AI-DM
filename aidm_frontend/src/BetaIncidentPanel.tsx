@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Download, RefreshCcw } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Download, RefreshCcw, X } from 'lucide-react'
 import { ApiClientError, apiFetch } from './api'
+import { ModalShell } from './ModalShell'
 import type { BetaIncidentsResponse, BetaSessionQualityResponse, BetaSupportBundleResponse, JsonRecord } from './types'
+import { useModalFocusTrap } from './useModalFocusTrap'
 
 type BetaIncidentPanelProps = {
   baseUrl: string
@@ -10,6 +12,11 @@ type BetaIncidentPanelProps = {
 }
 
 const INCIDENT_LIMIT = 20
+
+type SupportBundleRequest = {
+  sessionId: number | null
+  scope: string
+}
 
 const INCIDENT_TYPE_LABELS: Record<string, string> = {
   failed_turn: 'Failed Turn',
@@ -155,9 +162,12 @@ export function BetaIncidentPanel({ baseUrl, auth, selectedSessionId }: BetaInci
   const [loading, setLoading] = useState(false)
   const [qualityLoading, setQualityLoading] = useState(false)
   const [bundleLoadingKey, setBundleLoadingKey] = useState('')
+  const [supportBundleRequest, setSupportBundleRequest] = useState<SupportBundleRequest | null>(null)
   const [error, setError] = useState('')
   const [qualityError, setQualityError] = useState('')
   const [bundleError, setBundleError] = useState('')
+  const supportBundleDialogRef = useRef<HTMLElement | null>(null)
+  const supportBundleReturnFocusRef = useRef<HTMLElement | null>(null)
 
   const loadIncidents = useCallback(async (cancelled?: () => boolean) => {
     if (cancelled?.()) return
@@ -244,6 +254,32 @@ export function BetaIncidentPanel({ baseUrl, auth, selectedSessionId }: BetaInci
     }
   }, [auth, baseUrl])
 
+  const closeSupportBundleConfirmation = useCallback(() => {
+    setSupportBundleRequest(null)
+  }, [])
+
+  const requestSupportBundle = useCallback((sessionId: number | null, opener: HTMLElement) => {
+    supportBundleReturnFocusRef.current = opener
+    setSupportBundleRequest({
+      sessionId,
+      scope: sessionId === null ? 'workspace' : `session ${sessionId}`,
+    })
+  }, [])
+
+  const confirmSupportBundleDownload = useCallback(() => {
+    if (!supportBundleRequest) return
+    const { sessionId } = supportBundleRequest
+    closeSupportBundleConfirmation()
+    void downloadSupportBundle(sessionId)
+  }, [closeSupportBundleConfirmation, downloadSupportBundle, supportBundleRequest])
+
+  useModalFocusTrap({
+    activeKey: supportBundleRequest ? `support-bundle-${supportBundleRequest.scope}` : null,
+    dialogRef: supportBundleDialogRef,
+    onClose: closeSupportBundleConfirmation,
+    returnFocusRef: supportBundleReturnFocusRef,
+  })
+
   useEffect(() => {
     let cancelled = false
     void Promise.resolve().then(() => loadIncidents(() => cancelled))
@@ -278,7 +314,7 @@ export function BetaIncidentPanel({ baseUrl, auth, selectedSessionId }: BetaInci
         <div className="incident-panel-actions">
           <button
             type="button"
-            onClick={() => void downloadSupportBundle()}
+            onClick={(event) => requestSupportBundle(null, event.currentTarget)}
             disabled={bundleLoadingKey === 'workspace'}
             aria-label="Export workspace support bundle"
           >
@@ -411,7 +447,7 @@ export function BetaIncidentPanel({ baseUrl, auth, selectedSessionId }: BetaInci
                     <button
                       type="button"
                       className="incident-bundle-button"
-                      onClick={() => void downloadSupportBundle(sessionId)}
+                      onClick={(event) => requestSupportBundle(sessionId, event.currentTarget)}
                       disabled={bundleLoadingKey === sessionBundleKey}
                       aria-label={`Export support bundle for session ${sessionId}`}
                       title={`Export support bundle for session ${sessionId}`}
@@ -432,6 +468,52 @@ export function BetaIncidentPanel({ baseUrl, auth, selectedSessionId }: BetaInci
           )
         })}
       </div>
+      {supportBundleRequest ? (
+        <ModalShell
+          className="campaign-dialog support-bundle-dialog"
+          dialogRef={supportBundleDialogRef}
+          labelledBy="support-bundle-confirmation-title"
+          describedBy="support-bundle-confirmation-description"
+          onClose={closeSupportBundleConfirmation}
+        >
+          <header>
+            <div>
+              <span>Operator export</span>
+              <h2 id="support-bundle-confirmation-title">Confirm support bundle export</h2>
+            </div>
+            <button
+              type="button"
+              aria-label="Close support bundle confirmation"
+              onClick={closeSupportBundleConfirmation}
+            >
+              <X aria-hidden="true" size={18} />
+            </button>
+          </header>
+          <div className="dialog-body">
+            <div id="support-bundle-confirmation-description" className="dialog-warning">
+              <strong>{supportBundleRequest.scope} support bundle</strong>
+              <span>
+                This bundle can contain session IDs, provider/model metadata, and audit references
+                and should be handled as operator data. Review where you store or share it.
+              </span>
+            </div>
+            <footer>
+              <button
+                type="button"
+                className="secondary"
+                data-autofocus
+                onClick={closeSupportBundleConfirmation}
+              >
+                Cancel
+              </button>
+              <button type="button" onClick={confirmSupportBundleDownload}>
+                <Download aria-hidden="true" size={14} />
+                Download bundle
+              </button>
+            </footer>
+          </div>
+        </ModalShell>
+      ) : null}
     </section>
   )
 }

@@ -8,6 +8,7 @@ from aidm_server.canon_inventory import append_drop_all_inventory_changes_from_t
 from aidm_server.canon_text import int_or_default
 from aidm_server.combat.pipeline import (
     combat_turn_advance_change,
+    finalize_combat_prepare,
     prepare_combat_for_turn,
     prepare_combat_from_dm_response,
     record_combat_debug_from_outcome,
@@ -86,6 +87,95 @@ def _players_for_campaign(campaign: Campaign, fallback_player: Player) -> list[P
     if not any(player.player_id == fallback_player.player_id for player in available):
         available.append(fallback_player)
     return available
+
+
+def _pipeline_orm_token(
+    *,
+    turn: DmTurn,
+    session_obj: Session,
+    campaign: Campaign,
+    player: Player,
+    players: list[Player],
+) -> dict[str, Any]:
+    """Capture the rows whose state a helper response is allowed to mutate.
+
+    The models do not currently expose SQLAlchemy version columns. This token
+    therefore provides an optimistic version boundary from their mutable
+    columns so a helper result cannot overwrite edits committed while its
+    external provider call was in flight.
+    """
+
+    return {
+        'turn_id': turn.turn_id,
+        'session_id': session_obj.session_id,
+        'campaign_id': campaign.campaign_id,
+        'player_id': player.player_id,
+        'turn': (
+            turn.session_id,
+            turn.campaign_id,
+            turn.player_id,
+            turn.status,
+            turn.dm_output,
+            turn.requires_roll,
+            turn.roll_value,
+            turn.rule_type,
+            turn.outcome_status,
+            turn.rules_hint,
+            turn.metadata_json,
+            turn.completed_at,
+        ),
+        'session': (
+            session_obj.campaign_id,
+            session_obj.status,
+            session_obj.state_snapshot,
+            session_obj.updated_at,
+            session_obj.deleted_at,
+        ),
+        'campaign': (
+            campaign.workspace_id,
+            campaign.world_id,
+            campaign.status,
+            campaign.current_quest,
+            campaign.plot_points,
+            campaign.active_npcs,
+            campaign.location,
+            campaign.updated_at,
+        ),
+        'players': tuple(
+            (
+                player_obj.player_id,
+                player_obj.workspace_id,
+                player_obj.campaign_id,
+                player_obj.level,
+                player_obj.stats,
+                player_obj.inventory,
+                player_obj.character_sheet,
+                player_obj.updated_at,
+            )
+            for player_obj in players
+        ),
+    }
+
+
+def _reload_pipeline_orm(token: dict[str, Any]) -> tuple[DmTurn, Session, Campaign, Player, list[Player]]:
+    turn = db.session.get(DmTurn, token['turn_id'])
+    session_obj = db.session.get(Session, token['session_id'])
+    campaign = db.session.get(Campaign, token['campaign_id'])
+    player = db.session.get(Player, token['player_id'])
+    if not all((turn, session_obj, campaign, player)):
+        raise RuntimeError('Turn state changed while the helper provider was running.')
+
+    players = _players_for_campaign(campaign, player)
+    current = _pipeline_orm_token(
+        turn=turn,
+        session_obj=session_obj,
+        campaign=campaign,
+        player=player,
+        players=players,
+    )
+    if current != token:
+        raise RuntimeError('Turn state changed while the helper provider was running.')
+    return turn, session_obj, campaign, player, players
 
 
 def _metadata(turn: DmTurn) -> dict[str, Any]:
@@ -698,9 +788,17 @@ def pre_dm_pipeline(
     selected_item_ids: dict[str, str] | None = None,
     declared_actions_override: list[dict[str, Any]] | None = None,
     active_player_ids: list[int] | None = None,
+    before_helper_call: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     players = _players_for_campaign(campaign, player)
     players_by_id = {player_obj.player_id: player_obj for player_obj in players}
+    orm_token = _pipeline_orm_token(
+        turn=turn,
+        session_obj=session_obj,
+        campaign=campaign,
+        player=player,
+        players=players,
+    )
     state = state_snapshot_for_session(
         session_obj=session_obj,
         campaign=campaign,
@@ -716,6 +814,14 @@ def pre_dm_pipeline(
             'notes': ['clarification_resume'],
         }
     else:
+        helper_session_released = False
+
+        def _before_provider_call() -> None:
+            nonlocal helper_session_released
+            if before_helper_call:
+                before_helper_call()
+                helper_session_released = True
+
         pre_extraction = extract_pre_dm_actions(
             current_state=compact_state_for_extraction(state),
             player_message=player_message,
@@ -723,7 +829,11 @@ def pre_dm_pipeline(
             actor_id=actor_id,
             action_intent=action_intent,
             force_helper=_turn_awaits_player_roll(turn),
+            before_provider_call=_before_provider_call if before_helper_call else None,
         )
+        if helper_session_released:
+            turn, session_obj, campaign, player, players = _reload_pipeline_orm(orm_token)
+            players_by_id = {player_obj.player_id: player_obj for player_obj in players}
     pre_validation = validate_declared_actions(
         state=state,
         declared_actions=pre_extraction.get('declaredActions') or [],
@@ -745,6 +855,14 @@ def pre_dm_pipeline(
     apply_result = apply_state_changes(state, immediate_changes)
     state_after_immediate = apply_result['nextState']
     applied_immediate = apply_result['appliedChanges']
+    combat_session_released = False
+
+    def _before_combat_provider_call() -> None:
+        nonlocal combat_session_released
+        if before_helper_call:
+            before_helper_call()
+            combat_session_released = True
+
     combat_prepare = prepare_combat_for_turn(
         state=state_after_immediate,
         session_obj=session_obj,
@@ -752,7 +870,16 @@ def pre_dm_pipeline(
         turn=turn,
         player_message=player_message,
         workspace_id=campaign.workspace_id,
+        before_intent_provider_call=(
+            _before_combat_provider_call if before_helper_call else None
+        ),
+        before_creature_provider_call=(
+            _before_combat_provider_call if before_helper_call else None
+        ),
     )
+    if combat_session_released:
+        turn, session_obj, campaign, player, players = _reload_pipeline_orm(orm_token)
+        players_by_id = {player_obj.player_id: player_obj for player_obj in players}
     combat_changes = [
         change
         for change in (combat_prepare.get('changes') or [])
@@ -763,6 +890,13 @@ def pre_dm_pipeline(
     combat_apply = apply_state_changes(state_after_immediate, applied_combat_changes)
     state_before_dm = combat_apply['nextState']
     applied_combat = combat_apply['appliedChanges']
+    finalize_combat_prepare(
+        session_obj=session_obj,
+        campaign=campaign,
+        prepare_result=combat_prepare,
+        applied_changes=applied_combat,
+        final_state=state_before_dm,
+    )
     if applied_immediate or applied_combat:
         persist_state_to_database(session_obj=session_obj, state=state_before_dm, players_by_id=players_by_id)
     else:
@@ -843,11 +977,19 @@ def post_dm_pipeline(
     player: Player,
     dm_response_text: str,
     active_player_ids: list[int] | None = None,
+    before_helper_call: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     metadata = _metadata(turn)
     pipeline = metadata.get(STATE_PIPELINE_METADATA_KEY) if isinstance(metadata.get(STATE_PIPELINE_METADATA_KEY), dict) else {}
     players = _players_for_campaign(campaign, player)
     players_by_id = {player_obj.player_id: player_obj for player_obj in players}
+    orm_token = _pipeline_orm_token(
+        turn=turn,
+        session_obj=session_obj,
+        campaign=campaign,
+        player=player,
+        players=players,
+    )
     state_before_dm = pipeline.get('stateBeforeDm')
     if not isinstance(state_before_dm, dict):
         state_before_dm = state_snapshot_for_session(
@@ -899,6 +1041,14 @@ def post_dm_pipeline(
         applied_post: list[dict[str, Any]] = []
         session_obj.state_snapshot = safe_json_dumps(final_state, {})
     else:
+        helper_session_released = False
+
+        def _before_provider_call() -> None:
+            nonlocal helper_session_released
+            if before_helper_call:
+                before_helper_call()
+                helper_session_released = True
+
         post_extraction = extract_post_dm_outcomes(
             state_before_dm=compact_state_for_extraction(state_before_dm),
             player_message=turn.player_input,
@@ -908,7 +1058,19 @@ def post_dm_pipeline(
             recent_timeline=recent_timeline,
             actor_id=actor_id,
             turn_id=turn.turn_id,
+            before_provider_call=_before_provider_call if before_helper_call else None,
         )
+        if helper_session_released:
+            turn, session_obj, campaign, player, players = _reload_pipeline_orm(orm_token)
+            players_by_id = {player_obj.player_id: player_obj for player_obj in players}
+        combat_session_released = False
+
+        def _before_combat_provider_call() -> None:
+            nonlocal combat_session_released
+            if before_helper_call:
+                before_helper_call()
+                combat_session_released = True
+
         post_combat_prepare = prepare_combat_from_dm_response(
             state=state_before_dm,
             session_obj=session_obj,
@@ -917,7 +1079,16 @@ def post_dm_pipeline(
             player_message=turn.player_input or '',
             dm_response=dm_response_text,
             workspace_id=campaign.workspace_id,
+            before_intent_provider_call=(
+                _before_combat_provider_call if before_helper_call else None
+            ),
+            before_creature_provider_call=(
+                _before_combat_provider_call if before_helper_call else None
+            ),
         )
+        if combat_session_released:
+            turn, session_obj, campaign, player, players = _reload_pipeline_orm(orm_token)
+            players_by_id = {player_obj.player_id: player_obj for player_obj in players}
         post_combat_changes = [
             change
             for change in (post_combat_prepare.get('changes') or [])
@@ -1061,15 +1232,31 @@ def post_dm_pipeline(
             if 'combat_turn_roster_advanced' not in notes:
                 notes.append('combat_turn_roster_advanced')
             post_extraction['notes'] = notes
+        finalized_encounter = finalize_combat_prepare(
+            session_obj=session_obj,
+            campaign=campaign,
+            prepare_result=post_combat_prepare,
+            applied_changes=applied_post,
+            final_state=final_state,
+        )
         if applied_post:
             persist_state_to_database(session_obj=session_obj, state=final_state, players_by_id=players_by_id)
         else:
             session_obj.state_snapshot = safe_json_dumps(final_state, {})
-        sync_combat_encounter_record(
-            session_obj=session_obj,
-            campaign=campaign,
-            combat=final_state.get('combat') if isinstance(final_state.get('combat'), dict) else {},
-        )
+        if finalized_encounter is None and any(
+            str(change.get('type') or '').startswith('combat.')
+            for change in applied_post
+            if isinstance(change, dict)
+        ):
+            sync_combat_encounter_record(
+                session_obj=session_obj,
+                campaign=campaign,
+                combat=(
+                    final_state.get('combat')
+                    if isinstance(final_state.get('combat'), dict)
+                    else {}
+                ),
+            )
 
     state_log = build_state_log(
         turn_id=turn.turn_id,

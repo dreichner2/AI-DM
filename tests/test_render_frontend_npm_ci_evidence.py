@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sys
 
+import pytest
+
 from scripts.render_frontend_npm_ci_evidence import build_evidence, main, render_markdown
 
 
@@ -62,6 +64,7 @@ def test_main_writes_markdown_and_json(tmp_path):
     assert payload['status'] == 'passed'
 
 
+@pytest.mark.frontend_toolchain
 def test_default_npm_command_records_exact_toolchain(tmp_path):
     frontend = _frontend_dir(tmp_path)
 

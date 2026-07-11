@@ -20,25 +20,39 @@ from aidm_server.creatures.repository import (
     record_combat_debug_event,
     save_bestiary_entry,
 )
-from aidm_server.creatures.resolver import resolve_creature_for_encounter, resolve_creatures_for_encounter
+from aidm_server.creatures.resolver import (
+    persist_creature_resolution_plan,
+    plan_creatures_for_encounter,
+    resolve_creature_for_encounter,
+)
 from aidm_server.creatures.schemas import normalize_creature_definition
 from aidm_server.creatures.variants import create_creature_variant
-from aidm_server.database import db
+from aidm_server.database import db, release_clean_scoped_session
 from aidm_server.errors import error_response
 from aidm_server.game_state.campaign_pack_encounters import (
     MAX_CAMPAIGN_PACK_ENEMIES_PER_GROUP,
     MAX_CAMPAIGN_PACK_ENEMY_PARTICIPANTS,
 )
 from aidm_server.game_state.models import state_snapshot_for_session, stable_change_id
-from aidm_server.models import Campaign, CombatDebugEvent, Player, Session, safe_json_loads
+from aidm_server.models import (
+    Campaign,
+    CombatDebugEvent,
+    CombatEncounter,
+    Player,
+    Session,
+    safe_json_loads,
+)
 from aidm_server.operator_audit import record_operator_action
+from aidm_server.provider_priority import foreground_provider_reservation
 from aidm_server.services.campaign_pack_progress import update_campaign_pack_progress
 from aidm_server.services.session_state_mutation import (
+    SessionStateBeforePersistContext,
     SessionStateMutationPlan,
     expected_state_revision_from_payload,
     mutate_session_state,
     state_conflict_response,
 )
+from aidm_server.turn_coordinator import session_turn_coordinator
 from aidm_server.validation import coerce_bool, coerce_int, parse_json_body
 from aidm_server.workspace_access import (
     current_workspace_id,
@@ -100,6 +114,60 @@ def _session_state(session_obj: Session) -> dict[str, Any]:
     campaign = session_obj.campaign
     players = _campaign_players(campaign)
     return state_snapshot_for_session(session_obj=session_obj, campaign=campaign, players=players)
+
+
+def _combat_start_context(session_id: int) -> tuple[Session, Campaign, list[Player], dict[str, Any]]:
+    """Reload every ORM input needed to prepare or apply a combat start."""
+
+    db.session.expire_all()
+    session_obj = db.session.get(Session, session_id)
+    if session_obj is None:
+        raise LookupError(f'Session {session_id} is no longer available.')
+    db.session.refresh(session_obj)
+    campaign = db.session.get(Campaign, session_obj.campaign_id)
+    if campaign is None:
+        raise LookupError(f'Campaign {session_obj.campaign_id} is no longer available.')
+    db.session.refresh(campaign)
+    players = _campaign_players(campaign)
+    state = state_snapshot_for_session(session_obj=session_obj, campaign=campaign, players=players)
+    return session_obj, campaign, players, state
+
+
+def _combat_start_context_signature(
+    session_obj: Session,
+    campaign: Campaign,
+    players: list[Player],
+    state: dict[str, Any],
+) -> tuple[Any, ...]:
+    """Identify non-revisioned campaign/player context used by provider plans."""
+
+    player_characters = state.get('playerCharacters') if isinstance(state.get('playerCharacters'), list) else []
+    return (
+        session_obj.session_id,
+        session_obj.campaign_id,
+        campaign.campaign_id,
+        campaign.workspace_id,
+        campaign.title,
+        campaign.location,
+        tuple(player.player_id for player in players),
+        json.dumps(player_characters, sort_keys=True, separators=(',', ':'), default=str),
+    )
+
+
+def _state_revision(state: dict[str, Any]) -> int:
+    return expected_state_revision_from_payload(state) or 0
+
+
+def _combat_start_context_conflict(*, expected_revision: int, actual_revision: int):
+    return error_response(
+        'state_conflict',
+        'Session context changed while combat was being prepared. Refresh and retry.',
+        409,
+        {
+            'expected_state_revision': expected_revision,
+            'actual_state_revision': actual_revision,
+        },
+    )
 
 
 def _refresh_campaign_pack_progress(session_obj: Session) -> dict[str, Any] | None:
@@ -531,7 +599,13 @@ def resolve_creature():
         if not campaign:
             return error_response('not_found', 'Campaign not found.', 404)
         workspace_id = campaign.workspace_id
-    result = resolve_creature_for_encounter(payload, workspace_id=workspace_id)
+    result = resolve_creature_for_encounter(
+        payload,
+        workspace_id=workspace_id,
+        before_provider_call=lambda: release_clean_scoped_session(
+            boundary='creature resolver provider'
+        ),
+    )
     db.session.commit()
     return jsonify(_creature_resolution_response(result))
 
@@ -541,7 +615,12 @@ def generate_creature():
     payload = parse_json_body(request)
     if payload is None:
         return error_response('validation_error', 'Expected JSON request body.', 400)
-    creature, model_name = generate_new_creature(payload)
+    creature, model_name = generate_new_creature(
+        payload,
+        before_provider_call=lambda: release_clean_scoped_session(
+            boundary='creature generation provider'
+        ),
+    )
     return jsonify({'creature': creature, 'generationSource': model_name, 'balance': creature.get('balance') or {}})
 
 
@@ -652,15 +731,68 @@ def start_session_combat(session_id: int):
     if forbidden:
         return forbidden
     payload = parse_json_body(request) or {}
+    release_clean_scoped_session(boundary='combat start coordinator')
 
-    def build_start_changes(locked_session: Session, state: dict[str, Any]) -> SessionStateMutationPlan:
-        campaign = locked_session.campaign
-        pack_request_payload = _campaign_pack_encounter_request(state, payload, campaign=campaign, session_id=session_id)
-        if pack_request_payload:
-            encounter_resolution = resolve_creatures_for_encounter(pack_request_payload, workspace_id=campaign.workspace_id)
-            encounter_resolution['campaignPackEncounter'] = pack_request_payload.get('campaignPackEncounter')
-        elif isinstance(payload.get('creature'), dict):
-            creature = normalize_creature_definition(payload['creature'], source=payload['creature'].get('source') or 'user_custom')
+    start_change_id: str | None = None
+
+    def record_start_debug(result):
+        applied_ids = {
+            str(change.get('id') or '').strip()
+            for change in result.applied_changes
+            if isinstance(change, dict)
+        }
+        if not start_change_id or start_change_id not in applied_ids:
+            return
+        encounter = (
+            CombatEncounter.query.filter_by(session_id=session_id)
+            .filter(CombatEncounter.status.in_(['starting', 'active']))
+            .order_by(CombatEncounter.updated_at.desc())
+            .first()
+        )
+        record_combat_debug_event(
+            session_id=session_id,
+            campaign_id=result.session_obj.campaign_id if result.session_obj else None,
+            combat_encounter_id=(
+                encounter.combat_encounter_id if encounter is not None else None
+            ),
+            event_type='api_combat_start',
+            payload={
+                'resolution': result.metadata.get('encounterResolution'),
+                'intentPlan': result.metadata.get('intentPlan'),
+                'stateRevision': result.state_revision,
+            },
+        )
+
+    with session_turn_coordinator.serialized(session_id):
+        try:
+            session_obj, campaign, players, state = _combat_start_context(session_id)
+        except LookupError:
+            return error_response('not_found', 'Session or campaign not found.', 404)
+
+        captured_revision = _state_revision(state)
+        requested_revision = expected_state_revision_from_payload(payload)
+        if requested_revision is not None and requested_revision != captured_revision:
+            result = mutate_session_state(
+                session_id,
+                build_changes=lambda _locked_session, _state: [],
+                source='api.combat.start',
+                expected_revision=requested_revision,
+            )
+            return state_conflict_response(result)
+
+        expected_context = _combat_start_context_signature(session_obj, campaign, players, state)
+        pack_request_payload = _campaign_pack_encounter_request(
+            state,
+            payload,
+            campaign=campaign,
+            session_id=session_id,
+        )
+        resolution_plan = None
+        if isinstance(payload.get('creature'), dict) and not pack_request_payload:
+            creature = normalize_creature_definition(
+                payload['creature'],
+                source=payload['creature'].get('source') or 'user_custom',
+            )
             enemy_count = max(1, int(payload.get('enemyCount') or payload.get('enemy_count') or 1))
             encounter_resolution = {
                 'groups': [
@@ -688,7 +820,7 @@ def start_session_combat(session_id: int):
                 'debug': {'manualCreature': creature['id'], 'totalEnemies': enemy_count},
             }
         else:
-            request_payload = {
+            request_payload = pack_request_payload or {
                 'campaignId': campaign.campaign_id,
                 'sessionId': session_id,
                 'regionId': payload.get('regionId') or (state.get('currentScene') or {}).get('locationId'),
@@ -704,8 +836,49 @@ def start_session_combat(session_id: int):
                 'enemyCount': payload.get('enemyCount') or payload.get('enemy_count') or 1,
                 'enemyGroups': payload.get('enemyGroups') or payload.get('enemy_groups') or [],
             }
-            encounter_resolution = resolve_creatures_for_encounter(request_payload, workspace_id=campaign.workspace_id)
-        participants = [player_combat_participant(actor) for actor in (state.get('playerCharacters') or []) if isinstance(actor, dict)]
+            resolution_plan = plan_creatures_for_encounter(
+                request_payload,
+                workspace_id=campaign.workspace_id,
+                before_provider_call=lambda: release_clean_scoped_session(
+                    boundary='combat creature provider'
+                ),
+            )
+            encounter_resolution = resolution_plan.result
+            if pack_request_payload:
+                encounter_resolution['campaignPackEncounter'] = pack_request_payload.get('campaignPackEncounter')
+
+        try:
+            reloaded_session, reloaded_campaign, reloaded_players, reloaded_state = _combat_start_context(session_id)
+        except LookupError:
+            return _combat_start_context_conflict(
+                expected_revision=captured_revision,
+                actual_revision=captured_revision,
+            )
+        actual_revision = _state_revision(reloaded_state)
+        if _combat_start_context_signature(
+            reloaded_session,
+            reloaded_campaign,
+            reloaded_players,
+            reloaded_state,
+        ) != expected_context:
+            return _combat_start_context_conflict(
+                expected_revision=captured_revision,
+                actual_revision=actual_revision,
+            )
+        if actual_revision != captured_revision:
+            result = mutate_session_state(
+                session_id,
+                build_changes=lambda _locked_session, _state: [],
+                source='api.combat.start',
+                expected_revision=captured_revision,
+            )
+            return state_conflict_response(result)
+
+        participants = [
+            player_combat_participant(actor)
+            for actor in (reloaded_state.get('playerCharacters') or [])
+            if isinstance(actor, dict)
+        ]
         participants.extend(_instantiate_groups_for_api(encounter_resolution))
         encounter_flags = _encounter_flag_summary(encounter_resolution)
         combat = {
@@ -713,53 +886,99 @@ def start_session_combat(session_id: int):
             'round': 1,
             'turnIndex': 0,
             'participants': participants,
-            'battlefield': payload.get('battlefield') if isinstance(payload.get('battlefield'), dict) else default_battlefield(state.get('currentScene')),
-            'encounterGoal': payload.get('encounterGoal') if isinstance(payload.get('encounterGoal'), dict) else encounter_resolution.get('encounterGoal'),
+            'battlefield': (
+                payload.get('battlefield')
+                if isinstance(payload.get('battlefield'), dict)
+                else default_battlefield(reloaded_state.get('currentScene'))
+            ),
+            'encounterGoal': (
+                payload.get('encounterGoal')
+                if isinstance(payload.get('encounterGoal'), dict)
+                else encounter_resolution.get('encounterGoal')
+            ),
             'initiative': [],
             'flags': encounter_flags,
         }
-        intent_plan = plan_enemy_intents(combat)
+        with foreground_provider_reservation() as activate_provider:
+            release_clean_scoped_session(boundary='combat intent provider')
+            activate_provider()
+            intent_plan = plan_enemy_intents(combat)
         combat = attach_intents_to_combat(combat, intent_plan)
-        change = {
-            'id': stable_change_id(
-                session_id,
-                'api.combat.start',
-                encounter_flags.get('resolverMethod'),
-                encounter_flags.get('enemyCount'),
-            ),
-            'type': 'combat.start',
-            'combat': combat,
-            'reason': 'Combat started from API.',
-            'visible': False,
-        }
-        return SessionStateMutationPlan(
-            changes=[change],
-            metadata={'encounterResolution': encounter_resolution, 'intentPlan': intent_plan},
+
+        try:
+            final_session, final_campaign, final_players, final_state = _combat_start_context(session_id)
+        except LookupError:
+            return _combat_start_context_conflict(
+                expected_revision=captured_revision,
+                actual_revision=captured_revision,
+            )
+        final_revision = _state_revision(final_state)
+        if _combat_start_context_signature(
+            final_session,
+            final_campaign,
+            final_players,
+            final_state,
+        ) != expected_context:
+            return _combat_start_context_conflict(
+                expected_revision=captured_revision,
+                actual_revision=final_revision,
+            )
+
+        start_change_id = stable_change_id(
+            session_id,
+            'api.combat.start',
+            encounter_flags.get('resolverMethod'),
+            encounter_flags.get('enemyCount'),
         )
 
-    def record_start_debug(result):
-        record_combat_debug_event(
-            session_id=session_id,
-            campaign_id=result.session_obj.campaign_id if result.session_obj else None,
-            event_type='api_combat_start',
-            payload={
-                'resolution': result.metadata.get('encounterResolution'),
-                'intentPlan': result.metadata.get('intentPlan'),
+        def build_start_changes(
+            _locked_session: Session,
+            _state: dict[str, Any],
+        ) -> SessionStateMutationPlan:
+            change = {
+                'id': start_change_id,
+                'type': 'combat.start',
+                'combat': combat,
+                'reason': 'Combat started from API.',
+                'visible': False,
+            }
+            return SessionStateMutationPlan(
+                changes=[change],
+                metadata={'encounterResolution': encounter_resolution, 'intentPlan': intent_plan},
+            )
+
+        def persist_accepted_resolution(
+            context: SessionStateBeforePersistContext,
+        ) -> None:
+            applied_ids = {
+                str(change.get('id') or '').strip()
+                for change in context.applied_changes
+                if isinstance(change, dict)
+            }
+            if (
+                resolution_plan is not None
+                and start_change_id in applied_ids
+            ):
+                persist_creature_resolution_plan(resolution_plan)
+
+        result = mutate_session_state(
+            session_id,
+            build_changes=build_start_changes,
+            source='api.combat.start',
+            expected_revision=captured_revision,
+            sync_combat=True,
+            before_persist=persist_accepted_resolution,
+            after_persist=record_start_debug,
+        )
+        if result.conflict:
+            return state_conflict_response(result)
+        return jsonify(
+            {
+                'combat': result.state.get('combat'),
+                'validation': result.validation,
                 'stateRevision': result.state_revision,
-            },
+            }
         )
-
-    result = mutate_session_state(
-        session_id,
-        build_changes=build_start_changes,
-        source='api.combat.start',
-        expected_revision=expected_state_revision_from_payload(payload),
-        sync_combat=True,
-        after_persist=record_start_debug,
-    )
-    if result.conflict:
-        return state_conflict_response(result)
-    return jsonify({'combat': result.state.get('combat'), 'validation': result.validation, 'stateRevision': result.state_revision})
 
 
 @creatures_bp.post('/sessions/<int:session_id>/combat/plan-enemy-intents')
@@ -772,7 +991,10 @@ def plan_session_enemy_intents(session_id: int):
         return forbidden
     state = _session_state(session_obj)
     combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
-    intent_plan = plan_enemy_intents(combat)
+    with foreground_provider_reservation() as activate_provider:
+        release_clean_scoped_session(boundary='combat intent provider')
+        activate_provider()
+        intent_plan = plan_enemy_intents(combat)
     combat_with_intents = attach_intents_to_combat(combat, intent_plan)
     return jsonify({'intentPlan': intent_plan, 'combat': combat_with_intents})
 

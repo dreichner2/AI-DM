@@ -81,6 +81,7 @@ PROVIDER_CATALOG: dict[str, dict] = {
         ],
         'capabilities': {
             'streaming': True,
+            'progressive_streaming': False,
             'openai_compatible': True,
             'thinking_control': True,
             'default_timeout_seconds': 60,
@@ -95,6 +96,7 @@ PROVIDER_CATALOG: dict[str, dict] = {
         'models': [{'id': 'moonshotai/kimi-k2.5', 'label': 'Kimi K2.5'}],
         'capabilities': {
             'streaming': True,
+            'progressive_streaming': False,
             'openai_compatible': True,
             'thinking_control': True,
             'default_timeout_seconds': 60,

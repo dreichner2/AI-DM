@@ -18,6 +18,12 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Supersede stale runs only for the same pull request. Push, schedule, and
+  # manual runs use their run ID so release evidence is never cancelled here.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   backend:
     runs-on: ubuntu-24.04
@@ -26,21 +32,17 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.14.6'
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-          cache-dependency-path: aidm_frontend/package-lock.json
-      - name: Install and verify npm 12.0.0
-        run: |
-          npm install --global npm@12.0.0
-          test "$(npm --version)" = "12.0.0"
+          cache: pip
+          cache-dependency-path: |
+            requirements.constraints.txt
+            requirements-dev.lock.txt
+            requirements.runtime.lock.txt
       - name: Install backend dependencies
         run: python -m pip install --require-hashes --constraint requirements.constraints.txt -r requirements-dev.lock.txt
       - name: Secret scan
         run: python scripts/scan_secrets.py
       - name: Python dependency audit
-        run: python -m pip_audit -r requirements.runtime.lock.txt
+        run: python -m pip_audit -r requirements.runtime.lock.txt --no-deps --disable-pip
       - name: Python lint
         run: python -m ruff check --select E9,F63,F7,F82 aidm_server tests scripts
       - name: Run backend tests
@@ -48,7 +50,7 @@ jobs:
           AIDM_ENV: test
           AIDM_AUTO_CREATE_SCHEMA: 'true'
           AIDM_TELEMETRY_ENABLED: 'false'
-        run: python -m pytest
+        run: python -m pytest -m "not frontend_toolchain" --durations=25 --durations-min=0.25
       - name: Check generated API types
         run: python scripts/generate_api_types.py --check
 
@@ -97,6 +99,11 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.14.6'
+          cache: pip
+          cache-dependency-path: |
+            requirements.constraints.txt
+            requirements-dev.lock.txt
+            requirements.runtime.lock.txt
       - name: Install backend runtime dependencies
         run: python -m pip install --require-hashes --constraint requirements.constraints.txt -r requirements-dev.lock.txt
       - name: Verify PostgreSQL server version
@@ -267,7 +274,7 @@ jobs:
           cleanup
           trap - EXIT
       - name: Exercise PostgreSQL concurrency primitives
-        run: python -m pytest -q tests/test_postgres_runtime.py
+        run: python -m pytest -q tests/test_postgres_runtime.py --durations=10 --durations-min=0.05
       - name: Exercise PostgreSQL auth and data-integrity smokes
         run: |
           python scripts/hosted_cookie_auth_smoke.py \
@@ -302,6 +309,11 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.14.6'
+          cache: pip
+          cache-dependency-path: |
+            requirements.constraints.txt
+            requirements-dev.lock.txt
+            requirements.runtime.lock.txt
       - name: Install and verify npm 12.0.0
         run: |
           npm install --global npm@12.0.0
@@ -313,6 +325,9 @@ jobs:
       - name: Install backend dependencies for browser smoke
         working-directory: .
         run: python -m pip install --require-hashes --constraint requirements.constraints.txt -r requirements-dev.lock.txt
+      - name: Test exact frontend toolchain evidence
+        working-directory: .
+        run: python -m pytest -q -m frontend_toolchain tests/test_render_frontend_npm_ci_evidence.py
       - name: Test frontend
         run: npm test
       - name: Build
@@ -349,6 +364,11 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.14.6'
+          cache: pip
+          cache-dependency-path: |
+            requirements.constraints.txt
+            requirements-dev.lock.txt
+            requirements.runtime.lock.txt
       - name: Install and verify npm 12.0.0
         run: |
           npm install --global npm@12.0.0

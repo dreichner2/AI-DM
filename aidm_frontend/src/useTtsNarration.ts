@@ -3,7 +3,16 @@ import { addCookieCsrfHeader, addNgrokBrowserWarningBypassHeader, addWorkspaceTo
 import { metadataTurnId, stripMarkdown } from './gameSelectors'
 import type { JsonRecord, StreamingTurn, TimelineEntry, TtsRuntimeConfig } from './types'
 
-export type TtsPlaybackStatus = 'off' | 'ready' | 'queued' | 'requesting' | 'speaking' | 'failed'
+export type TtsPlaybackStatus =
+  | 'checking'
+  | 'status-error'
+  | 'unavailable'
+  | 'off'
+  | 'ready'
+  | 'queued'
+  | 'requesting'
+  | 'speaking'
+  | 'failed'
 
 const TTS_AUDIO_MIME = 'audio/mpeg'
 const TTS_MIN_PARTIAL_FLUSH_CHARS = 60
@@ -45,6 +54,7 @@ type UseTtsNarrationOptions = {
   auth: string
   baseUrl: string
   ttsConfig: TtsRuntimeConfig | null
+  ttsConfigLoadFailed?: boolean
   selectedSessionId: number | null
   sendPending: boolean
   streamingTurn: StreamingTurn | null
@@ -414,13 +424,17 @@ export function useTtsNarration({
   auth,
   baseUrl,
   ttsConfig,
+  ttsConfigLoadFailed = false,
   selectedSessionId,
   sendPending,
   streamingTurn,
   speakableDmEntry,
   pushError,
 }: UseTtsNarrationOptions) {
-  const [ttsEnabled, setTtsEnabled] = useState(() => localStorage.getItem('aidm:ttsEnabled') === 'true')
+  const [ttsEnabledPreference, setTtsEnabled] = useState(
+    () => localStorage.getItem('aidm:ttsEnabled') === 'true',
+  )
+  const ttsEnabled = ttsConfig?.configured === true && ttsEnabledPreference
   const [ttsSpeaking, setTtsSpeaking] = useState(false)
   const [ttsQueueCount, setTtsQueueCount] = useState(0)
   const [ttsLatency, setTtsLatency] = useState<TtsLatencySnapshot | null>(null)
@@ -485,19 +499,31 @@ export function useTtsNarration({
     [rememberSpokenTts, scopedTtsKey],
   )
 
-  const effectiveTtsStatus: TtsPlaybackStatus = ttsEnabled ? ttsStatus : 'off'
+  const effectiveTtsStatus: TtsPlaybackStatus = ttsConfigLoadFailed
+    ? 'status-error'
+    : ttsConfig === null
+      ? 'checking'
+      : !ttsConfig.configured
+        ? 'unavailable'
+        : ttsEnabled ? ttsStatus : 'off'
   const ttsStatusLabel =
-    effectiveTtsStatus === 'off'
-      ? 'Off'
-      : effectiveTtsStatus === 'ready'
-        ? 'Ready'
-        : effectiveTtsStatus === 'queued'
-          ? `${ttsQueueCount} queued`
-          : effectiveTtsStatus === 'requesting'
-            ? 'Requesting'
-            : effectiveTtsStatus === 'speaking'
-              ? 'Speaking'
-              : 'Failed'
+    effectiveTtsStatus === 'status-error'
+      ? 'Status unavailable'
+      : effectiveTtsStatus === 'checking'
+        ? 'Checking'
+        : effectiveTtsStatus === 'unavailable'
+          ? 'Unavailable'
+          : effectiveTtsStatus === 'off'
+            ? 'Off'
+            : effectiveTtsStatus === 'ready'
+              ? 'Ready'
+              : effectiveTtsStatus === 'queued'
+                ? `${ttsQueueCount} queued`
+                : effectiveTtsStatus === 'requesting'
+                  ? 'Requesting'
+                  : effectiveTtsStatus === 'speaking'
+                    ? 'Speaking'
+                    : 'Failed'
   const ttsLatencyLabel = ttsLatency
     ? [
         ttsLatency.source === 'cache' ? 'cache' : 'network',
@@ -574,6 +600,27 @@ export function useTtsNarration({
     setTtsStatus(ttsEnabledRef.current ? 'ready' : 'off')
   }, [suppressTtsQueueForCurrentResponse])
 
+  useEffect(() => {
+    if (ttsConfig?.configured === true) {
+      if (!ttsEnabledPreference) return
+      const timeoutId = window.setTimeout(() => {
+        ttsEnabledRef.current = true
+        setTtsStatus((current) => current === 'off' ? 'ready' : current)
+      }, 0)
+      return () => window.clearTimeout(timeoutId)
+    }
+    if (!ttsEnabledPreference) return
+    const timeoutId = window.setTimeout(() => {
+      stopTtsAudio()
+      ttsEnabledRef.current = false
+      setTtsStatus('off')
+      if (ttsConfig?.configured === false) {
+        setTtsEnabled(false)
+      }
+    }, 0)
+    return () => window.clearTimeout(timeoutId)
+  }, [stopTtsAudio, ttsConfig?.configured, ttsEnabledPreference])
+
   const toggleTts = () => {
     if (ttsEnabled) {
       stopTtsAudio()
@@ -581,7 +628,15 @@ export function useTtsNarration({
       setTtsStatus('off')
       return
     }
-    if (ttsConfig && !ttsConfig.configured) {
+    if (ttsConfigLoadFailed) {
+      pushError('tts', 'Narration configuration could not be checked. Refresh to retry.')
+      return
+    }
+    if (ttsConfig === null) {
+      pushError('tts', 'Narration availability is still being checked.')
+      return
+    }
+    if (!ttsConfig.configured) {
       pushError('tts', 'Deepgram TTS is not configured on the backend.')
       return
     }
@@ -936,8 +991,8 @@ export function useTtsNarration({
   )
 
   useEffect(() => {
-    localStorage.setItem('aidm:ttsEnabled', String(ttsEnabled))
-  }, [ttsEnabled])
+    localStorage.setItem('aidm:ttsEnabled', String(ttsEnabledPreference))
+  }, [ttsEnabledPreference])
 
   useEffect(() => {
     const cache = ttsAudioCacheRef.current

@@ -150,7 +150,8 @@ def test_send_message_persists_turn_and_emits_metadata(app, socketio, app_runtim
     telemetry_events = []
 
     def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
-        yield 'The corridor hums with ancient magic.'
+        yield 'The corridor hums '
+        yield 'with ancient magic.'
 
     def fake_telemetry_event(event_name, payload=None, severity='info'):
         telemetry_events.append({'event_name': event_name, 'payload': payload or {}, 'severity': severity})
@@ -186,12 +187,17 @@ def test_send_message_persists_turn_and_emits_metadata(app, socketio, app_runtim
     received = client.get_received()
 
     start_payload = _event_payload(received, 'dm_response_start')
-    chunk_payload = _event_payload(received, 'dm_chunk')
+    chunk_payloads = [event['args'][0] for event in received if event['name'] == 'dm_chunk']
     end_payload = _event_payload(received, 'dm_response_end')
 
     assert start_payload is not None
-    assert chunk_payload is not None
+    assert len(chunk_payloads) >= 2
+    assert [payload['chunk'] for payload in chunk_payloads[:2]] == [
+        'The corridor hums ',
+        'with ancient magic.',
+    ]
     assert end_payload is not None
+    assert end_payload['text'] == ''.join(payload['chunk'] for payload in chunk_payloads)
 
     assert start_payload['turn_id'] > 0
     assert start_payload['requires_roll'] is True
@@ -242,6 +248,54 @@ def test_send_message_persists_turn_and_emits_metadata(app, socketio, app_runtim
         'projection_refresh',
     }:
         assert any(f'phase={phase}' in key for key in phase_keys)
+
+
+def test_production_turn_enqueues_and_wakes_canon_without_inline_processing(
+    app, socketio, app_runtime, monkeypatch
+):
+    socketio_module = app_runtime['modules']['socketio_events']
+    turn_engine_module = app_runtime['modules']['turn_engine']
+    wake_calls = []
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player, rules_hint
+        yield 'The quiet road continues beneath the evening sky.'
+
+    def unexpected_inline_process(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError('Production turns must not process canon inline.')
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    monkeypatch.setattr(turn_engine_module, 'process_canon_job', unexpected_inline_process)
+    monkeypatch.setattr(
+        turn_engine_module,
+        'wake_canon_job_worker',
+        lambda worker_app: wake_calls.append(worker_app) or True,
+    )
+    app.config.update(TESTING=False, AIDM_ENV='development')
+
+    ids = seed_world_campaign_player_session(app)
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    assert client.is_connected()
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I continue along the quiet road.',
+        },
+    )
+
+    assert wake_calls == [app]
+    with app.app_context():
+        turn = DmTurn.query.order_by(DmTurn.turn_id.desc()).first()
+        job = CanonJob.query.filter_by(turn_id=turn.turn_id).one()
+        assert job.status == 'queued'
+        assert safe_json_loads(turn.metadata_json, {})['canon_status'] == 'queued'
 
 
 def test_send_message_persists_turn_when_legacy_player_action_projection_fails(app, socketio, app_runtime, monkeypatch):

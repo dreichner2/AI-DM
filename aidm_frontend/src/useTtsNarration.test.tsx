@@ -119,6 +119,103 @@ describe('useTtsNarration streaming', () => {
 
   afterEach(() => cleanup())
 
+  it('reports configured narration as ready after the user enables it', () => {
+    installAudioMock()
+    const { result } = renderTtsHarness()
+
+    expect(result.current.ttsEnabled).toBe(true)
+    expect(result.current.effectiveTtsStatus).toBe('ready')
+    expect(result.current.ttsStatusLabel).toBe('Ready')
+  })
+
+  it('turns off persisted narration when configuration is unavailable', async () => {
+    localStorage.setItem('aidm:ttsEnabled', 'true')
+    installAudioMock()
+    const pushError = vi.fn()
+    const { result } = renderHook(() =>
+      useTtsNarration({
+        auth: 'token',
+        baseUrl: 'https://backend.example.test',
+        ttsConfig: {
+          provider: 'deepgram',
+          configured: false,
+          model: 'aura-2-draco-en',
+        },
+        selectedSessionId: 20,
+        sendPending: false,
+        streamingTurn: null,
+        speakableDmEntry: null,
+        pushError,
+      }),
+    )
+
+    expect(result.current.ttsEnabled).toBe(false)
+    expect(result.current.effectiveTtsStatus).toBe('unavailable')
+    expect(result.current.ttsStatusLabel).toBe('Unavailable')
+    await waitFor(() => expect(localStorage.getItem('aidm:ttsEnabled')).toBe('false'))
+    expect(pushError).not.toHaveBeenCalled()
+  })
+
+  it('keeps narration off while configuration is unknown and explains a user request', () => {
+    localStorage.setItem('aidm:ttsEnabled', 'true')
+    installAudioMock()
+    const pushError = vi.fn()
+    const { result } = renderHook(() =>
+      useTtsNarration({
+        auth: 'token',
+        baseUrl: 'https://backend.example.test',
+        ttsConfig: null,
+        selectedSessionId: 20,
+        sendPending: false,
+        streamingTurn: null,
+        speakableDmEntry: null,
+        pushError,
+      }),
+    )
+
+    expect(result.current.effectiveTtsStatus).toBe('checking')
+    expect(result.current.ttsStatusLabel).toBe('Checking')
+    expect(result.current.ttsEnabled).toBe(false)
+    act(() => result.current.toggleTts())
+    expect(result.current.ttsEnabled).toBe(false)
+    expect(localStorage.getItem('aidm:ttsEnabled')).toBe('true')
+    expect(pushError).toHaveBeenCalledWith('tts', 'Narration availability is still being checked.')
+  })
+
+  it('restores a persisted narration preference when configuration finishes loading', async () => {
+    localStorage.setItem('aidm:ttsEnabled', 'true')
+    installAudioMock()
+    const pushError = vi.fn()
+    const { result, rerender } = renderHook(
+      ({ configured }: { configured: boolean | null }) =>
+        useTtsNarration({
+          auth: 'token',
+          baseUrl: 'https://backend.example.test',
+          ttsConfig: configured === null
+            ? null
+            : {
+                provider: 'deepgram',
+                configured,
+                model: 'aura-2-draco-en',
+              },
+          selectedSessionId: 20,
+          sendPending: false,
+          streamingTurn: null,
+          speakableDmEntry: null,
+          pushError,
+        }),
+      { initialProps: { configured: null as boolean | null } },
+    )
+
+    expect(result.current.effectiveTtsStatus).toBe('checking')
+    rerender({ configured: true })
+
+    await waitFor(() => expect(result.current.ttsEnabled).toBe(true))
+    await waitFor(() => expect(result.current.effectiveTtsStatus).toBe('ready'))
+    expect(localStorage.getItem('aidm:ttsEnabled')).toBe('true')
+    expect(pushError).not.toHaveBeenCalled()
+  })
+
   it('requests a complete streamed sentence before the response ends', async () => {
     installAudioMock()
     const { stream } = renderTtsHarness()

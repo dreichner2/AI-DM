@@ -12,6 +12,8 @@ import pytest
 from aidm_server.contracts import ProviderRequest
 from aidm_server import codex_runtime
 from aidm_server.llm import (
+    DISPLAY_STREAM_CHUNK_CHARS,
+    MAX_BUFFERED_STREAM_PACING_SECONDS,
     DeepSeekChatProvider,
     EmergencyFallbackChunk,
     GeminiProvider,
@@ -194,6 +196,7 @@ def test_provider_registry_defines_defaults_and_capabilities():
     assert deepseek_capabilities['openai_compatible'] is True
     assert deepseek_capabilities['thinking_control'] is True
     assert nvidia_capabilities['thinking_control'] is True
+    assert nvidia_capabilities['progressive_streaming'] is False
     assert codex_capabilities['streaming'] is True
     assert codex_capabilities['progressive_streaming'] is False
     assert codex_capabilities['isolated_runtime'] is True
@@ -303,10 +306,16 @@ def test_query_gpt_stream_records_telemetry_on_provider_failure(monkeypatch, cap
         chunks = list(query_gpt_stream('Summarize the session.', system_message='You summarize sessions.'))
 
     assert chunks == ['Session summary is temporarily unavailable due to AI provider unavailability.']
-    assert 'Provider failure in query_gpt_stream: stream transport failed' in caplog.text
+    assert 'Provider failure in query_gpt_stream' in caplog.text
+    assert 'error_type=RuntimeError' in caplog.text
+    assert 'stream transport failed' not in caplog.text
     assert {
         'event_name': 'llm.query_gpt_stream.failed',
-        'payload': {'error': 'stream transport failed'},
+        'payload': {
+            'provider': 'FailingStreamProvider',
+            'model': None,
+            'error_type': 'RuntimeError',
+        },
         'severity': 'warning',
     } in telemetry_events
 
@@ -1442,7 +1451,7 @@ def test_query_dm_function_stream_uses_generate_chunking_for_nvidia(monkeypatch)
     assert len(chunks) >= 1
 
 
-def test_query_dm_function_stream_uses_codex_provider_stream(monkeypatch, tmp_path):
+def test_query_dm_function_stream_chunks_completed_codex_response(monkeypatch, tmp_path):
     provider = CodexCliProvider(
         model_name='gpt-5.5',
         executable='codex',
@@ -1450,22 +1459,99 @@ def test_query_dm_function_stream_uses_codex_provider_stream(monkeypatch, tmp_pa
         reasoning_effort='medium',
         prompt_role='dm',
     )
+    completed_text = (
+        'The bronze doors grind open beneath the mountain. '
+        'Cold blue light spills across the floor, revealing a stairway that descends into mist. '
+        'Somewhere below, a bell answers your arrival.'
+    )
 
-    def fake_stream(_request):
-        yield 'First '
-        yield 'streamed '
-        yield 'sentence.'
-
-    def fail_generate(_request):
-        raise AssertionError('provider.generate should not be used for Codex query_dm_function_stream')
-
-    monkeypatch.setattr(provider, 'stream', fake_stream)
-    monkeypatch.setattr(provider, 'generate', fail_generate)
+    monkeypatch.setenv('AIDM_ENV', 'test')
+    monkeypatch.delenv('AIDM_BUFFERED_STREAM_CHUNK_DELAY_MS', raising=False)
+    monkeypatch.setattr(provider, '_invoke', lambda _prompt: completed_text)
     monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
+
+    def unexpected_sleep(_delay):
+        raise AssertionError('test environments should not pace buffered chunks by default')
+
+    monkeypatch.setattr('aidm_server.llm.time.sleep', unexpected_sleep)
 
     chunks = list(query_dm_function_stream('hello', '{"campaign":"test"}'))
 
-    assert chunks == ['First ', 'streamed ', 'sentence.']
+    assert len(chunks) >= 2
+    assert ''.join(chunks) == completed_text
+    assert all(0 < len(chunk) <= DISPLAY_STREAM_CHUNK_CHARS for chunk in chunks)
+
+
+def test_query_dm_function_stream_preserves_true_provider_chunks(monkeypatch):
+    provider_chunks = [
+        'A provider-owned chunk that is intentionally longer than the buffered display chunk size. ' * 2,
+        'Final provider chunk.',
+    ]
+
+    class ProgressiveProvider:
+        provider_name = 'gemini'
+        model_name = 'models/gemini-test'
+
+        def stream(self, _request):
+            yield from provider_chunks
+
+        def generate(self, _request):
+            raise AssertionError('progressive providers must not use completion chunking')
+
+    monkeypatch.setattr('aidm_server.llm.get_provider', lambda: ProgressiveProvider())
+
+    chunks = list(query_dm_function_stream('hello', '{"campaign":"test"}'))
+
+    assert chunks == provider_chunks
+
+
+def test_buffered_stream_delay_override_paces_chunks(monkeypatch, tmp_path):
+    provider = CodexCliProvider(
+        model_name='gpt-5.5',
+        executable='codex',
+        workdir=str(tmp_path),
+        prompt_role='dm',
+    )
+    completed_text = ' '.join(f'word-{index:02d}' for index in range(60))
+    sleeps = []
+
+    monkeypatch.setenv('AIDM_ENV', 'production')
+    monkeypatch.setenv('AIDM_BUFFERED_STREAM_CHUNK_DELAY_MS', '7.5')
+    monkeypatch.setattr(provider, '_invoke', lambda _prompt: completed_text)
+    monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
+    monkeypatch.setattr('aidm_server.llm.time.sleep', sleeps.append)
+
+    chunks = list(query_dm_function_stream('hello', '{"campaign":"test"}'))
+
+    assert len(chunks) >= 2
+    assert ''.join(chunks) == completed_text
+    assert sleeps == [0.0075] * (len(chunks) - 1)
+
+
+def test_codex_completion_failure_preserves_emergency_fallback_metadata(monkeypatch, tmp_path):
+    provider = CodexCliProvider(
+        model_name='gpt-5.5',
+        executable='codex',
+        workdir=str(tmp_path),
+        prompt_role='dm',
+    )
+
+    def fail_invoke(_prompt):
+        raise RuntimeError('private upstream token=must-not-leak')
+
+    monkeypatch.setenv('AIDM_ENV', 'test')
+    monkeypatch.setattr(provider, '_invoke', fail_invoke)
+    monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
+
+    chunks = list(query_dm_function_stream('open the gate', '{"campaign":"test"}'))
+
+    assert len(chunks) == 1
+    fallback = chunks[0]
+    assert isinstance(fallback, EmergencyFallbackChunk)
+    assert fallback.failed_provider == 'codex_cli'
+    assert fallback.failed_model == 'gpt-5.5'
+    assert fallback.error_type == 'RuntimeError'
+    assert 'must-not-leak' not in fallback.public_message
 
 
 def test_query_dm_function_stream_uses_real_streaming_for_deepseek(monkeypatch):
@@ -1516,7 +1602,10 @@ def test_query_dm_function_stream_falls_back_to_completion_for_deepseek_stream_f
     assert ''.join(chunks) == 'Completion fallback sentence. Another fallback sentence.'
 
 
-def test_query_dm_function_stream_marks_provider_exception_fallback_and_redacts_details(monkeypatch):
+def test_query_dm_function_stream_marks_provider_exception_fallback_and_redacts_details(
+    monkeypatch,
+    caplog,
+):
     class FailingProvider:
         provider_name = 'gemini'
         model_name = 'models/gemini-test'
@@ -1525,9 +1614,15 @@ def test_query_dm_function_stream_marks_provider_exception_fallback_and_redacts_
             raise RuntimeError('upstream body included secret-token-123 at https://private.example.test')
             yield  # pragma: no cover
 
+    telemetry_events = []
     monkeypatch.setattr('aidm_server.llm.get_provider', lambda: FailingProvider())
+    monkeypatch.setattr(
+        'aidm_server.llm.telemetry_event',
+        lambda name, **kwargs: telemetry_events.append({'name': name, **kwargs}),
+    )
 
-    chunks = list(query_dm_function_stream('open the gate', '{"campaign":"test"}'))
+    with caplog.at_level(logging.WARNING, logger='aidm_server.llm'):
+        chunks = list(query_dm_function_stream('open the gate', '{"campaign":"test"}'))
 
     assert len(chunks) == 1
     fallback = chunks[0]
@@ -1540,6 +1635,35 @@ def test_query_dm_function_stream_marks_provider_exception_fallback_and_redacts_
     assert fallback.public_message == 'The configured DM provider failed; continuity-safe narration was used.'
     assert 'secret-token-123' not in fallback.public_message
     assert 'private.example.test' not in fallback.public_message
+    recorded_diagnostics = caplog.text + json.dumps(telemetry_events)
+    assert 'secret-token-123' not in recorded_diagnostics
+    assert 'private.example.test' not in recorded_diagnostics
+    assert telemetry_events[-1]['payload']['error_type'] == 'RuntimeError'
+
+
+def test_buffered_stream_pacing_has_a_total_latency_cap(monkeypatch):
+    class LongCompletionProvider:
+        provider_name = 'codex_cli'
+        model_name = 'gpt-5.6-sol-medium'
+
+        def generate(self, _request):
+            return ProviderResponse(
+                text=' '.join(f'word-{index:05d}' for index in range(2000)),
+                provider=self.provider_name,
+                model=self.model_name,
+            )
+
+    sleeps = []
+    monkeypatch.setenv('AIDM_ENV', 'production')
+    monkeypatch.setenv('AIDM_BUFFERED_STREAM_CHUNK_DELAY_MS', '100')
+    monkeypatch.setattr('aidm_server.llm.get_provider', lambda: LongCompletionProvider())
+    monkeypatch.setattr('aidm_server.llm.time.sleep', sleeps.append)
+
+    chunks = list(query_dm_function_stream('hello', '{"campaign":"test"}'))
+
+    assert len(chunks) > len(sleeps) + 1
+    assert sum(sleeps) <= MAX_BUFFERED_STREAM_PACING_SECONDS
+    assert ''.join(chunks).startswith('word-00000')
 
 
 def test_query_dm_function_stream_marks_whitespace_only_stream_as_emergency_fallback(monkeypatch):
@@ -1571,7 +1695,8 @@ def test_intentionally_configured_deterministic_provider_is_not_emergency_fallba
 
     chunks = list(query_dm_function_stream('open the gate', '{"campaign":"test"}'))
 
-    assert chunks
+    assert len(chunks) >= 2
+    assert all(0 < len(chunk) <= DISPLAY_STREAM_CHUNK_CHARS for chunk in chunks)
     assert not any(isinstance(chunk, EmergencyFallbackChunk) for chunk in chunks)
     assert 'scene advances' in ''.join(chunks).lower()
 

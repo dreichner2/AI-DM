@@ -10,7 +10,8 @@ from flask import Blueprint, Response, current_app, jsonify, request, stream_wit
 from sqlalchemy import func
 
 from aidm_server.capabilities import CAPABILITY_DESCRIPTIONS, capability_forbidden_response, current_actor_capabilities
-from aidm_server.database import db
+from aidm_server.canon_jobs import canon_job_queue_snapshot
+from aidm_server.database import db, release_clean_scoped_session
 from aidm_server.errors import error_response
 from aidm_server.http_client import post as http_post
 from aidm_server.http_client import timeout_from_config
@@ -179,6 +180,13 @@ def metrics_snapshot():
     client = get_telemetry()
     snapshot = client.snapshot() if client else {'enabled': False, 'counters': {}, 'timings': {}}
     snapshot['beta'] = _beta_summary()
+    canon_queue = canon_job_queue_snapshot()
+    snapshot['canon_queue'] = {
+        'queued_count': canon_queue.queued_count,
+        'running_count': canon_queue.running_count,
+        'failed_count': canon_queue.failed_count,
+        'oldest_queued_age_seconds': canon_queue.oldest_queued_age_seconds,
+    }
     return jsonify(snapshot)
 
 
@@ -189,6 +197,15 @@ def metrics_prometheus():
     snapshot = client.snapshot() if client else {'enabled': False, 'counters': {}, 'timings': {}}
     beta_summary = _beta_summary()
     beta_gauges = {f'beta.{key}': value for key, value in beta_summary.items() if value is not None}
+    canon_queue = canon_job_queue_snapshot()
+    beta_gauges.update(
+        {
+            'canon_job.queue_depth': canon_queue.queued_count,
+            'canon_job.running': canon_queue.running_count,
+            'canon_job.failed': canon_queue.failed_count,
+            'canon_job.oldest_queued_age_seconds': canon_queue.oldest_queued_age_seconds,
+        }
+    )
     return Response(
         prometheus_text_from_snapshot(snapshot, extra_gauges=beta_gauges),
         content_type='text/plain; version=0.0.4; charset=utf-8',
@@ -441,6 +458,9 @@ def speak_text():
     chunks = _chunk_text_for_tts(text)
     telemetry_metric('system.tts_speak.chunks_total', len(chunks))
 
+    # Authentication and rate limiting may have opened a read transaction.
+    # Do not retain its database connection while Deepgram streams audio.
+    release_clean_scoped_session(boundary='TTS provider')
     tts_request_started = time.perf_counter()
     try:
         first_upstream = _deepgram_tts_request(api_key, model, chunks[0], stream=True)

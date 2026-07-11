@@ -348,18 +348,55 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
   await expect(page.locator('.segment-list').getByText('Smoke Gate')).toBeVisible({ timeout: 15_000 })
   await expect(page.locator('.map-meta-column').getByText(/Smoke Gate/)).toBeVisible()
 
-  const ttsOnButton = page.getByRole('button', { name: 'Turn TTS on' })
-  if (await ttsOnButton.isVisible()) {
-    await ttsOnButton.click()
-    await expect(page.locator('.rail-error-history li p')).toContainText('Deepgram TTS is not configured')
-  }
+  const unavailableTtsControl = page.getByRole('button', {
+    name: 'Narration unavailable; Deepgram is not configured',
+  })
+  await expect(unavailableTtsControl).toBeVisible()
+  await expect(unavailableTtsControl).toHaveAttribute('data-tts-configuration', 'unavailable')
+  await expect(unavailableTtsControl).toHaveAttribute(
+    'title',
+    'Unavailable: Deepgram narration is unavailable because the backend is not configured',
+  )
 
   const actionInput = page.getByLabel(/Your Action/i)
   await actionInput.fill('I inspect the smoke-lit archway.')
   await expect(actionInput).toHaveValue('I inspect the smoke-lit archway.')
   const sendButton = page.locator('.send-button')
   await expect(sendButton).toBeEnabled()
+  await page.evaluate(() => {
+    window.aidmStreamingSmokeProbe?.observer?.disconnect()
+    const snapshots = []
+    const captureStreamingResponse = () => {
+      const currentCard = document.querySelector('.turn-row.current .dm-response-card')
+      const status = currentCard?.querySelector('.turn-speaker span')?.textContent?.trim() || ''
+      const response = currentCard?.querySelector('.response-copy')?.textContent?.trim() || ''
+      if (status !== 'Streaming' || !response || response === '...' || snapshots.includes(response)) return
+      snapshots.push(response)
+    }
+    const observer = new MutationObserver(captureStreamingResponse)
+    observer.observe(document.body, { childList: true, characterData: true, subtree: true })
+    window.aidmStreamingSmokeProbe = { observer, snapshots }
+    captureStreamingResponse()
+  })
   await sendButton.click()
+  await page.waitForFunction(
+    () => (window.aidmStreamingSmokeProbe?.snapshots.length || 0) >= 2,
+    undefined,
+    { timeout: 15_000 },
+  )
+  const streamingSnapshots = await page.evaluate(() => {
+    const snapshots = [...(window.aidmStreamingSmokeProbe?.snapshots || [])]
+    window.aidmStreamingSmokeProbe?.observer?.disconnect()
+    return snapshots
+  })
+  if (
+    streamingSnapshots.length < 2
+    || streamingSnapshots.some((snapshot) => !snapshot.trim())
+    || new Set(streamingSnapshots).size < 2
+  ) {
+    throw new Error('Expected at least two distinct nonempty DM response snapshots while Streaming')
+  }
+  log(`observed ${streamingSnapshots.length} distinct nonempty DM response snapshots while Streaming`)
   const dmEntry = await waitForSessionLog(backendUrl, selectedIds.sessionId, (entries) =>
     entries.find(
       (entry) =>
@@ -494,6 +531,9 @@ async function main() {
         AIDM_LLM_PROVIDER: 'fallback',
         AIDM_LLM_MODEL: 'deterministic-v1',
         AIDM_LLM_FALLBACK_MODELS: '',
+        AIDM_BUFFERED_STREAM_CHUNK_DELAY_MS: '50',
+        AIDM_DEEPGRAM_API_KEY: '',
+        DEEPGRAM_API_KEY: '',
         AIDM_AUTH_REQUIRED: 'false',
         AIDM_TELEMETRY_ENABLED: 'false',
         AIDM_SECURITY_HEADERS_ENABLED: 'true',
@@ -533,7 +573,7 @@ async function main() {
 
   await stopAllManaged()
   cleanupTempDir()
-  log('passed: create campaign -> create player -> start session -> manage map/segments -> toggle TTS unavailable state -> send action -> receive DM response -> delete session -> import session -> delete imported session')
+  log('passed: create campaign -> create player -> start session -> manage map/segments -> verify control-local TTS unavailable state -> observe incremental DM streaming -> receive final DM response -> delete session -> import session -> delete imported session')
 }
 
 withTimeout(main(), SMOKE_TOTAL_TIMEOUT_MS, 'Browser smoke')

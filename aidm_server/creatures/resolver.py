@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
+from dataclasses import dataclass, field
 import re
 from typing import Any
 
@@ -9,6 +11,7 @@ from aidm_server.creatures.generator import generate_new_creature
 from aidm_server.creatures.repository import list_bestiary_entries, save_bestiary_entry, should_save_generated_creature
 from aidm_server.creatures.schemas import normalize_creature_definition
 from aidm_server.creatures.variants import create_creature_variant
+from aidm_server.database import db
 from aidm_server.game_state.models import normalize_item_name, stable_slug
 from aidm_server.models import Campaign, Session
 
@@ -30,6 +33,38 @@ SCOPED_BESTIARY_MATCH_THRESHOLD = 0.72
 CORE_BESTIARY_MATCH_THRESHOLD = 0.6
 MAX_ENCOUNTER_GROUPS = 8
 MAX_ENCOUNTER_ENEMIES = 24
+
+
+@dataclass
+class _CreatureProviderBoundary:
+    before_provider_call: Callable[[], None] | None = None
+    after_provider_call: Callable[[], None] | None = None
+    crossed: bool = False
+
+    def before_provider(self) -> None:
+        if self.before_provider_call:
+            self.before_provider_call()
+        self.crossed = True
+
+    def finish(self) -> None:
+        if not self.crossed:
+            return
+        if self.after_provider_call:
+            self.after_provider_call()
+        self.crossed = False
+
+
+@dataclass
+class CreatureResolutionPlan:
+    """A resolved encounter plus bestiary writes awaiting caller persistence."""
+
+    result: dict[str, Any]
+    pending_saves: tuple[dict[str, Any], ...]
+    _persisted: bool = field(default=False, init=False, repr=False)
+
+    @property
+    def persisted(self) -> bool:
+        return self._persisted
 
 
 def _text(value: Any) -> str:
@@ -189,10 +224,49 @@ def _result(creature: dict[str, Any], *, source: str, method: str, score: float 
     }
 
 
-def resolve_creature_for_encounter(
+def _queue_bestiary_save(pending_saves: list[dict[str, Any]], **save_kwargs: Any) -> None:
+    pending_saves.append(save_kwargs)
+
+
+def _revalidate_bestiary_save_targets(pending_saves: list[dict[str, Any]]) -> None:
+    campaign_keys: set[tuple[int, str]] = set()
+    session_keys: set[tuple[int, int]] = set()
+    for save_kwargs in pending_saves:
+        campaign_id = save_kwargs.get('campaign_id')
+        workspace_id = str(save_kwargs.get('workspace_id') or '')
+        if campaign_id is not None:
+            campaign_keys.add((int(campaign_id), workspace_id))
+        session_id = save_kwargs.get('session_id')
+        if session_id is not None and campaign_id is not None:
+            session_keys.add((int(session_id), int(campaign_id)))
+
+    for campaign_id, workspace_id in campaign_keys:
+        campaign = db.session.get(Campaign, campaign_id)
+        if campaign is None or campaign.workspace_id != workspace_id:
+            raise LookupError(f'Campaign {campaign_id} is no longer available in workspace {workspace_id}.')
+
+    for session_id, campaign_id in session_keys:
+        session_obj = db.session.get(Session, session_id)
+        if session_obj is None or session_obj.campaign_id != campaign_id:
+            raise LookupError(f'Session {session_id} is no longer available for campaign {campaign_id}.')
+
+
+def _persist_pending_bestiary_saves(pending_saves: list[dict[str, Any]]) -> None:
+    if not pending_saves:
+        return
+    # Validate every target before the first flush so a stale later target
+    # cannot leave a partially materialized bestiary batch in the transaction.
+    _revalidate_bestiary_save_targets(pending_saves)
+    for save_kwargs in pending_saves:
+        save_bestiary_entry(**save_kwargs)
+
+
+def _resolve_creature_for_encounter(
     request_payload: dict[str, Any],
     *,
-    workspace_id: str = 'owner',
+    workspace_id: str,
+    pending_saves: list[dict[str, Any]],
+    provider_boundary: _CreatureProviderBoundary,
 ) -> dict[str, Any]:
     request = normalize_creature_request(request_payload)
     campaign_id = int(request['campaignId']) if request.get('campaignId') else None
@@ -252,7 +326,8 @@ def resolve_creature_for_encounter(
                 'encounter_purpose': request.get('encounterPurpose'),
             },
         ):
-            save_bestiary_entry(
+            _queue_bestiary_save(
+                pending_saves,
                 workspace_id=workspace_id,
                 campaign_id=campaign_id,
                 session_id=session_id,
@@ -286,7 +361,10 @@ def resolve_creature_for_encounter(
             'existingBestiaryNames': existing_names,
             'creatureConcept': request.get('descriptionHint') or ' '.join(request.get('themeTags') or []) or 'appropriate encounter creature',
         }
-        generated, model_name = generate_new_creature(generation_input)
+        generation_kwargs: dict[str, Any] = {}
+        if provider_boundary.before_provider_call:
+            generation_kwargs['before_provider_call'] = provider_boundary.before_provider
+        generated, model_name = generate_new_creature(generation_input, **generation_kwargs)
         saved = False
         if request.get('saveGenerated') and campaign_id and should_save_generated_creature(
             generated,
@@ -295,7 +373,8 @@ def resolve_creature_for_encounter(
                 'encounter_purpose': request.get('encounterPurpose'),
             },
         ):
-            save_bestiary_entry(
+            _queue_bestiary_save(
+                pending_saves,
                 workspace_id=workspace_id,
                 campaign_id=campaign_id,
                 session_id=session_id,
@@ -330,6 +409,39 @@ def resolve_creature_for_encounter(
         notes=['Generation disabled; resolver fell back to closest core creature.'],
         debug=debug,
     )
+
+
+def resolve_creature_for_encounter(
+    request_payload: dict[str, Any],
+    *,
+    workspace_id: str = 'owner',
+    before_provider_call: Callable[[], None] | None = None,
+    after_provider_call: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Resolve one creature and persist generated entries after provider work.
+
+    ``before_provider_call`` is the caller-owned transaction boundary. It must
+    leave the scoped session clean and released. ``after_provider_call`` runs
+    once after provider work and before target revalidation/persistence, which
+    lets ORM-owning callers reload their models by primary key.
+    """
+
+    pending_saves: list[dict[str, Any]] = []
+    provider_boundary = _CreatureProviderBoundary(
+        before_provider_call=before_provider_call,
+        after_provider_call=after_provider_call,
+    )
+    try:
+        result = _resolve_creature_for_encounter(
+            request_payload,
+            workspace_id=workspace_id,
+            pending_saves=pending_saves,
+            provider_boundary=provider_boundary,
+        )
+    finally:
+        provider_boundary.finish()
+    _persist_pending_bestiary_saves(pending_saves)
+    return result
 
 
 def _encounter_group_payloads(request_payload: dict[str, Any], request: dict[str, Any]) -> list[dict[str, Any]]:
@@ -885,10 +997,12 @@ def _bound_generated_npc_groups(
     return groups
 
 
-def resolve_creatures_for_encounter(
+def _resolve_creatures_for_encounter(
     request_payload: dict[str, Any],
     *,
-    workspace_id: str = 'owner',
+    workspace_id: str,
+    pending_saves: list[dict[str, Any]],
+    provider_boundary: _CreatureProviderBoundary,
 ) -> dict[str, Any]:
     request = normalize_creature_request(request_payload)
     raw_groups = _encounter_group_payloads(request_payload if isinstance(request_payload, dict) else {}, request)
@@ -913,7 +1027,12 @@ def resolve_creatures_for_encounter(
                 debug={'request': group_request, 'rankings': {'encounter': [{'id': explicit_creature['id'], 'score': 1.0}]}},
             )
         else:
-            resolution = resolve_creature_for_encounter(group_request, workspace_id=workspace_id)
+            resolution = _resolve_creature_for_encounter(
+                group_request,
+                workspace_id=workspace_id,
+                pending_saves=pending_saves,
+                provider_boundary=provider_boundary,
+            )
         group = _group_result_from_resolution(
             resolution=resolution,
             raw_group=raw_group,
@@ -926,7 +1045,12 @@ def resolve_creatures_for_encounter(
         groups.append(group)
 
     if not groups:
-        resolution = resolve_creature_for_encounter(request, workspace_id=workspace_id)
+        resolution = _resolve_creature_for_encounter(
+            request,
+            workspace_id=workspace_id,
+            pending_saves=pending_saves,
+            provider_boundary=provider_boundary,
+        )
         groups.append(
             _group_result_from_resolution(
                 resolution=resolution,
@@ -940,7 +1064,7 @@ def resolve_creatures_for_encounter(
     methods = sorted({str(group.get('resolutionMethod') or '') for group in groups if group.get('resolutionMethod')})
     sources = sorted({str(group.get('source') or '') for group in groups if group.get('source')})
     purpose = request.get('encounterPurpose') or 'custom'
-    return {
+    result = {
         'groups': groups,
         'totalEnemies': total_enemies,
         'resolutionMethod': 'encounter_composed' if len(groups) > 1 or total_enemies > 1 else groups[0].get('resolutionMethod'),
@@ -985,6 +1109,70 @@ def resolve_creatures_for_encounter(
             ],
         },
     }
+    return result
+
+
+def plan_creatures_for_encounter(
+    request_payload: dict[str, Any],
+    *,
+    workspace_id: str = 'owner',
+    before_provider_call: Callable[[], None] | None = None,
+    after_provider_call: Callable[[], None] | None = None,
+) -> CreatureResolutionPlan:
+    """Resolve an encounter while deferring every generated bestiary write.
+
+    The before callback establishes a clean provider boundary. The after
+    callback runs once after all provider calls and before target revalidation,
+    allowing ORM-owning callers to reload their models before the plan returns.
+    """
+
+    pending_saves: list[dict[str, Any]] = []
+    provider_boundary = _CreatureProviderBoundary(
+        before_provider_call=before_provider_call,
+        after_provider_call=after_provider_call,
+    )
+    try:
+        result = _resolve_creatures_for_encounter(
+            request_payload,
+            workspace_id=workspace_id,
+            pending_saves=pending_saves,
+            provider_boundary=provider_boundary,
+        )
+    finally:
+        provider_boundary.finish()
+    # Revalidate once immediately after provider work so stale generation
+    # targets never enter the caller's encounter-application phase. The
+    # explicit finalizer repeats this check to cover any later provider wait.
+    _revalidate_bestiary_save_targets(pending_saves)
+    return CreatureResolutionPlan(result=result, pending_saves=tuple(pending_saves))
+
+
+def persist_creature_resolution_plan(plan: CreatureResolutionPlan) -> dict[str, Any]:
+    """Flush a planned bestiary batch into the caller's current transaction."""
+
+    if plan.persisted:
+        return plan.result
+    _persist_pending_bestiary_saves(list(plan.pending_saves))
+    plan._persisted = True
+    return plan.result
+
+
+def resolve_creatures_for_encounter(
+    request_payload: dict[str, Any],
+    *,
+    workspace_id: str = 'owner',
+    before_provider_call: Callable[[], None] | None = None,
+    after_provider_call: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Compatibility wrapper that plans and immediately persists an encounter."""
+
+    plan = plan_creatures_for_encounter(
+        request_payload,
+        workspace_id=workspace_id,
+        before_provider_call=before_provider_call,
+        after_provider_call=after_provider_call,
+    )
+    return persist_creature_resolution_plan(plan)
 
 
 def default_request_from_session(

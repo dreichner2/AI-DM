@@ -14,6 +14,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from aidm_server.auth import (
     DEFAULT_WORKSPACE_ID,
     account_requires_password_setup,
+    account_workspace_membership,
     claim_legacy_players_for_account,
     ensure_account_workspace_membership,
     is_global_operator_token,
@@ -64,6 +65,10 @@ logger = logging.getLogger(__name__)
 
 
 FRONTEND_RESERVED_PREFIXES = ('api/', 'socket.io/', 'admin/')
+FRONTEND_IMMUTABLE_PREFIX = 'assets/'
+FRONTEND_IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, immutable'
+FRONTEND_STATIC_CACHE_CONTROL = 'public, max-age=86400, stale-while-revalidate=604800'
+FRONTEND_SHELL_CACHE_CONTROL = 'no-cache, max-age=0, must-revalidate'
 UNSAFE_HTTP_METHODS = {'POST', 'PUT', 'PATCH', 'DELETE'}
 
 
@@ -85,6 +90,23 @@ def frontend_dist_dir(configured_path: str) -> Path:
     return default_frontend_dist_dir()
 
 
+def send_frontend_file(
+    dist_dir: Path,
+    frontend_path: str,
+    *,
+    spa_shell: bool = False,
+):
+    response = send_from_directory(dist_dir, frontend_path)
+    normalized_path = frontend_path.lstrip('/')
+    if spa_shell or normalized_path == 'index.html':
+        response.headers['Cache-Control'] = FRONTEND_SHELL_CACHE_CONTROL
+    elif normalized_path.startswith(FRONTEND_IMMUTABLE_PREFIX):
+        response.headers['Cache-Control'] = FRONTEND_IMMUTABLE_CACHE_CONTROL
+    else:
+        response.headers['Cache-Control'] = FRONTEND_STATIC_CACHE_CONTROL
+    return response
+
+
 def configure_frontend_routes(app: Flask, dist_dir: Path):
     @app.get('/')
     @app.get('/<path:frontend_path>')
@@ -101,10 +123,10 @@ def configure_frontend_routes(app: Flask, dist_dir: Path):
             except ValueError:
                 abort(404)
             if requested_path.is_file():
-                return send_from_directory(dist_dir, normalized_path)
+                return send_frontend_file(dist_dir, normalized_path)
 
         if index_path.is_file():
-            return send_from_directory(dist_dir, 'index.html')
+            return send_frontend_file(dist_dir, 'index.html', spa_shell=True)
 
         return error_response(
             code='frontend_not_built',
@@ -355,7 +377,13 @@ def create_app() -> Flask:
                 message='Missing or invalid workspace token.',
                 status=401,
             )
-        membership = ensure_account_workspace_membership(account, workspace_id) if account and workspace_id else None
+        membership = None
+        membership_created = False
+        if account and workspace_id:
+            membership = account_workspace_membership(account, workspace_id)
+            if membership is None:
+                membership = ensure_account_workspace_membership(account, workspace_id)
+                membership_created = True
         g.aidm_account = account
         g.aidm_account_id = account.account_id if account else None
         credential_token = workspace_token or account_token
@@ -379,8 +407,9 @@ def create_app() -> Flask:
                 return forbidden
 
         if membership:
-            claim_legacy_players_for_account(account, workspace_id)
-            db.session.commit()
+            claimed_player_ids = claim_legacy_players_for_account(account, workspace_id)
+            if membership_created or claimed_player_ids:
+                db.session.commit()
 
         return None
 

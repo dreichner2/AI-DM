@@ -14,12 +14,18 @@ import pytest
 from sqlalchemy import create_engine, delete, event, inspect, select, text, update
 from sqlalchemy.engine import URL, make_url
 
-from aidm_server.database import db
+from aidm_server.database import db, release_clean_scoped_session
 from aidm_server.migration_compat import ALEMBIC_VERSION_COLUMN_LENGTH
 from aidm_server.models import RateLimitEvent, SessionLogEntry, SessionTurnLock
 from aidm_server.rate_limiter import DatabaseRateLimitStore, FixedWindowRateLimiter
 from aidm_server.time_utils import utc_now
 from aidm_server.turn_coordinator import DatabaseSessionTurnCoordinator, TurnLeaseLostError
+from aidm_server.turn_engine import TurnEngine
+from aidm_server.turn_narration import (
+    NarrationRequest,
+    TurnNarrationDependencies,
+    TurnNarrationService,
+)
 from tests.helpers import seed_world_campaign_player_session
 
 
@@ -199,6 +205,130 @@ def test_postgres_rate_limiter_is_atomic_across_store_instances(postgres_app):
 
     assert results.count(True) == 1
     assert results.count(False) == 1
+
+
+def test_postgres_narration_releases_connection_before_provider(postgres_app):
+    with postgres_app.app_context():
+        engine = db.engine
+        observed: list[str] = []
+
+        def build_context(*_args, **_kwargs):
+            db.session.execute(text('SELECT 1'))
+            assert db.session().in_transaction() is True
+            assert engine.pool.checkedout() == 1
+            observed.append('context')
+            return 'postgres-context'
+
+        def stream(*_args, **_kwargs):
+            assert db.session().in_transaction() is False
+            assert engine.pool.checkedout() == 0
+            observed.append('provider')
+            yield 'PostgreSQL connection released.'
+
+        service = TurnNarrationService(
+            TurnNarrationDependencies(
+                emit=lambda *_args, **_kwargs: None,
+                sleep=lambda _seconds: None,
+                stream=stream,
+                build_context=build_context,
+                release_session=TurnEngine._release_clean_provider_session,
+                active_player_ids=None,
+                record_phase_timing=lambda *_args, **_kwargs: None,
+                emit_turn_status=lambda *_args, **_kwargs: None,
+                build_roll_prompt=lambda *_args, **_kwargs: '',
+                response_requests_roll=lambda _text: False,
+                response_explains_no_roll_needed=lambda _text: False,
+                telemetry_event=lambda *_args, **_kwargs: None,
+                telemetry_metric=lambda *_args, **_kwargs: None,
+                config_get={
+                    'AIDM_LLM_PROVIDER': 'test',
+                    'AIDM_LLM_MODEL': 'postgres-boundary',
+                }.get,
+                logger=postgres_app.logger,
+            )
+        )
+        result = service.narrate(
+            NarrationRequest(
+                session_id=1,
+                campaign_id=1,
+                turn_id=1,
+                player_id=1,
+                requires_roll=False,
+                roll_value=None,
+                rule_type=None,
+                confidence=1.0,
+                serialized_rules_hint='{}',
+                player_label='Postgres Probe',
+                world_id=1,
+                user_input='Probe the connection boundary.',
+                model_user_input='Probe the connection boundary.',
+                rules_hint_payload={'requires_roll': False},
+                resolved_turn_id=None,
+                pre_narration_effects={},
+            )
+        )
+
+        assert result.text == 'PostgreSQL connection released.'
+        assert observed == ['context', 'provider']
+        assert engine.pool.checkedout() == 0
+
+
+def test_postgres_provider_boundary_rejects_flushed_uncommitted_writes(postgres_app):
+    ids = seed_world_campaign_player_session(postgres_app)
+
+    with postgres_app.app_context():
+        db.session.add(
+            SessionLogEntry(
+                session_id=ids['session_id'],
+                message='postgres provider boundary write guard',
+                entry_type='system',
+            )
+        )
+        db.session.flush()
+        assert not db.session.new
+        assert not db.session.dirty
+
+        with pytest.raises(RuntimeError, match='pending PostgreSQL provider boundary writes'):
+            release_clean_scoped_session(boundary='PostgreSQL provider')
+
+        db.session.rollback()
+        release_clean_scoped_session(boundary='PostgreSQL provider')
+        assert db.engine.pool.checkedout() == 0
+
+
+def test_postgres_rate_limiter_does_not_serialize_different_buckets(postgres_app):
+    bucket_keys = [f'postgres-independent-{uuid4().hex}' for _index in range(2)]
+    limiter = FixedWindowRateLimiter(
+        limit=1,
+        window_seconds=60,
+        store=DatabaseRateLimitStore(retention_window_seconds=60),
+    )
+    start = threading.Barrier(2)
+    concurrent_inserts = threading.Barrier(2)
+
+    with postgres_app.app_context():
+        engine = db.engine
+
+    def require_overlapping_inserts(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if 'insert into rate_limit_events' in statement.lower():
+            concurrent_inserts.wait(timeout=5)
+
+    def hit_once(bucket_key: str) -> bool:
+        start.wait(timeout=5)
+        with postgres_app.app_context():
+            return limiter.allow(bucket_key).allowed
+
+    event.listen(engine, 'before_cursor_execute', require_overlapping_inserts)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(hit_once, bucket_key) for bucket_key in bucket_keys]
+            results = [future.result(timeout=10) for future in futures]
+    finally:
+        event.remove(engine, 'before_cursor_execute', require_overlapping_inserts)
+        with engine.begin() as connection:
+            connection.execute(delete(RateLimitEvent.__table__).where(RateLimitEvent.bucket_key.in_(bucket_keys)))
+
+    assert results == [True, True]
 
 
 def test_postgres_turn_coordinator_serializes_across_instances(postgres_app):
