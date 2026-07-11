@@ -321,6 +321,7 @@ def query_dm_function_stream(user_input, context, speaking_player=None, rules_hi
     _record_prompt_context_estimate('dm_stream', request, context)
 
     provider = None
+    yielded = False
     try:
         provider = get_provider()
         if not _provider_supports_progressive_streaming(provider):
@@ -328,10 +329,11 @@ def query_dm_function_stream(user_input, context, speaking_player=None, rules_hi
             # gameplay transport supports incremental display. Preserve that
             # distinction and emit ordered application-sized chunks without
             # claiming provider token streaming.
-            yield from _completion_chunks_for_stream(provider, request, str(user_input))
+            for chunk in _completion_chunks_for_stream(provider, request, str(user_input)):
+                yielded = True
+                yield chunk
             return
 
-        yielded = False
         yielded_meaningful_text = False
         try:
             for chunk in provider.stream(request):
@@ -348,11 +350,15 @@ def query_dm_function_stream(user_input, context, speaking_player=None, rules_hi
                 payload={'provider': getattr(provider, 'provider_name', provider.__class__.__name__)},
                 severity='warning',
             )
-            yield from _completion_chunks_for_stream(provider, request, str(user_input))
+            for chunk in _completion_chunks_for_stream(provider, request, str(user_input)):
+                yielded = True
+                yield chunk
             return
         if not yielded_meaningful_text:
             if not yielded and isinstance(provider, NvidiaChatProvider):
-                yield from _completion_chunks_for_stream(provider, request, str(user_input))
+                for chunk in _completion_chunks_for_stream(provider, request, str(user_input)):
+                    yielded = True
+                    yield chunk
                 return
             empty_error = RuntimeError('Provider returned an empty DM stream')
             telemetry_event(
@@ -373,6 +379,12 @@ def query_dm_function_stream(user_input, context, speaking_player=None, rules_hi
             payload=_provider_failure_payload(provider, exc),
             severity='warning',
         )
+        if yielded:
+            # The socket narration layer retains the already-emitted text and
+            # marks the response failed. Appending an emergency response here
+            # would create a hybrid narration and persist content from two
+            # different generation attempts.
+            raise
         yield _emergency_fallback_chunk(str(user_input), provider=provider, error=exc)
 
 

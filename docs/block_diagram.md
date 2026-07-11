@@ -102,8 +102,10 @@ sequenceDiagram
     Canon->>DB: update story memory and projections
 ```
 
-Codex CLI is the exception to progressive provider streaming: its completed
-response is emitted only after the isolated CLI invocation succeeds.
+Codex DM narration consumes app-server agent-message deltas progressively and
+reconciles them with the authoritative completed item. If app-server fails
+before the first delta, the isolated `codex exec --json` completion path remains
+available as a complete-response fallback.
 
 ## Database Map
 

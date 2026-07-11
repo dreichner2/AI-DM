@@ -240,7 +240,7 @@ def test_llm_config_exposes_provider_capabilities(client, monkeypatch, tmp_path)
     assert [model['reasoning_effort'] for model in codex_models] == ['medium', 'low', 'medium', 'high', 'xhigh']
     assert providers['codex_cli']['configured'] is True
     assert providers['codex_cli']['capabilities']['streaming'] is True
-    assert providers['codex_cli']['capabilities']['progressive_streaming'] is False
+    assert providers['codex_cli']['capabilities']['progressive_streaming'] is True
     assert providers['codex_cli']['capabilities']['isolated_runtime'] is True
     assert providers['codex_cli']['capabilities']['host_tool_access'] is False
     assert providers['codex_cli']['capabilities']['tool_event_policy'] == 'fail_closed'

@@ -36,15 +36,25 @@ workspace.
 Authentication is supplied from `AIDM_CODEX_ACCESS_TOKEN` or
 `CODEX_ACCESS_TOKEN`, or from saved `auth.json` under `AIDM_CODEX_HOME` /
 `CODEX_HOME`. Token-based calls receive a disposable `CODEX_HOME`. Saved-auth
-calls intentionally use the designated home so refreshed authentication can
-persist, while ignore-user-config and explicit overrides prevent that home from
-changing model behavior. Access to saved auth is serialized to avoid concurrent
-CLI sessions corrupting it. Structured CLI events are parsed fail closed:
-unexpected tool activity or malformed terminal output is an error.
+completion calls use the designated home with `--ignore-user-config`. Streaming
+calls copy only `auth.json` into a disposable home, then atomically persist a
+valid rotated auth file after the process exits. This prevents app-server from
+loading operator config while preserving refresh-token rotation. Saved-auth
+access is serialized to avoid concurrent CLI sessions corrupting it. Structured
+events are parsed fail closed: unexpected tool activity, malformed lifecycle
+output, or a final response that disagrees with streamed text is an error.
 
-The provider advertises streaming compatibility to the turn engine, but it is
-not progressive token streaming: narration is yielded only after the CLI call
-finishes successfully.
+DM narration uses Codex app-server's `item/agentMessage/delta` notifications for
+progressive text delivery and treats the completed agent item as authoritative.
+Current Codex models can omit `phase` on the player-facing item until completion;
+the isolated DM adapter streams that legacy form under its return-only-in-world
+prompt contract, while explicit commentary, reasoning, and tool items are never
+forwarded as narration. A later phase mismatch fails the turn instead of being
+silently reconciled.
+If app-server is unavailable before the first delta, the provider falls back to
+the isolated `codex exec --json` completion path without fabricating provider
+deltas. A failure after partial output is surfaced instead of replaying a second
+response over the partial text.
 
 ## Helper Tasks And Defaults
 

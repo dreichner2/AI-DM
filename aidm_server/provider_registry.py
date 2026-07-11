@@ -43,7 +43,7 @@ PROVIDER_CATALOG: dict[str, dict] = {
         ],
         'capabilities': {
             'streaming': True,
-            'progressive_streaming': False,
+            'progressive_streaming': True,
             'oauth_cli': True,
             'isolated_runtime': True,
             'host_tool_access': False,

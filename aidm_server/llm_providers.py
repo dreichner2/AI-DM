@@ -6,10 +6,11 @@ from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
+import queue
 import signal
 import subprocess
 import tempfile
-from threading import Lock
+from threading import Lock, Thread
 import time
 from typing import Any, Generator
 
@@ -64,6 +65,14 @@ class ProviderHTTPError(RuntimeError):
     def __init__(self, message: str, *, status_code: int | None = None):
         super().__init__(message)
         self.status_code = status_code
+
+
+class _CodexAppServerProtocolError(RuntimeError):
+    """Fail closed when app-server violates the expected narration protocol."""
+
+
+class _CodexAppServerPolicyError(_CodexAppServerProtocolError):
+    """Fail closed when app-server attempts behavior disabled for narration."""
 
 
 class BaseLLMProvider:
@@ -858,6 +867,8 @@ class CodexCliProvider(BaseLLMProvider):
         'turn.started',
     }
     _ALLOWED_EXEC_ITEM_TYPES = {'agent_message', 'reasoning'}
+    _ALLOWED_APP_SERVER_ITEM_TYPES = {'agentMessage', 'reasoning', 'userMessage'}
+    _APP_SERVER_AGENT_PHASES = {None, 'commentary', 'final_answer'}
     _PERMISSION_PROFILE_OVERRIDE = (
         'permissions.aidm_narrator={'
         'description="AIDM host-isolated narrator",'
@@ -924,6 +935,18 @@ class CodexCliProvider(BaseLLMProvider):
         command.append('-')
         return command
 
+    def _app_server_command(self, runtime_workdir: str) -> list[str]:
+        # Reuse the exact hardened config and feature overrides from the batch
+        # command while selecting the rich-client protocol that exposes text
+        # deltas. App-server has no --ignore-user-config flag, so its CODEX_HOME
+        # is separately isolated below.
+        exec_command = self._command(runtime_workdir)
+        command = [exec_command[0], 'app-server', '--stdio', '--strict-config']
+        for index, value in enumerate(exec_command[:-1]):
+            if value in {'-c', '--disable'}:
+                command.extend([value, exec_command[index + 1]])
+        return command
+
     @staticmethod
     def _source_codex_home() -> Path:
         configured = str(_cfg('AIDM_CODEX_HOME', os.getenv('CODEX_HOME')) or '').strip()
@@ -968,6 +991,67 @@ class CodexCliProvider(BaseLLMProvider):
                 )
             env['CODEX_HOME'] = str(source_codex_home)
         return env
+
+    def _app_server_runtime_env(
+        self,
+        runtime_root: Path,
+    ) -> tuple[dict[str, str], Path | None, bytes | None]:
+        env = self._runtime_env(runtime_root)
+        if 'CODEX_ACCESS_TOKEN' in env:
+            return env, None, None
+
+        # app-server does not support exec's --ignore-user-config option. Copy
+        # only auth.json into a disposable CODEX_HOME so operator config, MCP
+        # servers, skills, rules, and session history cannot enter the narrator.
+        source_auth = Path(env['CODEX_HOME']) / 'auth.json'
+        runtime_codex_home = runtime_root / 'codex-home'
+        runtime_codex_home.mkdir(mode=0o700, exist_ok=True)
+        runtime_auth = runtime_codex_home / 'auth.json'
+        source_auth_payload = source_auth.read_bytes()
+        runtime_auth.write_bytes(source_auth_payload)
+        runtime_auth.chmod(0o600)
+        env['CODEX_HOME'] = str(runtime_codex_home)
+        return env, source_auth, source_auth_payload
+
+    @staticmethod
+    def _persist_runtime_auth(
+        runtime_auth: Path,
+        source_auth: Path,
+        original_source_payload: bytes,
+    ) -> bool:
+        """Persist a rotated saved login atomically without exposing its contents."""
+        temporary_path: str | None = None
+        try:
+            payload = runtime_auth.read_bytes()
+            parsed = json.loads(payload)
+            if not payload or not isinstance(parsed, dict):
+                return False
+            current_source_payload = source_auth.read_bytes()
+            if current_source_payload == payload:
+                return True
+            if current_source_payload != original_source_payload:
+                return False
+
+            descriptor, temporary_path = tempfile.mkstemp(
+                prefix='.aidm-auth-',
+                dir=str(source_auth.parent),
+            )
+            with os.fdopen(descriptor, 'wb') as temporary_file:
+                os.fchmod(temporary_file.fileno(), 0o600)
+                temporary_file.write(payload)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            os.replace(temporary_path, source_auth)
+            temporary_path = None
+            return True
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+        finally:
+            if temporary_path:
+                try:
+                    os.unlink(temporary_path)
+                except OSError:
+                    pass
 
     def _parse_exec_output(self, stdout: str) -> str:
         accumulated_text = ''
@@ -1086,14 +1170,549 @@ class CodexCliProvider(BaseLLMProvider):
             completed.check_returncode()
         return completed
 
-    def _invoke(self, prompt: str) -> str:
+    @staticmethod
+    def _start_app_server_process(command, *, cwd, env):
+        return subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            cwd=cwd,
+            env=env,
+            start_new_session=os.name == 'posix',
+        )
+
+    @staticmethod
+    def _stop_app_server_process(process: subprocess.Popen):
+        try:
+            if process.stdin:
+                process.stdin.close()
+        except OSError:
+            pass
+        if process.poll() is None:
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+        if os.name == 'posix':
+            # Popen creates a dedicated session. Signal that group even when the
+            # launcher has already exited, because a detached descendant can
+            # otherwise survive the completed/cancelled narration turn.
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                if process.poll() is None:
+                    process.terminate()
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                if process.poll() is None:
+                    process.kill()
+            if process.poll() is None:
+                process.wait(timeout=2)
+        elif process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=2)
+        for stream in (process.stdout, process.stderr):
+            try:
+                if stream:
+                    stream.close()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _send_app_server_message(process: subprocess.Popen, message: dict):
+        if process.stdin is None:
+            raise RuntimeError('Codex app server closed unexpectedly')
+        try:
+            process.stdin.write(json.dumps(message, separators=(',', ':')) + '\n')
+            process.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            raise RuntimeError('Codex app server closed unexpectedly') from None
+
+    def _stream_app_server(
+        self,
+        prompt: str,
+        *,
+        deadline: float | None = None,
+    ) -> Generator[str, None, None]:
+        process = None
+        stdout_thread = None
+        stderr_thread = None
+        runtime_env: dict[str, str] | None = None
+        source_auth: Path | None = None
+        original_source_auth: bytes | None = None
+        saved_auth_lock_acquired = False
+        runtime_directory: tempfile.TemporaryDirectory[str] | None = None
+        if deadline is None:
+            deadline = time.monotonic() + self.timeout_seconds
+
+        try:
+            runtime_directory = tempfile.TemporaryDirectory(prefix='aidm-codex-runtime-')
+            runtime_dir = runtime_directory.name
+            try:
+                runtime_root = Path(runtime_dir)
+                runtime_workdir = runtime_root / 'workspace'
+                runtime_workdir.mkdir(mode=0o700)
+
+                access_token = _cfg('AIDM_CODEX_ACCESS_TOKEN', os.getenv('CODEX_ACCESS_TOKEN'))
+                if not access_token:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not self._saved_auth_lock.acquire(timeout=max(0.0, remaining)):
+                        raise subprocess.TimeoutExpired(self.executable, self.timeout_seconds)
+                    saved_auth_lock_acquired = True
+
+                runtime_env, source_auth, original_source_auth = self._app_server_runtime_env(runtime_root)
+                process = self._start_app_server_process(
+                    self._app_server_command(str(runtime_workdir)),
+                    cwd=str(runtime_workdir),
+                    env=runtime_env,
+                )
+
+                messages: queue.Queue[tuple[str, str | None]] = queue.Queue()
+
+                def read_stdout():
+                    try:
+                        if process.stdout:
+                            for line in process.stdout:
+                                messages.put(('line', line))
+                    except Exception:
+                        messages.put(('read_error', None))
+                    finally:
+                        messages.put(('eof', None))
+
+                def drain_stderr():
+                    try:
+                        if process.stderr:
+                            for _chunk in iter(lambda: process.stderr.read(8192), ''):
+                                pass
+                    except Exception:
+                        pass
+
+                stdout_thread = Thread(target=read_stdout, name='aidm-codex-stdout', daemon=True)
+                stderr_thread = Thread(target=drain_stderr, name='aidm-codex-stderr', daemon=True)
+                stdout_thread.start()
+                stderr_thread.start()
+
+                self._send_app_server_message(
+                    process,
+                    {
+                        'method': 'initialize',
+                        'id': 0,
+                        'params': {
+                            'clientInfo': {
+                                'name': 'aidm',
+                                'title': 'AIDM',
+                                'version': '1',
+                            }
+                        },
+                    },
+                )
+
+                initialized = False
+                thread_id: str | None = None
+                turn_id: str | None = None
+                item_states: dict[str, dict[str, Any]] = {}
+                explicit_final_item_id: str | None = None
+                legacy_stream_item_id: str | None = None
+                unknown_completed_texts: list[str] = []
+                streamed_text = ''
+                completed_text: str | None = None
+
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(self.executable, self.timeout_seconds)
+                    try:
+                        message_kind, raw_line = messages.get(timeout=remaining)
+                    except queue.Empty:
+                        raise subprocess.TimeoutExpired(self.executable, self.timeout_seconds) from None
+                    if message_kind != 'line' or raw_line is None:
+                        raise RuntimeError('Codex app server closed before completing the turn')
+                    try:
+                        message = json.loads(raw_line)
+                    except json.JSONDecodeError:
+                        raise _CodexAppServerProtocolError(
+                            'Codex app server returned invalid structured output'
+                        ) from None
+                    if not isinstance(message, dict):
+                        raise _CodexAppServerProtocolError(
+                            'Codex app server returned invalid structured output'
+                        )
+
+                    message_id = message.get('id')
+                    method = message.get('method')
+                    if message_id is not None and method is not None:
+                        raise _CodexAppServerPolicyError('Codex app server attempted a disabled tool')
+                    if message_id is not None:
+                        if message_id not in {0, 1, 2}:
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid lifecycle output'
+                            )
+                        if 'error' in message:
+                            raise RuntimeError('Codex app server request failed')
+                        result = message.get('result')
+                        if not isinstance(result, dict):
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid structured output'
+                            )
+                        if message_id == 0:
+                            if initialized:
+                                raise _CodexAppServerProtocolError(
+                                    'Codex app server returned invalid lifecycle output'
+                                )
+                            initialized = True
+                            self._send_app_server_message(process, {'method': 'initialized', 'params': {}})
+                            self._send_app_server_message(
+                                process,
+                                {
+                                    'method': 'thread/start',
+                                    'id': 1,
+                                    'params': {
+                                        'model': self.model_name,
+                                        'cwd': str(runtime_workdir),
+                                        'approvalPolicy': 'never',
+                                        'ephemeral': True,
+                                        'serviceTier': self.service_tier,
+                                    },
+                                },
+                            )
+                            continue
+                        if message_id == 1:
+                            thread = result.get('thread')
+                            candidate_thread_id = thread.get('id') if isinstance(thread, dict) else None
+                            if not initialized or thread_id is not None or not isinstance(candidate_thread_id, str):
+                                raise _CodexAppServerProtocolError(
+                                    'Codex app server returned invalid lifecycle output'
+                                )
+                            thread_id = candidate_thread_id.strip()
+                            if not thread_id:
+                                raise _CodexAppServerProtocolError(
+                                    'Codex app server returned invalid lifecycle output'
+                                )
+                            sandbox = result.get('sandbox')
+                            if (
+                                result.get('approvalPolicy') != 'never'
+                                or not isinstance(sandbox, dict)
+                                or sandbox.get('type') != 'readOnly'
+                                or sandbox.get('networkAccess') is not False
+                            ):
+                                raise _CodexAppServerPolicyError(
+                                    'Codex app server did not activate the narrator sandbox policy'
+                                )
+                            active_profile = result.get('activePermissionProfile')
+                            if (
+                                not isinstance(active_profile, dict)
+                                or active_profile.get('id') != 'aidm_narrator'
+                                or active_profile.get('extends') != ':read-only'
+                            ):
+                                raise _CodexAppServerPolicyError(
+                                    'Codex app server did not activate the narrator permission profile'
+                                )
+                            self._send_app_server_message(
+                                process,
+                                {
+                                    'method': 'turn/start',
+                                    'id': 2,
+                                    'params': {
+                                        'threadId': thread_id,
+                                        'input': [{'type': 'text', 'text': prompt}],
+                                        'model': self.model_name,
+                                        'effort': self.reasoning_effort,
+                                        'approvalPolicy': 'never',
+                                        'cwd': str(runtime_workdir),
+                                        'serviceTier': self.service_tier,
+                                    },
+                                },
+                            )
+                            continue
+
+                        turn = result.get('turn')
+                        candidate_turn_id = turn.get('id') if isinstance(turn, dict) else None
+                        if thread_id is None or turn_id is not None or not isinstance(candidate_turn_id, str):
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid lifecycle output'
+                            )
+                        turn_id = candidate_turn_id.strip()
+                        if not turn_id:
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid lifecycle output'
+                            )
+                        continue
+
+                    if not isinstance(method, str) or not method:
+                        raise _CodexAppServerProtocolError(
+                            'Codex app server returned invalid structured output'
+                        )
+                    params = message.get('params')
+                    if not isinstance(params, dict):
+                        raise _CodexAppServerProtocolError(
+                            'Codex app server returned invalid structured output'
+                        )
+
+                    if method in {'item/started', 'item/completed', 'item/agentMessage/delta', 'turn/completed'}:
+                        if (
+                            thread_id is None
+                            or turn_id is None
+                            or params.get('threadId') != thread_id
+                            or params.get('turnId', turn_id) != turn_id
+                        ):
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid lifecycle output'
+                            )
+
+                    if method == 'item/started':
+                        item = params.get('item')
+                        if not isinstance(item, dict):
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid structured output'
+                            )
+                        item_id = item.get('id')
+                        item_type = item.get('type')
+                        if not isinstance(item_id, str) or not item_id or not isinstance(item_type, str):
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid structured output'
+                            )
+                        if item_type not in self._ALLOWED_APP_SERVER_ITEM_TYPES:
+                            raise _CodexAppServerPolicyError(
+                                'Codex app server attempted a disabled tool'
+                            )
+                        if item_id in item_states:
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid lifecycle output'
+                            )
+                        phase = item.get('phase') if item_type == 'agentMessage' else None
+                        if phase not in self._APP_SERVER_AGENT_PHASES:
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid structured output'
+                            )
+                        item_states[item_id] = {'type': item_type, 'phase': phase, 'buffer': ''}
+                        if item_type == 'agentMessage' and phase == 'final_answer':
+                            if explicit_final_item_id is not None or legacy_stream_item_id is not None:
+                                raise _CodexAppServerProtocolError(
+                                    'Codex app server returned multiple final responses'
+                                )
+                            explicit_final_item_id = item_id
+                        elif (
+                            item_type == 'agentMessage'
+                            and phase is None
+                            and self.prompt_role == 'dm'
+                        ):
+                            # The installed Codex model omits phase on the
+                            # player-facing item until item/completed. DM prompts
+                            # forbid commentary and app-server has no tools, so
+                            # preserve legacy progressive delivery only for this
+                            # isolated narration contract. Helpers keep buffering
+                            # unknown-phase text until it is classified.
+                            if explicit_final_item_id is not None or legacy_stream_item_id is not None:
+                                raise _CodexAppServerProtocolError(
+                                    'Codex app server returned multiple final responses'
+                                )
+                            legacy_stream_item_id = item_id
+                        continue
+
+                    if method == 'item/agentMessage/delta':
+                        item_id = params.get('itemId')
+                        delta = params.get('delta')
+                        state = item_states.get(item_id) if isinstance(item_id, str) else None
+                        if not state or state.get('type') != 'agentMessage' or not isinstance(delta, str):
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid structured output'
+                            )
+                        if delta:
+                            state['buffer'] = str(state.get('buffer') or '') + delta
+                        phase = state.get('phase')
+                        if phase == 'commentary':
+                            continue
+                        if phase is None:
+                            if item_id != legacy_stream_item_id:
+                                continue
+                        elif phase != 'final_answer' or item_id != explicit_final_item_id:
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid lifecycle output'
+                            )
+                        if delta:
+                            streamed_text += delta
+                            yield delta
+                        continue
+
+                    if method == 'item/completed':
+                        item = params.get('item')
+                        if not isinstance(item, dict):
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid structured output'
+                            )
+                        item_id = item.get('id')
+                        item_type = item.get('type')
+                        state = item_states.get(item_id) if isinstance(item_id, str) else None
+                        if not state or state.get('type') != item_type:
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid lifecycle output'
+                            )
+                        if item_type not in self._ALLOWED_APP_SERVER_ITEM_TYPES:
+                            raise _CodexAppServerPolicyError(
+                                'Codex app server attempted a disabled tool'
+                            )
+                        if item_type != 'agentMessage':
+                            continue
+                        completed_phase = item.get('phase')
+                        if completed_phase not in self._APP_SERVER_AGENT_PHASES:
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid structured output'
+                            )
+                        started_phase = state.get('phase')
+                        if completed_phase and started_phase and completed_phase != started_phase:
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid lifecycle output'
+                            )
+                        effective_phase = completed_phase or started_phase
+                        if effective_phase == 'commentary':
+                            if item_id == legacy_stream_item_id:
+                                if streamed_text:
+                                    raise _CodexAppServerProtocolError(
+                                        'Codex app server phase-unknown output resolved to commentary'
+                                    )
+                                legacy_stream_item_id = None
+                            continue
+                        text = item.get('text')
+                        if not isinstance(text, str) or not text.strip():
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned an empty response'
+                            )
+                        buffered_text = str(state.get('buffer') or '')
+                        if buffered_text and not text.startswith(buffered_text):
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server final response did not match streamed output'
+                            )
+                        if effective_phase == 'final_answer':
+                            if legacy_stream_item_id is not None and item_id != legacy_stream_item_id:
+                                raise _CodexAppServerProtocolError(
+                                    'Codex app server returned multiple final responses'
+                                )
+                            if explicit_final_item_id is None:
+                                explicit_final_item_id = item_id
+                            if item_id != explicit_final_item_id or completed_text is not None:
+                                raise _CodexAppServerProtocolError(
+                                    'Codex app server returned multiple final responses'
+                                )
+                            completed_text = text
+                        elif item_id == legacy_stream_item_id:
+                            if completed_text is not None:
+                                raise _CodexAppServerProtocolError(
+                                    'Codex app server returned multiple final responses'
+                                )
+                            completed_text = text
+                        else:
+                            unknown_completed_texts.append(text)
+                        continue
+
+                    if method == 'turn/completed':
+                        turn = params.get('turn')
+                        if not isinstance(turn, dict) or turn.get('id') != turn_id:
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid lifecycle output'
+                            )
+                        if turn.get('status') != 'completed':
+                            raise RuntimeError('Codex app server did not complete the turn')
+                        if completed_text is None:
+                            if explicit_final_item_id is not None or legacy_stream_item_id is not None:
+                                raise _CodexAppServerProtocolError(
+                                    'Codex app server returned an empty response'
+                                )
+                            if not unknown_completed_texts:
+                                raise _CodexAppServerProtocolError(
+                                    'Codex app server returned an empty response'
+                                )
+                            completed_text = unknown_completed_texts[-1]
+                        if not completed_text.startswith(streamed_text):
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server final response did not match streamed output'
+                            )
+                        final_suffix = completed_text[len(streamed_text) :]
+                        if final_suffix:
+                            yield final_suffix
+                        return
+
+                    if method == 'error':
+                        will_retry = params.get('willRetry')
+                        if (
+                            params.get('threadId') != thread_id
+                            or params.get('turnId') != turn_id
+                            or not isinstance(params.get('error'), dict)
+                            or not isinstance(will_retry, bool)
+                        ):
+                            raise _CodexAppServerProtocolError(
+                                'Codex app server returned invalid structured output'
+                            )
+                        if will_retry:
+                            continue
+                        raise RuntimeError('Codex app server request failed')
+                    if method.startswith('item/') and not method.startswith('item/reasoning/'):
+                        raise _CodexAppServerPolicyError(
+                            'Codex app server attempted a disabled tool'
+                        )
+                    # Account, rate-limit, token-usage, reasoning, model-routing,
+                    # and status notifications carry no player-visible output.
+                    # Tool attempts are rejected through their item lifecycle or
+                    # server request above.
+            finally:
+                if process is not None:
+                    self._stop_app_server_process(process)
+                if stdout_thread is not None:
+                    stdout_thread.join(timeout=1)
+                if stderr_thread is not None:
+                    stderr_thread.join(timeout=1)
+                if (
+                    runtime_env is not None
+                    and source_auth is not None
+                    and original_source_auth is not None
+                ):
+                    runtime_auth = Path(runtime_env['CODEX_HOME']) / 'auth.json'
+                    if not self._persist_runtime_auth(
+                        runtime_auth,
+                        source_auth,
+                        original_source_auth,
+                    ):
+                        telemetry_event(
+                            'llm.codex_auth_persist_failed',
+                            payload={'provider': self.provider_name},
+                            severity='warning',
+                        )
+                if saved_auth_lock_acquired:
+                    self._saved_auth_lock.release()
+                runtime_directory.cleanup()
+        except subprocess.TimeoutExpired as exc:
+            exc.output = None
+            exc.stderr = None
+            raise RuntimeError(f'Codex app server timed out after {self.timeout_seconds} seconds') from None
+        except OSError:
+            raise RuntimeError('Codex app server failed to start') from None
+
+    def _invoke(self, prompt: str, *, deadline: float | None = None) -> str:
         try:
             with tempfile.TemporaryDirectory(prefix='aidm-codex-runtime-') as runtime_dir:
                 runtime_root = Path(runtime_dir)
                 runtime_workdir = runtime_root / 'workspace'
                 runtime_workdir.mkdir(mode=0o700)
                 runtime_env = self._runtime_env(runtime_root)
-                deadline = time.monotonic() + self.timeout_seconds
+                if deadline is None:
+                    deadline = time.monotonic() + self.timeout_seconds
 
                 def run_codex(timeout_seconds):
                     return self._run_process(
@@ -1108,9 +1727,15 @@ class CodexCliProvider(BaseLLMProvider):
                     )
 
                 if 'CODEX_ACCESS_TOKEN' in runtime_env:
-                    completed = run_codex(self.timeout_seconds)
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(self.executable, self.timeout_seconds)
+                    completed = run_codex(remaining)
                 else:
-                    acquired = self._saved_auth_lock.acquire(timeout=self.timeout_seconds)
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(self.executable, self.timeout_seconds)
+                    acquired = self._saved_auth_lock.acquire(timeout=remaining)
                     if not acquired:
                         raise subprocess.TimeoutExpired(self.executable, self.timeout_seconds)
                     try:
@@ -1144,14 +1769,31 @@ class CodexCliProvider(BaseLLMProvider):
         return ProviderResponse(text=text, provider=self.provider_name, model=self.display_model_name)
 
     def stream(self, request: ProviderRequest) -> Generator[str, None, None]:
-        text = self._invoke(self._build_prompt(request))
+        prompt = self._build_prompt(request)
+        deadline = time.monotonic() + self.timeout_seconds
+        yielded = False
+        try:
+            for chunk in self._stream_app_server(prompt, deadline=deadline):
+                yielded = True
+                yield chunk
+        except _CodexAppServerProtocolError:
+            raise
+        except Exception as exc:
+            if yielded:
+                raise
+            telemetry_event(
+                'llm.codex_stream.completion_fallback',
+                payload={'provider': self.provider_name, 'error_type': type(exc).__name__},
+                severity='warning',
+            )
+            text = self._invoke(prompt, deadline=deadline)
+            if text:
+                yield text
         telemetry_metric(
             'llm.stream.success_total',
             1,
             tags={'provider': self.provider_name, 'model': self.display_model_name},
         )
-        if text:
-            yield text
 
 
 def _cfg(key: str, default=None):
