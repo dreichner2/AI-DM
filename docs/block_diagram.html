@@ -273,7 +273,7 @@
     Engine-&gt;&gt;Canon: enqueue canon extraction job
     Canon-&gt;&gt;DB: update story memory and projections</pre>
       </div>
-      <p>Codex CLI is the exception to progressive provider streaming: its completed response is emitted only after the isolated CLI invocation succeeds.</p>
+      <p>Codex DM narration consumes app-server agent-message deltas progressively and reconciles them with the authoritative completed item. If app-server fails before the first delta, the isolated <code>codex exec --json</code> completion path remains available as a complete-response fallback.</p>
     </section>
 
     <section>

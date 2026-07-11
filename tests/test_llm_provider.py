@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 
 import pytest
@@ -28,6 +30,96 @@ from aidm_server.llm import (
 )
 from aidm_server.llm_providers import CodexCliProvider, DeterministicFallbackProvider, get_helper_provider
 from aidm_server.provider_registry import provider_capabilities, provider_default_model, provider_runtime_model
+
+
+class _CapturingStdin:
+    def __init__(self):
+        self.writes: list[str] = []
+        self.closed = False
+
+    def write(self, value: str):
+        self.writes.append(value)
+        return len(value)
+
+    def flush(self):
+        return None
+
+    def close(self):
+        self.closed = True
+
+
+class _CompletedAppServerProcess:
+    def __init__(self, messages: list[dict]):
+        self.stdin = _CapturingStdin()
+        self.stdout = io.StringIO('\n'.join(json.dumps(message) for message in messages) + '\n')
+        self.stderr = io.StringIO('')
+        self.pid = 12345
+
+    def poll(self):
+        return 0
+
+
+def _completed_app_server_messages(*chunks: str, final_text: str | None = None) -> list[dict]:
+    completed = final_text if final_text is not None else ''.join(chunks)
+    messages = [
+        {'id': 0, 'result': {'userAgent': 'codex-test'}},
+        {
+            'id': 1,
+            'result': {
+                'thread': {'id': 'thread_test'},
+                'approvalPolicy': 'never',
+                'sandbox': {'type': 'readOnly', 'networkAccess': False},
+                'activePermissionProfile': {'id': 'aidm_narrator', 'extends': ':read-only'},
+            },
+        },
+        {'id': 2, 'result': {'turn': {'id': 'turn_test', 'status': 'inProgress', 'items': []}}},
+        {
+            'method': 'item/started',
+            'params': {
+                'threadId': 'thread_test',
+                'turnId': 'turn_test',
+                'startedAtMs': 1,
+                'item': {'id': 'item_agent', 'type': 'agentMessage', 'text': '', 'phase': 'final_answer'},
+            },
+        },
+    ]
+    messages.extend(
+        {
+            'method': 'item/agentMessage/delta',
+            'params': {
+                'threadId': 'thread_test',
+                'turnId': 'turn_test',
+                'itemId': 'item_agent',
+                'delta': chunk,
+            },
+        }
+        for chunk in chunks
+    )
+    messages.extend(
+        [
+            {
+                'method': 'item/completed',
+                'params': {
+                    'threadId': 'thread_test',
+                    'turnId': 'turn_test',
+                    'item': {
+                        'id': 'item_agent',
+                        'type': 'agentMessage',
+                        'text': completed,
+                        'phase': 'final_answer',
+                    },
+                },
+            },
+            {
+                'method': 'turn/completed',
+                'params': {
+                    'threadId': 'thread_test',
+                    'turn': {'id': 'turn_test', 'status': 'completed', 'items': []},
+                },
+            },
+        ]
+    )
+    return messages
 
 
 def test_codex_executable_resolves_mac_app_bundle(monkeypatch, tmp_path):
@@ -198,7 +290,7 @@ def test_provider_registry_defines_defaults_and_capabilities():
     assert nvidia_capabilities['thinking_control'] is True
     assert nvidia_capabilities['progressive_streaming'] is False
     assert codex_capabilities['streaming'] is True
-    assert codex_capabilities['progressive_streaming'] is False
+    assert codex_capabilities['progressive_streaming'] is True
     assert codex_capabilities['isolated_runtime'] is True
     assert codex_capabilities['host_tool_access'] is False
     assert codex_capabilities['tool_event_policy'] == 'fail_closed'
@@ -668,7 +760,7 @@ def test_codex_cli_provider_generate_uses_isolated_tool_free_exec(monkeypatch, t
 
     class _TrackingLock:
         def acquire(self, *, timeout):
-            assert timeout == 12
+            assert timeout == pytest.approx(12, rel=0, abs=0.05)
             saved_auth_lock_entries.append('entered')
             return True
 
@@ -806,37 +898,35 @@ def test_codex_cli_provider_generate_uses_isolated_tool_free_exec(monkeypatch, t
     assert saved_auth_lock_entries == ['entered', 'exited']
 
 
-def test_codex_cli_provider_stream_uses_hardened_exec_result(monkeypatch, tmp_path):
+def test_codex_cli_provider_stream_uses_isolated_app_server_deltas(monkeypatch, tmp_path):
     calls = []
     source_codex_home = tmp_path / 'source-codex-home'
     source_codex_home.mkdir()
     (source_codex_home / 'auth.json').write_text('{"auth":"fake-test-auth"}', encoding='utf-8')
     monkeypatch.setenv('AIDM_CODEX_HOME', str(source_codex_home))
+    monkeypatch.delenv('AIDM_CODEX_ACCESS_TOKEN', raising=False)
+    monkeypatch.delenv('CODEX_ACCESS_TOKEN', raising=False)
+    monkeypatch.setenv('AIDM_DATABASE_URI', 'postgresql://must-not-reach-codex')
 
     def fake_which(executable):
         assert executable == 'codex'
         return '/usr/local/bin/codex'
 
-    def fake_run(command, input, capture_output, text, timeout, cwd, env, check):
-        del capture_output, text, check
-        calls.append({'command': command, 'input': input, 'timeout': timeout, 'cwd': cwd, 'env': env})
-        stdout = '\n'.join(
-            [
-                json.dumps({'type': 'thread.started', 'thread_id': 'thread_test'}),
-                json.dumps({'type': 'turn.started'}),
-                json.dumps(
-                    {
-                        'type': 'item.completed',
-                        'item': {'id': 'item_0', 'type': 'agent_message', 'text': 'Streamed final.'},
-                    }
-                ),
-                json.dumps({'type': 'turn.completed', 'usage': {}}),
-            ]
-        )
-        return type('Completed', (), {'returncode': 0, 'stdout': stdout, 'stderr': ''})()
+    process = _CompletedAppServerProcess(
+        _completed_app_server_messages('Streamed ', 'final.')
+    )
+
+    def fake_start(command, *, cwd, env):
+        runtime_codex_home = Path(env['CODEX_HOME'])
+        assert runtime_codex_home != source_codex_home
+        assert runtime_codex_home.parent == Path(cwd).parent
+        assert (runtime_codex_home / 'auth.json').read_text(encoding='utf-8') == '{"auth":"fake-test-auth"}'
+        (runtime_codex_home / 'auth.json').write_text('{"auth":"refreshed-test-auth"}', encoding='utf-8')
+        calls.append({'command': command, 'cwd': cwd, 'env': dict(env), 'runtime_home': runtime_codex_home})
+        return process
 
     monkeypatch.setattr(codex_runtime.shutil, 'which', fake_which)
-    monkeypatch.setattr(CodexCliProvider, '_run_process', staticmethod(fake_run))
+    monkeypatch.setattr(CodexCliProvider, '_start_app_server_process', staticmethod(fake_start))
 
     provider = CodexCliProvider(
         model_name='gpt-5.5',
@@ -844,22 +934,395 @@ def test_codex_cli_provider_stream_uses_hardened_exec_result(monkeypatch, tmp_pa
         workdir=str(tmp_path),
         timeout_seconds=12,
         reasoning_effort='medium',
+        prompt_role='dm',
     )
 
     chunks = list(provider.stream(ProviderRequest(prompt='Return a short answer.')))
 
-    assert chunks == ['Streamed final.']
+    assert chunks == ['Streamed ', 'final.']
     assert len(calls) == 1
     command = calls[0]['command']
-    assert command[:2] == ['/usr/local/bin/codex', 'exec']
-    assert '--json' in command
-    assert '-o' not in command
-    assert command[command.index('--model') + 1] == 'gpt-5.5'
+    assert command[:4] == ['/usr/local/bin/codex', 'app-server', '--stdio', '--strict-config']
+    assert 'exec' not in command
+    assert '--json' not in command
     assert 'model_reasoning_effort="medium"' in command
     assert calls[0]['cwd'] != str(tmp_path)
-    assert command[command.index('-C') + 1] == calls[0]['cwd']
-    assert 'TASK INPUT:\nReturn a short answer.' in calls[0]['input']
+    assert 'AIDM_DATABASE_URI' not in calls[0]['env']
+    assert calls[0]['env']['HOME'] != str(Path.home())
+    sent_messages = [json.loads(value) for value in process.stdin.writes]
+    assert [message['method'] for message in sent_messages] == [
+        'initialize',
+        'initialized',
+        'thread/start',
+        'turn/start',
+    ]
+    thread_start = sent_messages[2]['params']
+    turn_start = sent_messages[3]['params']
+    assert thread_start['ephemeral'] is True
+    assert thread_start['approvalPolicy'] == 'never'
+    assert 'sandbox' not in thread_start
+    assert 'sandboxPolicy' not in turn_start
+    assert turn_start['effort'] == 'medium'
+    assert turn_start['input'][0]['type'] == 'text'
+    assert 'TASK INPUT:\nReturn a short answer.' in turn_start['input'][0]['text']
+    assert 'Return only the in-world DM response that should be shown to the player.' in turn_start['input'][0]['text']
     assert not Path(calls[0]['cwd']).exists()
+    assert not calls[0]['runtime_home'].exists()
+    assert (source_codex_home / 'auth.json').read_text(encoding='utf-8') == '{"auth":"refreshed-test-auth"}'
+
+
+def test_codex_app_server_rejects_inactive_narrator_permission_profile(monkeypatch):
+    messages = _completed_app_server_messages('This must not run.')
+    messages[1]['result']['activePermissionProfile'] = None
+    process = _CompletedAppServerProcess(messages)
+    monkeypatch.setenv('AIDM_CODEX_ACCESS_TOKEN', 'dedicated-test-token')
+    monkeypatch.delenv('CODEX_ACCESS_TOKEN', raising=False)
+    monkeypatch.setattr(codex_runtime.shutil, 'which', lambda _executable: '/usr/local/bin/codex')
+    monkeypatch.setattr(
+        CodexCliProvider,
+        '_start_app_server_process',
+        staticmethod(lambda _command, *, cwd, env: process),
+    )
+
+    provider = CodexCliProvider(executable='codex')
+    monkeypatch.setattr(
+        provider,
+        '_invoke',
+        lambda _prompt, *, deadline: (_ for _ in ()).throw(
+            AssertionError(f'permission failures must not fall back before {deadline}')
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match='narrator permission profile'):
+        list(provider.stream(ProviderRequest(prompt='Narrate safely.')))
+
+
+def test_codex_app_server_allows_retryable_error_notifications(monkeypatch):
+    messages = _completed_app_server_messages('Recovered ', 'stream.')
+    messages.insert(
+        3,
+        {
+            'method': 'error',
+            'params': {
+                'threadId': 'thread_test',
+                'turnId': 'turn_test',
+                'error': {'message': 'transport reconnecting'},
+                'willRetry': True,
+            },
+        },
+    )
+    process = _CompletedAppServerProcess(messages)
+    monkeypatch.setenv('AIDM_CODEX_ACCESS_TOKEN', 'dedicated-test-token')
+    monkeypatch.delenv('CODEX_ACCESS_TOKEN', raising=False)
+    monkeypatch.setattr(codex_runtime.shutil, 'which', lambda _executable: '/usr/local/bin/codex')
+    monkeypatch.setattr(
+        CodexCliProvider,
+        '_start_app_server_process',
+        staticmethod(lambda _command, *, cwd, env: process),
+    )
+
+    chunks = list(CodexCliProvider(executable='codex').stream(ProviderRequest(prompt='Recover.')))
+
+    assert chunks == ['Recovered ', 'stream.']
+
+
+def test_codex_app_server_buffers_phase_unknown_commentary(monkeypatch):
+    final_messages = _completed_app_server_messages('Player-visible answer.')
+    commentary_messages = [
+        {
+            'method': 'item/started',
+            'params': {
+                'threadId': 'thread_test',
+                'turnId': 'turn_test',
+                'item': {'id': 'item_commentary', 'type': 'agentMessage', 'text': ''},
+            },
+        },
+        {
+            'method': 'item/agentMessage/delta',
+            'params': {
+                'threadId': 'thread_test',
+                'turnId': 'turn_test',
+                'itemId': 'item_commentary',
+                'delta': 'INTERNAL_COMMENTARY_CANARY',
+            },
+        },
+        {
+            'method': 'item/completed',
+            'params': {
+                'threadId': 'thread_test',
+                'turnId': 'turn_test',
+                'item': {
+                    'id': 'item_commentary',
+                    'type': 'agentMessage',
+                    'text': 'INTERNAL_COMMENTARY_CANARY',
+                    'phase': 'commentary',
+                },
+            },
+        },
+    ]
+    process = _CompletedAppServerProcess(
+        [*final_messages[:3], *commentary_messages, *final_messages[3:]]
+    )
+    monkeypatch.setenv('AIDM_CODEX_ACCESS_TOKEN', 'dedicated-test-token')
+    monkeypatch.delenv('CODEX_ACCESS_TOKEN', raising=False)
+    monkeypatch.setattr(codex_runtime.shutil, 'which', lambda _executable: '/usr/local/bin/codex')
+    monkeypatch.setattr(
+        CodexCliProvider,
+        '_start_app_server_process',
+        staticmethod(lambda _command, *, cwd, env: process),
+    )
+
+    chunks = list(CodexCliProvider(executable='codex').stream(ProviderRequest(prompt='Narrate.')))
+
+    assert chunks == ['Player-visible answer.']
+    assert 'INTERNAL_COMMENTARY_CANARY' not in ''.join(chunks)
+
+
+def test_codex_app_server_streams_phase_unknown_dm_final_message(monkeypatch):
+    messages = _completed_app_server_messages('Legacy ', 'streamed final.')
+    messages[3]['params']['item'].pop('phase')
+    messages[-2]['params']['item'].pop('phase')
+    process = _CompletedAppServerProcess(messages)
+    monkeypatch.setenv('AIDM_CODEX_ACCESS_TOKEN', 'dedicated-test-token')
+    monkeypatch.delenv('CODEX_ACCESS_TOKEN', raising=False)
+    monkeypatch.setattr(codex_runtime.shutil, 'which', lambda _executable: '/usr/local/bin/codex')
+    monkeypatch.setattr(
+        CodexCliProvider,
+        '_start_app_server_process',
+        staticmethod(lambda _command, *, cwd, env: process),
+    )
+
+    chunks = list(
+        CodexCliProvider(executable='codex', prompt_role='dm').stream(
+            ProviderRequest(prompt='Narrate.')
+        )
+    )
+
+    assert chunks == ['Legacy ', 'streamed final.']
+
+
+def test_codex_app_server_auth_rotation_does_not_overwrite_external_refresh(tmp_path):
+    source_auth = tmp_path / 'source-auth.json'
+    runtime_auth = tmp_path / 'runtime-auth.json'
+    original_payload = b'{"auth":"original"}'
+    source_auth.write_bytes(original_payload)
+    runtime_auth.write_bytes(b'{"auth":"runtime-refresh"}')
+    source_auth.write_bytes(b'{"auth":"external-refresh"}')
+
+    persisted = CodexCliProvider._persist_runtime_auth(
+        runtime_auth,
+        source_auth,
+        original_payload,
+    )
+
+    assert persisted is False
+    assert source_auth.read_bytes() == b'{"auth":"external-refresh"}'
+
+
+def test_codex_cli_provider_stream_falls_back_to_completed_exec_before_first_delta(monkeypatch):
+    provider = CodexCliProvider(executable='codex')
+    deadlines = []
+
+    def fail_before_delta(_prompt, *, deadline):
+        deadlines.append(deadline)
+        raise RuntimeError('app-server protocol unavailable')
+        yield  # pragma: no cover
+
+    def completed_fallback(_prompt, *, deadline):
+        deadlines.append(deadline)
+        return 'Completed fallback.'
+
+    monkeypatch.setattr(provider, '_stream_app_server', fail_before_delta)
+    monkeypatch.setattr(provider, '_invoke', completed_fallback)
+
+    assert list(provider.stream(ProviderRequest(prompt='Narrate.'))) == ['Completed fallback.']
+    assert len(deadlines) == 2
+    assert deadlines[0] == deadlines[1]
+
+
+def test_codex_cli_provider_stream_does_not_duplicate_after_partial_failure(monkeypatch):
+    provider = CodexCliProvider(executable='codex')
+
+    def fail_after_delta(_prompt, *, deadline):
+        del deadline
+        yield 'Partial text.'
+        raise RuntimeError('stream interrupted')
+
+    monkeypatch.setattr(provider, '_stream_app_server', fail_after_delta)
+    monkeypatch.setattr(
+        provider,
+        '_invoke',
+        lambda _prompt, *, deadline: (_ for _ in ()).throw(
+            AssertionError(f'batch fallback must not duplicate partial text before {deadline}')
+        ),
+    )
+
+    stream = provider.stream(ProviderRequest(prompt='Narrate.'))
+    assert next(stream) == 'Partial text.'
+    with pytest.raises(RuntimeError, match='stream interrupted'):
+        next(stream)
+
+
+def test_codex_app_server_final_item_is_authoritative(monkeypatch, tmp_path):
+    source_codex_home = tmp_path / 'source-codex-home'
+    source_codex_home.mkdir()
+    (source_codex_home / 'auth.json').write_text('{"auth":"fake-test-auth"}', encoding='utf-8')
+    monkeypatch.setenv('AIDM_CODEX_HOME', str(source_codex_home))
+    monkeypatch.delenv('AIDM_CODEX_ACCESS_TOKEN', raising=False)
+    monkeypatch.delenv('CODEX_ACCESS_TOKEN', raising=False)
+    monkeypatch.setattr(codex_runtime.shutil, 'which', lambda _executable: '/usr/local/bin/codex')
+
+    process = _CompletedAppServerProcess(
+        _completed_app_server_messages('The door ', final_text='The door opens.')
+    )
+    monkeypatch.setattr(
+        CodexCliProvider,
+        '_start_app_server_process',
+        staticmethod(lambda _command, *, cwd, env: process),
+    )
+
+    chunks = list(CodexCliProvider(executable='codex').stream(ProviderRequest(prompt='Open the door.')))
+
+    assert chunks == ['The door ', 'opens.']
+    assert ''.join(chunks) == 'The door opens.'
+
+
+def test_codex_app_server_rejects_tool_items_without_leaking_payload(monkeypatch, tmp_path):
+    source_codex_home = tmp_path / 'source-codex-home'
+    source_codex_home.mkdir()
+    (source_codex_home / 'auth.json').write_text('{"auth":"fake-test-auth"}', encoding='utf-8')
+    monkeypatch.setenv('AIDM_CODEX_HOME', str(source_codex_home))
+    monkeypatch.delenv('AIDM_CODEX_ACCESS_TOKEN', raising=False)
+    monkeypatch.delenv('CODEX_ACCESS_TOKEN', raising=False)
+    monkeypatch.setattr(codex_runtime.shutil, 'which', lambda _executable: '/usr/local/bin/codex')
+
+    messages = [
+        {'id': 0, 'result': {'userAgent': 'codex-test'}},
+        {
+            'id': 1,
+            'result': {
+                'thread': {'id': 'thread_test'},
+                'approvalPolicy': 'never',
+                'sandbox': {'type': 'readOnly', 'networkAccess': False},
+                'activePermissionProfile': {'id': 'aidm_narrator', 'extends': ':read-only'},
+            },
+        },
+        {'id': 2, 'result': {'turn': {'id': 'turn_test', 'status': 'inProgress', 'items': []}}},
+        {
+            'method': 'item/started',
+            'params': {
+                'threadId': 'thread_test',
+                'turnId': 'turn_test',
+                'startedAtMs': 1,
+                'item': {
+                    'id': 'item_tool',
+                    'type': 'commandExecution',
+                    'command': 'printenv',
+                    'aggregatedOutput': 'SECRET_TOOL_OUTPUT_CANARY',
+                },
+            },
+        },
+    ]
+    process = _CompletedAppServerProcess(messages)
+    monkeypatch.setattr(
+        CodexCliProvider,
+        '_start_app_server_process',
+        staticmethod(lambda _command, *, cwd, env: process),
+    )
+
+    provider = CodexCliProvider(executable='codex')
+    monkeypatch.setattr(
+        provider,
+        '_invoke',
+        lambda _prompt, *, deadline: (_ for _ in ()).throw(
+            AssertionError(f'policy failures must not fall back before {deadline}')
+        ),
+    )
+    with pytest.raises(RuntimeError, match='disabled tool') as exc_info:
+        list(provider.stream(ProviderRequest(prompt='Do not execute tools.')))
+
+    assert 'SECRET_TOOL_OUTPUT_CANARY' not in str(exc_info.value)
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='process-group cleanup is POSIX-specific')
+def test_codex_app_server_stream_close_terminates_process_group(monkeypatch, tmp_path):
+    child_pid_file = tmp_path / 'child.pid'
+    fake_codex = tmp_path / 'fake-codex'
+    fake_codex.write_text(
+        '#!/bin/sh\n'
+        'IFS= read -r initialize\n'
+        "printf '%s\\n' '{\"id\":0,\"result\":{}}'\n"
+        'IFS= read -r initialized\n'
+        'IFS= read -r thread_start\n'
+        "printf '%s\\n' '{\"id\":1,\"result\":{\"thread\":{\"id\":\"thread_test\"},\"approvalPolicy\":\"never\",\"sandbox\":{\"type\":\"readOnly\",\"networkAccess\":false},\"activePermissionProfile\":{\"id\":\"aidm_narrator\",\"extends\":\":read-only\"}}}'\n"
+        'IFS= read -r turn_start\n'
+        "printf '%s\\n' '{\"id\":2,\"result\":{\"turn\":{\"id\":\"turn_test\",\"status\":\"inProgress\",\"items\":[]}}}'\n"
+        "printf '%s\\n' '{\"method\":\"item/started\",\"params\":{\"threadId\":\"thread_test\",\"turnId\":\"turn_test\",\"startedAtMs\":1,\"item\":{\"id\":\"item_agent\",\"type\":\"agentMessage\",\"text\":\"\",\"phase\":\"final_answer\"}}}'\n"
+        "printf '%s\\n' '{\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"thread_test\",\"turnId\":\"turn_test\",\"itemId\":\"item_agent\",\"delta\":\"First chunk.\"}}'\n"
+        'sleep 60 &\n'
+        'child_pid=$!\n'
+        f"printf '%s\\n' \"$child_pid\" > {str(child_pid_file)!r}\n"
+        'wait "$child_pid"\n',
+        encoding='utf-8',
+    )
+    fake_codex.chmod(0o755)
+    monkeypatch.setenv('AIDM_CODEX_ACCESS_TOKEN', 'dedicated-test-token')
+    monkeypatch.delenv('CODEX_ACCESS_TOKEN', raising=False)
+
+    stream = CodexCliProvider(executable=str(fake_codex), timeout_seconds=30).stream(
+        ProviderRequest(prompt='Narrate until cancelled.')
+    )
+    assert next(stream) == 'First chunk.'
+
+    deadline = time.monotonic() + 2
+    while not child_pid_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert child_pid_file.exists()
+    child_pid = int(child_pid_file.read_text(encoding='utf-8').strip())
+
+    stream.close()
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.02)
+    else:
+        pytest.fail(f'app-server child process {child_pid} survived stream cancellation')
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='process-group cleanup is POSIX-specific')
+def test_codex_app_server_cleanup_kills_child_after_launcher_exits(tmp_path):
+    child_pid_file = tmp_path / 'orphan-child.pid'
+    child_code = (
+        'import pathlib, subprocess, sys; '
+        'child=subprocess.Popen(["sleep", "60"]); '
+        'pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding="utf-8")'
+    )
+    process = subprocess.Popen(
+        [sys.executable, '-c', child_code, str(child_pid_file)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    process.wait(timeout=5)
+    child_pid = int(child_pid_file.read_text(encoding='utf-8'))
+
+    CodexCliProvider._stop_app_server_process(process)
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.02)
+    else:
+        pytest.fail(f'app-server child process {child_pid} survived launcher cleanup')
 
 
 def test_codex_cli_provider_access_token_uses_disposable_codex_home(monkeypatch, tmp_path):
@@ -970,7 +1433,7 @@ def test_codex_cli_provider_saved_auth_lock_respects_overall_timeout(monkeypatch
     with pytest.raises(RuntimeError, match='timed out after 2 seconds'):
         provider.generate(ProviderRequest(prompt='Do not wait forever for saved auth.'))
 
-    assert lock_timeouts == [2]
+    assert lock_timeouts == [pytest.approx(2, rel=0, abs=0.05)]
 
 
 def test_codex_cli_provider_rejects_tool_events_without_leaking_output(monkeypatch, tmp_path):
@@ -1451,7 +1914,7 @@ def test_query_dm_function_stream_uses_generate_chunking_for_nvidia(monkeypatch)
     assert len(chunks) >= 1
 
 
-def test_query_dm_function_stream_chunks_completed_codex_response(monkeypatch, tmp_path):
+def test_query_dm_function_stream_preserves_codex_app_server_chunks(monkeypatch, tmp_path):
     provider = CodexCliProvider(
         model_name='gpt-5.5',
         executable='codex',
@@ -1459,27 +1922,43 @@ def test_query_dm_function_stream_chunks_completed_codex_response(monkeypatch, t
         reasoning_effort='medium',
         prompt_role='dm',
     )
-    completed_text = (
-        'The bronze doors grind open beneath the mountain. '
-        'Cold blue light spills across the floor, revealing a stairway that descends into mist. '
-        'Somewhere below, a bell answers your arrival.'
+    provider_chunks = ['The bronze doors ', 'grind open ', 'beneath the mountain.']
+    monkeypatch.setattr(provider, 'stream', lambda _request: iter(provider_chunks))
+    monkeypatch.setattr(
+        provider,
+        'generate',
+        lambda _request: (_ for _ in ()).throw(AssertionError('progressive Codex must not use generate')),
     )
-
-    monkeypatch.setenv('AIDM_ENV', 'test')
-    monkeypatch.delenv('AIDM_BUFFERED_STREAM_CHUNK_DELAY_MS', raising=False)
-    monkeypatch.setattr(provider, '_invoke', lambda _prompt: completed_text)
     monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
-
-    def unexpected_sleep(_delay):
-        raise AssertionError('test environments should not pace buffered chunks by default')
-
-    monkeypatch.setattr('aidm_server.llm.time.sleep', unexpected_sleep)
 
     chunks = list(query_dm_function_stream('hello', '{"campaign":"test"}'))
 
-    assert len(chunks) >= 2
-    assert ''.join(chunks) == completed_text
-    assert all(0 < len(chunk) <= DISPLAY_STREAM_CHUNK_CHARS for chunk in chunks)
+    assert chunks == provider_chunks
+
+
+def test_query_dm_function_stream_does_not_append_fallback_after_partial_failure(
+    monkeypatch,
+    tmp_path,
+):
+    provider = CodexCliProvider(
+        model_name='gpt-5.5',
+        executable='codex',
+        workdir=str(tmp_path),
+        prompt_role='dm',
+    )
+
+    def partial_stream(_request):
+        yield 'A partial narration.'
+        raise RuntimeError('provider stream interrupted')
+
+    monkeypatch.setattr(provider, 'stream', partial_stream)
+    monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
+
+    stream = query_dm_function_stream('hello', '{"campaign":"test"}')
+
+    assert next(stream) == 'A partial narration.'
+    with pytest.raises(RuntimeError, match='provider stream interrupted'):
+        next(stream)
 
 
 def test_query_dm_function_stream_preserves_true_provider_chunks(monkeypatch):
@@ -1506,18 +1985,25 @@ def test_query_dm_function_stream_preserves_true_provider_chunks(monkeypatch):
 
 
 def test_buffered_stream_delay_override_paces_chunks(monkeypatch, tmp_path):
-    provider = CodexCliProvider(
-        model_name='gpt-5.5',
-        executable='codex',
-        workdir=str(tmp_path),
-        prompt_role='dm',
+    provider = NvidiaChatProvider(
+        model_name='moonshotai/kimi-k2.5',
+        api_key='nvapi-test',
+        invoke_url='https://integrate.api.nvidia.com/v1',
     )
     completed_text = ' '.join(f'word-{index:02d}' for index in range(60))
     sleeps = []
 
     monkeypatch.setenv('AIDM_ENV', 'production')
     monkeypatch.setenv('AIDM_BUFFERED_STREAM_CHUNK_DELAY_MS', '7.5')
-    monkeypatch.setattr(provider, '_invoke', lambda _prompt: completed_text)
+    monkeypatch.setattr(
+        provider,
+        'generate',
+        lambda _request: ProviderResponse(
+            text=completed_text,
+            provider='nvidia',
+            model='moonshotai/kimi-k2.5',
+        ),
+    )
     monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
     monkeypatch.setattr('aidm_server.llm.time.sleep', sleeps.append)
 
@@ -1536,10 +2022,11 @@ def test_codex_completion_failure_preserves_emergency_fallback_metadata(monkeypa
         prompt_role='dm',
     )
 
-    def fail_invoke(_prompt):
+    def fail_invoke(_prompt, **_kwargs):
         raise RuntimeError('private upstream token=must-not-leak')
 
     monkeypatch.setenv('AIDM_ENV', 'test')
+    monkeypatch.setattr(provider, '_stream_app_server', fail_invoke)
     monkeypatch.setattr(provider, '_invoke', fail_invoke)
     monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
 
@@ -1643,8 +2130,8 @@ def test_query_dm_function_stream_marks_provider_exception_fallback_and_redacts_
 
 def test_buffered_stream_pacing_has_a_total_latency_cap(monkeypatch):
     class LongCompletionProvider:
-        provider_name = 'codex_cli'
-        model_name = 'gpt-5.6-sol-medium'
+        provider_name = 'nvidia'
+        model_name = 'moonshotai/kimi-k2.5'
 
         def generate(self, _request):
             return ProviderResponse(
