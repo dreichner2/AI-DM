@@ -52,6 +52,16 @@ Send testers:
   coherence, fun, and rules scores for the active turn.
 - Keep sessions short enough that operators can review incidents after each run.
 - Ask an operator before using the same account/table from multiple browsers.
+- Dice animation displays the result already generated and recorded by the
+  server; closing the animation does not cancel a submitted turn or change its
+  result.
+- If the connection drops before confirmation, wait for reconnection and use
+  **Retry safely**. It reuses the original request identity so the turn or roll
+  cannot be applied twice. Do not retype the action as a new turn unless the
+  original draft has been deliberately cleared.
+- Report a roll that changes after reconnect, a repeated narration/state change,
+  or a retry that never reconciles. Include the approximate time and session,
+  but never copy account tokens or private character data into the report.
 
 ## Known Limitations
 

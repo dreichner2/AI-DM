@@ -27,12 +27,12 @@ function createStorageMock(): Storage {
   }
 }
 
-function storeMusicLayout(width: number, height: number) {
+function storeMusicLayout(width: number, height: number, left = 24, top = 24) {
   localStorage.setItem(
     'aidm:sceneMusicLayout',
     JSON.stringify({
-      left: 24,
-      top: 24,
+      left,
+      top,
       width,
       height,
     }),
@@ -44,6 +44,22 @@ function installMatchMediaMock(matches: boolean) {
     'matchMedia',
     vi.fn((query: string) => ({
       matches,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  )
+}
+
+function installMatchMediaByQuery(matchQuery: (query: string) => boolean) {
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((query: string) => ({
+      matches: matchQuery(query),
       media: query,
       onchange: null,
       addEventListener: vi.fn(),
@@ -113,6 +129,7 @@ describe('SceneMusicPlayer', () => {
   })
 
   it('filters tracks by scene tag and shows the active now-playing metadata', async () => {
+    storeMusicLayout(560, 178)
     render(<SceneMusicPlayer />)
 
     const nowPlaying = screen.getByLabelText('Scene music player').querySelector('.scene-music-now')
@@ -347,7 +364,45 @@ describe('SceneMusicPlayer', () => {
     expect(screen.queryByRole('button', { name: 'Resize music player' })).not.toBeInTheDocument()
   })
 
-  it('places the default floating panel inside the session board bounds', async () => {
+  it('docks by default and exposes accessible full floating controls on demand', async () => {
+    render(<SceneMusicPlayer />)
+
+    const player = screen.getByLabelText('Scene music player')
+    expect(player).toHaveClass('is-inline-static', 'is-default-docked', 'is-full')
+    expect(player.style.left).toBe('')
+    expect(screen.queryByRole('button', { name: 'Move music player' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Float full music controls' }))
+
+    await waitFor(() => expect(player).not.toHaveClass('is-inline-static'))
+    expect(screen.getByRole('button', { name: 'Move music player' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Resize music player' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Dock music player' })).toBeInTheDocument()
+    await waitFor(() => expect(localStorage.getItem('aidm:sceneMusicLayout')).not.toBeNull())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dock music player' }))
+
+    await waitFor(() => expect(player).toHaveClass('is-inline-static', 'is-default-docked'))
+    expect(localStorage.getItem('aidm:sceneMusicLayout')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Float full music controls' })).toBeInTheDocument()
+  })
+
+  it('docks the full transport at short desktop heights instead of obscuring the turn feed', () => {
+    installMatchMediaByQuery((query) => query.includes('max-height: 700px'))
+    storeMusicLayout(560, 178)
+    render(<SceneMusicPlayer />)
+
+    const player = screen.getByLabelText('Scene music player')
+    expect(player).toHaveClass('is-inline-static', 'is-short-static', 'is-full')
+    expect(player).not.toHaveClass('is-mobile-static')
+    expect(player.style.left).toBe('')
+    expect(player.style.top).toBe('')
+    expect(screen.getByText('Scene music')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Move music player' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Resize music player' })).not.toBeInTheDocument()
+  })
+
+  it('keeps a saved floating panel inside the session board bounds', async () => {
     const sessionBoard = document.createElement('main')
     sessionBoard.className = 'session-board'
     sessionBoard.getBoundingClientRect = vi.fn(() =>
@@ -356,6 +411,7 @@ describe('SceneMusicPlayer', () => {
     document.body.append(sessionBoard)
 
     try {
+      storeMusicLayout(560, 178)
       render(<SceneMusicPlayer />)
       const player = screen.getByLabelText('Scene music player')
 
@@ -450,6 +506,7 @@ describe('SceneMusicPlayer', () => {
   })
 
   it('moves and resizes the floating player with pointer controls', async () => {
+    storeMusicLayout(560, 178, 120, 120)
     render(<SceneMusicPlayer />)
     const player = screen.getByLabelText('Scene music player')
     const initialLeft = Number.parseFloat(player.style.left)

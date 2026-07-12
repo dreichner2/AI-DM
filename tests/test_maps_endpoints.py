@@ -62,6 +62,17 @@ def test_create_map_validates_request_body_and_fields(client, app):
     assert invalid_map_data_response.status_code == 400
     assert invalid_map_data_response.get_json()['error_code'] == 'validation_error'
 
+    invalid_visibility_response = client.post(
+        '/api/maps',
+        json={
+            'title': 'Valid',
+            'world_id': ids['world_id'],
+            'visibility': 'everyone_and_the_dm',
+        },
+    )
+    assert invalid_visibility_response.status_code == 400
+    assert invalid_visibility_response.get_json()['error_code'] == 'validation_error'
+
     orphan_response = client.post('/api/maps', json={'title': 'Ownerless Map', 'map_data': {}})
     assert orphan_response.status_code == 400
     assert orphan_response.get_json()['error_code'] == 'validation_error'
@@ -92,6 +103,22 @@ def test_update_map_validates_mutable_fields(client, app):
     invalid_map_data_response = client.patch(f'/api/maps/{map_id}', json={'map_data': 'not-object'})
     assert invalid_map_data_response.status_code == 400
     assert invalid_map_data_response.get_json()['error_code'] == 'validation_error'
+
+    invalid_visibility_response = client.patch(f'/api/maps/{map_id}', json={'visibility': 123})
+    assert invalid_visibility_response.status_code == 400
+    assert invalid_visibility_response.get_json()['error_code'] == 'validation_error'
+
+    detail_response = client.get(f'/api/maps/{map_id}')
+    assert detail_response.status_code == 200
+    assert detail_response.get_json()['visibility'] == 'player'
+
+    hide_response = client.patch(f'/api/maps/{map_id}', json={'visibility': 'dm_only'})
+    assert hide_response.status_code == 200
+    assert client.get(f'/api/maps/{map_id}').get_json()['visibility'] == 'dm'
+
+    reveal_response = client.patch(f'/api/maps/{map_id}', json={'visibility': 'revealed'})
+    assert reveal_response.status_code == 200
+    assert client.get(f'/api/maps/{map_id}').get_json()['visibility'] == 'player'
 
 
 def test_list_maps_returns_404_for_missing_campaign(client):

@@ -142,18 +142,22 @@
       <h1>{{ title }}</h1>
       <p>{{ description }}</p>
       <div class="summary" aria-label="Chronicle summary">
-        <div><strong>Campaign</strong>{{ campaign.campaign_id }}</div>
         <div><strong>Chapters</strong>{{ chapter_count }}</div>
         <div><strong>Turns</strong>{{ turn_count }}</div>
+        {% if include_director_metadata %}
+        <div><strong>Campaign</strong>{{ campaign.campaign_id }}</div>
         <div><strong>Chapter Source</strong>{{ chapter_source }}</div>
         <div><strong>Exported</strong>{{ exported_at }}</div>
+        {% endif %}
       </div>
     </header>
 
     {% for chapter in chapters %}
-    <section class="chapter" data-chapter-source="{{ chapter.source }}">
+    <section class="chapter"{% if include_director_metadata %} data-chapter-source="{{ chapter.source }}"{% endif %}>
       <h2>Chapter {{ chapter.index }}: {{ chapter.title }}</h2>
+      {% if include_director_metadata and chapter.subtitle %}
       <p class="chapter-meta">{{ chapter.subtitle }}</p>
+      {% endif %}
       {% if chapter.commentary %}
       <details class="commentary" open>
         <summary>Director's Commentary</summary>
@@ -167,7 +171,9 @@
       {% if chapter.turns %}
         {% for turn in chapter.turns %}
         <article class="turn">
+          {% if include_director_metadata %}
           <div class="turn-meta">Turn {{ turn.turn_id }} | {{ turn.session_name }} | {{ turn.created_at }}</div>
+          {% endif %}
           {% if turn.player_input %}
           <blockquote class="player-input">
             {% for line in turn.player_input %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}
@@ -193,7 +199,9 @@
     {% if epilogue %}
     <section class="chapter epilogue" data-chapter-source="epilogue">
       <h2>Epilogue</h2>
+      {% if include_director_metadata %}
       <p class="chapter-meta">Stored session summary or recent line-log tail</p>
+      {% endif %}
       {% for paragraph in epilogue %}
       <p>{% for line in paragraph %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</p>
       {% endfor %}

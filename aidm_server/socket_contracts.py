@@ -7,6 +7,11 @@ from typing import Any
 
 from aidm_server.action_intent import ACTION_ID_RE, has_reserved_admin_prefix, validate_action_intent
 from aidm_server.errors import build_error
+from aidm_server.roll_visibility import (
+    public_action_intent_payload,
+    public_roll_payload,
+    public_rules_hint_payload,
+)
 from aidm_server.validation import coerce_int
 
 
@@ -77,6 +82,7 @@ def new_message_payload(
     context_version: str,
     action_intent: dict[str, Any] | None,
     client_message_id: str | None,
+    include_private_provenance: bool,
     turn_number: int | None = None,
 ) -> dict[str, Any]:
     payload = {
@@ -84,9 +90,13 @@ def new_message_payload(
         'speaker': speaker,
         'turn_id': turn_id,
         'requires_roll': requires_roll,
-        'rules_hint': rules_hint,
+        'rules_hint': rules_hint if include_private_provenance else public_rules_hint_payload(rules_hint),
         'context_version': context_version,
-        'action_intent': action_intent,
+        'action_intent': (
+            action_intent
+            if include_private_provenance
+            else public_action_intent_payload(action_intent)
+        ),
         'client_message_id': client_message_id,
     }
     if turn_number is not None:
@@ -115,6 +125,60 @@ def roll_required_payload(
     return payload
 
 
+def roll_resolved_payload(
+    *,
+    session_id: int,
+    turn_id: int,
+    player_id: int,
+    client_message_id: str | None,
+    pending_turn_id: int | None,
+    roll: dict[str, Any],
+    include_private_provenance: bool,
+) -> dict[str, Any]:
+    """Build a public room result or the acting player's private receipt."""
+
+    projected_roll = roll if include_private_provenance else public_roll_payload(roll)
+    payload = {
+        'session_id': session_id,
+        'turn_id': turn_id,
+        'player_id': player_id,
+        'client_message_id': client_message_id,
+        'pending_turn_id': pending_turn_id,
+        'rule_type': projected_roll.get('rule_type'),
+        'die': projected_roll.get('die'),
+        'mode': projected_roll.get('mode'),
+        'rolls': list(projected_roll.get('rolls') or []),
+        'kept': projected_roll.get('kept'),
+        'modifier': projected_roll.get('modifier'),
+        'total': projected_roll.get('total'),
+        'reason': projected_roll.get('reason'),
+        'result_visibility': projected_roll.get('result_visibility'),
+        'authoritative': True,
+    }
+    if include_private_provenance:
+        payload.update(
+            {
+                'ability': roll.get('ability') if isinstance(roll.get('ability'), dict) else None,
+                'proficiency': (
+                    roll.get('proficiency')
+                    if isinstance(roll.get('proficiency'), dict)
+                    else {'bonus': 0, 'skills': []}
+                ),
+                'modifier_breakdown': (
+                    roll.get('modifier_breakdown')
+                    if isinstance(roll.get('modifier_breakdown'), dict)
+                    else {
+                        'ability_modifier': 0,
+                        'proficiency_bonus': 0,
+                        'wound_penalty': 0,
+                        'total': roll.get('modifier') or 0,
+                    }
+                ),
+            }
+        )
+    return payload
+
+
 def dm_response_start_payload(
     *,
     session_id: int,
@@ -128,7 +192,7 @@ def dm_response_start_payload(
         'session_id': session_id,
         'turn_id': turn_id,
         'requires_roll': requires_roll,
-        'rules_hint': rules_hint,
+        'rules_hint': public_rules_hint_payload(rules_hint),
         'context_version': context_version,
     }
     if turn_number is not None:

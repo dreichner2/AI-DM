@@ -177,7 +177,12 @@ class SocketRuntime:
     def connection_account_context(self, sid: str) -> tuple[int | None, bool]:
         existing = self.state.connection(sid) or {}
         account_id = coerce_int(existing.get('account_id'))
-        return account_id, workspace_role_is_admin(str(existing.get('workspace_role') or ''))
+        can_access_all_players = (
+            workspace_role_is_admin(str(existing.get('workspace_role') or ''))
+            or bool(existing.get('global_operator'))
+            or (account_id is None and not bool(existing.get('credential_present')))
+        )
+        return account_id, can_access_all_players
 
     def active_player_payloads(self, session_id: int) -> list[dict]:
         return self.state.active_player_payloads(session_id)

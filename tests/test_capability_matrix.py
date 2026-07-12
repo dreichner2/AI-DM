@@ -133,6 +133,12 @@ def test_health_bypass_fails_closed_when_its_public_classification_is_missing(ap
 
 
 def test_sensitive_read_routes_are_explicitly_operator_scoped():
+    assert HTTP_ENDPOINT_CAPABILITIES[('segments.list_segments', 'GET')] == 'dm_authoring'
+    assert HTTP_ENDPOINT_CAPABILITIES[('segments.get_segment', 'GET')] == 'dm_authoring'
+    assert HTTP_ENDPOINT_CAPABILITIES[('campaigns.get_campaign_canon', 'GET')] == 'debug_read'
+    assert HTTP_ENDPOINT_CAPABILITIES[('creatures.get_campaign_bestiary', 'GET')] == 'debug_read'
+    assert HTTP_ENDPOINT_CAPABILITIES[('creatures.get_region_bestiary', 'GET')] == 'debug_read'
+    assert HTTP_ENDPOINT_CAPABILITIES[('creatures.get_core_bestiary', 'GET')] == 'player_read'
     assert HTTP_ENDPOINT_CAPABILITIES[('campaigns.list_installed_campaign_packs', 'GET')] == 'dm_authoring'
     assert HTTP_ENDPOINT_CAPABILITIES[('campaigns.get_installed_campaign_pack', 'GET')] == 'dm_authoring'
     assert HTTP_ENDPOINT_CAPABILITIES[('sessions.get_session_campaign_pack_commentary', 'GET')] == 'debug_read'

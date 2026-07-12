@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import pytest
+
 from aidm_server.database import db
 from aidm_server.character_state import apply_character_dc_adjustment, character_state_for_player
 from aidm_server.models import CampaignSegment, Player, safe_json_dumps
 from aidm_server.rules import RuleHint
-from aidm_server.rules import classify_player_action
+from aidm_server.rules import classify_player_action, player_message_reports_roll_result
 from aidm_server.segment_triggers import evaluate_segment_trigger
 from tests.helpers import seed_world_campaign_player_session
 
@@ -78,8 +80,8 @@ def test_rules_classifier_ignores_reported_threat_references():
 def test_rules_classifier_marks_resolved_when_roll_is_provided():
     hint = classify_player_action('I attack and rolled a d20: 17')
     assert hint.requires_roll is True
-    assert hint.roll_value == 17
-    assert hint.outcome_deferred is False
+    assert hint.roll_value is None
+    assert hint.outcome_deferred is True
 
 
 def test_rules_classifier_does_not_treat_food_roll_as_dice_check():
@@ -92,8 +94,35 @@ def test_rules_classifier_still_detects_explicit_generic_roll():
     hint = classify_player_action('I roll a d20: 19')
     assert hint.requires_roll is True
     assert hint.roll_type == 'check'
-    assert hint.roll_value == 19
-    assert hint.outcome_deferred is False
+    assert hint.roll_value is None
+    assert hint.outcome_deferred is True
+
+
+@pytest.mark.parametrize(
+    'message',
+    [
+        'I roll a d4: 4',
+        'I rolled d6 + 2: 5 = 7',
+        'I roll a d8-1: 7 = 6',
+        'I roll a d10: 9',
+        'I roll a d12 + 3: 11 = 14',
+        'I roll a d20+5: 20 = 25',
+        'I roll a d100: 99',
+    ],
+)
+def test_legacy_roll_result_signal_supports_all_valid_dice_and_totals(message):
+    assert player_message_reports_roll_result(message) is True
+
+    hint = classify_player_action(message)
+    assert hint.requires_roll is True
+    assert hint.roll_type == 'check'
+    assert hint.roll_value is None
+    assert hint.outcome_deferred is True
+
+
+def test_legacy_roll_result_signal_requires_a_claimed_outcome():
+    assert player_message_reports_roll_result('I roll a d100') is False
+    assert player_message_reports_roll_result('I give Danny one roll and one gold') is False
 
 
 def test_rules_classifier_detects_thieves_tools_context():
@@ -151,7 +180,7 @@ def test_character_state_exposes_and_applies_skill_proficiencies(app):
         adjusted = apply_character_dc_adjustment(hint, player)
 
     assert state['skill_proficiencies'] == ['persuasion']
-    assert adjusted.dc_hint == '11 (base 15, total mod +4, CHA 14 mod +2, proficiency +2 (persuasion))'
+    assert adjusted.dc_hint == '15 (roll mod +4, CHA 14 mod +2, proficiency +2 (persuasion))'
 
 
 def test_segment_keywords_trigger():

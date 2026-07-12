@@ -71,6 +71,7 @@ def export_campaign_chronicle_html(
     campaign: Campaign,
     *,
     include_archived_sessions: bool = False,
+    include_director_metadata: bool,
 ) -> ChronicleExport:
     sessions = _campaign_sessions(campaign, include_archived_sessions=include_archived_sessions)
     return _export_chronicle(
@@ -79,16 +80,22 @@ def export_campaign_chronicle_html(
         scope_label='Campaign',
         filename_scope='campaign',
         resource_id=campaign.campaign_id,
+        include_director_metadata=include_director_metadata,
     )
 
 
-def export_session_chronicle_html(session_obj: Session) -> ChronicleExport:
+def export_session_chronicle_html(
+    session_obj: Session,
+    *,
+    include_director_metadata: bool,
+) -> ChronicleExport:
     return _export_chronicle(
         campaign=session_obj.campaign,
         sessions=[session_obj],
         scope_label='Session',
         filename_scope='session',
         resource_id=session_obj.session_id,
+        include_director_metadata=include_director_metadata,
     )
 
 
@@ -106,10 +113,15 @@ def _export_chronicle(
     scope_label: str,
     filename_scope: str,
     resource_id: int,
+    include_director_metadata: bool,
 ) -> ChronicleExport:
     session_names = _session_names(sessions)
     turn_entries = _turn_entries(sessions, session_names)
-    chapters = _chapters_from_progress_events(sessions, turn_entries)
+    chapters = _chapters_from_progress_events(
+        sessions,
+        turn_entries,
+        include_director_metadata=include_director_metadata,
+    )
     if chapters is None:
         chapters = _chapters_from_session_boundaries(sessions, session_names, turn_entries)
 
@@ -119,6 +131,7 @@ def _export_chronicle(
         chapters=chapters,
         epilogue=_epilogue_text(sessions),
         turn_count=len(turn_entries),
+        include_director_metadata=include_director_metadata,
     )
     return ChronicleExport(
         html=html,
@@ -161,8 +174,17 @@ def _turn_entries(sessions: list[Session], session_names: dict[int, str]) -> lis
     return entries
 
 
-def _chapters_from_progress_events(sessions: list[Session], turn_entries: list[_TurnEntry]) -> tuple[_Chapter, ...] | None:
-    markers = _progress_markers(sessions, turn_entries)
+def _chapters_from_progress_events(
+    sessions: list[Session],
+    turn_entries: list[_TurnEntry],
+    *,
+    include_director_metadata: bool,
+) -> tuple[_Chapter, ...] | None:
+    markers = _progress_markers(
+        sessions,
+        turn_entries,
+        include_director_metadata=include_director_metadata,
+    )
     if not markers:
         return None
 
@@ -230,7 +252,12 @@ def _chapters_from_session_boundaries(
     return tuple(chapters)
 
 
-def _progress_markers(sessions: list[Session], turn_entries: list[_TurnEntry]) -> list[_ProgressMarker]:
+def _progress_markers(
+    sessions: list[Session],
+    turn_entries: list[_TurnEntry],
+    *,
+    include_director_metadata: bool,
+) -> list[_ProgressMarker]:
     session_ids = [session_obj.session_id for session_obj in sessions]
     if not session_ids:
         return []
@@ -245,7 +272,12 @@ def _progress_markers(sessions: list[Session], turn_entries: list[_TurnEntry]) -
         .all()
     )
     markers = [
-        _turn_progress_marker(event, turn_entries=turn_entries, checkpoint_titles=checkpoint_titles)
+        _turn_progress_marker(
+            event,
+            turn_entries=turn_entries,
+            checkpoint_titles=checkpoint_titles,
+            include_director_metadata=include_director_metadata,
+        )
         for event in turn_events
     ]
     markers = [marker for marker in markers if marker is not None]
@@ -258,7 +290,12 @@ def _progress_markers(sessions: list[Session], turn_entries: list[_TurnEntry]) -
         .all()
     )
     markers = [
-        _durable_progress_marker(event, turn_entries=turn_entries, checkpoint_titles=checkpoint_titles)
+        _durable_progress_marker(
+            event,
+            turn_entries=turn_entries,
+            checkpoint_titles=checkpoint_titles,
+            include_director_metadata=include_director_metadata,
+        )
         for event in durable_events
     ]
     markers = [marker for marker in markers if marker is not None]
@@ -292,20 +329,29 @@ def _durable_progress_marker(
     *,
     turn_entries: list[_TurnEntry],
     checkpoint_titles: dict[tuple[str, int | None, str], str],
+    include_director_metadata: bool,
 ) -> _ProgressMarker | None:
     boundary = _boundary_index(turn_entries, turn_id=event.turn_id, created_at=event.created_at)
     checkpoint_id = _text(event.to_checkpoint_id) or _text(event.from_checkpoint_id)
-    title = (
+    revealed_title = (
         checkpoint_titles.get(('pack_session', event.campaign_pack_session_id, checkpoint_id))
         if checkpoint_id
         else None
     )
-    title = title or _progress_title(checkpoint_id, event.action, event.reason)
-    subtitle = _progress_subtitle(
-        action=event.action,
-        reason=event.reason,
-        revision=event.progress_revision,
-        event_label=f'progress event {event.progress_event_id}',
+    title = revealed_title or (
+        _progress_title(checkpoint_id, event.action, event.reason)
+        if include_director_metadata
+        else 'Campaign Progress'
+    )
+    subtitle = (
+        _progress_subtitle(
+            action=event.action,
+            reason=event.reason,
+            revision=event.progress_revision,
+            event_label=f'progress event {event.progress_event_id}',
+        )
+        if include_director_metadata
+        else ''
     )
     return _ProgressMarker(
         boundary_index=boundary,
@@ -321,6 +367,7 @@ def _turn_progress_marker(
     *,
     turn_entries: list[_TurnEntry],
     checkpoint_titles: dict[tuple[str, int | None, str], str],
+    include_director_metadata: bool,
 ) -> _ProgressMarker | None:
     payload = safe_json_loads(event.payload_json, {})
     if not isinstance(payload, dict):
@@ -329,13 +376,21 @@ def _turn_progress_marker(
     checkpoint_id = _text(payload.get('toCheckpointId') or payload.get('to_checkpoint_id'))
     if not checkpoint_id:
         checkpoint_id = _text(payload.get('fromCheckpointId') or payload.get('from_checkpoint_id'))
-    title = checkpoint_titles.get(('session', event.session_id, checkpoint_id)) if checkpoint_id else None
-    title = title or _progress_title(checkpoint_id, payload.get('action'), payload.get('reason'))
-    subtitle = _progress_subtitle(
-        action=payload.get('action'),
-        reason=payload.get('reason'),
-        revision=payload.get('progressRevision') or payload.get('progress_revision'),
-        event_label=f'turn event {event.event_id}',
+    revealed_title = checkpoint_titles.get(('session', event.session_id, checkpoint_id)) if checkpoint_id else None
+    title = revealed_title or (
+        _progress_title(checkpoint_id, payload.get('action'), payload.get('reason'))
+        if include_director_metadata
+        else 'Campaign Progress'
+    )
+    subtitle = (
+        _progress_subtitle(
+            action=payload.get('action'),
+            reason=payload.get('reason'),
+            revision=payload.get('progressRevision') or payload.get('progress_revision'),
+            event_label=f'turn event {event.event_id}',
+        )
+        if include_director_metadata
+        else ''
     )
     return _ProgressMarker(
         boundary_index=boundary,
@@ -450,6 +505,7 @@ def _render_html(
     chapters: tuple[_Chapter, ...],
     epilogue: str,
     turn_count: int,
+    include_director_metadata: bool,
 ) -> str:
     exported_at = _isoformat(utc_now())
     chapter_source = 'campaign pack progress events' if any(
@@ -462,23 +518,39 @@ def _render_html(
         scope_label=scope_label,
         campaign=campaign,
         description=_text(campaign.description) or 'Recorded campaign chronicle.',
-        chapters=[_chapter_view(index, chapter) for index, chapter in enumerate(chapters, start=1)],
+        chapters=[
+            _chapter_view(
+                index,
+                chapter,
+                include_director_metadata=include_director_metadata,
+            )
+            for index, chapter in enumerate(chapters, start=1)
+        ],
         chapter_count=len(chapters),
         turn_count=turn_count,
         chapter_source=chapter_source,
         epilogue=_paragraphs(epilogue),
         exported_at=exported_at,
+        include_director_metadata=include_director_metadata,
     )
 
 
-def _chapter_view(index: int, chapter: _Chapter) -> dict[str, Any]:
+def _chapter_view(
+    index: int,
+    chapter: _Chapter,
+    *,
+    include_director_metadata: bool,
+) -> dict[str, Any]:
     return {
         'index': index,
         'title': chapter.title,
         'source': chapter.source,
-        'subtitle': chapter.subtitle,
-        'commentary': _chapter_commentary(chapter),
-        'turns': [_turn_view(entry) for entry in chapter.turns],
+        'subtitle': chapter.subtitle if include_director_metadata else '',
+        'commentary': _chapter_commentary(chapter) if include_director_metadata else [],
+        'turns': [
+            _turn_view(entry, include_director_metadata=include_director_metadata)
+            for entry in chapter.turns
+        ],
     }
 
 
@@ -539,12 +611,12 @@ def _chapter_commentary(chapter: _Chapter) -> list[str]:
     return notes
 
 
-def _turn_view(entry: _TurnEntry) -> dict[str, Any]:
+def _turn_view(entry: _TurnEntry, *, include_director_metadata: bool) -> dict[str, Any]:
     turn = entry.turn
     return {
-        'turn_id': turn.turn_id,
-        'session_name': entry.session_name,
-        'created_at': _isoformat(turn.created_at),
+        'turn_id': turn.turn_id if include_director_metadata else None,
+        'session_name': entry.session_name if include_director_metadata else '',
+        'created_at': _isoformat(turn.created_at) if include_director_metadata else '',
         'player_input': _lines(turn.player_input),
         'dm_paragraphs': _paragraphs(turn.dm_output),
     }

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import { X } from 'lucide-react'
+import type { RollResolvedPayload } from './gameActions'
 import {
   Body,
   ContactMaterial,
@@ -43,18 +44,24 @@ import {
   type Texture,
 } from 'three'
 
-type DiceRollStatus = 'rolling' | 'sending'
+type DiceRollStatus = 'requesting' | 'rolling' | 'resolved' | 'failed'
 
 type DiceRollDialogProps = {
   die: string
-  result: number
-  modifier: number
-  total: number
+  result: number | null
+  rolls: number[] | null
+  mode: 'normal' | 'advantage' | 'disadvantage'
+  modifier: number | null
+  total: number | null
+  provenance?: Pick<RollResolvedPayload, 'ability' | 'proficiency' | 'modifier_breakdown'> | null
   targetLabel?: string | null
   rollKey: number
   status: DiceRollStatus
+  dialogRef?: RefObject<HTMLElement | null>
+  error?: string
   onCancel: () => void
   onComplete: () => void
+  onRetry: () => void
 }
 
 type DiceAnimationEngine = 'scripted' | 'physics'
@@ -610,8 +617,8 @@ function ScriptedDiceCanvas({
     const resultQuaternion = createResultRestQuaternion(new Vector3(0, 0, 1), rollKey + result)
     const diceBounds = new Box3()
     const reduceMotion = prefersReducedMotion()
-    const duration = reduceMotion ? 320 : SCRIPTED_ROLL_DURATION_MS
-    const resultHold = reduceMotion ? 380 : RESULT_HOLD_MS
+    const duration = reduceMotion ? 80 : SCRIPTED_ROLL_DURATION_MS
+    const resultHold = reduceMotion ? 160 : RESULT_HOLD_MS
     const profile = animationProfileForDie(die)
     const resultFaceMaterial = resultFace.material as MeshBasicMaterial
     const resultHaloMaterial = resultHalo.material as MeshBasicMaterial
@@ -966,32 +973,49 @@ function DiceCanvas(props: DiceCanvasProps) {
 export default function DiceRollDialog({
   die,
   result,
+  rolls,
+  mode,
   modifier,
   total,
+  provenance,
   targetLabel,
   rollKey,
   status,
+  dialogRef,
+  error,
   onCancel,
   onComplete,
+  onRetry,
 }: DiceRollDialogProps) {
   const [landedRollKey, setLandedRollKey] = useState<number | null>(null)
   const hasLanded = landedRollKey === rollKey
-  const isSending = status === 'sending'
-  const modifierLabel = signedModifier(modifier)
-  const shownResult = hasLanded || isSending
+  const authoritativeResult = result !== null && modifier !== null && total !== null
+  const modifierLabel = signedModifier(modifier ?? 0)
+  const shownResult = authoritativeResult && (hasLanded || status === 'resolved')
   const primaryResult = shownResult ? (modifier ? total : result) : '...'
-  const title = isSending ? 'Sending roll' : hasLanded ? 'Landed' : 'Rolling dice'
-  const statusText = isSending
-    ? 'Sending to chat...'
-    : hasLanded
-      ? 'Landed. Sending roll...'
-      : 'Still tumbling...'
+  const title = status === 'requesting'
+    ? 'Requesting roll'
+    : status === 'failed'
+      ? 'Roll not confirmed'
+      : status === 'resolved' || hasLanded
+        ? 'Landed'
+        : 'Rolling dice'
+  const statusText = status === 'requesting'
+    ? 'Waiting for the authoritative server result...'
+    : status === 'failed'
+      ? error ?? 'The roll request was not confirmed.'
+      : status === 'resolved'
+        ? 'Authoritative result received.'
+        : hasLanded
+          ? 'Authoritative result landed.'
+          : 'Authoritative result received. Still tumbling...'
   const readoutLabel = shownResult
     ? `${die.toUpperCase()} roll ${primaryResult}${modifierLabel ? `, die ${result} ${modifierLabel} equals ${total}` : ''}. ${statusText}`
     : `${die.toUpperCase()} rolling. ${statusText}`
 
   return (
     <section
+      ref={dialogRef}
       className={`dice-dialog ${status}`}
       role="dialog"
       aria-modal="true"
@@ -1002,18 +1026,24 @@ export default function DiceRollDialog({
           <span>{die.toUpperCase()} roll</span>
           <h2 id="dice-roll-title">{title}</h2>
         </div>
-        <button type="button" aria-label="Close dice roller" onClick={onCancel} disabled={isSending}>
+        <button type="button" aria-label="Close dice roller" onClick={onCancel} data-autofocus>
           <X size={18} />
         </button>
       </header>
       <div className="dice-stage">
-        <DiceCanvas
-          die={die}
-          result={result}
-          rollKey={rollKey}
-          onLanded={() => setLandedRollKey(rollKey)}
-          onComplete={onComplete}
-        />
+        {status === 'rolling' && authoritativeResult ? (
+          <DiceCanvas
+            die={die}
+            result={result}
+            rollKey={rollKey}
+            onLanded={() => setLandedRollKey(rollKey)}
+            onComplete={onComplete}
+          />
+        ) : (
+          <div className={`dice-request-state ${status}`} aria-hidden="true">
+            <span>{status === 'failed' ? '!' : die.toUpperCase()}</span>
+          </div>
+        )}
         <div className="dice-readout" aria-label={readoutLabel} aria-live="polite">
           <span>{die.toUpperCase()}</span>
           <strong>{primaryResult}</strong>
@@ -1022,8 +1052,40 @@ export default function DiceRollDialog({
               Die {result} {modifierLabel} = {total}
             </small>
           ) : null}
+          {shownResult && rolls && rolls.length > 1 ? (
+            <small>
+              {mode === 'advantage' ? 'Advantage' : 'Disadvantage'} rolls {rolls.join(', ')}; kept {result}
+            </small>
+          ) : null}
+          {shownResult && provenance ? (
+            <div className="dice-private-provenance" aria-label="Private roll details">
+              {provenance.ability ? (
+                <small>
+                  {provenance.ability.label} score {provenance.ability.score ?? '—'} ({signedModifier(provenance.ability.modifier) || '+0'})
+                </small>
+              ) : null}
+              {provenance.proficiency && (provenance.proficiency.bonus || provenance.proficiency.skills.length) ? (
+                <small>
+                  Proficiency {signedModifier(provenance.proficiency.bonus) || '+0'}
+                  {provenance.proficiency.skills.length ? `: ${provenance.proficiency.skills.join(', ')}` : ''}
+                </small>
+              ) : null}
+              {provenance.modifier_breakdown ? (
+                <small>
+                  Modifier: ability {signedModifier(provenance.modifier_breakdown.ability_modifier) || '+0'}, proficiency{' '}
+                  {signedModifier(provenance.modifier_breakdown.proficiency_bonus) || '+0'}, wounds{' '}
+                  {provenance.modifier_breakdown.wound_penalty ? `-${provenance.modifier_breakdown.wound_penalty}` : '0'}
+                </small>
+              ) : null}
+            </div>
+          ) : null}
           <small>{statusText}</small>
           {targetLabel ? <small>Target: {targetLabel}</small> : null}
+          {status === 'failed' ? (
+            <button type="button" className="dice-retry-button" onClick={onRetry} data-autofocus>
+              Retry safely
+            </button>
+          ) : null}
         </div>
       </div>
     </section>

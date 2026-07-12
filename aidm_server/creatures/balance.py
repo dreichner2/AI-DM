@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import re
-from copy import deepcopy
 from typing import Any
 
 from aidm_server.canon_text import int_or_default

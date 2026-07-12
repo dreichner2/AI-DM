@@ -38,6 +38,9 @@ provider, and state contracts live in [API surface](api_surface.md),
   operator; recovery use rotates that token after the password is set.
 - Player visibility flows through workspace and account helpers rather than
   route-local filters.
+- Authored map visibility is enforced by the shared map query/direct-lookup
+  policy: players receive revealed maps, while DM-only records stay in
+  authoring views and are absent from realtime and session-export contracts.
 
 ## HTTP And Realtime Boundaries
 
@@ -56,6 +59,12 @@ provider, and state contracts live in [API surface](api_surface.md),
   `aidm_server/socket_runtime.py` resolves authenticated account/workspace
   context and connection capabilities; `aidm_server/blueprints/socketio_events.py`
   wires the capability and workspace checks into each event handler.
+- On reconnect, the frontend rejoins the room and reloads the current persisted
+  session snapshot. An uncertain retry reuses the exact original
+  `client_message_id`. A completed row emits `turn_duplicate`; an incomplete
+  `processing` row replays its persisted private roll receipt to the requester
+  and resumes from its pipeline state without another incoming event, roll,
+  peer rebroadcast, or already-recorded pre-DM application.
 
 ## Gameplay And Runtime State
 
@@ -65,6 +74,24 @@ provider, and state contracts live in [API surface](api_surface.md),
 - `aidm_server/turn_engine.py` orchestrates a turn. Supporting behavior is split
   across `turn_coordinator.py`, `turn_rules.py`, `turn_roll_policy.py`,
   `turn_narration.py`, `turn_segments.py`, and `turn_events.py`.
+- `aidm_server/player_rolls.py` owns player dice generation. Clients may request
+  a die, mode, reason, and permitted ability selection, but faces, modifiers,
+  totals, and persisted provenance are server-owned. The committed result is
+  emitted as `roll_resolved`; frontend dice physics are presentation only.
+- `aidm_server/combat/legal_actions.py` derives viewer-scoped combat HUD actions
+  from the persisted actor, turn index, weapons, target health, cover, zones,
+  and range bands. The turn engine revalidates every submitted action/target ID
+  and canonicalizes its text before rules handling; attack outcomes still flow
+  through `player_rolls.py`. Action-economy labels are turn-order-derived because
+  the current schema does not persist sub-turn action, movement, or reaction
+  counters.
+- Realtime roll and `new_message` delivery has two projections: the initiating
+  socket receives private roll provenance, while the rest of the room receives
+  only the shared aggregate result. Player-readable REST events use the same
+  account-aware projection; persisted operator records remain complete.
+- Inventory clarification actions/options are emitted only to the acting
+  socket. Party peers receive a neutral waiting status, and their persisted
+  event/log/export projections remove clarification and state-pipeline detail.
 - `aidm_server/game_state/` owns structured action/state schemas, extraction,
   validation, application, combat resolution, and state-change logging.
 - `Session.state_snapshot` is live runtime truth once present. Projection,
@@ -83,6 +110,9 @@ provider, and state contracts live in [API surface](api_surface.md),
 - Campaign-pack database records and progress events are durable authored and
   progress data; the snapshot `campaignPack` object is the runtime mirror used
   while playing.
+- Raw `CampaignSegment` records are DM-authoring data. Player campaign
+  workspaces expose only triggered segment ID/title/description fields, and the
+  player room event omits the private trigger recipe.
 - Campaign, player, and session archive/restore/delete behavior is implemented
   in `aidm_server/services/campaign_lifecycle.py`,
   `player_lifecycle.py`, and `session_lifecycle.py`.
@@ -115,6 +145,8 @@ provider, and state contracts live in [API surface](api_surface.md),
 - API requests are centralized in `aidm_frontend/src/api.ts`; realtime behavior
   is split across the socket hooks and event-contract code under
   `aidm_frontend/src`.
+- `useComposerActions.ts` retains exact in-flight turn payloads for safe recovery
+  and treats only a validated `roll_resolved` event as a dice result.
 - CSS is split by surface under `aidm_frontend/src/styles/`; responsive changes
   should preserve desktop behavior unless a change explicitly targets desktop.
 

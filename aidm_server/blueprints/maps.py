@@ -5,8 +5,15 @@ import logging
 from flask import Blueprint, jsonify, request
 from sqlalchemy import and_, or_
 
+from aidm_server.capabilities import current_actor_has_capability
 from aidm_server.database import db
 from aidm_server.errors import error_response
+from aidm_server.map_visibility import (
+    MAP_VISIBILITY_PLAYER,
+    MAP_VISIBILITY_VALUES,
+    normalize_map_visibility,
+    visible_maps_query,
+)
 from aidm_server.models import Campaign, Map, World, safe_json_dumps
 from aidm_server.pagination import jsonify_page, limited_page
 from aidm_server.response_dtos import map_payload
@@ -23,6 +30,18 @@ logger = logging.getLogger(__name__)
 maps_bp = Blueprint('maps', __name__)
 MAP_TITLE_MAX_LENGTH = 120
 MAP_TEXT_MAX_LENGTH = 2000
+
+
+def _include_dm_only_maps() -> bool:
+    return current_actor_has_capability('dm_authoring')
+
+
+def _map_visibility(value, *, default: str | None = None):
+    visibility = normalize_map_visibility(value, default=default)
+    if visibility is None:
+        allowed = ', '.join(sorted(MAP_VISIBILITY_VALUES))
+        return None, f'visibility must be one of: {allowed}.'
+    return visibility, None
 
 
 @maps_bp.route('', methods=['POST'])
@@ -50,6 +69,12 @@ def create_map():
     map_data, map_data_error = json_object(payload.get('map_data'), field='map_data', default={})
     if map_data_error:
         return error_response('validation_error', map_data_error, 400)
+    visibility, visibility_error = _map_visibility(
+        payload.get('visibility'),
+        default=MAP_VISIBILITY_PLAYER,
+    )
+    if visibility_error:
+        return error_response('validation_error', visibility_error, 400)
     if world_id is None and campaign_id is None:
         return error_response('validation_error', 'Map requires either world_id or campaign_id.', 400)
 
@@ -76,6 +101,7 @@ def create_map():
             title=title,
             description=description,
             map_data=safe_json_dumps(map_data, {}),
+            visibility=visibility,
         )
         db.session.add(new_map)
         db.session.commit()
@@ -104,6 +130,7 @@ def list_maps():
             and_(Map.campaign_id.is_(None), World.workspace_id == workspace_id),
         )
     )
+    query = visible_maps_query(query, include_dm_only=_include_dm_only_maps())
     if world_id is not None:
         world = workspace_world(world_id)
         if not world:
@@ -123,7 +150,7 @@ def list_maps():
 
 @maps_bp.route('/<int:map_id>', methods=['GET'])
 def get_map(map_id):
-    map_obj = get_campaign_map(map_id)
+    map_obj = get_campaign_map(map_id, include_dm_only=_include_dm_only_maps())
     if not map_obj:
         return error_response('map_not_found', 'Map not found.', 404)
 
@@ -160,6 +187,11 @@ def update_map(map_id):
             if map_data_error:
                 return error_response('validation_error', map_data_error, 400)
             map_obj.map_data = safe_json_dumps(map_data, {})
+        if 'visibility' in payload:
+            visibility, visibility_error = _map_visibility(payload.get('visibility'))
+            if visibility_error:
+                return error_response('validation_error', visibility_error, 400)
+            map_obj.visibility = visibility
         db.session.commit()
         return jsonify({'message': 'Map updated successfully'}), 200
     except Exception as exc:

@@ -96,8 +96,10 @@ def test_schema_contains_new_beta_tables(app):
         'idempotency_key',
         'payload_json',
     }.issubset(progress_event_cols)
+    map_cols = {column['name'] for column in inspector.get_columns('maps')}
+    assert 'visibility' in map_cols
     map_checks = {constraint['name'] for constraint in inspector.get_check_constraints('maps')}
-    assert 'ck_maps_maps_has_owner' in map_checks
+    assert {'ck_maps_maps_has_owner', 'ck_maps_maps_visibility'} <= map_checks
     assert _fk_ondelete(inspector, 'dm_turns', 'session_id') == 'CASCADE'
     assert _fk_ondelete(inspector, 'sessions', 'archived_by_campaign_id') == 'SET NULL'
     assert _fk_ondelete(inspector, 'session_log_entries', 'session_id') == 'CASCADE'

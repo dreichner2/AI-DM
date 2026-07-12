@@ -84,8 +84,8 @@ def test_turn_rules_build_roll_prompt_and_detect_roll_requests():
     assert prompt.startswith('Resolve pending turn 22:')
     assert 'Intelligence (Investigation/Arcana) check' in prompt
     assert 'DC 15 (base 13, INT 8 mod -1)' in prompt
-    assert 'Include the -1 modifier' in prompt
-    assert 'I roll a d20-1: 14 = 13' in prompt
+    assert 'persisted -1 modifier will be applied automatically' in prompt
+    assert 'server will generate and record the authoritative result' in prompt
     assert response_mentions_roll_request('Please roll a d20 for the ward.')
     assert response_mentions_roll_request(
         'Roll a Longbow attack for Legoless: `d20 + 4` against AC 13.'

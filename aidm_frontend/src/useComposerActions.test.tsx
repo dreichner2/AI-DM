@@ -4,6 +4,7 @@ import { useRef, useState } from 'react'
 import type { Socket } from 'socket.io-client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { StreamingTurn, TimelineEntry } from './types'
+import type { RollResolvedPayload } from './gameActions'
 import { SEND_PENDING_RECOVERY_MS, useComposerActions } from './useComposerActions'
 
 function useComposerHarness(socket: Socket, pushError: ReturnType<typeof vi.fn>) {
@@ -17,7 +18,6 @@ function useComposerHarness(socket: Socket, pushError: ReturnType<typeof vi.fn>)
     campaign: { campaign_id: 3, world_id: 2, title: 'Test campaign' },
     itemOptions: [],
     pendingRollOptions: [],
-    proficiencyBonus: '0',
     sessionState: null,
     selectedCampaignId: 3,
     selectedPlayer: { player_id: 4, character_name: 'Ari' },
@@ -102,6 +102,7 @@ describe('useComposerActions realtime delivery recovery', () => {
     act(() => result.current.actions.submitAction('Search the chamber'))
 
     expect(socket.emit).toHaveBeenCalledWith('send_message', expect.objectContaining({ message: 'Search the chamber' }))
+    const originalPayload = vi.mocked(socket.emit).mock.calls[0]?.[1]
     expect(result.current.sendPending).toBe(true)
     expect(result.current.optimisticEntries[0]?.metadata.persistence_status).toBe('pending')
 
@@ -113,7 +114,28 @@ describe('useComposerActions realtime delivery recovery', () => {
     expect(result.current.optimisticEntries[0]?.metadata.persistence_status).toBe('failed')
     expect(result.current.actions.actionText).toBe('Search the chamber')
     expect(result.current.actions.queuedActionText).toBe('Search the chamber')
+    expect(result.current.actions.queuedActionRetryable).toBe(true)
     expect(pushError).toHaveBeenCalledWith('validation', expect.stringContaining('timed out'))
+
+    act(() => result.current.actions.submitAction())
+
+    expect(vi.mocked(socket.emit).mock.calls[1]).toEqual(['send_message', originalPayload])
+    expect(result.current.optimisticEntries).toHaveLength(1)
+    expect(result.current.optimisticEntries[0]?.metadata.persistence_status).toBe('pending')
+    expect(result.current.actions.queuedActionRetryable).toBe(false)
+
+    const clientMessageId = (originalPayload as { client_message_id: string }).client_message_id
+    act(() => result.current.actions.handleTurnDuplicate({
+      session_id: 5,
+      turn_id: 44,
+      client_message_id: clientMessageId,
+    }))
+    expect(result.current.sendPending).toBe(false)
+    expect(result.current.optimisticEntries[0]?.metadata).toMatchObject({
+      client_message_id: clientMessageId,
+      persistence_status: 'received',
+      turn_id: 44,
+    })
   })
 
   it('cancels recovery after a terminal state clears sendPending', async () => {
@@ -130,5 +152,58 @@ describe('useComposerActions realtime delivery recovery', () => {
     expect(result.current.sendPending).toBe(false)
     expect(result.current.actions.actionText).toBe('')
     expect(pushError).not.toHaveBeenCalledWith('validation', expect.stringContaining('timed out'))
+  })
+
+  it('reuses the exact client id and payload after a disconnect before confirmation', () => {
+    const socket = socketWithConnection(true)
+    const { result } = renderHook(() => useComposerHarness(socket, vi.fn()))
+
+    act(() => result.current.actions.submitAction('Cross the bridge'))
+    const originalPayload = vi.mocked(socket.emit).mock.calls[0]?.[1]
+    act(() => result.current.actions.handleConnectionInterrupted())
+
+    expect(result.current.sendPending).toBe(false)
+    expect(result.current.actions.queuedActionRetryable).toBe(true)
+    act(() => result.current.actions.submitAction())
+
+    expect(vi.mocked(socket.emit).mock.calls[1]).toEqual(['send_message', originalPayload])
+    expect(result.current.optimisticEntries).toHaveLength(1)
+  })
+
+  it('does not restore or retry a roll after its authoritative result confirmed persistence', () => {
+    const socket = socketWithConnection(true)
+    const { result } = renderHook(() => useComposerHarness(socket, vi.fn()))
+
+    act(() => result.current.actions.startDiceRoll())
+    const request = vi.mocked(socket.emit).mock.calls[0]?.[1] as { client_message_id: string }
+    const resolved: RollResolvedPayload = {
+      session_id: 5,
+      turn_id: 45,
+      player_id: 4,
+      client_message_id: request.client_message_id,
+      pending_turn_id: null,
+      rule_type: 'check',
+      die: 'd20',
+      mode: 'normal',
+      rolls: [11],
+      kept: 11,
+      modifier: 0,
+      total: 11,
+      reason: 'check',
+      result_visibility: 'hidden_until_landed',
+      ability: null,
+      proficiency: { bonus: 0, skills: [] },
+      modifier_breakdown: { ability_modifier: 0, proficiency_bonus: 0, wound_penalty: 0, total: 0 },
+      authoritative: true,
+    }
+    act(() => {
+      result.current.actions.handleRollResolved(resolved)
+      result.current.actions.handleConnectionInterrupted()
+    })
+
+    expect(result.current.actions.diceRoll?.status).toBe('rolling')
+    expect(result.current.actions.actionText).toBe('')
+    expect(result.current.actions.queuedActionText).toBe('')
+    expect(result.current.actions.queuedActionRetryable).toBe(false)
   })
 })

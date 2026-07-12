@@ -39,6 +39,7 @@ const VISIBLE_WORLD_STATE_ITEMS = 5
 export type MapManagementForm = {
   title: string
   description: string
+  visibility: MapItem['visibility']
 }
 
 export type SegmentManagementForm = {
@@ -193,7 +194,7 @@ export function InspectorPanel({
   const [showAllKnownNpcs, setShowAllKnownNpcs] = useState(false)
   const [showAllKnownLocations, setShowAllKnownLocations] = useState(false)
   useEffect(() => {
-    if (!canUseOperatorTools && inspectorTab === 'ops') {
+    if (!canUseOperatorTools && (inspectorTab === 'bestiary' || inspectorTab === 'ops')) {
       setInspectorTab('party')
     }
   }, [canUseOperatorTools, inspectorTab, setInspectorTab])
@@ -262,25 +263,27 @@ export function InspectorPanel({
         >
           Inventory
         </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={inspectorTab === 'bestiary'}
-          className={inspectorTab === 'bestiary' ? 'active' : ''}
-          onClick={() => setInspectorTab('bestiary')}
-        >
-          Bestiary
-        </button>
         {canUseOperatorTools ? (
-          <button
-            type="button"
-            role="tab"
-            aria-selected={inspectorTab === 'ops'}
-            className={inspectorTab === 'ops' ? 'active' : ''}
-            onClick={() => setInspectorTab('ops')}
-          >
-            Ops
-          </button>
+          <>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={inspectorTab === 'bestiary'}
+              className={inspectorTab === 'bestiary' ? 'active' : ''}
+              onClick={() => setInspectorTab('bestiary')}
+            >
+              Bestiary
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={inspectorTab === 'ops'}
+              className={inspectorTab === 'ops' ? 'active' : ''}
+              onClick={() => setInspectorTab('ops')}
+            >
+              Ops
+            </button>
+          </>
         ) : null}
       </div>
 
@@ -738,7 +741,7 @@ export function InspectorPanel({
         />
       ) : null}
 
-      {inspectorTab === 'bestiary' ? (
+      {inspectorTab === 'bestiary' && canUseOperatorTools ? (
         <Suspense
           fallback={
             <section className="inspector-box bestiary-debug-panel" aria-label="Bestiary tools">
@@ -802,19 +805,21 @@ export function InspectorPanel({
           {!maps.length ? (
             <div className="empty-inline-action">
               <span>No campaign map has been recorded.</span>
-              <button
-                type="button"
-                onClick={() => void createDefaultMap()}
-                disabled={!selectedCampaignId || !campaign || createMapPending}
-              >
-                {createMapPending ? 'Creating...' : 'Create map'}
-              </button>
+              {canUseOperatorTools ? (
+                <button
+                  type="button"
+                  onClick={() => void createDefaultMap()}
+                  disabled={!selectedCampaignId || !campaign || createMapPending}
+                >
+                  {createMapPending ? 'Creating...' : 'Create map'}
+                </button>
+              ) : null}
             </div>
           ) : null}
         </section>
       ) : null}
 
-      {inspectorTab === 'map' ? (
+      {inspectorTab === 'map' && canUseOperatorTools ? (
         <section className="inspector-box map-management-box">
           <div className="box-title">
             <h3>Map Details</h3>
@@ -847,6 +852,22 @@ export function InspectorPanel({
                 rows={3}
                 disabled={mapSavePending}
               />
+            </label>
+            <label>
+              Player visibility
+              <select
+                value={mapManagementForm.visibility}
+                onChange={(event) =>
+                  setMapManagementForm((current) => ({
+                    ...current,
+                    visibility: event.target.value as MapItem['visibility'],
+                  }))
+                }
+                disabled={mapSavePending}
+              >
+                <option value="player">Players (revealed)</option>
+                <option value="dm">DM only</option>
+              </select>
             </label>
             <button
               type="submit"

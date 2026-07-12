@@ -37,6 +37,18 @@
   --composer-row-height: 188px;
 }
 
+.session-board:has(.scene-music-player.is-default-docked) {
+  grid-template-rows: 62px 40px 40px minmax(0, 1fr) minmax(var(--composer-row-height), auto);
+}
+
+.session-board:has(.combat-hud) {
+  grid-template-rows: 62px 40px minmax(0, 1fr) auto minmax(var(--composer-row-height), auto);
+}
+
+.session-board:has(.scene-music-player.is-default-docked):has(.combat-hud) {
+  grid-template-rows: 62px 40px 40px minmax(0, 1fr) auto minmax(var(--composer-row-height), auto);
+}
+
 .session-header {
   display: flex;
   align-items: center;
@@ -789,6 +801,77 @@
     rgba(9, 17, 18, 0.94);
   box-shadow: 0 18px 45px rgba(0, 0, 0, 0.38);
   backdrop-filter: blur(10px);
+}
+
+.scene-music-player.is-inline-static {
+  position: static;
+  z-index: auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  width: auto;
+  height: auto;
+  min-height: 40px;
+  max-width: none;
+  max-height: none;
+  overflow: hidden;
+  padding: 4px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background:
+    linear-gradient(90deg, rgba(255, 176, 103, 0.07), transparent 58%),
+    rgba(255, 255, 255, 0.018);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.scene-music-player.is-inline-static .scene-music-progress,
+.scene-music-player.is-inline-static .scene-music-select,
+.scene-music-player.is-inline-static .scene-music-volume,
+.scene-music-player.is-inline-static .scene-music-tags,
+.scene-music-player.is-inline-static .scene-music-error {
+  display: none;
+}
+
+.scene-music-player.is-inline-static .scene-music-now {
+  gap: 7px;
+  overflow: hidden;
+}
+
+.scene-music-player.is-inline-static .scene-music-now > svg {
+  width: 15px;
+  height: 15px;
+}
+
+.scene-music-player.is-inline-static .scene-music-now span {
+  font-size: 0.57rem;
+  line-height: 1;
+}
+
+.scene-music-player.is-inline-static .scene-music-now strong {
+  font-size: 0.72rem;
+  line-height: 1.05;
+}
+
+.scene-music-player.is-inline-static .scene-music-now small {
+  display: none;
+}
+
+.scene-music-player.is-inline-static .scene-music-controls {
+  justify-content: flex-end;
+  gap: 3px;
+}
+
+.scene-music-player.is-inline-static .scene-music-controls button {
+  width: 28px;
+  height: 28px;
+}
+
+.scene-music-player.is-inline-static .scene-music-controls .scene-music-play {
+  width: 30px;
+  height: 30px;
 }
 
 .scene-music-player.is-moving {
@@ -1763,6 +1846,65 @@
   margin-top: 2px;
   color: var(--muted);
   font-size: 0.68rem;
+}
+
+.combat-hud {
+  padding: 9px 18px;
+  border-top: 1px solid rgba(255, 107, 44, 0.34);
+  background: #0b1415;
+}
+
+.combat-hud-heading {
+  display: flex;
+  align-items: center;
+}
+
+.combat-hud-heading h2 {
+  margin: 0 auto 0 0;
+  font-size: 0.9rem;
+}
+
+.combat-hud-turn {
+  color: var(--muted);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.combat-hud-turn.current {
+  color: #b9ebd0;
+}
+
+.combat-hud-note {
+  margin: 4px 0 8px;
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
+.action-intent-panel.combat-hud-actions {
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+}
+
+.combat-hud-actions .combat-hud-option {
+  flex: 0 0 auto;
+  align-items: flex-start;
+  min-width: 200px;
+  height: auto;
+  min-height: 42px;
+  flex-direction: column;
+}
+
+.combat-hud-option strong,
+.combat-hud-option small {
+  display: block;
+}
+
+.combat-hud-option small {
+  color: var(--muted);
+  font-size: 0.6rem;
 }
 
 .action-composer {

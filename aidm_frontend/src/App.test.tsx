@@ -5,6 +5,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { originScopedStorageKey } from './api'
 import { actorCapabilitiesAllowOperatorTools } from './capabilities'
+import type { RollResolvedPayload } from './gameActions'
 import type { ClarificationRequest, PlayerDetail } from './types'
 import {
   appTestState,
@@ -24,6 +25,27 @@ import {
   teardownAppTest,
   toggleAdminToolsViaComposerLabel,
 } from './App.testHarness'
+
+function rollResolvedPayload(overrides: Partial<RollResolvedPayload> = {}): RollResolvedPayload {
+  return {
+    session_id: 20,
+    turn_id: 81,
+    player_id: 30,
+    client_message_id: 'client-roll-1',
+    pending_turn_id: null,
+    rule_type: 'check',
+    die: 'd20',
+    mode: 'normal',
+    rolls: [14],
+    kept: 14,
+    modifier: 0,
+    total: 14,
+    reason: '',
+    result_visibility: 'hidden_until_landed',
+    authoritative: true,
+    ...overrides,
+  }
+}
 
 describe('actorCapabilitiesAllowOperatorTools', () => {
   it('allows operator surfaces only for backend-declared operator capabilities', () => {
@@ -56,11 +78,8 @@ describe('App user workflow regressions', () => {
     expect(within(rollOptions).getByRole('button', { name: 'Plain' })).toHaveAttribute('aria-pressed', 'true')
 
     fireEvent.click(within(rollOptions).getByRole('button', { name: 'STR +3' }))
-    expect(screen.getByLabelText('Roll modifier')).toHaveValue(3)
     expect(screen.getByLabelText('Roll reason')).toHaveValue('STR check')
-
-    fireEvent.click(within(rollOptions).getByRole('button', { name: '+PB +2' }))
-    expect(screen.getByLabelText('Roll modifier')).toHaveValue(5)
+    expect(within(rollOptions).getByRole('note')).toHaveTextContent('Modifiers, proficiency, wounds')
 
     fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
     const restoredActionInput = screen.getByLabelText(/Your Action/i)
@@ -386,6 +405,28 @@ describe('App user workflow regressions', () => {
     )
   })
 
+  it('reloads persisted session data after a manual socket recreation rejoins', async () => {
+    await renderLoadedApp()
+    await act(async () => socketHandler<void>('connect')())
+    const initialLogFetchCount = appTestState.fetchCalls.filter(
+      (call) => call.method === 'GET' && call.path === '/api/sessions/20/log',
+    ).length
+    const initialSocketCount = socketMock.io.mock.calls.length
+
+    fireEvent.click(screen.getByRole('button', { name: 'Account' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Reconnect socket' }))
+    await waitFor(() => expect(socketMock.io.mock.calls.length).toBeGreaterThan(initialSocketCount))
+    await act(async () => socketHandler<void>('connect')())
+
+    await waitFor(() =>
+      expect(
+        appTestState.fetchCalls.filter(
+          (call) => call.method === 'GET' && call.path === '/api/sessions/20/log',
+        ).length,
+      ).toBeGreaterThan(initialLogFetchCount),
+    )
+  })
+
   it('lets users dismiss a stuck pending local message from history', async () => {
     await renderLoadedApp()
 
@@ -624,7 +665,7 @@ describe('App user workflow regressions', () => {
     )
   })
 
-  it('opens the dice roller from Roll options and sends the completed roll', async () => {
+  it('requests a server-only roll and landing the authoritative result does not send again', async () => {
     await renderLoadedApp()
 
     fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
@@ -635,28 +676,94 @@ describe('App user workflow regressions', () => {
 
     const dialog = await screen.findByRole('dialog', { name: 'Dice Roller' })
     expect(within(dialog).getByText('D20')).toBeInTheDocument()
+    expect(within(dialog).getByText('Status requesting')).toBeInTheDocument()
+    expect(within(dialog).getByText('Result')).toHaveTextContent('Result')
     expect(screen.queryByLabelText(/Your Action/i)).not.toBeInTheDocument()
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Complete roll' }))
+    const requestCall = socketMock.socket.emit.mock.calls.find(([event]) => event === 'send_message')
+    expect(requestCall).toBeDefined()
+    const request = requestCall?.[1] as {
+      session_id: number
+      campaign_id: number
+      player_id: number
+      client_message_id: string
+      action_intent: { roll: Record<string, unknown> }
+    }
+    expect(request).toMatchObject({ session_id: 20, campaign_id: 10, player_id: 30 })
+    expect(request.action_intent).toMatchObject({
+      kind: 'roll',
+      source: 'dice_roller',
+      roll: {
+        die: 'd20',
+        mode: 'normal',
+        result_visibility: 'hidden_until_landed',
+        reason: '',
+      },
+    })
+    expect(request.action_intent.roll).not.toHaveProperty('rolls')
+    expect(request.action_intent.roll).not.toHaveProperty('kept')
+    expect(request.action_intent.roll).not.toHaveProperty('modifier')
+    expect(request.action_intent.roll).not.toHaveProperty('total')
 
-    await waitFor(() =>
-      expect(socketMock.socket.emit).toHaveBeenCalledWith(
-        'send_message',
-        expect.objectContaining({
-          session_id: 20,
-          campaign_id: 10,
-          player_id: 30,
-          action_intent: expect.objectContaining({
-            kind: 'roll',
-            source: 'dice_roller',
-            roll: expect.objectContaining({
-              die: 'd20',
-              result_visibility: 'hidden_until_landed',
-            }),
-          }),
+    const sendCount = socketMock.socket.emit.mock.calls.filter(([event]) => event === 'send_message').length
+    await act(async () => {
+      socketHandler<RollResolvedPayload>('roll_resolved')(
+        rollResolvedPayload({ client_message_id: request.client_message_id }),
+      )
+    })
+    expect(within(dialog).getByText('Status rolling')).toBeInTheDocument()
+    expect(within(dialog).getByText('Result 14')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Complete roll' }))
+    expect(socketMock.socket.emit.mock.calls.filter(([event]) => event === 'send_message')).toHaveLength(sendCount)
+  })
+
+  it('ignores stale or wrong-session roll results and announces another player authoritative roll', async () => {
+    await renderLoadedApp()
+    fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Roll dice' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Dice Roller' })
+    const requestCall = socketMock.socket.emit.mock.calls.find(([event]) => event === 'send_message')
+    const clientMessageId = (requestCall?.[1] as { client_message_id: string }).client_message_id
+
+    await act(async () => {
+      socketHandler<RollResolvedPayload>('roll_resolved')(
+        rollResolvedPayload({ session_id: 999, client_message_id: clientMessageId }),
+      )
+      socketHandler<RollResolvedPayload>('roll_resolved')(
+        rollResolvedPayload({ client_message_id: 'stale-client-id' }),
+      )
+    })
+    expect(within(dialog).getByText('Status requesting')).toBeInTheDocument()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel roll' }))
+    await act(async () => {
+      socketHandler<RollResolvedPayload>('roll_resolved')(
+        rollResolvedPayload({
+          player_id: 31,
+          client_message_id: null,
+          reason: 'Stealth check',
+          modifier: 3,
+          total: 17,
         }),
-      ),
-    )
+      )
+    })
+    const sharedNotice = screen.getByText('Player 31').closest('aside')
+    expect(sharedNotice).toHaveTextContent('I roll a d20+3 for Stealth check: 14 = 17')
+  })
+
+  it('traps dice presentation focus, closes with Escape, and restores the roll button', async () => {
+    await renderLoadedApp()
+    fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
+    const rollButton = screen.getByRole('button', { name: 'Roll dice' })
+    rollButton.focus()
+    fireEvent.click(rollButton)
+    const dialog = await screen.findByRole('dialog', { name: 'Dice Roller' })
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Cancel roll' })).toHaveFocus())
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Dice Roller' })).not.toBeInTheDocument())
+    expect(screen.getByLabelText('Roll reason')).toHaveFocus()
   })
 
   it('shows a party-visible roll wait indicator with the remaining character and check', async () => {
@@ -736,31 +843,28 @@ describe('App user workflow regressions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
     const rollOptions = screen.getByLabelText('Roll options')
     fireEvent.click(within(rollOptions).getByRole('button', { name: 'STR +3' }))
-    fireEvent.click(within(rollOptions).getByRole('button', { name: '+PB +2' }))
 
     expect(screen.queryByLabelText(/Your Action/i)).not.toBeInTheDocument()
-    expect(screen.getByLabelText('Roll modifier')).toHaveValue(5)
 
     fireEvent.click(screen.getByRole('button', { name: 'Roll dice' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Dice Roller' })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Complete roll' }))
 
     await waitFor(() =>
       expect(socketMock.socket.emit).toHaveBeenCalledWith(
         'send_message',
         expect.objectContaining({
-          message: expect.stringMatching(/^kick the door\nI roll a d20\+5 for STR check: \d+/),
+          message: 'kick the door\nI roll a d20 for STR check.',
           action_intent: expect.objectContaining({
             kind: 'roll',
             ability: {
               key: 'strength',
               label: 'STR',
-              modifier: 3,
             },
-            roll: expect.objectContaining({
-              modifier: 5,
+            roll: {
+              die: 'd20',
+              mode: 'normal',
               reason: 'STR check',
-            }),
+              result_visibility: 'hidden_until_landed',
+            },
           }),
         }),
       ),
@@ -775,29 +879,27 @@ describe('App user workflow regressions', () => {
     fireEvent.click(within(rollOptions).getByRole('button', { name: 'Initiative DEX +1' }))
 
     expect(screen.queryByLabelText(/Your Action/i)).not.toBeInTheDocument()
-    expect(screen.getByLabelText('Roll modifier')).toHaveValue(1)
     expect(screen.getByLabelText('Roll reason')).toHaveValue('initiative')
 
     fireEvent.click(screen.getByRole('button', { name: 'Roll dice' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Dice Roller' })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Complete roll' }))
 
     await waitFor(() =>
       expect(socketMock.socket.emit).toHaveBeenCalledWith(
         'send_message',
         expect.objectContaining({
-          message: expect.stringMatching(/^I roll for initiative: \d+/),
+          message: 'I roll for initiative.',
           action_intent: expect.objectContaining({
             kind: 'roll',
             ability: {
               key: 'dexterity',
               label: 'Initiative',
-              modifier: 1,
             },
-            roll: expect.objectContaining({
-              modifier: 1,
+            roll: {
+              die: 'd20',
+              mode: 'normal',
               reason: 'initiative',
-            }),
+              result_visibility: 'hidden_until_landed',
+            },
           }),
         }),
       ),
@@ -2455,12 +2557,19 @@ describe('App user workflow regressions', () => {
     fireEvent.change(screen.getByLabelText('Map description'), {
       target: { value: 'The ruined gate and reservoir crossing.' },
     })
+    fireEvent.change(screen.getByLabelText('Player visibility'), {
+      target: { value: 'dm' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Create map details' }))
 
     await screen.findByText('Ash Gate Map')
     expect(appTestState.fetchCalls).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ method: 'POST', path: '/api/maps' }),
+        expect.objectContaining({
+          method: 'POST',
+          path: '/api/maps',
+          body: expect.objectContaining({ visibility: 'dm' }),
+        }),
       ]),
     )
 

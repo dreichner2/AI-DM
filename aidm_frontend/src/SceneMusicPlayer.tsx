@@ -1,4 +1,4 @@
-import { Grip, Maximize2, Music, Pause, Play, Rewind, SkipBack, SkipForward, Tags, Volume1 } from 'lucide-react'
+import { Grip, Maximize2, Minimize2, Music, Pause, Play, Rewind, SkipBack, SkipForward, Tags, Volume1 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import {
   SCENE_MUSIC_TAGS,
@@ -78,6 +78,7 @@ type SceneMusicPlayerProps = {
 const MUSIC_PREFS_STORAGE_KEY = 'aidm:sceneMusicPreferences'
 const MUSIC_LAYOUT_STORAGE_KEY = 'aidm:sceneMusicLayout'
 const MOBILE_MUSIC_LAYOUT_QUERY = '(max-width: 760px)'
+const SHORT_MUSIC_LAYOUT_QUERY = '(max-height: 700px) and (min-width: 761px)'
 const REWIND_SECONDS = 15
 const MUSIC_SYNC_HEARTBEAT_MS = 10000
 const MUSIC_MAX_POSITION_SECONDS = 24 * 60 * 60
@@ -141,6 +142,11 @@ function viewportSize() {
 function isMobileMusicLayout() {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
   return window.matchMedia(MOBILE_MUSIC_LAYOUT_QUERY).matches
+}
+
+function isShortMusicLayout() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+  return window.matchMedia(SHORT_MUSIC_LAYOUT_QUERY).matches
 }
 
 function clampNumber(value: number, min: number, max: number) {
@@ -242,6 +248,14 @@ function saveMusicLayout(layout: MusicPlayerLayout) {
   }
 }
 
+function clearMusicLayout() {
+  try {
+    localStorage.removeItem(MUSIC_LAYOUT_STORAGE_KEY)
+  } catch {
+    // The player still docks for the current page when storage is unavailable.
+  }
+}
+
 function formatSeconds(value: number) {
   if (!Number.isFinite(value) || value <= 0) return '0:00'
   const totalSeconds = Math.floor(value)
@@ -308,6 +322,7 @@ export function SceneMusicPlayer({
   const [panelLayout, setPanelLayout] = useState(loadedPanelLayout.layout)
   const [hasCustomPanelLayout, setHasCustomPanelLayout] = useState(loadedPanelLayout.fromStorage)
   const [mobileStaticLayout, setMobileStaticLayout] = useState(() => isMobileMusicLayout())
+  const [shortStaticLayout, setShortStaticLayout] = useState(() => isShortMusicLayout())
   const [isMovingPanel, setIsMovingPanel] = useState(false)
   const [selectedTag, setSelectedTag] = useState<MusicFilter>(storedPreferences.selectedTag)
   const [currentTrackId, setCurrentTrackId] = useState(storedPreferences.trackId)
@@ -338,25 +353,36 @@ export function SceneMusicPlayer({
     saveMusicPreferences({ selectedTag, trackId: currentTrackId, volume })
   }, [currentTrackId, selectedTag, volume])
 
-  useEffect(() => {
-    if (mobileStaticLayout) return
-    saveMusicLayout(panelLayout)
-  }, [mobileStaticLayout, panelLayout])
+  const defaultDockedLayout = !hasCustomPanelLayout
+  const inlineStaticLayout = defaultDockedLayout || mobileStaticLayout || shortStaticLayout
 
   useEffect(() => {
-    if (mobileStaticLayout || hasCustomPanelLayout) return
+    if (inlineStaticLayout) return
+    saveMusicLayout(panelLayout)
+  }, [inlineStaticLayout, panelLayout])
+
+  useEffect(() => {
+    if (inlineStaticLayout || hasCustomPanelLayout) return
     if (typeof window.requestAnimationFrame === 'function') {
       const frameId = window.requestAnimationFrame(() => setPanelLayout(defaultMusicLayout()))
       return () => window.cancelAnimationFrame(frameId)
     }
     const timerId = window.setTimeout(() => setPanelLayout(defaultMusicLayout()), 0)
     return () => window.clearTimeout(timerId)
-  }, [hasCustomPanelLayout, mobileStaticLayout])
+  }, [hasCustomPanelLayout, inlineStaticLayout])
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
     const mediaQuery = window.matchMedia(MOBILE_MUSIC_LAYOUT_QUERY)
     const handleLayoutChange = () => setMobileStaticLayout(mediaQuery.matches)
+    handleLayoutChange()
+    return subscribeToMediaQueryChange(mediaQuery, handleLayoutChange)
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const mediaQuery = window.matchMedia(SHORT_MUSIC_LAYOUT_QUERY)
+    const handleLayoutChange = () => setShortStaticLayout(mediaQuery.matches)
     handleLayoutChange()
     return subscribeToMediaQueryChange(mediaQuery, handleLayoutChange)
   }, [])
@@ -428,6 +454,16 @@ export function SceneMusicPlayer({
     },
     [panelLayout],
   )
+
+  const floatFullMusicControls = useCallback(() => {
+    setPanelLayout(defaultMusicLayout())
+    setHasCustomPanelLayout(true)
+  }, [])
+
+  const dockMusicPlayer = useCallback(() => {
+    clearMusicLayout()
+    setHasCustomPanelLayout(false)
+  }, [])
 
   const resetTrackProgress = useCallback(() => {
     const audio = audioRef.current
@@ -742,9 +778,9 @@ export function SceneMusicPlayer({
   const trackProgress = Math.min(currentTime, progressMax)
   const syncStatusLabel = syncEnabled ? 'Session synced' : 'Local player'
   const panelMode = musicPanelMode(panelLayout)
-  const effectivePanelMode: MusicPanelMode = mobileStaticLayout ? 'full' : panelMode
-  const playerClassName = `scene-music-player is-${effectivePanelMode}${mobileStaticLayout ? ' is-mobile-static' : ''}${isMovingPanel ? ' is-moving' : ''}`
-  const panelStyle = mobileStaticLayout
+  const effectivePanelMode: MusicPanelMode = inlineStaticLayout ? 'full' : panelMode
+  const playerClassName = `scene-music-player is-${effectivePanelMode}${inlineStaticLayout ? ' is-inline-static' : ''}${defaultDockedLayout ? ' is-default-docked' : ''}${mobileStaticLayout ? ' is-mobile-static' : ''}${shortStaticLayout ? ' is-short-static' : ''}${isMovingPanel ? ' is-moving' : ''}`
+  const panelStyle = inlineStaticLayout
     ? undefined
     : {
         left: `${panelLayout.left}px`,
@@ -753,7 +789,7 @@ export function SceneMusicPlayer({
         height: `${panelLayout.height}px`,
       }
   const moveMicroPanel = (event: ReactPointerEvent<HTMLElement>) => {
-    if (mobileStaticLayout || effectivePanelMode !== 'micro' || event.target !== event.currentTarget) return
+    if (inlineStaticLayout || effectivePanelMode !== 'micro' || event.target !== event.currentTarget) return
     startPanelDrag('move', event)
   }
 
@@ -773,7 +809,7 @@ export function SceneMusicPlayer({
         onLoadedMetadata={updateTrackDuration}
         onTimeUpdate={updateTrackTime}
       />
-      {!mobileStaticLayout && effectivePanelMode !== 'micro' ? (
+      {!inlineStaticLayout && effectivePanelMode !== 'micro' ? (
         <button
           type="button"
           className="scene-music-drag-handle"
@@ -820,6 +856,26 @@ export function SceneMusicPlayer({
         {effectivePanelMode !== 'micro' ? (
           <button type="button" aria-label="Next music track" title="Next track" onClick={() => skipBy(1)}>
             <SkipForward size={16} />
+          </button>
+        ) : null}
+        {defaultDockedLayout && !mobileStaticLayout && !shortStaticLayout ? (
+          <button
+            type="button"
+            aria-label="Float full music controls"
+            title="Float full music controls"
+            onClick={floatFullMusicControls}
+          >
+            <Maximize2 size={16} />
+          </button>
+        ) : null}
+        {!inlineStaticLayout && effectivePanelMode === 'full' ? (
+          <button
+            type="button"
+            aria-label="Dock music player"
+            title="Dock music player"
+            onClick={dockMusicPlayer}
+          >
+            <Minimize2 size={16} />
           </button>
         ) : null}
       </div>
@@ -902,7 +958,7 @@ export function SceneMusicPlayer({
           ) : null}
         </div>
       ) : null}
-      {!mobileStaticLayout ? (
+      {!inlineStaticLayout ? (
         <button
           type="button"
           className="scene-music-resize-handle"

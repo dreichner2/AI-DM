@@ -111,10 +111,15 @@ def _project_turn_event(event: TurnEvent, payload: dict[str, Any], *, timestamp=
     if event.event_type == ROLL_RESOLVED_EVENT:
         pending_turn_id = payload.get('pending_turn_id')
         roll_value = payload.get('roll_value')
+        message = (
+            f'**Check Resolved**: turn {pending_turn_id} resolved with roll {roll_value}.'
+            if pending_turn_id is not None
+            else f'**Roll Resolved**: authoritative result {roll_value}.'
+        )
         db.session.add(
             _log_entry(
                 event,
-                f'**Check Resolved**: turn {pending_turn_id} resolved with roll {roll_value}.',
+                message,
                 'dm',
                 payload.get('metadata', {}),
                 timestamp=timestamp,

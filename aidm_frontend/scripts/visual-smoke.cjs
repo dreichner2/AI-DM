@@ -215,12 +215,89 @@ async function assertLayoutHealth(page, viewport) {
   await expect(page.locator('.turn-feed')).toBeVisible()
   await expect(page.locator('.action-composer')).toBeVisible()
   await expect(page.locator('.composer-tools')).toBeVisible()
-  await expect(page.locator('.right-inspector')).toBeVisible()
+
+  const runtimeNoticeDetails = page.locator('.runtime-notice-details').first()
+  if (await runtimeNoticeDetails.count()) {
+    const summary = runtimeNoticeDetails.locator('summary')
+    await expect(summary).toBeVisible()
+    await summary.click()
+    await expect(runtimeNoticeDetails.locator('.runtime-notice-full')).toBeVisible()
+    await summary.click()
+  }
+
+  if (viewport.width > 760 && viewport.height > 700) {
+    const musicPlayer = page.locator('.scene-music-player')
+    await expect(musicPlayer).toHaveClass(/is-default-docked/)
+    const floatControls = page.getByRole('button', { name: 'Float full music controls' })
+    await expect(floatControls).toBeVisible()
+    await floatControls.click()
+    await expect(musicPlayer).not.toHaveClass(/is-inline-static/)
+    await expect(page.getByRole('button', { name: 'Move music player' })).toBeVisible()
+    const dockControls = page.getByRole('button', { name: 'Dock music player' })
+    await expect(dockControls).toBeVisible()
+    await dockControls.click()
+    await expect(musicPlayer).toHaveClass(/is-default-docked/)
+  }
+
+  if (viewport.width <= 760) {
+    await page.waitForFunction(() => window.matchMedia('(max-width: 760px)').matches)
+    const inspectorToggle = page.locator('.mobile-inspector-toggle')
+    await expect(inspectorToggle).toBeVisible()
+    if ((await inspectorToggle.getAttribute('aria-pressed')) !== 'true') {
+      await inspectorToggle.click()
+    }
+    await expect(page.locator('.right-inspector')).toBeVisible()
+    await page.waitForFunction(() => {
+      const inspector = document.querySelector('.right-inspector')
+      if (!inspector) return false
+      const rect = inspector.getBoundingClientRect()
+      return rect.left >= -1 && rect.right <= window.innerWidth + 1
+    })
+
+    const tabMetrics = await page.locator('.right-inspector .inspector-tabs').evaluate((tabList) => ({
+      clientWidth: tabList.clientWidth,
+      left: tabList.getBoundingClientRect().left,
+      right: tabList.getBoundingClientRect().right,
+      scrollWidth: tabList.scrollWidth,
+      tabs: [...tabList.querySelectorAll('[role="tab"]')].map((tab) => ({
+        clientWidth: tab.clientWidth,
+        label: tab.textContent?.trim() || 'unknown',
+        scrollWidth: tab.scrollWidth,
+      })),
+    }))
+    const clippedTab = tabMetrics.tabs.find((tab) => tab.scrollWidth > tab.clientWidth + 1)
+    if (clippedTab) {
+      throw new Error(`${viewport.name} clips the ${clippedTab.label} inspector tab label`)
+    }
+    if (tabMetrics.left < -1 || tabMetrics.right > viewport.width + 1) {
+      throw new Error(`${viewport.name} inspector tabs extend outside the viewport`)
+    }
+    if (tabMetrics.tabs.length > 4 && tabMetrics.scrollWidth <= tabMetrics.clientWidth) {
+      throw new Error(`${viewport.name} inspector tabs are not horizontally navigable`)
+    }
+    await page.locator('.right-inspector .inspector-tabs [role="tab"]').last().scrollIntoViewIfNeeded()
+    await inspectorToggle.click()
+    await expect(page.locator('.right-inspector')).toBeHidden()
+  } else {
+    await expect(page.locator('.right-inspector')).toBeVisible()
+  }
+
+  if (viewport.width > 760) {
+    await expect(page.locator('.scene-music-player')).toHaveClass(/is-inline-static/)
+    if (viewport.height <= 700) {
+      await expect(page.locator('.scene-music-player')).toHaveClass(/is-short-static/)
+    }
+  }
 
   const metrics = await page.evaluate(() => {
     const selectorList = [
       '.prototype-shell',
       '.ops-bar',
+      '.session-header',
+      '.session-header > div:first-child',
+      '.session-actions',
+      '.scene-music-player',
+      '.roll-wait-banner',
       '.turn-feed',
       '.action-composer',
       '.composer-tools',
@@ -248,6 +325,9 @@ async function assertLayoutHealth(page, viewport) {
       },
       scrollWidth: document.documentElement.scrollWidth,
       clientWidth: document.documentElement.clientWidth,
+      musicPosition: document.querySelector('.scene-music-player')
+        ? window.getComputedStyle(document.querySelector('.scene-music-player')).position
+        : null,
     }
   })
 
@@ -261,7 +341,10 @@ async function assertLayoutHealth(page, viewport) {
     const composerTools = metrics.boxes['.composer-tools']
     const actionComposer = metrics.boxes['.action-composer']
     const inspector = metrics.boxes['.right-inspector']
-    if (!topBar || !composerTools || !actionComposer || !inspector) {
+    const sessionHeader = metrics.boxes['.session-header']
+    const sessionTitle = metrics.boxes['.session-header > div:first-child']
+    const sessionActions = metrics.boxes['.session-actions']
+    if (!topBar || !composerTools || !actionComposer || !inspector || !sessionHeader || !sessionTitle || !sessionActions) {
       throw new Error(`${viewport.name} is missing required desktop layout boxes`)
     }
     if (topBar.top < -1 || topBar.bottom > metrics.viewport.height + 1) {
@@ -275,6 +358,30 @@ async function assertLayoutHealth(page, viewport) {
     }
     if (inspector.right > metrics.viewport.width + 1) {
       throw new Error(`${viewport.name} inspector is clipped horizontally`)
+    }
+    if (sessionActions.right > sessionHeader.right + 1 || sessionActions.right > inspector.left + 1) {
+      throw new Error(`${viewport.name} session actions collide with the inspector`)
+    }
+    if (sessionActions.left < sessionTitle.right - 1) {
+      throw new Error(`${viewport.name} session actions overlap the session title`)
+    }
+    const musicPlayer = metrics.boxes['.scene-music-player']
+    const rollWaitBanner = metrics.boxes['.roll-wait-banner']
+    const turnFeed = metrics.boxes['.turn-feed']
+    if (!musicPlayer || !turnFeed || metrics.musicPosition !== 'static') {
+      throw new Error(`${viewport.name} default music transport is not docked in the session layout`)
+    }
+    if (musicPlayer.bottom > turnFeed.top + 1) {
+      throw new Error(`${viewport.name} default music transport overlaps the turn feed`)
+    }
+    if (
+      rollWaitBanner &&
+      musicPlayer.right > rollWaitBanner.left &&
+      musicPlayer.left < rollWaitBanner.right &&
+      musicPlayer.bottom > rollWaitBanner.top &&
+      musicPlayer.top < rollWaitBanner.bottom
+    ) {
+      throw new Error(`${viewport.name} default music transport overlaps the pending-roll banner`)
     }
   }
 }

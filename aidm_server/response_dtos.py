@@ -10,6 +10,7 @@ from sqlalchemy import func, or_
 
 from aidm_server.armor_class import armor_class_details
 from aidm_server.canon_inventory import inventory_payload
+from aidm_server.combat.legal_actions import with_combat_legal_actions
 from aidm_server.database import db
 from aidm_server.auth import account_display_name
 from aidm_server.models import (
@@ -27,10 +28,29 @@ from aidm_server.models import (
 )
 from aidm_server.profile_icons import profile_icon_src_for_character
 from aidm_server.race_system import profile_race_from_selection, race_selection_from_json
+from aidm_server.roll_visibility import (
+    public_segment_triggered_payload,
+    public_turn_event_payload as player_visible_turn_event_body,
+    public_turn_metadata_payload,
+)
 from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
+from aidm_server.weapon_proficiency import normalize_weapon_proficiencies
 
 ACTIVE_STATUS = 'active'
 ARCHIVED_STATUS = 'archived'
+
+PARTY_PLAYER_PUBLIC_KEYS = (
+    'player_id',
+    'campaign_id',
+    'name',
+    'character_name',
+    'race',
+    'sex',
+    'profile_image',
+    'class_',
+    'char_class',
+    'level',
+)
 
 
 def isoformat(value):
@@ -268,9 +288,50 @@ def session_summaries(session_ids: list[int]) -> dict[int, dict]:
     return summaries
 
 
-def session_payload(session_obj: Session, summary: dict | None = None, *, include_hidden_state: bool = True) -> dict:
+def account_player_ids_by_campaign(
+    campaign_ids: list[int] | set[int],
+    account_id: int | None,
+) -> dict[int, frozenset[int]]:
+    ids = {int(campaign_id) for campaign_id in campaign_ids if campaign_id is not None}
+    result = {campaign_id: set() for campaign_id in ids}
+    if account_id is None or not ids:
+        return {campaign_id: frozenset() for campaign_id in ids}
+
+    rows = (
+        db.session.query(Player.campaign_id, Player.player_id)
+        .filter(
+            Player.campaign_id.in_(ids),
+            Player.account_id == account_id,
+        )
+        .all()
+    )
+    for campaign_id, player_id in rows:
+        result[int(campaign_id)].add(int(player_id))
+    return {campaign_id: frozenset(player_ids) for campaign_id, player_ids in result.items()}
+
+
+def session_payload(
+    session_obj: Session,
+    summary: dict | None = None,
+    *,
+    include_hidden_state: bool = True,
+    viewer_account_id: int | None = None,
+    private_player_ids: set[int] | frozenset[int] | None = None,
+) -> dict:
     snapshot = session_snapshot(session_obj)
-    payload_snapshot = snapshot if include_hidden_state else filter_session_snapshot_for_player(snapshot)
+    if include_hidden_state:
+        payload_snapshot = snapshot
+    else:
+        player_ids = private_player_ids
+        if player_ids is None:
+            player_ids = account_player_ids_by_campaign(
+                [session_obj.campaign_id],
+                viewer_account_id,
+            ).get(session_obj.campaign_id, frozenset())
+        payload_snapshot = filter_session_snapshot_for_player(
+            snapshot,
+            private_player_ids=frozenset(player_ids),
+        )
     summary = summary or session_summaries([session_obj.session_id]).get(session_obj.session_id, {})
     session_state = summary.get('session_state')
     latest_log_at = summary.get('latest_log_at')
@@ -312,10 +373,29 @@ def session_payload(session_obj: Session, summary: dict | None = None, *, includ
     }
 
 
-def session_payloads(session_objs: list[Session], *, include_hidden_state: bool = True) -> list[dict]:
+def session_payloads(
+    session_objs: list[Session],
+    *,
+    include_hidden_state: bool = True,
+    viewer_account_id: int | None = None,
+) -> list[dict]:
     summaries = session_summaries([session_obj.session_id for session_obj in session_objs])
+    player_ids_by_campaign = (
+        {}
+        if include_hidden_state
+        else account_player_ids_by_campaign(
+            {session_obj.campaign_id for session_obj in session_objs},
+            viewer_account_id,
+        )
+    )
     return [
-        session_payload(session_obj, summaries.get(session_obj.session_id), include_hidden_state=include_hidden_state)
+        session_payload(
+            session_obj,
+            summaries.get(session_obj.session_id),
+            include_hidden_state=include_hidden_state,
+            viewer_account_id=viewer_account_id,
+            private_player_ids=player_ids_by_campaign.get(session_obj.campaign_id),
+        )
         for session_obj in session_objs
     ]
 
@@ -325,9 +405,32 @@ def session_state_payload(
     session_state: SessionState | None,
     *,
     include_hidden_state: bool = True,
+    viewer_account_id: int | None = None,
+    private_player_ids: set[int] | frozenset[int] | None = None,
 ) -> dict:
     raw_snapshot = safe_json_loads(session_obj.state_snapshot, None)
-    payload_snapshot = raw_snapshot if include_hidden_state else filter_session_snapshot_for_player(raw_snapshot)
+    player_ids = private_player_ids
+    if include_hidden_state:
+        payload_snapshot = raw_snapshot
+    else:
+        if player_ids is None:
+            player_ids = account_player_ids_by_campaign(
+                [session_obj.campaign_id],
+                viewer_account_id,
+            ).get(session_obj.campaign_id, frozenset())
+        payload_snapshot = filter_session_snapshot_for_player(
+            raw_snapshot,
+            private_player_ids=frozenset(player_ids),
+        )
+    combat = payload_snapshot.get('combat') if isinstance(payload_snapshot, dict) else None
+    if isinstance(combat, dict) and str(combat.get('status') or '').strip().lower() in {'starting', 'active'}:
+        player_query = Player.query.filter_by(campaign_id=session_obj.campaign_id)
+        if not include_hidden_state:
+            player_query = player_query.filter(Player.player_id.in_(frozenset(player_ids or ())))
+        payload_snapshot = with_combat_legal_actions(
+            payload_snapshot,
+            player_query.order_by(Player.player_id.asc()).all(),
+        )
     if session_state is None:
         return {
             'session_id': session_obj.session_id,
@@ -341,20 +444,37 @@ def session_state_payload(
             'updated_at': None,
         }
 
+    active_segments = safe_json_loads(session_state.active_segments, [])
+    active_segments = active_segments if isinstance(active_segments, list) else []
+    if not include_hidden_state:
+        active_segments = [
+            public_segment_triggered_payload(segment)
+            for segment in active_segments
+            if isinstance(segment, dict)
+        ]
+
     return {
         'session_id': session_obj.session_id,
         'campaign_id': session_obj.campaign_id,
         'current_location': session_state.current_location,
         'current_quest': session_state.current_quest,
         'rolling_summary': session_state.rolling_summary,
-        'active_segments': safe_json_loads(session_state.active_segments, []),
+        'active_segments': active_segments,
         'memory_snippets': safe_json_loads(session_state.memory_snippets, []),
         'state_snapshot': payload_snapshot,
         'updated_at': isoformat(session_state.updated_at),
     }
 
 
-def turn_event_payload(event: TurnEvent) -> dict:
+def turn_event_payload(
+    event: TurnEvent,
+    *,
+    include_private: bool = True,
+    private_player_ids: set[int] | frozenset[int] | None = None,
+) -> dict:
+    event_body = safe_json_loads(event.payload_json, {})
+    if not include_private and event.player_id not in frozenset(private_player_ids or ()):
+        event_body = player_visible_turn_event_body(event_body)
     return {
         'event_id': event.event_id,
         'session_id': event.session_id,
@@ -362,8 +482,33 @@ def turn_event_payload(event: TurnEvent) -> dict:
         'turn_id': event.turn_id,
         'player_id': event.player_id,
         'event_type': event.event_type,
-        'payload': safe_json_loads(event.payload_json, {}),
+        'payload': event_body,
         'created_at': isoformat(event.created_at),
+    }
+
+
+def session_log_entry_payload(
+    entry: SessionLogEntry,
+    *,
+    include_private: bool = True,
+    private_player_ids: set[int] | frozenset[int] | None = None,
+    turn_player_ids: dict[int, int | None] | None = None,
+) -> dict:
+    metadata = safe_json_loads(entry.metadata_json, {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    try:
+        turn_id = int(metadata.get('turn_id')) if metadata.get('turn_id') is not None else None
+    except (TypeError, ValueError):
+        turn_id = None
+    actor_player_id = (turn_player_ids or {}).get(turn_id) if turn_id is not None else None
+    if not include_private and actor_player_id not in frozenset(private_player_ids or ()):
+        metadata = public_turn_metadata_payload(metadata)
+    return {
+        'id': entry.id,
+        'message': entry.message,
+        'entry_type': entry.entry_type,
+        'metadata': metadata,
+        'timestamp': isoformat(entry.timestamp),
     }
 
 
@@ -413,9 +558,17 @@ def player_detail_payload(player: Player) -> dict:
         **player_summary_payload(player),
         'stats': structured_payload(player.stats),
         'inventory': inventory_payload(player.inventory),
+        'weapon_proficiencies': normalize_weapon_proficiencies(player.weapon_proficiencies),
         'character_sheet': structured_payload(player.character_sheet),
         'derived': player_derived_payload(player),
     }
+
+
+def party_player_payload(player: Player, *, include_private: bool = False) -> dict:
+    if include_private:
+        return player_detail_payload(player)
+    summary = player_summary_payload(player)
+    return {key: summary[key] for key in PARTY_PLAYER_PUBLIC_KEYS}
 
 
 def map_payload(map_obj: Map) -> dict:
@@ -426,6 +579,7 @@ def map_payload(map_obj: Map) -> dict:
         'title': map_obj.title,
         'description': map_obj.description,
         'map_data': safe_json_loads(map_obj.map_data, {}),
+        'visibility': map_obj.visibility,
         'created_at': isoformat(map_obj.created_at),
         'updated_at': isoformat(map_obj.updated_at),
     }
@@ -446,4 +600,16 @@ def segment_payload(segment: CampaignSegment) -> dict:
         'is_triggered': segment.is_triggered,
         'created_at': isoformat(segment.created_at),
         'updated_at': isoformat(segment.updated_at),
+    }
+
+
+def public_segment_payload(segment: CampaignSegment) -> dict:
+    """Triggered story facts safe to include in a player campaign workspace."""
+
+    return {
+        'segment_id': segment.segment_id,
+        'campaign_id': segment.campaign_id,
+        'title': segment.title,
+        'description': segment.description,
+        'is_triggered': bool(segment.is_triggered),
     }

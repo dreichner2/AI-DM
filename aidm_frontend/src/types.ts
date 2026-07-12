@@ -40,6 +40,7 @@ export type {
   CustomRaceSaveResponse,
   JsonRecord,
   MapItem,
+  MapVisibility,
   PlayNowExamplePack,
   PlayNowJoinContext,
   PlayNowJoinSessionPayload,

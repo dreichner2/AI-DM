@@ -14,6 +14,10 @@ from aidm_server.spellbook import (
     spellbook_for_character,
     spellbook_from_character_sheet,
 )
+from aidm_server.weapon_proficiency import (
+    match_weapon_proficiency,
+    normalize_weapon_proficiencies,
+)
 
 
 ABILITY_KEYS = ('strength', 'dexterity', 'constitution', 'intelligence', 'wisdom', 'charisma')
@@ -39,18 +43,39 @@ POINT_BUY_COSTS = {
 
 ROLL_TYPE_ABILITY = {
     'athletics': 'strength',
+    'initiative': 'dexterity',
     'mobility': 'dexterity',
     'stealth': 'dexterity',
     'thieves_tools': 'dexterity',
     'lore': 'intelligence',
     'social': 'charisma',
-    'attack': 'strength',
     'strength': 'strength',
     'dexterity': 'dexterity',
     'constitution': 'constitution',
     'intelligence': 'intelligence',
     'wisdom': 'wisdom',
     'charisma': 'charisma',
+}
+RANGED_WEAPON_MARKERS = {
+    'bow',
+    'crossbow',
+    'firearm',
+    'gun',
+    'long rifle',
+    'longbow',
+    'pistol',
+    'rifle',
+    'shortbow',
+    'sidearm',
+    'sling',
+}
+FINESSE_WEAPON_MARKERS = {
+    'dagger',
+    'knife',
+    'rapier',
+    'scimitar',
+    'shortsword',
+    'whip',
 }
 ROLL_TYPE_BASE_DC = {
     'attack': 14,
@@ -369,24 +394,204 @@ def character_state_for_player(player: Player | None) -> dict[str, Any]:
     skill_proficiencies = _extract_skill_proficiencies(stats, sheet)
     if skill_proficiencies:
         state['skill_proficiencies'] = skill_proficiencies
+    weapon_proficiencies = normalize_weapon_proficiencies(player.weapon_proficiencies)
+    if weapon_proficiencies:
+        state['weapon_proficiencies'] = weapon_proficiencies
     if spellbook.get('knownSpells'):
         state['spellbook'] = spellbook
         state['spells'] = known_spell_names(spellbook)
     return state
 
 
-def apply_character_dc_adjustment(rule_hint, player: Player | None):
-    if not getattr(rule_hint, 'requires_roll', False) or getattr(rule_hint, 'roll_value', None) is not None:
-        return rule_hint
+def _task_dc_from_hint(dc_hint: Any, *, fallback: int | None) -> int | None:
+    """Read an exact task DC without treating a range as a resolved DC."""
+
+    text = str(dc_hint or '').strip()
+    match = re.search(r'\bDC\s*(\d{1,2})\b', text, re.IGNORECASE)
+    if not match:
+        match = re.match(r'^(\d{1,2})(?!\s*-)', text)
+    if match:
+        parsed = int(match.group(1))
+        if 5 <= parsed <= 30:
+            return parsed
+    return fallback
+
+
+def _weapon_labels(item: dict[str, Any]) -> set[str]:
+    labels = {
+        normalized_name(item.get('name')),
+        normalized_name(item.get('subtype')),
+        *[normalized_name(alias) for alias in item.get('aliases') or []],
+        *[normalized_name(tag) for tag in item.get('tags') or []],
+    }
+    return {label for label in labels if label}
+
+
+def _text_mentions_weapon(text: str, item: dict[str, Any]) -> bool:
+    normalized_text = normalized_name(text)
+    return any(
+        re.search(rf'(?:^|\s){re.escape(label)}(?:\s|$)', normalized_text)
+        for label in _weapon_labels(item)
+    )
+
+
+def server_attack_roll_context(player: Player | None, action_text: str | None) -> dict[str, Any]:
+    """Resolve weapon/ability from inventory and proficiency from the player profile."""
+
+    from aidm_server.canon_inventory import inventory_payload
+
     state = character_state_for_player(player)
-    ability_key = ROLL_TYPE_ABILITY.get(rule_hint.roll_type or 'check')
+    modifiers = state.get('ability_modifiers') if isinstance(state.get('ability_modifiers'), dict) else {}
+    weapons = [
+        item
+        for item in inventory_payload(player.inventory if player else None)
+        if normalized_name(item.get('type')) == 'weapon'
+    ]
+    mentioned = [item for item in weapons if _text_mentions_weapon(str(action_text or ''), item)]
+    weapon = mentioned[0] if len(mentioned) == 1 else None
+    resolution = 'named_inventory_weapon' if weapon else None
+
+    if weapon is None:
+        equipped = [item for item in weapons if item.get('equipped')]
+        primary = [
+            item
+            for item in equipped
+            if normalized_name(item.get('slot') or item.get('equipmentSlot')) in {'main hand', 'two hands'}
+        ]
+        if len(primary) == 1:
+            weapon = primary[0]
+            resolution = 'equipped_primary_weapon'
+        elif len(equipped) == 1:
+            weapon = equipped[0]
+            resolution = 'equipped_weapon'
+
+    if weapon is None:
+        return {
+            'ability_key': 'strength',
+            'proficient': False,
+            'source': 'server_default',
+            'resolution': 'no_unique_persisted_weapon',
+        }
+
+    labels = _weapon_labels(weapon)
+    ranged = any(
+        marker in label or label in RANGED_WEAPON_MARKERS
+        for label in labels
+        for marker in ('bow', 'crossbow', 'firearm', 'pistol', 'rifle', 'sidearm', 'sling', 'ranged')
+    )
+    finesse = not ranged and any(
+        marker in label or label in FINESSE_WEAPON_MARKERS
+        for label in labels
+        for marker in FINESSE_WEAPON_MARKERS
+    )
+    if ranged:
+        ability_key = 'dexterity'
+        classification = 'ranged'
+    elif finesse:
+        strength_modifier = int_or_default(modifiers.get('strength'), default=0)
+        dexterity_modifier = int_or_default(modifiers.get('dexterity'), default=0)
+        ability_key = 'dexterity' if dexterity_modifier > strength_modifier else 'strength'
+        classification = 'finesse'
+    else:
+        ability_key = 'strength'
+        classification = 'melee'
+
+    proficient, proficiency_selector = match_weapon_proficiency(
+        player.weapon_proficiencies if player else None,
+        weapon,
+    )
+    proficiency_source = 'player_weapon_proficiencies' if proficient else None
+    weapon_payload = {
+        key: weapon.get(key)
+        for key in ('id', 'name', 'subtype')
+        if weapon.get(key) not in (None, '')
+    }
+    weapon_payload['classification'] = classification
+    return {
+        'ability_key': ability_key,
+        'weapon': weapon_payload,
+        'proficient': proficient,
+        'proficiency_source': proficiency_source,
+        'proficiency_selector': proficiency_selector,
+        'source': 'persisted_inventory',
+        'resolution': resolution,
+    }
+
+
+def _requested_roll_ability(
+    roll_type: str,
+    requested_ability_key: str | None,
+    player: Player | None,
+    attack_context: dict[str, Any] | None = None,
+) -> str | None:
+    if roll_type == 'attack':
+        attack_ability = str((attack_context or {}).get('ability_key') or '').strip().lower()
+        return attack_ability if attack_ability in {'strength', 'dexterity'} else 'strength'
+
+    mapped = ROLL_TYPE_ABILITY.get(roll_type)
+    if mapped:
+        return mapped
+
+    requested = str(requested_ability_key or '').strip().lower()
+    if requested in ABILITY_KEYS:
+        return requested
+
+    if roll_type == 'spell' and player:
+        class_name = str(player.class_ or '').strip().lower()
+        class_ability = {
+            'artificer': 'intelligence',
+            'bard': 'charisma',
+            'cleric': 'wisdom',
+            'druid': 'wisdom',
+            'paladin': 'charisma',
+            'ranger': 'wisdom',
+            'sorcerer': 'charisma',
+            'warlock': 'charisma',
+            'wizard': 'intelligence',
+        }.get(class_name)
+        if class_ability:
+            return class_ability
+    return None
+
+
+def character_roll_spec(
+    player: Player | None,
+    *,
+    roll_type: str | None,
+    requested_ability_key: str | None = None,
+    dc_hint: str | None = None,
+    attack_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a server-owned d20 modifier and task-DC description.
+
+    Client ability labels may select an otherwise ambiguous ability, but every
+    score, proficiency, and penalty is derived from the persisted player.
+    """
+
+    normalized_roll_type = str(roll_type or 'check').strip().lower() or 'check'
+    state = character_state_for_player(player)
+    ability_key = _requested_roll_ability(
+        normalized_roll_type,
+        requested_ability_key,
+        player,
+        attack_context,
+    )
     scores = state.get('ability_scores') if isinstance(state.get('ability_scores'), dict) else {}
     modifiers = state.get('ability_modifiers') if isinstance(state.get('ability_modifiers'), dict) else {}
     ability_mod = int_or_default(modifiers.get(ability_key), default=0) if ability_key else 0
     skill_proficiencies = set(state.get('skill_proficiencies') if isinstance(state.get('skill_proficiencies'), list) else [])
-    matching_proficiencies = sorted(skill_proficiencies.intersection(ROLL_TYPE_PROFICIENCY_SKILLS.get(rule_hint.roll_type or 'check', set())))
+    if normalized_roll_type == 'attack' and bool((attack_context or {}).get('proficient')):
+        weapon = (attack_context or {}).get('weapon')
+        weapon = weapon if isinstance(weapon, dict) else {}
+        weapon_name = normalized_name(weapon.get('name') or weapon.get('subtype')) or 'weapon'
+        matching_proficiencies = [f'weapon:{weapon_name}']
+    else:
+        matching_proficiencies = sorted(
+            skill_proficiencies.intersection(
+                ROLL_TYPE_PROFICIENCY_SKILLS.get(normalized_roll_type, set())
+            )
+        )
     proficiency_bonus = int_or_default(state.get('proficiency_bonus'), default=0) if matching_proficiencies else 0
-    total_modifier = ability_mod + proficiency_bonus
     hp = state.get('hp') if isinstance(state.get('hp'), dict) else {}
     current_hp = int_or_default(hp.get('current'), default=0)
     max_hp = int_or_default(hp.get('max'), default=0)
@@ -400,22 +605,86 @@ def apply_character_dc_adjustment(rule_hint, player: Player | None):
         elif ratio <= 0.75:
             hp_penalty = 1
 
-    base_dc = ROLL_TYPE_BASE_DC.get(rule_hint.roll_type or 'check', ROLL_TYPE_BASE_DC['check'])
-    adjusted_dc = max(5, min(30, base_dc - total_modifier + hp_penalty))
+    total_modifier = ability_mod + proficiency_bonus - hp_penalty
+    fallback_dc = ROLL_TYPE_BASE_DC.get(normalized_roll_type)
+    if fallback_dc is None and normalized_roll_type != 'initiative':
+        fallback_dc = ROLL_TYPE_BASE_DC['check']
+    task_dc = _task_dc_from_hint(dc_hint, fallback=fallback_dc)
     ability_label = ABILITY_LABELS.get(ability_key or '', 'ability')
     score = scores.get(ability_key) if ability_key else None
-    if proficiency_bonus:
-        details = [
-            f'base {base_dc}',
-            f'total mod {total_modifier:+d}',
-            f'{ability_label} {score if score is not None else "unknown"} mod {ability_mod:+d}',
-            f'proficiency +{proficiency_bonus} ({"/".join(matching_proficiencies)})',
-        ]
-    else:
-        details = [f'base {base_dc}', f'{ability_label} {score if score is not None else "unknown"} mod {ability_mod:+d}']
-    if hp_penalty:
-        details.append(f'wounded +{hp_penalty}')
-    rule_hint.dc_hint = f'{adjusted_dc} ({", ".join(details)})'
+    result = {
+        'die': 'd20',
+        'mode': 'normal',
+        'rule_type': normalized_roll_type,
+        'task_dc': task_dc,
+        'ability': (
+            {
+                'key': ability_key,
+                'label': ability_label,
+                'score': score,
+                'modifier': ability_mod,
+            }
+            if ability_key
+            else None
+        ),
+        'proficiency': {
+            'bonus': proficiency_bonus,
+            'skills': matching_proficiencies,
+        },
+        'modifier_breakdown': {
+            'ability_modifier': ability_mod,
+            'proficiency_bonus': proficiency_bonus,
+            'wound_penalty': hp_penalty,
+            'total': total_modifier,
+        },
+        'modifier': total_modifier,
+    }
+    if normalized_roll_type == 'attack' and attack_context:
+        result['attack'] = {
+            key: value
+            for key, value in attack_context.items()
+            if value is not None
+        }
+    return result
+
+
+def apply_character_dc_adjustment(
+    rule_hint,
+    player: Player | None,
+    *,
+    requested_ability_key: str | None = None,
+    attack_context: dict[str, Any] | None = None,
+):
+    if not getattr(rule_hint, 'requires_roll', False) or getattr(rule_hint, 'roll_value', None) is not None:
+        return rule_hint
+
+    spec = character_roll_spec(
+        player,
+        roll_type=getattr(rule_hint, 'roll_type', None),
+        requested_ability_key=requested_ability_key,
+        dc_hint=getattr(rule_hint, 'dc_hint', None),
+        attack_context=attack_context,
+    )
+    ability = spec.get('ability') if isinstance(spec.get('ability'), dict) else None
+    proficiency = spec.get('proficiency') if isinstance(spec.get('proficiency'), dict) else {}
+    breakdown = spec.get('modifier_breakdown') if isinstance(spec.get('modifier_breakdown'), dict) else {}
+    details = [f"roll mod {int_or_default(spec.get('modifier'), default=0):+d}"]
+    if ability:
+        details.append(
+            f"{ability.get('label') or 'ability'} {ability.get('score') if ability.get('score') is not None else 'unknown'} "
+            f"mod {int_or_default(ability.get('modifier'), default=0):+d}"
+        )
+    if int_or_default(proficiency.get('bonus'), default=0):
+        details.append(
+            f"proficiency +{int_or_default(proficiency.get('bonus'), default=0)} "
+            f"({'/'.join(proficiency.get('skills') or [])})"
+        )
+    if int_or_default(breakdown.get('wound_penalty'), default=0):
+        details.append(f"wounded -{int_or_default(breakdown.get('wound_penalty'), default=0)}")
+
+    task_dc = spec.get('task_dc')
+    dc_label = str(task_dc) if task_dc is not None else str(getattr(rule_hint, 'dc_hint', None) or 'initiative order')
+    rule_hint.dc_hint = f'{dc_label} ({", ".join(details)})'
     return rule_hint
 
 

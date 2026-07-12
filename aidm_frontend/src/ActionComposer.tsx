@@ -1,5 +1,5 @@
 import { useEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from 'react'
-import { MessagesSquare, Minus, Plus, RotateCcw, Sparkles, Volume2, VolumeX, X } from 'lucide-react'
+import { MessagesSquare, Sparkles, Volume2, VolumeX, X } from 'lucide-react'
 import { ThinIcon } from './AppChrome'
 import {
   DICE_OPTIONS,
@@ -8,12 +8,10 @@ import {
   INTERACTION_TYPE_OPTIONS,
   PLAIN_ROLL_ABILITY_KEY,
   composerModeLabel,
-  formatModifier,
   interactionActionText,
   interactionTargetId,
   itemActionText,
-  parseRollModifier,
-  rollActionText,
+  type ActionIntent,
   type AbilityOption,
   type ComposerMode,
   type InteractionTarget,
@@ -31,11 +29,6 @@ const ROLL_MODE_OPTIONS: Array<{ value: RollMode; label: string; shortLabel: str
   { value: 'advantage', label: 'Advantage', shortLabel: 'Adv' },
   { value: 'disadvantage', label: 'Disadvantage', shortLabel: 'Dis' },
 ]
-
-function clampRollModifier(value: number) {
-  if (!Number.isFinite(value)) return 0
-  return Math.max(-99, Math.min(99, Math.trunc(value)))
-}
 
 function abilityChipLabel(ability: AbilityOption) {
   const modifier = ability.modifier && ability.modifier !== '—' ? ability.modifier : ''
@@ -60,6 +53,7 @@ export type ActionComposerProps = {
   turnControlStatusLabel: string
   selectedPlayerHasTurn: boolean
   queuedActionText: string
+  queuedActionRetryable?: boolean
   clearQueuedAction: () => void
   updateTurnControl: (mode: TurnControlMode, activePlayerId?: number | null, source?: TurnControlSource) => void
   ttsEnabled: boolean
@@ -68,7 +62,7 @@ export type ActionComposerProps = {
   ttsLatencyLabel: string
   canStopTts: boolean
   stopTtsAudio: () => void
-  submitAction: () => void
+  submitAction: (overrideMessage?: string, overrideIntent?: ActionIntent) => boolean
   toggleAdminTools: () => void
   startDiceRoll: (die?: string) => void
   preloadDiceRollDialog: () => void
@@ -76,11 +70,6 @@ export type ActionComposerProps = {
   updateSelectedDie: (die: string) => void
   rollMode: RollMode
   setRollMode: Dispatch<SetStateAction<RollMode>>
-  rollModifier: string
-  setRollModifier: Dispatch<SetStateAction<string>>
-  rollProficiencyApplied: boolean
-  rollProficiencyBonus: number
-  setRollProficiencyApplied: Dispatch<SetStateAction<boolean>>
   rollReason: string
   setRollReason: Dispatch<SetStateAction<string>>
   pendingRollOptions: PendingRollOption[]
@@ -129,6 +118,7 @@ export function ActionComposer({
   turnControlStatusLabel,
   selectedPlayerHasTurn,
   queuedActionText,
+  queuedActionRetryable,
   clearQueuedAction,
   updateTurnControl,
   ttsEnabled,
@@ -145,11 +135,6 @@ export function ActionComposer({
   updateSelectedDie,
   rollMode,
   setRollMode,
-  rollModifier,
-  setRollModifier,
-  rollProficiencyApplied,
-  rollProficiencyBonus,
-  setRollProficiencyApplied,
   rollReason,
   setRollReason,
   pendingRollOptions,
@@ -192,12 +177,10 @@ export function ActionComposer({
   const dexterityAbility = abilityOptions.find((ability) => ability.key === 'dexterity')
   const initiativeChipModifier =
     dexterityAbility?.modifier && dexterityAbility.modifier !== '—' ? `DEX ${dexterityAbility.modifier}` : 'DEX'
-  const rollModifierValue = parseRollModifier(rollModifier)
-  const rollModifierPreview = formatModifier(rollModifierValue)
   const rollModeLabel = ROLL_MODE_OPTIONS.find((option) => option.value === rollMode)?.label ?? 'Normal'
   const rollReasonPreview = rollReason.trim() || (selectedAbility ? `${selectedAbility.label} check` : '')
   const rollPreviewParts = [
-    `Rolling ${selectedDie.toUpperCase()}${rollModifierPreview ? ` ${rollModifierPreview}` : ''}${
+    `Requesting ${selectedDie.toUpperCase()}${
       selectedAbility ? ` ${selectedAbility.label}` : ''
     }`,
     ...(rollMode === 'normal' ? [] : [rollModeLabel]),
@@ -209,25 +192,6 @@ export function ActionComposer({
   const manualOverrideActive = turnControl.source === 'manual' || turnControl.source === 'admin'
   const isRollMode = composerMode === 'roll'
   const toggleRollMode = () => applyComposerMode(isRollMode ? 'action' : 'roll')
-  const updateRollModifierDraft = (nextModifier: number) => {
-    const clamped = clampRollModifier(nextModifier)
-    setRollModifier(String(clamped))
-    setActionText((current) => rollActionText(selectedDie, selectedAbility, current, clamped))
-  }
-  const adjustRollModifier = (delta: number) => {
-    updateRollModifierDraft(rollModifierValue + delta)
-  }
-  const clearRollModifier = () => {
-    updateRollModifierDraft(0)
-    setRollProficiencyApplied(false)
-  }
-  const toggleRollProficiency = () => {
-    if (!rollProficiencyBonus) return
-    const nextApplied = !rollProficiencyApplied
-    const delta = nextApplied ? rollProficiencyBonus : -rollProficiencyBonus
-    updateRollModifierDraft(rollModifierValue + delta)
-    setRollProficiencyApplied(nextApplied)
-  }
   const turnModeButton = (mode: TurnControlMode, label: string) => (
     <button
       key={mode}
@@ -304,8 +268,8 @@ export function ActionComposer({
             ) : null}
           </div>
           {queuedActionText ? (
-            <div className="queued-action-strip">
-              <span>Queued draft</span>
+            <div className="queued-action-strip" role="status" aria-live="polite">
+              <span>{queuedActionRetryable ? 'Safe retry ready' : 'Queued draft'}</span>
               <strong>{queuedActionText}</strong>
               <button type="button" onClick={clearQueuedAction}>
                 Clear
@@ -402,7 +366,7 @@ export function ActionComposer({
                 disabled={sendPending || !actionText.trim()}
               >
                 <ThinIcon name="send" size={18} />
-                Send
+                {queuedActionRetryable ? 'Retry safely' : 'Send'}
               </button>
             </div>
           </div>
@@ -490,73 +454,9 @@ export function ActionComposer({
               ))}
             </div>
 
-            <div className="roll-modifier-control">
-              <span className="roll-tray-label">Mod</span>
-              <button
-                type="button"
-                className="icon-adjust"
-                aria-label="Decrease roll modifier"
-                title="Decrease modifier"
-                onClick={() => adjustRollModifier(-1)}
-                disabled={sendPending}
-              >
-                <Minus size={14} />
-              </button>
-              <input
-                type="number"
-                value={rollModifier}
-                aria-label="Roll modifier"
-                min={-99}
-                max={99}
-                onChange={(event) => {
-                  const nextValue = event.target.value
-                  setRollModifier(nextValue)
-                  setActionText((current) =>
-                    rollActionText(selectedDie, selectedAbility, current, parseRollModifier(nextValue)),
-                  )
-                  setRollProficiencyApplied(false)
-                }}
-              />
-              <button
-                type="button"
-                className="icon-adjust"
-                aria-label="Increase roll modifier"
-                title="Increase modifier"
-                onClick={() => adjustRollModifier(1)}
-                disabled={sendPending}
-              >
-                <Plus size={14} />
-              </button>
-              <div className="roll-modifier-quick" role="group" aria-label="Modifier shortcuts">
-                <button type="button" onClick={() => adjustRollModifier(1)} disabled={sendPending}>
-                  +1
-                </button>
-                <button type="button" onClick={() => adjustRollModifier(2)} disabled={sendPending}>
-                  +2
-                </button>
-                <button type="button" onClick={() => adjustRollModifier(-1)} disabled={sendPending}>
-                  -1
-                </button>
-                <button
-                  type="button"
-                  className={rollProficiencyApplied ? 'selected' : ''}
-                  aria-pressed={rollProficiencyApplied}
-                  onClick={toggleRollProficiency}
-                  disabled={sendPending || !rollProficiencyBonus}
-                >
-                  +PB <small>{formatModifier(rollProficiencyBonus) || '+0'}</small>
-                </button>
-                <button
-                  type="button"
-                  className="icon-adjust"
-                  aria-label="Clear roll modifier"
-                  title="Clear modifier"
-                  onClick={clearRollModifier}
-                  disabled={sendPending}
-                >
-                  <RotateCcw size={14} />
-                </button>
-              </div>
+            <div className="roll-authority-note" role="note">
+              <strong>Server roll</strong>
+              <span>Modifiers, proficiency, wounds, and the final total use the current character sheet.</span>
             </div>
 
             <label className="roll-reason-field">

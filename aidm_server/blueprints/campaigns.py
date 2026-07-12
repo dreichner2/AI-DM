@@ -820,6 +820,7 @@ def get_campaign_workspace(campaign_id):
             map_limit=_optional_limit_arg('map_limit'),
             segment_limit=_optional_limit_arg('segment_limit'),
             include_hidden_state=_include_hidden_session_state(),
+            viewer_account_id=current_account_id(),
         )
     )
 
@@ -830,7 +831,11 @@ def export_campaign_chronicle(campaign_id):
     if not campaign:
         return error_response('campaign_not_found', 'Campaign not found.', 404)
 
-    export = export_campaign_chronicle_html(campaign, include_archived_sessions=_include_archived())
+    export = export_campaign_chronicle_html(
+        campaign,
+        include_archived_sessions=_include_archived(),
+        include_director_metadata=current_actor_has_capability('debug_read'),
+    )
     return chronicle_html_response(export)
 
 

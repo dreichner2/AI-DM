@@ -85,6 +85,7 @@ function workspace(campaignId: number): CampaignWorkspace {
         title: 'Ash Hall',
         description: '',
         map_data: {},
+        visibility: 'player',
         created_at: '2026-06-06T10:00:00.000Z',
         updated_at: '2026-06-06T10:00:00.000Z',
       },

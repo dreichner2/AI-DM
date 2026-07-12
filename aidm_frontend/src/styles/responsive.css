@@ -1,3 +1,42 @@
+@media (min-width: 981px) {
+  .session-board:has(.scene-music-player.is-inline-static) .chat-reading-control,
+  .session-board:has(.scene-music-player.is-inline-static) .operator-drawer {
+    top: 230px;
+  }
+}
+
+@media (min-width: 981px) and (max-width: 1600px) {
+  .session-header > div:first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .session-header h1,
+  .session-header p {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .session-actions {
+    flex: 0 0 auto;
+    gap: 4px;
+    margin-left: 10px;
+  }
+
+  .session-actions .toolbar-button {
+    width: 34px;
+    min-width: 34px;
+    height: 34px;
+    min-height: 34px;
+    padding: 0;
+  }
+
+  .session-actions .toolbar-button span {
+    display: none;
+  }
+}
+
 @media (max-width: 1400px) {
   .prototype-shell {
     grid-template-columns: 248px minmax(560px, 1fr) 388px;
@@ -95,6 +134,18 @@
   .session-board {
     --composer-row-height: 254px;
     grid-template-rows: 60px 38px minmax(0, 1fr) minmax(var(--composer-row-height), auto);
+  }
+
+  .session-board:has(.scene-music-player.is-inline-static) {
+    grid-template-rows: 60px 38px 40px minmax(0, 1fr) minmax(var(--composer-row-height), auto);
+  }
+
+  .session-board:has(.combat-hud) {
+    grid-template-rows: 60px 38px minmax(0, 1fr) auto minmax(var(--composer-row-height), auto);
+  }
+
+  .session-board:has(.scene-music-player.is-inline-static):has(.combat-hud) {
+    grid-template-rows: 60px 38px 40px minmax(0, 1fr) auto minmax(var(--composer-row-height), auto);
   }
 
   .session-header h1 {
@@ -413,6 +464,18 @@
     overflow: hidden;
     border-top: 1px solid var(--line);
     border-right: 0;
+  }
+
+  .session-board:has(.scene-music-player.is-inline-static) {
+    grid-template-rows: auto auto 40px minmax(0, 1fr) auto;
+  }
+
+  .session-board:has(.combat-hud) {
+    grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  }
+
+  .session-board:has(.scene-music-player.is-inline-static):has(.combat-hud) {
+    grid-template-rows: auto auto 40px minmax(0, 1fr) auto auto;
   }
 
   .session-header {
@@ -797,6 +860,10 @@
     font-size: 0.72rem;
   }
 
+  .runtime-notice-full {
+    top: 90px;
+  }
+
   .ops-bar {
     position: relative;
     z-index: 80;
@@ -941,6 +1008,23 @@
     box-shadow: -24px 0 44px rgba(0, 0, 0, 0.42);
   }
 
+  .right-inspector .inspector-tabs {
+    display: flex;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x proximity;
+    scrollbar-width: thin;
+  }
+
+  .right-inspector .inspector-tabs button {
+    flex: 0 0 auto;
+    min-width: 78px;
+    padding: 0 10px;
+    overflow: visible;
+    scroll-snap-align: start;
+    text-overflow: clip;
+  }
+
   .prototype-shell.mobile-inspector-open .right-inspector {
     pointer-events: auto;
     visibility: visible;
@@ -966,6 +1050,26 @@
 
   .session-board:has(.scene-music-player.is-mobile-static) {
     grid-template-rows: 50px 38px 36px 40px minmax(0, 1fr) auto;
+  }
+
+  .session-board:has(.combat-hud) {
+    grid-template-rows: 50px 38px 36px minmax(0, 1fr) auto auto;
+  }
+
+  .session-board:has(.scene-music-player.is-mobile-static):has(.combat-hud) {
+    grid-template-rows: 50px 38px 36px 40px minmax(0, 1fr) auto auto;
+  }
+
+  .combat-hud {
+    padding: 7px 10px 8px;
+  }
+
+  .combat-hud-note {
+    display: none;
+  }
+
+  .combat-hud-actions {
+    margin-top: 6px;
   }
 
   .session-header {

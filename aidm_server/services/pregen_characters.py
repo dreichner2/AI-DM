@@ -9,6 +9,10 @@ from aidm_server.models import Player, safe_json_dumps, safe_json_loads
 from aidm_server.profile_icons import profile_icon_src_for_character
 from aidm_server.spellbook import ensure_character_sheet_spellbook
 from aidm_server.starting_inventory import starting_inventory_for_class
+from aidm_server.weapon_proficiency import (
+    default_weapon_proficiencies_for_class,
+    serialize_weapon_proficiencies,
+)
 
 
 PREGEN_VERSION = 1
@@ -187,6 +191,7 @@ def pregenerated_character_payload(preset: PregeneratedCharacterPreset) -> dict[
         'profile_image': profile_icon_src_for_character(preset.race, preset.sex),
         'stats': stats,
         'inventory': inventory_payload(inventory),
+        'weapon_proficiencies': default_weapon_proficiencies_for_class(preset.class_name),
         'character_sheet': sheet,
     }
 
@@ -224,6 +229,9 @@ def build_player_from_preset(
         level=preset.level,
         stats=stats_payload,
         inventory=safe_json_dumps(inventory, []),
+        weapon_proficiencies=serialize_weapon_proficiencies(
+            default_weapon_proficiencies_for_class(preset.class_name)
+        ),
         character_sheet=safe_json_dumps(sheet, {}),
     )
 

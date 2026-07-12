@@ -345,7 +345,12 @@ def _play_now_payload(
         'world_id': campaign.world_id,
         'idempotent_replay': idempotent_replay,
         'campaign': campaign_payload(campaign),
-        'session': session_payload(session_obj),
+        'session': session_payload(
+            session_obj,
+            include_hidden_state=False,
+            viewer_account_id=player.account_id,
+            private_player_ids={player.player_id},
+        ),
         'player': player_detail_payload(player),
         'pregen': preset_payload,
         'example_pack': {

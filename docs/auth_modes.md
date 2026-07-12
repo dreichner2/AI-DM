@@ -30,7 +30,10 @@ Socket.IO event inventory.
 | Session imports | Import player-owned saved data; hidden operator state is stripped | `player_action` |
 | Session controls | Update content settings or campaign-pack progress | `dm_runtime_control` |
 | Director commentary | Read hidden campaign-pack commentary | `debug_read` |
-| Maps | Create or update | `dm_authoring` |
+| Campaign internals | Read raw canon or campaign/region bestiary catalogs | `debug_read` |
+| Chronicle | Read public narration and revealed chapter titles | `player_read` |
+| Maps | List/get revealed (`player`) maps | `player_read` |
+| Maps | Create, update, reveal, hide, or read DM-only maps | `dm_authoring` |
 | Segments | Create, update, delete | `dm_authoring` |
 | Segments | Activate for the live session | `dm_runtime_control` |
 | Bestiary | Create entries or generate-and-save packs | `dm_authoring` |
@@ -49,6 +52,30 @@ listed in `AIDM_API_AUTH_TOKEN_WORKSPACES` receive only player read/action
 capabilities; a workspace mapping takes precedence if a token is present in
 both settings. When authentication is disabled, a credential-free local
 request keeps the full local-operator capability set.
+
+Workspace membership grants access to the shared table; it does not grant
+object-level access to another account's private character sheet. Player-readable
+session list, workspace, state, and export responses retain full detail only for
+`Player` records owned by the authenticated account. Party peers are limited to
+public identity and bounded shared combat status. Selecting an unowned
+`player_id` for export returns `404 player_not_found`; administrators retain the
+complete operator view. Accountless workspace/table tokens own no private
+player record, so they receive only the public projection and cannot select a
+private player export, fetch or mutate a player directly by ID, or bind a
+Socket.IO connection to a guessed player. Credential-free loopback mode and
+authenticated administrators retain their operator workflows.
+
+Raw campaign-segment list/detail routes require `dm_authoring`. Player campaign
+workspace responses include only triggered segment ID/title/description/status;
+untriggered rows, trigger conditions, tags, source IDs, metadata, and room-event
+trigger recipes remain operator data.
+
+Raw campaign canon and campaign/region bestiary catalogs require `debug_read`;
+the core bestiary remains player-readable. Campaign and session Chronicle
+exports remain player-readable, but player copies contain only public prose and
+already-revealed chapter titles. Progress actions/reasons/revisions/event IDs,
+provider/model traces, state-pipeline notes, and Director's Commentary are
+included only for actors with `debug_read`.
 
 The frontend namespaces stored account/workspace credentials by configured
 backend origin and attaches them only to that origin. Cookie-authenticated
@@ -151,5 +178,10 @@ AIDM_ACCOUNT_TOKEN_RESPONSE_ENABLED=false
   `make hosted-cookie-auth-smoke HOSTED_COOKIE_AUTH_SMOKE_ARGS="--target-url <target-url> --account-intent signup --evidence-report tmp/release/hosted-cookie-auth-evidence.md"`.
   Use `--account-intent login --username <user> --password <pass>` when the
   target requires a pre-provisioned test account.
+- Prefer `make hosted-cookie-release-proof HOSTED_COOKIE_RELEASE_PROOF_ARGS="--target-url <target-url> --account-intent signup"`
+  when the target permits throwaway signup. It uses the owner and peer HTTP-only
+  cookie sessions for the forbidden-response, export/import, and beta SLO proof,
+  so no account or workspace bearer token needs to be placed in an argument or
+  evidence file.
 - Any bearer-token browser exception is documented with a reason and reviewed
   before testers are invited.

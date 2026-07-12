@@ -94,6 +94,8 @@ def test_hosted_cookie_auth_smoke_dispatches_live_target_mode(monkeypatch):
         'workspace_name': 'Smoke Workspace',
         'socketio_path': 'custom-socket.io',
         'timeout_seconds': 3.0,
+        'release_proof_suite': False,
+        'proof_output_dir': hosted_cookie_auth_smoke.DEFAULT_PROOF_OUTPUT_DIR,
     }
 
 
@@ -150,6 +152,7 @@ def test_live_socket_cookie_auth_reuses_http_session_and_forces_websocket(monkey
         campaign_id=2,
         session_id=3,
         player_id=4,
+        private_marker='private-marker',
     )
     monkeypatch.setattr(hosted_cookie_auth_smoke, 'HostedSocketClient', FakeSocketClient)
 
@@ -188,3 +191,113 @@ def test_hosted_socket_client_waits_before_namespace_connect(monkeypatch):
         ('sleep', hosted_cookie_auth_smoke.LIVE_SOCKET_NAMESPACE_SETTLE_SECONDS),
         ('connect', None),
     ]
+
+
+def test_release_proof_suite_generates_cookie_backed_artifacts_in_isolated_mode(tmp_path):
+    evidence_path = tmp_path / 'hosted-cookie-auth-evidence.md'
+    for filename in (*hosted_cookie_auth_smoke.PROOF_ARTIFACT_FILENAMES, evidence_path.name):
+        (tmp_path / filename).write_text('stale-proof-value', encoding='utf-8')
+
+    exit_code = hosted_cookie_auth_smoke.main(
+        [
+            '--release-proof-suite',
+            '--proof-output-dir',
+            str(tmp_path),
+            '--evidence-report',
+            str(evidence_path),
+        ]
+    )
+
+    assert exit_code == 0
+    cookie_evidence = evidence_path.read_text(encoding='utf-8')
+    security_evidence = (tmp_path / 'security-forbidden-evidence.md').read_text(encoding='utf-8')
+    export_evidence = (tmp_path / 'export-import-evidence.md').read_text(encoding='utf-8')
+    baseline = (tmp_path / 'beta-slo-baseline.md').read_text(encoding='utf-8')
+    assert '## Release Proof Suite' in cookie_evidence
+    assert '| Combat start | POST |' in security_evidence
+    assert '| Beta support bundle | GET |' in security_evidence
+    assert '- Cleanup status code: 200' in export_evidence
+    assert '- Environment: isolated' in baseline
+    combined = '\n'.join((cookie_evidence, security_evidence, export_evidence, baseline))
+    assert 'stale-proof-value' not in combined
+    assert 'hosted-cookie-secret' not in combined
+    assert 'hosted-cookie-peer-secret' not in combined
+    assert 'aidm_account_session=' not in combined
+    assert 'aidm_csrf_token=' not in combined
+
+
+def test_live_release_proof_failure_still_cleans_workspace_sessions_and_logins(monkeypatch, tmp_path):
+    clients = [object(), object()]
+    deleted_paths = []
+    logged_out = []
+    seeded = hosted_cookie_auth_smoke.SeededHostedAuthRuntime(
+        workspace_id='workspace-one',
+        world_id=1,
+        campaign_id=2,
+        session_id=3,
+        player_id=4,
+        private_marker='private-marker',
+    )
+
+    monkeypatch.setattr(hosted_cookie_auth_smoke, 'RequestsHttpClient', lambda *_args, **_kwargs: clients.pop(0))
+    monkeypatch.setattr(
+        hosted_cookie_auth_smoke,
+        '_create_account_and_workspace',
+        lambda *_args, **_kwargs: ('workspace-one', {'X-AIDM-CSRF-Token': 'owner-csrf-value'}, 'workspace-token'),
+    )
+    monkeypatch.setattr(hosted_cookie_auth_smoke, '_seed_play_runtime', lambda *_args, **_kwargs: seeded)
+    monkeypatch.setattr(
+        hosted_cookie_auth_smoke,
+        '_signup_and_join_second_account',
+        lambda *_args, **_kwargs: {'X-AIDM-CSRF-Token': 'peer-csrf-value'},
+    )
+    monkeypatch.setattr(hosted_cookie_auth_smoke, '_seed_second_account_player', lambda *_args, **_kwargs: 5)
+    monkeypatch.setattr(hosted_cookie_auth_smoke, '_assert_two_account_rest_privacy', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hosted_cookie_auth_smoke, '_assert_live_socket_cookie_auth', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hosted_cookie_auth_smoke, '_assert_live_socket_player_ownership', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        hosted_cookie_auth_smoke,
+        '_run_release_proof_suite',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('proof failed')),
+    )
+    monkeypatch.setattr(
+        hosted_cookie_auth_smoke,
+        '_delete',
+        lambda _http, path, **_kwargs: deleted_paths.append(path),
+    )
+    monkeypatch.setattr(
+        hosted_cookie_auth_smoke,
+        '_assert_live_logout_clears_session',
+        lambda http, *_args, **_kwargs: logged_out.append(http),
+    )
+
+    with pytest.raises(AssertionError, match='proof failed'):
+        hosted_cookie_auth_smoke.run_live_target_smoke(
+            target_url='https://aidm.example.test',
+            username='',
+            password='',
+            account_intent='signup',
+            workspace_name='Proof Workspace',
+            socketio_path='socket.io',
+            timeout_seconds=3,
+            release_proof_suite=True,
+            proof_output_dir=tmp_path,
+        )
+
+    assert deleted_paths == [
+        '/api/sessions/3?hard=true',
+        '/api/accounts/workspaces/workspace-one',
+    ]
+    assert len(logged_out) == 2
+
+
+def test_known_cookie_and_csrf_values_are_redacted_before_artifact_write(tmp_path):
+    output = tmp_path / 'proof.md'
+
+    hosted_cookie_auth_smoke._write_redacted_markdown(
+        output,
+        'cookie-value-123 csrf-value-456 safe-text',
+        sensitive_values=['cookie-value-123', 'csrf-value-456'],
+    )
+
+    assert output.read_text(encoding='utf-8') == '<redacted> <redacted> safe-text'

@@ -14,13 +14,49 @@ PLAYER_PROGRESS_FLAG_KEYS = {
     'campaignPackProgressRevision',
 }
 
+PUBLIC_PLAYER_CHARACTER_KEYS = (
+    'id',
+    'playerId',
+    'player_id',
+    'name',
+    'characterName',
+    'character_name',
+    'race',
+    'class',
+    'class_',
+    'level',
+    'sex',
+    'profileImage',
+    'profile_image',
+)
 
-def filter_session_snapshot_for_player(snapshot: Any) -> Any:
+PUBLIC_PLAYER_COMBAT_KEYS = (
+    'id',
+    'playerId',
+    'player_id',
+    'name',
+    'team',
+    'kind',
+    'class',
+    'class_',
+    'level',
+    'conditions',
+    'isAlive',
+    'isConscious',
+)
+
+
+def filter_session_snapshot_for_player(
+    snapshot: Any,
+    *,
+    private_player_ids: set[int] | frozenset[int] | None = None,
+) -> Any:
     if not isinstance(snapshot, dict):
         return snapshot
 
     migrated, _migrations_applied = migrate_campaign_pack_snapshot(snapshot)
     filtered = deepcopy(migrated)
+    owned_player_ids = _normalized_player_ids(private_player_ids)
     filtered.pop('stateChangeLedger', None)
 
     flags = filtered.get('flags') if isinstance(filtered.get('flags'), dict) else {}
@@ -34,7 +70,79 @@ def filter_session_snapshot_for_player(snapshot: Any) -> Any:
         if isinstance(filtered.get(key), list):
             filtered[key] = [record for record in filtered[key] if _record_player_visible(record)]
 
+    if isinstance(filtered.get('playerCharacters'), list):
+        filtered['playerCharacters'] = [
+            _player_character_for_viewer(record, owned_player_ids)
+            for record in filtered['playerCharacters']
+            if isinstance(record, dict)
+        ]
+
+    combat = filtered.get('combat') if isinstance(filtered.get('combat'), dict) else None
+    if combat is not None:
+        # Legal actions are response-time, viewer-scoped projections. Never
+        # trust or relay an imported/persisted copy across viewers.
+        combat.pop('legalActions', None)
+        combat.pop('legalActionsSchemaVersion', None)
+        if isinstance(combat.get('participants'), list):
+            combat['participants'] = [
+                _combat_participant_for_viewer(record, owned_player_ids)
+                for record in combat['participants']
+                if isinstance(record, dict)
+            ]
+
     return filtered
+
+
+def _normalized_player_ids(values: set[int] | frozenset[int] | None) -> frozenset[int]:
+    normalized = {
+        parsed
+        for value in values or ()
+        if (parsed := _positive_int(value)) is not None and parsed > 0
+    }
+    return frozenset(normalized)
+
+
+def _record_player_id(record: dict) -> int | None:
+    direct = _positive_int(_first(record, 'playerId', 'player_id'))
+    if direct is not None and direct > 0:
+        return direct
+
+    actor_id = _text(record.get('id')).lower()
+    for prefix in ('player_', 'player-'):
+        if actor_id.startswith(prefix):
+            parsed = _positive_int(actor_id[len(prefix):])
+            return parsed if parsed is not None and parsed > 0 else None
+    return None
+
+
+def _public_fields(record: dict, keys: tuple[str, ...]) -> dict:
+    return {key: record[key] for key in keys if key in record}
+
+
+def _player_character_for_viewer(record: dict, private_player_ids: frozenset[int]) -> dict:
+    player_id = _record_player_id(record)
+    if player_id is not None and player_id in private_player_ids:
+        return record
+    return _public_fields(record, PUBLIC_PLAYER_CHARACTER_KEYS)
+
+
+def _combat_participant_for_viewer(record: dict, private_player_ids: frozenset[int]) -> dict:
+    player_id = _record_player_id(record)
+    team = _text(record.get('team')).lower()
+    kind = _text(record.get('kind')).lower()
+    is_player = player_id is not None or team == 'player' or kind in {'player', 'player_character'}
+    if not is_player or (player_id is not None and player_id in private_player_ids):
+        return record
+    payload = _public_fields(record, PUBLIC_PLAYER_COMBAT_KEYS)
+    hp = record.get('hp') if isinstance(record.get('hp'), dict) else {}
+    public_hp = {
+        key: hp[key]
+        for key in ('current', 'max', 'currentHp', 'maxHp')
+        if key in hp
+    }
+    if public_hp:
+        payload['hp'] = public_hp
+    return payload
 
 
 def _player_pack_snapshot(pack: dict, flags: dict) -> dict:

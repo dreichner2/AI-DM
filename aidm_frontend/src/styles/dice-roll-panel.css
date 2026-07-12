@@ -160,6 +160,29 @@
   font-weight: 700;
 }
 
+.roll-authority-note {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  padding: 6px 9px;
+  border: 1px solid rgba(107, 220, 104, 0.2);
+  border-radius: 5px;
+  background: rgba(107, 220, 104, 0.055);
+}
+
+.roll-authority-note strong {
+  color: var(--heading);
+  font-size: 0.7rem;
+}
+
+.roll-authority-note span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.64rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .roll-modifier-control {
   display: flex;
   align-items: center;

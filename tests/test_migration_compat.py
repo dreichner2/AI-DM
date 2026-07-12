@@ -86,4 +86,4 @@ def test_version_table_capacity_covers_every_migration_revision():
         '0001_initial_core'
     ]
     referenced_revisions = {parent for parent in revisions.values() if parent is not None}
-    assert set(revisions) - referenced_revisions == {'0029_players_account_fk'}
+    assert set(revisions) - referenced_revisions == {'0031_authored_map_visibility'}

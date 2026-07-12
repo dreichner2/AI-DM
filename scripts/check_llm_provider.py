@@ -9,9 +9,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from aidm_server.env_loader import load_runtime_env
-from aidm_server.contracts import ProviderRequest
-from aidm_server.llm import get_provider
+from aidm_server.env_loader import load_runtime_env  # noqa: E402
+from aidm_server.contracts import ProviderRequest  # noqa: E402
+from aidm_server.llm import get_provider  # noqa: E402
 
 
 def main(argv: Sequence[str] | None = None) -> int:
