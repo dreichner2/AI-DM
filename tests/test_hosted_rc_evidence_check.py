@@ -75,6 +75,10 @@ def test_command_plan_builds_hosted_checks_with_expected_artifacts():
         '9',
         '--player-id',
         '11',
+        '--commit-sha',
+        'abc1234',
+        '--invite-more-testers',
+        'yes',
     )
 
     plan = build_command_plan(args)
@@ -104,6 +108,8 @@ def test_command_plan_builds_hosted_checks_with_expected_artifacts():
 
     beta_slo = next(check for check in plan if check.label == 'Hosted beta SLO baseline')
     assert '--output' in beta_slo.args
+    assert beta_slo.args[beta_slo.args.index('--commit-sha') + 1] == 'abc1234'
+    assert beta_slo.args[beta_slo.args.index('--invite-more-testers') + 1] == 'yes'
     assert 'tmp/release/beta-slo-baseline.md' in beta_slo.args
     assert '--evidence-report' not in beta_slo.args
     assert 'tmp/release/deployment-readiness-evidence.md' not in beta_slo.args

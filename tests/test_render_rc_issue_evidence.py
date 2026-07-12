@@ -37,6 +37,13 @@ def _write_tar(path, members: list[str]) -> None:
             archive.addfile(info, io.BytesIO(data))
 
 
+def _write_tar_member(path, member_name: str, data: bytes) -> None:
+    with tarfile.open(path, mode='w:gz') as archive:
+        info = tarfile.TarInfo(member_name)
+        info.size = len(data)
+        archive.addfile(info, io.BytesIO(data))
+
+
 def _write_link_tar(path, member_name: str, linkname: str) -> None:
     with tarfile.open(path, mode='w:gz') as archive:
         info = tarfile.TarInfo(member_name)
@@ -217,6 +224,35 @@ def test_inspect_source_archive_fails_large_non_lfs_members(tmp_path, monkeypatc
     assert result['status'] == 'failed'
     assert result['large_untracked'] == ['AIDM-main/docs/large-reference.txt']
     assert result['large_members'][0]['lfs_tracked'] is False
+
+
+def test_inspect_source_archive_fails_unresolved_git_lfs_pointer(tmp_path):
+    archive_path = tmp_path / 'aidm-source-lfs-pointer.tar.gz'
+    pointer = (
+        b'version https://git-lfs.github.com/spec/v1\n'
+        b'oid sha256:113495375c81bc9a25acc0b0aa5a9fa8032c397bb4338ea99f2571677659fdfc\n'
+        b'size 111217434\n'
+    )
+    _write_tar_member(
+        archive_path,
+        'AIDM-main/aidm_frontend/public/music/theme.mp3',
+        pointer,
+    )
+
+    result = inspect_source_archive(archive_path)
+
+    assert result['status'] == 'failed'
+    assert result['forbidden'] == []
+    assert result['large_untracked'] == []
+    assert result['unresolved_lfs_pointers'] == [
+        {
+            'path': 'AIDM-main/aidm_frontend/public/music/theme.mp3',
+            'project_path': 'aidm_frontend/public/music/theme.mp3',
+            'lfs_tracked': True,
+            'oid': 'sha256:113495375c81bc9a25acc0b0aa5a9fa8032c397bb4338ea99f2571677659fdfc',
+            'expected_bytes': 111217434,
+        }
+    ]
 
 
 def test_inspect_visual_smoke_reports_expected_screenshots(tmp_path):

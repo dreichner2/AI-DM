@@ -6,15 +6,17 @@ from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import requests
 
 
 DEFAULT_OUTPUT = Path('tmp/release/beta-slo-baseline.md')
 DEFAULT_TARGET_URL = 'http://127.0.0.1:5050'
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _first_csv_value(value: str | None) -> str:
@@ -23,6 +25,41 @@ def _first_csv_value(value: str | None) -> str:
 
 def _normalize_base_url(value: str) -> str:
     return value.strip().rstrip('/')
+
+
+def _valid_http_target_url(value: str) -> bool:
+    if not value or any(character.isspace() for character in value):
+        return False
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+    except ValueError:
+        return False
+    return parsed.scheme in {'http', 'https'} and bool(parsed.netloc and parsed.hostname)
+
+
+def resolve_commit_sha(value: str = '') -> str:
+    explicit = value.strip()
+    if explicit:
+        return explicit
+    github_sha = os.getenv('GITHUB_SHA', '').strip()
+    if github_sha:
+        return github_sha
+    try:
+        return subprocess.run(
+            ['git', 'rev-parse', 'HEAD'],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ''
+
+
+def _valid_commit_sha(value: str) -> bool:
+    normalized = value.strip().lower()
+    return 7 <= len(normalized) <= 64 and all(character in '0123456789abcdef' for character in normalized)
 
 
 def _json_file(path: Path, *, label: str) -> dict[str, Any]:
@@ -223,6 +260,7 @@ def render_baseline(
     observability_provider: str,
     alert_owner: str,
     evidence_report: str,
+    invite_more_testers: str = 'yes/no',
 ) -> str:
     metric_rows = ['| Metric | Value | Source | Decision |', '| --- | ---: | --- | --- |']
     metric_rows.extend(f'| {metric} | {value} | `{source}` | {decision} |' for metric, value, source, decision in _metric_rows(slo, incidents))
@@ -258,7 +296,7 @@ def render_baseline(
         '',
         '## Gate Decision',
         '',
-        '- Invite more testers: yes/no',
+        f'- Invite more testers: {invite_more_testers or "yes/no"}',
         '- Reasons:',
         '- Exceptions:',
         '- Follow-up issues:',
@@ -294,6 +332,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--observability-provider', default='', help='Observability provider to render.')
     parser.add_argument('--alert-owner', default='', help='Alert owner to render.')
     parser.add_argument('--evidence-report', default='', help='Related evidence report path or URL to render.')
+    parser.add_argument(
+        '--invite-more-testers',
+        choices=('yes', 'no'),
+        default='',
+        help='Explicit tester-expansion decision. Omit to leave the generated artifact incomplete for operator review.',
+    )
     return parser
 
 
@@ -302,8 +346,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit < 1:
         print('--limit must be positive.', file=sys.stderr)
         return 2
-    if not args.target_url and not args.slo_json:
-        print('--target-url or --slo-json is required.', file=sys.stderr)
+    if not args.target_url:
+        print('--target-url is required so the evidence is bound to its source environment.', file=sys.stderr)
+        return 2
+    if not _valid_http_target_url(args.target_url):
+        print('--target-url must be an absolute http(s) URL.', file=sys.stderr)
+        return 2
+    commit_sha = resolve_commit_sha(args.commit_sha)
+    if not _valid_commit_sha(commit_sha):
+        print('--commit-sha must resolve to a 7-64 character hexadecimal Git SHA.', file=sys.stderr)
         return 2
     try:
         if args.slo_json:
@@ -329,7 +380,7 @@ def main(argv: list[str] | None = None) -> int:
         incidents=incidents,
         generated_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
         release=args.release,
-        commit_sha=args.commit_sha,
+        commit_sha=commit_sha,
         environment=args.environment,
         target_url=target_url,
         socketio_worker_model=args.socketio_worker_model,
@@ -338,6 +389,7 @@ def main(argv: list[str] | None = None) -> int:
         observability_provider=args.observability_provider,
         alert_owner=args.alert_owner,
         evidence_report=args.evidence_report,
+        invite_more_testers=args.invite_more_testers,
     )
     output_path = write_baseline(markdown, args.output)
     print(f'Wrote beta SLO baseline: {output_path}')

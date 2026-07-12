@@ -42,6 +42,34 @@ Turn metadata under `state_pipeline` is audit, debug, and per-turn pipeline
 metadata. It explains extraction, validation, application, and summary results
 for an individual turn; it is not the canonical session state.
 
+Narration persistence does not authorize mechanics. If the primary post-DM
+pipeline fails, the compatibility immediate-state path may apply the validated
+changes. If that path also fails, the saved narration remains in the transcript
+but the turn is marked `failed` with `post_dm_state.status=failed` and
+`recovery_required=true`. Recovery metadata distinguishes `mechanics_status=none`
+from `mechanics_status=partial`: partial means one or more authoritative pre-DM
+changes in `state_pipeline.immediateAppliedChanges` or `combatAppliedChanges`
+already committed and must not be replayed. The safe projection includes the
+pre-DM applied-change count and always records
+`post_dm_mechanics_applied=false`; the turn's privileged `state_pipeline`
+retains the exact applied-change evidence. Structured turn advancement,
+clarification completion, and canon enqueue stop; operators must inspect and
+correct only the unapplied remainder rather than replaying the turn. A
+safe `turnRecoveryGate` in `Session.state_snapshot` pauses subsequent player
+turns with `session_recovery_required` while leaving join and read paths
+available. The failed `DmTurn.post_dm_state` row is the fail-closed source of
+truth: if writing the redundant snapshot gate fails, later submissions still
+discover the unresolved turn, remain blocked, and repair the gate when storage
+recovers. The recovery endpoint can resolve directly from that failed row, so
+an operator never needs to provoke another player action first. The
+`dm_runtime_control` recovery endpoint clears only the matching
+turn after an operator records either `state_corrected` or
+`no_mechanical_change_required` plus a bounded note. The original turn remains
+failed, the resolution metadata retains the none/partial mechanics summary,
+and the operator decision has durable turn and privileged audit records. Replay
+idempotency includes a one-way fingerprint of the normalized note; a changed
+resolution or note conflicts instead of silently discarding new operator text.
+
 ## Dice And Turn Authority
 
 Player roll requests may select a supported die or mode and identify the
@@ -64,6 +92,13 @@ Detailed ability score, proficiency, wound, DC, and attack provenance is private
 to the acting player and operator records. Room-wide roll events retain only the
 shared die, mode, faces, kept value, aggregate modifier, total, and reason.
 
+When a pending turn needs a roll, `roll_required` carries the pending turn ID,
+remaining player IDs, and a public roll specification limited to die, mode,
+rule type, reason, result visibility, and public ability key/label. The client
+uses that guidance to configure the request; it still cannot submit faces,
+modifiers, totals, DCs, or authoritative provenance. A rejected action draft is
+kept separately from the roll request and restored after resolution.
+
 The player combat HUD is also a server projection, not persisted client truth.
 `combat.legalActions` is derived for each owned player from the live snapshot
 and persisted inventory. Stable action and target IDs are re-resolved under the
@@ -72,6 +107,9 @@ out-of-range, hidden, down, or fully covered targets are rejected. Current turn
 order is enforceable. Separate action, movement, bonus-action, and reaction
 counters are not persisted, so the projection marks those sub-turn counters as
 untracked instead of claiming full tabletop action-economy enforcement.
+Unavailable targets remain in the viewer projection with a reason. The frontend
+disables and explains them; omission is reserved for targets the viewer must not
+know exist.
 
 ## Player-Visible Projections
 
@@ -90,6 +128,8 @@ list, workspace, state, and export responses are account-scoped projections:
   visible only to the acting player and operators;
 - raw canon and campaign/region bestiary catalogs are operator reads, while
   player Chronicle HTML retains only public prose and revealed chapter titles;
+- memory snippets in the compatibility `SessionState` projection are presented
+  as "Recent Memory," not as authoritative canon facts;
 - explicit export selection of a player the requester does not own returns
   `404`; workspace administrators keep the complete operator view.
 
@@ -118,12 +158,34 @@ records. Gameplay reads and updates the mirror through campaign-pack services;
 durable progress writes remain the recoverable record outside the snapshot.
 Do not treat either representation as a substitute for the other.
 
+Player progress payloads and player session snapshots share one checkpoint
+projection. A checkpoint marked `hiddenToPlayers` (or equivalent DM-only
+metadata) does not become visible merely because it is active or terminal, and
+its ID is removed from active/completed/skipped/failed projections. Authors may
+expose a safe alias with `playerTitle` or `playerSummary`; private authored
+title, summary, route, and director fields remain absent.
+
+## Lifecycle Boundary
+
+Archived or deleted sessions and campaigns remain outside the live-play
+mutation surface: they cannot accept room joins, player turns, clarification
+resolutions, or turn-control changes. Session lifecycle commits share the
+per-session turn coordinator. Campaign lifecycle commits fence every affected
+session in ascending order before row locking, so archive, restore, and delete
+cannot silently race an active turn.
+
 ## Long-Term Canon Memory
 
 `aidm_server/emergent_memory.py` contains canon extraction and normalization
 logic; it is not a separate state store. Durable long-term canon is stored in
 `story_entities`, `story_facts`, `story_threads`, `turn_canon_updates`, and
 `canon_jobs`.
+
+Canon extraction runs outside the session coordinator. Before applying the
+validated patch and refreshing the live projection, the worker acquires and
+revalidates the complete shared campaign-pack lock set in a fresh scoped
+database session. This prevents a canon waiter from projecting a snapshot it
+loaded before a foreground turn committed.
 
 These records capture story knowledge that arose through play. They are not the
 immediate mutable source for the current scene, active quest list, character

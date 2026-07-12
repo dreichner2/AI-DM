@@ -30,6 +30,7 @@ def test_typing_registration_owns_only_typing_status():
         set_socket_context=Mock(),
         socket_workspace_id=Mock(),
         socket_capability_forbidden=Mock(),
+        workspace_session=Mock(),
         set_player_typing=Mock(),
         active_player_payloads=Mock(),
         rate_key=Mock(),

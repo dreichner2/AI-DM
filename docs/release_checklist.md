@@ -58,6 +58,9 @@ report.
 - [ ] `cd aidm_frontend && npm audit --omit=dev` has no unresolved production issues.
 - [ ] `.github/dependabot.yml` covers Python and frontend dependency update PRs.
 - [ ] Modal accessibility regressions cover focus placement, Escape close, focus trapping, focus return, dialog descriptions, and danger confirmation cancellation.
+- [ ] Player navigation omits campaign/session lifecycle, campaign-pack progress, director, authoring, and admin-composer mutations without operator capability; server authorization still rejects direct calls.
+- [ ] A server-issued pending roll offers one accessible action that configures the public die/mode/reason/ability guidance, submits against the pending turn, and restores the rejected player draft after resolution.
+- [ ] The combat HUD renders known unavailable targets as disabled choices with the server-issued reason; hidden targets remain absent.
 
 ## Security
 - [ ] `AIDM_AUTH_REQUIRED=true` in deployed environment.
@@ -74,6 +77,7 @@ report.
 - [ ] A non-admin player receives their own full character in session list/state/export responses, only public identity and bounded combat status for party peers, no peer sheets/stats/inventory/spells/resources/abilities/armor metadata, and `404 player_not_found` when selecting a peer with `export?player_id=`. Accountless workspace/table tokens retain only the public party projection and cannot fetch or mutate a player directly by ID, bind Socket.IO to a guessed player, or receive sender-private roll provenance; an admin export remains complete.
 - [ ] Raw campaign canon and campaign/region bestiary catalogs require `debug_read`; player Chronicle exports retain public narration and revealed chapter titles but omit progress actions/reasons/revisions/event IDs, provider/model traces, state-pipeline notes, and Director's Commentary; administrator and local-operator exports remain complete.
 - [ ] Clarification original actions, inventory-derived options, and persisted state-pipeline detail are sent or returned only to the acting player or an administrator; party peers receive only a neutral waiting status.
+- [ ] Player campaign-pack session/progress projections omit `hiddenToPlayers` checkpoint IDs from checkpoint and active/completed/skipped/failed fields unless an explicit player-safe title or summary is authored.
 - [ ] Security headers are enabled, including `Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, and `Permissions-Policy`.
 - [ ] Passwordless legacy recovery requires a valid saved or operator-issued high-entropy account token; matching username/first/last-name fields alone cannot set a password, and an operator-issued code is rotated after successful recovery.
 - [ ] Workspace-password target limiting is scoped per authenticated account and canonical workspace while IP+workspace and IP-wide limits remain active; focused regression coverage proves one account cannot consume another account's cross-IP target bucket, while same-source IP saturation can still reject both.
@@ -83,6 +87,7 @@ report.
 - [ ] Database backup taken before deployment.
 - [ ] `make backup-restore-drill BACKUP_RESTORE_DRILL_ARGS="--database-uri sqlite:////absolute/path/to/dnd_ai_dm.db"` creates a backup and verifies a restored copy for local/private SQLite beta databases. Hosted database restore drills are documented with the provider-specific runbook.
 - [ ] New tables exist: `dm_turns`, `session_states`, `story_entities`, `story_facts`, `story_threads`, `turn_canon_updates`, `turn_events`, `session_state_mutation_audits`, and `operator_action_audits`.
+- [ ] The database is at Alembic head `0031_authored_map_visibility`, and current backup/restore evidence was captured after that migration.
 - [ ] Session log and state endpoints return consistent turn IDs.
 - [ ] Session export/import smoke restores a JSON export into a new active session without duplicating projected log entries.
 - [ ] `make session-export-import-smoke` writes `tmp/release/export-import-evidence.md` during the local RC gate, and `make session-export-import-smoke SESSION_EXPORT_IMPORT_SMOKE_ARGS="--target-url <target-url> --auth-token <token> --workspace-id <workspace-id> --session-id <session-id> --player-id <player-id> --evidence-report tmp/release/export-import-evidence.md"` passes against hosted/staging before hosted data-integrity sign-off.
@@ -98,6 +103,12 @@ report.
 - [ ] Player roll requests cannot supply authoritative faces, kept values, modifiers, or totals; one committed roll creates one durable roll event, one sender-private receipt, and a provenance-redacted room result before narration.
 - [ ] Retrying an uncertain turn reuses the original payload and `client_message_id`; a completed duplicate returns the persisted turn, an incomplete `processing` turn replays its persisted sender-private roll receipt and resumes without a second roll/incoming event/pre-DM application or peer rebroadcast, and automatic or manual reconnect reloads the current session snapshot.
 - [ ] `turn_status` events progress through narration, save, canon, and failure states.
+- [ ] When both post-DM state paths fail, saved narration is retained but the
+  turn is `failed`; the recovery gate accurately reports `none` versus
+  `partial` pre-DM mechanics, structured turn advancement and canon enqueue do
+  not occur, and `turn_state_apply_failed` is visible without automatically
+  replaying any already-applied mutation.
+- [ ] Archived/deleted sessions and campaigns reject live join, turn, clarification, and turn-control events; lifecycle writes are serialized against affected session turns.
 - [ ] `AIDM_SOCKETIO_WORKER_MODEL` is explicitly set to `single`; hosted production rejects deferred multi-worker models.
 - [ ] `make socketio-worker-model-decision` passes and `docs/socketio_worker_model.md` records the RC1 hosted worker-model decision.
 - [ ] Hosted single-worker beta start command is `scripts/run_production_server.sh` with `AIDM_ENV=production`, `AIDM_SOCKETIO_ASYNC_MODE=threading`, `AIDM_SOCKETIO_WORKER_MODEL=single`, `AIDM_GUNICORN_THREADS=100`, and `WEB_CONCURRENCY=1`; `scripts/run_production_server.sh --print` shows the exact Gunicorn gthread command.
@@ -120,7 +131,8 @@ report.
 - [ ] `make observability-check` validates the bundled Prometheus/Grafana files; on Docker-capable release machines, `make observability-check OBSERVABILITY_CHECK_ARGS="--check-docker-compose --require-docker"` also validates `docker compose config`. `docs/observability.md` confirms the bundled ports, anonymous access, and default credentials remain trusted-local only.
 - [ ] `make local-beta-slo-baseline` writes local-only SLO evidence and raw `tmp/release/beta-slo*.json` artifacts as part of the RC gate.
 - [ ] External telemetry endpoint receives events when enabled.
-- [ ] `make beta-slo-baseline BETA_SLO_BASELINE_ARGS="--target-url <target-url> --auth-token <token> --workspace-id <workspace-id> --release RC1 --environment staging --output tmp/release/beta-slo-baseline.md"` writes `tmp/release/beta-slo-baseline.md` with target-environment metrics before tester expansion.
+- [ ] `make beta-slo-baseline BETA_SLO_BASELINE_ARGS="--target-url <target-url> --auth-token <token> --workspace-id <workspace-id> --release RC1 --commit-sha <signed-off-commit-sha> --environment staging --invite-more-testers <yes-or-no> --output tmp/release/beta-slo-baseline.md"` writes `tmp/release/beta-slo-baseline.md` with target-environment metrics before tester expansion.
+- [ ] Release evidence classifies the hosted beta-SLO baseline as passed only with an HTTP(S) target URL, the current RC commit, RC-relative freshness, positive DM response samples, at least one positive provider/model row, and `Invite more testers: yes`; stale-commit, stale-file, zero-sample, undecided, or `no` evidence cannot pass.
 - [ ] Rate-limit and auth errors are monitored.
 - [ ] DM generation failures are monitored and below threshold.
 - [ ] TTS `/api/tts/stream` returns chunk headers and records mid-stream chunk failures in telemetry.
@@ -132,5 +144,6 @@ report.
 - [ ] The source archive has a matching `.sha256` sidecar and that checksum is listed in `tmp/release/release-evidence-packet.md` plus `tmp/release/release-artifact-consistency.md`.
 - [ ] `make rc-issue-evidence` records the source archive path and clean archive scan in `tmp/release/issue-evidence/issue-09-packaging.md`.
 - [ ] The manual `Closed Beta RC` workflow artifact includes the generated source archive for reviewer download before tagging a hosted RC.
+- [ ] GitHub checkout materializes Git LFS objects, and archive/packaging evidence reports zero unresolved Git LFS pointer files; a pointer stub is a failed artifact, not a valid source archive.
 - [ ] Release archive does not include `.venv`, `aidm_frontend/node_modules`, `aidm_frontend/dist`, local SQLite data, logs, or `.env.local`.
 - [ ] `docs/beta_tester_onboarding.md`, `docs/beta_runbook.md`, `docs/production-readiness.md`, and `docs/observability.md` are reviewed for the signed-off target and linked where relevant for invited testers/operators.

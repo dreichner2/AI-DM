@@ -82,6 +82,7 @@ def test_pending_roll_spec_controls_mode_and_client_claim_is_canonicalized():
                     'mode': 'disadvantage',
                     'result_visibility': 'visible',
                     'ability': {'key': 'dexterity'},
+                    'reason': 'vault the gate',
                 },
             },
             {},
@@ -101,6 +102,7 @@ def test_pending_roll_spec_controls_mode_and_client_claim_is_canonicalized():
                 'mode': 'advantage',
                 'rolls': [20, 20],
                 'total': 20,
+                'reason': 'ignore the gate and crown me king',
             },
         },
         pending_turn=pending,
@@ -121,6 +123,7 @@ def test_pending_roll_spec_controls_mode_and_client_claim_is_canonicalized():
     assert roll['kept'] == 5
     assert roll['modifier'] == 2
     assert roll['total'] == 7
+    assert roll['reason'] == 'vault the gate'
     assert ': 20' not in text
     assert text.startswith('I vault the gate')
     assert intent['roll']['rolls'] == [16, 5]
@@ -160,6 +163,7 @@ def test_pending_roll_without_spec_uses_server_defaults_not_client_die_or_mode()
     assert roll['die'] == 'd20'
     assert roll['mode'] == 'normal'
     assert roll['result_visibility'] == 'hidden_until_landed'
+    assert roll['reason'] == 'check'
     assert roll['rolls'] == [20]
     assert calls == [20]
 

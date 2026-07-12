@@ -27,10 +27,10 @@ from aidm_server.provider_priority import provider_priority_gate
 from aidm_server.segment_state import build_segment_state_payload
 from aidm_server.segment_triggers import evaluate_segment_trigger, parse_trigger_spec
 from aidm_server.services.campaign_pack_progress import update_campaign_pack_progress
+from aidm_server.services.campaign_pack_coordination import serialized_campaign_pack_progress
 from aidm_server.socket_contracts import segment_triggered_payload, turn_status_payload
 from aidm_server.telemetry import telemetry_event, telemetry_metric, telemetry_timing
 from aidm_server.time_utils import utc_now
-from aidm_server.turn_coordinator import session_turn_coordinator
 from aidm_server.turn_events import (
     CANON_APPLIED_EVENT,
     SEGMENT_TRIGGERED_EVENT,
@@ -371,7 +371,12 @@ def _activate_state_segments(turn: DmTurn, segments_to_activate: list[tuple[Camp
     return triggered_segments
 
 
-def _evaluate_state_segments_after_turn(turn: DmTurn, campaign: Campaign) -> list[dict]:
+def _evaluate_state_segments_after_turn(
+    turn: DmTurn,
+    campaign: Campaign,
+    *,
+    progress_commit: bool = True,
+) -> list[dict]:
     if not current_app.config.get('AIDM_SEGMENT_EVALUATOR_ENABLED', True):
         return []
 
@@ -411,6 +416,7 @@ def _evaluate_state_segments_after_turn(turn: DmTurn, campaign: Campaign) -> lis
             session_id=turn.session_id,
             campaign_id=campaign.campaign_id,
             triggered_segments=triggered_segments,
+            commit=progress_commit,
         )
         return triggered_segments
     except Exception as exc:
@@ -612,7 +618,11 @@ def _apply_canon_job_result(
         campaign=campaign,
         triggered_segments=triggered_segments,
     )
-    post_turn_segments = _evaluate_state_segments_after_turn(turn, campaign)
+    post_turn_segments = _evaluate_state_segments_after_turn(
+        turn,
+        campaign,
+        progress_commit=False,
+    )
     if post_turn_segments:
         segment_patch = _segment_thread_patch(post_turn_segments)
         validated_segment_patch, segment_rejections = validate_canon_patch(
@@ -822,7 +832,7 @@ def process_canon_job(
 
         # Provider I/O is complete and the retrieval session has been removed.
         # Serialize only the reload/validate/apply phase with foreground turns.
-        with session_turn_coordinator.serialized(session_id):
+        with serialized_campaign_pack_progress(session_id):
             return _apply_canon_job_result(
                 job_id,
                 claimed_attempt=claimed_attempt,

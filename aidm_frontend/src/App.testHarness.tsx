@@ -347,10 +347,10 @@ function resetApiData() {
       rolling_summary: 'The party is testing a sealed door.',
       active_segments: [],
       memory_snippets: [
-        { turn_id: 1, dm_output: 'The first canon fact glows in the margin.' },
-        { turn_id: 2, dm_output: 'The second canon fact names the keeper.' },
-        { turn_id: 3, dm_output: 'The third canon fact marks the hidden bridge.' },
-        { turn_id: 4, dm_output: 'The fourth canon fact reveals the lantern city.' },
+        { turn_id: 1, dm_output: 'The first remembered beat glows in the margin.' },
+        { turn_id: 2, dm_output: 'The second remembered beat names the keeper.' },
+        { turn_id: 3, dm_output: 'The third remembered beat marks the hidden bridge.' },
+        { turn_id: 4, dm_output: 'The fourth remembered beat reveals the lantern city.' },
       ],
       state_snapshot: {},
       updated_at: '2026-06-06T10:45:00.000Z',
@@ -992,6 +992,34 @@ function installFetchMock() {
           },
           { status: 201 },
         )
+      }
+
+      const recoveryMatch = path.match(/^\/api\/sessions\/(\d+)\/recovery\/resolve$/)
+      if (method === 'POST' && recoveryMatch) {
+        const sessionId = Number(recoveryMatch[1])
+        const currentState = sessionStates[sessionId]
+        if (!currentState) {
+          return jsonResponse(
+            { error: 'Session not found.', error_code: 'session_not_found' },
+            { status: 404 },
+          )
+        }
+        const currentSnapshot = currentState.state_snapshot ?? {}
+        const nextSnapshot = { ...currentSnapshot }
+        delete nextSnapshot.turnRecoveryGate
+        sessionStates[sessionId] = {
+          ...currentState,
+          state_snapshot: nextSnapshot,
+          updated_at: fixedNow.toISOString(),
+        }
+        return jsonResponse({
+          resolved: true,
+          idempotent_replay: false,
+          session_id: sessionId,
+          turn_id: body.turn_id,
+          resolution: body.resolution,
+          state_revision: 4,
+        })
       }
 
       const workspaceMatch = path.match(/^\/api\/campaigns\/(\d+)\/workspace$/)

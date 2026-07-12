@@ -14,6 +14,7 @@ from aidm_server.game_state.application.applier import apply_state_changes, pers
 from aidm_server.game_state.models import state_snapshot_for_session
 from aidm_server.game_state.validation.validator import validate_state_changes, validated_changes_for_application
 from aidm_server.models import Campaign, Player, Session, SessionStateMutationAudit, safe_json_dumps, safe_json_loads
+from aidm_server.services.campaign_pack_coordination import serialized_campaign_pack_progress
 from aidm_server.time_utils import utc_now
 from aidm_server.turn_coordinator import session_turn_coordinator
 from aidm_server.workspace_access import current_account_id, current_account_is_workspace_admin
@@ -388,8 +389,12 @@ def mutate_session_state(
     after_persist: AfterPersistHook | None = None,
     reject_on_validation_error: bool = False,
 ) -> SessionStateMutationResult:
-    with session_turn_coordinator.serialized(session_id) as wait_ms:
-        session_obj = db.session.get(Session, session_id)
+    with serialized_campaign_pack_progress(
+        session_id,
+        include_shared_progress=refresh_progress is not None,
+    ) as lock_boundary:
+        wait_ms = lock_boundary.waits.get(session_id, 0.0)
+        session_obj = db.session.get(Session, session_id, populate_existing=True)
         if session_obj is None:
             return SessionStateMutationResult(
                 session_obj=None,

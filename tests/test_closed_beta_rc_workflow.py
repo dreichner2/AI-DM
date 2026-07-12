@@ -38,6 +38,7 @@ def test_closed_beta_rc_workflow_uploads_full_handoff_bundle():
     assert 'make rc-handoff-artifacts PYTHON=python' in workflow
     assert '--include-gh-details' in workflow
     assert workflow.count('GH_TOKEN: ${{ github.token }}') == 2
+    assert workflow.count('lfs: true') == 1
 
     missing_required_globs = [
         required_glob

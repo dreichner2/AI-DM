@@ -1,12 +1,11 @@
 import {
-  lazy,
-  Suspense,
   type Dispatch,
   type FormEvent,
   type RefObject,
   type SetStateAction,
 } from 'react'
 import { X } from 'lucide-react'
+import { ClassSelector } from './ClassSelector'
 import {
   POINT_BUY_ABILITIES,
   POINT_BUY_BUDGET,
@@ -15,14 +14,8 @@ import {
   pointBuySpent,
 } from './characterStats'
 import { ModalShell } from './ModalShell'
+import { RaceSelector } from './RaceSelector'
 import type { PlayerEditDialogState } from './usePlayerProfileActions'
-
-const ClassSelector = lazy(() =>
-  import('./ClassSelector').then((module) => ({ default: module.ClassSelector })),
-)
-const RaceSelector = lazy(() =>
-  import('./RaceSelector').then((module) => ({ default: module.RaceSelector })),
-)
 
 type PlayerEditDialogProps = {
   auth: string
@@ -83,8 +76,7 @@ export function PlayerEditDialog({
               }
             />
           </label>
-          <Suspense fallback={null}>
-            <RaceSelector
+          <RaceSelector
               auth={auth}
               baseUrl={baseUrl}
               selectedRace={dialog.race}
@@ -100,15 +92,14 @@ export function PlayerEditDialog({
               onSexChange={(sex) =>
                 setDialog((current) => (current ? { ...current, sex } : current))
               }
-            />
-            <ClassSelector
+          />
+          <ClassSelector
               selectedClass={dialog.charClass}
               pending={dialog.pending}
               onClassChange={(charClass) =>
                 setDialog((current) => (current ? { ...current, charClass } : current))
               }
-            />
-          </Suspense>
+          />
           <div className="dialog-grid two character-level-grid">
             <label>
               Level

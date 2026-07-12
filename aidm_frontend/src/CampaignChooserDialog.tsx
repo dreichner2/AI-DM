@@ -5,6 +5,7 @@ import type { Campaign } from './types'
 
 type CampaignChooserDialogProps = {
   campaigns: Campaign[]
+  canCreateCampaign: boolean
   dialogRef: RefObject<HTMLElement | null>
   onChoose: (campaignId: number) => void
   onClose: () => void
@@ -14,6 +15,7 @@ type CampaignChooserDialogProps = {
 
 export function CampaignChooserDialog({
   campaigns,
+  canCreateCampaign,
   dialogRef,
   onChoose,
   onClose,
@@ -65,16 +67,22 @@ export function CampaignChooserDialog({
           ) : (
             <div className="dialog-warning">
               <strong>No campaigns yet.</strong>
-              <span>Create a campaign before choosing a character.</span>
+              <span>
+                {canCreateCampaign
+                  ? 'Create a campaign before choosing a character.'
+                  : 'Ask the table Dungeon Master to create a campaign.'}
+              </span>
             </div>
           )}
           <footer>
             <button type="button" className="secondary" onClick={onClose}>
               Cancel
             </button>
-            <button type="button" data-autofocus onClick={onCreate}>
-              Create Campaign
-            </button>
+            {canCreateCampaign ? (
+              <button type="button" data-autofocus onClick={onCreate}>
+                Create Campaign
+              </button>
+            ) : null}
           </footer>
         </div>
     </ModalShell>

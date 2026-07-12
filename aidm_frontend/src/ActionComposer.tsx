@@ -40,6 +40,7 @@ export type ActionComposerProps = {
   actionText: string
   adminPasscode: string
   adminToolsUnlocked: boolean
+  canUseOperatorTools: boolean
   setActionText: Dispatch<SetStateAction<string>>
   updateActionText: (nextText: string) => void
   setAdminPasscode: Dispatch<SetStateAction<string>>
@@ -105,6 +106,7 @@ export function ActionComposer({
   actionText,
   adminPasscode,
   adminToolsUnlocked,
+  canUseOperatorTools,
   setActionText,
   updateActionText,
   setAdminPasscode,
@@ -170,6 +172,10 @@ export function ActionComposer({
     }
   }, [composerMode, preloadDiceRollDialog])
 
+  useEffect(() => {
+    if (!canUseOperatorTools && adminToolsUnlocked) toggleAdminTools()
+  }, [adminToolsUnlocked, canUseOperatorTools, toggleAdminTools])
+
   const characterName = selectedCharacterName ?? 'I'
   const adminUnlockRef = useRef({ count: 0, startedAt: 0 })
   const inventoryActionUsesOwnedItem = ['use', 'equip', 'unequip', 'drop', 'give', 'sell'].includes(selectedInventoryAction)
@@ -190,6 +196,7 @@ export function ActionComposer({
   const activeTurnPlayerId = turnControl.activePlayerId ?? selectedPlayerId ?? activePlayers[0]?.id ?? null
   const conductorControlled = turnControl.source === 'auto' || turnControl.source === 'ai'
   const manualOverrideActive = turnControl.source === 'manual' || turnControl.source === 'admin'
+  const adminControlsVisible = canUseOperatorTools && adminToolsUnlocked
   const isRollMode = composerMode === 'roll'
   const toggleRollMode = () => applyComposerMode(isRollMode ? 'action' : 'roll')
   const turnModeButton = (mode: TurnControlMode, label: string) => (
@@ -206,6 +213,7 @@ export function ActionComposer({
   )
 
   const handleActionLabelClick = () => {
+    if (!canUseOperatorTools) return
     const now = Date.now()
     const unlockState = adminUnlockRef.current
     if (now - unlockState.startedAt > 15000) {
@@ -232,7 +240,7 @@ export function ActionComposer({
               <span>Flow</span>
               <strong>{turnControlStatusLabel}</strong>
             </div>
-            {adminToolsUnlocked ? (
+            {adminControlsVisible ? (
               <div className="turn-control-actions" role="group" aria-label="Turn mode override">
                 <button
                   type="button"
@@ -347,7 +355,7 @@ export function ActionComposer({
                 >
                   <ThinIcon name="chevron" size={17} />
                 </button>
-                {adminToolsUnlocked ? (
+                {adminControlsVisible ? (
                   <button
                     type="button"
                     aria-label="Admin mode"
@@ -653,7 +661,7 @@ export function ActionComposer({
           </span>
         </div>
       ) : null}
-      {!isRollMode && adminToolsUnlocked && composerMode === 'admin' ? (
+      {!isRollMode && adminControlsVisible && composerMode === 'admin' ? (
         <div className="action-intent-panel admin-intent-panel" aria-label="Admin options">
           <input
             type="password"
@@ -720,7 +728,7 @@ export function ActionComposer({
             >
               <ThinIcon name="dot" size={16} /> OOC
             </button>
-            {adminToolsUnlocked ? (
+            {adminControlsVisible ? (
               <button
                 type="button"
                 className={composerMode === 'admin' ? 'selected' : ''}

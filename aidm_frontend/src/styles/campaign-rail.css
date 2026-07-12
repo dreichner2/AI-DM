@@ -332,13 +332,6 @@
     linear-gradient(180deg, rgba(255, 255, 255, 0.046), rgba(255, 255, 255, 0.02));
 }
 
-.live-dot {
-  position: absolute;
-  right: 16px;
-  top: 22px;
-  color: #62dc57;
-}
-
 .rail-nav {
   display: grid;
   gap: 5px;

@@ -100,9 +100,12 @@ def _write_packet(path: Path, *, hosted_ready: bool = False) -> Path:
             },
         },
         'beta_slo_baseline': {
-            'status': 'present' if hosted_ready else 'local-only',
+            'status': 'passed' if hosted_ready else 'local-only',
             'path': str(path.parent / 'beta-slo-baseline.md'),
             'target_url': 'https://aidm.example.test' if hosted_ready else 'isolated local runtime',
+            'dm_response_sample_count': 3 if hosted_ready else 0,
+            'provider_turn_count': 3 if hosted_ready else 0,
+            'invite_more_testers': 'yes' if hosted_ready else 'yes/no',
         },
         'frontend_npm_ci': {
             'status': 'passed' if hosted_ready else 'missing',
@@ -727,6 +730,15 @@ def test_build_status_report_uses_hosted_rc_aggregate_checks(tmp_path):
     )
     packet_path = _write_packet(tmp_path / 'packet-hosted-aggregate.json', hosted_ready=False)
     packet = json.loads(packet_path.read_text(encoding='utf-8'))
+    packet['beta_slo_baseline'].update(
+        {
+            'status': 'passed',
+            'target_url': 'https://aidm.closedbeta.dev',
+            'dm_response_sample_count': 3,
+            'provider_turn_count': 3,
+            'invite_more_testers': 'yes',
+        }
+    )
     packet['hosted_rc_evidence'].update(
         {
             'status': 'manual-evidence-required',
@@ -760,6 +772,77 @@ def test_build_status_report_uses_hosted_rc_aggregate_checks(tmp_path):
 
     assert report['counts'] == {'passed': 7}
     assert all('via hosted RC evidence' in item['evidence'] for item in report['items'])
+
+
+def test_build_status_report_rejects_incomplete_beta_slo_despite_passed_hosted_aggregate(tmp_path):
+    checklist = tmp_path / 'release_checklist.md'
+    checklist.write_text(
+        '## Observability\n- [ ] `make beta-slo-baseline BETA_SLO_BASELINE_ARGS="--target-url <target-url>"` writes target-environment metrics.\n',
+        encoding='utf-8',
+    )
+    packet_path = _write_packet(tmp_path / 'packet-incomplete-slo.json', hosted_ready=False)
+    packet = json.loads(packet_path.read_text(encoding='utf-8'))
+    packet['beta_slo_baseline'].update(
+        {
+            'status': 'incomplete',
+            'target_url': 'https://aidm.closedbeta.dev',
+            'dm_response_sample_count': 0,
+            'provider_turn_count': 0,
+            'invite_more_testers': 'yes/no',
+            'validation_errors': [
+                'DM response sample count must be greater than zero',
+                'provider/model turn mix must include at least one positive real row',
+                'Invite more testers must be explicitly set to yes or no',
+            ],
+        }
+    )
+    packet['hosted_rc_evidence'].update(
+        {
+            'status': 'manual-evidence-required',
+            'target_url': 'https://aidm.closedbeta.dev',
+            'generator_freshness': 'current',
+            'checks': {
+                'Hosted beta SLO baseline': {
+                    'status': 'passed',
+                    'evidence_path': 'tmp/release/beta-slo-baseline.md',
+                    'evidence_target_url': 'https://aidm.closedbeta.dev',
+                    'missing_inputs': [],
+                    'validation_errors': [],
+                }
+            },
+        }
+    )
+    packet_path.write_text(json.dumps(packet), encoding='utf-8')
+
+    report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-06-19T00:00:00+00:00',
+    )
+
+    assert report['counts'] == {'external-required': 1}
+    assert 'needs hosted/staging target evidence' in report['items'][0]['evidence']
+
+
+def test_build_status_report_fails_explicit_beta_slo_no_decision(tmp_path):
+    checklist = tmp_path / 'release_checklist.md'
+    checklist.write_text(
+        '## Observability\n- [ ] `make beta-slo-baseline BETA_SLO_BASELINE_ARGS="--target-url <target-url>"` writes target-environment metrics.\n',
+        encoding='utf-8',
+    )
+    packet_path = _write_packet(tmp_path / 'packet-no-slo.json', hosted_ready=True)
+    packet = json.loads(packet_path.read_text(encoding='utf-8'))
+    packet['beta_slo_baseline'].update({'status': 'failed', 'invite_more_testers': 'no'})
+    packet_path.write_text(json.dumps(packet), encoding='utf-8')
+
+    report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-06-19T00:00:00+00:00',
+    )
+
+    assert report['counts'] == {'failed': 1}
+    assert 'status is failed' in report['items'][0]['evidence']
 
 
 def test_build_status_report_uses_frontend_npm_ci_evidence(tmp_path):

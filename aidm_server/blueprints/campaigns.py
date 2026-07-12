@@ -39,7 +39,9 @@ from aidm_server.services.campaign_pack_examples import (
 from aidm_server.services.campaign_pack_linter import lint_campaign_pack_manifest
 from aidm_server.services.campaign_lifecycle import (
     CampaignHasSessionsError,
+    CampaignLifecycleTargetNotFoundError,
     archive_campaign_record,
+    commit_campaign_lifecycle_operation,
     delete_campaign_record,
     restore_campaign_record,
 )
@@ -745,9 +747,15 @@ def archive_campaign(campaign_id):
         return error_response('campaign_not_found', 'Campaign not found.', 404)
 
     try:
-        payload = archive_campaign_record(campaign)
-        db.session.commit()
+        payload = commit_campaign_lifecycle_operation(
+            campaign_id,
+            workspace_id=current_workspace_id(),
+            operation=archive_campaign_record,
+        )
         return jsonify({'archived': True, 'campaign': payload})
+    except CampaignLifecycleTargetNotFoundError:
+        db.session.rollback()
+        return error_response('campaign_not_found', 'Campaign not found.', 404)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to archive campaign: %s', str(exc))
@@ -761,9 +769,15 @@ def restore_campaign(campaign_id):
         return error_response('campaign_not_found', 'Campaign not found.', 404)
 
     try:
-        payload = restore_campaign_record(campaign)
-        db.session.commit()
+        payload = commit_campaign_lifecycle_operation(
+            campaign_id,
+            workspace_id=current_workspace_id(),
+            operation=restore_campaign_record,
+        )
         return jsonify({'restored': True, 'campaign': payload})
+    except CampaignLifecycleTargetNotFoundError:
+        db.session.rollback()
+        return error_response('campaign_not_found', 'Campaign not found.', 404)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to restore campaign: %s', str(exc))
@@ -779,13 +793,19 @@ def delete_campaign(campaign_id):
         return error_response('campaign_not_found', 'Campaign not found.', 404)
 
     try:
-        payload = delete_campaign_record(
-            campaign,
-            hard_delete=hard_delete,
-            force_delete=force_delete,
+        payload = commit_campaign_lifecycle_operation(
+            campaign_id,
+            workspace_id=current_workspace_id(),
+            operation=lambda refreshed: delete_campaign_record(
+                refreshed,
+                hard_delete=hard_delete,
+                force_delete=force_delete,
+            ),
         )
-        db.session.commit()
         return jsonify(payload)
+    except CampaignLifecycleTargetNotFoundError:
+        db.session.rollback()
+        return error_response('campaign_not_found', 'Campaign not found.', 404)
     except CampaignHasSessionsError as exc:
         db.session.rollback()
         return error_response(

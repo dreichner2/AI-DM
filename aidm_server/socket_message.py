@@ -10,6 +10,7 @@ from flask_socketio import emit
 
 from aidm_server.logging_context import clear_logging_context, set_logging_context
 from aidm_server.rate_limiter import RateLimitResult
+from aidm_server.services.session_lifecycle import session_playability_error
 from aidm_server.socket_access import AdminSocketAuthorization
 from aidm_server.socket_contracts import (
     SendMessagePayload,
@@ -122,9 +123,6 @@ def prepare_socket_message(
             },
         )
 
-    if dependencies.set_player_typing(session_id, player_id, sid, False):
-        dependencies.emit_active_players(session_id)
-
     session_obj = dependencies.workspace_session(session_id, workspace_id)
     if not session_obj or session_obj.campaign_id != campaign_id:
         return SocketMessageFailure(
@@ -133,6 +131,19 @@ def prepare_socket_message(
             telemetry_suffix='session_not_found',
             telemetry_payload={'session_id': session_id, 'campaign_id': campaign_id},
         )
+
+    playability_error = session_playability_error(session_obj)
+    if playability_error:
+        error_code, message = playability_error
+        return SocketMessageFailure(
+            error_code=error_code,
+            message=message,
+            telemetry_suffix=error_code,
+            telemetry_payload={'session_id': session_id, 'campaign_id': campaign_id},
+        )
+
+    if dependencies.set_player_typing(session_id, player_id, sid, False):
+        dependencies.emit_active_players(session_id)
 
     player = dependencies.workspace_player(player_id, workspace_id)
     if not player:

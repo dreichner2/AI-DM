@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import threading
 
+import aidm_server.blueprints.campaigns as campaigns_blueprint
 from aidm_server.database import db
 from aidm_server.models import (
     Campaign,
@@ -22,6 +24,7 @@ from aidm_server.models import (
     Session,
     SessionLogEntry,
     SessionState,
+    SessionTurnLock,
     StoryEntity,
     StoryFact,
     StoryThread,
@@ -29,6 +32,7 @@ from aidm_server.models import (
     TurnEvent,
     World,
 )
+from aidm_server.turn_coordinator import session_turn_coordinator
 from tests.helpers import seed_world_campaign_player_session
 
 
@@ -945,6 +949,101 @@ def test_campaign_archive_delete_and_restore_hide_from_default_lists(client, app
         assert json.loads(audits[1].details_json)['restoredSessionCount'] == 1
 
 
+def test_campaign_archive_waits_for_every_existing_session_lock(app, monkeypatch):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        second_session = Session(campaign_id=ids['campaign_id'], name='Second Session')
+        db.session.add(second_session)
+        db.session.commit()
+        second_session_id = second_session.session_id
+
+    entered_lifecycle = threading.Event()
+    completed = threading.Event()
+    result = {}
+    original_commit_operation = campaigns_blueprint.commit_campaign_lifecycle_operation
+
+    def tracked_commit_operation(*args, **kwargs):
+        entered_lifecycle.set()
+        return original_commit_operation(*args, **kwargs)
+
+    monkeypatch.setattr(
+        campaigns_blueprint,
+        'commit_campaign_lifecycle_operation',
+        tracked_commit_operation,
+    )
+
+    def archive_request():
+        response = app.test_client().post(f"/api/campaigns/{ids['campaign_id']}/archive")
+        result['status_code'] = response.status_code
+        result['payload'] = response.get_json()
+        completed.set()
+
+    with app.app_context():
+        app.config['AIDM_TURN_COORDINATOR_STORE'] = 'memory'
+        with session_turn_coordinator.serialized(second_session_id):
+            thread = threading.Thread(target=archive_request)
+            thread.start()
+            assert entered_lifecycle.wait(timeout=1.0)
+            assert completed.wait(timeout=0.1) is False
+
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+
+    assert result['status_code'] == 200
+    assert result['payload']['campaign']['status'] == 'archived'
+    with app.app_context():
+        statuses = {
+            session.session_id: session.status
+            for session in Session.query.filter_by(campaign_id=ids['campaign_id']).all()
+        }
+        assert statuses == {
+            ids['session_id']: 'archived',
+            second_session_id: 'archived',
+        }
+
+
+def test_database_coordinator_campaign_archive_and_restore_fence_every_session(client, app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        second_session = Session(campaign_id=ids['campaign_id'], name='Second Session')
+        db.session.add(second_session)
+        db.session.commit()
+        session_ids = [ids['session_id'], second_session.session_id]
+        app.config['AIDM_TURN_COORDINATOR_STORE'] = 'database'
+        app.config['AIDM_TURN_COORDINATOR_LOCK_TTL_SECONDS'] = 30
+        app.config['AIDM_TURN_COORDINATOR_POLL_INTERVAL_MS'] = 10
+
+    archive_response = client.post(f"/api/campaigns/{ids['campaign_id']}/archive")
+
+    assert archive_response.status_code == 200
+    with app.app_context():
+        archived_statuses = {
+            session.session_id: session.status
+            for session in Session.query.filter(Session.session_id.in_(session_ids)).all()
+        }
+        first_tokens = {
+            lock.session_id: lock.fencing_token
+            for lock in SessionTurnLock.query.filter(SessionTurnLock.session_id.in_(session_ids)).all()
+        }
+        assert archived_statuses == {session_id: 'archived' for session_id in session_ids}
+        assert first_tokens == {session_id: 1 for session_id in session_ids}
+
+    restore_response = client.post(f"/api/campaigns/{ids['campaign_id']}/restore")
+
+    assert restore_response.status_code == 200
+    with app.app_context():
+        restored_statuses = {
+            session.session_id: session.status
+            for session in Session.query.filter(Session.session_id.in_(session_ids)).all()
+        }
+        second_tokens = {
+            lock.session_id: lock.fencing_token
+            for lock in SessionTurnLock.query.filter(SessionTurnLock.session_id.in_(session_ids)).all()
+        }
+        assert restored_statuses == {session_id: 'active' for session_id in session_ids}
+        assert second_tokens == {session_id: 2 for session_id in session_ids}
+
+
 def test_campaign_hard_delete_rejects_campaigns_with_sessions(client, app):
     ids = seed_world_campaign_player_session(app)
 
@@ -1049,6 +1148,27 @@ def test_campaign_force_hard_delete_removes_campaign_workspace(client, app):
             resource_id=str(ids['session_id']),
         ).one()
         assert session_audit.workspace_id == 'owner'
+
+
+def test_database_coordinator_force_delete_cascades_all_campaign_turn_locks(client, app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        second_session = Session(campaign_id=ids['campaign_id'], name='Second Session')
+        db.session.add(second_session)
+        db.session.commit()
+        session_ids = [ids['session_id'], second_session.session_id]
+        app.config['AIDM_TURN_COORDINATOR_STORE'] = 'database'
+        app.config['AIDM_TURN_COORDINATOR_LOCK_TTL_SECONDS'] = 30
+        app.config['AIDM_TURN_COORDINATOR_POLL_INTERVAL_MS'] = 10
+
+    response = client.delete(f"/api/campaigns/{ids['campaign_id']}?hard=true&force=true")
+
+    assert response.status_code == 200
+    assert response.get_json()['deleted_session_ids'] == session_ids
+    with app.app_context():
+        assert db.session.get(Campaign, ids['campaign_id']) is None
+        assert Session.query.filter(Session.session_id.in_(session_ids)).count() == 0
+        assert SessionTurnLock.query.filter(SessionTurnLock.session_id.in_(session_ids)).count() == 0
 
 
 def test_campaign_workspace_endpoint_returns_aggregate_payload(client, app):

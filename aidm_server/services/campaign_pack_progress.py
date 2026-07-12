@@ -2,21 +2,26 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from aidm_server.database import db
 from aidm_server.game_state.models import stable_slug
 from aidm_server.models import CampaignSegment, Session, TurnEvent, safe_json_dumps, safe_json_loads
-from aidm_server.services.campaign_pack_snapshot import migrate_campaign_pack_snapshot
-from aidm_server.services.campaign_pack_storage import (
+from aidm_server.services.campaign_pack_coordination import (
+    CampaignPackProgressLockSetChanged,
     campaign_pack_progress_lock_session_ids,
+    serialized_campaign_pack_progress,
+)
+from aidm_server.services.campaign_pack_snapshot import migrate_campaign_pack_snapshot
+from aidm_server.services.campaign_pack_visibility import player_visible_checkpoint_payloads
+from aidm_server.services.campaign_pack_storage import (
     propagate_shared_campaign_pack_progress,
     record_campaign_pack_progress_event,
 )
 from aidm_server.services.session_state_mutation import record_session_state_mutation_audit
 from aidm_server.segment_triggers import parse_trigger_spec
 from aidm_server.time_utils import utc_now
-from aidm_server.turn_coordinator import session_turn_coordinator
+from aidm_server.turn_coordinator import SessionTurnTargetMissingError, session_turn_coordinator
 
 
 PROGRESS_CHANGED_EVENT = 'campaign_pack.progress.changed'
@@ -30,6 +35,7 @@ COMBAT_COMPLETE_REASONS = {
     'objective_completed': {'objective', 'completed', 'resolve', 'resolved', 'success'},
 }
 COMBAT_FAILED_REASONS = {'objective_failed', 'players_fled'}
+ProgressOperationResult = TypeVar('ProgressOperationResult')
 
 
 @dataclass(frozen=True)
@@ -64,20 +70,97 @@ class CampaignPackControlResult:
     event_id: int | None = None
 
 
+def _run_campaign_pack_progress_operation(
+    *,
+    session_id: int,
+    operation: Callable[[], ProgressOperationResult],
+    commit: bool,
+) -> ProgressOperationResult:
+    if not commit:
+        lock_session_ids = campaign_pack_progress_lock_session_ids(session_id)
+        if not session_turn_coordinator.holds_all(lock_session_ids):
+            raise CampaignPackProgressError(
+                'Campaign pack progress requires the complete shared-session lock set.',
+                error_code='campaign_pack_progress_coordination_required',
+                status_code=409,
+            )
+        try:
+            result = operation()
+        except CampaignPackProgressLockSetChanged as exc:
+            raise CampaignPackProgressError(
+                'Shared campaign pack progress changed during this transaction. Retry the action.',
+                error_code='campaign_pack_progress_coordination_changed',
+                status_code=409,
+            ) from exc
+        final_lock_session_ids = campaign_pack_progress_lock_session_ids(session_id)
+        if not session_turn_coordinator.holds_all(final_lock_session_ids):
+            raise CampaignPackProgressError(
+                'Shared campaign pack progress changed during this transaction. Retry the action.',
+                error_code='campaign_pack_progress_coordination_changed',
+                status_code=409,
+            )
+        return result
+
+    while True:
+        try:
+            with serialized_campaign_pack_progress(session_id) as lock_boundary:
+                try:
+                    session = db.session.get(Session, session_id)
+                    if session is None:
+                        raise CampaignPackProgressError(
+                            'Session not found.',
+                            error_code='session_not_found',
+                            status_code=404,
+                        )
+                    try:
+                        result = operation()
+                    except CampaignPackProgressLockSetChanged:
+                        db.session.rollback()
+                        continue
+                    final_lock_session_ids = campaign_pack_progress_lock_session_ids(session_id)
+                    if tuple(final_lock_session_ids) != lock_boundary.session_ids:
+                        db.session.rollback()
+                        continue
+                    db.session.commit()
+                    return result
+                except Exception:
+                    db.session.rollback()
+                    raise
+        except SessionTurnTargetMissingError as exc:
+            db.session.rollback()
+            if exc.session_id != session_id:
+                continue
+            raise CampaignPackProgressError(
+                'Session not found.',
+                error_code='session_not_found',
+                status_code=404,
+            ) from exc
+
+
 def update_campaign_pack_progress(
     *,
     session_id: int,
     campaign_id: int,
     triggered_segments: list[dict] | None = None,
     turn_id: int | None = None,
+    commit: bool = True,
 ) -> CampaignPackProgressResult:
-    with session_turn_coordinator.serialized_many(campaign_pack_progress_lock_session_ids(session_id)):
-        return _update_campaign_pack_progress_locked(
+    """Update progress transactionally or join a fully locked caller transaction.
+
+    ``commit=False`` is reserved for callers that already hold every shared
+    session coordinator lease and will commit or roll back before releasing it.
+    """
+
+    return _run_campaign_pack_progress_operation(
+        session_id=session_id,
+        commit=commit,
+        operation=lambda: _update_campaign_pack_progress_locked(
             session_id=session_id,
             campaign_id=campaign_id,
             triggered_segments=triggered_segments,
             turn_id=turn_id,
-        )
+        ),
+    )
 
 
 def _update_campaign_pack_progress_locked(
@@ -289,15 +372,20 @@ def campaign_pack_progress_payload(*, session_id: int, include_hidden: bool = Tr
         or _ids_from(flags, 'campaignPackFailedCheckpointIds', 'failedCheckpointIds')
     )
     active_rules = _active_director_rules(pack, active_checkpoint)
+    active_checkpoint_id = _checkpoint_id(active_checkpoint)
     checkpoint_statuses = _checkpoint_statuses(
         checkpoints,
-        active_checkpoint_id=_checkpoint_id(active_checkpoint),
+        active_checkpoint_id=active_checkpoint_id,
         completed_ids=completed_ids,
         skipped_ids=skipped_ids,
         failed_ids=failed_ids,
     )
     visible_checkpoints = checkpoints
     visible_statuses = checkpoint_statuses
+    visible_active_checkpoint_id = active_checkpoint_id
+    visible_completed_ids = completed_ids
+    visible_skipped_ids = skipped_ids
+    visible_failed_ids = failed_ids
     director_rules = pack.get('directorRules') if isinstance(pack.get('directorRules'), dict) else {}
     visible_flags = flags
     operator_fields = {}
@@ -308,11 +396,28 @@ def campaign_pack_progress_payload(*, session_id: int, include_hidden: bool = Tr
             'hiddenSceneNotes': _first(pack, 'hiddenSceneNotes', 'hidden_scene_notes'),
         }
     if not include_hidden:
-        visible_checkpoints = _player_visible_checkpoints(checkpoints, checkpoint_statuses)
+        visible_checkpoints = player_visible_checkpoint_payloads(checkpoints, checkpoint_statuses)
+        visible_id_keys = {
+            _id_key(checkpoint.get('id'))
+            for checkpoint in visible_checkpoints
+            if _text(checkpoint.get('id'))
+        }
         visible_statuses = {checkpoint['id']: checkpoint['status'] for checkpoint in visible_checkpoints if checkpoint.get('id')}
+        visible_active_checkpoint_id = (
+            active_checkpoint_id if _id_key(active_checkpoint_id) in visible_id_keys else ''
+        )
+        visible_completed_ids = [value for value in completed_ids if _id_key(value) in visible_id_keys]
+        visible_skipped_ids = [value for value in skipped_ids if _id_key(value) in visible_id_keys]
+        visible_failed_ids = [value for value in failed_ids if _id_key(value) in visible_id_keys]
         director_rules = {}
         active_rules = {}
-        visible_flags = _player_visible_flags(flags)
+        visible_flags = _player_visible_flags(
+            flags,
+            active_checkpoint_id=visible_active_checkpoint_id,
+            completed_ids=visible_completed_ids,
+            skipped_ids=visible_skipped_ids,
+            failed_ids=visible_failed_ids,
+        )
     return {
         'enabled': True,
         'visibility': 'dm' if include_hidden else 'player',
@@ -323,10 +428,10 @@ def campaign_pack_progress_payload(*, session_id: int, include_hidden: bool = Tr
             'schemaVersion': _text(_first(pack, 'schemaVersion', 'schema_version')) or '1',
             'source': _text(_first(pack, 'source')) or 'campaign_pack',
         },
-        'activeCheckpointId': _checkpoint_id(active_checkpoint),
-        'completedCheckpointIds': completed_ids,
-        'skippedCheckpointIds': skipped_ids,
-        'failedCheckpointIds': failed_ids,
+        'activeCheckpointId': visible_active_checkpoint_id or None,
+        'completedCheckpointIds': visible_completed_ids,
+        'skippedCheckpointIds': visible_skipped_ids,
+        'failedCheckpointIds': visible_failed_ids,
         'checkpointStatuses': visible_statuses,
         'checkpoints': visible_checkpoints,
         'directorRules': director_rules,
@@ -346,16 +451,22 @@ def control_campaign_pack_progress(
     reason: str | None = None,
     actor: str | None = None,
     expected_revision: int | None = None,
+    commit: bool = True,
 ) -> CampaignPackControlResult:
-    with session_turn_coordinator.serialized_many(campaign_pack_progress_lock_session_ids(session_id)):
-        return _control_campaign_pack_progress_locked(
+    """Apply a privileged checkpoint control with shared-session fencing."""
+
+    return _run_campaign_pack_progress_operation(
+        session_id=session_id,
+        commit=commit,
+        operation=lambda: _control_campaign_pack_progress_locked(
             session_id=session_id,
             action=action,
             checkpoint_id=checkpoint_id,
             reason=reason,
             actor=actor,
             expected_revision=expected_revision,
-        )
+        ),
+    )
 
 
 def _control_campaign_pack_progress_locked(
@@ -1384,63 +1495,27 @@ def _checkpoint_statuses(
     return statuses
 
 
-def _player_visible_checkpoints(checkpoints: list[dict], checkpoint_statuses: dict[str, str]) -> list[dict]:
-    visible: list[dict] = []
-    for checkpoint in checkpoints:
-        checkpoint_id = _checkpoint_id(checkpoint)
-        if not checkpoint_id:
-            continue
-        status = checkpoint_statuses.get(checkpoint_id) or 'open'
-        if status not in {'active', 'completed', 'skipped', 'failed'} and not _checkpoint_player_visible(checkpoint):
-            continue
-        payload = {
-            'id': checkpoint_id,
-            'status': status,
-        }
-        title = (
-            _text(_first(checkpoint, 'playerTitle', 'player_title', 'publicTitle', 'public_title'))
-            or _text(_first(checkpoint, 'title', 'name'))
-        )
-        if title:
-            payload['title'] = title
-        summary = (
-            _text(_first(checkpoint, 'playerSummary', 'player_summary', 'publicSummary', 'public_summary'))
-            or (_text(_first(checkpoint, 'summary', 'description')) if status in {'active', 'completed', 'skipped', 'failed'} else '')
-        )
-        if summary:
-            payload['summary'] = summary
-        if _checkpoint_optional(checkpoint):
-            payload['optional'] = True
-        visible.append(payload)
-    return visible
-
-
-def _checkpoint_player_visible(checkpoint: dict) -> bool:
-    return _truthy(
-        _first(
-            checkpoint,
-            'visibleToPlayers',
-            'visible_to_players',
-            'knownToPlayers',
-            'known_to_players',
-            'playerVisible',
-            'player_visible',
-        )
-    )
-
-
-def _player_visible_flags(flags: dict) -> dict:
-    return {
-        key: flags[key]
-        for key in (
-            'campaignPackActiveCheckpointId',
-            'campaignPackCompletedCheckpointIds',
-            'campaignPackSkippedCheckpointIds',
-            'campaignPackFailedCheckpointIds',
-            'campaignPackProgressRevision',
-        )
-        if key in flags
-    }
+def _player_visible_flags(
+    flags: dict,
+    *,
+    active_checkpoint_id: str,
+    completed_ids: list[str],
+    skipped_ids: list[str],
+    failed_ids: list[str],
+) -> dict:
+    result = {}
+    if active_checkpoint_id and 'campaignPackActiveCheckpointId' in flags:
+        result['campaignPackActiveCheckpointId'] = active_checkpoint_id
+    for key, values in (
+        ('campaignPackCompletedCheckpointIds', completed_ids),
+        ('campaignPackSkippedCheckpointIds', skipped_ids),
+        ('campaignPackFailedCheckpointIds', failed_ids),
+    ):
+        if key in flags:
+            result[key] = values
+    if 'campaignPackProgressRevision' in flags:
+        result['campaignPackProgressRevision'] = flags['campaignPackProgressRevision']
+    return result
 
 
 def _active_director_rules(pack: dict, checkpoint: dict | None) -> dict:

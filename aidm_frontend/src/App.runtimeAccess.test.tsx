@@ -10,6 +10,7 @@ import {
   renderLoadedApp,
   setupAppTest,
   teardownAppTest,
+  toggleAdminToolsViaComposerLabel,
 } from './App.testHarness'
 
 describe('App runtime and workspace access', () => {
@@ -136,11 +137,40 @@ describe('App runtime and workspace access', () => {
     expect(screen.queryByText('Auth disabled.')).not.toBeInTheDocument()
   })
 
-  it('keeps Bestiary and Ops inspector surfaces operator-only', async () => {
-    await renderLoadedApp()
+  it('shows the complete authoring shell to operators', async () => {
+    appTestState.health.auth_required = true
+    appTestState.requiredAuthToken = 'account-token'
+    sessionStorage.setItem('aidm:authToken', 'account-token')
+    localStorage.setItem('aidm:workspaceId', 'owner')
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Choose Smoke Campaign' }))
+    await screen.findByRole('heading', { name: /Session Alpha/i })
+    await waitFor(() => expect(screen.getAllByText('Ember').length).toBeGreaterThan(0))
 
     expect(screen.getByRole('tab', { name: 'Bestiary' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Ops' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Rename selected campaign' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open campaign archive' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Manage worlds' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Import campaign pack' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add campaign' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Rename selected session' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open session archive' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Start session' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Director Commentary' })).toBeInTheDocument()
+    expect(screen.getByText('Operator')).toBeInTheDocument()
+
+    const inspector = screen.getByRole('tablist', { name: 'Inspector panels' })
+    expect(within(inspector).getByRole('tab', { name: 'Memory' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /Recent Memory/i })).toBeInTheDocument()
+    fireEvent.click(within(inspector).getByRole('tab', { name: 'Map' }))
+    expect(screen.getByRole('heading', { name: 'Map Details' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Segment title')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add segment' })).toBeInTheDocument()
+
+    toggleAdminToolsViaComposerLabel()
+    expect(screen.getByRole('button', { name: 'Admin mode' })).toBeInTheDocument()
   })
 
   it('hides Bestiary and Ops inspector surfaces from non-operator players', async () => {
@@ -172,6 +202,25 @@ describe('App runtime and workspace access', () => {
         },
       ],
     }
+    appTestState.segmentsByCampaign = {
+      10: [
+        {
+          segment_id: 50,
+          campaign_id: 10,
+          title: 'Revealed Milestone',
+          description: 'The party has already crossed the broken bridge.',
+          trigger_condition: null,
+          tags: null,
+          external_id: null,
+          source: 'runtime',
+          source_pack_id: null,
+          metadata: {},
+          is_triggered: true,
+          created_at: null,
+          updated_at: null,
+        },
+      ],
+    }
     sessionStorage.setItem('aidm:authToken', 'player-token')
     localStorage.setItem('aidm:workspaceId', 'owner')
 
@@ -183,14 +232,53 @@ describe('App runtime and workspace access', () => {
       expect(within(inspector).queryByRole('tab', { name: 'Ops' })).not.toBeInTheDocument()
     })
     expect(within(inspector).getByRole('tab', { name: 'Party' })).toBeInTheDocument()
+    expect(within(inspector).getByRole('tab', { name: 'Memory' })).toBeInTheDocument()
+    expect(within(inspector).queryByRole('tab', { name: 'Canon' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /Recent Memory/i })).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /Smoke Campaign/i }))
+    for (const name of [
+      'Rename selected campaign',
+      'Open campaign archive',
+      'Delete selected campaign',
+      'Manage worlds',
+      'Import campaign pack',
+      'Add campaign',
+      'Rename selected session',
+      'Open session archive',
+      'Delete selected session',
+      'Start session',
+      'Director Commentary',
+    ]) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+    }
+    expect(screen.queryByText('Operator')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Export' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Download session Chronicle' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Import' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Share' })).toBeInTheDocument()
+
+    toggleAdminToolsViaComposerLabel()
+    expect(screen.queryByRole('button', { name: 'Admin mode' })).not.toBeInTheDocument()
+
+    expect(screen.queryByRole('button', { name: 'Create Campaign' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Choose Smoke Campaign' }))
     await screen.findByRole('heading', { name: /Session Alpha/i })
     fireEvent.click(within(inspector).getByRole('tab', { name: 'Map' }))
     expect(screen.getByRole('heading', { name: 'Revealed Crossing' })).toBeInTheDocument()
     expect(screen.queryByText('DM_ONLY_STALE_MAP')).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Map Details' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Create map' })).not.toBeInTheDocument()
+    expect(screen.getByText('Revealed Milestone')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Set active' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Segment title')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add segment' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Session menu' }))
+    const sessionMenu = screen.getByRole('menu', { name: 'Session menu' })
+    expect(within(sessionMenu).getByRole('menuitem', { name: 'Download session Chronicle' })).toBeInTheDocument()
+    expect(within(sessionMenu).getByRole('menuitem', { name: 'Download campaign Chronicle' })).toBeInTheDocument()
+    expect(within(sessionMenu).queryByRole('menuitem', { name: 'Rename session' })).not.toBeInTheDocument()
+    expect(within(sessionMenu).queryByRole('menuitem', { name: 'Delete session' })).not.toBeInTheDocument()
   })
 
   it('keeps beta information available from the account menu without stale operator guidance', async () => {

@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from sqlalchemy import or_
+
 from aidm_server.database import db
 from aidm_server.models import (
     Campaign,
@@ -16,9 +18,18 @@ from aidm_server.models import (
     safe_json_dumps,
     safe_json_loads,
 )
+from aidm_server.services.campaign_pack_coordination import (
+    campaign_pack_progress_lock_session_ids as _campaign_pack_progress_lock_session_ids,
+    require_campaign_pack_progress_locks,
+)
 from aidm_server.services.session_state_mutation import record_session_state_mutation_audit
 from aidm_server.time_utils import utc_now
-from aidm_server.turn_coordinator import session_turn_coordinator
+
+
+def campaign_pack_progress_lock_session_ids(session_id: int) -> list[int]:
+    """Compatibility export for callers that used the storage module."""
+
+    return _campaign_pack_progress_lock_session_ids(session_id)
 
 
 def upsert_campaign_pack_definition(
@@ -192,41 +203,6 @@ def record_campaign_pack_progress_event(
     return progress_event.progress_event_id
 
 
-def campaign_pack_progress_lock_session_ids(session_id: int) -> list[int]:
-    session = db.session.get(Session, session_id)
-    if session is None:
-        return [session_id]
-
-    snapshot = safe_json_loads(session.state_snapshot, {})
-    pack = snapshot.get('campaignPack') if isinstance(snapshot, dict) and isinstance(snapshot.get('campaignPack'), dict) else {}
-    group_key = _text(_first(pack, 'multiSessionGroupKey', 'multi_session_group_key'))
-    pack_id = _text(_first(pack, 'packId', 'pack_id'))
-    if not group_key or not pack_id:
-        return [session_id]
-
-    current_progress = CampaignPackSession.query.filter_by(session_id=session_id).first()
-    if current_progress is None:
-        return [session_id]
-
-    sibling_ids: list[int] = []
-    siblings = (
-        CampaignPackSession.query.filter(
-            CampaignPackSession.workspace_id == current_progress.workspace_id,
-            CampaignPackSession.pack_id == pack_id,
-            CampaignPackSession.multi_session_group_key == group_key,
-            CampaignPackSession.session_id != session_id,
-        )
-        .order_by(CampaignPackSession.session_id.asc())
-        .all()
-    )
-    for sibling_progress in siblings:
-        sibling_session = sibling_progress.session
-        if not sibling_session or sibling_session.status in {'archived', 'deleted'}:
-            continue
-        sibling_ids.append(int(sibling_progress.session_id))
-    return sorted({int(session_id), *sibling_ids})
-
-
 def propagate_shared_campaign_pack_progress(
     *,
     session: Session,
@@ -249,95 +225,106 @@ def propagate_shared_campaign_pack_progress(
         return 0
 
     siblings = (
-        CampaignPackSession.query.filter(
+        CampaignPackSession.query.join(
+            Session,
+            Session.session_id == CampaignPackSession.session_id,
+        ).filter(
             CampaignPackSession.workspace_id == current_progress.workspace_id,
             CampaignPackSession.pack_id == pack_id,
             CampaignPackSession.multi_session_group_key == group_key,
             CampaignPackSession.session_id != session.session_id,
+            or_(Session.status.is_(None), Session.status.notin_(['archived', 'deleted'])),
         )
         .order_by(CampaignPackSession.campaign_pack_session_id.asc())
         .all()
     )
     if not siblings:
         return 0
+    require_campaign_pack_progress_locks(
+        sibling_progress.session_id for sibling_progress in siblings
+    )
 
     now = utc_now().isoformat()
     propagated = 0
     for sibling_progress in siblings:
-        with session_turn_coordinator.serialized(sibling_progress.session_id):
-            sibling_session = sibling_progress.session
-            if not sibling_session or sibling_session.status in {'archived', 'deleted'}:
-                continue
-            snapshot = safe_json_loads(sibling_session.state_snapshot, {})
-            if not isinstance(snapshot, dict):
-                continue
-            sibling_pack = snapshot.get('campaignPack') if isinstance(snapshot.get('campaignPack'), dict) else {}
-            sibling_group = _text(_first(sibling_pack, 'multiSessionGroupKey', 'multi_session_group_key'))
-            sibling_pack_id = _text(_first(sibling_pack, 'packId', 'pack_id'))
-            if sibling_pack_id != pack_id or sibling_group != group_key:
-                continue
-            checkpoints = [checkpoint for checkpoint in (sibling_pack.get('checkpoints') or []) if isinstance(checkpoint, dict)]
-            if not checkpoints:
-                continue
-            flags = snapshot.get('flags') if isinstance(snapshot.get('flags'), dict) else {}
-            previous_revision = _progress_revision(sibling_pack, flags)
-            if previous_revision > progress_revision:
-                continue
-            before_snapshot = deepcopy(snapshot)
-            flags['campaignPackActiveCheckpointId'] = active_checkpoint_id
-            flags['campaignPackCompletedCheckpointIds'] = completed_ids
-            flags['campaignPackSkippedCheckpointIds'] = skipped_ids
-            flags['campaignPackFailedCheckpointIds'] = failed_ids
-            flags['campaignPackProgressRevision'] = progress_revision
-            flags['campaignPackSharedProgressSourceSessionId'] = session.session_id
-            flags['campaignPackSharedProgressAt'] = now
-            flags['campaignPackSharedProgressActor'] = actor
-            flags['campaignPackSharedProgressReason'] = reason
-            sibling_pack['activeCheckpointId'] = active_checkpoint_id
-            sibling_pack['completedCheckpointIds'] = completed_ids
-            sibling_pack['skippedCheckpointIds'] = skipped_ids
-            sibling_pack['failedCheckpointIds'] = failed_ids
-            sibling_pack['progressRevision'] = progress_revision
-            sibling_pack['lastSharedProgressSourceSessionId'] = session.session_id
-            sibling_pack['lastSharedProgressAt'] = now
-            sibling_pack['lastProgressReason'] = reason
-            snapshot['flags'] = flags
-            snapshot['campaignPack'] = sibling_pack
-            sibling_session.state_snapshot = safe_json_dumps(snapshot, {})
-            sync_campaign_pack_progress(
-                session=sibling_session,
-                pack=sibling_pack,
-                checkpoints=checkpoints,
-                active_checkpoint_id=active_checkpoint_id,
-                completed_ids=completed_ids,
-                skipped_ids=skipped_ids,
-                failed_ids=failed_ids,
-                progress_revision=progress_revision,
-                campaign_pack=sibling_progress.campaign_pack,
-                installed_pack=sibling_progress.installed_pack,
-            )
-            record_session_state_mutation_audit(
-                session_obj=sibling_session,
-                before_state=before_snapshot,
-                after_state=snapshot,
-                source='system.campaign_pack.shared_progress',
-                actor=actor or 'system',
-                previous_revision=previous_revision,
-                state_revision=progress_revision,
-                applied_changes=[
-                    {
-                        'id': f'campaign_pack.shared_progress.{pack_id}.{progress_revision}',
-                        'type': 'campaign_pack.progress.shared',
-                    }
-                ],
-                rejected_count=0,
-                metadata={
-                    'packId': pack_id,
-                    'sourceSessionId': session.session_id,
-                    'reason': reason,
-                },
-            )
-            propagated += 1
+        sibling_session = db.session.get(
+            Session,
+            sibling_progress.session_id,
+            populate_existing=True,
+            with_for_update=True,
+        )
+        if not sibling_session or sibling_session.status in {'archived', 'deleted'}:
+            continue
+        snapshot = safe_json_loads(sibling_session.state_snapshot, {})
+        if not isinstance(snapshot, dict):
+            continue
+        sibling_pack = snapshot.get('campaignPack') if isinstance(snapshot.get('campaignPack'), dict) else {}
+        sibling_group = _text(_first(sibling_pack, 'multiSessionGroupKey', 'multi_session_group_key'))
+        sibling_pack_id = _text(_first(sibling_pack, 'packId', 'pack_id'))
+        if sibling_pack_id != pack_id or sibling_group != group_key:
+            continue
+        checkpoints = [checkpoint for checkpoint in (sibling_pack.get('checkpoints') or []) if isinstance(checkpoint, dict)]
+        if not checkpoints:
+            continue
+        flags = snapshot.get('flags') if isinstance(snapshot.get('flags'), dict) else {}
+        previous_revision = _progress_revision(sibling_pack, flags)
+        if previous_revision > progress_revision:
+            continue
+        before_snapshot = deepcopy(snapshot)
+        flags['campaignPackActiveCheckpointId'] = active_checkpoint_id
+        flags['campaignPackCompletedCheckpointIds'] = completed_ids
+        flags['campaignPackSkippedCheckpointIds'] = skipped_ids
+        flags['campaignPackFailedCheckpointIds'] = failed_ids
+        flags['campaignPackProgressRevision'] = progress_revision
+        flags['campaignPackSharedProgressSourceSessionId'] = session.session_id
+        flags['campaignPackSharedProgressAt'] = now
+        flags['campaignPackSharedProgressActor'] = actor
+        flags['campaignPackSharedProgressReason'] = reason
+        sibling_pack['activeCheckpointId'] = active_checkpoint_id
+        sibling_pack['completedCheckpointIds'] = completed_ids
+        sibling_pack['skippedCheckpointIds'] = skipped_ids
+        sibling_pack['failedCheckpointIds'] = failed_ids
+        sibling_pack['progressRevision'] = progress_revision
+        sibling_pack['lastSharedProgressSourceSessionId'] = session.session_id
+        sibling_pack['lastSharedProgressAt'] = now
+        sibling_pack['lastProgressReason'] = reason
+        snapshot['flags'] = flags
+        snapshot['campaignPack'] = sibling_pack
+        sibling_session.state_snapshot = safe_json_dumps(snapshot, {})
+        sync_campaign_pack_progress(
+            session=sibling_session,
+            pack=sibling_pack,
+            checkpoints=checkpoints,
+            active_checkpoint_id=active_checkpoint_id,
+            completed_ids=completed_ids,
+            skipped_ids=skipped_ids,
+            failed_ids=failed_ids,
+            progress_revision=progress_revision,
+            campaign_pack=sibling_progress.campaign_pack,
+            installed_pack=sibling_progress.installed_pack,
+        )
+        record_session_state_mutation_audit(
+            session_obj=sibling_session,
+            before_state=before_snapshot,
+            after_state=snapshot,
+            source='system.campaign_pack.shared_progress',
+            actor=actor or 'system',
+            previous_revision=previous_revision,
+            state_revision=progress_revision,
+            applied_changes=[
+                {
+                    'id': f'campaign_pack.shared_progress.{pack_id}.{progress_revision}',
+                    'type': 'campaign_pack.progress.shared',
+                }
+            ],
+            rejected_count=0,
+            metadata={
+                'packId': pack_id,
+                'sourceSessionId': session.session_id,
+                'reason': reason,
+            },
+        )
+        propagated += 1
     return propagated
 
 

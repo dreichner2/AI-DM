@@ -61,6 +61,152 @@ describe('App user workflow regressions', () => {
   beforeEach(setupAppTest)
   afterEach(teardownAppTest)
 
+  it('blocks new turns until an operator resolves a partial turn and refreshes session state', async () => {
+    appTestState.sessionStates[20] = {
+      ...appTestState.sessionStates[20],
+      state_snapshot: {
+        ...appTestState.sessionStates[20].state_snapshot,
+        turnRecoveryGate: {
+          status: 'required',
+          reason: 'post_dm_state_application_failed',
+          turnId: 82,
+          narrationSaved: true,
+          mechanicsApplied: true,
+          mechanicsStatus: 'partial',
+          preDmMechanicsApplied: true,
+          preDmAppliedChangeCount: 2,
+          postDmMechanicsApplied: false,
+          createdAt: '2026-06-06T10:46:00.000Z',
+        },
+      },
+    }
+
+    await renderLoadedApp()
+
+    const recoveryAlert = await screen.findByRole('alert')
+    expect(recoveryAlert).toHaveTextContent('Turn 82 needs recovery')
+    expect(recoveryAlert).toHaveTextContent(
+      'Narration was saved after 2 pre-DM changes; post-DM mechanics were not applied',
+    )
+    expect(screen.queryByLabelText(/Your Action/i)).not.toBeInTheDocument()
+
+    const form = within(recoveryAlert).getByRole('form', { name: 'Resolve turn recovery' })
+    fireEvent.click(within(form).getByRole('radio', { name: /No mechanical change required/i }))
+    fireEvent.change(within(form).getByLabelText('Operator note'), {
+      target: { value: 'Reviewed the narration; no HP, inventory, or combat state changed.' },
+    })
+    fireEvent.click(within(form).getByRole('button', { name: 'Resolve and resume play' }))
+
+    await waitFor(() =>
+      expect(appTestState.fetchCalls).toContainEqual(
+        expect.objectContaining({
+          method: 'POST',
+          path: '/api/sessions/20/recovery/resolve',
+          body: {
+            turn_id: 82,
+            resolution: 'no_mechanical_change_required',
+            operator_note: 'Reviewed the narration; no HP, inventory, or combat state changed.',
+          },
+        }),
+      ),
+    )
+    expect(
+      await screen.findByText('Recovery resolved. Session state is refreshed and play can resume.'),
+    ).toBeInTheDocument()
+    expect(screen.getByLabelText(/Your Action/i)).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('reloads recovery state for the active room when another operator resolves the gate', async () => {
+    await renderLoadedApp()
+    const stateRequestCount = () =>
+      appTestState.fetchCalls.filter(
+        (call) => call.method === 'GET' && call.path === '/api/sessions/20/state',
+      ).length
+    const initialCount = stateRequestCount()
+
+    await act(async () => {
+      socketHandler<{
+        session_id: number
+        turn_id: number
+        state_revision: number
+        recovery_required: false
+      }>('session_recovery_resolved')({
+        session_id: 21,
+        turn_id: 82,
+        state_revision: 4,
+        recovery_required: false,
+      })
+      await Promise.resolve()
+    })
+    expect(stateRequestCount()).toBe(initialCount)
+
+    await act(async () => {
+      socketHandler<{
+        session_id: number
+        turn_id: number
+        state_revision: number
+        recovery_required: false
+      }>('session_recovery_resolved')({
+        session_id: 20,
+        turn_id: 82,
+        state_revision: 4,
+        recovery_required: false,
+      })
+    })
+    await waitFor(() => expect(stateRequestCount()).toBe(initialCount + 1))
+  })
+
+  it('reloads the recovery gate immediately when post-narration state application fails', async () => {
+    await renderLoadedApp()
+    const stateRequestCount = () =>
+      appTestState.fetchCalls.filter(
+        (call) => call.method === 'GET' && call.path === '/api/sessions/20/state',
+      ).length
+    const initialCount = stateRequestCount()
+    appTestState.sessionStates[20] = {
+      ...appTestState.sessionStates[20],
+      state_snapshot: {
+        ...appTestState.sessionStates[20].state_snapshot,
+        turnRecoveryGate: {
+          status: 'required',
+          reason: 'post_dm_state_application_failed',
+          turnId: 83,
+          narrationSaved: true,
+          mechanicsApplied: false,
+          mechanicsStatus: 'none',
+          preDmMechanicsApplied: false,
+          preDmAppliedChangeCount: 0,
+          postDmMechanicsApplied: false,
+          createdAt: '2026-06-06T10:48:00.000Z',
+        },
+      },
+    }
+
+    await act(async () => {
+      socketHandler<{ error_code: string; error: string; details: Record<string, unknown> }>('error')({
+        error_code: 'turn_state_apply_failed',
+        error: 'Turn narration saved, but state application failed.',
+        details: {
+          session_id: 20,
+          turn_id: 83,
+          narration_saved: true,
+          mechanics_status: 'none',
+          mechanics_applied: false,
+          pre_dm_mechanics_applied: false,
+          pre_dm_applied_change_count: 0,
+          post_dm_mechanics_applied: false,
+          recovery_required: true,
+        },
+      })
+    })
+
+    await waitFor(() => expect(stateRequestCount()).toBe(initialCount + 1))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Turn 83 needs recovery')
+    expect(screen.queryByLabelText(/Your Action/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Recovery status refresh failed/i)).not.toBeInTheDocument()
+  })
+
   it('switches composer modes and rewrites the action text without stale prefixes', async () => {
     await renderLoadedApp()
 
@@ -526,6 +672,40 @@ describe('App user workflow regressions', () => {
     })
 
     expect(screen.getAllByText(pendingMessage)).toHaveLength(1)
+  })
+
+  it('keeps an uncertain turn bound to its session until it can be retried or dismissed', async () => {
+    const current = appTestState.sessionsByCampaign[10][0]!
+    appTestState.sessionsByCampaign = {
+      10: [
+        current,
+        {
+          ...current,
+          session_id: 21,
+          display_name: 'Session Beta',
+          created_at: '2026-06-06T11:00:00.000Z',
+          updated_at: '2026-06-06T11:05:00.000Z',
+          latest_activity_at: '2026-06-06T11:05:00.000Z',
+        },
+      ],
+    }
+    await renderLoadedApp()
+
+    fireEvent.change(screen.getByLabelText(/Your Action/i), {
+      target: { value: 'Cross the unstable bridge.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Send/i }))
+
+    const otherSession = screen.getByRole('button', { name: /Session Beta/i })
+    expect(otherSession).toBeDisabled()
+    expect(otherSession).toHaveAttribute('title', 'Wait for the active turn to finish.')
+    fireEvent.click(otherSession)
+
+    expect(screen.getByRole('heading', { name: /Session Alpha/i })).toBeInTheDocument()
+    expect(socketMock.socket.emit).toHaveBeenCalledWith(
+      'send_message',
+      expect.objectContaining({ message: 'Cross the unstable bridge.' }),
+    )
   })
 
   it('keeps admin mode hidden until the composer label gesture unlocks it', async () => {
@@ -2535,13 +2715,13 @@ describe('App user workflow regressions', () => {
     )
   })
 
-  it('opens all canon facts from the View All Canon control', async () => {
+  it('opens all recent memory from the View All Memory control', async () => {
     await renderLoadedApp()
 
-    expect(screen.queryByText(/first canon fact/i)).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /View All Canon/i }))
+    expect(screen.queryByText(/first remembered beat/i)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /View All Memory/i }))
 
-    await waitFor(() => expect(screen.getAllByText(/first canon fact/i).length).toBeGreaterThan(0))
+    await waitFor(() => expect(screen.getAllByText(/first remembered beat/i).length).toBeGreaterThan(0))
     expect(screen.getByText('Session State')).toBeInTheDocument()
   })
 
@@ -2766,8 +2946,8 @@ describe('App user workflow regressions', () => {
     expect(within(sessionViews).getByRole('tab', { name: 'DM Response' })).toHaveAttribute('aria-selected', 'true')
 
     const inspectorPanels = screen.getByRole('tablist', { name: 'Inspector panels' })
-    fireEvent.click(within(inspectorPanels).getByRole('tab', { name: 'Canon' }))
-    expect(within(inspectorPanels).getByRole('tab', { name: 'Canon' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(within(inspectorPanels).getByRole('tab', { name: 'Memory' }))
+    expect(within(inspectorPanels).getByRole('tab', { name: 'Memory' })).toHaveAttribute('aria-selected', 'true')
 
     const accountButton = screen.getByRole('button', { name: 'Account' })
     fireEvent.click(accountButton)

@@ -57,6 +57,31 @@ export type RollDraft = {
   targetPendingTurnId?: number | null
 }
 
+export type PendingRollSpec = {
+  die: string
+  mode: RollMode
+  ruleType: string
+  reason: string
+  resultVisibility: ResultVisibility
+  ability?: {
+    key: string
+    label: string
+  } | null
+}
+
+export type PendingRollGuidance = {
+  pendingTurnId: number
+  ruleType: string
+  dcHint: string | null
+  prompt: string
+  remainingPlayerIds: number[]
+  rollSpec: PendingRollSpec
+}
+
+export type RollRequiredPayload = PendingRollGuidance & {
+  sessionId: number
+}
+
 export type RollResult = RollDraft & {
   modifier: number
   rolls: number[]

@@ -92,6 +92,7 @@ HTTP_ENDPOINT_CAPABILITIES: dict[tuple[str, str], Capability] = {
     ('sessions.archive_session', 'POST'): 'dm_runtime_control',
     ('sessions.restore_session', 'POST'): 'dm_runtime_control',
     ('sessions.delete_session', 'DELETE'): 'dm_runtime_control',
+    ('sessions.resolve_session_recovery', 'POST'): 'dm_runtime_control',
     ('sessions.update_session_content_settings', 'PATCH'): 'dm_runtime_control',
     ('sessions.update_session_content_settings', 'POST'): 'dm_runtime_control',
     ('sessions.get_session_campaign_pack_commentary', 'GET'): 'debug_read',

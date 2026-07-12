@@ -1,7 +1,16 @@
 from __future__ import annotations
 
 import importlib
+import threading
+from unittest.mock import Mock
 
+import pytest
+from sqlalchemy import event
+from sqlalchemy.orm import Session as SqlAlchemySession
+
+import aidm_server.services.campaign_pack_progress as campaign_pack_progress_module
+import aidm_server.services.campaign_pack_coordination as campaign_pack_coordination_module
+from aidm_server.services.session_state_mutation import mutate_session_state
 from aidm_server.auth import generate_account_token, hash_secret
 from aidm_server.canon_jobs import _evaluate_state_segments_after_turn
 from aidm_server.database import db
@@ -16,15 +25,22 @@ from aidm_server.models import (
     DmTurn,
     Session,
     SessionStateMutationAudit,
+    SessionTurnLock,
     TurnEvent,
     World,
     safe_json_dumps,
     safe_json_loads,
 )
-from aidm_server.services.campaign_pack_progress import PROGRESS_CHANGED_EVENT
-from aidm_server.services.campaign_pack_progress import control_campaign_pack_progress, update_campaign_pack_progress
+from aidm_server.services.campaign_pack_progress import (
+    PROGRESS_CHANGED_EVENT,
+    CampaignPackProgressError,
+    control_campaign_pack_progress,
+    update_campaign_pack_progress,
+)
 from aidm_server.services.campaign_pack_storage import sync_campaign_pack_progress
 from aidm_server.services.campaign_pack_storage import campaign_pack_progress_lock_session_ids
+from aidm_server.turn_coordinator import session_turn_coordinator
+from aidm_server.turn_engine import TurnCommand, TurnEngine
 
 
 def _build_auth_app(tmp_path, monkeypatch):
@@ -439,6 +455,446 @@ def test_pack_progress_shared_propagation_does_not_overwrite_newer_sibling_revis
     assert second_snapshot['campaignPack']['progressRevision'] == 2
     assert second_progress.progress_revision == 2
     assert shared_audit_count == 0
+
+
+def test_shared_progress_commit_holds_every_group_lock_until_durable(app, monkeypatch):
+    checkpoints = [
+        {'id': 'cp_one', 'title': 'First beat', 'nextCheckpointIds': ['cp_two']},
+        {'id': 'cp_two', 'title': 'Second beat', 'nextCheckpointIds': ['cp_three']},
+        {'id': 'cp_three', 'title': 'Final beat', 'terminal': True},
+    ]
+    first_ids = _seed_pack_session(
+        app,
+        _pack_snapshot(
+            location_id='bleakmoor_gate',
+            flags={'campaignPackActiveCheckpointId': 'cp_one'},
+            checkpoints=checkpoints,
+            pack_extra={'multiSessionGroupKey': 'transactional-shared-group'},
+        ),
+    )
+    second_ids = _seed_pack_session(
+        app,
+        _pack_snapshot(
+            location_id='bleakmoor_gate',
+            flags={'campaignPackActiveCheckpointId': 'cp_one'},
+            checkpoints=checkpoints,
+            pack_extra={'multiSessionGroupKey': 'transactional-shared-group'},
+        ),
+    )
+    with app.app_context():
+        app.config['AIDM_TURN_COORDINATOR_STORE'] = 'memory'
+        for session_id in (first_ids['session_id'], second_ids['session_id']):
+            session_obj = db.session.get(Session, session_id)
+            snapshot = safe_json_loads(session_obj.state_snapshot, {})
+            pack = snapshot['campaignPack']
+            sync_campaign_pack_progress(
+                session=session_obj,
+                pack=pack,
+                checkpoints=pack['checkpoints'],
+                active_checkpoint_id='cp_one',
+                completed_ids=[],
+                skipped_ids=[],
+                failed_ids=[],
+                progress_revision=0,
+            )
+        db.session.commit()
+
+    first_commit_entered = threading.Event()
+    allow_first_commit = threading.Event()
+    second_started = threading.Event()
+    second_mutation_entered = threading.Event()
+    results = {}
+    errors = []
+    original_control = campaign_pack_progress_module._control_campaign_pack_progress_locked
+
+    def tracked_control(*args, **kwargs):
+        session_id = kwargs.get('session_id')
+        if session_id == second_ids['session_id']:
+            second_mutation_entered.set()
+        return original_control(*args, **kwargs)
+
+    monkeypatch.setattr(
+        campaign_pack_progress_module,
+        '_control_campaign_pack_progress_locked',
+        tracked_control,
+    )
+
+    def pause_marked_commit(session):
+        del session
+        if threading.current_thread().name != 'shared-progress-first':
+            return
+        first_commit_entered.set()
+        if not allow_first_commit.wait(timeout=2.0):
+            raise AssertionError('Timed out waiting to release the first shared-progress commit.')
+
+    event.listen(SqlAlchemySession, 'before_commit', pause_marked_commit)
+
+    def run_control(label, session_id):
+        with app.app_context():
+            try:
+                if label == 'second':
+                    second_started.set()
+                results[label] = control_campaign_pack_progress(
+                    session_id=session_id,
+                    action='advance',
+                    actor=f'test-{label}',
+                )
+            except Exception as exc:  # pragma: no cover - assertion reports thread failures.
+                errors.append(exc)
+            finally:
+                db.session.remove()
+
+    try:
+        first_thread = threading.Thread(
+            target=run_control,
+            args=('first', first_ids['session_id']),
+            name='shared-progress-first',
+        )
+        first_thread.start()
+        assert first_commit_entered.wait(timeout=1.0)
+
+        second_thread = threading.Thread(
+            target=run_control,
+            args=('second', second_ids['session_id']),
+        )
+        second_thread.start()
+        assert second_started.wait(timeout=1.0)
+        assert second_mutation_entered.wait(timeout=0.1) is False
+
+        allow_first_commit.set()
+        first_thread.join(timeout=2.0)
+        second_thread.join(timeout=2.0)
+        assert not first_thread.is_alive()
+        assert not second_thread.is_alive()
+    finally:
+        allow_first_commit.set()
+        event.remove(SqlAlchemySession, 'before_commit', pause_marked_commit)
+
+    assert errors == []
+    assert results['first'].progress_revision == 1
+    assert results['second'].progress_revision == 2
+    with app.app_context():
+        snapshots = [
+            safe_json_loads(db.session.get(Session, session_id).state_snapshot, {})
+            for session_id in (first_ids['session_id'], second_ids['session_id'])
+        ]
+    for snapshot in snapshots:
+        assert snapshot['campaignPack']['activeCheckpointId'] == 'cp_three'
+        assert snapshot['campaignPack']['completedCheckpointIds'] == ['cp_one', 'cp_two']
+        assert snapshot['campaignPack']['progressRevision'] == 2
+
+
+def test_state_mutation_waiter_preserves_snapshot_committed_before_lock_acquisition(
+    app,
+    monkeypatch,
+):
+    ids = _seed_pack_session(
+        app,
+        _pack_snapshot(
+            location_id='bleakmoor_gate',
+            flags={'campaignPackActiveCheckpointId': 'cp_one'},
+            checkpoints=[{'id': 'cp_one', 'title': 'First beat'}],
+            pack_extra={'multiSessionGroupKey': 'waiter-refresh-group'},
+        ),
+    )
+    sibling_ids = _seed_pack_session(
+        app,
+        _pack_snapshot(
+            location_id='bleakmoor_gate',
+            flags={'campaignPackActiveCheckpointId': 'cp_one'},
+            checkpoints=[{'id': 'cp_one', 'title': 'First beat'}],
+            pack_extra={'multiSessionGroupKey': 'waiter-refresh-group'},
+        ),
+    )
+    with app.app_context():
+        app.config['AIDM_TURN_COORDINATOR_STORE'] = 'memory'
+        session_obj = db.session.get(Session, ids['session_id'])
+        snapshot = safe_json_loads(session_obj.state_snapshot, {})
+        pack = snapshot['campaignPack']
+        sync_campaign_pack_progress(
+            session=session_obj,
+            pack=pack,
+            checkpoints=pack['checkpoints'],
+            active_checkpoint_id='cp_one',
+            completed_ids=[],
+            skipped_ids=[],
+            failed_ids=[],
+            progress_revision=0,
+        )
+        db.session.commit()
+
+    initial_discovery_finished = threading.Event()
+    worker_errors: list[Exception] = []
+    observed_lock_sets: list[frozenset[int]] = []
+    original_discovery = (
+        campaign_pack_coordination_module.campaign_pack_progress_lock_session_ids
+    )
+
+    def observe_discovery(session_id):
+        lock_ids = original_discovery(session_id)
+        if threading.current_thread().name == 'state-mutation-snapshot-waiter':
+            initial_discovery_finished.set()
+        return lock_ids
+
+    monkeypatch.setattr(
+        campaign_pack_coordination_module,
+        'campaign_pack_progress_lock_session_ids',
+        observe_discovery,
+    )
+
+    def run_waiting_mutation():
+        with app.app_context():
+            try:
+                def observe_locked_mutation(_session, _state):
+                    observed_lock_sets.append(session_turn_coordinator.held_session_ids())
+                    return []
+
+                mutate_session_state(
+                    ids['session_id'],
+                    build_changes=observe_locked_mutation,
+                    source='test.snapshot_waiter',
+                    refresh_progress=lambda _session: None,
+                )
+            except Exception as exc:  # pragma: no cover - assertion reports worker failures.
+                worker_errors.append(exc)
+            finally:
+                db.session.remove()
+
+    worker = threading.Thread(
+        target=run_waiting_mutation,
+        name='state-mutation-snapshot-waiter',
+    )
+    with app.app_context(), session_turn_coordinator.serialized(ids['session_id']):
+        worker.start()
+        assert initial_discovery_finished.wait(timeout=1.0)
+        session_obj = db.session.get(Session, ids['session_id'], populate_existing=True)
+        foreground_snapshot = safe_json_loads(session_obj.state_snapshot, {})
+        foreground_snapshot['foregroundCommitMarker'] = 'must-survive-waiter'
+        session_obj.state_snapshot = safe_json_dumps(foreground_snapshot, {})
+        sibling_session = db.session.get(Session, sibling_ids['session_id'])
+        sibling_snapshot = safe_json_loads(sibling_session.state_snapshot, {})
+        sibling_pack = sibling_snapshot['campaignPack']
+        sync_campaign_pack_progress(
+            session=sibling_session,
+            pack=sibling_pack,
+            checkpoints=sibling_pack['checkpoints'],
+            active_checkpoint_id='cp_one',
+            completed_ids=[],
+            skipped_ids=[],
+            failed_ids=[],
+            progress_revision=0,
+        )
+        db.session.commit()
+
+    worker.join(timeout=2.0)
+    assert not worker.is_alive()
+    assert worker_errors == []
+    assert observed_lock_sets == [
+        frozenset({ids['session_id'], sibling_ids['session_id']})
+    ]
+    with app.app_context():
+        final_snapshot = safe_json_loads(
+            db.session.get(Session, ids['session_id']).state_snapshot,
+            {},
+        )
+    assert final_snapshot['foregroundCommitMarker'] == 'must-survive-waiter'
+    assert final_snapshot['lastMutation']['source'] == 'test.snapshot_waiter'
+
+
+def test_shared_progress_database_commit_is_fenced_by_every_group_lease(app):
+    checkpoints = [
+        {'id': 'cp_one', 'title': 'First beat', 'nextCheckpointIds': ['cp_two']},
+        {'id': 'cp_two', 'title': 'Second beat'},
+    ]
+    first_ids = _seed_pack_session(
+        app,
+        _pack_snapshot(
+            location_id='bleakmoor_gate',
+            flags={'campaignPackActiveCheckpointId': 'cp_one'},
+            checkpoints=checkpoints,
+            pack_extra={'multiSessionGroupKey': 'database-shared-group'},
+        ),
+    )
+    second_ids = _seed_pack_session(
+        app,
+        _pack_snapshot(
+            location_id='bleakmoor_gate',
+            flags={'campaignPackActiveCheckpointId': 'cp_one'},
+            checkpoints=checkpoints,
+            pack_extra={'multiSessionGroupKey': 'database-shared-group'},
+        ),
+    )
+    captured_held_ids = []
+
+    def capture_marked_commit(session):
+        del session
+        captured_held_ids.append(session_turn_coordinator.held_session_ids())
+
+    with app.app_context():
+        for session_id in (first_ids['session_id'], second_ids['session_id']):
+            session_obj = db.session.get(Session, session_id)
+            snapshot = safe_json_loads(session_obj.state_snapshot, {})
+            pack = snapshot['campaignPack']
+            sync_campaign_pack_progress(
+                session=session_obj,
+                pack=pack,
+                checkpoints=pack['checkpoints'],
+                active_checkpoint_id='cp_one',
+                completed_ids=[],
+                skipped_ids=[],
+                failed_ids=[],
+                progress_revision=0,
+            )
+        db.session.commit()
+        lock_ids = campaign_pack_progress_lock_session_ids(first_ids['session_id'])
+        app.config['AIDM_TURN_COORDINATOR_STORE'] = 'database'
+        app.config['AIDM_TURN_COORDINATOR_LOCK_TTL_SECONDS'] = 30
+        app.config['AIDM_TURN_COORDINATOR_POLL_INTERVAL_MS'] = 10
+        event.listen(SqlAlchemySession, 'before_commit', capture_marked_commit)
+        try:
+            result = control_campaign_pack_progress(
+                session_id=first_ids['session_id'],
+                action='advance',
+                actor='database-fence-test',
+            )
+        finally:
+            event.remove(SqlAlchemySession, 'before_commit', capture_marked_commit)
+
+        lock_tokens = {
+            lock.session_id: lock.fencing_token
+            for lock in SessionTurnLock.query.filter(SessionTurnLock.session_id.in_(lock_ids)).all()
+        }
+
+    assert result.progress_revision == 1
+    assert captured_held_ids == [frozenset(lock_ids)]
+    assert lock_tokens == {session_id: 1 for session_id in lock_ids}
+
+
+def test_non_committing_shared_progress_requires_complete_outer_lock_set(app):
+    checkpoints = [
+        {'id': 'cp_one', 'title': 'First beat', 'nextCheckpointIds': ['cp_two']},
+        {'id': 'cp_two', 'title': 'Second beat'},
+    ]
+    first_ids = _seed_pack_session(
+        app,
+        _pack_snapshot(
+            location_id='bleakmoor_gate',
+            flags={'campaignPackActiveCheckpointId': 'cp_one'},
+            checkpoints=checkpoints,
+            pack_extra={'multiSessionGroupKey': 'outer-transaction-group'},
+        ),
+    )
+    second_ids = _seed_pack_session(
+        app,
+        _pack_snapshot(
+            location_id='bleakmoor_gate',
+            flags={'campaignPackActiveCheckpointId': 'cp_one'},
+            checkpoints=checkpoints,
+            pack_extra={'multiSessionGroupKey': 'outer-transaction-group'},
+        ),
+    )
+    with app.app_context():
+        for session_id in (first_ids['session_id'], second_ids['session_id']):
+            session_obj = db.session.get(Session, session_id)
+            snapshot = safe_json_loads(session_obj.state_snapshot, {})
+            pack = snapshot['campaignPack']
+            sync_campaign_pack_progress(
+                session=session_obj,
+                pack=pack,
+                checkpoints=pack['checkpoints'],
+                active_checkpoint_id='cp_one',
+                completed_ids=[],
+                skipped_ids=[],
+                failed_ids=[],
+                progress_revision=0,
+            )
+        db.session.commit()
+        lock_ids = campaign_pack_progress_lock_session_ids(first_ids['session_id'])
+
+        with session_turn_coordinator.serialized(first_ids['session_id']):
+            with pytest.raises(CampaignPackProgressError) as exc_info:
+                control_campaign_pack_progress(
+                    session_id=first_ids['session_id'],
+                    action='advance',
+                    actor='incomplete-lock-test',
+                    commit=False,
+                )
+        assert exc_info.value.error_code == 'campaign_pack_progress_coordination_required'
+
+        with session_turn_coordinator.serialized_many(lock_ids):
+            result = control_campaign_pack_progress(
+                session_id=first_ids['session_id'],
+                action='advance',
+                actor='complete-lock-test',
+                commit=False,
+            )
+            db.session.commit()
+
+    assert result.progress_revision == 1
+
+
+def test_turn_engine_outer_boundary_holds_complete_shared_progress_group(app, monkeypatch):
+    checkpoints = [
+        {'id': 'cp_one', 'title': 'First beat', 'nextCheckpointIds': ['cp_two']},
+        {'id': 'cp_two', 'title': 'Second beat'},
+    ]
+    first_ids = _seed_pack_session(
+        app,
+        _pack_snapshot(
+            location_id='bleakmoor_gate',
+            flags={'campaignPackActiveCheckpointId': 'cp_one'},
+            checkpoints=checkpoints,
+            pack_extra={'multiSessionGroupKey': 'turn-engine-shared-group'},
+        ),
+    )
+    second_ids = _seed_pack_session(
+        app,
+        _pack_snapshot(
+            location_id='bleakmoor_gate',
+            flags={'campaignPackActiveCheckpointId': 'cp_one'},
+            checkpoints=checkpoints,
+            pack_extra={'multiSessionGroupKey': 'turn-engine-shared-group'},
+        ),
+    )
+    with app.app_context():
+        for session_id in (first_ids['session_id'], second_ids['session_id']):
+            session_obj = db.session.get(Session, session_id)
+            snapshot = safe_json_loads(session_obj.state_snapshot, {})
+            pack = snapshot['campaignPack']
+            sync_campaign_pack_progress(
+                session=session_obj,
+                pack=pack,
+                checkpoints=pack['checkpoints'],
+                active_checkpoint_id='cp_one',
+                completed_ids=[],
+                skipped_ids=[],
+                failed_ids=[],
+                progress_revision=0,
+            )
+        db.session.commit()
+        lock_ids = campaign_pack_progress_lock_session_ids(first_ids['session_id'])
+        observed_held_ids = []
+        engine = TurnEngine(socketio=Mock(), emit_fn=Mock(), stream_fn=Mock())
+
+        def observe_outer_boundary(_command):
+            observed_held_ids.append(session_turn_coordinator.held_session_ids())
+            return 'processed'
+
+        monkeypatch.setattr(engine, '_process_serialized', observe_outer_boundary)
+        outcome = engine.process(
+            TurnCommand(
+                sid='socket-1',
+                session_id=first_ids['session_id'],
+                campaign_id=first_ids['campaign_id'],
+                world_id=first_ids['world_id'],
+                player_id=1,
+                user_input='I advance the shared story.',
+                manual_segment_ids=set(),
+            )
+        )
+
+    assert outcome == 'processed'
+    assert observed_held_ids == [frozenset(lock_ids)]
 
 
 def test_pack_progress_explicit_complete_when_does_not_fall_back_to_context_fields(app):
@@ -1306,6 +1762,132 @@ def test_campaign_pack_progress_filters_player_reads_and_blocks_player_controls(
         event_payload = safe_json_loads(event.payload_json, {})
     assert event_payload['action'] == 'advance'
     assert event_payload['actor'].endswith(':admin')
+
+
+def test_hidden_checkpoints_require_player_aliases_in_both_player_projections(tmp_path, monkeypatch):
+    auth_app = _build_auth_app(tmp_path, monkeypatch)
+    client = auth_app.test_client()
+    player_headers = _account_headers(auth_app, username='hidden_checkpoint_player', role='player')
+    admin_headers = _account_headers(auth_app, username='hidden_checkpoint_admin', role='admin')
+    ids = _seed_pack_session(
+        auth_app,
+        _pack_snapshot(
+            location_id='bleakmoor_gate',
+            flags={
+                'campaignPackActiveCheckpointId': 'cp_secret_active',
+                'campaignPackCompletedCheckpointIds': [
+                    'cp_secret_completed',
+                    'cp_secret_alias',
+                    'cp_visibility_secret',
+                ],
+            },
+            checkpoints=[
+                {
+                    'id': 'cp_secret_active',
+                    'title': 'Expose the traitor beneath the keep',
+                    'summary': 'The trusted steward is the traitor.',
+                    'hiddenToPlayers': True,
+                },
+                {
+                    'id': 'cp_secret_completed',
+                    'title': 'Recover the forbidden crown',
+                    'summary': 'The crown belongs to the hidden heir.',
+                    'hiddenToPlayers': True,
+                },
+                {
+                    'id': 'cp_secret_alias',
+                    'title': 'Meet the assassin in the cellar',
+                    'summary': 'The assassin is the captain in disguise.',
+                    'hiddenToPlayers': True,
+                    'playerTitle': 'Follow the last clue',
+                    'playerSummary': 'The party followed the evidence to its conclusion.',
+                },
+                {
+                    'id': 'cp_visibility_secret',
+                    'title': 'Wake the dragon below the city',
+                    'summary': 'The dragon is the city founder.',
+                    'visibility': 'dm_only',
+                },
+                {
+                    'id': 'cp_public_rumor',
+                    'title': 'Hear a public rumor',
+                    'visibleToPlayers': True,
+                },
+            ],
+        ),
+    )
+
+    player_progress = client.get(
+        f"/api/sessions/{ids['session_id']}/campaign-pack/progress",
+        headers=player_headers,
+    )
+    player_state = client.get(f"/api/sessions/{ids['session_id']}/state", headers=player_headers)
+    admin_progress = client.get(
+        f"/api/sessions/{ids['session_id']}/campaign-pack/progress",
+        headers=admin_headers,
+    )
+    admin_state = client.get(f"/api/sessions/{ids['session_id']}/state", headers=admin_headers)
+
+    assert player_progress.status_code == 200
+    assert player_state.status_code == 200
+    player_progress_payload = player_progress.get_json()
+    player_state_snapshot = player_state.get_json()['state_snapshot']
+    player_progress_checkpoints = player_progress_payload['checkpoints']
+    player_state_checkpoints = player_state_snapshot['campaignPack']['checkpoints']
+    expected_player_checkpoints = [
+        {
+            'id': 'cp_secret_alias',
+            'status': 'completed',
+            'title': 'Follow the last clue',
+            'summary': 'The party followed the evidence to its conclusion.',
+        },
+        {
+            'id': 'cp_public_rumor',
+            'status': 'open',
+            'title': 'Hear a public rumor',
+        },
+    ]
+    assert player_progress_checkpoints == expected_player_checkpoints
+    assert player_state_checkpoints == expected_player_checkpoints
+    assert player_progress_payload['activeCheckpointId'] is None
+    assert player_progress_payload['completedCheckpointIds'] == ['cp_secret_alias']
+    assert player_progress_payload['checkpointStatuses'] == {
+        'cp_secret_alias': 'completed',
+        'cp_public_rumor': 'open',
+    }
+    assert player_progress_payload['flags'] == {
+        'campaignPackCompletedCheckpointIds': ['cp_secret_alias'],
+        'campaignPackSkippedCheckpointIds': [],
+        'campaignPackFailedCheckpointIds': [],
+        'campaignPackProgressRevision': 0,
+    }
+    assert 'activeCheckpointId' not in player_state_snapshot['campaignPack']
+    assert player_state_snapshot['campaignPack']['completedCheckpointIds'] == ['cp_secret_alias']
+    assert player_state_snapshot['campaignPack']['checkpointStatuses'] == {
+        'cp_secret_alias': 'completed',
+        'cp_public_rumor': 'open',
+    }
+    assert player_state_snapshot['flags'] == {
+        'campaignPackCompletedCheckpointIds': ['cp_secret_alias'],
+        'campaignPackSkippedCheckpointIds': [],
+        'campaignPackFailedCheckpointIds': [],
+        'campaignPackProgressRevision': 0,
+    }
+
+    assert admin_progress.status_code == 200
+    assert admin_state.status_code == 200
+    admin_progress_checkpoints = admin_progress.get_json()['checkpoints']
+    admin_state_checkpoints = admin_state.get_json()['state_snapshot']['campaignPack']['checkpoints']
+    assert [checkpoint['id'] for checkpoint in admin_progress_checkpoints] == [
+        'cp_secret_active',
+        'cp_secret_completed',
+        'cp_secret_alias',
+        'cp_visibility_secret',
+        'cp_public_rumor',
+    ]
+    assert admin_progress_checkpoints[0]['title'] == 'Expose the traitor beneath the keep'
+    assert admin_progress_checkpoints[2]['summary'] == 'The assassin is the captain in disguise.'
+    assert admin_state_checkpoints == admin_progress_checkpoints
 
 
 def test_campaign_pack_progress_endpoint_can_mark_checkpoint_failed(client, app):

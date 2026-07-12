@@ -41,10 +41,12 @@ type CampaignRailProps = {
   setMainTab: Dispatch<SetStateAction<MainTab>>
   inspectorTab: InspectorTab
   setInspectorTab: Dispatch<SetStateAction<InspectorTab>>
+  canUseOperatorTools: boolean
   canManageCampaign: boolean
   canManageSession: boolean
   canOpenCampaignArchive: boolean
   canOpenSessionArchive: boolean
+  selectionLocked: boolean
   onRenameCampaign: () => void
   onArchiveCampaign: () => void
   onDeleteCampaign: () => void
@@ -84,10 +86,12 @@ export function CampaignRail({
   setMainTab,
   inspectorTab,
   setInspectorTab,
+  canUseOperatorTools,
   canManageCampaign,
   canManageSession,
   canOpenCampaignArchive,
   canOpenSessionArchive,
+  selectionLocked,
   onRenameCampaign,
   onArchiveCampaign,
   onDeleteCampaign,
@@ -112,49 +116,51 @@ export function CampaignRail({
       <section className="rail-section">
         <div className="rail-heading campaign-heading">
           <span>Campaigns</span>
-          <div className="rail-heading-actions">
-            <button
-              type="button"
-              aria-label="Rename selected campaign"
-              title="Rename campaign"
-              onClick={onRenameCampaign}
-              disabled={!canManageCampaign}
-            >
-              <Pencil size={14} />
-            </button>
-            <button
-              type="button"
-              aria-label="Open campaign archive"
-              title="Archive and restore campaigns"
-              onClick={onArchiveCampaign}
-              disabled={!canOpenCampaignArchive}
-            >
-              <Archive size={14} />
-            </button>
-            <button
-              type="button"
-              aria-label="Delete selected campaign"
-              title="Delete campaign"
-              onClick={onDeleteCampaign}
-              disabled={!canManageCampaign}
-            >
-              <Trash2 size={14} />
-            </button>
-            <button type="button" aria-label="Manage worlds" title="Manage worlds" onClick={onManageWorlds}>
-              <Globe2 size={15} />
-            </button>
-            <button
-              type="button"
-              aria-label="Import campaign pack"
-              title="Import campaign pack"
-              onClick={onImportCampaignPack}
-            >
-              <Upload size={15} />
-            </button>
-            <button type="button" aria-label="Add campaign" title="Add campaign" onClick={onCreateCampaign}>
-              <Plus size={16} />
-            </button>
-          </div>
+          {canUseOperatorTools ? (
+            <div className="rail-heading-actions">
+              <button
+                type="button"
+                aria-label="Rename selected campaign"
+                title="Rename campaign"
+                onClick={onRenameCampaign}
+                disabled={!canManageCampaign}
+              >
+                <Pencil size={14} />
+              </button>
+              <button
+                type="button"
+                aria-label="Open campaign archive"
+                title="Archive and restore campaigns"
+                onClick={onArchiveCampaign}
+                disabled={!canOpenCampaignArchive}
+              >
+                <Archive size={14} />
+              </button>
+              <button
+                type="button"
+                aria-label="Delete selected campaign"
+                title="Delete campaign"
+                onClick={onDeleteCampaign}
+                disabled={!canManageCampaign}
+              >
+                <Trash2 size={14} />
+              </button>
+              <button type="button" aria-label="Manage worlds" title="Manage worlds" onClick={onManageWorlds}>
+                <Globe2 size={15} />
+              </button>
+              <button
+                type="button"
+                aria-label="Import campaign pack"
+                title="Import campaign pack"
+                onClick={onImportCampaignPack}
+              >
+                <Upload size={15} />
+              </button>
+              <button type="button" aria-label="Add campaign" title="Add campaign" onClick={onCreateCampaign}>
+                <Plus size={16} />
+              </button>
+            </div>
+          ) : null}
         </div>
         <div className="search-field">
           <ThinIcon name="spark" size={14} />
@@ -176,6 +182,8 @@ export function CampaignRail({
                 }`}
                 aria-current={item.id === selectedCampaignId ? 'true' : undefined}
                 aria-busy={item.id === loadingCampaignId}
+                disabled={selectionLocked && item.id !== selectedCampaignId}
+                title={selectionLocked && item.id !== selectedCampaignId ? 'Wait for the active turn to finish.' : undefined}
                 onClick={() => onSelectCampaign(item.id)}
               >
                 <Thumbnail
@@ -205,38 +213,40 @@ export function CampaignRail({
       <section className="rail-section session-section">
         <div className="rail-heading">
           <span>Sessions ({campaignTitle ?? 'None'})</span>
-          <div className="rail-heading-actions">
-            <button
-              type="button"
-              onClick={onRenameSession}
-              aria-label="Rename selected session"
-              title="Rename session"
-              disabled={!canManageSession}
-            >
-              <Pencil size={14} />
-            </button>
-            <button
-              type="button"
-              onClick={onArchiveSession}
-              aria-label="Open session archive"
-              title="Archive and restore sessions"
-              disabled={!canOpenSessionArchive}
-            >
-              <Archive size={14} />
-            </button>
-            <button
-              type="button"
-              onClick={onDeleteSession}
-              aria-label="Delete selected session"
-              title="Delete session permanently"
-              disabled={!canManageSession}
-            >
-              <Trash2 size={14} />
-            </button>
-            <button type="button" onClick={onStartSession} aria-label="Start session" title="Start session">
-              <Plus size={16} />
-            </button>
-          </div>
+          {canUseOperatorTools ? (
+            <div className="rail-heading-actions">
+              <button
+                type="button"
+                onClick={onRenameSession}
+                aria-label="Rename selected session"
+                title="Rename session"
+                disabled={!canManageSession}
+              >
+                <Pencil size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={onArchiveSession}
+                aria-label="Open session archive"
+                title="Archive and restore sessions"
+                disabled={!canOpenSessionArchive}
+              >
+                <Archive size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={onDeleteSession}
+                aria-label="Delete selected session"
+                title="Delete session permanently"
+                disabled={!canManageSession}
+              >
+                <Trash2 size={14} />
+              </button>
+              <button type="button" onClick={onStartSession} aria-label="Start session" title="Start session">
+                <Plus size={16} />
+              </button>
+            </div>
+          ) : null}
         </div>
         <div className="session-list">
           {sessionCards.length ? (
@@ -249,6 +259,8 @@ export function CampaignRail({
                 }`}
                 aria-current={session.id === selectedSessionId ? 'true' : undefined}
                 aria-busy={session.id === selectedSessionId && sessionLoading}
+                disabled={selectionLocked && session.id !== selectedSessionId}
+                title={selectionLocked && session.id !== selectedSessionId ? 'Wait for the active turn to finish.' : undefined}
                 onClick={() => onSelectSession(session.id)}
               >
                 <strong>{session.title}</strong>
@@ -264,9 +276,11 @@ export function CampaignRail({
           ) : (
             <div className="empty-rail empty-action-card">
               <span>No sessions yet.</span>
-              <button type="button" onClick={onStartSession} disabled={!selectedCampaignId}>
-                Start session
-              </button>
+              {canUseOperatorTools ? (
+                <button type="button" onClick={onStartSession} disabled={!selectedCampaignId}>
+                  Start session
+                </button>
+              ) : null}
             </div>
           )}
         </div>
@@ -296,7 +310,7 @@ export function CampaignRail({
         />
         <NavItem
           icon={<ThinIcon name="book" size={18} />}
-          label="Canon"
+          label="Memory"
           selected={inspectorTab === 'canon'}
           onClick={() => setInspectorTab('canon')}
         />

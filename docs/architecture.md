@@ -65,6 +65,10 @@ provider, and state contracts live in [API surface](api_surface.md),
   `processing` row replays its persisted private roll receipt to the requester
   and resumes from its pipeline state without another incoming event, roll,
   peer rebroadcast, or already-recorded pre-DM application.
+- Live Socket.IO operations fail closed when either the session or its campaign
+  is archived or deleted. Join, turn submission, clarification resolution, and
+  turn-control handlers return stable lifecycle error codes until an operator
+  restores the target.
 
 ## Gameplay And Runtime State
 
@@ -78,13 +82,18 @@ provider, and state contracts live in [API surface](api_surface.md),
   a die, mode, reason, and permitted ability selection, but faces, modifiers,
   totals, and persisted provenance are server-owned. The committed result is
   emitted as `roll_resolved`; frontend dice physics are presentation only.
+- A blocked turn emits `roll_required` with the pending turn ID, rule/prompt,
+  remaining player IDs, and a viewer-safe roll specification. It can name the
+  die, mode, reason, visibility, and public ability key/label, but never exposes
+  DC or modifier provenance.
 - `aidm_server/combat/legal_actions.py` derives viewer-scoped combat HUD actions
   from the persisted actor, turn index, weapons, target health, cover, zones,
   and range bands. The turn engine revalidates every submitted action/target ID
   and canonicalizes its text before rules handling; attack outcomes still flow
   through `player_rolls.py`. Action-economy labels are turn-order-derived because
   the current schema does not persist sub-turn action, movement, or reaction
-  counters.
+  counters. The HUD renders unavailable targets as disabled choices with the
+  server-issued legality reason so validation remains visible to the player.
 - Realtime roll and `new_message` delivery has two projections: the initiating
   socket receives private roll provenance, while the rest of the room receives
   only the shared aggregate result. Player-readable REST events use the same
@@ -94,6 +103,13 @@ provider, and state contracts live in [API surface](api_surface.md),
   event/log/export projections remove clarification and state-pipeline detail.
 - `aidm_server/game_state/` owns structured action/state schemas, extraction,
   validation, application, combat resolution, and state-change logging.
+- Narration is persisted before post-DM state application. If both the primary
+  pipeline and compatibility fallback fail, the narration remains auditable but
+  the turn is marked failed. Recovery derives `none` versus `partial` from the
+  persisted pre-DM applied-change lists; partial changes remain authoritative
+  and must not be replayed. Structured turn advancement, clarification
+  completion, and canon enqueue are blocked and the room receives
+  `turn_state_apply_failed` for operator recovery.
 - `Session.state_snapshot` is live runtime truth once present. Projection,
   authored-content, campaign-pack, and long-term canon tables have distinct
   responsibilities documented in [runtime state boundaries](runtime_state_boundaries.md).
@@ -110,12 +126,18 @@ provider, and state contracts live in [API surface](api_surface.md),
 - Campaign-pack database records and progress events are durable authored and
   progress data; the snapshot `campaignPack` object is the runtime mirror used
   while playing.
+- Shared campaign-pack progress, foreground turns, state mutations, and queued
+  canon projection use one acquire-refresh-revalidate boundary. Lock discovery
+  never leaves a clean pre-wait snapshot in the ORM identity map, and changed
+  group membership is reacquired before a mutation begins.
 - Raw `CampaignSegment` records are DM-authoring data. Player campaign
   workspaces expose only triggered segment ID/title/description fields, and the
   player room event omits the private trigger recipe.
 - Campaign, player, and session archive/restore/delete behavior is implemented
   in `aidm_server/services/campaign_lifecycle.py`,
-  `player_lifecycle.py`, and `session_lifecycle.py`.
+  `player_lifecycle.py`, and `session_lifecycle.py`. Session lifecycle writes
+  run under the session turn coordinator; campaign lifecycle writes acquire all
+  affected session fences in deterministic order before row locking and commit.
 - Bestiary, creature generation, combat state, enemy planning, morale, and
   encounter resolution are owned by `aidm_server/creatures/`,
   `aidm_server/combat/`, the creature REST blueprint, and the game-state combat
@@ -146,7 +168,16 @@ provider, and state contracts live in [API surface](api_surface.md),
   is split across the socket hooks and event-contract code under
   `aidm_frontend/src`.
 - `useComposerActions.ts` retains exact in-flight turn payloads for safe recovery
-  and treats only a validated `roll_resolved` event as a dice result.
+  and treats only a validated `roll_resolved` event as a dice result. A
+  `roll_required` response removes the rejected optimistic action, restores its
+  text as a queued draft, opens the server-specified roll, and returns to the
+  preserved draft after the authoritative result lands.
+- Frontend operator surfaces use the server-advertised capability to hide
+  campaign/session lifecycle, campaign-pack progress, director, authoring, and
+  admin composer controls from players. Server-side capability checks remain
+  the authority; UI gating is defense in depth and interaction clarity.
+- The inspector calls compatibility `SessionState` snippets "Recent Memory";
+  durable story facts remain the separate canon store.
 - CSS is split by surface under `aidm_frontend/src/styles/`; responsive changes
   should preserve desktop behavior unless a change explicitly targets desktop.
 
@@ -160,7 +191,12 @@ provider, and state contracts live in [API surface](api_surface.md),
   worker, an explicit CORS policy (exact allowlists or an intentionally empty
   same-origin policy), security headers, and configured observability ownership.
 - Production schema changes are applied with migrations before startup;
-  `AIDM_AUTO_CREATE_SCHEMA=true` is rejected.
+  `AIDM_AUTO_CREATE_SCHEMA=true` is rejected. The current Alembic head is
+  `0031_authored_map_visibility`.
 - Destructive lifecycle flows are covered by tests for archive preservation,
   restore scope, force-delete cleanup, and turn-history readability after player
   deletion.
+- RC source-archive inspection rejects unresolved Git LFS pointer files as
+  incomplete artifacts. Hosted beta-SLO evidence is accepted only when it has a
+  real target, positive DM/provider samples, and an explicit tester-expansion
+  decision; these gates do not replace external deployment or operator proof.

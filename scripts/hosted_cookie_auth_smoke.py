@@ -540,7 +540,7 @@ def _run_release_proof_suite(
             incidents=incidents,
             generated_at=generated_at,
             release='hosted-cookie-release-proof',
-            commit_sha=os.getenv('GITHUB_SHA', ''),
+            commit_sha=render_beta_slo_baseline.resolve_commit_sha(),
             environment='hosted-target' if mode == 'live-target' else 'isolated',
             target_url=target_url,
             socketio_worker_model='',

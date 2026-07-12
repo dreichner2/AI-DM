@@ -6,6 +6,7 @@ export type CampaignPackControlAction = 'advance' | 'skip' | 'fail' | 'rewind' |
 
 type CampaignPackPanelProps = {
   snapshot: JsonRecord | null | undefined
+  canControl: boolean
   pendingAction: string | null
   onControl: (
     action: CampaignPackControlAction,
@@ -138,15 +139,23 @@ function packSummaryFromSnapshot(snapshot: JsonRecord | null | undefined): PackS
           .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
       )
     : {}
-  const activeId =
-    stringValue(
+  const explicitActiveId = stringValue(
       pack.activeCheckpointId ??
         pack.active_checkpoint_id ??
         pack.currentCheckpointId ??
         pack.current_checkpoint_id ??
         flags.campaignPackActiveCheckpointId ??
         flags.activeCheckpointId,
-    ) || checkpoints.find((checkpoint) => !completedIds.includes(checkpoint.id))?.id || ''
+    )
+  const statusActiveId = checkpoints.find(
+    (checkpoint) => checkpointStatuses[checkpoint.id] === 'active',
+  )?.id
+  const playerProjection = stringValue(pack.visibility).toLowerCase() === 'player'
+  const activeId = explicitActiveId || statusActiveId || (
+    playerProjection
+      ? ''
+      : checkpoints.find((checkpoint) => !completedIds.includes(checkpoint.id))?.id || ''
+  )
   const activeCheckpoint = checkpoints.find((checkpoint) => checkpoint.id === activeId) ?? null
   const policy = isRecord(pack.directorRules) ? pack.directorRules : {}
   const activePolicy = isRecord(pack.activeDirectorRules)
@@ -176,7 +185,7 @@ function policyLabel(policy: JsonRecord, key: string, fallback: string) {
   return stringValue(policy[key]) || fallback
 }
 
-export function CampaignPackPanel({ snapshot, pendingAction, onControl }: CampaignPackPanelProps) {
+export function CampaignPackPanel({ snapshot, canControl, pendingAction, onControl }: CampaignPackPanelProps) {
   const summary = useMemo(() => packSummaryFromSnapshot(snapshot), [snapshot])
   const [overrideCheckpointId, setOverrideCheckpointId] = useState('')
 
@@ -259,63 +268,67 @@ export function CampaignPackPanel({ snapshot, pendingAction, onControl }: Campai
         <strong>{summary.activeQuestIds.length || 0}</strong>
       </div>
 
-      <div className="campaign-pack-actions" aria-label="Campaign pack checkpoint controls">
-        <button
-          type="button"
-          onClick={() => void onControl('advance', null, 'Manual advance')}
-          disabled={pending || !summary.activeCheckpoint}
-        >
-          <FastForward size={13} aria-hidden="true" />
-          {pendingAction === 'advance' ? 'Advancing...' : 'Advance'}
-        </button>
-        <button
-          type="button"
-          onClick={() => void onControl('skip', null, 'Manual skip')}
-          disabled={pending || !summary.activeCheckpoint}
-        >
-          <SkipForward size={13} aria-hidden="true" />
-          {pendingAction === 'skip' ? 'Skipping...' : 'Skip'}
-        </button>
-        <button
-          type="button"
-          onClick={() => void onControl('fail', null, 'Manual fail')}
-          disabled={pending || !summary.activeCheckpoint}
-        >
-          <XCircle size={13} aria-hidden="true" />
-          {pendingAction === 'fail' ? 'Failing...' : 'Fail'}
-        </button>
-        <button
-          type="button"
-          onClick={() => void onControl('rewind', null, 'Manual rewind')}
-          disabled={pending}
-        >
-          <RotateCcw size={13} aria-hidden="true" />
-          {pendingAction === 'rewind' ? 'Rewinding...' : 'Rewind'}
-        </button>
-      </div>
+      {canControl ? (
+        <>
+          <div className="campaign-pack-actions" aria-label="Campaign pack checkpoint controls">
+            <button
+              type="button"
+              onClick={() => void onControl('advance', null, 'Manual advance')}
+              disabled={pending || !summary.activeCheckpoint}
+            >
+              <FastForward size={13} aria-hidden="true" />
+              {pendingAction === 'advance' ? 'Advancing...' : 'Advance'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void onControl('skip', null, 'Manual skip')}
+              disabled={pending || !summary.activeCheckpoint}
+            >
+              <SkipForward size={13} aria-hidden="true" />
+              {pendingAction === 'skip' ? 'Skipping...' : 'Skip'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void onControl('fail', null, 'Manual fail')}
+              disabled={pending || !summary.activeCheckpoint}
+            >
+              <XCircle size={13} aria-hidden="true" />
+              {pendingAction === 'fail' ? 'Failing...' : 'Fail'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void onControl('rewind', null, 'Manual rewind')}
+              disabled={pending}
+            >
+              <RotateCcw size={13} aria-hidden="true" />
+              {pendingAction === 'rewind' ? 'Rewinding...' : 'Rewind'}
+            </button>
+          </div>
 
-      <div className="campaign-pack-override">
-        <select
-          value={selectedOverrideCheckpointId}
-          onChange={(event) => setOverrideCheckpointId(event.target.value)}
-          disabled={pending}
-          aria-label="Override active checkpoint"
-        >
-          {summary.checkpoints.map((checkpoint) => (
-            <option key={checkpoint.id} value={checkpoint.id}>
-              {checkpoint.title}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          onClick={() => void onControl('override', selectedOverrideCheckpointId, 'Manual checkpoint override')}
-          disabled={pending || !selectedOverrideCheckpointId}
-        >
-          <Route size={13} aria-hidden="true" />
-          {pendingAction === 'override' ? 'Setting...' : 'Override'}
-        </button>
-      </div>
+          <div className="campaign-pack-override">
+            <select
+              value={selectedOverrideCheckpointId}
+              onChange={(event) => setOverrideCheckpointId(event.target.value)}
+              disabled={pending}
+              aria-label="Override active checkpoint"
+            >
+              {summary.checkpoints.map((checkpoint) => (
+                <option key={checkpoint.id} value={checkpoint.id}>
+                  {checkpoint.title}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => void onControl('override', selectedOverrideCheckpointId, 'Manual checkpoint override')}
+              disabled={pending || !selectedOverrideCheckpointId}
+            >
+              <Route size={13} aria-hidden="true" />
+              {pendingAction === 'override' ? 'Setting...' : 'Override'}
+            </button>
+          </div>
+        </>
+      ) : null}
     </section>
   )
 }

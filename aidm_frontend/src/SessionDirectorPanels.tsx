@@ -24,7 +24,7 @@ export type DmExecutionStats = {
   temperature: string
 }
 
-export type CanonFact = [fact: string, source: string]
+export type RecentMemoryEntry = [text: string, source: string]
 
 export type OperatorDrawerProps = {
   boardViewMode: BoardViewMode
@@ -39,7 +39,7 @@ export type OperatorDrawerProps = {
 
 export type DirectorCommentaryPanelProps = {
   activeSessionTitle: string
-  canonFacts: CanonFact[]
+  recentMemory: RecentMemoryEntry[]
   commentary: CampaignPackCommentaryResponse | null
   contentSettings: ContentSettings
   currentResponseEntry: TimelineEntry | null
@@ -200,7 +200,7 @@ export function OperatorDrawer({
 
 export function DirectorCommentaryPanel({
   activeSessionTitle,
-  canonFacts,
+  recentMemory,
   commentary,
   contentSettings,
   currentResponseEntry,
@@ -226,7 +226,7 @@ export function DirectorCommentaryPanel({
   const responseSummary = latestDmText.trim()
     ? truncateText(latestDmText, 156)
     : 'No DM prose recorded yet.'
-  const memoryHighlights = canonFacts.slice(0, 3)
+  const memoryHighlights = recentMemory.slice(0, 3)
   const packTitle = commentary?.pack?.title || commentary?.pack?.packId || ''
   const commentaryNotes = commentary?.commentary.slice(0, 3) ?? []
 

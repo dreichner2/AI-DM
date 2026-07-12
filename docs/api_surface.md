@@ -176,10 +176,18 @@ implements them in the split `aidm_server/socket_*.py` modules.
 Common server events include `error`, `player_joined`, `player_left`,
 `active_players`, `new_message`, `dm_response_start`, `dm_chunk`,
 `dm_response_end`, `roll_required`, `roll_resolved`, `turn_duplicate`,
-`turn_status`, `session_log_update`,
+`turn_status`, `session_log_update`, `session_recovery_resolved`,
 `scene_state`, `segment_triggered`, `clarification_required`, `music_state`, and
 `turn_control_updated`. A consumer should tolerate additive fields and unrelated
 events but validate the payload for the events it handles.
+
+`roll_required` identifies `session_id`, `pending_turn_id`, `rule_type`,
+`dc_hint`, and a user-facing `prompt`; it can also include
+`remaining_player_ids` plus a viewer-safe `roll_spec`. The public specification
+is limited to die, mode, rule type, reason, result visibility, and an ability
+key/label. DC and modifier provenance are not included in the public spec. The
+frontend should preserve the rejected action draft, submit the roll against the
+pending turn, and wait for `roll_resolved` rather than inventing a result.
 
 Player dice are authoritative on the server. `send_message` still accepts legacy
 roll payloads, but client-supplied faces, modifiers, kept values, and totals are
@@ -192,6 +200,50 @@ a completed request emits `turn_duplicate` with `session_id`, `turn_id`, and
 `client_message_id`, while an incomplete `processing` turn replays its persisted
 private roll receipt to the requester and resumes without a second incoming
 write, roll, durable roll event, or peer rebroadcast.
+
+Live play rejects archived or deleted lifecycle targets. `join_session`,
+`send_message`, `resolve_clarification`, and `set_turn_control` can return
+`session_archived`, `session_deleted`, `campaign_archived`, or
+`campaign_deleted`; clients must not retry until an authorized restore occurs.
+Campaign and session archive/restore/delete REST handlers serialize the
+lifecycle commit against affected session turns before returning success.
+
+If narration saves but both post-DM state paths fail, the server emits an
+`error` with `error_code=turn_state_apply_failed` and details including the
+session/turn IDs, `narration_saved=true`, `mechanics_status` (`none` or
+`partial`), `pre_dm_mechanics_applied`, `pre_dm_applied_change_count`, and
+`post_dm_mechanics_applied=false`. `mechanics_applied` is a compatibility
+summary and is true when the status is partial. Partial means those pre-DM
+changes remain authoritative; it does not mean the post-DM phase completed.
+The corresponding turn status is `failed`. The session snapshot contains the
+same safe summary in camelCase under `turnRecoveryGate` as `mechanicsStatus`,
+`mechanicsApplied`, `preDmMechanicsApplied`, `preDmAppliedChangeCount`, and
+`postDmMechanicsApplied`, and every later `send_message` returns
+`session_recovery_required`; joining and read APIs remain available. Clients
+must not automatically resubmit the state-changing request or reapply the
+counted pre-DM changes. If snapshot-gate persistence fails, the unresolved
+failed `DmTurn.post_dm_state` metadata remains authoritative: a later send is
+still blocked and attempts to repair the redundant gate without retrying any
+mechanic.
+
+A `dm_runtime_control` actor clears that gate with
+`POST /api/sessions/<session_id>/recovery/resolve` and JSON
+`{turn_id, resolution, operator_note}`. `resolution` is
+`state_corrected` or `no_mechanical_change_required`; `operator_note` is
+required and limited to 1000 characters. Success returns `resolved`,
+`idempotent_replay`, the session/turn IDs, the resolution, and the resulting
+`state_revision`. Replaying the same turn, resolution, and normalized operator
+note is idempotent and does not duplicate audit rows. A changed turn,
+resolution, or note returns a structured 409; the turn stores only a one-way
+note fingerprint while the raw note remains restricted to privileged audits.
+The endpoint can also resolve the matching failed turn atomically when the
+redundant snapshot gate was never written. Resolution removes the live gate but deliberately leaves the original
+`DmTurn` failed; the turn metadata and privileged state-mutation/operator audit
+records preserve the recovery decision and its none/partial mechanics summary.
+The first successful resolution also broadcasts `session_recovery_resolved`
+to the session room with only `session_id`, `turn_id`, `state_revision`, and
+`recovery_required=false`, so every connected client can reload the
+authoritative state. Idempotent REST replays do not rebroadcast the event.
 
 `clarification_required` carries the original action and inventory-derived
 options only to the acting socket. The room-wide `turn_status` names the player

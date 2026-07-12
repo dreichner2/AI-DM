@@ -4,10 +4,14 @@ import { useRef, useState } from 'react'
 import type { Socket } from 'socket.io-client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { StreamingTurn, TimelineEntry } from './types'
-import type { RollResolvedPayload } from './gameActions'
+import type { RollRequiredPayload, RollResolvedPayload } from './gameActions'
 import { SEND_PENDING_RECOVERY_MS, useComposerActions } from './useComposerActions'
 
-function useComposerHarness(socket: Socket, pushError: ReturnType<typeof vi.fn>) {
+function useComposerHarness(
+  socket: Socket,
+  pushError: ReturnType<typeof vi.fn>,
+  overrides: Partial<Parameters<typeof useComposerActions>[0]> = {},
+) {
   const socketRef = useRef<Socket | null>(socket)
   const [sendPending, setSendPending] = useState(false)
   const [optimisticEntries, setOptimisticEntries] = useState<TimelineEntry[]>([])
@@ -33,6 +37,7 @@ function useComposerHarness(socket: Socket, pushError: ReturnType<typeof vi.fn>)
     stopTtsAudio: vi.fn(),
     turnControl: { mode: 'free', activePlayerId: null, activePlayerName: null },
     pushError,
+    ...overrides,
   } as unknown as Parameters<typeof useComposerActions>[0])
   return {
     actions,
@@ -205,5 +210,118 @@ describe('useComposerActions realtime delivery recovery', () => {
     expect(result.current.actions.actionText).toBe('')
     expect(result.current.actions.queuedActionText).toBe('')
     expect(result.current.actions.queuedActionRetryable).toBe(false)
+  })
+
+  it('preserves a blocked action while preparing the authoritative pending roll', () => {
+    const socket = socketWithConnection(true)
+    const { result } = renderHook(() =>
+      useComposerHarness(socket, vi.fn(), {
+        abilityOptions: [
+          { key: 'dexterity', label: 'DEX', score: '16', modifier: '+3' },
+        ],
+      }),
+    )
+
+    act(() => result.current.actions.submitAction('Open the chest and move on.'))
+
+    const guidance: RollRequiredPayload = {
+      sessionId: 5,
+      pendingTurnId: 41,
+      ruleType: 'ability_check',
+      dcHint: null,
+      prompt: 'Roll Dexterity to resolve the trap.',
+      remainingPlayerIds: [4],
+      rollSpec: {
+        die: 'd20',
+        mode: 'advantage',
+        ruleType: 'ability_check',
+        reason: 'Dexterity check',
+        resultVisibility: 'hidden_until_landed',
+        ability: { key: 'dexterity', label: 'DEX' },
+      },
+    }
+    act(() => result.current.actions.handleRollRequired(guidance))
+
+    expect(result.current.sendPending).toBe(false)
+    expect(result.current.optimisticEntries).toEqual([])
+    expect(result.current.actions.actionText).toBe('Open the chest and move on.')
+    expect(result.current.actions.queuedActionText).toBe('Open the chest and move on.')
+    expect(result.current.actions.queuedActionRetryable).toBe(false)
+    expect(result.current.actions.composerMode).toBe('roll')
+    expect(result.current.actions.rollTargetPendingTurnId).toBe('41')
+    expect(result.current.actions.selectedDie).toBe('d20')
+    expect(result.current.actions.rollMode).toBe('advantage')
+    expect(result.current.actions.rollReason).toBe('Dexterity check')
+    expect(result.current.actions.selectedAbilityKey).toBe('dexterity')
+
+    act(() => result.current.actions.startDiceRoll())
+
+    const rollPayload = vi.mocked(socket.emit).mock.calls[1]?.[1] as {
+      message: string
+      action_intent: {
+        kind: string
+        roll?: { target_pending_turn_id?: number | null; mode?: string; reason?: string }
+      }
+    }
+    expect(rollPayload.message).not.toContain('Open the chest and move on.')
+    expect(rollPayload.action_intent).toMatchObject({
+      kind: 'roll',
+      roll: {
+        target_pending_turn_id: 41,
+        mode: 'advantage',
+        reason: 'Dexterity check',
+      },
+    })
+    expect(result.current.actions.actionText).toBe('Open the chest and move on.')
+    expect(result.current.actions.queuedActionText).toBe('Open the chest and move on.')
+  })
+
+  it('keeps composer drafts isolated by campaign, session, and character', () => {
+    const socket = socketWithConnection(true)
+    const { result, rerender } = renderHook(
+      ({ sessionId }) =>
+        useComposerHarness(socket, vi.fn(), {
+          selectedSessionId: sessionId,
+      }),
+      { initialProps: { sessionId: 5 } },
+    )
+    act(() => vi.runOnlyPendingTimers())
+
+    act(() => result.current.actions.updateActionText('Listen at the sealed door.'))
+    act(() => result.current.actions.preparePendingRoll({
+      pendingTurnId: 99,
+      ruleType: 'saving_throw',
+      dcHint: null,
+      prompt: 'Make a saving throw.',
+      remainingPlayerIds: [4],
+      rollSpec: {
+        die: 'd20',
+        mode: 'disadvantage',
+        ruleType: 'saving_throw',
+        reason: 'Wisdom saving throw',
+        resultVisibility: 'hidden_until_landed',
+        ability: null,
+      },
+    }))
+    expect(result.current.actions.composerMode).toBe('roll')
+    expect(result.current.actions.rollTargetPendingTurnId).toBe('99')
+    act(() => rerender({ sessionId: 6 }))
+
+    expect(sessionStorage.getItem('aidm:composerDraft:3:5:4')).toBe(
+      'Listen at the sealed door.',
+    )
+    act(() => vi.runOnlyPendingTimers())
+    expect(result.current.actions.actionText).toBe('')
+    expect(result.current.actions.composerMode).toBe('action')
+    expect(result.current.actions.rollTargetPendingTurnId).toBe('')
+    expect(result.current.actions.queuedActionText).toBe('')
+    expect(result.current.actions.diceRoll).toBeNull()
+
+    act(() => result.current.actions.updateActionText('Search the lower vault.'))
+    act(() => rerender({ sessionId: 5 }))
+
+    expect(sessionStorage.getItem('aidm:composerDraft:3:6:4')).toBe('Search the lower vault.')
+    act(() => vi.runOnlyPendingTimers())
+    expect(result.current.actions.actionText).toBe('Listen at the sealed door.')
   })
 })

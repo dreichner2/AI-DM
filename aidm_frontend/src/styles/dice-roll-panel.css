@@ -28,8 +28,7 @@
 }
 
 .dice-chip-grid,
-.ability-chip-grid,
-.roll-modifier-quick {
+.ability-chip-grid {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -40,7 +39,6 @@
 .dice-chip-grid button,
 .ability-chip-grid button,
 .roll-mode-toggle button,
-.roll-modifier-control button,
 .roll-primary-button {
   border: 1px solid rgba(144, 164, 159, 0.24);
   border-radius: 5px;
@@ -53,8 +51,7 @@
 
 .dice-chip-grid button:hover:not(:disabled),
 .ability-chip-grid button:hover:not(:disabled),
-.roll-mode-toggle button:hover:not(:disabled),
-.roll-modifier-control button:hover:not(:disabled) {
+.roll-mode-toggle button:hover:not(:disabled) {
   border-color: rgba(255, 176, 103, 0.42);
   background: rgba(255, 107, 44, 0.12);
 }
@@ -62,11 +59,9 @@
 .dice-chip-grid button:focus-visible,
 .ability-chip-grid button:focus-visible,
 .roll-mode-toggle button:focus-visible,
-.roll-modifier-control button:focus-visible,
 .roll-primary-button:focus-visible,
 .roll-reason-field input:focus,
-.roll-pending-field select:focus,
-.roll-modifier-control input:focus {
+.roll-pending-field select:focus {
   outline: none;
   border-color: rgba(255, 176, 103, 0.72);
   box-shadow: 0 0 0 2px rgba(255, 107, 44, 0.14);
@@ -75,7 +70,6 @@
 .dice-chip-grid button:disabled,
 .ability-chip-grid button:disabled,
 .roll-mode-toggle button:disabled,
-.roll-modifier-control button:disabled,
 .roll-primary-button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
@@ -95,8 +89,7 @@
 
 .dice-chip.selected,
 .ability-chip-grid button.selected,
-.roll-mode-toggle button.selected,
-.roll-modifier-control button.selected {
+.roll-mode-toggle button.selected {
   border-color: rgba(255, 176, 103, 0.6);
   color: #fff6ed;
   background:
@@ -116,15 +109,13 @@
   white-space: nowrap;
 }
 
-.ability-chip-grid small,
-.roll-modifier-quick small {
+.ability-chip-grid small {
   color: var(--muted);
   font-size: 0.66rem;
   font-weight: 640;
 }
 
-.ability-chip-grid button.selected small,
-.roll-modifier-control button.selected small {
+.ability-chip-grid button.selected small {
   color: #ffe1c7;
 }
 
@@ -181,41 +172,6 @@
   font-size: 0.64rem;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.roll-modifier-control {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-}
-
-.roll-modifier-control input {
-  width: 58px;
-  height: 30px;
-  border: 1px solid rgba(144, 164, 159, 0.24);
-  border-radius: 5px;
-  color: var(--heading);
-  background: rgba(255, 255, 255, 0.035);
-  font: inherit;
-  font-size: 0.74rem;
-  font-weight: 700;
-  text-align: center;
-}
-
-.roll-modifier-control .icon-adjust {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  padding: 0;
-}
-
-.roll-modifier-quick button {
-  height: 30px;
-  padding: 0 8px;
-  font-size: 0.7rem;
-  font-weight: 720;
 }
 
 .roll-reason-field,
@@ -335,10 +291,6 @@
 
   .roll-mode-toggle {
     width: 100%;
-  }
-
-  .roll-modifier-control {
-    flex-wrap: wrap;
   }
 
   .roll-reason-field,

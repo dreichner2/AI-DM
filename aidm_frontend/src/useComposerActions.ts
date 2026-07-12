@@ -20,7 +20,9 @@ import {
   type InteractionType,
   type InventoryAction,
   type ItemOption,
+  type PendingRollGuidance,
   type RollMode,
+  type RollRequiredPayload,
   type RollResolvedPayload,
   type RollResult,
 } from './gameActions'
@@ -33,6 +35,7 @@ import {
 import type { ActivePlayer, Campaign, Player, SessionState, StreamingTurn, TimelineEntry, TurnControl } from './types'
 
 export const SEND_PENDING_RECOVERY_MS = 120_000
+const COMPOSER_DRAFT_PREFIX = 'aidm:composerDraft'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -207,6 +210,62 @@ export function useComposerActions({
   const typingBindingRef = useRef<{ socket: Socket; sessionId: number; playerId: number } | null>(null)
   const typingIdleTimerRef = useRef<number | null>(null)
   const pendingSubmissionRef = useRef<StoredSubmission | null>(null)
+  const abilityOptionsRef = useRef(abilityOptions)
+  const actionTextRef = useRef(actionText)
+
+  useEffect(() => {
+    abilityOptionsRef.current = abilityOptions
+  }, [abilityOptions])
+
+  useEffect(() => {
+    actionTextRef.current = actionText
+  }, [actionText])
+
+  const composerDraftKey = selectedCampaignId && selectedSessionId && selectedPlayerId
+    ? `${COMPOSER_DRAFT_PREFIX}:${selectedCampaignId}:${selectedSessionId}:${selectedPlayerId}`
+    : ''
+
+  useEffect(() => {
+    if (!composerDraftKey) return undefined
+    let storedDraft = ''
+    try {
+      storedDraft = sessionStorage.getItem(composerDraftKey) ?? ''
+    } catch {
+      // Session storage may be unavailable in hardened browser contexts. The
+      // in-memory composer remains fully functional.
+    }
+    const hydrationTimer = window.setTimeout(() => {
+      actionTextRef.current = storedDraft
+      setActionText(storedDraft)
+      setQueuedActionText('')
+      setRecoverableSubmission(null)
+      setDiceRoll(null)
+      setSharedRollNotice(null)
+      setRollTargetPendingTurnId('')
+      setComposerMode('action')
+    }, 0)
+
+    const persistDraft = () => {
+      try {
+        const draft = actionTextRef.current
+        if (draft.trim()) sessionStorage.setItem(composerDraftKey, draft)
+        else sessionStorage.removeItem(composerDraftKey)
+      } catch {
+        // Draft persistence is best effort and must never block play.
+      }
+    }
+    const persistWhenHidden = () => {
+      if (document.visibilityState === 'hidden') persistDraft()
+    }
+    window.addEventListener('pagehide', persistDraft)
+    document.addEventListener('visibilitychange', persistWhenHidden)
+    return () => {
+      window.clearTimeout(hydrationTimer)
+      persistDraft()
+      window.removeEventListener('pagehide', persistDraft)
+      document.removeEventListener('visibilitychange', persistWhenHidden)
+    }
+  }, [composerDraftKey])
 
   const markSubmissionRecoverable = useCallback((reason: string) => {
     const pendingSubmission = pendingSubmissionRef.current
@@ -393,9 +452,50 @@ export function useComposerActions({
     interactionTargets.find((target) => interactionTargetId(target) === selectedInteractionTargetId) ?? null
   const rollTargetPendingTurnId =
     rawRollTargetPendingTurnId &&
-    pendingRollOptions.some((option) => String(option.turnId) === rawRollTargetPendingTurnId)
+    Number.isInteger(Number(rawRollTargetPendingTurnId)) &&
+    Number(rawRollTargetPendingTurnId) > 0
       ? rawRollTargetPendingTurnId
       : ''
+
+  const preparePendingRoll = useCallback((guidance: PendingRollGuidance) => {
+    const abilityKey = guidance.rollSpec.ability?.key
+    const hasAbility = Boolean(
+      abilityKey && abilityOptionsRef.current.some((ability) => ability.key === abilityKey),
+    )
+    setSelectedDie(normalizeDie(guidance.rollSpec.die))
+    setRollMode(guidance.rollSpec.mode)
+    setRollReason(guidance.rollSpec.reason || guidance.ruleType.replace(/_/g, ' '))
+    setRollTargetPendingTurnId(String(guidance.pendingTurnId))
+    setSelectedAbilityKey(
+      guidance.ruleType === 'initiative'
+        ? INITIATIVE_ROLL_ABILITY_KEY
+        : hasAbility && abilityKey
+          ? abilityKey
+          : PLAIN_ROLL_ABILITY_KEY,
+    )
+    setComposerMode('roll')
+  }, [])
+
+  const handleRollRequired = useCallback((payload: RollRequiredPayload) => {
+    if (payload.sessionId !== selectedSessionId) return
+    const rejectedSubmission = pendingSubmissionRef.current
+    if (rejectedSubmission) {
+      pendingSubmissionRef.current = null
+      setRecoverableSubmission((current) =>
+        current?.clientMessageId === rejectedSubmission.clientMessageId ? null : current,
+      )
+      setOptimisticEntries((current) =>
+        current.filter(
+          (entry) => entry.metadata.client_message_id !== rejectedSubmission.clientMessageId,
+        ),
+      )
+      setActionText((current) => current || rejectedSubmission.message)
+      setQueuedActionText(rejectedSubmission.message)
+    }
+    setSendPending(false)
+    setStreamingTurn(null)
+    preparePendingRoll(payload)
+  }, [preparePendingRoll, selectedSessionId, setOptimisticEntries, setSendPending, setStreamingTurn])
 
   const toggleAdminTools = () => {
     if (adminToolsUnlocked) {
@@ -742,6 +842,7 @@ export function useComposerActions({
     const normalizedDie = normalizeDie(die)
     const targetPendingTurnId = rollTargetPendingTurnId ? Number(rollTargetPendingTurnId) : null
     const targetOption = pendingRollOptions.find((option) => option.turnId === targetPendingTurnId) ?? null
+    const deferredActionDraft = targetPendingTurnId ? actionText.trim() : ''
     const roll = {
       die: normalizedDie,
       mode: rollMode,
@@ -752,7 +853,7 @@ export function useComposerActions({
       resultVisibility: 'hidden_until_landed' as const,
       targetPendingTurnId,
     }
-    const actionDescription = stripComposerCommand(actionText)
+    const actionDescription = targetPendingTurnId ? '' : stripComposerCommand(actionText)
     const rollMessage = diceRollRequestMessage(roll)
     const message = actionDescription ? `${actionDescription}\n${rollMessage}` : rollMessage
     const clientMessageId = createClientMessageId()
@@ -766,7 +867,6 @@ export function useComposerActions({
     })
     setSelectedDie(normalizedDie)
     setComposerMode('roll')
-    setActionText(message)
     const rollKey = (diceRollKeyRef.current += 1)
     setDiceRoll({
       die: normalizedDie,
@@ -785,18 +885,25 @@ export function useComposerActions({
           ? { ...current, status: 'failed', error: 'The roll request could not be sent.' }
           : current,
       )
+    } else if (deferredActionDraft) {
+      setActionText(deferredActionDraft)
+      setQueuedActionText(deferredActionDraft)
     }
   }
 
   const completeDiceRoll = () => {
     if (!diceRoll || diceRoll.status !== 'rolling') return
     const { rollKey } = diceRoll
+    const returnToQueuedAction = Boolean(
+      diceRoll.actionIntent.roll?.target_pending_turn_id && queuedActionText,
+    )
     setDiceRoll((current) =>
       current?.rollKey === rollKey ? { ...current, status: 'resolved' } : current,
     )
     window.setTimeout(() => {
       setDiceRoll((current) => (current?.rollKey === rollKey ? null : current))
     }, 700)
+    if (returnToQueuedAction) setComposerMode('action')
   }
 
   const closeDiceRoll = () => {
@@ -902,6 +1009,7 @@ export function useComposerActions({
     composerMode,
     diceRoll,
     handleConnectionInterrupted,
+    handleRollRequired,
     handleRollResolved,
     handleTurnDuplicate,
     interactionTargets,
@@ -920,6 +1028,7 @@ export function useComposerActions({
     itemDraftName,
     itemQuantity,
     itemCostGold,
+    preparePendingRoll,
     setActionText,
     updateActionText,
     setAdminPasscode,

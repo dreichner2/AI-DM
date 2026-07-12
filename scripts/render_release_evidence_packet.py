@@ -9,6 +9,7 @@ import re
 import sys
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 try:
     from scripts.render_rc_issue_evidence import (
@@ -260,16 +261,147 @@ def _inspect_deployment_readiness(path: pathlib.Path) -> dict[str, Any]:
     return {'status': status, 'path': str(path), 'target_url': target_url, 'metadata': metadata}
 
 
-def _inspect_beta_slo_baseline(path: pathlib.Path) -> dict[str, Any]:
+def _markdown_table_rows(markdown: str, heading: str) -> list[dict[str, str]]:
+    lines = markdown.splitlines()
+    try:
+        heading_index = next(index for index, line in enumerate(lines) if line.strip() == heading)
+    except StopIteration:
+        return []
+
+    table_lines: list[str] = []
+    for line in lines[heading_index + 1 :]:
+        stripped = line.strip()
+        if stripped.startswith('#'):
+            break
+        if stripped.startswith('|') and stripped.endswith('|'):
+            table_lines.append(stripped)
+    if len(table_lines) < 2:
+        return []
+
+    headers = [cell.strip() for cell in table_lines[0].strip('|').split('|')]
+    rows: list[dict[str, str]] = []
+    for line in table_lines[2:]:
+        values = [cell.strip() for cell in line.strip('|').split('|')]
+        if len(values) != len(headers):
+            continue
+        rows.append(dict(zip(headers, values, strict=True)))
+    return rows
+
+
+def _parse_non_negative_int(value: str) -> int | None:
+    normalized = _strip_ticks(value).strip()
+    if not normalized.isdigit():
+        return None
+    return int(normalized)
+
+
+def _valid_http_target_url(value: str) -> bool:
+    if not value or any(character.isspace() for character in value):
+        return False
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+    except ValueError:
+        return False
+    return parsed.scheme in {'http', 'https'} and bool(parsed.netloc and parsed.hostname)
+
+
+def _valid_commit_sha(value: str) -> bool:
+    normalized = value.strip().lower()
+    return 7 <= len(normalized) <= 64 and all(character in '0123456789abcdef' for character in normalized)
+
+
+def _commit_shas_match(left: str, right: str) -> bool:
+    if not _valid_commit_sha(left) or not _valid_commit_sha(right):
+        return False
+    normalized_left = left.strip().lower()
+    normalized_right = right.strip().lower()
+    return normalized_left.startswith(normalized_right) or normalized_right.startswith(normalized_left)
+
+
+def _inspect_beta_slo_baseline(
+    path: pathlib.Path,
+    *,
+    expected_commit_sha: str | None = None,
+) -> dict[str, Any]:
     if not path.exists():
-        return {'status': 'missing', 'path': str(path), 'target_url': ''}
+        return {
+            'status': 'missing',
+            'path': str(path),
+            'target_url': '',
+            'dm_response_sample_count': None,
+            'provider_turn_count': 0,
+            'invite_more_testers': '',
+            'commit_sha': '',
+            'expected_commit_sha': expected_commit_sha or '',
+            'commit_matches_rc': False,
+            'validation_errors': [],
+        }
+    markdown = path.read_text(encoding='utf-8')
     metadata = parse_markdown_metadata(path)
     target_url = metadata.get('target_url') or ''
-    if target_url == 'isolated local runtime':
+    metric_rows = _markdown_table_rows(markdown, '## Baseline Metrics')
+    metric_values = {
+        row.get('Metric', '').strip(): row.get('Value', '').strip()
+        for row in metric_rows
+        if row.get('Metric', '').strip()
+    }
+    dm_response_sample_count = _parse_non_negative_int(metric_values.get('DM response sample count', ''))
+    provider_turn_count = 0
+    for row in _markdown_table_rows(markdown, '## Provider/Model Turn Mix'):
+        provider = row.get('Provider', '').strip().lower()
+        model = row.get('Model', '').strip().lower()
+        turn_count = _parse_non_negative_int(row.get('Turns', ''))
+        if provider in {'', 'unknown', 'not available'} or model in {'', 'unknown', 'not available'}:
+            continue
+        if turn_count is not None and turn_count > 0:
+            provider_turn_count += turn_count
+
+    invite_more_testers = (metadata.get('invite_more_testers') or '').strip().lower()
+    commit_sha = (metadata.get('commit_sha') or '').strip()
+    expected_commit = (expected_commit_sha or '').strip()
+    commit_matches_rc = bool(expected_commit and _commit_shas_match(commit_sha, expected_commit))
+    validation_errors: list[str] = []
+    is_local_only = target_url == 'isolated local runtime'
+    if not is_local_only and not _valid_http_target_url(target_url):
+        validation_errors.append('Target URL must be an absolute http(s) URL')
+    if not is_local_only and not _valid_commit_sha(commit_sha):
+        validation_errors.append('Commit SHA is missing or invalid')
+    if not is_local_only and expected_commit_sha is not None:
+        if not _valid_commit_sha(expected_commit):
+            validation_errors.append('Current RC evidence commit is missing or invalid')
+        elif _valid_commit_sha(commit_sha) and not commit_matches_rc:
+            validation_errors.append(f'Commit SHA {commit_sha} does not match current RC commit {expected_commit}')
+    if dm_response_sample_count is None:
+        validation_errors.append('DM response sample count is missing or invalid')
+    elif dm_response_sample_count <= 0:
+        validation_errors.append('DM response sample count must be greater than zero')
+    if provider_turn_count <= 0:
+        validation_errors.append('provider/model turn mix must include at least one positive real row')
+    if invite_more_testers not in {'yes', 'no'}:
+        validation_errors.append('Invite more testers must be explicitly set to yes or no')
+
+    if is_local_only:
         status = 'local-only'
+    elif validation_errors:
+        status = 'incomplete'
+    elif invite_more_testers == 'no':
+        status = 'failed'
     else:
-        status = 'present' if target_url and '<target-url>' not in target_url else 'incomplete'
-    return {'status': status, 'path': str(path), 'target_url': target_url, 'metadata': metadata}
+        status = 'passed'
+    return {
+        'status': status,
+        'path': str(path),
+        'target_url': target_url,
+        'dm_response_sample_count': dm_response_sample_count,
+        'provider_turn_count': provider_turn_count,
+        'invite_more_testers': invite_more_testers,
+        'commit_sha': commit_sha,
+        'expected_commit_sha': expected_commit,
+        'commit_matches_rc': commit_matches_rc,
+        'validation_errors': validation_errors,
+        'metadata': metadata,
+    }
 
 
 def _inspect_security_forbidden_evidence(path: pathlib.Path) -> dict[str, Any]:
@@ -308,6 +440,7 @@ def _inspect_packaging_cleanup_evidence(path: pathlib.Path) -> dict[str, Any]:
             'forbidden_paths': '',
             'large_files': '',
             'large_files_not_lfs_tracked': '',
+            'unresolved_lfs_pointers': '',
         }
     metadata = parse_markdown_metadata(path)
     return {
@@ -317,6 +450,7 @@ def _inspect_packaging_cleanup_evidence(path: pathlib.Path) -> dict[str, Any]:
         'forbidden_paths': metadata.get('source_archive_forbidden_paths') or '',
         'large_files': metadata.get('source_archive_large_files') or '',
         'large_files_not_lfs_tracked': metadata.get('source_archive_large_files_not_lfs_tracked') or '',
+        'unresolved_lfs_pointers': metadata.get('source_archive_unresolved_git_lfs_pointers') or '',
         'metadata': metadata,
     }
 
@@ -852,7 +986,8 @@ def _hosted_signoff_checklist(packet: dict[str, Any]) -> list[dict[str, str]]:
             'evidence': 'Hosted beta SLO baseline',
             'command': (
                 'make beta-slo-baseline BETA_SLO_BASELINE_ARGS="--target-url <target-url> '
-                '--auth-token <token> --workspace-id <workspace-id> --release RC1 --environment staging '
+                '--auth-token <token> --workspace-id <workspace-id> --release RC1 '
+                '--commit-sha <signed-off-commit-sha> --environment staging --invite-more-testers <yes-or-no> '
                 '--output tmp/release/beta-slo-baseline.md"'
             ),
             'artifact': '`tmp/release/beta-slo-baseline.md` and raw target JSON if saved',
@@ -985,7 +1120,16 @@ def build_packet(
     security_forbidden = _inspect_security_forbidden_evidence(security_forbidden_evidence_path)
     export_import = inspect_export_import_evidence(export_import_evidence_path)
     deployment_readiness = _inspect_deployment_readiness(deployment_readiness_evidence_path)
-    beta_slo_baseline = _inspect_beta_slo_baseline(beta_slo_baseline_path)
+    beta_slo_baseline = _inspect_beta_slo_baseline(
+        beta_slo_baseline_path,
+        expected_commit_sha=str(rc_evidence.get('commit') or ''),
+    )
+    beta_slo_baseline = _with_freshness_against_rc(
+        beta_slo_baseline,
+        artifact_path=beta_slo_baseline_path,
+        rc_evidence_path=rc_evidence_path,
+        label='beta SLO baseline',
+    )
     frontend_npm_ci = _inspect_frontend_npm_ci_evidence(frontend_npm_ci_evidence_path)
     frontend_npm_ci = _with_freshness_against_rc(
         frontend_npm_ci,
@@ -1274,7 +1418,12 @@ def render_packet(packet: dict[str, Any]) -> str:
         ),
         (
             f"| Beta SLO baseline | {slo.get('status')} | {_artifact_evidence_path(slo.get('path') or '')} | "
-            f"target URL: {slo.get('target_url') or 'missing'} |"
+            f"target URL: {slo.get('target_url') or 'missing'}, "
+            f"commit: {slo.get('commit_sha') or 'missing'}, "
+            f"RC commit match: {slo.get('commit_matches_rc')}, "
+            f"DM samples: {slo.get('dm_response_sample_count') if slo.get('dm_response_sample_count') is not None else 'missing'}, "
+            f"provider/model turns: {slo.get('provider_turn_count') or 0}, "
+            f"invite more testers: {slo.get('invite_more_testers') or 'missing'} |"
         ),
         (
             f"| Frontend npm ci evidence | {frontend_npm_ci.get('status')} | "
@@ -1288,7 +1437,8 @@ def render_packet(packet: dict[str, Any]) -> str:
             f"source archive: {packaging_cleanup.get('source_archive_status') or 'missing'}, "
             f"forbidden paths: {packaging_cleanup.get('forbidden_paths') or 'missing'}, "
             f"large files: {packaging_cleanup.get('large_files') or 'missing'}, "
-            f"large files not LFS-tracked: {packaging_cleanup.get('large_files_not_lfs_tracked') or 'missing'} |"
+            f"large files not LFS-tracked: {packaging_cleanup.get('large_files_not_lfs_tracked') or 'missing'}, "
+            f"unresolved LFS pointers: {packaging_cleanup.get('unresolved_lfs_pointers') or 'missing'} |"
         ),
         (
             f"| Beta tester onboarding | {onboarding.get('status')} | "

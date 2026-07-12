@@ -99,6 +99,10 @@ def test_main_renders_from_saved_json(tmp_path):
             'https://aidm.example.test',
             '--release',
             'RC1',
+            '--commit-sha',
+            'abc1234',
+            '--invite-more-testers',
+            'yes',
             '--output',
             str(output_path),
         ]
@@ -107,8 +111,38 @@ def test_main_renders_from_saved_json(tmp_path):
     assert exit_code == 0
     output = output_path.read_text(encoding='utf-8')
     assert '- RC or release: RC1' in output
+    assert '- Commit SHA: abc1234' in output
     assert '- Target URL: https://aidm.example.test' in output
+    assert '- Invite more testers: yes' in output
     assert '| Socket unauthorized events | 2 | `/api/beta/slo` |  |' in output
+
+
+def test_main_rejects_non_http_target_before_fetch(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        'scripts.render_beta_slo_baseline.requests.get',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('request should not run')),
+    )
+
+    exit_code = main(['--target-url', 'staging', '--output', str(tmp_path / 'baseline.md')])
+
+    assert exit_code == 2
+    assert '--target-url must be an absolute http(s) URL.' in capsys.readouterr().err
+
+
+def test_main_rejects_invalid_explicit_commit_before_reading_json(tmp_path, capsys):
+    exit_code = main(
+        [
+            '--target-url',
+            'https://aidm.example.test',
+            '--commit-sha',
+            'not-a-sha',
+            '--slo-json',
+            str(tmp_path / 'missing.json'),
+        ]
+    )
+
+    assert exit_code == 2
+    assert '--commit-sha must resolve to a 7-64 character hexadecimal Git SHA.' in capsys.readouterr().err
 
 
 def test_main_fetches_target_slo_and_incidents(tmp_path, monkeypatch):
@@ -164,8 +198,8 @@ def test_main_fetches_target_slo_and_incidents(tmp_path, monkeypatch):
     assert 'Wrote beta SLO baseline' not in output_path.read_text(encoding='utf-8')
 
 
-def test_main_requires_target_or_slo_json(capsys):
+def test_main_requires_target_url_for_evidence_binding(capsys):
     exit_code = main([])
 
     assert exit_code == 2
-    assert '--target-url or --slo-json is required.' in capsys.readouterr().err
+    assert '--target-url is required so the evidence is bound to its source environment.' in capsys.readouterr().err

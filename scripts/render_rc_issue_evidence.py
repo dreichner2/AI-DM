@@ -28,6 +28,8 @@ DEFAULT_BETA_TESTER_LINK_SOURCES = (
 DEFAULT_GITATTRIBUTES = REPO_ROOT / '.gitattributes'
 EXPECTED_VISUAL_SMOKE_SCREENSHOTS = ('desktop-shell.png', 'mobile-full.png', 'short-height-composer.png')
 LARGE_ARCHIVE_MEMBER_THRESHOLD_BYTES = 50 * 1024 * 1024
+GIT_LFS_POINTER_MAX_BYTES = 4 * 1024
+GIT_LFS_POINTER_VERSION = 'version https://git-lfs.github.com/spec/v1'
 GITHUB_ACTIONS_RUN_URL_EXCEPTION = 'Attach GitHub Actions `AIDM CI` and `Closed Beta RC` run URLs before closing.'
 HOSTED_HEALTH_EXCEPTION = 'Attach live hosted/staging `/api/health` evidence when this issue is used for hosted RC sign-off.'
 HOSTED_DEPLOYMENT_READINESS_EXCEPTION = 'Run deployment-readiness against the actual hosted/staging URL before closing.'
@@ -633,6 +635,45 @@ def _matches_lfs_pattern(project_path: str, patterns: list[str]) -> bool:
     return False
 
 
+def _git_lfs_pointer_metadata(
+    archive: tarfile.TarFile,
+    member: tarfile.TarInfo,
+) -> dict[str, Any] | None:
+    if not member.isfile() or member.size > GIT_LFS_POINTER_MAX_BYTES:
+        return None
+    extracted = archive.extractfile(member)
+    if extracted is None:
+        return None
+    raw = extracted.read(GIT_LFS_POINTER_MAX_BYTES + 1)
+    if len(raw) > GIT_LFS_POINTER_MAX_BYTES:
+        return None
+    try:
+        lines = raw.decode('utf-8').splitlines()
+    except UnicodeDecodeError:
+        return None
+    if not lines or lines[0].strip() != GIT_LFS_POINTER_VERSION:
+        return None
+
+    oid = ''
+    expected_bytes: int | None = None
+    for line in lines[1:]:
+        stripped = line.strip()
+        if stripped.startswith('oid sha256:'):
+            candidate = stripped.removeprefix('oid sha256:')
+            if len(candidate) == 64 and all(character in '0123456789abcdef' for character in candidate):
+                oid = candidate
+        elif stripped.startswith('size '):
+            candidate = stripped.removeprefix('size ')
+            if candidate.isdigit():
+                expected_bytes = int(candidate)
+    if not oid or expected_bytes is None:
+        return None
+    return {
+        'oid': f'sha256:{oid}',
+        'expected_bytes': expected_bytes,
+    }
+
+
 def inspect_source_archive(path: pathlib.Path | None) -> dict[str, Any]:
     archive_path = _resolve_repo_path(path) if path is not None else _latest_source_archive()
     if archive_path is None:
@@ -645,10 +686,12 @@ def inspect_source_archive(path: pathlib.Path | None) -> dict[str, Any]:
             'large_members': [],
             'large_member_count': 0,
             'large_untracked': [],
+            'unresolved_lfs_pointers': [],
         }
     forbidden: list[str] = []
     large_members: list[dict[str, Any]] = []
     large_untracked: list[str] = []
+    unresolved_lfs_pointers: list[dict[str, Any]] = []
     if not archive_path.exists():
         return {
             'status': 'missing',
@@ -659,6 +702,7 @@ def inspect_source_archive(path: pathlib.Path | None) -> dict[str, Any]:
             'large_members': [],
             'large_member_count': 0,
             'large_untracked': [],
+            'unresolved_lfs_pointers': [],
         }
     sha256 = _file_sha256(archive_path)
     byte_count = archive_path.stat().st_size
@@ -675,6 +719,17 @@ def inspect_source_archive(path: pathlib.Path | None) -> dict[str, Any]:
                     forbidden.append(name)
                 if (member.issym() or member.islnk()) and _link_target_is_forbidden(member.linkname):
                     forbidden.append(f'{name} -> {member.linkname}')
+                pointer_metadata = _git_lfs_pointer_metadata(archive, member)
+                if pointer_metadata is not None:
+                    project_path = _archive_project_path(name)
+                    unresolved_lfs_pointers.append(
+                        {
+                            'path': name,
+                            'project_path': project_path,
+                            'lfs_tracked': _matches_lfs_pattern(project_path, lfs_patterns),
+                            **pointer_metadata,
+                        }
+                    )
                 if member.isfile() and member.size >= LARGE_ARCHIVE_MEMBER_THRESHOLD_BYTES:
                     project_path = _archive_project_path(name)
                     lfs_tracked = _matches_lfs_pattern(project_path, lfs_patterns)
@@ -698,10 +753,11 @@ def inspect_source_archive(path: pathlib.Path | None) -> dict[str, Any]:
             'large_members': [],
             'large_member_count': 0,
             'large_untracked': [],
+            'unresolved_lfs_pointers': [],
             'lfs_patterns': lfs_patterns,
         }
     return {
-        'status': 'passed' if not forbidden and not large_untracked else 'failed',
+        'status': 'passed' if not forbidden and not large_untracked and not unresolved_lfs_pointers else 'failed',
         'path': str(archive_path),
         'forbidden': forbidden[:20],
         'sha256': sha256,
@@ -709,6 +765,7 @@ def inspect_source_archive(path: pathlib.Path | None) -> dict[str, Any]:
         'large_members': large_members[:20],
         'large_member_count': len(large_members),
         'large_untracked': large_untracked[:20],
+        'unresolved_lfs_pointers': unresolved_lfs_pointers[:20],
         'large_member_threshold_bytes': LARGE_ARCHIVE_MEMBER_THRESHOLD_BYTES,
         'lfs_patterns': lfs_patterns,
     }
@@ -728,6 +785,9 @@ def _archive_identity(source_archive: dict[str, Any]) -> str:
     if large_member_count:
         large_untracked_count = len(source_archive.get('large_untracked') or [])
         details.append(f'large files: {large_member_count} ({large_untracked_count} not LFS-tracked)')
+    unresolved_lfs_pointer_count = len(source_archive.get('unresolved_lfs_pointers') or [])
+    if unresolved_lfs_pointer_count:
+        details.append(f'unresolved Git LFS pointers: {unresolved_lfs_pointer_count}')
     return '; '.join(details) if details else 'missing'
 
 
@@ -926,8 +986,21 @@ def render_issue(
         export_import=export_import,
     )
     if source_archive.get('status') == 'failed':
+        archive_failures: list[str] = []
+        if source_archive.get('forbidden'):
+            archive_failures.append('forbidden paths: ' + ', '.join(source_archive.get('forbidden') or []))
+        if source_archive.get('large_untracked'):
+            archive_failures.append(
+                'large files not tracked by Git LFS: ' + ', '.join(source_archive.get('large_untracked') or [])
+            )
+        unresolved_pointers = source_archive.get('unresolved_lfs_pointers') or []
+        if unresolved_pointers:
+            archive_failures.append(
+                'unresolved Git LFS pointers: '
+                + ', '.join(str(pointer.get('path') or '') for pointer in unresolved_pointers)
+            )
         remaining_exceptions.append(
-            'Source archive scan found forbidden paths: ' + ', '.join(source_archive.get('forbidden') or [])
+            'Source archive scan failed: ' + ('; '.join(archive_failures) or 'unknown archive integrity failure')
         )
     elif source_archive.get('status') in {'missing', 'invalid'} and spec.issue_number == 9:
         remaining_exceptions.append('Source archive evidence is missing or invalid.')

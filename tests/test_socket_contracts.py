@@ -8,6 +8,7 @@ from aidm_server.socket_contracts import (
     roll_required_payload,
     segment_triggered_payload,
     session_log_update_payload,
+    session_recovery_resolved_payload,
     socket_error_payload,
     turn_duplicate_payload,
     turn_status_payload,
@@ -165,6 +166,16 @@ def test_outgoing_turn_payload_contracts_are_stable():
 
 def test_outgoing_status_and_side_effect_payload_contracts_are_stable():
     assert session_log_update_payload(4, 9) == {'session_id': 4, 'turn_id': 9}
+    assert session_recovery_resolved_payload(
+        session_id=4,
+        turn_id=9,
+        state_revision=12,
+    ) == {
+        'session_id': 4,
+        'turn_id': 9,
+        'state_revision': 12,
+        'recovery_required': False,
+    }
     assert turn_status_payload(4, 9, 'saved', {'stage': 'dm_response'}) == {
         'session_id': 4,
         'turn_id': 9,
@@ -182,12 +193,31 @@ def test_outgoing_status_and_side_effect_payload_contracts_are_stable():
         rule_type='attack',
         dc_hint='DC 15',
         prompt='Please roll.',
+        remaining_player_ids=[3],
+        roll_spec={
+            'die': 'd20',
+            'mode': 'advantage',
+            'rule_type': 'attack',
+            'reason': 'Longsword attack',
+            'result_visibility': 'hidden_until_landed',
+            'ability': {'key': 'strength', 'label': 'STR', 'score': 18, 'modifier': 4},
+            'attack': {'weapon': 'private'},
+        },
     ) == {
         'session_id': 4,
         'pending_turn_id': 9,
         'rule_type': 'attack',
         'dc_hint': 'DC 15',
         'prompt': 'Please roll.',
+        'remaining_player_ids': [3],
+        'roll_spec': {
+            'die': 'd20',
+            'mode': 'advantage',
+            'rule_type': 'attack',
+            'reason': 'Longsword attack',
+            'result_visibility': 'hidden_until_landed',
+            'ability': {'key': 'strength', 'label': 'STR'},
+        },
     }
     assert roll_resolved_payload(
         session_id=4,

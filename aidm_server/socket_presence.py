@@ -14,6 +14,7 @@ from aidm_server.database import db
 from aidm_server.llm import CONTEXT_VERSION
 from aidm_server.logging_context import clear_logging_context, set_logging_context
 from aidm_server.profile_icons import profile_icon_src_for_character
+from aidm_server.services.session_lifecycle import session_playability_error
 from aidm_server.services.scene_state import scene_state_for_session
 from aidm_server.socket_contracts import scene_state_payload, socket_error_payload as socket_error
 from aidm_server.socket_runtime import SocketRuntime
@@ -169,6 +170,21 @@ def register_socket_presence_events(socketio, dependencies: SocketPresenceDepend
                 telemetry_event(
                     'socket.join.session_not_found',
                     payload={'sid': request.sid, 'session_id': session_id},
+                    severity='warning',
+                )
+                return
+
+            playability_error = session_playability_error(session_obj)
+            if playability_error:
+                error_code, message = playability_error
+                emit('error', socket_error(error_code, message))
+                telemetry_event(
+                    f'socket.join.{error_code}',
+                    payload={
+                        'sid': request.sid,
+                        'session_id': session_id,
+                        'campaign_id': session_obj.campaign_id,
+                    },
                     severity='warning',
                 )
                 return

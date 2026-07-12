@@ -175,6 +175,7 @@ def _refresh_campaign_pack_progress(session_obj: Session) -> dict[str, Any] | No
         session_id=session_obj.session_id,
         campaign_id=session_obj.campaign_id,
         triggered_segments=[],
+        commit=False,
     )
     if not result.changed:
         return None
@@ -588,8 +589,10 @@ def resolve_creature():
     if payload is None:
         return error_response('validation_error', 'Expected JSON request body.', 400)
     campaign_id = payload.get('campaignId') or payload.get('campaign_id')
-    save_generated = _save_generated_enabled(payload)
-    if campaign_id and save_generated:
+    if campaign_id:
+        # Even a non-persisting preview can resolve against campaign-scoped
+        # bestiary entries. Keep those authored and potentially unrevealed
+        # creatures behind the DM boundary.
         forbidden = _bestiary_authoring_forbidden_response()
         if forbidden:
             return forbidden
