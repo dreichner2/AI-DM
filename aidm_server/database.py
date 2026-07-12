@@ -95,17 +95,22 @@ def commit_with_retry(
             time.sleep(delay)
 
 
-def release_clean_scoped_session(*, boundary: str = 'provider') -> None:
-    """Return a read-only scoped session without discarding pending writes."""
+def scoped_session_has_pending_writes() -> bool:
+    """Return whether removing the current scoped session would lose writes."""
 
     session = db.session()
-    has_pending_writes = bool(
+    return bool(
         session.new
         or session.dirty
         or session.deleted
         or session.info.get(_PENDING_FLUSHED_WRITES_KEY)
     )
-    if has_pending_writes:
+
+
+def release_clean_scoped_session(*, boundary: str = 'provider') -> None:
+    """Return a read-only scoped session without discarding pending writes."""
+
+    if scoped_session_has_pending_writes():
         raise RuntimeError(
             f'Refusing to release a database session with pending {boundary} boundary writes.'
         )

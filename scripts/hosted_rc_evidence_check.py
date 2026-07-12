@@ -361,6 +361,7 @@ def build_command_plan(args: argparse.Namespace) -> list[HostedCheck]:
         _append_if(command, '--llm-provider-model', args.llm_provider_model)
         _append_if(command, '--observability-provider', args.observability_provider)
         _append_if(command, '--alert-owner', args.alert_owner)
+        _append_if(command, '--invite-more-testers', args.invite_more_testers)
         command.extend(['--output', 'tmp/release/beta-slo-baseline.md'])
         required = list(target_missing)
         if not args.workspace_token:
@@ -739,6 +740,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--llm-provider-model', default='')
     parser.add_argument('--observability-provider', default='')
     parser.add_argument('--alert-owner', default='')
+    parser.add_argument('--invite-more-testers', choices=('yes', 'no'), default='')
     parser.add_argument('--hosted-backup-restore-evidence', default='')
     parser.add_argument('--hosted-worker-process-evidence', default='')
     parser.add_argument('--source-archive-attachment-evidence', default='')

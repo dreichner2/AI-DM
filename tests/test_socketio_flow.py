@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import Mock
 
 import pytest
+from sqlalchemy.orm.attributes import set_committed_value
 
 from aidm_server.contracts import ProviderResponse
 from aidm_server.database import db
@@ -28,6 +30,7 @@ from aidm_server.models import (
     PlayerAction,
     Session,
     SessionLogEntry,
+    SessionStateMutationAudit,
     SessionState,
     StoryEntity,
     StoryThread,
@@ -1653,6 +1656,274 @@ def test_join_session_rejects_same_workspace_player_from_other_campaign(app, soc
 
     error_payload = _event_payload(client.get_received(), 'error')
     assert error_payload['error_code'] == 'campaign_mismatch'
+
+
+@pytest.mark.parametrize(
+    ('scope', 'status', 'error_code', 'message'),
+    [
+        (
+            'session',
+            'archived',
+            'session_archived',
+            'This session is archived. Restore it before playing.',
+        ),
+        (
+            'session',
+            'deleted',
+            'session_deleted',
+            'This session has been deleted and is unavailable.',
+        ),
+        (
+            'campaign',
+            'archived',
+            'campaign_archived',
+            'This campaign is archived. Restore it before playing.',
+        ),
+    ],
+)
+def test_join_session_rejects_unavailable_lifecycle_state_without_joining_room(
+    app,
+    socketio,
+    app_runtime,
+    scope,
+    status,
+    error_code,
+    message,
+):
+    socketio_module = app_runtime['modules']['socketio_events']
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        target = (
+            db.session.get(Session, ids['session_id'])
+            if scope == 'session'
+            else db.session.get(Campaign, ids['campaign_id'])
+        )
+        assert target is not None
+        target.status = status
+        db.session.commit()
+
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    assert client.is_connected()
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    received = client.get_received()
+
+    error_payload = _event_payload(received, 'error')
+    assert error_payload == {'error': message, 'error_code': error_code, 'details': {}}
+    assert _event_payload(received, 'player_joined') is None
+    assert _event_payload(received, 'active_players') is None
+    assert str(ids['session_id']) not in socketio.server.manager.rooms.get('/', {})
+    assert all(
+        record.get('session_id') is None and record.get('player_id') is None
+        for record in socketio_module.socketio_connections.values()
+    )
+    assert ids['session_id'] not in socketio_module.active_players
+
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I should not enter an unavailable session.',
+            'client_message_id': f'unavailable-join-{scope}-{status}',
+        },
+    )
+    assert _event_payload(client.get_received(), 'error')['error_code'] == 'player_identity_mismatch'
+    with app.app_context():
+        assert DmTurn.query.filter_by(session_id=ids['session_id']).count() == 0
+
+
+@pytest.mark.parametrize(
+    ('scope', 'status', 'error_code', 'message'),
+    [
+        (
+            'session',
+            'archived',
+            'session_archived',
+            'This session is archived. Restore it before playing.',
+        ),
+        (
+            'session',
+            'deleted',
+            'session_deleted',
+            'This session has been deleted and is unavailable.',
+        ),
+        (
+            'campaign',
+            'archived',
+            'campaign_archived',
+            'This campaign is archived. Restore it before playing.',
+        ),
+    ],
+)
+def test_send_message_rejects_session_that_became_unavailable_without_creating_turn(
+    app,
+    socketio,
+    scope,
+    status,
+    error_code,
+    message,
+):
+    ids = seed_world_campaign_player_session(app)
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    assert client.is_connected()
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+
+    with app.app_context():
+        target = (
+            db.session.get(Session, ids['session_id'])
+            if scope == 'session'
+            else db.session.get(Campaign, ids['campaign_id'])
+        )
+        assert target is not None
+        target.status = status
+        db.session.commit()
+
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I should not create a turn after archival.',
+            'client_message_id': f'unavailable-message-{scope}-{status}',
+        },
+    )
+    received = client.get_received()
+
+    assert _event_payload(received, 'error') == {
+        'error': message,
+        'error_code': error_code,
+        'details': {},
+    }
+    assert _event_payload(received, 'dm_response_start') is None
+    with app.app_context():
+        assert DmTurn.query.filter_by(session_id=ids['session_id']).count() == 0
+
+
+@pytest.mark.parametrize(
+    ('scope', 'error_code'),
+    [
+        ('session', 'session_archived'),
+        ('campaign', 'campaign_archived'),
+    ],
+)
+def test_presence_side_channels_stop_after_session_or_campaign_archive(
+    app,
+    socketio,
+    app_runtime,
+    scope,
+    error_code,
+):
+    socketio_module = app_runtime['modules']['socketio_events']
+    ids = seed_world_campaign_player_session(app)
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+
+    with app.app_context():
+        target = (
+            db.session.get(Session, ids['session_id'])
+            if scope == 'session'
+            else db.session.get(Campaign, ids['campaign_id'])
+        )
+        assert target is not None
+        target.status = 'archived'
+        db.session.commit()
+
+    client.emit(
+        'typing_status',
+        {'session_id': ids['session_id'], 'player_id': ids['player_id'], 'is_typing': True},
+    )
+    typing_events = client.get_received()
+    assert _event_payload(typing_events, 'error')['error_code'] == error_code
+    assert _event_payload(typing_events, 'active_players') is None
+    assert socketio_module.socket_state.player_is_typing(ids['session_id'], ids['player_id']) is False
+
+    client.emit(
+        'music_control',
+        {
+            'session_id': ids['session_id'],
+            'player_id': ids['player_id'],
+            'track_id': 'forest-road',
+            'status': 'playing',
+            'position': 0,
+        },
+    )
+    music_events = client.get_received()
+    assert _event_payload(music_events, 'error')['error_code'] == error_code
+    assert _event_payload(music_events, 'music_state') is None
+
+
+@pytest.mark.parametrize(
+    ('scope', 'error_code', 'message'),
+    [
+        (
+            'session',
+            'session_archived',
+            'This session is archived. Restore it before playing.',
+        ),
+        (
+            'campaign',
+            'campaign_archived',
+            'This campaign is archived. Restore it before playing.',
+        ),
+    ],
+)
+def test_turn_engine_refreshes_lifecycle_state_before_authoritative_processing(
+    app,
+    app_runtime,
+    scope,
+    error_code,
+    message,
+):
+    turn_engine_module = app_runtime['modules']['turn_engine']
+    ids = seed_world_campaign_player_session(app)
+    emit = Mock()
+    stream = Mock(side_effect=AssertionError('Archived lifecycle must not reach narration.'))
+    engine = turn_engine_module.TurnEngine(
+        socketio=Mock(),
+        emit_fn=emit,
+        stream_fn=stream,
+    )
+
+    with app.app_context():
+        session_obj = db.session.get(Session, ids['session_id'])
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        target = session_obj if scope == 'session' else campaign
+        assert session_obj is not None
+        assert campaign is not None
+        target.status = 'archived'
+        db.session.commit()
+
+        # Recreate the stale identity-map state left by an earlier socket
+        # preflight. The turn engine must populate from the database again.
+        set_committed_value(target, 'status', 'active')
+        assert target.status == 'active'
+
+        engine.process(
+            turn_engine_module.TurnCommand(
+                sid='socket-1',
+                session_id=ids['session_id'],
+                campaign_id=ids['campaign_id'],
+                world_id=ids['world_id'],
+                player_id=ids['player_id'],
+                user_input='I should not act after archival.',
+                manual_segment_ids=set(),
+                client_message_id=f'archived-engine-{scope}',
+            )
+        )
+
+        assert DmTurn.query.filter_by(session_id=ids['session_id']).count() == 0
+
+    emit.assert_called_once_with(
+        'error',
+        {'error': message, 'error_code': error_code, 'details': {}},
+    )
+    stream.assert_not_called()
 
 
 def test_harmful_player_targeting_creates_pvp_roll_gate(app, socketio, app_runtime, monkeypatch):
@@ -4096,6 +4367,482 @@ def test_canon_job_failure_keeps_dm_response_saved(app, socketio, app_runtime, m
         assert metadata['canon_status'] == 'failed'
 
 
+def test_state_application_failure_preserves_narration_and_blocks_turn_progression(
+    app,
+    socketio,
+    app_runtime,
+    monkeypatch,
+):
+    socketio_module = app_runtime['modules']['socketio_events']
+    turn_engine_module = app_runtime['modules']['turn_engine']
+    calls = {'advance': 0, 'canon': 0}
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player, rules_hint
+        yield 'The ward breaks and the chamber shudders.'
+
+    def fail_post_pipeline(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError('private-primary-state-error')
+
+    def fail_legacy_fallback(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError('private-fallback-state-error')
+
+    def unexpected_advance(*args, **kwargs):
+        del args, kwargs
+        calls['advance'] += 1
+
+    def unexpected_canon(*args, **kwargs):
+        del args, kwargs
+        calls['canon'] += 1
+        raise AssertionError('Canon must not run after authoritative state application fails.')
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    monkeypatch.setattr(turn_engine_module, 'post_dm_pipeline', fail_post_pipeline)
+    monkeypatch.setattr(turn_engine_module, 'apply_immediate_state_changes', fail_legacy_fallback)
+    monkeypatch.setattr(
+        turn_engine_module.TurnEngine,
+        '_advance_structured_turn_if_ready',
+        unexpected_advance,
+    )
+    monkeypatch.setattr(turn_engine_module, 'enqueue_canon_job', unexpected_canon)
+
+    ids = seed_world_campaign_player_session(app)
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I break the ward.',
+            'client_message_id': 'state-failure-1',
+        },
+    )
+    received = client.get_received()
+
+    error = _event_payload(received, 'error')
+    assert error['error_code'] == 'turn_state_apply_failed'
+    assert error['details']['narration_saved'] is True
+    assert error['details']['mechanics_status'] == 'none'
+    assert error['details']['mechanics_applied'] is False
+    assert error['details']['pre_dm_mechanics_applied'] is False
+    assert error['details']['pre_dm_applied_change_count'] == 0
+    assert error['details']['post_dm_mechanics_applied'] is False
+    assert 'private-primary-state-error' not in json.dumps(received)
+    assert 'private-fallback-state-error' not in json.dumps(received)
+    failed_status = _turn_status_payloads(received, 'failed')[-1]
+    assert failed_status['details'] == {
+        'stage': 'state_application',
+        'narration_saved': True,
+        'mechanics_status': 'none',
+        'mechanics_applied': False,
+        'pre_dm_mechanics_applied': False,
+        'pre_dm_applied_change_count': 0,
+        'post_dm_mechanics_applied': False,
+        'recovery_required': True,
+    }
+    assert not _turn_status_payloads(received, 'canon_pending')
+    assert calls == {'advance': 0, 'canon': 0}
+
+    with app.app_context():
+        turn = DmTurn.query.filter_by(session_id=ids['session_id']).one()
+        metadata = safe_json_loads(turn.metadata_json, {})
+        assert turn.status == 'failed'
+        assert turn.dm_output.startswith('The ward breaks and the chamber shudders.')
+        assert metadata['canon_status'] == 'blocked_state_failure'
+        assert metadata['post_dm_state'] == {
+            'status': 'failed',
+            'narration_saved': True,
+            'mechanics_status': 'none',
+            'mechanics_applied': False,
+            'pre_dm_mechanics_applied': False,
+            'pre_dm_applied_change_count': 0,
+            'post_dm_mechanics_applied': False,
+            'recovery_required': True,
+        }
+        session_obj = db.session.get(Session, ids['session_id'])
+        snapshot = safe_json_loads(session_obj.state_snapshot, {})
+        assert snapshot['turnRecoveryGate'] == {
+            'status': 'required',
+            'reason': 'post_dm_state_application_failed',
+            'turnId': turn.turn_id,
+            'narrationSaved': True,
+            'mechanicsStatus': 'none',
+            'mechanicsApplied': False,
+            'preDmMechanicsApplied': False,
+            'preDmAppliedChangeCount': 0,
+            'postDmMechanicsApplied': False,
+            'createdAt': snapshot['turnRecoveryGate']['createdAt'],
+        }
+        assert SessionStateMutationAudit.query.filter_by(
+            session_id=ids['session_id'],
+            source='system.turn_recovery.activate',
+        ).count() == 1
+        assert 'private-primary-state-error' not in turn.metadata_json
+        assert 'private-fallback-state-error' not in turn.metadata_json
+        assert CanonJob.query.filter_by(turn_id=turn.turn_id).count() == 0
+
+    reconnecting_client = socketio.test_client(
+        app,
+        flask_test_client=app.test_client(),
+    )
+    reconnecting_client.emit(
+        'join_session',
+        {'session_id': ids['session_id'], 'player_id': ids['player_id']},
+    )
+    reconnect_events = reconnecting_client.get_received()
+    assert _event_payload(reconnect_events, 'error') is None
+    assert _event_payload(reconnect_events, 'active_players') is not None
+    reconnecting_client.disconnect()
+
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I continue through the chamber.',
+            'client_message_id': 'state-failure-blocked-2',
+        },
+    )
+    blocked = _event_payload(client.get_received(), 'error')
+    assert blocked == {
+        'error_code': 'session_recovery_required',
+        'error': (
+            'This session is paused while the Dungeon Master reviews a turn whose '
+            'narration was saved without authoritative mechanics.'
+        ),
+        'details': {
+            'session_id': ids['session_id'],
+            'turn_id': turn.turn_id,
+            'narration_saved': True,
+            'mechanics_status': 'none',
+            'mechanics_applied': False,
+            'pre_dm_mechanics_applied': False,
+            'pre_dm_applied_change_count': 0,
+            'post_dm_mechanics_applied': False,
+            'recovery_required': True,
+        },
+    }
+    with app.app_context():
+        assert DmTurn.query.filter_by(session_id=ids['session_id']).count() == 1
+
+
+def test_state_application_failure_reports_persisted_pre_dm_mechanics_as_partial(
+    app,
+    socketio,
+    app_runtime,
+    monkeypatch,
+):
+    socketio_module = app_runtime['modules']['socketio_events']
+    turn_engine_module = app_runtime['modules']['turn_engine']
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player, rules_hint
+        yield 'You raise the greatsword as the ward fractures.'
+
+    def fail_post_pipeline(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError('private-primary-state-error')
+
+    def fail_legacy_fallback(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError('private-fallback-state-error')
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    monkeypatch.setattr(turn_engine_module, 'post_dm_pipeline', fail_post_pipeline)
+    monkeypatch.setattr(turn_engine_module, 'apply_immediate_state_changes', fail_legacy_fallback)
+
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        assert player is not None
+        player.inventory = safe_json_dumps(
+            [
+                {
+                    'id': 'great',
+                    'name': 'Greatsword',
+                    'quantity': 1,
+                    'type': 'weapon',
+                    'subtype': 'greatsword',
+                }
+            ],
+            [],
+        )
+        db.session.commit()
+
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I equip my greatsword and break the ward.',
+            'client_message_id': 'state-failure-partial-1',
+            'action_intent': {
+                'kind': 'item',
+                'source': 'composer',
+                'text': 'I equip my greatsword and break the ward.',
+                'inventory_action': 'equip',
+                'item': {'name': 'Greatsword', 'quantity': 1},
+            },
+        },
+    )
+    received = client.get_received()
+
+    error = _event_payload(received, 'error')
+    assert error['error_code'] == 'turn_state_apply_failed'
+    turn_id = error['details']['turn_id']
+    assert error['details'] == {
+        'session_id': ids['session_id'],
+        'turn_id': turn_id,
+        'narration_saved': True,
+        'mechanics_status': 'partial',
+        'mechanics_applied': True,
+        'pre_dm_mechanics_applied': True,
+        'pre_dm_applied_change_count': 1,
+        'post_dm_mechanics_applied': False,
+        'recovery_required': True,
+    }
+    assert 'remain applied' in error['error'].lower()
+    assert 'private-primary-state-error' not in json.dumps(received)
+    assert 'private-fallback-state-error' not in json.dumps(received)
+    failed_status = _turn_status_payloads(received, 'failed')[-1]
+    assert failed_status['details'] == {
+        'stage': 'state_application',
+        'narration_saved': True,
+        'mechanics_status': 'partial',
+        'mechanics_applied': True,
+        'pre_dm_mechanics_applied': True,
+        'pre_dm_applied_change_count': 1,
+        'post_dm_mechanics_applied': False,
+        'recovery_required': True,
+    }
+
+    with app.app_context():
+        turn = DmTurn.query.filter_by(session_id=ids['session_id']).one()
+        metadata = safe_json_loads(turn.metadata_json, {})
+        applied_changes = metadata['state_pipeline']['immediateAppliedChanges']
+        assert [change['type'] for change in applied_changes] == ['inventory.equip']
+        assert metadata['state_pipeline']['combatAppliedChanges'] == []
+        assert metadata['post_dm_state']['mechanics_status'] == 'partial'
+        assert metadata['post_dm_state']['pre_dm_applied_change_count'] == 1
+        assert metadata['post_dm_state']['post_dm_mechanics_applied'] is False
+        player = db.session.get(Player, ids['player_id'])
+        inventory = {item['id']: item for item in safe_json_loads(player.inventory, [])}
+        assert inventory['great']['equipped'] is True
+        assert inventory['great']['slot'] == 'two_hands'
+        snapshot = safe_json_loads(db.session.get(Session, ids['session_id']).state_snapshot, {})
+        gate = snapshot['turnRecoveryGate']
+        assert gate['turnId'] == turn.turn_id
+        assert gate['mechanicsStatus'] == 'partial'
+        assert gate['mechanicsApplied'] is True
+        assert gate['preDmMechanicsApplied'] is True
+        assert gate['preDmAppliedChangeCount'] == 1
+        assert gate['postDmMechanicsApplied'] is False
+        activation_audit = SessionStateMutationAudit.query.filter_by(
+            session_id=ids['session_id'],
+            source='system.turn_recovery.activate',
+        ).one()
+        activation_metadata = json.loads(activation_audit.metadata_json)
+        assert activation_metadata['mechanics_status'] == 'partial'
+        assert activation_metadata['pre_dm_applied_change_count'] == 1
+        assert activation_metadata['pre_dm_applied_change_types'] == ['inventory.equip']
+
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I equip the greatsword again.',
+            'client_message_id': 'state-failure-partial-blocked-2',
+        },
+    )
+    blocked = _event_payload(client.get_received(), 'error')
+    assert blocked['error_code'] == 'session_recovery_required'
+    assert blocked['details']['mechanics_status'] == 'partial'
+    assert blocked['details']['pre_dm_applied_change_count'] == 1
+    assert 'must not be repeated' in blocked['error'].lower()
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        inventory = {item['id']: item for item in safe_json_loads(player.inventory, [])}
+        assert inventory['great']['equipped'] is True
+        assert DmTurn.query.filter_by(session_id=ids['session_id']).count() == 1
+
+    resolved = app.test_client().post(
+        f"/api/sessions/{ids['session_id']}/recovery/resolve",
+        json={
+            'turn_id': turn_id,
+            'resolution': 'no_mechanical_change_required',
+            'operator_note': (
+                'Verified the greatsword equip already committed; no additional '
+                'post-narration mechanic was intended.'
+            ),
+        },
+    )
+    assert resolved.status_code == 200
+    with app.app_context():
+        turn = db.session.get(DmTurn, turn_id)
+        post_dm_state = safe_json_loads(turn.metadata_json, {})['post_dm_state']
+        assert post_dm_state['mechanics_status'] == 'partial'
+        assert post_dm_state['pre_dm_applied_change_count'] == 1
+        assert post_dm_state['recovery_resolution']['mechanics_status'] == 'partial'
+        assert post_dm_state['recovery_resolution']['pre_dm_applied_change_count'] == 1
+        resolution_audit = SessionStateMutationAudit.query.filter_by(
+            session_id=ids['session_id'],
+            source='operator.session_recovery.resolve',
+        ).one()
+        resolution_metadata = json.loads(resolution_audit.metadata_json)
+        assert resolution_metadata['mechanics_status'] == 'partial'
+        assert resolution_metadata['pre_dm_applied_change_count'] == 1
+        assert resolution_metadata['pre_dm_applied_change_types'] == ['inventory.equip']
+        player = db.session.get(Player, ids['player_id'])
+        inventory = {item['id']: item for item in safe_json_loads(player.inventory, [])}
+        assert inventory['great']['equipped'] is True
+
+
+def test_state_application_failure_remains_closed_when_snapshot_gate_activation_fails(
+    app,
+    socketio,
+    app_runtime,
+    monkeypatch,
+):
+    socketio_module = app_runtime['modules']['socketio_events']
+    turn_engine_module = app_runtime['modules']['turn_engine']
+    real_activate_recovery_gate = turn_engine_module.activate_turn_recovery_gate
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player, rules_hint
+        yield 'The ward fractures, revealing a stair into the dark.'
+
+    def fail_post_pipeline(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError('private-primary-state-error')
+
+    def fail_legacy_fallback(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError('private-fallback-state-error')
+
+    def fail_recovery_gate(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError('private-recovery-gate-error')
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    monkeypatch.setattr(turn_engine_module, 'post_dm_pipeline', fail_post_pipeline)
+    monkeypatch.setattr(turn_engine_module, 'apply_immediate_state_changes', fail_legacy_fallback)
+    monkeypatch.setattr(
+        turn_engine_module,
+        'activate_turn_recovery_gate',
+        fail_recovery_gate,
+    )
+
+    ids = seed_world_campaign_player_session(app)
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit(
+        'join_session',
+        {'session_id': ids['session_id'], 'player_id': ids['player_id']},
+    )
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I break the ward.',
+            'client_message_id': 'state-gate-failure-1',
+        },
+    )
+    received = client.get_received()
+
+    failure = _event_payload(received, 'error')
+    assert failure['error_code'] == 'turn_state_apply_failed'
+    assert failure['details']['recovery_required'] is True
+    assert failure['details']['narration_saved'] is True
+    assert 'private-primary-state-error' not in json.dumps(received)
+    assert 'private-fallback-state-error' not in json.dumps(received)
+    assert 'private-recovery-gate-error' not in json.dumps(received)
+    assert not [
+        event
+        for event in received
+        if event['name'] == 'error'
+        and event['args'][0].get('error_code') == 'turn_persist_failed'
+    ]
+
+    with app.app_context():
+        turn = DmTurn.query.filter_by(session_id=ids['session_id']).one()
+        turn_id = turn.turn_id
+        metadata = safe_json_loads(turn.metadata_json, {})
+        assert turn.status == 'failed'
+        assert turn.dm_output.startswith(
+            'The ward fractures, revealing a stair into the dark.'
+        )
+        assert metadata['canon_status'] == 'blocked_state_failure'
+        assert metadata['post_dm_state']['status'] == 'failed'
+        assert metadata['post_dm_state']['recovery_required'] is True
+        assert metadata['post_dm_state']['narration_saved'] is True
+        assert 'private-primary-state-error' not in turn.metadata_json
+        assert 'private-fallback-state-error' not in turn.metadata_json
+        assert 'private-recovery-gate-error' not in turn.metadata_json
+        snapshot = safe_json_loads(
+            db.session.get(Session, ids['session_id']).state_snapshot,
+            {},
+        )
+        assert 'turnRecoveryGate' not in snapshot
+
+    # A later action discovers the unresolved failed turn row, repairs the
+    # redundant snapshot gate, and blocks without re-running mechanics.
+    monkeypatch.setattr(
+        turn_engine_module,
+        'activate_turn_recovery_gate',
+        real_activate_recovery_gate,
+    )
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I descend the stairs.',
+            'client_message_id': 'state-gate-failure-blocked-2',
+        },
+    )
+    blocked = _event_payload(client.get_received(), 'error')
+    assert blocked['error_code'] == 'session_recovery_required'
+    assert blocked['details']['turn_id'] == turn_id
+    with app.app_context():
+        assert DmTurn.query.filter_by(session_id=ids['session_id']).count() == 1
+        snapshot = safe_json_loads(
+            db.session.get(Session, ids['session_id']).state_snapshot,
+            {},
+        )
+        assert snapshot['turnRecoveryGate']['turnId'] == turn_id
+
+    resolved = app.test_client().post(
+        f"/api/sessions/{ids['session_id']}/recovery/resolve",
+        json={
+            'turn_id': turn_id,
+            'resolution': 'no_mechanical_change_required',
+            'operator_note': 'Confirmed the narration intended no mechanical change.',
+        },
+    )
+    assert resolved.status_code == 200
+
+
 def test_join_session_rejects_player_from_other_workspace(app, socketio, app_runtime):
     ids = seed_world_campaign_player_session(app)
 
@@ -4813,6 +5560,9 @@ def test_pending_check_blocks_new_action_until_roll_is_provided(app, socketio, a
     assert roll_required_payload is not None
     assert roll_required_payload['pending_turn_id'] == first_turn_id
     assert roll_required_payload['rule_type'] == 'attack'
+    assert roll_required_payload['remaining_player_ids'] == [ids['player_id']]
+    assert roll_required_payload['roll_spec']['die'] == 'd20'
+    assert roll_required_payload['roll_spec']['mode'] == 'normal'
 
     with app.app_context():
         turn_count = DmTurn.query.filter_by(session_id=ids['session_id']).count()

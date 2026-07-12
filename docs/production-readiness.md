@@ -193,7 +193,7 @@ provider-specific deployment evidence for the signed-off commit.
 - Deployment readiness:
   `.venv/bin/python scripts/deployment_readiness_check.py --env-file /path/to/env --evidence-report tmp/release/deployment-readiness-evidence.md`
 - Beta SLO baseline:
-  `make beta-slo-baseline BETA_SLO_BASELINE_ARGS="--target-url https://aidm.example.com --auth-token <token> --workspace-id <workspace-id> --release RC1 --environment staging --output tmp/release/beta-slo-baseline.md"`
+  `make beta-slo-baseline BETA_SLO_BASELINE_ARGS="--target-url https://aidm.example.com --auth-token <token> --workspace-id <workspace-id> --release RC1 --commit-sha <signed-off-commit-sha> --environment staging --invite-more-testers <yes-or-no> --output tmp/release/beta-slo-baseline.md"`
 
 ## Beta SLOs
 

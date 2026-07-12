@@ -97,6 +97,19 @@ def test_ci_workflows_pin_upgraded_toolchains_and_dependencies():
     ) in frontend_job
 
 
+def test_ci_fetches_lfs_assets_only_for_frontend_build_and_visual_jobs():
+    workflow = (REPO_ROOT / '.github' / 'workflows' / 'ci.yml').read_text(encoding='utf-8')
+    backend_job = workflow.split('  backend:', 1)[1].split('\n  postgres-integration:', 1)[0]
+    postgres_job = workflow.split('  postgres-integration:', 1)[1].split('\n  frontend:', 1)[0]
+    frontend_job = workflow.split('  frontend:', 1)[1].split('\n  visual-smoke:', 1)[0]
+    visual_job = workflow.split('  visual-smoke:', 1)[1]
+
+    assert 'lfs: true' not in backend_job
+    assert 'lfs: true' not in postgres_job
+    assert frontend_job.count('lfs: true') == 1
+    assert visual_job.count('lfs: true') == 1
+
+
 def test_dependabot_tracks_supported_ecosystems_and_compatibility_holds():
     dependabot = (REPO_ROOT / '.github' / 'dependabot.yml').read_text(encoding='utf-8')
 

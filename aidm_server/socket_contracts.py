@@ -8,6 +8,7 @@ from typing import Any
 from aidm_server.action_intent import ACTION_ID_RE, has_reserved_admin_prefix, validate_action_intent
 from aidm_server.errors import build_error
 from aidm_server.roll_visibility import (
+    player_roll_spec_payload,
     public_action_intent_payload,
     public_roll_payload,
     public_rules_hint_payload,
@@ -55,6 +56,20 @@ def session_log_update_payload(session_id: int, turn_id: int | None = None) -> d
     return {
         'session_id': session_id,
         'turn_id': turn_id,
+    }
+
+
+def session_recovery_resolved_payload(
+    *,
+    session_id: int,
+    turn_id: int,
+    state_revision: int,
+) -> dict[str, Any]:
+    return {
+        'session_id': session_id,
+        'turn_id': turn_id,
+        'state_revision': state_revision,
+        'recovery_required': False,
     }
 
 
@@ -112,6 +127,7 @@ def roll_required_payload(
     dc_hint: str | None,
     prompt: str,
     remaining_player_ids: list[int] | None = None,
+    roll_spec: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = {
         'session_id': session_id,
@@ -122,6 +138,8 @@ def roll_required_payload(
     }
     if remaining_player_ids is not None:
         payload['remaining_player_ids'] = remaining_player_ids
+    if roll_spec is not None:
+        payload['roll_spec'] = player_roll_spec_payload(roll_spec)
     return payload
 
 

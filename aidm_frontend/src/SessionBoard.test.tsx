@@ -18,6 +18,7 @@ function actionComposerProps(): ActionComposerProps {
     actionText: '',
     adminPasscode: '',
     adminToolsUnlocked: false,
+    canUseOperatorTools: true,
     setActionText: vi.fn(),
     updateActionText: vi.fn(),
     setAdminPasscode: vi.fn(),
@@ -107,6 +108,7 @@ function sessionBoardProps(overrides: Partial<SessionBoardProps> = {}): SessionB
     onSceneMusicControl: vi.fn(),
     contentSettings: DEFAULT_CONTENT_SETTINGS,
     contentSettingsPending: false,
+    canUseOperatorTools: true,
     canEditContentSettings: true,
     onContentRatingChange: vi.fn(),
     onContentToneTagsChange: vi.fn(),
@@ -246,6 +248,12 @@ function sessionBoardProps(overrides: Partial<SessionBoardProps> = {}): SessionB
     sendPending: false,
     streamingTurnActive: false,
     pendingRollNotice: null,
+    onPreparePendingRoll: vi.fn(),
+    turnRecoveryGate: null,
+    turnRecoveryPending: false,
+    turnRecoveryError: '',
+    turnRecoverySuccess: '',
+    onResolveTurnRecovery: vi.fn(async () => undefined),
     combatState: {
       active: false,
       status: 'none',
@@ -302,9 +310,9 @@ function sessionBoardProps(overrides: Partial<SessionBoardProps> = {}): SessionB
       latest_session_id: 20,
       latest_activity_at: '2026-06-06T10:45:00.000Z',
     },
-    canonFacts: [
-      ['The first canon fact glows in the margin.', 'Turn 1'],
-      ['The second canon fact names the keeper.', 'Turn 2'],
+    recentMemory: [
+      ['The first remembered beat glows in the margin.', 'Turn 1'],
+      ['The second remembered beat names the keeper.', 'Turn 2'],
     ],
     clarificationRequest: null,
     resolveClarification: vi.fn(),
@@ -337,7 +345,7 @@ describe('SessionBoard visible theater surfaces', () => {
     expect(within(directorPanel).getByText('Ash Hall')).toBeInTheDocument()
     expect(within(directorPanel).getByText('The Branching Pack')).toBeInTheDocument()
     expect(within(directorPanel).getAllByText('Abandoned Watchtower').length).toBeGreaterThan(0)
-    expect(within(directorPanel).getByText('The first canon fact glows in the margin.')).toBeInTheDocument()
+    expect(within(directorPanel).getByText('The first remembered beat glows in the margin.')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Download session Chronicle' }))
     expect(downloadSessionChronicle).toHaveBeenCalledTimes(1)
@@ -383,5 +391,194 @@ describe('SessionBoard visible theater surfaces', () => {
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Download campaign Chronicle' }))
 
     expect(downloadCampaignChronicle).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps player-safe session actions while hiding operator and lifecycle controls', () => {
+    render(
+      <SessionBoard
+        {...sessionBoardProps({
+          canUseOperatorTools: false,
+          canEditContentSettings: false,
+          sessionMenuOpen: true,
+          actionComposerProps: {
+            ...actionComposerProps(),
+            canUseOperatorTools: false,
+            adminToolsUnlocked: true,
+          },
+        })}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Director Commentary' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Operator')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Admin mode' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Export' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Share' })).toBeInTheDocument()
+
+    const menu = screen.getByRole('menu', { name: 'Session menu' })
+    expect(within(menu).getByRole('menuitem', { name: 'Download session Chronicle' })).toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: 'Download campaign Chronicle' })).toBeInTheDocument()
+    expect(within(menu).queryByRole('menuitem', { name: 'Rename session' })).not.toBeInTheDocument()
+    expect(within(menu).queryByRole('menuitem', { name: 'Delete session' })).not.toBeInTheDocument()
+  })
+
+  it('opens the configured roller when the selected character owes a pending check', () => {
+    const onPreparePendingRoll = vi.fn()
+    const guidance = {
+      pendingTurnId: 71,
+      ruleType: 'saving_throw',
+      dcHint: null,
+      prompt: 'Make a Wisdom saving throw.',
+      remainingPlayerIds: [30],
+      rollSpec: {
+        die: 'd20',
+        mode: 'disadvantage' as const,
+        ruleType: 'saving_throw',
+        reason: 'Wisdom saving throw',
+        resultVisibility: 'hidden_until_landed' as const,
+        ability: { key: 'wisdom', label: 'WIS' },
+      },
+    }
+    render(
+      <SessionBoard
+        {...sessionBoardProps({
+          onPreparePendingRoll,
+          pendingRollNotice: {
+            turnId: 71,
+            turnLabel: 'Turn 7',
+            ruleLabel: 'Saving throw',
+            detail: 'Make a Wisdom saving throw.',
+            waitingOnLabel: 'Ember',
+            waitingPlayerIds: [30],
+            waitingPlayerNames: ['Ember'],
+            pendingCount: 1,
+            isWaitingOnSelectedPlayer: true,
+            guidance,
+          },
+        })}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Roll now' }))
+
+    expect(onPreparePendingRoll).toHaveBeenCalledWith(guidance)
+  })
+
+  it('blocks play for every viewer while exposing recovery decisions only to operators', () => {
+    const gate = {
+      status: 'required' as const,
+      reason: 'post_dm_state_application_failed' as const,
+      turnId: 72,
+      narrationSaved: true as const,
+      mechanicsApplied: true,
+      mechanicsStatus: 'partial' as const,
+      preDmMechanicsApplied: true,
+      preDmAppliedChangeCount: 2,
+      postDmMechanicsApplied: false as const,
+      createdAt: '2026-06-06T10:46:00.000Z',
+    }
+    render(
+      <SessionBoard
+        {...sessionBoardProps({
+          canUseOperatorTools: false,
+          canEditContentSettings: false,
+          turnRecoveryGate: gate,
+          actionComposerProps: {
+            ...actionComposerProps(),
+            actionText: 'I keep my hand on the sealed door.',
+            canUseOperatorTools: false,
+          },
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Turn 72 needs recovery')
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Narration was saved after 2 pre-DM changes; post-DM mechanics were not applied',
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'The pre-DM changes remain authoritative. Do not replay or duplicate them',
+    )
+    expect(screen.getByText(/Your draft is safe/i)).toBeInTheDocument()
+    expect(screen.queryByRole('form', { name: 'Resolve turn recovery' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/Your Action/i)).not.toBeInTheDocument()
+    expect(screen.getByText('Actions are paused for state recovery')).toBeInTheDocument()
+  })
+
+  it('requires an explicit recovery decision and bounded operator note before resolving', () => {
+    const onResolveTurnRecovery = vi.fn(async () => undefined)
+    render(
+      <SessionBoard
+        {...sessionBoardProps({
+          turnRecoveryGate: {
+            status: 'required',
+            reason: 'post_dm_state_application_failed',
+            turnId: 73,
+            narrationSaved: true,
+            mechanicsApplied: false,
+            mechanicsStatus: 'none',
+            preDmMechanicsApplied: false,
+            preDmAppliedChangeCount: 0,
+            postDmMechanicsApplied: false,
+            createdAt: '2026-06-06T10:47:00.000Z',
+          },
+          onResolveTurnRecovery,
+        })}
+      />,
+    )
+
+    const form = screen.getByRole('form', { name: 'Resolve turn recovery' })
+    const submit = within(form).getByRole('button', { name: 'Resolve and resume play' })
+    expect(submit).toBeDisabled()
+
+    fireEvent.click(within(form).getByRole('radio', { name: /State corrected/i }))
+    expect(submit).toBeDisabled()
+    fireEvent.change(within(form).getByLabelText('Operator note'), {
+      target: { value: 'Verified HP and inventory against turn 72; corrected the session snapshot.' },
+    })
+    expect(submit).toBeEnabled()
+    fireEvent.click(submit)
+
+    expect(onResolveTurnRecovery).toHaveBeenCalledWith(
+      'state_corrected',
+      'Verified HP and inventory against turn 72; corrected the session snapshot.',
+    )
+  })
+
+  it('announces recovery failure and locks the resolution form while a retry is in flight', () => {
+    const gate = {
+      status: 'required' as const,
+      reason: 'post_dm_state_application_failed' as const,
+      turnId: 74,
+      narrationSaved: true as const,
+      mechanicsApplied: false,
+      mechanicsStatus: 'none' as const,
+      preDmMechanicsApplied: false,
+      preDmAppliedChangeCount: 0,
+      postDmMechanicsApplied: false as const,
+      createdAt: '2026-06-06T10:48:00.000Z',
+    }
+    const rendered = render(
+      <SessionBoard
+        {...sessionBoardProps({
+          turnRecoveryGate: gate,
+          turnRecoveryError: 'Recovery failed: request timed out. The recovery request was not retried.',
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Recovery failed: request timed out')
+
+    rendered.rerender(
+      <SessionBoard
+        {...sessionBoardProps({
+          turnRecoveryGate: gate,
+          turnRecoveryPending: true,
+        })}
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'Resolving and refreshing…' })).toBeDisabled()
+    expect(screen.getByLabelText('Operator note')).toBeDisabled()
+    expect(screen.getByRole('radio', { name: /State corrected/i })).toBeDisabled()
   })
 })

@@ -16,7 +16,7 @@ for a future production cutover.
 
 ## Current baseline
 
-- Repository migration head: `0029_players_account_fk`.
+- Repository migration head: `0031_authored_map_visibility`.
 - Repository CI rehearsal target: PostgreSQL 18.4.
 - The application uses psycopg 3.3.4 and SQLAlchemy 2.0.51 and enables
   `pool_pre_ping` for PostgreSQL connections.

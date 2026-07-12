@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import type { ActionIntent } from './gameActions'
 import type {
   CombatLegalAction,
@@ -31,6 +32,7 @@ function attackMessage(actorName: string, action: CombatLegalAction, target: Com
 }
 
 export function CombatHud({ combat, playerId, disabled, submitAction }: CombatHudProps) {
+  const optionIdPrefix = useId()
   const bundle = combat.legalActionBundles.find((candidate) => candidate.playerId === playerId) ?? null
 
   if (!combat.active || !bundle) return null
@@ -61,36 +63,71 @@ export function CombatHud({ combat, playerId, disabled, submitAction }: CombatHu
     <section className="combat-hud" aria-labelledby="combat-hud-title">
       <div className="combat-hud-heading">
         <h2 id="combat-hud-title">Combat actions · Round {bundle.round}</h2>
-        <span className={`combat-hud-turn ${bundle.isCurrentActor ? 'current' : ''}`}>{turnLabel}</span>
+        <span
+          className={`combat-hud-turn ${bundle.isCurrentActor ? 'current' : ''}`}
+          role="status"
+          aria-live="polite"
+        >
+          {turnLabel}
+        </span>
       </div>
       <p className="combat-hud-note">
         Turn order and targets are server-issued. Sub-turn counters are not tracked.
       </p>
       <div className="action-intent-panel combat-hud-actions">
-        {bundle.actions.flatMap((action) => {
-          const availableTargets = action.targets.filter((target) => target.available)
+        {bundle.actions.flatMap((action, actionIndex) => {
           const options: Array<CombatLegalTarget | null> = action.requiresTarget
-            ? availableTargets.length ? availableTargets : [null]
+            ? action.targets.length ? action.targets : [null]
             : [null]
-          return options.map((target) => {
-            const blocked = disabled || !action.available || (action.requiresTarget && !target)
+          return options.map((target, targetIndex) => {
+            const targetUnavailable = Boolean(target && !target.available)
+            const missingTarget = action.requiresTarget && !target
+            const blocked = disabled || !action.available || targetUnavailable || missingTarget
+            const blockedReason = [
+              !action.available
+                ? action.reason || 'This action is not currently legal.'
+                : '',
+              targetUnavailable
+                ? target?.reason || 'This target is not currently legal.'
+                : '',
+              missingTarget ? 'No targets are available for this action.' : '',
+              disabled ? 'Actions are unavailable while the current turn resolves.' : '',
+            ].filter(Boolean).join(' ')
             const detail = [
-              target ? `${target.name} · ${target.rangeBand}` : '',
+              target?.rangeBand || '',
               action.rangeClassification ? `${action.rangeClassification} range` : '',
               economyLabel(action),
-              action.available ? '' : action.reason,
             ].filter(Boolean).join(' · ')
+            const optionId = `${optionIdPrefix}-${actionIndex}-${targetIndex}`
+            const descriptionId = action.description ? `${optionId}-description` : ''
+            const detailId = `${optionId}-detail`
+            const reasonId = blockedReason ? `${optionId}-reason` : ''
             return (
               <button
                 type="button"
-                className="combat-hud-option"
+                className={blockedReason ? 'combat-hud-option is-unavailable' : 'combat-hud-option'}
                 key={`${action.id}:${target?.id ?? 'none'}`}
                 disabled={blocked}
                 onClick={() => submit(action, target)}
+                aria-label={target ? `${action.label}, target ${target.name}` : action.label}
+                aria-describedby={[descriptionId, detailId, reasonId].filter(Boolean).join(' ')}
+                title={blockedReason || undefined}
               >
-                <strong>{action.label}</strong>
-                {' '}
-                <small>{detail}</small>
+                <strong>
+                  {action.label}
+                  {target ? <span className="combat-hud-target"> · {target.name}</span> : null}
+                </strong>
+                {action.description ? (
+                  <span id={descriptionId} className="combat-hud-option-description">
+                    {action.description}
+                  </span>
+                ) : null}
+                <small id={detailId}>{detail}</small>
+                {blockedReason ? (
+                  <small id={reasonId} className="combat-hud-option-reason">
+                    Unavailable: {blockedReason}
+                  </small>
+                ) : null}
               </button>
             )
           })

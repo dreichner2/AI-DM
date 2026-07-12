@@ -138,6 +138,8 @@ def build_evidence(
         failures.append('source archive contains forbidden paths')
     if archive_result.get('large_untracked'):
         failures.append('source archive contains large files not tracked by Git LFS')
+    if archive_result.get('unresolved_lfs_pointers'):
+        failures.append('source archive contains unresolved Git LFS pointer files')
 
     return {
         'generated_at': generated_at,
@@ -164,6 +166,7 @@ def render_markdown(evidence: dict[str, Any]) -> str:
     archive = evidence.get('source_archive') or {}
     archive_policy = evidence.get('archive_policy') or {}
     large_members = archive.get('large_members') or []
+    unresolved_lfs_pointers = archive.get('unresolved_lfs_pointers') or []
     failure_rows = ['| Failure |', '| --- |']
     for failure in evidence.get('failures') or []:
         failure_rows.append(f'| {failure} |')
@@ -195,6 +198,15 @@ def render_markdown(evidence: dict[str, Any]) -> str:
     if len(large_rows) == 2:
         large_rows.append('| None | 0 | n/a |')
 
+    pointer_rows = ['| Path | OID | Expected bytes | LFS tracked |', '| --- | --- | ---: | --- |']
+    for pointer in unresolved_lfs_pointers:
+        pointer_rows.append(
+            f"| `{pointer.get('path')}` | `{pointer.get('oid')}` | "
+            f"{pointer.get('expected_bytes') or 0} | {pointer.get('lfs_tracked')} |"
+        )
+    if len(pointer_rows) == 2:
+        pointer_rows.append('| None | n/a | 0 | n/a |')
+
     return '\n'.join(
         [
             '# Packaging Cleanup Evidence',
@@ -208,6 +220,7 @@ def render_markdown(evidence: dict[str, Any]) -> str:
             f"- Source archive forbidden paths: {len(archive.get('forbidden') or [])}",
             f"- Source archive large files: {archive.get('large_member_count') or 0}",
             f"- Source archive large files not LFS-tracked: {len(archive.get('large_untracked') or [])}",
+            f"- Source archive unresolved Git LFS pointers: {len(unresolved_lfs_pointers)}",
             '',
             '## make clean Coverage',
             '',
@@ -227,6 +240,10 @@ def render_markdown(evidence: dict[str, Any]) -> str:
             f"- Git LFS patterns: `{', '.join(archive.get('lfs_patterns') or []) or 'none'}`",
             '',
             *large_rows,
+            '',
+            '## Unresolved Git LFS Pointers',
+            '',
+            *pointer_rows,
             '',
             '## Failures',
             '',

@@ -223,6 +223,16 @@ Supported actions:
 
 Manual checkpoint controls record append-only `campaign_pack.progress.changed` events in both `TurnEvent` and `campaign_pack_progress_events`. Pass `expectedRevision` or `expected_revision` on POST requests to reject stale manual controls.
 
+Progress mutations serialize through the per-session turn coordinator. Shared
+groups acquire every active member lease in deterministic order, discard clean
+pre-wait discovery identities, and revalidate membership from fresh rows after
+the leases are held. A membership change retries before mutation, and the full
+lock set remains held through commit or rollback so a waiting state mutation or
+canon projection cannot replace a foreground snapshot commit. The frontend
+exposes advance, skip, fail, rewind, and override controls only to actors with
+operator capability; the server remains authoritative for authorization and
+revision checks.
+
 If a pack declares `multiSessionGroupKey`, progress changes propagate to other active sessions that imported the same pack ID with the same group key. This is intended for parallel-party or shared-world campaigns; omit the key for independent runs.
 
 ## Branching Semantics
@@ -271,6 +281,14 @@ Pack-authored records are materialized from `campaignPack.catalog`; non-pack add
 Operator/DM views can see the full catalog, `gmNotes`, `hiddenSceneNotes`, future checkpoints, and progress-event audit data. Player-facing session state and progress payloads filter hidden catalog records, future checkpoint details, alternate routes, director rules, hidden notes, and the raw `stateChangeLedger`.
 
 Use `playerTitle`, `playerSummary`, `visibleToPlayers`, `knownToPlayers`, and `hiddenToPlayers` to control what filtered progress payloads may reveal.
+
+`hiddenToPlayers` and equivalent DM-only metadata are fail-closed. A hidden
+checkpoint does not reveal its authored title, summary, or ID merely because it
+becomes active, completed, skipped, or failed. Player active/completed/skipped/
+failed ID lists and flags are filtered through the same projection. To expose a
+safe player-facing milestone while keeping the authored checkpoint hidden,
+provide `playerTitle` or `playerSummary`; only that alias and current status are
+projected.
 
 ## Off-Track Support
 

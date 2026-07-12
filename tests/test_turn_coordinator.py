@@ -16,6 +16,7 @@ from aidm_server.turn_coordinator import (
     ConfiguredSessionTurnCoordinator,
     DatabaseSessionTurnCoordinator,
     SessionTurnCoordinator,
+    SessionTurnTargetMissingError,
     TurnLeaseLostError,
 )
 from tests.helpers import seed_world_campaign_player_session
@@ -154,6 +155,16 @@ def test_database_session_turn_coordinator_reclaims_expired_lock(app):
             lock = db.session.get(SessionTurnLock, session_id)
             assert lock is not None
             assert lock.owner_token != 'stale-owner'
+
+
+def test_database_session_turn_coordinator_fails_fast_when_session_was_deleted(app):
+    coordinator = DatabaseSessionTurnCoordinator(poll_interval_seconds=0.01)
+
+    with app.app_context(), pytest.raises(SessionTurnTargetMissingError) as exc_info:
+        with coordinator.serialized(999_999):
+            raise AssertionError('A missing session must not acquire a database lease.')
+
+    assert exc_info.value.session_id == 999_999
 
 
 def test_database_session_turn_coordinator_advances_fencing_token_on_each_acquisition(app):

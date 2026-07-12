@@ -749,9 +749,9 @@ def _target_status(packet: dict[str, Any], key: str) -> tuple[str, str]:
     artifact = packet.get(key) or {}
     status = str(artifact.get('status') or 'missing')
     target_url = str(artifact.get('target_url') or '')
+    if status in {'failed', 'invalid', 'invalid-evidence'}:
+        return 'failed', f"{_artifact_path(packet, key) or key} status is {status}"
     if status == 'passed' and target_url and target_url not in {'not checked', 'isolated local runtime'}:
-        return 'passed', f"{_artifact_path(packet, key)} against {target_url}"
-    if status in {'present', 'passed'} and target_url and target_url not in {'not checked', 'isolated local runtime'}:
         return 'passed', f"{_artifact_path(packet, key)} against {target_url}"
     return 'external-required', f"{_artifact_path(packet, key) or key} needs hosted/staging target evidence"
 
@@ -1271,11 +1271,16 @@ def classify_item(item: ChecklistItem, packet: dict[str, Any]) -> ChecklistStatu
             return _with_item(item, _status('passed', f"{_artifact_path(packet, 'export_import')} passed", ''))
 
     if 'beta slo baseline' in lowered or 'target-environment metrics' in lowered:
+        status, evidence = _target_status(packet, 'beta_slo_baseline')
+        if status != 'passed':
+            return _with_item(
+                item,
+                _status(status, evidence, 'render a semantically complete beta SLO baseline from the hosted/staging target'),
+            )
         hosted_status = _hosted_rc_check_status(packet, 'Hosted beta SLO baseline')
         if hosted_status is not None:
             return _with_item(item, hosted_status)
-        status, evidence = _target_status(packet, 'beta_slo_baseline')
-        return _with_item(item, _status(status, evidence, '' if status == 'passed' else 'render beta SLO baseline from hosted/staging target'))
+        return _with_item(item, _status(status, evidence, ''))
 
     if 'source archive' in lowered or 'release archive' in lowered:
         source_status = _artifact_status(packet, 'source_archive')

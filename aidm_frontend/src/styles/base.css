@@ -180,7 +180,6 @@ select:focus-visible {
   }
 }
 
-.safe-mode-banner,
 .beta-runtime-notices {
   grid-column: 1 / -1;
   display: flex;
@@ -199,8 +198,6 @@ select:focus-visible {
   scrollbar-width: thin;
 }
 
-.safe-mode-banner strong,
-.safe-mode-banner span,
 .beta-runtime-notice strong,
 .beta-runtime-notice span {
   min-width: 0;
@@ -209,14 +206,12 @@ select:focus-visible {
   white-space: nowrap;
 }
 
-.safe-mode-banner strong,
 .beta-runtime-notice strong {
   flex: 0 0 auto;
   color: #ffe9a8;
   font-weight: 660;
 }
 
-.safe-mode-banner span,
 .beta-runtime-notice span {
   color: #d8c38a;
 }

@@ -17,14 +17,20 @@ from aidm_server.models import (
     Session,
     SessionLogEntry,
     SessionState,
+    SessionStateMutationAudit,
+    SessionTurnLock,
     StoryEntity,
     StoryFact,
     StoryThread,
     TurnEvent,
     TurnCanonUpdate,
     World,
+    safe_json_dumps,
+    safe_json_loads,
 )
 from aidm_server.services.campaign_pack_progress import PROGRESS_CHANGED_EVENT
+from aidm_server.services.session_recovery import activate_turn_recovery_gate
+from aidm_server.turn_coordinator import session_turn_coordinator
 from aidm_server.turn_events import (
     DM_RESPONSE_EVENT,
     PLAYER_MESSAGE_EVENT,
@@ -57,6 +63,279 @@ def _pool_checkout_probe(engine):
     event.listen(engine, 'checkout', checkout)
     event.listen(engine, 'checkin', checkin)
     return snapshot, checkout, checkin
+
+
+def _seed_failed_turn_recovery(app, ids: dict, *, message: str = 'The ward fractures.') -> int:
+    with app.app_context():
+        turn = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='I break the ward.',
+            dm_output=message,
+            status='failed',
+            metadata_json=safe_json_dumps(
+                {
+                    'post_dm_state': {
+                        'status': 'failed',
+                        'narration_saved': True,
+                        'mechanics_status': 'none',
+                        'mechanics_applied': False,
+                        'pre_dm_mechanics_applied': False,
+                        'pre_dm_applied_change_count': 0,
+                        'post_dm_mechanics_applied': False,
+                        'recovery_required': True,
+                    },
+                    'canon_status': 'blocked_state_failure',
+                },
+                {},
+            ),
+        )
+        db.session.add(turn)
+        db.session.commit()
+        turn_id = turn.turn_id
+        activate_turn_recovery_gate(session_id=ids['session_id'], turn_id=turn_id)
+        return turn_id
+
+
+def test_dm_can_resolve_failed_turn_recovery_once_with_durable_audits(client, app, socketio):
+    ids = seed_world_campaign_player_session(app)
+    turn_id = _seed_failed_turn_recovery(app, ids)
+    path = f"/api/sessions/{ids['session_id']}/recovery/resolve"
+    request_payload = {
+        'turn_id': turn_id,
+        'resolution': 'state_corrected',
+        'operator_note': 'Corrected the chamber trigger and verified party inventory.',
+    }
+    room_clients = [
+        socketio.test_client(app, flask_test_client=app.test_client())
+        for _index in range(2)
+    ]
+    for room_client in room_clients:
+        room_client.emit(
+            'join_session',
+            {'session_id': ids['session_id'], 'player_id': ids['player_id']},
+        )
+        room_client.get_received()
+    for room_client in room_clients:
+        room_client.get_received()
+
+    before = client.get(f"/api/sessions/{ids['session_id']}/state")
+    assert before.status_code == 200
+    gate = before.get_json()['state_snapshot']['turnRecoveryGate']
+    assert gate['turnId'] == turn_id
+    assert 'operator_note' not in json.dumps(gate)
+
+    mismatch = client.post(path, json={**request_payload, 'turn_id': turn_id + 1})
+    assert mismatch.status_code == 409
+    assert mismatch.get_json()['error_code'] == 'recovery_turn_mismatch'
+    assert all(room_client.get_received() == [] for room_client in room_clients)
+
+    resolved = client.post(path, json=request_payload)
+    assert resolved.status_code == 200
+    resolved_payload = resolved.get_json()
+    assert resolved_payload == {
+        'resolved': True,
+        'idempotent_replay': False,
+        'session_id': ids['session_id'],
+        'turn_id': turn_id,
+        'resolution': 'state_corrected',
+        'state_revision': 2,
+    }
+    expected_room_payload = {
+        'session_id': ids['session_id'],
+        'turn_id': turn_id,
+        'state_revision': 2,
+        'recovery_required': False,
+    }
+    for room_client in room_clients:
+        recovery_events = [
+            event
+            for event in room_client.get_received()
+            if event['name'] == 'session_recovery_resolved'
+        ]
+        assert len(recovery_events) == 1
+        assert recovery_events[0]['args'][0] == expected_room_payload
+        assert request_payload['operator_note'] not in json.dumps(recovery_events)
+
+    replay = client.post(
+        path,
+        json={
+            **request_payload,
+            'operator_note': f"  {request_payload['operator_note']}  ",
+        },
+    )
+    assert replay.status_code == 200
+    assert replay.get_json()['idempotent_replay'] is True
+    assert all(room_client.get_received() == [] for room_client in room_clients)
+    note_conflict = client.post(
+        path,
+        json={
+            **request_payload,
+            'operator_note': 'Corrected the chamber trigger but did not verify inventory.',
+        },
+    )
+    assert note_conflict.status_code == 409
+    assert note_conflict.get_json()['error_code'] == 'session_recovery_already_resolved'
+    conflict = client.post(
+        path,
+        json={**request_payload, 'resolution': 'no_mechanical_change_required'},
+    )
+    assert conflict.status_code == 409
+    assert conflict.get_json()['error_code'] == 'session_recovery_already_resolved'
+
+    with app.app_context():
+        session_obj = db.session.get(Session, ids['session_id'])
+        snapshot = safe_json_loads(session_obj.state_snapshot, {})
+        assert 'turnRecoveryGate' not in snapshot
+        turn = db.session.get(DmTurn, turn_id)
+        assert turn.status == 'failed'
+        post_dm_state = safe_json_loads(turn.metadata_json, {})['post_dm_state']
+        assert post_dm_state['recovery_required'] is False
+        assert post_dm_state['mechanics_status'] == 'none'
+        assert post_dm_state['pre_dm_mechanics_applied'] is False
+        assert post_dm_state['pre_dm_applied_change_count'] == 0
+        assert post_dm_state['post_dm_mechanics_applied'] is False
+        assert post_dm_state['recovery_resolution']['resolution'] == 'state_corrected'
+        assert post_dm_state['recovery_resolution']['operator_note_recorded'] is True
+        assert len(
+            post_dm_state['recovery_resolution']['operator_note_fingerprint']
+        ) == 64
+        assert len(
+            post_dm_state['recovery_resolution'][
+                'operator_note_fingerprint_salt'
+            ]
+        ) == 32
+        assert post_dm_state['recovery_resolution']['mechanics_status'] == 'none'
+        assert post_dm_state['recovery_resolution']['pre_dm_applied_change_count'] == 0
+        assert request_payload['operator_note'] not in turn.metadata_json
+
+        state_audits = (
+            SessionStateMutationAudit.query.filter_by(session_id=ids['session_id'])
+            .order_by(SessionStateMutationAudit.mutation_audit_id.asc())
+            .all()
+        )
+        assert [audit.source for audit in state_audits] == [
+            'system.turn_recovery.activate',
+            'operator.session_recovery.resolve',
+        ]
+        resolution_audit = state_audits[-1]
+        assert json.loads(resolution_audit.metadata_json)['operator_note'] == request_payload['operator_note']
+
+        operator_audits = OperatorActionAudit.query.filter_by(
+            session_id=ids['session_id'],
+            action='session.turn_recovery_resolved',
+        ).all()
+        assert len(operator_audits) == 1
+        operator_details = json.loads(operator_audits[0].details_json)
+        assert operator_details['operator_note'] == request_payload['operator_note']
+        assert operator_details['mechanics_status'] == 'none'
+        assert operator_details['pre_dm_applied_change_count'] == 0
+
+
+def test_dm_can_resolve_failed_turn_when_snapshot_gate_is_missing(client, app):
+    ids = seed_world_campaign_player_session(app)
+    turn_id = _seed_failed_turn_recovery(app, ids)
+    with app.app_context():
+        session_obj = db.session.get(Session, ids['session_id'])
+        snapshot = safe_json_loads(session_obj.state_snapshot, {})
+        snapshot.pop('turnRecoveryGate', None)
+        session_obj.state_snapshot = safe_json_dumps(snapshot, {})
+        db.session.commit()
+
+    response = client.post(
+        f"/api/sessions/{ids['session_id']}/recovery/resolve",
+        json={
+            'turn_id': turn_id,
+            'resolution': 'no_mechanical_change_required',
+            'operator_note': 'Verified that the saved narration requires no mechanical change.',
+        },
+    )
+    assert response.status_code == 200
+    assert response.get_json()['idempotent_replay'] is False
+    with app.app_context():
+        turn = db.session.get(DmTurn, turn_id)
+        post_dm_state = safe_json_loads(turn.metadata_json, {})['post_dm_state']
+        assert turn.status == 'failed'
+        assert post_dm_state['recovery_required'] is False
+        assert (
+            post_dm_state['recovery_resolution']['resolution']
+            == 'no_mechanical_change_required'
+        )
+        assert OperatorActionAudit.query.filter_by(
+            session_id=ids['session_id'],
+            action='session.turn_recovery_resolved',
+        ).count() == 1
+
+
+@pytest.mark.parametrize(
+    ('payload', 'message_fragment'),
+    [
+        ({'turn_id': 1, 'resolution': 'state_corrected'}, 'operator_note'),
+        (
+            {'turn_id': 1, 'resolution': 'state_corrected', 'operator_note': ' '},
+            'operator_note',
+        ),
+        (
+            {'turn_id': 1, 'resolution': 'retry_mechanics', 'operator_note': 'Reviewed.'},
+            'resolution',
+        ),
+        (
+            {'turn_id': 1, 'resolution': 'state_corrected', 'operator_note': 'x' * 1001},
+            'operator_note',
+        ),
+    ],
+)
+def test_turn_recovery_resolution_validates_operator_decision(client, app, payload, message_fragment):
+    ids = seed_world_campaign_player_session(app)
+    response = client.post(
+        f"/api/sessions/{ids['session_id']}/recovery/resolve",
+        json=payload,
+    )
+    assert response.status_code == 400
+    assert response.get_json()['error_code'] == 'validation_error'
+    assert message_fragment in response.get_json()['error']
+
+
+def test_concurrent_turn_recovery_resolution_is_idempotent(app):
+    ids = seed_world_campaign_player_session(app)
+    turn_id = _seed_failed_turn_recovery(app, ids)
+    barrier = threading.Barrier(2)
+    responses: list[tuple[int, dict]] = []
+    response_lock = threading.Lock()
+
+    def resolve() -> None:
+        local_client = app.test_client()
+        barrier.wait(timeout=5)
+        response = local_client.post(
+            f"/api/sessions/{ids['session_id']}/recovery/resolve",
+            json={
+                'turn_id': turn_id,
+                'resolution': 'no_mechanical_change_required',
+                'operator_note': 'Reviewed the narration; it contains no mechanical change.',
+            },
+        )
+        with response_lock:
+            responses.append((response.status_code, response.get_json()))
+
+    threads = [threading.Thread(target=resolve) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert [status for status, _payload in responses] == [200, 200]
+    assert sorted(payload['idempotent_replay'] for _status, payload in responses) == [False, True]
+    with app.app_context():
+        assert SessionStateMutationAudit.query.filter_by(
+            session_id=ids['session_id'],
+            source='operator.session_recovery.resolve',
+        ).count() == 1
+        assert OperatorActionAudit.query.filter_by(
+            session_id=ids['session_id'],
+            action='session.turn_recovery_resolved',
+        ).count() == 1
 
 
 def test_session_state_and_log_endpoints(client, app):
@@ -306,6 +585,28 @@ def test_start_session_reuses_client_session_id(client, app):
         assert created_count == 2
         created = Session.query.filter_by(client_session_id='session-start-1').one()
         assert created.session_id == first_response.get_json()['session_id']
+
+
+def test_start_session_and_idempotent_replay_reject_archived_campaign(client, app):
+    ids = seed_world_campaign_player_session(app)
+    replay_key = {'campaign_id': ids['campaign_id'], 'client_session_id': 'archived-replay'}
+    created = client.post('/api/sessions/start', json=replay_key)
+    assert created.status_code == 201
+
+    with app.app_context():
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        campaign.status = 'archived'
+        db.session.commit()
+
+    new_session = client.post('/api/sessions/start', json={'campaign_id': ids['campaign_id']})
+    replay = client.post('/api/sessions/start', json=replay_key)
+
+    assert new_session.status_code == 409
+    assert new_session.get_json()['error_code'] == 'campaign_archived'
+    assert replay.status_code == 409
+    assert replay.get_json()['error_code'] == 'campaign_archived'
+    with app.app_context():
+        assert Session.query.filter_by(campaign_id=ids['campaign_id']).count() == 2
 
 
 def test_session_client_session_id_is_unique_per_campaign(app):
@@ -918,6 +1219,69 @@ def test_delete_session_removes_session_owned_rows(client, app):
         assert SessionLogEntry.query.filter_by(session_id=ids['session_id']).count() == 0
         assert SessionState.query.filter_by(session_id=ids['session_id']).count() == 0
         assert TurnCanonUpdate.query.filter_by(turn_id=turn_id).count() == 0
+
+
+def test_session_archive_waits_for_inflight_turn_lock_and_refreshes_after_acquire(
+    app,
+    monkeypatch,
+):
+    ids = seed_world_campaign_player_session(app)
+    entered_lifecycle = threading.Event()
+    completed = threading.Event()
+    result = {}
+    original_commit_operation = sessions_blueprint.commit_session_lifecycle_operation
+
+    def tracked_commit_operation(*args, **kwargs):
+        entered_lifecycle.set()
+        return original_commit_operation(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sessions_blueprint,
+        'commit_session_lifecycle_operation',
+        tracked_commit_operation,
+    )
+
+    def archive_request():
+        response = app.test_client().post(f"/api/sessions/{ids['session_id']}/archive")
+        result['status_code'] = response.status_code
+        result['payload'] = response.get_json()
+        completed.set()
+
+    with app.app_context():
+        app.config['AIDM_TURN_COORDINATOR_STORE'] = 'memory'
+        with session_turn_coordinator.serialized(ids['session_id']):
+            thread = threading.Thread(target=archive_request)
+            thread.start()
+            assert entered_lifecycle.wait(timeout=1.0)
+            assert completed.wait(timeout=0.1) is False
+
+            session_obj = db.session.get(Session, ids['session_id'])
+            assert session_obj is not None
+            session_obj.name = 'Refreshed While Waiting'
+            db.session.commit()
+
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+
+    assert result['status_code'] == 200
+    assert result['payload']['session']['display_name'] == 'Refreshed While Waiting'
+    with app.app_context():
+        assert db.session.get(Session, ids['session_id']).status == 'archived'
+
+
+def test_database_coordinator_hard_delete_fences_then_cascades_turn_lock(client, app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        app.config['AIDM_TURN_COORDINATOR_STORE'] = 'database'
+        app.config['AIDM_TURN_COORDINATOR_LOCK_TTL_SECONDS'] = 30
+        app.config['AIDM_TURN_COORDINATOR_POLL_INTERVAL_MS'] = 10
+
+    response = client.delete(f"/api/sessions/{ids['session_id']}?hard=true")
+
+    assert response.status_code == 200
+    with app.app_context():
+        assert db.session.get(Session, ids['session_id']) is None
+        assert db.session.get(SessionTurnLock, ids['session_id']) is None
 
 
 def test_hard_delete_session_removes_session_origin_canon(client, app):

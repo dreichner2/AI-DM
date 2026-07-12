@@ -10,6 +10,8 @@
    `docs/socketio_worker_model.md`.
 3. Install dependencies: `python3.14 -m venv .venv && .venv/bin/python -m pip install -c requirements.constraints.txt --upgrade pip && .venv/bin/python -m pip install --require-hashes -r requirements-dev.lock.txt` for local development, or use `requirements.runtime.lock.txt` for a minimal runtime without pytest/admin UI tooling. The lockfiles pin and hash every transitive package; runtime dependencies include the migration CLI and PostgreSQL driver.
 4. Apply migrations: `make db-upgrade` (or run the bootstrap command below).
+   The current repository head is `0031_authored_map_visibility`; do not treat
+   backup/restore evidence captured at an earlier head as current release proof.
 5. Bootstrap check/start command:
    - Check only: `.venv/bin/python scripts/deploy_bootstrap.py --check-only`
    - Local/private start after checks: `.venv/bin/python scripts/deploy_bootstrap.py`
@@ -23,7 +25,7 @@
 9. Run `make socketio-worker-model-decision` to verify the hosted RC1
    worker-model decision, production env template, production server command,
    and docs agree.
-10. For a release-candidate rehearsal, run `make closed-beta-rc`. For local iteration without browser/dependency gates, run `make closed-beta-rc-fast`. To save gate evidence for an issue or release note, run the checker directly with `--evidence-report` or a specific path such as `tmp/release/rc-evidence.md`. The manual GitHub Actions `Closed Beta RC` workflow uploads the `closed-beta-rc-evidence` artifact with the RC report, issue snippets, release evidence packet, source archive, security/export-import evidence, visual-smoke screenshots/review evidence, and GitHub Actions run URL evidence when available. Before dispatching the manual workflow, run `make github-actions-rc-plan`; after the signed-off candidate is clean, use `GITHUB_ACTIONS_RC_PLAN_ARGS="--dispatch-closed-beta-rc"` to dispatch from the same helper. The `make rc-handoff-artifacts` target refreshes GitHub Actions evidence with read-only `gh` discovery; after CI or the manual RC workflow changes, rerun `make github-actions-evidence GITHUB_ACTIONS_EVIDENCE_ARGS="--auto-gh --include-gh-details --verify-closed-beta-rc-artifact-contents"` directly or pass the run URLs manually. Use `docs/rc_issue_evidence_template.md` when closing gate issues.
+10. For a release-candidate rehearsal, run `make closed-beta-rc`. For local iteration without browser/dependency gates, run `make closed-beta-rc-fast`. To save gate evidence for an issue or release note, run the checker directly with `--evidence-report` or a specific path such as `tmp/release/rc-evidence.md`. The manual GitHub Actions `Closed Beta RC` workflow checks out Git LFS objects and uploads the `closed-beta-rc-evidence` artifact with the RC report, issue snippets, release evidence packet, source archive, security/export-import evidence, visual-smoke screenshots/review evidence, and GitHub Actions run URL evidence when available. Archive inspection fails if any Git LFS pointer text remains in place of its object; re-fetch the LFS object and regenerate the archive rather than waiving that failure. Before dispatching the manual workflow, run `make github-actions-rc-plan`; after the signed-off candidate is clean, use `GITHUB_ACTIONS_RC_PLAN_ARGS="--dispatch-closed-beta-rc"` to dispatch from the same helper. The `make rc-handoff-artifacts` target refreshes GitHub Actions evidence with read-only `gh` discovery; after CI or the manual RC workflow changes, rerun `make github-actions-evidence GITHUB_ACTIONS_EVIDENCE_ARGS="--auto-gh --include-gh-details --verify-closed-beta-rc-artifact-contents"` directly or pass the run URLs manually. Use `docs/rc_issue_evidence_template.md` when closing gate issues.
    For hosted/staging sign-off, run `make hosted-rc-evidence` with
    `HOSTED_RC_EVIDENCE_ARGS` set for the target URL, env file, operator token,
    workspace/session/player IDs, and non-admin token. The report at
@@ -129,8 +131,13 @@ disabled. Unexpected tool events or malformed structured output fail closed.
 9. Render local-only SLO evidence with `make local-beta-slo-baseline`, then
    render hosted target SLO evidence with `make beta-slo-baseline
    BETA_SLO_BASELINE_ARGS="--target-url <target-url> --auth-token <token>
-   --workspace-id <workspace-id> --release RC1 --environment staging"` before
-   inviting more testers.
+   --workspace-id <workspace-id> --release RC1 --commit-sha
+   <signed-off-commit-sha> --environment staging --invite-more-testers
+   <yes-or-no>"` before inviting more testers. Hosted SLO proof passes only
+   with an HTTP(S) target, the current RC commit, RC-relative freshness, a
+   positive DM response sample count, at least one positive real provider/model
+   row, and `Invite more testers` explicitly set to `yes`. A stale, zero-sample,
+   or undecided report remains incomplete; an explicit `no` fails.
 10. Share `docs/beta_tester_onboarding.md` with invited testers after target
    deployment readiness passes.
 
@@ -146,8 +153,29 @@ disabled. Unexpected tool events or malformed structured output fail closed.
 4. The per-session coordinator remains locked while post-turn processing first persists `dm_output` and the `dm_response` timeline event, then emits `saved` with `stage=dm_response`. It continues through immediate validated state changes and durable canon-job enqueue, emits a second `saved` with `stage=post_turn`, and finally emits `session_log_update` after returning from post-turn persistence.
 5. Outside tests, canon extraction/validation/application and projection refresh run through one bounded, wakeable worker over the durable canon queue. Foreground narration receives provider priority, while the canon worker releases database connections during provider waits and revalidates each attempt before apply. Watch `canon_pending`, `canon_applied`, or `failed` independently of the already-saved narration, plus the `aidm_canon_job_queue_depth` and `aidm_canon_job_oldest_queued_age_seconds` Prometheus gauges for sustained starvation. Tests process jobs inline for deterministic assertions. A canon failure should not erase a saved visible DM response.
 6. Watch `turn_status` events for `received`, `narrating`, `response_complete`, `saving`, `saved`, `canon_pending`, `canon_applied`, and `failed`. `canon_applied` can also carry immediate state-application details before the background canon extraction completes, so inspect its detail payload and the canon-job status during incident review.
-7. Treat `turn_events` as the turn transcript audit trail. `dm_turns`, `session_log_entries`, `PlayerAction`, and `SessionState` are projections or convenience tables that should agree with the event spine. Use `/api/beta/audits` as a workspace admin when investigating manual/operator changes; it includes recent session-state mutation diffs and bestiary/operator authoring actions.
-8. If a future change rewrites projection logic, verify both the event rows and the projected session log/state before assuming the UI is wrong.
+7. If `turn_state_apply_failed` arrives, narration is saved but the post-DM
+   mechanics phase failed. Check `mechanics_status` before correcting state:
+   `none` means no pre-DM mechanic committed, while `partial` means the reported
+   number of authoritative pre-DM changes already committed and must not be
+   replayed. Inspect the failed turn's privileged `state_pipeline` metadata and
+   audits for exact applied-change evidence, correct only the missing or wrong
+   remainder through an operator control, then call
+   `POST /api/sessions/<session_id>/recovery/resolve` with the matching
+   `turn_id`, an explicit `state_corrected` or
+   `no_mechanical_change_required` resolution, and a nonempty operator note.
+   Until that succeeds, new player turns fail with
+   `session_recovery_required`; joining and read paths remain available. The
+   failed turn row enforces that pause even if the redundant
+   `turnRecoveryGate` snapshot write failed, and the resolve endpoint can use
+   the matching failed row directly. Structured turn advance and canon enqueue are
+   blocked for the failed turn, which remains failed after recovery for audit.
+   An idempotent retry must repeat the same normalized operator note as well as
+   the same turn and resolution; changed note text returns 409.
+   The successful resolve broadcasts `session_recovery_resolved`; each client
+   should reload session state at the advertised revision before re-enabling
+   the composer.
+8. Treat `turn_events` as the turn transcript audit trail. `dm_turns`, `session_log_entries`, `PlayerAction`, and `SessionState` are projections or convenience tables that should agree with the event spine. Use `/api/beta/audits` as a workspace admin when investigating manual/operator changes; it includes recent session-state mutation diffs and bestiary/operator authoring actions.
+9. If a future change rewrites projection logic, verify both the event rows and the projected session log/state before assuming the UI is wrong.
 
 The per-session turn coordinator defaults to an in-memory store for local single-process play. Hosted production uses the database store and migrations through `0028_session_turn_lock_fencing`, which gives every lease owner a persistent monotonic fencing token and rejects commits after ownership changes. Tune `AIDM_TURN_COORDINATOR_LOCK_TTL_SECONDS` high enough for the longest expected provider turn, and keep `AIDM_TURN_COORDINATOR_POLL_INTERVAL_MS` low enough that queued players are not left waiting after a lock releases. Multi-worker Socket.IO remains deferred because presence and music are process-local; future support also requires both load-balancer affinity and a shared Socket.IO message queue.
 
@@ -176,6 +204,10 @@ The per-session turn coordinator defaults to an in-memory store for local single
     `turn_duplicate`. Do not submit a new key while persistence is uncertain;
     use the visible safe-retry action, which resends the original payload, then
     verify the reloaded session snapshot.
+12. `session_archived`, `session_deleted`, `campaign_archived`, or
+    `campaign_deleted`: stop the client retry loop. An authorized operator must
+    restore the lifecycle target before room join, turn submission,
+    clarification resolution, or turn-control updates can resume.
 
 ## Safe Flags for Closed Beta
 - `AIDM_AUTH_REQUIRED=true`

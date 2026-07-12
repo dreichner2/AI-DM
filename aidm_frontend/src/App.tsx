@@ -36,6 +36,7 @@ import type {
   SessionArchiveDialogState,
 } from './ArchiveDialogs'
 import { StatusDot, ThinIcon } from './AppChrome'
+import { BetaRuntimeNotesPanel } from './BetaRuntimeNotesPanel'
 import { CampaignRail, type CampaignCard, type SessionCard } from './CampaignRail'
 import type { CampaignPackControlAction } from './CampaignPackPanel'
 import {
@@ -63,7 +64,7 @@ import {
   abilityOptionsFromStatBlock,
   buildMapMeta,
   buildTimeline,
-  canonFactsFromMemorySnippets,
+  recentMemoryFromSnippets,
   formatCompactNumber,
   inventoryCapacity,
   inventoryGoldLabel as buildInventoryGoldLabel,
@@ -93,6 +94,11 @@ import type { SceneDisplayState } from './sceneState'
 import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
 import { TitleScreen } from './TitleScreen'
 import { turnControlFromSnapshot, turnControlWithActiveName } from './turnControl'
+import {
+  turnRecoveryGateFromSnapshot,
+  type TurnRecoveryResolution,
+  type TurnRecoveryResponse,
+} from './turnRecovery'
 import './App.css'
 import type {
   AccountWorkspace,
@@ -162,21 +168,20 @@ const PlayerEditDialog = lazy(() =>
   import('./PlayerEditDialog').then((module) => ({ default: module.PlayerEditDialog })),
 )
 const CreateCampaignDialog = lazy(() =>
-  import('./CreateCampaignDialog').then((module) => ({ default: module.CreateCampaignDialog })),
+  import('./OperatorTools').then((module) => ({ default: module.CreateCampaignDialog })),
 )
 const CampaignPackImportDialog = lazy(() =>
-  import('./CampaignPackImportDialog').then((module) => ({ default: module.CampaignPackImportDialog })),
+  import('./OperatorTools').then((module) => ({ default: module.CampaignPackImportDialog })),
 )
 const CampaignChooserDialog = lazy(() =>
   import('./CampaignChooserDialog').then((module) => ({ default: module.CampaignChooserDialog })),
 )
 const CampaignArchiveDialog = lazy(() =>
-  import('./ArchiveDialogs').then((module) => ({ default: module.CampaignArchiveDialog })),
+  import('./OperatorTools').then((module) => ({ default: module.CampaignArchiveDialog })),
 )
 const SessionArchiveDialog = lazy(() =>
-  import('./ArchiveDialogs').then((module) => ({ default: module.SessionArchiveDialog })),
+  import('./OperatorTools').then((module) => ({ default: module.SessionArchiveDialog })),
 )
-const BetaRuntimeNotesPanel = lazy(() => import('./BetaRuntimeNotesPanel'))
 function preloadDiceRollDialog() {
   if (import.meta.env.MODE === 'test') return
   void loadDiceRollDialog()
@@ -619,6 +624,9 @@ function AIDMApp() {
   const [directorCommentary, setDirectorCommentary] = useState<CampaignPackCommentaryResponse | null>(null)
   const [socketReconnectKey, setSocketReconnectKey] = useState(0)
   const [equipmentPendingItemKey, setEquipmentPendingItemKey] = useState<string | null>(null)
+  const [turnRecoveryPending, setTurnRecoveryPending] = useState(false)
+  const [turnRecoveryError, setTurnRecoveryError] = useState('')
+  const [turnRecoverySuccess, setTurnRecoverySuccess] = useState('')
   const resetRuntimeState = useCallback(() => {
     setHealth(null)
     setActorCapabilities(null)
@@ -926,17 +934,34 @@ function AIDMApp() {
       selectedPlayerByCampaignRef.current[selectedCampaignId] = selectedPlayerId
     }
   }, [players, selectedCampaignId, selectedPlayer, selectedPlayerId, setSelectedPlayerId])
-  const statBlock = normalizeStats(
-    playerDetail?.stats,
-    playerDetail?.character_sheet,
-    selectedPlayerLevel,
-    playerDetail?.derived,
+  const statBlock = useMemo(
+    () => normalizeStats(
+      playerDetail?.stats,
+      playerDetail?.character_sheet,
+      selectedPlayerLevel,
+      playerDetail?.derived,
+    ),
+    [
+      playerDetail?.character_sheet,
+      playerDetail?.derived,
+      playerDetail?.stats,
+      selectedPlayerLevel,
+    ],
   )
-  const inventoryRows = normalizeInventory(playerDetail?.inventory)
-  const spellbook = normalizeSpellbook(playerDetail?.stats, playerDetail?.character_sheet)
-  const characterTraits = normalizeCharacterTraits(playerDetail?.race_selection, playerDetail?.character_sheet)
-  const abilityOptions = abilityOptionsFromStatBlock(statBlock)
-  const itemOptions = itemOptionsFromInventory(inventoryRows)
+  const inventoryRows = useMemo(
+    () => normalizeInventory(playerDetail?.inventory),
+    [playerDetail?.inventory],
+  )
+  const spellbook = useMemo(
+    () => normalizeSpellbook(playerDetail?.stats, playerDetail?.character_sheet),
+    [playerDetail?.character_sheet, playerDetail?.stats],
+  )
+  const characterTraits = useMemo(
+    () => normalizeCharacterTraits(playerDetail?.race_selection, playerDetail?.character_sheet),
+    [playerDetail?.character_sheet, playerDetail?.race_selection],
+  )
+  const abilityOptions = useMemo(() => abilityOptionsFromStatBlock(statBlock), [statBlock])
+  const itemOptions = useMemo(() => itemOptionsFromInventory(inventoryRows), [inventoryRows])
   const campaignWorldId = campaign?.world_id ?? campaigns[0]?.world_id ?? null
   const worldSelectOptions = useMemo(() => {
     const options = new Map<number, World>()
@@ -1144,6 +1169,7 @@ function AIDMApp() {
     composerMode,
     diceRoll,
     handleConnectionInterrupted,
+    handleRollRequired,
     handleRollResolved,
     handleTurnDuplicate,
     interactionTargets,
@@ -1164,6 +1190,7 @@ function AIDMApp() {
     itemCostGold,
     queuedActionText,
     queuedActionRetryable,
+    preparePendingRoll,
     retryDiceRoll,
     sharedRollNotice,
     setActionText,
@@ -2788,6 +2815,7 @@ function AIDMApp() {
     lastSpokenTurnIdRef,
     lastSpokenTextRef,
     onConnectionInterrupted: handleConnectionInterrupted,
+    onRollRequired: handleRollRequired,
     onRollResolved: handleRollResolved,
     onTurnDuplicate: handleTurnDuplicate,
   })
@@ -2866,6 +2894,96 @@ function AIDMApp() {
   const activeSessionSnapshot = isRecord(sessionState?.state_snapshot)
     ? sessionState.state_snapshot
     : snapshotRecord(activeSession)
+  const turnRecoveryGate = useMemo(
+    () => turnRecoveryGateFromSnapshot(activeSessionSnapshot),
+    [activeSessionSnapshot],
+  )
+  const turnRecoveryTurnId = turnRecoveryGate?.turnId ?? null
+
+  useEffect(() => {
+    setTurnRecoveryPending(false)
+    setTurnRecoveryError('')
+    setTurnRecoverySuccess('')
+  }, [activeSessionId])
+
+  useEffect(() => {
+    if (turnRecoveryTurnId === null) return
+    setTurnRecoveryError('')
+    setTurnRecoverySuccess('')
+  }, [turnRecoveryTurnId])
+
+  const resolveTurnRecovery = useCallback(
+    async (resolution: TurnRecoveryResolution, operatorNote: string) => {
+      const note = operatorNote.trim()
+      if (!activeSessionId || !turnRecoveryGate || !canUseOperatorTools) return
+      if (!note || note.length > 1000) {
+        setTurnRecoveryError('Enter an operator note between 1 and 1000 characters.')
+        return
+      }
+
+      setTurnRecoveryPending(true)
+      setTurnRecoveryError('')
+      setTurnRecoverySuccess('')
+      try {
+        const response = await apiFetch<TurnRecoveryResponse>(
+          baseUrl,
+          `/api/sessions/${activeSessionId}/recovery/resolve`,
+          auth,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              turn_id: turnRecoveryGate.turnId,
+              resolution,
+              operator_note: note,
+            }),
+          },
+        )
+        if (
+          response.resolved !== true ||
+          response.session_id !== activeSessionId ||
+          response.turn_id !== turnRecoveryGate.turnId ||
+          response.resolution !== resolution
+        ) {
+          throw new Error('Recovery response did not match the requested session and turn.')
+        }
+        await loadSessionData(activeSessionId)
+        setTurnRecoverySuccess(
+          response.idempotent_replay
+            ? 'Recovery was already resolved. Session state is refreshed.'
+            : 'Recovery resolved. Session state is refreshed and play can resume.',
+        )
+      } catch (error) {
+        if (isUnauthorizedError(error)) {
+          openAuthTokenPrompt()
+          clearAuthTokenErrors()
+        }
+        let refreshDetail: string
+        try {
+          await loadSessionData(activeSessionId)
+          refreshDetail = 'Authoritative session state was refreshed; the recovery request was not retried.'
+        } catch (refreshError) {
+          refreshDetail = `Session refresh also failed: ${
+            refreshError instanceof Error ? refreshError.message : String(refreshError)
+          }`
+        }
+        setTurnRecoveryError(
+          `Recovery failed: ${error instanceof Error ? error.message : String(error)} ${refreshDetail}`,
+        )
+      } finally {
+        setTurnRecoveryPending(false)
+      }
+    },
+    [
+      activeSessionId,
+      auth,
+      baseUrl,
+      canUseOperatorTools,
+      clearAuthTokenErrors,
+      loadSessionData,
+      openAuthTokenPrompt,
+      turnRecoveryGate,
+    ],
+  )
   const contentSettings = useMemo(
     () => contentSettingsFromSnapshot(activeSessionSnapshot),
     [activeSessionSnapshot],
@@ -2886,8 +3004,8 @@ function AIDMApp() {
     setSessionState,
   })
   const worldStatePanel = worldStateFromSnapshot(activeSessionSnapshot)
-  const canonFacts = canonFactsFromMemorySnippets(memorySnippets, selectedSessionId)
-  const visibleCanonFacts = inspectorTab === 'canon' ? canonFacts : canonFacts.slice(0, 3)
+  const recentMemory = recentMemoryFromSnippets(memorySnippets, selectedSessionId)
+  const visibleRecentMemory = inspectorTab === 'canon' ? recentMemory : recentMemory.slice(0, 3)
   const selectedSegment =
     segments.find((segment) => segment.is_triggered) ?? segments[0] ?? null
   const mapTitle = viewerMaps[0]?.title ?? 'No map recorded'
@@ -3370,9 +3488,7 @@ function AIDMApp() {
               </div>
             ) : null}
             {accountMenuOpen && betaNotesOpen ? (
-              <Suspense fallback={null}>
-                <BetaRuntimeNotesPanel onClose={closeBetaNotes} />
-              </Suspense>
+              <BetaRuntimeNotesPanel onClose={closeBetaNotes} />
             ) : null}
           </div>
         </div>
@@ -3440,10 +3556,12 @@ function AIDMApp() {
         setMainTab={setMainTabFromRail}
         inspectorTab={inspectorTab}
         setInspectorTab={setInspectorTabFromRail}
+        canUseOperatorTools={canUseOperatorTools}
         canManageCampaign={Boolean(campaign)}
         canManageSession={Boolean(activeSession)}
         canOpenCampaignArchive={health?.status === 'ok'}
         canOpenSessionArchive={Boolean(selectedCampaignId)}
+        selectionLocked={sendPending || dmResponseBlocking || queuedActionRetryable || Boolean(diceRoll)}
         onRenameCampaign={openRenameCampaignDialog}
         onArchiveCampaign={openCampaignArchiveManager}
         onDeleteCampaign={openDeleteCampaignDialog}
@@ -3455,6 +3573,13 @@ function AIDMApp() {
         onDeleteSession={openDeleteSessionDialog}
         onStartSession={startSession}
         onSelectCampaign={(campaignId) => {
+          if (
+            campaignId !== selectedCampaignId &&
+            (sendPending || dmResponseBlocking || queuedActionRetryable || Boolean(diceRoll))
+          ) {
+            pushError('validation', 'Wait for the current turn to finish or dismiss its retry before changing campaigns.')
+            return
+          }
           if (campaignId !== selectedCampaignId) {
             setSelectedCampaignId(campaignId)
           }
@@ -3462,11 +3587,17 @@ function AIDMApp() {
           closeMobilePanels()
         }}
         onSelectSession={(sessionId) => {
+          if (
+            sessionId !== selectedSessionId &&
+            (sendPending || dmResponseBlocking || queuedActionRetryable || Boolean(diceRoll))
+          ) {
+            pushError('validation', 'Wait for the current turn to finish or dismiss its retry before changing sessions.')
+            return
+          }
           if (sessionId !== selectedSessionId) {
             setSelectedSessionId(sessionId)
             setOptimisticEntries([])
             setStreamingTurn(null)
-            setSendPending(false)
           }
           setMainTab('turns')
           closeMobilePanels()
@@ -3488,6 +3619,7 @@ function AIDMApp() {
         onSceneMusicControl={updateSceneMusicControl}
         contentSettings={contentSettings}
         contentSettingsPending={contentSettingsPending}
+        canUseOperatorTools={canUseOperatorTools}
         canEditContentSettings={canUseOperatorTools}
         onContentRatingChange={updateContentRating}
         onContentToneTagsChange={updateContentToneTags}
@@ -3537,6 +3669,12 @@ function AIDMApp() {
         sendPending={sendPending}
         streamingTurnActive={dmResponseBlocking}
         pendingRollNotice={pendingRollNotice}
+        onPreparePendingRoll={preparePendingRoll}
+        turnRecoveryGate={turnRecoveryGate}
+        turnRecoveryPending={turnRecoveryPending}
+        turnRecoveryError={turnRecoveryError}
+        turnRecoverySuccess={turnRecoverySuccess}
+        onResolveTurnRecovery={resolveTurnRecovery}
         combatState={worldStatePanel.combat}
         dmExecutionStats={dmExecutionStats}
         welcomeText={welcomeText}
@@ -3545,7 +3683,7 @@ function AIDMApp() {
         questTitle={questTitle}
         sessionState={sessionState}
         campaign={campaign}
-        canonFacts={canonFacts}
+        recentMemory={recentMemory}
         clarificationRequest={clarificationRequest}
         resolveClarification={resolveClarification}
         onStartAdventure={startAdventure}
@@ -3554,6 +3692,7 @@ function AIDMApp() {
           actionText,
           adminPasscode,
           adminToolsUnlocked,
+          canUseOperatorTools,
           setActionText,
           setAdminPasscode,
           selectedCharacterName: selectedPlayer?.character_name ?? null,
@@ -3644,7 +3783,7 @@ function AIDMApp() {
         equipmentPendingItemKey={equipmentPendingItemKey}
         toggleInventoryEquipment={toggleInventoryEquipment}
         memorySnippetCount={memorySnippets.length}
-        visibleCanonFacts={visibleCanonFacts}
+        visibleRecentMemory={visibleRecentMemory}
         worldStatePanel={worldStatePanel}
         mapPanelTitle={mapPanelTitle}
         mapDescription={mapDescription}
@@ -3895,6 +4034,7 @@ function AIDMApp() {
         <Suspense fallback={null}>
           <CampaignChooserDialog
             campaigns={campaigns}
+            canCreateCampaign={canUseOperatorTools}
             dialogRef={modalDialogRef}
             onChoose={chooseCampaign}
             onClose={closeCampaignChooserDialog}

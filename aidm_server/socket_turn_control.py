@@ -10,10 +10,12 @@ from flask import request
 from flask_socketio import emit
 
 from aidm_server.logging_context import clear_logging_context, set_logging_context
+from aidm_server.services.session_lifecycle import session_playability_error
 from aidm_server.socket_contracts import socket_error_payload as socket_error
 from aidm_server.socket_state import SocketState
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 from aidm_server.turn_control import TURN_CONTROL_MODES, TURN_CONTROL_SOURCES
+from aidm_server.turn_coordinator import SessionTurnTargetMissingError
 from aidm_server.validation import coerce_int
 
 
@@ -26,6 +28,8 @@ class SocketTurnControlDependencies:
     socket_capability_forbidden: Callable[[str], bool]
     workspace_session: Callable[[int, str], Any]
     workspace_player: Callable[[int, str], Any]
+    serialize_session: Callable[[int], Any]
+    refresh_session: Callable[[], None]
     set_turn_control: Callable[..., dict]
     turn_control_payload: Callable[[int, dict], dict]
     commit: Callable[[], None]
@@ -55,59 +59,35 @@ class TurnControlUpdate:
     payload: dict
 
 
-def normalize_turn_control_request(data: dict) -> TurnControlRequest:
-    """Normalize snake/camel-case transport fields without applying access policy."""
-
-    return TurnControlRequest(
-        session_id=coerce_int(data.get('session_id') or data.get('sessionId')),
-        player_id=coerce_int(data.get('player_id') or data.get('playerId')),
-        mode=str(data.get('mode') or 'free').strip().lower(),
-        source=str(data.get('source') or 'manual').strip().lower(),
-        active_player_id=coerce_int(data.get('active_player_id') or data.get('activePlayerId')),
-    )
-
-
-def apply_turn_control_update(
+def _apply_turn_control_update_locked(
     turn_request: TurnControlRequest,
     *,
-    sid: str,
     workspace_id: str,
     dependencies: SocketTurnControlDependencies,
 ) -> TurnControlUpdate | TurnControlFailure:
-    """Authorize, validate, and persist a normalized turn-control update."""
+    """Re-read, validate, and commit while the session coordinator is held."""
 
     session_id = turn_request.session_id
     player_id = turn_request.player_id
-    if not session_id or not player_id:
-        return TurnControlFailure(
-            'validation_error',
-            'session_id and player_id are required.',
-            'validation_error',
-            {},
-        )
+    assert session_id is not None and player_id is not None
 
-    connection_record = dependencies.state.connection(sid)
-    bound_session_id = coerce_int(connection_record.get('session_id')) if connection_record else None
-    bound_player_id = coerce_int(connection_record.get('player_id')) if connection_record else None
-    if bound_session_id != session_id or bound_player_id != player_id:
-        return TurnControlFailure(
-            'player_identity_mismatch',
-            'This socket can only change turn control for the player and session it joined with.',
-            'player_identity_mismatch',
-            {
-                'session_id': session_id,
-                'player_id': player_id,
-                'bound_session_id': bound_session_id,
-                'bound_player_id': bound_player_id,
-            },
-        )
-
+    dependencies.refresh_session()
     session_obj = dependencies.workspace_session(session_id, workspace_id)
     if not session_obj:
         return TurnControlFailure(
             'session_not_found',
             'Session not found.',
             'session_not_found',
+            {'session_id': session_id},
+        )
+
+    playability_error = session_playability_error(session_obj)
+    if playability_error:
+        error_code, message = playability_error
+        return TurnControlFailure(
+            error_code,
+            message,
+            error_code,
             {'session_id': session_id},
         )
 
@@ -160,6 +140,69 @@ def apply_turn_control_update(
         session_id=session_id,
         payload=dependencies.turn_control_payload(session_id, turn_control),
     )
+
+
+def normalize_turn_control_request(data: dict) -> TurnControlRequest:
+    """Normalize snake/camel-case transport fields without applying access policy."""
+
+    return TurnControlRequest(
+        session_id=coerce_int(data.get('session_id') or data.get('sessionId')),
+        player_id=coerce_int(data.get('player_id') or data.get('playerId')),
+        mode=str(data.get('mode') or 'free').strip().lower(),
+        source=str(data.get('source') or 'manual').strip().lower(),
+        active_player_id=coerce_int(data.get('active_player_id') or data.get('activePlayerId')),
+    )
+
+
+def apply_turn_control_update(
+    turn_request: TurnControlRequest,
+    *,
+    sid: str,
+    workspace_id: str,
+    dependencies: SocketTurnControlDependencies,
+) -> TurnControlUpdate | TurnControlFailure:
+    """Authorize, validate, and persist a normalized turn-control update."""
+
+    session_id = turn_request.session_id
+    player_id = turn_request.player_id
+    if not session_id or not player_id:
+        return TurnControlFailure(
+            'validation_error',
+            'session_id and player_id are required.',
+            'validation_error',
+            {},
+        )
+
+    connection_record = dependencies.state.connection(sid)
+    bound_session_id = coerce_int(connection_record.get('session_id')) if connection_record else None
+    bound_player_id = coerce_int(connection_record.get('player_id')) if connection_record else None
+    if bound_session_id != session_id or bound_player_id != player_id:
+        return TurnControlFailure(
+            'player_identity_mismatch',
+            'This socket can only change turn control for the player and session it joined with.',
+            'player_identity_mismatch',
+            {
+                'session_id': session_id,
+                'player_id': player_id,
+                'bound_session_id': bound_session_id,
+                'bound_player_id': bound_player_id,
+            },
+        )
+
+    try:
+        with dependencies.serialize_session(session_id):
+            return _apply_turn_control_update_locked(
+                turn_request,
+                workspace_id=workspace_id,
+                dependencies=dependencies,
+            )
+    except SessionTurnTargetMissingError:
+        return TurnControlFailure(
+            'session_not_found',
+            'Session not found.',
+            'session_not_found',
+            {'session_id': session_id},
+        )
 
 
 def register_socket_turn_control_events(

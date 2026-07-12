@@ -84,7 +84,7 @@ describe('DirectorCommentaryPanel', () => {
     render(
       <DirectorCommentaryPanel
         activeSessionTitle="Session Alpha"
-        canonFacts={[
+        recentMemory={[
           ['The gate remembers Ember.', 'Turn 1'],
           ['The keeper left a warning.', 'Turn 2'],
         ]}
@@ -137,7 +137,7 @@ describe('DirectorCommentaryPanel', () => {
     render(
       <DirectorCommentaryPanel
         activeSessionTitle="Session Alpha"
-        canonFacts={[]}
+        recentMemory={[]}
         commentary={null}
         contentSettings={DEFAULT_CONTENT_SETTINGS}
         currentResponseEntry={null}

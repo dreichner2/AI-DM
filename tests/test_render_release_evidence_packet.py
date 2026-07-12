@@ -7,7 +7,13 @@ import tarfile
 from pathlib import Path
 
 from scripts.render_rc_issue_evidence import ISSUE_SPECS
-from scripts.render_release_evidence_packet import _inspect_hosted_rc_evidence, build_packet, main, render_packet
+from scripts.render_release_evidence_packet import (
+    _inspect_beta_slo_baseline,
+    _inspect_hosted_rc_evidence,
+    build_packet,
+    main,
+    render_packet,
+)
 
 
 def _write_tar(path: Path, members: list[str]) -> None:
@@ -36,6 +42,47 @@ def _write_visual_review(path: Path, visual_smoke_dir: Path) -> None:
                 f'- Artifact dir: `{visual_smoke_dir}`',
                 '- Screenshots: 3/3',
                 '- Failures: None.',
+                '',
+            ]
+        ),
+        encoding='utf-8',
+    )
+
+
+def _write_beta_slo_baseline(
+    path: Path,
+    *,
+    sample_count: int = 3,
+    provider_turn_count: int = 3,
+    invite_more_testers: str = 'yes',
+    target_url: str = 'https://aidm.example.test',
+    commit_sha: str = 'abc1234',
+) -> None:
+    path.write_text(
+        '\n'.join(
+            [
+                '# Beta SLO Baseline',
+                '',
+                '## Release Context',
+                '',
+                f'- Target URL: {target_url}',
+                f'- Commit SHA: {commit_sha}',
+                '',
+                '## Baseline Metrics',
+                '',
+                '| Metric | Value | Source | Decision |',
+                '| --- | ---: | --- | --- |',
+                f'| DM response sample count | {sample_count} | `/api/beta/slo` |  |',
+                '',
+                '## Provider/Model Turn Mix',
+                '',
+                '| Provider | Model | Turns |',
+                '| --- | --- | ---: |',
+                f'| gemini | gemini-test | {provider_turn_count} |',
+                '',
+                '## Gate Decision',
+                '',
+                f'- Invite more testers: {invite_more_testers}',
                 '',
             ]
         ),
@@ -133,6 +180,69 @@ def test_inspect_hosted_rc_evidence_parses_check_statuses(tmp_path):
         'validation_errors': [],
     }
     assert inspected['checks']['Hosted beta SLO baseline']['status'] == 'passed'
+
+
+def test_inspect_beta_slo_baseline_requires_samples_provider_turns_and_decision(tmp_path):
+    path = tmp_path / 'beta-slo-baseline.md'
+    _write_beta_slo_baseline(path, sample_count=0, provider_turn_count=0, invite_more_testers='yes/no')
+
+    inspected = _inspect_beta_slo_baseline(path)
+
+    assert inspected['status'] == 'incomplete'
+    assert inspected['dm_response_sample_count'] == 0
+    assert inspected['provider_turn_count'] == 0
+    assert inspected['invite_more_testers'] == 'yes/no'
+    assert inspected['validation_errors'] == [
+        'DM response sample count must be greater than zero',
+        'provider/model turn mix must include at least one positive real row',
+        'Invite more testers must be explicitly set to yes or no',
+    ]
+
+
+def test_inspect_beta_slo_baseline_passes_only_semantically_complete_yes_decision(tmp_path):
+    path = tmp_path / 'beta-slo-baseline.md'
+    _write_beta_slo_baseline(path)
+
+    inspected = _inspect_beta_slo_baseline(path)
+
+    assert inspected['status'] == 'passed'
+    assert inspected['dm_response_sample_count'] == 3
+    assert inspected['provider_turn_count'] == 3
+    assert inspected['invite_more_testers'] == 'yes'
+    assert inspected['commit_sha'] == 'abc1234'
+    assert inspected['validation_errors'] == []
+
+
+def test_inspect_beta_slo_baseline_fails_explicit_no_expansion_decision(tmp_path):
+    path = tmp_path / 'beta-slo-baseline.md'
+    _write_beta_slo_baseline(path, invite_more_testers='no')
+
+    inspected = _inspect_beta_slo_baseline(path)
+
+    assert inspected['status'] == 'failed'
+    assert inspected['invite_more_testers'] == 'no'
+    assert inspected['validation_errors'] == []
+
+
+def test_inspect_beta_slo_baseline_rejects_non_http_target(tmp_path):
+    path = tmp_path / 'beta-slo-baseline.md'
+    _write_beta_slo_baseline(path, target_url='staging')
+
+    inspected = _inspect_beta_slo_baseline(path)
+
+    assert inspected['status'] == 'incomplete'
+    assert inspected['validation_errors'] == ['Target URL must be an absolute http(s) URL']
+
+
+def test_inspect_beta_slo_baseline_rejects_stale_rc_commit(tmp_path):
+    path = tmp_path / 'beta-slo-baseline.md'
+    _write_beta_slo_baseline(path, commit_sha='deadbee')
+
+    inspected = _inspect_beta_slo_baseline(path, expected_commit_sha='abc1234')
+
+    assert inspected['status'] == 'incomplete'
+    assert inspected['commit_matches_rc'] is False
+    assert inspected['validation_errors'] == ['Commit SHA deadbee does not match current RC commit abc1234']
 
 
 def test_inspect_hosted_rc_evidence_rejects_invalid_check_rows(tmp_path):
@@ -445,6 +555,7 @@ def _write_packaging_cleanup_evidence(path: Path, *, status: str = 'passed') -> 
                 '- Source archive forbidden paths: 0',
                 '- Source archive large files: 1',
                 '- Source archive large files not LFS-tracked: 0',
+                '- Source archive unresolved Git LFS pointers: 0',
                 '',
             ]
         ),
@@ -710,6 +821,7 @@ def test_build_packet_marks_local_ready_with_external_exceptions(tmp_path):
     assert packet['packaging_cleanup']['forbidden_paths'] == '0'
     assert packet['packaging_cleanup']['large_files'] == '1'
     assert packet['packaging_cleanup']['large_files_not_lfs_tracked'] == '0'
+    assert packet['packaging_cleanup']['unresolved_lfs_pointers'] == '0'
     assert packet['rc_issue_closure_evidence']['status'] == 'external-required'
     assert packet['rc_issue_closure_evidence']['open_issues'] == '7'
     assert packet['visual_smoke_review']['status'] == 'passed'
@@ -797,6 +909,8 @@ def test_build_packet_marks_local_ready_with_external_exceptions(tmp_path):
     assert '| #4 | Visual-smoke screenshot review |' in markdown
     assert '| #8 | Hosted beta SLO baseline |' in markdown
     slo_check = next(item for item in packet['hosted_signoff_checklist'] if item['evidence'] == 'Hosted beta SLO baseline')
+    assert '--commit-sha <signed-off-commit-sha>' in slo_check['command']
+    assert '--invite-more-testers <yes-or-no>' in slo_check['command']
     assert '--output tmp/release/beta-slo-baseline.md' in slo_check['command']
     assert '--evidence-report' not in slo_check['command']
     assert 'deployment-readiness-evidence.md' not in slo_check['command']
@@ -824,14 +938,22 @@ def test_build_packet_marks_local_handoff_artifacts_stale_when_older_than_rc_evi
     _write_frontend_npm_ci_evidence(frontend_npm_ci_path)
     _write_packaging_cleanup_evidence(packaging_cleanup_path)
     _write_release_artifact_consistency(release_artifact_consistency_path)
+    _write_beta_slo_baseline(slo_path)
     hosted_auth_path.write_text('- Status: passed\n- Mode: isolated\n- Target URL: `isolated local runtime`\n', encoding='utf-8')
     security_path.write_text('- Status: passed\n- Mode: isolated\n- Target URL: `isolated local runtime`\n', encoding='utf-8')
     export_import_path.write_text('- Status: passed\n- Mode: isolated\n- Target URL: `isolated local runtime`\n', encoding='utf-8')
     rc_evidence_path.write_text(
-        json.dumps({'status': 'passed', 'commands': [], 'git_worktree': {'state': 'clean', 'dirty': False}}),
+        json.dumps(
+            {
+                'status': 'passed',
+                'commit': 'abc1234',
+                'commands': [],
+                'git_worktree': {'state': 'clean', 'dirty': False},
+            }
+        ),
         encoding='utf-8',
     )
-    for stale_path in (archive_path, frontend_npm_ci_path, packaging_cleanup_path):
+    for stale_path in (archive_path, frontend_npm_ci_path, packaging_cleanup_path, slo_path):
         _mark_older_than(stale_path, rc_evidence_path)
 
     packet = build_packet(
@@ -859,6 +981,9 @@ def test_build_packet_marks_local_handoff_artifacts_stale_when_older_than_rc_evi
     assert packet['frontend_npm_ci']['previous_status'] == 'passed'
     assert packet['packaging_cleanup']['status'] == 'stale'
     assert packet['packaging_cleanup']['previous_status'] == 'passed'
+    assert packet['beta_slo_baseline']['status'] == 'stale'
+    assert packet['beta_slo_baseline']['previous_status'] == 'passed'
+    assert packet['beta_slo_baseline']['freshness'] == 'stale'
 
 
 def test_build_packet_marks_missing_release_artifact_consistency_incomplete(tmp_path):
@@ -1051,7 +1176,14 @@ def test_main_writes_markdown_and_json_packet(tmp_path):
     json_output_path = tmp_path / 'release-evidence-packet.json'
 
     rc_evidence_path.write_text(
-        json.dumps({'status': 'passed', 'commands': [], 'git_worktree': {'state': 'clean', 'dirty': False}}),
+        json.dumps(
+            {
+                'status': 'passed',
+                'commit': 'abc1234',
+                'commands': [],
+                'git_worktree': {'state': 'clean', 'dirty': False},
+            }
+        ),
         encoding='utf-8',
     )
     _write_issue_evidence(issue_dir)
@@ -1090,7 +1222,7 @@ def test_main_writes_markdown_and_json_packet(tmp_path):
     security_path.write_text('- Status: passed\n- Mode: live-target\n- Target URL: `https://aidm.example.test`\n', encoding='utf-8')
     export_import_path.write_text('- Status: passed\n- Mode: live-target\n- Target URL: `https://aidm.example.test`\n', encoding='utf-8')
     readiness_path.write_text('- Status: passed\n- Target URL: `https://aidm.example.test`\n', encoding='utf-8')
-    slo_path.write_text('- Target URL: https://aidm.example.test\n', encoding='utf-8')
+    _write_beta_slo_baseline(slo_path)
 
     exit_code = main(
         [
@@ -1179,7 +1311,12 @@ def test_main_writes_markdown_and_json_packet(tmp_path):
     assert payload['hosted_cookie_auth']['mode'] == 'live-target'
     assert payload['security_forbidden']['mode'] == 'live-target'
     assert payload['export_import']['mode'] == 'live-target'
-    assert payload['beta_slo_baseline']['status'] == 'present'
+    assert payload['beta_slo_baseline']['status'] == 'passed'
+    assert payload['beta_slo_baseline']['dm_response_sample_count'] == 3
+    assert payload['beta_slo_baseline']['provider_turn_count'] == 3
+    assert payload['beta_slo_baseline']['invite_more_testers'] == 'yes'
+    assert payload['beta_slo_baseline']['commit_matches_rc'] is True
+    assert payload['beta_slo_baseline']['freshness'] == 'current'
     assert payload['frontend_npm_ci']['status'] == 'passed'
     assert payload['packaging_cleanup']['status'] == 'passed'
     assert payload['beta_tester_onboarding']['status'] == 'passed'
@@ -1212,7 +1349,14 @@ def test_build_packet_marks_isolated_slo_baseline_local_only(tmp_path):
     release_artifact_consistency_path = tmp_path / 'release-artifact-consistency.md'
 
     rc_evidence_path.write_text(
-        json.dumps({'status': 'passed', 'commands': [], 'git_worktree': {'state': 'clean', 'dirty': False}}),
+        json.dumps(
+            {
+                'status': 'passed',
+                'commit': 'abc1234',
+                'commands': [],
+                'git_worktree': {'state': 'clean', 'dirty': False},
+            }
+        ),
         encoding='utf-8',
     )
     issue_dir.mkdir()
@@ -1279,7 +1423,14 @@ def test_build_packet_overall_status_depends_on_external_evidence_statuses(tmp_p
     release_artifact_consistency_path = tmp_path / 'release-artifact-consistency.md'
 
     rc_evidence_path.write_text(
-        json.dumps({'status': 'passed', 'commands': [], 'git_worktree': {'state': 'clean', 'dirty': False}}),
+        json.dumps(
+            {
+                'status': 'passed',
+                'commit': 'abc1234',
+                'commands': [],
+                'git_worktree': {'state': 'clean', 'dirty': False},
+            }
+        ),
         encoding='utf-8',
     )
     _write_issue_evidence_without_exceptions(issue_dir)
@@ -1293,7 +1444,7 @@ def test_build_packet_overall_status_depends_on_external_evidence_statuses(tmp_p
     security_path.write_text('- Status: passed\n- Mode: live-target\n- Target URL: `https://aidm.example.test`\n', encoding='utf-8')
     export_import_path.write_text('- Status: passed\n- Mode: live-target\n- Target URL: `https://aidm.example.test`\n', encoding='utf-8')
     readiness_path.write_text('- Status: passed\n- Target URL: `https://aidm.example.test`\n', encoding='utf-8')
-    slo_path.write_text('- Target URL: https://aidm.example.test\n', encoding='utf-8')
+    _write_beta_slo_baseline(slo_path)
     _write_frontend_npm_ci_evidence(frontend_npm_ci_path)
     _write_packaging_cleanup_evidence(packaging_cleanup_path)
     _write_release_artifact_consistency(release_artifact_consistency_path)

@@ -3,7 +3,7 @@ import {
   abilityOptionsFromStatBlock,
   buildMapMeta,
   buildTimeline,
-  canonFactsFromMemorySnippets,
+  recentMemoryFromSnippets,
   inventoryCapacity,
   inventoryGoldLabel,
   inventoryWeightLabel,
@@ -398,6 +398,17 @@ describe('game selector helpers', () => {
           requires_roll: true,
           outcome_status: 'deferred',
           rule_type: 'thieves_tools',
+          dc_hint: 'DC 14',
+          roll_gate: {
+            roll_spec: {
+              die: 'd20',
+              mode: 'advantage',
+              rule_type: 'thieves_tools',
+              reason: 'Pick the warded lock',
+              result_visibility: 'hidden_until_landed',
+              ability: { key: 'dexterity', label: 'DEX', score: 16, modifier: 3 },
+            },
+          },
         },
       },
       {
@@ -428,6 +439,21 @@ describe('game selector helpers', () => {
         turnId: 10,
         label: 'Turn 1: thieves tools',
         detail: 'The lock resists your tools.',
+        guidance: {
+          pendingTurnId: 10,
+          ruleType: 'thieves tools',
+          dcHint: 'DC 14',
+          prompt: 'The lock resists your tools.',
+          remainingPlayerIds: [],
+          rollSpec: {
+            die: 'd20',
+            mode: 'advantage',
+            ruleType: 'thieves_tools',
+            reason: 'Pick the warded lock',
+            resultVisibility: 'hidden_until_landed',
+            ability: { key: 'dexterity', label: 'DEX' },
+          },
+        },
       },
     ])
   })
@@ -509,6 +535,19 @@ describe('game selector helpers', () => {
       detail: 'Everyone roll initiative before the blast lands.',
       pendingCount: 1,
       isWaitingOnSelectedPlayer: false,
+      guidance: {
+        pendingTurnId: 20,
+        ruleType: 'initiative',
+        remainingPlayerIds: [2],
+        rollSpec: {
+          die: 'd20',
+          mode: 'normal',
+          ruleType: 'initiative',
+          reason: 'initiative',
+          resultVisibility: 'hidden_until_landed',
+          ability: null,
+        },
+      },
     })
 
     expect(
@@ -534,7 +573,7 @@ describe('game selector helpers', () => {
     ).toBeNull()
   })
 
-  it('derives speaker detail, canon facts, truncation, and map meta', () => {
+  it('derives speaker detail, recent memory, truncation, and map meta', () => {
     const player: Player = {
       player_id: 1,
       workspace_id: 'owner',
@@ -570,7 +609,7 @@ describe('game selector helpers', () => {
       { turn_id: 5, player_input: 'Ember asks about the ash crown.' },
       'bad value',
     ])
-    expect(canonFactsFromMemorySnippets(snippets, 9)).toEqual([
+    expect(recentMemoryFromSnippets(snippets, 9)).toEqual([
       ['Ember asks about the ash crown.', 'S9E5'],
       ['The gate remembers Ember.', 'S9E4'],
     ])

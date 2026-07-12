@@ -9,6 +9,9 @@ All notable AIDM closed-beta changes should be recorded here.
 - Added server-authoritative player dice with persisted roll provenance and a
   room-scoped `roll_resolved` event. Advantage, disadvantage, character-sheet
   modifiers, proficiency, and wound penalties are resolved by the backend.
+- Added viewer-safe `roll_required` guidance with the pending turn, public roll
+  specification, and remaining player IDs. The composer can configure that
+  authoritative check in one action while preserving the rejected player draft.
 - Added a player combat HUD backed by viewer-scoped, server-issued action IDs,
   persisted weapon choices, current-turn gating, and range-band target checks.
   Submitted action and target IDs are revalidated and attack rolls remain
@@ -41,6 +44,13 @@ All notable AIDM closed-beta changes should be recorded here.
   animates the committed server result, exposes distinct requesting, rolling,
   resolved, and recoverable-failure states, and removes manual modifier and
   proficiency overrides from player controls.
+- Changed the combat HUD to retain unavailable server-issued targets, disable
+  them, and show the engine's legality reason instead of silently hiding them.
+- Changed player navigation and panels to omit campaign, session, pack,
+  director, and admin mutation controls unless the current actor has operator
+  capability. Player-safe read, export, and share actions remain available.
+- Renamed frontend memory-snippet presentation from "Canon Facts" to "Recent
+  Memory" so a compatibility summary is not presented as durable canon truth.
 - Docked scene music by default so it cannot cover pending rolls or narration,
   while preserving accessible full floating controls on demand and saved custom
   layouts. Compact desktop actions and scrollable full-label mobile inspector
@@ -109,6 +119,13 @@ All notable AIDM closed-beta changes should be recorded here.
   projections; peers now receive only a neutral waiting status.
 - Added shared capability gates for operator combat, bestiary, campaign,
   session, map, segment, telemetry, and Socket.IO actions.
+- Archived or deleted sessions and campaigns now reject room joins, turns,
+  clarification resolution, and turn-control changes with stable lifecycle
+  errors. Lifecycle mutations are serialized against active turns and commit
+  under the same fenced coordination boundary.
+- Player campaign-pack projections now keep `hiddenToPlayers` checkpoints and
+  their IDs out of active/completed/skipped/failed fields unless an author has
+  supplied an explicit player-safe title or summary.
 - Hardened passwordless legacy-account claims, workspace-password joins,
   pre-auth rate limiting, account-token handling, cookie/CSRF behavior, and
   browser credential retention.
@@ -133,6 +150,18 @@ All notable AIDM closed-beta changes should be recorded here.
 - Fixed turns stranded in `processing` after their incoming commit by allowing
   an exact-key retry to resume narration without another roll, player event, or
   pre-DM state application.
+- Fixed a post-narration failure in both state-application paths being treated
+  as a completed turn. The saved narration is retained, the turn fails with
+  recovery metadata, structured turn advancement and canon enqueue are blocked,
+  and the room receives `turn_state_apply_failed`. Recovery now distinguishes
+  no committed mechanics from partial pre-DM mechanics, preserves the applied
+  count and audit evidence, and warns operators not to replay changes that
+  already committed.
+- Fixed hosted beta-SLO evidence with zero DM samples, no positive provider/model
+  rows, or an unset tester-expansion decision being accepted as release proof.
+- Fixed release archives containing unresolved Git LFS pointer files being
+  accepted as complete source artifacts; RC archive evidence now fails and
+  reports the pointer path and expected object metadata.
 - Fixed candidate checklist reports that could present passed RC rows from an
   older commit without a prominent stale or dirty-worktree warning, or treat an
   unsafe short/mismatched signoff commit as current.
@@ -165,3 +194,6 @@ All notable AIDM closed-beta changes should be recorded here.
 - Added RC issue evidence, source archives and checksums, release packets,
   GitHub Actions evidence, hosted proof collection, external-proof validation,
   and final operator signoff tooling.
+- Updated migration and release documentation for current Alembic head
+  `0031_authored_map_visibility`; hosted backup and cutover proof remains an
+  external operator requirement.

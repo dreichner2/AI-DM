@@ -14,10 +14,16 @@ import {
   storedWorkspaceToken,
 } from './api'
 import { stringValue, turnStatusAllowsNextSend } from './gameSelectors'
-import type { RollMode, RollResolvedPayload } from './gameActions'
+import type {
+  ResultVisibility,
+  RollMode,
+  RollRequiredPayload,
+  RollResolvedPayload,
+} from './gameActions'
 import type { SceneMusicSyncState } from './SceneMusicPlayer'
 import { normalizeSceneState, type SceneDisplayState, type SceneStatePayload } from './sceneState'
 import { normalizeTurnControl } from './turnControl'
+import { turnRecoveryGateFromSocketDetails } from './turnRecovery'
 import type {
   ActivePlayer,
   ClarificationRequest,
@@ -47,6 +53,13 @@ type DmResponseEndPayload = {
   error?: string
 }
 
+type SessionRecoveryResolvedPayload = {
+  session_id?: number
+  turn_id?: number
+  state_revision?: number
+  recovery_required?: boolean
+}
+
 type NewMessagePayload = {
   message?: string
   speaker?: string
@@ -73,6 +86,20 @@ type MusicStatePayload = {
 }
 
 type SocketErrorCategory = 'connection' | 'workspace'
+const TERMINAL_SESSION_ERROR_CODES = new Set([
+  'session_not_found',
+  'session_archived',
+  'session_deleted',
+  'campaign_archived',
+  'campaign_deleted',
+  'campaign_mismatch',
+  'invalid_player',
+  'player_identity_mismatch',
+])
+
+export function isTerminalSessionSocketError(errorCode: unknown) {
+  return TERMINAL_SESSION_ERROR_CODES.has(stringValue(errorCode).toLowerCase())
+}
 
 export type TurnDuplicatePayload = {
   session_id: number
@@ -115,6 +142,7 @@ type UseSessionSocketOptions = {
   lastSpokenTurnIdRef: MutableRefObject<number | null>
   lastSpokenTextRef: MutableRefObject<string | null>
   onConnectionInterrupted: () => void
+  onRollRequired: (payload: RollRequiredPayload) => void
   onRollResolved: (payload: RollResolvedPayload) => void
   onTurnDuplicate: (payload: TurnDuplicatePayload) => void
 }
@@ -225,6 +253,50 @@ export function normalizeRollResolvedPayload(payload: unknown): RollResolvedPayl
     ...(proficiency ? { proficiency } : {}),
     ...(modifierBreakdown ? { modifier_breakdown: modifierBreakdown } : {}),
     authoritative: true,
+  }
+}
+
+export function normalizeRollRequiredPayload(payload: unknown): RollRequiredPayload | null {
+  const value = recordValue(payload)
+  if (!value) return null
+  const sessionId = positiveInteger(value.session_id)
+  const pendingTurnId = positiveInteger(value.pending_turn_id)
+  const ruleType = stringValue(value.rule_type).toLowerCase()
+  const prompt = stringValue(value.prompt)
+  if (!sessionId || !pendingTurnId || !ruleType || !prompt) return null
+
+  const rawSpec = recordValue(value.roll_spec) ?? {}
+  const requestedDie = stringValue(rawSpec.die, 'd20').toLowerCase()
+  const die = /^d(?:4|6|8|10|12|20|100)$/.test(requestedDie) ? requestedDie : 'd20'
+  const requestedMode = stringValue(rawSpec.mode).toLowerCase()
+  const mode: RollMode = ['advantage', 'disadvantage'].includes(requestedMode)
+    ? requestedMode as RollMode
+    : 'normal'
+  const requestedVisibility = stringValue(rawSpec.result_visibility).toLowerCase()
+  const resultVisibility: ResultVisibility = requestedVisibility === 'visible'
+    ? 'visible'
+    : 'hidden_until_landed'
+  const rawAbility = recordValue(rawSpec.ability)
+  const abilityKey = stringValue(rawAbility?.key).toLowerCase()
+  const abilityLabel = stringValue(rawAbility?.label)
+
+  return {
+    sessionId,
+    pendingTurnId,
+    ruleType,
+    dcHint: stringValue(value.dc_hint) || null,
+    prompt,
+    remainingPlayerIds: numericArray(value.remaining_player_ids),
+    rollSpec: {
+      die,
+      mode,
+      ruleType: stringValue(rawSpec.rule_type, ruleType),
+      reason: stringValue(rawSpec.reason, ruleType.replace(/_/g, ' ')),
+      resultVisibility,
+      ability: abilityKey
+        ? { key: abilityKey, label: abilityLabel || abilityKey.toUpperCase() }
+        : null,
+    },
   }
 }
 
@@ -394,6 +466,7 @@ export function useSessionSocket({
   lastSpokenTurnIdRef,
   lastSpokenTextRef,
   onConnectionInterrupted,
+  onRollRequired,
   onRollResolved,
   onTurnDuplicate,
 }: UseSessionSocketOptions) {
@@ -421,6 +494,20 @@ export function useSessionSocket({
     setSocketStatus('connecting')
     let hasConnected = false
     let refreshInFlight = false
+    const refreshAuthoritativeSession = (failureLabel: string) => {
+      if (refreshInFlight) return
+      refreshInFlight = true
+      void loadSessionData(selectedSessionId)
+        .catch((error: unknown) => {
+          pushError(
+            'workspace',
+            `${failureLabel}: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        })
+        .finally(() => {
+          refreshInFlight = false
+        })
+    }
 
     socket.on('connect', () => {
       const shouldRefreshAfterJoin = hasConnected || lastJoinedSessionRef.current === selectedSessionId
@@ -433,17 +520,7 @@ export function useSessionSocket({
         player_id: selectedPlayerId,
       })
       if (shouldRefreshAfterJoin && !refreshInFlight) {
-        refreshInFlight = true
-        void loadSessionData(selectedSessionId)
-          .catch((error: unknown) => {
-            pushError(
-              'workspace',
-              `Session refresh after reconnect failed: ${error instanceof Error ? error.message : String(error)}`,
-            )
-          })
-          .finally(() => {
-            refreshInFlight = false
-          })
+        refreshAuthoritativeSession('Session refresh after reconnect failed')
       }
     })
 
@@ -512,6 +589,14 @@ export function useSessionSocket({
         if (existingIndex < 0) return [...current, entry]
         return current.map((item, index) => (index === existingIndex ? entry : item))
       })
+    })
+
+    socket.on('roll_required', (payload: unknown) => {
+      const required = normalizeRollRequiredPayload(payload)
+      if (!required || required.sessionId !== selectedSessionId) return
+      setSendPending(false)
+      setStreamingTurn(null)
+      onRollRequired(required)
     })
 
     socket.on('roll_resolved', (payload: unknown) => {
@@ -712,9 +797,52 @@ export function useSessionSocket({
       setClarificationRequest(payload)
     })
 
+    socket.on('session_recovery_resolved', (payload: SessionRecoveryResolvedPayload) => {
+      if (Number(payload.session_id) !== selectedSessionId || payload.recovery_required !== false) return
+      setSendPending(false)
+      setStreamingTurn(null)
+      refreshAuthoritativeSession('Recovery resolution refresh failed')
+    })
+
     socket.on('error', (payload: SocketErrorPayload) => {
       setSendPending(false)
       setClarificationRequest(null)
+      if (payload.error_code === 'roll_required') {
+        const required = normalizeRollRequiredPayload(payload.details)
+        if (required && required.sessionId === selectedSessionId) {
+          setStreamingTurn(null)
+          onRollRequired(required)
+        }
+        return
+      }
+      if (
+        payload.error_code === 'turn_state_apply_failed' ||
+        payload.error_code === 'session_recovery_required'
+      ) {
+        setStreamingTurn(null)
+        const recoveryGate = turnRecoveryGateFromSocketDetails(payload.details)
+        if (recoveryGate && Number(payload.details?.session_id) === selectedSessionId) {
+          setSessionState((current) => {
+            if (!current || current.session_id !== selectedSessionId) return current
+            const currentSnapshot = recordValue(current.state_snapshot) ?? {}
+            return {
+              ...current,
+              state_snapshot: {
+                ...currentSnapshot,
+                turnRecoveryGate: recoveryGate,
+              },
+            }
+          })
+        }
+        refreshAuthoritativeSession('Recovery status refresh failed')
+        return
+      }
+      if (isTerminalSessionSocketError(payload.error_code)) {
+        setSocketStatus('error')
+        setActivePlayers([])
+        setSceneMusicSyncState(null)
+        setSceneState(null)
+      }
       pushError('connection', socketMessage(payload))
     })
 
@@ -750,6 +878,7 @@ export function useSessionSocket({
     lastSpokenTextRef,
     lastSpokenTurnIdRef,
     onConnectionInterrupted,
+    onRollRequired,
     onRollResolved,
     onTurnDuplicate,
     pushError,

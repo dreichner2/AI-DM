@@ -3,16 +3,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from aidm_server.services.campaign_pack_graph import hidden_to_players
 from aidm_server.services.campaign_pack_snapshot import migrate_campaign_pack_snapshot
 
 
-PLAYER_PROGRESS_FLAG_KEYS = {
-    'campaignPackActiveCheckpointId',
-    'campaignPackCompletedCheckpointIds',
-    'campaignPackSkippedCheckpointIds',
-    'campaignPackFailedCheckpointIds',
-    'campaignPackProgressRevision',
-}
+PLAYER_REVEALED_CHECKPOINT_STATUSES = frozenset({'active', 'completed', 'skipped', 'failed'})
 
 PUBLIC_PLAYER_CHARACTER_KEYS = (
     'id',
@@ -61,10 +56,12 @@ def filter_session_snapshot_for_player(
 
     flags = filtered.get('flags') if isinstance(filtered.get('flags'), dict) else {}
     pack = filtered.get('campaignPack') if isinstance(filtered.get('campaignPack'), dict) else {}
+    player_pack: dict = {}
     if pack:
-        filtered['campaignPack'] = _player_pack_snapshot(pack, flags)
+        player_pack = _player_pack_snapshot(pack, flags)
+        filtered['campaignPack'] = player_pack
     if flags:
-        filtered['flags'] = _player_flags(flags)
+        filtered['flags'] = _player_flags(flags, player_pack)
 
     for key in ('locations', 'knownNpcs', 'partyNpcs', 'quests'):
         if isinstance(filtered.get(key), list):
@@ -172,6 +169,21 @@ def _player_pack_snapshot(pack: dict, flags: dict) -> dict:
         skipped_ids=skipped_ids,
         failed_ids=failed_ids,
     )
+    visible_checkpoints = player_visible_checkpoint_payloads(pack.get('checkpoints'), checkpoint_statuses)
+    visible_id_keys = {
+        _id_key(checkpoint.get('id'))
+        for checkpoint in visible_checkpoints
+        if _text(checkpoint.get('id'))
+    }
+    visible_active_id = active_id if _id_key(active_id) in visible_id_keys else ''
+    visible_completed_ids = [value for value in completed_ids if _id_key(value) in visible_id_keys]
+    visible_skipped_ids = [value for value in skipped_ids if _id_key(value) in visible_id_keys]
+    visible_failed_ids = [value for value in failed_ids if _id_key(value) in visible_id_keys]
+    visible_statuses = {
+        checkpoint['id']: checkpoint['status']
+        for checkpoint in visible_checkpoints
+        if checkpoint.get('id')
+    }
 
     result = {
         'packId': _text(_first(pack, 'packId', 'pack_id')),
@@ -182,17 +194,25 @@ def _player_pack_snapshot(pack: dict, flags: dict) -> dict:
         'visibility': 'player',
         'progressSchemaVersion': _positive_int(_first(pack, 'progressSchemaVersion', 'progress_schema_version')) or 1,
         'progressRevision': _progress_revision(pack, flags),
-        'activeCheckpointId': active_id or None,
-        'completedCheckpointIds': completed_ids,
-        'skippedCheckpointIds': skipped_ids,
-        'failedCheckpointIds': failed_ids,
-        'checkpointStatuses': checkpoint_statuses,
-        'checkpoints': _player_visible_checkpoints(pack.get('checkpoints'), checkpoint_statuses),
+        'activeCheckpointId': visible_active_id or None,
+        'completedCheckpointIds': visible_completed_ids,
+        'skippedCheckpointIds': visible_skipped_ids,
+        'failedCheckpointIds': visible_failed_ids,
+        'checkpointStatuses': visible_statuses,
+        'checkpoints': visible_checkpoints,
     }
     return {key: value for key, value in result.items() if value not in ('', None)}
 
 
-def _player_visible_checkpoints(value: Any, checkpoint_statuses: dict[str, str]) -> list[dict]:
+def player_visible_checkpoint_payloads(value: Any, checkpoint_statuses: dict[str, str]) -> list[dict]:
+    """Project checkpoint records without leaking hidden authored details.
+
+    A hidden checkpoint remains absent even after it becomes active or terminal.
+    Authors may intentionally expose a player-safe alias through the schema's
+    ``playerTitle`` or ``playerSummary`` fields once the checkpoint would
+    otherwise be visible.
+    """
+
     checkpoints = [checkpoint for checkpoint in (value or []) if isinstance(checkpoint, dict)]
     visible: list[dict] = []
     for checkpoint in checkpoints:
@@ -200,32 +220,31 @@ def _player_visible_checkpoints(value: Any, checkpoint_statuses: dict[str, str])
         if not checkpoint_id:
             continue
         status = checkpoint_statuses.get(checkpoint_id) or 'open'
-        if status not in {'active', 'completed', 'skipped', 'failed'} and not _truthy(
-            _first(
-                checkpoint,
-                'visibleToPlayers',
-                'visible_to_players',
-                'knownToPlayers',
-                'known_to_players',
-                'playerVisible',
-                'player_visible',
-            )
-        ):
+        status_revealed = status in PLAYER_REVEALED_CHECKPOINT_STATUSES
+        if not status_revealed and not _checkpoint_player_visible(checkpoint):
+            continue
+
+        player_title = _text(
+            _first(checkpoint, 'playerTitle', 'player_title', 'publicTitle', 'public_title')
+        )
+        player_summary = _text(
+            _first(checkpoint, 'playerSummary', 'player_summary', 'publicSummary', 'public_summary')
+        )
+        hidden = _checkpoint_player_hidden(checkpoint)
+        if hidden and not (player_title or player_summary):
             continue
 
         payload = {
             'id': checkpoint_id,
             'status': status,
         }
-        title = _text(
-            _first(checkpoint, 'playerTitle', 'player_title', 'publicTitle', 'public_title')
-            or _first(checkpoint, 'title', 'name')
-        )
+        title = player_title or ('' if hidden else _text(_first(checkpoint, 'title', 'name')))
         if title:
             payload['title'] = title
-        summary = _text(
-            _first(checkpoint, 'playerSummary', 'player_summary', 'publicSummary', 'public_summary')
-            or (_first(checkpoint, 'summary', 'description') if status in {'active', 'completed', 'skipped', 'failed'} else '')
+        summary = player_summary or (
+            ''
+            if hidden or not status_revealed
+            else _text(_first(checkpoint, 'summary', 'description'))
         )
         if summary:
             payload['summary'] = summary
@@ -235,8 +254,49 @@ def _player_visible_checkpoints(value: Any, checkpoint_statuses: dict[str, str])
     return visible
 
 
-def _player_flags(flags: dict) -> dict:
-    return {key: flags[key] for key in PLAYER_PROGRESS_FLAG_KEYS if key in flags}
+def _checkpoint_player_hidden(checkpoint: dict) -> bool:
+    metadata = checkpoint.get('metadata') if isinstance(checkpoint.get('metadata'), dict) else {}
+    return any(
+        hidden_to_players(source)
+        or _truthy(_first(source, 'dmOnly', 'dm_only', 'secret'))
+        for source in (checkpoint, metadata)
+    )
+
+
+def _checkpoint_player_visible(checkpoint: dict) -> bool:
+    return _truthy(
+        _first(
+            checkpoint,
+            'visibleToPlayers',
+            'visible_to_players',
+            'knownToPlayers',
+            'known_to_players',
+            'playerVisible',
+            'player_visible',
+        )
+    )
+
+
+def _player_flags(flags: dict, player_pack: dict) -> dict:
+    result = {}
+    progress_revision_key = 'campaignPackProgressRevision'
+    if progress_revision_key in flags:
+        result[progress_revision_key] = flags[progress_revision_key]
+
+    projection_keys = {
+        'campaignPackActiveCheckpointId': 'activeCheckpointId',
+        'campaignPackCompletedCheckpointIds': 'completedCheckpointIds',
+        'campaignPackSkippedCheckpointIds': 'skippedCheckpointIds',
+        'campaignPackFailedCheckpointIds': 'failedCheckpointIds',
+    }
+    for flag_key, pack_key in projection_keys.items():
+        if flag_key not in flags:
+            continue
+        value = player_pack.get(pack_key)
+        if pack_key == 'activeCheckpointId' and not value:
+            continue
+        result[flag_key] = value if value is not None else []
+    return result
 
 
 def _record_player_visible(record: Any) -> bool:

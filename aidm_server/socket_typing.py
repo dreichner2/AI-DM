@@ -10,6 +10,7 @@ from flask_socketio import emit
 
 from aidm_server.logging_context import clear_logging_context, set_logging_context
 from aidm_server.rate_limiter import RateLimitResult
+from aidm_server.services.session_lifecycle import session_playability_error
 from aidm_server.socket_contracts import socket_error_payload as socket_error
 from aidm_server.socket_state import SocketState
 from aidm_server.telemetry import telemetry_event, telemetry_metric
@@ -22,6 +23,7 @@ class SocketTypingDependencies:
     set_socket_context: Callable[..., None]
     socket_workspace_id: Callable[..., str | None]
     socket_capability_forbidden: Callable[[str], bool]
+    workspace_session: Callable[[int, str], object | None]
     set_player_typing: Callable[[int, int, str, bool], bool]
     active_player_payloads: Callable[[int], list[dict]]
     rate_key: Callable[[str, int, int], str]
@@ -76,6 +78,26 @@ def register_socket_typing_events(socketio, dependencies: SocketTypingDependenci
                         'bound_session_id': bound_session_id,
                         'bound_player_id': bound_player_id,
                     },
+                    severity='warning',
+                )
+                return
+
+            session_obj = dependencies.workspace_session(session_id, workspace_id)
+            if not session_obj:
+                emit('error', socket_error('session_not_found', 'Session not found.'))
+                telemetry_event(
+                    'socket.typing.session_not_found',
+                    payload={'sid': request.sid, 'session_id': session_id},
+                    severity='warning',
+                )
+                return
+            playability_error = session_playability_error(session_obj)
+            if playability_error:
+                error_code, message = playability_error
+                emit('error', socket_error(error_code, message))
+                telemetry_event(
+                    f'socket.typing.{error_code}',
+                    payload={'sid': request.sid, 'session_id': session_id},
                     severity='warning',
                 )
                 return

@@ -1,4 +1,11 @@
-import type { AbilityOption, ItemOption } from './gameActions'
+import {
+  normalizeDie,
+  type AbilityOption,
+  type ItemOption,
+  type PendingRollGuidance,
+  type ResultVisibility,
+  type RollMode,
+} from './gameActions'
 import type {
   CampaignSegment,
   JsonRecord,
@@ -206,6 +213,7 @@ export type PendingRollOption = {
   turnId: number
   label: string
   detail: string
+  guidance: PendingRollGuidance
 }
 
 export type PendingRollNotice = {
@@ -218,6 +226,7 @@ export type PendingRollNotice = {
   detail: string
   pendingCount: number
   isWaitingOnSelectedPlayer: boolean
+  guidance: PendingRollGuidance
 }
 
 export function isRecord(value: unknown): value is JsonRecord {
@@ -1316,6 +1325,7 @@ type PendingRollTimelineEntry = {
   detail: string
   ruleLabel: string
   waitingPlayerIds: number[]
+  guidance: PendingRollGuidance
 }
 
 function uniquePositiveIntegers(values: number[]) {
@@ -1333,6 +1343,37 @@ function numberArrayValue(value: unknown): number[] | null {
 
 function metadataRollGate(metadata: JsonRecord) {
   return isRecord(metadata.roll_gate) ? metadata.roll_gate : {}
+}
+
+function pendingRollSpecFromMetadata(metadata: JsonRecord, ruleType: string) {
+  const rollGate = metadataRollGate(metadata)
+  const nestedRulesHint = isRecord(metadata.rules_hint) ? metadata.rules_hint : {}
+  const rawSpec = isRecord(rollGate.roll_spec)
+    ? rollGate.roll_spec
+    : isRecord(metadata.roll_spec)
+      ? metadata.roll_spec
+      : isRecord(nestedRulesHint.roll_spec)
+        ? nestedRulesHint.roll_spec
+        : {}
+  const modeValue = stringValue(rawSpec.mode).toLowerCase()
+  const mode: RollMode = ['advantage', 'disadvantage'].includes(modeValue)
+    ? modeValue as RollMode
+    : 'normal'
+  const visibilityValue = stringValue(rawSpec.result_visibility).toLowerCase()
+  const resultVisibility: ResultVisibility = visibilityValue === 'visible' ? 'visible' : 'hidden_until_landed'
+  const rawAbility = isRecord(rawSpec.ability) ? rawSpec.ability : null
+  const abilityKey = stringValue(rawAbility?.key).toLowerCase()
+  const abilityLabel = stringValue(rawAbility?.label)
+  return {
+    die: normalizeDie(stringValue(rawSpec.die, 'd20')),
+    mode,
+    ruleType: stringValue(rawSpec.rule_type, ruleType),
+    reason: stringValue(rawSpec.reason, ruleType.replace(/_/g, ' ')),
+    resultVisibility,
+    ability: abilityKey
+      ? { key: abilityKey, label: abilityLabel || abilityKey.toUpperCase() }
+      : null,
+  }
 }
 
 function metadataNumberArray(metadata: JsonRecord, key: string): number[] | null {
@@ -1393,22 +1434,32 @@ function pendingRollTimelineEntries(timeline: TimelineEntry[]): PendingRollTimel
       const resolutionState = resolutionStates.get(turnId)
       const ruleType = stringValue(entry.metadata.rule_type ?? entry.metadata.roll_type, 'check').replace(/_/g, ' ')
       const detail = truncateText(entry.text || 'Pending check', 72)
+      const waitingPlayerIds = pendingPlayerIds(entry, resolutionState)
       return {
         turnId,
         label: `Turn ${turnNumber(entry, index)}: ${ruleType}`,
         detail,
         ruleLabel: ruleType,
-        waitingPlayerIds: pendingPlayerIds(entry, resolutionState),
+        waitingPlayerIds,
+        guidance: {
+          pendingTurnId: turnId,
+          ruleType,
+          dcHint: stringValue(entry.metadata.dc_hint) || null,
+          prompt: detail,
+          remainingPlayerIds: waitingPlayerIds,
+          rollSpec: pendingRollSpecFromMetadata(entry.metadata, ruleType),
+        },
       }
     })
     .reverse()
 }
 
 export function pendingRollOptionsFromTimeline(timeline: TimelineEntry[]): PendingRollOption[] {
-  return pendingRollTimelineEntries(timeline).map(({ turnId, label, detail }) => ({
+  return pendingRollTimelineEntries(timeline).map(({ turnId, label, detail, guidance }) => ({
     turnId,
     label,
     detail,
+    guidance,
   }))
 }
 
@@ -1445,6 +1496,7 @@ export function pendingRollNoticeFromTimeline(
     detail: current.detail,
     pendingCount: pendingRolls.length,
     isWaitingOnSelectedPlayer: selectedPlayerId !== null && waitingPlayerIds.includes(selectedPlayerId),
+    guidance: current.guidance,
   }
 }
 
@@ -1452,7 +1504,7 @@ export function memorySnippetRecords(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? value.filter(isRecord) : []
 }
 
-export function canonFactsFromMemorySnippets(memorySnippets: JsonRecord[], selectedSessionId: number | null) {
+export function recentMemoryFromSnippets(memorySnippets: JsonRecord[], selectedSessionId: number | null) {
   return [...memorySnippets]
     .reverse()
     .map((snippet) => {

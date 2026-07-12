@@ -430,6 +430,16 @@ def test_player_account_cannot_mutate_dm_resources_but_admin_can(tmp_path, monke
         ('post', '/api/worlds', {'name': 'Player-authored world'}, 'dm_authoring'),
         ('patch', f"/api/campaigns/{ids['campaign_id']}", {'title': 'Player rename'}, 'dm_authoring'),
         ('post', '/api/sessions/start', {'campaign_id': ids['campaign_id']}, 'dm_runtime_control'),
+        (
+            'post',
+            f"/api/sessions/{ids['session_id']}/recovery/resolve",
+            {
+                'turn_id': 1,
+                'resolution': 'state_corrected',
+                'operator_note': 'Player must not clear recovery gates.',
+            },
+            'dm_runtime_control',
+        ),
         ('post', '/api/maps', {'title': 'Player map', 'campaign_id': ids['campaign_id']}, 'dm_authoring'),
         (
             'post',
@@ -1556,10 +1566,8 @@ def test_bestiary_authoring_endpoints_require_workspace_admin_account(tmp_path, 
     assert player_generate_pack.get_json()['error_code'] == 'forbidden'
     assert player_resolve_save.status_code == 403
     assert player_resolve_save.get_json()['error_code'] == 'forbidden'
-    assert player_resolve_preview.status_code == 200
-    player_resolve_preview_payload = player_resolve_preview.get_json()
-    assert player_resolve_preview_payload['savedToBestiary'] is False
-    assert 'debug' not in player_resolve_preview_payload
+    assert player_resolve_preview.status_code == 403
+    assert player_resolve_preview.get_json()['error_code'] == 'forbidden'
     assert player_evolve_save.status_code == 403
     assert player_evolve_save.get_json()['error_code'] == 'forbidden'
     assert player_evolve_preview.status_code == 200

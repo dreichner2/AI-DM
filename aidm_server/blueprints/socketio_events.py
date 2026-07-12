@@ -43,6 +43,7 @@ from aidm_server.turn_control import (
     turn_control_update_payload,
 )
 from aidm_server.turn_engine import TurnEngine
+from aidm_server.turn_coordinator import session_turn_coordinator
 from aidm_server.workspace_access import get_player as workspace_player, get_session as workspace_session
 
 
@@ -215,6 +216,8 @@ def register_socketio_events(socketio):
             socket_capability_forbidden=lambda event_name: _socket_capability_forbidden(event_name),
             workspace_session=lambda session_id, workspace_id: workspace_session(session_id, workspace_id),
             workspace_player=lambda player_id, workspace_id: _workspace_player_for_socket(player_id, workspace_id),
+            serialize_session=lambda session_id: session_turn_coordinator.serialized(session_id),
+            refresh_session=lambda: db.session.expire_all(),
             set_turn_control=set_session_turn_control,
             turn_control_payload=turn_control_update_payload,
             commit=lambda: db.session.commit(),
@@ -245,6 +248,7 @@ def register_socketio_events(socketio):
             set_socket_context=lambda *args, **kwargs: _set_socket_context(*args, **kwargs),
             socket_workspace_id=lambda *args, **kwargs: _socket_workspace_id(*args, **kwargs),
             socket_capability_forbidden=lambda event_name: _socket_capability_forbidden(event_name),
+            workspace_session=lambda session_id, workspace_id: workspace_session(session_id, workspace_id),
             set_player_typing=lambda session_id, player_id, sid, is_typing: _set_player_typing(
                 session_id,
                 player_id,

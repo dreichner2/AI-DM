@@ -3,10 +3,11 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from threading import Barrier, Lock
+from threading import Barrier, Event, Lock, Thread, current_thread
 
 import pytest
 
+import aidm_server.services.campaign_pack_coordination as campaign_pack_coordination_module
 from aidm_server.canon_jobs import (
     CANON_JOB_WORKER_EXTENSION,
     CANON_JOB_FAILED_MESSAGE,
@@ -23,12 +24,15 @@ from aidm_server.models import (
     CanonJob,
     Campaign,
     DmTurn,
+    Session,
     SessionState,
     TurnCanonUpdate,
     TurnEvent,
+    safe_json_dumps,
     safe_json_loads,
 )
 from aidm_server.time_utils import utc_now
+from aidm_server.turn_coordinator import session_turn_coordinator
 from tests.helpers import seed_world_campaign_player_session
 
 
@@ -158,6 +162,79 @@ def test_canon_provider_wait_has_no_active_database_transaction(app, monkeypatch
         assert processed.status == 'succeeded'
 
     assert provider_transaction_states == [False]
+
+
+def test_canon_waiter_preserves_foreground_snapshot_commit(app, monkeypatch):
+    import aidm_server.canon_jobs as canon_jobs_module
+
+    ids = seed_world_campaign_player_session(app)
+    turn_id = _seed_completed_turn(app, ids)
+    with app.app_context():
+        app.config['AIDM_TURN_COORDINATOR_STORE'] = 'memory'
+        turn = db.session.get(DmTurn, turn_id)
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        job = enqueue_canon_job(
+            turn=turn,
+            campaign=campaign,
+            speaking_player_name='Seraphina',
+        )
+        db.session.commit()
+        job_id = job.job_id
+
+    monkeypatch.setattr(
+        canon_jobs_module,
+        'extract_canon_patch',
+        lambda *args, **kwargs: (_empty_patch(), 'snapshot-waiter-test'),
+    )
+    initial_discovery_finished = Event()
+    worker_errors: list[Exception] = []
+    worker_statuses: list[str] = []
+    original_discovery = (
+        campaign_pack_coordination_module.campaign_pack_progress_lock_session_ids
+    )
+
+    def observe_discovery(session_id):
+        lock_ids = original_discovery(session_id)
+        if current_thread().name == 'canon-snapshot-waiter':
+            initial_discovery_finished.set()
+        return lock_ids
+
+    monkeypatch.setattr(
+        campaign_pack_coordination_module,
+        'campaign_pack_progress_lock_session_ids',
+        observe_discovery,
+    )
+
+    def run_waiting_canon_job():
+        with app.app_context():
+            try:
+                processed = process_canon_job(job_id)
+                worker_statuses.append(processed.status if processed else 'missing')
+            except Exception as exc:  # pragma: no cover - assertion reports worker failures.
+                worker_errors.append(exc)
+            finally:
+                db.session.remove()
+
+    worker = Thread(target=run_waiting_canon_job, name='canon-snapshot-waiter')
+    with app.app_context(), session_turn_coordinator.serialized(ids['session_id']):
+        worker.start()
+        assert initial_discovery_finished.wait(timeout=1.0)
+        session_obj = db.session.get(Session, ids['session_id'], populate_existing=True)
+        foreground_snapshot = safe_json_loads(session_obj.state_snapshot, {})
+        foreground_snapshot['foregroundCommitMarker'] = 'must-survive-canon'
+        session_obj.state_snapshot = safe_json_dumps(foreground_snapshot, {})
+        db.session.commit()
+
+    worker.join(timeout=2.0)
+    assert not worker.is_alive()
+    assert worker_errors == []
+    assert worker_statuses == ['succeeded']
+    with app.app_context():
+        final_snapshot = safe_json_loads(
+            db.session.get(Session, ids['session_id']).state_snapshot,
+            {},
+        )
+    assert final_snapshot['foregroundCommitMarker'] == 'must-survive-canon'
 
 
 def test_canon_job_failure_is_durable_retryable_and_does_not_expose_internal_error(app, monkeypatch):

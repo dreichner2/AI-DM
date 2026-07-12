@@ -161,7 +161,8 @@ def resolve_authoritative_player_roll(
         rolls.append(_secure_die(sides, roller))
     kept = max(rolls) if mode == 'advantage' else min(rolls) if mode == 'disadvantage' else rolls[0]
     modifier = int(spec.get('modifier') or 0)
-    reason = _clean_text(requested_roll.get('reason'), max_length=240)
+    reason_source = stored_spec.get('reason') if pending_turn is not None else requested_roll.get('reason')
+    reason = _clean_text(reason_source, max_length=240)
     if not reason:
         reason = str(rule_type or 'check').replace('_', ' ')
 

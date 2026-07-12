@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { trustBackendOrigin, writeOriginScopedStorage } from './api'
 import {
   buildSessionSocketConnection,
+  isTerminalSessionSocketError,
+  normalizeRollRequiredPayload,
   normalizeRollResolvedPayload,
   normalizeTurnDuplicatePayload,
 } from './useSessionSocket'
@@ -44,6 +46,16 @@ describe('session socket backend origin credential boundary', () => {
     })
     expect(socketOptions.withCredentials).toBeUndefined()
     expect(socketOptions.extraHeaders).toEqual({ 'ngrok-skip-browser-warning': 'true' })
+  })
+})
+
+describe('session socket lifecycle errors', () => {
+  it('treats unavailable session, campaign, and player bindings as terminal', () => {
+    expect(isTerminalSessionSocketError('session_archived')).toBe(true)
+    expect(isTerminalSessionSocketError('campaign_deleted')).toBe(true)
+    expect(isTerminalSessionSocketError('player_identity_mismatch')).toBe(true)
+    expect(isTerminalSessionSocketError('roll_required')).toBe(false)
+    expect(isTerminalSessionSocketError('rate_limited')).toBe(false)
   })
 })
 
@@ -110,5 +122,42 @@ describe('authoritative socket payload validation', () => {
     expect(normalizeRollResolvedPayload({ ...resolvedRoll, total: 999 })).toBeNull()
     expect(normalizeRollResolvedPayload({ ...resolvedRoll, rolls: [21] })).toBeNull()
     expect(normalizeRollResolvedPayload({ ...resolvedRoll, proficiency: { bonus: 2 } })).toBeNull()
+  })
+
+  it('normalizes server roll guidance while dropping private or malformed fields', () => {
+    expect(normalizeRollRequiredPayload({
+      session_id: 20,
+      pending_turn_id: 80,
+      rule_type: 'stealth',
+      dc_hint: 'DC 14',
+      prompt: 'Roll to slip past the sentry.',
+      remaining_player_ids: [30, '31', -1],
+      roll_spec: {
+        die: 'd20',
+        mode: 'disadvantage',
+        rule_type: 'stealth',
+        reason: 'Sneak past the sentry',
+        result_visibility: 'hidden_until_landed',
+        ability: { key: 'dexterity', label: 'DEX', score: 18, modifier: 4 },
+        attack: { private: true },
+      },
+    })).toEqual({
+      sessionId: 20,
+      pendingTurnId: 80,
+      ruleType: 'stealth',
+      dcHint: 'DC 14',
+      prompt: 'Roll to slip past the sentry.',
+      remainingPlayerIds: [30, 31],
+      rollSpec: {
+        die: 'd20',
+        mode: 'disadvantage',
+        ruleType: 'stealth',
+        reason: 'Sneak past the sentry',
+        resultVisibility: 'hidden_until_landed',
+        ability: { key: 'dexterity', label: 'DEX' },
+      },
+    })
+
+    expect(normalizeRollRequiredPayload({ pending_turn_id: 80 })).toBeNull()
   })
 })

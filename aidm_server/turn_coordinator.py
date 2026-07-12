@@ -54,6 +54,14 @@ class TurnLeaseLostError(RuntimeError):
     """Raised when a database-backed turn lease can no longer fence a commit."""
 
 
+class SessionTurnTargetMissingError(RuntimeError):
+    """Raised when a database lease cannot exist because its session is gone."""
+
+    def __init__(self, session_id: int):
+        super().__init__(f'Session {session_id} no longer exists.')
+        self.session_id = session_id
+
+
 @dataclass(frozen=True)
 class DatabaseTurnLease:
     coordinator: 'DatabaseSessionTurnCoordinator'
@@ -138,7 +146,7 @@ class DatabaseSessionTurnCoordinator:
         self._heartbeat_signal_factory = heartbeat_signal_factory
 
     def _try_acquire(self, session_id: int, owner_token: str) -> int | None:
-        from aidm_server.models import SessionTurnLock
+        from aidm_server.models import Session, SessionTurnLock
 
         table = SessionTurnLock.__table__
         now = self._clock()
@@ -177,6 +185,18 @@ class DatabaseSessionTurnCoordinator:
                 )
             return 1
         except IntegrityError:
+            # A concurrent hard delete removes the lease through the session
+            # foreign-key cascade. Distinguish that terminal state from normal
+            # lease contention so waiters do not spin forever trying to insert
+            # a lock row whose parent can no longer exist.
+            with db.engine.connect() as connection:
+                session_exists = connection.execute(
+                    select(Session.__table__.c.session_id).where(
+                        Session.__table__.c.session_id == session_id,
+                    )
+                ).first()
+            if session_exists is None:
+                raise SessionTurnTargetMissingError(session_id) from None
             return None
 
     def _renew(self, session_id: int, owner_token: str, fencing_token: int) -> bool:
@@ -383,6 +403,13 @@ class ConfiguredSessionTurnCoordinator:
 
     def discard_session(self, session_id: int) -> bool:
         return self._active_coordinator().discard_session(session_id)
+
+    def held_session_ids(self) -> frozenset[int]:
+        return frozenset(_HELD_SESSION_IDS.get())
+
+    def holds_all(self, session_ids) -> bool:
+        held = self.held_session_ids()
+        return all(int(session_id) in held for session_id in session_ids)
 
     def lock_count(self) -> int:
         return self._active_coordinator().lock_count()

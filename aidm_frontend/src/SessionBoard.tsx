@@ -7,6 +7,7 @@ import {
   Download,
   MoreHorizontal,
   Share2,
+  ShieldAlert,
   SlidersHorizontal,
   Sparkles,
   Trash2,
@@ -16,6 +17,7 @@ import {
 import { ActionComposer, type ActionComposerProps } from './ActionComposer'
 import { ThinIcon, ToolbarButton } from './AppChrome'
 import { CombatHud } from './CombatHud'
+import type { PendingRollGuidance } from './gameActions'
 import {
   type ContentRating,
   type ContentSettings,
@@ -30,12 +32,16 @@ import {
 } from './gameSelectors'
 import { NarrativeProse } from './NarrativeProse'
 import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
+import type {
+  TurnRecoveryGate,
+  TurnRecoveryResolution,
+} from './turnRecovery'
 import {
   DirectorCommentaryPanel,
   OperatorDrawer,
   type BoardViewMode,
-  type CanonFact,
   type DmExecutionStats,
+  type RecentMemoryEntry,
 } from './SessionDirectorPanels'
 import { SessionPresenceStrip } from './SessionPresenceStrip'
 import type { SceneDisplayState } from './sceneState'
@@ -142,6 +148,7 @@ type SessionBoardProps = {
   onSceneMusicControl: (payload: SceneMusicControlPayload) => void
   contentSettings: ContentSettings
   contentSettingsPending: boolean
+  canUseOperatorTools: boolean
   canEditContentSettings: boolean
   onContentRatingChange: (rating: ContentRating) => void
   onContentToneTagsChange: (toneTags: string[]) => void
@@ -191,6 +198,15 @@ type SessionBoardProps = {
   sendPending: boolean
   streamingTurnActive: boolean
   pendingRollNotice: PendingRollNotice | null
+  onPreparePendingRoll: (guidance: PendingRollGuidance) => void
+  turnRecoveryGate: TurnRecoveryGate | null
+  turnRecoveryPending: boolean
+  turnRecoveryError: string
+  turnRecoverySuccess: string
+  onResolveTurnRecovery: (
+    resolution: TurnRecoveryResolution,
+    operatorNote: string,
+  ) => Promise<void>
   combatState: CombatStatePanel
   dmExecutionStats: DmExecutionStats
   welcomeText: string
@@ -199,7 +215,7 @@ type SessionBoardProps = {
   questTitle: string
   sessionState: SessionState | null
   campaign: Campaign | null
-  canonFacts: CanonFact[]
+  recentMemory: RecentMemoryEntry[]
   clarificationRequest: ClarificationRequest | null
   resolveClarification: (selectedItemId: string) => void
   onStartAdventure: () => void
@@ -223,6 +239,135 @@ function formatClock(value: string | null) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+}
+
+function TurnRecoveryBanner({
+  canResolve,
+  error,
+  gate,
+  pending,
+  success,
+  onResolve,
+}: {
+  canResolve: boolean
+  error: string
+  gate: TurnRecoveryGate
+  pending: boolean
+  success: string
+  onResolve: (resolution: TurnRecoveryResolution, operatorNote: string) => Promise<void>
+}) {
+  const [resolution, setResolution] = useState<TurnRecoveryResolution | ''>('')
+  const [operatorNote, setOperatorNote] = useState('')
+  const note = operatorNote.trim()
+  const partialMechanics = gate.mechanicsStatus === 'partial'
+  const appliedChangeLabel = `${gate.preDmAppliedChangeCount} pre-DM ${
+    gate.preDmAppliedChangeCount === 1 ? 'change' : 'changes'
+  }`
+
+  return (
+    <section
+      className="turn-recovery-banner"
+      role="alert"
+      aria-labelledby="turn-recovery-title"
+    >
+      <div className="turn-recovery-heading">
+        <ShieldAlert size={20} aria-hidden="true" />
+        <div>
+          <strong id="turn-recovery-title">Turn {gate.turnId} needs recovery</strong>
+          <span>
+            {partialMechanics
+              ? `Narration was saved after ${appliedChangeLabel}; post-DM mechanics were not applied.`
+              : 'Narration was saved, but post-DM mechanical state was not applied.'}
+          </span>
+        </div>
+        <span className="turn-recovery-badge">Actions paused</span>
+      </div>
+      <p>
+        {partialMechanics
+          ? 'The pre-DM changes remain authoritative. Do not replay or duplicate them while correcting the remaining state. '
+          : 'No pre-DM mechanical changes were recorded for this turn. '}
+        New turns are blocked so HP, inventory, combat, and world state cannot silently diverge.
+        {gate.createdAt ? ` Flagged ${formatDateTime(gate.createdAt)}.` : ''}
+      </p>
+      {canResolve ? (
+        <form
+          className="turn-recovery-form"
+          aria-label="Resolve turn recovery"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (!resolution || !note || pending) return
+            void onResolve(resolution, note)
+          }}
+        >
+          <fieldset disabled={pending}>
+            <legend>Confirm the authoritative outcome</legend>
+            <label>
+              <input
+                type="radio"
+                name={`turn-${gate.turnId}-recovery`}
+                value="state_corrected"
+                checked={resolution === 'state_corrected'}
+                onChange={() => setResolution('state_corrected')}
+              />
+              <span>
+                <strong>State corrected</strong>
+                <small>
+                  {partialMechanics
+                    ? 'I verified the already-applied pre-DM changes and corrected the remaining state without replaying them.'
+                    : 'I inspected and corrected the authoritative game state.'}
+                </small>
+              </span>
+            </label>
+            <label>
+              <input
+                type="radio"
+                name={`turn-${gate.turnId}-recovery`}
+                value="no_mechanical_change_required"
+                checked={resolution === 'no_mechanical_change_required'}
+                onChange={() => setResolution('no_mechanical_change_required')}
+              />
+              <span>
+                <strong>No mechanical change required</strong>
+                <small>
+                  {partialMechanics
+                    ? 'The applied pre-DM changes are correct and the narration needs no additional persistent change.'
+                    : 'The saved narration did not require a persistent state change.'}
+                </small>
+              </span>
+            </label>
+          </fieldset>
+          <div className="turn-recovery-note">
+            <label htmlFor={`turn-${gate.turnId}-recovery-note`}>Operator note</label>
+            <textarea
+              id={`turn-${gate.turnId}-recovery-note`}
+              value={operatorNote}
+              onChange={(event) => setOperatorNote(event.target.value)}
+              disabled={pending}
+              required
+              maxLength={1000}
+              rows={2}
+              placeholder="Record what you verified or corrected."
+            />
+            <small aria-hidden="true">{operatorNote.length}/1000</small>
+          </div>
+          <div className="turn-recovery-submit-row">
+            <span className="turn-recovery-feedback" aria-live="polite">
+              {error || success}
+            </span>
+            <button type="submit" disabled={!resolution || !note || pending}>
+              {pending ? 'Resolving and refreshing…' : 'Resolve and resume play'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <p className="turn-recovery-player-note">
+          The Dungeon Master is reviewing the turn. Your draft is safe; play will resume after the
+          session state is verified.
+        </p>
+      )}
+      {error && !canResolve ? <p className="turn-recovery-feedback">{error}</p> : null}
+    </section>
+  )
 }
 
 function timelineMetadataString(entry: TimelineEntry, key: string) {
@@ -252,7 +397,13 @@ function canRateTurnQuality(entry: TimelineEntry | null) {
   return canReportBadTurn(entry)
 }
 
-function RollWaitBanner({ notice }: { notice: PendingRollNotice }) {
+function RollWaitBanner({
+  notice,
+  onPrepare,
+}: {
+  notice: PendingRollNotice
+  onPrepare: (guidance: PendingRollGuidance) => void
+}) {
   return (
     <section
       className={`roll-wait-banner ${notice.isWaitingOnSelectedPlayer ? 'current-player' : ''}`}
@@ -270,9 +421,19 @@ function RollWaitBanner({ notice }: { notice: PendingRollNotice }) {
         </span>
         <small>{notice.detail}</small>
       </div>
-      <div className="roll-wait-meta">
-        {notice.pendingCount > 1 ? `${notice.pendingCount} pending checks` : 'Roll needed'}
-      </div>
+      {notice.isWaitingOnSelectedPlayer ? (
+        <button
+          type="button"
+          className="roll-wait-meta roll-wait-action"
+          onClick={() => onPrepare(notice.guidance)}
+        >
+          Roll now
+        </button>
+      ) : (
+        <div className="roll-wait-meta">
+          {notice.pendingCount > 1 ? `${notice.pendingCount} pending checks` : 'Roll needed'}
+        </div>
+      )}
     </section>
   )
 }
@@ -328,6 +489,7 @@ export function SessionBoard({
   onSceneMusicControl,
   contentSettings,
   contentSettingsPending,
+  canUseOperatorTools,
   canEditContentSettings,
   onContentRatingChange,
   onContentToneTagsChange,
@@ -377,6 +539,12 @@ export function SessionBoard({
   sendPending,
   streamingTurnActive,
   pendingRollNotice,
+  onPreparePendingRoll,
+  turnRecoveryGate,
+  turnRecoveryPending,
+  turnRecoveryError,
+  turnRecoverySuccess,
+  onResolveTurnRecovery,
   combatState,
   dmExecutionStats,
   welcomeText,
@@ -385,7 +553,7 @@ export function SessionBoard({
   questTitle,
   sessionState,
   campaign,
-  canonFacts,
+  recentMemory,
   clarificationRequest,
   resolveClarification,
   onStartAdventure,
@@ -403,11 +571,38 @@ export function SessionBoard({
       : sendPending || streamingTurnActive ? 'Streaming...' : 'Ready'
   const chatTextClassName = `chat-text-size-${chatTextSettings.size} chat-text-font-${chatTextSettings.font}`
   const theaterMode = boardViewMode === 'theater'
-  const rollWaitBanner = pendingRollNotice ? <RollWaitBanner notice={pendingRollNotice} /> : null
+  const rollWaitBanner = pendingRollNotice ? (
+    <RollWaitBanner notice={pendingRollNotice} onPrepare={onPreparePendingRoll} />
+  ) : null
+  const recoveryBanner = turnRecoveryGate ? (
+    <TurnRecoveryBanner
+      key={turnRecoveryGate.turnId}
+      canResolve={canUseOperatorTools}
+      error={turnRecoveryError}
+      gate={turnRecoveryGate}
+      pending={turnRecoveryPending}
+      success={turnRecoverySuccess}
+      onResolve={onResolveTurnRecovery}
+    />
+  ) : null
+  const recoverySuccessNotice = !turnRecoveryGate && turnRecoverySuccess ? (
+    <div className="turn-recovery-success" role="status" aria-live="polite">
+      {turnRecoverySuccess}
+    </div>
+  ) : null
+  const recoveryFailureNotice = !turnRecoveryGate && turnRecoveryError ? (
+    <div className="turn-recovery-failure" role="alert">
+      {turnRecoveryError}
+    </div>
+  ) : null
   const showStartAdventure =
     Boolean(activeSession) && !loading && turnRows.length === 0 && !currentResponseEntry
   const startAdventureDisabled =
-    sendPending || streamingTurnActive || !sessionId || !actionComposerProps.selectedPlayerId
+    sendPending ||
+    streamingTurnActive ||
+    Boolean(turnRecoveryGate) ||
+    !sessionId ||
+    !actionComposerProps.selectedPlayerId
   const previouslyOnText =
     sessionRecap.trim() ||
     sessionState?.rolling_summary?.trim() ||
@@ -579,15 +774,17 @@ export function SessionBoard({
           >
             Summary
           </ToolbarButton>
-          <ToolbarButton
-            ariaControls="director-commentary-panel"
-            ariaExpanded={directorCommentaryOpen}
-            icon={<Sparkles size={17} />}
-            onClick={() => setDirectorCommentaryOpen((current) => !current)}
-            title="Director Commentary"
-          >
-            Director
-          </ToolbarButton>
+          {canUseOperatorTools ? (
+            <ToolbarButton
+              ariaControls="director-commentary-panel"
+              ariaExpanded={directorCommentaryOpen}
+              icon={<Sparkles size={17} />}
+              onClick={() => setDirectorCommentaryOpen((current) => !current)}
+              title="Director Commentary"
+            >
+              Director
+            </ToolbarButton>
+          ) : null}
           <ToolbarButton
             icon={<Download size={17} />}
             onClick={() => void downloadSessionJson()}
@@ -649,12 +846,16 @@ export function SessionBoard({
                 <button type="button" role="menuitem" disabled={!campaign} onClick={() => void downloadCampaignChronicle()}>
                   Download campaign Chronicle
                 </button>
-                <button type="button" role="menuitem" disabled={!activeSession} onClick={openRenameSessionDialog}>
-                  Rename session
-                </button>
-                <button type="button" role="menuitem" disabled={!activeSession} className="danger" onClick={openDeleteSessionDialog}>
-                  Delete session
-                </button>
+                {canUseOperatorTools ? (
+                  <>
+                    <button type="button" role="menuitem" disabled={!activeSession} onClick={openRenameSessionDialog}>
+                      Rename session
+                    </button>
+                    <button type="button" role="menuitem" disabled={!activeSession} className="danger" onClick={openDeleteSessionDialog}>
+                      Delete session
+                    </button>
+                  </>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -766,21 +967,23 @@ export function SessionBoard({
         ) : null}
       </div>
 
-      <OperatorDrawer
-        boardViewMode={boardViewMode}
-        canEditContentSettings={canEditContentSettings}
-        contentSettings={contentSettings}
-        contentSettingsPending={contentSettingsPending}
-        dmExecutionStats={dmExecutionStats}
-        onBoardViewModeChange={updateBoardViewMode}
-        onContentRatingChange={onContentRatingChange}
-        onContentToneTagsChange={onContentToneTagsChange}
-      />
+      {canUseOperatorTools ? (
+        <OperatorDrawer
+          boardViewMode={boardViewMode}
+          canEditContentSettings={canEditContentSettings}
+          contentSettings={contentSettings}
+          contentSettingsPending={contentSettingsPending}
+          dmExecutionStats={dmExecutionStats}
+          onBoardViewModeChange={updateBoardViewMode}
+          onContentRatingChange={onContentRatingChange}
+          onContentToneTagsChange={onContentToneTagsChange}
+        />
+      ) : null}
 
-      {directorCommentaryOpen ? (
+      {canUseOperatorTools && directorCommentaryOpen ? (
         <DirectorCommentaryPanel
           activeSessionTitle={activeSessionTitle}
-          canonFacts={canonFacts}
+          recentMemory={recentMemory}
           commentary={directorCommentary}
           contentSettings={contentSettings}
           currentResponseEntry={currentResponseEntry}
@@ -801,6 +1004,9 @@ export function SessionBoard({
             ref={turnFeedRef}
             onScroll={updateJumpToLatestVisibility}
           >
+            {recoveryFailureNotice}
+            {recoverySuccessNotice}
+            {recoveryBanner}
             {rollWaitBanner}
             <PreviouslyOnCard
               text={previouslyOnText}
@@ -926,6 +1132,9 @@ export function SessionBoard({
 
       {mainTab === 'dm' ? (
         <section className={`turn-feed single-panel ${chatTextClassName}`}>
+          {recoveryFailureNotice}
+          {recoverySuccessNotice}
+          {recoveryBanner}
           {rollWaitBanner}
           {loading ? (
             <div className="panel-loading-strip" role="status">
@@ -957,6 +1166,9 @@ export function SessionBoard({
 
       {mainTab === 'notes' ? (
         <section className="turn-feed notes-panel">
+          {recoveryFailureNotice}
+          {recoverySuccessNotice}
+          {recoveryBanner}
           {rollWaitBanner}
           <div className="notes-card">
             <h2>Session State</h2>
@@ -973,11 +1185,11 @@ export function SessionBoard({
           </div>
           <div className="notes-card compact-notes">
             <h3>Recent Memory</h3>
-            {canonFacts.length ? (
-              canonFacts.slice(0, 5).map(([fact, source]) => (
-                <div key={`${fact}-${source}`} className="note-line">
+            {recentMemory.length ? (
+              recentMemory.slice(0, 5).map(([text, source]) => (
+                <div key={`${text}-${source}`} className="note-line">
                   <ThinIcon name="dot" size={12} />
-                  <span>{fact}</span>
+                  <span>{text}</span>
                   <small>{source}</small>
                 </div>
               ))
@@ -1012,11 +1224,31 @@ export function SessionBoard({
       <CombatHud
         combat={combatState}
         playerId={playerId}
-        disabled={sendPending || streamingTurnActive || Boolean(pendingRollNotice) || Boolean(clarificationRequest)}
+        disabled={
+          sendPending ||
+          streamingTurnActive ||
+          Boolean(turnRecoveryGate) ||
+          Boolean(pendingRollNotice) ||
+          Boolean(clarificationRequest)
+        }
         submitAction={actionComposerProps.submitAction}
       />
 
-      <ActionComposer {...actionComposerProps} />
+      {turnRecoveryGate ? (
+        <section className="action-composer recovery-action-block" role="status" aria-live="polite">
+          <ShieldAlert size={20} aria-hidden="true" />
+          <div>
+            <strong>Actions are paused for state recovery</strong>
+            <span>
+              {turnRecoveryGate.mechanicsStatus === 'partial'
+                ? 'Narration is safe and pre-DM changes remain applied; they must not be replayed.'
+                : 'Narration is safe. The next turn will unlock after the game state is verified.'}
+            </span>
+          </div>
+        </section>
+      ) : (
+        <ActionComposer {...actionComposerProps} />
+      )}
     </main>
   )
 }

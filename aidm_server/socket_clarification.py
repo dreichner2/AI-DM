@@ -10,6 +10,7 @@ from flask_socketio import emit
 
 from aidm_server.logging_context import clear_logging_context
 from aidm_server.models import safe_json_loads
+from aidm_server.services.session_lifecycle import session_playability_error
 from aidm_server.socket_contracts import socket_error_payload as socket_error
 from aidm_server.socket_state import SocketState
 from aidm_server.telemetry import telemetry_event
@@ -104,6 +105,18 @@ def register_socket_clarification_events(
                 return
 
             session_obj = dependencies.workspace_session(session_id, workspace_id)
+            if session_obj:
+                playability_error = session_playability_error(session_obj)
+                if playability_error:
+                    error_code, message = playability_error
+                    emit('error', socket_error(error_code, message))
+                    telemetry_event(
+                        f'socket.resolve_clarification.{error_code}',
+                        payload={'sid': request.sid, 'session_id': session_id},
+                        severity='warning',
+                    )
+                    return
+
             player = dependencies.workspace_player(player_id, workspace_id)
             turn = dependencies.get_turn(turn_id)
             if not session_obj or not player or not turn or turn.session_id != session_id or turn.player_id != player_id:

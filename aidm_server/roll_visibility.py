@@ -53,6 +53,24 @@ def public_roll_spec_payload(spec: Any) -> dict[str, Any]:
     return {key: deepcopy(spec[key]) for key in PUBLIC_ROLL_SPEC_KEYS if key in spec}
 
 
+def player_roll_spec_payload(spec: Any) -> dict[str, Any]:
+    """Project roll guidance for the acting player without numeric provenance."""
+
+    payload = public_roll_spec_payload(spec)
+    if not isinstance(spec, dict):
+        return payload
+    ability = spec.get('ability')
+    if isinstance(ability, dict):
+        public_ability = {
+            key: deepcopy(ability[key])
+            for key in ('key', 'label')
+            if key in ability
+        }
+        if public_ability:
+            payload['ability'] = public_ability
+    return payload
+
+
 def public_action_intent_payload(action_intent: Any) -> Any:
     if not isinstance(action_intent, dict):
         return deepcopy(action_intent)

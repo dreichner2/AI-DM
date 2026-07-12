@@ -88,11 +88,20 @@ describe('CombatHud', () => {
     const submitAction = vi.fn<(message?: string, intent?: ActionIntent) => boolean>(() => true)
     render(<CombatHud combat={combatState()} playerId={30} disabled={false} submitAction={submitAction} />)
 
-    expect(screen.getByText('Your turn')).toBeInTheDocument()
-    expect(screen.getByText(/Goblin Sentry · near · melee range · 1 action · movement optional · ends turn/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Distant Archer/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Your turn')
+    expect(screen.getByText(/near · melee range · 1 action · movement optional · ends turn/)).toBeInTheDocument()
+    expect(screen.getAllByText('Make one server-rolled weapon attack against a legal target.')).toHaveLength(2)
 
-    fireEvent.click(screen.getByRole('button', { name: /Attack with Longsword Goblin Sentry/ }))
+    const unavailableTarget = screen.getByRole('button', {
+      name: 'Attack with Longsword, target Distant Archer',
+    })
+    expect(unavailableTarget).toBeDisabled()
+    expect(unavailableTarget).toHaveAccessibleDescription(/Target is at far range\./)
+    expect(screen.getByText('Unavailable: Target is at far range.')).toBeVisible()
+    fireEvent.click(unavailableTarget)
+    expect(submitAction).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Attack with Longsword, target Goblin Sentry' }))
 
     expect(submitAction).toHaveBeenCalledTimes(1)
     const [message, intent] = submitAction.mock.calls[0] ?? []
@@ -113,11 +122,13 @@ describe('CombatHud', () => {
     const submitAction = vi.fn(() => true)
     render(<CombatHud combat={combatState({ current: false })} playerId={30} disabled={false} submitAction={submitAction} />)
 
-    expect(screen.getByText('Goblin Sentry is acting')).toBeInTheDocument()
-    expect(screen.getByRole('button', {
-      name: /Attack with Longsword Goblin Sentry .* Goblin Sentry is acting now\./,
-    })).toBeDisabled()
-    expect(screen.getByText(/Goblin Sentry is acting now\./)).toBeVisible()
+    expect(screen.getByRole('status')).toHaveTextContent('Goblin Sentry is acting')
+    const action = screen.getByRole('button', {
+      name: 'Attack with Longsword, target Goblin Sentry',
+    })
+    expect(action).toBeDisabled()
+    expect(action).toHaveAccessibleDescription(/Goblin Sentry is acting now\./)
+    expect(screen.getAllByText(/Unavailable: Goblin Sentry is acting now\./)).not.toHaveLength(0)
   })
 
   it('does not expose another player bundle', () => {

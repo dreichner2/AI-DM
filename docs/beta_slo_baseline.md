@@ -24,7 +24,7 @@ make closed-beta-rc
 make local-beta-slo-baseline
 make deployment-readiness DEPLOYMENT_READINESS_ARGS="--env-file <target-env> --target-url <target-url> --auth-token <token> --evidence-report tmp/release/deployment-readiness-evidence.md"
 make hosted-cookie-auth-smoke HOSTED_COOKIE_AUTH_SMOKE_ARGS="--target-url <target-url> --account-intent signup --evidence-report tmp/release/hosted-cookie-auth-evidence.md"
-make beta-slo-baseline BETA_SLO_BASELINE_ARGS="--target-url <target-url> --auth-token <token> --workspace-id <workspace-id> --release RC1 --environment staging --output tmp/release/beta-slo-baseline.md"
+make beta-slo-baseline BETA_SLO_BASELINE_ARGS="--target-url <target-url> --auth-token <token> --workspace-id <workspace-id> --release RC1 --commit-sha <signed-off-commit-sha> --environment staging --invite-more-testers <yes-or-no> --output tmp/release/beta-slo-baseline.md"
 ```
 
 For any future multi-worker Socket.IO deployment, also include the staging proof
@@ -37,6 +37,13 @@ target-environment evidence for inviting more testers.
 The `beta-slo-baseline` target writes `tmp/release/beta-slo-baseline.md` from
 the hosted target. It can also render from saved evidence with `--slo-json` and
 `--incidents-json`.
+
+Release evidence accepts the hosted baseline only when its target is an
+absolute HTTP(S) URL, its commit matches the current RC evidence, it is not
+older than that RC evidence, it contains positive response and provider/model
+turn samples, and the expansion decision is explicitly `yes`. An explicit
+`no` decision fails the release gate; omitted or placeholder evidence remains
+incomplete.
 
 The repository defines the measurements but does not define universal pass/fail
 thresholds for every deployment. Record the release owner's thresholds and the

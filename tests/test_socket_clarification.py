@@ -1,7 +1,9 @@
 from unittest.mock import Mock
 
+import pytest
+
 from aidm_server.database import db
-from aidm_server.models import DmTurn, safe_json_dumps
+from aidm_server.models import Campaign, DmTurn, Session, safe_json_dumps
 from aidm_server.socket_clarification import (
     SocketClarificationDependencies,
     clarification_action_and_option_ids,
@@ -114,6 +116,89 @@ def test_clarification_rejects_selection_outside_persisted_options_without_resum
     error = _event_payload(client.get_received(), 'error')
 
     assert error['error_code'] == 'clarification_invalid_selection'
+    with app.app_context():
+        persisted_turn = db.session.get(DmTurn, turn_id)
+        assert persisted_turn.status == 'awaiting_clarification'
+        assert DmTurn.query.count() == 1
+
+
+@pytest.mark.parametrize(
+    ('scope', 'error_code', 'message'),
+    [
+        (
+            'session',
+            'session_archived',
+            'This session is archived. Restore it before playing.',
+        ),
+        (
+            'campaign',
+            'campaign_archived',
+            'This campaign is archived. Restore it before playing.',
+        ),
+    ],
+)
+def test_clarification_cannot_resume_after_lifecycle_archive(
+    app,
+    socketio,
+    scope,
+    error_code,
+    message,
+):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        turn = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='I attack with my sword.',
+            status='awaiting_clarification',
+            metadata_json=safe_json_dumps(
+                {
+                    'state_pipeline': {
+                        'clarificationRequest': {
+                            'originalAction': {'id': 'act_001', 'kind': 'attack'},
+                            'options': [{'itemId': 'great', 'label': 'Greatsword'}],
+                        }
+                    },
+                },
+                {},
+            ),
+        )
+        db.session.add(turn)
+        db.session.commit()
+        turn_id = turn.turn_id
+
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+
+    with app.app_context():
+        target = (
+            db.session.get(Session, ids['session_id'])
+            if scope == 'session'
+            else db.session.get(Campaign, ids['campaign_id'])
+        )
+        assert target is not None
+        target.status = 'archived'
+        db.session.commit()
+
+    client.emit(
+        'resolve_clarification',
+        {
+            'session_id': ids['session_id'],
+            'player_id': ids['player_id'],
+            'turn_id': turn_id,
+            'selected_item_id': 'great',
+        },
+    )
+    received = client.get_received()
+
+    assert _event_payload(received, 'error') == {
+        'error': message,
+        'error_code': error_code,
+        'details': {},
+    }
+    assert _event_payload(received, 'dm_response_start') is None
     with app.app_context():
         persisted_turn = db.session.get(DmTurn, turn_id)
         assert persisted_turn.status == 'awaiting_clarification'

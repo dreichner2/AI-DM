@@ -17,10 +17,10 @@ import type { ActivePlayer, Campaign, CampaignSegment, JsonRecord, MapItem } fro
 import type { MainTab } from './SessionBoard'
 
 const BetaIncidentPanel = lazy(() =>
-  import('./BetaIncidentPanel').then((module) => ({ default: module.BetaIncidentPanel })),
+  import('./OperatorTools').then((module) => ({ default: module.BetaIncidentPanel })),
 )
 const BestiaryDebugPanel = lazy(() =>
-  import('./BestiaryDebugPanel').then((module) => ({ default: module.BestiaryDebugPanel })),
+  import('./OperatorTools').then((module) => ({ default: module.BestiaryDebugPanel })),
 )
 
 export type InspectorTab = 'party' | 'map' | 'magic' | 'canon' | 'inventory' | 'bestiary' | 'ops'
@@ -32,7 +32,7 @@ type DisplayCharacter = {
   detailId: string
 }
 
-type CanonFact = [fact: string, source: string]
+type RecentMemoryEntry = [text: string, source: string]
 
 const VISIBLE_WORLD_STATE_ITEMS = 5
 
@@ -79,7 +79,7 @@ type InspectorPanelProps = {
   equipmentPendingItemKey: string | null
   toggleInventoryEquipment: (item: InventoryRow) => Promise<void>
   memorySnippetCount: number
-  visibleCanonFacts: CanonFact[]
+  visibleRecentMemory: RecentMemoryEntry[]
   worldStatePanel: WorldStatePanel
   mapPanelTitle: string
   mapDescription: string
@@ -164,7 +164,7 @@ export function InspectorPanel({
   equipmentPendingItemKey,
   toggleInventoryEquipment,
   memorySnippetCount,
-  visibleCanonFacts,
+  visibleRecentMemory,
   worldStatePanel,
   mapPanelTitle,
   mapDescription,
@@ -252,7 +252,7 @@ export function InspectorPanel({
           className={inspectorTab === 'canon' ? 'active' : ''}
           onClick={() => setInspectorTab('canon')}
         >
-          Canon
+          Memory
         </button>
         <button
           type="button"
@@ -557,15 +557,15 @@ export function InspectorPanel({
       {inspectorTab === 'party' || inspectorTab === 'canon' ? (
         <section className="inspector-box">
           <div className="box-title">
-            <h3>Canon Facts ({memorySnippetCount})</h3>
+            <h3>Recent Memory ({memorySnippetCount})</h3>
             <span>{inspectorTab === 'canon' ? 'All' : 'Recent'} <ChevronDown size={14} /></span>
           </div>
           <div className="canon-list">
-            {visibleCanonFacts.length ? (
-              visibleCanonFacts.map(([fact, source]) => (
-                <div key={`${fact}-${source}`}>
+            {visibleRecentMemory.length ? (
+              visibleRecentMemory.map(([text, source]) => (
+                <div key={`${text}-${source}`}>
                   <ThinIcon name="dot" size={12} />
-                  <span>{fact}</span>
+                  <span>{text}</span>
                   <small>{source}</small>
                 </div>
               ))
@@ -581,7 +581,7 @@ export function InspectorPanel({
               setMainTab('notes')
             }}
           >
-            View All Canon <ExternalLink size={12} />
+            View All Memory <ExternalLink size={12} />
           </button>
         </section>
       ) : null}
@@ -736,6 +736,7 @@ export function InspectorPanel({
       {inspectorTab === 'party' || inspectorTab === 'map' || inspectorTab === 'canon' ? (
         <CampaignPackPanel
           snapshot={campaignPackSnapshot}
+          canControl={canUseOperatorTools}
           pendingAction={campaignPackControlPending}
           onControl={controlCampaignPackProgress}
         />
@@ -898,101 +899,105 @@ export function InspectorPanel({
                   </div>
                   <p>{segment.description || segment.trigger_condition || 'No segment notes recorded.'}</p>
                   {segment.tags ? <small>{segment.tags}</small> : null}
-                  <div className="segment-actions">
-                    <button
-                      type="button"
-                      onClick={() => void activateSegment(segment)}
-                      disabled={segmentSavePending || segment.is_triggered}
-                    >
-                      Set active
-                    </button>
-                    <button
-                      type="button"
-                      className="danger"
-                      onClick={() => void deleteSegment(segment)}
-                      disabled={segmentDeletePendingId === segment.segment_id}
-                    >
-                      {segmentDeletePendingId === segment.segment_id ? 'Deleting...' : 'Delete'}
-                    </button>
-                  </div>
+                  {canUseOperatorTools ? (
+                    <div className="segment-actions">
+                      <button
+                        type="button"
+                        onClick={() => void activateSegment(segment)}
+                        disabled={segmentSavePending || segment.is_triggered}
+                      >
+                        Set active
+                      </button>
+                      <button
+                        type="button"
+                        className="danger"
+                        onClick={() => void deleteSegment(segment)}
+                        disabled={segmentDeletePendingId === segment.segment_id}
+                      >
+                        {segmentDeletePendingId === segment.segment_id ? 'Deleting...' : 'Delete'}
+                      </button>
+                    </div>
+                  ) : null}
                 </article>
               ))
             ) : (
               <div className="empty-row">No campaign segments recorded.</div>
             )}
           </div>
-          <form className="management-form" onSubmit={(event) => void createSegment(event)}>
-            <label>
-              Segment title
-              <input
-                value={segmentManagementForm.title}
-                onChange={(event) =>
-                  setSegmentManagementForm((current) => ({
-                    ...current,
-                    title: event.target.value,
-                  }))
-                }
-                disabled={segmentSavePending}
-              />
-            </label>
-            <label>
-              Segment description
-              <textarea
-                value={segmentManagementForm.description}
-                onChange={(event) =>
-                  setSegmentManagementForm((current) => ({
-                    ...current,
-                    description: event.target.value,
-                  }))
-                }
-                rows={2}
-                disabled={segmentSavePending}
-              />
-            </label>
-            <label>
-              Trigger condition
-              <input
-                value={segmentManagementForm.triggerCondition}
-                onChange={(event) =>
-                  setSegmentManagementForm((current) => ({
-                    ...current,
-                    triggerCondition: event.target.value,
-                  }))
-                }
-                disabled={segmentSavePending}
-              />
-            </label>
-            <label>
-              Tags
-              <input
-                value={segmentManagementForm.tags}
-                onChange={(event) =>
-                  setSegmentManagementForm((current) => ({
-                    ...current,
-                    tags: event.target.value,
-                  }))
-                }
-                disabled={segmentSavePending}
-              />
-            </label>
-            <label className="management-checkbox">
-              <input
-                type="checkbox"
-                checked={segmentManagementForm.isTriggered}
-                onChange={(event) =>
-                  setSegmentManagementForm((current) => ({
-                    ...current,
-                    isTriggered: event.target.checked,
-                  }))
-                }
-                disabled={segmentSavePending}
-              />
-              Start as active segment
-            </label>
-            <button type="submit" disabled={!selectedCampaignId || segmentSavePending}>
-              {segmentSavePending ? 'Adding...' : 'Add segment'}
-            </button>
-          </form>
+          {canUseOperatorTools ? (
+            <form className="management-form" onSubmit={(event) => void createSegment(event)}>
+              <label>
+                Segment title
+                <input
+                  value={segmentManagementForm.title}
+                  onChange={(event) =>
+                    setSegmentManagementForm((current) => ({
+                      ...current,
+                      title: event.target.value,
+                    }))
+                  }
+                  disabled={segmentSavePending}
+                />
+              </label>
+              <label>
+                Segment description
+                <textarea
+                  value={segmentManagementForm.description}
+                  onChange={(event) =>
+                    setSegmentManagementForm((current) => ({
+                      ...current,
+                      description: event.target.value,
+                    }))
+                  }
+                  rows={2}
+                  disabled={segmentSavePending}
+                />
+              </label>
+              <label>
+                Trigger condition
+                <input
+                  value={segmentManagementForm.triggerCondition}
+                  onChange={(event) =>
+                    setSegmentManagementForm((current) => ({
+                      ...current,
+                      triggerCondition: event.target.value,
+                    }))
+                  }
+                  disabled={segmentSavePending}
+                />
+              </label>
+              <label>
+                Tags
+                <input
+                  value={segmentManagementForm.tags}
+                  onChange={(event) =>
+                    setSegmentManagementForm((current) => ({
+                      ...current,
+                      tags: event.target.value,
+                    }))
+                  }
+                  disabled={segmentSavePending}
+                />
+              </label>
+              <label className="management-checkbox">
+                <input
+                  type="checkbox"
+                  checked={segmentManagementForm.isTriggered}
+                  onChange={(event) =>
+                    setSegmentManagementForm((current) => ({
+                      ...current,
+                      isTriggered: event.target.checked,
+                    }))
+                  }
+                  disabled={segmentSavePending}
+                />
+                Start as active segment
+              </label>
+              <button type="submit" disabled={!selectedCampaignId || segmentSavePending}>
+                {segmentSavePending ? 'Adding...' : 'Add segment'}
+              </button>
+            </form>
+          ) : null}
         </section>
       ) : null}
     </aside>

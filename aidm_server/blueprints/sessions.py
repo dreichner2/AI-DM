@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
 from aidm_server.action_intent import ACTION_ID_RE
@@ -12,6 +12,7 @@ from aidm_server.database import db, release_clean_scoped_session
 from aidm_server.errors import error_response
 from aidm_server.llm import query_gpt
 from aidm_server.models import (
+    Campaign,
     DmTurn,
     Player,
     Session,
@@ -34,10 +35,17 @@ from aidm_server.response_dtos import (
 )
 from aidm_server.provider_priority import foreground_provider_reservation
 from aidm_server.services.session_lifecycle import (
+    SessionLifecycleTargetNotFoundError,
     archive_session_record,
+    commit_session_lifecycle_operation,
     delete_session_record,
-    metadata_cleaned_snapshot,
     restore_session_record,
+)
+from aidm_server.services.session_recovery import (
+    OPERATOR_NOTE_MAX_LENGTH,
+    TURN_RECOVERY_RESOLUTIONS,
+    SessionRecoveryConflictError,
+    resolve_turn_recovery_gate,
 )
 from aidm_server.services.campaign_pack_progress import (
     CampaignPackProgressError,
@@ -54,6 +62,7 @@ from aidm_server.services.content_settings import (
 )
 from aidm_server.services.session_import import SessionImportError, import_session_export
 from aidm_server.services.workspace import list_campaign_session_payloads
+from aidm_server.socket_contracts import session_recovery_resolved_payload
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 from aidm_server.time_utils import utc_now
 from aidm_server.turn_coordinator import session_turn_coordinator
@@ -107,10 +116,6 @@ def _merge_state_snapshot(raw_snapshot, updates: dict) -> dict:
     snapshot = _state_snapshot_dict(raw_snapshot)
     snapshot.update(updates)
     return snapshot
-
-
-def _metadata_cleaned_snapshot(raw_snapshot) -> dict:
-    return metadata_cleaned_snapshot(raw_snapshot)
 
 
 def _client_session_id(payload: dict | None) -> tuple[str | None, str | None]:
@@ -426,13 +431,39 @@ def start_new_session():
         telemetry_event('sessions.start.campaign_not_found', payload={'campaign_id': campaign_id}, severity='warning')
         return error_response('campaign_not_found', 'Campaign not found.', 404)
 
-    if client_session_id:
-        existing_session = _find_idempotent_session(campaign.campaign_id, client_session_id)
-        if existing_session:
-            telemetry_metric('sessions.start.idempotent_replay_total', 1)
-            return jsonify({'session_id': existing_session.session_id, 'idempotent_replay': True}), 200
-
     try:
+        # Campaign lifecycle mutations row-lock the same record. Refresh under
+        # that lock so a stale preflight cannot create or replay an active
+        # session after the campaign has been archived.
+        campaign = db.session.get(
+            Campaign,
+            campaign.campaign_id,
+            populate_existing=True,
+            with_for_update=True,
+        )
+        if campaign is None:
+            db.session.rollback()
+            return error_response('campaign_not_found', 'Campaign not found.', 404)
+        if str(campaign.status or 'active').strip().lower() != 'active':
+            db.session.rollback()
+            telemetry_event(
+                'sessions.start.campaign_archived',
+                payload={'campaign_id': campaign_id},
+                severity='warning',
+            )
+            return error_response(
+                'campaign_archived',
+                'This campaign is archived. Restore it before starting a session.',
+                409,
+            )
+
+        if client_session_id:
+            existing_session = _find_idempotent_session(campaign.campaign_id, client_session_id)
+            if existing_session:
+                db.session.rollback()
+                telemetry_metric('sessions.start.idempotent_replay_total', 1)
+                return jsonify({'session_id': existing_session.session_id, 'idempotent_replay': True}), 200
+
         name = None
         if payload.get('name') is not None:
             name, name_error = optional_text(payload.get('name'), max_length=80, field='name', default=None)
@@ -469,6 +500,15 @@ def start_new_session():
         return jsonify({'session_id': new_session.session_id, 'idempotent_replay': False}), 201
     except IntegrityError:
         db.session.rollback()
+        campaign = db.session.get(Campaign, campaign_id, populate_existing=True)
+        if campaign is None:
+            return error_response('campaign_not_found', 'Campaign not found.', 404)
+        if str(campaign.status or 'active').strip().lower() != 'active':
+            return error_response(
+                'campaign_archived',
+                'This campaign is archived. Restore it before starting a session.',
+                409,
+            )
         if client_session_id:
             existing_session = _find_idempotent_session(campaign.campaign_id, client_session_id)
             if existing_session:
@@ -726,7 +766,6 @@ def update_session(session_id):
     try:
         session_obj.name = name
         session_obj.updated_at = utc_now()
-        session_obj.state_snapshot = safe_json_dumps(_metadata_cleaned_snapshot(session_obj.state_snapshot), {})
         db.session.commit()
         telemetry_metric('sessions.update.success_total', 1)
         return jsonify(session_payload(session_obj, include_hidden_state=_campaign_pack_operator_view()))
@@ -746,10 +785,21 @@ def archive_session(session_id):
         return error_response('session_not_found', 'Session not found.', 404)
 
     try:
-        payload = archive_session_record(session_obj, include_hidden_state=_campaign_pack_operator_view())
-        db.session.commit()
+        include_hidden_state = _campaign_pack_operator_view()
+        payload = commit_session_lifecycle_operation(
+            session_id,
+            workspace_id=current_workspace_id(),
+            operation=lambda refreshed: archive_session_record(
+                refreshed,
+                include_hidden_state=include_hidden_state,
+            ),
+        )
         telemetry_metric('sessions.archive.success_total', 1)
         return jsonify({'archived': True, 'session': payload})
+    except SessionLifecycleTargetNotFoundError:
+        db.session.rollback()
+        telemetry_event('sessions.archive.session_not_found', payload={'session_id': session_id}, severity='warning')
+        return error_response('session_not_found', 'Session not found.', 404)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to archive session: %s', str(exc))
@@ -766,10 +816,21 @@ def restore_session(session_id):
         return error_response('session_not_found', 'Session not found.', 404)
 
     try:
-        payload = restore_session_record(session_obj, include_hidden_state=_campaign_pack_operator_view())
-        db.session.commit()
+        include_hidden_state = _campaign_pack_operator_view()
+        payload = commit_session_lifecycle_operation(
+            session_id,
+            workspace_id=current_workspace_id(),
+            operation=lambda refreshed: restore_session_record(
+                refreshed,
+                include_hidden_state=include_hidden_state,
+            ),
+        )
         telemetry_metric('sessions.restore.success_total', 1)
         return jsonify({'restored': True, 'session': payload})
+    except SessionLifecycleTargetNotFoundError:
+        db.session.rollback()
+        telemetry_event('sessions.restore.session_not_found', payload={'session_id': session_id}, severity='warning')
+        return error_response('session_not_found', 'Session not found.', 404)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to restore session: %s', str(exc))
@@ -787,22 +848,155 @@ def delete_session(session_id):
 
     hard_delete = str(request.args.get('hard', '')).strip().lower() in {'1', 'true', 'yes', 'on'}
     try:
-        result = delete_session_record(
-            session_obj,
-            hard_delete=hard_delete,
-            include_hidden_state=_campaign_pack_operator_view(),
+        include_hidden_state = _campaign_pack_operator_view()
+        result = commit_session_lifecycle_operation(
+            session_id,
+            workspace_id=current_workspace_id(),
+            operation=lambda refreshed: delete_session_record(
+                refreshed,
+                hard_delete=hard_delete,
+                include_hidden_state=include_hidden_state,
+            ),
         )
-        db.session.commit()
         telemetry_metric(
             'sessions.delete.success_total' if result.hard_deleted else 'sessions.delete.archived_total',
             1,
         )
         return jsonify(result.payload)
+    except SessionLifecycleTargetNotFoundError:
+        db.session.rollback()
+        telemetry_event('sessions.delete.session_not_found', payload={'session_id': session_id}, severity='warning')
+        return error_response('session_not_found', 'Session not found.', 404)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to delete session: %s', str(exc))
         telemetry_event('sessions.delete.failed', payload={'session_id': session_id, 'error': str(exc)}, severity='error')
         return error_response('session_delete_failed', 'Failed to delete session.', 400)
+
+
+@sessions_bp.route('/<int:session_id>/recovery/resolve', methods=['POST'])
+def resolve_session_recovery(session_id):
+    if not _campaign_pack_operator_view():
+        return error_response(
+            'forbidden',
+            'Only workspace admins can resolve a failed-turn recovery gate.',
+            403,
+            {'required_capability': 'dm_runtime_control'},
+        )
+    session_obj = workspace_session(session_id)
+    if not session_obj:
+        return error_response('session_not_found', 'Session not found.', 404)
+
+    payload = parse_json_body(request)
+    if payload is None:
+        return error_response('validation_error', 'Expected JSON request body.', 400)
+
+    raw_turn_id = payload.get('turn_id') if 'turn_id' in payload else payload.get('turnId')
+    turn_id, turn_id_error = positive_int(raw_turn_id, field='turn_id', required=True)
+    if turn_id_error:
+        return error_response('validation_error', turn_id_error, 400)
+
+    resolution = str(payload.get('resolution') or '').strip()
+    if resolution not in TURN_RECOVERY_RESOLUTIONS:
+        return error_response(
+            'validation_error',
+            'resolution must be state_corrected or no_mechanical_change_required.',
+            400,
+        )
+
+    raw_operator_note = (
+        payload.get('operator_note')
+        if 'operator_note' in payload
+        else payload.get('operatorNote')
+    )
+    operator_note, operator_note_error = required_text(
+        raw_operator_note,
+        max_length=OPERATOR_NOTE_MAX_LENGTH,
+        field='operator_note',
+    )
+    if operator_note_error:
+        return error_response('validation_error', operator_note_error, 400)
+
+    try:
+        result = resolve_turn_recovery_gate(
+            session_id=session_id,
+            turn_id=turn_id,
+            resolution=resolution,
+            operator_note=operator_note,
+        )
+        telemetry_event(
+            'sessions.recovery.resolved',
+            payload={
+                'session_id': session_id,
+                'turn_id': turn_id,
+                'resolution': resolution,
+                'idempotent_replay': result.idempotent_replay,
+            },
+        )
+        if not result.idempotent_replay:
+            socketio = current_app.extensions.get('socketio')
+            if socketio is not None:
+                try:
+                    socketio.emit(
+                        'session_recovery_resolved',
+                        session_recovery_resolved_payload(
+                            session_id=result.session_id,
+                            turn_id=result.turn_id,
+                            state_revision=result.state_revision,
+                        ),
+                        room=str(result.session_id),
+                    )
+                except Exception as exc:
+                    # The authoritative recovery commit already succeeded. A
+                    # transient notification failure must not turn that durable
+                    # success into an ambiguous HTTP error or replay the audit.
+                    error_type = type(exc).__name__
+                    logger.warning(
+                        'Failed to notify recovery resolution (error_type=%s, session_id=%s, turn_id=%s).',
+                        error_type,
+                        result.session_id,
+                        result.turn_id,
+                    )
+                    telemetry_event(
+                        'sessions.recovery.notification_failed',
+                        payload={
+                            'session_id': result.session_id,
+                            'turn_id': result.turn_id,
+                            'error_type': error_type,
+                        },
+                        severity='warning',
+                    )
+        return jsonify(
+            {
+                'resolved': True,
+                'idempotent_replay': result.idempotent_replay,
+                'session_id': result.session_id,
+                'turn_id': result.turn_id,
+                'resolution': result.resolution,
+                'state_revision': result.state_revision,
+            }
+        )
+    except SessionRecoveryConflictError as exc:
+        db.session.rollback()
+        status_code = 404 if exc.error_code == 'session_not_found' else 409
+        return error_response(
+            exc.error_code,
+            exc.public_message,
+            status_code,
+            exc.details or None,
+        )
+    except Exception:
+        db.session.rollback()
+        logger.exception(
+            'Failed to resolve session recovery (session_id=%s, turn_id=%s).',
+            session_id,
+            turn_id,
+        )
+        return error_response(
+            'session_recovery_resolve_failed',
+            'Failed to resolve session recovery.',
+            500,
+        )
 
 
 @sessions_bp.route('/<int:session_id>/log', methods=['GET'])
@@ -1022,18 +1216,15 @@ def update_session_campaign_pack_progress(session_id):
     raw_expected_revision = payload.get('expectedRevision') if 'expectedRevision' in payload else payload.get('expected_revision')
     expected_revision = coerce_int(raw_expected_revision)
     try:
-        with session_turn_coordinator.serialized(session_id):
-            db.session.expire(session_obj)
-            result = control_campaign_pack_progress(
-                session_id=session_id,
-                action=action,
-                checkpoint_id=checkpoint_id,
-                reason=reason,
-                actor=_campaign_pack_progress_actor(),
-                expected_revision=expected_revision,
-            )
-            session_state = SessionState.query.filter_by(session_id=session_id).first()
-            db.session.commit()
+        result = control_campaign_pack_progress(
+            session_id=session_id,
+            action=action,
+            checkpoint_id=checkpoint_id,
+            reason=reason,
+            actor=_campaign_pack_progress_actor(),
+            expected_revision=expected_revision,
+        )
+        session_state = SessionState.query.filter_by(session_id=session_id).first()
         return jsonify(
             {
                 'changed': result.changed,
