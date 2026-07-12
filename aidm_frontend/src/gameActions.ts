@@ -51,7 +51,6 @@ export type InteractionTarget = {
 
 export type RollDraft = {
   die: string
-  modifier: number
   mode: RollMode
   reason: string
   resultVisibility: ResultVisibility
@@ -59,23 +58,46 @@ export type RollDraft = {
 }
 
 export type RollResult = RollDraft & {
+  modifier: number
   rolls: number[]
   kept: number
   total: number
 }
 
+export type RollResolvedPayload = {
+  session_id: number
+  turn_id: number
+  player_id: number
+  client_message_id: string | null
+  pending_turn_id: number | null
+  rule_type: string
+  die: string
+  mode: RollMode
+  rolls: number[]
+  kept: number
+  modifier: number
+  total: number
+  reason: string
+  result_visibility: ResultVisibility
+  ability?: { key: string; label: string; score: number | string | null; modifier: number } | null
+  proficiency?: { bonus: number; skills: string[] }
+  modifier_breakdown?: {
+    ability_modifier: number
+    proficiency_bonus: number
+    wound_penalty: number
+    total: number
+  }
+  authoritative: true
+}
+
 export type ActionIntent = {
-  kind: ComposerMode | 'message'
-  source: 'composer' | 'dice_roller'
+  kind: ComposerMode | 'message' | 'combat'
+  source: 'composer' | 'dice_roller' | 'combat_hud'
   text: string
   client_message_id: string
   roll?: {
     die: string
     mode: RollMode
-    modifier: number
-    rolls: number[]
-    kept: number
-    total: number
     result_visibility: ResultVisibility
     reason: string
     target_pending_turn_id?: number
@@ -83,7 +105,7 @@ export type ActionIntent = {
   ability?: {
     key: string
     label: string
-    modifier: number
+    modifier?: number
   }
   item?: {
     name: string
@@ -105,6 +127,10 @@ export type ActionIntent = {
     npc_id?: string
     character_name: string
     player_name: string
+  }
+  combat?: {
+    action_id: string
+    target_id?: string
   }
 }
 
@@ -270,44 +296,6 @@ export function createClientMessageId() {
   throw new Error('Secure client ID generation requires the Web Crypto API.')
 }
 
-export function rollDie(die: string) {
-  const sides = dieSides(die)
-  const cryptoSource = globalThis.crypto
-  if (typeof cryptoSource?.getRandomValues === 'function') {
-    const value = new Uint32Array(1)
-    cryptoSource.getRandomValues(value)
-    return (value[0] % sides) + 1
-  }
-  return Math.floor(Math.random() * sides) + 1
-}
-
-export function resolveRoll(draft: RollDraft, roller: (die: string) => number = rollDie): RollResult {
-  const die = normalizeDie(draft.die)
-  const first = roller(die)
-  const rolls = draft.mode === 'normal' ? [first] : [first, roller(die)]
-  const kept =
-    draft.mode === 'advantage'
-      ? Math.max(...rolls)
-      : draft.mode === 'disadvantage'
-        ? Math.min(...rolls)
-        : rolls[0]
-  const modifier = Math.max(-99, Math.min(99, Math.trunc(draft.modifier || 0)))
-  return {
-    die,
-    modifier,
-    mode: draft.mode,
-    reason: draft.reason.trim().slice(0, 240),
-    resultVisibility: draft.resultVisibility,
-    targetPendingTurnId:
-      typeof draft.targetPendingTurnId === 'number' && Number.isInteger(draft.targetPendingTurnId) && draft.targetPendingTurnId > 0
-        ? draft.targetPendingTurnId
-        : null,
-    rolls,
-    kept,
-    total: kept + modifier,
-  }
-}
-
 export function diceRollMessage(roll: RollResult) {
   if (isInitiativeRollReason(roll.reason)) {
     const dexModifier = formatModifier(roll.modifier)
@@ -326,6 +314,12 @@ export function diceRollMessage(roll: RollResult) {
       : `${roll.kept} (${roll.mode}; rolls ${roll.rolls.join(', ')})`
   const reason = roll.reason ? ` for ${roll.reason}` : ''
   return `I roll a ${roll.die}${modifier}${reason}: ${rollSummary}${roll.modifier ? ` = ${roll.total}` : ''}`
+}
+
+export function diceRollRequestMessage(roll: RollDraft) {
+  if (isInitiativeRollReason(roll.reason)) return 'I roll for initiative.'
+  const reason = roll.reason ? ` for ${roll.reason}` : ''
+  return `I roll a ${normalizeDie(roll.die)}${reason}.`
 }
 
 export function abilityActionText(characterName: string, ability: AbilityOption | null, current: string) {
@@ -467,7 +461,7 @@ export function buildActionIntent({
   message: string
   clientMessageId: string
   source?: ActionIntent['source']
-  roll?: RollResult | null
+  roll?: RollDraft | null
   ability?: AbilityOption | null
   item?: ItemOption | null
   inventoryAction?: InventoryAction
@@ -487,14 +481,10 @@ export function buildActionIntent({
   }
   if (mode === 'roll' && roll) {
     intent.roll = {
-      die: roll.die,
+      die: normalizeDie(roll.die),
       mode: roll.mode,
-      modifier: roll.modifier,
-      rolls: roll.rolls,
-      kept: roll.kept,
-      total: roll.total,
       result_visibility: roll.resultVisibility,
-      reason: roll.reason,
+      reason: roll.reason.trim().slice(0, 240),
     }
     if (roll.targetPendingTurnId) {
       intent.roll.target_pending_turn_id = roll.targetPendingTurnId
@@ -504,8 +494,8 @@ export function buildActionIntent({
     intent.ability = {
       key: ability.key,
       label: ability.label,
-      modifier: abilityModifierValue(ability),
     }
+    if (mode !== 'roll') intent.ability.modifier = abilityModifierValue(ability)
   }
   if (mode === 'spell') {
     const effect = stripComposerCommand(message)

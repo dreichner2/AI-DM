@@ -9,7 +9,7 @@ from aidm_server.canon_inventory import INVENTORY_ACTIONS, clean_inventory_item_
 from aidm_server.rules import DC_HINTS, RuleHint
 
 
-VALID_ACTION_KINDS = {'message', 'roll', 'ability', 'spell', 'item', 'interact', 'emote', 'ooc', 'admin'}
+VALID_ACTION_KINDS = {'message', 'roll', 'ability', 'spell', 'item', 'interact', 'combat', 'emote', 'ooc', 'admin'}
 VALID_DICE = {'d4', 'd6', 'd8', 'd10', 'd12', 'd20', 'd100'}
 VALID_ROLL_MODES = {'normal', 'advantage', 'disadvantage'}
 VALID_RESULT_VISIBILITY = {'hidden_until_landed', 'visible'}
@@ -82,34 +82,9 @@ def _validate_roll(raw_roll: Any) -> tuple[dict[str, Any] | None, str | None]:
     if die not in VALID_DICE:
         return None, f'roll.die must be one of {sorted(VALID_DICE)}.'
 
-    sides = int(die[1:])
     mode = _clean_text(raw_roll.get('mode'), max_length=24).lower() or 'normal'
     if mode not in VALID_ROLL_MODES:
         return None, f'roll.mode must be one of {sorted(VALID_ROLL_MODES)}.'
-
-    modifier = _coerce_int(raw_roll.get('modifier'))
-    if modifier is None:
-        modifier = 0
-    if modifier < -99 or modifier > 99:
-        return None, 'roll.modifier must be between -99 and 99.'
-
-    rolls = _coerce_int_list(raw_roll.get('rolls'), min_value=1, max_value=sides, max_count=2)
-    expected_roll_count = 2 if mode in {'advantage', 'disadvantage'} else 1
-    if len(rolls) != expected_roll_count:
-        return None, f'roll.rolls must include {expected_roll_count} value(s) for {mode}.'
-
-    kept = _coerce_int(raw_roll.get('kept'))
-    if kept is None:
-        kept = max(rolls) if mode == 'advantage' else min(rolls) if mode == 'disadvantage' else rolls[0]
-    if kept not in rolls:
-        return None, 'roll.kept must match one of roll.rolls.'
-
-    total = _coerce_int(raw_roll.get('total'))
-    expected_total = kept + modifier
-    if total is None:
-        total = expected_total
-    if total != expected_total:
-        return None, 'roll.total must equal roll.kept plus roll.modifier.'
 
     visibility = _clean_text(raw_roll.get('result_visibility'), max_length=32).lower() or 'hidden_until_landed'
     if visibility not in VALID_RESULT_VISIBILITY:
@@ -122,10 +97,6 @@ def _validate_roll(raw_roll: Any) -> tuple[dict[str, Any] | None, str | None]:
     normalized = {
         'die': die,
         'mode': mode,
-        'modifier': modifier,
-        'rolls': rolls,
-        'kept': kept,
-        'total': total,
         'result_visibility': visibility,
         'reason': _clean_text(raw_roll.get('reason'), max_length=ACTION_REASON_MAX_LENGTH),
     }
@@ -140,11 +111,9 @@ def _validate_ability_payload(raw_ability: Any) -> tuple[dict[str, Any] | None, 
     key = _clean_text(raw_ability.get('key'), max_length=32).lower()
     if key not in VALID_ABILITIES:
         return None, f'ability.key must be one of {sorted(VALID_ABILITIES)}.'
-    modifier = _coerce_int(raw_ability.get('modifier'))
     return {
         'key': key,
         'label': _clean_text(raw_ability.get('label'), max_length=40) or key.title(),
-        'modifier': modifier if modifier is not None else 0,
     }, None
 
 
@@ -166,6 +135,23 @@ def _coerce_non_negative_int(value: Any) -> int:
     if parsed is None:
         return 0
     return max(0, parsed)
+
+
+def _validate_combat_payload(raw_combat: Any) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(raw_combat, dict):
+        return None, 'combat action metadata must include a combat object.'
+    action_id = _clean_text(raw_combat.get('action_id'), max_length=ACTION_ID_MAX_LENGTH)
+    target_id = _clean_text(raw_combat.get('target_id'), max_length=ACTION_ID_MAX_LENGTH)
+    if not action_id:
+        return None, 'combat.action_id is required.'
+    if not ACTION_ID_RE.fullmatch(action_id):
+        return None, 'combat.action_id contains unsupported characters.'
+    if target_id and not ACTION_ID_RE.fullmatch(target_id):
+        return None, 'combat.target_id contains unsupported characters.'
+    payload = {'action_id': action_id}
+    if target_id:
+        payload['target_id'] = target_id
+    return payload, None
 
 
 def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | None]:
@@ -286,6 +272,12 @@ def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | Non
             normalized_target['npc_id'] = target_npc_id
         normalized['target'] = normalized_target
 
+    if kind == 'combat':
+        combat, combat_error = _validate_combat_payload(value.get('combat'))
+        if combat_error:
+            return None, combat_error
+        normalized['combat'] = combat
+
     return normalized, None
 
 
@@ -300,15 +292,14 @@ def apply_action_intent_to_rule_hint(intent: dict[str, Any] | None, hint: RuleHi
         roll = intent.get('roll') if isinstance(intent.get('roll'), dict) else {}
         ability = intent.get('ability') if isinstance(intent.get('ability'), dict) else {}
         ability_key = _clean_text(ability.get('key'), max_length=32).lower()
-        total = _coerce_int(roll.get('total'))
         reason = _clean_text(roll.get('reason'), max_length=ACTION_REASON_MAX_LENGTH)
         hint.requires_roll = True
         hint.roll_type = hint.roll_type or ability_key or 'check'
         hint.dc_hint = hint.dc_hint or DC_HINTS['check']
         hint.reason = reason or (f'Typed {ability_key} ability check' if ability_key else 'Typed roll action')
         hint.confidence = max(hint.confidence or 0.0, 0.99)
-        hint.roll_value = total
-        hint.outcome_deferred = False
+        hint.roll_value = None
+        hint.outcome_deferred = True
         return hint
 
     if kind == 'ability':
@@ -324,19 +315,34 @@ def apply_action_intent_to_rule_hint(intent: dict[str, Any] | None, hint: RuleHi
 
     if kind == 'spell':
         spell = intent.get('spell') if isinstance(intent.get('spell'), dict) else {}
-        ability = intent.get('ability') if isinstance(intent.get('ability'), dict) else {}
-        ability_label = _clean_text(ability.get('label'), max_length=40)
-        ability_modifier = _coerce_int(ability.get('modifier'))
         spell_name = _clean_text(spell.get('name'), max_length=ACTION_SPELL_NAME_MAX_LENGTH) or 'spell'
         hint.requires_roll = True
         hint.roll_type = 'spell'
-        if ability_label and ability_modifier is not None:
-            hint.dc_hint = f"{DC_HINTS['spell']} ({ability_label} mod {ability_modifier:+d})"
-        else:
-            hint.dc_hint = DC_HINTS['spell']
+        hint.dc_hint = DC_HINTS['spell']
         hint.reason = f'Typed spell action: {spell_name}'
         hint.confidence = max(hint.confidence or 0.0, 0.97)
         hint.outcome_deferred = hint.roll_value is None
+        return hint
+
+    if kind == 'combat':
+        combat = intent.get('combat') if isinstance(intent.get('combat'), dict) else {}
+        action_type = _clean_text(combat.get('action_type'), max_length=32).lower()
+        if action_type == 'attack':
+            hint.requires_roll = True
+            hint.roll_type = 'attack'
+            hint.dc_hint = hint.dc_hint or DC_HINTS['attack']
+            hint.reason = 'Server-issued combat attack'
+            hint.confidence = max(hint.confidence or 0.0, 1.0)
+            hint.roll_value = None
+            hint.outcome_deferred = True
+        else:
+            hint.requires_roll = False
+            hint.roll_type = None
+            hint.dc_hint = None
+            hint.reason = f'Server-issued combat action: {action_type or "turn action"}'
+            hint.confidence = 1.0
+            hint.roll_value = None
+            hint.outcome_deferred = False
         return hint
 
     if kind in {'ooc', 'emote', 'item', 'admin'}:

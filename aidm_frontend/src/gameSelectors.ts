@@ -123,6 +123,54 @@ export type CombatParticipantSummary = {
   selectionMethod: string
 }
 
+export type CombatLegalTarget = {
+  id: string
+  name: string
+  rangeBand: string
+  available: boolean
+  reason: string
+}
+
+export type CombatActionEconomy = {
+  action: number
+  movement: string
+  endsTurn: boolean
+  tracking: string
+  reactionTracked: boolean
+  subTurnCountersTracked: boolean
+}
+
+export type CombatLegalAction = {
+  id: string
+  type: string
+  label: string
+  description: string
+  message: string
+  available: boolean
+  reason: string
+  requiresTarget: boolean
+  authoritative: boolean
+  economy: CombatActionEconomy
+  targets: CombatLegalTarget[]
+  rangeClassification: string
+  allowedRangeBands: string[]
+  weaponName: string
+}
+
+export type CombatLegalActionBundle = {
+  schemaVersion: number
+  playerId: number
+  actorId: string
+  actorName: string
+  round: number
+  currentActorId: string
+  currentActorName: string
+  isCurrentActor: boolean
+  economyTracking: string
+  subTurnCountersTracked: boolean
+  actions: CombatLegalAction[]
+}
+
 export type CombatStatePanel = {
   active: boolean
   status: string
@@ -140,6 +188,7 @@ export type CombatStatePanel = {
   enemies: CombatParticipantSummary[]
   allies: CombatParticipantSummary[]
   telegraphs: string[]
+  legalActionBundles: CombatLegalActionBundle[]
 }
 
 export type WorldStatePanel = {
@@ -310,6 +359,66 @@ function combatParticipantSummary(participant: JsonRecord): CombatParticipantSum
   }
 }
 
+function combatLegalAction(action: JsonRecord): CombatLegalAction | null {
+  const id = stringValue(action.id)
+  if (!id) return null
+  const economy = isRecord(action.economy) ? action.economy : {}
+  const range = isRecord(action.range) ? action.range : {}
+  const weapon = isRecord(action.weapon) ? action.weapon : {}
+  return {
+    id,
+    type: stringValue(action.type, 'turn_action'),
+    label: stringValue(action.label, 'Combat action'),
+    description: stringValue(action.description),
+    message: stringValue(action.message),
+    available: Boolean(action.available),
+    reason: stringValue(action.reason),
+    requiresTarget: Boolean(action.requiresTarget),
+    authoritative: action.authoritative === true,
+    economy: {
+      action: numberValue(economy.action) ?? 0,
+      movement: stringValue(economy.movement, 'unused'),
+      endsTurn: economy.endsTurn !== false,
+      tracking: stringValue(economy.tracking, 'turn_order_derived'),
+      reactionTracked: economy.reactionTracked === true,
+      subTurnCountersTracked: economy.subTurnCountersTracked === true,
+    },
+    targets: recordArray(action.targets).map((target) => ({
+      id: stringValue(target.id),
+      name: stringValue(target.name, 'Unknown target'),
+      rangeBand: stringValue(target.rangeBand, 'unknown'),
+      available: Boolean(target.available),
+      reason: stringValue(target.reason),
+    })).filter((target) => Boolean(target.id)),
+    rangeClassification: stringValue(range.classification),
+    allowedRangeBands: Array.isArray(range.allowedBands)
+      ? range.allowedBands.map((value) => stringValue(value)).filter(Boolean)
+      : [],
+    weaponName: stringValue(weapon.name),
+  }
+}
+
+function combatLegalActionBundle(bundle: JsonRecord): CombatLegalActionBundle | null {
+  const playerId = numberValue(bundle.playerId)
+  if (playerId === null || playerId < 1) return null
+  const economy = isRecord(bundle.economy) ? bundle.economy : {}
+  return {
+    schemaVersion: numberValue(bundle.schemaVersion) ?? 1,
+    playerId,
+    actorId: stringValue(bundle.actorId),
+    actorName: stringValue(bundle.actorName, 'Player'),
+    round: numberValue(bundle.round) ?? 1,
+    currentActorId: stringValue(bundle.currentActorId),
+    currentActorName: stringValue(bundle.currentActorName),
+    isCurrentActor: Boolean(bundle.isCurrentActor),
+    economyTracking: stringValue(economy.tracking, 'turn_order_derived'),
+    subTurnCountersTracked: economy.subTurnCountersTracked === true,
+    actions: recordArray(bundle.actions)
+      .map(combatLegalAction)
+      .filter((action): action is CombatLegalAction => action !== null),
+  }
+}
+
 function combatStateFromSnapshot(snapshot: JsonRecord): CombatStatePanel {
   const combat = isRecord(snapshot.combat) ? snapshot.combat : {}
   const status = stringValue(combat.status, 'none')
@@ -319,6 +428,9 @@ function combatStateFromSnapshot(snapshot: JsonRecord): CombatStatePanel {
   const difficultyAI = isRecord(flags.combatDifficultyAI) ? flags.combatDifficultyAI : {}
   const enemyGroups = recordArray(flags.enemyGroups)
   const participants = recordArray(combat.participants).map(combatParticipantSummary)
+  const legalActionBundles = recordArray(combat.legalActions)
+    .map(combatLegalActionBundle)
+    .filter((bundle): bundle is CombatLegalActionBundle => bundle !== null)
   const enemies = participants.filter((participant) => participant.team === 'enemy')
   const allies = participants.filter((participant) => participant.team !== 'enemy')
   const telegraphs = enemies.map((enemy) => enemy.telegraph).filter(Boolean).slice(0, 4)
@@ -353,6 +465,7 @@ function combatStateFromSnapshot(snapshot: JsonRecord): CombatStatePanel {
     enemies,
     allies,
     telegraphs,
+    legalActionBundles,
   }
 }
 

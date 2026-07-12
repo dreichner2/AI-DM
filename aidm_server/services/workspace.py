@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from aidm_server.map_visibility import visible_maps_query
 from aidm_server.models import Campaign, CampaignSegment, Map, Player, Session
 from aidm_server.pagination import limited_page
 from aidm_server.response_dtos import (
@@ -8,6 +9,7 @@ from aidm_server.response_dtos import (
     isoformat,
     map_payload,
     player_summary_payload,
+    public_segment_payload,
     segment_payload,
     session_payloads,
 )
@@ -26,6 +28,7 @@ def list_campaign_session_payloads(
     include_archived: bool = False,
     limit: int | None = None,
     include_hidden_state: bool = True,
+    viewer_account_id: int | None = None,
 ) -> list[dict]:
     sessions_query = (
         Session.query.filter_by(campaign_id=campaign_id)
@@ -36,7 +39,11 @@ def list_campaign_session_payloads(
         sessions_query.order_by(Session.updated_at.desc(), Session.created_at.desc()),
         limit,
     ).all()
-    payloads = session_payloads(sessions, include_hidden_state=include_hidden_state)
+    payloads = session_payloads(
+        sessions,
+        include_hidden_state=include_hidden_state,
+        viewer_account_id=viewer_account_id,
+    )
     payloads.sort(key=lambda item: item.get('latest_activity_at') or '', reverse=True)
     return payloads
 
@@ -50,6 +57,7 @@ def campaign_workspace_payload(
     map_limit: int | None = None,
     segment_limit: int | None = None,
     include_hidden_state: bool = True,
+    viewer_account_id: int | None = None,
 ) -> dict:
     campaign_id = campaign.campaign_id
     campaign_data = campaign_payload(campaign)
@@ -63,7 +71,11 @@ def campaign_workspace_payload(
         sessions_query.order_by(Session.updated_at.desc(), Session.created_at.desc()),
         limit=session_limit,
     )
-    session_items = session_payloads(session_rows, include_hidden_state=include_hidden_state)
+    session_items = session_payloads(
+        session_rows,
+        include_hidden_state=include_hidden_state,
+        viewer_account_id=viewer_account_id,
+    )
     session_items.sort(key=lambda item: item.get('latest_activity_at') or '', reverse=True)
     players_query = visible_players_query(campaign.workspace_id, campaign_id=campaign_id)
     player_count = players_query.count()
@@ -71,13 +83,18 @@ def campaign_workspace_payload(
         players_query.order_by(Player.created_at.asc(), Player.player_id.asc()),
         limit=player_limit,
     )
-    maps_query = Map.query.filter_by(campaign_id=campaign_id)
+    maps_query = visible_maps_query(
+        Map.query.filter_by(campaign_id=campaign_id),
+        include_dm_only=include_hidden_state,
+    )
     map_count = maps_query.count()
     maps = limited_page(
         maps_query.order_by(Map.created_at.desc(), Map.map_id.desc()),
         limit=map_limit,
     )
     segments_query = CampaignSegment.query.filter_by(campaign_id=campaign_id)
+    if not include_hidden_state:
+        segments_query = segments_query.filter(CampaignSegment.is_triggered.is_(True))
     segment_count = segments_query.count()
     segments = limited_page(
         segments_query.order_by(
@@ -93,7 +110,10 @@ def campaign_workspace_payload(
         'sessions': session_items,
         'players': [player_summary_payload(player) for player in players],
         'maps': [map_payload(map_obj) for map_obj in maps],
-        'segments': [segment_payload(segment) for segment in segments],
+        'segments': [
+            segment_payload(segment) if include_hidden_state else public_segment_payload(segment)
+            for segment in segments
+        ],
         'summary': {
             'session_count': session_count,
             'player_count': player_count,

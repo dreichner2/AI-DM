@@ -27,8 +27,12 @@ scene.
   typing status, turn control, music, and clarification prompts.
 - **Durable continuity** — turn events, state snapshots, rolling summaries,
   canon, and emergent memory keep the story coherent.
-- **Rules-aware play** — dice checks, combat state, health, creatures, and
-  action validation add structure without taking over the story.
+- **Rules-aware play** — the server rolls and records authoritative dice,
+  validates actions, and tracks combat, health, and creatures without letting
+  presentation code decide mechanical outcomes.
+- **Player combat HUD** — active encounters expose server-issued actions,
+  current-turn status, persisted weapon choices, and legal range-band targets;
+  the server revalidates every selection before it becomes a turn.
 - **DM tools** — create or import adventures, manage encounters and maps,
   inspect state, and export a campaign Chronicle.
 - **Flexible AI** — use Codex, Gemini, DeepSeek, NVIDIA/Kimi, or the built-in

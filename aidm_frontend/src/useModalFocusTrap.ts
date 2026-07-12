@@ -81,7 +81,14 @@ export function useModalFocusTrap({
       window.clearTimeout(focusTimer)
       document.removeEventListener('keydown', handleKeyDown)
       if (previouslyFocused?.isConnected) {
-        previouslyFocused.focus()
+        const canRestoreDirectly = !previouslyFocused.matches(':disabled, [aria-disabled="true"]')
+        const nearbyContainer = previouslyFocused.closest<HTMLElement>('section, form, main')
+        const returnTarget = canRestoreDirectly
+          ? previouslyFocused
+          : nearbyContainer
+            ? focusableDialogElements(nearbyContainer)[0]
+            : null
+        returnTarget?.focus()
       }
       returnFocusRef.current = null
     }

@@ -61,6 +61,26 @@ def test_run_forbidden_checks_requires_expected_capabilities():
     }
 
 
+def test_run_forbidden_checks_accepts_cookie_csrf_headers_without_bearer_token():
+    http = _FakeHttp()
+    headers = {
+        'X-AIDM-Workspace-Id': 'owner',
+        'X-AIDM-CSRF-Token': 'csrf-companion-value',
+    }
+
+    results = security_forbidden_smoke.run_forbidden_checks(
+        http,
+        workspace_id='owner',
+        campaign_id=12,
+        session_id=34,
+        headers=headers,
+    )
+
+    assert all(result.ok for result in results)
+    assert all(call[2] == headers for call in http.calls)
+    assert all('Authorization' not in call[2] for call in http.calls)
+
+
 def test_run_forbidden_checks_fails_on_wrong_capability():
     http = _FakeHttp(
         {

@@ -68,7 +68,7 @@ flowchart LR
 | Campaign packs | `/api/campaigns/pack-tools/*`, `/api/campaigns/example-packs*`, `/api/campaigns/installed-packs*`, `/api/campaigns/import-pack` |
 | Players / races / onboarding | `/api/players/*`, `/api/races*`, `/api/custom-races*`, `/api/onboarding/*` |
 | Sessions | `/api/sessions/start`, lifecycle, import/export, log/events/state, content settings, and pack progress |
-| Maps / segments | CRUD/update paths under `/api/maps` and `/api/segments`, including segment activation |
+| Maps / segments | CRUD/update paths under `/api/maps` and `/api/segments`, including player/DM map visibility and segment activation |
 | Bestiary / creatures / combat | `/api/bestiary/*`, campaign/region bestiaries, `/api/creatures/*`, and `/api/sessions/<session_id>/combat/*` |
 | Runtime AI config | `GET/PATCH/POST /api/llm/config` |
 | TTS / feedback | `/api/tts/*`, `/api/feedback/coherence`, `/api/feedback/bad-turn` |
@@ -91,10 +91,21 @@ sequenceDiagram
     Browser->>Socket: join_session(session_id, player_id)
     Socket->>DB: verify session, player, workspace, capability
     Socket-->>Browser: active_players / player_joined
-    Browser->>Socket: send_message(player input)
+    Browser->>Socket: send_message(player input + client_message_id)
     Socket->>Engine: build validated TurnCommand
-    Engine->>DB: coordinate turn and write durable player event
-    Engine->>LLM: generate DM prompt/context
+    Engine->>DB: deduplicate key; coordinate turn
+    alt completed duplicate request
+        Engine-->>Browser: turn_duplicate(existing turn_id)
+    else incomplete committed request
+        Engine->>DB: restore persisted command and pre-DM pipeline
+        Engine->>LLM: resume narration without reroll/incoming write
+    else authoritative roll request
+        Engine->>DB: generate and commit canonical roll + player event
+        Engine-->>Browser: roll_resolved(committed result)
+    else non-roll turn
+        Engine->>DB: write durable player event
+    end
+    Engine->>LLM: generate DM prompt/context for a new turn
     LLM-->>Engine: provider response or progressive chunks
     Engine-->>Browser: dm_response_start / dm_chunk / dm_response_end
     Engine->>DB: persist logs, events, state, and mutation audit

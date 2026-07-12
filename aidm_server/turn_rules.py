@@ -65,15 +65,6 @@ def _modifier_from_dc_hint(dc_hint: str | None) -> int | None:
     return int(match.group(1))
 
 
-def _roll_example(modifier: int | None) -> str:
-    kept = 14
-    if modifier is None or modifier == 0:
-        return '"I roll a d20: 14"'
-    total = kept + modifier
-    sign = f'+{modifier}' if modifier > 0 else str(modifier)
-    return f'"I roll a d20{sign}: {kept} = {total}"'
-
-
 def _metadata(turn: DmTurn | None) -> dict:
     if not turn:
         return {}
@@ -196,11 +187,15 @@ def build_roll_prompt(rule_hint: RuleHint, pending_turn_id: int | None = None) -
     roll_label = ROLL_TYPE_LABELS.get(rule_hint.roll_type or 'check', 'an appropriate ability check')
     dc_hint = f" (DC {rule_hint.dc_hint})" if rule_hint.dc_hint else ''
     modifier = _modifier_from_dc_hint(rule_hint.dc_hint)
-    modifier_text = f' Include the {modifier:+d} modifier.' if modifier not in (None, 0) else ''
+    modifier_text = (
+        f' Your persisted {modifier:+d} modifier will be applied automatically.'
+        if modifier not in (None, 0)
+        else ''
+    )
     pending_prefix = f'Resolve pending turn {pending_turn_id}: ' if pending_turn_id else ''
     return (
-        f'{pending_prefix}Please roll {roll_label}{dc_hint}.{modifier_text} Send the result '
-        f'(example: {_roll_example(modifier)}).'
+        f'{pending_prefix}Please roll {roll_label}{dc_hint}.{modifier_text} '
+        'The server will generate and record the authoritative result.'
     )
 
 

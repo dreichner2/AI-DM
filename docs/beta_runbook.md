@@ -117,24 +117,37 @@ disabled. Unexpected tool events or malformed structured output fail closed.
 2. Confirm `/api/metrics` exposes counters/timings.
 3. Confirm session creation and state retrieval (`/api/sessions/<id>/state`).
 4. Confirm socket `send_message` emits `dm_response_start`, `dm_chunk`, `dm_response_end`.
-5. Confirm `turn_id` appears in logs (`/api/sessions/<id>/log`).
-6. Confirm improvised entities/threads are being written to `story_entities` / `story_threads` for active sessions.
-7. Render local-only SLO evidence with `make local-beta-slo-baseline`, then
+5. Submit a dice request and confirm one `roll_resolved` event arrives after the
+   incoming turn is persisted. Its `client_message_id`, faces, modifier
+   breakdown, and total must match the durable roll event; client-supplied
+   outcome fields must not affect it.
+6. Retry the same `client_message_id` and confirm `turn_duplicate` names the
+   existing `turn_id` without another roll or state mutation. Reconnect and
+   confirm the room rejoin reloads the current session snapshot.
+7. Confirm `turn_id` appears in logs (`/api/sessions/<id>/log`).
+8. Confirm improvised entities/threads are being written to `story_entities` / `story_threads` for active sessions.
+9. Render local-only SLO evidence with `make local-beta-slo-baseline`, then
    render hosted target SLO evidence with `make beta-slo-baseline
    BETA_SLO_BASELINE_ARGS="--target-url <target-url> --auth-token <token>
    --workspace-id <workspace-id> --release RC1 --environment staging"` before
    inviting more testers.
-8. Share `docs/beta_tester_onboarding.md` with invited testers after target
+10. Share `docs/beta_tester_onboarding.md` with invited testers after target
    deployment readiness passes.
 
 ## Turn Lifecycle
-1. The socket receives `send_message` and records the player action in `dm_turns` plus the `turn_events` event spine.
-2. Narration streams through `dm_response_start`, one or more `dm_chunk` events, and `dm_response_end`; `response_complete` means visible streaming ended, not that persistence or canon work finished.
-3. The per-session coordinator remains locked while post-turn processing first persists `dm_output` and the `dm_response` timeline event, then emits `saved` with `stage=dm_response`. It continues through immediate validated state changes and durable canon-job enqueue, emits a second `saved` with `stage=post_turn`, and finally emits `session_log_update` after returning from post-turn persistence.
-4. Outside tests, canon extraction/validation/application and projection refresh run through one bounded, wakeable worker over the durable canon queue. Foreground narration receives provider priority, while the canon worker releases database connections during provider waits and revalidates each attempt before apply. Watch `canon_pending`, `canon_applied`, or `failed` independently of the already-saved narration, plus the `aidm_canon_job_queue_depth` and `aidm_canon_job_oldest_queued_age_seconds` Prometheus gauges for sustained starvation. Tests process jobs inline for deterministic assertions. A canon failure should not erase a saved visible DM response.
-5. Watch `turn_status` events for `received`, `narrating`, `response_complete`, `saving`, `saved`, `canon_pending`, `canon_applied`, and `failed`. `canon_applied` can also carry immediate state-application details before the background canon extraction completes, so inspect its detail payload and the canon-job status during incident review.
-6. Treat `turn_events` as the turn transcript audit trail. `dm_turns`, `session_log_entries`, `PlayerAction`, and `SessionState` are projections or convenience tables that should agree with the event spine. Use `/api/beta/audits` as a workspace admin when investigating manual/operator changes; it includes recent session-state mutation diffs and bestiary/operator authoring actions.
-7. If a future change rewrites projection logic, verify both the event rows and the projected session log/state before assuming the UI is wrong.
+1. The socket receives `send_message` under the per-session coordinator. A
+   repeated `client_message_id` returns `turn_duplicate` for the existing turn
+   instead of re-executing it.
+2. For a roll submission, the server derives the roll specification from
+   persisted player/pending-roll state, generates the result, and commits the
+   canonical incoming `dm_turns` row plus durable roll event together. Only then
+   does it broadcast `roll_resolved`; the browser animation is presentation.
+3. Narration streams through `dm_response_start`, one or more `dm_chunk` events, and `dm_response_end`; `response_complete` means visible streaming ended, not that persistence or canon work finished.
+4. The per-session coordinator remains locked while post-turn processing first persists `dm_output` and the `dm_response` timeline event, then emits `saved` with `stage=dm_response`. It continues through immediate validated state changes and durable canon-job enqueue, emits a second `saved` with `stage=post_turn`, and finally emits `session_log_update` after returning from post-turn persistence.
+5. Outside tests, canon extraction/validation/application and projection refresh run through one bounded, wakeable worker over the durable canon queue. Foreground narration receives provider priority, while the canon worker releases database connections during provider waits and revalidates each attempt before apply. Watch `canon_pending`, `canon_applied`, or `failed` independently of the already-saved narration, plus the `aidm_canon_job_queue_depth` and `aidm_canon_job_oldest_queued_age_seconds` Prometheus gauges for sustained starvation. Tests process jobs inline for deterministic assertions. A canon failure should not erase a saved visible DM response.
+6. Watch `turn_status` events for `received`, `narrating`, `response_complete`, `saving`, `saved`, `canon_pending`, `canon_applied`, and `failed`. `canon_applied` can also carry immediate state-application details before the background canon extraction completes, so inspect its detail payload and the canon-job status during incident review.
+7. Treat `turn_events` as the turn transcript audit trail. `dm_turns`, `session_log_entries`, `PlayerAction`, and `SessionState` are projections or convenience tables that should agree with the event spine. Use `/api/beta/audits` as a workspace admin when investigating manual/operator changes; it includes recent session-state mutation diffs and bestiary/operator authoring actions.
+8. If a future change rewrites projection logic, verify both the event rows and the projected session log/state before assuming the UI is wrong.
 
 The per-session turn coordinator defaults to an in-memory store for local single-process play. Hosted production uses the database store and migrations through `0028_session_turn_lock_fencing`, which gives every lease owner a persistent monotonic fencing token and rejects commits after ownership changes. Tune `AIDM_TURN_COORDINATOR_LOCK_TTL_SECONDS` high enough for the longest expected provider turn, and keep `AIDM_TURN_COORDINATOR_POLL_INTERVAL_MS` low enough that queued players are not left waiting after a lock releases. Multi-worker Socket.IO remains deferred because presence and music are process-local; future support also requires both load-balancer affinity and a shared Socket.IO message queue.
 
@@ -158,6 +171,11 @@ The per-session turn coordinator defaults to an in-memory store for local single
 8. TTS icon on but silent: verify `/api/tts/config`, browser autoplay policy, visible frontend TTS errors, and direct `/api/tts/stream` behavior with a short sentence.
 9. Frontend connected to wrong backend: restart Vite with `VITE_AIDM_API_BASE_URL=http://127.0.0.1:5050`, then verify the backend URL displayed in the top bar.
 10. Created campaign has no players/sessions: create or select a player for the campaign, then start a session; the campaign workspace endpoint should show `player_count` and `session_count`.
+11. Roll or turn looked duplicated after a disconnect: compare
+    `client_message_id` across the browser event, `dm_turns`, and
+    `turn_duplicate`. Do not submit a new key while persistence is uncertain;
+    use the visible safe-retry action, which resends the original payload, then
+    verify the reloaded session snapshot.
 
 ## Safe Flags for Closed Beta
 - `AIDM_AUTH_REQUIRED=true`

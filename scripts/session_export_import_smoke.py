@@ -244,28 +244,42 @@ def run_round_trip(
     if not turn_events:
         raise AssertionError('Exported session has no turnEvents; choose a session with persisted turn events for duplication proof.')
 
-    import_payload = _assert_status(
-        http.post('/api/sessions/import', headers=headers, json_payload=export_payload),
-        201,
-        label='POST /api/sessions/import',
-    )
-    imported_session_id = int(import_payload['session_id'])
-    counts = import_payload.get('counts') if isinstance(import_payload.get('counts'), dict) else {}
-    imported_log_payload = _assert_status(
-        http.get(f'/api/sessions/{imported_session_id}/log?limit=200', headers=headers),
-        200,
-        label=f'GET /api/sessions/{imported_session_id}/log',
-    )
-    imported_logs = imported_log_payload.get('entries') if isinstance(imported_log_payload.get('entries'), list) else []
-    joined_logs = '\n'.join(str(entry.get('message') or '') for entry in imported_logs if isinstance(entry, dict))
-    duplicate_marker_found = 'This stale source log should not be duplicated' in joined_logs
-
+    imported_session_id: int | None = None
     cleanup_status_code = None
-    if not keep_imported_session:
-        cleanup_response = http.delete(f'/api/sessions/{imported_session_id}?hard=true', headers=headers)
-        cleanup_status_code = int(cleanup_response.status_code)
-        if cleanup_status_code != 200:
-            raise AssertionError(f'DELETE imported session expected HTTP 200, got {cleanup_status_code}.')
+    try:
+        import_payload = _assert_status(
+            http.post('/api/sessions/import', headers=headers, json_payload=export_payload),
+            201,
+            label='POST /api/sessions/import',
+        )
+        imported_session_id = int(import_payload['session_id'])
+        counts = import_payload.get('counts') if isinstance(import_payload.get('counts'), dict) else {}
+        imported_log_payload = _assert_status(
+            http.get(f'/api/sessions/{imported_session_id}/log?limit=200', headers=headers),
+            200,
+            label=f'GET /api/sessions/{imported_session_id}/log',
+        )
+        imported_logs = imported_log_payload.get('entries') if isinstance(imported_log_payload.get('entries'), list) else []
+        joined_logs = '\n'.join(str(entry.get('message') or '') for entry in imported_logs if isinstance(entry, dict))
+        duplicate_marker_found = 'This stale source log should not be duplicated' in joined_logs
+    finally:
+        had_prior_error = sys.exc_info()[0] is not None
+        cleanup_error = ''
+        if imported_session_id is not None and not keep_imported_session:
+            try:
+                cleanup_response = http.delete(f'/api/sessions/{imported_session_id}?hard=true', headers=headers)
+                cleanup_status_code = int(cleanup_response.status_code)
+                if cleanup_status_code != 200:
+                    cleanup_error = f'DELETE imported session expected HTTP 200, got {cleanup_status_code}.'
+            except Exception as exc:  # pragma: no cover - transport failures are environment-specific
+                cleanup_error = f'Imported session cleanup request failed: {type(exc).__name__}.'
+        if cleanup_error:
+            if had_prior_error:
+                print(f'[session-export-import-smoke][warning] {cleanup_error}', file=sys.stderr)
+            else:
+                raise AssertionError(cleanup_error)
+
+    assert imported_session_id is not None
 
     result = ExportImportSmokeResult(
         source_session_id=session_id,

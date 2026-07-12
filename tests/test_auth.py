@@ -17,11 +17,18 @@ from aidm_server.models import (
     AccountWorkspaceMembership,
     BestiaryEntry,
     Campaign,
+    CampaignPackCheckpointProgress,
+    CampaignPackSession,
+    CampaignSegment,
     DmTurn,
+    Map,
     OperatorActionAudit,
     Player,
     PlayerAction,
     Session,
+    SessionLogEntry,
+    SessionState,
+    StoryEntity,
     TurnEvent,
     Workspace,
     World,
@@ -453,6 +460,248 @@ def test_player_account_cannot_mutate_dm_resources_but_admin_can(tmp_path, monke
         },
     )
     assert admin_metrics.status_code == 200
+
+
+def test_player_cannot_read_raw_segments_and_workspace_only_exposes_triggered_public_segments(
+    tmp_path,
+    monkeypatch,
+):
+    app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+    with app.app_context():
+        player_account = Account(
+            username='segment-player',
+            first_name='Segment',
+            last_name='Player',
+            password_hash='configured',
+            account_token_hash=hash_secret('segment-player-token'),
+        )
+        admin_account = Account(
+            username='segment-admin',
+            first_name='Segment',
+            last_name='Admin',
+            password_hash='configured',
+            account_token_hash=hash_secret('segment-admin-token'),
+        )
+        db.session.add_all([player_account, admin_account])
+        db.session.flush()
+        db.session.add_all(
+            [
+                AccountWorkspaceMembership(account_id=player_account.account_id, workspace_id='owner', role='player'),
+                AccountWorkspaceMembership(account_id=admin_account.account_id, workspace_id='owner', role='admin'),
+            ]
+        )
+        world = World(name='Segment Privacy World', description='segment privacy', workspace_id='owner')
+        db.session.add(world)
+        db.session.flush()
+        campaign = Campaign(title='Segment Privacy Campaign', world_id=world.world_id, workspace_id='owner')
+        db.session.add(campaign)
+        db.session.flush()
+        player = Player(
+            campaign_id=campaign.campaign_id,
+            workspace_id='owner',
+            account_id=player_account.account_id,
+            name='Segment Player',
+            character_name='Segment Hero',
+        )
+        revealed = CampaignSegment(
+            campaign_id=campaign.campaign_id,
+            title='Revealed Segment',
+            description='The bridge has already collapsed.',
+            trigger_condition='DM_ONLY_REVEALED_TRIGGER',
+            tags='DM_ONLY_REVEALED_TAGS',
+            metadata_json=safe_json_dumps({'directorNote': 'DM_ONLY_REVEALED_METADATA'}, {}),
+            is_triggered=True,
+        )
+        hidden = CampaignSegment(
+            campaign_id=campaign.campaign_id,
+            title='DM_ONLY_HIDDEN_TITLE',
+            description='DM_ONLY_HIDDEN_DESCRIPTION',
+            trigger_condition='DM_ONLY_HIDDEN_TRIGGER',
+            tags='DM_ONLY_HIDDEN_TAGS',
+            metadata_json=safe_json_dumps({'directorNote': 'DM_ONLY_HIDDEN_METADATA'}, {}),
+            is_triggered=False,
+        )
+        db.session.add_all([player, revealed, hidden])
+        db.session.commit()
+        campaign_id = campaign.campaign_id
+        revealed_id = revealed.segment_id
+
+    player_headers = {
+        'Authorization': 'Bearer segment-player-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+    admin_headers = {
+        'Authorization': 'Bearer segment-admin-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+
+    raw_list = client.get(f'/api/segments?campaign_id={campaign_id}', headers=player_headers)
+    raw_detail = client.get(f'/api/segments/{revealed_id}', headers=player_headers)
+    player_workspace = client.get(f'/api/campaigns/{campaign_id}/workspace', headers=player_headers)
+    admin_list = client.get(f'/api/segments?campaign_id={campaign_id}', headers=admin_headers)
+    admin_workspace = client.get(f'/api/campaigns/{campaign_id}/workspace', headers=admin_headers)
+
+    assert raw_list.status_code == 403
+    assert raw_list.get_json()['details']['required_capability'] == 'dm_authoring'
+    assert raw_detail.status_code == 403
+    assert raw_detail.get_json()['details']['required_capability'] == 'dm_authoring'
+
+    assert player_workspace.status_code == 200
+    player_payload = player_workspace.get_json()
+    assert player_payload['summary']['segment_count'] == 1
+    assert len(player_payload['segments']) == 1
+    assert player_payload['segments'][0] == {
+        'segment_id': revealed_id,
+        'campaign_id': campaign_id,
+        'title': 'Revealed Segment',
+        'description': 'The bridge has already collapsed.',
+        'is_triggered': True,
+    }
+    assert 'DM_ONLY_' not in json.dumps(player_payload)
+
+    assert admin_list.status_code == 200
+    assert len(admin_list.get_json()) == 2
+    assert admin_workspace.status_code == 200
+    admin_payload = admin_workspace.get_json()
+    assert admin_payload['summary']['segment_count'] == 2
+    assert 'DM_ONLY_HIDDEN_TITLE' in json.dumps(admin_payload)
+    assert 'DM_ONLY_REVEALED_TRIGGER' in json.dumps(admin_payload)
+
+
+def test_authored_map_visibility_filters_player_rest_workspace_export_socket_and_supports_reveal(
+    tmp_path,
+    monkeypatch,
+):
+    app, socketio = _build_auth_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+    with app.app_context():
+        player_account = Account(
+            username='map-player',
+            first_name='Map',
+            last_name='Player',
+            password_hash='configured',
+            account_token_hash=hash_secret('map-player-token'),
+        )
+        admin_account = Account(
+            username='map-admin',
+            first_name='Map',
+            last_name='Admin',
+            password_hash='configured',
+            account_token_hash=hash_secret('map-admin-token'),
+        )
+        db.session.add_all([player_account, admin_account])
+        db.session.flush()
+        db.session.add_all(
+            [
+                AccountWorkspaceMembership(account_id=player_account.account_id, workspace_id='owner', role='player'),
+                AccountWorkspaceMembership(account_id=admin_account.account_id, workspace_id='owner', role='admin'),
+            ]
+        )
+        world = World(name='Map Privacy World', description='map privacy', workspace_id='owner')
+        db.session.add(world)
+        db.session.flush()
+        campaign = Campaign(title='Map Privacy Campaign', world_id=world.world_id, workspace_id='owner')
+        db.session.add(campaign)
+        db.session.flush()
+        player = Player(
+            campaign_id=campaign.campaign_id,
+            workspace_id='owner',
+            account_id=player_account.account_id,
+            name='Map Player',
+            character_name='Map Hero',
+        )
+        session = Session(campaign_id=campaign.campaign_id)
+        revealed = Map(
+            world_id=world.world_id,
+            campaign_id=campaign.campaign_id,
+            title='Revealed Crossing',
+            description='A crossing the party has discovered.',
+            map_data=safe_json_dumps({'marker': 'PLAYER_MAP_MARKER'}, {}),
+            visibility='player',
+        )
+        hidden = Map(
+            world_id=world.world_id,
+            campaign_id=campaign.campaign_id,
+            title='DM_ONLY_MAP_TITLE',
+            description='DM_ONLY_MAP_DESCRIPTION',
+            map_data=safe_json_dumps({'marker': 'DM_ONLY_MAP_DATA'}, {}),
+            visibility='dm',
+        )
+        db.session.add_all([player, session, revealed, hidden])
+        db.session.commit()
+        campaign_id = campaign.campaign_id
+        session_id = session.session_id
+        player_id = player.player_id
+        revealed_id = revealed.map_id
+        hidden_id = hidden.map_id
+
+    player_headers = {
+        'Authorization': 'Bearer map-player-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+    admin_headers = {
+        'Authorization': 'Bearer map-admin-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+
+    player_list = client.get(f'/api/maps?campaign_id={campaign_id}', headers=player_headers)
+    player_workspace = client.get(f'/api/campaigns/{campaign_id}/workspace', headers=player_headers)
+    player_revealed = client.get(f'/api/maps/{revealed_id}', headers=player_headers)
+    player_hidden = client.get(f'/api/maps/{hidden_id}', headers=player_headers)
+    player_export = client.get(f'/api/sessions/{session_id}/export', headers=player_headers)
+
+    assert player_list.status_code == 200
+    assert [item['map_id'] for item in player_list.get_json()] == [revealed_id]
+    assert player_revealed.status_code == 200
+    assert player_revealed.get_json()['visibility'] == 'player'
+    assert player_hidden.status_code == 404
+    assert player_hidden.get_json()['error_code'] == 'map_not_found'
+    assert player_workspace.status_code == 200
+    player_workspace_payload = player_workspace.get_json()
+    assert player_workspace_payload['summary']['map_count'] == 1
+    assert [item['map_id'] for item in player_workspace_payload['maps']] == [revealed_id]
+    assert player_export.status_code == 200
+    assert 'DM_ONLY_MAP_' not in json.dumps(player_export.get_json())
+    assert 'DM_ONLY_MAP_' not in json.dumps(player_workspace_payload)
+
+    player_socket = socketio.test_client(
+        app,
+        flask_test_client=app.test_client(),
+        auth={'account_token': 'map-player-token', 'workspace_id': 'owner'},
+    )
+    assert player_socket.is_connected()
+    player_socket.emit('join_session', {'session_id': session_id, 'player_id': player_id})
+    assert 'DM_ONLY_MAP_' not in json.dumps(player_socket.get_received())
+    player_socket.disconnect()
+
+    admin_list = client.get(f'/api/maps?campaign_id={campaign_id}', headers=admin_headers)
+    admin_workspace = client.get(f'/api/campaigns/{campaign_id}/workspace', headers=admin_headers)
+    admin_hidden = client.get(f'/api/maps/{hidden_id}', headers=admin_headers)
+    assert admin_list.status_code == 200
+    assert {item['map_id'] for item in admin_list.get_json()} == {revealed_id, hidden_id}
+    assert admin_workspace.status_code == 200
+    assert admin_workspace.get_json()['summary']['map_count'] == 2
+    assert admin_hidden.status_code == 200
+    assert admin_hidden.get_json()['map_data']['marker'] == 'DM_ONLY_MAP_DATA'
+
+    reveal = client.patch(
+        f'/api/maps/{hidden_id}',
+        headers=admin_headers,
+        json={'visibility': 'player'},
+    )
+    assert reveal.status_code == 200
+    newly_revealed = client.get(f'/api/maps/{hidden_id}', headers=player_headers)
+    assert newly_revealed.status_code == 200
+    assert newly_revealed.get_json()['map_data']['marker'] == 'DM_ONLY_MAP_DATA'
+
+    hide_again = client.patch(
+        f'/api/maps/{hidden_id}',
+        headers=admin_headers,
+        json={'visibility': 'dm'},
+    )
+    assert hide_again.status_code == 200
+    assert client.get(f'/api/maps/{hidden_id}', headers=player_headers).status_code == 404
 
 
 def test_workspace_bearer_token_cannot_use_campaign_pack_or_metrics_operator_paths(tmp_path, monkeypatch):
@@ -1600,6 +1849,907 @@ def test_session_import_strips_campaign_pack_state_for_non_admin_account(tmp_pat
     assert snapshot['importMetadata']['campaignPackStateStripped'] is True
     assert imported_pack_events == 0
     assert 'campaignPack' not in response.get_json()['session']['state_snapshot']
+
+
+def _seed_session_player_privacy_fixture(app):
+    with app.app_context():
+        attacker = Account(
+            username='session-privacy-attacker',
+            first_name='Session',
+            last_name='Attacker',
+            password_hash='configured',
+            account_token_hash=hash_secret('session-privacy-attacker-token'),
+        )
+        victim = Account(
+            username='session-privacy-victim',
+            first_name='Session',
+            last_name='Victim',
+            password_hash='configured',
+            account_token_hash=hash_secret('session-privacy-victim-token'),
+        )
+        admin = Account(
+            username='session-privacy-admin',
+            first_name='Session',
+            last_name='Admin',
+            password_hash='configured',
+            account_token_hash=hash_secret('session-privacy-admin-token'),
+        )
+        db.session.add_all([attacker, victim, admin])
+        db.session.flush()
+        db.session.add_all(
+            [
+                AccountWorkspaceMembership(account_id=attacker.account_id, workspace_id='owner', role='player'),
+                AccountWorkspaceMembership(account_id=victim.account_id, workspace_id='owner', role='player'),
+                AccountWorkspaceMembership(account_id=admin.account_id, workspace_id='owner', role='admin'),
+            ]
+        )
+        world = World(name='Session Privacy World', description='authorization regression')
+        db.session.add(world)
+        db.session.flush()
+        campaign = Campaign(
+            title='Session Privacy Campaign',
+            world_id=world.world_id,
+            workspace_id='owner',
+        )
+        db.session.add(campaign)
+        db.session.flush()
+        attacker_player = Player(
+            campaign_id=campaign.campaign_id,
+            workspace_id='owner',
+            account_id=attacker.account_id,
+            name='Attacker Account',
+            character_name='Attacker Hero',
+            race='Human',
+            class_='Rogue',
+            level=3,
+            stats=safe_json_dumps({'dexterity': 16, 'privateResource': 'ATTACKER_RESOURCE'}, {}),
+            inventory=safe_json_dumps([{'id': 'attacker_item', 'name': 'ATTACKER_PRIVATE_ITEM'}], []),
+            character_sheet=safe_json_dumps(
+                {'privateNotes': 'ATTACKER_PRIVATE_SHEET', 'knownSpells': ['ATTACKER_PRIVATE_SPELL']},
+                {},
+            ),
+        )
+        victim_player = Player(
+            campaign_id=campaign.campaign_id,
+            workspace_id='owner',
+            account_id=victim.account_id,
+            name='Victim Account',
+            character_name='Victim Hero',
+            race='Elf',
+            class_='Wizard',
+            level=4,
+            stats=safe_json_dumps({'intelligence': 18, 'privateResource': 'VICTIM_RESOURCE'}, {}),
+            inventory=safe_json_dumps([{'id': 'victim_item', 'name': 'VICTIM_PRIVATE_ITEM'}], []),
+            character_sheet=safe_json_dumps(
+                {'privateNotes': 'VICTIM_PRIVATE_SHEET', 'knownSpells': ['VICTIM_PRIVATE_SPELL']},
+                {},
+            ),
+        )
+        db.session.add_all([attacker_player, victim_player])
+        db.session.flush()
+
+        def snapshot_player(player, *, item: str, spell: str, resource: str):
+            return {
+                'id': f'player_{player.player_id}',
+                'playerId': player.player_id,
+                'name': player.character_name,
+                'race': player.race,
+                'class': player.class_,
+                'level': player.level,
+                'health': {'currentHp': 17, 'maxHp': 21},
+                'stats': {'ability': 18, 'privateResource': resource},
+                'inventory': {'items': [{'id': f'item_{player.player_id}', 'name': item}]},
+                'character_sheet': {'privateNotes': f'{resource}_PRIVATE_SHEET'},
+                'spellbook': {'knownSpells': [{'id': f'spell_{player.player_id}', 'name': spell}]},
+                'spells': [spell],
+                'resources': {'spellSlots': {'1': 3}},
+                'metadata': {'privateNotes': f'{player.character_name} private metadata'},
+            }
+
+        snapshot = {
+            'schemaVersion': 1,
+            'playerCharacters': [
+                snapshot_player(
+                    attacker_player,
+                    item='ATTACKER_PRIVATE_ITEM',
+                    spell='ATTACKER_PRIVATE_SPELL',
+                    resource='ATTACKER_RESOURCE',
+                ),
+                snapshot_player(
+                    victim_player,
+                    item='VICTIM_PRIVATE_ITEM',
+                    spell='VICTIM_PRIVATE_SPELL',
+                    resource='VICTIM_RESOURCE',
+                ),
+            ],
+            'combat': {
+                'status': 'active',
+                'participants': [
+                    {
+                        'id': f'player_{attacker_player.player_id}',
+                        'name': attacker_player.character_name,
+                        'team': 'player',
+                        'kind': 'player_character',
+                        'class': attacker_player.class_,
+                        'level': attacker_player.level,
+                        'hp': {'current': 17, 'max': 21},
+                        'stats': {'privateResource': 'ATTACKER_COMBAT_RESOURCE'},
+                        'abilities': [{'name': 'ATTACKER_COMBAT_ABILITY'}],
+                        'armorClass': 15,
+                        'conditions': [],
+                        'isAlive': True,
+                        'isConscious': True,
+                    },
+                    {
+                        'id': f'player_{victim_player.player_id}',
+                        'name': victim_player.character_name,
+                        'team': 'player',
+                        'kind': 'player_character',
+                        'class': victim_player.class_,
+                        'level': victim_player.level,
+                        'hp': {'current': 12, 'max': 24},
+                        'stats': {'privateResource': 'VICTIM_COMBAT_RESOURCE'},
+                        'abilities': [{'name': 'VICTIM_COMBAT_ABILITY'}],
+                        'armorClass': 13,
+                        'conditions': ['concentrating'],
+                        'isAlive': True,
+                        'isConscious': True,
+                    },
+                ],
+                'flags': {},
+            },
+            'flags': {
+                'campaignPackActiveCheckpointId': 'cp_start',
+                'campaignPackProgressRevision': 2,
+                'dmOnlyRuntimeFlag': 'DM_ONLY_FLAG',
+            },
+            'stateChangeLedger': [{'message': 'DM_ONLY_LEDGER'}],
+            'campaignPack': {
+                'packId': 'privacy_pack',
+                'title': 'Privacy Pack',
+                'activeCheckpointId': 'cp_start',
+                'checkpoints': [
+                    {'id': 'cp_start', 'title': 'Visible Start'},
+                    {'id': 'cp_secret', 'title': 'DM_ONLY_CHECKPOINT'},
+                ],
+                'catalog': {'locations': [{'id': 'secret_lair', 'name': 'DM_ONLY_LOCATION'}]},
+                'directorRules': {'offTrackPolicy': 'DM_ONLY_POLICY'},
+            },
+        }
+        session = Session(
+            campaign_id=campaign.campaign_id,
+            state_snapshot=safe_json_dumps(snapshot, {}),
+        )
+        db.session.add(session)
+        db.session.flush()
+        db.session.add(
+            SessionState(
+                session_id=session.session_id,
+                current_location='Visible Start',
+                current_quest='Protect private character state',
+                active_segments=safe_json_dumps(
+                    [
+                        {
+                            'segment_id': 44,
+                            'title': 'Revealed Story Beat',
+                            'description': 'The party has reached the bell tower.',
+                            'reason': 'DM_ONLY_TRIGGER_REASON',
+                            'trigger_spec': {
+                                'trigger_type': 'keywords',
+                                'raw': {'keywords': ['DM_ONLY_TRIGGER_KEYWORD']},
+                            },
+                        }
+                    ],
+                    [],
+                ),
+                memory_snippets='[]',
+            )
+        )
+        db.session.commit()
+        return {
+            'campaign_id': campaign.campaign_id,
+            'session_id': session.session_id,
+            'attacker_player_id': attacker_player.player_id,
+            'victim_player_id': victim_player.player_id,
+        }
+
+
+def _private_roll_event_payload(*, client_message_id: str, score: int, skill: str, wound_penalty: int) -> dict:
+    roll = {
+        'rule_type': 'social',
+        'die': 'd20',
+        'mode': 'normal',
+        'rolls': [12],
+        'kept': 12,
+        'modifier': 4,
+        'total': 16,
+        'reason': 'persuade the guard',
+        'result_visibility': 'visible',
+        'dc_hint': f'DM_ONLY_DC_HINT_{client_message_id}',
+        'ability': {'key': 'charisma', 'label': 'CHA', 'score': score, 'modifier': 4},
+        'proficiency': {'bonus': 2, 'skills': [skill]},
+        'modifier_breakdown': {
+            'ability_modifier': 4,
+            'proficiency_bonus': 2,
+            'wound_penalty': wound_penalty,
+            'total': 4,
+        },
+    }
+    return {
+        'pending_turn_id': None,
+        'roll_value': 16,
+        'roll': roll,
+        'metadata': {
+            'client_message_id': client_message_id,
+            'dc_hint': f'DM_ONLY_METADATA_HINT_{client_message_id}',
+            'action_intent': {'kind': 'roll', 'roll': roll},
+            'authoritative_roll': roll,
+            'roll_gate': {'scope': 'single_player', 'roll_spec': {**roll, 'task_dc': 14}},
+        },
+    }
+
+
+def test_non_admin_session_state_keeps_own_detail_and_redacts_other_players(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+    ids = _seed_session_player_privacy_fixture(app)
+    attacker_headers = {
+        'Authorization': 'Bearer session-privacy-attacker-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+
+    victim_detail = client.get(f"/api/players/{ids['victim_player_id']}", headers=attacker_headers)
+    state_response = client.get(f"/api/sessions/{ids['session_id']}/state", headers=attacker_headers)
+    session_list_response = client.get(
+        f"/api/sessions/campaigns/{ids['campaign_id']}/sessions",
+        headers=attacker_headers,
+    )
+    workspace_response = client.get(
+        f"/api/campaigns/{ids['campaign_id']}/workspace",
+        headers=attacker_headers,
+    )
+
+    assert victim_detail.status_code == 404
+    assert state_response.status_code == 200
+    state_payload = state_response.get_json()
+    snapshot = state_payload['state_snapshot']
+    assert state_payload['active_segments'] == [
+        {
+            'segment_id': 44,
+            'title': 'Revealed Story Beat',
+            'description': 'The party has reached the bell tower.',
+        }
+    ]
+    assert 'DM_ONLY_TRIGGER' not in json.dumps(state_payload)
+    assert [
+        bundle['playerId']
+        for bundle in snapshot['combat'].get('legalActions', [])
+    ] == [ids['attacker_player_id']]
+    actors = {actor['playerId']: actor for actor in snapshot['playerCharacters']}
+    assert actors[ids['attacker_player_id']]['inventory']['items'][0]['name'] == 'ATTACKER_PRIVATE_ITEM'
+    assert actors[ids['attacker_player_id']]['spellbook']['knownSpells'][0]['name'] == 'ATTACKER_PRIVATE_SPELL'
+    assert set(actors[ids['victim_player_id']]) == {'id', 'playerId', 'name', 'race', 'class', 'level'}
+    assert actors[ids['victim_player_id']]['name'] == 'Victim Hero'
+    victim_combat = next(
+        participant
+        for participant in snapshot['combat']['participants']
+        if participant['id'] == f"player_{ids['victim_player_id']}"
+    )
+    assert set(victim_combat) == {
+        'id',
+        'name',
+        'team',
+        'kind',
+        'class',
+        'level',
+        'hp',
+        'conditions',
+        'isAlive',
+        'isConscious',
+    }
+    assert victim_combat['hp'] == {'current': 12, 'max': 24}
+    assert 'stateChangeLedger' not in snapshot
+    assert snapshot['flags'] == {
+        'campaignPackActiveCheckpointId': 'cp_start',
+        'campaignPackCompletedCheckpointIds': [],
+        'campaignPackSkippedCheckpointIds': [],
+        'campaignPackFailedCheckpointIds': [],
+        'campaignPackProgressRevision': 2,
+    }
+    assert 'catalog' not in snapshot['campaignPack']
+    assert 'directorRules' not in snapshot['campaignPack']
+    assert 'VICTIM_PRIVATE' not in json.dumps(snapshot)
+    assert 'VICTIM_RESOURCE' not in json.dumps(snapshot)
+    assert session_list_response.status_code == 200
+    assert 'ATTACKER_PRIVATE_ITEM' in json.dumps(session_list_response.get_json())
+    assert 'VICTIM_PRIVATE' not in json.dumps(session_list_response.get_json())
+    assert workspace_response.status_code == 200
+    assert 'ATTACKER_PRIVATE_ITEM' in json.dumps(workspace_response.get_json())
+    assert 'VICTIM_PRIVATE' not in json.dumps(workspace_response.get_json())
+
+
+def test_session_export_scopes_player_detail_and_selection_but_admin_remains_complete(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={
+            'AIDM_API_AUTH_TOKENS': 'token-123,session-privacy-table-test-key',
+            'AIDM_API_AUTH_TOKEN_WORKSPACES': 'owner=session-privacy-table-test-key',
+        },
+    )
+    client = app.test_client()
+    ids = _seed_session_player_privacy_fixture(app)
+    attacker_headers = {
+        'Authorization': 'Bearer session-privacy-attacker-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+    admin_headers = {
+        'Authorization': 'Bearer session-privacy-admin-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+    table_token_headers = {
+        'Authorization': 'Bearer session-privacy-table-test-key',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+
+    attacker_export = client.get(f"/api/sessions/{ids['session_id']}/export", headers=attacker_headers)
+    victim_selection = client.get(
+        f"/api/sessions/{ids['session_id']}/export?player_id={ids['victim_player_id']}",
+        headers=attacker_headers,
+    )
+    own_selection = client.get(
+        f"/api/sessions/{ids['session_id']}/export?player_id={ids['attacker_player_id']}",
+        headers=attacker_headers,
+    )
+    admin_export = client.get(
+        f"/api/sessions/{ids['session_id']}/export?player_id={ids['victim_player_id']}",
+        headers=admin_headers,
+    )
+    table_token_selection = client.get(
+        f"/api/sessions/{ids['session_id']}/export?player_id={ids['victim_player_id']}",
+        headers=table_token_headers,
+    )
+
+    assert attacker_export.status_code == 200
+    attacker_payload = attacker_export.get_json()
+    assert attacker_payload['selectedPlayer']['player_id'] == ids['attacker_player_id']
+    assert attacker_payload['selectedPlayer']['inventory'][0]['name'] == 'ATTACKER_PRIVATE_ITEM'
+    attacker_players = {player['player_id']: player for player in attacker_payload['players']}
+    assert attacker_players[ids['attacker_player_id']]['character_sheet']['privateNotes'] == 'ATTACKER_PRIVATE_SHEET'
+    assert set(attacker_players[ids['victim_player_id']]) == {
+        'player_id',
+        'campaign_id',
+        'name',
+        'character_name',
+        'race',
+        'sex',
+        'profile_image',
+        'class_',
+        'char_class',
+        'level',
+    }
+    assert 'VICTIM_PRIVATE' not in json.dumps(attacker_payload)
+    assert 'VICTIM_RESOURCE' not in json.dumps(attacker_payload)
+    assert 'DM_ONLY_TRIGGER' not in json.dumps(attacker_payload)
+
+    assert victim_selection.status_code == 404
+    assert victim_selection.get_json()['error_code'] == 'player_not_found'
+    assert own_selection.status_code == 200
+    assert own_selection.get_json()['selectedPlayer']['player_id'] == ids['attacker_player_id']
+    assert table_token_selection.status_code == 404
+    assert table_token_selection.get_json()['error_code'] == 'player_not_found'
+
+    assert admin_export.status_code == 200
+    admin_payload = admin_export.get_json()
+    assert admin_payload['selectedPlayer']['player_id'] == ids['victim_player_id']
+    assert admin_payload['selectedPlayer']['inventory'][0]['name'] == 'VICTIM_PRIVATE_ITEM'
+    assert admin_payload['selectedPlayer']['character_sheet']['privateNotes'] == 'VICTIM_PRIVATE_SHEET'
+    admin_players = {player['player_id']: player for player in admin_payload['players']}
+    assert admin_players[ids['victim_player_id']]['stats']['privateResource'] == 'VICTIM_RESOURCE'
+    assert admin_players[ids['attacker_player_id']]['inventory'][0]['name'] == 'ATTACKER_PRIVATE_ITEM'
+    assert 'DM_ONLY_LEDGER' in json.dumps(admin_payload['sessionState']['state_snapshot'])
+    assert 'DM_ONLY_TRIGGER_REASON' in json.dumps(admin_payload['sessionState']['active_segments'])
+
+
+def test_accountless_table_token_cannot_read_mutate_or_socket_bind_guessed_player(
+    tmp_path,
+    monkeypatch,
+):
+    app, socketio = _build_auth_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={
+            'AIDM_API_AUTH_TOKENS': 'token-123,session-privacy-table-test-key',
+            'AIDM_API_AUTH_TOKEN_WORKSPACES': 'owner=session-privacy-table-test-key',
+        },
+    )
+    client = app.test_client()
+    ids = _seed_session_player_privacy_fixture(app)
+    table_token_headers = {
+        'Authorization': 'Bearer session-privacy-table-test-key',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+    admin_headers = {
+        'Authorization': 'Bearer session-privacy-admin-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+
+    party_response = client.get(
+        f"/api/players/campaigns/{ids['campaign_id']}/players",
+        headers=table_token_headers,
+    )
+    guessed_detail = client.get(
+        f"/api/players/{ids['victim_player_id']}",
+        headers=table_token_headers,
+    )
+    guessed_update = client.patch(
+        f"/api/players/{ids['victim_player_id']}",
+        headers=table_token_headers,
+        json={'level': 20},
+    )
+    admin_detail = client.get(
+        f"/api/players/{ids['victim_player_id']}",
+        headers=admin_headers,
+    )
+
+    assert party_response.status_code == 200
+    party_payload = party_response.get_json()
+    assert {player['player_id'] for player in party_payload} == {
+        ids['attacker_player_id'],
+        ids['victim_player_id'],
+    }
+    assert 'VICTIM_PRIVATE' not in json.dumps(party_payload)
+    assert 'VICTIM_RESOURCE' not in json.dumps(party_payload)
+    assert guessed_detail.status_code == 404
+    assert guessed_detail.get_json()['error_code'] == 'player_not_found'
+    assert guessed_update.status_code == 404
+    assert guessed_update.get_json()['error_code'] == 'player_not_found'
+    assert admin_detail.status_code == 200
+    assert admin_detail.get_json()['level'] == 4
+    assert admin_detail.get_json()['stats']['privateResource'] == 'VICTIM_RESOURCE'
+
+    table_socket = socketio.test_client(
+        app,
+        flask_test_client=app.test_client(),
+        auth={'token': 'session-privacy-table-test-key'},
+    )
+    assert table_socket.is_connected()
+    table_socket.emit(
+        'join_session',
+        {'session_id': ids['session_id'], 'player_id': ids['victim_player_id']},
+    )
+    join_events = table_socket.get_received()
+    join_error = _socket_event_payload(join_events, 'error')
+    assert join_error['error_code'] == 'invalid_player'
+    assert _socket_event_payload(join_events, 'player_joined') is None
+
+
+def test_player_cannot_read_raw_campaign_canon_but_admin_can(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+    ids = _seed_session_player_privacy_fixture(app)
+    with app.app_context():
+        db.session.add(
+            StoryEntity(
+                campaign_id=ids['campaign_id'],
+                session_id=ids['session_id'],
+                entity_type='npc',
+                name='Canon Keeper',
+                summary='DM_ONLY_CANON_SUMMARY',
+                metadata_json=safe_json_dumps({'directorNote': 'DM_ONLY_CANON_METADATA'}, {}),
+            )
+        )
+        db.session.commit()
+
+    player_headers = {
+        'Authorization': 'Bearer session-privacy-attacker-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+    admin_headers = {
+        'Authorization': 'Bearer session-privacy-admin-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+    player_response = client.get(
+        f"/api/campaigns/{ids['campaign_id']}/canon",
+        headers=player_headers,
+    )
+    admin_response = client.get(
+        f"/api/campaigns/{ids['campaign_id']}/canon",
+        headers=admin_headers,
+    )
+
+    assert player_response.status_code == 403
+    assert player_response.get_json()['details']['required_capability'] == 'debug_read'
+    assert admin_response.status_code == 200
+    assert 'DM_ONLY_CANON_SUMMARY' in json.dumps(admin_response.get_json())
+    assert 'DM_ONLY_CANON_METADATA' in json.dumps(admin_response.get_json())
+
+
+def test_chronicle_exports_redact_director_metadata_for_players_but_preserve_admin_view(
+    tmp_path,
+    monkeypatch,
+):
+    app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+    ids = _seed_session_player_privacy_fixture(app)
+    with app.app_context():
+        turn = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['attacker_player_id'],
+            player_input='PUBLIC_PLAYER_ACTION',
+            dm_output='PUBLIC_DM_NARRATION',
+            status='completed',
+            outcome_status='resolved',
+            llm_provider='DM_ONLY_PROVIDER',
+            llm_model='DM_ONLY_MODEL',
+            metadata_json=safe_json_dumps(
+                {'state_pipeline': {'directorTrace': 'DM_ONLY_STATE_PIPELINE'}},
+                {},
+            ),
+        )
+        db.session.add(turn)
+        db.session.flush()
+        pack_session = CampaignPackSession(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            workspace_id='owner',
+            pack_id='privacy_pack',
+            pack_title='Privacy Pack',
+            active_checkpoint_id='cp_revealed_chapter',
+            progress_revision=7,
+        )
+        db.session.add(pack_session)
+        db.session.flush()
+        db.session.add(
+            CampaignPackCheckpointProgress(
+                campaign_pack_session_id=pack_session.campaign_pack_session_id,
+                checkpoint_id='cp_revealed_chapter',
+                title='Revealed Chapter',
+                status='active',
+                sort_order=1,
+                progress_revision=7,
+            )
+        )
+        progress_event = TurnEvent(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            turn_id=turn.turn_id,
+            event_type='campaign_pack.progress.changed',
+            payload_json=safe_json_dumps(
+                {
+                    'type': 'campaign_pack.progress.changed',
+                    'action': 'DM_ONLY_ADVANCE_ACTION',
+                    'fromCheckpointId': 'cp_previous',
+                    'toCheckpointId': 'cp_revealed_chapter',
+                    'progressRevision': 7,
+                    'reason': 'DM_ONLY_PROGRESS_REASON',
+                },
+                {},
+            ),
+        )
+        db.session.add(progress_event)
+        db.session.commit()
+        progress_event_id = progress_event.event_id
+        turn_id = turn.turn_id
+
+    player_headers = {
+        'Authorization': 'Bearer session-privacy-attacker-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+    admin_headers = {
+        'Authorization': 'Bearer session-privacy-admin-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+    paths = [
+        f"/api/campaigns/{ids['campaign_id']}/chronicle",
+        f"/api/sessions/{ids['session_id']}/chronicle",
+    ]
+    for path in paths:
+        player_response = client.get(path, headers=player_headers)
+        admin_response = client.get(path, headers=admin_headers)
+
+        assert player_response.status_code == 200
+        player_html = player_response.get_data(as_text=True)
+        assert 'PUBLIC_PLAYER_ACTION' in player_html
+        assert 'PUBLIC_DM_NARRATION' in player_html
+        assert 'Revealed Chapter' in player_html
+        assert 'DM_ONLY_ADVANCE_ACTION' not in player_html
+        assert 'Dm Only Advance Action' not in player_html
+        assert 'DM_ONLY_PROGRESS_REASON' not in player_html
+        assert 'revision 7' not in player_html
+        assert f'turn event {progress_event_id}' not in player_html
+        assert 'DM_ONLY_PROVIDER/DM_ONLY_MODEL' not in player_html
+        assert 'recorded state-pipeline metadata' not in player_html
+        assert "Director's Commentary" not in player_html
+        assert 'data-chapter-source="campaign-pack-progress"' not in player_html
+        assert f'Turn {turn_id} |' not in player_html
+
+        assert admin_response.status_code == 200
+        admin_html = admin_response.get_data(as_text=True)
+        assert 'PUBLIC_DM_NARRATION' in admin_html
+        assert 'Revealed Chapter' in admin_html
+        assert 'Dm Only Advance Action' in admin_html
+        assert 'DM_ONLY_PROGRESS_REASON' in admin_html
+        assert 'revision 7' in admin_html
+        assert f'turn event {progress_event_id}' in admin_html
+        assert 'DM_ONLY_PROVIDER/DM_ONLY_MODEL' in admin_html
+        assert 'recorded state-pipeline metadata' in admin_html
+        assert "Director's Commentary" in admin_html
+        assert 'data-chapter-source="campaign-pack-progress"' in admin_html
+        assert f'Turn {turn_id} |' in admin_html
+
+
+def test_player_read_logs_events_and_exports_redact_peer_roll_provenance_but_keep_own_and_admin_detail(
+    tmp_path,
+    monkeypatch,
+):
+    app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
+    client = app.test_client()
+    ids = _seed_session_player_privacy_fixture(app)
+
+    with app.app_context():
+        own_turn = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['attacker_player_id'],
+            player_input='Own roll',
+            status='completed',
+            client_message_id='own-private-roll',
+        )
+        peer_turn = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['victim_player_id'],
+            player_input='Peer roll',
+            status='completed',
+            client_message_id='peer-private-roll',
+        )
+        db.session.add_all([own_turn, peer_turn])
+        db.session.flush()
+        own_payload = _private_roll_event_payload(
+            client_message_id='own-private-roll',
+            score=17,
+            skill='OWN_PRIVATE_SKILL',
+            wound_penalty=1,
+        )
+        peer_payload = _private_roll_event_payload(
+            client_message_id='peer-private-roll',
+            score=19,
+            skill='PEER_PRIVATE_SKILL',
+            wound_penalty=3,
+        )
+        peer_payload['metadata']['state_pipeline'] = {
+            'clarificationRequest': {
+                'originalAction': {'itemName': 'PEER_PRIVATE_CLARIFICATION_ITEM'},
+                'options': [
+                    {'id': 'private-item', 'label': 'PEER_PRIVATE_CLARIFICATION_ITEM'},
+                ],
+            },
+            'preDmValidation': {
+                'validatedActions': [
+                    {'resolvedItem': {'itemName': 'PEER_PRIVATE_CLARIFICATION_ITEM'}},
+                ],
+            },
+        }
+        own_payload['metadata']['turn_id'] = own_turn.turn_id
+        peer_payload['metadata']['turn_id'] = peer_turn.turn_id
+        db.session.add_all(
+            [
+                TurnEvent(
+                    session_id=ids['session_id'],
+                    campaign_id=ids['campaign_id'],
+                    turn_id=own_turn.turn_id,
+                    player_id=ids['attacker_player_id'],
+                    event_type='roll_resolved',
+                    payload_json=safe_json_dumps(own_payload, {}),
+                ),
+                TurnEvent(
+                    session_id=ids['session_id'],
+                    campaign_id=ids['campaign_id'],
+                    turn_id=peer_turn.turn_id,
+                    player_id=ids['victim_player_id'],
+                    event_type='roll_resolved',
+                    payload_json=safe_json_dumps(peer_payload, {}),
+                ),
+                SessionLogEntry(
+                    session_id=ids['session_id'],
+                    message='Own authoritative roll resolved.',
+                    entry_type='dm',
+                    metadata_json=safe_json_dumps(own_payload['metadata'], {}),
+                ),
+                SessionLogEntry(
+                    session_id=ids['session_id'],
+                    message='Peer authoritative roll resolved.',
+                    entry_type='dm',
+                    metadata_json=safe_json_dumps(peer_payload['metadata'], {}),
+                ),
+            ]
+        )
+        db.session.commit()
+
+    attacker_headers = {
+        'Authorization': 'Bearer session-privacy-attacker-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+    admin_headers = {
+        'Authorization': 'Bearer session-privacy-admin-token',
+        'X-AIDM-Workspace-Id': 'owner',
+    }
+
+    player_events = client.get(f"/api/sessions/{ids['session_id']}/events", headers=attacker_headers)
+    player_log = client.get(f"/api/sessions/{ids['session_id']}/log", headers=attacker_headers)
+    player_export = client.get(f"/api/sessions/{ids['session_id']}/export", headers=attacker_headers)
+    admin_events = client.get(f"/api/sessions/{ids['session_id']}/events", headers=admin_headers)
+
+    assert player_events.status_code == 200
+    events_by_player = {
+        event['player_id']: event['payload']
+        for event in player_events.get_json()['events']
+        if event['event_type'] == 'roll_resolved'
+    }
+    own_event = events_by_player[ids['attacker_player_id']]
+    peer_event = events_by_player[ids['victim_player_id']]
+    assert own_event['roll']['ability']['score'] == 17
+    assert own_event['roll']['proficiency']['skills'] == ['OWN_PRIVATE_SKILL']
+    assert own_event['roll']['modifier_breakdown']['wound_penalty'] == 1
+    assert 'ability' not in peer_event['roll']
+    assert 'proficiency' not in peer_event['roll']
+    assert 'modifier_breakdown' not in peer_event['roll']
+    assert 'dc_hint' not in peer_event['metadata']
+    assert 'ability' not in peer_event['metadata']['authoritative_roll']
+    assert 'proficiency' not in peer_event['metadata']['action_intent']['roll']
+    assert 'modifier_breakdown' not in peer_event['metadata']['roll_gate']['roll_spec']
+    assert 'PEER_PRIVATE_SKILL' not in json.dumps(player_events.get_json())
+    assert 'PEER_PRIVATE_CLARIFICATION_ITEM' not in json.dumps(player_events.get_json())
+
+    assert player_log.status_code == 200
+    log_by_client_id = {
+        entry['metadata'].get('client_message_id'): entry['metadata']
+        for entry in player_log.get_json()['entries']
+    }
+    assert log_by_client_id['own-private-roll']['authoritative_roll']['ability']['score'] == 17
+    assert 'ability' not in log_by_client_id['peer-private-roll']['authoritative_roll']
+    assert 'dc_hint' not in log_by_client_id['peer-private-roll']
+    assert 'PEER_PRIVATE_SKILL' not in json.dumps(player_log.get_json())
+    assert 'PEER_PRIVATE_CLARIFICATION_ITEM' not in json.dumps(player_log.get_json())
+
+    assert player_export.status_code == 200
+    export_payload = player_export.get_json()
+    assert 'OWN_PRIVATE_SKILL' in json.dumps(export_payload['turnEvents'])
+    assert 'OWN_PRIVATE_SKILL' in json.dumps(export_payload['logEntries'])
+    assert 'PEER_PRIVATE_SKILL' not in json.dumps(export_payload['turnEvents'])
+    assert 'PEER_PRIVATE_SKILL' not in json.dumps(export_payload['logEntries'])
+    assert 'PEER_PRIVATE_CLARIFICATION_ITEM' not in json.dumps(export_payload['turnEvents'])
+    assert 'PEER_PRIVATE_CLARIFICATION_ITEM' not in json.dumps(export_payload['logEntries'])
+
+    assert admin_events.status_code == 200
+    assert 'PEER_PRIVATE_SKILL' in json.dumps(admin_events.get_json())
+    assert 'DM_ONLY_METADATA_HINT_peer-private-roll' in json.dumps(admin_events.get_json())
+    assert 'PEER_PRIVATE_CLARIFICATION_ITEM' in json.dumps(admin_events.get_json())
+
+
+def test_socket_room_roll_events_redact_peer_provenance_and_keep_sender_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    app, socketio = _build_auth_runtime(tmp_path, monkeypatch)
+    ids = _seed_session_player_privacy_fixture(app)
+    with app.app_context():
+        victim = db.session.get(Player, ids['victim_player_id'])
+        victim.stats = safe_json_dumps(
+            {
+                'charisma': 18,
+                'skill_proficiencies': ['Persuasion'],
+                'current_hp': 5,
+                'hp_current': 5,
+                'max_hp': 20,
+                'hp_max': 20,
+            },
+            {},
+        )
+        db.session.commit()
+
+    import aidm_server.blueprints.socketio_events as socketio_events_module
+    import aidm_server.player_rolls as player_rolls_module
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player, rules_hint
+        yield 'The guard weighs the argument.'
+
+    monkeypatch.setattr(socketio_events_module, 'query_dm_function_stream', fake_stream)
+    monkeypatch.setattr(player_rolls_module.secrets, 'randbelow', lambda _sides: 11)
+
+    attacker_client = socketio.test_client(
+        app,
+        flask_test_client=app.test_client(),
+        auth={'account_token': 'session-privacy-attacker-token', 'workspace_id': 'owner'},
+    )
+    victim_client = socketio.test_client(
+        app,
+        flask_test_client=app.test_client(),
+        auth={'account_token': 'session-privacy-victim-token', 'workspace_id': 'owner'},
+    )
+    assert attacker_client.is_connected()
+    assert victim_client.is_connected()
+    attacker_client.emit(
+        'join_session',
+        {'session_id': ids['session_id'], 'player_id': ids['attacker_player_id']},
+    )
+    victim_client.emit(
+        'join_session',
+        {'session_id': ids['session_id'], 'player_id': ids['victim_player_id']},
+    )
+    attacker_client.get_received()
+    victim_client.get_received()
+
+    victim_client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'player_id': ids['victim_player_id'],
+            'message': 'I persuade the guard to let us pass.',
+            'client_message_id': 'victim-private-socket-roll',
+            'action_intent': {
+                'kind': 'roll',
+                'source': 'dice_roller',
+                'text': 'I persuade the guard to let us pass.',
+                'client_message_id': 'victim-private-socket-roll',
+                'ability': {'key': 'charisma', 'label': 'CHA'},
+                'roll': {
+                    'die': 'd20',
+                    'mode': 'normal',
+                    'reason': 'persuade the guard',
+                    'result_visibility': 'visible',
+                },
+            },
+        },
+    )
+    sender_events = victim_client.get_received()
+    peer_events = attacker_client.get_received()
+
+    sender_roll = _socket_event_payload(sender_events, 'roll_resolved')
+    peer_roll = _socket_event_payload(peer_events, 'roll_resolved')
+    assert sender_roll['ability']['score'] == 18
+    assert sender_roll['proficiency']['skills'] == ['persuasion']
+    assert sender_roll['modifier_breakdown']['wound_penalty'] == 4
+    assert peer_roll['total'] == sender_roll['total']
+    assert 'ability' not in peer_roll
+    assert 'proficiency' not in peer_roll
+    assert 'modifier_breakdown' not in peer_roll
+
+    sender_message = _socket_event_payload(sender_events, 'new_message')
+    peer_message = _socket_event_payload(peer_events, 'new_message')
+    assert sender_message['action_intent']['ability']['score'] == 18
+    assert sender_message['rules_hint']['roll_spec']['ability']['score'] == 18
+    assert 'dc_hint' in sender_message['rules_hint']
+    assert peer_message['action_intent']['ability'] == {'key': 'charisma', 'label': 'CHA'}
+    assert 'dc_hint' not in peer_message['rules_hint']
+    assert 'ability' not in peer_message['rules_hint']['roll_spec']
+    assert 'proficiency' not in peer_message['rules_hint']['roll_spec']
+    assert 'modifier_breakdown' not in peer_message['rules_hint']['roll_spec']
+    assert 'task_dc' not in peer_message['rules_hint']['roll_spec']
+    assert 'ability' not in peer_message['rules_hint']['authoritative_roll']
+
+    for socket_event in peer_events:
+        if socket_event['name'] not in {'dm_response_start', 'dm_chunk', 'dm_response_end'}:
+            continue
+        payload = socket_event['args'][0]
+        rules_hint = payload['rules_hint']
+        assert 'dc_hint' not in rules_hint
+        if isinstance(rules_hint.get('roll_spec'), dict):
+            assert 'ability' not in rules_hint['roll_spec']
+            assert 'proficiency' not in rules_hint['roll_spec']
+            assert 'modifier_breakdown' not in rules_hint['roll_spec']
+            assert 'task_dc' not in rules_hint['roll_spec']
+        if isinstance(rules_hint.get('authoritative_roll'), dict):
+            assert 'ability' not in rules_hint['authoritative_roll']
+            assert 'proficiency' not in rules_hint['authoritative_roll']
+            assert 'modifier_breakdown' not in rules_hint['authoritative_roll']
+
+    attacker_client.disconnect()
+    victim_client.disconnect()
 
 
 def test_session_import_non_admin_cannot_attribute_actions_to_other_players(tmp_path, monkeypatch):

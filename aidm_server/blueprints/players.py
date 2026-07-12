@@ -42,6 +42,10 @@ from aidm_server.validation import (
     parse_json_body,
     required_text as _required_text,
 )
+from aidm_server.weapon_proficiency import (
+    default_weapon_proficiencies_for_class,
+    serialize_weapon_proficiencies,
+)
 from aidm_server.workspace_access import (
     current_account_id,
     current_workspace_id,
@@ -249,6 +253,9 @@ def add_player(campaign_id):
             level=level,
             stats=stats_payload,
             inventory=(safe_json_dumps(inventory_items, []) if raw_inventory is not None or inventory_items else None),
+            weapon_proficiencies=serialize_weapon_proficiencies(
+                default_weapon_proficiencies_for_class(class_name)
+            ),
             character_sheet=_character_sheet_payload_with_spellbook(
                 payload.get('character_sheet'),
                 class_name=class_name,
@@ -373,6 +380,9 @@ def update_player(player_id):
             if error:
                 return error_response('validation_error', error, 400)
             player.class_ = value
+            player.weapon_proficiencies = serialize_weapon_proficiencies(
+                default_weapon_proficiencies_for_class(value)
+            )
 
         if 'level' in payload:
             level = coerce_int(payload.get('level'))

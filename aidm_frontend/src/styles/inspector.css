@@ -1255,6 +1255,7 @@
 }
 
 .management-form input,
+.management-form select,
 .management-form textarea {
   width: 100%;
   min-width: 0;
@@ -1264,9 +1265,14 @@
   background: rgba(255, 255, 255, 0.035);
 }
 
-.management-form input {
+.management-form input,
+.management-form select {
   height: 30px;
   padding: 0 8px;
+}
+
+.management-form select {
+  background: #11191a;
 }
 
 .management-form textarea {

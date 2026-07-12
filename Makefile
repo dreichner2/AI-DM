@@ -2,7 +2,7 @@ PYTHON := .venv/bin/python
 PYTHON_BOOTSTRAP ?= python3.14
 FRONTEND_DIR := aidm_frontend
 
-.PHONY: install lock verify-python verify-frontend-toolchain backend frontend unified test lint typecheck build bundle-budget smoke scenario-regression socket-concurrency-smoke hosted-cookie-auth-smoke security-forbidden-smoke session-export-import-smoke hosted-rc-evidence hosted-rc-plan export-support-bundle beta-slo-baseline local-beta-slo-baseline backup-restore-drill postgres-backup-restore-drill migration-chain-drill browser-smoke visual-smoke visual-smoke-review frontend-npm-ci-evidence packaging-cleanup-evidence github-actions-rc-plan github-actions-evidence clean clean-deps source-archive rc-issue-evidence rc-issue-closure-evidence release-evidence-packet release-artifact-consistency release-checklist-status rc-recommendation-matrix external-proof-inputs external-proof-execution-plan operator-signoff-values-template external-proof-values-merge external-proof-values-check operator-signoff-from-inputs operator-signoff-draft operator-signoff-action-plan operator-signoff-status rc-finalize-signoff rc-handoff-artifacts post-rc-issue-evidence db-upgrade health secrets api-types request-json-parsing state-writers socketio-worker-model-decision dev-check closed-beta-rc closed-beta-rc-fast deployment-readiness observability-check reproject-session reproject-all
+.PHONY: install lock verify-python verify-frontend-toolchain backend frontend unified test lint typecheck build bundle-budget smoke scenario-regression socket-concurrency-smoke hosted-cookie-auth-smoke hosted-cookie-release-proof security-forbidden-smoke session-export-import-smoke hosted-rc-evidence hosted-rc-plan export-support-bundle beta-slo-baseline local-beta-slo-baseline backup-restore-drill postgres-backup-restore-drill migration-chain-drill browser-smoke visual-smoke visual-smoke-review frontend-npm-ci-evidence packaging-cleanup-evidence github-actions-rc-plan github-actions-evidence clean clean-deps source-archive rc-issue-evidence rc-issue-closure-evidence release-evidence-packet release-artifact-consistency release-checklist-status rc-recommendation-matrix external-proof-inputs external-proof-execution-plan operator-signoff-values-template external-proof-values-merge external-proof-values-check operator-signoff-from-inputs operator-signoff-draft operator-signoff-action-plan operator-signoff-status rc-finalize-signoff rc-handoff-artifacts post-rc-issue-evidence db-upgrade health secrets api-types request-json-parsing state-writers socketio-worker-model-decision dev-check closed-beta-rc closed-beta-rc-fast deployment-readiness observability-check reproject-session reproject-all
 
 verify-python:
 	@test -x "$(PYTHON)" || { echo "Missing $(PYTHON); run make install." >&2; exit 1; }
@@ -72,6 +72,9 @@ socket-concurrency-smoke:
 
 hosted-cookie-auth-smoke:
 	$(PYTHON) scripts/hosted_cookie_auth_smoke.py $(HOSTED_COOKIE_AUTH_SMOKE_ARGS)
+
+hosted-cookie-release-proof:
+	$(PYTHON) scripts/hosted_cookie_auth_smoke.py --release-proof-suite --evidence-report tmp/release/hosted-cookie-auth-evidence.md $(HOSTED_COOKIE_RELEASE_PROOF_ARGS)
 
 security-forbidden-smoke:
 	$(PYTHON) scripts/security_forbidden_smoke.py $(SECURITY_FORBIDDEN_SMOKE_ARGS)

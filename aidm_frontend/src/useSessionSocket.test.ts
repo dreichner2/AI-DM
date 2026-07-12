@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
 import { trustBackendOrigin, writeOriginScopedStorage } from './api'
-import { buildSessionSocketConnection } from './useSessionSocket'
+import {
+  buildSessionSocketConnection,
+  normalizeRollResolvedPayload,
+  normalizeTurnDuplicatePayload,
+} from './useSessionSocket'
 
 describe('session socket backend origin credential boundary', () => {
   beforeEach(() => {
@@ -40,5 +44,71 @@ describe('session socket backend origin credential boundary', () => {
     })
     expect(socketOptions.withCredentials).toBeUndefined()
     expect(socketOptions.extraHeaders).toEqual({ 'ngrok-skip-browser-warning': 'true' })
+  })
+})
+
+describe('authoritative socket payload validation', () => {
+  const resolvedRoll = {
+    session_id: 20,
+    turn_id: 81,
+    player_id: 30,
+    client_message_id: 'client-roll-1',
+    pending_turn_id: null,
+    rule_type: 'ability_check',
+    die: 'd20',
+    mode: 'advantage',
+    rolls: [7, 18],
+    kept: 18,
+    modifier: 5,
+    total: 23,
+    reason: 'STR check',
+    result_visibility: 'hidden_until_landed',
+    ability: { key: 'strength', label: 'STR', score: 16, modifier: 3 },
+    proficiency: { bonus: 2, skills: ['athletics'] },
+    modifier_breakdown: { ability_modifier: 3, proficiency_bonus: 2, wound_penalty: 0, total: 5 },
+    authoritative: true,
+  }
+
+  it('accepts a consistent authoritative roll and duplicate receipt', () => {
+    expect(normalizeRollResolvedPayload(resolvedRoll)).toMatchObject({
+      client_message_id: 'client-roll-1',
+      rolls: [7, 18],
+      kept: 18,
+      modifier: 5,
+      total: 23,
+      authoritative: true,
+    })
+    expect(normalizeTurnDuplicatePayload({
+      session_id: 20,
+      turn_id: 81,
+      client_message_id: 'client-roll-1',
+    })).toEqual({ session_id: 20, turn_id: 81, client_message_id: 'client-roll-1' })
+  })
+
+  it('accepts the public room payload without private character provenance', () => {
+    const publicRoll: Record<string, unknown> = { ...resolvedRoll }
+    delete publicRoll.ability
+    delete publicRoll.proficiency
+    delete publicRoll.modifier_breakdown
+
+    const normalized = normalizeRollResolvedPayload(publicRoll)
+
+    expect(normalized).toMatchObject({
+      rolls: [7, 18],
+      kept: 18,
+      modifier: 5,
+      total: 23,
+      authoritative: true,
+    })
+    expect(normalized).not.toHaveProperty('ability')
+    expect(normalized).not.toHaveProperty('proficiency')
+    expect(normalized).not.toHaveProperty('modifier_breakdown')
+  })
+
+  it('rejects client-like, unauthoritative, or internally inconsistent results', () => {
+    expect(normalizeRollResolvedPayload({ ...resolvedRoll, authoritative: false })).toBeNull()
+    expect(normalizeRollResolvedPayload({ ...resolvedRoll, total: 999 })).toBeNull()
+    expect(normalizeRollResolvedPayload({ ...resolvedRoll, rolls: [21] })).toBeNull()
+    expect(normalizeRollResolvedPayload({ ...resolvedRoll, proficiency: { bonus: 2 } })).toBeNull()
   })
 })

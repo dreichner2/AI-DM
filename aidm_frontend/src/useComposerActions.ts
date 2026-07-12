@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react'
 import type { Socket } from 'socket.io-client'
 import {
   INITIATIVE_ROLL_ABILITY_KEY,
@@ -8,12 +8,10 @@ import {
   buildActionIntent,
   composerTextForMode,
   createClientMessageId,
-  diceRollMessage,
+  diceRollRequestMessage,
   hasReservedAdminPrefix,
   interactionTargetId,
   normalizeDie,
-  parseRollModifier,
-  resolveRoll,
   stripComposerCommand,
   type AbilityOption,
   type ActionIntent,
@@ -23,6 +21,7 @@ import {
   type InventoryAction,
   type ItemOption,
   type RollMode,
+  type RollResolvedPayload,
   type RollResult,
 } from './gameActions'
 import type { PendingRollOption } from './gameSelectors'
@@ -100,15 +99,41 @@ function sceneNpcTargets(sessionState: SessionState | null): InteractionTarget[]
     .map((entry) => entry.target)
 }
 
-type DiceRollState = {
+export type DiceRollState = {
   die: string
-  result: number
   message: string
   actionIntent: ActionIntent
-  roll: RollResult
+  roll: RollResult | null
+  provenance: Pick<RollResolvedPayload, 'ability' | 'proficiency' | 'modifier_breakdown'> | null
+  clientMessageId: string
   targetLabel: string | null
   rollKey: number
-  status: 'rolling' | 'sending'
+  status: 'requesting' | 'rolling' | 'resolved' | 'failed'
+  error?: string
+}
+
+export type SharedRollNotice = {
+  playerId: number
+  turnId: number
+  roll: RollResult
+}
+
+type OutgoingTurnPayload = {
+  session_id: number
+  campaign_id: number
+  world_id: number
+  player_id: number
+  message: string
+  client_message_id: string
+  action_intent: ActionIntent
+  admin_passcode?: string
+}
+
+type StoredSubmission = {
+  clientMessageId: string
+  message: string
+  sessionId: number
+  payload: OutgoingTurnPayload
 }
 
 type UseComposerActionsOptions = {
@@ -117,7 +142,6 @@ type UseComposerActionsOptions = {
   campaign: Campaign | null
   itemOptions: ItemOption[]
   pendingRollOptions: PendingRollOption[]
-  proficiencyBonus: string
   sessionState: SessionState | null
   selectedCampaignId: number | null
   selectedPlayer: Player | null
@@ -141,7 +165,6 @@ export function useComposerActions({
   campaign,
   itemOptions,
   pendingRollOptions,
-  proficiencyBonus,
   sessionState,
   selectedCampaignId,
   selectedPlayer,
@@ -161,10 +184,8 @@ export function useComposerActions({
   const [actionText, setActionText] = useState('')
   const [composerMode, setComposerMode] = useState<ComposerMode>('action')
   const [selectedDie, setSelectedDie] = useState('d20')
-  const [rollModifier, setRollModifier] = useState('0')
   const [rollMode, setRollMode] = useState<RollMode>('normal')
   const [rollReason, setRollReason] = useState('')
-  const [rollProficiencyApplied, setRollProficiencyApplied] = useState(false)
   const [rawRollTargetPendingTurnId, setRollTargetPendingTurnId] = useState('')
   const [selectedAbilityKey, setSelectedAbilityKey] = useState(PLAIN_ROLL_ABILITY_KEY)
   const [selectedInventoryAction, setSelectedInventoryAction] = useState<InventoryAction>('use')
@@ -179,52 +200,71 @@ export function useComposerActions({
   const [adminToolsUnlocked, setAdminToolsUnlocked] = useState(false)
   const [queuedActionText, setQueuedActionText] = useState('')
   const [diceRoll, setDiceRoll] = useState<DiceRollState | null>(null)
+  const [recoverableSubmission, setRecoverableSubmission] = useState<StoredSubmission | null>(null)
+  const [sharedRollNotice, setSharedRollNotice] = useState<SharedRollNotice | null>(null)
   const diceRollKeyRef = useRef(0)
   const typingStatusRef = useRef(false)
   const typingBindingRef = useRef<{ socket: Socket; sessionId: number; playerId: number } | null>(null)
   const typingIdleTimerRef = useRef<number | null>(null)
-  const pendingSubmissionRef = useRef<{
-    clientMessageId: string
-    message: string
-    sessionId: number
-  } | null>(null)
+  const pendingSubmissionRef = useRef<StoredSubmission | null>(null)
+
+  const markSubmissionRecoverable = useCallback((reason: string) => {
+    const pendingSubmission = pendingSubmissionRef.current
+    if (!pendingSubmission) return
+    pendingSubmissionRef.current = null
+    setRecoverableSubmission(pendingSubmission)
+    setSendPending(false)
+    setStreamingTurn(null)
+    setOptimisticEntries((current) =>
+      current.map((entry) =>
+        entry.metadata.client_message_id === pendingSubmission.clientMessageId &&
+        entry.metadata.persistence_status === 'pending'
+          ? { ...entry, metadata: { ...entry.metadata, persistence_status: 'failed' } }
+          : entry,
+      ),
+    )
+    setActionText((current) => current || pendingSubmission.message)
+    setQueuedActionText((current) => current || pendingSubmission.message)
+    setDiceRoll((current) =>
+      current?.clientMessageId === pendingSubmission.clientMessageId
+        ? { ...current, status: 'failed', error: reason }
+        : current,
+    )
+    pushError('validation', `${reason} Retry will reuse the original request, so it cannot roll twice.`)
+  }, [pushError, setOptimisticEntries, setSendPending, setStreamingTurn])
 
   useEffect(() => {
     const pendingSubmission = pendingSubmissionRef.current
-    if ((!sendPending && !dmResponseBlocking) || !pendingSubmission || pendingSubmission.sessionId !== selectedSessionId) {
+    if (!pendingSubmission || pendingSubmission.sessionId !== selectedSessionId) {
       pendingSubmissionRef.current = null
       return
     }
-    const timer = window.setTimeout(() => {
+    if (!sendPending && !dmResponseBlocking) {
       pendingSubmissionRef.current = null
-      setSendPending(false)
-      setStreamingTurn(null)
-      setOptimisticEntries((current) =>
-        current.map((entry) =>
-          entry.metadata.client_message_id === pendingSubmission.clientMessageId &&
-          entry.metadata.persistence_status === 'pending'
-            ? {
-                ...entry,
-                metadata: { ...entry.metadata, persistence_status: 'failed' },
-              }
-            : entry,
-        ),
+      setRecoverableSubmission((current) =>
+        current?.clientMessageId === pendingSubmission.clientMessageId ? null : current,
       )
-      setActionText((current) => current || pendingSubmission.message)
-      setQueuedActionText((current) => current || pendingSubmission.message)
-      pushError('validation', 'Realtime confirmation timed out. Your message was restored so you can retry.')
+      return
+    }
+    const timer = window.setTimeout(() => {
+      if (pendingSubmissionRef.current?.clientMessageId === pendingSubmission.clientMessageId) {
+        markSubmissionRecoverable('Realtime confirmation timed out.')
+      }
     }, SEND_PENDING_RECOVERY_MS)
     return () => window.clearTimeout(timer)
   }, [
-    pushError,
     dmResponseBlocking,
+    markSubmissionRecoverable,
     selectedSessionId,
     sendPending,
-    setOptimisticEntries,
-    setSendPending,
-    setStreamingTurn,
     streamingTurn?.text,
   ])
+
+  useEffect(() => {
+    if (!sharedRollNotice) return
+    const timer = window.setTimeout(() => setSharedRollNotice(null), 6_000)
+    return () => window.clearTimeout(timer)
+  }, [sharedRollNotice])
 
   useEffect(() => {
     sessionStorage.removeItem('aidm:adminPasscode')
@@ -290,6 +330,9 @@ export function useComposerActions({
 
   const updateActionText = (nextText: string) => {
     setActionText(nextText)
+    setRecoverableSubmission((current) =>
+      current && nextText.trim() !== current.message ? null : current,
+    )
     setQueuedActionText((current) => (current && current !== nextText ? '' : current))
     if (nextText.trim()) {
       emitTypingStatus(true)
@@ -313,9 +356,6 @@ export function useComposerActions({
       : selectedAbilityKey === INITIATIVE_ROLL_ABILITY_KEY
         ? initiativeAbility
         : abilityOptions.find((ability) => ability.key === selectedAbilityKey) ?? null
-  const rollProficiencyBonus = Math.max(0, parseRollModifier(proficiencyBonus))
-  const rollModifierForAbility = (ability: AbilityOption | null) =>
-    abilityModifierValue(ability) + (rollProficiencyApplied ? rollProficiencyBonus : 0)
   const defaultSpellAbility =
     abilityOptions.find((ability) => ability.key === preferredSpellAbilityKey(selectedPlayer)) ??
     abilityOptions.find((ability) => ability.key === 'charisma') ??
@@ -368,39 +408,77 @@ export function useComposerActions({
     setAdminToolsUnlocked(true)
   }
 
+  const retryRecoverableSubmission = () => {
+    const retry = recoverableSubmission
+    if (!retry) return false
+    if (retry.sessionId !== selectedSessionId) {
+      pushError('validation', 'Return to the original session before retrying this request.')
+      return false
+    }
+    const socket = socketRef.current
+    if (!socket || socket.connected !== true) {
+      pushError('validation', 'Realtime is still reconnecting. Try the same request again in a moment.')
+      return false
+    }
+    socket.emit('send_message', retry.payload)
+    pendingSubmissionRef.current = retry
+    setRecoverableSubmission(null)
+    setSendPending(true)
+    setOptimisticEntries((current) =>
+      current.map((entry) =>
+        entry.metadata.client_message_id === retry.clientMessageId
+          ? { ...entry, metadata: { ...entry.metadata, persistence_status: 'pending' } }
+          : entry,
+      ),
+    )
+    setDiceRoll((current) =>
+      current?.clientMessageId === retry.clientMessageId
+        ? { ...current, status: 'requesting', error: undefined }
+        : current,
+    )
+    setActionText((current) => (current === retry.message ? '' : current))
+    setQueuedActionText((current) => (current === retry.message ? '' : current))
+    stopTtsAudio()
+    emitTypingStatus(false)
+    return true
+  }
+
   const submitAction = (overrideMessage?: string, overrideIntent?: ActionIntent) => {
     if (sendPending || dmResponseBlocking) {
       pushError('validation', 'Wait for the current DM response to save before sending again.')
-      return
+      return false
+    }
+    if (!overrideMessage && !overrideIntent && recoverableSubmission && actionText.trim() === recoverableSubmission.message) {
+      return retryRecoverableSubmission()
     }
     if (!selectedSessionId || !selectedCampaignId || !campaign || !selectedPlayerId) {
       pushError('validation', 'Choose a campaign, session, and player before sending.')
-      return
+      return false
     }
     const socket = socketRef.current
     if (!socket || socket.connected !== true) {
       pushError('validation', 'Realtime is reconnecting. Try again in a moment.')
-      return
+      return false
     }
     const message = (overrideMessage ?? actionText).trim()
-    if (!message) return
+    if (!message) return false
     const trimmedAdminPasscode = adminPasscode.trim()
     if (!overrideIntent && composerMode === 'admin' && !trimmedAdminPasscode) {
       pushError('validation', 'Admin passcode is required for Admin mode.')
-      return
+      return false
     }
     if (!overrideIntent && composerMode === 'interact' && !selectedInteractionTarget) {
       pushError('validation', 'Choose another player before sending an interaction.')
-      return
+      return false
     }
     if (!overrideIntent && composerMode === 'item') {
       if (selectedInventoryActionRequiresItem && !selectedItem) {
         pushError('validation', 'Choose an item already in your inventory for that action.')
-        return
+        return false
       }
       if (!itemIntentName.trim()) {
         pushError('validation', 'Name an item before sending an inventory action.')
-        return
+        return false
       }
     }
     const clientMessageId = overrideIntent?.client_message_id ?? createClientMessageId()
@@ -422,7 +500,7 @@ export function useComposerActions({
       })
     if (actionIntent.kind !== 'admin' && hasReservedAdminPrefix(message)) {
       pushError('validation', 'Admin-prefixed messages require authenticated Admin mode.')
-      return
+      return false
     }
     const hasPendingRoll =
       actionIntent.kind === 'roll' &&
@@ -430,10 +508,10 @@ export function useComposerActions({
     if (!canSubmitWithTurnControl(turnControl, selectedPlayerId, actionIntent.kind, hasPendingRoll)) {
       setQueuedActionText(message)
       pushError('validation', turnControlBlockMessage(turnControl))
-      return
+      return false
     }
 
-    socket.emit('send_message', {
+    const payload: OutgoingTurnPayload = {
       session_id: selectedSessionId,
       campaign_id: selectedCampaignId,
       world_id: campaign.world_id,
@@ -442,9 +520,11 @@ export function useComposerActions({
       client_message_id: clientMessageId,
       action_intent: actionIntent,
       ...(actionIntent.kind === 'admin' ? { admin_passcode: trimmedAdminPasscode } : {}),
-    })
+    }
+    socket.emit('send_message', payload)
     if (actionIntent.kind === 'admin') setAdminPasscode('')
-    pendingSubmissionRef.current = { clientMessageId, message, sessionId: selectedSessionId }
+    pendingSubmissionRef.current = { clientMessageId, message, sessionId: selectedSessionId, payload }
+    setRecoverableSubmission(null)
     stopTtsAudio()
     setSendPending(true)
     setOptimisticEntries((current) => [
@@ -465,6 +545,7 @@ export function useComposerActions({
     setActionText('')
     setQueuedActionText((current) => (current === message ? '' : current))
     emitTypingStatus(false)
+    return true
   }
 
   const applyComposerMode = (mode: ComposerMode, die = selectedDie) => {
@@ -472,7 +553,6 @@ export function useComposerActions({
     const abilityForMode = mode === 'spell' ? selectedSpellAbility : selectedAbility
     if (mode === 'spell' && abilityForMode) {
       setSelectedAbilityKey(abilityForMode.key)
-      setRollModifier(String(abilityModifierValue(abilityForMode)))
       setRollReason(`${abilityForMode.label} spell`)
     }
     setComposerMode(mode)
@@ -490,7 +570,7 @@ export function useComposerActions({
         itemIntentName,
         itemCostGold,
         spellName,
-        mode === 'roll' ? parseRollModifier(rollModifier) : null,
+        null,
       ),
     )
   }
@@ -507,8 +587,7 @@ export function useComposerActions({
         ? INITIATIVE_ROLL_ABILITY_KEY
         : nextAbility?.key ?? PLAIN_ROLL_ABILITY_KEY,
     )
-    const nextModifier = rollModifierForAbility(nextAbility)
-    setRollModifier(String(nextModifier))
+    const nextModifier = abilityModifierValue(nextAbility)
     setRollReason(
       nextKey === INITIATIVE_ROLL_ABILITY_KEY
         ? INITIATIVE_ROLL_REASON
@@ -577,7 +656,7 @@ export function useComposerActions({
           '',
           '',
           '',
-          parseRollModifier(rollModifier),
+          null,
         ),
       )
     }
@@ -663,19 +742,18 @@ export function useComposerActions({
     const normalizedDie = normalizeDie(die)
     const targetPendingTurnId = rollTargetPendingTurnId ? Number(rollTargetPendingTurnId) : null
     const targetOption = pendingRollOptions.find((option) => option.turnId === targetPendingTurnId) ?? null
-    const roll = resolveRoll({
+    const roll = {
       die: normalizedDie,
-      modifier: parseRollModifier(rollModifier),
       mode: rollMode,
       reason:
         selectedAbilityKey === INITIATIVE_ROLL_ABILITY_KEY
           ? INITIATIVE_ROLL_REASON
           : rollReason || (selectedAbility ? `${selectedAbility.label} check` : ''),
-      resultVisibility: 'hidden_until_landed',
+      resultVisibility: 'hidden_until_landed' as const,
       targetPendingTurnId,
-    })
+    }
     const actionDescription = stripComposerCommand(actionText)
-    const rollMessage = diceRollMessage(roll)
+    const rollMessage = diceRollRequestMessage(roll)
     const message = actionDescription ? `${actionDescription}\n${rollMessage}` : rollMessage
     const clientMessageId = createClientMessageId()
     const actionIntent = buildActionIntent({
@@ -689,33 +767,130 @@ export function useComposerActions({
     setSelectedDie(normalizedDie)
     setComposerMode('roll')
     setActionText(message)
+    const rollKey = (diceRollKeyRef.current += 1)
     setDiceRoll({
       die: normalizedDie,
-      result: roll.kept,
       message,
       actionIntent,
-      roll,
+      roll: null,
+      provenance: null,
+      clientMessageId,
       targetLabel: targetOption ? `${targetOption.label} - ${targetOption.detail}` : null,
-      rollKey: (diceRollKeyRef.current += 1),
-      status: 'rolling',
+      rollKey,
+      status: 'requesting',
     })
+    if (!submitAction(message, actionIntent)) {
+      setDiceRoll((current) =>
+        current?.rollKey === rollKey
+          ? { ...current, status: 'failed', error: 'The roll request could not be sent.' }
+          : current,
+      )
+    }
   }
 
   const completeDiceRoll = () => {
     if (!diceRoll || diceRoll.status !== 'rolling') return
-    const { rollKey, message, actionIntent } = diceRoll
+    const { rollKey } = diceRoll
     setDiceRoll((current) =>
-      current?.rollKey === rollKey ? { ...current, status: 'sending' } : current,
+      current?.rollKey === rollKey ? { ...current, status: 'resolved' } : current,
     )
-    submitAction(message, actionIntent)
     window.setTimeout(() => {
       setDiceRoll((current) => (current?.rollKey === rollKey ? null : current))
-    }, 450)
+    }, 700)
   }
 
   const closeDiceRoll = () => {
     setDiceRoll(null)
   }
+
+  const retryDiceRoll = () => {
+    if (recoverableSubmission) return retryRecoverableSubmission()
+    if (!diceRoll || diceRoll.status !== 'failed') return false
+    const { rollKey, message, actionIntent } = diceRoll
+    setDiceRoll((current) =>
+      current?.rollKey === rollKey ? { ...current, status: 'requesting', error: undefined } : current,
+    )
+    if (submitAction(message, actionIntent)) return true
+    setDiceRoll((current) =>
+      current?.rollKey === rollKey
+        ? { ...current, status: 'failed', error: 'The roll request could not be sent.' }
+        : current,
+    )
+    return false
+  }
+
+  const handleRollResolved = useCallback((payload: RollResolvedPayload) => {
+    if (payload.session_id !== selectedSessionId) return
+    const roll: RollResult = {
+      die: payload.die,
+      mode: payload.mode,
+      reason: payload.reason,
+      resultVisibility: payload.result_visibility,
+      targetPendingTurnId: payload.pending_turn_id,
+      rolls: payload.rolls,
+      kept: payload.kept,
+      modifier: payload.modifier,
+      total: payload.total,
+    }
+    if (payload.player_id !== selectedPlayerId) {
+      setSharedRollNotice({ playerId: payload.player_id, turnId: payload.turn_id, roll })
+      return
+    }
+    if (!payload.client_message_id) return
+    const provenance = payload.ability !== undefined || payload.proficiency || payload.modifier_breakdown
+      ? {
+          ...(payload.ability !== undefined ? { ability: payload.ability } : {}),
+          ...(payload.proficiency ? { proficiency: payload.proficiency } : {}),
+          ...(payload.modifier_breakdown ? { modifier_breakdown: payload.modifier_breakdown } : {}),
+        }
+      : null
+    setDiceRoll((current) =>
+      current?.clientMessageId === payload.client_message_id
+        ? { ...current, die: payload.die, roll, provenance, status: 'rolling', error: undefined }
+        : current,
+    )
+    if (pendingSubmissionRef.current?.clientMessageId === payload.client_message_id) {
+      pendingSubmissionRef.current = null
+    }
+    setRecoverableSubmission((current) =>
+      current?.clientMessageId === payload.client_message_id ? null : current,
+    )
+  }, [selectedPlayerId, selectedSessionId])
+
+  const handleTurnDuplicate = useCallback((payload: {
+    session_id: number
+    client_message_id: string
+    turn_id?: number | null
+  }) => {
+    if (payload.session_id !== selectedSessionId) return
+    const matchesPending = pendingSubmissionRef.current?.clientMessageId === payload.client_message_id
+    pendingSubmissionRef.current = matchesPending ? null : pendingSubmissionRef.current
+    setRecoverableSubmission((current) =>
+      current?.clientMessageId === payload.client_message_id ? null : current,
+    )
+    if (matchesPending) setSendPending(false)
+    setOptimisticEntries((current) =>
+      current.map((entry) =>
+        entry.metadata.client_message_id === payload.client_message_id
+          ? {
+              ...entry,
+              metadata: {
+                ...entry.metadata,
+                persistence_status: 'received',
+                ...(payload.turn_id ? { turn_id: payload.turn_id } : {}),
+              },
+            }
+          : entry,
+      ),
+    )
+    setDiceRoll((current) =>
+      current?.clientMessageId === payload.client_message_id ? null : current,
+    )
+  }, [selectedSessionId, setOptimisticEntries, setSendPending])
+
+  const handleConnectionInterrupted = useCallback(() => {
+    markSubmissionRecoverable('Realtime disconnected before confirmation.')
+  }, [markSubmissionRecoverable])
 
   return {
     actionText,
@@ -726,11 +901,11 @@ export function useComposerActions({
     completeDiceRoll,
     composerMode,
     diceRoll,
+    handleConnectionInterrupted,
+    handleRollResolved,
+    handleTurnDuplicate,
     interactionTargets,
     rollMode,
-    rollModifier,
-    rollProficiencyApplied,
-    rollProficiencyBonus,
     rollReason,
     rollTargetPendingTurnId,
     spellName,
@@ -752,8 +927,6 @@ export function useComposerActions({
     setSelectedInteractionType,
     setItemQuantity,
     setRollMode,
-    setRollModifier,
-    setRollProficiencyApplied,
     setRollReason,
     setRollTargetPendingTurnId,
     updateRollAbilityKey,
@@ -766,7 +939,18 @@ export function useComposerActions({
     submitAction,
     toggleAdminTools,
     queuedActionText,
-    clearQueuedAction: () => setQueuedActionText(''),
+    queuedActionRetryable: Boolean(
+      recoverableSubmission &&
+      recoverableSubmission.message === queuedActionText &&
+      recoverableSubmission.message === actionText.trim(),
+    ),
+    retryRecoverableSubmission,
+    retryDiceRoll,
+    sharedRollNotice,
+    clearQueuedAction: () => {
+      setQueuedActionText('')
+      setRecoverableSubmission(null)
+    },
     selectedPlayerHasTurn: canSubmitWithTurnControl(turnControl, selectedPlayerId, 'message', false),
     turnControlStatusLabel: turnControlStatusLabel(turnControl),
     updateSelectedDie,

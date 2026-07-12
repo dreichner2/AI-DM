@@ -253,15 +253,24 @@ def _redact_sensitive_text(value: str) -> str:
 def run_forbidden_checks(
     http,
     *,
-    account_token: str,
     workspace_id: str,
     campaign_id: int,
     session_id: int,
+    account_token: str = '',
+    headers: dict[str, str] | None = None,
 ) -> list[ForbiddenCheckResult]:
-    headers = _auth_headers(account_token=account_token, workspace_id=workspace_id)
+    request_headers = dict(headers) if headers is not None else _auth_headers(
+        account_token=account_token,
+        workspace_id=workspace_id,
+    )
     results: list[ForbiddenCheckResult] = []
     for spec in check_specs(campaign_id=campaign_id, session_id=session_id):
-        response = http.request(spec.method, spec.path_template, headers=headers, json_payload=spec.payload)
+        response = http.request(
+            spec.method,
+            spec.path_template,
+            headers=request_headers,
+            json_payload=spec.payload,
+        )
         payload = _response_payload(response)
         details = payload.get('details') if isinstance(payload.get('details'), dict) else {}
         required_capability = str(details.get('required_capability') or '')

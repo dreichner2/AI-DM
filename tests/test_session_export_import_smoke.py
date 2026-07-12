@@ -99,6 +99,22 @@ def test_run_round_trip_flags_duplicate_source_log_marker():
     assert result.duplicate_marker_found is True
 
 
+def test_run_round_trip_cleans_imported_session_when_post_import_validation_fails():
+    class FailingImportedLogHttp(_FakeHttp):
+        def get(self, path: str, *, headers: dict[str, str]):
+            if path == '/api/sessions/34/log?limit=200':
+                self.calls.append(('GET', path, headers, None))
+                return _FakeResponse(500, {'error_code': 'temporary_failure'})
+            return super().get(path, headers=headers)
+
+    http = FailingImportedLogHttp()
+
+    with pytest.raises(AssertionError, match='expected HTTP 200, got 500'):
+        session_export_import_smoke.run_round_trip(http, headers={}, session_id=12)
+
+    assert http.calls[-1] == ('DELETE', '/api/sessions/34?hard=true', {}, None)
+
+
 def test_session_export_import_smoke_uses_isolated_database_by_default(tmp_path):
     external_db_path = tmp_path / 'should-not-be-created.sqlite'
     env = {

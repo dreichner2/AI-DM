@@ -108,7 +108,11 @@ def import_session_export(
     result_payload = {
         'imported': True,
         'session_id': session_obj.session_id,
-        'session': session_payload(session_obj, include_hidden_state=include_hidden_state),
+        'session': session_payload(
+            session_obj,
+            include_hidden_state=include_hidden_state,
+            viewer_account_id=required_player_account_id,
+        ),
         'counts': {
             'turn_events': events_imported,
             'projected_log_entries': projected_log_entries,

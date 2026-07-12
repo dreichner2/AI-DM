@@ -15,6 +15,7 @@ def _write_packet(path: Path, *, hosted_ready: bool = False) -> Path:
         'overall_status': 'ready-for-issue-closure' if hosted_ready else 'local-ready-with-external-exceptions',
         'rc_evidence': {
             'status': 'passed',
+            'commit': 'abc1234',
             'commands': [
                 {'label': 'Backend tests', 'status': 'passed'},
                 {'label': 'Frontend tests', 'status': 'passed'},
@@ -28,7 +29,7 @@ def _write_packet(path: Path, *, hosted_ready: bool = False) -> Path:
         'signed_off_worktree': {
             'status': 'passed' if hosted_ready else 'dirty',
             'worktree': 'clean' if hosted_ready else 'dirty (3 changed/untracked paths; 2 tracked, 1 untracked)',
-            'commit': 'abc123',
+            'commit': 'abc1234',
         },
         'issue_evidence': {
             'status': 'passed' if hosted_ready else 'passed with external exceptions',
@@ -149,6 +150,52 @@ def _write_packet(path: Path, *, hosted_ready: bool = False) -> Path:
         },
     }
     path.write_text(json.dumps(packet), encoding='utf-8')
+    return path
+
+
+def _write_candidate_freshness_checklist(path: Path) -> Path:
+    path.write_text(
+        '\n'.join(
+            [
+                '## Preflight',
+                '- [ ] `make closed-beta-rc` passes for the signed-off candidate.',
+                '- [ ] RC evidence is generated from a clean signed-off commit/worktree before final issue closure.',
+                '- [ ] `make deployment-readiness DEPLOYMENT_READINESS_ARGS="--target-url <target-url>"` passes for the hosted/staging target.',
+                '- [ ] `make operator-signoff-status OPERATOR_SIGNOFF_STATUS_ARGS="--require-complete"` passes before RC issue closure.',
+                '',
+            ]
+        ),
+        encoding='utf-8',
+    )
+    return path
+
+
+def _write_candidate_regression_checklist(path: Path) -> Path:
+    path.write_text(
+        '\n'.join(
+            [
+                '## Preflight',
+                '- [ ] Candidate checklist output reports RC evidence as `current`; a `stale`, `dirty`, '
+                '`not-signed-off`, or `unavailable` banner blocks treating local RC rows as candidate proof.',
+                '## Security',
+                '- [ ] A non-admin player receives their own full character in session list/state/export responses, '
+                'only public identity and bounded combat status for party peers, and an admin export remains complete.',
+                '- [ ] Raw campaign canon and campaign/region bestiary catalogs require `debug_read`; player Chronicle '
+                "exports retain public narration and revealed chapter titles but omit Director's Commentary.",
+                '- [ ] Clarification original actions, inventory-derived options, and persisted state-pipeline detail are '
+                'sent only to the acting player; party peers receive only a neutral waiting status.',
+                '## Runtime Quality',
+                '- [ ] Player roll requests cannot supply authoritative faces, kept values, modifiers, or totals; '
+                'one committed roll creates one durable roll event, one sender-private receipt, and a '
+                'provenance-redacted room result before narration.',
+                '- [ ] Retrying an uncertain turn reuses the original payload and `client_message_id`; a completed '
+                'duplicate returns the persisted turn, an incomplete `processing` turn resumes without a second '
+                'roll/incoming event/pre-DM application, and automatic or manual reconnect reloads the current session snapshot.',
+                '',
+            ]
+        ),
+        encoding='utf-8',
+    )
     return path
 
 
@@ -385,7 +432,7 @@ def test_build_status_report_fails_missing_modal_accessibility_regressions(tmp_p
     assert 'danger confirmation cancellation' in report['items'][0]['evidence']
 
 
-def test_build_status_report_marks_hosted_items_passed_when_packet_is_complete(tmp_path):
+def test_build_status_report_marks_hosted_items_passed_when_packet_is_complete(tmp_path, monkeypatch):
     checklist = tmp_path / 'release_checklist.md'
     checklist.write_text(
         '\n'.join(
@@ -406,6 +453,7 @@ def test_build_status_report_marks_hosted_items_passed_when_packet_is_complete(t
         encoding='utf-8',
     )
     packet_path = _write_packet(tmp_path / 'packet.json', hosted_ready=True)
+    monkeypatch.setattr(checklist_status, '_current_git_snapshot', lambda: ('abc1234', True))
 
     report = build_status_report(
         checklist_path=checklist,
@@ -414,6 +462,191 @@ def test_build_status_report_marks_hosted_items_passed_when_packet_is_complete(t
     )
 
     assert report['counts'] == {'passed': 6}
+
+
+def test_candidate_rc_evidence_is_current_for_matching_clean_worktree(tmp_path, monkeypatch):
+    checklist = _write_candidate_freshness_checklist(tmp_path / 'release_checklist.md')
+    packet_path = _write_packet(tmp_path / 'packet-current.json', hosted_ready=True)
+    monkeypatch.setattr(checklist_status, '_current_git_snapshot', lambda: ('abc1234def456', True))
+
+    report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-07-11T00:00:00+00:00',
+    )
+
+    assert report['candidate_rc_evidence'] == {
+        'status': 'current',
+        'is_current': True,
+        'packet_commit': 'abc1234',
+        'current_commit': 'abc1234def456',
+        'current_worktree_clean': True,
+        'signed_off_status': 'passed',
+        'message': 'Candidate RC evidence is current for clean worktree at abc1234',
+        'remaining_action': '',
+    }
+    assert [item['status'] for item in report['items']] == ['passed', 'passed', 'passed', 'passed']
+    markdown = render_markdown(report)
+    assert '- Candidate RC evidence: current' in markdown
+    assert '> Candidate RC evidence is current for clean worktree at abc1234.' in markdown
+    assert 'WARNING: Candidate RC evidence' not in markdown
+
+
+def test_candidate_rc_evidence_marks_commit_mismatch_stale_without_invalidating_external_rows(
+    tmp_path,
+    monkeypatch,
+):
+    checklist = _write_candidate_freshness_checklist(tmp_path / 'release_checklist.md')
+    packet_path = _write_packet(tmp_path / 'packet-stale.json', hosted_ready=True)
+    monkeypatch.setattr(checklist_status, '_current_git_snapshot', lambda: ('def4567', True))
+
+    report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-07-11T00:00:00+00:00',
+    )
+
+    assert report['candidate_rc_evidence']['status'] == 'stale'
+    assert report['candidate_rc_evidence']['is_current'] is False
+    assert [item['status'] for item in report['items']] == [
+        'external-required',
+        'external-required',
+        'passed',
+        'passed',
+    ]
+    markdown = render_markdown(report)
+    assert '> **WARNING: Candidate RC evidence is STALE.**' in markdown
+    assert 'packet abc1234; current def4567; clean=True' in markdown
+
+
+def test_candidate_rc_evidence_marks_dirty_worktree_without_invalidating_external_rows(
+    tmp_path,
+    monkeypatch,
+):
+    checklist = _write_candidate_freshness_checklist(tmp_path / 'release_checklist.md')
+    packet_path = _write_packet(tmp_path / 'packet-dirty.json', hosted_ready=True)
+    monkeypatch.setattr(checklist_status, '_current_git_snapshot', lambda: ('abc1234def456', False))
+
+    report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-07-11T00:00:00+00:00',
+    )
+
+    assert report['candidate_rc_evidence']['status'] == 'dirty'
+    assert report['candidate_rc_evidence']['is_current'] is False
+    assert [item['status'] for item in report['items']] == [
+        'external-required',
+        'external-required',
+        'passed',
+        'passed',
+    ]
+    markdown = render_markdown(report)
+    assert '> **WARNING: Candidate RC evidence is DIRTY.**' in markdown
+    assert 'current worktree is dirty' in markdown
+
+
+def test_candidate_rc_evidence_rejects_signed_off_commit_mismatch(tmp_path, monkeypatch):
+    checklist = _write_candidate_freshness_checklist(tmp_path / 'release_checklist.md')
+    packet_path = _write_packet(tmp_path / 'packet-signoff-mismatch.json', hosted_ready=True)
+    packet = json.loads(packet_path.read_text(encoding='utf-8'))
+    packet['signed_off_worktree']['commit'] = 'deadbeef'
+    packet_path.write_text(json.dumps(packet), encoding='utf-8')
+    monkeypatch.setattr(checklist_status, '_current_git_snapshot', lambda: ('abc1234def456', True))
+
+    report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-07-11T00:00:00+00:00',
+    )
+
+    assert report['candidate_rc_evidence']['status'] == 'not-signed-off'
+    assert report['candidate_rc_evidence']['is_current'] is False
+    assert 'not bound to the signed-off worktree' in report['candidate_rc_evidence']['message']
+
+
+def test_candidate_rc_evidence_rejects_unsafe_short_commit_prefix(tmp_path, monkeypatch):
+    checklist = _write_candidate_freshness_checklist(tmp_path / 'release_checklist.md')
+    packet_path = _write_packet(tmp_path / 'packet-short-commit.json', hosted_ready=True)
+    packet = json.loads(packet_path.read_text(encoding='utf-8'))
+    packet['rc_evidence']['commit'] = 'a'
+    packet['signed_off_worktree']['commit'] = 'a'
+    packet_path.write_text(json.dumps(packet), encoding='utf-8')
+    monkeypatch.setattr(checklist_status, '_current_git_snapshot', lambda: ('abc1234def456', True))
+
+    report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-07-11T00:00:00+00:00',
+    )
+
+    assert report['candidate_rc_evidence']['status'] == 'not-signed-off'
+    assert report['candidate_rc_evidence']['is_current'] is False
+
+
+def test_candidate_regression_rows_require_current_clean_full_rc(tmp_path, monkeypatch):
+    checklist = _write_candidate_regression_checklist(tmp_path / 'release_checklist.md')
+    packet_path = _write_packet(tmp_path / 'packet-current-regressions.json', hosted_ready=True)
+    monkeypatch.setattr(checklist_status, '_current_git_snapshot', lambda: ('abc1234def456', True))
+
+    report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-07-11T00:00:00+00:00',
+    )
+
+    assert report['counts'] == {'passed': 6}
+    assert report['items'][0]['evidence'] == 'Candidate RC evidence is current for clean worktree at abc1234'
+    assert all('Current clean full RC evidence passed' in item['evidence'] for item in report['items'][1:])
+
+
+def test_candidate_regression_rows_do_not_reuse_forbidden_smoke_or_incomplete_rc(
+    tmp_path,
+    monkeypatch,
+):
+    checklist = _write_candidate_regression_checklist(tmp_path / 'release_checklist.md')
+    packet_path = _write_packet(tmp_path / 'packet-incomplete-regressions.json', hosted_ready=True)
+    packet = json.loads(packet_path.read_text(encoding='utf-8'))
+    packet['rc_evidence']['status'] = 'failed'
+    packet_path.write_text(json.dumps(packet), encoding='utf-8')
+    monkeypatch.setattr(checklist_status, '_current_git_snapshot', lambda: ('abc1234', True))
+
+    report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-07-11T00:00:00+00:00',
+    )
+
+    assert [item['status'] for item in report['items']] == [
+        'passed',
+        'external-required',
+        'external-required',
+        'external-required',
+        'external-required',
+        'external-required',
+    ]
+    assert all(item['evidence'] == 'full closed-beta RC evidence is failed' for item in report['items'][1:])
+    assert all('security-forbidden' not in item['evidence'] for item in report['items'][1:])
+
+
+def test_candidate_regression_rows_reject_stale_or_inconsistent_full_rc(tmp_path, monkeypatch):
+    checklist = _write_candidate_regression_checklist(tmp_path / 'release_checklist.md')
+    packet_path = _write_packet(tmp_path / 'packet-stale-regressions.json', hosted_ready=True)
+    packet = json.loads(packet_path.read_text(encoding='utf-8'))
+    packet['rc_evidence']['commands'][0]['status'] = 'failed'
+    packet_path.write_text(json.dumps(packet), encoding='utf-8')
+    monkeypatch.setattr(checklist_status, '_current_git_snapshot', lambda: ('def4567', True))
+
+    report = build_status_report(
+        checklist_path=checklist,
+        packet_path=packet_path,
+        generated_at='2026-07-11T00:00:00+00:00',
+    )
+
+    assert report['items'][0]['status'] == 'external-required'
+    assert 'packet abc1234; current def4567' in report['items'][0]['evidence']
+    assert all(item['status'] == 'external-required' for item in report['items'][1:])
+    assert all('Backend tests' in item['evidence'] for item in report['items'][1:])
 
 
 def test_security_recovery_and_workspace_isolation_rows_require_current_clean_rc(
@@ -433,7 +666,7 @@ def test_security_recovery_and_workspace_isolation_rows_require_current_clean_rc
         encoding='utf-8',
     )
     packet_path = _write_packet(tmp_path / 'packet-security-regressions.json', hosted_ready=True)
-    monkeypatch.setattr(checklist_status, '_current_git_snapshot', lambda: ('abc123', True))
+    monkeypatch.setattr(checklist_status, '_current_git_snapshot', lambda: ('abc1234', True))
 
     report = build_status_report(
         checklist_path=checklist,
@@ -459,7 +692,7 @@ def test_security_regression_rows_do_not_reuse_stale_rc_packet(tmp_path, monkeyp
         encoding='utf-8',
     )
     packet_path = _write_packet(tmp_path / 'packet-stale-security-regressions.json', hosted_ready=True)
-    monkeypatch.setattr(checklist_status, '_current_git_snapshot', lambda: ('def456', True))
+    monkeypatch.setattr(checklist_status, '_current_git_snapshot', lambda: ('def4567', True))
 
     report = build_status_report(
         checklist_path=checklist,

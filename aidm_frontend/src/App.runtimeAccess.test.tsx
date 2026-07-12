@@ -102,6 +102,13 @@ describe('App runtime and workspace access', () => {
     expect(
       await screen.findByText('Fallback DM active. Ask the table operator to restore the live provider.'),
     ).toBeInTheDocument()
+    const fullNoticeToggle = screen.getByLabelText('Read full Safe Mode notice')
+    fireEvent.click(fullNoticeToggle)
+    expect(
+      within(screen.getByRole('note')).getByText(
+        'Recovery guidance: Fallback DM active. Ask the table operator to restore the live provider.',
+      ),
+    ).toBeVisible()
     expect(appTestState.fetchCalls).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -127,6 +134,63 @@ describe('App runtime and workspace access', () => {
     expect(screen.queryByLabelText('Beta runtime notices')).not.toBeInTheDocument()
     expect(screen.queryByText('Local/Private')).not.toBeInTheDocument()
     expect(screen.queryByText('Auth disabled.')).not.toBeInTheDocument()
+  })
+
+  it('keeps Bestiary and Ops inspector surfaces operator-only', async () => {
+    await renderLoadedApp()
+
+    expect(screen.getByRole('tab', { name: 'Bestiary' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Ops' })).toBeInTheDocument()
+  })
+
+  it('hides Bestiary and Ops inspector surfaces from non-operator players', async () => {
+    appTestState.health.auth_required = true
+    appTestState.requiredAuthToken = 'player-token'
+    appTestState.mapsByCampaign = {
+      10: [
+        {
+          map_id: 40,
+          world_id: 5,
+          campaign_id: 10,
+          title: 'Revealed Crossing',
+          description: 'A crossing the party has discovered.',
+          map_data: {},
+          visibility: 'player',
+          created_at: null,
+          updated_at: null,
+        },
+        {
+          map_id: 41,
+          world_id: 5,
+          campaign_id: 10,
+          title: 'DM_ONLY_STALE_MAP',
+          description: 'A cached DM map must fail closed after the role changes.',
+          map_data: { marker: 'DM_ONLY_STALE_DATA' },
+          visibility: 'dm',
+          created_at: null,
+          updated_at: null,
+        },
+      ],
+    }
+    sessionStorage.setItem('aidm:authToken', 'player-token')
+    localStorage.setItem('aidm:workspaceId', 'owner')
+
+    render(<App />)
+
+    const inspector = await screen.findByRole('tablist', { name: 'Inspector panels' })
+    await waitFor(() => {
+      expect(within(inspector).queryByRole('tab', { name: 'Bestiary' })).not.toBeInTheDocument()
+      expect(within(inspector).queryByRole('tab', { name: 'Ops' })).not.toBeInTheDocument()
+    })
+    expect(within(inspector).getByRole('tab', { name: 'Party' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Smoke Campaign/i }))
+    await screen.findByRole('heading', { name: /Session Alpha/i })
+    fireEvent.click(within(inspector).getByRole('tab', { name: 'Map' }))
+    expect(screen.getByRole('heading', { name: 'Revealed Crossing' })).toBeInTheDocument()
+    expect(screen.queryByText('DM_ONLY_STALE_MAP')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Map Details' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Create map' })).not.toBeInTheDocument()
   })
 
   it('keeps beta information available from the account menu without stale operator guidance', async () => {

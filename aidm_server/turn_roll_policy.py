@@ -97,12 +97,18 @@ class TurnRollPolicy:
     ) -> dict | None:
         if not ((turn.requires_roll and turn.outcome_status == 'deferred') or response_requests_roll):
             return None
-        if turn.roll_value is not None:
-            return None
 
         roll_type = cls.roll_type_from_response(dm_response_text, turn.rule_type)
         rules_hint = safe_json_loads(turn.rules_hint, {})
         rules_hint = rules_hint if isinstance(rules_hint, dict) else {}
+        persisted_roll_spec = rules_hint.get('roll_spec') if isinstance(rules_hint.get('roll_spec'), dict) else None
+        roll_spec = {
+            'die': 'd20',
+            'mode': 'normal',
+            'rule_type': roll_type,
+            'result_visibility': 'hidden_until_landed',
+            **(persisted_roll_spec or {}),
+        }
         pvp_payload = rules_hint.get('pvp') if isinstance(rules_hint.get('pvp'), dict) else {}
         try:
             pvp_target_player_id = int(pvp_payload.get('target_player_id')) if pvp_payload else None
@@ -125,7 +131,7 @@ class TurnRollPolicy:
                 for player_id in required_player_ids
                 if player_id not in set(resolved_player_ids)
             ]
-            return {
+            gate = {
                 'scope': 'pvp_contest',
                 'rule_type': roll_type,
                 'required_player_ids': required_player_ids,
@@ -133,6 +139,11 @@ class TurnRollPolicy:
                 'remaining_player_ids': remaining_player_ids,
                 'target_player_id': pvp_target_player_id,
             }
+            gate['roll_spec'] = roll_spec
+            return gate
+
+        if turn.roll_value is not None:
+            return None
 
         required_player_ids = [turn.player_id] if turn.player_id else []
         scope = 'single_player'
@@ -141,10 +152,12 @@ class TurnRollPolicy:
             scope = 'group'
         if not required_player_ids:
             return None
-        return {
+        gate = {
             'scope': scope,
             'rule_type': roll_type,
             'required_player_ids': required_player_ids,
             'resolved_player_ids': [],
             'remaining_player_ids': required_player_ids,
         }
+        gate['roll_spec'] = roll_spec
+        return gate

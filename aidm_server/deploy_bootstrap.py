@@ -21,7 +21,6 @@ from typing import Iterable
 from sqlalchemy import inspect
 
 from aidm_server.config import (
-    SOCKETIO_WORKER_MODEL_MESSAGE_QUEUE,
     SOCKETIO_WORKER_MODEL_SINGLE,
     SUPPORTED_TURN_COORDINATOR_STORES,
     SUPPORTED_SOCKETIO_WORKER_MODELS,

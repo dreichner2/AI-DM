@@ -90,6 +90,7 @@ function playNowResponse(): PlayNowResponse {
       updated_at: null,
       stats: {},
       inventory: [],
+      weapon_proficiencies: ['category:simple', 'category:martial'],
       character_sheet: {},
     },
     pregen: {

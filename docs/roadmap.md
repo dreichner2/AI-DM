@@ -5,7 +5,7 @@ session, world, map, Socket.IO, state pipeline, canon memory, and metrics
 surfaces exist. The highest-return work is reducing security, runtime, and
 maintenance risk before expanding gameplay scope.
 
-## Current Status - 2026-07-10
+## Current Status - 2026-07-11
 
 - The current `main` implementation includes the closed-beta gameplay surface,
   executable release/readiness evidence, hosted cookie authentication, the
@@ -65,6 +65,26 @@ Archived review material lives in:
 - Hosted same-origin account auth can use server-issued `HttpOnly` account
   cookies, suppress raw account tokens in JSON responses, and enforce a
   companion CSRF token on unsafe cookie-authenticated REST requests.
+- Player dice are generated on the server, derived from persisted character and
+  pending-roll state, committed as durable turn evidence, and then broadcast for
+  client presentation. Client roll totals and natural-language claims are not
+  mechanical authority.
+- Uncertain frontend turn retries reuse the original idempotency key, duplicate
+  acknowledgments reconcile cleanly, and both automatic and manual reconnects
+  reload the persisted session snapshot.
+- A turn interrupted after its incoming commit can resume from persisted
+  pre-DM pipeline state without rerolling or replaying the incoming mutation.
+- Non-admin session projections preserve the requester's complete character but
+  redact peer character sheets, inventory, spells, resources, statistics, and
+  other private mechanics while retaining bounded party combat status.
+- Raw segment reads are DM-only; player campaign workspaces and socket events
+  expose revealed story content without trigger conditions or recipes.
+- Authored maps persist explicit player/DM visibility. Player REST, workspace,
+  browser export, and inspector projections fail closed on DM-only or stale
+  cached rows, while admins can reveal or hide maps without rewriting content.
+- Candidate release-checklist output now identifies current, stale, dirty,
+  unsigned, or unavailable RC evidence instead of allowing old local proof to
+  read as current.
 
 ## Beta Hardening
 
@@ -143,6 +163,18 @@ Archived review material lives in:
 
 ## Not Now
 
+- The combat HUD now uses viewer-scoped, server-issued action and target IDs with
+  current-turn and range-band validation. Persisted sub-turn action, movement,
+  bonus-action, and reaction counters; spell/class-feature enumeration; and
+  grid/pathfinding/line-of-sight rules remain separate gameplay projects.
+- Guided composer handling for every server-issued `roll_required` event and a
+  richer campaign resume dashboard remain high-value UX follow-ups.
+- Class-derived and migrated legacy weapon proficiencies are now persisted in a
+  private server-owned player profile. Operator UI and rules support for custom
+  proficiencies acquired later from ancestry, feats, training, or magic remain
+  future work.
+- Authored map visibility is currently whole-map `player` or `dm` visibility;
+  per-layer and per-token reveal controls remain future work.
 - Do not replace the backend-owned TypeScript contract with OpenAPI yet. The
   current contract generator is low-friction; the immediate win is drift
   checking and response tests.

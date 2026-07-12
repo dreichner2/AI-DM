@@ -6,6 +6,7 @@ from flask import g, has_request_context
 
 from aidm_server.auth import DEFAULT_WORKSPACE_ID
 from aidm_server.database import db
+from aidm_server.map_visibility import map_is_player_visible
 from aidm_server.models import Campaign, CampaignSegment, Map, Player, Session, World
 
 
@@ -29,6 +30,22 @@ def current_account_is_workspace_admin() -> bool:
     if not has_request_context():
         return False
     return bool(getattr(g, 'aidm_workspace_admin', False))
+
+
+def current_actor_can_access_all_players() -> bool:
+    """Return whether this request may resolve private player records by ID.
+
+    Credential-free local mode and explicit operators keep the legacy local
+    workflow. Accountless workspace/table credentials are player actors but do
+    not own a private character record, so they must fail closed here.
+    """
+    if not has_request_context():
+        return True
+    if current_account_is_workspace_admin():
+        return True
+    if bool(getattr(g, 'aidm_global_operator_token', False)):
+        return True
+    return not bool(getattr(g, 'aidm_auth_token_present', False))
 
 
 def campaign_query():
@@ -87,7 +104,7 @@ def get_player(
         player,
         target_workspace_id,
         account_id=current_account_id() if account_id is None else account_id,
-        is_admin=current_account_is_workspace_admin() if is_admin is None else is_admin,
+        is_admin=current_actor_can_access_all_players() if is_admin is None else is_admin,
     ):
         return None
     if player.workspace_id:
@@ -113,14 +130,14 @@ def player_is_visible(
         return False
 
     if is_admin is None:
-        is_admin = current_account_is_workspace_admin()
+        is_admin = current_actor_can_access_all_players()
     if is_admin:
         return True
 
     if account_id is None:
         account_id = current_account_id()
     if account_id is None:
-        return True
+        return False
     return player.account_id == account_id
 
 
@@ -135,9 +152,16 @@ def visible_players_query(workspace_id: str | None = None, *, campaign_id: int |
     return query
 
 
-def get_campaign_map(map_id: int, workspace_id: str | None = None) -> Map | None:
+def get_campaign_map(
+    map_id: int,
+    workspace_id: str | None = None,
+    *,
+    include_dm_only: bool = True,
+) -> Map | None:
     map_obj = db.session.get(Map, map_id)
     if not map_obj:
+        return None
+    if not include_dm_only and not map_is_player_visible(map_obj):
         return None
     if map_obj.campaign_id is None:
         return map_obj if world_is_visible(map_obj.world, workspace_id) else None

@@ -15,12 +15,14 @@ import {
 } from 'lucide-react'
 import { ActionComposer, type ActionComposerProps } from './ActionComposer'
 import { ThinIcon, ToolbarButton } from './AppChrome'
+import { CombatHud } from './CombatHud'
 import {
   type ContentRating,
   type ContentSettings,
 } from './contentSettings'
 import {
   type PendingRollNotice,
+  type CombatStatePanel,
   speakerDetail,
   truncateText,
   turnNumber,
@@ -189,6 +191,7 @@ type SessionBoardProps = {
   sendPending: boolean
   streamingTurnActive: boolean
   pendingRollNotice: PendingRollNotice | null
+  combatState: CombatStatePanel
   dmExecutionStats: DmExecutionStats
   welcomeText: string
   showJumpToLatest: boolean
@@ -374,6 +377,7 @@ export function SessionBoard({
   sendPending,
   streamingTurnActive,
   pendingRollNotice,
+  combatState,
   dmExecutionStats,
   welcomeText,
   showJumpToLatest,
@@ -1004,6 +1008,13 @@ export function SessionBoard({
           </div>
         </section>
       ) : null}
+
+      <CombatHud
+        combat={combatState}
+        playerId={playerId}
+        disabled={sendPending || streamingTurnActive || Boolean(pendingRollNotice) || Boolean(clarificationRequest)}
+        submitAction={actionComposerProps.submitAction}
+      />
 
       <ActionComposer {...actionComposerProps} />
     </main>

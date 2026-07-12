@@ -455,6 +455,7 @@ export type PlayerDetail = {
   updated_at: string | null
   stats: unknown
   inventory: unknown
+  weapon_proficiencies: string[]
   character_sheet: unknown
   derived?: JsonRecord
 }
@@ -524,6 +525,8 @@ export type PlayNowResponse = {
 
 export type PlayerEquipmentUpdateResponse = PlayerDetail & { snapshot_changed: boolean; equipment_update: JsonRecord }
 
+export type MapVisibility = 'player' | 'dm'
+
 export type MapItem = {
   map_id: number
   world_id: number | null
@@ -531,6 +534,7 @@ export type MapItem = {
   title: string
   description: string | null
   map_data: JsonRecord
+  visibility: MapVisibility
   created_at: string | null
   updated_at: string | null
 }

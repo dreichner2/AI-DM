@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 from aidm_server.armor_class import ARMOR_METADATA_KEYS, sync_actor_armor_class
 from aidm_server.canon_inventory import clean_inventory_item_name, item_weight_for_name
-from aidm_server.canon_text import int_or_default, normalized_name, positive_int
+from aidm_server.canon_text import int_or_default, positive_int
 from aidm_server.character_state import character_state_for_player
 from aidm_server.game_state.equipment import infer_equipment_slot
 from aidm_server.models import Campaign, Player, Session, safe_json_dumps, safe_json_loads
@@ -341,6 +341,7 @@ def player_character_from_model(player: Player) -> dict[str, Any]:
         },
         'metadata': {
             'defaultWeaponId': stats.get('default_weapon_id') or stats.get('defaultWeaponId'),
+            'weaponProficiencies': list(state.get('weapon_proficiencies') or []),
         },
     }
     sync_actor_armor_class(actor)

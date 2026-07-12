@@ -582,6 +582,7 @@ describe('game selector helpers', () => {
       title: 'Ash Gate',
       description: 'A locked gate.',
       map_data: { explored_percent: 72.4, threat: 'High', weather: 'Cold rain' },
+      visibility: 'player',
       created_at: null,
       updated_at: null,
     }
@@ -688,7 +689,83 @@ describe('game selector helpers', () => {
         enemies: [],
         allies: [],
         telegraphs: [],
+        legalActionBundles: [],
       },
+    })
+  })
+
+  it('parses viewer-scoped server combat actions without inventing client mechanics', () => {
+    const panel = worldStateFromSnapshot({
+      combat: {
+        status: 'active',
+        round: 2,
+        participants: [
+          { id: 'player_30', name: 'Ember', team: 'player', hp: { current: 20, max: 20 } },
+          { id: 'enemy_goblin_1', name: 'Goblin', team: 'enemy', hp: { current: 7, max: 7 } },
+        ],
+        legalActions: [
+          {
+            schemaVersion: 1,
+            playerId: 30,
+            actorId: 'player_30',
+            actorName: 'Ember',
+            round: 2,
+            currentActorId: 'player_30',
+            currentActorName: 'Ember',
+            isCurrentActor: true,
+            economy: {
+              tracking: 'turn_order_derived',
+              subTurnCountersTracked: false,
+            },
+            actions: [
+              {
+                id: 'combat.attack.blade',
+                type: 'attack',
+                label: 'Attack with Longsword',
+                available: true,
+                authoritative: true,
+                requiresTarget: true,
+                economy: {
+                  action: 1,
+                  movement: 'optional',
+                  endsTurn: true,
+                  tracking: 'turn_order_derived',
+                  reactionTracked: false,
+                  subTurnCountersTracked: false,
+                },
+                weapon: { name: 'Longsword' },
+                range: { classification: 'melee', allowedBands: ['melee', 'near'] },
+                targets: [
+                  {
+                    id: 'enemy_goblin_1',
+                    name: 'Goblin',
+                    rangeBand: 'near',
+                    available: true,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    })
+
+    expect(panel.combat.legalActionBundles[0]).toMatchObject({
+      playerId: 30,
+      actorName: 'Ember',
+      isCurrentActor: true,
+      economyTracking: 'turn_order_derived',
+      subTurnCountersTracked: false,
+      actions: [
+        {
+          id: 'combat.attack.blade',
+          authoritative: true,
+          weaponName: 'Longsword',
+          rangeClassification: 'melee',
+          allowedRangeBands: ['melee', 'near'],
+          targets: [{ id: 'enemy_goblin_1', available: true }],
+        },
+      ],
     })
   })
 

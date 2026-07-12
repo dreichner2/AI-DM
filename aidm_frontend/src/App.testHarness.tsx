@@ -6,6 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { expect, vi } from 'vitest'
+import type { RefObject } from 'react'
 import App from './App'
 import type {
   BetaSummary,
@@ -44,28 +45,38 @@ vi.mock('./DiceRollDialog', () => ({
   default: ({
     die,
     result,
+    rolls,
     status,
     targetLabel,
+    dialogRef,
     onCancel,
     onComplete,
+    onRetry,
   }: {
     die: string
-    result: number
+    result: number | null
+    rolls?: number[] | null
     status: string
     targetLabel?: string | null
+    dialogRef?: RefObject<HTMLElement | null>
     onCancel: () => void
     onComplete: () => void
+    onRetry: () => void
   }) => (
-    <section role="dialog" aria-label="Dice Roller">
+    <section ref={dialogRef} role="dialog" aria-label="Dice Roller">
       <strong>{die.toUpperCase()}</strong>
       <span>Result {result}</span>
+      {rolls ? <span>Faces {rolls.join(', ')}</span> : null}
       <span>Status {status}</span>
       {targetLabel ? <span>{targetLabel}</span> : null}
-      <button type="button" onClick={onCancel}>
+      <button type="button" onClick={onCancel} data-autofocus>
         Cancel roll
       </button>
       <button type="button" onClick={onComplete}>
         Complete roll
+      </button>
+      <button type="button" onClick={onRetry}>
+        Retry safely
       </button>
     </section>
   ),
@@ -350,6 +361,7 @@ function resetApiData() {
       ...player,
       stats: { strength: 16, dexterity: 12, constitution: 14, intelligence: 18, wisdom: 10, charisma: 8 },
       inventory: [{ name: 'Healing Potion', quantity: 2, weight: 0.5 }],
+      weapon_proficiencies: ['category:simple'],
       character_sheet: { hp: 14, max_hp: 16, ac: 13, speed: 30 },
     },
   }
@@ -1114,6 +1126,7 @@ function installFetchMock() {
           updated_at: fixedNow.toISOString(),
           stats: {},
           inventory: [],
+          weapon_proficiencies: [],
           character_sheet: {},
         }
         playerDetails[playerId] = player
@@ -1400,6 +1413,7 @@ function installFetchMock() {
           title: body.title,
           description: body.description,
           map_data: body.map_data ?? {},
+          visibility: body.visibility ?? 'player',
           created_at: fixedNow.toISOString(),
           updated_at: fixedNow.toISOString(),
         }
@@ -1416,6 +1430,7 @@ function installFetchMock() {
                 ...map,
                 title: body.title ?? map.title,
                 description: body.description ?? map.description,
+                visibility: body.visibility ?? map.visibility,
                 updated_at: fixedNow.toISOString(),
               }
             : map,
@@ -1492,7 +1507,7 @@ function toggleAdminToolsViaComposerLabel() {
 }
 
 function socketHandler<TPayload>(eventName: string) {
-  const call = socketMock.socket.on.mock.calls.find(([event]) => event === eventName)
+  const call = [...socketMock.socket.on.mock.calls].reverse().find(([event]) => event === eventName)
   if (!call) throw new Error(`Missing socket handler for ${eventName}`)
   return call[1] as (payload: TPayload) => void
 }

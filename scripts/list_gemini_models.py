@@ -11,7 +11,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from aidm_server.env_loader import load_runtime_env
+from aidm_server.env_loader import load_runtime_env  # noqa: E402
 
 
 def _supports_generate_content(model) -> bool:

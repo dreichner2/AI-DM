@@ -14,6 +14,7 @@ import {
   storedWorkspaceToken,
 } from './api'
 import { stringValue, turnStatusAllowsNextSend } from './gameSelectors'
+import type { RollMode, RollResolvedPayload } from './gameActions'
 import type { SceneMusicSyncState } from './SceneMusicPlayer'
 import { normalizeSceneState, type SceneDisplayState, type SceneStatePayload } from './sceneState'
 import { normalizeTurnControl } from './turnControl'
@@ -73,6 +74,12 @@ type MusicStatePayload = {
 
 type SocketErrorCategory = 'connection' | 'workspace'
 
+export type TurnDuplicatePayload = {
+  session_id: number
+  turn_id: number
+  client_message_id: string
+}
+
 type UseSessionSocketOptions = {
   auth: string
   baseUrl: string
@@ -107,6 +114,129 @@ type UseSessionSocketOptions = {
   lastSpokenDmEntryRef: MutableRefObject<string | null>
   lastSpokenTurnIdRef: MutableRefObject<number | null>
   lastSpokenTextRef: MutableRefObject<string | null>
+  onConnectionInterrupted: () => void
+  onRollResolved: (payload: RollResolvedPayload) => void
+  onTurnDuplicate: (payload: TurnDuplicatePayload) => void
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function positiveInteger(value: unknown) {
+  const number = Number(value)
+  return Number.isInteger(number) && number > 0 ? number : null
+}
+
+function finiteNumber(value: unknown) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+export function normalizeRollResolvedPayload(payload: unknown): RollResolvedPayload | null {
+  const value = recordValue(payload)
+  if (!value || value.authoritative !== true) return null
+  const sessionId = positiveInteger(value.session_id)
+  const turnId = positiveInteger(value.turn_id)
+  const playerId = positiveInteger(value.player_id)
+  const clientMessageId = value.client_message_id === null ? null : stringValue(value.client_message_id)
+  const pendingTurnId = value.pending_turn_id === null || value.pending_turn_id === undefined
+    ? null
+    : positiveInteger(value.pending_turn_id)
+  const die = stringValue(value.die).toLowerCase()
+  const sides = Number(die.replace(/^d/, ''))
+  const mode = stringValue(value.mode) as RollMode
+  const rolls = Array.isArray(value.rolls) ? value.rolls.map(Number) : []
+  const kept = finiteNumber(value.kept)
+  const modifier = finiteNumber(value.modifier)
+  const total = finiteNumber(value.total)
+  const resultVisibility = stringValue(value.result_visibility)
+  if (!sessionId || !turnId || !playerId || !/^d(?:4|6|8|10|12|20|100)$/.test(die)) return null
+  if (!['normal', 'advantage', 'disadvantage'].includes(mode)) return null
+  if (!rolls.length || rolls.some((roll) => !Number.isInteger(roll) || roll < 1 || roll > sides)) return null
+  if (kept === null || modifier === null || total === null || !Number.isInteger(kept) || !rolls.includes(kept)) return null
+  if (total !== kept + modifier || !['hidden_until_landed', 'visible'].includes(resultVisibility)) return null
+  if (value.client_message_id !== null && !clientMessageId) return null
+  if (value.pending_turn_id !== null && value.pending_turn_id !== undefined && !pendingTurnId) return null
+
+  let ability: RollResolvedPayload['ability']
+  if (value.ability === null) {
+    ability = null
+  } else if (value.ability !== undefined) {
+    const abilityValue = recordValue(value.ability)
+    if (!abilityValue) return null
+    const key = stringValue(abilityValue.key)
+    const label = stringValue(abilityValue.label)
+    const abilityResolvedModifier = finiteNumber(abilityValue.modifier)
+    const score = abilityValue.score === null || typeof abilityValue.score === 'number' || typeof abilityValue.score === 'string'
+      ? abilityValue.score
+      : undefined
+    if (!key || !label || abilityResolvedModifier === null || score === undefined) return null
+    ability = { key, label, score, modifier: abilityResolvedModifier }
+  }
+
+  let proficiency: RollResolvedPayload['proficiency']
+  if (value.proficiency !== undefined) {
+    const proficiencyValue = recordValue(value.proficiency)
+    if (!proficiencyValue) return null
+    const bonus = finiteNumber(proficiencyValue.bonus)
+    const skills = Array.isArray(proficiencyValue.skills)
+      ? proficiencyValue.skills.map((skill) => stringValue(skill)).filter(Boolean)
+      : null
+    if (bonus === null || !skills) return null
+    proficiency = { bonus, skills }
+  }
+
+  let modifierBreakdown: RollResolvedPayload['modifier_breakdown']
+  if (value.modifier_breakdown !== undefined) {
+    const breakdownValue = recordValue(value.modifier_breakdown)
+    if (!breakdownValue) return null
+    const abilityModifier = finiteNumber(breakdownValue.ability_modifier)
+    const proficiencyBonus = finiteNumber(breakdownValue.proficiency_bonus)
+    const woundPenalty = finiteNumber(breakdownValue.wound_penalty)
+    const breakdownTotal = finiteNumber(breakdownValue.total)
+    if ([abilityModifier, proficiencyBonus, woundPenalty, breakdownTotal].some((part) => part === null)) return null
+    modifierBreakdown = {
+      ability_modifier: abilityModifier as number,
+      proficiency_bonus: proficiencyBonus as number,
+      wound_penalty: woundPenalty as number,
+      total: breakdownTotal as number,
+    }
+  }
+
+  return {
+    session_id: sessionId,
+    turn_id: turnId,
+    player_id: playerId,
+    client_message_id: clientMessageId || null,
+    pending_turn_id: pendingTurnId,
+    rule_type: stringValue(value.rule_type),
+    die,
+    mode,
+    rolls,
+    kept,
+    modifier,
+    total,
+    reason: stringValue(value.reason),
+    result_visibility: resultVisibility as RollResolvedPayload['result_visibility'],
+    ...(ability !== undefined ? { ability } : {}),
+    ...(proficiency ? { proficiency } : {}),
+    ...(modifierBreakdown ? { modifier_breakdown: modifierBreakdown } : {}),
+    authoritative: true,
+  }
+}
+
+export function normalizeTurnDuplicatePayload(payload: unknown): TurnDuplicatePayload | null {
+  const value = recordValue(payload)
+  if (!value) return null
+  const sessionId = positiveInteger(value.session_id)
+  const turnId = positiveInteger(value.turn_id)
+  const clientMessageId = stringValue(value.client_message_id)
+  return sessionId && turnId && clientMessageId
+    ? { session_id: sessionId, turn_id: turnId, client_message_id: clientMessageId }
+    : null
 }
 
 function normalizeMusicState(payload: MusicStatePayload): SceneMusicSyncState | null {
@@ -263,8 +393,12 @@ export function useSessionSocket({
   lastSpokenDmEntryRef,
   lastSpokenTurnIdRef,
   lastSpokenTextRef,
+  onConnectionInterrupted,
+  onRollResolved,
+  onTurnDuplicate,
 }: UseSessionSocketOptions) {
   const lastWorldSnapshotRefreshRef = useRef<{ sessionId: number; turnId: number } | null>(null)
+  const lastJoinedSessionRef = useRef<number | null>(null)
 
   useEffect(() => {
     if (!selectedSessionId || !selectedPlayerId || !selectedCampaignId) {
@@ -286,27 +420,35 @@ export function useSessionSocket({
     socketRef.current = socket
     setSocketStatus('connecting')
     let hasConnected = false
+    let refreshInFlight = false
 
     socket.on('connect', () => {
-      const isAutomaticReconnect = hasConnected
+      const shouldRefreshAfterJoin = hasConnected || lastJoinedSessionRef.current === selectedSessionId
       hasConnected = true
+      lastJoinedSessionRef.current = selectedSessionId
       setSendPending(false)
       setSocketStatus('joining')
       socket.emit('join_session', {
         session_id: selectedSessionId,
         player_id: selectedPlayerId,
       })
-      if (isAutomaticReconnect) {
-        void loadSessionData(selectedSessionId).catch((error: unknown) => {
-          pushError(
-            'workspace',
-            `Session refresh after reconnect failed: ${error instanceof Error ? error.message : String(error)}`,
-          )
-        })
+      if (shouldRefreshAfterJoin && !refreshInFlight) {
+        refreshInFlight = true
+        void loadSessionData(selectedSessionId)
+          .catch((error: unknown) => {
+            pushError(
+              'workspace',
+              `Session refresh after reconnect failed: ${error instanceof Error ? error.message : String(error)}`,
+            )
+          })
+          .finally(() => {
+            refreshInFlight = false
+          })
       }
     })
 
     socket.on('connect_error', (error) => {
+      onConnectionInterrupted()
       setSendPending(false)
       setSocketStatus('error')
       pushError('connection', `Socket connection failed: ${error.message}`)
@@ -370,6 +512,18 @@ export function useSessionSocket({
         if (existingIndex < 0) return [...current, entry]
         return current.map((item, index) => (index === existingIndex ? entry : item))
       })
+    })
+
+    socket.on('roll_resolved', (payload: unknown) => {
+      const resolved = normalizeRollResolvedPayload(payload)
+      if (!resolved || resolved.session_id !== selectedSessionId) return
+      onRollResolved(resolved)
+    })
+
+    socket.on('turn_duplicate', (payload: unknown) => {
+      const duplicate = normalizeTurnDuplicatePayload(payload)
+      if (!duplicate || duplicate.session_id !== selectedSessionId) return
+      onTurnDuplicate(duplicate)
     })
 
     socket.on(
@@ -565,6 +719,7 @@ export function useSessionSocket({
     })
 
     socket.on('disconnect', () => {
+      onConnectionInterrupted()
       setSendPending(false)
       setStreamingTurn(null)
       setActivePlayers([])
@@ -594,6 +749,9 @@ export function useSessionSocket({
     lastSpokenDmEntryRef,
     lastSpokenTextRef,
     lastSpokenTurnIdRef,
+    onConnectionInterrupted,
+    onRollResolved,
+    onTurnDuplicate,
     pushError,
     queueTtsNarrationRef,
     rememberStreamedTtsTurn,

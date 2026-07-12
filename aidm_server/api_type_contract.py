@@ -551,6 +551,7 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
             field('updated_at', 'string | null'),
             field('stats', 'unknown'),
             field('inventory', 'unknown'),
+            field('weapon_proficiencies', 'string[]'),
             field('character_sheet', 'unknown'),
             field('derived', 'JsonRecord', optional=True),
         ),
@@ -631,6 +632,7 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
         ),
     ),
     TypeContract('PlayerEquipmentUpdateResponse', alias='PlayerDetail & { snapshot_changed: boolean; equipment_update: JsonRecord }'),
+    TypeContract('MapVisibility', alias="'player' | 'dm'"),
     TypeContract(
         'MapItem',
         fields=(
@@ -640,6 +642,7 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
             field('title', 'string'),
             field('description', 'string | null'),
             field('map_data', 'JsonRecord'),
+            field('visibility', 'MapVisibility'),
             field('created_at', 'string | null'),
             field('updated_at', 'string | null'),
         ),

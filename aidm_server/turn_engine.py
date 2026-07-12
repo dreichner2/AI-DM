@@ -16,11 +16,17 @@ from aidm_server.canon_jobs import (
 )
 from aidm_server.character_state import (
     apply_character_dc_adjustment,
+    character_roll_spec,
     character_state_for_player,
     inventory_contains,
     requested_gold_spend,
+    server_attack_roll_context,
 )
 from aidm_server.canon_inventory import OWNED_ITEM_ACTIONS
+from aidm_server.combat.legal_actions import (
+    combat_snapshot_from_session,
+    resolve_combat_legal_action,
+)
 from aidm_server.database import commit_with_retry, db, release_clean_scoped_session, run_with_commit_retry
 from aidm_server.emergent_memory import apply_immediate_state_changes
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY
@@ -38,11 +44,21 @@ from aidm_server.game_state.orchestration.turn_pipeline import (
 from aidm_server.llm import CONTEXT_VERSION, build_dm_context
 from aidm_server.logging_context import set_logging_context
 from aidm_server.models import Campaign, CampaignSegment, DmTurn, Player, Session, safe_json_dumps, safe_json_loads
-from aidm_server.rules import RuleHint, classify_player_action
+from aidm_server.player_rolls import (
+    canonicalize_roll_action_intent,
+    canonicalize_roll_text,
+    pending_roll_spec,
+    requested_ability_key,
+    resolve_authoritative_player_roll,
+)
+from aidm_server.player_roll_claims import find_legacy_roll_claim
+from aidm_server.roll_visibility import public_segment_triggered_payload
+from aidm_server.rules import RuleHint, classify_player_action, player_message_reports_roll_result
 from aidm_server.services.campaign_pack_progress import update_campaign_pack_progress
 from aidm_server.services.scene_state import scene_state_for_session
 from aidm_server.socket_contracts import (
     new_message_payload,
+    roll_resolved_payload,
     roll_required_payload,
     scene_state_payload,
     session_log_update_payload,
@@ -398,9 +414,15 @@ class TurnEngine:
             if isinstance(command.action_intent, dict) and command.action_intent.get('kind') is not None
             else ''
         )
+        legacy_roll_submission = player_message_reports_roll_result(command.user_input)
         has_pending_roll = (
-            action_kind == 'roll'
+            (action_kind == 'roll' or legacy_roll_submission)
             and self.latest_pending_turn(command.session_id, command.player_id) is not None
+        )
+        conductor_intent = (
+            {'kind': 'roll'}
+            if legacy_roll_submission and has_pending_roll
+            else command.action_intent if isinstance(command.action_intent, dict) else None
         )
         active_player_ids = []
         if self.active_player_ids:
@@ -414,7 +436,7 @@ class TurnEngine:
                 session_obj,
                 player_id=command.player_id,
                 message=command.user_input,
-                action_intent=command.action_intent,
+                action_intent=conductor_intent,
                 has_pending_roll=has_pending_roll,
                 active_player_ids=active_player_ids,
                 before_helper_call=self._release_clean_provider_session,
@@ -699,6 +721,47 @@ class TurnEngine:
         target['player_name'] = target_player.name
         return True
 
+    def _prepare_combat_action(self, command: TurnCommand, player: Player, session_obj: Session) -> bool:
+        action_intent = command.action_intent
+        if not isinstance(action_intent, dict) or action_intent.get('kind') != 'combat':
+            return True
+        requested = action_intent.get('combat') if isinstance(action_intent.get('combat'), dict) else {}
+        resolved, error_code, error_message = resolve_combat_legal_action(
+            combat_snapshot_from_session(session_obj.state_snapshot),
+            player,
+            action_id=requested.get('action_id'),
+            target_id=requested.get('target_id'),
+        )
+        if resolved is None:
+            self.emit(
+                'error',
+                socket_error(
+                    error_code or 'combat_action_invalid',
+                    error_message or 'That combat action is no longer available.',
+                    {
+                        'session_id': command.session_id,
+                        'player_id': command.player_id,
+                        'action_id': requested.get('action_id'),
+                    },
+                ),
+            )
+            telemetry_event(
+                'socket.send_message.combat_action_rejected',
+                payload={
+                    'sid': command.sid,
+                    'session_id': command.session_id,
+                    'player_id': command.player_id,
+                    'action_id': requested.get('action_id'),
+                    'error_code': error_code,
+                },
+                severity='warning',
+            )
+            return False
+        action_intent['combat'] = resolved
+        action_intent['text'] = resolved['message']
+        command.user_input = resolved['message']
+        return True
+
     def _validate_character_limits(self, command: TurnCommand, player: Player) -> bool:
         action_intent = command.action_intent if isinstance(command.action_intent, dict) else {}
         item_cost_gold = 0
@@ -897,6 +960,334 @@ class TurnEngine:
             dm_context_packet['pendingRolls'] = []
             dm_context_packet['rollRequirementCleared'] = veto
 
+    @staticmethod
+    def _persisted_pre_pipeline_result(turn: DmTurn) -> dict | None:
+        metadata = safe_json_loads(turn.metadata_json, {})
+        metadata = metadata if isinstance(metadata, dict) else {}
+        pipeline = metadata.get(STATE_PIPELINE_METADATA_KEY)
+        if not isinstance(pipeline, dict) or not isinstance(pipeline.get('dmContextPacket'), dict):
+            return None
+        pre_validation = pipeline.get('preDmValidation')
+        pre_validation = pre_validation if isinstance(pre_validation, dict) else {}
+        return {
+            'stateBeforeDm': pipeline.get('stateBeforeDm'),
+            'preExtraction': pipeline.get('preDmExtraction') or {},
+            'preValidation': pre_validation,
+            'immediateValidation': pipeline.get('immediateValidation') or {},
+            'pendingImmediateValidation': pipeline.get('pendingImmediateValidation') or {},
+            'pendingImmediateChanges': pipeline.get('pendingImmediateChanges') or [],
+            'immediateAppliedChanges': pipeline.get('immediateAppliedChanges') or [],
+            'combatValidation': pipeline.get('combatPreDmValidation') or {},
+            'combatAppliedChanges': pipeline.get('combatAppliedChanges') or [],
+            'combatDebug': pipeline.get('combatDebug') or {},
+            'dmContextPacket': pipeline.get('dmContextPacket') or {},
+            'stateLog': pipeline.get('stateLog') or {},
+            'clarificationRequests': pre_validation.get('clarificationRequests') or [],
+        }
+
+    @staticmethod
+    def _is_resumable_processing_turn(turn: DmTurn) -> bool:
+        return bool(
+            turn.status == 'processing'
+            and turn.dm_output is None
+            and turn.completed_at is None
+        )
+
+    def _resume_processing_turn(
+        self,
+        *,
+        command: TurnCommand,
+        turn: DmTurn,
+        session_obj: Session,
+        campaign: Campaign,
+        player: Player,
+    ) -> None:
+        metadata = safe_json_loads(turn.metadata_json, {})
+        metadata = metadata if isinstance(metadata, dict) else {}
+        rules_hint_payload = safe_json_loads(turn.rules_hint, {})
+        rules_hint_payload = rules_hint_payload if isinstance(rules_hint_payload, dict) else {}
+
+        persisted_intent = metadata.get('action_intent')
+        command.user_input = str(turn.player_input or '')
+        command.action_intent = persisted_intent if isinstance(persisted_intent, dict) else None
+        command.client_message_id = turn.client_message_id or command.client_message_id
+        persisted_override = metadata.get('state_pipeline_override')
+        command.state_pipeline_override = (
+            persisted_override if isinstance(persisted_override, dict) else None
+        )
+        manual_segment_ids = metadata.get('manual_segment_ids')
+        command.manual_segment_ids = {
+            int(segment_id)
+            for segment_id in (manual_segment_ids if isinstance(manual_segment_ids, list) else [])
+            if isinstance(segment_id, int) and segment_id > 0
+        }
+
+        player_label = str(metadata.get('speaker') or player.character_name or player.name)
+        resolved_turn_id = _coerce_player_id(
+            metadata.get('resolved_turn_id', rules_hint_payload.get('resolved_turn_id'))
+        )
+        try:
+            session_turn_number = int(
+                metadata.get('turn_number', rules_hint_payload.get('turn_number')) or 0
+            )
+        except (TypeError, ValueError):
+            session_turn_number = 0
+
+        pvp_payload = metadata.get('pvp')
+        if not isinstance(pvp_payload, dict):
+            pvp_payload = rules_hint_payload.get('pvp')
+        pvp_payload = pvp_payload if isinstance(pvp_payload, dict) else {}
+        pvp_target_id = _coerce_player_id(pvp_payload.get('target_player_id'))
+        pvp_target = db.session.get(Player, pvp_target_id) if pvp_target_id else None
+        if not TurnActionPolicy.player_is_available_for_campaign(pvp_target, campaign):
+            pvp_target = None
+
+        persisted_roll = metadata.get('authoritative_roll')
+        if not isinstance(persisted_roll, dict):
+            persisted_roll = rules_hint_payload.get('authoritative_roll')
+        if isinstance(persisted_roll, dict) and persisted_roll.get('authoritative') is True:
+            self.emit(
+                'roll_resolved',
+                roll_resolved_payload(
+                    session_id=command.session_id,
+                    turn_id=turn.turn_id,
+                    player_id=command.player_id,
+                    client_message_id=command.client_message_id,
+                    pending_turn_id=resolved_turn_id,
+                    roll=persisted_roll,
+                    include_private_provenance=True,
+                ),
+                room=command.sid,
+            )
+
+        telemetry_event(
+            'socket.send_message.duplicate_resumed',
+            payload={
+                'sid': command.sid,
+                'session_id': command.session_id,
+                'player_id': command.player_id,
+                'turn_id': turn.turn_id,
+                'client_message_id': command.client_message_id,
+                'pre_dm_already_persisted': self._persisted_pre_pipeline_result(turn) is not None,
+            },
+        )
+        self._emit_turn_status(
+            command.session_id,
+            turn.turn_id,
+            'resuming',
+            {'stage': 'idempotent_retry'},
+        )
+        self._continue_persisted_turn(
+            turn=turn,
+            command=command,
+            session_obj=session_obj,
+            campaign=campaign,
+            player=player,
+            player_label=player_label,
+            rules_hint_payload=rules_hint_payload,
+            resolved_turn_id=resolved_turn_id,
+            session_turn_number=session_turn_number,
+            pvp_target=pvp_target,
+            start_time=time.perf_counter(),
+        )
+
+    def _continue_persisted_turn(
+        self,
+        *,
+        turn: DmTurn,
+        command: TurnCommand,
+        session_obj: Session,
+        campaign: Campaign,
+        player: Player,
+        player_label: str,
+        rules_hint_payload: dict,
+        resolved_turn_id: int | None,
+        session_turn_number: int,
+        pvp_target: Player | None,
+        start_time: float,
+    ) -> None:
+        turn_id = int(turn.turn_id)
+        pre_pipeline_result = self._persisted_pre_pipeline_result(turn) or {}
+        pre_pipeline_succeeded = bool(pre_pipeline_result)
+        if not pre_pipeline_succeeded:
+            state_pipeline_started = time.perf_counter()
+            try:
+                active_player_ids = []
+                if self.active_player_ids:
+                    active_player_ids = [
+                        player_id
+                        for player_id in self.active_player_ids(command.session_id)
+                        if player_id
+                    ]
+                pre_pipeline_result = pre_dm_pipeline(
+                    turn=turn,
+                    session_obj=session_obj,
+                    campaign=campaign,
+                    player=player,
+                    player_message=command.user_input,
+                    action_intent=command.action_intent,
+                    selected_item_ids=(
+                        command.state_pipeline_override.get('selectedItemIds')
+                        if isinstance(command.state_pipeline_override, dict)
+                        else None
+                    ),
+                    declared_actions_override=(
+                        command.state_pipeline_override.get('declaredActions')
+                        if isinstance(command.state_pipeline_override, dict)
+                        else None
+                    ),
+                    active_player_ids=active_player_ids,
+                    before_helper_call=self._release_clean_provider_session,
+                )
+                turn, session_obj, campaign, player = self._reload_core_models(
+                    command,
+                    turn_id,
+                )
+                commit_with_retry(label='pre-DM state pipeline')
+                self._record_phase_timing(
+                    'state_pre_dm',
+                    state_pipeline_started,
+                    campaign_id=command.campaign_id,
+                    session_id=command.session_id,
+                )
+                pre_pipeline_succeeded = True
+            except Exception as exc:
+                db.session.rollback()
+                try:
+                    turn, session_obj, campaign, player = self._reload_core_models(
+                        command,
+                        turn_id,
+                    )
+                except RuntimeError:
+                    self.emit(
+                        'error',
+                        socket_error(
+                            'turn_persist_failed',
+                            'Failed to reload player action state.',
+                        ),
+                    )
+                    telemetry_event(
+                        'socket.send_message.turn_reload_failed',
+                        payload={'session_id': command.session_id, 'turn_id': turn_id},
+                        severity='error',
+                    )
+                    return
+                logger.warning('Pre-DM state pipeline failed: %s', str(exc))
+                telemetry_event(
+                    'socket.state_pipeline.pre_dm_failed',
+                    payload={
+                        'session_id': command.session_id,
+                        'turn_id': turn_id,
+                        'error': str(exc),
+                    },
+                    severity='warning',
+                )
+                rules_hint_payload['state_pipeline_warning'] = (
+                    'State validation failed; avoid committing inventory/HP/currency changes.'
+                )
+
+        if pre_pipeline_succeeded:
+            clarification_requests = pre_pipeline_result.get('clarificationRequests') or []
+            if clarification_requests:
+                self._emit_clarification_request(
+                    session_id=command.session_id,
+                    turn_id=turn.turn_id,
+                    player_id=command.player_id,
+                    request_sid=command.sid,
+                    player_message=command.user_input,
+                    clarification_requests=clarification_requests,
+                )
+                return
+            pre_dm_roll_veto = self._pre_dm_roll_veto(
+                pre_pipeline_result,
+                rules_hint_payload,
+            )
+            if pre_dm_roll_veto:
+                self._clear_turn_roll_requirement_from_pre_dm_veto(
+                    turn=turn,
+                    rules_hint_payload=rules_hint_payload,
+                    veto=pre_dm_roll_veto,
+                    pre_pipeline_result=pre_pipeline_result,
+                )
+            rules_hint_payload = augment_rules_hint_with_state_packet(
+                rules_hint_payload,
+                pre_pipeline_result.get('dmContextPacket') or {},
+            )
+            turn.rules_hint = safe_json_dumps(rules_hint_payload, {})
+            commit_with_retry(label='pre-narration rules state')
+
+        triggered_segments = self._evaluate_segments(
+            turn=turn,
+            campaign=campaign,
+            command=command,
+            allowed_trigger_types={'keywords'},
+            include_manual=False,
+        )
+        for segment_payload in triggered_segments:
+            self.emit(
+                'segment_triggered',
+                public_segment_triggered_payload(segment_payload),
+                room=str(command.session_id),
+            )
+
+        commit_with_retry(label='pre-narration boundary')
+        turn, session_obj, campaign, player = self._reload_core_models(command, turn_id)
+        narration_request = NarrationRequest(
+            session_id=turn.session_id,
+            campaign_id=campaign.campaign_id,
+            turn_id=turn.turn_id,
+            player_id=turn.player_id,
+            requires_roll=turn.requires_roll,
+            roll_value=turn.roll_value,
+            rule_type=turn.rule_type,
+            confidence=turn.confidence,
+            serialized_rules_hint=turn.rules_hint,
+            player_label=player_label,
+            world_id=campaign.world_id,
+            user_input=command.user_input,
+            model_user_input=TurnActionPolicy.model_input_for_action(
+                command.user_input,
+                command.action_intent,
+                player_label,
+                pvp_target,
+            ),
+            rules_hint_payload=rules_hint_payload,
+            resolved_turn_id=resolved_turn_id,
+            pre_narration_effects=_pre_narration_effects(
+                pre_pipeline_result,
+                triggered_segments,
+            ),
+        )
+        persistence_token = self._persistence_token(turn=turn)
+        narration_result = self._narrate_turn(narration_request)
+
+        self._emit_turn_status(command.session_id, turn_id, 'saving')
+        post_turn_segments = self._persist_turn_outcome(
+            persistence_token=persistence_token,
+            command=command,
+            player_label=player_label,
+            rules_hint_payload=rules_hint_payload,
+            dm_response_text=narration_result.text,
+            stream_error=narration_result.stream_error,
+            narration_provider=narration_result.provider,
+            narration_model=narration_result.model,
+            emergency_fallback=narration_result.emergency_fallback,
+            triggered_segments=triggered_segments,
+            start_time=start_time,
+        )
+        for segment_payload in post_turn_segments:
+            self.socketio.emit(
+                'segment_triggered',
+                public_segment_triggered_payload(segment_payload),
+                room=str(command.session_id),
+            )
+
+        self.socketio.emit(
+            'session_log_update',
+            session_log_update_payload(command.session_id, turn_id),
+            room=str(command.session_id),
+        )
+
     def process(self, command: TurnCommand):
         with session_turn_coordinator.serialized(command.session_id) as wait_ms:
             if wait_ms >= 1.0:
@@ -959,9 +1350,20 @@ class TurnEngine:
         if command.client_message_id:
             duplicate_turn = self._find_duplicate_turn(command)
             if duplicate_turn:
+                if self._is_resumable_processing_turn(duplicate_turn):
+                    self._resume_processing_turn(
+                        command=command,
+                        turn=duplicate_turn,
+                        session_obj=session_obj,
+                        campaign=campaign,
+                        player=player,
+                    )
+                    return
                 self._emit_duplicate_turn(command, duplicate_turn, detected_by='preflight')
                 return
 
+        if not self._prepare_combat_action(command, player, session_obj):
+            return
         if not self._conduct_turn_submission(command, session_obj):
             return
         try:
@@ -985,6 +1387,36 @@ class TurnEngine:
 
         player_label = player.character_name
         is_admin_override = TurnActionPolicy.is_admin_override(command.action_intent)
+        action_kind = (
+            str(command.action_intent.get('kind')).strip().lower()
+            if isinstance(command.action_intent, dict)
+            else ''
+        )
+        roll_submission_requested = (
+            action_kind == 'roll'
+            or player_message_reports_roll_result(command.user_input)
+        )
+        combat_roll_requested = bool(
+            action_kind == 'combat'
+            and isinstance(command.action_intent, dict)
+            and isinstance(command.action_intent.get('combat'), dict)
+            and command.action_intent['combat'].get('action_type') == 'attack'
+        )
+        roll_submission_requested = roll_submission_requested or combat_roll_requested
+        legacy_roll_claim = find_legacy_roll_claim(command.user_input)
+        if legacy_roll_claim is not None and action_kind in {'', 'message'}:
+            command.action_intent = {
+                'kind': 'roll',
+                'source': 'server_legacy_text',
+                'text': command.user_input,
+                'roll': {
+                    'die': legacy_roll_claim.die,
+                    'mode': 'normal',
+                    'result_visibility': 'hidden_until_landed',
+                    'reason': legacy_roll_claim.reason or '',
+                },
+            }
+            action_kind = 'roll'
         rules_engine_enabled = bool(current_app.config.get('AIDM_RULES_ENGINE_ENABLED', True))
         rule_hint: RuleHint = (
             classify_player_action(command.user_input)
@@ -1000,7 +1432,6 @@ class TurnEngine:
             )
         )
         rule_hint = apply_action_intent_to_rule_hint(command.action_intent, rule_hint)
-        rule_hint = apply_character_dc_adjustment(rule_hint, player)
         rule_hint = self._apply_pvp_rule_hint(rule_hint, pvp_payload)
 
         roll_target_pending_turn_id = None
@@ -1016,8 +1447,12 @@ class TurnEngine:
                 if roll_target_pending_turn_id is not None
                 else self.latest_pending_turn(command.session_id, command.player_id)
             )
+        if pending_turn_before is not None and combat_roll_requested:
+            # A fresh HUD attack must never be mistaken for a response to an
+            # earlier unresolved check. The player must resolve that check first.
+            roll_submission_requested = False
         any_pending_turn = None if is_admin_override else self.latest_pending_turn(command.session_id, None)
-        if roll_target_pending_turn_id is not None and rule_hint.roll_value is not None and not pending_turn_before:
+        if roll_target_pending_turn_id is not None and roll_submission_requested and not pending_turn_before:
             self.emit(
                 'error',
                 socket_error(
@@ -1041,7 +1476,7 @@ class TurnEngine:
             )
             return
 
-        if pending_turn_before and rule_hint.roll_value is None:
+        if pending_turn_before and not roll_submission_requested:
             pending_rule_type = pending_turn_before.rule_type or 'check'
             pending_dc_hint = self.dc_hint_from_turn(pending_turn_before)
             roll_required = roll_required_payload(
@@ -1084,7 +1519,7 @@ class TurnEngine:
             return
 
         if not is_admin_override and any_pending_turn is not None and not pending_turn_before:
-            if rule_hint.roll_value is None:
+            if not roll_submission_requested:
                 remaining_player_ids = pending_turn_remaining_player_ids(any_pending_turn)
                 if len(pending_turn_required_player_ids(any_pending_turn)) > 1:
                     pending_context = self._pending_roll_context(any_pending_turn)
@@ -1115,7 +1550,7 @@ class TurnEngine:
                     )
                     return
 
-            if rule_hint.roll_value is not None and any_pending_turn.player_id != command.player_id:
+            if roll_submission_requested and any_pending_turn.player_id != command.player_id:
                 pending_context = self._pending_roll_context(any_pending_turn)
                 pending_name = pending_context.get('pending_player_name') or 'Another player'
                 pending_rule = pending_context.get('pending_rule_type') or 'check'
@@ -1148,6 +1583,90 @@ class TurnEngine:
                 )
                 return
 
+        if pending_turn_before and roll_submission_requested:
+            pending_rule_type = pending_turn_before.rule_type or 'check'
+            pending_dc_hint = self.dc_hint_from_turn(pending_turn_before)
+            rule_hint.requires_roll = True
+            rule_hint.roll_type = pending_rule_type
+            rule_hint.dc_hint = pending_dc_hint or rule_hint.dc_hint
+            rule_hint.reason = f'Resolving pending {pending_rule_type} from turn {pending_turn_before.turn_id}'
+            rule_hint.outcome_deferred = True
+
+        attack_context = None
+        if str(rule_hint.roll_type or '').strip().lower() == 'attack':
+            stored_roll_spec = pending_roll_spec(pending_turn_before)
+            stored_attack_context = (
+                stored_roll_spec.get('attack')
+                if isinstance(stored_roll_spec.get('attack'), dict)
+                else None
+            )
+            attack_source_text = (
+                pending_turn_before.player_input
+                if pending_turn_before is not None
+                else command.user_input
+            )
+            attack_context = stored_attack_context or server_attack_roll_context(
+                player,
+                attack_source_text,
+            )
+            persisted_ability = (
+                stored_roll_spec.get('ability')
+                if isinstance(stored_roll_spec.get('ability'), dict)
+                else {}
+            )
+            persisted_ability_key = str(persisted_ability.get('key') or '').strip().lower()
+            if pending_turn_before is not None and persisted_ability_key in {'strength', 'dexterity'}:
+                attack_context = {**attack_context, 'ability_key': persisted_ability_key}
+            ability_key = str(attack_context.get('ability_key') or 'strength')
+        else:
+            ability_key = requested_ability_key(command.action_intent, pending_turn_before)
+        rule_hint = apply_character_dc_adjustment(
+            rule_hint,
+            player,
+            requested_ability_key=ability_key,
+            attack_context=attack_context,
+        )
+        roll_spec_payload = (
+            character_roll_spec(
+                player,
+                roll_type=rule_hint.roll_type,
+                requested_ability_key=ability_key,
+                dc_hint=rule_hint.dc_hint,
+                attack_context=attack_context,
+            )
+            if rule_hint.requires_roll
+            else None
+        )
+        authoritative_roll = None
+        if roll_submission_requested:
+            authoritative_roll = resolve_authoritative_player_roll(
+                player=player,
+                rule_type=rule_hint.roll_type,
+                dc_hint=rule_hint.dc_hint,
+                action_intent=command.action_intent,
+                pending_turn=pending_turn_before,
+                attack_context=attack_context,
+            )
+            roll_spec_payload = {
+                **(roll_spec_payload or {}),
+                'die': authoritative_roll['die'],
+                'mode': authoritative_roll['mode'],
+                'result_visibility': authoritative_roll['result_visibility'],
+                'reason': authoritative_roll['reason'],
+            }
+            rule_hint.requires_roll = True
+            rule_hint.roll_value = int(authoritative_roll['total'])
+            rule_hint.outcome_deferred = False
+            canonical_text = canonicalize_roll_text(command.user_input, authoritative_roll)
+            command.user_input = canonical_text
+            command.action_intent = canonicalize_roll_action_intent(
+                command.action_intent,
+                canonical_text=canonical_text,
+                client_message_id=command.client_message_id,
+                roll=authoritative_roll,
+                pending_turn_id=(pending_turn_before.turn_id if pending_turn_before else None),
+            )
+
         pending_turn_to_resolve, resolved_turn_id = self.apply_pending_resolution_hint(
             command.session_id,
             command.player_id,
@@ -1171,6 +1690,10 @@ class TurnEngine:
             'turn_number': session_turn_number,
             'turn_control': turn_control_payload,
         }
+        if roll_spec_payload:
+            rules_hint_payload['roll_spec'] = roll_spec_payload
+        if authoritative_roll:
+            rules_hint_payload['authoritative_roll'] = authoritative_roll
         if pvp_payload:
             rules_hint_payload['pvp'] = pvp_payload
         if resolved_clarification_turn_id:
@@ -1199,7 +1722,10 @@ class TurnEngine:
                     'resolved_turn_id': resolved_turn_id,
                     'turn_number': session_turn_number,
                     'action_intent': command.action_intent,
+                    'authoritative_roll': authoritative_roll,
                     'client_message_id': command.client_message_id,
+                    'manual_segment_ids': sorted(command.manual_segment_ids),
+                    'state_pipeline_override': command.state_pipeline_override,
                     'turn_control': turn_control_payload,
                     'pvp': pvp_payload,
                     'resolved_clarification_turn_id': resolved_clarification_turn_id,
@@ -1226,10 +1752,41 @@ class TurnEngine:
             pending_turn_to_resolve,
             resolved_turn_id,
             session_turn_number,
+            authoritative_roll,
         )
         if not incoming_result.get('ok'):
             return
         turn_id = int(turn.turn_id)
+        if authoritative_roll:
+            resolved_payload_args = {
+                'session_id': command.session_id,
+                'turn_id': turn_id,
+                'player_id': command.player_id,
+                'client_message_id': command.client_message_id,
+                'pending_turn_id': (
+                    pending_turn_to_resolve.turn_id
+                    if pending_turn_to_resolve
+                    else None
+                ),
+                'roll': authoritative_roll,
+            }
+            self.emit(
+                'roll_resolved',
+                roll_resolved_payload(
+                    **resolved_payload_args,
+                    include_private_provenance=False,
+                ),
+                room=str(command.session_id),
+                skip_sid=command.sid,
+            )
+            self.emit(
+                'roll_resolved',
+                roll_resolved_payload(
+                    **resolved_payload_args,
+                    include_private_provenance=True,
+                ),
+                room=command.sid,
+            )
         self._record_phase_timing(
             'incoming_db_save',
             incoming_save_started,
@@ -1238,20 +1795,33 @@ class TurnEngine:
         )
         self._emit_turn_status(command.session_id, turn.turn_id, 'received')
 
+        message_payload_args = {
+            'message': command.user_input,
+            'speaker': player_label,
+            'turn_id': turn.turn_id,
+            'requires_roll': rule_hint.requires_roll,
+            'rules_hint': rules_hint_payload,
+            'context_version': CONTEXT_VERSION,
+            'action_intent': command.action_intent,
+            'client_message_id': command.client_message_id,
+            'turn_number': session_turn_number,
+        }
         self.emit(
             'new_message',
             new_message_payload(
-                message=command.user_input,
-                speaker=player_label,
-                turn_id=turn.turn_id,
-                requires_roll=rule_hint.requires_roll,
-                rules_hint=rules_hint_payload,
-                context_version=CONTEXT_VERSION,
-                action_intent=command.action_intent,
-                client_message_id=command.client_message_id,
-                turn_number=session_turn_number,
+                **message_payload_args,
+                include_private_provenance=False,
             ),
             room=str(command.session_id),
+            skip_sid=command.sid,
+        )
+        self.emit(
+            'new_message',
+            new_message_payload(
+                **message_payload_args,
+                include_private_provenance=True,
+            ),
+            room=command.sid,
         )
 
         if incoming_result.get('waiting_for_rolls'):
@@ -1270,164 +1840,18 @@ class TurnEngine:
             )
             return
 
-        pre_pipeline_result: dict = {}
-        state_pipeline_started = time.perf_counter()
-        try:
-            active_player_ids = []
-            if self.active_player_ids:
-                active_player_ids = [player_id for player_id in self.active_player_ids(command.session_id) if player_id]
-            pre_pipeline_result = pre_dm_pipeline(
-                turn=turn,
-                session_obj=session_obj,
-                campaign=campaign,
-                player=player,
-                player_message=command.user_input,
-                action_intent=command.action_intent,
-                selected_item_ids=(
-                    command.state_pipeline_override.get('selectedItemIds')
-                    if isinstance(command.state_pipeline_override, dict)
-                    else None
-                ),
-                declared_actions_override=(
-                    command.state_pipeline_override.get('declaredActions')
-                    if isinstance(command.state_pipeline_override, dict)
-                    else None
-                ),
-                active_player_ids=active_player_ids,
-                before_helper_call=self._release_clean_provider_session,
-            )
-            turn, session_obj, campaign, player = self._reload_core_models(
-                command, turn_id
-            )
-            commit_with_retry(label='pre-DM state pipeline')
-            self._record_phase_timing(
-                'state_pre_dm',
-                state_pipeline_started,
-                campaign_id=command.campaign_id,
-                session_id=command.session_id,
-            )
-        except Exception as exc:
-            db.session.rollback()
-            try:
-                turn, session_obj, campaign, player = self._reload_core_models(
-                    command, turn_id
-                )
-            except RuntimeError:
-                self.emit(
-                    'error',
-                    socket_error(
-                        'turn_persist_failed', 'Failed to reload player action state.'
-                    ),
-                )
-                telemetry_event(
-                    'socket.send_message.turn_reload_failed',
-                    payload={'session_id': command.session_id, 'turn_id': turn_id},
-                    severity='error',
-                )
-                return
-            logger.warning('Pre-DM state pipeline failed: %s', str(exc))
-            telemetry_event(
-                'socket.state_pipeline.pre_dm_failed',
-                payload={
-                    'session_id': command.session_id,
-                    'turn_id': turn_id,
-                    'error': str(exc),
-                },
-                severity='warning',
-            )
-            rules_hint_payload['state_pipeline_warning'] = 'State validation failed; avoid committing inventory/HP/currency changes.'
-        else:
-            clarification_requests = pre_pipeline_result.get('clarificationRequests') or []
-            if clarification_requests:
-                self._emit_clarification_request(
-                    session_id=command.session_id,
-                    turn_id=turn.turn_id,
-                    player_id=command.player_id,
-                    player_message=command.user_input,
-                    clarification_requests=clarification_requests,
-                )
-                return
-            pre_dm_roll_veto = self._pre_dm_roll_veto(pre_pipeline_result, rules_hint_payload)
-            if pre_dm_roll_veto:
-                self._clear_turn_roll_requirement_from_pre_dm_veto(
-                    turn=turn,
-                    rules_hint_payload=rules_hint_payload,
-                    veto=pre_dm_roll_veto,
-                    pre_pipeline_result=pre_pipeline_result,
-                )
-            rules_hint_payload = augment_rules_hint_with_state_packet(
-                rules_hint_payload,
-                pre_pipeline_result.get('dmContextPacket') or {},
-            )
-            turn.rules_hint = safe_json_dumps(rules_hint_payload, {})
-            commit_with_retry(label='pre-narration rules state')
-
-        triggered_segments = self._evaluate_segments(
+        self._continue_persisted_turn(
             turn=turn,
-            campaign=campaign,
             command=command,
-            allowed_trigger_types={'keywords'},
-            include_manual=False,
-        )
-        for segment_payload in triggered_segments:
-            self.emit('segment_triggered', segment_payload, room=str(command.session_id))
-
-        # The segment service commits when it evaluates. This explicit boundary
-        # also covers the disabled/no-op path before context construction.
-        commit_with_retry(label='pre-narration boundary')
-        turn, session_obj, campaign, player = self._reload_core_models(command, turn_id)
-        narration_request = NarrationRequest(
-            session_id=turn.session_id,
-            campaign_id=campaign.campaign_id,
-            turn_id=turn.turn_id,
-            player_id=turn.player_id,
-            requires_roll=turn.requires_roll,
-            roll_value=turn.roll_value,
-            rule_type=turn.rule_type,
-            confidence=turn.confidence,
-            serialized_rules_hint=turn.rules_hint,
+            session_obj=session_obj,
+            campaign=campaign,
+            player=player,
             player_label=player_label,
-            world_id=campaign.world_id,
-            user_input=command.user_input,
-            model_user_input=TurnActionPolicy.model_input_for_action(
-                command.user_input,
-                command.action_intent,
-                player_label,
-                pvp_target,
-            ),
             rules_hint_payload=rules_hint_payload,
             resolved_turn_id=resolved_turn_id,
-            pre_narration_effects=_pre_narration_effects(pre_pipeline_result, triggered_segments),
-        )
-        persistence_token = self._persistence_token(
-            turn=turn,
-        )
-        narration_result = self._narrate_turn(narration_request)
-
-        # Keep the per-session coordinator locked until the DM response has a
-        # durable DmTurn row and timeline event. Canon extraction can continue
-        # asynchronously after that saved boundary.
-        self._emit_turn_status(command.session_id, turn_id, 'saving')
-        post_turn_segments = self._persist_turn_outcome(
-            persistence_token=persistence_token,
-            command=command,
-            player_label=player_label,
-            rules_hint_payload=rules_hint_payload,
-            dm_response_text=narration_result.text,
-            stream_error=narration_result.stream_error,
-            narration_provider=narration_result.provider,
-            narration_model=narration_result.model,
-            emergency_fallback=narration_result.emergency_fallback,
-            triggered_segments=triggered_segments,
+            session_turn_number=session_turn_number,
+            pvp_target=pvp_target,
             start_time=start_time,
-        )
-        for segment_payload in post_turn_segments:
-            self.socketio.emit('segment_triggered', segment_payload, room=str(command.session_id))
-
-        self.socketio.emit(
-            'session_log_update',
-            session_log_update_payload(command.session_id, turn_id),
-            room=str(command.session_id),
         )
 
     def _emit_turn_status(
@@ -1462,6 +1886,7 @@ class TurnEngine:
         session_id: int,
         turn_id: int,
         player_id: int,
+        request_sid: str,
         player_message: str,
         clarification_requests: list[dict],
     ) -> None:
@@ -1487,8 +1912,17 @@ class TurnEngine:
             turn_obj.status = 'awaiting_clarification'
             turn_obj.outcome_status = 'resolved'
             commit_with_retry(label='clarification request')
-        self.socketio.emit('clarification_required', request_payload, room=str(session_id))
-        self._emit_turn_status(session_id, turn_id, 'clarification_required', request_payload)
+        self.socketio.emit('clarification_required', request_payload, room=request_sid)
+        self._emit_turn_status(
+            session_id,
+            turn_id,
+            'clarification_required',
+            {
+                'stage': 'awaiting_clarification',
+                'player_id': player_id,
+                'waiting_for_player_id': player_id,
+            },
+        )
         self.socketio.emit('session_log_update', session_log_update_payload(session_id, turn_id), room=str(session_id))
 
     def _mark_clarification_resume_completed(self, *, command: TurnCommand, resumed_turn: DmTurn) -> None:
@@ -1622,6 +2056,7 @@ class TurnEngine:
         pending_turn_to_resolve: DmTurn | None,
         resolved_turn_id: int | None,
         session_turn_number: int,
+        authoritative_roll: dict | None,
     ) -> dict:
         remaining_player_ids: list[int] = []
         try:
@@ -1631,6 +2066,7 @@ class TurnEngine:
                 db.session.add(turn)
                 db.session.flush()
                 set_logging_context(turn_id=turn.turn_id)
+                pending_metadata: dict = {}
 
                 if pending_turn_to_resolve:
                     pending_metadata = safe_json_loads(pending_turn_to_resolve.metadata_json, {})
@@ -1662,6 +2098,13 @@ class TurnEngine:
                     pending_metadata['resolved_by_turn_id'] = turn.turn_id
                     pending_metadata['resolved_at'] = utc_now().isoformat()
                     pending_turn_to_resolve.metadata_json = safe_json_dumps(pending_metadata, {})
+
+                if authoritative_roll:
+                    pending_turn_id = (
+                        pending_turn_to_resolve.turn_id
+                        if pending_turn_to_resolve
+                        else None
+                    )
                     record_turn_event(
                         session_id=command.session_id,
                         campaign_id=command.campaign_id,
@@ -1669,17 +2112,19 @@ class TurnEngine:
                         player_id=command.player_id,
                         event_type=ROLL_RESOLVED_EVENT,
                         payload={
-                            'pending_turn_id': pending_turn_to_resolve.turn_id,
+                            'pending_turn_id': pending_turn_id,
                             'roll_value': rule_hint.roll_value,
+                            'roll': authoritative_roll,
                             'metadata': {
                                 'turn_id': turn.turn_id,
                                 'turn_number': session_turn_number,
-                                'resolved_turn_id': pending_turn_to_resolve.turn_id,
+                                'resolved_turn_id': pending_turn_id,
                                 'roll_value': rule_hint.roll_value,
                                 'rule_type': rule_hint.roll_type,
                                 'roll_gate': pending_metadata.get('roll_gate'),
                                 'remaining_player_ids': remaining_player_ids,
                                 'action_intent': command.action_intent,
+                                'authoritative_roll': authoritative_roll,
                                 'client_message_id': command.client_message_id,
                             },
                         },

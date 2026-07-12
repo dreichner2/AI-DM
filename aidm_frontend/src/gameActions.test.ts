@@ -6,10 +6,9 @@ import {
   composerTextForMode,
   createClientMessageId,
   diceRollMessage,
+  diceRollRequestMessage,
   hasReservedAdminPrefix,
   itemActionText,
-  parseRollModifier,
-  resolveRoll,
   spellActionText,
   stripComposerCommand,
   type AbilityOption,
@@ -111,57 +110,50 @@ describe('game action helpers', () => {
     )
   })
 
-  it('calculates advantage rolls with modifier and hidden result metadata', () => {
-    const rolls = [7, 18]
-    const roll = resolveRoll(
-      {
-        die: 'd20',
-        mode: 'advantage',
-        modifier: parseRollModifier('+2'),
-        reason: 'ward',
-        resultVisibility: 'hidden_until_landed',
-      },
-      () => rolls.shift() ?? 1,
-    )
+  it('formats an authoritative result without generating it in the browser', () => {
+    const roll = {
+      die: 'd20',
+      mode: 'advantage' as const,
+      modifier: 2,
+      reason: 'ward',
+      resultVisibility: 'hidden_until_landed' as const,
+      rolls: [7, 18],
+      kept: 18,
+      total: 20,
+    }
 
-    expect(roll.rolls).toEqual([7, 18])
-    expect(roll.kept).toBe(18)
-    expect(roll.total).toBe(20)
     expect(diceRollMessage(roll)).toBe('I roll a d20+2 for ward: 18 (advantage; rolls 7, 18) = 20')
+    expect(diceRollRequestMessage(roll)).toBe('I roll a d20 for ward.')
   })
 
   it('formats initiative rolls with the dexterity total first', () => {
-    const roll = resolveRoll(
-      {
-        die: 'd20',
-        mode: 'normal',
-        modifier: parseRollModifier(initiative.modifier),
-        reason: INITIATIVE_ROLL_REASON,
-        resultVisibility: 'hidden_until_landed',
-      },
-      () => 14,
-    )
+    const roll = {
+      die: 'd20',
+      mode: 'normal' as const,
+      modifier: 1,
+      reason: INITIATIVE_ROLL_REASON,
+      resultVisibility: 'hidden_until_landed' as const,
+      rolls: [14],
+      kept: 14,
+      total: 15,
+    }
 
     expect(roll.total).toBe(15)
     expect(diceRollMessage(roll)).toBe('I roll for initiative: 15 (d20 14 +1 DEX)')
   })
 
   it('builds typed action metadata for backend persistence', () => {
-    const roll = resolveRoll(
-      {
-        die: 'd20',
-        mode: 'normal',
-        modifier: 1,
-        reason: 'trap',
-        resultVisibility: 'hidden_until_landed',
-        targetPendingTurnId: 42,
-      },
-      () => 12,
-    )
+    const roll = {
+      die: 'd20',
+      mode: 'normal' as const,
+      reason: 'trap',
+      resultVisibility: 'hidden_until_landed' as const,
+      targetPendingTurnId: 42,
+    }
 
     const intent = buildActionIntent({
       mode: 'roll',
-      message: diceRollMessage(roll),
+      message: diceRollRequestMessage(roll),
       clientMessageId: 'local-test',
       source: 'dice_roller',
       roll,
@@ -172,16 +164,18 @@ describe('game action helpers', () => {
     expect(intent.client_message_id).toBe('local-test')
     expect(intent.roll).toMatchObject({
       die: 'd20',
-      kept: 12,
-      modifier: 1,
-      total: 13,
+      mode: 'normal',
+      reason: 'trap',
       result_visibility: 'hidden_until_landed',
       target_pending_turn_id: 42,
     })
+    expect(intent.roll).not.toHaveProperty('rolls')
+    expect(intent.roll).not.toHaveProperty('kept')
+    expect(intent.roll).not.toHaveProperty('modifier')
+    expect(intent.roll).not.toHaveProperty('total')
     expect(intent.ability).toEqual({
       key: 'strength',
       label: 'STR',
-      modifier: 3,
     })
 
     const itemIntent = buildActionIntent({

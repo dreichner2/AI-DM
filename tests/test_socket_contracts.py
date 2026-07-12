@@ -4,6 +4,7 @@ from aidm_server.socket_contracts import (
     dm_response_end_payload,
     dm_response_start_payload,
     new_message_payload,
+    roll_resolved_payload,
     roll_required_payload,
     segment_triggered_payload,
     session_log_update_payload,
@@ -51,7 +52,7 @@ def test_validate_send_message_payload_reports_missing_fields():
     assert error.telemetry_payload == {'missing_fields': ['campaign_id', 'message', 'player_id']}
 
 
-def test_validate_send_message_payload_rejects_invalid_action_intent():
+def test_validate_send_message_payload_strips_legacy_roll_outcome_fields():
     payload, error = validate_send_message_payload(
         {
             'session_id': 1,
@@ -72,11 +73,14 @@ def test_validate_send_message_payload_rejects_invalid_action_intent():
         }
     )
 
-    assert payload is None
-    assert error is not None
-    assert error.error_code == 'validation_error'
-    assert 'roll.total' in error.message
-    assert error.telemetry_payload['field'] == 'action_intent'
+    assert error is None
+    assert payload is not None
+    assert payload.action_intent['roll'] == {
+        'die': 'd20',
+        'mode': 'normal',
+        'result_visibility': 'hidden_until_landed',
+        'reason': '',
+    }
 
 
 def test_validate_send_message_payload_rejects_manual_segment_override():
@@ -185,6 +189,88 @@ def test_outgoing_status_and_side_effect_payload_contracts_are_stable():
         'dc_hint': 'DC 15',
         'prompt': 'Please roll.',
     }
+    assert roll_resolved_payload(
+        session_id=4,
+        turn_id=10,
+        player_id=3,
+        client_message_id='roll-10',
+        pending_turn_id=9,
+        roll={
+            'rule_type': 'social',
+            'die': 'd20',
+            'mode': 'advantage',
+            'rolls': [8, 17],
+            'kept': 17,
+            'modifier': 4,
+            'total': 21,
+            'reason': 'persuade the guard',
+            'result_visibility': 'hidden_until_landed',
+            'ability': {'key': 'charisma', 'label': 'CHA', 'score': 14, 'modifier': 2},
+            'proficiency': {'bonus': 2, 'skills': ['persuasion']},
+            'modifier_breakdown': {
+                'ability_modifier': 2,
+                'proficiency_bonus': 2,
+                'wound_penalty': 0,
+                'total': 4,
+            },
+        },
+        include_private_provenance=True,
+    ) == {
+        'session_id': 4,
+        'turn_id': 10,
+        'player_id': 3,
+        'client_message_id': 'roll-10',
+        'pending_turn_id': 9,
+        'rule_type': 'social',
+        'die': 'd20',
+        'mode': 'advantage',
+        'rolls': [8, 17],
+        'kept': 17,
+        'modifier': 4,
+        'total': 21,
+        'reason': 'persuade the guard',
+        'result_visibility': 'hidden_until_landed',
+        'ability': {'key': 'charisma', 'label': 'CHA', 'score': 14, 'modifier': 2},
+        'proficiency': {'bonus': 2, 'skills': ['persuasion']},
+        'modifier_breakdown': {
+            'ability_modifier': 2,
+            'proficiency_bonus': 2,
+            'wound_penalty': 0,
+            'total': 4,
+        },
+        'authoritative': True,
+    }
+    public_roll = roll_resolved_payload(
+        session_id=4,
+        turn_id=10,
+        player_id=3,
+        client_message_id='roll-10',
+        pending_turn_id=9,
+        roll={
+            'rule_type': 'social',
+            'die': 'd20',
+            'mode': 'advantage',
+            'rolls': [8, 17],
+            'kept': 17,
+            'modifier': 4,
+            'total': 21,
+            'reason': 'persuade the guard',
+            'result_visibility': 'hidden_until_landed',
+            'ability': {'key': 'charisma', 'label': 'CHA', 'score': 14, 'modifier': 2},
+            'proficiency': {'bonus': 2, 'skills': ['persuasion']},
+            'modifier_breakdown': {
+                'ability_modifier': 2,
+                'proficiency_bonus': 2,
+                'wound_penalty': 0,
+                'total': 4,
+            },
+        },
+        include_private_provenance=False,
+    )
+    assert public_roll['total'] == 21
+    assert 'ability' not in public_roll
+    assert 'proficiency' not in public_roll
+    assert 'modifier_breakdown' not in public_roll
     assert segment_triggered_payload(
         segment_id=7,
         title='Ash Gate',
@@ -210,6 +296,7 @@ def test_new_message_payload_contract_is_stable():
         context_version='v2',
         action_intent={'kind': 'action'},
         client_message_id='client-12',
+        include_private_provenance=False,
     )
 
     assert payload == {

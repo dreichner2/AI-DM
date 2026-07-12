@@ -85,6 +85,7 @@ import {
   turnStatusAllowsNextSend,
   worldStateFromSnapshot,
 } from './gameSelectors'
+import { diceRollMessage } from './gameActions'
 import { subscribeToMediaQueryChange } from './mediaQuery'
 import { profileIconSrcForCharacter } from './profileIcons'
 import { BackendTrustDialog, RuntimeSettingsDialog } from './RuntimeSettingsDialog'
@@ -795,6 +796,10 @@ function AIDMApp() {
     selectedSessionId: readInitialSelection(storedSelectionScope, 'selectedSessionId', 'session'),
     selectedPlayerId: readInitialSelection(storedSelectionScope, 'selectedPlayerId'),
   })
+  const viewerMaps = useMemo(
+    () => (canUseOperatorTools ? maps : maps.filter((map) => map.visibility === 'player')),
+    [canUseOperatorTools, maps],
+  )
   const pushError = useCallback((category: UiErrorCategory, message: string) => {
     const createdAt = Date.now()
     setErrors((current) => {
@@ -1138,11 +1143,11 @@ function AIDMApp() {
     completeDiceRoll,
     composerMode,
     diceRoll,
+    handleConnectionInterrupted,
+    handleRollResolved,
+    handleTurnDuplicate,
     interactionTargets,
     rollMode,
-    rollModifier,
-    rollProficiencyApplied,
-    rollProficiencyBonus,
     rollReason,
     rollTargetPendingTurnId,
     spellName,
@@ -1158,6 +1163,9 @@ function AIDMApp() {
     itemQuantity,
     itemCostGold,
     queuedActionText,
+    queuedActionRetryable,
+    retryDiceRoll,
+    sharedRollNotice,
     setActionText,
     updateActionText,
     setAdminPasscode,
@@ -1165,8 +1173,6 @@ function AIDMApp() {
     setSelectedInteractionType,
     setItemQuantity,
     setRollMode,
-    setRollModifier,
-    setRollProficiencyApplied,
     setRollReason,
     setRollTargetPendingTurnId,
     setSelectedItemName,
@@ -1188,7 +1194,6 @@ function AIDMApp() {
     campaign,
     itemOptions,
     pendingRollOptions,
-    proficiencyBonus: statBlock.proficiency,
     sessionState,
     selectedCampaignId,
     selectedPlayer,
@@ -1327,7 +1332,7 @@ function AIDMApp() {
     auth,
     baseUrl,
     campaign,
-    maps,
+    maps: viewerMaps,
     selectedCampaignId,
     refreshCampaignWorkspace,
     setSelectedPlayerId,
@@ -1434,7 +1439,7 @@ function AIDMApp() {
     playerDetail,
     sessionState,
     logEntries,
-    maps,
+    maps: viewerMaps,
     segments,
     metrics,
     rememberDialogTrigger,
@@ -2143,12 +2148,13 @@ function AIDMApp() {
   }, [theme])
 
   useEffect(() => {
-    const currentMap = maps[0]
+    const currentMap = viewerMaps[0]
     setMapManagementForm({
       title: currentMap?.title ?? (campaign ? `${campaign.title} Map` : ''),
       description: currentMap?.description ?? campaign?.location ?? '',
+      visibility: currentMap?.visibility ?? 'player',
     })
-  }, [campaign, maps, setMapManagementForm])
+  }, [campaign, setMapManagementForm, viewerMaps])
 
   useEffect(() => {
     submitActionRef.current = submitAction
@@ -2164,6 +2170,10 @@ function AIDMApp() {
   }, [campaignActionDialog])
 
   const closeCurrentDialog = useCallback(() => {
+    if (diceRoll) {
+      closeDiceRoll()
+      return
+    }
     const activeCampaignDialog = campaignActionDialogRef.current
     if (activeCampaignDialog) {
       if (!activeCampaignDialog.pending) {
@@ -2239,6 +2249,7 @@ function AIDMApp() {
     }
   }, [
     closeCreateCampaignDialog,
+    closeDiceRoll,
     closePlayerDeleteDialog,
     closeShareSessionDialog,
     closePlayerEditDialog,
@@ -2257,6 +2268,7 @@ function AIDMApp() {
     campaignChooserOpen,
     characterJoinDialogOpen,
     createCampaignOpen,
+    diceRoll,
     playerDeleteDialog,
     playerEditDialog,
     profileSettingsOpen,
@@ -2270,39 +2282,41 @@ function AIDMApp() {
     worldManagerOpen,
   ])
 
-  const activeModalKey = campaignActionDialog
-    ? 'campaign-action'
-    : sessionActionDialog
-      ? 'session-action'
-      : worldDeleteDialog
-      ? 'world-delete'
-      : worldManagerOpen
-        ? 'world-manager'
-        : campaignArchiveDialog
-          ? 'campaign-archive'
-          : sessionArchiveDialog
-            ? 'session-archive'
-            : campaignPackImportOpen
-              ? 'campaign-pack-import'
-              : campaignChooserOpen
-                ? 'campaign-chooser'
-                : characterJoinDialogOpen
-                  ? 'character-join'
-                  : playerDeleteDialog
-                    ? 'player-delete'
-                    : playerEditDialog
-                      ? `player-edit-${playerEditDialog.mode}`
-                      : savedWorkspaceDeleteDialog
-                        ? 'saved-workspace-delete'
-                        : runtimeSettingsOpen
-                          ? 'runtime-settings'
-                          : shareSessionUrl
-                            ? 'share-session'
-                            : profileSettingsOpen
-                              ? 'profile-settings'
-                              : createCampaignOpen
-                                ? 'create-campaign'
-                                : null
+  const activeModalKey = diceRoll
+    ? `dice-roll-${diceRoll.rollKey}`
+    : campaignActionDialog
+      ? 'campaign-action'
+      : sessionActionDialog
+        ? 'session-action'
+        : worldDeleteDialog
+          ? 'world-delete'
+          : worldManagerOpen
+            ? 'world-manager'
+            : campaignArchiveDialog
+              ? 'campaign-archive'
+              : sessionArchiveDialog
+                ? 'session-archive'
+                : campaignPackImportOpen
+                  ? 'campaign-pack-import'
+                  : campaignChooserOpen
+                    ? 'campaign-chooser'
+                    : characterJoinDialogOpen
+                      ? 'character-join'
+                      : playerDeleteDialog
+                        ? 'player-delete'
+                        : playerEditDialog
+                          ? `player-edit-${playerEditDialog.mode}`
+                          : savedWorkspaceDeleteDialog
+                            ? 'saved-workspace-delete'
+                            : runtimeSettingsOpen
+                              ? 'runtime-settings'
+                              : shareSessionUrl
+                                ? 'share-session'
+                                : profileSettingsOpen
+                                  ? 'profile-settings'
+                                  : createCampaignOpen
+                                    ? 'create-campaign'
+                                    : null
   const modalOpen = Boolean(activeModalKey)
   useModalFocusTrap({
     activeKey: activeModalKey,
@@ -2773,6 +2787,9 @@ function AIDMApp() {
     lastSpokenDmEntryRef,
     lastSpokenTurnIdRef,
     lastSpokenTextRef,
+    onConnectionInterrupted: handleConnectionInterrupted,
+    onRollResolved: handleRollResolved,
+    onTurnDuplicate: handleTurnDuplicate,
   })
 
   const updateSceneMusicControl = useCallback(
@@ -2873,17 +2890,17 @@ function AIDMApp() {
   const visibleCanonFacts = inspectorTab === 'canon' ? canonFacts : canonFacts.slice(0, 3)
   const selectedSegment =
     segments.find((segment) => segment.is_triggered) ?? segments[0] ?? null
-  const mapTitle = maps[0]?.title ?? 'No map recorded'
+  const mapTitle = viewerMaps[0]?.title ?? 'No map recorded'
   const mapDescription =
-    maps[0]?.description ||
+    viewerMaps[0]?.description ||
     sessionState?.current_location ||
     campaign?.location ||
     'No location recorded'
   const questTitle =
     sessionState?.current_quest || campaign?.current_quest || 'No quest recorded'
   const mapPanelTitle =
-    maps[0]?.title || selectedSegment?.title || (sessionState?.current_location ? 'Current Location' : mapTitle)
-  const mapMeta = buildMapMeta(maps[0], selectedSegment)
+    viewerMaps[0]?.title || selectedSegment?.title || (sessionState?.current_location ? 'Current Location' : mapTitle)
+  const mapMeta = buildMapMeta(viewerMaps[0], selectedSegment)
   const sessionCards: SessionCard[] = sessions.map((session, index) => ({
     id: session.session_id,
     title: sessionDisplayName(session, campaign?.world_id ?? selectedCampaignId),
@@ -3364,8 +3381,6 @@ function AIDMApp() {
       {betaRuntimeNotices.length ? (
         <div
           className="beta-runtime-notices"
-          role="status"
-          aria-live="polite"
           aria-label="Beta runtime notices"
         >
           {betaRuntimeNotices.map((notice) => (
@@ -3373,8 +3388,17 @@ function AIDMApp() {
               key={notice.id}
               className={`beta-runtime-notice ${notice.tone}`}
             >
-              <strong>{notice.title}</strong>
-              <span>{notice.message}</span>
+              <div className="runtime-notice-copy" role="status" aria-live="polite">
+                <strong>{notice.title}</strong>
+                <span title={notice.message}>{notice.message}</span>
+              </div>
+              <details className="runtime-notice-details">
+                <summary aria-label={`Read full ${notice.title} notice`}>Details</summary>
+                <div className="runtime-notice-full" role="note">
+                  <strong>{`Full ${notice.title} notice`}</strong>
+                  <p>{`Recovery guidance: ${notice.message}`}</p>
+                </div>
+              </details>
             </div>
           ))}
         </div>
@@ -3513,6 +3537,7 @@ function AIDMApp() {
         sendPending={sendPending}
         streamingTurnActive={dmResponseBlocking}
         pendingRollNotice={pendingRollNotice}
+        combatState={worldStatePanel.combat}
         dmExecutionStats={dmExecutionStats}
         welcomeText={welcomeText}
         showJumpToLatest={showJumpToLatest}
@@ -3541,6 +3566,7 @@ function AIDMApp() {
           turnControlStatusLabel,
           selectedPlayerHasTurn,
           queuedActionText,
+          queuedActionRetryable,
           clearQueuedAction,
           updateTurnControl,
           ttsEnabled,
@@ -3557,11 +3583,6 @@ function AIDMApp() {
           updateSelectedDie,
           rollMode,
           setRollMode,
-          rollModifier,
-          setRollModifier,
-          rollProficiencyApplied,
-          rollProficiencyBonus,
-          setRollProficiencyApplied,
           rollReason,
           setRollReason,
           pendingRollOptions,
@@ -3630,7 +3651,7 @@ function AIDMApp() {
         mapMeta={mapMeta}
         questTitle={questTitle}
         selectedSegment={selectedSegment}
-        maps={maps}
+        maps={viewerMaps}
         createDefaultMap={createDefaultMap}
         campaign={campaign}
         createMapPending={createMapPending}
@@ -3651,12 +3672,22 @@ function AIDMApp() {
         controlCampaignPackProgress={controlCampaignPackProgress}
       />
 
+      {sharedRollNotice ? (
+        <aside className="shared-roll-notice" role="status" aria-live="polite">
+          <span>
+            {activePlayers.find((player) => player.id === sharedRollNotice.playerId)?.character_name
+              ?? `Player ${sharedRollNotice.playerId}`}
+          </span>
+          <strong>{diceRollMessage(sharedRollNotice.roll)}</strong>
+        </aside>
+      ) : null}
+
       {diceRoll ? (
         <div
           className="modal-backdrop dice-roll-backdrop"
           role="presentation"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget && diceRoll.status === 'rolling') {
+            if (event.target === event.currentTarget) {
               closeDiceRoll()
             }
           }}
@@ -3673,18 +3704,20 @@ function AIDMApp() {
           >
             <DiceRollDialog
               die={diceRoll.die}
-              result={diceRoll.result}
-              modifier={diceRoll.roll.modifier}
-              total={diceRoll.roll.total}
+              result={diceRoll.roll?.kept ?? null}
+              rolls={diceRoll.roll?.rolls ?? null}
+              mode={diceRoll.roll?.mode ?? 'normal'}
+              modifier={diceRoll.roll?.modifier ?? null}
+              total={diceRoll.roll?.total ?? null}
+              provenance={diceRoll.provenance}
               targetLabel={diceRoll.targetLabel}
               rollKey={diceRoll.rollKey}
               status={diceRoll.status}
-              onCancel={() => {
-                if (diceRoll.status === 'rolling') {
-                  closeDiceRoll()
-                }
-              }}
+              dialogRef={modalDialogRef}
+              error={diceRoll.error}
+              onCancel={closeDiceRoll}
               onComplete={completeDiceRoll}
+              onRetry={retryDiceRoll}
             />
           </Suspense>
         </div>

@@ -133,6 +133,12 @@ provider-specific deployment evidence for the signed-off commit.
 - Python correctness lint:
   `.venv/bin/python -m ruff check --select E9,F63,F7,F82 aidm_server tests scripts`
 - Backend tests: `.venv/bin/python -m pytest`
+- Current-candidate backend/frontend regressions prove server-authoritative dice,
+  one durable roll per idempotency key, duplicate/reconnect reconciliation, and
+  account-scoped session/export player projections. These rows only pass in
+  `make release-checklist-status` when the full RC packet matches the clean,
+  signed-off current commit; the forbidden-response smoke is not substitute
+  evidence for successful `200` response redaction.
 - PostgreSQL production rehearsal: the `postgres-integration` GitHub Actions
   job applies the migration chain, runs production bootstrap, starts the real
   Gunicorn threaded entrypoint with `simple-websocket`, checks live health, metrics, Prometheus output,
@@ -152,6 +158,14 @@ provider-specific deployment evidence for the signed-off commit.
   `.venv/bin/python scripts/hosted_cookie_auth_smoke.py --evidence-report tmp/release/hosted-cookie-auth-evidence.md`
 - Hosted cookie-only account auth smoke against the deployed target:
   `make hosted-cookie-auth-smoke HOSTED_COOKIE_AUTH_SMOKE_ARGS="--target-url https://aidm.example.com --account-intent signup --evidence-report tmp/release/hosted-cookie-auth-evidence.md"`
+- Preferred credential-minimizing hosted proof suite:
+  `make hosted-cookie-release-proof HOSTED_COOKIE_RELEASE_PROOF_ARGS="--target-url https://aidm.example.com --account-intent signup"`.
+  This reuses the two throwaway cookie sessions to generate cookie-auth,
+  non-admin forbidden, export/import, and beta SLO/incident evidence without
+  bearer-token arguments, then removes the proof sessions and workspace. The
+  current API has no account-deletion endpoint, so signup-mode account rows
+  remain after their memberships and game data are removed; use dedicated
+  pre-provisioned login accounts when that residue is unacceptable.
 - Non-admin forbidden-response smoke:
   `.venv/bin/python scripts/security_forbidden_smoke.py --evidence-report tmp/release/security-forbidden-evidence.md`
 - Non-admin forbidden-response smoke against the deployed target:
@@ -164,6 +178,9 @@ provider-specific deployment evidence for the signed-off commit.
   `git diff --exit-code aidm_frontend/src/apiContract.generated.ts`
 - Frontend tests, build, bundle budget, single-origin browser smoke against the built frontend, visual smoke screenshots, and visual-smoke review evidence
 - Hosted RC evidence via `make hosted-rc-evidence` against the target URL, including deployment readiness, hosted cookie auth, non-admin forbidden responses, session export/import, beta SLO baseline, and the manual backup/restore, worker-process, and source-archive attachment proof flags needed to avoid `manual-evidence-required`
+- Before wider beta, capture hosted two-account evidence that session
+  state/export responses preserve the requester's character, redact the peer,
+  reject explicit peer export selection, and keep admin inspection complete.
 - Final operator sign-off via `make rc-finalize-signoff` after filling and merging `tmp/release/external-proof-values.json` with GitHub Actions URLs, hosted proof links, target env evidence, backup/restore proof, worker-process proof, telemetry receipt, source-archive attachment, issue-closure review, and packaging command evidence. Manual signoff edits still need `make operator-signoff-status OPERATOR_SIGNOFF_STATUS_ARGS="--require-complete"` before issue closure.
 - Socket.IO worker-model decision:
   `.venv/bin/python scripts/check_socketio_worker_model_decision.py`

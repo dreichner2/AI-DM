@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
+from aidm_server.player_roll_claims import find_legacy_roll_claim
+
 
 @dataclass
 class RuleHint:
@@ -212,7 +214,13 @@ _ROLL_SKILL_WORDS = {
     "deception",
     "dex",
     "dexterity",
+    "d4",
+    "d6",
+    "d8",
+    "d10",
+    "d12",
     "d20",
+    "d100",
     "history",
     "initiative",
     "insight",
@@ -238,7 +246,7 @@ _ROLL_SKILL_WORDS = {
 }
 _GENERIC_ROLL_REQUEST_PATTERNS = [
     re.compile(r'\b(?:i\s+)?roll(?:ed|ing)?\s*$', re.IGNORECASE),
-    re.compile(r'\b(?:i\s+)?roll(?:ed|ing)?\s*(?:a\s*)?d20\b', re.IGNORECASE),
+    re.compile(r'\b(?:i\s+)?roll(?:ed|ing)?\s*(?:a\s*)?d(?:100|20|12|10|8|6|4)\b', re.IGNORECASE),
     re.compile(r'\b(?:i\s+)?roll(?:ed|ing)?\s+(?:for|to)\b', re.IGNORECASE),
     re.compile(r'\b(?:please\s+)?(?:make|give)\s+(?:me\s+)?(?:a\s+)?(?:roll|check)\b', re.IGNORECASE),
 ]
@@ -258,27 +266,14 @@ DC_HINTS = {
 }
 
 
-def _extract_roll_value(text: str) -> int | None:
-    normalized = (text or '').lower()
-    if 'natural 20' in normalized or 'nat 20' in normalized:
-        return 20
-    if 'natural 1' in normalized or 'nat 1' in normalized:
-        return 1
+def player_message_reports_roll_result(message: str) -> bool:
+    """Return whether legacy player text includes a claimed die result.
 
-    patterns = [
-        r'\broll(?:ed|ing)?\s*(?:a\s*)?(?:d20\s*)?(?:=|is|:)?\s*(\d{1,2})\b',
-        r'\binitiative\s*(?:=|is|:)?\s*(\d{1,2})\b',
-        r'\bd20\s*(?:=|is|:)\s*(\d{1,2})\b',
-        r'\bcheck\s*(?:=|is|:)\s*(\d{1,2})\b',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, normalized)
-        if not match:
-            continue
-        value = int(match.group(1))
-        if 1 <= value <= 20:
-            return value
-    return None
+    The claim is only a submission signal. Its number is never gameplay
+    authority; the turn engine replaces it with a server-generated result.
+    """
+
+    return find_legacy_roll_claim(message) is not None
 
 
 def _explicit_generic_roll_request(text: str, tokens: set[str]) -> bool:
@@ -318,7 +313,7 @@ def classify_player_action(message: str) -> RuleHint:
         return RuleHint(False, None, None, "No actionable text provided", confidence=0.99)
 
     tokens = set(text.replace(".", " ").replace(",", " ").split())
-    roll_value = _extract_roll_value(text)
+    reported_roll_result = player_message_reports_roll_result(text)
 
     if _looks_like_spell_action(text, tokens):
         return _with_resolution(
@@ -328,7 +323,7 @@ def classify_player_action(message: str) -> RuleHint:
                 DC_HINTS["spell"],
                 "Spell or magic action detected",
                 confidence=0.91,
-                roll_value=roll_value,
+                roll_value=None,
             )
         )
     if tokens & _ATTACK_KEYWORDS and not _looks_like_reported_attack_reference(text):
@@ -339,7 +334,7 @@ def classify_player_action(message: str) -> RuleHint:
                 DC_HINTS["attack"],
                 "Combat action detected",
                 confidence=0.92,
-                roll_value=roll_value,
+                roll_value=None,
             )
         )
     if tokens & _STEALTH_KEYWORDS:
@@ -350,7 +345,7 @@ def classify_player_action(message: str) -> RuleHint:
                 DC_HINTS["stealth"],
                 "Stealth action detected",
                 confidence=0.9,
-                roll_value=roll_value,
+                roll_value=None,
             )
         )
     if tokens & _SOCIAL_KEYWORDS:
@@ -361,7 +356,7 @@ def classify_player_action(message: str) -> RuleHint:
                 DC_HINTS["social"],
                 "Social influence action detected",
                 confidence=0.88,
-                roll_value=roll_value,
+                roll_value=None,
             )
         )
     if tokens & _LORE_KEYWORDS:
@@ -372,7 +367,7 @@ def classify_player_action(message: str) -> RuleHint:
                 DC_HINTS["lore"],
                 "Investigation or knowledge action detected",
                 confidence=0.87,
-                roll_value=roll_value,
+                roll_value=None,
             )
         )
     if tokens & _ATHLETIC_KEYWORDS:
@@ -383,7 +378,7 @@ def classify_player_action(message: str) -> RuleHint:
                 DC_HINTS["athletics"],
                 "Physical challenge action detected",
                 confidence=0.89,
-                roll_value=roll_value,
+                roll_value=None,
             )
         )
     if tokens & _THIEVES_TOOLS_KEYWORDS:
@@ -394,7 +389,7 @@ def classify_player_action(message: str) -> RuleHint:
                 DC_HINTS["thieves_tools"],
                 "Precision disable/disarm action detected",
                 confidence=0.9,
-                roll_value=roll_value,
+                roll_value=None,
             )
         )
     if tokens & _MOBILITY_KEYWORDS and not _looks_like_non_movement_run_reference(text, tokens):
@@ -405,11 +400,11 @@ def classify_player_action(message: str) -> RuleHint:
                 DC_HINTS["mobility"],
                 "High-risk movement or escape detected",
                 confidence=0.86,
-                roll_value=roll_value,
+                roll_value=None,
             )
         )
 
-    if 'initiative' in tokens and (roll_value is not None or 'roll' in tokens):
+    if 'initiative' in tokens and (reported_roll_result or 'roll' in tokens):
         return _with_resolution(
             RuleHint(
                 True,
@@ -417,11 +412,11 @@ def classify_player_action(message: str) -> RuleHint:
                 DC_HINTS["initiative"],
                 "Initiative roll detected",
                 confidence=0.9,
-                roll_value=roll_value,
+                roll_value=None,
             )
         )
 
-    if roll_value is not None or 'check' in tokens or _explicit_generic_roll_request(text, tokens):
+    if reported_roll_result or 'check' in tokens or _explicit_generic_roll_request(text, tokens):
         return _with_resolution(
             RuleHint(
                 True,
@@ -429,7 +424,7 @@ def classify_player_action(message: str) -> RuleHint:
                 DC_HINTS["check"],
                 "Player indicated a generic roll/check",
                 confidence=0.78,
-                roll_value=roll_value,
+                roll_value=None,
             )
         )
 

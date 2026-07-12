@@ -37,6 +37,7 @@ report.
 - [ ] `make release-evidence-packet` renders `tmp/release/release-evidence-packet.md` and `.json` so the RC handoff has one manifest of local evidence, artifact paths, source archive checksum, dirty-worktree status, and remaining external exceptions.
 - [ ] `make release-artifact-consistency` renders `tmp/release/release-artifact-consistency.md` and `.json`, proving the release packet, source archive, `.sha256` sidecar, operator signoff status, and generated proof docs all reference the same source archive checksum.
 - [ ] `make release-checklist-status` renders `tmp/release/release-checklist-status.md` and `.json` from the latest evidence packet so remaining local, external, and manual checklist items are visible in one place.
+- [ ] Candidate checklist output reports RC evidence as `current`; a `stale`, `dirty`, `not-signed-off`, or `unavailable` banner blocks treating local RC rows as candidate proof.
 - [ ] `make operator-signoff-draft` seeds `tmp/release/operator-signoff.draft.json` from the latest release evidence packet without marking local isolated smokes, dry-run hosted plans, or placeholder targets as completed hosted proof.
 - [ ] `make operator-signoff-action-plan` renders `tmp/release/operator-signoff-action-plan.md` and `.json` with the remaining signoff commands, required inputs, and evidence fields.
 - [ ] `make operator-signoff-status OPERATOR_SIGNOFF_STATUS_ARGS="--require-complete"` passes before RC issue closure. Prefer `make rc-finalize-signoff` after external proof values are filled; it generates the final signoff manifest, self-records the signoff-status evidence, runs the proof-values check, and refreshes packet artifacts.
@@ -67,8 +68,12 @@ report.
 - [ ] If cookie auth is enabled, `AIDM_ACCOUNT_COOKIE_SECURE=true`; if cookie-only browser auth is required, `AIDM_ACCOUNT_TOKEN_RESPONSE_ENABLED=false`.
 - [ ] `make hosted-cookie-auth-smoke` writes `tmp/release/hosted-cookie-auth-evidence.md` during the local RC gate and proves cookie-only account login, no raw account-token JSON response, CSRF enforcement on unsafe REST, logout cleanup, workspace role downgrade refresh, and Socket.IO cookie auth.
 - [ ] `make hosted-cookie-auth-smoke HOSTED_COOKIE_AUTH_SMOKE_ARGS="--target-url <target-url> --account-intent signup --evidence-report tmp/release/hosted-cookie-auth-evidence.md"` passes against the hosted/staging URL, or `--account-intent login --username <user> --password <pass>` is used for a pre-provisioned test account.
+  Preferred combined invocation: `make hosted-cookie-release-proof HOSTED_COOKIE_RELEASE_PROOF_ARGS="--target-url <target-url> --account-intent signup"`. One opt-in two-account cookie flow writes `hosted-cookie-auth-evidence.md`, `security-forbidden-evidence.md`, `export-import-evidence.md`, and `beta-slo-baseline.md` without bearer-token arguments; generated passwords, cookies, CSRF values, and the one-time workspace token are never written to evidence, and proof sessions plus the temporary workspace are cleaned even when a later check fails where the target remains reachable.
 - [ ] `make security-forbidden-smoke` proves non-admin accounts are rejected by combat operator, bestiary authoring/save, and beta operator endpoints.
 - [ ] `make security-forbidden-smoke SECURITY_FORBIDDEN_SMOKE_ARGS="--target-url <target-url> --account-token <non-admin-token> --workspace-id <workspace-id> --campaign-id <campaign-id> --session-id <session-id> --evidence-report tmp/release/security-forbidden-evidence.md"` passes against hosted/staging before closing the security gate.
+- [ ] A non-admin player receives their own full character in session list/state/export responses, only public identity and bounded combat status for party peers, no peer sheets/stats/inventory/spells/resources/abilities/armor metadata, and `404 player_not_found` when selecting a peer with `export?player_id=`. Accountless workspace/table tokens retain only the public party projection and cannot fetch or mutate a player directly by ID, bind Socket.IO to a guessed player, or receive sender-private roll provenance; an admin export remains complete.
+- [ ] Raw campaign canon and campaign/region bestiary catalogs require `debug_read`; player Chronicle exports retain public narration and revealed chapter titles but omit progress actions/reasons/revisions/event IDs, provider/model traces, state-pipeline notes, and Director's Commentary; administrator and local-operator exports remain complete.
+- [ ] Clarification original actions, inventory-derived options, and persisted state-pipeline detail are sent or returned only to the acting player or an administrator; party peers receive only a neutral waiting status.
 - [ ] Security headers are enabled, including `Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, and `Permissions-Policy`.
 - [ ] Passwordless legacy recovery requires a valid saved or operator-issued high-entropy account token; matching username/first/last-name fields alone cannot set a password, and an operator-issued code is rotated after successful recovery.
 - [ ] Workspace-password target limiting is scoped per authenticated account and canonical workspace while IP+workspace and IP-wide limits remain active; focused regression coverage proves one account cannot consume another account's cross-IP target bucket, while same-source IP saturation can still reject both.
@@ -90,6 +95,8 @@ report.
 ## Runtime Quality
 - [ ] Socket message stream includes `turn_id`, `requires_roll`, `rules_hint`, `context_version`.
 - [ ] Typed `action_intent` metadata persists for roll/ability/item actions.
+- [ ] Player roll requests cannot supply authoritative faces, kept values, modifiers, or totals; one committed roll creates one durable roll event, one sender-private receipt, and a provenance-redacted room result before narration.
+- [ ] Retrying an uncertain turn reuses the original payload and `client_message_id`; a completed duplicate returns the persisted turn, an incomplete `processing` turn replays its persisted sender-private roll receipt and resumes without a second roll/incoming event/pre-DM application or peer rebroadcast, and automatic or manual reconnect reloads the current session snapshot.
 - [ ] `turn_status` events progress through narration, save, canon, and failure states.
 - [ ] `AIDM_SOCKETIO_WORKER_MODEL` is explicitly set to `single`; hosted production rejects deferred multi-worker models.
 - [ ] `make socketio-worker-model-decision` passes and `docs/socketio_worker_model.md` records the RC1 hosted worker-model decision.
@@ -98,7 +105,7 @@ report.
 - [ ] Campaign-pack progress service calls are serialized through the reentrant session turn coordinator, including nested calls from active turn processing.
 - [ ] `make socket-concurrency-smoke` proves same-session queue locking and different-session socket turn persistence.
 - [ ] Beta runtime notices are visible for deterministic fallback, missing live provider configuration, local/private auth-disabled mode, unavailable TTS, and process-local provider changes.
-- [ ] Segment trigger events emit reason/spec metadata.
+- [ ] Segment trigger events retain reason/spec metadata in durable operator records, while the player room event exposes only the revealed segment ID, title, and description.
 - [ ] Improvised canon is persisted into emergent memory tables after a narrated turn.
 - [ ] Scenario quality regressions cover opening narration, impossible actions, combat roll prompts, item use, checkpoint triggers, NPC continuity, and canon recall.
 - [ ] Session end recap is stored and retrievable.

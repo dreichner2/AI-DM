@@ -57,11 +57,25 @@ npm audit --omit=dev
 
 ## Notes
 
-- The client reads campaigns, sessions, players, maps, segments, session state,
-  logs, worlds, canon, turn events, and beta metrics from the REST API.
+- The client reads campaigns, sessions, players, maps, player-safe triggered
+  segments, session state, logs, worlds, turn events, and permitted diagnostics
+  from the REST API. Raw segments, canon diagnostics, and campaign/region
+  Bestiary catalogs are operator-only.
 - Live play uses Socket.IO events: `join_session`, `send_message`,
-  `dm_response_start`, `dm_chunk`, `dm_response_end`, `roll_required`, and
-  `turn_status`, `session_log_update`.
+  `dm_response_start`, `dm_chunk`, `dm_response_end`, `roll_required`,
+  `roll_resolved`, `turn_duplicate`, `turn_status`, and `session_log_update`.
+- Dice controls send only a roll request. The backend supplies the authoritative
+  faces, modifier breakdown, and total; the 3D animation presents that committed
+  result. Party peers see the shared result without private ability/proficiency
+  provenance. An uncertain retry reuses the original request identity.
+- Active combat renders a compact horizontal HUD from viewer-scoped
+  `combat.legalActions`. The browser sends only the chosen server action and
+  target IDs; it never supplies attack rolls, damage, or action legality.
+- Every Socket.IO rejoin refreshes the persisted session snapshot so missed
+  events are not the sole recovery mechanism.
+- Scene music is docked by default so it cannot cover pending rolls or the turn
+  feed. Desktop users can open full floating controls and dock them again;
+  short-height and mobile layouts remain inline.
 - The UI intentionally does not send a test turn automatically, so it will not
   mutate a live campaign just by loading.
 - Auth tokens are kept in `sessionStorage` for the current tab session. The

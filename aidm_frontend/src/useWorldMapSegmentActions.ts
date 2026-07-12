@@ -23,6 +23,7 @@ type UseWorldMapSegmentActionsOptions = {
 const emptyMapManagementForm: MapManagementForm = {
   title: '',
   description: '',
+  visibility: 'player',
 }
 
 const emptySegmentManagementForm: SegmentManagementForm = {
@@ -96,6 +97,7 @@ export function useWorldMapSegmentActions({
           title: `${campaign.title} Map`,
           description: campaign.location || 'Campaign map notes.',
           map_data: {},
+          visibility: 'player',
         }),
       })
       await refreshCampaignWorkspace(selectedCampaignId)
@@ -121,6 +123,7 @@ export function useWorldMapSegmentActions({
           body: JSON.stringify({
             title,
             description,
+            visibility: mapManagementForm.visibility,
           }),
         })
       } else {
@@ -132,6 +135,7 @@ export function useWorldMapSegmentActions({
             title,
             description,
             map_data: {},
+            visibility: mapManagementForm.visibility,
           }),
         })
       }

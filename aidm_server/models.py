@@ -311,6 +311,7 @@ class Map(db.Model):
     __tablename__ = 'maps'
     __table_args__ = (
         db.CheckConstraint('world_id IS NOT NULL OR campaign_id IS NOT NULL', name='maps_has_owner'),
+        db.CheckConstraint("visibility IN ('player', 'dm')", name='maps_visibility'),
     )
 
     map_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -319,6 +320,7 @@ class Map(db.Model):
     title = db.Column(db.String, nullable=False)
     description = db.Column(db.Text)
     map_data = db.Column(db.Text)
+    visibility = db.Column(db.String(16), nullable=False, default='player', server_default='player')
     created_at = db.Column(db.DateTime, default=utc_now)
     updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
 
@@ -346,6 +348,7 @@ class Player(db.Model):
     level = db.Column(db.Integer, default=1)
     stats = db.Column(db.Text)
     inventory = db.Column(db.Text)
+    weapon_proficiencies = db.Column(db.Text, nullable=False, default='[]', server_default='[]')
     character_sheet = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=utc_now)
     updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)

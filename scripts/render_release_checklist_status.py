@@ -124,9 +124,75 @@ def _current_git_snapshot() -> tuple[str | None, bool | None]:
 def _commits_match(left: str, right: str) -> bool:
     clean_left = left.strip().lower()
     clean_right = right.strip().lower()
-    return bool(clean_left and clean_right) and (
+    minimum_safe_abbreviation = 7
+    if (
+        len(clean_left) < minimum_safe_abbreviation
+        or len(clean_right) < minimum_safe_abbreviation
+        or not all(character in '0123456789abcdef' for character in clean_left)
+        or not all(character in '0123456789abcdef' for character in clean_right)
+    ):
+        return False
+    return (
         clean_left.startswith(clean_right) or clean_right.startswith(clean_left)
     )
+
+
+def _candidate_rc_evidence_freshness(packet: dict[str, Any]) -> dict[str, Any]:
+    rc_evidence = packet.get('rc_evidence') or {}
+    signed_off = packet.get('signed_off_worktree') or {}
+    packet_commit = str(rc_evidence.get('commit') or '').strip()
+    signed_off_commit = str(signed_off.get('commit') or '').strip()
+    signed_off_status = str(signed_off.get('status') or 'unknown')
+    current_commit, current_clean = _current_git_snapshot()
+    packet_label = packet_commit or 'missing'
+    current_label = current_commit[:12] if current_commit else 'unavailable'
+    remaining_action = 'commit the candidate and rerun make closed-beta-rc plus make release-evidence-packet'
+
+    if not packet_commit or not signed_off_commit or not current_commit or current_clean is None:
+        status = 'unavailable'
+        message = (
+            'Candidate RC evidence freshness is unavailable '
+            f'(packet {packet_label}; current {current_label}; clean={current_clean})'
+        )
+    elif signed_off_status != 'passed':
+        status = 'not-signed-off'
+        message = (
+            'RC evidence is not current because it was not generated from a clean signed-off worktree '
+            f'(packet {packet_label}; current {current_label}; recorded={signed_off_status})'
+        )
+    elif not _commits_match(packet_commit, signed_off_commit):
+        status = 'not-signed-off'
+        message = (
+            'RC evidence is not bound to the signed-off worktree '
+            f'(packet {packet_label}; signed-off {signed_off_commit}; current {current_label})'
+        )
+    elif not _commits_match(packet_commit, current_commit):
+        status = 'stale'
+        message = (
+            'RC evidence is not current for this worktree '
+            f'(packet {packet_label}; current {current_label}; clean={current_clean})'
+        )
+    elif current_clean is not True:
+        status = 'dirty'
+        message = (
+            'RC evidence is not current because the current worktree is dirty '
+            f'(packet {packet_label}; current {current_label}; clean={current_clean})'
+        )
+    else:
+        status = 'current'
+        message = f'Candidate RC evidence is current for clean worktree at {packet_label}'
+        remaining_action = ''
+
+    return {
+        'status': status,
+        'is_current': status == 'current',
+        'packet_commit': packet_commit,
+        'current_commit': current_commit or '',
+        'current_worktree_clean': current_clean,
+        'signed_off_status': signed_off_status,
+        'message': message,
+        'remaining_action': remaining_action,
+    }
 
 
 def _artifact_status(packet: dict[str, Any], key: str) -> str:
@@ -507,12 +573,20 @@ def _signed_off_worktree_status(packet: dict[str, Any]) -> ChecklistStatus:
     status = str(worktree.get('status') or 'unknown')
     label = str(worktree.get('worktree') or 'unknown')
     commit = str(worktree.get('commit') or 'unknown')
-    if status == 'passed':
+    if status != 'passed':
+        return _status(
+            'external-required',
+            f'RC evidence worktree is {label}',
+            'commit/push the release candidate and regenerate RC evidence from a clean signed-off worktree',
+        )
+
+    freshness = _candidate_rc_evidence_freshness(packet)
+    if freshness['is_current']:
         return _status('passed', f'RC evidence is from clean worktree at {commit}', '')
     return _status(
         'external-required',
-        f'RC evidence worktree is {label}',
-        'commit/push the release candidate and regenerate RC evidence from a clean signed-off worktree',
+        str(freshness['message']),
+        str(freshness['remaining_action']),
     )
 
 
@@ -808,28 +882,61 @@ def _passed_when_current_rc_gates(
     if gate_status.status != 'passed':
         return gate_status
 
-    rc_evidence = packet.get('rc_evidence') or {}
-    signed_off = packet.get('signed_off_worktree') or {}
-    packet_commit = str(rc_evidence.get('commit') or signed_off.get('commit') or '').strip()
-    current_commit, current_clean = _current_git_snapshot()
-    if (
-        str(signed_off.get('status') or '') != 'passed'
-        or not packet_commit
-        or not current_commit
-        or not _commits_match(packet_commit, current_commit)
-        or current_clean is not True
-    ):
-        current_label = current_commit[:12] if current_commit else 'unavailable'
-        packet_label = packet_commit or 'missing'
+    freshness = _candidate_rc_evidence_freshness(packet)
+    if not freshness['is_current']:
         return _status(
             'external-required',
-            (
-                f'RC regression evidence is not current for this worktree '
-                f'(packet {packet_label}; current {current_label}; clean={current_clean})'
-            ),
-            'commit the remediation and rerun make closed-beta-rc plus make release-evidence-packet',
+            str(freshness['message']),
+            str(freshness['remaining_action']),
         )
     return gate_status
+
+
+def _candidate_rc_evidence_status(packet: dict[str, Any]) -> ChecklistStatus:
+    freshness = _candidate_rc_evidence_freshness(packet)
+    if freshness['is_current']:
+        return _status('passed', str(freshness['message']), '')
+    return _status(
+        'external-required',
+        str(freshness['message']),
+        str(freshness['remaining_action']),
+    )
+
+
+def _passed_when_current_full_rc(packet: dict[str, Any], evidence_label: str) -> ChecklistStatus:
+    rc_evidence = packet.get('rc_evidence') or {}
+    rc_status = str(rc_evidence.get('status') or 'missing')
+    if rc_status != 'passed':
+        return _status(
+            'external-required',
+            f'full closed-beta RC evidence is {rc_status}',
+            'rerun make closed-beta-rc plus make release-evidence-packet',
+        )
+
+    command_labels = tuple(
+        str(command.get('label') or '').strip()
+        for command in rc_evidence.get('commands') or []
+        if isinstance(command, dict) and str(command.get('label') or '').strip()
+    )
+    if not command_labels:
+        return _status(
+            'external-required',
+            'full closed-beta RC evidence has no recorded command results',
+            'rerun make closed-beta-rc plus make release-evidence-packet',
+        )
+
+    gate_status = _passed_when_gates(packet, command_labels, evidence_label)
+    if gate_status.status != 'passed':
+        return gate_status
+
+    freshness = _candidate_rc_evidence_freshness(packet)
+    if not freshness['is_current']:
+        return _status(
+            'external-required',
+            str(freshness['message']),
+            str(freshness['remaining_action']),
+        )
+    return _status('passed', f'Current clean full RC evidence passed: {evidence_label}', '')
 
 
 def _classify_command_item(text: str, packet: dict[str, Any]) -> ChecklistStatus | None:
@@ -868,7 +975,7 @@ def _classify_command_item(text: str, packet: dict[str, Any]) -> ChecklistStatus
         if 'closed-beta-rc' in needles:
             rc_status = (packet.get('rc_evidence') or {}).get('status')
             if rc_status == 'passed':
-                return _status('passed', 'local RC evidence passed', '')
+                return _passed_when_current_rc_gates(packet, labels, 'full closed-beta RC gate')
             return _status('external-required', 'local RC evidence is not passed', 'run make closed-beta-rc')
         if 'rc-issue-evidence' in needles:
             issue_status = _artifact_status(packet, 'issue_evidence')
@@ -947,6 +1054,13 @@ def classify_item(item: ChecklistItem, packet: dict[str, Any]) -> ChecklistStatu
 
     if 'operator-signoff-status' in lowered or 'operator sign-off' in lowered or 'operator signoff' in lowered:
         return _with_item(item, _operator_signoff_status(packet))
+
+    if (
+        'candidate checklist output reports rc evidence as current' in lowered
+        and 'stale' in lowered
+        and 'dirty' in lowered
+    ):
+        return _with_item(item, _candidate_rc_evidence_status(packet))
 
     if 'clean signed-off' in lowered or 'clean worktree' in lowered:
         return _with_item(item, _signed_off_worktree_status(packet))
@@ -1061,6 +1175,52 @@ def classify_item(item: ChecklistItem, packet: dict[str, Any]) -> ChecklistStatu
     command_status = _classify_command_item(lowered, packet)
     if command_status is not None:
         return _with_item(item, command_status)
+
+    candidate_regression_label = ''
+    normalized_candidate_text = lowered.replace('`', '')
+    if (
+        'non-admin player receives their own full character' in lowered
+        and 'party peers' in lowered
+        and 'admin export remains complete' in lowered
+    ):
+        candidate_regression_label = 'player-owned session projection and export privacy regressions'
+    elif (
+        'raw campaign canon' in normalized_candidate_text
+        and 'campaign/region bestiary catalogs require debug_read' in normalized_candidate_text
+        and 'player chronicle exports' in normalized_candidate_text
+    ):
+        candidate_regression_label = 'canon, bestiary, and Chronicle hidden-information regressions'
+    elif (
+        'clarification original actions' in normalized_candidate_text
+        and 'inventory-derived options' in normalized_candidate_text
+        and 'neutral waiting status' in normalized_candidate_text
+    ):
+        candidate_regression_label = 'clarification owner-only projection regressions'
+    elif (
+        'player roll requests cannot supply authoritative faces' in normalized_candidate_text
+        and 'one durable roll event' in normalized_candidate_text
+        and (
+            'roll_resolved' in normalized_candidate_text
+            or 'provenance-redacted room result' in normalized_candidate_text
+        )
+    ):
+        candidate_regression_label = 'server-authoritative player roll regressions'
+    elif (
+        'retrying an uncertain turn reuses the original payload and client_message_id'
+        in normalized_candidate_text
+        and (
+            'duplicate delivery returns the persisted turn' in normalized_candidate_text
+            or (
+                'completed duplicate returns the persisted turn' in normalized_candidate_text
+                and 'incomplete processing turn' in normalized_candidate_text
+                and 'resumes without a second' in normalized_candidate_text
+            )
+        )
+        and 'reconnect reloads the current session snapshot' in normalized_candidate_text
+    ):
+        candidate_regression_label = 'exact-key retry, duplicate reconciliation, and reconnect regressions'
+    if candidate_regression_label:
+        return _with_item(item, _passed_when_current_full_rc(packet, candidate_regression_label))
 
     if 'deployment-readiness' in lowered or 'deployment readiness' in lowered:
         hosted_status = _hosted_rc_check_status(packet, 'Hosted deployment readiness')
@@ -1319,6 +1479,7 @@ def build_status_report(
     generated_at: str,
 ) -> dict[str, Any]:
     packet = load_packet(packet_path)
+    candidate_rc_evidence = _candidate_rc_evidence_freshness(packet)
     items = parse_checklist(checklist_path)
     statuses = [classify_item(item, packet) for item in items]
     counts: dict[str, int] = {}
@@ -1332,6 +1493,7 @@ def build_status_report(
         'checklist_path': str(_resolve_repo_path(checklist_path)),
         'packet_path': str(_resolve_repo_path(packet_path)),
         'packet_overall_status': packet.get('overall_status') or 'missing',
+        'candidate_rc_evidence': candidate_rc_evidence,
         'counts': counts,
         'by_section': by_section,
         'items': [asdict(status) for status in statuses],
@@ -1339,6 +1501,21 @@ def build_status_report(
 
 
 def render_markdown(report: dict[str, Any]) -> str:
+    candidate = report.get('candidate_rc_evidence') or {}
+    candidate_status = str(candidate.get('status') or 'unavailable')
+    candidate_message = str(candidate.get('message') or 'Candidate RC evidence freshness is unavailable.')
+    candidate_action = str(candidate.get('remaining_action') or '')
+    if candidate_status == 'current':
+        candidate_banner = [f'> {candidate_message}.']
+    else:
+        candidate_banner = [
+            f'> **WARNING: Candidate RC evidence is {candidate_status.upper()}.**',
+            '>',
+            f'> {candidate_message}.',
+        ]
+        if candidate_action:
+            candidate_banner.extend(['>', f'> Required action: {candidate_action}.'])
+
     count_rows = ['| Status | Count |', '| --- | ---: |']
     for status in ('passed', 'external-required', 'manual-review', 'failed', 'unmapped'):
         count_rows.append(f"| {status} | {report.get('counts', {}).get(status, 0)} |")
@@ -1369,6 +1546,9 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"- Checklist: `{_relative_or_absolute(report.get('checklist_path') or '')}`",
             f"- Evidence packet: `{_relative_or_absolute(report.get('packet_path') or '')}`",
             f"- Evidence packet status: {report.get('packet_overall_status')}",
+            f'- Candidate RC evidence: {candidate_status}',
+            '',
+            *candidate_banner,
             '',
             '## Summary',
             '',

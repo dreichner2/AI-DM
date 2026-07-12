@@ -36,12 +36,16 @@ def test_validate_roll_action_intent_normalizes_roll_metadata():
     assert intent['kind'] == 'roll'
     assert intent['client_message_id'] == 'local-test-1'
     assert intent['roll']['die'] == 'd20'
-    assert intent['roll']['total'] == 20
+    assert intent['roll']['mode'] == 'advantage'
+    assert 'total' not in intent['roll']
+    assert 'modifier' not in intent['roll']
+    assert 'rolls' not in intent['roll']
+    assert 'kept' not in intent['roll']
     assert intent['roll']['target_pending_turn_id'] == 42
-    assert intent['ability'] == {'key': 'dexterity', 'label': 'DEX', 'modifier': 2}
+    assert intent['ability'] == {'key': 'dexterity', 'label': 'DEX'}
 
 
-def test_validate_roll_action_rejects_inconsistent_total():
+def test_validate_roll_action_ignores_client_claimed_outcome():
     intent, error = validate_action_intent(
         {
             'kind': 'roll',
@@ -56,8 +60,14 @@ def test_validate_roll_action_rejects_inconsistent_total():
         }
     )
 
-    assert intent is None
-    assert error == 'roll.total must equal roll.kept plus roll.modifier.'
+    assert error is None
+    assert intent is not None
+    assert intent['roll'] == {
+        'die': 'd20',
+        'mode': 'normal',
+        'result_visibility': 'hidden_until_landed',
+        'reason': '',
+    }
 
 
 def test_validate_roll_action_rejects_invalid_pending_target():
@@ -108,8 +118,8 @@ def test_apply_roll_intent_overrides_natural_language_rule_hint():
 
     assert updated.requires_roll is True
     assert updated.roll_type == 'strength'
-    assert updated.roll_value == 20
-    assert updated.outcome_deferred is False
+    assert updated.roll_value is None
+    assert updated.outcome_deferred is True
     assert updated.confidence == 0.99
 
 
@@ -163,7 +173,7 @@ def test_validate_spell_intent_and_applies_spellcasting_rule_hint():
 
     assert updated.requires_roll is True
     assert updated.roll_type == 'spell'
-    assert updated.dc_hint == '12-18 (CHA mod -1)'
+    assert updated.dc_hint == '12-18'
     assert updated.outcome_deferred is True
     assert updated.reason == 'Typed spell action: Wild Surge'
 
@@ -180,6 +190,57 @@ def test_validate_item_intent_rejects_non_items():
 
     assert intent is None
     assert error == 'item.name must be a tangible inventory item.'
+
+
+def test_validate_combat_intent_keeps_only_server_resolvable_ids():
+    intent, error = validate_action_intent(
+        {
+            'kind': 'combat',
+            'source': 'combat_hud',
+            'text': 'I deal 999 damage.',
+            'combat': {
+                'action_id': 'combat.attack.blade',
+                'target_id': 'enemy_goblin_1',
+                'action_type': 'instant_kill',
+                'damage': 999,
+                'available': True,
+            },
+        }
+    )
+
+    assert error is None
+    assert intent is not None
+    assert intent['kind'] == 'combat'
+    assert intent['combat'] == {
+        'action_id': 'combat.attack.blade',
+        'target_id': 'enemy_goblin_1',
+    }
+
+
+def test_server_resolved_combat_attack_forces_attack_roll_hint():
+    hint = RuleHint(
+        requires_roll=False,
+        roll_type=None,
+        dc_hint=None,
+        reason='Narrative action',
+        confidence=0.1,
+    )
+    intent = {
+        'kind': 'combat',
+        'combat': {
+            'action_id': 'combat.attack.blade',
+            'action_type': 'attack',
+            'authoritative': True,
+        },
+    }
+
+    updated = apply_action_intent_to_rule_hint(intent, hint)
+
+    assert updated.requires_roll is True
+    assert updated.roll_type == 'attack'
+    assert updated.roll_value is None
+    assert updated.outcome_deferred is True
+    assert updated.confidence == 1.0
 
 
 def test_validate_interaction_intent_normalizes_target_metadata():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import pathlib
 import subprocess
@@ -107,7 +108,7 @@ def test_migration_chain_upgrade_and_downgrade(tmp_path):
         column for column in inspector.get_columns('alembic_version') if column['name'] == 'version_num'
     )
     assert version_column['type'].length >= ALEMBIC_VERSION_COLUMN_LENGTH
-    assert _current_revision(db_uri) == '0029_players_account_fk'
+    assert _current_revision(db_uri) == '0031_authored_map_visibility'
     feedback_cols_head = {col['name'] for col in inspector.get_columns('dm_coherence_feedback')}
     assert {'feedback_type', 'category', 'provider', 'model', 'metadata_json'}.issubset(feedback_cols_head)
     campaign_cols_head = {col['name'] for col in inspector.get_columns('campaigns')}
@@ -126,12 +127,16 @@ def test_migration_chain_upgrade_and_downgrade(tmp_path):
     assert _fk_ondelete(inspector, 'canon_jobs', 'session_id') == 'CASCADE'
     assert _fk_ondelete(inspector, 'sessions', 'archived_by_campaign_id') == 'SET NULL'
     assert _fk_ondelete(inspector, 'players', 'account_id') == 'SET NULL'
+    player_cols_head = {column['name'] for column in inspector.get_columns('players')}
+    assert 'weapon_proficiencies' in player_cols_head
     session_indexes_head = {index['name'] for index in inspector.get_indexes('sessions')}
     assert 'ix_sessions_campaign_id_status_updated_at' in session_indexes_head
     assert 'ix_sessions_archived_by_campaign_id' in session_indexes_head
     assert 'uq_sessions_campaign_client_session_id' in session_indexes_head
+    map_cols_head = {column['name'] for column in inspector.get_columns('maps')}
+    assert 'visibility' in map_cols_head
     map_checks_head = {constraint['name'] for constraint in inspector.get_check_constraints('maps')}
-    assert 'ck_maps_maps_has_owner' in map_checks_head
+    assert {'ck_maps_maps_has_owner', 'ck_maps_maps_visibility'} <= map_checks_head
     log_indexes_head = {index['name'] for index in inspector.get_indexes('session_log_entries')}
     assert 'ix_session_log_entries_session_id_timestamp_id' in log_indexes_head
     fact_indexes_head = {index['name'] for index in inspector.get_indexes('story_facts')}
@@ -218,6 +223,75 @@ def test_migration_chain_upgrade_and_downgrade(tmp_path):
     )
 
 
+def test_player_weapon_proficiency_migration_backfills_existing_profiles(tmp_path):
+    db_path = tmp_path / 'migration_player_weapon_proficiencies.db'
+    db_uri = f'sqlite:///{db_path}'
+    env = os.environ.copy()
+    env.update(
+        {
+            'FLASK_APP': 'aidm_server.main:create_app',
+            'PYTHONPATH': str(REPO_ROOT),
+            'PYTHON_DOTENV_DISABLED': '1',
+            'AIDM_ENV': 'test',
+            'AIDM_DEBUG': 'false',
+            'AIDM_SOCKETIO_ASYNC_MODE': 'threading',
+            'AIDM_AUTO_CREATE_SCHEMA': 'false',
+            'AIDM_DATABASE_URI': db_uri,
+            'AIDM_TELEMETRY_ENABLED': 'false',
+        }
+    )
+
+    _run_flask_db(['upgrade', '0029_players_account_fk'], env)
+    engine = create_engine(db_uri)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO worlds (world_id, name) VALUES (1, 'World')"))
+            connection.execute(
+                text("INSERT INTO campaigns (campaign_id, title, world_id) VALUES (1, 'Campaign', 1)")
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO players "
+                "(player_id, campaign_id, name, character_name, class_, inventory) VALUES "
+                "(1, 1, 'Player', 'Fighter Hero', 'Fighter - Champion', "
+                "'[{\"name\":\"Greatsword\",\"type\":\"weapon\",\"subtype\":\"greatsword\"}]'), "
+                "(2, 1, 'Player', 'Classless Hero', NULL, "
+                "'[{\"name\":\"Rapier\",\"type\":\"weapon\",\"subtype\":\"rapier\","
+                "\"metadata\":{\"weaponProficient\":true}}]'), "
+                "(3, 1, 'Player', 'Wizard Hero', 'Wizard', "
+                "'[{\"name\":\"Greatsword\",\"type\":\"weapon\",\"subtype\":\"greatsword\"}]')"
+            )
+    finally:
+        engine.dispose()
+
+    _run_flask_db(['upgrade', '0030_player_weapon_proficiencies'], env)
+    engine = create_engine(db_uri)
+    try:
+        inspector = inspect(engine)
+        assert 'weapon_proficiencies' in {
+            column['name'] for column in inspector.get_columns('players')
+        }
+        with engine.connect() as connection:
+            profiles = {
+                player_id: json.loads(raw_profile)
+                for player_id, raw_profile in connection.execute(
+                    text('SELECT player_id, weapon_proficiencies FROM players ORDER BY player_id')
+                )
+            }
+        assert {'category:simple', 'category:martial'}.issubset(profiles[1])
+        assert 'weapon:greatsword' not in profiles[1]
+        assert profiles[2] == ['weapon:rapier']
+        assert 'weapon:quarterstaff' in profiles[3]
+        assert 'weapon:greatsword' not in profiles[3]
+    finally:
+        engine.dispose()
+
+    _run_flask_db(['downgrade', '0029_players_account_fk'], env)
+    inspector = _inspect_db(db_uri)
+    assert 'weapon_proficiencies' not in {
+        column['name'] for column in inspector.get_columns('players')
+    }
+
+
 def test_players_account_fk_migration_preserves_referenced_players(tmp_path):
     db_path = tmp_path / 'migration_players_account_fk_with_data.db'
     db_uri = f'sqlite:///{db_path}'
@@ -278,7 +352,7 @@ def test_players_account_fk_migration_preserves_referenced_players(tmp_path):
     engine = create_engine(db_uri)
     try:
         inspector = inspect(engine)
-        assert _current_revision(db_uri) == '0029_players_account_fk'
+        assert _current_revision(db_uri) == '0031_authored_map_visibility'
         assert _fk_ondelete(inspector, 'players', 'account_id') == 'SET NULL'
         with engine.connect() as connection:
             assert connection.execute(text('SELECT count(*) FROM players')).scalar_one() == 1
@@ -302,7 +376,7 @@ def test_players_account_fk_migration_preserves_referenced_players(tmp_path):
 
     _run_flask_db(['upgrade', 'head'], env)
     inspector = _inspect_db(db_uri)
-    assert _current_revision(db_uri) == '0029_players_account_fk'
+    assert _current_revision(db_uri) == '0031_authored_map_visibility'
     assert _fk_ondelete(inspector, 'players', 'account_id') == 'SET NULL'
 
 
@@ -365,6 +439,62 @@ def test_players_account_fk_migration_restores_sqlite_foreign_keys_in_process(tm
             assert connection.exec_driver_sql('PRAGMA foreign_key_check').all() == []
             assert connection.execute(text('SELECT count(*) FROM players')).scalar_one() == 1
             assert connection.execute(text('SELECT count(*) FROM dm_turns')).scalar_one() == 1
+    finally:
+        engine.dispose()
+
+
+def test_authored_map_visibility_migration_preserves_legacy_maps_as_revealed(tmp_path):
+    db_path = tmp_path / 'migration_map_visibility.db'
+    db_uri = f'sqlite:///{db_path}'
+    env = os.environ.copy()
+    env.update(
+        {
+            'FLASK_APP': 'aidm_server.main:create_app',
+            'PYTHONPATH': str(REPO_ROOT),
+            'AIDM_ENV': 'test',
+            'AIDM_DEBUG': 'false',
+            'AIDM_SOCKETIO_ASYNC_MODE': 'threading',
+            'AIDM_AUTO_CREATE_SCHEMA': 'false',
+            'AIDM_DATABASE_URI': db_uri,
+            'AIDM_TELEMETRY_ENABLED': 'false',
+        }
+    )
+
+    _run_flask_db(['upgrade', '0030_player_weapon_proficiencies'], env)
+    engine = create_engine(db_uri)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO worlds (world_id, name) VALUES (1, 'Legacy Map World')"))
+            connection.execute(
+                text("INSERT INTO campaigns (campaign_id, title, world_id) VALUES (1, 'Legacy Map Campaign', 1)")
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO maps (map_id, world_id, campaign_id, title, map_data) "
+                    "VALUES (1, 1, 1, 'Legacy Revealed Map', '{}')"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    _run_flask_db(['upgrade', 'head'], env)
+    engine = create_engine(db_uri)
+    try:
+        inspector = inspect(engine)
+        assert _current_revision(db_uri) == '0031_authored_map_visibility'
+        assert 'visibility' in {column['name'] for column in inspector.get_columns('maps')}
+        with engine.connect() as connection:
+            assert connection.execute(text('SELECT visibility FROM maps WHERE map_id = 1')).scalar_one() == 'player'
+    finally:
+        engine.dispose()
+
+    _run_flask_db(['downgrade', '0030_player_weapon_proficiencies'], env)
+    engine = create_engine(db_uri)
+    try:
+        inspector = inspect(engine)
+        assert 'visibility' not in {column['name'] for column in inspector.get_columns('maps')}
+        with engine.connect() as connection:
+            assert connection.execute(text('SELECT title FROM maps WHERE map_id = 1')).scalar_one() == 'Legacy Revealed Map'
     finally:
         engine.dispose()
 

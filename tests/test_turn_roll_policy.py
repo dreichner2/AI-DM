@@ -62,6 +62,12 @@ def test_build_roll_gate_uses_group_roster_only_for_group_requests():
         'required_player_ids': [3, 4],
         'resolved_player_ids': [],
         'remaining_player_ids': [3, 4],
+        'roll_spec': {
+            'die': 'd20',
+            'mode': 'normal',
+            'rule_type': 'initiative',
+            'result_visibility': 'hidden_until_landed',
+        },
     }
 
 
@@ -85,6 +91,49 @@ def test_build_roll_gate_prioritizes_pvp_contest_metadata():
         'resolved_player_ids': [],
         'remaining_player_ids': [3, 8],
         'target_player_id': 8,
+        'roll_spec': {
+            'die': 'd20',
+            'mode': 'normal',
+            'rule_type': 'attack',
+            'result_visibility': 'hidden_until_landed',
+        },
+    }
+
+
+def test_build_roll_gate_keeps_pvp_target_pending_after_actor_authoritative_roll():
+    roll_spec = {'die': 'd20', 'mode': 'normal', 'ability': {'key': 'strength'}}
+    gate = TurnRollPolicy.build_roll_gate(
+        turn=_turn(
+            requires_roll=True,
+            outcome_status='resolved',
+            roll_value=18,
+            rule_type='attack',
+            rules_hint=json.dumps(
+                {
+                    'pvp': {'target_player_id': 8},
+                    'roll_spec': roll_spec,
+                }
+            ),
+        ),
+        dm_response_text='The defender must roll an opposed check.',
+        response_requests_roll=True,
+        group_player_ids=[3, 8],
+    )
+
+    assert gate == {
+        'scope': 'pvp_contest',
+        'rule_type': 'attack',
+        'required_player_ids': [3, 8],
+        'resolved_player_ids': [3],
+        'remaining_player_ids': [8],
+        'target_player_id': 8,
+        'roll_spec': {
+            'die': 'd20',
+            'mode': 'normal',
+            'rule_type': 'attack',
+            'result_visibility': 'hidden_until_landed',
+            'ability': {'key': 'strength'},
+        },
     }
 
 

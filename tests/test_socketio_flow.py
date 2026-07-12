@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from aidm_server.contracts import ProviderResponse
 from aidm_server.database import db
 from aidm_server.llm import EmergencyFallbackChunk
 import aidm_server.game_state.extraction.post_dm_outcome_extractor as post_extractor_module
 import aidm_server.game_state.extraction.pre_dm_action_extractor as pre_extractor_module
+import aidm_server.player_rolls as player_rolls_module
 import aidm_server.turn_events as turn_events_module
 import aidm_server.turn_control as turn_control_module
+from aidm_server.weapon_proficiency import serialize_weapon_proficiencies
 from aidm_server.turn_engine import (
     DM_GENERATION_FAILED_MESSAGE,
     POST_TURN_PERSIST_FAILED_MESSAGE,
@@ -356,6 +360,8 @@ def test_send_message_persists_typed_action_intent_and_status_events(app, socket
         yield 'The roll carries cleanly into the scene.'
 
     monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    values = iter([6, 17])
+    monkeypatch.setattr(player_rolls_module.secrets, 'randbelow', lambda _sides: next(values))
 
     ids = seed_world_campaign_player_session(app)
     client = socketio.test_client(app, flask_test_client=app.test_client())
@@ -393,19 +399,233 @@ def test_send_message_persists_typed_action_intent_and_status_events(app, socket
 
     statuses = [event['args'][0]['status'] for event in received if event['name'] == 'turn_status']
     assert {'received', 'narrating', 'response_complete', 'saving', 'saved', 'canon_pending', 'canon_applied'}.issubset(set(statuses))
+    roll_payload = _event_payload(received, 'roll_resolved')
+    assert roll_payload is not None
+    assert roll_payload['authoritative'] is True
+    assert roll_payload['rolls'] == [7, 18]
+    assert roll_payload['kept'] == 18
+    assert roll_payload['modifier'] == 0
+    assert roll_payload['total'] == 18
+    assert roll_payload['client_message_id'] == 'typed-roll-1'
     start_payload = _event_payload(received, 'dm_response_start')
-    assert start_payload['rules_hint']['roll_value'] == 20
+    assert start_payload['rules_hint']['roll_value'] == 18
 
     with app.app_context():
         turn = DmTurn.query.order_by(DmTurn.turn_id.desc()).first()
         assert turn is not None
         metadata = safe_json_loads(turn.metadata_json, {})
         assert metadata['client_message_id'] == 'typed-roll-1'
-        assert metadata['action_intent']['roll']['total'] == 20
+        assert metadata['action_intent']['roll']['total'] == 18
+        assert metadata['authoritative_roll']['rolls'] == [7, 18]
+        assert ': 18 = 20' not in turn.player_input
+        roll_events = TurnEvent.query.filter_by(event_type=turn_events_module.ROLL_RESOLVED_EVENT).all()
+        assert len(roll_events) == 1
+        roll_event_payload = safe_json_loads(roll_events[0].payload_json, {})
+        assert roll_event_payload['roll']['total'] == 18
         player_event = TurnEvent.query.filter_by(event_type='player_message').order_by(TurnEvent.event_id.desc()).first()
         assert player_event is not None
         payload = safe_json_loads(player_event.payload_json, {})
         assert payload['metadata']['action_intent']['kind'] == 'roll'
+
+
+def test_combat_hud_action_is_revalidated_canonicalized_and_server_rolled(
+    app,
+    socketio,
+    app_runtime,
+    monkeypatch,
+):
+    socketio_module = app_runtime['modules']['socketio_events']
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del context, speaking_player, rules_hint
+        assert user_input.startswith('Seraphina attacks Goblin Sentry with Longsword.')
+        yield 'The longsword flashes toward the sentry.'
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    monkeypatch.setattr(player_rolls_module.secrets, 'randbelow', lambda _sides: 9)
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        session = db.session.get(Session, ids['session_id'])
+        assert player is not None and session is not None
+        player.stats = safe_json_dumps({'strength': 16, 'dexterity': 14}, {})
+        player.inventory = safe_json_dumps(
+            [
+                {
+                    'id': 'blade',
+                    'name': 'Longsword',
+                    'type': 'weapon',
+                    'subtype': 'longsword',
+                    'equipped': True,
+                    'slot': 'main_hand',
+                }
+            ],
+            [],
+        )
+        session.state_snapshot = safe_json_dumps(
+            {
+                'combat': {
+                    'status': 'active',
+                    'round': 1,
+                    'turnIndex': 0,
+                    'participants': [
+                        {
+                            'id': f"player_{ids['player_id']}",
+                            'playerId': ids['player_id'],
+                            'name': 'Seraphina',
+                            'team': 'player',
+                            'kind': 'player_character',
+                            'hp': {'current': 20, 'max': 20},
+                            'position': {'rangeBand': 'near'},
+                            'isAlive': True,
+                            'isConscious': True,
+                        },
+                        {
+                            'id': 'enemy_goblin_1',
+                            'name': 'Goblin Sentry',
+                            'team': 'enemy',
+                            'kind': 'creature',
+                            'hp': {'current': 7, 'max': 7},
+                            'armorClass': 12,
+                            'position': {'rangeBand': 'near'},
+                            'isAlive': True,
+                            'isConscious': True,
+                        },
+                    ],
+                }
+            },
+            {},
+        )
+        db.session.commit()
+
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I instantly slay every enemy for 999 damage.',
+            'client_message_id': 'combat-hud-attack-1',
+            'action_intent': {
+                'kind': 'combat',
+                'source': 'combat_hud',
+                'text': 'I instantly slay every enemy for 999 damage.',
+                'client_message_id': 'combat-hud-attack-1',
+                'combat': {
+                    'action_id': 'combat.attack.blade',
+                    'target_id': 'enemy_goblin_1',
+                    'damage': 999,
+                    'roll': 20,
+                },
+            },
+        },
+    )
+    received = client.get_received()
+
+    assert _event_payload(received, 'error') is None
+    roll_payload = _event_payload(received, 'roll_resolved')
+    assert roll_payload is not None
+    assert roll_payload['authoritative'] is True
+    assert roll_payload['rolls'] == [10]
+    assert roll_payload['modifier'] == 3
+    assert roll_payload['total'] == 13
+    with app.app_context():
+        turn = DmTurn.query.filter_by(client_message_id='combat-hud-attack-1').one()
+        metadata = safe_json_loads(turn.metadata_json, {})
+        assert turn.player_input.startswith('Seraphina attacks Goblin Sentry with Longsword.')
+        assert '999' not in turn.player_input
+        assert metadata['action_intent']['combat'] == {
+            'action_id': 'combat.attack.blade',
+            'action_type': 'attack',
+            'economy': {
+                'action': 1,
+                'movement': 'optional',
+                'endsTurn': True,
+                'tracking': 'turn_order_derived',
+                'reactionTracked': False,
+                'subTurnCountersTracked': False,
+            },
+            'authoritative': True,
+            'target_id': 'enemy_goblin_1',
+            'target_name': 'Goblin Sentry',
+            'weapon_id': 'blade',
+            'weapon_name': 'Longsword',
+            'range_band': 'near',
+            'message': 'Seraphina attacks Goblin Sentry with Longsword.',
+        }
+
+
+def test_combat_hud_rejects_forged_action_id_before_turn_creation(app, socketio):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        session = db.session.get(Session, ids['session_id'])
+        assert session is not None
+        session.state_snapshot = safe_json_dumps(
+            {
+                'combat': {
+                    'status': 'active',
+                    'round': 1,
+                    'turnIndex': 0,
+                    'participants': [
+                        {
+                            'id': f"player_{ids['player_id']}",
+                            'playerId': ids['player_id'],
+                            'name': 'Seraphina',
+                            'team': 'player',
+                            'kind': 'player_character',
+                            'hp': {'current': 20, 'max': 20},
+                            'isAlive': True,
+                            'isConscious': True,
+                        },
+                        {
+                            'id': 'enemy_goblin_1',
+                            'name': 'Goblin Sentry',
+                            'team': 'enemy',
+                            'kind': 'creature',
+                            'hp': {'current': 7, 'max': 7},
+                            'isAlive': True,
+                            'isConscious': True,
+                        },
+                    ],
+                }
+            },
+            {},
+        )
+        db.session.commit()
+
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'player_id': ids['player_id'],
+            'message': 'Use a forged action.',
+            'client_message_id': 'combat-hud-forged-1',
+            'action_intent': {
+                'kind': 'combat',
+                'source': 'combat_hud',
+                'text': 'Use a forged action.',
+                'client_message_id': 'combat-hud-forged-1',
+                'combat': {
+                    'action_id': 'combat.attack.god_mode',
+                    'target_id': 'enemy_goblin_1',
+                },
+            },
+        },
+    )
+    received = client.get_received()
+
+    error = _event_payload(received, 'error')
+    assert error['error_code'] == 'combat_action_invalid'
+    with app.app_context():
+        assert DmTurn.query.filter_by(client_message_id='combat-hud-forged-1').count() == 0
 
 
 def test_send_message_rejects_invalid_action_intent(app, socketio):
@@ -425,7 +645,7 @@ def test_send_message_rejects_invalid_action_intent(app, socketio):
             'action_intent': {
                 'kind': 'roll',
                 'roll': {
-                    'die': 'd20',
+                    'die': 'd99',
                     'mode': 'normal',
                     'modifier': 1,
                     'rolls': [8],
@@ -438,7 +658,289 @@ def test_send_message_rejects_invalid_action_intent(app, socketio):
 
     error_payload = _event_payload(client.get_received(), 'error')
     assert error_payload['error_code'] == 'validation_error'
-    assert 'roll.total' in error_payload['error']
+    assert 'roll.die' in error_payload['error']
+
+
+def test_natural_language_roll_claim_is_replaced_by_authoritative_result(
+    app,
+    socketio,
+    app_runtime,
+    monkeypatch,
+):
+    socketio_module = app_runtime['modules']['socketio_events']
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del context, speaking_player, rules_hint
+        assert '19' not in user_input
+        assert ': 4 = 4' in user_input
+        yield 'The server-owned result carries into the scene.'
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    monkeypatch.setattr(player_rolls_module.secrets, 'randbelow', lambda _sides: 3)
+
+    ids = seed_world_campaign_player_session(app)
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'player_id': ids['player_id'],
+            'message': 'I roll a d20: 19',
+            'client_message_id': 'legacy-roll-1',
+        },
+    )
+    received = client.get_received()
+
+    roll_payload = _event_payload(received, 'roll_resolved')
+    assert roll_payload['rolls'] == [4]
+    assert roll_payload['total'] == 4
+    assert roll_payload['pending_turn_id'] is None
+    assert _event_payload(received, 'error') is None
+
+    with app.app_context():
+        turn = DmTurn.query.filter_by(client_message_id='legacy-roll-1').one()
+        metadata = safe_json_loads(turn.metadata_json, {})
+        assert '19' not in turn.player_input
+        assert turn.roll_value == 4
+        assert metadata['action_intent']['source'] == 'server_legacy_text'
+        assert metadata['action_intent']['roll']['total'] == 4
+        assert TurnEvent.query.filter_by(
+            turn_id=turn.turn_id,
+            event_type=turn_events_module.ROLL_RESOLVED_EVENT,
+        ).count() == 1
+
+
+def test_legacy_d100_claim_uses_named_die_and_preserves_suffix_action(
+    app,
+    socketio,
+    app_runtime,
+    monkeypatch,
+):
+    socketio_module = app_runtime['modules']['socketio_events']
+    requested_sides = []
+
+    def fake_randbelow(sides):
+        requested_sides.append(sides)
+        return 42
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del context, speaking_player, rules_hint
+        assert '99' not in user_input
+        assert 'consult the wild-magic table' in user_input
+        assert 'I roll a d100' in user_input
+        yield 'The table answers the server-owned roll.'
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    monkeypatch.setattr(player_rolls_module.secrets, 'randbelow', fake_randbelow)
+
+    ids = seed_world_campaign_player_session(app)
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'player_id': ids['player_id'],
+            'message': 'I roll a d100-12: 99 = 87 to consult the wild-magic table.',
+            'client_message_id': 'legacy-d100-1',
+        },
+    )
+    received = client.get_received()
+
+    roll_payload = _event_payload(received, 'roll_resolved')
+    assert requested_sides == [100]
+    assert roll_payload['die'] == 'd100'
+    assert roll_payload['rolls'] == [43]
+    with app.app_context():
+        turn = DmTurn.query.filter_by(client_message_id='legacy-d100-1').one()
+        assert '99' not in turn.player_input
+        assert 'consult the wild-magic table' in turn.player_input
+        assert 'I roll a d100' in turn.player_input
+
+
+def test_duplicate_authoritative_roll_does_not_reroll_or_reemit(
+    app,
+    socketio,
+    app_runtime,
+    monkeypatch,
+):
+    socketio_module = app_runtime['modules']['socketio_events']
+    calls = {'roll': 0, 'stream': 0}
+
+    def fake_randbelow(_sides):
+        calls['roll'] += 1
+        return 8
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player, rules_hint
+        calls['stream'] += 1
+        yield 'Resolved once.'
+
+    monkeypatch.setattr(player_rolls_module.secrets, 'randbelow', fake_randbelow)
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+
+    ids = seed_world_campaign_player_session(app)
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    payload = {
+        'session_id': ids['session_id'],
+        'campaign_id': ids['campaign_id'],
+        'player_id': ids['player_id'],
+        'message': 'I roll a d20+99: 20 = 119',
+        'client_message_id': 'authoritative-duplicate-1',
+        'action_intent': {
+            'kind': 'roll',
+            'source': 'dice_roller',
+            'roll': {
+                'die': 'd20',
+                'mode': 'normal',
+                'modifier': 99,
+                'rolls': [20],
+                'kept': 20,
+                'total': 119,
+            },
+        },
+    }
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit('send_message', payload)
+    first_received = client.get_received()
+    client.emit('send_message', payload)
+    duplicate_received = client.get_received()
+
+    assert _event_payload(first_received, 'roll_resolved')['total'] == 9
+    assert _event_payload(duplicate_received, 'roll_resolved') is None
+    assert _event_payload(duplicate_received, 'turn_duplicate') is not None
+    assert calls == {'roll': 1, 'stream': 1}
+    with app.app_context():
+        turn = DmTurn.query.filter_by(client_message_id='authoritative-duplicate-1').one()
+        assert turn.roll_value == 9
+        assert TurnEvent.query.filter_by(
+            turn_id=turn.turn_id,
+            event_type=turn_events_module.ROLL_RESOLVED_EVENT,
+        ).count() == 1
+
+
+def test_processing_authoritative_roll_retry_reuses_persisted_pre_dm_state_without_reroll(
+    app,
+    socketio,
+    app_runtime,
+    monkeypatch,
+):
+    socketio_module = app_runtime['modules']['socketio_events']
+    turn_engine_module = app_runtime['modules']['turn_engine']
+    calls = {'roll': 0, 'pre_dm': 0, 'narrate': 0, 'stream': 0}
+    streamed_inputs = []
+
+    def fake_randbelow(_sides):
+        calls['roll'] += 1
+        return 6
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del context, speaking_player, rules_hint
+        calls['stream'] += 1
+        streamed_inputs.append(user_input)
+        yield 'The committed roll resumes exactly once.'
+
+    original_pre_dm = turn_engine_module.pre_dm_pipeline
+    original_narrate = socketio_module.TurnEngine._narrate_turn
+
+    def counted_pre_dm(**kwargs):
+        calls['pre_dm'] += 1
+        return original_pre_dm(**kwargs)
+
+    def interrupt_before_narration_once(self, request):
+        calls['narrate'] += 1
+        if calls['narrate'] == 1:
+            raise RuntimeError('simulated process interruption after pre-DM commit')
+        return original_narrate(self, request)
+
+    monkeypatch.setattr(player_rolls_module.secrets, 'randbelow', fake_randbelow)
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    monkeypatch.setattr(turn_engine_module, 'pre_dm_pipeline', counted_pre_dm)
+    monkeypatch.setattr(socketio_module.TurnEngine, '_narrate_turn', interrupt_before_narration_once)
+
+    ids = seed_world_campaign_player_session(app)
+    peer_player_id = _seed_second_player(app, ids['campaign_id'])
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    peer_client = socketio.test_client(app, flask_test_client=app.test_client())
+    payload = {
+        'session_id': ids['session_id'],
+        'campaign_id': ids['campaign_id'],
+        'player_id': ids['player_id'],
+        'message': 'I roll a d20: 19 to cross the bridge.',
+        'client_message_id': 'resume-authoritative-1',
+        'action_intent': {
+            'kind': 'roll',
+            'source': 'dice_roller',
+            'roll': {'die': 'd20', 'mode': 'normal'},
+        },
+    }
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    peer_client.emit(
+        'join_session',
+        {'session_id': ids['session_id'], 'player_id': peer_player_id},
+    )
+    client.get_received()
+    peer_client.get_received()
+    with pytest.raises(RuntimeError, match='simulated process interruption'):
+        client.emit('send_message', payload)
+    first_received = client.get_received()
+    first_peer_received = peer_client.get_received()
+
+    with app.app_context():
+        interrupted_turn = DmTurn.query.filter_by(client_message_id='resume-authoritative-1').one()
+        assert interrupted_turn.status == 'processing'
+        assert interrupted_turn.dm_output is None
+        interrupted_metadata = safe_json_loads(interrupted_turn.metadata_json, {})
+        assert interrupted_metadata['state_pipeline']['dmContextPacket']
+
+    retry_payload = {
+        **payload,
+        'message': 'I roll a d100 with advantage: 100 = 100 and replace the prior action.',
+        'action_intent': {
+            'kind': 'roll',
+            'source': 'dice_roller',
+            'roll': {'die': 'd100', 'mode': 'advantage'},
+        },
+    }
+    client.emit('send_message', retry_payload)
+    resumed_received = client.get_received()
+    resumed_peer_received = peer_client.get_received()
+
+    assert _event_payload(first_received, 'roll_resolved')['rolls'] == [7]
+    assert _event_payload(first_peer_received, 'roll_resolved')['rolls'] == [7]
+    assert 'ability' not in _event_payload(first_peer_received, 'roll_resolved')
+    resumed_roll = _event_payload(resumed_received, 'roll_resolved')
+    assert resumed_roll['rolls'] == [7]
+    assert resumed_roll['total'] == _event_payload(first_received, 'roll_resolved')['total']
+    assert 'ability' in resumed_roll
+    assert 'proficiency' in resumed_roll
+    assert 'modifier_breakdown' in resumed_roll
+    assert _event_payload(resumed_peer_received, 'roll_resolved') is None
+    assert _event_payload(resumed_received, 'turn_duplicate') is None
+    assert _turn_status_payloads(resumed_received, 'resuming')
+    assert calls == {'roll': 1, 'pre_dm': 1, 'narrate': 2, 'stream': 1}
+    assert len(streamed_inputs) == 1
+    assert 'd100' not in streamed_inputs[0]
+    assert 'replace the prior action' not in streamed_inputs[0]
+
+    with app.app_context():
+        turn = DmTurn.query.filter_by(client_message_id='resume-authoritative-1').one()
+        assert turn.status == 'completed'
+        assert DmTurn.query.filter_by(session_id=ids['session_id']).count() == 1
+        assert TurnEvent.query.filter_by(
+            turn_id=turn.turn_id,
+            event_type=turn_events_module.ROLL_RESOLVED_EVENT,
+        ).count() == 1
+        assert TurnEvent.query.filter_by(
+            turn_id=turn.turn_id,
+            event_type=turn_events_module.PLAYER_MESSAGE_EVENT,
+        ).count() == 1
 
 
 def test_turn_control_blocks_out_of_turn_player(app, socketio):
@@ -1649,6 +2151,7 @@ def test_attack_pipeline_pauses_and_resumes_for_item_clarification(app, socketio
 
     monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
     ids = seed_world_campaign_player_session(app)
+    peer_player_id = _seed_second_player(app, ids['campaign_id'])
 
     with app.app_context():
         player = db.session.get(Player, ids['player_id'])
@@ -1662,8 +2165,14 @@ def test_attack_pipeline_pauses_and_resumes_for_item_clarification(app, socketio
         db.session.commit()
 
     client = socketio.test_client(app, flask_test_client=app.test_client())
+    peer_client = socketio.test_client(app, flask_test_client=app.test_client())
     client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    peer_client.emit(
+        'join_session',
+        {'session_id': ids['session_id'], 'player_id': peer_player_id},
+    )
     client.get_received()
+    peer_client.get_received()
     client.emit(
         'send_message',
         {
@@ -1675,11 +2184,32 @@ def test_attack_pipeline_pauses_and_resumes_for_item_clarification(app, socketio
         },
     )
     first_received = client.get_received()
+    peer_received = peer_client.get_received()
     clarification = _event_payload(first_received, 'clarification_required')
 
     assert clarification is not None
     assert calls == []
     assert [option['label'] for option in clarification['options']] == ['Greatsword', 'Longsword']
+    assert _event_payload(peer_received, 'clarification_required') is None
+    peer_wait_status = _turn_status_payloads(peer_received, 'clarification_required')[0]
+    assert peer_wait_status['details'] == {
+        'stage': 'awaiting_clarification',
+        'player_id': ids['player_id'],
+        'waiting_for_player_id': ids['player_id'],
+    }
+    assert 'Greatsword' not in json.dumps(peer_received)
+    assert 'Longsword' not in json.dumps(peer_received)
+    assert 'originalAction' not in json.dumps(peer_received)
+
+    with app.app_context():
+        paused_turn = db.session.get(DmTurn, clarification['turnId'])
+        paused_metadata = safe_json_loads(paused_turn.metadata_json, {})
+        persisted_request = paused_metadata['state_pipeline']['clarificationRequest']
+        assert [option['label'] for option in persisted_request['options']] == [
+            'Greatsword',
+            'Longsword',
+        ]
+        assert persisted_request['originalAction']
 
     client.emit(
         'resolve_clarification',
@@ -3970,6 +4500,7 @@ def test_roll_resolves_pending_turn_and_carries_rule_type(app, socketio, app_run
         yield 'The encounter advances.'
 
     monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    monkeypatch.setattr(player_rolls_module.secrets, 'randbelow', lambda _sides: 2)
 
     ids = seed_world_campaign_player_session(app)
     client = socketio.test_client(app, flask_test_client=app.test_client())
@@ -4002,14 +4533,16 @@ def test_roll_resolves_pending_turn_and_carries_rule_type(app, socketio, app_run
             'world_id': ids['world_id'],
             'player_id': ids['player_id'],
             'message': 'I roll a d20: 17',
+            'action_intent': {'kind': 'message'},
         },
     )
     second_events = client.get_received()
     second_start = _event_payload(second_events, 'dm_response_start')
     assert second_start is not None
-    assert second_start['rules_hint']['roll_value'] == 17
+    assert second_start['rules_hint']['roll_value'] == 3
     assert second_start['rules_hint']['resolved_turn_id'] == first_turn_id
     assert second_start['rules_hint']['roll_type'] == 'attack'
+    assert _event_payload(second_events, 'roll_resolved')['total'] == 3
 
     with app.app_context():
         first_turn = db.session.get(DmTurn, first_turn_id)
@@ -4018,9 +4551,133 @@ def test_roll_resolves_pending_turn_and_carries_rule_type(app, socketio, app_run
 
         second_turn = DmTurn.query.order_by(DmTurn.turn_id.desc()).first()
         assert second_turn is not None
-        assert second_turn.roll_value == 17
+        assert second_turn.roll_value == 3
         assert second_turn.rule_type == 'attack'
         assert second_turn.outcome_status == 'resolved'
+
+
+def test_pending_attack_uses_persisted_weapon_spec_not_client_die_mode_or_ability(
+    app,
+    socketio,
+    app_runtime,
+    monkeypatch,
+):
+    socketio_module = app_runtime['modules']['socketio_events']
+    requested_sides = []
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player, rules_hint
+        yield 'The attack check advances.'
+
+    def fake_randbelow(sides):
+        requested_sides.append(sides)
+        return 9
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    monkeypatch.setattr(player_rolls_module.secrets, 'randbelow', fake_randbelow)
+
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        player.stats = safe_json_dumps(
+            {
+                'ability_scores': {
+                    'strength': 8,
+                    'dexterity': 16,
+                    'constitution': 10,
+                    'intelligence': 10,
+                    'wisdom': 10,
+                    'charisma': 10,
+                },
+                'current_hp': 20,
+                'max_hp': 20,
+                'proficiency_bonus': 2,
+            },
+            {},
+        )
+        player.inventory = safe_json_dumps(
+            [
+                {
+                    'id': 'persisted-longbow',
+                    'name': 'Longbow',
+                    'type': 'weapon',
+                    'subtype': 'longbow',
+                    'equipped': True,
+                    'slot': 'two_hands',
+                    'metadata': {'weaponProficient': True},
+                },
+            ],
+            [],
+        )
+        # The profile is the server-owned authority. The per-item legacy flag
+        # remains inert at runtime and is present only as a hostile/legacy input.
+        player.weapon_proficiencies = serialize_weapon_proficiencies(
+            ['category:martial']
+        )
+        db.session.commit()
+
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'player_id': ids['player_id'],
+            'message': 'I attack the goblin with my longbow.',
+            'client_message_id': 'longbow-attack-action',
+        },
+    )
+    first_events = client.get_received()
+    first_start = _event_payload(first_events, 'dm_response_start')
+    pending_turn_id = first_start['turn_id']
+    first_roll_spec = first_start['rules_hint']['roll_spec']
+    assert first_roll_spec['die'] == 'd20'
+    assert first_roll_spec['mode'] == 'normal'
+    with app.app_context():
+        pending_turn = db.session.get(DmTurn, pending_turn_id)
+        persisted_roll_spec = safe_json_loads(pending_turn.rules_hint, {})['roll_spec']
+        assert persisted_roll_spec['ability']['key'] == 'dexterity'
+        assert persisted_roll_spec['attack']['weapon']['name'] == 'Longbow'
+
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'player_id': ids['player_id'],
+            'message': 'I roll a d100 with advantage: 99 = 99',
+            'client_message_id': 'longbow-attack-roll',
+            'action_intent': {
+                'kind': 'roll',
+                'source': 'dice_roller',
+                'ability': {'key': 'strength'},
+                'roll': {
+                    'die': 'd100',
+                    'mode': 'advantage',
+                    'target_pending_turn_id': pending_turn_id,
+                },
+            },
+        },
+    )
+    second_events = client.get_received()
+    roll_payload = _event_payload(second_events, 'roll_resolved')
+
+    assert requested_sides == [20]
+    assert roll_payload['die'] == 'd20'
+    assert roll_payload['mode'] == 'normal'
+    assert roll_payload['ability']['key'] == 'dexterity'
+    assert roll_payload['proficiency'] == {
+        'bonus': 2,
+        'skills': ['weapon:longbow'],
+    }
+    assert roll_payload['total'] == 15
+
+    with app.app_context():
+        pending_turn = db.session.get(DmTurn, pending_turn_id)
+        pending_metadata = safe_json_loads(pending_turn.metadata_json, {})
+        assert pending_metadata['roll_gate']['roll_spec']['attack']['weapon']['name'] == 'Longbow'
 
 
 def test_roll_can_target_specific_pending_turn(app, socketio, app_runtime, monkeypatch):
