@@ -39,7 +39,7 @@ def test_authoritative_roll_ignores_client_faces_modifier_and_total():
     values = iter([7, 18])
     roll = resolve_authoritative_player_roll(
         player=_player(),
-        rule_type='social',
+        rule_type='persuasion',
         dc_hint='DC 15',
         action_intent={
             'kind': 'roll',
@@ -67,7 +67,7 @@ def test_authoritative_roll_ignores_client_faces_modifier_and_total():
         'score': 14,
         'modifier': 2,
     }
-    assert roll['proficiency'] == {'bonus': 2, 'skills': ['persuasion']}
+    assert roll['proficiency'] == {'bonus': 2, 'skills': ['persuasion'], 'multiplier': 1}
     assert roll['task_dc'] == 15
     assert roll['authoritative'] is True
 
@@ -315,7 +315,7 @@ def test_attack_roll_uses_persisted_ranged_weapon_and_player_proficiency_profile
     assert attack_context['source'] == 'persisted_inventory'
     assert attack_context['proficiency_source'] == 'player_weapon_proficiencies'
     assert roll['ability']['key'] == 'dexterity'
-    assert roll['proficiency'] == {'bonus': 2, 'skills': ['weapon:longbow']}
+    assert roll['proficiency'] == {'bonus': 2, 'skills': ['weapon:longbow'], 'multiplier': 1}
     assert roll['modifier'] == 5
     assert roll['total'] == 15
 
@@ -348,7 +348,7 @@ def test_attack_roll_uses_best_finesse_ability_without_inventing_proficiency():
 
     assert attack_context['weapon']['classification'] == 'finesse'
     assert roll['ability']['key'] == 'dexterity'
-    assert roll['proficiency'] == {'bonus': 0, 'skills': []}
+    assert roll['proficiency'] == {'bonus': 0, 'skills': [], 'multiplier': 0}
     assert roll['modifier'] == 2
 
 
@@ -415,3 +415,242 @@ def test_legacy_pending_attack_without_attack_spec_uses_server_inventory_context
     assert roll['mode'] == 'normal'
     assert roll['ability']['key'] == 'dexterity'
     assert roll['attack']['weapon']['name'] == 'Longbow'
+
+
+def test_named_skill_does_not_borrow_a_different_skill_proficiency():
+    player = _player()
+    player.stats = safe_json_dumps(
+        {
+            'ability_scores': {
+                'strength': 10,
+                'dexterity': 10,
+                'constitution': 10,
+                'intelligence': 10,
+                'wisdom': 10,
+                'charisma': 14,
+            },
+            'current_hp': 20,
+            'max_hp': 20,
+            'skill_proficiencies': ['Deception'],
+            'proficiency_bonus': 2,
+        },
+        {},
+    )
+
+    roll = resolve_authoritative_player_roll(
+        player=player,
+        rule_type='persuasion',
+        dc_hint='DC 15',
+        action_intent=None,
+        roller=lambda _sides: 10,
+    )
+
+    assert roll['ability']['key'] == 'charisma'
+    assert roll['proficiency'] == {'bonus': 0, 'skills': [], 'multiplier': 0}
+    assert roll['modifier'] == 2
+
+
+def test_class_saving_throw_proficiency_uses_requested_ability():
+    player = _player()
+    player.class_ = 'Cleric - Life Domain'
+    player.stats = safe_json_dumps(
+        {
+            'ability_scores': {
+                'strength': 8,
+                'dexterity': 10,
+                'constitution': 12,
+                'intelligence': 10,
+                'wisdom': 16,
+                'charisma': 12,
+            },
+            'current_hp': 20,
+            'max_hp': 20,
+            'proficiency_bonus': 2,
+        },
+        {},
+    )
+
+    roll = resolve_authoritative_player_roll(
+        player=player,
+        rule_type='wisdom_saving_throw',
+        dc_hint='DC 14',
+        action_intent=None,
+        roller=lambda _sides: 10,
+    )
+
+    assert roll['ability']['key'] == 'wisdom'
+    assert roll['proficiency'] == {'bonus': 2, 'skills': ['save:wisdom'], 'multiplier': 1}
+    assert roll['modifier'] == 5
+    assert roll['total'] == 15
+
+
+def test_skill_expertise_doubles_persisted_proficiency_bonus():
+    player = _player()
+    player.stats = safe_json_dumps(
+        {
+            'ability_scores': {
+                'strength': 10,
+                'dexterity': 14,
+                'constitution': 10,
+                'intelligence': 10,
+                'wisdom': 10,
+                'charisma': 14,
+            },
+            'current_hp': 20,
+            'max_hp': 20,
+            'skill_proficiencies': ['Persuasion'],
+            'skill_expertise': ['Persuasion'],
+            'proficiency_bonus': 2,
+        },
+        {},
+    )
+
+    roll = resolve_authoritative_player_roll(
+        player=player,
+        rule_type='persuasion',
+        dc_hint='DC 15',
+        action_intent=None,
+        roller=lambda _sides: 10,
+    )
+
+    assert roll['proficiency'] == {'bonus': 4, 'skills': ['persuasion'], 'multiplier': 2}
+    assert roll['modifier_breakdown']['proficiency_multiplier'] == 2
+    assert roll['modifier'] == 6
+
+
+def test_curated_race_skill_proficiency_participates_in_rolls():
+    player = _player()
+    player.race = 'Tabaxi'
+    player.stats = safe_json_dumps(
+        {
+            'ability_scores': {
+                'strength': 10,
+                'dexterity': 14,
+                'constitution': 10,
+                'intelligence': 10,
+                'wisdom': 12,
+                'charisma': 10,
+            },
+            'current_hp': 20,
+            'max_hp': 20,
+            'proficiency_bonus': 2,
+        },
+        {},
+    )
+
+    roll = resolve_authoritative_player_roll(
+        player=player,
+        rule_type='stealth',
+        dc_hint='DC 14',
+        action_intent=None,
+        roller=lambda _sides: 10,
+    )
+
+    assert roll['proficiency'] == {'bonus': 2, 'skills': ['stealth'], 'multiplier': 1}
+    assert roll['modifier'] == 4
+
+
+def test_spell_roll_uses_class_spellcasting_ability_and_proficiency():
+    player = _player()
+    player.class_ = 'Wizard - Diviner'
+    player.stats = safe_json_dumps(
+        {
+            'ability_scores': {
+                'strength': 8,
+                'dexterity': 12,
+                'constitution': 12,
+                'intelligence': 16,
+                'wisdom': 10,
+                'charisma': 8,
+            },
+            'current_hp': 20,
+            'max_hp': 20,
+            'proficiency_bonus': 2,
+        },
+        {},
+    )
+
+    roll = resolve_authoritative_player_roll(
+        player=player,
+        rule_type='spell',
+        dc_hint='DC 14',
+        action_intent={
+            'kind': 'roll',
+            'ability': {'key': 'charisma'},
+            'roll': {'die': 'd20'},
+        },
+        roller=lambda _sides: 10,
+    )
+
+    assert roll['ability']['key'] == 'intelligence'
+    assert roll['proficiency'] == {
+        'bonus': 2,
+        'skills': ['spellcasting:wizard'],
+        'multiplier': 1,
+    }
+    assert roll['modifier'] == 5
+
+
+def test_catalog_caster_archetypes_use_their_rules_ability_and_proficiency():
+    for class_name, expected_archetype, expected_ability in (
+        ('Oracle - Battle Seer', 'cleric', 'wisdom'),
+        ('Witch - Grave Witch', 'wizard', 'intelligence'),
+        ('Technomancer - Signal Savant', 'artificer', 'intelligence'),
+    ):
+        player = _player()
+        player.class_ = class_name
+        player.stats = safe_json_dumps(
+            {
+                'ability_scores': {
+                    'strength': 8,
+                    'dexterity': 12,
+                    'constitution': 12,
+                    'intelligence': 16,
+                    'wisdom': 16,
+                    'charisma': 8,
+                },
+                'current_hp': 20,
+                'max_hp': 20,
+                'proficiency_bonus': 2,
+            },
+            {},
+        )
+
+        roll = resolve_authoritative_player_roll(
+            player=player,
+            rule_type='spell',
+            dc_hint='DC 14',
+            action_intent={'kind': 'roll', 'ability': {'key': 'charisma'}},
+            roller=lambda _sides: 10,
+        )
+
+        assert roll['ability']['key'] == expected_ability
+        assert roll['proficiency'] == {
+            'bonus': 2,
+            'skills': [f'spellcasting:{expected_archetype}'],
+            'multiplier': 1,
+        }
+
+
+def test_catalog_caster_archetype_inherits_saving_throw_proficiencies():
+    player = _player()
+    player.class_ = 'Oracle - Battle Seer'
+    player.stats = safe_json_dumps(
+        {
+            'ability_scores': {'wisdom': 16},
+            'current_hp': 20,
+            'max_hp': 20,
+            'proficiency_bonus': 2,
+        },
+        {},
+    )
+
+    roll = resolve_authoritative_player_roll(
+        player=player,
+        rule_type='wisdom_saving_throw',
+        dc_hint='DC 14',
+        action_intent=None,
+        roller=lambda _sides: 10,
+    )
+
+    assert roll['proficiency'] == {'bonus': 2, 'skills': ['save:wisdom'], 'multiplier': 1}

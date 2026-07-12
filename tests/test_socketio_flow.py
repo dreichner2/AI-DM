@@ -5418,6 +5418,7 @@ def test_pending_attack_uses_persisted_weapon_spec_not_client_die_mode_or_abilit
     assert roll_payload['proficiency'] == {
         'bonus': 2,
         'skills': ['weapon:longbow'],
+        'multiplier': 1,
     }
     assert roll_payload['total'] == 15
 
@@ -5855,7 +5856,7 @@ def test_dm_no_roll_explanation_clears_classifier_roll_gate(app, socketio, app_r
     def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
         del user_input, context, speaking_player
         assert rules_hint['requires_roll'] is True
-        assert rules_hint['roll_type'] == 'social'
+        assert rules_hint['roll_type'] == 'intimidation'
         yield 'No roll is needed. The guard already wants to answer honestly.'
 
     monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)

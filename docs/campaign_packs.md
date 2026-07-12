@@ -74,6 +74,8 @@ Recommended fields:
 - `world`
 - `startingState.locationId`
 - `startingState.questId`
+- `startingState.checkpointId` (optional; selects the authored initial
+  checkpoint instead of defaulting to the first checkpoint)
 - `locations`
 - `npcs`
 - `quests`
@@ -92,6 +94,10 @@ Recommended fields:
 - `multiSessionGroupKey`
 - `gmNotes`
 - `hiddenSceneNotes`
+
+Validated travel to a catalog location materializes its player-safe authored
+scene fields, items, and NPC/quest references into live runtime state. Author
+notes and Dungeon Master-only catalog metadata remain confined to the pack.
 
 ## Content Sources
 

@@ -208,6 +208,7 @@ def test_import_campaign_pack_seeds_structured_campaign_content(client, app):
                 'startingState': {
                     'locationId': 'bleakmoor_gate',
                     'questId': 'q_missing_caravan',
+                    'checkpointId': 'cp_watchtower',
                     'currentScene': {
                         'mood': 'rain-darkened',
                         'description': 'The gatehouse lanterns hiss in the rain.',
@@ -365,11 +366,11 @@ def test_import_campaign_pack_seeds_structured_campaign_content(client, app):
         assert pack_session.campaign_pack_id == campaign_pack.campaign_pack_id
         assert pack_session.installed_pack_id == installed_pack.installed_pack_id
         assert pack_session.pack_id == 'bleakmoor_intro'
-        assert pack_session.active_checkpoint_id == 'cp_old_road'
+        assert pack_session.active_checkpoint_id == 'cp_watchtower'
         assert pack_session.progress_revision == 0
         assert [(row.checkpoint_id, row.status) for row in checkpoint_progress] == [
-            ('cp_old_road', 'active'),
-            ('cp_watchtower', 'open'),
+            ('cp_old_road', 'open'),
+            ('cp_watchtower', 'active'),
         ]
         assert campaign.current_quest == 'Find the Missing Caravan - Ask at Bleakmoor Gate'
         assert campaign.location == 'Bleakmoor Gate'
@@ -379,7 +380,7 @@ def test_import_campaign_pack_seeds_structured_campaign_content(client, app):
         snapshot = json.loads(session_obj.state_snapshot)
         assert snapshot['campaignPack']['packId'] == 'bleakmoor_intro'
         assert snapshot['campaignPack']['schemaVersion'] == '1'
-        assert snapshot['campaignPack']['activeCheckpointId'] == 'cp_old_road'
+        assert snapshot['campaignPack']['activeCheckpointId'] == 'cp_watchtower'
         assert snapshot['campaignPack']['directorRules']['mainQuestGeneration'] == 'pack_only'
         assert snapshot['currentScene']['locationId'] == 'bleakmoor_gate'
         assert snapshot['currentScene']['name'] == 'Bleakmoor Gate'

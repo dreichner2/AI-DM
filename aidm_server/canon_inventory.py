@@ -676,6 +676,7 @@ def inventory_change_from_intent_outcome(turn: DmTurn, dm_output: str) -> dict |
 
     item_payload = action_intent.get('item') if isinstance(action_intent.get('item'), dict) else {}
     item_name = clean_inventory_item_name(item_payload.get('name'))
+    item_id = str(item_payload.get('id') or item_payload.get('itemId') or '').strip()
     if not item_name or not looks_like_inventory_item(item_name):
         return None
 
@@ -693,6 +694,7 @@ def inventory_change_from_intent_outcome(turn: DmTurn, dm_output: str) -> dict |
     return {
         'action': action,
         'item_name': item_name,
+        **({'item_id': item_id} if item_id else {}),
         'quantity': positive_int(item_payload.get('quantity', 1)),
         'source': 'item_intent_outcome',
         'inventory_action': inventory_action,

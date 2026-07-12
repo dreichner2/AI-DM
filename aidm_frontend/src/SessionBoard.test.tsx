@@ -76,7 +76,7 @@ function actionComposerProps(): ActionComposerProps {
     itemQuantity: '1',
     itemCostGold: '',
     itemOptions: [],
-    setSelectedItemName: vi.fn(),
+    setSelectedItemId: vi.fn(),
     setItemQuantity: vi.fn(),
     updateSelectedInventoryAction: vi.fn(),
     updateItemDraftName: vi.fn(),
@@ -391,6 +391,58 @@ describe('SessionBoard visible theater surfaces', () => {
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Download campaign Chronicle' }))
 
     expect(downloadCampaignChronicle).toHaveBeenCalledTimes(1)
+  })
+
+  it('keys duplicate-name inventory choices by item id', () => {
+    const setSelectedItemId = vi.fn()
+    const redPotion = { id: 'potion-red', name: 'Healing Potion', quantity: '1' }
+    const bluePotion = { id: 'potion-blue', name: 'Healing Potion', quantity: '1' }
+    render(
+      <SessionBoard
+        {...sessionBoardProps({
+          actionComposerProps: {
+            ...actionComposerProps(),
+            composerMode: 'item',
+            selectedItem: redPotion,
+            itemOptions: [redPotion, bluePotion],
+            setSelectedItemId,
+          },
+        })}
+      />,
+    )
+
+    const itemSelect = screen.getByRole('combobox', { name: 'Inventory item' })
+    expect(itemSelect).toHaveValue('potion-red')
+
+    fireEvent.change(itemSelect, { target: { value: 'potion-blue' } })
+
+    expect(setSelectedItemId).toHaveBeenCalledWith('potion-blue')
+  })
+
+  it('keeps legacy id-less inventory choices selectable', () => {
+    const setSelectedItemId = vi.fn()
+    const torch = { name: 'Torch', quantity: '1' }
+    const rope = { name: 'Rope', quantity: '1' }
+    render(
+      <SessionBoard
+        {...sessionBoardProps({
+          actionComposerProps: {
+            ...actionComposerProps(),
+            composerMode: 'item',
+            selectedItem: torch,
+            itemOptions: [torch, rope],
+            setSelectedItemId,
+          },
+        })}
+      />,
+    )
+
+    const itemSelect = screen.getByRole('combobox', { name: 'Inventory item' })
+    expect(itemSelect).toHaveValue('legacy-item-0')
+
+    fireEvent.change(itemSelect, { target: { value: 'legacy-item-1' } })
+
+    expect(setSelectedItemId).toHaveBeenCalledWith('legacy-item-1')
   })
 
   it('keeps player-safe session actions while hiding operator and lifecycle controls', () => {

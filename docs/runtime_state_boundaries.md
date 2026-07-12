@@ -16,6 +16,10 @@ snapshot. Systems that need current play state should read it for:
 - quests and locations;
 - `knownNpcs` and `partyNpcs`;
 - combat and campaign-pack runtime mirrors;
+- `locationSceneStates`, the backward-compatible per-location cache for scene
+  items, environment details, active scene references, and spatial state that
+  is saved and restored during validated travel (the cache is server-only;
+  players receive the filtered `currentScene` projection instead);
 - flags; and
 - `stateChangeLedger`.
 

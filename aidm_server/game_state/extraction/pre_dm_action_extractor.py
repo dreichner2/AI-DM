@@ -313,6 +313,7 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
         return None
     item = action_intent.get('item') if isinstance(action_intent.get('item'), dict) else {}
     item_name = str(item.get('name') or '').strip()
+    item_id = str(item.get('id') or item.get('itemId') or '').strip()
     if not item_name:
         return None
     inventory_action = str(action_intent.get('inventory_action') or 'use').strip().lower()
@@ -347,6 +348,7 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
                     'sourceText': player_message,
                     'requiresDMResolution': False,
                     'itemName': item_name,
+                    **({'itemId': item_id} if item_id else {}),
                 }
             ],
             'notes': ['action_intent_pre_dm'],
@@ -382,6 +384,7 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
                 'sourceText': player_message,
                 'requiresDMResolution': action_type != 'inventory.consume',
                 'itemName': item_name,
+                **({'itemId': item_id} if item_id else {}),
                 'quantity': int(item.get('quantity') or 1),
             }
         ],

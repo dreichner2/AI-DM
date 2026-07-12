@@ -134,7 +134,7 @@ def test_validate_ability_and_item_intents():
         {
             'kind': 'item',
             'inventory_action': 'buy',
-            'item': {'name': 'Healing Potion', 'quantity': 2},
+            'item': {'id': 'healing-potion-1', 'name': 'Healing Potion', 'quantity': 2},
             'cost_gold': '5',
         }
     )
@@ -143,8 +143,22 @@ def test_validate_ability_and_item_intents():
     assert item_error is None
     assert ability['ability']['key'] == 'strength'
     assert item['item']['name'] == 'Healing Potion'
+    assert item['item']['id'] == 'healing-potion-1'
     assert item['inventory_action'] == 'buy'
     assert item['cost_gold'] == 5
+
+
+def test_validate_item_intent_rejects_unsafe_item_id():
+    intent, error = validate_action_intent(
+        {
+            'kind': 'item',
+            'inventory_action': 'use',
+            'item': {'id': 'potion id with spaces', 'name': 'Healing Potion', 'quantity': 1},
+        }
+    )
+
+    assert intent is None
+    assert error == 'item.id contains unsupported characters.'
 
 
 def test_validate_spell_intent_and_applies_spellcasting_rule_hint():

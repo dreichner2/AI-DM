@@ -11,6 +11,7 @@ import {
   diceRollRequestMessage,
   hasReservedAdminPrefix,
   interactionTargetId,
+  itemOptionSelectionKey,
   normalizeDie,
   stripComposerCommand,
   type AbilityOption,
@@ -192,7 +193,7 @@ export function useComposerActions({
   const [rawRollTargetPendingTurnId, setRollTargetPendingTurnId] = useState('')
   const [selectedAbilityKey, setSelectedAbilityKey] = useState(PLAIN_ROLL_ABILITY_KEY)
   const [selectedInventoryAction, setSelectedInventoryAction] = useState<InventoryAction>('use')
-  const [selectedItemName, setSelectedItemName] = useState('')
+  const [selectedItemId, setSelectedItemId] = useState('')
   const [itemDraftName, setItemDraftName] = useState('')
   const [itemQuantity, setItemQuantity] = useState('1')
   const [itemCostGold, setItemCostGold] = useState('0')
@@ -430,7 +431,7 @@ export function useComposerActions({
   const selectedSpellAbility =
     selectedAbilityKey === INITIATIVE_ROLL_ABILITY_KEY ? defaultSpellAbility : selectedAbility ?? defaultSpellAbility
   const selectedItem =
-    itemOptions.find((item) => item.name === selectedItemName) ?? itemOptions[0] ?? null
+    itemOptions.find((item, index) => itemOptionSelectionKey(item, index) === selectedItemId) ?? itemOptions[0] ?? null
   const selectedInventoryActionRequiresItem = ['use', 'equip', 'unequip', 'drop', 'give', 'sell'].includes(selectedInventoryAction)
   const itemIntentName = selectedInventoryActionRequiresItem
     ? selectedItem?.name ?? itemDraftName
@@ -1046,7 +1047,7 @@ export function useComposerActions({
     setRollTargetPendingTurnId,
     updateRollAbilityKey,
     updateSpellName,
-    setSelectedItemName,
+    setSelectedItemId,
     updateSelectedInventoryAction,
     updateItemDraftName,
     updateItemCostGold,

@@ -213,8 +213,11 @@ export function normalizeRollResolvedPayload(payload: unknown): RollResolvedPayl
     const skills = Array.isArray(proficiencyValue.skills)
       ? proficiencyValue.skills.map((skill) => stringValue(skill)).filter(Boolean)
       : null
-    if (bonus === null || !skills) return null
-    proficiency = { bonus, skills }
+    const multiplier = proficiencyValue.multiplier === undefined
+      ? undefined
+      : finiteNumber(proficiencyValue.multiplier)
+    if (bonus === null || !skills || multiplier === null) return null
+    proficiency = { bonus, skills, ...(multiplier !== undefined ? { multiplier } : {}) }
   }
 
   let modifierBreakdown: RollResolvedPayload['modifier_breakdown']
@@ -223,12 +226,16 @@ export function normalizeRollResolvedPayload(payload: unknown): RollResolvedPayl
     if (!breakdownValue) return null
     const abilityModifier = finiteNumber(breakdownValue.ability_modifier)
     const proficiencyBonus = finiteNumber(breakdownValue.proficiency_bonus)
+    const proficiencyMultiplier = breakdownValue.proficiency_multiplier === undefined
+      ? undefined
+      : finiteNumber(breakdownValue.proficiency_multiplier)
     const woundPenalty = finiteNumber(breakdownValue.wound_penalty)
     const breakdownTotal = finiteNumber(breakdownValue.total)
-    if ([abilityModifier, proficiencyBonus, woundPenalty, breakdownTotal].some((part) => part === null)) return null
+    if ([abilityModifier, proficiencyBonus, proficiencyMultiplier, woundPenalty, breakdownTotal].some((part) => part === null)) return null
     modifierBreakdown = {
       ability_modifier: abilityModifier as number,
       proficiency_bonus: proficiencyBonus as number,
+      ...(proficiencyMultiplier !== undefined ? { proficiency_multiplier: proficiencyMultiplier as number } : {}),
       wound_penalty: woundPenalty as number,
       total: breakdownTotal as number,
     }
@@ -519,8 +526,16 @@ export function useSessionSocket({
         session_id: selectedSessionId,
         player_id: selectedPlayerId,
       })
-      if (shouldRefreshAfterJoin && !refreshInFlight) {
-        refreshAuthoritativeSession('Session refresh after reconnect failed')
+      if (shouldRefreshAfterJoin) {
+        if (!refreshInFlight) {
+          refreshAuthoritativeSession('Session refresh after reconnect failed')
+        }
+        void refreshPlayerDetail(selectedPlayerId).catch((error: unknown) => {
+          pushError(
+            'workspace',
+            `Player refresh after reconnect failed: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        })
       }
     })
 

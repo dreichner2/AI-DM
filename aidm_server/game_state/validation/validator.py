@@ -688,7 +688,11 @@ def _validate_attack(
     )
     if not actor:
         return _invalid(action, resolution.get('reason') or 'Actor not found.')
-    if resolution.get('status') == 'missing' and normalize_item_name(weapon_name) in GENERIC_RANGED_WEAPON_NAMES:
+    if (
+        resolution.get('status') == 'missing'
+        and not selected_item_id
+        and normalize_item_name(weapon_name) in GENERIC_RANGED_WEAPON_NAMES
+    ):
         item, resolution = _resolve_generic_ranged_attack_weapon(actor, weapon_name)
     if resolution.get('status') == 'needs_clarification':
         return _clarification(action, resolution)
@@ -747,7 +751,11 @@ def validate_declared_actions(
         if actor_error:
             validated.append(_invalid(action, actor_error))
             continue
-        selected_item_id = selected_item_ids.get(str(action.get('id')))
+        selected_item_id = (
+            selected_item_ids.get(str(action.get('id')))
+            or _action_value(action, 'itemId', 'item_id')
+            or _action_value(action, 'weaponId', 'weapon_id')
+        )
         if action_type == 'inventory.consume':
             result = _validate_consume_item(
                 action,
@@ -868,14 +876,17 @@ def _validate_inventory_change(state: dict[str, Any], change: dict[str, Any]) ->
         return 'accepted', 'Inventory add is valid.', None
     item_id = _action_value(change, 'itemId', 'item_id')
     item_name = _action_value(change, 'itemName', 'item_name')
-    item = None
-    for candidate in actor_items(actor):
-        if item_id and str(candidate.get('id')) == str(item_id):
-            item = candidate
-            break
-        if item_name and normalize_item_name(candidate.get('name')) == normalize_item_name(item_name):
-            item = candidate
-            break
+    if item_id:
+        item = next((candidate for candidate in actor_items(actor) if str(candidate.get('id')) == str(item_id)), None)
+    else:
+        item = next(
+            (
+                candidate
+                for candidate in actor_items(actor)
+                if item_name and normalize_item_name(candidate.get('name')) == normalize_item_name(item_name)
+            ),
+            None,
+        )
     if not item:
         return 'rejected', 'Item not found in inventory.', None
     if int_or_default(item.get('quantity'), default=1) < quantity:
@@ -892,14 +903,17 @@ def _validate_equipment_change(state: dict[str, Any], change: dict[str, Any]) ->
         return 'rejected', 'Actor not found.', None
     item_id = _action_value(change, 'itemId', 'item_id')
     item_name = _action_value(change, 'itemName', 'item_name')
-    item = None
-    for candidate in actor_items(actor):
-        if item_id and str(candidate.get('id')) == str(item_id):
-            item = candidate
-            break
-        if item_name and normalize_item_name(candidate.get('name')) == normalize_item_name(item_name):
-            item = candidate
-            break
+    if item_id:
+        item = next((candidate for candidate in actor_items(actor) if str(candidate.get('id')) == str(item_id)), None)
+    else:
+        item = next(
+            (
+                candidate
+                for candidate in actor_items(actor)
+                if item_name and normalize_item_name(candidate.get('name')) == normalize_item_name(item_name)
+            ),
+            None,
+        )
     if not item:
         return 'rejected', 'Item not found in inventory.', None
 
@@ -1080,6 +1094,17 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return _text(value).lower() in {'1', 'true', 'yes', 'y', 'on', 'allow', 'allowed'}
+
+
+def _party_membership_change(change: dict[str, Any]) -> bool | None:
+    for key in ('party', 'partyNpc', 'inParty'):
+        if key not in change:
+            continue
+        value = change.get(key)
+        if isinstance(value, bool):
+            return value
+        return _truthy(value)
+    return None
 
 
 def _campaign_pack_policy(state: dict[str, Any]) -> tuple[str | None, dict[str, Any], str | None]:
@@ -1328,6 +1353,27 @@ def _apply_campaign_pack_drift_control(
         return 'accepted', None, change
 
     change_type = _text(change.get('type'))
+    if change_type == 'scene.move_location':
+        catalog_location = _pack_catalog_record_for_change(
+            state,
+            pack_id=pack_id,
+            key='locations',
+            change=change,
+        )
+        if catalog_location:
+            return (
+                'modified',
+                'Campaign pack catalog location was materialized for scene movement.',
+                _materialize_pack_catalog_change(
+                    change,
+                    catalog_location,
+                    pack_id=pack_id,
+                    embedded_key='location',
+                    id_key='locationId',
+                    label_key='name',
+                ),
+            )
+
     if change_type == 'quest.add':
         existing_quest = _find_quest(state, change)
         if _record_is_campaign_pack(existing_quest, pack_id):
@@ -1790,6 +1836,8 @@ def _find_scene_item(state: dict[str, Any], change: dict[str, Any]) -> dict[str,
     for item in _scene_items(state):
         if requested_id and _text(item.get('id')) == requested_id:
             return item
+    if requested_id:
+        return None
     if requested_name:
         for item in _scene_items(state):
             if normalize_item_name(item.get('name')) == requested_name:
@@ -1912,6 +1960,12 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
         return 'accepted', 'Scene update is valid.', normalized
 
     if change_type == 'scene.move_location':
+        scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
+        combat = normalize_combat_state(state.get('combat'), scene)
+        combat_status = _text(combat.get('status')).lower()
+        scene_combat_status = _text(scene.get('combatState')).lower()
+        if combat_status in {'starting', 'active'} or scene_combat_status in {'pending', 'active'}:
+            return 'rejected', 'Scene movement is unavailable while combat is active.', None
         if not _valid_location_label(normalized.get('name') or normalized.get('locationName') or normalized.get('locationId')):
             return 'rejected', 'Scene movement location must be a short place name.', None
         location_id = _stable_id(normalized.get('locationId'), normalized.get('name') or normalized.get('locationName'))
@@ -2050,8 +2104,38 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
                 normalized['type'] = change_type
                 return 'accepted', 'NPC update target was missing, so it will be applied as a discovery.', normalized
             return 'rejected', 'NPC update target was not found.', None
+        membership_change = _party_membership_change(normalized)
+        current_scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
+        current_location_id = _stable_id(
+            current_scene.get('locationId'),
+            current_scene.get('name'),
+        )
+        if membership_change is True:
+            if not current_location_id:
+                return 'rejected', 'NPC cannot join the party without a current scene location.', None
+            # Joining is a physical transition: even a remote NPC is moved to
+            # the party's current scene. Leaving does not alter locationId.
+            normalized['locationId'] = current_location_id
         if normalized.get('locationId'):
             normalized['locationId'] = _stable_id(normalized.get('locationId'))
+        party_npc = _find_record(
+            _records(state, 'partyNpcs'),
+            record_id=normalized.get('npcId'),
+            name=normalized.get('name') or normalized.get('npcName'),
+        )
+        target_location_id = _text(normalized.get('locationId'))
+        leaves_party_atomically = change_type == 'npc.update' and membership_change is False
+        if (
+            party_npc
+            and target_location_id
+            and target_location_id != current_location_id
+            and not leaves_party_atomically
+        ):
+            return (
+                'rejected',
+                'Party NPCs must remain at the current scene unless they leave the party in the same NPC update.',
+                None,
+            )
         normalized['questIds'] = _string_list(normalized.get('questIds'))
         if change_type == 'npc.relationship.update':
             relationship = normalized.get('relationship') if isinstance(normalized.get('relationship'), dict) else {}
@@ -2424,12 +2508,16 @@ def _inventory_reservation_key(actor: dict[str, Any], item: dict[str, Any]) -> t
 def _inventory_item_from_change(actor: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] | None:
     item_id = _action_value(change, 'itemId', 'item_id')
     item_name = _action_value(change, 'itemName', 'item_name')
-    for candidate in actor_items(actor):
-        if item_id and str(candidate.get('id')) == str(item_id):
-            return candidate
-        if item_name and normalize_item_name(candidate.get('name')) == normalize_item_name(item_name):
-            return candidate
-    return None
+    if item_id:
+        return next((candidate for candidate in actor_items(actor) if str(candidate.get('id')) == str(item_id)), None)
+    return next(
+        (
+            candidate
+            for candidate in actor_items(actor)
+            if item_name and normalize_item_name(candidate.get('name')) == normalize_item_name(item_name)
+        ),
+        None,
+    )
 
 
 def _reserve_inventory_quantity(
@@ -2521,14 +2609,17 @@ def _validate_inventory_transfer_change(
 
     item_id = _action_value(change, 'itemId', 'item_id')
     item_name = _action_value(change, 'itemName', 'item_name')
-    source_item = None
-    for candidate in actor_items(source):
-        if item_id and str(candidate.get('id')) == str(item_id):
-            source_item = candidate
-            break
-        if item_name and normalize_item_name(candidate.get('name')) == normalize_item_name(item_name):
-            source_item = candidate
-            break
+    if item_id:
+        source_item = next((candidate for candidate in actor_items(source) if str(candidate.get('id')) == str(item_id)), None)
+    else:
+        source_item = next(
+            (
+                candidate
+                for candidate in actor_items(source)
+                if item_name and normalize_item_name(candidate.get('name')) == normalize_item_name(item_name)
+            ),
+            None,
+        )
     if not source_item:
         return [], [_rejected(change, 'Item not found in source inventory.')]
 

@@ -40,6 +40,10 @@ export type ItemOption = {
   slot?: string
 }
 
+export function itemOptionSelectionKey(item: ItemOption, index: number) {
+  return item.id || `legacy-item-${index}`
+}
+
 export type InteractionTarget = {
   kind: 'player' | 'npc'
   player_id?: number
@@ -105,10 +109,11 @@ export type RollResolvedPayload = {
   reason: string
   result_visibility: ResultVisibility
   ability?: { key: string; label: string; score: number | string | null; modifier: number } | null
-  proficiency?: { bonus: number; skills: string[] }
+  proficiency?: { bonus: number; skills: string[]; multiplier?: number }
   modifier_breakdown?: {
     ability_modifier: number
     proficiency_bonus: number
+    proficiency_multiplier?: number
     wound_penalty: number
     total: number
   }
@@ -133,6 +138,7 @@ export type ActionIntent = {
     modifier?: number
   }
   item?: {
+    id?: string
     name: string
     quantity: number
   }
@@ -544,6 +550,7 @@ export function buildActionIntent({
       return intent
     }
     intent.item = {
+      ...(item?.id ? { id: item.id } : {}),
       name: resolvedItemName,
       quantity: parsePositiveInteger(itemQuantity || item?.quantity || '1'),
     }

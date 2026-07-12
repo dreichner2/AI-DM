@@ -81,6 +81,35 @@ describe('useComposerActions realtime delivery recovery', () => {
     )
   })
 
+  it('submits the selected second same-name inventory item by id', () => {
+    const socket = socketWithConnection(true)
+    const { result } = renderHook(() =>
+      useComposerHarness(socket, vi.fn(), {
+        itemOptions: [
+          { id: 'potion-red', name: 'Healing Potion', quantity: '1' },
+          { id: 'potion-blue', name: 'Healing Potion', quantity: '1' },
+        ],
+      }),
+    )
+
+    act(() => result.current.actions.applyComposerMode('item'))
+    act(() => result.current.actions.setSelectedItemId('potion-blue'))
+
+    expect(result.current.actions.selectedItem?.id).toBe('potion-blue')
+
+    act(() => result.current.actions.submitAction())
+
+    expect(socket.emit).toHaveBeenCalledWith(
+      'send_message',
+      expect.objectContaining({
+        action_intent: expect.objectContaining({
+          kind: 'item',
+          item: expect.objectContaining({ id: 'potion-blue', name: 'Healing Potion' }),
+        }),
+      }),
+    )
+  })
+
   it('keeps the admin passcode in memory only and clears legacy storage on lock', () => {
     sessionStorage.setItem('aidm:adminPasscode', 'legacy-secret')
     const socket = socketWithConnection(true)

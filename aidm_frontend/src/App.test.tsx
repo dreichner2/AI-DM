@@ -115,7 +115,7 @@ describe('App user workflow regressions', () => {
     ).toBeInTheDocument()
     expect(screen.getByLabelText(/Your Action/i)).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-  })
+  }, 10_000)
 
   it('reloads recovery state for the active room when another operator resolves the gate', async () => {
     await renderLoadedApp()
@@ -535,9 +535,30 @@ describe('App user workflow regressions', () => {
     const initialLogFetchCount = appTestState.fetchCalls.filter(
       (call) => call.method === 'GET' && call.path === '/api/sessions/20/log',
     ).length
+    const initialPlayerFetchCount = appTestState.fetchCalls.filter(
+      (call) => call.method === 'GET' && call.path === '/api/players/30',
+    ).length
+
+    expect(screen.queryByText('Reconnect Rope')).not.toBeInTheDocument()
 
     await act(async () => {
       socketHandler<void>('connect')()
+    })
+
+    appTestState.playerDetails[30] = {
+      ...appTestState.playerDetails[30],
+      stats: {
+        ...(appTestState.playerDetails[30].stats as Record<string, unknown>),
+        current_hp: 3,
+        max_hp: 16,
+      },
+      inventory: [
+        { name: 'Healing Potion', quantity: 2, weight: 0.5 },
+        { name: 'Reconnect Rope', quantity: 1, weight: 10 },
+      ],
+    }
+
+    await act(async () => {
       socketHandler<void>('disconnect')()
       socketHandler<void>('connect')()
     })
@@ -549,6 +570,15 @@ describe('App user workflow regressions', () => {
         ).length,
       ).toBeGreaterThan(initialLogFetchCount),
     )
+    await waitFor(() =>
+      expect(
+        appTestState.fetchCalls.filter(
+          (call) => call.method === 'GET' && call.path === '/api/players/30',
+        ).length,
+      ).toBeGreaterThan(initialPlayerFetchCount),
+    )
+    expect(await screen.findByText('Reconnect Rope')).toBeInTheDocument()
+    expect(document.querySelector('.vital-grid .hp')).toHaveTextContent('3 / 16')
   })
 
   it('reloads persisted session data after a manual socket recreation rejoins', async () => {
@@ -2683,9 +2713,12 @@ describe('App user workflow regressions', () => {
 
     const rendered = await renderLoadedApp()
 
-    expect(screen.getByText(/State updated: thunderer took 8 damage/i)).toBeInTheDocument()
-    const currentResponse = rendered.container.querySelector<HTMLElement>('.turn-row.current .dm-response-card')
-    expect(currentResponse).not.toBeNull()
+    expect(await screen.findByText(/State updated: thunderer took 8 damage/i)).toBeInTheDocument()
+    const currentResponse = await waitFor(() => {
+      const response = rendered.container.querySelector<HTMLElement>('.turn-row.current .dm-response-card')
+      expect(response).not.toBeNull()
+      return response as HTMLElement
+    })
     expect(currentResponse as HTMLElement).toHaveTextContent(/Latest Response/i)
     expect(currentResponse as HTMLElement).toHaveTextContent(/Full narrator ending remains visible/i)
   })

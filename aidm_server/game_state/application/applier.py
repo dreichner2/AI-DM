@@ -45,9 +45,7 @@ def _change_value(change: dict[str, Any], camel_key: str, snake_key: str | None 
 
 def _find_item(items: list[dict[str, Any]], *, item_id: str | None = None, item_name: str | None = None) -> dict[str, Any] | None:
     if item_id:
-        exact = next((item for item in items if str(item.get('id')) == str(item_id)), None)
-        if exact:
-            return exact
+        return next((item for item in items if str(item.get('id')) == str(item_id)), None)
     requested = normalize_item_name(item_name)
     if requested:
         return next((item for item in items if normalize_item_name(item.get('name')) == requested), None)
@@ -72,9 +70,25 @@ def _item_payload(change: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _items_are_stack_compatible(existing: dict[str, Any], incoming: dict[str, Any]) -> bool:
+    if normalize_item_name(existing.get('name')) != normalize_item_name(incoming.get('name')):
+        return False
+    for key in ('type', 'subtype'):
+        existing_value = normalize_item_name(existing.get(key))
+        incoming_value = normalize_item_name(incoming.get(key))
+        if existing_value and incoming_value and existing_value != incoming_value:
+            return False
+    return True
+
+
 def _merge_item(items: list[dict[str, Any]], incoming: dict[str, Any]) -> dict[str, Any]:
-    existing = _find_item(items, item_id=str(incoming.get('id')), item_name=str(incoming.get('name')))
-    if existing:
+    incoming_id = str(incoming.get('id') or '').strip()
+    existing = _find_item(
+        items,
+        item_id=incoming_id or None,
+        item_name=None if incoming_id else str(incoming.get('name') or ''),
+    )
+    if existing and _items_are_stack_compatible(existing, incoming):
         existing['quantity'] = max(0, int_or_default(existing.get('quantity'), default=0)) + max(
             1,
             int_or_default(incoming.get('quantity'), default=1),
@@ -321,12 +335,24 @@ def _remove_active_quest_id(state: dict[str, Any], quest_id: Any) -> None:
     if not quest_id_text:
         return
     scene = state.get('currentScene')
-    if not isinstance(scene, dict):
+    if isinstance(scene, dict):
+        active_quest_ids = scene.get('activeQuestIds')
+        if isinstance(active_quest_ids, list):
+            scene['activeQuestIds'] = [item for item in active_quest_ids if _text(item) != quest_id_text]
+
+    # A terminal quest must also be removed from every saved location scene.
+    # Otherwise traveling back to an older location restores the stale quest.
+    scene_states = state.get('locationSceneStates')
+    if not isinstance(scene_states, dict):
         return
-    active_quest_ids = scene.get('activeQuestIds')
-    if not isinstance(active_quest_ids, list):
-        return
-    scene['activeQuestIds'] = [item for item in active_quest_ids if _text(item) != quest_id_text]
+    for saved_scene in scene_states.values():
+        if not isinstance(saved_scene, dict):
+            continue
+        saved_active_quest_ids = saved_scene.get('activeQuestIds')
+        if isinstance(saved_active_quest_ids, list):
+            saved_scene['activeQuestIds'] = [
+                item for item in saved_active_quest_ids if _text(item) != quest_id_text
+            ]
 
 
 def _find_record(records: list[dict[str, Any]], *, record_id: Any = None, name: Any = None, title: Any = None) -> dict[str, Any] | None:
@@ -610,6 +636,194 @@ def _scene_items(scene: dict[str, Any]) -> list[dict[str, Any]]:
     return scene['items']
 
 
+LOCATION_SCENE_STATES_KEY = 'locationSceneStates'
+SCENE_LOCAL_SCALAR_FIELDS = (
+    'sceneType',
+    'dangerLevel',
+    'mood',
+    'description',
+    'musicTag',
+    'updatedAtTurn',
+)
+SCENE_LOCAL_LIST_FIELDS = ('activeNpcIds', 'activeQuestIds', 'items')
+SCENE_LOCAL_DICT_FIELDS = ('playerPositions', 'playerZones', 'characterPositions', 'characterZones')
+PUBLIC_AUTHORED_LOCATION_FIELDS = (
+    'region',
+    'playerSummary',
+    'player_summary',
+    'playerDescription',
+    'player_description',
+    'publicSummary',
+    'public_summary',
+    'publicDescription',
+    'public_description',
+    'visibleAtStart',
+    'visible_at_start',
+    'hiddenToPlayers',
+    'hidden_to_players',
+    'knownToPlayers',
+    'known_to_players',
+    'visibleToPlayers',
+    'visible_to_players',
+    'playerVisible',
+    'player_visible',
+    *SCENE_LOCAL_SCALAR_FIELDS,
+    *SCENE_LOCAL_LIST_FIELDS,
+    *SCENE_LOCAL_DICT_FIELDS,
+)
+
+
+def _location_scene_states(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    scene_states = state.get(LOCATION_SCENE_STATES_KEY)
+    if not isinstance(scene_states, dict):
+        scene_states = {}
+        state[LOCATION_SCENE_STATES_KEY] = scene_states
+    return scene_states
+
+
+def _scene_local_state(scene: dict[str, Any]) -> dict[str, Any]:
+    saved: dict[str, Any] = {}
+    for key in SCENE_LOCAL_SCALAR_FIELDS:
+        if key in scene:
+            saved[key] = deepcopy(scene.get(key))
+    for key in SCENE_LOCAL_LIST_FIELDS:
+        saved[key] = deepcopy(scene.get(key)) if isinstance(scene.get(key), list) else []
+    for key in SCENE_LOCAL_DICT_FIELDS:
+        saved[key] = deepcopy(scene.get(key)) if isinstance(scene.get(key), dict) else {}
+    return saved
+
+
+def _public_authored_location_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    authored = {
+        key: deepcopy(payload.get(key))
+        for key in PUBLIC_AUTHORED_LOCATION_FIELDS
+        if key in payload and payload.get(key) not in (None, '', [], {})
+    }
+    scene_state = payload.get('sceneState') if isinstance(payload.get('sceneState'), dict) else payload.get('scene_state')
+    if isinstance(scene_state, dict):
+        # Only scene-runtime fields are copied into the player-visible location
+        # record; author-only notes remain confined to the campaign-pack catalog.
+        authored['sceneState'] = _scene_local_state(scene_state)
+    return authored
+
+
+def _save_current_scene_state(state: dict[str, Any]) -> None:
+    scene = _ensure_scene(state)
+    location_id = _world_id(scene.get('locationId'), scene.get('name'))
+    if location_id:
+        _location_scene_states(state)[location_id] = _scene_local_state(scene)
+
+
+def _cached_scene_state(state: dict[str, Any], location: dict[str, Any]) -> dict[str, Any]:
+    location_id = _text(location.get('id'))
+    saved = _location_scene_states(state).get(location_id)
+    authored = location.get('sceneState') if isinstance(location.get('sceneState'), dict) else location.get('scene_state')
+    authored_state: dict[str, Any] = {}
+    for key in SCENE_LOCAL_SCALAR_FIELDS:
+        if key in location:
+            authored_state[key] = deepcopy(location.get(key))
+    for key in SCENE_LOCAL_LIST_FIELDS:
+        if isinstance(location.get(key), list):
+            authored_state[key] = deepcopy(location.get(key))
+    for key in SCENE_LOCAL_DICT_FIELDS:
+        if isinstance(location.get(key), dict):
+            authored_state[key] = deepcopy(location.get(key))
+    authored_state['activeNpcIds'] = _merge_unique(authored_state.get('activeNpcIds'), location.get('npcIds'))
+    authored_state['activeQuestIds'] = _merge_unique(authored_state.get('activeQuestIds'), location.get('questIds'))
+    if isinstance(authored, dict):
+        authored_state.update(deepcopy(authored))
+    if isinstance(saved, dict):
+        authored_state.update(deepcopy(saved))
+
+    terminal_quest_ids = {
+        _text(quest.get('id'))
+        for quest in _ensure_list(state, 'quests')
+        if isinstance(quest, dict)
+        and _text(quest.get('id'))
+        and _text(quest.get('status')).lower() in {'completed', 'failed', 'abandoned'}
+    }
+    authored_state['activeQuestIds'] = [
+        quest_id
+        for quest_id in _string_list(authored_state.get('activeQuestIds'))
+        if quest_id not in terminal_quest_ids
+    ]
+    return authored_state
+
+
+def _npc_matches(record: dict[str, Any], npc_id: Any) -> bool:
+    return bool(
+        isinstance(record, dict)
+        and _text(npc_id)
+        and _text(record.get('id') or record.get('npcId')) == _text(npc_id)
+    )
+
+
+def _set_cached_location_npc_presence(
+    state: dict[str, Any],
+    *,
+    location_id: Any,
+    npc_id: Any,
+    present: bool,
+) -> None:
+    location_key = _world_id(location_id)
+    npc_key = _text(npc_id)
+    if not location_key or not npc_key:
+        return
+    scene_state = _location_scene_states(state).setdefault(location_key, {})
+    active_ids = _string_list(scene_state.get('activeNpcIds'))
+    if present:
+        scene_state['activeNpcIds'] = _merge_unique(active_ids, [npc_key])
+    else:
+        scene_state['activeNpcIds'] = [item for item in active_ids if _text(item) != npc_key]
+
+
+def _remove_npc_location_reference(state: dict[str, Any], *, location_id: Any, npc_id: Any) -> None:
+    location = _location_record(state, location_id=location_id)
+    if location:
+        location['npcIds'] = [
+            item
+            for item in _string_list(location.get('npcIds'))
+            if _text(item) != _text(npc_id)
+        ]
+    _set_cached_location_npc_presence(state, location_id=location_id, npc_id=npc_id, present=False)
+
+
+def _add_npc_location_reference(state: dict[str, Any], *, location_id: Any, npc_id: Any) -> None:
+    location = _location_record(state, location_id=location_id)
+    if location:
+        location['npcIds'] = _merge_unique(location.get('npcIds'), [npc_id])
+    _set_cached_location_npc_presence(state, location_id=location_id, npc_id=npc_id, present=True)
+
+
+def _reconcile_current_scene_npcs(state: dict[str, Any]) -> None:
+    scene = _ensure_scene(state)
+    location_id = _text(scene.get('locationId'))
+    active_ids = _string_list(scene.get('activeNpcIds'))
+    party_ids = {
+        _text(npc.get('id'))
+        for npc in _ensure_list(state, 'partyNpcs')
+        if isinstance(npc, dict) and _text(npc.get('id'))
+    }
+    tracked = {
+        _text(npc.get('id')): npc
+        for npc in [*_ensure_list(state, 'knownNpcs'), *_ensure_list(state, 'partyNpcs')]
+        if isinstance(npc, dict) and _text(npc.get('id'))
+    }
+    reconciled: list[str] = []
+    for npc_id in active_ids:
+        npc = tracked.get(npc_id)
+        npc_location_id = _text(npc.get('locationId')) if npc else ''
+        if npc and npc_id not in party_ids and npc_location_id and npc_location_id != location_id:
+            continue
+        if npc_id not in reconciled:
+            reconciled.append(npc_id)
+    for npc_id, npc in tracked.items():
+        if npc_id in party_ids or (_text(npc.get('locationId')) and _text(npc.get('locationId')) == location_id):
+            if npc_id not in reconciled:
+                reconciled.append(npc_id)
+    scene['activeNpcIds'] = reconciled
+
+
 def _apply_scene_fields(scene: dict[str, Any], change: dict[str, Any]) -> None:
     for key in ('locationId', 'name', 'sceneType', 'mood', 'combatState', 'musicTag'):
         _set_if_present(scene, key, change.get(key))
@@ -655,9 +869,7 @@ def _location_payload(change: dict[str, Any], *, status: str | None = None) -> d
         'tags': _merge_unique(location.get('tags'), change.get('tags')),
         'metadata': location.get('metadata') if isinstance(location.get('metadata'), dict) else {},
     }
-    location_type = change.get('locationType') or change.get('type') or location.get('type')
-    if location_type and str(location_type).startswith('location.'):
-        location_type = None
+    location_type = change.get('locationType') or location.get('type')
     if location_type:
         payload['type'] = location_type
     if turn_id is not None:
@@ -675,7 +887,10 @@ def _merge_location(state: dict[str, Any], payload: dict[str, Any]) -> dict[str,
     locations = _ensure_list(state, 'locations')
     record = _find_record(locations, record_id=payload.get('id'), name=payload.get('name'))
     if not record:
+        # Keep authored campaign-pack fields (including sceneState and items)
+        # when a catalog location first becomes part of visible world state.
         record = {
+            **_public_authored_location_fields(payload),
             'id': payload.get('id'),
             'name': payload.get('name'),
             'type': payload.get('type') or 'other',
@@ -700,6 +915,9 @@ def _merge_location(state: dict[str, Any], payload: dict[str, Any]) -> dict[str,
     _merge_rich_text(record, 'description', payload.get('description'))
     for key in ('connectedLocationIds', 'npcIds', 'questIds', 'tags'):
         record[key] = _merge_unique(record.get(key), payload.get(key))
+    for key, value in _public_authored_location_fields(payload).items():
+        if record.get(key) in (None, '', [], {}):
+            record[key] = deepcopy(value)
     _merge_metadata(record, payload.get('metadata'))
     _merge_record_source(record, payload)
     return record
@@ -707,23 +925,57 @@ def _merge_location(state: dict[str, Any], payload: dict[str, Any]) -> dict[str,
 
 def _apply_scene_move(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
     scene = _ensure_scene(state)
+    previous_location_id = _text(scene.get('locationId'))
+    _save_current_scene_state(state)
     location_payload = _location_payload(change, status='visited')
     location = _merge_location(state, location_payload)
-    move_change = {
-        'sceneType': 'exploration',
-        'dangerLevel': 0,
-        'combatState': 'none',
-        'description': '',
-        'activeNpcIds': [],
-        **change,
-        'locationId': location.get('id'),
-        'name': location.get('name'),
-    }
-    if 'mood' not in change:
-        scene.pop('mood', None)
-    if 'musicTag' not in change:
-        scene.pop('musicTag', None)
-    _apply_scene_fields(scene, move_change)
+    target_location_id = _text(location.get('id'))
+    target_state = _cached_scene_state(state, location)
+    scene.clear()
+    scene.update(
+        {
+            'locationId': target_location_id,
+            'name': location.get('name'),
+            'sceneType': target_state.get('sceneType') or location.get('sceneType') or 'exploration',
+            'dangerLevel': max(0, min(10, int_or_default(target_state.get('dangerLevel'), default=0))),
+            'combatState': 'none',
+            'description': target_state.get('description') or location.get('description') or '',
+            'activeNpcIds': _string_list(target_state.get('activeNpcIds')),
+            'activeQuestIds': _string_list(target_state.get('activeQuestIds')),
+            'items': deepcopy(target_state.get('items')) if isinstance(target_state.get('items'), list) else [],
+            'playerPositions': deepcopy(target_state.get('playerPositions')) if isinstance(target_state.get('playerPositions'), dict) else {},
+            'playerZones': deepcopy(target_state.get('playerZones')) if isinstance(target_state.get('playerZones'), dict) else {},
+            'characterPositions': deepcopy(target_state.get('characterPositions')) if isinstance(target_state.get('characterPositions'), dict) else {},
+            'characterZones': deepcopy(target_state.get('characterZones')) if isinstance(target_state.get('characterZones'), dict) else {},
+        }
+    )
+    for key in ('mood', 'musicTag', 'updatedAtTurn'):
+        if key in target_state:
+            scene[key] = deepcopy(target_state.get(key))
+    _apply_scene_fields(
+        scene,
+        {
+            **change,
+            'locationId': target_location_id,
+            'name': location.get('name'),
+            'combatState': 'none',
+        },
+    )
+    if scene.get('sceneType') == 'combat':
+        scene['sceneType'] = 'exploration'
+
+    for npc in _ensure_list(state, 'partyNpcs'):
+        if not isinstance(npc, dict) or not _text(npc.get('id')):
+            continue
+        old_location_id = _text(npc.get('locationId')) or previous_location_id
+        if old_location_id and old_location_id != target_location_id:
+            _remove_npc_location_reference(state, location_id=old_location_id, npc_id=npc.get('id'))
+        npc['locationId'] = target_location_id
+        _add_npc_location_reference(state, location_id=target_location_id, npc_id=npc.get('id'))
+
+    _reconcile_current_scene_npcs(state)
+    state['combat'] = normalize_combat_state({}, scene)
+    scene['combatState'] = 'none'
     return location
 
 
@@ -890,10 +1142,50 @@ def _npc_payload(change: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _merge_npc(state: dict[str, Any], payload: dict[str, Any], *, party: bool = False) -> dict[str, Any]:
-    collection_key = 'partyNpcs' if party else 'knownNpcs'
-    collection = _ensure_list(state, collection_key)
+def _party_membership_change(change: dict[str, Any]) -> bool | None:
+    for key in ('party', 'partyNpc', 'inParty'):
+        if key not in change:
+            continue
+        value = change.get(key)
+        if isinstance(value, bool):
+            return value
+        return _text(value).lower() in {'1', 'true', 'yes', 'on'}
+    return None
+
+
+def _party_npc_remote_location_error(
+    state: dict[str, Any],
+    npc: dict[str, Any] | None,
+    *,
+    target_location_id: Any,
+    membership_change: bool | None = None,
+) -> str | None:
+    target_id = _world_id(target_location_id)
+    npc_id = _text(npc.get('id')) if isinstance(npc, dict) else ''
+    if not target_id or not npc_id:
+        return None
+    is_party_npc = any(
+        _npc_matches(candidate, npc_id)
+        for candidate in _ensure_list(state, 'partyNpcs')
+        if isinstance(candidate, dict)
+    )
+    if not is_party_npc or membership_change is False:
+        return None
+    scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
+    current_location_id = _world_id(scene.get('locationId'), scene.get('name'))
+    if target_id == current_location_id:
+        return None
+    return 'Party NPCs must remain at the current scene unless they leave the party in the same NPC update.'
+
+
+def _merge_npc(state: dict[str, Any], payload: dict[str, Any], *, party: bool | None = None) -> dict[str, Any]:
+    known_collection = _ensure_list(state, 'knownNpcs')
+    party_collection = _ensure_list(state, 'partyNpcs')
     record = _npc_record(state, npc_id=payload.get('id'), name=payload.get('name'))
+    record_id = _text((record or payload).get('id'))
+    already_in_party = any(_npc_matches(candidate, record_id) for candidate in party_collection)
+    collection_key = 'partyNpcs' if (party if party is not None else already_in_party) else 'knownNpcs'
+    collection = party_collection if collection_key == 'partyNpcs' else known_collection
     if not record:
         record = {
             'id': payload.get('id'),
@@ -916,6 +1208,16 @@ def _merge_npc(state: dict[str, Any], payload: dict[str, Any], *, party: bool = 
         _merge_record_source(record, payload)
         collection.append(record)
         return record
+
+    # Membership is exclusive. An explicit party flag moves the existing
+    # record atomically; an omitted flag preserves its current collection.
+    for key in ('knownNpcs', 'partyNpcs'):
+        state[key] = [
+            candidate
+            for candidate in _ensure_list(state, key)
+            if not _npc_matches(candidate, record_id)
+        ]
+    state[collection_key].append(record)
     for key in ('name', 'race', 'role', 'disposition', 'locationId', 'status', 'faction', 'firstMetTurn', 'lastSeenTurn'):
         if key == 'firstMetTurn' and record.get(key):
             continue
@@ -939,17 +1241,26 @@ def _merge_npc(state: dict[str, Any], payload: dict[str, Any], *, party: bool = 
     return record
 
 
-def _link_npc_and_quest_refs(state: dict[str, Any], npc: dict[str, Any]) -> None:
+def _link_npc_and_quest_refs(
+    state: dict[str, Any],
+    npc: dict[str, Any],
+    *,
+    previous_location_id: Any = None,
+) -> None:
     npc_id = _text(npc.get('id'))
     if not npc_id:
         return
-    location = _location_record(state, location_id=npc.get('locationId'))
-    if location:
-        location['npcIds'] = _merge_unique(location.get('npcIds'), [npc_id])
+    location_id = _text(npc.get('locationId'))
+    old_location_id = _text(previous_location_id)
+    if old_location_id and old_location_id != location_id:
+        _remove_npc_location_reference(state, location_id=old_location_id, npc_id=npc_id)
+    if location_id:
+        _add_npc_location_reference(state, location_id=location_id, npc_id=npc_id)
     for quest_id in _string_list(npc.get('questIds')):
         quest = _quest_record(state, quest_id=quest_id)
         if quest:
             quest['relatedNpcIds'] = _merge_unique(quest.get('relatedNpcIds'), [npc_id])
+    _reconcile_current_scene_npcs(state)
 
 
 def _apply_relationship_update(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] | None:
@@ -1547,12 +1858,24 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             applied_change['questId'] = quest.get('id')
             applied_change['questTitle'] = quest.get('title')
         elif change_type in {'npc.discover', 'npc.update'}:
+            previous_npc = _npc_record(next_state, npc_id=change.get('npcId'), name=change.get('name'))
+            previous_location_id = previous_npc.get('locationId') if isinstance(previous_npc, dict) else None
+            membership_change = _party_membership_change(change)
+            party_location_error = _party_npc_remote_location_error(
+                next_state,
+                previous_npc,
+                target_location_id=change.get('locationId'),
+                membership_change=membership_change if change_type == 'npc.update' else None,
+            )
+            if party_location_error:
+                skipped.append({'change': change, 'reason': party_location_error})
+                continue
             npc = _merge_npc(
                 next_state,
                 _npc_payload(change),
-                party=bool(change.get('party') or change.get('partyNpc') or change.get('inParty')),
+                party=membership_change,
             )
-            _link_npc_and_quest_refs(next_state, npc)
+            _link_npc_and_quest_refs(next_state, npc, previous_location_id=previous_location_id)
             applied_change['npcId'] = npc.get('id')
             applied_change['npcName'] = npc.get('name')
         elif change_type == 'npc.move':
@@ -1560,11 +1883,20 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             if not npc:
                 skipped.append({'change': change, 'reason': 'NPC missing during movement.'})
                 continue
+            party_location_error = _party_npc_remote_location_error(
+                next_state,
+                npc,
+                target_location_id=change.get('locationId'),
+            )
+            if party_location_error:
+                skipped.append({'change': change, 'reason': party_location_error})
+                continue
+            previous_location_id = npc.get('locationId')
             npc['locationId'] = _world_id(change.get('locationId'))
             turn_id = _turn_id(change)
             if turn_id is not None:
                 npc['lastSeenTurn'] = turn_id
-            _link_npc_and_quest_refs(next_state, npc)
+            _link_npc_and_quest_refs(next_state, npc, previous_location_id=previous_location_id)
             applied_change['npcId'] = npc.get('id')
             applied_change['npcName'] = npc.get('name')
         elif change_type == 'npc.relationship.update':

@@ -39,7 +39,12 @@ def test_group_roll_detection_respects_explicit_no_roll_language(text, expected)
         ('Everyone roll initiative.', None, 'initiative'),
         ('Make an attack with your weapon.', None, 'attack'),
         ('Try to levitate the relic with magic.', None, 'spell'),
-        ('Make a Dexterity acrobatics check.', None, 'mobility'),
+        ('Make a Dexterity acrobatics check.', None, 'acrobatics'),
+        ('Make a Persuasion check.', None, 'persuasion'),
+        ('Make a Wisdom saving throw.', None, 'wisdom_saving_throw'),
+        ('Make a Constitution ability check.', None, 'constitution'),
+        ('Your failed Stealth attempt alerts them. Make a Wisdom check.', None, 'wisdom'),
+        ('With Persuasion impossible, make a Strength check.', None, 'strength'),
         ('Test the old inscription.', 'wisdom', 'wisdom'),
         ('Test the old inscription.', None, 'check'),
     ],
@@ -134,6 +139,41 @@ def test_build_roll_gate_keeps_pvp_target_pending_after_actor_authoritative_roll
             'result_visibility': 'hidden_until_landed',
             'ability': {'key': 'strength'},
         },
+    }
+
+
+def test_build_roll_gate_discards_stale_mechanics_when_dm_refines_roll_type():
+    gate = TurnRollPolicy.build_roll_gate(
+        turn=_turn(
+            requires_roll=True,
+            outcome_status='deferred',
+            rule_type='spell',
+            rules_hint=json.dumps(
+                {
+                    'roll_spec': {
+                        'die': 'd20',
+                        'mode': 'disadvantage',
+                        'rule_type': 'spell',
+                        'result_visibility': 'visible',
+                        'ability': {'key': 'intelligence'},
+                        'proficiency': {'bonus': 2, 'skills': ['spellcasting:wizard']},
+                        'modifier': 5,
+                    }
+                }
+            ),
+        ),
+        dm_response_text='Make a Wisdom saving throw.',
+        response_requests_roll=True,
+        group_player_ids=[3],
+    )
+
+    assert gate is not None
+    assert gate['rule_type'] == 'wisdom_saving_throw'
+    assert gate['roll_spec'] == {
+        'die': 'd20',
+        'mode': 'disadvantage',
+        'rule_type': 'wisdom_saving_throw',
+        'result_visibility': 'visible',
     }
 
 

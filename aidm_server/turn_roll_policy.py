@@ -26,6 +26,51 @@ _GROUP_ROLL_REQUEST_RE = re.compile(
     r'\binitiative\b',
     re.IGNORECASE,
 )
+_ROLL_REQUEST_CLAUSE_RE = re.compile(
+    r'\b(?:please\s+)?roll\b|'
+    r'\b(?:must|should|need(?:s)? to|have to|has to)\s+(?:all\s+)?(?:roll|make)\b|'
+    r'\bmake\b',
+    re.IGNORECASE,
+)
+_ABILITY_PATTERN = r'(strength|dexterity|constitution|intelligence|wisdom|charisma)'
+_SAVING_THROW_RE = re.compile(
+    rf'\b{_ABILITY_PATTERN}\s+(?:saving\s+throw|save)\b',
+    re.IGNORECASE,
+)
+_ABILITY_CHECK_RE = re.compile(
+    rf'\b{_ABILITY_PATTERN}\s+(?:ability\s+)?check\b',
+    re.IGNORECASE,
+)
+_SKILL_PHRASES = {
+    'acrobatics': 'acrobatics',
+    'animal handling': 'animal_handling',
+    'arcana': 'arcana',
+    'athletics': 'athletics',
+    'deception': 'deception',
+    'history': 'history',
+    'insight': 'insight',
+    'intimidation': 'intimidation',
+    'investigation': 'investigation',
+    'medicine': 'medicine',
+    'nature': 'nature',
+    'perception': 'perception',
+    'performance': 'performance',
+    'persuasion': 'persuasion',
+    'religion': 'religion',
+    'sleight of hand': 'sleight_of_hand',
+    'stealth': 'stealth',
+    'survival': 'survival',
+    "thieves' tools": 'thieves_tools',
+    'thieves tools': 'thieves_tools',
+}
+_SKILL_RE = re.compile(
+    r"\b(" + '|'.join(sorted((re.escape(value) for value in _SKILL_PHRASES), key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _text_roll_type(value: object) -> str:
+    return str(value or '').strip().lower()
 
 
 class RollGateTurn(Protocol):
@@ -61,11 +106,29 @@ class TurnRollPolicy:
                 return True
         return False
 
-    @staticmethod
-    def roll_type_from_response(text: str, fallback: str | None = None) -> str:
-        candidate = (text or '').lower()
+    @classmethod
+    def roll_type_from_response(cls, text: str, fallback: str | None = None) -> str:
+        requested_clauses: list[str] = []
+        for sentence in cls.response_sentences(text):
+            if _NO_ROLL_NEEDED_RE.search(sentence) or not _GROUP_ROLL_REQUEST_RE.search(sentence):
+                continue
+            request_start = _ROLL_REQUEST_CLAUSE_RE.search(sentence)
+            requested_clauses.append(sentence[request_start.start():] if request_start else sentence)
+        # A response may mention a prior check while narrating its consequence
+        # before requesting the next one. Classify the final explicit request,
+        # not the first skill name anywhere in the response.
+        candidate = (requested_clauses[-1] if requested_clauses else (text or '')).lower()
         if re.search(r'\binitiative\b', candidate):
             return 'initiative'
+        saving_throw = _SAVING_THROW_RE.search(candidate)
+        if saving_throw:
+            return f'{saving_throw.group(1).lower()}_saving_throw'
+        skill = _SKILL_RE.search(candidate)
+        if skill:
+            return _SKILL_PHRASES[skill.group(1).lower()]
+        ability_check = _ABILITY_CHECK_RE.search(candidate)
+        if ability_check:
+            return ability_check.group(1).lower()
         if re.search(
             r'\bspell\b|\bmagic\b|\bcast\b|\bconjure\b|\bsummon\b|\bsorcery\b|'
             r'\bsorcerous\b|\btelekinesis\b|\blevitat\w*\b|\bwild magic\b',
@@ -102,12 +165,27 @@ class TurnRollPolicy:
         rules_hint = safe_json_loads(turn.rules_hint, {})
         rules_hint = rules_hint if isinstance(rules_hint, dict) else {}
         persisted_roll_spec = rules_hint.get('roll_spec') if isinstance(rules_hint.get('roll_spec'), dict) else None
+        persisted_rule_type = (
+            _text_roll_type((persisted_roll_spec or {}).get('rule_type'))
+            or _text_roll_type(turn.rule_type)
+        )
+        if persisted_roll_spec and persisted_rule_type and persisted_rule_type != roll_type:
+            # The DM can refine an initial heuristic (for example, a generic
+            # magic action) into a specific skill or saving throw. Keep only
+            # presentation settings across that refinement; ability and
+            # proficiency provenance must be recomputed from the persisted
+            # character when the authoritative roll is resolved.
+            persisted_roll_spec = {
+                key: persisted_roll_spec[key]
+                for key in ('die', 'mode', 'reason', 'result_visibility')
+                if key in persisted_roll_spec
+            }
         roll_spec = {
             'die': 'd20',
             'mode': 'normal',
-            'rule_type': roll_type,
             'result_visibility': 'hidden_until_landed',
             **(persisted_roll_spec or {}),
+            'rule_type': roll_type,
         }
         pvp_payload = rules_hint.get('pvp') if isinstance(rules_hint.get('pvp'), dict) else {}
         try:

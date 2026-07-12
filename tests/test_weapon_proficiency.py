@@ -102,7 +102,7 @@ def test_attack_roll_uses_persisted_player_profile_and_ignores_client_proficienc
     assert attack_context['proficiency_source'] == 'player_weapon_proficiencies'
     assert attack_context['proficiency_selector'] == 'category:martial'
     assert roll['ability']['key'] == 'dexterity'
-    assert roll['proficiency'] == {'bonus': 2, 'skills': ['weapon:longbow']}
+    assert roll['proficiency'] == {'bonus': 2, 'skills': ['weapon:longbow'], 'multiplier': 1}
     assert roll['modifier'] == 3
     assert roll['total'] == 13
 
@@ -138,7 +138,7 @@ def test_empty_persisted_profile_does_not_accept_client_proficiency_claim():
     )
 
     assert attack_context['proficient'] is False
-    assert roll['proficiency'] == {'bonus': 0, 'skills': []}
+    assert roll['proficiency'] == {'bonus': 0, 'skills': [], 'multiplier': 0}
     assert roll['modifier'] == 1
     assert roll['total'] == 11
 

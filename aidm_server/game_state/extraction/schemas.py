@@ -282,6 +282,8 @@ def normalize_declared_action(raw_action: Any, *, fallback_actor_id: str, fallba
     for key in (
         'itemName',
         'item_name',
+        'itemId',
+        'item_id',
         'targetId',
         'target_id',
         'intendedUse',

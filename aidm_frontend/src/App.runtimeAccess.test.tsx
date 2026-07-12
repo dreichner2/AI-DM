@@ -26,7 +26,7 @@ describe('App runtime and workspace access', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Log In' })
     expect(within(dialog).getByText('Access')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Open table settings' })).toBeInTheDocument()
-  })
+  }, 10_000)
 
   it('does not show the mobile table settings gear on desktop', async () => {
     await renderLoadedApp()

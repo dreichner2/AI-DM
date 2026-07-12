@@ -220,8 +220,12 @@ def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | Non
         if not looks_like_inventory_item(name):
             return None, 'item.name must be a tangible inventory item.'
         quantity = _coerce_int(item.get('quantity'))
+        item_id = _clean_text(item.get('id') or item.get('item_id') or item.get('itemId'), max_length=ACTION_ID_MAX_LENGTH)
+        if item_id and not ACTION_ID_RE.fullmatch(item_id):
+            return None, 'item.id contains unsupported characters.'
         cost_gold = _coerce_non_negative_int(value.get('cost_gold', value.get('price_gold')))
         normalized['item'] = {
+            **({'id': item_id} if item_id else {}),
             'name': name,
             'quantity': quantity if quantity is not None and quantity > 0 else 1,
         }

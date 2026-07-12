@@ -9,6 +9,7 @@ from aidm_server.canon_text import int_or_default, normalized_name
 from aidm_server.database import db
 from aidm_server.models import DmTurn, Player, safe_json_dumps, safe_json_loads
 from aidm_server.spellbook import (
+    class_spell_archetype,
     known_spell_names,
     merge_spellbooks,
     spellbook_for_character,
@@ -29,6 +30,53 @@ ABILITY_LABELS = {
     'wisdom': 'WIS',
     'charisma': 'CHA',
 }
+SKILL_ABILITY = {
+    'acrobatics': 'dexterity',
+    'animal_handling': 'wisdom',
+    'arcana': 'intelligence',
+    'athletics': 'strength',
+    'deception': 'charisma',
+    'history': 'intelligence',
+    'insight': 'wisdom',
+    'intimidation': 'charisma',
+    'investigation': 'intelligence',
+    'medicine': 'wisdom',
+    'nature': 'intelligence',
+    'perception': 'wisdom',
+    'performance': 'charisma',
+    'persuasion': 'charisma',
+    'religion': 'intelligence',
+    'sleight_of_hand': 'dexterity',
+    'stealth': 'dexterity',
+    'survival': 'wisdom',
+    'thieves_tools': 'dexterity',
+}
+CLASS_SAVING_THROW_PROFICIENCIES = {
+    'artificer': {'constitution', 'intelligence'},
+    'barbarian': {'strength', 'constitution'},
+    'bard': {'dexterity', 'charisma'},
+    'cleric': {'wisdom', 'charisma'},
+    'druid': {'intelligence', 'wisdom'},
+    'fighter': {'strength', 'constitution'},
+    'monk': {'strength', 'dexterity'},
+    'paladin': {'wisdom', 'charisma'},
+    'ranger': {'strength', 'dexterity'},
+    'rogue': {'dexterity', 'intelligence'},
+    'sorcerer': {'constitution', 'charisma'},
+    'warlock': {'wisdom', 'charisma'},
+    'wizard': {'intelligence', 'wisdom'},
+}
+SPELLCASTING_ABILITY_BY_CLASS = {
+    'artificer': 'intelligence',
+    'bard': 'charisma',
+    'cleric': 'wisdom',
+    'druid': 'wisdom',
+    'paladin': 'charisma',
+    'ranger': 'wisdom',
+    'sorcerer': 'charisma',
+    'warlock': 'charisma',
+    'wizard': 'intelligence',
+}
 POINT_BUY_BUDGET = 27
 POINT_BUY_COSTS = {
     8: 0,
@@ -42,11 +90,9 @@ POINT_BUY_COSTS = {
 }
 
 ROLL_TYPE_ABILITY = {
-    'athletics': 'strength',
+    **SKILL_ABILITY,
     'initiative': 'dexterity',
     'mobility': 'dexterity',
-    'stealth': 'dexterity',
-    'thieves_tools': 'dexterity',
     'lore': 'intelligence',
     'social': 'charisma',
     'strength': 'strength',
@@ -86,15 +132,16 @@ ROLL_TYPE_BASE_DC = {
     'thieves_tools': 15,
     'mobility': 14,
     'check': 14,
-}
-ROLL_TYPE_PROFICIENCY_SKILLS = {
-    'athletics': {'athletics'},
-    'lore': {'arcana', 'history', 'investigation', 'nature', 'religion'},
-    'mobility': {'acrobatics', 'athletics'},
-    'social': {'deception', 'intimidation', 'performance', 'persuasion'},
-    'spell': {'arcana', 'nature', 'religion'},
-    'stealth': {'stealth'},
-    'thieves_tools': {'sleight_of_hand', 'thieves_tools'},
+    **{
+        skill: (
+            15
+            if ability == 'charisma'
+            else 13
+            if ability == 'intelligence'
+            else 14
+        )
+        for skill, ability in SKILL_ABILITY.items()
+    },
 }
 SKILL_NAME_ALIASES = {
     'animal_handling': 'animal_handling',
@@ -104,27 +151,7 @@ SKILL_NAME_ALIASES = {
     'thieves_tool': 'thieves_tools',
     'thieves_tools': 'thieves_tools',
 }
-KNOWN_SKILLS = {
-    'acrobatics',
-    'animal_handling',
-    'arcana',
-    'athletics',
-    'deception',
-    'history',
-    'insight',
-    'intimidation',
-    'investigation',
-    'medicine',
-    'nature',
-    'perception',
-    'performance',
-    'persuasion',
-    'religion',
-    'sleight_of_hand',
-    'stealth',
-    'survival',
-    'thieves_tools',
-}
+KNOWN_SKILLS = set(SKILL_ABILITY)
 
 GOLD_SPEND_PATTERNS = [
     re.compile(r'\b(?:spend|pay|paid|buy|bought|purchase|purchased|hand over|give)\s+(?:[^.!?\n]{0,80}?\s+)?(\d{1,5})\s+(?:gp|gold)\b', re.IGNORECASE),
@@ -243,6 +270,116 @@ def _extract_skill_proficiencies(stats: dict[str, Any], sheet: dict[str, Any]) -
             'skills',
         ):
             _collect_skill_values(source.get(key), proficiencies)
+    return sorted(proficiencies)
+
+
+def _extract_skill_expertise(stats: dict[str, Any], sheet: dict[str, Any]) -> list[str]:
+    expertise: set[str] = set()
+    for source in (stats, sheet):
+        if not isinstance(source, dict):
+            continue
+        for key in ('skill_expertise', 'skillExpertise', 'expertise', 'expertSkills'):
+            _collect_skill_values(source.get(key), expertise)
+
+        skills = source.get('skills')
+        if isinstance(skills, list):
+            for record in skills:
+                if not isinstance(record, dict):
+                    continue
+                multiplier = int_or_default(
+                    record.get('proficiency_multiplier', record.get('proficiencyMultiplier')),
+                    default=0,
+                )
+                if record.get('expertise') or multiplier >= 2:
+                    _collect_skill_values(record.get('name') or record.get('skill') or record.get('id'), expertise)
+        elif isinstance(skills, dict):
+            for skill_name, record in skills.items():
+                if not isinstance(record, dict):
+                    continue
+                multiplier = int_or_default(
+                    record.get('proficiency_multiplier', record.get('proficiencyMultiplier')),
+                    default=0,
+                )
+                if record.get('expertise') or multiplier >= 2:
+                    _collect_skill_values(skill_name, expertise)
+    return sorted(expertise)
+
+
+def _collect_ability_values(raw: Any, proficiencies: set[str]) -> None:
+    if isinstance(raw, str):
+        key = _skill_key(raw).removesuffix('_saving_throw').removesuffix('_save')
+        if key in ABILITY_KEYS:
+            proficiencies.add(key)
+        return
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                if item.get('proficient') is False or item.get('trained') is False:
+                    continue
+                _collect_ability_values(item.get('ability') or item.get('name') or item.get('id'), proficiencies)
+            else:
+                _collect_ability_values(item, proficiencies)
+        return
+    if isinstance(raw, dict):
+        for key, enabled in raw.items():
+            if isinstance(enabled, dict):
+                enabled = enabled.get('proficient', enabled.get('trained', enabled.get('value', True)))
+            if enabled:
+                _collect_ability_values(key, proficiencies)
+
+
+def _base_class_name(value: Any) -> str:
+    class_name = normalized_name(value)
+    for candidate in CLASS_SAVING_THROW_PROFICIENCIES:
+        if class_name == candidate or class_name.startswith(f'{candidate} '):
+            return candidate
+    return class_name
+
+
+def _extract_saving_throw_proficiencies(
+    player: Player,
+    stats: dict[str, Any],
+    sheet: dict[str, Any],
+) -> list[str]:
+    class_archetype = class_spell_archetype(player.class_) or _base_class_name(player.class_)
+    proficiencies = set(CLASS_SAVING_THROW_PROFICIENCIES.get(class_archetype, set()))
+    for source in (stats, sheet):
+        if not isinstance(source, dict):
+            continue
+        for key in (
+            'saving_throw_proficiencies',
+            'savingThrowProficiencies',
+            'proficientSavingThrows',
+            'saving_throws',
+            'savingThrows',
+        ):
+            _collect_ability_values(source.get(key), proficiencies)
+    return sorted(proficiencies)
+
+
+def _race_skill_proficiencies(player: Player) -> list[str]:
+    try:
+        from aidm_server.race_system import race_definition_from_selection, race_selection_from_json
+
+        selection = race_selection_from_json(player.race_selection, player.race)
+        race = race_definition_from_selection(selection, player.race)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(race, dict):
+        return []
+
+    proficiencies: set[str] = set()
+    for trait in race.get('traits') or []:
+        if not isinstance(trait, dict):
+            continue
+        mechanics = trait.get('mechanics') if isinstance(trait.get('mechanics'), dict) else {}
+        bonus = mechanics.get('skillBonus') if isinstance(mechanics.get('skillBonus'), dict) else {}
+        if str(bonus.get('bonusType') or '').strip().lower() not in {'proficiency', 'expertise'}:
+            continue
+        for skill in bonus.get('skills') or []:
+            skill_key = _skill_key(skill)
+            if skill_key in KNOWN_SKILLS:
+                proficiencies.add(skill_key)
     return sorted(proficiencies)
 
 
@@ -391,9 +528,21 @@ def character_state_for_player(player: Player | None) -> dict[str, Any]:
         'level': int(player.level or 1),
         'proficiency_bonus': int_or_default(stats.get('proficiency_bonus'), default=2 + max(0, int(player.level or 1) - 1) // 4),
     }
-    skill_proficiencies = _extract_skill_proficiencies(stats, sheet)
+    skill_expertise = _extract_skill_expertise(stats, sheet)
+    skill_proficiencies = sorted(
+        {
+            *_extract_skill_proficiencies(stats, sheet),
+            *_race_skill_proficiencies(player),
+            *skill_expertise,
+        }
+    )
     if skill_proficiencies:
         state['skill_proficiencies'] = skill_proficiencies
+    if skill_expertise:
+        state['skill_expertise'] = skill_expertise
+    saving_throw_proficiencies = _extract_saving_throw_proficiencies(player, stats, sheet)
+    if saving_throw_proficiencies:
+        state['saving_throw_proficiencies'] = saving_throw_proficiencies
     weapon_proficiencies = normalize_weapon_proficiencies(player.weapon_proficiencies)
     if weapon_proficiencies:
         state['weapon_proficiencies'] = weapon_proficiencies
@@ -524,6 +673,9 @@ def _requested_roll_ability(
     player: Player | None,
     attack_context: dict[str, Any] | None = None,
 ) -> str | None:
+    if roll_type.endswith('_saving_throw'):
+        saving_throw_ability = roll_type.removesuffix('_saving_throw')
+        return saving_throw_ability if saving_throw_ability in ABILITY_KEYS else None
     if roll_type == 'attack':
         attack_ability = str((attack_context or {}).get('ability_key') or '').strip().lower()
         return attack_ability if attack_ability in {'strength', 'dexterity'} else 'strength'
@@ -532,25 +684,13 @@ def _requested_roll_ability(
     if mapped:
         return mapped
 
+    if roll_type == 'spell' and player:
+        class_ability = SPELLCASTING_ABILITY_BY_CLASS.get(class_spell_archetype(player.class_) or '')
+        if class_ability:
+            return class_ability
     requested = str(requested_ability_key or '').strip().lower()
     if requested in ABILITY_KEYS:
         return requested
-
-    if roll_type == 'spell' and player:
-        class_name = str(player.class_ or '').strip().lower()
-        class_ability = {
-            'artificer': 'intelligence',
-            'bard': 'charisma',
-            'cleric': 'wisdom',
-            'druid': 'wisdom',
-            'paladin': 'charisma',
-            'ranger': 'wisdom',
-            'sorcerer': 'charisma',
-            'warlock': 'charisma',
-            'wizard': 'intelligence',
-        }.get(class_name)
-        if class_ability:
-            return class_ability
     return None
 
 
@@ -580,18 +720,46 @@ def character_roll_spec(
     modifiers = state.get('ability_modifiers') if isinstance(state.get('ability_modifiers'), dict) else {}
     ability_mod = int_or_default(modifiers.get(ability_key), default=0) if ability_key else 0
     skill_proficiencies = set(state.get('skill_proficiencies') if isinstance(state.get('skill_proficiencies'), list) else [])
+    skill_expertise = set(state.get('skill_expertise') if isinstance(state.get('skill_expertise'), list) else [])
+    saving_throw_proficiencies = set(
+        state.get('saving_throw_proficiencies')
+        if isinstance(state.get('saving_throw_proficiencies'), list)
+        else []
+    )
+    proficiency_multiplier = 0
     if normalized_roll_type == 'attack' and bool((attack_context or {}).get('proficient')):
         weapon = (attack_context or {}).get('weapon')
         weapon = weapon if isinstance(weapon, dict) else {}
         weapon_name = normalized_name(weapon.get('name') or weapon.get('subtype')) or 'weapon'
         matching_proficiencies = [f'weapon:{weapon_name}']
-    else:
-        matching_proficiencies = sorted(
-            skill_proficiencies.intersection(
-                ROLL_TYPE_PROFICIENCY_SKILLS.get(normalized_roll_type, set())
-            )
+        proficiency_multiplier = 1
+    elif normalized_roll_type.endswith('_saving_throw'):
+        saving_throw_ability = normalized_roll_type.removesuffix('_saving_throw')
+        matching_proficiencies = (
+            [f'save:{saving_throw_ability}']
+            if saving_throw_ability in saving_throw_proficiencies
+            else []
         )
-    proficiency_bonus = int_or_default(state.get('proficiency_bonus'), default=0) if matching_proficiencies else 0
+        proficiency_multiplier = 1 if matching_proficiencies else 0
+    elif normalized_roll_type in SKILL_ABILITY:
+        matching_proficiencies = (
+            [normalized_roll_type]
+            if normalized_roll_type in skill_proficiencies
+            else []
+        )
+        proficiency_multiplier = 2 if normalized_roll_type in skill_expertise else (1 if matching_proficiencies else 0)
+    elif normalized_roll_type == 'spell' and (
+        spell_archetype := class_spell_archetype(player.class_ if player else None)
+    ) in SPELLCASTING_ABILITY_BY_CLASS:
+        matching_proficiencies = [f'spellcasting:{spell_archetype}']
+        proficiency_multiplier = 1
+    else:
+        # Broad legacy categories do not identify one concrete skill. Applying
+        # whichever related proficiency happens to exist would let Deception
+        # qualify Persuasion, History qualify Arcana, and similar mismatches.
+        matching_proficiencies = []
+    base_proficiency_bonus = int_or_default(state.get('proficiency_bonus'), default=0)
+    proficiency_bonus = base_proficiency_bonus * proficiency_multiplier
     hp = state.get('hp') if isinstance(state.get('hp'), dict) else {}
     current_hp = int_or_default(hp.get('current'), default=0)
     max_hp = int_or_default(hp.get('max'), default=0)
@@ -630,10 +798,12 @@ def character_roll_spec(
         'proficiency': {
             'bonus': proficiency_bonus,
             'skills': matching_proficiencies,
+            'multiplier': proficiency_multiplier,
         },
         'modifier_breakdown': {
             'ability_modifier': ability_mod,
             'proficiency_bonus': proficiency_bonus,
+            'proficiency_multiplier': proficiency_multiplier,
             'wound_penalty': hp_penalty,
             'total': total_modifier,
         },

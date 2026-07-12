@@ -402,15 +402,26 @@ def _state_change_signature(change: dict[str, Any]) -> tuple[Any, ...] | None:
     actor_id = str(change.get('actorId') or change.get('actor_id') or '')
     if change_type in {'inventory.add', 'inventory.remove', 'inventory.equip', 'inventory.unequip'}:
         item = change.get('item') if isinstance(change.get('item'), dict) else {}
+        item_id = change.get('itemId') or change.get('item_id') or item.get('id') or item.get('itemId')
         item_name = change.get('itemName') or change.get('item_name') or item.get('name')
-        return (change_type, actor_id, normalize_item_name(item_name), normalize_item_name(change.get('slot')))
+        return (
+            change_type,
+            actor_id,
+            str(item_id or ''),
+            normalize_item_name(item_name),
+            int_or_default(change.get('quantity', item.get('quantity')), default=1),
+            normalize_item_name(change.get('slot')),
+        )
     if change_type == 'inventory.transfer':
+        item = change.get('item') if isinstance(change.get('item'), dict) else {}
+        item_id = change.get('itemId') or change.get('item_id') or item.get('id') or item.get('itemId')
         item_name = change.get('itemName') or change.get('item_name')
         to_actor = str(change.get('toActorId') or change.get('to_actor_id') or change.get('toActorName') or change.get('to_actor_name') or '')
         return (
             change_type,
             actor_id,
             to_actor.lower(),
+            str(item_id or ''),
             normalize_item_name(item_name),
             int_or_default(change.get('quantity'), default=1),
         )
@@ -483,14 +494,92 @@ def _state_change_signature(change: dict[str, Any]) -> tuple[Any, ...] | None:
     return None
 
 
+def _inventory_change_quantity(change: dict[str, Any]) -> int:
+    item = change.get('item') if isinstance(change.get('item'), dict) else {}
+    return int_or_default(change.get('quantity', item.get('quantity')), default=1)
+
+
+def _inventory_changes_semantically_match(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_type = str(left.get('type') or '').strip()
+    right_type = str(right.get('type') or '').strip()
+    inventory_types = {
+        'inventory.add',
+        'inventory.remove',
+        'inventory.equip',
+        'inventory.unequip',
+        'inventory.transfer',
+    }
+    if left_type != right_type or left_type not in inventory_types:
+        return False
+    if _change_actor_id(left) != _change_actor_id(right):
+        return False
+    if _inventory_change_quantity(left) != _inventory_change_quantity(right):
+        return False
+    if normalize_item_name(left.get('slot')) != normalize_item_name(right.get('slot')):
+        return False
+    if left_type == 'inventory.transfer' and (
+        _transfer_target_actor_id(left) != _transfer_target_actor_id(right)
+    ):
+        return False
+    left_item = left.get('item') if isinstance(left.get('item'), dict) else {}
+    right_item = right.get('item') if isinstance(right.get('item'), dict) else {}
+    left_id = str(left.get('itemId') or left.get('item_id') or left_item.get('id') or '').strip()
+    right_id = str(right.get('itemId') or right.get('item_id') or right_item.get('id') or '').strip()
+    if bool(left_id) != bool(right_id):
+        left_name = normalize_item_name(left.get('itemName') or left.get('item_name') or left_item.get('name'))
+        right_name = normalize_item_name(right.get('itemName') or right.get('item_name') or right_item.get('name'))
+        if not left_name or left_name != right_name:
+            return False
+        correlation_id = str(left.get('_semanticCorrelationId') or '').strip()
+        return bool(correlation_id and correlation_id == str(right.get('_semanticCorrelationId') or '').strip())
+    return _item_reference_matches(left, right)
+
+
+def _correlate_inventory_intent_changes(
+    proposed_changes: list[dict[str, Any]],
+    intent_changes: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    proposed = [deepcopy(change) for change in proposed_changes if isinstance(change, dict)]
+    intents = [deepcopy(change) for change in intent_changes if isinstance(change, dict)]
+    for intent_index, intent in enumerate(intents):
+        intent_type = str(intent.get('type') or '').strip()
+        if intent_type not in {'inventory.add', 'inventory.remove', 'inventory.equip', 'inventory.unequip'}:
+            continue
+        candidates = [
+            index
+            for index, proposed_change in enumerate(proposed)
+            if _inventory_changes_semantically_match(
+                {**intent, '_semanticCorrelationId': 'candidate'},
+                {**proposed_change, '_semanticCorrelationId': 'candidate'},
+            )
+        ]
+        if len(candidates) != 1:
+            continue
+        proposed_index = candidates[0]
+        intent_item = intent.get('item') if isinstance(intent.get('item'), dict) else {}
+        correlation_id = stable_change_id(
+            intent.get('turnId'),
+            'confirmed_inventory_action',
+            intent_type,
+            _change_actor_id(intent),
+            normalize_item_name(intent.get('itemName') or intent_item.get('name')),
+            _inventory_change_quantity(intent),
+        )
+        intents[intent_index]['_semanticCorrelationId'] = correlation_id
+        proposed[proposed_index]['_semanticCorrelationId'] = correlation_id
+    return proposed, intents
+
+
 def _merge_state_changes(
     *change_lists: list[dict[str, Any]],
     seed_changes: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen: set[tuple[Any, ...]] = set()
+    semantically_seen: list[dict[str, Any]] = []
     for change in seed_changes or []:
         if isinstance(change, dict):
+            semantically_seen.append(change)
             signature = _state_change_signature(change)
             if signature:
                 seen.add(signature)
@@ -501,9 +590,15 @@ def _merge_state_changes(
             signature = _state_change_signature(change)
             if signature and signature in seen:
                 continue
+            if any(
+                _inventory_changes_semantically_match(change, existing)
+                for existing in semantically_seen
+            ):
+                continue
             if signature:
                 seen.add(signature)
-            merged.append(change)
+            merged.append({key: value for key, value in change.items() if key != '_semanticCorrelationId'})
+            semantically_seen.append(change)
     return merged
 
 
@@ -526,9 +621,25 @@ def _item_reference_matches(left: dict[str, Any], right: dict[str, Any]) -> bool
     right_id = str(right.get('itemId') or right.get('item_id') or right_item.get('id') or right_item.get('itemId') or '').strip()
     if left_id and right_id:
         return left_id == right_id
+    if left_id or right_id:
+        return False
     left_name = normalize_item_name(left.get('itemName') or left.get('item_name') or left_item.get('name'))
     right_name = normalize_item_name(right.get('itemName') or right.get('item_name') or right_item.get('name'))
     return bool(left_name and right_name and left_name == right_name)
+
+
+def _confirmed_item_reference_matches(change: dict[str, Any], confirmed: dict[str, Any]) -> bool:
+    change_item = change.get('item') if isinstance(change.get('item'), dict) else {}
+    confirmed_item = confirmed.get('item') if isinstance(confirmed.get('item'), dict) else {}
+    change_id = str(change.get('itemId') or change.get('item_id') or change_item.get('id') or '').strip()
+    confirmed_id = str(confirmed.get('itemId') or confirmed.get('item_id') or confirmed_item.get('id') or '').strip()
+    if change_id and confirmed_id:
+        return change_id == confirmed_id
+    change_name = normalize_item_name(change.get('itemName') or change.get('item_name') or change_item.get('name'))
+    confirmed_name = normalize_item_name(
+        confirmed.get('itemName') or confirmed.get('item_name') or confirmed_item.get('name')
+    )
+    return bool(change_name and change_name == confirmed_name)
 
 
 def _same_positive_amount(left: dict[str, Any], right: dict[str, Any], key: str) -> bool:
@@ -542,10 +653,10 @@ def _change_overlaps_confirmed_transfer(change: dict[str, Any], confirmed_transf
         transfer_type = str(transfer.get('type') or '').strip()
         if transfer_type == 'inventory.transfer':
             if change_type == 'inventory.remove' and actor_id == _transfer_source_actor_id(transfer):
-                if _same_positive_amount(change, transfer, 'quantity') and _item_reference_matches(change, transfer):
+                if _same_positive_amount(change, transfer, 'quantity') and _confirmed_item_reference_matches(change, transfer):
                     return True
             if change_type == 'inventory.add' and actor_id == _transfer_target_actor_id(transfer):
-                if _same_positive_amount(change, transfer, 'quantity') and _item_reference_matches(change, transfer):
+                if _same_positive_amount(change, transfer, 'quantity') and _confirmed_item_reference_matches(change, transfer):
                     return True
         elif transfer_type == 'currency.transfer':
             currency = str(change.get('currency') or '').strip().lower()
@@ -574,6 +685,35 @@ def _without_confirmed_transfer_overlaps(
     ]
 
 
+def _without_confirmed_inventory_overlaps(
+    changes: list[dict[str, Any]],
+    confirmed_changes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    confirmed_inventory = [
+        change
+        for change in confirmed_changes
+        if isinstance(change, dict)
+        and str(change.get('type') or '').strip()
+        in {'inventory.add', 'inventory.remove', 'inventory.equip', 'inventory.unequip'}
+    ]
+    if not confirmed_inventory:
+        return changes
+    filtered: list[dict[str, Any]] = []
+    for change in changes or []:
+        if not isinstance(change, dict):
+            continue
+        overlaps = any(
+            str(change.get('type') or '').strip() == str(confirmed.get('type') or '').strip()
+            and _change_actor_id(change) == _change_actor_id(confirmed)
+            and _inventory_change_quantity(change) == _inventory_change_quantity(confirmed)
+            and _confirmed_item_reference_matches(change, confirmed)
+            for confirmed in confirmed_inventory
+        )
+        if not overlaps:
+            filtered.append(change)
+    return filtered
+
+
 def _intent_confirmed_post_changes(
     *,
     turn: DmTurn,
@@ -586,21 +726,28 @@ def _intent_confirmed_post_changes(
         action = str(inventory_change.get('action') or '')
         change_type = 'inventory.add' if action == 'acquire' else 'inventory.remove' if action == 'lose' else ''
         item_name = str(inventory_change.get('item_name') or '').strip()
+        item_id = str(inventory_change.get('item_id') or '').strip()
         quantity = max(1, int_or_default(inventory_change.get('quantity'), default=1))
         if change_type and item_name:
             change: dict[str, Any] = {
-                'id': stable_change_id(turn.turn_id, 'post_dm_intent', change_type, actor_id, item_name, quantity),
+                'id': stable_change_id(turn.turn_id, 'post_dm_intent', change_type, actor_id, item_id or item_name, quantity),
                 'turnId': turn.turn_id,
                 'type': change_type,
                 'source': 'post_dm',
                 'actorId': actor_id,
                 'itemName': item_name,
+                **({'itemId': item_id} if item_id else {}),
                 'quantity': quantity,
                 'reason': f"DM confirmed requested inventory action for {item_name}.",
                 'visible': True,
             }
             if change_type == 'inventory.add':
-                change['item'] = {'name': item_name, 'quantity': quantity, 'type': 'misc'}
+                change['item'] = {
+                    **({'id': item_id} if item_id else {}),
+                    'name': item_name,
+                    'quantity': quantity,
+                    'type': 'misc',
+                }
             changes.append(change)
 
     metadata = _metadata(turn)
@@ -1123,9 +1270,22 @@ def post_dm_pipeline(
                 for change in confirmed_pre_dm_changes
                 if isinstance(change, dict) and str(change.get('type') or '').strip() in {'inventory.transfer', 'currency.transfer'}
             ]
+            proposed_inventory_changes, correlated_intent_changes = _correlate_inventory_intent_changes(
+                _without_confirmed_inventory_overlaps(
+                    _without_confirmed_transfer_overlaps(
+                        post_extraction.get('proposedChanges') or [],
+                        confirmed_transfers,
+                    ),
+                    confirmed_pre_dm_changes,
+                ),
+                _without_confirmed_inventory_overlaps(
+                    _without_confirmed_transfer_overlaps(intent_changes, confirmed_transfers),
+                    confirmed_pre_dm_changes,
+                ),
+            )
             post_extraction['proposedChanges'] = _merge_state_changes(
-                _without_confirmed_transfer_overlaps(post_extraction.get('proposedChanges') or [], confirmed_transfers),
-                _without_confirmed_transfer_overlaps(intent_changes, confirmed_transfers),
+                proposed_inventory_changes,
+                correlated_intent_changes,
                 confirmed_pre_dm_changes,
                 seed_changes=already_applied,
             )

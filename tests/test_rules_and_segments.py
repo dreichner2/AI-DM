@@ -135,7 +135,7 @@ def test_rules_classifier_detects_thieves_tools_context():
 def test_rules_classifier_detects_bluff_social_context():
     hint = classify_player_action('I bluff the guard and impersonate a city inspector.')
     assert hint.requires_roll is True
-    assert hint.roll_type == 'social'
+    assert hint.roll_type == 'deception'
 
 
 def test_rules_classifier_detects_mobility_escape_context():
@@ -172,14 +172,14 @@ def test_character_state_exposes_and_applies_skill_proficiencies(app):
         state = character_state_for_player(player)
         hint = RuleHint(
             requires_roll=True,
-            roll_type='social',
+            roll_type='persuasion',
             dc_hint=None,
             reason='Social influence action detected',
             confidence=0.9,
         )
         adjusted = apply_character_dc_adjustment(hint, player)
 
-    assert state['skill_proficiencies'] == ['persuasion']
+    assert state['skill_proficiencies'] == ['perception', 'persuasion']
     assert adjusted.dc_hint == '15 (roll mod +4, CHA 14 mod +2, proficiency +2 (persuasion))'
 
 
