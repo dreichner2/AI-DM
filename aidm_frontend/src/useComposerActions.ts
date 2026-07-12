@@ -234,7 +234,13 @@ export function useComposerActions({
       // Session storage may be unavailable in hardened browser contexts. The
       // in-memory composer remains fully functional.
     }
+    const hydrationDiceRollKey = diceRollKeyRef.current
     const hydrationTimer = window.setTimeout(() => {
+      // Draft hydration is intentionally deferred, but it must never erase a
+      // roll the player started before the timer ran. Session selection is
+      // locked while a roll is open, so a changed key means this hydration is
+      // stale for the current interaction.
+      if (diceRollKeyRef.current !== hydrationDiceRollKey) return
       actionTextRef.current = storedDraft
       setActionText(storedDraft)
       setQueuedActionText('')

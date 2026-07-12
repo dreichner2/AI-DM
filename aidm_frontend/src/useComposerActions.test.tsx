@@ -212,6 +212,26 @@ describe('useComposerActions realtime delivery recovery', () => {
     expect(result.current.actions.queuedActionRetryable).toBe(false)
   })
 
+  it('does not erase a roll started before deferred draft hydration completes', async () => {
+    const socket = socketWithConnection(true)
+    const { result } = renderHook(() => useComposerHarness(socket, vi.fn()))
+
+    act(() => result.current.actions.startDiceRoll())
+    expect(result.current.actions.diceRoll?.status).toBe('requesting')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(result.current.actions.diceRoll?.status).toBe('requesting')
+    expect(socket.emit).toHaveBeenCalledWith(
+      'send_message',
+      expect.objectContaining({
+        action_intent: expect.objectContaining({ kind: 'roll' }),
+      }),
+    )
+  })
+
   it('preserves a blocked action while preparing the authoritative pending roll', () => {
     const socket = socketWithConnection(true)
     const { result } = renderHook(() =>
