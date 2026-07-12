@@ -282,6 +282,30 @@ def test_player_projection_discards_persisted_or_imported_legal_action_bundles()
     assert 'legalActionsSchemaVersion' not in projected['combat']
 
 
+def test_player_projection_fails_closed_when_hidden_combatant_owns_the_turn():
+    player = _player(7)
+    combat = _active_combat(7, turn_index=1)
+    combat['participants'][1]['hiddenToPlayers'] = True
+    combat['flags'] = {
+        'activeActorId': 'enemy_goblin_1',
+        'activeActorName': 'Goblin Sentry',
+        'turnOrder': ['player_7', 'enemy_goblin_1', 'enemy_archer_1'],
+    }
+
+    projected = filter_session_snapshot_for_player({'combat': combat}, private_player_ids={7})
+    projected = with_combat_legal_actions(projected, [player])
+
+    assert [actor['id'] for actor in projected['combat']['participants']] == [
+        'player_7',
+        'enemy_archer_1',
+    ]
+    assert projected['combat']['turnIndex'] is None
+    assert 'activeActorId' not in projected['combat']['flags']
+    bundle = projected['combat']['legalActions'][0]
+    assert bundle['currentActorId'] is None
+    assert all(action['available'] is False for action in bundle['actions'])
+
+
 def test_session_state_endpoint_attaches_server_issued_combat_actions(client, app):
     ids = seed_world_campaign_player_session(app)
     with app.app_context():

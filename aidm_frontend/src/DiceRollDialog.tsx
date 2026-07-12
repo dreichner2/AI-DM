@@ -1066,7 +1066,8 @@ export default function DiceRollDialog({
               ) : null}
               {provenance.proficiency && (provenance.proficiency.bonus || provenance.proficiency.skills.length) ? (
                 <small>
-                  Proficiency {signedModifier(provenance.proficiency.bonus) || '+0'}
+                  {provenance.proficiency.multiplier === 2 ? 'Expertise' : 'Proficiency'}{' '}
+                  {signedModifier(provenance.proficiency.bonus) || '+0'}
                   {provenance.proficiency.skills.length ? `: ${provenance.proficiency.skills.join(', ')}` : ''}
                 </small>
               ) : null}

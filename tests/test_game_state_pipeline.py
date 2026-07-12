@@ -648,6 +648,123 @@ def test_item_action_intent_drop_uses_generic_resolution(app):
     assert action['summary'] == 'Player attempts to drop Wooden Shield.'
 
 
+def test_item_action_intent_preserves_selected_inventory_item_id(app):
+    with app.app_context():
+        result = extract_pre_dm_actions(
+            current_state=_state(
+                items=[
+                    {'id': 'healing-potion-red', 'name': 'Healing Potion', 'quantity': 1},
+                    {'id': 'healing-potion-blue', 'name': 'Healing Potion', 'quantity': 1},
+                ]
+            ),
+            player_message='I drink the blue healing potion.',
+            recent_timeline=[],
+            actor_id='player_1',
+            action_intent={
+                'kind': 'item',
+                'inventory_action': 'use',
+                'item': {
+                    'id': 'healing-potion-blue',
+                    'name': 'Healing Potion',
+                    'quantity': 1,
+                },
+            },
+        )
+
+    action = result['declaredActions'][0]
+    assert action['type'] == 'inventory.consume'
+    assert action['itemId'] == 'healing-potion-blue'
+
+
+def test_declared_item_action_uses_selected_second_same_name_item_and_applies_only_that_id():
+    state = _state(
+        items=[
+            _item('Healing Potion', item_id='healing-potion-red', item_type='consumable'),
+            _item('Healing Potion', item_id='healing-potion-blue', item_type='consumable'),
+        ]
+    )
+    validation = validate_declared_actions(
+        state=state,
+        declared_actions=[
+            {
+                'id': 'drink_selected_potion',
+                'type': 'inventory.consume',
+                'actorId': 'player_1',
+                'itemId': 'healing-potion-blue',
+                'itemName': 'Healing Potion',
+                'quantity': 1,
+            }
+        ],
+        current_turn=18,
+    )
+    result = apply_state_changes(state, validation['immediateChanges'])
+
+    assert validation['clarificationRequests'] == []
+    assert validation['validatedActions'][0]['status'] == 'valid'
+    assert validation['validatedActions'][0]['normalizedAction']['itemId'] == 'healing-potion-blue'
+    assert validation['immediateChanges'][0]['itemId'] == 'healing-potion-blue'
+    assert [item['id'] for item in result['nextState']['playerCharacters'][0]['inventory']['items']] == [
+        'healing-potion-red'
+    ]
+
+
+def test_declared_item_action_with_stale_id_fails_closed_without_same_name_fallback():
+    state = _state(
+        items=[
+            _item('Healing Potion', item_id='healing-potion-red', item_type='consumable'),
+            _item('Healing Potion', item_id='healing-potion-blue', item_type='consumable'),
+        ]
+    )
+    validation = validate_declared_actions(
+        state=state,
+        declared_actions=[
+            {
+                'id': 'drink_stale_potion',
+                'type': 'inventory.consume',
+                'actorId': 'player_1',
+                'itemId': 'healing-potion-stale',
+                'itemName': 'Healing Potion',
+                'quantity': 1,
+            }
+        ],
+        current_turn=18,
+    )
+
+    assert validation['validatedActions'][0]['status'] == 'invalid'
+    assert validation['clarificationRequests'] == []
+    assert validation['immediateChanges'] == []
+
+
+def test_confirmed_item_intent_mutation_keeps_selected_item_id():
+    turn = DmTurn(
+        turn_id=77,
+        metadata_json=safe_json_dumps(
+            {
+                'action_intent': {
+                    'kind': 'item',
+                    'inventory_action': 'drop',
+                    'item': {
+                        'id': 'torch-blue',
+                        'name': 'Torch',
+                        'quantity': 1,
+                    },
+                }
+            },
+            {},
+        ),
+    )
+
+    changes = turn_pipeline_module._intent_confirmed_post_changes(
+        turn=turn,
+        dm_response_text='You drop the Torch beside the blue door.',
+        actor_id='player_1',
+    )
+
+    assert len(changes) == 1
+    assert changes[0]['type'] == 'inventory.remove'
+    assert changes[0]['itemId'] == 'torch-blue'
+
+
 def test_post_dm_extracts_equipment_outcomes(app):
     with app.app_context():
         result = extract_post_dm_outcomes(
@@ -996,6 +1113,68 @@ def test_apply_inventory_remove_quantity_and_delete_zero():
     result = apply_state_changes(state, validated_changes_for_application(validation))
 
     assert result['nextState']['playerCharacters'][0]['inventory']['items'] == []
+
+
+def test_inventory_remove_with_stale_id_is_rejected_without_same_name_fallback():
+    state = _state(
+        items=[
+            _item('Torch', item_id='torch-red', quantity=1),
+            _item('Torch', item_id='torch-blue', quantity=1),
+        ]
+    )
+    change = {
+        'id': 'remove_stale_torch',
+        'type': 'inventory.remove',
+        'actorId': 'player_1',
+        'itemId': 'torch-stale',
+        'itemName': 'Torch',
+        'quantity': 1,
+    }
+    validation = validate_state_changes(state=state, changes=[change])
+    direct_result = apply_state_changes(state, [change])
+
+    assert validation['accepted'] == []
+    assert validation['rejected'][0]['reason'] == 'Item not found in inventory.'
+    assert direct_result['appliedChanges'] == []
+    assert direct_result['skippedChanges'][0]['reason'] == 'Item missing during inventory removal.'
+    assert [item['id'] for item in direct_result['nextState']['playerCharacters'][0]['inventory']['items']] == [
+        'torch-red',
+        'torch-blue',
+    ]
+
+
+def test_inventory_add_keeps_distinct_same_name_item_ids_and_merges_only_matching_id():
+    state = _state(
+        items=[
+            _item('Torch', item_id='torch-red', quantity=1),
+            _item('Torch', item_id='torch-blue', quantity=1),
+        ]
+    )
+    result = apply_state_changes(
+        state,
+        [
+            {
+                'id': 'add_blue_torches',
+                'type': 'inventory.add',
+                'actorId': 'player_1',
+                'item': {'id': 'torch-blue', 'name': 'Torch', 'quantity': 2, 'type': 'misc'},
+                'quantity': 2,
+            },
+            {
+                'id': 'add_green_torch',
+                'type': 'inventory.add',
+                'actorId': 'player_1',
+                'item': {'id': 'torch-green', 'name': 'Torch', 'quantity': 1, 'type': 'misc'},
+                'quantity': 1,
+            },
+        ],
+    )
+    quantities = {
+        item['id']: item['quantity']
+        for item in result['nextState']['playerCharacters'][0]['inventory']['items']
+    }
+
+    assert quantities == {'torch-red': 1, 'torch-blue': 3, 'torch-green': 1}
 
 
 def test_validate_state_changes_rejects_mismatched_expected_actor():
@@ -2062,7 +2241,7 @@ def test_scene_move_location_resets_stale_scene_local_fields():
         'sceneType': 'combat',
         'mood': 'dangerous',
         'dangerLevel': 8,
-        'combatState': 'active',
+        'combatState': 'resolved',
         'description': 'Kozuki is down while stale NPCs crowd the room.',
         'activeNpcIds': ['captain_velra', 'stale_orc'],
     }
@@ -2090,6 +2269,143 @@ def test_scene_move_location_resets_stale_scene_local_fields():
     assert scene['description'] == ''
     assert scene['activeNpcIds'] == []
     assert 'mood' not in scene
+
+
+def test_scene_move_location_rejects_active_combat():
+    state = _state()
+    state['currentScene'] = {
+        'locationId': 'blackwake_tavern',
+        'name': 'Blackwake Tavern',
+        'combatState': 'active',
+    }
+    state['combat'] = {
+        'status': 'active',
+        'round': 1,
+        'participants': [],
+    }
+
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'leave_active_combat',
+                'type': 'scene.move_location',
+                'locationId': 'old_harbor',
+                'name': 'Old Harbor',
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+
+    assert validation['accepted'] == []
+    assert validation['rejected'][0]['reason'] == 'Scene movement is unavailable while combat is active.'
+    assert result['nextState']['currentScene']['locationId'] == 'blackwake_tavern'
+    assert result['nextState']['combat']['status'] == 'active'
+
+
+def test_scene_move_location_restores_location_items_and_spatial_state_without_cross_room_carryover():
+    state = _state()
+    state['locations'] = [
+        {'id': 'old_road', 'name': 'Old Road', 'description': 'A muddy road.', 'npcIds': []},
+        {'id': 'old_harbor', 'name': 'Old Harbor', 'description': 'Fog hangs over the piers.', 'npcIds': []},
+    ]
+    state['currentScene'] = {
+        'locationId': 'old_road',
+        'name': 'Old Road',
+        'sceneType': 'exploration',
+        'dangerLevel': 2,
+        'combatState': 'none',
+        'description': 'A muddy road.',
+        'activeNpcIds': [],
+        'activeQuestIds': [],
+        'items': [{'id': 'dropped_shield', 'name': 'Wooden Shield', 'quantity': 1, 'type': 'armor'}],
+        'playerPositions': {'player_1': {'zoneId': 'road_ditch', 'rangeBand': 'near'}},
+        'playerZones': {'player_1': 'road_ditch'},
+        'characterPositions': {'Kael': {'zoneId': 'road_ditch'}},
+        'characterZones': {'Kael': 'road_ditch'},
+    }
+    state['combat'] = {'status': 'none', 'round': 1, 'participants': []}
+
+    to_harbor = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'travel_to_harbor',
+                'type': 'scene.move_location',
+                'turnId': 31,
+                'locationId': 'old_harbor',
+                'name': 'Old Harbor',
+            }
+        ],
+    )
+    harbor_state = apply_state_changes(state, validated_changes_for_application(to_harbor))['nextState']
+
+    assert to_harbor['rejected'] == []
+    assert harbor_state['currentScene']['items'] == []
+    assert harbor_state['currentScene']['playerPositions'] == {}
+    assert harbor_state['currentScene']['playerZones'] == {}
+    assert harbor_state['currentScene']['characterPositions'] == {}
+    assert harbor_state['currentScene']['characterZones'] == {}
+    assert harbor_state['combat']['status'] == 'none'
+    assert harbor_state['currentScene']['combatState'] == 'none'
+
+    harbor_changes = validate_state_changes(
+        state=harbor_state,
+        changes=[
+            {
+                'id': 'drop_harbor_lantern',
+                'type': 'scene.item.add',
+                'item': {'id': 'harbor_lantern', 'name': 'Lantern', 'quantity': 1, 'type': 'gear'},
+                'quantity': 1,
+            },
+            {
+                'id': 'harbor_positions',
+                'type': 'scene.update',
+                'playerPositions': {'player_1': {'zoneId': 'harbor_pier', 'rangeBand': 'near'}},
+                'playerZones': {'player_1': 'harbor_pier'},
+            },
+        ],
+    )
+    harbor_state = apply_state_changes(harbor_state, validated_changes_for_application(harbor_changes))['nextState']
+    back_to_road = validate_state_changes(
+        state=harbor_state,
+        changes=[
+            {
+                'id': 'return_to_road',
+                'type': 'scene.move_location',
+                'turnId': 32,
+                'locationId': 'old_road',
+                'name': 'Old Road',
+            }
+        ],
+    )
+    road_state = apply_state_changes(harbor_state, validated_changes_for_application(back_to_road))['nextState']
+
+    assert [item['id'] for item in road_state['currentScene']['items']] == ['dropped_shield']
+    assert road_state['currentScene']['playerPositions']['player_1']['zoneId'] == 'road_ditch'
+    assert road_state['currentScene']['playerZones']['player_1'] == 'road_ditch'
+    assert 'harbor_lantern' not in {item['id'] for item in road_state['currentScene']['items']}
+
+    return_to_harbor = validate_state_changes(
+        state=road_state,
+        changes=[
+            {
+                'id': 'return_to_harbor',
+                'type': 'scene.move_location',
+                'turnId': 33,
+                'locationId': 'old_harbor',
+                'name': 'Old Harbor',
+            }
+        ],
+    )
+    returned_harbor = apply_state_changes(
+        road_state,
+        validated_changes_for_application(return_to_harbor),
+    )['nextState']
+
+    assert [item['id'] for item in returned_harbor['currentScene']['items']] == ['harbor_lantern']
+    assert returned_harbor['currentScene']['playerPositions']['player_1']['zoneId'] == 'harbor_pier'
+    assert returned_harbor['currentScene']['playerZones']['player_1'] == 'harbor_pier'
 
 
 def test_scene_move_location_rejects_sentence_length_location_names():
@@ -2372,6 +2688,78 @@ def test_pack_catalog_discovery_materializes_authored_records():
     assert quest['flags'].get('sideQuest') is None
     assert quest['metadata']['driftControl'] == 'materialized_from_catalog'
     assert result['nextState']['currentScene']['activeQuestIds'] == ['q_missing_caravan', 'q_lantern_witness']
+
+
+def test_scene_move_to_pack_catalog_location_materializes_authored_scene_state():
+    state = _campaign_pack_state()
+    catalog_location = next(
+        location
+        for location in state['campaignPack']['catalog']['locations']
+        if location['id'] == 'old_road'
+    )
+    catalog_location.update(
+        {
+            'region': 'Bleakmoor Marsh',
+            'playerSummary': 'A flooded road lined with dead lanterns.',
+            'gmNotes': 'The lantern keeper is secretly working for the wraith.',
+            'npcIds': ['npc_lantern_keeper'],
+            'questIds': ['q_lantern_witness'],
+            'sceneState': {
+                'sceneType': 'travel',
+                'dangerLevel': 4,
+                'mood': 'eerie',
+                'description': 'Blue witchlight shivers over the flooded ruts.',
+                'activeNpcIds': ['npc_lantern_keeper'],
+                'activeQuestIds': ['q_lantern_witness'],
+                'items': [
+                    {
+                        'id': 'pack_broken_lantern',
+                        'name': 'Broken Lantern',
+                        'quantity': 1,
+                        'type': 'clue',
+                    }
+                ],
+            },
+        }
+    )
+
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'travel_to_authored_old_road',
+                'type': 'scene.move_location',
+                'source': 'post_dm',
+                'turnId': 40,
+                'locationId': 'old_road',
+                'name': 'Old Road',
+            }
+        ],
+    )
+    next_state = apply_state_changes(state, validated_changes_for_application(validation))['nextState']
+    location = next(location for location in next_state['locations'] if location['id'] == 'old_road')
+    scene = next_state['currentScene']
+
+    assert validation['accepted'] == []
+    assert validation['rejected'] == []
+    assert validation['modified'][0]['modifiedChange']['source'] == 'campaign_pack'
+    assert location['source'] == 'campaign_pack'
+    assert location['type'] == 'road'
+    assert location['description'] == 'A drowned road into the marsh.'
+    assert location['region'] == 'Bleakmoor Marsh'
+    assert location['playerSummary'] == 'A flooded road lined with dead lanterns.'
+    assert 'gmNotes' not in location
+    assert location['npcIds'] == ['npc_lantern_keeper']
+    assert location['questIds'] == ['q_lantern_witness']
+    assert location['sceneState']['items'][0]['id'] == 'pack_broken_lantern'
+    assert scene['locationId'] == 'old_road'
+    assert scene['sceneType'] == 'travel'
+    assert scene['dangerLevel'] == 4
+    assert scene['mood'] == 'eerie'
+    assert scene['description'] == 'Blue witchlight shivers over the flooded ruts.'
+    assert scene['activeNpcIds'] == ['npc_lantern_keeper']
+    assert scene['activeQuestIds'] == ['q_lantern_witness']
+    assert [item['id'] for item in scene['items']] == ['pack_broken_lantern']
 
 
 def test_pack_catalog_materializes_clues_factions_maps_handouts_and_lore():
@@ -2795,10 +3183,18 @@ def test_quest_objective_update_accepts_top_level_open_status():
 def test_quest_complete_marks_completed_and_does_not_recomplete_on_retry():
     state = _state()
     state['quests'] = [{'id': 'find_missing_sailor', 'title': 'Find the Missing Sailor', 'status': 'active'}]
+    state['locations'] = [
+        {'id': 'old_harbor', 'name': 'Old Harbor', 'questIds': ['find_missing_sailor']},
+        {'id': 'old_road', 'name': 'Old Road', 'questIds': ['find_missing_sailor']},
+    ]
     state['currentScene'] = {
         'locationId': 'old_harbor',
         'name': 'Old Harbor',
         'activeQuestIds': ['find_missing_sailor', 'find_smuggler_cache'],
+    }
+    state['locationSceneStates'] = {
+        'old_harbor': {'activeQuestIds': ['find_missing_sailor', 'find_smuggler_cache']},
+        'old_road': {'activeQuestIds': ['find_missing_sailor', 'roadside_rumors']},
     }
     validation = validate_state_changes(
         state=state,
@@ -2821,10 +3217,30 @@ def test_quest_complete_marks_completed_and_does_not_recomplete_on_retry():
     assert first['nextState']['quests'][0]['completedAtTurn'] == 26
     assert first['nextState']['quests'][0]['id'] == 'find_missing_sailor'
     assert first['nextState']['currentScene']['activeQuestIds'] == ['find_smuggler_cache']
+    assert first['nextState']['locationSceneStates']['old_harbor']['activeQuestIds'] == ['find_smuggler_cache']
+    assert first['nextState']['locationSceneStates']['old_road']['activeQuestIds'] == ['roadside_rumors']
     assert retry['appliedChanges'] == []
     assert retry['nextState']['quests'][0]['completedAtTurn'] == 26
     assert retry['nextState']['quests'][0]['id'] == 'find_missing_sailor'
     assert retry['nextState']['currentScene']['activeQuestIds'] == ['find_smuggler_cache']
+
+    travel_validation = validate_state_changes(
+        state=first['nextState'],
+        changes=[
+            {
+                'id': 'visit_old_road_after_quest_completion',
+                'type': 'scene.move_location',
+                'locationId': 'old_road',
+                'name': 'Old Road',
+            }
+        ],
+    )
+    revisited = apply_state_changes(
+        first['nextState'],
+        validated_changes_for_application(travel_validation),
+    )['nextState']
+
+    assert revisited['currentScene']['activeQuestIds'] == ['roadside_rumors']
 
 
 def test_quest_fail_marks_failed_and_removes_from_active_scene_on_retry():
@@ -2834,6 +3250,10 @@ def test_quest_fail_marks_failed_and_removes_from_active_scene_on_retry():
         'locationId': 'old_harbor',
         'name': 'Old Harbor',
         'activeQuestIds': ['find_missing_sailor', 'find_smuggler_cache'],
+    }
+    state['locationSceneStates'] = {
+        'old_harbor': {'activeQuestIds': ['find_missing_sailor', 'find_smuggler_cache']},
+        'old_road': {'activeQuestIds': ['find_missing_sailor', 'roadside_rumors']},
     }
     validation = validate_state_changes(
         state=state,
@@ -2855,6 +3275,8 @@ def test_quest_fail_marks_failed_and_removes_from_active_scene_on_retry():
     assert first['nextState']['quests'][0]['status'] == 'failed'
     assert first['nextState']['quests'][0]['id'] == 'find_missing_sailor'
     assert first['nextState']['currentScene']['activeQuestIds'] == ['find_smuggler_cache']
+    assert first['nextState']['locationSceneStates']['old_harbor']['activeQuestIds'] == ['find_smuggler_cache']
+    assert first['nextState']['locationSceneStates']['old_road']['activeQuestIds'] == ['roadside_rumors']
     assert retry['appliedChanges'] == []
     assert retry['nextState']['quests'][0]['status'] == 'failed'
     assert retry['nextState']['quests'][0]['id'] == 'find_missing_sailor'
@@ -2891,6 +3313,362 @@ def test_npc_discover_adds_npc_and_links_location_and_quest():
     assert result['nextState']['knownNpcs'][0]['race'] == 'Human'
     assert result['nextState']['locations'][0]['npcIds'] == ['captain_velra']
     assert result['nextState']['quests'][0]['relatedNpcIds'] == ['captain_velra']
+
+
+def test_existing_npc_party_join_travel_leave_and_move_reconcile_membership_and_presence():
+    state = _state()
+    state['locations'] = [
+        {'id': 'blackwake_tavern', 'name': 'Blackwake Tavern', 'npcIds': ['mira']},
+        {'id': 'old_road', 'name': 'Old Road', 'npcIds': []},
+    ]
+    state['currentScene'] = {
+        'locationId': 'blackwake_tavern',
+        'name': 'Blackwake Tavern',
+        'combatState': 'none',
+        'activeNpcIds': ['mira'],
+        'activeQuestIds': [],
+        'items': [],
+    }
+    state['knownNpcs'] = [
+        {
+            'id': 'mira',
+            'name': 'Mira',
+            'status': 'allied',
+            'locationId': 'blackwake_tavern',
+        }
+    ]
+    state['partyNpcs'] = []
+    state['combat'] = {'status': 'none', 'round': 1, 'participants': []}
+
+    join_validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'mira_joins_party',
+                'type': 'npc.update',
+                'npcId': 'mira',
+                'name': 'Mira',
+                'party': True,
+                'status': 'allied',
+            }
+        ],
+    )
+    joined = apply_state_changes(state, validated_changes_for_application(join_validation))['nextState']
+
+    assert join_validation['rejected'] == []
+    assert joined['knownNpcs'] == []
+    assert [npc['id'] for npc in joined['partyNpcs']] == ['mira']
+    assert joined['currentScene']['activeNpcIds'] == ['mira']
+
+    travel_validation = validate_state_changes(
+        state=joined,
+        changes=[
+            {
+                'id': 'party_travels_to_road',
+                'type': 'scene.move_location',
+                'locationId': 'old_road',
+                'name': 'Old Road',
+            }
+        ],
+    )
+    traveled = apply_state_changes(joined, validated_changes_for_application(travel_validation))['nextState']
+    mira = traveled['partyNpcs'][0]
+
+    assert mira['locationId'] == 'old_road'
+    assert traveled['currentScene']['activeNpcIds'] == ['mira']
+    assert traveled['locations'][0]['npcIds'] == []
+    assert traveled['locations'][1]['npcIds'] == ['mira']
+
+    leave_validation = validate_state_changes(
+        state=traveled,
+        changes=[
+            {
+                'id': 'mira_leaves_party',
+                'type': 'npc.update',
+                'npcId': 'mira',
+                'name': 'Mira',
+                'party': False,
+                'status': 'allied',
+            }
+        ],
+    )
+    left = apply_state_changes(traveled, validated_changes_for_application(leave_validation))['nextState']
+
+    assert left['partyNpcs'] == []
+    assert [npc['id'] for npc in left['knownNpcs']] == ['mira']
+    assert left['currentScene']['activeNpcIds'] == ['mira']
+
+    move_validation = validate_state_changes(
+        state=left,
+        changes=[
+            {
+                'id': 'mira_returns_to_tavern',
+                'type': 'npc.move',
+                'npcId': 'mira',
+                'locationId': 'blackwake_tavern',
+            }
+        ],
+    )
+    moved = apply_state_changes(left, validated_changes_for_application(move_validation))['nextState']
+
+    assert move_validation['rejected'] == []
+    assert moved['knownNpcs'][0]['locationId'] == 'blackwake_tavern'
+    assert moved['currentScene']['activeNpcIds'] == []
+    assert moved['locations'][0]['npcIds'] == ['mira']
+    assert moved['locations'][1]['npcIds'] == []
+
+
+def test_remote_npc_party_join_moves_to_current_scene_and_leave_preserves_location():
+    state = _state()
+    state['locations'] = [
+        {'id': 'blackwake_tavern', 'name': 'Blackwake Tavern', 'npcIds': []},
+        {'id': 'old_road', 'name': 'Old Road', 'npcIds': ['mira']},
+    ]
+    state['currentScene'] = {
+        'locationId': 'blackwake_tavern',
+        'name': 'Blackwake Tavern',
+        'combatState': 'none',
+        'activeNpcIds': [],
+        'activeQuestIds': [],
+        'items': [],
+    }
+    state['locationSceneStates'] = {
+        'blackwake_tavern': {'activeNpcIds': []},
+        'old_road': {'activeNpcIds': ['mira', 'road_warden']},
+    }
+    state['knownNpcs'] = [
+        {
+            'id': 'mira',
+            'name': 'Mira',
+            'status': 'allied',
+            'locationId': 'old_road',
+        }
+    ]
+    state['partyNpcs'] = []
+
+    join_validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'remote_mira_joins',
+                'type': 'npc.update',
+                'npcId': 'mira',
+                'party': True,
+            }
+        ],
+    )
+    joined = apply_state_changes(state, validated_changes_for_application(join_validation))['nextState']
+
+    assert join_validation['rejected'] == []
+    assert join_validation['accepted'][0]['change']['locationId'] == 'blackwake_tavern'
+    assert joined['knownNpcs'] == []
+    assert joined['partyNpcs'][0]['locationId'] == 'blackwake_tavern'
+    assert joined['locations'][0]['npcIds'] == ['mira']
+    assert joined['locations'][1]['npcIds'] == []
+    assert joined['currentScene']['activeNpcIds'] == ['mira']
+    assert joined['locationSceneStates']['blackwake_tavern']['activeNpcIds'] == ['mira']
+    assert joined['locationSceneStates']['old_road']['activeNpcIds'] == ['road_warden']
+
+    leave_validation = validate_state_changes(
+        state=joined,
+        changes=[
+            {
+                'id': 'mira_leaves_after_remote_join',
+                'type': 'npc.update',
+                'npcId': 'mira',
+                'party': False,
+            }
+        ],
+    )
+    left = apply_state_changes(joined, validated_changes_for_application(leave_validation))['nextState']
+
+    assert leave_validation['rejected'] == []
+    assert left['partyNpcs'] == []
+    assert left['knownNpcs'][0]['locationId'] == 'blackwake_tavern'
+    assert left['currentScene']['activeNpcIds'] == ['mira']
+    assert left['locations'][0]['npcIds'] == ['mira']
+
+
+def test_party_npc_move_allows_current_scene_noop_but_rejects_remote_location():
+    state = _state()
+    state['locations'] = [
+        {'id': 'blackwake_tavern', 'name': 'Blackwake Tavern', 'npcIds': ['mira']},
+        {'id': 'old_road', 'name': 'Old Road', 'npcIds': []},
+    ]
+    state['currentScene'] = {
+        'locationId': 'blackwake_tavern',
+        'name': 'Blackwake Tavern',
+        'activeNpcIds': ['mira'],
+    }
+    state['knownNpcs'] = []
+    state['partyNpcs'] = [
+        {'id': 'mira', 'name': 'Mira', 'locationId': 'blackwake_tavern'},
+    ]
+
+    same_location = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'mira_stays_with_party',
+                'type': 'npc.move',
+                'npcId': 'mira',
+                'locationId': 'blackwake_tavern',
+            }
+        ],
+    )
+    same_location_state = apply_state_changes(
+        state,
+        validated_changes_for_application(same_location),
+    )['nextState']
+
+    assert same_location['rejected'] == []
+    assert same_location_state['partyNpcs'][0]['locationId'] == 'blackwake_tavern'
+    assert same_location_state['currentScene']['activeNpcIds'] == ['mira']
+    assert same_location_state['locations'][0]['npcIds'] == ['mira']
+
+    remote_move = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'mira_cannot_leave_party_remotely',
+                'type': 'npc.move',
+                'npcId': 'mira',
+                'locationId': 'old_road',
+            }
+        ],
+    )
+
+    assert remote_move['accepted'] == []
+    assert remote_move['rejected'][0]['reason'] == (
+        'Party NPCs must remain at the current scene unless they leave the party in the same NPC update.'
+    )
+
+
+def test_party_npc_remote_update_requires_atomic_party_exit():
+    state = _state()
+    state['locations'] = [
+        {'id': 'blackwake_tavern', 'name': 'Blackwake Tavern', 'npcIds': ['mira']},
+        {'id': 'old_road', 'name': 'Old Road', 'npcIds': []},
+    ]
+    state['currentScene'] = {
+        'locationId': 'blackwake_tavern',
+        'name': 'Blackwake Tavern',
+        'activeNpcIds': ['mira'],
+    }
+    state['knownNpcs'] = []
+    state['partyNpcs'] = [
+        {'id': 'mira', 'name': 'Mira', 'locationId': 'blackwake_tavern'},
+    ]
+
+    remote_update = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'mira_update_cannot_split_presence',
+                'type': 'npc.update',
+                'npcId': 'mira',
+                'locationId': 'old_road',
+            }
+        ],
+    )
+
+    assert remote_update['accepted'] == []
+    assert remote_update['rejected'][0]['reason'] == (
+        'Party NPCs must remain at the current scene unless they leave the party in the same NPC update.'
+    )
+
+    leave_and_move = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'mira_leaves_for_old_road',
+                'type': 'npc.update',
+                'npcId': 'mira',
+                'party': False,
+                'locationId': 'old_road',
+            }
+        ],
+    )
+    moved = apply_state_changes(
+        state,
+        validated_changes_for_application(leave_and_move),
+    )['nextState']
+
+    assert leave_and_move['rejected'] == []
+    assert moved['partyNpcs'] == []
+    assert moved['knownNpcs'][0]['locationId'] == 'old_road'
+    assert moved['currentScene']['activeNpcIds'] == []
+    assert moved['locations'][0]['npcIds'] == []
+    assert moved['locations'][1]['npcIds'] == ['mira']
+
+
+def test_applier_defensively_skips_unvalidated_remote_party_npc_move():
+    state = _state()
+    state['currentScene'] = {
+        'locationId': 'blackwake_tavern',
+        'name': 'Blackwake Tavern',
+        'activeNpcIds': ['mira'],
+    }
+    state['partyNpcs'] = [
+        {'id': 'mira', 'name': 'Mira', 'locationId': 'blackwake_tavern'},
+    ]
+
+    result = apply_state_changes(
+        state,
+        [
+            {
+                'id': 'unvalidated_remote_move',
+                'type': 'npc.move',
+                'npcId': 'mira',
+                'locationId': 'old_road',
+            }
+        ],
+    )
+
+    assert result['appliedChanges'] == []
+    assert result['nextState']['partyNpcs'][0]['locationId'] == 'blackwake_tavern'
+    assert result['skippedChanges'][0]['reason'] == (
+        'Party NPCs must remain at the current scene unless they leave the party in the same NPC update.'
+    )
+
+    update_result = apply_state_changes(
+        state,
+        [
+            {
+                'id': 'unvalidated_remote_update',
+                'type': 'npc.update',
+                'npcId': 'mira',
+                'locationId': 'old_road',
+            }
+        ],
+    )
+
+    assert update_result['appliedChanges'] == []
+    assert update_result['nextState']['partyNpcs'][0]['locationId'] == 'blackwake_tavern'
+    assert update_result['skippedChanges'][0]['reason'] == (
+        'Party NPCs must remain at the current scene unless they leave the party in the same NPC update.'
+    )
+
+
+def test_npc_party_join_without_current_location_is_rejected_clearly():
+    state = _state()
+    state['currentScene'] = {'activeNpcIds': []}
+    state['knownNpcs'] = [{'id': 'mira', 'name': 'Mira', 'locationId': 'old_road'}]
+
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'mira_cannot_join_nowhere',
+                'type': 'npc.update',
+                'npcId': 'mira',
+                'party': True,
+            }
+        ],
+    )
+
+    assert validation['accepted'] == []
+    assert validation['rejected'][0]['reason'] == 'NPC cannot join the party without a current scene location.'
 
 
 def test_npc_update_normalizes_condition_like_status_and_disposition_aliases():
@@ -6698,6 +7476,195 @@ def test_post_dm_semantic_merge_dedupes_exact_duplicate_combat_outcomes():
     )
 
     assert [change['id'] for change in changes] == ['helper_end', 'helper_participant', 'xp']
+
+
+def test_post_dm_semantic_merge_keeps_same_name_inventory_changes_distinct_by_id_and_quantity():
+    changes = turn_pipeline_module._merge_state_changes(
+        [
+            {
+                'id': 'red_one',
+                'type': 'inventory.remove',
+                'actorId': 'player_1',
+                'itemId': 'potion-red',
+                'itemName': 'Healing Potion',
+                'quantity': 1,
+            },
+            {
+                'id': 'blue_one',
+                'type': 'inventory.remove',
+                'actorId': 'player_1',
+                'itemId': 'potion-blue',
+                'itemName': 'Healing Potion',
+                'quantity': 1,
+            },
+            {
+                'id': 'red_two',
+                'type': 'inventory.remove',
+                'actorId': 'player_1',
+                'itemId': 'potion-red',
+                'itemName': 'Healing Potion',
+                'quantity': 2,
+            },
+            {
+                'id': 'red_one_duplicate',
+                'type': 'inventory.remove',
+                'actorId': 'player_1',
+                'itemId': 'potion-red',
+                'itemName': 'Healing Potion',
+                'quantity': 1,
+            },
+        ]
+    )
+
+    assert [change['id'] for change in changes] == ['red_one', 'blue_one', 'red_two']
+
+
+def test_post_dm_semantic_merge_keeps_uncorrelated_name_only_and_id_enriched_changes():
+    changes = turn_pipeline_module._merge_state_changes(
+        [
+            {
+                'id': 'heuristic_use',
+                'type': 'inventory.remove',
+                'actorId': 'player_1',
+                'itemId': 'potion-red',
+                'itemName': 'Healing Potion',
+                'quantity': 1,
+            },
+            {
+                'id': 'intent_use',
+                'type': 'inventory.remove',
+                'actorId': 'player_1',
+                'itemName': 'Healing Potion',
+                'quantity': 1,
+            },
+        ]
+    )
+
+    assert [change['id'] for change in changes] == ['heuristic_use', 'intent_use']
+
+
+def test_post_dm_semantic_merge_coalesces_correlated_intent_and_id_enriched_change():
+    proposed, intents = turn_pipeline_module._correlate_inventory_intent_changes(
+        [
+            {
+                'id': 'heuristic_use',
+                'turnId': 8,
+                'type': 'inventory.remove',
+                'source': 'post_dm',
+                'actorId': 'player_1',
+                'itemId': 'potion-red',
+                'itemName': 'Healing Potion',
+                'quantity': 1,
+            }
+        ],
+        [
+            {
+                'id': 'intent_use',
+                'turnId': 8,
+                'type': 'inventory.remove',
+                'source': 'post_dm',
+                'actorId': 'player_1',
+                'itemName': 'Healing Potion',
+                'quantity': 1,
+            }
+        ],
+    )
+
+    changes = turn_pipeline_module._merge_state_changes(proposed, intents)
+
+    assert [change['id'] for change in changes] == ['heuristic_use']
+    assert '_semanticCorrelationId' not in changes[0]
+
+
+def test_post_dm_intent_correlation_does_not_merge_different_item_names():
+    proposed, intents = turn_pipeline_module._correlate_inventory_intent_changes(
+        [
+            {
+                'id': 'heuristic_use',
+                'turnId': 8,
+                'type': 'inventory.remove',
+                'actorId': 'player_1',
+                'itemId': 'potion-red',
+                'itemName': 'Healing Potion',
+                'quantity': 1,
+            }
+        ],
+        [
+            {
+                'id': 'intent_use',
+                'turnId': 8,
+                'type': 'inventory.remove',
+                'actorId': 'player_1',
+                'itemName': 'Antitoxin',
+                'quantity': 1,
+            }
+        ],
+    )
+
+    assert [change['id'] for change in turn_pipeline_module._merge_state_changes(proposed, intents)] == [
+        'heuristic_use',
+        'intent_use',
+    ]
+
+
+def test_confirmed_inventory_change_suppresses_name_only_duplicate_but_not_other_explicit_id():
+    confirmed = {
+        'id': 'confirmed_red',
+        'type': 'inventory.remove',
+        'actorId': 'player_1',
+        'itemId': 'potion-red',
+        'itemName': 'Healing Potion',
+        'quantity': 1,
+    }
+    filtered = turn_pipeline_module._without_confirmed_inventory_overlaps(
+        [
+            {
+                'id': 'name_only_duplicate',
+                'type': 'inventory.remove',
+                'actorId': 'player_1',
+                'itemName': 'Healing Potion',
+                'quantity': 1,
+            },
+            {
+                'id': 'blue_potion',
+                'type': 'inventory.remove',
+                'actorId': 'player_1',
+                'itemId': 'potion-blue',
+                'itemName': 'Healing Potion',
+                'quantity': 1,
+            },
+        ],
+        [confirmed],
+    )
+
+    assert [change['id'] for change in filtered] == ['blue_potion']
+
+
+def test_confirmed_transfer_suppresses_name_only_source_remove_with_enriched_id():
+    transfer = {
+        'id': 'confirmed_transfer',
+        'type': 'inventory.transfer',
+        'actorId': 'player_1',
+        'fromActorId': 'player_1',
+        'toActorId': 'player_2',
+        'itemId': 'sword-iron',
+        'itemName': 'Iron Sword',
+        'quantity': 1,
+    }
+    filtered = turn_pipeline_module._without_confirmed_transfer_overlaps(
+        [
+            {
+                'id': 'name_only_remove',
+                'type': 'inventory.remove',
+                'actorId': 'player_1',
+                'itemName': 'Iron Sword',
+                'quantity': 1,
+            }
+        ],
+        [transfer],
+    )
+
+    assert filtered == []
 
 
 def test_post_dm_semantic_merge_keeps_distinct_combat_participant_updates():

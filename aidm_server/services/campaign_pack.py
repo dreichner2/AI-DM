@@ -1266,7 +1266,7 @@ def _initial_snapshot(
     flags = _record(_first(starting_state, 'flags'))
     flags['campaignPackImported'] = True
     flags['campaignPackId'] = pack_id
-    active_checkpoint_id = _initial_checkpoint_id(checkpoints)
+    active_checkpoint_id = _initial_checkpoint_id(checkpoints, starting_state=starting_state)
     flags['campaignPackActiveCheckpointId'] = active_checkpoint_id
     flags['campaignPackCompletedCheckpointIds'] = []
     flags['campaignPackSkippedCheckpointIds'] = []
@@ -1350,7 +1350,22 @@ def _initial_snapshot(
     }
 
 
-def _initial_checkpoint_id(checkpoints: list[dict]) -> str | None:
+def _initial_checkpoint_id(
+    checkpoints: list[dict],
+    *,
+    starting_state: dict | None = None,
+) -> str | None:
+    requested_id = _clean_id(
+        _first(
+            starting_state or {},
+            'checkpointId',
+            'checkpoint_id',
+            'startingCheckpointId',
+            'starting_checkpoint_id',
+        )
+    )
+    if requested_id:
+        return requested_id
     for checkpoint in checkpoints:
         checkpoint_id = _clean_id(_first(checkpoint, 'id', 'checkpointId', 'checkpoint_id'))
         if checkpoint_id:

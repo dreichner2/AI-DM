@@ -76,8 +76,14 @@ describe('authoritative socket payload validation', () => {
     reason: 'STR check',
     result_visibility: 'hidden_until_landed',
     ability: { key: 'strength', label: 'STR', score: 16, modifier: 3 },
-    proficiency: { bonus: 2, skills: ['athletics'] },
-    modifier_breakdown: { ability_modifier: 3, proficiency_bonus: 2, wound_penalty: 0, total: 5 },
+    proficiency: { bonus: 2, skills: ['athletics'], multiplier: 2 },
+    modifier_breakdown: {
+      ability_modifier: 3,
+      proficiency_bonus: 2,
+      proficiency_multiplier: 2,
+      wound_penalty: 0,
+      total: 5,
+    },
     authoritative: true,
   }
 
@@ -88,6 +94,8 @@ describe('authoritative socket payload validation', () => {
       kept: 18,
       modifier: 5,
       total: 23,
+      proficiency: { bonus: 2, skills: ['athletics'], multiplier: 2 },
+      modifier_breakdown: expect.objectContaining({ proficiency_multiplier: 2 }),
       authoritative: true,
     })
     expect(normalizeTurnDuplicatePayload({

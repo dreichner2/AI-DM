@@ -1382,9 +1382,11 @@ def test_build_dm_context_shape_snapshot(app):
                     'electrum': 0,
                     'platinum': 0,
                     'xp': 0,
-                    'level': 3,
-                    'proficiency_bonus': 2,
-                    'spellbook': {
+                        'level': 3,
+                        'proficiency_bonus': 2,
+                        'skill_proficiencies': ['perception'],
+                        'saving_throw_proficiencies': ['dexterity', 'strength'],
+                        'spellbook': {
                         'knownSpells': '<known-spells>',
                         'preparedSpells': [],
                         'sources': [

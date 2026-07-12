@@ -215,6 +215,7 @@ describe('game action helpers', () => {
       message: 'Lin uses Rapier: cut the rope',
       clientMessageId: 'use-rapier',
       inventoryAction: 'use',
+      item: { id: 'rapier-1', name: 'Rapier', quantity: '1' },
       itemName: 'Rapier',
       itemQuantity: '1',
     })
@@ -222,7 +223,7 @@ describe('game action helpers', () => {
     expect(actualItemIntent).toMatchObject({
       kind: 'item',
       inventory_action: 'use',
-      item: { name: 'Rapier', quantity: 1 },
+      item: { id: 'rapier-1', name: 'Rapier', quantity: 1 },
     })
 
     const spellIntent = buildActionIntent({

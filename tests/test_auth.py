@@ -1956,6 +1956,40 @@ def _seed_session_player_privacy_fixture(app):
 
         snapshot = {
             'schemaVersion': 1,
+            'gmNotes': 'DM_ONLY_PROJECTION_FIELD_TOP_LEVEL',
+            'locationSceneStates': {
+                'hidden_vault': {
+                    'items': [
+                        {'id': 'vault_key', 'name': 'DM_ONLY_CACHED_SCENE_ITEM'},
+                    ],
+                    'activeNpcIds': ['npc_hidden_spy'],
+                },
+            },
+            'currentScene': {
+                'locationId': 'visible_square',
+                'name': 'Visible Square',
+                'gmNotes': 'DM_ONLY_PROJECTION_FIELD_SCENE',
+                'metadata': {'directorNote': 'DM_ONLY_PROJECTION_FIELD_SCENE_METADATA'},
+                'activeNpcIds': ['npc_visible_guide', 'npc_hidden_spy'],
+                'activeQuestIds': ['quest_visible_patrol', 'quest_hidden_betrayal'],
+                'playerPositions': {
+                    f'player_{attacker_player.player_id}': {
+                        'zoneId': 'square_center',
+                        'rangeBand': 'near',
+                        'gmNotes': 'DM_ONLY_PROJECTION_FIELD_POSITION',
+                    },
+                    'npc_hidden_spy': {'zoneId': 'secret_roof'},
+                },
+                'items': [
+                    {
+                        'id': 'visible_torch',
+                        'name': 'Visible Torch',
+                        'gmNotes': 'DM_ONLY_PROJECTION_FIELD_ITEM',
+                        'metadata': {'directorNote': 'DM_ONLY_PROJECTION_FIELD_ITEM_METADATA'},
+                    },
+                    {'id': 'hidden_key', 'name': 'DM_ONLY_SCENE_ITEM', 'metadata': {'visibility': 'dm'}},
+                ],
+            },
             'playerCharacters': [
                 snapshot_player(
                     attacker_player,
@@ -1972,6 +2006,27 @@ def _seed_session_player_privacy_fixture(app):
             ],
             'combat': {
                 'status': 'active',
+                'turnIndex': 0,
+                'gmNotes': 'DM_ONLY_PROJECTION_FIELD_COMBAT',
+                'encounterGoal': {
+                    'playerObjective': 'Drive off the raider.',
+                    'gmNotes': 'DM_ONLY_PROJECTION_FIELD_ENCOUNTER_GOAL',
+                },
+                'battlefield': {
+                    'environmentType': 'city_street',
+                    'lighting': 'bright',
+                    'visibility': 'clear',
+                    'hazards': [
+                        {
+                            'id': 'market_fire',
+                            'name': 'Market Fire',
+                            'description': 'Flames block the west lane.',
+                            'effect': 'hazardous terrain',
+                            'gmNotes': 'DM_ONLY_PROJECTION_FIELD_HAZARD',
+                        }
+                    ],
+                    'gmNotes': 'DM_ONLY_PROJECTION_FIELD_BATTLEFIELD',
+                },
                 'participants': [
                     {
                         'id': f'player_{attacker_player.player_id}',
@@ -1982,6 +2037,7 @@ def _seed_session_player_privacy_fixture(app):
                         'level': attacker_player.level,
                         'hp': {'current': 17, 'max': 21},
                         'stats': {'privateResource': 'ATTACKER_COMBAT_RESOURCE'},
+                        'privateTactics': {'targetId': 'ATTACKER_PRIVATE_NONCOMBAT_TARGET'},
                         'abilities': [{'name': 'ATTACKER_COMBAT_ABILITY'}],
                         'armorClass': 15,
                         'conditions': [],
@@ -2003,9 +2059,152 @@ def _seed_session_player_privacy_fixture(app):
                         'isAlive': True,
                         'isConscious': True,
                     },
+                    {
+                        'id': 'enemy_visible_raider',
+                        'name': 'Visible Raider',
+                        'team': 'enemy',
+                        'kind': 'creature',
+                        'hp': {'current': 9, 'max': 9},
+                        'armorClass': 12,
+                        'conditions': [],
+                        'isAlive': True,
+                        'isConscious': True,
+                        'position': {'rangeBand': 'near'},
+                        'stats': {'privateResource': 'DM_ONLY_ENEMY_STATS'},
+                        'abilities': [{'name': 'DM_ONLY_ENEMY_ABILITY'}],
+                        'currentIntent': {
+                            'intentType': 'attack',
+                            'targetId': f'player_{attacker_player.player_id}',
+                            'reason': 'DM_ONLY_ENEMY_REASON',
+                            'suggestedSpeech': 'DM_ONLY_ENEMY_SPEECH',
+                            'brainSource': 'DM_ONLY_ENEMY_BRAIN',
+                            'selectionScore': 999,
+                            'visibleTelegraph': 'The raider raises an axe.',
+                        },
+                    },
+                    {
+                        'id': 'enemy_hidden_assassin',
+                        'name': 'DM_ONLY_HIDDEN_ASSASSIN',
+                        'team': 'enemy',
+                        'kind': 'creature',
+                        'hp': {'current': 11, 'max': 11},
+                        'armorClass': 17,
+                        'conditions': [],
+                        'isAlive': True,
+                        'isConscious': True,
+                        'position': {'rangeBand': 'near'},
+                        'visibility': 'dm_only',
+                    },
                 ],
-                'flags': {},
+                'initiative': [
+                    {
+                        'participantId': f'player_{attacker_player.player_id}',
+                        'total': 18,
+                        'gmNotes': 'DM_ONLY_PROJECTION_FIELD_INITIATIVE_PLAYER',
+                    },
+                    {
+                        'participantId': 'enemy_visible_raider',
+                        'total': 14,
+                        'gmNotes': 'DM_ONLY_PROJECTION_FIELD_INITIATIVE_ENEMY',
+                    },
+                    {'participantId': 'enemy_hidden_assassin', 'total': 20},
+                ],
+                'flags': {
+                    'activeActorId': f'player_{attacker_player.player_id}',
+                    'activeActorName': attacker_player.character_name,
+                    'turnOrder': [
+                        f'player_{attacker_player.player_id}',
+                        f'player_{victim_player.player_id}',
+                        'enemy_visible_raider',
+                        'enemy_hidden_assassin',
+                    ],
+                    'turnOrderText': (
+                        f'{attacker_player.character_name} -> {victim_player.character_name} -> '
+                        'Visible Raider -> DM_ONLY_HIDDEN_ASSASSIN'
+                    ),
+                    'enemyTurnBlock': ['enemy_visible_raider', 'enemy_hidden_assassin'],
+                    'enemyTurnBlockText': 'Visible Raider, DM_ONLY_HIDDEN_ASSASSIN',
+                    'resolverMethod': 'campaign_pack',
+                    'creatureSource': 'campaign_pack',
+                    'combatDifficultyAI': {
+                        'tacticalLevel': 'smart',
+                        'privateSelector': 'DM_ONLY_PROJECTION_FIELD_DIFFICULTY',
+                    },
+                    'enemyGroups': [
+                        {
+                            'name': 'Visible Raider',
+                            'count': 1,
+                            'privatePlan': 'DM_ONLY_PROJECTION_FIELD_ENEMY_GROUP',
+                        }
+                    ],
+                    'privatePlan': 'DM_ONLY_PROJECTION_FIELD_COMBAT_FLAGS',
+                },
             },
+            'knownNpcs': [
+                {
+                    'id': 'npc_visible_guide',
+                    'name': 'Visible Guide',
+                    'role': 'guide',
+                    'locationId': 'visible_square',
+                    'questIds': ['quest_visible_patrol', 'quest_hidden_betrayal'],
+                    'gmNotes': 'DM_ONLY_PROJECTION_FIELD_NPC',
+                    'metadata': {'directorNote': 'DM_ONLY_PROJECTION_FIELD_NPC_METADATA'},
+                },
+                {'id': 'npc_hidden_spy', 'name': 'DM_ONLY_HIDDEN_SPY', 'hiddenToPlayers': True},
+            ],
+            'partyNpcs': [],
+            'quests': [
+                {
+                    'id': 'quest_visible_patrol',
+                    'title': 'Visible Patrol',
+                    'status': 'active',
+                    'relatedNpcIds': ['npc_visible_guide', 'npc_hidden_spy'],
+                    'relatedLocationIds': ['visible_square', 'hidden_vault'],
+                    'objectives': [
+                        {
+                            'id': 'watch_square',
+                            'description': 'Watch the square.',
+                            'gmNotes': 'DM_ONLY_PROJECTION_FIELD_OBJECTIVE',
+                        }
+                    ],
+                    'gmNotes': 'DM_ONLY_PROJECTION_FIELD_QUEST',
+                    'metadata': {'directorNote': 'DM_ONLY_PROJECTION_FIELD_QUEST_METADATA'},
+                },
+                {
+                    'id': 'quest_hidden_betrayal',
+                    'title': 'DM_ONLY_HIDDEN_QUEST',
+                    'status': 'active',
+                    'hiddenToPlayers': True,
+                },
+            ],
+            'locations': [
+                {
+                    'id': 'visible_square',
+                    'name': 'Visible Square',
+                    'status': 'visited',
+                    'connectedLocationIds': ['hidden_vault'],
+                    'npcIds': ['npc_visible_guide', 'npc_hidden_spy'],
+                    'questIds': ['quest_visible_patrol', 'quest_hidden_betrayal'],
+                    'gmNotes': 'DM_ONLY_PROJECTION_FIELD_LOCATION',
+                    'metadata': {'directorNote': 'DM_ONLY_PROJECTION_FIELD_LOCATION_METADATA'},
+                },
+                {
+                    'id': 'hidden_vault',
+                    'name': 'Hidden Vault',
+                    'hiddenToPlayers': True,
+                },
+            ],
+            'clues': [
+                {
+                    'id': 'visible_clue',
+                    'title': 'Scuffed Cobblestone',
+                    'status': 'discovered',
+                    'locationIds': ['visible_square', 'hidden_vault'],
+                    'npcIds': ['npc_visible_guide', 'npc_hidden_spy'],
+                    'gmNotes': 'DM_ONLY_PROJECTION_FIELD_CLUE',
+                    'metadata': {'directorNote': 'DM_ONLY_PROJECTION_FIELD_CLUE_METADATA'},
+                }
+            ],
             'flags': {
                 'campaignPackActiveCheckpointId': 'cp_start',
                 'campaignPackProgressRevision': 2,
@@ -2133,9 +2332,91 @@ def test_non_admin_session_state_keeps_own_detail_and_redacts_other_players(tmp_
         bundle['playerId']
         for bundle in snapshot['combat'].get('legalActions', [])
     ] == [ids['attacker_player_id']]
+    assert snapshot['currentScene']['activeNpcIds'] == ['npc_visible_guide']
+    assert snapshot['currentScene']['activeQuestIds'] == ['quest_visible_patrol']
+    assert snapshot['currentScene']['items'] == [{'id': 'visible_torch', 'name': 'Visible Torch'}]
+    assert snapshot['currentScene']['playerPositions'] == {
+        f"player_{ids['attacker_player_id']}": {
+            'rangeBand': 'near',
+            'zoneId': 'square_center',
+        }
+    }
+    assert snapshot['locations'][0]['connectedLocationIds'] == []
+    assert snapshot['locations'][0]['npcIds'] == ['npc_visible_guide']
+    assert snapshot['locations'][0]['questIds'] == ['quest_visible_patrol']
+    assert snapshot['knownNpcs'][0]['questIds'] == ['quest_visible_patrol']
+    assert snapshot['quests'][0]['relatedNpcIds'] == ['npc_visible_guide']
+    assert snapshot['quests'][0]['relatedLocationIds'] == ['visible_square']
+    assert snapshot['quests'][0]['objectives'] == [
+        {'id': 'watch_square', 'description': 'Watch the square.'}
+    ]
+    assert snapshot['clues'][0]['locationIds'] == ['visible_square']
+    assert snapshot['clues'][0]['npcIds'] == ['npc_visible_guide']
+    assert [participant['id'] for participant in snapshot['combat']['participants']] == [
+        f"player_{ids['attacker_player_id']}",
+        f"player_{ids['victim_player_id']}",
+        'enemy_visible_raider',
+    ]
+    assert [entry['participantId'] for entry in snapshot['combat']['initiative']] == [
+        f"player_{ids['attacker_player_id']}",
+        'enemy_visible_raider',
+    ]
+    visible_enemy = next(
+        participant
+        for participant in snapshot['combat']['participants']
+        if participant['id'] == 'enemy_visible_raider'
+    )
+    assert set(visible_enemy) == {
+        'id',
+        'name',
+        'team',
+        'kind',
+        'hp',
+        'armorClass',
+        'conditions',
+        'position',
+        'isAlive',
+        'isConscious',
+        'currentIntent',
+    }
+    assert visible_enemy['currentIntent'] == {'visibleTelegraph': 'The raider raises an axe.'}
+    assert snapshot['combat']['flags']['turnOrder'] == [
+        f"player_{ids['attacker_player_id']}",
+        f"player_{ids['victim_player_id']}",
+        'enemy_visible_raider',
+    ]
+    assert snapshot['combat']['encounterGoal'] == {
+        'playerObjective': 'Drive off the raider.',
+        'description': 'Drive off the raider.',
+    }
+    assert snapshot['combat']['battlefield']['hazards'] == [
+        {
+            'id': 'market_fire',
+            'name': 'Market Fire',
+            'description': 'Flames block the west lane.',
+            'effect': 'hazardous terrain',
+        }
+    ]
+    assert snapshot['combat']['flags']['combatDifficultyAI'] == {'tacticalLevel': 'smart'}
+    assert snapshot['combat']['flags']['enemyGroups'] == [
+        {'count': 1, 'name': 'Visible Raider', 'label': 'Visible Raider'}
+    ]
+    attack_actions = [
+        action
+        for bundle in snapshot['combat']['legalActions']
+        for action in bundle['actions']
+        if action['type'] == 'attack'
+    ]
+    assert attack_actions
+    assert {
+        target['id']
+        for action in attack_actions
+        for target in action.get('targets', [])
+    } == {'enemy_visible_raider'}
     actors = {actor['playerId']: actor for actor in snapshot['playerCharacters']}
     assert actors[ids['attacker_player_id']]['inventory']['items'][0]['name'] == 'ATTACKER_PRIVATE_ITEM'
     assert actors[ids['attacker_player_id']]['spellbook']['knownSpells'][0]['name'] == 'ATTACKER_PRIVATE_SPELL'
+    assert snapshot['combat']['participants'][0]['privateTactics']['targetId'] == 'ATTACKER_PRIVATE_NONCOMBAT_TARGET'
     assert set(actors[ids['victim_player_id']]) == {'id', 'playerId', 'name', 'race', 'class', 'level'}
     assert actors[ids['victim_player_id']]['name'] == 'Victim Hero'
     victim_combat = next(
@@ -2168,12 +2449,27 @@ def test_non_admin_session_state_keeps_own_detail_and_redacts_other_players(tmp_
     assert 'directorRules' not in snapshot['campaignPack']
     assert 'VICTIM_PRIVATE' not in json.dumps(snapshot)
     assert 'VICTIM_RESOURCE' not in json.dumps(snapshot)
+    assert 'DM_ONLY_HIDDEN' not in json.dumps(snapshot)
+    assert 'DM_ONLY_SCENE_ITEM' not in json.dumps(snapshot)
+    assert 'DM_ONLY_CACHED_SCENE_ITEM' not in json.dumps(snapshot)
+    assert 'DM_ONLY_ENEMY' not in json.dumps(snapshot)
+    assert 'DM_ONLY_PROJECTION_FIELD' not in json.dumps(snapshot)
     assert session_list_response.status_code == 200
     assert 'ATTACKER_PRIVATE_ITEM' in json.dumps(session_list_response.get_json())
     assert 'VICTIM_PRIVATE' not in json.dumps(session_list_response.get_json())
+    assert 'DM_ONLY_HIDDEN' not in json.dumps(session_list_response.get_json())
+    assert 'DM_ONLY_SCENE_ITEM' not in json.dumps(session_list_response.get_json())
+    assert 'DM_ONLY_CACHED_SCENE_ITEM' not in json.dumps(session_list_response.get_json())
+    assert 'DM_ONLY_ENEMY' not in json.dumps(session_list_response.get_json())
+    assert 'DM_ONLY_PROJECTION_FIELD' not in json.dumps(session_list_response.get_json())
     assert workspace_response.status_code == 200
     assert 'ATTACKER_PRIVATE_ITEM' in json.dumps(workspace_response.get_json())
     assert 'VICTIM_PRIVATE' not in json.dumps(workspace_response.get_json())
+    assert 'DM_ONLY_HIDDEN' not in json.dumps(workspace_response.get_json())
+    assert 'DM_ONLY_SCENE_ITEM' not in json.dumps(workspace_response.get_json())
+    assert 'DM_ONLY_CACHED_SCENE_ITEM' not in json.dumps(workspace_response.get_json())
+    assert 'DM_ONLY_ENEMY' not in json.dumps(workspace_response.get_json())
+    assert 'DM_ONLY_PROJECTION_FIELD' not in json.dumps(workspace_response.get_json())
 
 
 def test_session_export_scopes_player_detail_and_selection_but_admin_remains_complete(tmp_path, monkeypatch):
@@ -2239,6 +2535,11 @@ def test_session_export_scopes_player_detail_and_selection_but_admin_remains_com
     assert 'VICTIM_PRIVATE' not in json.dumps(attacker_payload)
     assert 'VICTIM_RESOURCE' not in json.dumps(attacker_payload)
     assert 'DM_ONLY_TRIGGER' not in json.dumps(attacker_payload)
+    assert 'DM_ONLY_HIDDEN' not in json.dumps(attacker_payload)
+    assert 'DM_ONLY_SCENE_ITEM' not in json.dumps(attacker_payload)
+    assert 'DM_ONLY_CACHED_SCENE_ITEM' not in json.dumps(attacker_payload)
+    assert 'DM_ONLY_ENEMY' not in json.dumps(attacker_payload)
+    assert 'DM_ONLY_PROJECTION_FIELD' not in json.dumps(attacker_payload)
 
     assert victim_selection.status_code == 404
     assert victim_selection.get_json()['error_code'] == 'player_not_found'
@@ -2257,6 +2558,11 @@ def test_session_export_scopes_player_detail_and_selection_but_admin_remains_com
     assert admin_players[ids['attacker_player_id']]['inventory'][0]['name'] == 'ATTACKER_PRIVATE_ITEM'
     assert 'DM_ONLY_LEDGER' in json.dumps(admin_payload['sessionState']['state_snapshot'])
     assert 'DM_ONLY_TRIGGER_REASON' in json.dumps(admin_payload['sessionState']['active_segments'])
+    assert 'DM_ONLY_HIDDEN_ASSASSIN' in json.dumps(admin_payload['sessionState']['state_snapshot'])
+    assert 'DM_ONLY_SCENE_ITEM' in json.dumps(admin_payload['sessionState']['state_snapshot'])
+    assert 'DM_ONLY_CACHED_SCENE_ITEM' in json.dumps(admin_payload['sessionState']['state_snapshot'])
+    assert 'DM_ONLY_ENEMY_BRAIN' in json.dumps(admin_payload['sessionState']['state_snapshot'])
+    assert 'DM_ONLY_PROJECTION_FIELD' in json.dumps(admin_payload['sessionState']['state_snapshot'])
 
 
 def test_accountless_table_token_cannot_read_mutate_or_socket_bind_guessed_player(

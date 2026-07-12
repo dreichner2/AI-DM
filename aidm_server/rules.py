@@ -263,6 +263,9 @@ DC_HINTS = {
     "thieves_tools": "12-18",
     "mobility": "12-18",
     "check": "10-18",
+    "persuasion": "12-18",
+    "deception": "12-18",
+    "intimidation": "12-18",
 }
 
 
@@ -349,10 +352,16 @@ def classify_player_action(message: str) -> RuleHint:
             )
         )
     if tokens & _SOCIAL_KEYWORDS:
+        if tokens & {'persuade', 'convince', 'negotiate'}:
+            social_roll_type = 'persuasion'
+        elif tokens & {'intimidate'}:
+            social_roll_type = 'intimidation'
+        else:
+            social_roll_type = 'deception'
         return _with_resolution(
             RuleHint(
                 True,
-                "social",
+                social_roll_type,
                 DC_HINTS["social"],
                 "Social influence action detected",
                 confidence=0.88,

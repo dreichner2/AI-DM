@@ -11,6 +11,7 @@ import {
   interactionActionText,
   interactionTargetId,
   itemActionText,
+  itemOptionSelectionKey,
   type ActionIntent,
   type AbilityOption,
   type ComposerMode,
@@ -94,7 +95,7 @@ export type ActionComposerProps = {
   itemQuantity: string
   itemCostGold: string
   itemOptions: ItemOption[]
-  setSelectedItemName: Dispatch<SetStateAction<string>>
+  setSelectedItemId: Dispatch<SetStateAction<string>>
   setItemQuantity: Dispatch<SetStateAction<string>>
   updateSelectedInventoryAction: (action: InventoryAction) => void
   updateItemDraftName: (name: string) => void
@@ -160,12 +161,15 @@ export function ActionComposer({
   itemQuantity,
   itemCostGold,
   itemOptions,
-  setSelectedItemName,
+  setSelectedItemId,
   setItemQuantity,
   updateSelectedInventoryAction,
   updateItemDraftName,
   updateItemCostGold,
 }: ActionComposerProps) {
+  const selectedItemIndex = selectedItem
+    ? itemOptions.findIndex((item) => item === selectedItem || (item.id && item.id === selectedItem.id))
+    : -1
   useEffect(() => {
     if (composerMode === 'roll') {
       preloadDiceRollDialog()
@@ -559,11 +563,13 @@ export function ActionComposer({
             ))}
           </select>
           <select
-            value={selectedItem?.name ?? ''}
+            value={selectedItem && selectedItemIndex >= 0 ? itemOptionSelectionKey(selectedItem, selectedItemIndex) : ''}
             aria-label="Inventory item"
             onChange={(event) => {
-              const nextItem = itemOptions.find((item) => item.name === event.target.value) ?? null
-              setSelectedItemName(event.target.value)
+              const nextItem = itemOptions.find(
+                (item, index) => itemOptionSelectionKey(item, index) === event.target.value,
+              ) ?? null
+              setSelectedItemId(event.target.value)
               setActionText((current) =>
                 itemActionText(characterName, selectedInventoryAction, nextItem?.name ?? itemDraftName, current, itemCostGold),
               )
@@ -571,8 +577,8 @@ export function ActionComposer({
             disabled={!inventoryActionUsesOwnedItem || !itemOptions.length}
           >
             {itemOptions.length ? (
-              itemOptions.map((item) => (
-                <option key={item.name} value={item.name}>
+              itemOptions.map((item, index) => (
+                <option key={itemOptionSelectionKey(item, index)} value={itemOptionSelectionKey(item, index)}>
                   {item.name} x{item.quantity}
                 </option>
               ))

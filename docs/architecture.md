@@ -59,8 +59,10 @@ provider, and state contracts live in [API surface](api_surface.md),
   `aidm_server/socket_runtime.py` resolves authenticated account/workspace
   context and connection capabilities; `aidm_server/blueprints/socketio_events.py`
   wires the capability and workspace checks into each event handler.
-- On reconnect, the frontend rejoins the room and reloads the current persisted
-  session snapshot. An uncertain retry reuses the exact original
+- On reconnect, the frontend rejoins the room and reloads both the current
+  persisted session snapshot and the selected player's authoritative detail,
+  so missed HP, inventory, and other character events do not leave stale UI.
+  An uncertain retry reuses the exact original
   `client_message_id`. A completed row emits `turn_duplicate`; an incomplete
   `processing` row replays its persisted private roll receipt to the requester
   and resumes from its pipeline state without another incoming event, roll,
@@ -82,6 +84,13 @@ provider, and state contracts live in [API surface](api_surface.md),
   a die, mode, reason, and permitted ability selection, but faces, modifiers,
   totals, and persisted provenance are server-owned. The committed result is
   emitted as `roll_resolved`; frontend dice physics are presentation only.
+- Named skill checks keep their exact skill identity through the pending-roll
+  lifecycle, so one related proficiency cannot qualify a different skill.
+  Saving throws use the requested ability plus class-derived or explicitly
+  persisted save proficiency; curated ancestry skill traits and persisted
+  expertise also participate in the server-owned modifier breakdown. Known
+  spellcasting classes use their class ability and proficiency instead of a
+  client-selected replacement.
 - A blocked turn emits `roll_required` with the pending turn ID, rule/prompt,
   remaining player IDs, and a viewer-safe roll specification. It can name the
   die, mode, reason, visibility, and public ability key/label, but never exposes
@@ -94,6 +103,10 @@ provider, and state contracts live in [API surface](api_surface.md),
   the current schema does not persist sub-turn action, movement, or reaction
   counters. The HUD renders unavailable targets as disabled choices with the
   server-issued legality reason so validation remains visible to the player.
+- Player snapshot projections expose only public enemy combat facts (identity,
+  HP, AC, conditions, position, and an explicit visible telegraph). Server-side
+  intent reasoning, targeting, planner provenance, abilities, and other
+  Dungeon Master-only fields remain in the operator snapshot.
 - Realtime roll and `new_message` delivery has two projections: the initiating
   socket receives private roll provenance, while the rest of the room receives
   only the shared aggregate result. Player-readable REST events use the same
@@ -101,6 +114,9 @@ provider, and state contracts live in [API surface](api_surface.md),
 - Inventory clarification actions/options are emitted only to the acting
   socket. Party peers receive a neutral waiting status, and their persisted
   event/log/export projections remove clarification and state-pipeline detail.
+- Structured owned-item actions preserve the selected persisted item ID from
+  the composer through validation and confirmed mutation, so identically named
+  inventory entries do not silently collapse to name-only targeting.
 - `aidm_server/game_state/` owns structured action/state schemas, extraction,
   validation, application, combat resolution, and state-change logging.
 - Narration is persisted before post-DM state application. If both the primary
