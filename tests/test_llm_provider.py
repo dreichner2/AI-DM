@@ -2014,6 +2014,31 @@ def test_buffered_stream_delay_override_paces_chunks(monkeypatch, tmp_path):
     assert sleeps == [0.0075] * (len(chunks) - 1)
 
 
+def test_buffered_stream_chunk_size_override_produces_multiple_render_windows(monkeypatch):
+    provider = DeterministicFallbackProvider(model_name='deterministic-v1')
+    expected_text = provider.generate(ProviderRequest(prompt='hello')).text
+    monkeypatch.setenv('AIDM_BUFFERED_STREAM_CHUNK_CHARS', '48')
+    monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
+
+    chunks = list(query_dm_function_stream('open the gate', '{"campaign":"test"}'))
+
+    assert len(chunks) >= 3
+    assert all(0 < len(chunk) <= 48 for chunk in chunks)
+    assert ''.join(chunks) == expected_text
+
+
+def test_buffered_stream_chunk_size_override_is_safely_bounded(monkeypatch):
+    provider = DeterministicFallbackProvider(model_name='deterministic-v1')
+    expected_text = provider.generate(ProviderRequest(prompt='hello')).text
+    monkeypatch.setenv('AIDM_BUFFERED_STREAM_CHUNK_CHARS', '1')
+    monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
+
+    chunks = list(query_dm_function_stream('open the gate', '{"campaign":"test"}'))
+
+    assert all(0 < len(chunk) <= 16 for chunk in chunks)
+    assert ''.join(chunks) == expected_text
+
+
 def test_codex_completion_failure_preserves_emergency_fallback_metadata(monkeypatch, tmp_path):
     provider = CodexCliProvider(
         model_name='gpt-5.5',
@@ -2229,3 +2254,4 @@ def test_chunk_text_for_stream_preserves_boundary_whitespace():
     chunks = list(_chunk_text_for_stream(text, max_chunk_size=24))
 
     assert ''.join(chunks) == text
+    assert all(len(chunk) <= 24 for chunk in chunks)

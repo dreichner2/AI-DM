@@ -63,6 +63,8 @@ logger = logging.getLogger(__name__)
 CONTINUITY_FALLBACK_PROVIDER = 'fallback'
 CONTINUITY_FALLBACK_MODEL = 'continuity-safe-v1'
 DISPLAY_STREAM_CHUNK_CHARS = 96
+BUFFERED_STREAM_CHUNK_CHARS_ENV = 'AIDM_BUFFERED_STREAM_CHUNK_CHARS'
+MIN_BUFFERED_STREAM_CHUNK_CHARS = 16
 BUFFERED_STREAM_CHUNK_DELAY_ENV = 'AIDM_BUFFERED_STREAM_CHUNK_DELAY_MS'
 DEFAULT_BUFFERED_STREAM_CHUNK_DELAY_MS = 50.0
 MAX_BUFFERED_STREAM_CHUNK_DELAY_MS = 100.0
@@ -218,7 +220,7 @@ def _chunk_text_for_stream(text: str, max_chunk_size: int = DISPLAY_STREAM_CHUNK
         split_at = -1
         split_width = 0
         for marker in ('\n\n', '. ', '! ', '? ', '\n', ' '):
-            idx = full_text.rfind(marker, start + 1, window_end + 1)
+            idx = full_text.rfind(marker, start + 1, window_end)
             if idx > split_at:
                 split_at = idx
                 split_width = len(marker)
@@ -252,6 +254,17 @@ def _buffered_stream_chunk_delay_seconds() -> float:
     return min(MAX_BUFFERED_STREAM_CHUNK_DELAY_MS, max(0.0, delay_ms)) / 1000.0
 
 
+def _buffered_stream_chunk_chars() -> int:
+    raw_chunk_chars = os.getenv(BUFFERED_STREAM_CHUNK_CHARS_ENV)
+    if has_app_context() and current_app.config.get(BUFFERED_STREAM_CHUNK_CHARS_ENV) is not None:
+        raw_chunk_chars = current_app.config.get(BUFFERED_STREAM_CHUNK_CHARS_ENV)
+    try:
+        chunk_chars = DISPLAY_STREAM_CHUNK_CHARS if raw_chunk_chars in (None, '') else int(raw_chunk_chars)
+    except (TypeError, ValueError):
+        chunk_chars = DISPLAY_STREAM_CHUNK_CHARS
+    return min(DISPLAY_STREAM_CHUNK_CHARS, max(MIN_BUFFERED_STREAM_CHUNK_CHARS, chunk_chars))
+
+
 def _provider_supports_progressive_streaming(provider: BaseLLMProvider) -> bool:
     provider_name = str(getattr(provider, 'provider_name', '') or '').strip().lower()
     capabilities = provider_capabilities(provider_name)
@@ -265,8 +278,9 @@ def _completion_chunks_for_stream(provider: BaseLLMProvider, request: ProviderRe
     text = response.text.strip()
     if text:
         delay_seconds = _buffered_stream_chunk_delay_seconds()
+        chunk_chars = _buffered_stream_chunk_chars()
         paced_seconds = 0.0
-        for index, chunk in enumerate(_chunk_text_for_stream(text)):
+        for index, chunk in enumerate(_chunk_text_for_stream(text, max_chunk_size=chunk_chars)):
             if (
                 index > 0
                 and delay_seconds > 0
