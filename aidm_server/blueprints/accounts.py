@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from urllib.parse import urlsplit
 
 from flask import Blueprint, current_app, jsonify, make_response, request
 from sqlalchemy import or_
@@ -38,6 +39,8 @@ from aidm_server.auth import (
 from aidm_server.database import db
 from aidm_server.errors import error_response
 from aidm_server.rate_limiter import FixedWindowRateLimiter, privacy_safe_preauth_bucket
+from aidm_server.services.campaign_pack import CampaignPackImportError
+from aidm_server.services.play_now import PlayNowOnboardingError, ensure_play_now_adventure
 from aidm_server.telemetry import telemetry_event
 from aidm_server.models import (
     Account,
@@ -75,7 +78,12 @@ from aidm_server.models import (
     Workspace,
     World,
 )
-from aidm_server.validation import optional_text as _optional_text, parse_json_body, required_text as _required_text
+from aidm_server.validation import (
+    optional_text as _optional_text,
+    parse_json_body,
+    parse_optional_json_body,
+    required_text as _required_text,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -86,6 +94,8 @@ LEGACY_PASSWORD_SETUP_MESSAGE = (
 )
 WORKSPACE_NAME_TAKEN_MESSAGE = 'table/ workspace name already in use'
 ACCOUNT_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
+GUEST_USERNAME_PREFIX = '_aidm_guest_'
+PRIVATE_PLAY_NOW_WORKSPACE_PREFIX = 'play_now_'
 
 
 def _legacy_password_setup_required_response():
@@ -97,6 +107,7 @@ def _preauth_rate_limit_response(
     action: str,
     normalized_target: str,
     target_bucket_scope: str | None = None,
+    include_target_bucket: bool = True,
 ):
     """Consume compound, IP-wide, and target-wide credential-attempt buckets."""
     client_ip = request.remote_addr or 'unknown'
@@ -107,8 +118,9 @@ def _preauth_rate_limit_response(
     limiter_specs: tuple[tuple[str, str, str], ...] = (
         ('ip-target', 'aidm_preauth_ip_target_limiter', normalized_target),
         ('ip', 'aidm_preauth_ip_limiter', '*'),
-        ('target', 'aidm_preauth_target_limiter', target_bucket_target),
     )
+    if include_target_bucket:
+        limiter_specs += (('target', 'aidm_preauth_target_limiter', target_bucket_target),)
     for dimension, extension_name, target in limiter_specs:
         limiter: FixedWindowRateLimiter = current_app.extensions[extension_name]
         bucket = privacy_safe_preauth_bucket(
@@ -485,6 +497,211 @@ def _clear_account_session_response(status: int = 200):
         samesite=str(current_app.config.get('AIDM_ACCOUNT_COOKIE_SAMESITE') or 'Lax'),
     )
     return response
+
+
+def _normalized_origin(value: str | None) -> str | None:
+    raw_value = str(value or '').strip()
+    if not raw_value:
+        return None
+    parsed = urlsplit(raw_value)
+    if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+        return None
+    return f'{parsed.scheme.casefold()}://{parsed.netloc.casefold()}'
+
+
+def _guest_bootstrap_origin_response():
+    """Reject browser cross-site guest provisioning before creating state."""
+    origin_header = str(request.headers.get('Origin') or '').strip()
+    fetch_site = str(request.headers.get('Sec-Fetch-Site') or '').strip().casefold()
+    if not origin_header:
+        if fetch_site == 'cross-site':
+            return error_response('origin_forbidden', 'Guest Play Now must start from an allowed origin.', 403)
+        return None
+
+    request_origin = _normalized_origin(origin_header)
+    same_origin = _normalized_origin(request.host_url)
+    allowed_origins = {
+        normalized
+        for configured in current_app.config.get('AIDM_CORS_ALLOWLIST', [])
+        if configured != '*'
+        if (normalized := _normalized_origin(configured)) is not None
+    }
+    if request_origin is None or request_origin not in {*allowed_origins, same_origin}:
+        return error_response('origin_forbidden', 'Guest Play Now must start from an allowed origin.', 403)
+    return None
+
+
+def _is_guest_account(account: Account) -> bool:
+    return str(account.username or '').startswith(GUEST_USERNAME_PREFIX)
+
+
+def _create_guest_account() -> tuple[Account, str]:
+    for _attempt in range(5):
+        suffix = secrets.token_urlsafe(18)
+        username = f'{GUEST_USERNAME_PREFIX}{suffix}'
+        if Account.query.filter_by(username=username).first():
+            continue
+        account_token = generate_account_token()
+        account = Account(
+            username=username,
+            first_name='Guest',
+            last_name='Adventurer',
+            # The random password is discarded. The issued session token is the
+            # only way to continue this deliberately nonrecoverable guest account.
+            password_hash=password_hash_for(generate_account_token()),
+            account_token_hash=hash_secret(account_token),
+        )
+        db.session.add(account)
+        db.session.flush()
+        return account, account_token
+    raise RuntimeError('Failed to allocate a guest account identifier.')
+
+
+def _create_private_play_now_workspace(
+    account: Account,
+    *,
+    membership_role: str,
+) -> tuple[Workspace, AccountWorkspaceMembership]:
+    for _attempt in range(5):
+        # Workspace IDs are normalized to lowercase on subsequent requests.
+        # Generate a lowercase-only suffix so the stored ID survives replay.
+        suffix = secrets.token_hex(12)
+        workspace_id = f'{PRIVATE_PLAY_NOW_WORKSPACE_PREFIX}{suffix}'
+        workspace_name = f'Private Play Now {suffix}'
+        if _workspace_name_in_use(workspace_name, workspace_id):
+            continue
+        workspace = Workspace(
+            workspace_id=workspace_id,
+            name=workspace_name,
+            name_key=normalize_workspace_name_key(workspace_name),
+            # No password or workspace token is issued, so nobody else can join
+            # this workspace through either public join path.
+            password_hash=None,
+            token_hash=None,
+            created_by_account_id=account.account_id,
+        )
+        membership = AccountWorkspaceMembership(
+            account_id=account.account_id,
+            workspace_id=workspace_id,
+            role=membership_role,
+        )
+        db.session.add_all((workspace, membership))
+        db.session.flush()
+        return workspace, membership
+    raise RuntimeError('Failed to allocate a private Play Now workspace.')
+
+
+def _requested_play_now_workspace_id(payload: dict) -> tuple[str | None, str | None]:
+    body_value = payload.get('workspace_id') or payload.get('workspaceId')
+    header_value = str(request.headers.get(WORKSPACE_ID_HEADER) or '').strip()
+    if body_value and header_value:
+        body_workspace_id = normalize_workspace_id(str(body_value))
+        header_workspace_id = normalize_workspace_id(header_value)
+        if body_workspace_id != header_workspace_id:
+            return None, 'workspace_id does not match the selected workspace header.'
+    raw_value = body_value or header_value
+    if not raw_value:
+        return None, None
+    return normalize_workspace_id(str(raw_value)), None
+
+
+@accounts_bp.route('/play-now', methods=['POST'])
+def play_now_account():
+    payload = parse_optional_json_body(request)
+    if payload is None:
+        return error_response('validation_error', 'Expected JSON request body.', 400)
+
+    account_token = request_account_token() or ''
+    account = account_for_token(account_token)
+    guest_account = False
+    if account is None:
+        origin_response = _guest_bootstrap_origin_response()
+        if origin_response:
+            return origin_response
+        limited_response = _preauth_rate_limit_response(
+            action='guest-play-now',
+            normalized_target='guest-bootstrap',
+            include_target_bucket=False,
+        )
+        if limited_response:
+            return limited_response
+
+    workspace_id, workspace_error = _requested_play_now_workspace_id(payload)
+    if workspace_error:
+        return error_response('validation_error', workspace_error, 400)
+
+    try:
+        if account is None:
+            account, account_token = _create_guest_account()
+            guest_account = True
+            workspace, membership = _create_private_play_now_workspace(
+                account,
+                membership_role='player',
+            )
+            workspace_id = workspace.workspace_id
+        else:
+            guest_account = _is_guest_account(account)
+            membership = account_workspace_membership(account, workspace_id) if workspace_id else None
+            if workspace_id and membership is None:
+                return error_response('workspace_not_saved', 'Workspace is not saved to this account.', 403)
+            if membership is None:
+                workspace, membership = _create_private_play_now_workspace(
+                    account,
+                    membership_role='admin',
+                )
+                workspace_id = workspace.workspace_id
+
+        character_id = (
+            payload.get('character_id')
+            or payload.get('characterId')
+            or payload.get('pregen_id')
+            or payload.get('pregenId')
+        )
+        example_pack_id = (
+            payload.get('example_pack_id')
+            or payload.get('examplePackId')
+            or payload.get('pack_id')
+            or payload.get('packId')
+        )
+        result = ensure_play_now_adventure(
+            workspace_id=workspace_id,
+            account_id=account.account_id,
+            character_id=character_id,
+            example_pack_id=example_pack_id,
+        )
+        db.session.commit()
+        db.session.expire(account, ['workspace_memberships'])
+        session_payload = account_session_payload(
+            account,
+            account_token=account_token,
+            workspace_id=workspace_id,
+            role=membership.role,
+        )
+        response_payload = {
+            **result.payload,
+            'account_session': session_payload,
+            'guest_account': guest_account,
+        }
+        response = _account_session_response(
+            response_payload,
+            account_token=account_token,
+            status=result.status_code,
+        )
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    except PlayNowOnboardingError as exc:
+        db.session.rollback()
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
+    except CampaignPackImportError as exc:
+        db.session.rollback()
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
+    except IntegrityError:
+        db.session.rollback()
+        return error_response('play_now_conflict', 'Failed to reserve a private Play Now session.', 409)
+    except Exception as exc:
+        db.session.rollback()
+        logger.exception('Failed to prepare account Play Now onboarding: %s', str(exc))
+        return error_response('play_now_failed', 'Failed to prepare Play Now.', 400)
 
 
 @accounts_bp.route('/login', methods=['POST'])

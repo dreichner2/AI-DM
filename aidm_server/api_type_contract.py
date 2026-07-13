@@ -629,6 +629,8 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
             field('pregen', 'PlayNowPregeneratedCharacter'),
             field('example_pack', 'PlayNowExamplePack'),
             field('join_context', 'PlayNowJoinContext'),
+            field('account_session', 'AccountSession | null', optional=True),
+            field('guest_account', 'boolean', optional=True),
         ),
     ),
     TypeContract('PlayerEquipmentUpdateResponse', alias='PlayerDetail & { snapshot_changed: boolean; equipment_update: JsonRecord }'),

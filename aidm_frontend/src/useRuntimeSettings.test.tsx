@@ -407,6 +407,74 @@ describe('useRuntimeSettings', () => {
     expect(sessionStorage.getItem('aidm:accountTokenTransport')).toBeNull()
   })
 
+  it.each([
+    { label: 'http-only cookie', accountToken: '', transport: 'http_only_cookie' },
+    { label: 'bearer token', accountToken: 'guest-bearer-token', transport: 'bearer' },
+  ])('adopts a Play Now $label session and reconnects the selected table', ({ accountToken, transport }) => {
+    const resetRuntimeState = vi.fn()
+    const reconnectSocket = vi.fn()
+    const { result } = renderHook(() =>
+      useRuntimeSettings({
+        defaultBaseUrl: 'https://backend.example.test',
+        resetRuntimeState,
+        reconnectSocket,
+      }),
+    )
+    const workspace = {
+      workspace_id: 'guest-table',
+      workspace_name: 'Guest Table',
+      table_name: 'Guest Table',
+      access_mode: 'password' as const,
+      workspace_role: 'player',
+      is_workspace_admin: false,
+      created_at: null,
+      updated_at: null,
+    }
+
+    act(() => {
+      result.current.adoptAccountSession({
+        account: {
+          account_id: 41,
+          username: 'guest-41',
+          first_name: 'Guest',
+          last_name: 'Adventurer',
+          display_name: 'Guest Adventurer',
+          workspace_id: 'guest-table',
+          workspace_role: 'player',
+          is_workspace_admin: false,
+          requires_password_setup: false,
+          workspaces: [workspace],
+        },
+        account_token: accountToken,
+        account_token_transport: transport,
+        workspace_id: 'guest-table',
+        workspace_role: 'player',
+        is_workspace_admin: false,
+        claimed_player_ids: [30],
+        workspaces: [workspace],
+      })
+    })
+
+    expect(result.current.authToken).toBe(accountToken)
+    expect(result.current.accountTokenTransport).toBe(transport)
+    expect(result.current.workspaceId).toBe('guest-table')
+    expect(result.current.runtimeAccount?.username).toBe('guest-41')
+    expect(sessionStorage.getItem('aidm:authToken')).toBe(accountToken || null)
+    expect(sessionStorage.getItem('aidm:accountTokenTransport')).toBe(transport)
+    expect(localStorage.getItem('aidm:workspaceId')).toBe('guest-table')
+    expect(
+      sessionStorage.getItem(originScopedStorageKey('aidm:authToken', 'https://backend.example.test')),
+    ).toBe(accountToken || null)
+    expect(
+      sessionStorage.getItem(originScopedStorageKey('aidm:accountTokenTransport', 'https://backend.example.test')),
+    ).toBe(transport)
+    expect(
+      localStorage.getItem(originScopedStorageKey('aidm:workspaceId', 'https://backend.example.test')),
+    ).toBe('guest-table')
+    expect(resetRuntimeState).toHaveBeenCalledOnce()
+    expect(reconnectSocket).toHaveBeenCalledOnce()
+  })
+
   it('sends the selected auth intent and displays username intent errors', async () => {
     const requestBodies: Array<Record<string, unknown>> = []
     vi.stubGlobal(

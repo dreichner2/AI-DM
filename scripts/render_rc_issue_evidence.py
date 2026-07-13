@@ -26,7 +26,14 @@ DEFAULT_BETA_TESTER_LINK_SOURCES = (
     REPO_ROOT / 'docs' / 'beta_runbook.md',
 )
 DEFAULT_GITATTRIBUTES = REPO_ROOT / '.gitattributes'
-EXPECTED_VISUAL_SMOKE_SCREENSHOTS = ('desktop-shell.png', 'mobile-full.png', 'short-height-composer.png')
+EXPECTED_VISUAL_SMOKE_SCREENSHOTS = (
+    'desktop-shell.png',
+    'laptop-shell.png',
+    'mobile-full.png',
+    'mobile-narrow.png',
+    'tablet-landscape.png',
+    'tablet-portrait.png',
+)
 LARGE_ARCHIVE_MEMBER_THRESHOLD_BYTES = 50 * 1024 * 1024
 GIT_LFS_POINTER_MAX_BYTES = 4 * 1024
 GIT_LFS_POINTER_VERSION = 'version https://git-lfs.github.com/spec/v1'

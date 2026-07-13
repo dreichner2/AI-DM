@@ -10,18 +10,15 @@
   --line-strong: rgba(144, 164, 159, 0.26);
   --line-hot: rgba(255, 107, 44, 0.58);
   --border: rgba(144, 164, 159, 0.16);
-  --border-strong: rgba(144, 164, 159, 0.26);
   --heading: #fbf5e8;
   --text: #c9d0cc;
   --muted: #8a9793;
   --faint: #63706d;
   --orange: #ff6b2c;
-  --orange-soft: rgba(255, 107, 44, 0.14);
   --accent: #ff6b2c;
   --accent-2: #ffb067;
   --teal: #72b59b;
   --green: #6bdc68;
-  --soft-shadow: 0 12px 34px rgba(0, 0, 0, 0.24);
   --panel-shadow: 0 14px 34px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.022);
   --sans:
     'Inter', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Helvetica Neue',

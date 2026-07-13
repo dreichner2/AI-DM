@@ -396,10 +396,9 @@ export function useComposerActions({
 
   const updateActionText = (nextText: string) => {
     setActionText(nextText)
-    setRecoverableSubmission((current) =>
-      current && nextText.trim() !== current.message ? null : current,
-    )
-    setQueuedActionText((current) => (current && current !== nextText ? '' : current))
+    if (!recoverableSubmission) {
+      setQueuedActionText((current) => (current && current !== nextText ? '' : current))
+    }
     if (nextText.trim()) {
       emitTypingStatus(true)
       scheduleTypingIdle()
@@ -557,6 +556,13 @@ export function useComposerActions({
     }
     if (!overrideMessage && !overrideIntent && recoverableSubmission && actionText.trim() === recoverableSubmission.message) {
       return retryRecoverableSubmission()
+    }
+    if (recoverableSubmission) {
+      pushError(
+        'validation',
+        'Delivery of your previous action is uncertain. Retry it safely or discard it after checking the timeline before sending something new.',
+      )
+      return false
     }
     if (!selectedSessionId || !selectedCampaignId || !campaign || !selectedPlayerId) {
       pushError('validation', 'Choose a campaign, session, and player before sending.')
@@ -1055,11 +1061,7 @@ export function useComposerActions({
     submitAction,
     toggleAdminTools,
     queuedActionText,
-    queuedActionRetryable: Boolean(
-      recoverableSubmission &&
-      recoverableSubmission.message === queuedActionText &&
-      recoverableSubmission.message === actionText.trim(),
-    ),
+    queuedActionRetryable: Boolean(recoverableSubmission),
     retryRecoverableSubmission,
     retryDiceRoll,
     sharedRollNotice,

@@ -42,11 +42,14 @@ def test_unclassified_http_endpoint_requires_ungrantable_internal_capability():
 def test_public_and_account_self_service_routes_are_explicitly_allowlisted():
     assert HTTP_EXPLICIT_ACCESS[('system.health_check', 'GET')] == 'public'
     assert HTTP_EXPLICIT_ACCESS[('accounts.login_or_create_account', 'POST')] == 'self_service'
+    assert HTTP_EXPLICIT_ACCESS[('accounts.play_now_account', 'POST')] == 'self_service'
     assert explicit_http_access('system.health_check', 'GET') == 'public'
     assert explicit_http_access('accounts.login_or_create_account', 'POST') == 'self_service'
+    assert explicit_http_access('accounts.play_now_account', 'POST') == 'self_service'
     assert required_http_capability('system.health_check', 'GET') is None
     assert required_http_capability('system.health_check', 'HEAD') is None
     assert required_http_capability('accounts.login_or_create_account', 'POST') is None
+    assert required_http_capability('accounts.play_now_account', 'POST') is None
 
 
 def test_unclassified_api_route_fails_closed_at_runtime(app):

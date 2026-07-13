@@ -204,6 +204,53 @@ describe('useComposerActions realtime delivery recovery', () => {
     expect(result.current.optimisticEntries).toHaveLength(1)
   })
 
+  it('blocks a modified or new submission while delivery is uncertain and keeps safe retry available', () => {
+    const socket = socketWithConnection(true)
+    const pushError = vi.fn()
+    const { result } = renderHook(() => useComposerHarness(socket, pushError))
+
+    act(() => result.current.actions.submitAction('Cross the bridge'))
+    const originalPayload = vi.mocked(socket.emit).mock.calls[0]?.[1]
+    act(() => result.current.actions.handleConnectionInterrupted())
+    act(() => result.current.actions.updateActionText('Inspect the river instead'))
+    act(() => result.current.actions.submitAction())
+
+    expect(vi.mocked(socket.emit).mock.calls.filter(([event]) => event === 'send_message')).toHaveLength(1)
+    expect(result.current.actions.actionText).toBe('Inspect the river instead')
+    expect(result.current.actions.queuedActionText).toBe('Cross the bridge')
+    expect(result.current.actions.queuedActionRetryable).toBe(true)
+    expect(pushError).toHaveBeenCalledWith(
+      'validation',
+      expect.stringContaining('Delivery of your previous action is uncertain'),
+    )
+
+    act(() => result.current.actions.retryRecoverableSubmission())
+    expect(vi.mocked(socket.emit).mock.calls.filter(([event]) => event === 'send_message')[1])
+      .toEqual(['send_message', originalPayload])
+  })
+
+  it('preserves an edited draft when the player explicitly discards an uncertain delivery', () => {
+    const socket = socketWithConnection(true)
+    const { result } = renderHook(() => useComposerHarness(socket, vi.fn()))
+
+    act(() => result.current.actions.submitAction('Open the hatch'))
+    act(() => result.current.actions.handleConnectionInterrupted())
+    act(() => result.current.actions.updateActionText('Listen at the hatch'))
+    act(() => result.current.actions.clearQueuedAction())
+
+    expect(result.current.actions.actionText).toBe('Listen at the hatch')
+    expect(result.current.actions.queuedActionText).toBe('')
+    expect(result.current.actions.queuedActionRetryable).toBe(false)
+
+    act(() => result.current.actions.submitAction())
+    const sendMessageCalls = vi.mocked(socket.emit).mock.calls.filter(([event]) => event === 'send_message')
+    expect(sendMessageCalls).toHaveLength(2)
+    expect(sendMessageCalls[1]).toEqual([
+      'send_message',
+      expect.objectContaining({ message: 'Listen at the hatch' }),
+    ])
+  })
+
   it('does not restore or retry a roll after its authoritative result confirmed persistence', () => {
     const socket = socketWithConnection(true)
     const { result } = renderHook(() => useComposerHarness(socket, vi.fn()))

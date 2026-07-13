@@ -138,11 +138,46 @@ function playNowResponse(): PlayNowResponse {
   }
 }
 
+function guestAccountSession() {
+  const workspace = {
+    workspace_id: 'owner',
+    workspace_name: 'Guest Table',
+    table_name: 'Guest Table',
+    access_mode: 'password',
+    workspace_role: 'player',
+    is_workspace_admin: false,
+    created_at: null,
+    updated_at: null,
+  }
+  return {
+    account: {
+      account_id: 41,
+      username: 'guest-41',
+      first_name: 'Guest',
+      last_name: 'Adventurer',
+      display_name: 'Guest Adventurer',
+      workspace_id: 'owner',
+      workspace_role: 'player',
+      is_workspace_admin: false,
+      requires_password_setup: false,
+      workspaces: [workspace],
+    },
+    account_token: '',
+    account_token_transport: 'http_only_cookie',
+    workspace_id: 'owner',
+    workspace_role: 'player',
+    is_workspace_admin: false,
+    claimed_player_ids: [30],
+    workspaces: [workspace],
+  }
+}
+
 function createOptions(overrides: Record<string, unknown> = {}) {
   return {
     activeSessionId: null,
     auth: '',
     authRequired: false,
+    hostedAccessReady: false,
     backendReady: true,
     baseUrl: 'https://backend.example.test',
     campaignCount: 0,
@@ -161,6 +196,8 @@ function createOptions(overrides: Record<string, unknown> = {}) {
     loadPlayerDetail: vi.fn(() => Promise.resolve()),
     loadSessionData: vi.fn(() => Promise.resolve()),
     openCreateCampaignDialog: vi.fn(),
+    openLogIn: vi.fn(),
+    openCreateAccount: vi.fn(),
     pushError: vi.fn(),
     refreshCampaignWorkspace: vi.fn(() => Promise.resolve()),
     refreshRoot: vi.fn(() => Promise.resolve()),
@@ -222,6 +259,58 @@ describe('usePlayNowOnboarding', () => {
 
     rerender({ values: createOptions({ campaignCount: 0, workspaceLoading: true }) })
     expect(result.current.showTitleScreen).toBe(false)
+  })
+
+  it('starts hosted Play Now as a guest while keeping account choices separate', async () => {
+    const payload = {
+      ...playNowResponse(),
+      account_session: guestAccountSession(),
+      guest_account: true,
+    }
+    apiFetchMock.mockResolvedValue(payload)
+    const adoptAccountSession = vi.fn()
+    const options = createOptions({
+      authRequired: true,
+      hostedAccessReady: false,
+      campaignCount: 0,
+      selectedCampaignId: 10,
+      selectedSessionId: 20,
+      selectedPlayerId: 30,
+      adoptAccountSession,
+    })
+    const { result } = renderHook(() => usePlayNowOnboarding(options))
+
+    expect(result.current.showTitleScreen).toBe(true)
+    expect(result.current.titleScreenAccountReady).toBe(false)
+
+    await act(async () => result.current.playNowFromTitleScreen())
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      'https://backend.example.test',
+      '/api/accounts/play-now',
+      '',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(adoptAccountSession).toHaveBeenCalledWith(payload.account_session)
+    expect(options.openLogIn).not.toHaveBeenCalled()
+    expect(options.campaignUpserted).toHaveBeenCalledWith(payload.campaign)
+
+    act(() => result.current.logInFromTitleScreen())
+    act(() => result.current.createAccountFromTitleScreen())
+    expect(options.openLogIn).toHaveBeenCalledOnce()
+    expect(options.openCreateAccount).toHaveBeenCalledOnce()
+    expect(options.closeMobilePanels).toHaveBeenCalledTimes(3)
+  })
+
+  it('preserves campaign selection for authenticated hosted accounts with existing campaigns', () => {
+    const options = createOptions({
+      authRequired: true,
+      hostedAccessReady: true,
+      campaignCount: 1,
+    })
+    const { result } = renderHook(() => usePlayNowOnboarding(options))
+
+    expect(result.current.showTitleScreen).toBe(false)
+    expect(result.current.titleScreenAccountReady).toBe(true)
   })
 
   it('prepares Play Now once, refreshes its workspace, and auto-starts when joined', async () => {

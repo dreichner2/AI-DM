@@ -32,9 +32,15 @@ def test_session_recap_get_returns_stored_snapshot_recap(client, app):
     assert payload['state']['current_location'] == 'Moon Gate'
 
 
-def test_session_recap_get_falls_back_to_recent_turns_without_llm(client, app):
+def test_session_recap_get_builds_player_facing_recap_from_recent_completed_turns(client, app):
     ids = seed_world_campaign_player_session(app)
     with app.app_context():
+        db.session.add(
+            SessionState(
+                session_id=ids['session_id'],
+                rolling_summary='T7 | P1: internal action | DM: internal outcome',
+            )
+        )
         db.session.add(
             DmTurn(
                 session_id=ids['session_id'],
@@ -46,6 +52,17 @@ def test_session_recap_get_falls_back_to_recent_turns_without_llm(client, app):
                 outcome_status='resolved',
             )
         )
+        db.session.add(
+            DmTurn(
+                session_id=ids['session_id'],
+                campaign_id=ids['campaign_id'],
+                player_id=ids['player_id'],
+                player_input='I open the pending door.',
+                dm_output='This incomplete turn must not appear.',
+                status='pending',
+                outcome_status='resolved',
+            )
+        )
         db.session.commit()
 
     response = client.get(f"/api/sessions/{ids['session_id']}/recap")
@@ -54,8 +71,117 @@ def test_session_recap_get_falls_back_to_recent_turns_without_llm(client, app):
     payload = response.get_json()
     assert payload['source'] == 'recent_turns'
     assert payload['generated'] is False
-    assert 'I inspect the rain-slick sigil.' in payload['recap']
+    assert 'Seraphina chose to inspect the rain-slick sigil.' in payload['recap']
     assert 'The sigil glows blue' in payload['recap']
+    assert 'Player:' not in payload['recap']
+    assert 'DM:' not in payload['recap']
+    assert 'chose this action' not in payload['recap']
+    assert 'T7 | P1' not in payload['recap']
+    assert 'pending door' not in payload['recap']
+
+
+def test_session_recap_get_returns_empty_instead_of_internal_rolling_summary(client, app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        db.session.add(
+            SessionState(
+                session_id=ids['session_id'],
+                rolling_summary='T3 | P1: secret internal ledger | DM: not player-facing',
+            )
+        )
+        db.session.commit()
+
+    response = client.get(f"/api/sessions/{ids['session_id']}/recap")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['recap'] == ''
+    assert payload['source'] == 'empty'
+
+
+def test_session_recap_get_hides_onboarding_prompt_and_summarizes_observation(client, app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        db.session.add_all(
+            [
+                DmTurn(
+                    session_id=ids['session_id'],
+                    campaign_id=ids['campaign_id'],
+                    player_id=ids['player_id'],
+                    player_input=(
+                        'Please narrate the opening scene for this campaign. '
+                        'Campaign: Internal setup text that players should never see.'
+                    ),
+                    dm_output='Rain drums against the inn while an abandoned caravan waits outside.',
+                    status='completed',
+                    outcome_status='resolved',
+                ),
+                DmTurn(
+                    session_id=ids['session_id'],
+                    campaign_id=ids['campaign_id'],
+                    player_id=ids['player_id'],
+                    player_input='What can I see?',
+                    dm_output='Seraphina spots an erased ledger and a carved stone beneath the rear wagon.',
+                    status='completed',
+                    outcome_status='resolved',
+                ),
+            ]
+        )
+        db.session.commit()
+
+    recap = client.get(f"/api/sessions/{ids['session_id']}/recap").get_json()['recap']
+
+    assert 'The adventure began.' in recap
+    assert 'Seraphina surveyed the scene.' in recap
+    assert 'Please narrate' not in recap
+    assert 'Internal setup text' not in recap
+
+
+def test_session_recap_get_accepts_explicit_player_facing_snapshot_recap(client, app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        session = db.session.get(Session, ids['session_id'])
+        session.state_snapshot = safe_json_dumps(
+            {'playerRecap': 'Seraphina followed the moonlit trail to the old bridge.'},
+            {},
+        )
+        db.session.commit()
+
+    response = client.get(f"/api/sessions/{ids['session_id']}/recap")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['recap'] == 'Seraphina followed the moonlit trail to the old bridge.'
+    assert payload['source'] == 'state_snapshot'
+
+
+def test_session_recap_get_bounds_fallback_to_three_recent_readable_beats(client, app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        for index in range(4):
+            db.session.add(
+                DmTurn(
+                    session_id=ids['session_id'],
+                    campaign_id=ids['campaign_id'],
+                    player_id=ids['player_id'],
+                    player_input=f'I investigate route {index}. ' + ('carefully ' * 80),
+                    dm_output=f'Outcome {index} reveals a new clue. ' + ('The trail continues. ' * 40),
+                    status='completed',
+                    outcome_status='resolved',
+                )
+            )
+        db.session.commit()
+
+    response = client.get(f"/api/sessions/{ids['session_id']}/recap")
+
+    assert response.status_code == 200
+    recap = response.get_json()['recap']
+    assert len(recap) <= 1_200
+    assert 'route 0' not in recap
+    assert 'route 1' in recap
+    assert 'route 2' in recap
+    assert 'route 3' in recap
+    assert '\n' not in recap
 
 
 def test_campaign_pack_commentary_reports_route_branches_and_undiscovered_records(client, app):

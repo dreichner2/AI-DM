@@ -3,6 +3,7 @@ import type { ActionIntent } from './gameActions'
 import type {
   CombatLegalAction,
   CombatLegalTarget,
+  CombatParticipantSummary,
   CombatStatePanel,
 } from './gameSelectors'
 
@@ -29,6 +30,55 @@ function economyLabel(action: CombatLegalAction) {
 
 function attackMessage(actorName: string, action: CombatLegalAction, target: CombatLegalTarget) {
   return `${actorName} attacks ${target.name} with ${action.weaponName || 'their weapon'}.`
+}
+
+function playerFacingActionDescription(description: string) {
+  const rollHandledAutomatically = /\bserver-rolled\b/i.test(description)
+  const copy = description
+    .replace(/\bserver-rolled\s+/gi, '')
+    .replace(/\ba legal target\b/gi, 'an available target')
+    .replace(/\blegal target\b/gi, 'available target')
+  return rollHandledAutomatically
+    ? `${copy.replace(/\.$/, '')}. The roll is handled automatically.`
+    : copy
+}
+
+function CombatantList({
+  currentActorId,
+  label,
+  participants,
+}: {
+  currentActorId: string
+  label: 'Allies' | 'Enemies'
+  participants: CombatParticipantSummary[]
+}) {
+  return (
+    <section className="combat-hud-team" aria-label={`${label} in combat`}>
+      <h3>{label}</h3>
+      {participants.length ? (
+        <ul>
+          {participants.map((participant) => (
+            <li
+              key={participant.id || `${label}-${participant.name}`}
+              className={participant.id === currentActorId ? 'is-acting' : ''}
+            >
+              <strong>{participant.name}</strong>
+              <span className={`combat-hud-health ${participant.healthTone}`}>
+                HP: {participant.health}
+              </span>
+              <small>
+                {participant.conditions.length
+                  ? `Conditions: ${participant.conditions.join(', ')}`
+                  : 'No conditions'}
+              </small>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>{label === 'Allies' ? 'No allies listed' : 'No enemies visible'}</p>
+      )}
+    </section>
+  )
 }
 
 export function CombatHud({ combat, playerId, disabled, submitAction }: CombatHudProps) {
@@ -58,23 +108,69 @@ export function CombatHud({ combat, playerId, disabled, submitAction }: CombatHu
     : bundle.currentActorName
       ? `${bundle.currentActorName} is acting`
       : 'Waiting for turn order'
+  const actionStateNote = disabled
+    ? 'Your combat choices are paused while the current turn finishes.'
+    : bundle.isCurrentActor
+      ? 'Choose an action and, when needed, a target. Unavailable choices explain what is blocking them.'
+      : `Wait for ${bundle.currentActorName || 'the current actor'} to finish. Your choices remain visible below.`
+  const enemyCues = combat.enemies.flatMap((enemy) =>
+    enemy.telegraph
+      ? [`${enemy.name}: ${enemy.telegraph}${enemy.intent ? ` Intent: ${enemy.intent}` : ''}`]
+      : enemy.intent
+        ? [`${enemy.name} appears ready to ${enemy.intent}.`]
+        : [],
+  )
+  const visibleCues = enemyCues.length ? enemyCues : combat.telegraphs
 
   return (
-    <section className="combat-hud" aria-labelledby="combat-hud-title">
+    <section
+      className={`combat-hud ${disabled ? 'is-disabled' : ''}`}
+      aria-labelledby="combat-hud-title"
+    >
       <div className="combat-hud-heading">
-        <h2 id="combat-hud-title">Combat actions · Round {bundle.round}</h2>
+        <h2 id="combat-hud-title">Combat · Round {bundle.round}</h2>
         <span
           className={`combat-hud-turn ${bundle.isCurrentActor ? 'current' : ''}`}
           role="status"
           aria-live="polite"
         >
+          <strong>Current actor</strong>
           {turnLabel}
         </span>
       </div>
-      <p className="combat-hud-note">
-        Turn order and targets are server-issued. Sub-turn counters are not tracked.
-      </p>
-      <div className="action-intent-panel combat-hud-actions">
+      <p id="combat-hud-action-state" className="combat-hud-note">{actionStateNote}</p>
+      <div className="combat-hud-overview">
+        <div className="combat-hud-roster">
+          <CombatantList
+            currentActorId={bundle.currentActorId}
+            label="Allies"
+            participants={combat.allies}
+          />
+          <CombatantList
+            currentActorId={bundle.currentActorId}
+            label="Enemies"
+            participants={combat.enemies}
+          />
+        </div>
+        {visibleCues.length ? (
+          <section className="combat-hud-cues" aria-label="Visible enemy intentions">
+            <h3>Watch for</h3>
+            <ul>
+              {visibleCues.map((cue, index) => <li key={`${cue}-${index}`}>{cue}</li>)}
+            </ul>
+          </section>
+        ) : null}
+      </div>
+      {bundle.actions.length > 2 ? (
+        <span className="combat-hud-choice-count">Scroll to see all {bundle.actions.length} choices</span>
+      ) : null}
+      <div
+        className="action-intent-panel combat-hud-actions"
+        role="group"
+        aria-label="Combat action choices"
+        aria-describedby="combat-hud-action-state"
+        tabIndex={0}
+      >
         {bundle.actions.flatMap((action, actionIndex) => {
           const options: Array<CombatLegalTarget | null> = action.requiresTarget
             ? action.targets.length ? action.targets : [null]
@@ -119,7 +215,7 @@ export function CombatHud({ combat, playerId, disabled, submitAction }: CombatHu
                 </strong>
                 {action.description ? (
                   <span id={descriptionId} className="combat-hud-option-description">
-                    {action.description}
+                    {playerFacingActionDescription(action.description)}
                   </span>
                 ) : null}
                 <small id={detailId}>{detail}</small>

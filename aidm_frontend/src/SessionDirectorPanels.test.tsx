@@ -160,41 +160,35 @@ describe('DirectorCommentaryPanel', () => {
 })
 
 describe('OperatorDrawer', () => {
-  it('routes board, rating, and bounded tone-tag changes through typed callbacks', () => {
-    const onBoardViewModeChange = vi.fn()
+  it('routes rating and bounded tone-tag changes through typed callbacks', () => {
     const onContentRatingChange = vi.fn()
     const onContentToneTagsChange = vi.fn()
     render(
       <OperatorDrawer
-        boardViewMode="ops"
         canEditContentSettings
         contentSettings={{ ...DEFAULT_CONTENT_SETTINGS, toneTags: ['noir'] }}
         contentSettingsPending={false}
         dmExecutionStats={{ tokens: 72, time: '1.2s', model: 'test-model', temperature: '0.7' }}
-        onBoardViewModeChange={onBoardViewModeChange}
         onContentRatingChange={onContentRatingChange}
         onContentToneTagsChange={onContentToneTagsChange}
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Theater' }))
     fireEvent.click(screen.getByRole('button', { name: 'Mature' }))
     fireEvent.click(screen.getByRole('button', { name: 'Noir' }))
 
-    expect(onBoardViewModeChange).toHaveBeenCalledWith('theater')
     expect(onContentRatingChange).toHaveBeenCalledWith('mature')
     expect(onContentToneTagsChange).toHaveBeenCalledWith([])
+    expect(screen.queryByRole('group', { name: 'Board view mode' })).not.toBeInTheDocument()
   })
 
   it('disables content policy controls while an update is pending', () => {
     render(
       <OperatorDrawer
-        boardViewMode="ops"
         canEditContentSettings
         contentSettings={DEFAULT_CONTENT_SETTINGS}
         contentSettingsPending
         dmExecutionStats={{ tokens: 0, time: '0s', model: 'test-model', temperature: '0.7' }}
-        onBoardViewModeChange={vi.fn()}
         onContentRatingChange={vi.fn()}
         onContentToneTagsChange={vi.fn()}
       />,
@@ -202,6 +196,5 @@ describe('OperatorDrawer', () => {
 
     expect(screen.getByRole('button', { name: 'Mature' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Noir' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Theater' })).toBeEnabled()
   })
 })

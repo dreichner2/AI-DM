@@ -413,8 +413,11 @@ def test_build_evidence_verifies_closed_beta_artifact_contents(monkeypatch):
                 'tmp/release/aidm-source-test.tar.gz',
                 'tmp/release/aidm-source-test.tar.gz.sha256',
                 'tmp/verification_artifacts/visual-smoke/2026-06-19T00-00-00Z/desktop-shell.png',
+                'tmp/verification_artifacts/visual-smoke/2026-06-19T00-00-00Z/laptop-shell.png',
                 'tmp/verification_artifacts/visual-smoke/2026-06-19T00-00-00Z/mobile-full.png',
-                'tmp/verification_artifacts/visual-smoke/2026-06-19T00-00-00Z/short-height-composer.png',
+                'tmp/verification_artifacts/visual-smoke/2026-06-19T00-00-00Z/mobile-narrow.png',
+                'tmp/verification_artifacts/visual-smoke/2026-06-19T00-00-00Z/tablet-landscape.png',
+                'tmp/verification_artifacts/visual-smoke/2026-06-19T00-00-00Z/tablet-portrait.png',
             ):
                 path = output_dir / relative_path.removeprefix('tmp/')
                 path.parent.mkdir(parents=True, exist_ok=True)

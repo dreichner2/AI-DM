@@ -56,6 +56,7 @@ export type ActionComposerProps = {
   selectedPlayerHasTurn: boolean
   queuedActionText: string
   queuedActionRetryable?: boolean
+  retryRecoverableSubmission: () => boolean
   clearQueuedAction: () => void
   updateTurnControl: (mode: TurnControlMode, activePlayerId?: number | null, source?: TurnControlSource) => void
   ttsEnabled: boolean
@@ -122,6 +123,7 @@ export function ActionComposer({
   selectedPlayerHasTurn,
   queuedActionText,
   queuedActionRetryable,
+  retryRecoverableSubmission,
   clearQueuedAction,
   updateTurnControl,
   ttsEnabled,
@@ -280,13 +282,37 @@ export function ActionComposer({
             ) : null}
           </div>
           {queuedActionText ? (
-            <div className="queued-action-strip" role="status" aria-live="polite">
-              <span>{queuedActionRetryable ? 'Safe retry ready' : 'Queued draft'}</span>
-              <strong>{queuedActionText}</strong>
-              <button type="button" onClick={clearQueuedAction}>
-                Clear
-              </button>
-            </div>
+            queuedActionRetryable ? (
+              <div className="queued-action-strip delivery-uncertain" role="alert" aria-live="polite">
+                <div className="queued-action-copy">
+                  <span>Delivery uncertain</span>
+                  <strong>{queuedActionText}</strong>
+                  <small>
+                    Retry safely reuses the original request. Check the timeline before discarding it.
+                  </small>
+                </div>
+                <div className="queued-action-actions">
+                  <button
+                    type="button"
+                    onClick={() => retryRecoverableSubmission()}
+                    disabled={sendPending}
+                  >
+                    Retry safely
+                  </button>
+                  <button type="button" onClick={clearQueuedAction} disabled={sendPending}>
+                    Discard after checking
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="queued-action-strip" role="status" aria-live="polite">
+                <span>Queued draft</span>
+                <strong>{queuedActionText}</strong>
+                <button type="button" onClick={clearQueuedAction}>
+                  Clear
+                </button>
+              </div>
+            )
           ) : null}
           <div className={`tts-status-strip ${ttsStatusClassName}`} role="status" aria-live="polite">
             <span>
@@ -374,8 +400,8 @@ export function ActionComposer({
               <button
                 type="button"
                 className="send-button"
-                onClick={() => submitAction()}
-                disabled={sendPending || !actionText.trim()}
+                onClick={() => queuedActionRetryable ? retryRecoverableSubmission() : submitAction()}
+                disabled={sendPending || (!queuedActionRetryable && !actionText.trim())}
               >
                 <ThinIcon name="send" size={18} />
                 {queuedActionRetryable ? 'Retry safely' : 'Send'}

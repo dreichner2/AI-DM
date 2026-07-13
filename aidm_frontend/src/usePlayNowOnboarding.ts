@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateA
 import { apiFetch } from './api'
 import type { MainTab } from './SessionBoard'
 import type {
+  AccountSession,
   Campaign,
   ClarificationRequest,
   PlayNowResponse,
@@ -21,6 +22,7 @@ type UsePlayNowOnboardingOptions = {
   activeSessionId: number | null
   auth: string
   authRequired: boolean | null
+  hostedAccessReady?: boolean
   backendReady: boolean
   baseUrl: string
   campaignCount: number
@@ -35,10 +37,13 @@ type UsePlayNowOnboardingOptions = {
   campaignUpserted: (campaign: Campaign) => void
   sessionUpserted: (session: SessionSummary) => void
   playerUpserted: (player: PlayerDetail) => void
+  adoptAccountSession?: (session: AccountSession) => void | Promise<void>
   clearAuthTokenErrors: () => void
   loadPlayerDetail: (playerId: number) => Promise<void>
   loadSessionData: (sessionId: number) => Promise<void>
   openCreateCampaignDialog: () => void
+  openLogIn?: () => void
+  openCreateAccount?: () => void
   pushError: (category: 'persistence' | 'workspace', message: string) => void
   refreshCampaignWorkspace: (campaignId: number) => Promise<void>
   refreshRoot: () => Promise<void>
@@ -73,6 +78,7 @@ export function usePlayNowOnboarding({
   activeSessionId,
   auth,
   authRequired,
+  hostedAccessReady = false,
   backendReady,
   baseUrl,
   campaignCount,
@@ -87,10 +93,13 @@ export function usePlayNowOnboarding({
   campaignUpserted,
   sessionUpserted,
   playerUpserted,
+  adoptAccountSession,
   clearAuthTokenErrors,
   loadPlayerDetail,
   loadSessionData,
   openCreateCampaignDialog,
+  openLogIn,
+  openCreateAccount,
   pushError,
   refreshCampaignWorkspace,
   refreshRoot,
@@ -126,31 +135,66 @@ export function usePlayNowOnboarding({
     setTitleScreenDismissed(true)
   }, [])
 
+  const logInFromTitleScreen = useCallback(() => {
+    closeMobilePanels()
+    openLogIn?.()
+  }, [closeMobilePanels, openLogIn])
+
+  const createAccountFromTitleScreen = useCallback(() => {
+    closeMobilePanels()
+    openCreateAccount?.()
+  }, [closeMobilePanels, openCreateAccount])
+
   const continueFromTitleScreen = useCallback(() => {
+    if (authRequired === true && !hostedAccessReady) {
+      logInFromTitleScreen()
+      return
+    }
     rememberTitleScreenChoice()
     closeMobilePanels()
-  }, [closeMobilePanels, rememberTitleScreenChoice])
+  }, [authRequired, closeMobilePanels, hostedAccessReady, logInFromTitleScreen, rememberTitleScreenChoice])
 
   const createCampaignFromTitleScreen = useCallback(() => {
+    if (authRequired === true && !hostedAccessReady) {
+      logInFromTitleScreen()
+      return
+    }
     rememberTitleScreenChoice()
     closeMobilePanels()
     openCreateCampaignDialog()
-  }, [closeMobilePanels, openCreateCampaignDialog, rememberTitleScreenChoice])
+  }, [
+    authRequired,
+    closeMobilePanels,
+    hostedAccessReady,
+    logInFromTitleScreen,
+    openCreateCampaignDialog,
+    rememberTitleScreenChoice,
+  ])
 
   const playNowFromTitleScreen = useCallback(async () => {
     if (playNowPendingRef.current) return
+    const hostedGuestPlayNow = authRequired === true && !hostedAccessReady
     playNowPendingRef.current = true
     setPlayNowPending(true)
     try {
       const payload = await apiFetch<PlayNowResponse>(
         baseUrl,
-        '/api/onboarding/play-now',
+        hostedGuestPlayNow ? '/api/accounts/play-now' : '/api/onboarding/play-now',
         auth,
         {
           method: 'POST',
           body: JSON.stringify({}),
         },
       )
+      if (hostedGuestPlayNow && !payload.account_session) {
+        throw new Error('Play Now did not return guest account access.')
+      }
+      if (payload.account_session) {
+        if (!adoptAccountSession) {
+          throw new Error('Play Now could not activate the guest account session.')
+        }
+        await adoptAccountSession(payload.account_session)
+      }
       try {
         localStorage.setItem('aidm:workspaceId', payload.workspace_id)
       } catch {
@@ -192,13 +236,16 @@ export function usePlayNowOnboarding({
       setPlayNowPending(false)
     }
   }, [
+    adoptAccountSession,
     auth,
+    authRequired,
     baseUrl,
     campaignUpserted,
     clearAuthTokenErrors,
     closeMobilePanels,
     loadPlayerDetail,
     loadSessionData,
+    hostedAccessReady,
     playerUpserted,
     pushError,
     refreshCampaignWorkspace,
@@ -246,23 +293,32 @@ export function usePlayNowOnboarding({
     turnRowCount,
   ])
 
+  const hostedFirstRun = authRequired === true && !hostedAccessReady
   const showTitleScreen =
     backendReady &&
-    authRequired === false &&
+    authRequired !== null &&
     !runtimeSettingsOpen &&
     !workspaceLoading &&
-    !selectedCampaignId &&
-    !selectedSessionId &&
-    !selectedPlayerId &&
     !modalOpen &&
-    (campaignCount === 0 || !titleScreenDismissed)
+    (
+      hostedFirstRun ||
+      (
+        !selectedCampaignId &&
+        !selectedSessionId &&
+        !selectedPlayerId &&
+        (campaignCount === 0 || (authRequired === false && !titleScreenDismissed))
+      )
+    )
 
   return {
+    createAccountFromTitleScreen,
     createCampaignFromTitleScreen,
     continueFromTitleScreen,
+    logInFromTitleScreen,
     playNowFromTitleScreen,
     playNowPending,
     showTitleScreen,
+    titleScreenAccountReady: authRequired !== true || hostedAccessReady,
     titleScreenCanContinue: campaignCount > 0,
   }
 }

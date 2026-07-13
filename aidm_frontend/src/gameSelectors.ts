@@ -92,6 +92,7 @@ export type WorldQuestSummary = {
   title: string
   status: string
   stage: string
+  objective: string
 }
 
 export type WorldLocationSummary = {
@@ -108,6 +109,13 @@ export type WorldNpcSummary = {
   role: string
   disposition: string
   status: string
+}
+
+export type WorldSceneItemSummary = {
+  id: string
+  name: string
+  quantity: number
+  type: string
 }
 
 export type CombatParticipantSummary = {
@@ -200,10 +208,14 @@ export type CombatStatePanel = {
 
 export type WorldStatePanel = {
   sceneName: string
+  sceneDescription: string
   sceneType: string
   mood: string
   dangerLevel: string
   activeQuests: WorldQuestSummary[]
+  presentNpcs: WorldNpcSummary[]
+  sceneItems: WorldSceneItemSummary[]
+  availableExits: WorldLocationSummary[]
   knownLocations: WorldLocationSummary[]
   knownNpcs: WorldNpcSummary[]
   combat: CombatStatePanel
@@ -980,9 +992,10 @@ export function itemOptionsFromInventory(inventoryRows: InventoryRow[]): ItemOpt
 export function normalizeXp(value: unknown, level: number | string): XpProgress {
   const records = collectRecords(value)
   const current = numberValue(findValue(records, ['xp', 'experience', 'current_xp'])) ?? 0
+  const normalizedLevel = numberValue(level) ?? 1
   const max =
     numberValue(findValue(records, ['xp_to_next', 'next_level_at', 'nextLevelAt', 'next_level_xp', 'max_xp'])) ??
-    Math.max(300, Number(level) * 300)
+    Math.max(300, normalizedLevel * 300)
   const percent = max > 0 ? Math.min(100, Math.round((current / max) * 100)) : 0
   return {
     current,
@@ -1104,10 +1117,101 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
       title: stringValue(quest.title, 'Untitled quest'),
       status: stringValue(quest.status, 'unknown'),
       stage: stringValue(quest.stage, 'No stage recorded'),
+      objective:
+        recordArray(quest.objectives)
+          .find((objective) => !['complete', 'completed', 'failed'].includes(stringValue(objective.status).toLowerCase()))
+          ?.description?.toString().trim() || '',
     }))
+
+  const knownLocations = locations
+    .map((location, index) => {
+      const id = stringValue(location.id)
+      const rawName = stringValue(location.name)
+      const name = rawName || 'Unknown location'
+      const status = stringValue(location.status).toLowerCase()
+      const current =
+        Boolean(currentLocationId && id === currentLocationId) ||
+        Boolean(currentLocationName && normalizedLookup(name) === currentLocationName)
+      const visited = status === 'visited' || current
+      return {
+        location,
+        index,
+        id,
+        rawName,
+        name,
+        status,
+        current,
+        visited,
+        lastVisitedTurn: recordTurnValue(location, ['lastVisitedTurn']),
+        recencyTurn: recordTurnValue(location, [
+          'lastVisitedTurn',
+          'updatedAtTurn',
+          'firstDiscoveredTurn',
+          'createdAtTurn',
+        ]),
+      }
+    })
+    .filter(({ id, rawName, status, current }) => {
+      if (!id && !rawName) return false
+      return current || !['hidden', 'inaccessible'].includes(status)
+    })
+    .sort((left, right) => {
+      if (left.current !== right.current) return left.current ? -1 : 1
+      if (left.visited !== right.visited) return left.visited ? -1 : 1
+      if (left.visited && right.visited) {
+        return right.lastVisitedTurn - left.lastVisitedTurn || left.index - right.index
+      }
+      return right.recencyTurn - left.recencyTurn || left.index - right.index
+    })
+    .map(({ location }) => ({
+      id: stringValue(location.id),
+      name: stringValue(location.name, 'Unknown location'),
+      status: stringValue(location.status, 'unknown'),
+      type: stringValue(location.type, 'other'),
+    }))
+
+  const knownNpcs = npcs
+    .map((npc, index) => ({
+      npc,
+      index,
+      activeIndex: activeNpcIds.indexOf(stringValue(npc.id)),
+      lastSeenTurn: numberValue(npc.lastSeenTurn) ?? numberValue(npc.updatedAtTurn) ?? 0,
+    }))
+    .filter(({ npc }) => {
+      const id = stringValue(npc.id)
+      const name = normalizedLookup(npc.name)
+      return Boolean(id || name) && !playerIds.has(id) && !playerNames.has(name)
+    })
+    .sort((left, right) => {
+      const leftActive = activeNpcIdSet.has(stringValue(left.npc.id))
+      const rightActive = activeNpcIdSet.has(stringValue(right.npc.id))
+      if (leftActive !== rightActive) return leftActive ? -1 : 1
+      if (leftActive && rightActive) return left.activeIndex - right.activeIndex
+      return right.lastSeenTurn - left.lastSeenTurn || left.index - right.index
+    })
+    .map(({ npc }) => ({
+      id: stringValue(npc.id),
+      name: stringValue(npc.name, 'Unknown NPC'),
+      race: stringValue(npc.race) || stringValue(npc.species) || stringValue(npc.ancestry),
+      role: stringValue(npc.role, 'Role unknown'),
+      disposition: stringValue(npc.disposition, 'unknown'),
+      status: stringValue(npc.status, 'unknown'),
+    }))
+
+  const currentLocation = locations.find((location) => {
+    const id = stringValue(location.id)
+    return Boolean(currentLocationId && id === currentLocationId) ||
+      Boolean(currentLocationName && normalizedLookup(location.name) === currentLocationName)
+  })
+  const connectedLocationIds = new Set(
+    Array.isArray(currentLocation?.connectedLocationIds)
+      ? currentLocation.connectedLocationIds.map((value) => stringValue(value)).filter(Boolean)
+      : [],
+  )
 
   return {
     sceneName: stringValue(scene.name, 'No scene recorded'),
+    sceneDescription: stringValue(scene.description),
     sceneType: stringValue(scene.sceneType, 'unknown'),
     mood: stringValue(scene.mood, 'unknown'),
     dangerLevel:
@@ -1115,79 +1219,16 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
         ? '0'
         : stringValue(scene.dangerLevel, '0'),
     activeQuests,
-    knownLocations: locations
-      .map((location, index) => {
-        const id = stringValue(location.id)
-        const rawName = stringValue(location.name)
-        const name = rawName || 'Unknown location'
-        const status = stringValue(location.status).toLowerCase()
-        const current =
-          Boolean(currentLocationId && id === currentLocationId) ||
-          Boolean(currentLocationName && normalizedLookup(name) === currentLocationName)
-        const visited = status === 'visited' || current
-        return {
-          location,
-          index,
-          id,
-          rawName,
-          name,
-          status,
-          current,
-          visited,
-          lastVisitedTurn: recordTurnValue(location, ['lastVisitedTurn']),
-          recencyTurn: recordTurnValue(location, [
-            'lastVisitedTurn',
-            'updatedAtTurn',
-            'firstDiscoveredTurn',
-            'createdAtTurn',
-          ]),
-        }
-      })
-      .filter(({ id, rawName, status, current }) => {
-        if (!id && !rawName) return false
-        return current || !['hidden', 'inaccessible'].includes(status)
-      })
-      .sort((left, right) => {
-        if (left.current !== right.current) return left.current ? -1 : 1
-        if (left.visited !== right.visited) return left.visited ? -1 : 1
-        if (left.visited && right.visited) {
-          return right.lastVisitedTurn - left.lastVisitedTurn || left.index - right.index
-        }
-        return right.recencyTurn - left.recencyTurn || left.index - right.index
-      })
-      .map(({ location }) => ({
-        id: stringValue(location.id),
-        name: stringValue(location.name, 'Unknown location'),
-        status: stringValue(location.status, 'unknown'),
-        type: stringValue(location.type, 'other'),
-      })),
-    knownNpcs: npcs
-      .map((npc, index) => ({
-        npc,
-        index,
-        activeIndex: activeNpcIds.indexOf(stringValue(npc.id)),
-        lastSeenTurn: numberValue(npc.lastSeenTurn) ?? numberValue(npc.updatedAtTurn) ?? 0,
-      }))
-      .filter(({ npc }) => {
-        const id = stringValue(npc.id)
-        const name = normalizedLookup(npc.name)
-        return Boolean(id || name) && !playerIds.has(id) && !playerNames.has(name)
-      })
-      .sort((left, right) => {
-        const leftActive = activeNpcIdSet.has(stringValue(left.npc.id))
-        const rightActive = activeNpcIdSet.has(stringValue(right.npc.id))
-        if (leftActive !== rightActive) return leftActive ? -1 : 1
-        if (leftActive && rightActive) return left.activeIndex - right.activeIndex
-        return right.lastSeenTurn - left.lastSeenTurn || left.index - right.index
-      })
-      .map(({ npc }) => ({
-        id: stringValue(npc.id),
-        name: stringValue(npc.name, 'Unknown NPC'),
-        race: stringValue(npc.race) || stringValue(npc.species) || stringValue(npc.ancestry),
-        role: stringValue(npc.role, 'Role unknown'),
-        disposition: stringValue(npc.disposition, 'unknown'),
-        status: stringValue(npc.status, 'unknown'),
-      })),
+    presentNpcs: knownNpcs.filter((npc) => activeNpcIdSet.has(npc.id)),
+    sceneItems: recordArray(scene.items).map((item) => ({
+      id: stringValue(item.id),
+      name: stringValue(item.name, 'Unknown object'),
+      quantity: Math.max(1, Math.floor(numberValue(item.quantity) ?? 1)),
+      type: stringValue(item.type, 'object'),
+    })),
+    availableExits: knownLocations.filter((location) => connectedLocationIds.has(location.id)),
+    knownLocations,
+    knownNpcs,
     combat: combatStateFromSnapshot(root),
   }
 }
@@ -1218,7 +1259,7 @@ function stripSpeakerPrefix(message: string, speaker: string) {
 export function timelineFromLog(entry: SessionLogEntry): TimelineEntry {
   let role: TimelineRole =
     entry.entry_type === 'player' ? 'player' : entry.entry_type === 'system' ? 'system' : 'dm'
-  let speaker = role === 'player' ? 'Player' : 'DM'
+  let speaker = role === 'player' ? 'Player' : role === 'system' ? 'System' : 'DM'
   let text = entry.message
 
   if (text.startsWith('**')) {

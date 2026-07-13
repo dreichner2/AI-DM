@@ -21,8 +21,11 @@ let smokeTempDir = null
 
 const VIEWPORTS = [
   { name: 'desktop-shell', width: 1440, height: 900, fullPage: false },
-  { name: 'short-height-composer', width: 1280, height: 620, fullPage: false },
-  { name: 'mobile-full', width: 390, height: 844, fullPage: true },
+  { name: 'laptop-shell', width: 1280, height: 800, fullPage: false },
+  { name: 'tablet-landscape', width: 1024, height: 768, fullPage: false },
+  { name: 'tablet-portrait', width: 768, height: 1024, fullPage: false },
+  { name: 'mobile-full', width: 390, height: 844, fullPage: false },
+  { name: 'mobile-narrow', width: 360, height: 800, fullPage: false },
 ]
 
 function log(message) {
@@ -225,7 +228,7 @@ async function assertLayoutHealth(page, viewport) {
     await summary.click()
   }
 
-  if (viewport.width > 760 && viewport.height > 700) {
+  if (viewport.width > 1100 && viewport.height > 700) {
     const musicPlayer = page.locator('.scene-music-player')
     await expect(musicPlayer).toHaveClass(/is-default-docked/)
     const floatControls = page.getByRole('button', { name: 'Float full music controls' })
@@ -239,11 +242,11 @@ async function assertLayoutHealth(page, viewport) {
     await expect(musicPlayer).toHaveClass(/is-default-docked/)
   }
 
-  if (viewport.width <= 760) {
-    await page.waitForFunction(() => window.matchMedia('(max-width: 760px)').matches)
+  if (viewport.width <= 1100) {
+    await page.waitForFunction(() => window.matchMedia('(max-width: 1100px)').matches)
     const inspectorToggle = page.locator('.mobile-inspector-toggle')
     await expect(inspectorToggle).toBeVisible()
-    if ((await inspectorToggle.getAttribute('aria-pressed')) !== 'true') {
+    if ((await inspectorToggle.getAttribute('aria-expanded')) !== 'true') {
       await inspectorToggle.click()
     }
     await expect(page.locator('.right-inspector')).toBeVisible()
@@ -282,7 +285,7 @@ async function assertLayoutHealth(page, viewport) {
     await expect(page.locator('.right-inspector')).toBeVisible()
   }
 
-  if (viewport.width > 760) {
+  if (viewport.width > 1100) {
     await expect(page.locator('.scene-music-player')).toHaveClass(/is-inline-static/)
     if (viewport.height <= 700) {
       await expect(page.locator('.scene-music-player')).toHaveClass(/is-short-static/)
@@ -336,7 +339,12 @@ async function assertLayoutHealth(page, viewport) {
     throw new Error(`${viewport.name} has horizontal overflow of ${overflowX}px`)
   }
 
-  if (viewport.width >= 981) {
+  const visibleTurnFeed = metrics.boxes['.turn-feed']
+  if (viewport.width <= 1100 && (!visibleTurnFeed || visibleTurnFeed.height < 120)) {
+    throw new Error(`${viewport.name} leaves only ${visibleTurnFeed?.height ?? 0}px for the session timeline`)
+  }
+
+  if (viewport.width > 1100) {
     const topBar = metrics.boxes['.ops-bar']
     const composerTools = metrics.boxes['.composer-tools']
     const actionComposer = metrics.boxes['.action-composer']
@@ -383,6 +391,67 @@ async function assertLayoutHealth(page, viewport) {
     ) {
       throw new Error(`${viewport.name} default music transport overlaps the pending-roll banner`)
     }
+  }
+}
+
+async function assertCompactCombatLayout(page, viewport) {
+  await page.setViewportSize({ width: viewport.width, height: viewport.height })
+  await expect(page.locator('.combat-hud')).toBeVisible()
+
+  const metrics = await page.evaluate(() => {
+    const box = (selector) => {
+      const element = document.querySelector(selector)
+      if (!element) return null
+      const rect = element.getBoundingClientRect()
+      return { bottom: rect.bottom, height: rect.height, top: rect.top }
+    }
+    const combat = document.querySelector('.combat-hud')
+    const firstAction = combat?.querySelector('.combat-hud-option')
+    const actions = combat?.querySelector('.combat-hud-actions')
+    const overview = combat?.querySelector('.combat-hud-overview')
+    const combatRect = combat?.getBoundingClientRect()
+    const actionRect = firstAction?.getBoundingClientRect()
+    const actionsRect = actions?.getBoundingClientRect()
+    const overviewRect = overview?.getBoundingClientRect()
+    const visibleFirstActionHeight = combatRect && actionRect
+      ? Math.max(0, Math.min(combatRect.bottom, actionRect.bottom) - Math.max(combatRect.top, actionRect.top))
+      : 0
+    return {
+      combat: box('.combat-hud'),
+      combatClientHeight: combat?.clientHeight ?? 0,
+      combatScrollHeight: combat?.scrollHeight ?? 0,
+      composer: box('.action-composer'),
+      situationDisplay: window.getComputedStyle(document.querySelector('.session-at-a-glance')).display,
+      turnFeed: box('.turn-feed'),
+      viewportHeight: window.innerHeight,
+      visibleFirstActionHeight,
+      actionsBottom: actionsRect?.bottom ?? 0,
+      overviewTop: overviewRect?.top ?? 0,
+    }
+  })
+
+  if (!metrics.combat || metrics.combat.height > 142) {
+    throw new Error(`${viewport.name} compact combat panel is ${metrics.combat?.height ?? 0}px tall`)
+  }
+  if (metrics.combatScrollHeight <= metrics.combatClientHeight + 20) {
+    throw new Error(`${viewport.name} compact combat fixture is not using one intentional scroll region`)
+  }
+  if (!metrics.turnFeed || metrics.turnFeed.height < 120) {
+    throw new Error(`${viewport.name} combat leaves only ${metrics.turnFeed?.height ?? 0}px for the timeline`)
+  }
+  if (!metrics.composer || metrics.composer.bottom > metrics.viewportHeight + 1) {
+    throw new Error(`${viewport.name} combat pushes the composer below the viewport`)
+  }
+  if (metrics.situationDisplay !== 'none') {
+    throw new Error(`${viewport.name} compact combat did not replace the redundant situation card`)
+  }
+  if (metrics.visibleFirstActionHeight < 40) {
+    throw new Error(
+      `${viewport.name} exposes only ${metrics.visibleFirstActionHeight}px of the first combat choice`,
+    )
+  }
+  if (metrics.overviewTop < metrics.actionsBottom) {
+    throw new Error(`${viewport.name} combat roster overlaps the action choices`)
   }
 }
 
@@ -441,6 +510,33 @@ async function runVisualFlow(frontendUrl, backendUrl, ids, artifactDir) {
     await page.screenshot({ path: filePath, fullPage: viewport.fullPage })
     screenshots.push(filePath)
   }
+
+  const combatSession = await postJson(backendUrl, '/api/sessions/start', {
+    campaign_id: ids.campaign.campaign_id,
+  })
+  await patchJson(backendUrl, `/api/sessions/${combatSession.session_id}`, {
+    name: 'Visual Smoke Combat',
+  })
+  await postJson(backendUrl, `/api/sessions/${combatSession.session_id}/combat/start`, {
+    creature: {
+      id: 'visual_smoke_sentry',
+      name: 'Visual Smoke Sentry',
+      source: 'user_custom',
+      creatureType: 'humanoid',
+      stats: { maxHp: 14, armorClass: 12 },
+    },
+    enemyCount: 4,
+    encounterGoal: { description: 'Break through the sentry line.' },
+  })
+  const combatRouteUrl = `${frontendUrl}/?campaign=${ids.campaign.campaign_id}&session=${combatSession.session_id}&player=${ids.player.player_id}`
+  await page.goto(combatRouteUrl, { waitUntil: 'domcontentloaded' })
+  await expect(page.getByRole('heading', { name: /Visual Smoke Combat/i })).toBeVisible()
+  await expect(page.locator('.combat-hud')).toBeVisible({ timeout: 15_000 })
+  await assertCompactCombatLayout(page, { name: 'tablet-landscape-combat', width: 1024, height: 768 })
+  await page.screenshot({ path: path.join(artifactDir, 'combat-tablet-landscape.png') })
+  await assertCompactCombatLayout(page, { name: 'mobile-narrow-combat', width: 360, height: 800 })
+  await page.screenshot({ path: path.join(artifactDir, 'combat-mobile-narrow.png') })
+  log('captured real combat layouts at 1024x768 and 360x800')
 
   await browser.close()
   if (consoleErrors.length) {

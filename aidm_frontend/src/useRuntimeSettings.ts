@@ -715,6 +715,54 @@ export function useRuntimeSettings({
     ],
   )
 
+  const adoptAccountSession = useCallback((session: AccountSession) => {
+    const nextBaseUrl = normalizeBaseUrl(baseUrl)
+    const accountToken = String(session.account_token || '').trim()
+    const tokenTransport = accountSessionTokenTransport(session)
+    const cookieAuthAvailable = hasCookieAccountSession(tokenTransport)
+    const nextWorkspaceId = String(session.workspace_id || '').trim()
+    const nextWorkspaceToken = String(session.workspace_token || '').trim()
+
+    if (!session.account || !Number.isFinite(session.account.account_id) || !session.account.username?.trim()) {
+      throw new Error('Play Now returned an invalid account session.')
+    }
+    if (!accountToken && !cookieAuthAvailable) {
+      throw new Error('Play Now did not return a usable account session.')
+    }
+    if (!nextWorkspaceId) {
+      throw new Error('Play Now did not return a table for the guest session.')
+    }
+
+    const account = accountFromSession(session)
+    trustBackendOrigin(nextBaseUrl)
+    storeSessionAuthToken(accountToken, nextBaseUrl)
+    storeAccountTokenTransport(tokenTransport, nextBaseUrl)
+    storeSessionWorkspaceToken(nextWorkspaceToken, nextBaseUrl)
+    storeWorkspaceId(nextWorkspaceId, nextBaseUrl)
+    storeSessionAccount(account, nextBaseUrl)
+    accountRefreshTokenRef.current = accountToken || tokenTransport
+    setBaseUrl(nextBaseUrl)
+    setAuthToken(accountToken)
+    setAccountTokenTransport(tokenTransport)
+    setPendingAuthToken('')
+    setWorkspaceToken(nextWorkspaceToken)
+    setWorkspaceId(nextWorkspaceId)
+    setRuntimeAccount(account)
+    setRuntimeSettingsForm((current) => ({
+      ...current,
+      baseUrl: nextBaseUrl,
+      workspaceToken: nextWorkspaceToken,
+      username: account.username,
+    }))
+    setRuntimeSettingsOpen(false)
+    setRuntimeSettingsMode('settings')
+    setRuntimeAuthStep('account')
+    setRuntimeSettingsError('')
+    setLegacyPasswordSetupRequired(false)
+    resetRuntimeState()
+    reconnectSocket()
+  }, [baseUrl, reconnectSocket, resetRuntimeState])
+
   useEffect(() => {
     const accountStepToken = authToken.trim()
     if (!accountStepToken && !hasCookieAccountSession(accountTokenTransport)) {
@@ -1272,6 +1320,8 @@ export function useRuntimeSettings({
   )
 
   return {
+    adoptAccountSession,
+    accountTokenTransport,
     authToken,
     baseUrl,
     clearAuthToken,

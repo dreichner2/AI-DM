@@ -117,7 +117,7 @@ select:focus-visible {
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03), 0 10px 28px rgba(0, 0, 0, 0.36);
 }
 
-@media (min-width: 981px) {
+@media (min-width: 1101px) {
   .prototype-shell.theater-shell,
   .prototype-shell.theater-mode-active,
   .prototype-shell.title-screen-active {
@@ -178,6 +178,19 @@ select:focus-visible {
   .prototype-shell.theater-mode-active.runtime-notices-active .right-inspector {
     grid-row: 2;
   }
+}
+
+.workspace-surfaces {
+  display: contents;
+}
+
+.workspace-main-board-isolation {
+  display: contents;
+}
+
+.workspace-surfaces[aria-hidden='true'] {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .beta-runtime-notices {

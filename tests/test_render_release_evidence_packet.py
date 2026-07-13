@@ -27,7 +27,14 @@ def _write_tar(path: Path, members: list[str]) -> None:
 
 def _write_visual_smoke(path: Path) -> None:
     path.mkdir()
-    for name in ('desktop-shell.png', 'mobile-full.png', 'short-height-composer.png'):
+    for name in (
+        'desktop-shell.png',
+        'laptop-shell.png',
+        'mobile-full.png',
+        'mobile-narrow.png',
+        'tablet-landscape.png',
+        'tablet-portrait.png',
+    ):
         (path / name).write_bytes(b'png')
 
 
@@ -40,7 +47,7 @@ def _write_visual_review(path: Path, visual_smoke_dir: Path) -> None:
                 '- Status: passed',
                 '- Reviewed: 2026-06-19T00:05:00+00:00',
                 f'- Artifact dir: `{visual_smoke_dir}`',
-                '- Screenshots: 3/3',
+                '- Screenshots: 6/6',
                 '- Failures: None.',
                 '',
             ]

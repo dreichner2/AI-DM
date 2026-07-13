@@ -1,4 +1,4 @@
-import { SlidersHorizontal, X } from 'lucide-react'
+import { ShieldCheck, X } from 'lucide-react'
 import {
   CONTENT_RATING_OPTIONS,
   CONTENT_TONE_TAG_OPTIONS,
@@ -27,12 +27,10 @@ export type DmExecutionStats = {
 export type RecentMemoryEntry = [text: string, source: string]
 
 export type OperatorDrawerProps = {
-  boardViewMode: BoardViewMode
   canEditContentSettings: boolean
   contentSettings: ContentSettings
   contentSettingsPending: boolean
   dmExecutionStats: DmExecutionStats
-  onBoardViewModeChange: (mode: BoardViewMode) => void
   onContentRatingChange: (rating: ContentRating) => void
   onContentToneTagsChange: (toneTags: string[]) => void
 }
@@ -102,12 +100,10 @@ function DirectorUndiscoveredList({ records }: { records: Record<string, Campaig
 }
 
 export function OperatorDrawer({
-  boardViewMode,
   canEditContentSettings,
   contentSettings,
   contentSettingsPending,
   dmExecutionStats,
-  onBoardViewModeChange,
   onContentRatingChange,
   onContentToneTagsChange,
 }: OperatorDrawerProps) {
@@ -121,26 +117,10 @@ export function OperatorDrawer({
   return (
     <details className="operator-drawer">
       <summary>
-        <SlidersHorizontal size={15} />
-        Operator
+        <ShieldCheck size={15} />
+        <span>Operator</span>
       </summary>
       <div className="operator-drawer-body">
-        <div className="operator-mode-toggle" role="group" aria-label="Board view mode">
-          <button
-            type="button"
-            aria-pressed={boardViewMode === 'theater'}
-            onClick={() => onBoardViewModeChange('theater')}
-          >
-            Theater
-          </button>
-          <button
-            type="button"
-            aria-pressed={boardViewMode === 'ops'}
-            onClick={() => onBoardViewModeChange('ops')}
-          >
-            Ops
-          </button>
-        </div>
         <div className="operator-rating-toggle" role="group" aria-label="Content rating">
           {CONTENT_RATING_OPTIONS.map((option) => (
             <button

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, jsonify, request
 
 from aidm_server.database import db
 from aidm_server.errors import error_response
@@ -34,13 +34,6 @@ def list_pregenerated_characters():
 
 @onboarding_bp.route('/play-now', methods=['POST'])
 def play_now():
-    if current_app.config.get('AIDM_AUTH_REQUIRED'):
-        return error_response(
-            'play_now_auth_required',
-            'Play Now onboarding is only available when authentication is disabled.',
-            403,
-        )
-
     payload = parse_optional_json_body(request)
     if payload is None:
         return error_response('validation_error', 'Expected JSON request body.', 400)

@@ -229,11 +229,19 @@ def _ensure_preset_player(
         .order_by(Player.created_at.asc(), Player.player_id.asc())
         .all()
     )
-    for player in players:
+    eligible_players = [
+        player
+        for player in players
+        if account_id is None or player.account_id == account_id
+    ]
+    for player in eligible_players:
         if player_matches_preset(player, preset):
             return player, False
 
-    fallback = next((player for player in players if player.character_name == preset.character_name), None)
+    fallback = next(
+        (player for player in eligible_players if player.character_name == preset.character_name),
+        None,
+    )
     if fallback:
         return fallback, False
 

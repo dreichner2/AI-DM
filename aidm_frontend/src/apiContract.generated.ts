@@ -521,6 +521,8 @@ export type PlayNowResponse = {
   pregen: PlayNowPregeneratedCharacter
   example_pack: PlayNowExamplePack
   join_context: PlayNowJoinContext
+  account_session?: AccountSession | null
+  guest_account?: boolean
 }
 
 export type PlayerEquipmentUpdateResponse = PlayerDetail & { snapshot_changed: boolean; equipment_update: JsonRecord }

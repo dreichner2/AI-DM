@@ -460,6 +460,9 @@ export function useSessionActions({
           { method: 'DELETE' },
         )
         setSessionActionDialog(null)
+        setSelectedSessionId((current) =>
+          current === session.session_id ? null : current,
+        )
         setOptimisticEntries([])
         setStreamingTurn(null)
         setLogEntries([])

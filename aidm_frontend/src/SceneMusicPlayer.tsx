@@ -77,8 +77,8 @@ type SceneMusicPlayerProps = {
 
 const MUSIC_PREFS_STORAGE_KEY = 'aidm:sceneMusicPreferences'
 const MUSIC_LAYOUT_STORAGE_KEY = 'aidm:sceneMusicLayout'
-const MOBILE_MUSIC_LAYOUT_QUERY = '(max-width: 760px)'
-const SHORT_MUSIC_LAYOUT_QUERY = '(max-height: 700px) and (min-width: 761px)'
+const COMPACT_MUSIC_LAYOUT_QUERY = '(max-width: 1100px)'
+const SHORT_MUSIC_LAYOUT_QUERY = '(max-height: 700px) and (min-width: 1101px)'
 const REWIND_SECONDS = 15
 const MUSIC_SYNC_HEARTBEAT_MS = 10000
 const MUSIC_MAX_POSITION_SECONDS = 24 * 60 * 60
@@ -141,7 +141,7 @@ function viewportSize() {
 
 function isMobileMusicLayout() {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
-  return window.matchMedia(MOBILE_MUSIC_LAYOUT_QUERY).matches
+  return window.matchMedia(COMPACT_MUSIC_LAYOUT_QUERY).matches
 }
 
 function isShortMusicLayout() {
@@ -373,7 +373,7 @@ export function SceneMusicPlayer({
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
-    const mediaQuery = window.matchMedia(MOBILE_MUSIC_LAYOUT_QUERY)
+    const mediaQuery = window.matchMedia(COMPACT_MUSIC_LAYOUT_QUERY)
     const handleLayoutChange = () => setMobileStaticLayout(mediaQuery.matches)
     handleLayoutChange()
     return subscribeToMediaQueryChange(mediaQuery, handleLayoutChange)
