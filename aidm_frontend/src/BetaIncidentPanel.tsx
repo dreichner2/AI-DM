@@ -363,7 +363,7 @@ export function BetaIncidentPanel({ baseUrl, auth, selectedSessionId }: BetaInci
           ) : null}
         </div>
         {selectedSessionId === null ? <div className="empty-row">Select a session to view quality.</div> : null}
-        {qualityError ? <div className="bestiary-message error">{qualityError}</div> : null}
+        {qualityError ? <div className="bestiary-message error" role="alert">{qualityError}</div> : null}
         {!qualityError && qualityLoading && !sessionQuality ? <div className="empty-row">Loading session quality...</div> : null}
         {!qualityError && sessionQuality && qualitySummary ? (
           <>
@@ -424,7 +424,7 @@ export function BetaIncidentPanel({ baseUrl, auth, selectedSessionId }: BetaInci
         ) : null}
       </section>
 
-      {displayError ? <div className="bestiary-message error">{displayError}</div> : null}
+      {displayError ? <div className="bestiary-message error" role="alert">{displayError}</div> : null}
       {!displayError && loading && !incidents ? <div className="empty-row">Loading incidents...</div> : null}
       {!displayError && !loading && incidents && !incidentRows.length ? (
         <div className="empty-row">No beta incidents recorded.</div>

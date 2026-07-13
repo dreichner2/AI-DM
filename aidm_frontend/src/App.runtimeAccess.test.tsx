@@ -367,19 +367,19 @@ describe('App runtime and workspace access', () => {
     expect(screen.queryByRole('button', { name: 'Add segment' })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Session menu' }))
-    const sessionMenu = screen.getByRole('menu', { name: 'Session menu' })
-    expect(within(sessionMenu).getByRole('menuitem', { name: 'Download session Chronicle' })).toBeInTheDocument()
-    expect(within(sessionMenu).getByRole('menuitem', { name: 'Download campaign Chronicle' })).toBeInTheDocument()
-    expect(within(sessionMenu).queryByRole('menuitem', { name: 'Rename session' })).not.toBeInTheDocument()
-    expect(within(sessionMenu).queryByRole('menuitem', { name: 'Delete session' })).not.toBeInTheDocument()
+    const sessionMenu = screen.getByRole('group', { name: 'Session menu' })
+    expect(within(sessionMenu).getByRole('button', { name: 'Download session Chronicle' })).toBeInTheDocument()
+    expect(within(sessionMenu).getByRole('button', { name: 'Download campaign Chronicle' })).toBeInTheDocument()
+    expect(within(sessionMenu).queryByRole('button', { name: 'Rename session' })).not.toBeInTheDocument()
+    expect(within(sessionMenu).queryByRole('button', { name: 'Delete session' })).not.toBeInTheDocument()
   })
 
   it('keeps beta information available from the account menu without stale operator guidance', async () => {
     await renderLoadedApp()
 
     fireEvent.click(screen.getByRole('button', { name: 'Account' }))
-    const accountMenu = await screen.findByRole('menu', { name: 'Account options' })
-    const notesToggle = within(accountMenu).getByRole('menuitem', { name: 'Beta information' })
+    const accountMenu = await screen.findByRole('group', { name: 'Account options' })
+    const notesToggle = within(accountMenu).getByRole('button', { name: 'Beta information' })
     expect(notesToggle).toHaveAttribute('aria-expanded', 'false')
     expect(notesToggle).toHaveAttribute('aria-controls', 'beta-runtime-information')
     fireEvent.click(notesToggle)
@@ -696,7 +696,7 @@ describe('App runtime and workspace access', () => {
     fireEvent.change(within(dialog).getByLabelText('Table Token'), { target: { value: 'aidan_test' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Join Table' }))
 
-    await screen.findByText('No campaigns match.')
+    await screen.findByText('No campaigns yet.')
     await waitFor(() => {
       expect(screen.queryByText(/Workspace load failed:/)).not.toBeInTheDocument()
       expect(screen.queryByText(/Session refresh failed:/)).not.toBeInTheDocument()

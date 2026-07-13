@@ -48,7 +48,7 @@ export function PlayerDeleteDialog({
               character record.
             </span>
           </div>
-          {dialog.error ? <div className="dialog-error">{dialog.error}</div> : null}
+          {dialog.error ? <div className="dialog-error" role="alert">{dialog.error}</div> : null}
           <footer>
             <button
               type="button"

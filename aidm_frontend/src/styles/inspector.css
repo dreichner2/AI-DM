@@ -45,6 +45,15 @@
   background: var(--orange);
 }
 
+.inspector-tabpanel {
+  min-width: 0;
+}
+
+.inspector-tabpanel:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
 .character-panel,
 .inspector-box {
   margin-top: 9px;

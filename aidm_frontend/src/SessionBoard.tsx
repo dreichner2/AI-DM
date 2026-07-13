@@ -372,7 +372,7 @@ function TurnRecoveryBanner({
           session state is verified.
         </p>
       )}
-      {error && !canResolve ? <p className="turn-recovery-feedback">{error}</p> : null}
+      {error && !canResolve ? <p className="turn-recovery-feedback" role="alert">{error}</p> : null}
     </section>
   )
 }
@@ -913,7 +913,7 @@ export function SessionBoard({
           <h1>
             {activeSessionTitle}{' '}
             <span className={loading ? 'loading-badge' : ''}>
-              {loading ? 'Loading' : 'Live'}
+              {loading ? 'Loading' : 'Active'}
             </span>
           </h1>
           <p>{campaignTitle}</p>
@@ -998,25 +998,24 @@ export function SessionBoard({
               <div
                 id="session-menu"
                 className="session-menu"
-                role="menu"
-                aria-label="Session actions"
+                role="group"
                 aria-labelledby="session-menu-button"
               >
-                <button type="button" role="menuitem" onClick={() => void refreshCurrentWorkspace()}>
+                <button type="button" onClick={() => void refreshCurrentWorkspace()}>
                   Refresh session
                 </button>
-                <button type="button" role="menuitem" disabled={!activeSession} onClick={() => void downloadSessionChronicle()}>
+                <button type="button" disabled={!activeSession} onClick={() => void downloadSessionChronicle()}>
                   Download session Chronicle
                 </button>
-                <button type="button" role="menuitem" disabled={!campaign} onClick={() => void downloadCampaignChronicle()}>
+                <button type="button" disabled={!campaign} onClick={() => void downloadCampaignChronicle()}>
                   Download campaign Chronicle
                 </button>
                 {canUseOperatorTools ? (
                   <>
-                    <button type="button" role="menuitem" disabled={!activeSession} onClick={openRenameSessionDialog}>
+                    <button type="button" disabled={!activeSession} onClick={openRenameSessionDialog}>
                       Rename session
                     </button>
-                    <button type="button" role="menuitem" disabled={!activeSession} className="danger" onClick={openDeleteSessionDialog}>
+                    <button type="button" disabled={!activeSession} className="danger" onClick={openDeleteSessionDialog}>
                       Delete session
                     </button>
                   </>

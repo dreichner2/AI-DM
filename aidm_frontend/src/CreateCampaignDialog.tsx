@@ -117,7 +117,6 @@ export function CreateCampaignDialog({
                 type="button"
                 className="campaign-pack-picker-button"
                 aria-label="Campaign Pack"
-                aria-haspopup="listbox"
                 aria-expanded={packPickerOpen}
                 aria-controls="create-campaign-pack-options"
                 onClick={() => setPackPickerOpen((current) => !current)}
@@ -146,13 +145,12 @@ export function CreateCampaignDialog({
                 <div
                   id="create-campaign-pack-options"
                   className="campaign-pack-picker-menu"
-                  role="listbox"
+                  role="group"
                   aria-label="Campaign packs"
                 >
                   <button
                     type="button"
-                    role="option"
-                    aria-selected={!form.packId}
+                    aria-pressed={!form.packId}
                     className="campaign-pack-picker-option"
                     onClick={() => selectCampaignPack('')}
                   >
@@ -169,8 +167,7 @@ export function CreateCampaignDialog({
                       <button
                         key={pack.pack_id}
                         type="button"
-                        role="option"
-                        aria-selected={form.packId === pack.pack_id}
+                        aria-pressed={form.packId === pack.pack_id}
                         className="campaign-pack-picker-option"
                         onClick={() => selectCampaignPack(pack.pack_id)}
                       >
@@ -272,7 +269,7 @@ export function CreateCampaignDialog({
               ? 'Use the pack world, or attach this campaign to an existing world.'
               : 'Select an existing world, or enter a new world name to create one for this campaign.'}
           </p>
-          {error ? <div className="dialog-error">{error}</div> : null}
+          {error ? <div className="dialog-error" role="alert">{error}</div> : null}
           <footer>
             <button
               type="button"

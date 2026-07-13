@@ -658,13 +658,13 @@ export function RaceSelector({
               </button>
             ) : null}
           </div>
-          {customError ? <div className="race-custom-error">{customError}</div> : null}
+          {customError ? <div className="race-custom-error" role="alert">{customError}</div> : null}
           <section className="custom-race-library" aria-label="Saved custom races">
             <div className="custom-race-library-head">
               <span>Saved Custom Races</span>
               <strong>{customCatalogLoading ? 'Loading' : `${customCatalog.length} available`}</strong>
             </div>
-            {customCatalogError ? <div className="race-custom-error">{customCatalogError}</div> : null}
+            {customCatalogError ? <div className="race-custom-error" role="alert">{customCatalogError}</div> : null}
             {customCatalog.length ? (
               <div className="custom-race-library-list">
                 {customCatalog.map((race) => {

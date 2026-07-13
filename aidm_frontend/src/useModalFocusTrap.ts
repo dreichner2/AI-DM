@@ -40,15 +40,27 @@ export function useModalFocusTrap({
     const previouslyFocused =
       returnFocusRef.current ??
       (document.activeElement instanceof HTMLElement ? document.activeElement : null)
-    const focusTimer = window.setTimeout(() => {
-      const dialog = dialogRef.current
+    const focusDialog = (dialog: HTMLElement | null) => {
       const focusTarget = dialog
         ?.querySelector<HTMLElement>('[data-autofocus]')
         ?? dialog?.querySelector<HTMLElement>(
           'input:not([disabled]), textarea:not([disabled]), button:not([disabled])',
         )
       focusTarget?.focus()
+    }
+    const focusTimer = window.setTimeout(() => {
+      focusDialog(dialogRef.current)
     }, 0)
+    let currentDialog = dialogRef.current
+    const dialogObserver = new MutationObserver(() => {
+      const nextDialog = dialogRef.current
+      if (!nextDialog || nextDialog === currentDialog) return
+      currentDialog = nextDialog
+      if (!nextDialog.contains(document.activeElement)) {
+        focusDialog(nextDialog)
+      }
+    })
+    dialogObserver.observe(document.body, { childList: true, subtree: true })
 
     const handleKeyDown = (event: KeyboardEvent) => {
       const dialog = dialogRef.current
@@ -79,6 +91,7 @@ export function useModalFocusTrap({
     document.addEventListener('keydown', handleKeyDown)
     return () => {
       window.clearTimeout(focusTimer)
+      dialogObserver.disconnect()
       document.removeEventListener('keydown', handleKeyDown)
       if (previouslyFocused?.isConnected) {
         const canRestoreDirectly = !previouslyFocused.matches(':disabled, [aria-disabled="true"]')

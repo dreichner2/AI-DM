@@ -527,7 +527,7 @@ export function CampaignPackImportDialog({
       ) : null}
 
       {error ? (
-        <div className="dialog-error">
+        <div className="dialog-error" role="alert">
           <AlertTriangle size={14} aria-hidden="true" />
           {error}
         </div>

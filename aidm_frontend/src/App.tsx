@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type RefObject,
   type SetStateAction,
 } from 'react'
 import type { Socket } from 'socket.io-client'
@@ -191,6 +192,31 @@ const SessionArchiveDialog = lazy(() =>
 function preloadDiceRollDialog() {
   if (import.meta.env.MODE === 'test') return
   void loadDiceRollDialog()
+}
+
+function ModalLoading({
+  dialogRef,
+  label,
+}: {
+  dialogRef: RefObject<HTMLElement | null>
+  label: string
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section
+        ref={dialogRef}
+        className="campaign-dialog modal-loading-dialog"
+        role="dialog"
+        aria-label={label}
+        aria-modal="true"
+        aria-busy="true"
+      >
+        <span className="modal-loading-mark" aria-hidden="true" />
+        <strong data-autofocus tabIndex={-1} role="status" aria-live="polite">{label}</strong>
+        <p>The requested tools are loading. Your current table state is preserved.</p>
+      </section>
+    </div>
+  )
 }
 
 const ACTIVE_PLAYER_HEALTH_LABELS: Record<ActivePlayerHealthTone, string> = {
@@ -433,6 +459,22 @@ function readInitialSelection(scope: string, name: SelectionStorageName, queryNa
 
 function pluralize(value: number, singular: string, plural = `${singular}s`) {
   return `${value} ${value === 1 ? singular : plural}`
+}
+
+function focusableElements(container: HTMLElement) {
+  const selector = [
+    'button:not([disabled])',
+    'input:not([disabled])',
+    'textarea:not([disabled])',
+    'select:not([disabled])',
+    'a[href]',
+    '[tabindex]:not([tabindex="-1"])',
+  ].join(',')
+  return Array.from(container.querySelectorAll<HTMLElement>(selector)).filter((element) => {
+    if (element.getAttribute('aria-hidden') === 'true') return false
+    const style = window.getComputedStyle(element)
+    return style.display !== 'none' && style.visibility !== 'hidden'
+  })
 }
 
 function playerAdventureName(player: Player) {
@@ -749,23 +791,48 @@ function AIDMApp() {
         : null
     if (!drawerId) return
 
-    const drawer = document.getElementById(drawerId)
-    const initialControl = drawerId === CAMPAIGN_RAIL_ID
-      ? drawer?.querySelector<HTMLElement>('[aria-label="Search campaigns"]')
-      : drawer?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
-    initialControl?.focus()
+    const focusTimer = window.setTimeout(() => {
+      const drawer = document.getElementById(drawerId)
+      const initialControl = drawerId === CAMPAIGN_RAIL_ID
+        ? drawer?.querySelector<HTMLElement>('[aria-label="Search campaigns"]')
+        : drawer?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+      initialControl?.focus()
+    }, 200)
+    return () => window.clearTimeout(focusTimer)
   }, [compactViewport, mobileInspectorOpen, mobileRailOpen])
 
   useEffect(() => {
     if (!compactViewport || (!mobileRailOpen && !mobileInspectorOpen)) return
 
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      closeMobilePanelsAndRestoreFocus()
+    const drawerId = mobileRailOpen ? CAMPAIGN_RAIL_ID : INSPECTOR_PANEL_ID
+    const handleDrawerKeyDown = (event: KeyboardEvent) => {
+      if (modalDialogRef.current) return
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        closeMobilePanelsAndRestoreFocus()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const drawer = document.getElementById(drawerId)
+      if (!drawer) return
+      const focusable = focusableElements(drawer)
+      if (!focusable.length) {
+        event.preventDefault()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && (document.activeElement === first || !drawer.contains(document.activeElement))) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && (document.activeElement === last || !drawer.contains(document.activeElement))) {
+        event.preventDefault()
+        first.focus()
+      }
     }
-    document.addEventListener('keydown', closeOnEscape)
-    return () => document.removeEventListener('keydown', closeOnEscape)
+    document.addEventListener('keydown', handleDrawerKeyDown)
+    return () => document.removeEventListener('keydown', handleDrawerKeyDown)
   }, [closeMobilePanelsAndRestoreFocus, compactViewport, mobileInspectorOpen, mobileRailOpen])
 
   const auth = runtimeAccount?.requiresPasswordSetup ? '' : authToken.trim()
@@ -2492,6 +2559,12 @@ function AIDMApp() {
   })
 
   useEffect(() => {
+    if (showTitleScreen && (mobileRailOpen || mobileInspectorOpen)) {
+      closeMobilePanels()
+    }
+  }, [closeMobilePanels, mobileInspectorOpen, mobileRailOpen, showTitleScreen])
+
+  useEffect(() => {
     if (
       showTitleScreen ||
       (!auth && (!runtimeAccount?.workspaceId || runtimeAccount.workspaceId !== workspaceId)) ||
@@ -3189,15 +3262,17 @@ function AIDMApp() {
     : tableStatusDisplayName(runtimeAccount, workspaceId)
   const runtimeLabel = runtimePending
     ? 'Switching'
-    : runtime?.configured
-      ? 'Live'
-      : health === null
-        ? 'Checking'
-        : health.status === 'ok'
-        ? 'Missing key'
-        : 'Offline'
+    : safeModeActive
+      ? 'Safe Mode'
+      : runtime?.configured
+        ? 'Live'
+        : health === null
+          ? 'Checking'
+          : health.status === 'ok'
+            ? 'Missing key'
+            : 'Offline'
   const runtimeTone =
-    runtimePending || health === null ? 'neutral' : runtime?.configured ? 'good' : 'warn'
+    runtimePending || health === null ? 'neutral' : runtime?.configured && !safeModeActive ? 'good' : 'warn'
   const ttsConfigurationStatus = ttsConfigLoadFailed
     ? 'Status unavailable'
     : ttsConfig === null
@@ -3272,6 +3347,8 @@ function AIDMApp() {
         return
       }
       mobilePanelReturnFocusRef.current = campaignRailToggleRef.current
+      setAccountMenuOpen(false)
+      setBetaNotesOpen(false)
       setMobileInspectorOpen(false)
       setMobileRailOpen(true)
       return
@@ -3284,6 +3361,8 @@ function AIDMApp() {
       return
     }
     mobilePanelReturnFocusRef.current = mobileInspectorToggleRef.current
+    setAccountMenuOpen(false)
+    setBetaNotesOpen(false)
     setMobileRailOpen(false)
     setMobileInspectorOpen(true)
   }, [closeMobilePanelsAndRestoreFocus, mobileInspectorOpen])
@@ -3316,6 +3395,9 @@ function AIDMApp() {
   const mobileInspectorToggleLabel = mobileInspectorOpen
     ? 'Close character panel'
     : 'Open character panel'
+  const compactDrawerOpen = compactViewport
+    && !showTitleScreen
+    && (mobileRailOpen || mobileInspectorOpen)
   const shellClassName = [
     `prototype-shell theme-${theme}`,
     railCollapsed ? 'rail-collapsed' : '',
@@ -3333,7 +3415,10 @@ function AIDMApp() {
       ref={rootRef}
       className={shellClassName}
     >
-      <header className="ops-bar">
+      <header
+        className="ops-bar"
+        inert={compactDrawerOpen ? true : undefined}
+      >
         <div className="ops-brand">
           <Flame size={25} fill="currentColor" />
           <strong>AI-DM</strong>
@@ -3558,7 +3643,7 @@ function AIDMApp() {
               <div
                 id="account-menu"
                 className="account-menu"
-                role="menu"
+                role="group"
                 aria-label="Account options"
               >
                 <strong role="presentation">{runtimeAccount?.displayName ?? 'No account connected'}</strong>
@@ -3567,15 +3652,14 @@ function AIDMApp() {
                     ? `${runtimeAccount.workspaceRole} / ${runtimeAccount.workspaceId ?? 'workspace'}`
                     : selectedPlayer?.character_name ?? 'Choose account'}
                 </span>
-                <button type="button" role="menuitem" onClick={() => void refreshCurrentWorkspace()}>
+                <button type="button" onClick={() => void refreshCurrentWorkspace()}>
                   Refresh workspace
                 </button>
-                <button type="button" role="menuitem" onClick={openProfileSettingsDialog}>
+                <button type="button" onClick={openProfileSettingsDialog}>
                   Profile settings
                 </button>
                 <button
                   type="button"
-                  role="menuitem"
                   onClick={() => {
                     setSocketReconnectKey((current) => current + 1)
                     setAccountMenuOpen(false)
@@ -3583,13 +3667,12 @@ function AIDMApp() {
                 >
                   Reconnect socket
                 </button>
-                <button type="button" role="menuitem" onClick={openRuntimeSettingsDialog}>
+                <button type="button" onClick={openRuntimeSettingsDialog}>
                   Runtime settings
                 </button>
                 <button
                   ref={betaNotesToggleRef}
                   type="button"
-                  role="menuitem"
                   aria-expanded={betaNotesOpen}
                   aria-controls="beta-runtime-information"
                   onClick={() => setBetaNotesOpen((current) => !current)}
@@ -3597,7 +3680,7 @@ function AIDMApp() {
                   Beta information
                 </button>
                 {authToken ? (
-                  <button type="button" role="menuitem" onClick={clearAuthToken}>
+                  <button type="button" onClick={clearAuthToken}>
                     Sign out
                   </button>
                 ) : null}
@@ -3614,6 +3697,7 @@ function AIDMApp() {
         <div
           className="beta-runtime-notices"
           aria-label="Beta runtime notices"
+          inert={compactDrawerOpen ? true : undefined}
         >
           {betaRuntimeNotices.map((notice) => (
             <div
@@ -3643,7 +3727,7 @@ function AIDMApp() {
           canContinue={titleScreenCanContinue}
           campaignCount={campaigns.length}
           selectedCampaignTitle={campaign?.title ?? null}
-          runtimeConfigured={Boolean(runtime?.configured)}
+          runtimeConfigured={!safeModeActive && Boolean(runtime?.configured)}
           onPlayNow={() => void playNowFromTitleScreen()}
           onLogIn={logInFromTitleScreen}
           onCreateAccount={createAccountFromTitleScreen}
@@ -3660,12 +3744,15 @@ function AIDMApp() {
         <button
           type="button"
           className="mobile-panel-scrim"
-          aria-label="Close mobile side panel"
+          aria-hidden="true"
+          tabIndex={-1}
           onClick={closeMobilePanelsAndRestoreFocus}
         />
 
       <CampaignRail
-        inert={compactViewport && !mobileRailOpen}
+        inert={compactViewport && (!mobileRailOpen || modalOpen)}
+        modal={compactViewport && mobileRailOpen && !showTitleScreen && !modalOpen}
+        onRequestClose={closeMobilePanelsAndRestoreFocus}
         backendStatus={health?.status ?? null}
         campaignTitle={campaign?.title ? truncateText(campaign.title, 12) : null}
         campaignCards={campaignCards}
@@ -3734,7 +3821,7 @@ function AIDMApp() {
 
       <div
         className="workspace-main-board-isolation"
-        inert={compactViewport && (mobileRailOpen || mobileInspectorOpen) ? true : undefined}
+        inert={compactDrawerOpen ? true : undefined}
       >
         <SessionBoard
         activeSessionTitle={activeSessionTitle}
@@ -3895,7 +3982,9 @@ function AIDMApp() {
       </div>
 
       <InspectorPanel
-        inert={compactViewport && !mobileInspectorOpen}
+        inert={compactViewport && (!mobileInspectorOpen || modalOpen)}
+        modal={compactViewport && mobileInspectorOpen && !showTitleScreen && !modalOpen}
+        onRequestClose={closeMobilePanelsAndRestoreFocus}
         inspectorTab={inspectorTab}
         setInspectorTab={setInspectorTab}
         setMainTab={setMainTab}
@@ -3953,7 +4042,12 @@ function AIDMApp() {
       />
 
       {sharedRollNotice ? (
-        <aside className="shared-roll-notice" role="status" aria-live="polite">
+        <aside
+          className="shared-roll-notice"
+          role="status"
+          aria-live="polite"
+          aria-hidden={compactDrawerOpen ? true : undefined}
+        >
           <span>
             {activePlayers.find((player) => player.id === sharedRollNotice.playerId)?.character_name
               ?? `Player ${sharedRollNotice.playerId}`}
@@ -4101,7 +4195,7 @@ function AIDMApp() {
       />
 
       {campaignArchiveDialog ? (
-        <Suspense fallback={null}>
+        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening campaign archive…" />}>
           <CampaignArchiveDialog
             campaign={campaign}
             dialog={campaignArchiveDialog}
@@ -4115,7 +4209,7 @@ function AIDMApp() {
       ) : null}
 
       {sessionArchiveDialog ? (
-        <Suspense fallback={null}>
+        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening session archive…" />}>
           <SessionArchiveDialog
             activeSession={activeSession}
             campaign={campaign}
@@ -4173,7 +4267,7 @@ function AIDMApp() {
       ) : null}
 
       {campaignChooserOpen ? (
-        <Suspense fallback={null}>
+        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening your campaigns…" />}>
           <CampaignChooserDialog
             campaigns={campaigns}
             canCreateCampaign={canUseOperatorTools}
@@ -4187,7 +4281,7 @@ function AIDMApp() {
       ) : null}
 
       {playerEditDialog ? (
-        <Suspense fallback={null}>
+        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening character editor…" />}>
           <PlayerEditDialog
             auth={auth}
             baseUrl={baseUrl}
@@ -4268,7 +4362,7 @@ function AIDMApp() {
       ) : null}
 
       {createCampaignOpen ? (
-        <Suspense fallback={null}>
+        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Preparing campaign creation…" />}>
           <CreateCampaignDialog
             defaultWorldId={campaignWorldId}
             dialogRef={modalDialogRef}

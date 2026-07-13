@@ -631,8 +631,8 @@ describe('SessionBoard visible theater surfaces', () => {
       />,
     )
 
-    const menu = screen.getByRole('menu', { name: 'Session menu' })
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Download campaign Chronicle' }))
+    const menu = screen.getByRole('group', { name: 'Session menu' })
+    fireEvent.click(within(menu).getByRole('button', { name: 'Download campaign Chronicle' }))
 
     expect(downloadCampaignChronicle).toHaveBeenCalledTimes(1)
   })
@@ -711,11 +711,11 @@ describe('SessionBoard visible theater surfaces', () => {
     expect(screen.getByRole('button', { name: 'Export' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Share' })).toBeInTheDocument()
 
-    const menu = screen.getByRole('menu', { name: 'Session menu' })
-    expect(within(menu).getByRole('menuitem', { name: 'Download session Chronicle' })).toBeInTheDocument()
-    expect(within(menu).getByRole('menuitem', { name: 'Download campaign Chronicle' })).toBeInTheDocument()
-    expect(within(menu).queryByRole('menuitem', { name: 'Rename session' })).not.toBeInTheDocument()
-    expect(within(menu).queryByRole('menuitem', { name: 'Delete session' })).not.toBeInTheDocument()
+    const menu = screen.getByRole('group', { name: 'Session menu' })
+    expect(within(menu).getByRole('button', { name: 'Download session Chronicle' })).toBeInTheDocument()
+    expect(within(menu).getByRole('button', { name: 'Download campaign Chronicle' })).toBeInTheDocument()
+    expect(within(menu).queryByRole('button', { name: 'Rename session' })).not.toBeInTheDocument()
+    expect(within(menu).queryByRole('button', { name: 'Delete session' })).not.toBeInTheDocument()
   })
 
   it('opens the configured roller when the selected character owes a pending check', () => {

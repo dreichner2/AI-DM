@@ -590,7 +590,7 @@ describe('App user workflow regressions', () => {
     const initialSocketCount = socketMock.io.mock.calls.length
 
     fireEvent.click(screen.getByRole('button', { name: 'Account' }))
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Reconnect socket' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect socket' }))
     await waitFor(() => expect(socketMock.io.mock.calls.length).toBeGreaterThan(initialSocketCount))
     await act(async () => socketHandler<void>('connect')())
 
@@ -1331,8 +1331,21 @@ describe('App user workflow regressions', () => {
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Search campaigns' })).toHaveFocus())
     expect(opener).toHaveAttribute('aria-expanded', 'true')
     expect(campaignRail).not.toHaveAttribute('inert')
+    expect(campaignRail).toHaveAttribute('role', 'dialog')
+    expect(campaignRail).toHaveAttribute('aria-modal', 'true')
     expect(inspector).toHaveAttribute('inert')
     expect(mainBoard).toHaveAttribute('inert')
+    expect(rendered.container.querySelector('.ops-bar')).toHaveAttribute('inert')
+
+    const firstDrawerControl = within(campaignRail as HTMLElement).getByRole('button', {
+      name: 'Close campaign menu',
+    })
+    const refresh = within(campaignRail as HTMLElement).getByRole('button', { name: 'Refresh workspace' })
+    refresh.focus()
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(firstDrawerControl).toHaveFocus()
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+    expect(refresh).toHaveFocus()
 
     fireEvent.keyDown(document, { key: 'Escape' })
 
@@ -1343,7 +1356,7 @@ describe('App user workflow regressions', () => {
 
     fireEvent.click(opener)
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Search campaigns' })).toHaveFocus())
-    fireEvent.click(screen.getByRole('button', { name: 'Turns' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Adventure' }))
     await waitFor(() => expect(opener).toHaveFocus())
     expect(campaignRail).toHaveAttribute('inert')
   })
@@ -1366,8 +1379,11 @@ describe('App user workflow regressions', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: 'Party' })).toHaveFocus())
     expect(opener).toHaveAttribute('aria-expanded', 'true')
     expect(inspector).not.toHaveAttribute('inert')
+    expect(inspector).toHaveAttribute('role', 'dialog')
+    expect(inspector).toHaveAttribute('aria-modal', 'true')
     expect(campaignRail).toHaveAttribute('inert')
     expect(mainBoard).toHaveAttribute('inert')
+    expect(rendered.container.querySelector('.ops-bar')).toHaveAttribute('inert')
 
     fireEvent.keyDown(document, { key: 'Escape' })
 
@@ -1376,11 +1392,47 @@ describe('App user workflow regressions', () => {
 
     fireEvent.click(opener)
     await waitFor(() => expect(screen.getByRole('tab', { name: 'Party' })).toHaveFocus())
-    fireEvent.click(screen.getByRole('button', { name: 'Close mobile side panel' }))
+    const scrim = rendered.container.querySelector('.mobile-panel-scrim')
+    expect(scrim).toHaveAttribute('aria-hidden', 'true')
+    fireEvent.click(scrim as HTMLElement)
 
     await waitFor(() => expect(opener).toHaveFocus())
     expect(opener).toHaveAttribute('aria-expanded', 'false')
     expect(mainBoard).not.toHaveAttribute('inert')
+  })
+
+  it('suspends the compact drawer modal while a nested dialog is open', async () => {
+    installMatchMediaMock(true)
+    await renderLoadedApp()
+
+    const drawerOpener = screen.getByRole('button', { name: 'Open campaign menu' })
+    fireEvent.click(drawerOpener)
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Search campaigns' })).toHaveFocus())
+
+    const campaignRail = document.getElementById('campaign-rail-drawer') as HTMLElement
+    const addCampaignButton = within(campaignRail).getByRole('button', { name: 'Add campaign' })
+    addCampaignButton.focus()
+    fireEvent.click(addCampaignButton)
+
+    const dialog = await screen.findByRole('dialog', { name: 'Create New Campaign' })
+    expect(campaignRail).toHaveAttribute('inert')
+    expect(campaignRail).not.toHaveAttribute('role', 'dialog')
+    expect(campaignRail).not.toHaveAttribute('aria-modal')
+
+    const closeButton = within(dialog).getByRole('button', { name: 'Close create campaign' })
+    const submitButton = within(dialog).getByRole('button', { name: 'Create Campaign' })
+    submitButton.focus()
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(closeButton).toHaveFocus()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Create New Campaign' })).not.toBeInTheDocument())
+    expect(campaignRail).not.toHaveAttribute('inert')
+    expect(campaignRail).toHaveAttribute('role', 'dialog')
+    expect(addCampaignButton).toHaveFocus()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(drawerOpener).toHaveFocus())
   })
 
   it('mounts mobile layout with legacy MediaQueryList listeners', async () => {
@@ -2565,7 +2617,7 @@ describe('App user workflow regressions', () => {
     await renderLoadedApp()
 
     fireEvent.click(screen.getByRole('button', { name: 'Account' }))
-    fireEvent.click(within(screen.getByRole('menu', { name: 'Account options' })).getByRole('menuitem', {
+    fireEvent.click(within(screen.getByRole('group', { name: 'Account options' })).getByRole('button', {
       name: 'Profile settings',
     }))
     fireEvent.click(await screen.findByRole('button', { name: 'Edit character' }))
@@ -2642,7 +2694,7 @@ describe('App user workflow regressions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add campaign' }))
     const dialog = await screen.findByRole('dialog', { name: 'Create New Campaign' })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Campaign Pack' }))
-    fireEvent.click(await within(dialog).findByRole('option', { name: /Shadow Under Eryn Luin/ }))
+    fireEvent.click(await within(dialog).findByRole('button', { name: /Shadow Under Eryn Luin/ }))
 
     expect(within(dialog).getAllByText('Shadow Under Eryn Luin').length).toBeGreaterThan(0)
     expect(
@@ -2674,8 +2726,8 @@ describe('App user workflow regressions', () => {
     await renderLoadedApp()
 
     fireEvent.click(screen.getByRole('button', { name: 'Session menu' }))
-    const sessionMenu = await screen.findByRole('menu', { name: 'Session menu' })
-    fireEvent.click(within(sessionMenu).getByRole('menuitem', { name: 'Rename session' }))
+    const sessionMenu = await screen.findByRole('group', { name: 'Session menu' })
+    fireEvent.click(within(sessionMenu).getByRole('button', { name: 'Rename session' }))
     const renameDialog = await screen.findByRole('dialog', { name: 'Rename Session' })
     fireEvent.change(within(renameDialog).getByLabelText('Session Name'), {
       target: { value: 'Session Beta' },
@@ -2690,8 +2742,8 @@ describe('App user workflow regressions', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Session menu' }))
-    const reopenedSessionMenu = await screen.findByRole('menu', { name: 'Session menu' })
-    fireEvent.click(within(reopenedSessionMenu).getByRole('menuitem', { name: 'Delete session' }))
+    const reopenedSessionMenu = await screen.findByRole('group', { name: 'Session menu' })
+    fireEvent.click(within(reopenedSessionMenu).getByRole('button', { name: 'Delete session' }))
     const deleteDialog = await screen.findByRole('dialog', { name: 'Delete Session' })
     fireEvent.click(within(deleteDialog).getByRole('button', { name: 'Delete Session' }))
 
@@ -3046,10 +3098,10 @@ describe('App user workflow regressions', () => {
 
     expect(screen.getByRole('button', { name: /Smoke Campaign/i })).toHaveAttribute('aria-current', 'true')
     expect(screen.getByRole('button', { name: /Session Alpha/i })).toHaveAttribute('aria-current', 'true')
-    expect(screen.getByRole('button', { name: 'Turns' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('button', { name: 'Adventure' })).toHaveAttribute('aria-current', 'page')
 
     expect(screen.queryByRole('tablist', { name: 'Session views' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Turns' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('button', { name: 'Adventure' })).toHaveAttribute('aria-current', 'page')
 
     const inspectorPanels = screen.getByRole('tablist', { name: 'Inspector panels' })
     fireEvent.click(within(inspectorPanels).getByRole('tab', { name: 'Memory' }))
@@ -3058,14 +3110,14 @@ describe('App user workflow regressions', () => {
     const accountButton = screen.getByRole('button', { name: 'Account' })
     fireEvent.click(accountButton)
     expect(accountButton).toHaveAttribute('aria-expanded', 'true')
-    expect(within(screen.getByRole('menu', { name: 'Account options' })).getByRole('menuitem', {
+    expect(within(screen.getByRole('group', { name: 'Account options' })).getByRole('button', {
       name: 'Profile settings',
     })).toBeInTheDocument()
 
     const sessionMenuButton = screen.getByRole('button', { name: 'Session menu' })
     fireEvent.click(sessionMenuButton)
     expect(sessionMenuButton).toHaveAttribute('aria-expanded', 'true')
-    expect(within(screen.getByRole('menu', { name: 'Session menu' })).getByRole('menuitem', {
+    expect(within(screen.getByRole('group', { name: 'Session menu' })).getByRole('button', {
       name: 'Rename session',
     })).toBeInTheDocument()
   })

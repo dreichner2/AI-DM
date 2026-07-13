@@ -1,0 +1,319 @@
+.prototype-shell.theme-light {
+  background:
+    linear-gradient(180deg, rgba(162, 60, 18, 0.045), transparent 190px),
+    linear-gradient(135deg, #f6f1e8 0%, #e9eee9 54%, #f7efe3 100%);
+}
+
+/* Onboarding is a cinematic, deliberately dark surface in both app themes. */
+.prototype-shell.theme-light .title-screen {
+  --heading: #fbf5e8;
+  --text: #c9d0cc;
+  --muted: #8a9793;
+  --faint: #63706d;
+  --orange: #ff6b2c;
+  --accent: #ff6b2c;
+  --accent-2: #ffb067;
+  --focus-ring: #ffb067;
+  --line: rgba(144, 164, 159, 0.16);
+  --line-strong: rgba(144, 164, 159, 0.26);
+  --on-accent: #fff8ee;
+  color-scheme: dark;
+}
+
+.prototype-shell.theme-light .ops-bar {
+  background: linear-gradient(180deg, rgba(255, 250, 241, 0.98), rgba(239, 231, 218, 0.98));
+  box-shadow: 0 8px 22px rgba(45, 56, 51, 0.12);
+}
+
+.prototype-shell.theme-light :where(
+  .campaign-rail,
+  .session-board,
+  .right-inspector,
+  .action-composer,
+  .turn-feed,
+  .turns-view
+) {
+  background-color: var(--surface-sunken);
+  background-image: none;
+}
+
+.prototype-shell.theme-light :where(.roll-wait-banner, .turn-recovery-banner) {
+  color: var(--heading);
+  background:
+    linear-gradient(90deg, rgba(162, 60, 18, 0.1), rgba(162, 60, 18, 0.025)),
+    var(--surface-raised);
+}
+
+.prototype-shell.theme-light :where(
+  .roll-wait-icon,
+  .roll-wait-copy span,
+  .roll-wait-meta,
+  .turn-recovery-heading > svg,
+  .turn-recovery-heading .turn-recovery-badge,
+  .turn-recovery-form legend,
+  .turn-recovery-note > label
+) {
+  color: var(--accent);
+}
+
+.prototype-shell.theme-light :where(
+  .turn-recovery-heading strong,
+  .turn-recovery-form label strong
+) {
+  color: var(--heading);
+}
+
+.prototype-shell.theme-light :where(
+  .turn-recovery-heading span,
+  .turn-recovery-banner > p,
+  .turn-recovery-form label small
+) {
+  color: var(--muted);
+}
+
+.prototype-shell.theme-light .turn-recovery-note textarea {
+  color: var(--text);
+  background: var(--field);
+}
+
+.prototype-shell.theme-light .turn-recovery-submit-row button {
+  color: var(--on-accent);
+  background: var(--accent);
+}
+
+.prototype-shell.theme-light :where(.turn-recovery-feedback, .turn-recovery-failure) {
+  color: var(--text-danger);
+}
+
+.prototype-shell.theme-light .turn-recovery-success {
+  color: var(--text-success);
+}
+
+.prototype-shell.theme-light .roll-wait-action:is(:hover, :focus-visible) {
+  color: var(--on-accent);
+  background: var(--accent);
+}
+
+.prototype-shell.theme-light .combat-hud {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.prototype-shell.theme-light .combat-hud-turn.current {
+  color: var(--text-success);
+}
+
+.prototype-shell.theme-light .combat-hud-health.healthy {
+  color: var(--text-success);
+}
+
+.prototype-shell.theme-light .combat-hud-health.hurt {
+  color: var(--text-warning);
+}
+
+.prototype-shell.theme-light :where(
+  .combat-hud-health.critical,
+  .combat-hud-health.down,
+  .combat-hud-option .combat-hud-option-reason
+) {
+  color: var(--text-danger);
+}
+
+.prototype-shell.theme-light :where(.combat-hud-cues li, .combat-hud-choice-count) {
+  color: var(--text);
+}
+
+.prototype-shell.theme-light .scene-music-player:not(.is-inline-static) {
+  color: var(--text);
+  background:
+    linear-gradient(90deg, rgba(18, 116, 86, 0.055), transparent 52%),
+    var(--surface-raised);
+}
+
+.prototype-shell.theme-light .director-memory-strip p {
+  color: var(--text);
+}
+
+.prototype-shell.theme-light .current-situation-combat.in-combat {
+  color: var(--accent);
+  background: rgba(162, 60, 18, 0.08);
+}
+
+.prototype-shell.theme-light .current-situation-next {
+  border-left-color: var(--line-strong);
+  color: var(--accent);
+}
+
+.prototype-shell.theme-light .current-situation-details {
+  border-top-color: var(--line);
+  background: var(--surface);
+}
+
+.prototype-shell.theme-light .current-situation-details > p {
+  color: var(--text);
+}
+
+.prototype-shell.theme-light .campaign-rail {
+  background: linear-gradient(180deg, var(--surface), var(--surface-sunken));
+}
+
+.prototype-shell.theme-light .session-board {
+  background:
+    radial-gradient(circle at 50% 4%, rgba(162, 60, 18, 0.06), transparent 18rem),
+    var(--paper);
+}
+
+.prototype-shell.theme-light .right-inspector {
+  background: var(--panel);
+}
+
+.prototype-shell.theme-light :where(
+  .turn-card,
+  .dm-response-card,
+  .system-state-card,
+  .previously-on-card,
+  .session-at-a-glance,
+  .current-situation,
+  .character-panel,
+  .inspector-box,
+  .campaign-card,
+  .session-card,
+  .search-field,
+  .composer-frame,
+  .composer-frame textarea,
+  .mode-buttons,
+  .flow-status,
+  .narration-status,
+  .view-settings-menu,
+  .operator-drawer-body,
+  .account-menu,
+  .session-menu,
+  .panel-loading-strip
+) {
+  color: var(--text);
+  border-color: var(--line-strong);
+  background-color: var(--surface-raised);
+  background-image: none;
+  box-shadow: var(--panel-shadow);
+}
+
+.prototype-shell.theme-light :where(
+  .rail-heading button,
+  .top-icon,
+  .toolbar-button,
+  .character-actions button,
+  .composer-tools button,
+  .mode-buttons button,
+  .view-mode-toggle button,
+  .inspiration-toggle,
+  .equipment-toggle,
+  .view-link
+) {
+  color: var(--text);
+  border-color: var(--line-strong);
+  background: var(--button);
+}
+
+.prototype-shell.theme-light :where(
+  input,
+  textarea,
+  select,
+  .runtime-select,
+  .view-settings-menu select,
+  .action-intent-panel select,
+  .action-intent-panel input
+) {
+  color: var(--heading);
+  border-color: var(--line-strong);
+  background: var(--field);
+}
+
+.prototype-shell.theme-light :where(
+  .campaign-card.active,
+  .session-card.active,
+  .nav-item.active,
+  .inspector-tabs button.active,
+  .view-mode-toggle button[aria-pressed='true']
+) {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-raised));
+}
+
+.prototype-shell.theme-light :where(
+  .turn-card p,
+  .dm-response-card p,
+  .response-copy p,
+  .narrative-prose,
+  .narrative-prose p,
+  .previously-on-card p
+) {
+  color: var(--text);
+}
+
+.prototype-shell.theme-light :where(.narrative-dialogue, .narrative-prose em) {
+  color: var(--accent-2);
+}
+
+.prototype-shell.theme-light .narrative-mechanical-line {
+  color: var(--heading);
+  border-color: var(--line-strong);
+  background: var(--surface-sunken);
+}
+
+.prototype-shell.theme-light .session-header h1 > span:not(.loading-badge) {
+  color: var(--text-success);
+  background: color-mix(in srgb, var(--text-success) 12%, var(--surface-raised));
+}
+
+.prototype-shell.theme-light :where(
+  .character-panel,
+  .inspector-box,
+  .vital-grid div,
+  .ability-grid,
+  .inspiration-row,
+  .inventory-table > div,
+  .scene-state-grid > div,
+  .world-state-list > div,
+  .map-segment,
+  .campaign-pack-card,
+  .campaign-pack-checkpoint
+) {
+  background-color: rgba(255, 255, 255, 0.5);
+  background-image: none;
+}
+
+.prototype-shell.theme-light .portrait,
+.prototype-shell.theme-light .active-player-avatar-wrap {
+  background: var(--surface-sunken);
+}
+
+.prototype-shell.theme-light .modal-backdrop {
+  background: rgba(45, 56, 51, 0.44);
+}
+
+.prototype-shell.theme-light .campaign-dialog {
+  background:
+    linear-gradient(180deg, rgba(162, 60, 18, 0.045), transparent 110px),
+    var(--surface);
+}
+
+.prototype-shell.theme-light :where(.dialog-error, .turn-recovery-failure) {
+  color: var(--text-danger);
+  background: color-mix(in srgb, var(--text-danger) 9%, var(--surface-raised));
+}
+
+.prototype-shell.theme-light :where(.turn-recovery-success, .status-dot.good) {
+  color: var(--text-success);
+}
+
+.prototype-shell.theme-light .title-action.primary,
+.prototype-shell.theme-light .campaign-dialog footer button:not(.secondary) {
+  color: var(--on-accent);
+  background: linear-gradient(180deg, #b94a1c, #8f3210);
+}
+
+.prototype-shell.theme-light ::selection {
+  color: var(--on-accent);
+  background: var(--accent);
+}

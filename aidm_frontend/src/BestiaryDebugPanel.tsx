@@ -263,7 +263,7 @@ export function BestiaryDebugPanel({
           </button>
         </div>
 
-        {error ? <div className="bestiary-message error">{error}</div> : null}
+        {error ? <div className="bestiary-message error" role="alert">{error}</div> : null}
         {status && !error ? <div className="bestiary-message">{status}</div> : null}
 
         <div className="bestiary-layout">

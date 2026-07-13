@@ -531,7 +531,7 @@ export function RuntimeSettingsDialog({
             </>
           ) : null}
           <p>{helpText}</p>
-          {error ? <div className="dialog-error">{error}</div> : null}
+          {error ? <div className="dialog-error" role="alert">{error}</div> : null}
           <footer>
             {isAuthPrompt ? null : (
               <button

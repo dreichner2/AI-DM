@@ -1,5 +1,14 @@
-import { lazy, Suspense, useEffect, useState, type Dispatch, type FormEvent, type SetStateAction } from 'react'
-import { ChevronDown, Coins, ExternalLink, ShieldCheck, ShieldOff, Swords } from 'lucide-react'
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useState,
+  type Dispatch,
+  type FormEvent,
+  type KeyboardEvent,
+  type SetStateAction,
+} from 'react'
+import { ChevronDown, Coins, ExternalLink, ShieldCheck, ShieldOff, Swords, X } from 'lucide-react'
 import { ThinIcon } from './AppChrome'
 import { CampaignPackPanel, type CampaignPackControlAction } from './CampaignPackPanel'
 import {
@@ -26,6 +35,28 @@ const BestiaryDebugPanel = lazy(() =>
 export type InspectorTab = 'party' | 'map' | 'magic' | 'canon' | 'inventory' | 'bestiary' | 'ops'
 
 export const INSPECTOR_PANEL_ID = 'character-inspector-drawer'
+
+const INSPECTOR_TABS: ReadonlyArray<{
+  id: InspectorTab
+  label: string
+  operatorOnly?: boolean
+}> = [
+  { id: 'party', label: 'Party' },
+  { id: 'map', label: 'Map' },
+  { id: 'magic', label: 'Magic' },
+  { id: 'canon', label: 'Memory' },
+  { id: 'inventory', label: 'Inventory' },
+  { id: 'bestiary', label: 'Bestiary', operatorOnly: true },
+  { id: 'ops', label: 'Ops', operatorOnly: true },
+]
+
+function inspectorTabId(tab: InspectorTab) {
+  return `inspector-tab-${tab}`
+}
+
+function inspectorTabPanelId(tab: InspectorTab) {
+  return `inspector-tabpanel-${tab}`
+}
 
 type DisplayCharacter = {
   name: string
@@ -54,6 +85,8 @@ export type SegmentManagementForm = {
 
 type InspectorPanelProps = {
   inert?: boolean
+  modal?: boolean
+  onRequestClose?: () => void
   inspectorTab: InspectorTab
   setInspectorTab: Dispatch<SetStateAction<InspectorTab>>
   setMainTab: Dispatch<SetStateAction<MainTab>>
@@ -140,6 +173,8 @@ function activePlayerAncestryClass(player: ActivePlayer) {
 
 export function InspectorPanel({
   inert,
+  modal = false,
+  onRequestClose,
   inspectorTab,
   setInspectorTab,
   setMainTab,
@@ -197,6 +232,10 @@ export function InspectorPanel({
 }: InspectorPanelProps) {
   const [showAllKnownNpcs, setShowAllKnownNpcs] = useState(false)
   const [showAllKnownLocations, setShowAllKnownLocations] = useState(false)
+  const availableTabs = INSPECTOR_TABS.filter((tab) => canUseOperatorTools || !tab.operatorOnly)
+  const activeInspectorTab = availableTabs.some((tab) => tab.id === inspectorTab)
+    ? inspectorTab
+    : 'party'
   useEffect(() => {
     if (!canUseOperatorTools && (inspectorTab === 'bestiary' || inspectorTab === 'ops')) {
       setInspectorTab('party')
@@ -211,92 +250,85 @@ export function InspectorPanel({
     : worldStatePanel.knownLocations.slice(0, VISIBLE_WORLD_STATE_ITEMS)
   const olderNpcCount = Math.max(0, worldStatePanel.knownNpcs.length - VISIBLE_WORLD_STATE_ITEMS)
   const olderLocationCount = Math.max(0, worldStatePanel.knownLocations.length - VISIBLE_WORLD_STATE_ITEMS)
-  const visibleSpells = inspectorTab === 'magic' ? spellbook.knownSpells : spellbook.knownSpells.slice(0, 5)
-  const visibleCharacterTraits = inspectorTab === 'magic' ? characterTraits : characterTraits.slice(0, 4)
+  const visibleSpells = activeInspectorTab === 'magic' ? spellbook.knownSpells : spellbook.knownSpells.slice(0, 5)
+  const visibleCharacterTraits = activeInspectorTab === 'magic' ? characterTraits : characterTraits.slice(0, 4)
   const spellbookSourceLabel = spellbook.sources.some((source) => source === 'aidm-original')
     ? 'AIDM'
     : spellbook.sources.find((source) => source.toLowerCase().includes('class')) ||
       spellbook.sources[0] ||
       'Known'
 
+  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const currentIndex = availableTabs.findIndex((tab) => tab.id === activeInspectorTab)
+    if (currentIndex < 0) return
+
+    let nextIndex: number | null = null
+    if (event.key === 'ArrowRight') {
+      nextIndex = (currentIndex + 1) % availableTabs.length
+    } else if (event.key === 'ArrowLeft') {
+      nextIndex = (currentIndex - 1 + availableTabs.length) % availableTabs.length
+    } else if (event.key === 'Home') {
+      nextIndex = 0
+    } else if (event.key === 'End') {
+      nextIndex = availableTabs.length - 1
+    }
+    if (nextIndex === null) return
+
+    event.preventDefault()
+    const nextTab = availableTabs[nextIndex]
+    setInspectorTab(nextTab.id)
+    document.getElementById(inspectorTabId(nextTab.id))?.focus()
+  }
+
   return (
     <aside
       id={INSPECTOR_PANEL_ID}
       className="right-inspector"
+      role={modal ? 'dialog' : undefined}
       aria-label="Character and campaign inspector"
+      aria-modal={modal ? true : undefined}
       inert={inert ? true : undefined}
     >
+      {modal && onRequestClose ? (
+        <button
+          type="button"
+          className="drawer-close-button"
+          aria-label="Close character panel"
+          onClick={onRequestClose}
+        >
+          <X size={18} />
+        </button>
+      ) : null}
       <div className="inspector-tabs" role="tablist" aria-label="Inspector panels">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={inspectorTab === 'party'}
-          className={inspectorTab === 'party' ? 'active' : ''}
-          onClick={() => setInspectorTab('party')}
-        >
-          Party
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={inspectorTab === 'map'}
-          className={inspectorTab === 'map' ? 'active' : ''}
-          onClick={() => setInspectorTab('map')}
-        >
-          Map
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={inspectorTab === 'magic'}
-          className={inspectorTab === 'magic' ? 'active' : ''}
-          onClick={() => setInspectorTab('magic')}
-        >
-          Magic
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={inspectorTab === 'canon'}
-          className={inspectorTab === 'canon' ? 'active' : ''}
-          onClick={() => setInspectorTab('canon')}
-        >
-          Memory
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={inspectorTab === 'inventory'}
-          className={inspectorTab === 'inventory' ? 'active' : ''}
-          onClick={() => setInspectorTab('inventory')}
-        >
-          Inventory
-        </button>
-        {canUseOperatorTools ? (
-          <>
+        {availableTabs.map((tab) => {
+          const selected = activeInspectorTab === tab.id
+          return (
             <button
+              key={tab.id}
+              id={inspectorTabId(tab.id)}
               type="button"
               role="tab"
-              aria-selected={inspectorTab === 'bestiary'}
-              className={inspectorTab === 'bestiary' ? 'active' : ''}
-              onClick={() => setInspectorTab('bestiary')}
+              aria-controls={inspectorTabPanelId(tab.id)}
+              aria-selected={selected}
+              className={selected ? 'active' : ''}
+              tabIndex={selected ? 0 : -1}
+              onClick={() => setInspectorTab(tab.id)}
+              onKeyDown={handleTabKeyDown}
             >
-              Bestiary
+              {tab.label}
             </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={inspectorTab === 'ops'}
-              className={inspectorTab === 'ops' ? 'active' : ''}
-              onClick={() => setInspectorTab('ops')}
-            >
-              Ops
-            </button>
-          </>
-        ) : null}
+          )
+        })}
       </div>
 
-      {inspectorTab === 'party' || inspectorTab === 'inventory' ? (
+      <div
+        id={inspectorTabPanelId(activeInspectorTab)}
+        className="inspector-tabpanel"
+        role="tabpanel"
+        aria-labelledby={inspectorTabId(activeInspectorTab)}
+        tabIndex={0}
+      >
+      {activeInspectorTab === 'party' || activeInspectorTab === 'inventory' ? (
         <section className="character-panel">
           <div className="character-card">
             <div className="portrait">
@@ -375,10 +407,10 @@ export function InspectorPanel({
 
           <div className="inspiration-row">
             <span>Inspiration</span>
-            <button
-              type="button"
+            <span
               className={`inspiration-toggle ${statBlock.inspiration ? 'filled' : ''}`}
-              aria-label="Inspiration"
+              role="status"
+              aria-label={`Inspiration: ${statBlock.inspiration ? 'available' : 'not available'}`}
             />
             <span>Proficiency</span>
             <strong>{displayStatValue(statBlock.proficiency)}</strong>
@@ -386,7 +418,7 @@ export function InspectorPanel({
         </section>
       ) : null}
 
-      {inspectorTab === 'party' ? (
+      {activeInspectorTab === 'party' ? (
         <section className="inspector-box active-player-box">
           <div className="box-title">
             <h3>Active Players ({activePlayers.length})</h3>
@@ -444,7 +476,7 @@ export function InspectorPanel({
         </section>
       ) : null}
 
-      {inspectorTab === 'party' || inspectorTab === 'magic' ? (
+      {activeInspectorTab === 'party' || activeInspectorTab === 'magic' ? (
         <section className="inspector-box spellbook-box">
           <div className="box-title">
             <h3>Spellbook ({spellbook.knownSpells.length})</h3>
@@ -463,7 +495,7 @@ export function InspectorPanel({
                         .join(' / ') || 'Known spell'}
                     </small>
                     {spell.description ? (
-                      <p>{truncateText(spell.description, inspectorTab === 'magic' ? 110 : 82)}</p>
+                      <p>{truncateText(spell.description, activeInspectorTab === 'magic' ? 110 : 82)}</p>
                     ) : null}
                   </div>
                 </div>
@@ -472,7 +504,7 @@ export function InspectorPanel({
               <div className="empty-row">No spells recorded.</div>
             )}
           </div>
-          {inspectorTab !== 'magic' && spellbook.knownSpells.length > 5 ? (
+          {activeInspectorTab !== 'magic' && spellbook.knownSpells.length > 5 ? (
             <button type="button" className="view-link" onClick={() => setInspectorTab('magic')}>
               View All Magic <ExternalLink size={12} />
             </button>
@@ -480,7 +512,7 @@ export function InspectorPanel({
         </section>
       ) : null}
 
-      {(inspectorTab === 'party' || inspectorTab === 'magic') && characterTraits.length ? (
+      {(activeInspectorTab === 'party' || activeInspectorTab === 'magic') && characterTraits.length ? (
         <section className="inspector-box trait-box">
           <div className="box-title">
             <h3>Abilities &amp; Traits ({characterTraits.length})</h3>
@@ -497,13 +529,13 @@ export function InspectorPanel({
                       'Character trait'}
                   </small>
                   {trait.description ? (
-                    <p>{truncateText(trait.description, inspectorTab === 'magic' ? 120 : 86)}</p>
+                    <p>{truncateText(trait.description, activeInspectorTab === 'magic' ? 120 : 86)}</p>
                   ) : null}
                 </div>
               </div>
             ))}
           </div>
-          {inspectorTab !== 'magic' && characterTraits.length > 4 ? (
+          {activeInspectorTab !== 'magic' && characterTraits.length > 4 ? (
             <button type="button" className="view-link" onClick={() => setInspectorTab('magic')}>
               View All Magic <ExternalLink size={12} />
             </button>
@@ -511,7 +543,7 @@ export function InspectorPanel({
         </section>
       ) : null}
 
-      {inspectorTab === 'party' || inspectorTab === 'inventory' ? (
+      {activeInspectorTab === 'party' || activeInspectorTab === 'inventory' ? (
         <section className="inspector-box">
           <div className="box-title">
             <h3>Inventory ({inventoryRows.length})</h3>
@@ -525,7 +557,7 @@ export function InspectorPanel({
           </div>
           <div className="inventory-table">
             {inventoryRows.length ? (
-              (inspectorTab === 'inventory' ? inventoryRows : inventoryRows.slice(0, 4)).map((item, index) => (
+              (activeInspectorTab === 'inventory' ? inventoryRows : inventoryRows.slice(0, 4)).map((item, index) => (
                 <div key={`${item.id || item.item}-${index}`} className={item.equipped ? 'equipped' : ''}>
                   <span className={`item-icon ${item.icon}`}>
                     <ThinIcon name={inventoryIconName(item.icon)} size={15} />
@@ -555,7 +587,7 @@ export function InspectorPanel({
               <div className="empty-row">No inventory recorded.</div>
             )}
           </div>
-          {inspectorTab !== 'inventory' && inventoryRows.length > 4 ? (
+          {activeInspectorTab !== 'inventory' && inventoryRows.length > 4 ? (
             <button type="button" className="view-link" onClick={() => setInspectorTab('inventory')}>
               View All Inventory <ExternalLink size={12} />
             </button>
@@ -563,11 +595,11 @@ export function InspectorPanel({
         </section>
       ) : null}
 
-      {inspectorTab === 'party' || inspectorTab === 'canon' ? (
+      {activeInspectorTab === 'party' || activeInspectorTab === 'canon' ? (
         <section className="inspector-box">
           <div className="box-title">
             <h3>Recent Memory ({memorySnippetCount})</h3>
-            <span>{inspectorTab === 'canon' ? 'All' : 'Recent'} <ChevronDown size={14} /></span>
+            <span>{activeInspectorTab === 'canon' ? 'All' : 'Recent'} <ChevronDown size={14} /></span>
           </div>
           <div className="canon-list">
             {visibleRecentMemory.length ? (
@@ -595,7 +627,7 @@ export function InspectorPanel({
         </section>
       ) : null}
 
-      {inspectorTab === 'party' || inspectorTab === 'map' ? (
+      {activeInspectorTab === 'party' || activeInspectorTab === 'map' ? (
         <section className="inspector-box world-state-box">
           <div className="box-title">
             <h3>Scene State</h3>
@@ -742,7 +774,7 @@ export function InspectorPanel({
         </section>
       ) : null}
 
-      {inspectorTab === 'party' || inspectorTab === 'map' || inspectorTab === 'canon' ? (
+      {activeInspectorTab === 'party' || activeInspectorTab === 'map' || activeInspectorTab === 'canon' ? (
         <CampaignPackPanel
           snapshot={campaignPackSnapshot}
           canControl={canUseOperatorTools}
@@ -751,7 +783,7 @@ export function InspectorPanel({
         />
       ) : null}
 
-      {inspectorTab === 'bestiary' && canUseOperatorTools ? (
+      {activeInspectorTab === 'bestiary' && canUseOperatorTools ? (
         <Suspense
           fallback={
             <section className="inspector-box bestiary-debug-panel" aria-label="Bestiary tools">
@@ -769,7 +801,7 @@ export function InspectorPanel({
         </Suspense>
       ) : null}
 
-      {inspectorTab === 'ops' && canUseOperatorTools ? (
+      {activeInspectorTab === 'ops' && canUseOperatorTools ? (
         <Suspense
           fallback={
             <section className="inspector-box beta-incident-panel" aria-label="Beta incidents">
@@ -781,7 +813,7 @@ export function InspectorPanel({
         </Suspense>
       ) : null}
 
-      {inspectorTab === 'party' || inspectorTab === 'map' ? (
+      {activeInspectorTab === 'party' || activeInspectorTab === 'map' ? (
         <section className="inspector-box">
           <div className="box-title">
             <h3>Current Map / Segment</h3>
@@ -829,7 +861,7 @@ export function InspectorPanel({
         </section>
       ) : null}
 
-      {inspectorTab === 'map' && canUseOperatorTools ? (
+      {activeInspectorTab === 'map' && canUseOperatorTools ? (
         <section className="inspector-box map-management-box">
           <div className="box-title">
             <h3>Map Details</h3>
@@ -889,7 +921,7 @@ export function InspectorPanel({
         </section>
       ) : null}
 
-      {inspectorTab === 'map' ? (
+      {activeInspectorTab === 'map' ? (
         <section className="inspector-box segment-management-box">
           <div className="box-title">
             <h3>Segments</h3>
@@ -1009,6 +1041,18 @@ export function InspectorPanel({
           ) : null}
         </section>
       ) : null}
+      </div>
+      {availableTabs
+        .filter((tab) => tab.id !== activeInspectorTab)
+        .map((tab) => (
+          <div
+            key={tab.id}
+            id={inspectorTabPanelId(tab.id)}
+            role="tabpanel"
+            aria-labelledby={inspectorTabId(tab.id)}
+            hidden
+          />
+        ))}
     </aside>
   )
 }
