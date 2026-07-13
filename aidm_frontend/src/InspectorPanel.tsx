@@ -25,6 +25,8 @@ const BestiaryDebugPanel = lazy(() =>
 
 export type InspectorTab = 'party' | 'map' | 'magic' | 'canon' | 'inventory' | 'bestiary' | 'ops'
 
+export const INSPECTOR_PANEL_ID = 'character-inspector-drawer'
+
 type DisplayCharacter = {
   name: string
   ancestryClass: string
@@ -51,6 +53,7 @@ export type SegmentManagementForm = {
 }
 
 type InspectorPanelProps = {
+  inert?: boolean
   inspectorTab: InspectorTab
   setInspectorTab: Dispatch<SetStateAction<InspectorTab>>
   setMainTab: Dispatch<SetStateAction<MainTab>>
@@ -136,6 +139,7 @@ function activePlayerAncestryClass(player: ActivePlayer) {
 }
 
 export function InspectorPanel({
+  inert,
   inspectorTab,
   setInspectorTab,
   setMainTab,
@@ -216,7 +220,12 @@ export function InspectorPanel({
       'Known'
 
   return (
-    <aside className="right-inspector">
+    <aside
+      id={INSPECTOR_PANEL_ID}
+      className="right-inspector"
+      aria-label="Character and campaign inspector"
+      inert={inert ? true : undefined}
+    >
       <div className="inspector-tabs" role="tablist" aria-label="Inspector panels">
         <button
           type="button"
@@ -578,7 +587,7 @@ export function InspectorPanel({
             className="view-link"
             onClick={() => {
               setInspectorTab('canon')
-              setMainTab('notes')
+              setMainTab('turns')
             }}
           >
             View All Memory <ExternalLink size={12} />

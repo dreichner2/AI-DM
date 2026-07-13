@@ -1313,6 +1313,76 @@ describe('App user workflow regressions', () => {
     expect(within(mobilePresence).queryByLabelText('Ember is typing')).not.toBeInTheDocument()
   })
 
+  it('moves focus into the compact campaign drawer and restores it on Escape', async () => {
+    installMatchMediaMock(true)
+    const rendered = await renderLoadedApp()
+
+    const opener = screen.getByRole('button', { name: 'Open campaign menu' })
+    const campaignRail = document.getElementById('campaign-rail-drawer')
+    const inspector = document.getElementById('character-inspector-drawer')
+    const mainBoard = rendered.container.querySelector('.workspace-main-board-isolation')
+    expect(opener).toHaveAttribute('aria-controls', 'campaign-rail-drawer')
+    expect(opener).toHaveAttribute('aria-expanded', 'false')
+    expect(campaignRail).toHaveAccessibleName('Campaign and session navigation')
+    expect(campaignRail).toHaveAttribute('inert')
+
+    fireEvent.click(opener)
+
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Search campaigns' })).toHaveFocus())
+    expect(opener).toHaveAttribute('aria-expanded', 'true')
+    expect(campaignRail).not.toHaveAttribute('inert')
+    expect(inspector).toHaveAttribute('inert')
+    expect(mainBoard).toHaveAttribute('inert')
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    await waitFor(() => expect(opener).toHaveFocus())
+    expect(opener).toHaveAttribute('aria-expanded', 'false')
+    expect(campaignRail).toHaveAttribute('inert')
+    expect(mainBoard).not.toHaveAttribute('inert')
+
+    fireEvent.click(opener)
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Search campaigns' })).toHaveFocus())
+    fireEvent.click(screen.getByRole('button', { name: 'Turns' }))
+    await waitFor(() => expect(opener).toHaveFocus())
+    expect(campaignRail).toHaveAttribute('inert')
+  })
+
+  it('moves focus into the compact inspector and restores it after Escape and scrim close', async () => {
+    installMatchMediaMock(true)
+    const rendered = await renderLoadedApp()
+
+    const opener = screen.getByRole('button', { name: 'Open character panel' })
+    const campaignRail = document.getElementById('campaign-rail-drawer')
+    const inspector = document.getElementById('character-inspector-drawer')
+    const mainBoard = rendered.container.querySelector('.workspace-main-board-isolation')
+    expect(opener).toHaveAttribute('aria-controls', 'character-inspector-drawer')
+    expect(opener).toHaveAttribute('aria-expanded', 'false')
+    expect(inspector).toHaveAccessibleName('Character and campaign inspector')
+    expect(inspector).toHaveAttribute('inert')
+
+    fireEvent.click(opener)
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Party' })).toHaveFocus())
+    expect(opener).toHaveAttribute('aria-expanded', 'true')
+    expect(inspector).not.toHaveAttribute('inert')
+    expect(campaignRail).toHaveAttribute('inert')
+    expect(mainBoard).toHaveAttribute('inert')
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    await waitFor(() => expect(opener).toHaveFocus())
+    expect(opener).toHaveAttribute('aria-expanded', 'false')
+
+    fireEvent.click(opener)
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Party' })).toHaveFocus())
+    fireEvent.click(screen.getByRole('button', { name: 'Close mobile side panel' }))
+
+    await waitFor(() => expect(opener).toHaveFocus())
+    expect(opener).toHaveAttribute('aria-expanded', 'false')
+    expect(mainBoard).not.toHaveAttribute('inert')
+  })
+
   it('mounts mobile layout with legacy MediaQueryList listeners', async () => {
     const legacyListeners = installLegacyMatchMediaMock(true)
     const rendered = await renderLoadedApp()
@@ -1744,7 +1814,7 @@ describe('App user workflow regressions', () => {
     expect(feed).toHaveClass('chat-text-size-default')
     expect(feed).toHaveClass('chat-text-font-default')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Chat text options' }))
+    fireEvent.click(screen.getByRole('button', { name: 'View settings' }))
     fireEvent.change(screen.getByLabelText('Chat text size'), { target: { value: 'large' } })
     fireEvent.change(screen.getByLabelText('Chat text font'), { target: { value: 'sans' } })
 
@@ -2488,7 +2558,7 @@ describe('App user workflow regressions', () => {
       (call) => call.method === 'POST' && call.path === '/api/players/campaigns/10/players',
     )
     expect(createCall?.body).not.toHaveProperty('name')
-    expect(await screen.findByText('Borin')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Borin' })).toBeInTheDocument()
   })
 
   it('keeps focus in the edited character field instead of snapping back to player name', async () => {
@@ -2690,16 +2760,14 @@ describe('App user workflow regressions', () => {
     )
   })
 
-  it('keeps long DM responses visible in the current response and full response views', async () => {
+  it('keeps long DM responses visible in the Turns feed', async () => {
     await renderLoadedApp()
 
     await waitFor(() => expect(screen.getAllByText(/Full narrator ending remains visible/i).length).toBeGreaterThan(0))
-
-    fireEvent.click(screen.getByRole('tab', { name: 'DM Response' }))
-    await waitFor(() => expect(screen.getAllByText(/Full narrator ending remains visible/i).length).toBeGreaterThan(0))
+    expect(screen.queryByRole('tablist', { name: 'Session views' })).not.toBeInTheDocument()
   })
 
-  it('keeps the latest DM response expanded when a state update arrives after it', async () => {
+  it('keeps narration before the mechanical state update that follows it', async () => {
     appTestState.sessionLogs[20] = [
       ...appTestState.sessionLogs[20],
       {
@@ -2714,13 +2782,15 @@ describe('App user workflow regressions', () => {
     const rendered = await renderLoadedApp()
 
     expect(await screen.findByText(/State updated: thunderer took 8 damage/i)).toBeInTheDocument()
-    const currentResponse = await waitFor(() => {
-      const response = rendered.container.querySelector<HTMLElement>('.turn-row.current .dm-response-card')
-      expect(response).not.toBeNull()
-      return response as HTMLElement
+    await waitFor(() => {
+      const rows = [...rendered.container.querySelectorAll<HTMLElement>('.turn-row')]
+        .map((row) => row.textContent ?? '')
+      const narrationIndex = rows.findIndex((text) => text.includes('The chamber beyond is much larger'))
+      const stateUpdateIndex = rows.findIndex((text) => text.includes('thunderer took 8 damage'))
+      expect(narrationIndex).toBeGreaterThanOrEqual(0)
+      expect(stateUpdateIndex).toBeGreaterThan(narrationIndex)
     })
-    expect(currentResponse as HTMLElement).toHaveTextContent(/Latest Response/i)
-    expect(currentResponse as HTMLElement).toHaveTextContent(/Full narrator ending remains visible/i)
+    expect(rendered.container.querySelector('.turn-row.current .dm-response-card')).toBeNull()
   })
 
   it('expands prior turns so long historical responses can be read', async () => {
@@ -2755,7 +2825,12 @@ describe('App user workflow regressions', () => {
     fireEvent.click(screen.getByRole('button', { name: /View All Memory/i }))
 
     await waitFor(() => expect(screen.getAllByText(/first remembered beat/i).length).toBeGreaterThan(0))
-    expect(screen.getByText('Session State')).toBeInTheDocument()
+    const inspectorPanels = screen.getByRole('tablist', { name: 'Inspector panels' })
+    expect(within(inspectorPanels).getByRole('tab', { name: 'Memory' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.queryByText('Session State')).not.toBeInTheDocument()
   })
 
   it('manages map details and campaign segments from the map tab', async () => {
@@ -2973,10 +3048,8 @@ describe('App user workflow regressions', () => {
     expect(screen.getByRole('button', { name: /Session Alpha/i })).toHaveAttribute('aria-current', 'true')
     expect(screen.getByRole('button', { name: 'Turns' })).toHaveAttribute('aria-current', 'page')
 
-    const sessionViews = screen.getByRole('tablist', { name: 'Session views' })
-    expect(within(sessionViews).getByRole('tab', { name: 'Turns' })).toHaveAttribute('aria-selected', 'true')
-    fireEvent.click(within(sessionViews).getByRole('tab', { name: 'DM Response' }))
-    expect(within(sessionViews).getByRole('tab', { name: 'DM Response' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('tablist', { name: 'Session views' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Turns' })).toHaveAttribute('aria-current', 'page')
 
     const inspectorPanels = screen.getByRole('tablist', { name: 'Inspector panels' })
     fireEvent.click(within(inspectorPanels).getByRole('tab', { name: 'Memory' }))
@@ -2995,6 +3068,24 @@ describe('App user workflow regressions', () => {
     expect(within(screen.getByRole('menu', { name: 'Session menu' })).getByRole('menuitem', {
       name: 'Rename session',
     })).toBeInTheDocument()
+  })
+
+  it('isolates workspace surfaces from keyboard and assistive tech while the title screen is active', async () => {
+    localStorage.removeItem('aidm:selectedCampaignId')
+    localStorage.removeItem('aidm:selectedSessionId')
+    localStorage.removeItem('aidm:selectedPlayerId')
+    render(<App />)
+
+    await screen.findByRole('button', { name: 'Play Now — Ready-Made Adventure' })
+    const workspaceSurfaces = document.querySelector('.workspace-surfaces')
+    expect(workspaceSurfaces).toHaveAttribute('inert')
+    expect(workspaceSurfaces).toHaveAttribute('aria-hidden', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'New Campaign' }))
+
+    await screen.findByRole('dialog', { name: 'Create New Campaign' })
+    expect(workspaceSurfaces).not.toHaveAttribute('inert')
+    expect(workspaceSurfaces).not.toHaveAttribute('aria-hidden')
   })
 
   it('keeps icon-only controls named and light theme contrast readable', async () => {

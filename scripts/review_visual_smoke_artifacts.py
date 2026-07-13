@@ -44,8 +44,11 @@ class PngInspection:
 
 EXPECTED_SCREENSHOTS: tuple[ScreenshotExpectation, ...] = (
     ScreenshotExpectation('desktop-shell.png', width=1440, min_height=900, max_height=900),
-    ScreenshotExpectation('short-height-composer.png', width=1280, min_height=620, max_height=620),
-    ScreenshotExpectation('mobile-full.png', width=390, min_height=844),
+    ScreenshotExpectation('laptop-shell.png', width=1280, min_height=800, max_height=800),
+    ScreenshotExpectation('tablet-landscape.png', width=1024, min_height=768, max_height=768),
+    ScreenshotExpectation('tablet-portrait.png', width=768, min_height=1024, max_height=1024),
+    ScreenshotExpectation('mobile-full.png', width=390, min_height=844, max_height=844),
+    ScreenshotExpectation('mobile-narrow.png', width=360, min_height=800, max_height=800),
 )
 
 COLOR_CHANNELS = {

@@ -172,6 +172,7 @@ HTTP_ENDPOINT_CAPABILITIES: dict[tuple[str, str], Capability] = {
 HTTP_EXPLICIT_ACCESS: dict[tuple[str, str], ExplicitHTTPAccess] = {
     ('system.health_check', 'GET'): 'public',
     ('accounts.login_or_create_account', 'POST'): 'self_service',
+    ('accounts.play_now_account', 'POST'): 'self_service',
     ('accounts.join_account_workspace', 'POST'): 'self_service',
     ('accounts.create_account_workspace', 'POST'): 'self_service',
     ('accounts.select_account_workspace', 'POST'): 'self_service',

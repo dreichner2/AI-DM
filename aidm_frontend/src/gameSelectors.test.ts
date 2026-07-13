@@ -17,6 +17,7 @@ import {
   pendingRollNoticeFromTimeline,
   pendingRollOptionsFromTimeline,
   speakerDetail,
+  timelineFromLog,
   truncateText,
   turnNumber,
   turnPersistenceLabel,
@@ -25,6 +26,20 @@ import {
 import type { CampaignSegment, MapItem, Player, SessionLogEntry, TimelineEntry } from './types'
 
 describe('game selector helpers', () => {
+  it('labels every persisted system log entry as System without requiring markdown', () => {
+    expect(timelineFromLog({
+      id: 91,
+      entry_type: 'system',
+      message: 'State updated: Torch removed.',
+      timestamp: '2026-06-06T01:00:03Z',
+      metadata: {},
+    })).toMatchObject({
+      role: 'system',
+      speaker: 'System',
+      text: 'State updated: Torch removed.',
+    })
+  })
+
   it('normalizes inventory, weight labels, stat blocks, and picker options', () => {
     const inventory = normalizeInventory({
       items: [
@@ -74,6 +89,12 @@ describe('game selector helpers', () => {
       current: 150,
       max: 300,
       percent: 50,
+    })
+    expect(normalizeXp({}, '—')).toEqual({
+      current: 0,
+      max: 300,
+      percent: 0,
+      label: '0 / 300 XP',
     })
   })
 
@@ -682,6 +703,7 @@ describe('game selector helpers', () => {
       }),
     ).toEqual({
       sceneName: 'Blackwake Tavern',
+      sceneDescription: '',
       sceneType: 'social',
       mood: 'tense',
       dangerLevel: '2',
@@ -691,8 +713,12 @@ describe('game selector helpers', () => {
           title: 'Find the Missing Sailor',
           status: 'active',
           stage: 'Investigate the docks',
+          objective: '',
         },
       ],
+      presentNpcs: [],
+      sceneItems: [],
+      availableExits: [],
       knownLocations: [
         {
           id: 'blackwake_tavern',
@@ -830,6 +856,55 @@ describe('game selector helpers', () => {
       'new_sentry',
       'oden',
     ])
+    expect(panel.presentNpcs.map((npc) => npc.id)).toEqual([
+      'marta_fenwick',
+      'captain_velra',
+    ])
+  })
+
+  it('keeps the current decision context together for the play surface', () => {
+    const panel = worldStateFromSnapshot({
+      currentScene: {
+        locationId: 'lantern_post',
+        name: 'The Lantern Post Inn',
+        description: 'Rain taps the shutters while an abandoned caravan waits outside.',
+        sceneType: 'exploration',
+        activeNpcIds: ['mara'],
+        activeQuestIds: ['missing_caravan'],
+        items: [{ id: 'muddy_track', name: 'Muddy track', quantity: 1, type: 'clue' }],
+      },
+      knownNpcs: [{ id: 'mara', name: 'Mara Reedwake', role: 'innkeeper' }],
+      quests: [
+        {
+          id: 'missing_caravan',
+          title: 'The Empty Caravan',
+          status: 'active',
+          stage: 'Investigate outside',
+          objectives: [
+            { id: 'ask', description: 'Question the witnesses', status: 'completed' },
+            { id: 'tracks', description: 'Follow the tracks', status: 'active' },
+          ],
+        },
+      ],
+      locations: [
+        {
+          id: 'lantern_post',
+          name: 'The Lantern Post Inn',
+          status: 'visited',
+          connectedLocationIds: ['old_road'],
+        },
+        { id: 'old_road', name: 'The Old North Road', status: 'known' },
+      ],
+    })
+
+    expect(panel).toMatchObject({
+      sceneName: 'The Lantern Post Inn',
+      sceneDescription: 'Rain taps the shutters while an abandoned caravan waits outside.',
+      presentNpcs: [{ id: 'mara', name: 'Mara Reedwake' }],
+      sceneItems: [{ id: 'muddy_track', name: 'Muddy track', quantity: 1, type: 'clue' }],
+      availableExits: [{ id: 'old_road', name: 'The Old North Road' }],
+      activeQuests: [{ id: 'missing_caravan', objective: 'Follow the tracks' }],
+    })
   })
 
   it('shows every known NPC after active and recent entries', () => {

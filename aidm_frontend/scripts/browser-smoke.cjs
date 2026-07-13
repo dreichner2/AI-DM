@@ -267,7 +267,7 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
     })
     await playNowPage.goto(frontendUrl, { waitUntil: 'domcontentloaded' })
     await playNowPage.locator('.prototype-shell').waitFor({ state: 'visible', timeout: 20_000 })
-    await playNowPage.getByRole('button', { name: 'Play Now', exact: true }).click()
+    await playNowPage.getByRole('button', { name: 'Play Now — Ready-Made Adventure', exact: true }).click()
     await expect(playNowPage.getByLabel(/Your Action/i)).toBeVisible({ timeout: 30_000 })
     await waitForRouteIds(playNowPage)
     await playNowPage.close()
@@ -405,9 +405,8 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
         entry.metadata?.action_intent?.text === 'I inspect the smoke-lit archway.',
     ),
   )
-  await page.getByRole('tab', { name: 'DM Response' }).click()
   const renderedDmText = dmEntry.message.replace(/^DM:\s*/i, '')
-  await expect(page.locator('.dm-response-card.expanded .response-copy')).toContainText(
+  await expect(page.locator('.turn-row.current .dm-response-card .response-copy')).toContainText(
     renderedDmText.slice(0, 48),
     { timeout: 15_000 },
   )

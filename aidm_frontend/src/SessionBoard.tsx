@@ -25,6 +25,7 @@ import {
 import {
   type PendingRollNotice,
   type CombatStatePanel,
+  type WorldStatePanel,
   speakerDetail,
   truncateText,
   turnNumber,
@@ -60,6 +61,9 @@ const SceneMusicPlayer = lazy(() =>
   import('./SceneMusicPlayer').then((module) => ({ default: module.SceneMusicPlayer })),
 )
 
+// App-level callers still pass the retired values while the board normalizes them
+// back to Turns. Keeping the compatibility union avoids coupling this cleanup to
+// the wider workspace shell.
 export type MainTab = 'turns' | 'dm' | 'notes'
 export type { BoardViewMode } from './SessionDirectorPanels'
 export type TurnQualityScores = {
@@ -208,6 +212,9 @@ type SessionBoardProps = {
     operatorNote: string,
   ) => Promise<void>
   combatState: CombatStatePanel
+  worldState: WorldStatePanel
+  operationalError?: string
+  onRecoverOperationalError?: () => void | Promise<void>
   dmExecutionStats: DmExecutionStats
   welcomeText: string
   showJumpToLatest: boolean
@@ -375,6 +382,30 @@ function timelineMetadataString(entry: TimelineEntry, key: string) {
   return typeof value === 'string' ? value.trim().toLowerCase() : ''
 }
 
+type StateConsequence = {
+  message: string
+  status: 'applied' | 'modified' | 'rejected' | 'recorded'
+}
+
+function stateConsequences(entry: TimelineEntry): StateConsequence[] {
+  const rawStateLog = entry.metadata.state_log
+  if (!rawStateLog || typeof rawStateLog !== 'object' || Array.isArray(rawStateLog)) return []
+  const rawLines = (rawStateLog as Record<string, unknown>).lines
+  if (!Array.isArray(rawLines)) return []
+  return rawLines.flatMap((rawLine) => {
+    if (!rawLine || typeof rawLine !== 'object' || Array.isArray(rawLine)) return []
+    const line = rawLine as Record<string, unknown>
+    if (line.visibleToPlayer === false) return []
+    const message = typeof line.message === 'string' ? line.message.trim() : ''
+    if (!message) return []
+    const rawStatus = typeof line.status === 'string' ? line.status.toLowerCase() : ''
+    const status = rawStatus === 'applied' || rawStatus === 'modified' || rawStatus === 'rejected'
+      ? rawStatus
+      : 'recorded'
+    return [{ message, status }]
+  })
+}
+
 function canDismissLocalTimelineEntry(entry: TimelineEntry) {
   if (entry.role !== 'player') return false
   const persistenceStatus = timelineMetadataString(entry, 'persistence_status')
@@ -452,6 +483,100 @@ function SceneHeader({ sceneState }: { sceneState: SceneDisplayState | null }) {
   )
 }
 
+function CurrentSituation({
+  actionComposer,
+  activePlayers,
+  pendingRollNotice,
+  compact,
+  sceneState,
+  sendPending,
+  streamingTurnActive,
+  worldState,
+}: {
+  actionComposer: ActionComposerProps
+  activePlayers: ActivePlayer[]
+  pendingRollNotice: PendingRollNotice | null
+  compact: boolean
+  sceneState: SceneDisplayState | null
+  sendPending: boolean
+  streamingTurnActive: boolean
+  worldState: WorldStatePanel
+}) {
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const worldSceneName = worldState.sceneName === 'unknown_location' ? '' : worldState.sceneName
+  const sceneLocationParts = [worldSceneName, sceneState?.locationName]
+    .filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index)
+  const sceneLocation = sceneLocationParts.length === 1
+    ? `At ${sceneLocationParts[0]}`
+    : sceneLocationParts.join(' · ')
+  const party = [...new Set([
+    ...activePlayers.map((player) => player.character_name || player.name),
+    actionComposer.selectedCharacterName,
+  ].filter((name): name is string => Boolean(name)))]
+  const presentNpcs = worldState.presentNpcs.map((npc) => npc.name).filter(Boolean)
+  const objective = worldState.activeQuests[0]
+  const objectiveLabel = objective?.objective || objective?.stage || objective?.title || 'No active objective recorded'
+  const objects = worldState.sceneItems.map((item) =>
+    item.quantity > 1 ? `${item.name} ×${item.quantity}` : item.name,
+  )
+  const exits = worldState.availableExits.map((exit) => exit.name).filter(Boolean)
+  const currentActor = worldState.combat.legalActionBundles.find((bundle) => bundle.currentActorName)
+    ?.currentActorName
+  const combatLabel = worldState.combat.active
+    ? `Round ${worldState.combat.round} · ${currentActor ? `${currentActor} is acting` : 'Current actor unavailable'}`
+    : 'Not in combat'
+  let nextLabel = `Next: ${actionComposer.turnControlStatusLabel}`
+  if (pendingRollNotice) {
+    nextLabel = `Waiting for ${pendingRollNotice.waitingOnLabel} to roll`
+  } else if (sendPending || streamingTurnActive) {
+    nextLabel = 'Waiting for the DM response'
+  } else if (!actionComposer.selectedPlayerId) {
+    nextLabel = 'Next: choose a character'
+  } else if (actionComposer.selectedPlayerHasTurn) {
+    nextLabel = `Next: ${actionComposer.selectedCharacterName || 'the selected character'} can act`
+  } else if (actionComposer.turnControl.activePlayerName) {
+    nextLabel = `Waiting for ${actionComposer.turnControl.activePlayerName} to act`
+  }
+  const facts = [
+    ['Party', party.join(', ') || 'No active party listed'],
+    ['Present NPCs', presentNpcs.join(', ') || 'None in view'],
+    ['Active objective', objectiveLabel],
+    ['Scene objects', objects.join(', ') || 'None recorded'],
+    ['Exits', exits.join(', ') || 'None recorded'],
+  ]
+
+  return (
+    <section className={`current-situation ${compact ? 'compact' : ''}`} aria-labelledby="current-situation-title">
+      <button
+        type="button"
+        className="current-situation-toggle"
+        aria-expanded={detailsOpen}
+        aria-controls="current-situation-detail-content"
+        aria-label={`${detailsOpen ? 'Hide' : 'Show'} Current Situation details`}
+        onClick={() => setDetailsOpen((current) => !current)}
+      >
+        <span id="current-situation-title" className="current-situation-label">Current Situation</span>
+        <strong className="current-situation-location">{sceneLocation || 'Scene not recorded'}</strong>
+        <span className={`current-situation-combat ${worldState.combat.active ? 'in-combat' : ''}`}>
+          {combatLabel}
+        </span>
+        <strong className="current-situation-next">{nextLabel}</strong>
+        <ChevronDown className="current-situation-chevron" size={16} aria-hidden="true" />
+      </button>
+      {detailsOpen ? (
+        <div id="current-situation-detail-content" className="current-situation-details">
+          <p>{worldState.sceneDescription || 'No scene description recorded.'}</p>
+          <dl className="current-situation-facts">
+            {facts.map(([label, value]) => (
+              <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
+            ))}
+          </dl>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
 function PreviouslyOnCard({
   onSpeak,
   text,
@@ -517,7 +642,6 @@ export function SessionBoard({
   activeSession,
   openRenameSessionDialog,
   openDeleteSessionDialog,
-  notesCount,
   turnFeedRef,
   updateJumpToLatestVisibility,
   sessionLogHasMore,
@@ -546,6 +670,9 @@ export function SessionBoard({
   turnRecoverySuccess,
   onResolveTurnRecovery,
   combatState,
+  worldState,
+  operationalError,
+  onRecoverOperationalError,
   dmExecutionStats,
   welcomeText,
   showJumpToLatest,
@@ -562,13 +689,18 @@ export function SessionBoard({
   const loading = workspaceLoading || sessionLoading
   const [chatTextSettings, setChatTextSettings] = useState(loadChatTextSettings)
   const [boardViewMode, setBoardViewMode] = useState<BoardViewMode>(loadBoardViewMode)
-  const [chatTextMenuOpen, setChatTextMenuOpen] = useState(false)
+  const [viewMenuOpen, setViewMenuOpen] = useState(false)
   const [directorCommentaryOpen, setDirectorCommentaryOpen] = useState(false)
   const [qualityDrafts, setQualityDrafts] = useState<Record<number, TurnQualityScores>>({})
   const streamLabel =
     currentResponseEntry && turnPersistenceLabel(currentResponseEntry)
       ? turnPersistenceLabel(currentResponseEntry)
       : sendPending || streamingTurnActive ? 'Streaming...' : 'Ready'
+  const dmResponseAnnouncement = sendPending || streamingTurnActive
+    ? 'Dungeon Master response in progress.'
+    : currentResponseEntry
+      ? 'Dungeon Master response complete.'
+      : 'Dungeon Master ready.'
   const chatTextClassName = `chat-text-size-${chatTextSettings.size} chat-text-font-${chatTextSettings.font}`
   const theaterMode = boardViewMode === 'theater'
   const rollWaitBanner = pendingRollNotice ? (
@@ -595,6 +727,19 @@ export function SessionBoard({
       {turnRecoveryError}
     </div>
   ) : null
+  const operationalErrorNotice = operationalError ? (
+    <section className="operational-error-alert" role="alert">
+      <div>
+        <strong>Play connection needs attention</strong>
+        <span>{operationalError}</span>
+      </div>
+      {onRecoverOperationalError ? (
+        <button type="button" onClick={() => void onRecoverOperationalError()}>
+          Refresh and reconnect
+        </button>
+      ) : null}
+    </section>
+  ) : null
   const showStartAdventure =
     Boolean(activeSession) && !loading && turnRows.length === 0 && !currentResponseEntry
   const startAdventureDisabled =
@@ -603,11 +748,7 @@ export function SessionBoard({
     Boolean(turnRecoveryGate) ||
     !sessionId ||
     !actionComposerProps.selectedPlayerId
-  const previouslyOnText =
-    sessionRecap.trim() ||
-    sessionState?.rolling_summary?.trim() ||
-    activeSession?.latest_summary?.trim() ||
-    (activeSession ? 'No recap recorded yet.' : welcomeText)
+  const previouslyOnText = sessionRecap.trim()
   const previouslyOnUpdatedAt =
     sessionState?.updated_at ?? activeSession?.latest_activity_at ?? activeSession?.updated_at ?? null
 
@@ -624,6 +765,10 @@ export function SessionBoard({
   useEffect(() => {
     onBoardViewModeChange?.(boardViewMode)
   }, [boardViewMode, onBoardViewModeChange])
+
+  useEffect(() => {
+    if (mainTab !== 'turns') setMainTab('turns')
+  }, [mainTab, setMainTab])
 
   const toggleTurnExpanded = (turnId: string) => {
     setExpandedTurnIds((current) => {
@@ -728,6 +873,21 @@ export function SessionBoard({
   }
 
   const renderTurnCopy = (turn: TimelineEntry, expanded: boolean) => {
+    const consequences = stateConsequences(turn)
+    if (consequences.length) {
+      return (
+        <section className="turn-consequence" aria-label="What changed">
+          <strong>What changed</strong>
+          <ul>
+            {consequences.map((consequence, index) => (
+              <li key={`${consequence.status}-${consequence.message}-${index}`} data-status={consequence.status}>
+                {consequence.message}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )
+    }
     const text = theaterMode && turn.role === 'dm'
       ? turn.text
       : expanded
@@ -761,19 +921,24 @@ export function SessionBoard({
         </div>
         <div className="session-actions">
           <ToolbarButton
-            icon={theaterMode ? <SlidersHorizontal size={17} /> : <BookOpen size={17} />}
-            onClick={() => updateBoardViewMode(theaterMode ? 'ops' : 'theater')}
-            title={theaterMode ? 'Operator view' : 'Theater view'}
+            ariaControls="session-view-menu"
+            ariaExpanded={viewMenuOpen}
+            icon={<SlidersHorizontal size={17} />}
+            onClick={() => setViewMenuOpen((current) => !current)}
+            title="View settings"
           >
-            {theaterMode ? 'Ops' : 'Theater'}
+            View
           </ToolbarButton>
-          <ToolbarButton
-            icon={<ClipboardList size={17} />}
-            onClick={() => setMainTab('notes')}
-            title="Summary"
-          >
-            Summary
-          </ToolbarButton>
+          {canUseOperatorTools ? (
+            <OperatorDrawer
+              canEditContentSettings={canEditContentSettings}
+              contentSettings={contentSettings}
+              contentSettingsPending={contentSettingsPending}
+              dmExecutionStats={dmExecutionStats}
+              onContentRatingChange={onContentRatingChange}
+              onContentToneTagsChange={onContentToneTagsChange}
+            />
+          ) : null}
           {canUseOperatorTools ? (
             <ToolbarButton
               ariaControls="director-commentary-panel"
@@ -860,77 +1025,35 @@ export function SessionBoard({
             ) : null}
           </div>
         </div>
-      </section>
-
-      <div className="content-tabs" role="tablist" aria-label="Session views">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mainTab === 'turns'}
-          className={mainTab === 'turns' ? 'active' : ''}
-          onClick={() => setMainTab('turns')}
-        >
-          Turns
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mainTab === 'dm'}
-          className={mainTab === 'dm' ? 'active' : ''}
-          onClick={() => setMainTab('dm')}
-        >
-          DM Response
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mainTab === 'notes'}
-          className={mainTab === 'notes' ? 'active' : ''}
-          onClick={() => setMainTab('notes')}
-        >
-          Notes ({notesCount})
-        </button>
-      </div>
-
-      {showMobilePresenceStrip ? (
-        <SessionPresenceStrip
-          activePlayers={activePlayers}
-          selectedPlayerId={actionComposerProps.selectedPlayerId}
-          selectedPlayerHasTurn={actionComposerProps.selectedPlayerHasTurn}
-          turnControlStatusLabel={actionComposerProps.turnControlStatusLabel}
-        />
-      ) : null}
-
-      {showSceneMusicPlayer ? (
-        <Suspense fallback={null}>
-          <SceneMusicPlayer
-            sessionId={sessionId}
-            playerId={playerId}
-            duckForNarration={duckMusicForNarration}
-            musicSyncState={sceneMusicSyncState}
-            sceneState={sceneState}
-            autoFollowScene
-            onMusicControl={onSceneMusicControl}
-          />
-        </Suspense>
-      ) : null}
-
-      <div className="chat-reading-control">
-        <button
-          type="button"
-          className="chat-reading-toggle"
-          aria-label="Chat text options"
-          aria-expanded={chatTextMenuOpen}
-          aria-controls="chat-reading-menu"
-          title="Chat text options"
-          onClick={() => setChatTextMenuOpen((current) => !current)}
-        >
-          Aa
-        </button>
-        {chatTextMenuOpen ? (
-          <div id="chat-reading-menu" className="chat-reading-menu" role="group" aria-label="Chat text display">
+        {viewMenuOpen ? (
+          <div
+            id="session-view-menu"
+            className="view-settings-menu"
+            role="group"
+            aria-label="View settings"
+          >
+            <div className="view-settings-heading">
+              <strong>View</strong>
+              <span>Reading and presentation</span>
+            </div>
+            <div className="view-mode-toggle" role="group" aria-label="Board view mode">
+              <button
+                type="button"
+                aria-pressed={boardViewMode === 'theater'}
+                onClick={() => updateBoardViewMode('theater')}
+              >
+                Theater
+              </button>
+              <button
+                type="button"
+                aria-pressed={boardViewMode === 'ops'}
+                onClick={() => updateBoardViewMode('ops')}
+              >
+                Operator
+              </button>
+            </div>
             <label>
-              <span>Size</span>
+              <span>Text size</span>
               <select
                 aria-label="Chat text size"
                 value={chatTextSettings.size}
@@ -958,26 +1081,36 @@ export function SessionBoard({
                   })
                 }
               >
-                <option value="default">Default</option>
+                <option value="default">Story</option>
                 <option value="sans">Sans</option>
                 <option value="mono">Mono</option>
               </select>
             </label>
           </div>
         ) : null}
-      </div>
+      </section>
 
-      {canUseOperatorTools ? (
-        <OperatorDrawer
-          boardViewMode={boardViewMode}
-          canEditContentSettings={canEditContentSettings}
-          contentSettings={contentSettings}
-          contentSettingsPending={contentSettingsPending}
-          dmExecutionStats={dmExecutionStats}
-          onBoardViewModeChange={updateBoardViewMode}
-          onContentRatingChange={onContentRatingChange}
-          onContentToneTagsChange={onContentToneTagsChange}
+      {showMobilePresenceStrip ? (
+        <SessionPresenceStrip
+          activePlayers={activePlayers}
+          selectedPlayerId={actionComposerProps.selectedPlayerId}
+          selectedPlayerHasTurn={actionComposerProps.selectedPlayerHasTurn}
+          turnControlStatusLabel={actionComposerProps.turnControlStatusLabel}
         />
+      ) : null}
+
+      {showSceneMusicPlayer ? (
+        <Suspense fallback={null}>
+          <SceneMusicPlayer
+            sessionId={sessionId}
+            playerId={playerId}
+            duckForNarration={duckMusicForNarration}
+            musicSyncState={sceneMusicSyncState}
+            sceneState={sceneState}
+            autoFollowScene
+            onMusicControl={onSceneMusicControl}
+          />
+        </Suspense>
       ) : null}
 
       {canUseOperatorTools && directorCommentaryOpen ? (
@@ -997,12 +1130,30 @@ export function SessionBoard({
         />
       ) : null}
 
-      {mainTab === 'turns' ? (
-        <>
+      <div className="turns-view">
+          <div className="session-at-a-glance">
+            <span className="assistive-status" role="status" aria-live="polite">
+              {dmResponseAnnouncement}
+            </span>
+            {operationalErrorNotice}
+            <CurrentSituation
+              actionComposer={actionComposerProps}
+              activePlayers={activePlayers}
+              pendingRollNotice={pendingRollNotice}
+              compact={showMobilePresenceStrip}
+              sceneState={sceneState}
+              sendPending={sendPending}
+              streamingTurnActive={streamingTurnActive}
+              worldState={worldState}
+            />
+          </div>
           <section
             className={`turn-feed ${chatTextClassName}`}
             ref={turnFeedRef}
             onScroll={updateJumpToLatestVisibility}
+            role="log"
+            aria-label="Session timeline"
+            aria-live="off"
           >
             {recoveryFailureNotice}
             {recoverySuccessNotice}
@@ -1127,78 +1278,7 @@ export function SessionBoard({
               Latest
             </button>
           ) : null}
-        </>
-      ) : null}
-
-      {mainTab === 'dm' ? (
-        <section className={`turn-feed single-panel ${chatTextClassName}`}>
-          {recoveryFailureNotice}
-          {recoverySuccessNotice}
-          {recoveryBanner}
-          {rollWaitBanner}
-          {loading ? (
-            <div className="panel-loading-strip" role="status">
-              {sessionLoading ? 'Loading session response...' : 'Loading campaign workspace...'}
-            </div>
-          ) : null}
-          <article className="turn-row current">
-            <div className="turn-number">
-              {currentResponseEntry ? turnNumber(currentResponseEntry, 0) : '—'}
-            </div>
-            <div className="dm-response-card expanded">
-              <div className="turn-speaker">
-                <strong>{currentResponseEntry?.speaker ?? 'DM'}</strong>
-                <span>Full Response</span>
-              </div>
-              <div className="dm-response-actions">{renderReportButton(currentResponseEntry)}</div>
-              <div className="response-copy">
-                {renderDmResponseCopy(latestDmText)}
-              </div>
-              {renderQualityPrompt(currentResponseEntry)}
-              <div className={`stream-state ${sendPending || streamingTurnActive ? 'streaming' : ''}`}>
-                <span />
-                {streamLabel}
-              </div>
-            </div>
-          </article>
-        </section>
-      ) : null}
-
-      {mainTab === 'notes' ? (
-        <section className="turn-feed notes-panel">
-          {recoveryFailureNotice}
-          {recoverySuccessNotice}
-          {recoveryBanner}
-          {rollWaitBanner}
-          <div className="notes-card">
-            <h2>Session State</h2>
-            <dl>
-              <dt>Current quest</dt>
-              <dd>{questTitle}</dd>
-              <dt>Current location</dt>
-              <dd>{sessionState?.current_location || campaign?.location || 'No location recorded'}</dd>
-              <dt>Updated</dt>
-              <dd>{formatDateTime(sessionState?.updated_at ?? null)}</dd>
-            </dl>
-            <h3>Rolling Summary</h3>
-            <p>{sessionState?.rolling_summary || 'No rolling summary recorded yet.'}</p>
-          </div>
-          <div className="notes-card compact-notes">
-            <h3>Recent Memory</h3>
-            {recentMemory.length ? (
-              recentMemory.slice(0, 5).map(([text, source]) => (
-                <div key={`${text}-${source}`} className="note-line">
-                  <ThinIcon name="dot" size={12} />
-                  <span>{text}</span>
-                  <small>{source}</small>
-                </div>
-              ))
-            ) : (
-              <p>No memory snippets recorded yet.</p>
-            )}
-          </div>
-        </section>
-      ) : null}
+      </div>
 
       {clarificationRequest ? (
         <section className="clarification-panel" aria-live="polite">

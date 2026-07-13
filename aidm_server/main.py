@@ -309,7 +309,8 @@ def create_app() -> Flask:
             return None
 
         if (
-            request.method in UNSAFE_HTTP_METHODS
+            app.config.get('AIDM_AUTH_REQUIRED')
+            and request.method in UNSAFE_HTTP_METHODS
             and request.path != '/api/accounts/login'
             and request_uses_account_cookie_auth()
             and not request_account_cookie_csrf_valid()
@@ -356,17 +357,28 @@ def create_app() -> Flask:
                 return _capability_guard('server_internal', route_key)
             return None
 
-        account_token = request_account_token()
-        account = request_account()
+        auth_required = bool(app.config.get('AIDM_AUTH_REQUIRED'))
+        if auth_required:
+            account_token = request_account_token()
+            account = request_account()
+            workspace_token = request_workspace_token(account_token)
+            workspace_id = request_workspace_id()
+        else:
+            # Local open mode is already constrained to loopback by bootstrap.
+            # Browser credentials can outlive a hosted/backend switch, so ignore
+            # them entirely instead of letting a stale token downgrade the local
+            # operator to player-only capabilities.
+            account_token = None
+            account = None
+            workspace_token = None
+            workspace_id = DEFAULT_WORKSPACE_ID
         if account_requires_password_setup(account):
             return error_response(
                 code='legacy_password_setup_required',
                 message=LEGACY_PASSWORD_SETUP_MESSAGE,
                 status=401,
             )
-        workspace_token = request_workspace_token(account_token)
-        workspace_id = request_workspace_id()
-        if app.config.get('AIDM_AUTH_REQUIRED') and not workspace_id:
+        if auth_required and not workspace_id:
             telemetry_event(
                 'api.unauthorized',
                 payload={'path': route_key, 'method': request.method, 'remote_addr': request.remote_addr},

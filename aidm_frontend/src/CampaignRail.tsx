@@ -5,6 +5,8 @@ import type { InspectorTab } from './InspectorPanel'
 
 type MainTab = 'turns' | 'dm' | 'notes'
 
+export const CAMPAIGN_RAIL_ID = 'campaign-rail-drawer'
+
 export type CampaignCard = {
   id: number
   title: string
@@ -26,6 +28,7 @@ export type RailError = {
 }
 
 type CampaignRailProps = {
+  inert?: boolean
   backendStatus: string | null
   campaignTitle: string | null
   campaignCards: CampaignCard[]
@@ -71,6 +74,7 @@ function formatErrorClock(value: number) {
 }
 
 export function CampaignRail({
+  inert,
   backendStatus,
   campaignTitle,
   campaignCards,
@@ -112,7 +116,12 @@ export function CampaignRail({
   const backendChecking = backendStatus === null
 
   return (
-    <aside className="campaign-rail">
+    <aside
+      id={CAMPAIGN_RAIL_ID}
+      className="campaign-rail"
+      aria-label="Campaign and session navigation"
+      inert={inert ? true : undefined}
+    >
       <section className="rail-section">
         <div className="rail-heading campaign-heading">
           <span>Campaigns</span>
@@ -319,12 +328,6 @@ export function CampaignRail({
           label="Inventory"
           selected={inspectorTab === 'inventory'}
           onClick={() => setInspectorTab('inventory')}
-        />
-        <NavItem
-          icon={<ThinIcon name="settings" size={18} />}
-          label="Settings"
-          selected={mainTab === 'notes'}
-          onClick={() => setMainTab('notes')}
         />
       </nav>
 

@@ -109,8 +109,7 @@ class SocketRuntime:
 
     def workspace_id_for_auth(self, auth_payload: dict | None = None, data_payload: dict | None = None) -> str | None:
         if not self.auth_required():
-            workspace_token = extract_socket_workspace_token(auth_payload=auth_payload, data_payload=data_payload)
-            return workspace_id_for_workspace_token(workspace_token) or DEFAULT_WORKSPACE_ID
+            return DEFAULT_WORKSPACE_ID
         sid = getattr(request, 'sid', None)
         existing = self.state.connection(sid)
         if existing and existing.get('authorized'):
@@ -129,6 +128,8 @@ class SocketRuntime:
         return None
 
     def account_for_auth(self, auth_payload: dict | None = None):
+        if not self.auth_required():
+            return None
         sid = getattr(request, 'sid', None)
         existing = self.state.connection(sid)
         if existing and existing.get('account_id'):
@@ -153,6 +154,8 @@ class SocketRuntime:
         data_payload: dict | None = None,
     ) -> bool:
         """Report credential presence without retaining a raw token in socket state."""
+        if not self.auth_required():
+            return False
         return bool(extract_socket_token(auth_payload=auth_payload, data_payload=data_payload))
 
     def global_operator_for_auth(
@@ -160,6 +163,8 @@ class SocketRuntime:
         auth_payload: dict | None = None,
         data_payload: dict | None = None,
     ) -> bool:
+        if not self.auth_required():
+            return False
         token = extract_socket_token(auth_payload=auth_payload, data_payload=data_payload)
         return is_global_operator_token(token)
 

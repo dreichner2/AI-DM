@@ -1,11 +1,4 @@
-@media (min-width: 981px) {
-  .session-board:has(.scene-music-player.is-inline-static) .chat-reading-control,
-  .session-board:has(.scene-music-player.is-inline-static) .operator-drawer {
-    top: 230px;
-  }
-}
-
-@media (min-width: 981px) and (max-width: 1600px) {
+@media (min-width: 1101px) and (max-width: 1600px) {
   .session-header > div:first-child {
     flex: 1 1 auto;
     min-width: 0;
@@ -35,15 +28,28 @@
   .session-actions .toolbar-button span {
     display: none;
   }
+
+  .session-actions .operator-drawer summary {
+    width: 34px;
+    min-width: 34px;
+    height: 34px;
+    min-height: 34px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .session-actions .operator-drawer summary span {
+    display: none;
+  }
 }
 
 @media (max-width: 1400px) {
   .prototype-shell {
-    grid-template-columns: 248px minmax(560px, 1fr) 388px;
+    grid-template-columns: 220px minmax(500px, 1fr) 360px;
   }
 
   .ops-bar {
-    grid-template-columns: 156px 56px minmax(200px, 1fr) minmax(148px, 0.44fr) minmax(210px, 0.58fr) minmax(116px, 0.34fr) minmax(82px, 0.26fr) 236px;
+    grid-template-columns: 140px 48px minmax(170px, 1fr) minmax(130px, 0.44fr) minmax(170px, 0.58fr) minmax(96px, 0.34fr) minmax(72px, 0.26fr) 190px;
   }
 
   .ops-segment.mini-stat:nth-of-type(7),
@@ -60,20 +66,20 @@
   }
 }
 
-@media (min-height: 901px) and (min-width: 981px) {
-  .turn-feed:not(.single-panel) .dm-response-card {
+@media (min-height: 901px) and (min-width: 1101px) {
+  .turn-feed .dm-response-card {
     height: auto;
     min-height: 360px;
   }
 
-  .turn-feed:not(.single-panel) .dm-response-card .response-copy p {
+  .turn-feed .dm-response-card .response-copy p {
     display: block;
     overflow: visible;
     -webkit-line-clamp: unset;
   }
 }
 
-@media (max-height: 900px) and (min-width: 981px) {
+@media (max-height: 900px) and (min-width: 1101px) {
   .rail-section {
     padding-top: 12px;
   }
@@ -133,27 +139,23 @@
 
   .session-board {
     --composer-row-height: 254px;
-    grid-template-rows: 60px 38px minmax(0, 1fr) minmax(var(--composer-row-height), auto);
+    grid-template-rows: 60px minmax(0, 1fr) minmax(var(--composer-row-height), auto);
   }
 
   .session-board:has(.scene-music-player.is-inline-static) {
-    grid-template-rows: 60px 38px 40px minmax(0, 1fr) minmax(var(--composer-row-height), auto);
+    grid-template-rows: 60px 40px minmax(0, 1fr) minmax(var(--composer-row-height), auto);
   }
 
   .session-board:has(.combat-hud) {
-    grid-template-rows: 60px 38px minmax(0, 1fr) auto minmax(var(--composer-row-height), auto);
+    grid-template-rows: 60px minmax(0, 1fr) auto minmax(var(--composer-row-height), auto);
   }
 
   .session-board:has(.scene-music-player.is-inline-static):has(.combat-hud) {
-    grid-template-rows: 60px 38px 40px minmax(0, 1fr) auto minmax(var(--composer-row-height), auto);
+    grid-template-rows: 60px 40px minmax(0, 1fr) auto minmax(var(--composer-row-height), auto);
   }
 
   .session-header h1 {
     font-size: 0.98rem;
-  }
-
-  .content-tabs button {
-    height: 38px;
   }
 
   .scene-music-player {
@@ -170,17 +172,9 @@
     min-height: 22px;
   }
 
-  .chat-reading-control {
-    top: 104px;
-  }
-
   .turn-feed {
     padding-top: 8px;
     padding-bottom: 10px;
-  }
-
-  .jump-latest-button {
-    bottom: calc(var(--composer-row-height) + 16px);
   }
 
   .turn-card {
@@ -193,12 +187,12 @@
     line-height: var(--chat-turn-line-height, 1.24);
   }
 
-  .turn-feed:not(.single-panel) .dm-response-card {
+  .turn-feed .dm-response-card {
     height: auto;
     min-height: 210px;
   }
 
-  .turn-feed:not(.single-panel) .dm-response-card .response-copy p {
+  .turn-feed .dm-response-card .response-copy p {
     display: block;
     overflow: visible;
     -webkit-line-clamp: unset;
@@ -377,15 +371,7 @@
   }
 }
 
-@media (max-width: 980px) {
-  .prototype-shell {
-    height: auto;
-    min-height: 100svh;
-    grid-template-columns: 1fr;
-    grid-template-rows: auto auto auto auto;
-    overflow: visible;
-  }
-
+@media (max-width: 1100px) {
   .ops-bar,
   .campaign-rail,
   .session-board,
@@ -400,18 +386,6 @@
     gap: 8px;
     min-height: 0;
     padding: 8px 12px;
-  }
-
-  .ops-brand {
-    min-height: 40px;
-    padding: 0;
-    border-right: 0;
-  }
-
-  .ops-bar > .top-icon {
-    grid-column: 2;
-    grid-row: 1;
-    justify-self: end;
   }
 
   .ops-segment {
@@ -470,23 +444,8 @@
     grid-template-rows: auto auto 40px minmax(0, 1fr) auto;
   }
 
-  .session-board:has(.combat-hud) {
-    grid-template-rows: auto auto minmax(0, 1fr) auto auto;
-  }
-
   .session-board:has(.scene-music-player.is-inline-static):has(.combat-hud) {
     grid-template-rows: auto auto 40px minmax(0, 1fr) auto auto;
-  }
-
-  .session-header {
-    align-items: start;
-    flex-direction: column;
-    gap: 12px;
-    padding: 16px;
-  }
-
-  .session-actions {
-    flex-wrap: wrap;
   }
 
   .scene-music-player {
@@ -516,12 +475,6 @@
   .scene-music-select {
     grid-template-columns: 43px minmax(0, 1fr);
     align-items: center;
-  }
-
-  .chat-reading-control {
-    top: auto;
-    right: 16px;
-    bottom: calc(var(--composer-row-height) + 18px);
   }
 
   .turn-feed {
@@ -567,32 +520,14 @@
     white-space: normal;
   }
 
-  .roll-wait-meta {
-    margin-left: 46px;
-  }
-
   .roll-wait-action {
     min-height: 44px;
     padding-inline: 14px;
   }
 
-  .jump-latest-button {
-    position: fixed;
-    bottom: 18px;
-  }
-
-  .turn-row {
-    grid-template-columns: 40px minmax(0, 1fr);
-  }
-
   .turn-card,
   .dm-response-card {
     grid-template-columns: 1fr;
-  }
-
-  .turn-card {
-    gap: 8px;
-    padding: 12px;
   }
 
   .turn-actions {
@@ -642,7 +577,7 @@
     height: auto;
   }
 
-  .turn-feed:not(.single-panel) .dm-response-card {
+  .turn-feed .dm-response-card {
     height: auto;
     min-height: 240px;
   }
@@ -664,10 +599,6 @@
     grid-template-columns: repeat(5, minmax(24px, 1fr));
   }
 
-  .stream-state {
-    padding: 0 16px 16px;
-  }
-
   .composer-frame,
   .map-segment {
     grid-template-columns: 1fr;
@@ -687,16 +618,6 @@
   .turn-control-actions select {
     flex: 1 1 140px;
     max-width: none;
-  }
-
-  .input-action-row {
-    align-self: auto;
-    justify-content: flex-end;
-    padding: 0 10px 10px;
-  }
-
-  .action-intent-panel {
-    flex-wrap: wrap;
   }
 
   .action-intent-panel input[type='text'] {
@@ -746,10 +667,6 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .composer-tools {
-    flex-wrap: wrap;
-  }
-
   .dice-roll-backdrop {
     padding: 12px;
   }
@@ -774,21 +691,21 @@
   display: none;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 1100px) {
   .prototype-shell {
     height: 100dvh;
     min-height: 100svh;
     grid-template-columns: 1fr;
-    grid-template-rows: 52px minmax(0, 1fr);
+    grid-template-rows: 56px minmax(0, 1fr);
     overflow: hidden;
   }
 
   .prototype-shell.safe-mode-active {
-    grid-template-rows: 52px 34px minmax(0, 1fr);
+    grid-template-rows: 56px 34px minmax(0, 1fr);
   }
 
   .prototype-shell.runtime-notices-active {
-    grid-template-rows: 52px 34px minmax(0, 1fr);
+    grid-template-rows: 56px 34px minmax(0, 1fr);
   }
 
   .prototype-shell.title-screen-active {
@@ -855,7 +772,7 @@
 
   .title-action {
     width: 100%;
-    min-height: 43px;
+    min-height: 44px;
   }
 
   .title-screen-table {
@@ -887,7 +804,7 @@
     z-index: 80;
     grid-column: 1;
     grid-row: 1;
-    grid-template-columns: auto 40px minmax(0, 1fr) auto;
+    grid-template-columns: auto 44px minmax(0, 1fr) auto;
     grid-template-rows: 1fr;
     align-items: center;
     gap: 6px;
@@ -898,7 +815,7 @@
   .ops-brand {
     grid-column: 1;
     grid-row: 1;
-    min-height: 40px;
+    min-height: 44px;
     gap: 7px;
     padding: 0;
     border-right: 0;
@@ -917,8 +834,8 @@
     grid-column: 2;
     grid-row: 1;
     justify-self: start;
-    width: 38px;
-    height: 38px;
+    width: 44px;
+    height: 44px;
     border-color: var(--line-strong);
     background: linear-gradient(180deg, #172021, #0d1314);
   }
@@ -937,8 +854,8 @@
   }
 
   .ops-actions .top-icon {
-    width: 34px;
-    height: 34px;
+    width: 44px;
+    height: 44px;
   }
 
   .ops-actions .mobile-optional {
@@ -947,14 +864,14 @@
 
   .account-menu {
     position: fixed;
-    top: 54px;
+    top: 58px;
     right: 8px;
     max-width: calc(100vw - 16px);
   }
 
   .mobile-panel-scrim {
     position: fixed;
-    inset: 52px 0 0;
+    inset: 56px 0 0;
     z-index: 50;
     display: none;
     width: 100%;
@@ -965,7 +882,7 @@
 
   .prototype-shell.safe-mode-active .mobile-panel-scrim,
   .prototype-shell.runtime-notices-active .mobile-panel-scrim {
-    inset: 86px 0 0;
+    inset: 90px 0 0;
   }
 
   .prototype-shell.mobile-rail-open .mobile-panel-scrim,
@@ -980,7 +897,7 @@
   .campaign-rail,
   .right-inspector {
     position: fixed;
-    top: 52px;
+    top: 56px;
     bottom: 0;
     z-index: 60;
     height: auto;
@@ -998,7 +915,7 @@
   .prototype-shell.safe-mode-active .right-inspector,
   .prototype-shell.runtime-notices-active .campaign-rail,
   .prototype-shell.runtime-notices-active .right-inspector {
-    top: 86px;
+    top: 90px;
   }
 
   .campaign-rail,
@@ -1050,13 +967,13 @@
   }
 
   .session-board {
-    --composer-row-height: 168px;
+    --composer-row-height: 260px;
     grid-column: 1;
     grid-row: 2;
     align-self: stretch;
     height: auto;
     min-height: 0;
-    grid-template-rows: 50px 38px 36px minmax(0, 1fr) auto;
+    grid-template-rows: 56px 44px minmax(0, 1fr) auto;
     overflow: hidden;
     border-top: 1px solid var(--line);
   }
@@ -1067,27 +984,106 @@
   }
 
   .session-board:has(.scene-music-player.is-mobile-static) {
-    grid-template-rows: 50px 38px 36px 40px minmax(0, 1fr) auto;
+    grid-template-rows: 56px 44px 52px minmax(0, 1fr) auto;
   }
 
   .session-board:has(.combat-hud) {
-    grid-template-rows: 50px 38px 36px minmax(0, 1fr) auto auto;
+    grid-template-rows: 56px 44px minmax(0, 1fr) auto auto;
   }
 
   .session-board:has(.scene-music-player.is-mobile-static):has(.combat-hud) {
-    grid-template-rows: 50px 38px 36px 40px minmax(0, 1fr) auto auto;
+    grid-template-rows: 56px 44px 52px minmax(0, 1fr) auto auto;
   }
 
-  .combat-hud {
-    padding: 7px 10px 8px;
-  }
-
-  .combat-hud-note {
+  .session-board:has(.combat-hud) .session-at-a-glance {
     display: none;
   }
 
-  .combat-hud-actions {
-    margin-top: 6px;
+  .session-board:has(.combat-hud) .turns-view {
+    grid-template-rows: minmax(120px, 1fr);
+  }
+
+  .session-board:has(.combat-hud) .turn-control-strip {
+    display: none;
+  }
+
+  .turns-view {
+    grid-template-rows: minmax(0, auto) minmax(120px, 1fr);
+  }
+
+  .session-at-a-glance {
+    min-height: 0;
+    padding: 4px 10px 0;
+    overflow: auto;
+  }
+
+  .combat-hud {
+    display: flex;
+    flex-direction: column;
+    max-height: 140px;
+    padding: 7px 10px 8px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .combat-hud > * {
+    flex: none;
+  }
+
+  .combat-hud-heading {
+    position: sticky;
+    top: -7px;
+    z-index: 2;
+    order: 0;
+    padding-block: 0;
+    background: #0b1415;
+  }
+
+  .combat-hud-note {
+    order: 3;
+    display: block;
+  }
+
+  .combat-hud-choice-count {
+    order: 1;
+  }
+
+  .combat-hud-overview {
+    order: 4;
+  }
+
+  .action-intent-panel.combat-hud-actions {
+    order: 2;
+    display: grid;
+    grid-template-columns: 1fr;
+    min-height: max-content;
+    margin-top: 0;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .combat-hud.is-disabled .combat-hud-note,
+  .combat-hud:has(.combat-hud-turn:not(.current)) .combat-hud-note {
+    order: 1;
+  }
+
+  .combat-hud.is-disabled .combat-hud-choice-count,
+  .combat-hud:has(.combat-hud-turn:not(.current)) .combat-hud-choice-count {
+    order: 2;
+  }
+
+  .combat-hud.is-disabled .combat-hud-actions,
+  .combat-hud:has(.combat-hud-turn:not(.current)) .combat-hud-actions {
+    order: 3;
+  }
+
+  .combat-hud-actions .combat-hud-option {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    min-height: 56px;
   }
 
   .session-header {
@@ -1095,7 +1091,7 @@
     flex-direction: row;
     gap: 8px;
     min-height: 0;
-    padding: 7px 10px;
+    padding: 6px 10px;
   }
 
   .session-header > div:first-child {
@@ -1124,14 +1120,21 @@
     flex: 0 0 auto;
     flex-wrap: nowrap;
     gap: 3px;
+    max-width: min(62vw, 520px);
     margin-left: auto;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .session-actions::-webkit-scrollbar {
+    display: none;
   }
 
   .session-actions .toolbar-button {
-    width: 34px;
-    min-width: 34px;
-    height: 34px;
-    min-height: 34px;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
     padding: 0;
   }
 
@@ -1139,22 +1142,26 @@
     display: none;
   }
 
+  .session-actions .operator-drawer summary {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .session-actions .operator-drawer summary span {
+    display: none;
+  }
+
+  .session-actions .operator-drawer-body {
+    top: 50px;
+  }
+
   .session-menu {
     top: 40px;
     right: 0;
-  }
-
-  .content-tabs {
-    gap: 0;
-    overflow-x: auto;
-    padding: 0 6px;
-  }
-
-  .content-tabs button {
-    flex: 1 0 auto;
-    min-width: 72px;
-    height: 38px;
-    font-size: 0.75rem;
   }
 
   .mobile-presence-strip {
@@ -1162,7 +1169,7 @@
     align-items: center;
     gap: 7px;
     min-width: 0;
-    min-height: 36px;
+    min-height: 44px;
     overflow: hidden;
     padding: 3px 8px;
     border-bottom: 1px solid var(--line);
@@ -1386,7 +1393,7 @@
     gap: 7px;
     width: auto;
     height: auto;
-    min-height: 40px;
+    min-height: 52px;
     max-width: none;
     max-height: none;
     overflow: hidden;
@@ -1439,13 +1446,13 @@
   }
 
   .scene-music-player.is-mobile-static .scene-music-controls button {
-    width: 28px;
-    height: 28px;
+    width: 44px;
+    height: 44px;
   }
 
   .scene-music-player.is-mobile-static .scene-music-controls .scene-music-play {
-    width: 30px;
-    height: 30px;
+    width: 44px;
+    height: 44px;
   }
 
   .turn-feed {
@@ -1495,11 +1502,11 @@
   .turn-expand,
   .turn-dismiss,
   .turn-report {
-    min-height: 32px;
+    min-height: 44px;
   }
 
   .dm-response-card,
-  .turn-feed:not(.single-panel) .dm-response-card {
+  .turn-feed .dm-response-card {
     min-height: min(44svh, 360px);
   }
 
@@ -1588,39 +1595,18 @@
     padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
   }
 
-  .chat-reading-control {
-    right: 10px;
-    bottom: calc(var(--composer-row-height) + 10px);
-  }
-
-  .chat-reading-toggle {
-    width: 30px;
-    height: 28px;
-  }
-
-  .chat-reading-menu {
-    top: auto;
-    right: 0;
-    bottom: 34px;
-  }
-
-  .jump-latest-button {
-    bottom: calc(var(--composer-row-height) + 10px);
-    min-height: 30px;
-  }
-
   .action-composer {
     min-height: 0;
     padding: 6px 10px calc(8px + env(safe-area-inset-bottom));
   }
 
   .action-composer label {
-    display: none;
+    display: block;
   }
 
   .turn-control-strip,
   .queued-action-strip {
-    min-height: 26px;
+    min-height: 44px;
     margin: 0 0 5px;
     padding: 0 7px;
     font-size: 0.68rem;
@@ -1632,7 +1618,7 @@
   }
 
   .tts-status-strip {
-    min-height: 24px;
+    min-height: 32px;
     margin: 0 0 5px;
     padding: 0 7px;
     font-size: 0.68rem;
@@ -1658,18 +1644,18 @@
   }
 
   .mode-buttons {
-    height: 34px;
+    height: 44px;
     overflow-x: auto;
   }
 
   .mode-buttons button {
-    width: 30px;
-    height: 34px;
+    width: 44px;
+    height: 44px;
   }
 
   .send-button {
     min-width: 82px;
-    height: 34px;
+    height: 44px;
     font-size: 0.82rem;
   }
 
@@ -1684,6 +1670,16 @@
   .action-intent-panel select {
     flex: 0 0 auto;
     max-width: 138px;
+  }
+
+  .action-intent-panel select,
+  .action-intent-panel input,
+  .action-intent-panel button {
+    height: 44px;
+  }
+
+  .action-intent-panel.combat-hud-actions .combat-hud-option {
+    height: auto;
   }
 
   .action-intent-panel input[type='text'],
@@ -1707,8 +1703,19 @@
 
   .composer-tools button {
     flex: 0 0 auto;
-    min-height: 28px;
+    min-height: 44px;
     font-size: 0.72rem;
+  }
+}
+
+@media (min-width: 600px) and (max-width: 1100px) {
+  .composer-frame {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .input-action-row {
+    align-self: stretch;
+    padding: 0 8px;
   }
 }
 

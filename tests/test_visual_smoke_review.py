@@ -39,8 +39,11 @@ def _write_rgb_png(path, *, width: int, height: int, varied: bool) -> None:
 def _expectations() -> tuple[ScreenshotExpectation, ...]:
     return (
         ScreenshotExpectation('desktop-shell.png', width=8, min_height=6, max_height=6),
-        ScreenshotExpectation('short-height-composer.png', width=8, min_height=6, max_height=6),
+        ScreenshotExpectation('laptop-shell.png', width=7, min_height=6, max_height=6),
         ScreenshotExpectation('mobile-full.png', width=5, min_height=7),
+        ScreenshotExpectation('mobile-narrow.png', width=4, min_height=7),
+        ScreenshotExpectation('tablet-landscape.png', width=6, min_height=5, max_height=5),
+        ScreenshotExpectation('tablet-portrait.png', width=5, min_height=8, max_height=8),
     )
 
 
@@ -75,7 +78,7 @@ def test_review_visual_smoke_artifacts_passes_expected_screenshots(tmp_path):
     assert review['status'] == 'passed'
     assert review['failures'] == []
     assert '- Status: passed' in markdown
-    assert '- Screenshots: 3/3' in markdown
+    assert '- Screenshots: 6/6' in markdown
     assert '| desktop-shell.png | passed | 8x6 |' in markdown
 
 
@@ -93,4 +96,4 @@ def test_review_visual_smoke_artifacts_fails_blank_or_missing_screenshots(tmp_pa
 
     assert review['status'] == 'failed'
     assert any('desktop-shell.png' in failure and 'unique color count' in failure for failure in review['failures'])
-    assert any('short-height-composer.png' in failure and 'missing expected screenshot' in failure for failure in review['failures'])
+    assert any('laptop-shell.png' in failure and 'missing expected screenshot' in failure for failure in review['failures'])

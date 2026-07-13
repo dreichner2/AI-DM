@@ -108,6 +108,84 @@ def test_rest_auth_required(tmp_path, monkeypatch):
     assert 'local_operator_only' not in capabilities
 
 
+def test_auth_disabled_ignores_stale_rest_credentials(tmp_path, monkeypatch):
+    app, _socketio = _build_auth_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={
+            'AIDM_ACCOUNT_COOKIE_AUTH_ENABLED': 'true',
+            'AIDM_AUTH_REQUIRED': 'false',
+        },
+    )
+    client = app.test_client()
+    client.set_cookie('aidm_account_token', 'stale-cookie-token')
+    headers = {
+        'Authorization': 'Bearer stale-account-token',
+        'X-AIDM-Workspace-Token': 'stale-workspace-token',
+    }
+
+    capabilities_response = client.get('/api/capabilities', headers=headers)
+    world_response = client.post('/api/worlds', headers=headers, json={'name': 'Local Open World'})
+    cookie_world_response = client.post('/api/worlds', json={'name': 'Local Cookie World'})
+
+    assert capabilities_response.status_code == 200
+    capabilities = capabilities_response.get_json()
+    assert capabilities['account_id'] is None
+    assert capabilities['workspace_id'] == 'owner'
+    assert 'local_operator_only' in capabilities['capabilities']
+    assert 'dm_authoring' in capabilities['capabilities']
+    assert world_response.status_code == 201
+    assert cookie_world_response.status_code == 201
+
+
+def test_auth_disabled_socket_ignores_stale_credentials_for_local_player_visibility(tmp_path, monkeypatch):
+    app, socketio = _build_auth_runtime(
+        tmp_path,
+        monkeypatch,
+        extra_env={'AIDM_AUTH_REQUIRED': 'false'},
+    )
+    with app.app_context():
+        world = World(workspace_id='owner', name='Local Socket World')
+        db.session.add(world)
+        db.session.flush()
+        campaign = Campaign(workspace_id='owner', world_id=world.world_id, title='Local Socket Campaign')
+        db.session.add(campaign)
+        db.session.flush()
+        player = Player(
+            workspace_id='owner',
+            campaign_id=campaign.campaign_id,
+            name='Local Player',
+            character_name='Arden',
+        )
+        session = Session(campaign_id=campaign.campaign_id)
+        db.session.add_all([player, session])
+        db.session.commit()
+        player_id = player.player_id
+        session_id = session.session_id
+
+    socket_client = socketio.test_client(
+        app,
+        flask_test_client=app.test_client(),
+        auth={'token': 'stale-socket-token', 'workspace_id': 'stale-workspace'},
+    )
+    assert socket_client.is_connected()
+
+    import aidm_server.blueprints.socketio_events as socketio_events_module
+
+    connection = next(iter(socketio_events_module.socketio_connections.values()))
+    assert connection['workspace_id'] == 'owner'
+    assert connection['account_id'] is None
+    assert connection['credential_present'] is False
+    assert connection['global_operator'] is False
+
+    socket_client.emit('join_session', {'session_id': session_id, 'player_id': player_id})
+    received = socket_client.get_received()
+    errors = [event for event in received if event['name'] == 'error']
+    assert errors == []
+    assert player_id in socketio_events_module.active_players[session_id]
+    socket_client.disconnect()
+
+
 def test_capabilities_endpoint_reports_account_role_capabilities(tmp_path, monkeypatch):
     app, _socketio = _build_auth_runtime(tmp_path, monkeypatch)
     client = app.test_client()

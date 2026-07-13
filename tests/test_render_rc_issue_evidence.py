@@ -258,13 +258,27 @@ def test_inspect_source_archive_fails_unresolved_git_lfs_pointer(tmp_path):
 def test_inspect_visual_smoke_reports_expected_screenshots(tmp_path):
     smoke_dir = tmp_path / 'visual-smoke-run'
     smoke_dir.mkdir()
-    for name in ('desktop-shell.png', 'mobile-full.png', 'short-height-composer.png'):
+    for name in (
+        'desktop-shell.png',
+        'laptop-shell.png',
+        'mobile-full.png',
+        'mobile-narrow.png',
+        'tablet-landscape.png',
+        'tablet-portrait.png',
+    ):
         (smoke_dir / name).write_bytes(b'png')
 
     result = inspect_visual_smoke(smoke_dir)
 
     assert result['status'] == 'passed'
-    assert result['screenshots'] == ['desktop-shell.png', 'mobile-full.png', 'short-height-composer.png']
+    assert result['screenshots'] == [
+        'desktop-shell.png',
+        'laptop-shell.png',
+        'mobile-full.png',
+        'mobile-narrow.png',
+        'tablet-landscape.png',
+        'tablet-portrait.png',
+    ]
     assert result['missing'] == []
 
 
@@ -395,7 +409,14 @@ def test_render_issue_evidence_writes_issue_ready_markdown(tmp_path):
     _write_tar(archive_path, ['AIDM-main/README.md'])
     _write_hosted_rc_evidence(hosted_rc_path)
     visual_smoke_dir.mkdir()
-    for name in ('desktop-shell.png', 'mobile-full.png', 'short-height-composer.png'):
+    for name in (
+        'desktop-shell.png',
+        'laptop-shell.png',
+        'mobile-full.png',
+        'mobile-narrow.png',
+        'tablet-landscape.png',
+        'tablet-portrait.png',
+    ):
         (visual_smoke_dir / name).write_bytes(b'png')
     visual_smoke_review_path.write_text(
         '\n'.join(
@@ -404,7 +425,7 @@ def test_render_issue_evidence_writes_issue_ready_markdown(tmp_path):
                 '',
                 '- Status: passed',
                 f'- Artifact dir: `{visual_smoke_dir}`',
-                '- Screenshots: 3/3',
+                '- Screenshots: 6/6',
                 '- Failures: None.',
                 '',
             ]
@@ -504,8 +525,11 @@ def test_render_issue_evidence_writes_issue_ready_markdown(tmp_path):
     frontend = (output_dir / 'issue-04-frontend.md').read_text(encoding='utf-8')
     assert '- Visual smoke artifacts:' in frontend
     assert '- Visual smoke review:' in frontend
-    assert '(passed; screenshots: 3/3; failures: None.)' in frontend
-    assert 'desktop-shell.png, mobile-full.png, short-height-composer.png' in frontend
+    assert '(passed; screenshots: 6/6; failures: None.)' in frontend
+    assert (
+        'desktop-shell.png, laptop-shell.png, mobile-full.png, mobile-narrow.png, '
+        'tablet-landscape.png, tablet-portrait.png'
+    ) in frontend
 
     security = (output_dir / 'issue-05-security.md').read_text(encoding='utf-8')
     assert '- Security forbidden evidence:' in security

@@ -1136,8 +1136,7 @@
   border-top: 1px solid var(--line);
 }
 
-.canon-list svg,
-.note-line svg {
+.canon-list svg {
   color: #6adb5e;
 }
 
@@ -1810,100 +1809,4 @@
   background: rgba(255, 255, 255, 0.025);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.single-panel {
-  padding-top: 18px;
-}
-
-.dm-response-card.expanded {
-  min-height: 430px;
-}
-
-.notes-panel {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  gap: 12px;
-}
-
-.notes-card {
-  min-width: 0;
-  overflow: hidden;
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
-  background: linear-gradient(180deg, #111a1b, #0d1516);
-  padding: 14px 16px;
-}
-
-.notes-card h2,
-.notes-card h3 {
-  margin: 0 0 10px;
-  color: var(--heading);
-}
-
-.notes-card h2 {
-  font-size: 1rem;
-}
-
-.notes-card h3 {
-  font-size: 0.9rem;
-}
-
-.notes-card dl {
-  display: grid;
-  grid-template-columns: 120px minmax(0, 1fr);
-  gap: 7px 14px;
-  margin: 0 0 12px;
-}
-
-.notes-card dt {
-  color: var(--muted);
-  font-size: 0.78rem;
-}
-
-.notes-card dd {
-  min-width: 0;
-  margin: 0;
-  overflow: hidden;
-  color: var(--text);
-  font-size: 0.82rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.notes-card p {
-  margin: 0;
-  color: var(--text);
-  font-family: var(--serif);
-  font-size: 1rem;
-  line-height: 1.4;
-  white-space: pre-wrap;
-}
-
-.compact-notes {
-  max-height: 146px;
-}
-
-.note-line {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) 58px;
-  align-items: center;
-  min-height: 28px;
-  border-top: 1px solid var(--line);
-}
-
-.note-line svg {
-  color: var(--green);
-}
-
-.note-line span {
-  overflow: hidden;
-  color: var(--text);
-  font-size: 0.78rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.note-line small {
-  color: var(--muted);
 }

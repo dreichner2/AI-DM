@@ -477,6 +477,101 @@ function installFetchMock() {
           descriptions: {},
         })
       }
+      if (method === 'POST' && path === '/api/accounts/play-now') {
+        const campaign = campaigns[0]
+        const session = campaign ? sessionsByCampaign[campaign.campaign_id]?.[0] : undefined
+        const player = session ? playerDetails[playersByCampaign[session.campaign_id]?.[0]?.player_id] : undefined
+        const world = worlds.find((item) => item.world_id === campaign?.world_id)
+        if (!campaign || !session || !player || !world) {
+          return jsonResponse({ error: 'Missing Play Now fixture.' }, { status: 500 })
+        }
+        const workspace = {
+          workspace_id: 'owner',
+          workspace_name: 'Guest Table',
+          table_name: 'Guest Table',
+          access_mode: 'password',
+          workspace_role: 'player',
+          is_workspace_admin: false,
+          created_at: null,
+          updated_at: null,
+        }
+        return jsonResponse({
+          mode: 'play_now',
+          workspace_id: 'owner',
+          campaign_id: campaign.campaign_id,
+          session_id: session.session_id,
+          player_id: player.player_id,
+          world_id: world.world_id,
+          idempotent_replay: false,
+          guest_account: true,
+          account_session: {
+            account: {
+              account_id: 41,
+              username: 'guest-41',
+              first_name: 'Guest',
+              last_name: 'Adventurer',
+              display_name: 'Guest Adventurer',
+              workspace_id: 'owner',
+              workspace_role: 'player',
+              is_workspace_admin: false,
+              requires_password_setup: false,
+              workspaces: [workspace],
+            },
+            account_token: 'guest-token',
+            account_token_transport: 'bearer',
+            workspace_id: 'owner',
+            workspace_role: 'player',
+            is_workspace_admin: false,
+            claimed_player_ids: [player.player_id],
+            workspaces: [workspace],
+          },
+          campaign,
+          session,
+          player,
+          pregen: {
+            character_id: 'ember',
+            character_name: player.character_name,
+            name: player.name,
+            race: player.race,
+            sex: player.sex,
+            class_: player.class_,
+            char_class: player.char_class,
+            level: player.level,
+            tagline: 'A ready-made adventurer.',
+            profile_image: player.profile_image,
+            stats: player.stats,
+            inventory: player.inventory,
+            character_sheet: player.character_sheet,
+          },
+          example_pack: {
+            example_pack_id: 'road.unremembered-kings',
+            pack_id: 'road.unremembered-kings',
+            source_filename: 'road.json',
+            source: 'bundled_example',
+          },
+          join_context: {
+            workspace_id: 'owner',
+            campaign_id: campaign.campaign_id,
+            session_id: session.session_id,
+            player_id: player.player_id,
+            world_id: world.world_id,
+            socket: {
+              event: 'join_session',
+              payload: { workspace_id: 'owner', session_id: session.session_id, player_id: player.player_id },
+            },
+            send_message: {
+              event: 'send_message',
+              payload: {
+                workspace_id: 'owner',
+                campaign_id: campaign.campaign_id,
+                session_id: session.session_id,
+                player_id: player.player_id,
+                world_id: world.world_id,
+              },
+            },
+          },
+        })
+      }
       if (method === 'GET' && path === '/api/accounts/me') {
         const accountToken = authorization?.replace(/^Bearer\s+/i, '') ?? ''
         if (!accountToken) {

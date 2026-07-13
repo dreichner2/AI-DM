@@ -1,12 +1,15 @@
-import { BookOpen, Flame, Play, Plus, Sparkles } from 'lucide-react'
+import { BookOpen, Flame, LogIn, Play, Plus, Sparkles, UserPlus } from 'lucide-react'
 
 type TitleScreenProps = {
   pending: boolean
+  accountReady?: boolean
   canContinue: boolean
   campaignCount: number
   selectedCampaignTitle: string | null
   runtimeConfigured: boolean
   onPlayNow: () => void
+  onLogIn?: () => void
+  onCreateAccount?: () => void
   onCreateCampaign: () => void
   onContinue: () => void
 }
@@ -17,11 +20,14 @@ function pluralize(value: number, singular: string, plural = `${singular}s`) {
 
 export function TitleScreen({
   pending,
+  accountReady = true,
   canContinue,
   campaignCount,
   selectedCampaignTitle,
   runtimeConfigured,
   onPlayNow,
+  onLogIn = () => undefined,
+  onCreateAccount = () => undefined,
   onCreateCampaign,
   onContinue,
 }: TitleScreenProps) {
@@ -36,7 +42,8 @@ export function TitleScreen({
           </div>
           <h1 id="title-screen-heading">AI-DM</h1>
           <p>
-            The Road of Unremembered Kings is ready with a starter hero, a live table, and an opening scene.
+            Play Now jumps straight into The Road of Unremembered Kings with a ready-made hero,
+            campaign, and opening scene. It skips account, campaign, and character setup.
           </p>
           <div className="title-screen-actions">
             <button
@@ -46,26 +53,51 @@ export function TitleScreen({
               onClick={onPlayNow}
             >
               <Play size={19} fill="currentColor" />
-              <span>{pending ? 'Preparing' : 'Play Now'}</span>
+              <span>{pending ? 'Preparing Adventure' : 'Play Now — Ready-Made Adventure'}</span>
             </button>
-            <button
-              type="button"
-              className="title-action"
-              disabled={pending}
-              onClick={onCreateCampaign}
-            >
-              <Plus size={19} />
-              <span>New Campaign</span>
-            </button>
-            <button
-              type="button"
-              className="title-action"
-              disabled={pending || !canContinue}
-              onClick={onContinue}
-            >
-              <BookOpen size={19} />
-              <span>Continue</span>
-            </button>
+            {accountReady ? (
+              <>
+                <button
+                  type="button"
+                  className="title-action"
+                  disabled={pending}
+                  onClick={onCreateCampaign}
+                >
+                  <Plus size={19} />
+                  <span>New Campaign</span>
+                </button>
+                <button
+                  type="button"
+                  className="title-action"
+                  disabled={pending || !canContinue}
+                  onClick={onContinue}
+                >
+                  <BookOpen size={19} />
+                  <span>Continue</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="title-action"
+                  disabled={pending}
+                  onClick={onLogIn}
+                >
+                  <LogIn size={19} />
+                  <span>Log In</span>
+                </button>
+                <button
+                  type="button"
+                  className="title-action"
+                  disabled={pending}
+                  onClick={onCreateAccount}
+                >
+                  <UserPlus size={19} />
+                  <span>Create Account</span>
+                </button>
+              </>
+            )}
           </div>
         </div>
         <aside className="title-screen-table" aria-label="Starting table">

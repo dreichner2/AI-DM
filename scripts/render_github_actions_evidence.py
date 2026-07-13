@@ -39,8 +39,11 @@ DEFAULT_CLOSED_BETA_RC_ARTIFACT_CONTENT_GLOBS = (
     'tmp/release/aidm-source-*.tar.gz',
     'tmp/release/aidm-source-*.tar.gz.sha256',
     'tmp/verification_artifacts/visual-smoke/*/desktop-shell.png',
+    'tmp/verification_artifacts/visual-smoke/*/laptop-shell.png',
     'tmp/verification_artifacts/visual-smoke/*/mobile-full.png',
-    'tmp/verification_artifacts/visual-smoke/*/short-height-composer.png',
+    'tmp/verification_artifacts/visual-smoke/*/mobile-narrow.png',
+    'tmp/verification_artifacts/visual-smoke/*/tablet-landscape.png',
+    'tmp/verification_artifacts/visual-smoke/*/tablet-portrait.png',
 )
 GITHUB_RUN_URL_RE = re.compile(r'^https://github\.com/([^/\s]+)/([^/\s]+)/actions/runs/(\d+)(?:[/?#].*)?$')
 GITHUB_REMOTE_RE = re.compile(r'(?:github\.com[:/])([^/\s]+)/([^/\s]+?)(?:\.git)?/?$')

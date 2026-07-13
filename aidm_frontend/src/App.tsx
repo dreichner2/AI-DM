@@ -37,9 +37,15 @@ import type {
 } from './ArchiveDialogs'
 import { StatusDot, ThinIcon } from './AppChrome'
 import { BetaRuntimeNotesPanel } from './BetaRuntimeNotesPanel'
-import { CampaignRail, type CampaignCard, type SessionCard } from './CampaignRail'
+import {
+  CAMPAIGN_RAIL_ID,
+  CampaignRail,
+  type CampaignCard,
+  type SessionCard,
+} from './CampaignRail'
 import type { CampaignPackControlAction } from './CampaignPackPanel'
 import {
+  INSPECTOR_PANEL_ID,
   InspectorPanel,
   type InspectorTab,
 } from './InspectorPanel'
@@ -159,7 +165,7 @@ import {
 } from './worldDialogState'
 
 const DEFAULT_BASE_URL = import.meta.env.VITE_AIDM_API_BASE_URL ?? ''
-const PHONE_LAYOUT_MEDIA_QUERY = '(max-width: 760px)'
+const COMPACT_LAYOUT_MEDIA_QUERY = '(max-width: 1100px)'
 const BOARD_VIEW_MODE_STORAGE_KEY = 'aidm:boardViewMode'
 
 const loadDiceRollDialog = () => import('./DiceRollDialog')
@@ -289,11 +295,11 @@ function activePlayersWithSnapshotHealth(activePlayers: ActivePlayer[], snapshot
   })
 }
 
-function isPhoneLayoutViewport() {
+function isCompactLayoutViewport() {
   return (
     typeof window !== 'undefined' &&
     typeof window.matchMedia === 'function' &&
-    window.matchMedia(PHONE_LAYOUT_MEDIA_QUERY).matches
+    window.matchMedia(COMPACT_LAYOUT_MEDIA_QUERY).matches
   )
 }
 
@@ -595,7 +601,7 @@ function AIDMApp() {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [betaNotesOpen, setBetaNotesOpen] = useState(false)
   const [railCollapsed, setRailCollapsed] = useState(false)
-  const [mobileViewport, setMobileViewport] = useState(isPhoneLayoutViewport)
+  const [compactViewport, setCompactViewport] = useState(isCompactLayoutViewport)
   const [mobileRailOpen, setMobileRailOpen] = useState(false)
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -627,6 +633,9 @@ function AIDMApp() {
   const [turnRecoveryPending, setTurnRecoveryPending] = useState(false)
   const [turnRecoveryError, setTurnRecoveryError] = useState('')
   const [turnRecoverySuccess, setTurnRecoverySuccess] = useState('')
+  const campaignRailToggleRef = useRef<HTMLButtonElement | null>(null)
+  const mobileInspectorToggleRef = useRef<HTMLButtonElement | null>(null)
+  const mobilePanelReturnFocusRef = useRef<HTMLButtonElement | null>(null)
   const resetRuntimeState = useCallback(() => {
     setHealth(null)
     setActorCapabilities(null)
@@ -640,10 +649,20 @@ function AIDMApp() {
     setSocketReconnectKey((current) => current + 1)
   }, [])
   const closeMobilePanels = useCallback(() => {
+    mobilePanelReturnFocusRef.current = null
     setMobileRailOpen(false)
     setMobileInspectorOpen(false)
   }, [])
+  const closeMobilePanelsAndRestoreFocus = useCallback(() => {
+    const returnFocusTarget = mobilePanelReturnFocusRef.current
+    mobilePanelReturnFocusRef.current = null
+    setMobileRailOpen(false)
+    setMobileInspectorOpen(false)
+    window.requestAnimationFrame(() => returnFocusTarget?.focus())
+  }, [])
   const {
+    adoptAccountSession,
+    accountTokenTransport,
     authToken,
     baseUrl,
     clearAuthToken: clearRuntimeAuthToken,
@@ -706,28 +725,66 @@ function AIDMApp() {
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
 
-    const mediaQuery = window.matchMedia(PHONE_LAYOUT_MEDIA_QUERY)
-    const syncMobileViewport = () => {
-      const isMobile = mediaQuery.matches
-      setMobileViewport(isMobile)
-      if (!isMobile) {
+    const mediaQuery = window.matchMedia(COMPACT_LAYOUT_MEDIA_QUERY)
+    const syncCompactViewport = () => {
+      const isCompact = mediaQuery.matches
+      setCompactViewport(isCompact)
+      if (!isCompact) {
         setMobileRailOpen(false)
         setMobileInspectorOpen(false)
       }
     }
 
-    syncMobileViewport()
-    return subscribeToMediaQueryChange(mediaQuery, syncMobileViewport)
+    syncCompactViewport()
+    return subscribeToMediaQueryChange(mediaQuery, syncCompactViewport)
   }, [])
 
+  useEffect(() => {
+    if (!compactViewport) return
+
+    const drawerId = mobileRailOpen
+      ? CAMPAIGN_RAIL_ID
+      : mobileInspectorOpen
+        ? INSPECTOR_PANEL_ID
+        : null
+    if (!drawerId) return
+
+    const drawer = document.getElementById(drawerId)
+    const initialControl = drawerId === CAMPAIGN_RAIL_ID
+      ? drawer?.querySelector<HTMLElement>('[aria-label="Search campaigns"]')
+      : drawer?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+    initialControl?.focus()
+  }, [compactViewport, mobileInspectorOpen, mobileRailOpen])
+
+  useEffect(() => {
+    if (!compactViewport || (!mobileRailOpen && !mobileInspectorOpen)) return
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      closeMobilePanelsAndRestoreFocus()
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [closeMobilePanelsAndRestoreFocus, compactViewport, mobileInspectorOpen, mobileRailOpen])
+
   const auth = runtimeAccount?.requiresPasswordSetup ? '' : authToken.trim()
+  const accountSessionAvailable = Boolean(
+    auth || accountTokenTransport === 'http_only_cookie',
+  )
+  const hostedWorkspaceAccessReady = Boolean(
+    accountSessionAvailable &&
+    runtimeAccount?.workspaceId &&
+    workspaceId &&
+    runtimeAccount.workspaceId === workspaceId,
+  )
   const canUseOwnerRuntimeConfig = Boolean(
     runtimeAccount?.workspaces.some(
       (workspace) => workspace.workspace_id === OWNER_WORKSPACE_ID && workspace.is_workspace_admin,
     ),
   )
   const canQueryActorCapabilities =
-    health?.auth_required === true && Boolean(auth && runtimeAccount?.workspaceId && workspaceId)
+    health?.auth_required === true && hostedWorkspaceAccessReady
   const activeActorCapabilities =
     actorCapabilities && actorCapabilities.workspace_id === workspaceId ? actorCapabilities : null
   const canUseOperatorTools = activeActorCapabilities
@@ -875,7 +932,8 @@ function AIDMApp() {
       current.filter((item) => {
         if (
           item.category === 'connection' &&
-          item.message.startsWith('Socket connection failed:')
+          (item.message.startsWith('Socket connection failed:') ||
+            item.message === 'Realtime is reconnecting. Try again in a moment.')
         ) {
           return false
         }
@@ -1007,7 +1065,7 @@ function AIDMApp() {
     [players, selectedPlayerDetailId, timeline],
   )
   const sceneMusicWorkspaceReady =
-    health?.auth_required === false || Boolean(auth && runtimeAccount?.workspaceId && workspaceId)
+    health?.auth_required === false || hostedWorkspaceAccessReady
   const showSceneMusicPlayer =
     Boolean(activeSessionId && selectedPlayerDetailId && sceneMusicWorkspaceReady) &&
     !(runtimeSettingsOpen && runtimeSettingsMode === 'auth')
@@ -1021,9 +1079,7 @@ function AIDMApp() {
   const currentResponseEntry =
     latestTimelineEntry?.streaming || latestTimelineEntry?.role === 'dm'
       ? latestTimelineEntry
-      : latestTimelineEntry?.role === 'system'
-        ? latestDmEntry
-        : null
+      : null
   const turnRows = currentResponseEntry
     ? timeline.filter((entry) => entry.id !== currentResponseEntry.id)
     : timeline
@@ -1035,6 +1091,18 @@ function AIDMApp() {
   const welcomeText = activeSession
     ? `Welcome to ${activeSessionName}. Choose an opening move and the DM will begin the scene.`
     : 'Start or select a session to begin play.'
+
+  const latestPlayError = errors.find((error) =>
+    (error.category === 'connection' && (
+      error.message.startsWith('Socket connection failed:') ||
+      error.message === 'Realtime is reconnecting. Try again in a moment.'
+    )) ||
+    (error.category === 'workspace' && (
+      error.message.startsWith('Workspace load failed:') ||
+      error.message.startsWith('Session refresh failed:') ||
+      error.message.startsWith('Player load failed:')
+    )),
+  ) ?? null
 
   const latestDmText =
     currentResponseEntry?.text ||
@@ -1191,6 +1259,7 @@ function AIDMApp() {
     queuedActionText,
     queuedActionRetryable,
     preparePendingRoll,
+    retryRecoverableSubmission,
     retryDiceRoll,
     sharedRollNotice,
     setActionText,
@@ -1295,6 +1364,13 @@ function AIDMApp() {
       : realtimeLabel === 'Error' || realtimeLabel === 'Offline'
         ? 'warn'
         : 'neutral'
+  const handleWorkspaceUnauthorized = useCallback(() => {
+    // Hosted first-run visitors should land on the welcome screen and choose
+    // Log In or Create Account themselves. Existing sessions still reopen the
+    // access dialog when their saved credentials expire.
+    if (!accountSessionAvailable && !runtimeAccount?.workspaceId) return
+    openAuthTokenPrompt()
+  }, [accountSessionAvailable, openAuthTokenPrompt, runtimeAccount?.workspaceId])
 
   const {
     clearSessionData,
@@ -1337,7 +1413,7 @@ function AIDMApp() {
     setStreamingTurn,
     setSendPending,
     pushError,
-    onUnauthorized: openAuthTokenPrompt,
+    onUnauthorized: handleWorkspaceUnauthorized,
   })
 
   const {
@@ -2352,16 +2428,20 @@ function AIDMApp() {
     returnFocusRef: dialogReturnFocusRef,
   })
   const {
+    createAccountFromTitleScreen,
     createCampaignFromTitleScreen,
     continueFromTitleScreen,
+    logInFromTitleScreen,
     playNowFromTitleScreen,
     playNowPending,
     showTitleScreen,
+    titleScreenAccountReady,
     titleScreenCanContinue,
   } = usePlayNowOnboarding({
     activeSessionId,
     auth,
     authRequired: health?.auth_required ?? null,
+    hostedAccessReady: hostedWorkspaceAccessReady,
     backendReady: health?.status === 'ok',
     baseUrl,
     campaignCount: campaigns.length,
@@ -2376,10 +2456,19 @@ function AIDMApp() {
     campaignUpserted,
     sessionUpserted,
     playerUpserted,
+    adoptAccountSession,
     clearAuthTokenErrors,
     loadPlayerDetail,
     loadSessionData,
     openCreateCampaignDialog,
+    openLogIn: () => {
+      setRuntimeAuthIntent('login')
+      openRuntimeSettings('auth')
+    },
+    openCreateAccount: () => {
+      setRuntimeAuthIntent('signup')
+      openRuntimeSettings('auth')
+    },
     pushError,
     refreshCampaignWorkspace,
     refreshRoot,
@@ -2404,7 +2493,8 @@ function AIDMApp() {
 
   useEffect(() => {
     if (
-      !auth ||
+      showTitleScreen ||
+      (!auth && (!runtimeAccount?.workspaceId || runtimeAccount.workspaceId !== workspaceId)) ||
       selectedCampaignId ||
       health?.status !== 'ok' ||
       workspaceLoading ||
@@ -2424,7 +2514,10 @@ function AIDMApp() {
     loadingCampaignId,
     modalOpen,
     rememberDialogTrigger,
+    runtimeAccount?.workspaceId,
     selectedCampaignId,
+    showTitleScreen,
+    workspaceId,
     workspaceLoading,
   ])
 
@@ -2652,6 +2745,13 @@ function AIDMApp() {
       setSessionRecap('')
       return undefined
     }
+    // When a populated session's timeline is being cleared (for example,
+    // during delete/switch), wait for the replacement log instead of racing a
+    // recap request against the session mutation.
+    if ((activeSession?.turn_count ?? 0) > 0 && !latestDmEntry?.id) {
+      setSessionRecap('')
+      return undefined
+    }
     let cancelled = false
     setSessionRecap('')
     apiFetch<SessionRecapResponse>(baseUrl, `/api/sessions/${activeSessionId}/recap`, auth)
@@ -2668,7 +2768,7 @@ function AIDMApp() {
     return () => {
       cancelled = true
     }
-  }, [activeSessionId, auth, baseUrl])
+  }, [activeSession?.turn_count, activeSessionId, auth, baseUrl, latestDmEntry?.id])
 
   useEffect(() => {
     if (!activeSessionId || !canUseOperatorTools) {
@@ -3084,7 +3184,9 @@ function AIDMApp() {
   const backendStatusTone =
     health === null ? 'neutral' : health.status === 'ok' ? 'good' : 'warn'
   const backendDisplayUrl = baseUrl || 'Same origin'
-  const tableDisplayName = tableStatusDisplayName(runtimeAccount, workspaceId)
+  const tableDisplayName = health?.auth_required === false
+    ? 'Local Table'
+    : tableStatusDisplayName(runtimeAccount, workspaceId)
   const runtimeLabel = runtimePending
     ? 'Switching'
     : runtime?.configured
@@ -3164,43 +3266,53 @@ function AIDMApp() {
     temperature: '0.7',
   }
   const toggleCampaignRail = useCallback(() => {
-    if (mobileViewport) {
+    if (compactViewport) {
+      if (mobileRailOpen) {
+        closeMobilePanelsAndRestoreFocus()
+        return
+      }
+      mobilePanelReturnFocusRef.current = campaignRailToggleRef.current
       setMobileInspectorOpen(false)
-      setMobileRailOpen((current) => !current)
+      setMobileRailOpen(true)
       return
     }
     setRailCollapsed((current) => !current)
-  }, [mobileViewport])
+  }, [closeMobilePanelsAndRestoreFocus, compactViewport, mobileRailOpen])
   const toggleMobileInspector = useCallback(() => {
+    if (mobileInspectorOpen) {
+      closeMobilePanelsAndRestoreFocus()
+      return
+    }
+    mobilePanelReturnFocusRef.current = mobileInspectorToggleRef.current
     setMobileRailOpen(false)
-    setMobileInspectorOpen((current) => !current)
-  }, [])
+    setMobileInspectorOpen(true)
+  }, [closeMobilePanelsAndRestoreFocus, mobileInspectorOpen])
   const setMainTabFromRail = useCallback((nextTab: SetStateAction<MainTab>) => {
     setMainTab((current) =>
       typeof nextTab === 'function'
         ? (nextTab as (currentTab: MainTab) => MainTab)(current)
         : nextTab,
     )
-    if (mobileViewport) {
-      closeMobilePanels()
+    if (compactViewport) {
+      closeMobilePanelsAndRestoreFocus()
     }
-  }, [closeMobilePanels, mobileViewport])
+  }, [closeMobilePanelsAndRestoreFocus, compactViewport])
   const setInspectorTabFromRail = useCallback((nextTab: SetStateAction<InspectorTab>) => {
     setInspectorTab((current) =>
       typeof nextTab === 'function'
         ? (nextTab as (currentTab: InspectorTab) => InspectorTab)(current)
         : nextTab,
     )
-    if (mobileViewport) {
+    if (compactViewport) {
+      mobilePanelReturnFocusRef.current = mobileInspectorToggleRef.current
       setMobileRailOpen(false)
       setMobileInspectorOpen(true)
     }
-  }, [mobileViewport])
+  }, [compactViewport])
   const fullscreenActive = isFullscreen || fullscreenFallback
-  const campaignRailToggleLabel = mobileViewport
+  const campaignRailToggleLabel = compactViewport
     ? mobileRailOpen ? 'Close campaign menu' : 'Open campaign menu'
     : railCollapsed ? 'Show campaign rail' : 'Hide campaign rail'
-  const campaignRailTogglePressed = mobileViewport ? mobileRailOpen : railCollapsed
   const mobileInspectorToggleLabel = mobileInspectorOpen
     ? 'Close character panel'
     : 'Open character panel'
@@ -3227,10 +3339,12 @@ function AIDMApp() {
           <strong>AI-DM</strong>
         </div>
         <button
+          ref={campaignRailToggleRef}
           type="button"
           className="top-icon"
           aria-label={campaignRailToggleLabel}
-          aria-pressed={campaignRailTogglePressed}
+          aria-controls={CAMPAIGN_RAIL_ID}
+          aria-expanded={compactViewport ? mobileRailOpen : !railCollapsed}
           onClick={toggleCampaignRail}
         >
           <Menu size={21} />
@@ -3367,13 +3481,15 @@ function AIDMApp() {
           >
             {ttsEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
           </button>
-          {mobileViewport ? (
+          {compactViewport ? (
             <>
               <button
+                ref={mobileInspectorToggleRef}
                 type="button"
                 className="top-icon mobile-inspector-toggle"
                 aria-label={mobileInspectorToggleLabel}
-                aria-pressed={mobileInspectorOpen}
+                aria-controls={INSPECTOR_PANEL_ID}
+                aria-expanded={mobileInspectorOpen}
                 title={mobileInspectorToggleLabel}
                 onClick={toggleMobileInspector}
               >
@@ -3522,25 +3638,34 @@ function AIDMApp() {
 
       {showTitleScreen ? (
         <TitleScreen
+          accountReady={titleScreenAccountReady}
           pending={playNowPending}
           canContinue={titleScreenCanContinue}
           campaignCount={campaigns.length}
           selectedCampaignTitle={campaign?.title ?? null}
           runtimeConfigured={Boolean(runtime?.configured)}
           onPlayNow={() => void playNowFromTitleScreen()}
+          onLogIn={logInFromTitleScreen}
+          onCreateAccount={createAccountFromTitleScreen}
           onCreateCampaign={createCampaignFromTitleScreen}
           onContinue={continueFromTitleScreen}
         />
       ) : null}
 
-      <button
-        type="button"
-        className="mobile-panel-scrim"
-        aria-label="Close mobile side panel"
-        onClick={closeMobilePanels}
-      />
+      <div
+        className="workspace-surfaces"
+        aria-hidden={showTitleScreen ? true : undefined}
+        inert={showTitleScreen ? true : undefined}
+      >
+        <button
+          type="button"
+          className="mobile-panel-scrim"
+          aria-label="Close mobile side panel"
+          onClick={closeMobilePanelsAndRestoreFocus}
+        />
 
       <CampaignRail
+        inert={compactViewport && !mobileRailOpen}
         backendStatus={health?.status ?? null}
         campaignTitle={campaign?.title ? truncateText(campaign.title, 12) : null}
         campaignCards={campaignCards}
@@ -3584,7 +3709,7 @@ function AIDMApp() {
             setSelectedCampaignId(campaignId)
           }
           setMainTab('turns')
-          closeMobilePanels()
+          closeMobilePanelsAndRestoreFocus()
         }}
         onSelectSession={(sessionId) => {
           if (
@@ -3600,14 +3725,18 @@ function AIDMApp() {
             setStreamingTurn(null)
           }
           setMainTab('turns')
-          closeMobilePanels()
+          closeMobilePanelsAndRestoreFocus()
         }}
         lastSyncLabel={formatShortAge(lastSync)}
         onRefreshWorkspace={() => void refreshCurrentWorkspace()}
         errors={errors}
       />
 
-      <SessionBoard
+      <div
+        className="workspace-main-board-isolation"
+        inert={compactViewport && (mobileRailOpen || mobileInspectorOpen) ? true : undefined}
+      >
+        <SessionBoard
         activeSessionTitle={activeSessionTitle}
         campaignTitle={campaignTitle}
         sessionId={activeSessionId}
@@ -3631,7 +3760,7 @@ function AIDMApp() {
         sessionLoading={sessionLoading}
         mainTab={mainTab}
         setMainTab={setMainTab}
-        showMobilePresenceStrip={mobileViewport}
+        showMobilePresenceStrip={compactViewport}
         activePlayers={activePlayersWithHealth}
         downloadCampaignChronicle={downloadCampaignChronicle}
         downloadSessionChronicle={downloadSessionChronicle}
@@ -3676,6 +3805,15 @@ function AIDMApp() {
         turnRecoverySuccess={turnRecoverySuccess}
         onResolveTurnRecovery={resolveTurnRecovery}
         combatState={worldStatePanel.combat}
+        worldState={worldStatePanel}
+        operationalError={latestPlayError?.message}
+        onRecoverOperationalError={async () => {
+          setSocketReconnectKey((current) => current + 1)
+          await refreshCurrentWorkspace()
+          if (latestPlayError) {
+            setErrors((current) => current.filter((error) => error.id !== latestPlayError.id))
+          }
+        }}
         dmExecutionStats={dmExecutionStats}
         welcomeText={welcomeText}
         showJumpToLatest={showJumpToLatest}
@@ -3706,6 +3844,7 @@ function AIDMApp() {
           selectedPlayerHasTurn,
           queuedActionText,
           queuedActionRetryable,
+          retryRecoverableSubmission,
           clearQueuedAction,
           updateTurnControl,
           ttsEnabled,
@@ -3752,9 +3891,11 @@ function AIDMApp() {
           updateItemDraftName,
           updateItemCostGold,
         }}
-      />
+        />
+      </div>
 
       <InspectorPanel
+        inert={compactViewport && !mobileInspectorOpen}
         inspectorTab={inspectorTab}
         setInspectorTab={setInspectorTab}
         setMainTab={setMainTab}
@@ -3820,6 +3961,7 @@ function AIDMApp() {
           <strong>{diceRollMessage(sharedRollNotice.roll)}</strong>
         </aside>
       ) : null}
+      </div>
 
       {diceRoll ? (
         <div

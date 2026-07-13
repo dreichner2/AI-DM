@@ -34,12 +34,77 @@ describe('App runtime and workspace access', () => {
     expect(screen.queryByRole('button', { name: 'Open table settings' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Change table access' })).toBeInTheDocument()
   })
+
+  it('keeps first-launch Play Now above campaign selection when stale auth is restored locally', async () => {
+    sessionStorage.setItem('aidm:authToken', 'stale-local-token')
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'AI-DM' })).toBeInTheDocument()
+    await waitFor(() =>
+      expect(appTestState.fetchCalls).toEqual(
+        expect.arrayContaining([expect.objectContaining({ method: 'GET', path: '/api/campaigns' })]),
+      ),
+    )
+    expect(screen.queryByRole('dialog', { name: 'Choose Campaign' })).not.toBeInTheDocument()
+  })
+
+  it('opens campaign selection for an authenticated cookie session without a bearer token', async () => {
+    appTestState.health.auth_required = true
+    localStorage.removeItem('aidm:selectedCampaignId')
+    localStorage.removeItem('aidm:selectedSessionId')
+    localStorage.removeItem('aidm:selectedPlayerId')
+    localStorage.setItem('aidm:accountTokenTransport', 'http_only_cookie')
+    localStorage.setItem('aidm:workspaceId', 'owner')
+    localStorage.setItem(
+      'aidm:account',
+      JSON.stringify({
+        accountId: 1,
+        username: 'cookie-player',
+        firstName: 'Cookie',
+        lastName: 'Player',
+        displayName: 'Cookie Player',
+        workspaceId: 'owner',
+        workspaceRole: 'player',
+        isWorkspaceAdmin: false,
+        requiresPasswordSetup: false,
+        workspaces: [
+          {
+            workspace_id: 'owner',
+            workspace_name: 'Test',
+            table_name: 'Test',
+            access_mode: 'password',
+            workspace_role: 'player',
+            is_workspace_admin: false,
+            created_at: null,
+            updated_at: null,
+          },
+        ],
+      }),
+    )
+
+    render(<App />)
+
+    const chooser = await screen.findByRole('dialog', { name: 'Choose Campaign' })
+    expect(screen.queryByRole('heading', { name: 'AI-DM' })).not.toBeInTheDocument()
+
+    fireEvent.click(within(chooser).getByRole('button', { name: 'Choose Smoke Campaign' }))
+
+    await screen.findByRole('heading', { name: /Session Alpha/i })
+    const characterDialog = await screen.findByRole('dialog', { name: 'Join Campaign' })
+    fireEvent.click(within(characterDialog).getByRole('button', { name: 'Join as Ember' }))
+    expect(await screen.findByLabelText('Scene music player')).toBeInTheDocument()
+  })
+
   it('prompts for an account when the public app requires a table token', async () => {
+    appTestState.health.auth_required = true
     appTestState.requiredAuthToken = 'shared-token'
     localStorage.setItem('aidm:selectedPlayerId', '30')
 
     render(<App />)
 
+    await screen.findByRole('button', { name: 'Play Now — Ready-Made Adventure' })
+    fireEvent.click(screen.getByRole('button', { name: 'Log In' }))
     let dialog = await screen.findByRole('dialog', { name: 'Log In' })
     expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
@@ -82,6 +147,34 @@ describe('App runtime and workspace access', () => {
         expect.objectContaining({
           method: 'GET',
           path: '/api/players/30',
+        }),
+      ]),
+    )
+  })
+
+  it('starts hosted Play Now as a guest without opening account access', async () => {
+    appTestState.health.auth_required = true
+    appTestState.requiredAuthToken = 'guest-token'
+    localStorage.removeItem('aidm:selectedCampaignId')
+    localStorage.removeItem('aidm:selectedSessionId')
+    localStorage.removeItem('aidm:selectedPlayerId')
+
+    render(<App />)
+
+    const playNow = await screen.findByRole('button', { name: 'Play Now — Ready-Made Adventure' })
+    fireEvent.click(playNow)
+
+    expect(await screen.findByRole('heading', { name: /Session Alpha/i })).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Log In' })).not.toBeInTheDocument()
+    expect(sessionStorage.getItem('aidm:authToken')).toBe('guest-token')
+    expect(sessionStorage.getItem('aidm:accountTokenTransport')).toBe('bearer')
+    expect(localStorage.getItem('aidm:workspaceId')).toBe('owner')
+    expect(appTestState.fetchCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: 'POST',
+          path: '/api/accounts/play-now',
+          authorization: null,
         }),
       ]),
     )
@@ -455,6 +548,7 @@ describe('App runtime and workspace access', () => {
   })
 
   it('opens table auth from the backend gear when an account is active', async () => {
+    appTestState.health.auth_required = true
     sessionStorage.setItem('aidm:authToken', 'account-token')
     sessionStorage.setItem('aidm:workspaceToken', 'old-workspace')
     sessionStorage.setItem(
@@ -578,6 +672,7 @@ describe('App runtime and workspace access', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Save Table Token' })).not.toBeInTheDocument())
   })
   it('clears stale owner selections after connecting to an empty auth workspace', async () => {
+    appTestState.health.auth_required = true
     appTestState.requiredAuthToken = 'aidan_test'
     appTestState.campaigns = []
     appTestState.worlds = []
@@ -591,6 +686,8 @@ describe('App runtime and workspace access', () => {
 
     render(<App />)
 
+    await screen.findByRole('button', { name: 'Play Now — Ready-Made Adventure' })
+    fireEvent.click(screen.getByRole('button', { name: 'Log In' }))
     let dialog = await screen.findByRole('dialog', { name: 'Log In' })
     fireEvent.change(within(dialog).getByLabelText('Username'), { target: { value: 'Aidan' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))

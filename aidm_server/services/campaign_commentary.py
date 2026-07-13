@@ -45,6 +45,11 @@ COMMON_UNDISCOVERED_COLLECTIONS = (
     'handouts',
     'lore',
 )
+RECENT_RECAP_TURN_LIMIT = 3
+RECENT_RECAP_QUERY_LIMIT = 12
+RECENT_RECAP_ACTION_CHAR_LIMIT = 160
+RECENT_RECAP_OUTCOME_CHAR_LIMIT = 260
+RECENT_RECAP_CHAR_BUDGET = 1_200
 
 
 def session_recap_payload(session_obj: Session) -> dict[str, Any]:
@@ -56,9 +61,6 @@ def session_recap_payload(session_obj: Session) -> dict[str, Any]:
     if snapshot_recap:
         recap = snapshot_recap
         source = 'state_snapshot'
-    elif text(state_record.rolling_summary if state_record else ''):
-        recap = text(state_record.rolling_summary)
-        source = 'session_state'
     else:
         recap = _recent_turn_recap(session_obj.session_id)
         source = 'recent_turns' if recap else 'empty'
@@ -167,7 +169,15 @@ def _session_snapshot(session_obj: Session) -> dict[str, Any]:
 
 
 def _snapshot_recap(snapshot: dict[str, Any]) -> str:
-    for key in ('recap', 'sessionRecap', 'session_recap', 'previouslyOn', 'previously_on'):
+    for key in (
+        'recap',
+        'playerRecap',
+        'player_recap',
+        'sessionRecap',
+        'session_recap',
+        'previouslyOn',
+        'previously_on',
+    ):
         value = text(snapshot.get(key))
         if value:
             return value
@@ -185,22 +195,80 @@ def _session_state_payload(snapshot: dict[str, Any], state_record: SessionState 
     }
 
 
+def _bounded_recap_text(value: Any, limit: int) -> str:
+    normalized = ' '.join(text(value).split())
+    if len(normalized) <= limit:
+        return normalized
+    prefix = normalized[: limit + 1]
+    sentence_end = max(prefix.rfind('. '), prefix.rfind('! '), prefix.rfind('? '))
+    if sentence_end >= max(60, limit // 2):
+        return prefix[: sentence_end + 1]
+    clipped = prefix.rsplit(' ', 1)[0].rstrip(' ,;:-')
+    return f'{clipped or normalized[:limit].rstrip()}…'
+
+
+def _sentence(value: str) -> str:
+    value = value.strip()
+    if not value or value.endswith(('.', '!', '?', '…')):
+        return value
+    return f'{value}.'
+
+
+def _lowercase_leading_word(value: str) -> str:
+    if not value or (len(value) > 1 and value[:2].isupper()):
+        return value
+    return f'{value[0].lower()}{value[1:]}'
+
+
+def _turn_recap_beat(turn: DmTurn) -> str:
+    action = _bounded_recap_text(turn.player_input, RECENT_RECAP_ACTION_CHAR_LIMIT)
+    outcome = _bounded_recap_text(turn.dm_output, RECENT_RECAP_OUTCOME_CHAR_LIMIT)
+    if not outcome:
+        return ''
+
+    character = text(turn.player.character_name if turn.player else '')
+    character = character or text(turn.player.name if turn.player else '') or 'The party'
+    action_without_punctuation = action.rstrip('.!?')
+    lowered_action = action_without_punctuation.lower()
+    if lowered_action.startswith('please narrate the opening scene for this campaign'):
+        action_summary = 'The adventure began'
+    elif lowered_action in {'what can i see', 'what do i see', 'what can we see', 'what do we see'}:
+        action_summary = f'{character} surveyed the scene'
+    elif lowered_action.startswith('i '):
+        action_summary = f'{character} chose to {_lowercase_leading_word(action_without_punctuation[2:])}'
+    elif lowered_action.startswith('we '):
+        action_summary = (
+            f'{character} and the party chose to '
+            f'{_lowercase_leading_word(action_without_punctuation[3:])}'
+        )
+    elif lowered_action:
+        action_summary = f'{character} chose to {_lowercase_leading_word(action_without_punctuation)}'
+    else:
+        action_summary = 'The party pressed onward'
+
+    outcome_status = text(turn.outcome_status).lower()
+    if outcome_status == 'deferred':
+        outcome_summary = f'The outcome remained unresolved. {_sentence(outcome)}'
+    else:
+        outcome_summary = _sentence(outcome)
+    return f'{_sentence(action_summary)} {outcome_summary}'.strip()
+
+
 def _recent_turn_recap(session_id: int) -> str:
     turns = (
-        DmTurn.query.filter_by(session_id=session_id)
+        DmTurn.query.filter_by(session_id=session_id, status='completed')
         .order_by(DmTurn.created_at.desc(), DmTurn.turn_id.desc())
-        .limit(3)
+        .limit(RECENT_RECAP_QUERY_LIMIT)
         .all()
     )
-    entries: list[str] = []
-    for turn in reversed(turns):
-        player_input = text(turn.player_input)
-        dm_output = text(turn.dm_output)
-        if player_input:
-            entries.append(f'Player: {player_input}')
-        if dm_output:
-            entries.append(f'DM: {dm_output}')
-    return '\n'.join(entries)
+    beats: list[str] = []
+    for turn in turns:
+        beat = _turn_recap_beat(turn)
+        if beat:
+            beats.append(beat)
+        if len(beats) == RECENT_RECAP_TURN_LIMIT:
+            break
+    return _bounded_recap_text(' '.join(reversed(beats)), RECENT_RECAP_CHAR_BUDGET)
 
 
 def _status_by_checkpoint_id(
