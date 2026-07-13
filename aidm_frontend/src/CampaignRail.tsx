@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from 'react'
-import { Archive, Globe2, Pencil, Plus, Trash2, Upload } from 'lucide-react'
+import { Archive, Globe2, Pencil, Plus, Trash2, Upload, X } from 'lucide-react'
 import { NavItem, StatusDot, ThinIcon, Thumbnail } from './AppChrome'
 import type { InspectorTab } from './InspectorPanel'
 
@@ -29,6 +29,8 @@ export type RailError = {
 
 type CampaignRailProps = {
   inert?: boolean
+  modal?: boolean
+  onRequestClose?: () => void
   backendStatus: string | null
   campaignTitle: string | null
   campaignCards: CampaignCard[]
@@ -75,6 +77,8 @@ function formatErrorClock(value: number) {
 
 export function CampaignRail({
   inert,
+  modal = false,
+  onRequestClose,
   backendStatus,
   campaignTitle,
   campaignCards,
@@ -119,9 +123,21 @@ export function CampaignRail({
     <aside
       id={CAMPAIGN_RAIL_ID}
       className="campaign-rail"
+      role={modal ? 'dialog' : undefined}
       aria-label="Campaign and session navigation"
+      aria-modal={modal ? true : undefined}
       inert={inert ? true : undefined}
     >
+      {modal && onRequestClose ? (
+        <button
+          type="button"
+          className="drawer-close-button"
+          aria-label="Close campaign menu"
+          onClick={onRequestClose}
+        >
+          <X size={18} />
+        </button>
+      ) : null}
       <section className="rail-section">
         <div className="rail-heading campaign-heading">
           <span>Campaigns</span>
@@ -214,7 +230,9 @@ export function CampaignRail({
               <span />
             </div>
           ) : (
-            <div className="empty-rail">No campaigns match.</div>
+            <div className="empty-rail">
+              {campaignFilter.trim() ? 'No campaigns match your search.' : 'No campaigns yet.'}
+            </div>
           )}
         </div>
       </section>
@@ -297,19 +315,13 @@ export function CampaignRail({
 
       <nav className="rail-nav">
         <NavItem
-          icon={<ThinIcon name="archive" size={18} />}
-          label="Campaigns"
+          icon={<ThinIcon name="turns" size={18} />}
+          label="Adventure"
           selected={mainTab === 'turns' && inspectorTab === 'party'}
           onClick={() => {
             setMainTab('turns')
             setInspectorTab('party')
           }}
-        />
-        <NavItem
-          icon={<ThinIcon name="turns" size={18} />}
-          label="Turns"
-          selected={mainTab === 'turns'}
-          onClick={() => setMainTab('turns')}
         />
         <NavItem
           icon={<ThinIcon name="map" size={18} />}

@@ -2977,6 +2977,10 @@
   background: rgba(255, 107, 44, 0.1);
 }
 
+.composer-tools .phone-action-mode {
+  display: none;
+}
+
 @media (max-width: 560px) {
   .combat-hud-heading {
     align-items: start;

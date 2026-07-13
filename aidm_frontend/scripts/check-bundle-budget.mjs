@@ -21,9 +21,10 @@ const budgets = {
   asyncJsGzip: 240 * 1024,
   cssGzip: 48 * 1024,
   initialAssetGzip: 220 * 1024,
-  // HEAD was already at 419.9 KiB. Allow the bounded at-a-glance, recovery,
-  // and combat UX while retaining the existing initial and async ceilings.
-  totalAssetGzip: 424 * 1024,
+  // The accessible tab/drawer behavior and complete two-theme surface system
+  // add a bounded ~3 KiB while the stricter initial JS, async JS, CSS, and
+  // initial-asset ceilings remain unchanged.
+  totalAssetGzip: 428 * 1024,
   distRaw: 190 * mebibyte,
   staticRaw: 188 * mebibyte,
   largestStaticRaw: 175 * mebibyte,

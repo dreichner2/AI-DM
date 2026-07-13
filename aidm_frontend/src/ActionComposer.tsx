@@ -718,6 +718,16 @@ export function ActionComposer({
         >
           <ThinIcon name="dice" size={16} /> Roll <ThinIcon name="chevron" size={13} />
         </button>
+        <button
+          type="button"
+          className={`phone-action-mode ${composerMode === 'action' ? 'selected' : ''}`}
+          aria-label="Return to Action mode"
+          aria-pressed={composerMode === 'action'}
+          onClick={() => applyComposerMode('action')}
+          disabled={sendPending}
+        >
+          <ThinIcon name="bolt" size={16} /> Action
+        </button>
         {!isRollMode ? (
           <>
             <button

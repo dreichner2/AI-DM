@@ -149,7 +149,7 @@ export function WorldManagerDialog({
               disabled={form.pending}
             />
           </label>
-          {form.error ? <div className="dialog-error">{form.error}</div> : null}
+          {form.error ? <div className="dialog-error" role="alert">{form.error}</div> : null}
           <footer>
             <button
               type="button"
@@ -210,7 +210,7 @@ export function WorldDeleteDialog({
               If campaigns are linked, force delete removes those linked campaigns first.
             </span>
           </div>
-          {dialog.error ? <div className="dialog-error">{dialog.error}</div> : null}
+          {dialog.error ? <div className="dialog-error" role="alert">{dialog.error}</div> : null}
           <footer>
             <button
               type="button"

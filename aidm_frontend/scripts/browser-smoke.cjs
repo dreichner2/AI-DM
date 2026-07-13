@@ -412,7 +412,7 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
   )
 
   await page.getByRole('button', { name: 'Session menu' }).click()
-  await page.getByRole('menuitem', { name: 'Delete session' }).click()
+  await page.getByRole('button', { name: 'Delete session' }).click()
   await expect(page.getByRole('dialog', { name: 'Delete Session' })).toBeVisible()
   await page.getByRole('button', { name: 'Delete Session' }).click()
   await expect(page.getByRole('heading', { name: /No session selected/i })).toBeVisible({ timeout: 15_000 })
@@ -471,7 +471,7 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
   })
 
   await page.getByRole('button', { name: 'Session menu' }).click()
-  await page.getByRole('menuitem', { name: 'Delete session' }).click()
+  await page.getByRole('button', { name: 'Delete session' }).click()
   await expect(page.getByRole('dialog', { name: 'Delete Session' })).toBeVisible()
   await page.getByRole('button', { name: 'Delete Session' }).click()
   await expect(page.getByRole('heading', { name: /No session selected/i })).toBeVisible({ timeout: 15_000 })

@@ -127,6 +127,11 @@
   background: transparent;
 }
 
+.search-field:focus-within {
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus-ring) 22%, transparent);
+}
+
 .search-field input::placeholder {
   color: var(--faint);
 }

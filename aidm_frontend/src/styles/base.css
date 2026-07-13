@@ -51,11 +51,11 @@ button {
   border: 0;
   cursor: pointer;
   transition:
-    border-color 160ms ease,
-    background 160ms ease,
-    box-shadow 160ms ease,
-    color 160ms ease,
-    transform 160ms ease;
+    border-color var(--motion-fast) var(--ease-standard),
+    background var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
 }
 
 button:disabled {
@@ -67,7 +67,7 @@ button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
-  outline: 2px solid rgba(255, 176, 103, 0.85);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -191,6 +191,11 @@ select:focus-visible {
 .workspace-surfaces[aria-hidden='true'] {
   visibility: hidden;
   pointer-events: none;
+}
+
+/* Hidden grid children must not create implicit rows behind onboarding. */
+.prototype-shell.title-screen-active .workspace-surfaces {
+  display: none;
 }
 
 .beta-runtime-notices {
@@ -938,7 +943,44 @@ select:focus-visible {
   background:
     linear-gradient(180deg, rgba(255, 107, 44, 0.055), transparent 110px),
     linear-gradient(180deg, var(--surface-2), var(--surface));
-  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.48);
+  box-shadow: var(--overlay-shadow);
+}
+
+.modal-loading-dialog {
+  display: grid;
+  width: min(420px, 100%);
+  min-height: 188px;
+  place-items: center;
+  align-content: center;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  text-align: center;
+}
+
+.modal-loading-dialog strong {
+  color: var(--heading);
+  font-size: 1rem;
+}
+
+.modal-loading-dialog p {
+  max-width: 32ch;
+  margin: 0;
+  color: var(--muted);
+}
+
+.modal-loading-mark {
+  width: 34px;
+  height: 34px;
+  border: 2px solid var(--line-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: modal-loading-spin 800ms linear infinite;
+}
+
+@keyframes modal-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .player-edit-dialog {
@@ -2553,7 +2595,7 @@ select:focus-visible {
 }
 
 .campaign-pack-picker-option:hover,
-.campaign-pack-picker-option[aria-selected="true"] {
+.campaign-pack-picker-option[aria-pressed="true"] {
   border-color: rgba(255, 107, 44, 0.44);
   background: rgba(255, 107, 44, 0.12);
 }
@@ -3271,7 +3313,18 @@ select:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dice-request-state.requesting span {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .dice-request-state.requesting span,
+  .rail-skeleton-list span,
+  .modal-loading-mark {
     animation: none;
   }
 }

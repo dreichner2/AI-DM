@@ -26,6 +26,13 @@ const VIEWPORTS = [
   { name: 'tablet-portrait', width: 768, height: 1024, fullPage: false },
   { name: 'mobile-full', width: 390, height: 844, fullPage: false },
   { name: 'mobile-narrow', width: 360, height: 800, fullPage: false },
+  { name: 'mobile-small', width: 320, height: 667, fullPage: false },
+  { name: 'mobile-landscape', width: 844, height: 390, fullPage: false },
+]
+
+const LIGHT_THEME_VIEWPORTS = [
+  { name: 'desktop-light', width: 1440, height: 900, fullPage: false },
+  { name: 'mobile-light', width: 390, height: 844, fullPage: false },
 ]
 
 function log(message) {
@@ -279,7 +286,7 @@ async function assertLayoutHealth(page, viewport) {
       throw new Error(`${viewport.name} inspector tabs are not horizontally navigable`)
     }
     await page.locator('.right-inspector .inspector-tabs [role="tab"]').last().scrollIntoViewIfNeeded()
-    await inspectorToggle.click()
+    await page.locator('.right-inspector').getByRole('button', { name: 'Close character panel' }).click()
     await expect(page.locator('.right-inspector')).toBeHidden()
   } else {
     await expect(page.locator('.right-inspector')).toBeVisible()
@@ -302,6 +309,13 @@ async function assertLayoutHealth(page, viewport) {
       '.scene-music-player',
       '.roll-wait-banner',
       '.turn-feed',
+      '.dm-response-card',
+      '.dm-response-card .response-copy',
+      '.dm-response-card .stream-state',
+      '.dm-response-card .dm-response-actions',
+      '.turn-card',
+      '.turn-card > p, .turn-card > .narrative-prose, .turn-card > .turn-consequence',
+      '.combat-hud',
       '.action-composer',
       '.composer-tools',
       '.right-inspector',
@@ -331,6 +345,9 @@ async function assertLayoutHealth(page, viewport) {
       musicPosition: document.querySelector('.scene-music-player')
         ? window.getComputedStyle(document.querySelector('.scene-music-player')).position
         : null,
+      rollWaitPosition: document.querySelector('.roll-wait-banner')
+        ? window.getComputedStyle(document.querySelector('.roll-wait-banner')).position
+        : null,
     }
   })
 
@@ -340,8 +357,68 @@ async function assertLayoutHealth(page, viewport) {
   }
 
   const visibleTurnFeed = metrics.boxes['.turn-feed']
-  if (viewport.width <= 1100 && (!visibleTurnFeed || visibleTurnFeed.height < 120)) {
+  const minimumTimelineHeight = viewport.height <= 500 ? 50 : 120
+  if (viewport.width <= 1100 && (!visibleTurnFeed || visibleTurnFeed.height < minimumTimelineHeight)) {
     throw new Error(`${viewport.name} leaves only ${visibleTurnFeed?.height ?? 0}px for the session timeline`)
+  }
+
+  const compactPhone = viewport.width <= 560 || (viewport.width <= 1100 && viewport.height <= 500)
+  if (compactPhone) {
+    const composer = metrics.boxes['.action-composer']
+    const responseCard = metrics.boxes['.dm-response-card']
+    const responseCopy = metrics.boxes['.dm-response-card .response-copy']
+    const minimumFeedHeight = viewport.height <= 500 ? 50 : 220
+    if (!visibleTurnFeed || visibleTurnFeed.height < minimumFeedHeight) {
+      throw new Error(`${viewport.name} leaves only ${visibleTurnFeed?.height ?? 0}px for readable story content`)
+    }
+    if (!composer || composer.height > 220 || composer.bottom > metrics.viewport.height + 1) {
+      throw new Error(`${viewport.name} composer consumes ${composer?.height ?? 0}px or is clipped`)
+    }
+    if (visibleTurnFeed && visibleTurnFeed.bottom > composer.top + 1) {
+      throw new Error(`${viewport.name} timeline overlaps the action composer`)
+    }
+    if (
+      responseCard &&
+      responseCopy &&
+      responseCopy.width < responseCard.width * 0.82
+    ) {
+      throw new Error(
+        `${viewport.name} squeezes response copy to ${responseCopy.width}px inside a ${responseCard.width}px card`,
+      )
+    }
+    if (metrics.rollWaitPosition === 'sticky') {
+      throw new Error(`${viewport.name} pins the pending-roll banner over the story`)
+    }
+
+    const actionMode = page.getByRole('button', { name: 'Return to Action mode' })
+    await expect(actionMode).toBeVisible()
+    const spellMode = page.locator('.composer-tools').getByRole('button', { name: /Spell/ })
+    await spellMode.click()
+    await expect(spellMode).toHaveAttribute('aria-pressed', 'true')
+    await actionMode.click()
+    await expect(actionMode).toHaveAttribute('aria-pressed', 'true')
+  }
+
+  if (viewport.width <= 1100) {
+    const turnCard = metrics.boxes['.turn-card']
+    const turnCopy = metrics.boxes['.turn-card > p, .turn-card > .narrative-prose, .turn-card > .turn-consequence']
+    if (turnCard && turnCopy && turnCopy.width < turnCard.width * 0.82) {
+      throw new Error(
+        `${viewport.name} squeezes turn copy to ${turnCopy.width}px inside a ${turnCard.width}px card`,
+      )
+    }
+    const streamState = metrics.boxes['.dm-response-card .stream-state']
+    const responseActions = metrics.boxes['.dm-response-card .dm-response-actions']
+    if (
+      streamState &&
+      responseActions &&
+      streamState.right > responseActions.left &&
+      streamState.left < responseActions.right &&
+      streamState.bottom > responseActions.top &&
+      streamState.top < responseActions.bottom
+    ) {
+      throw new Error(`${viewport.name} response status overlaps its report control`)
+    }
   }
 
   if (viewport.width > 1100) {
@@ -397,6 +474,7 @@ async function assertLayoutHealth(page, viewport) {
 async function assertCompactCombatLayout(page, viewport) {
   await page.setViewportSize({ width: viewport.width, height: viewport.height })
   await expect(page.locator('.combat-hud')).toBeVisible()
+  const phoneLayout = viewport.width <= 560
 
   const metrics = await page.evaluate(() => {
     const box = (selector) => {
@@ -411,6 +489,7 @@ async function assertCompactCombatLayout(page, viewport) {
     const overview = combat?.querySelector('.combat-hud-overview')
     const combatRect = combat?.getBoundingClientRect()
     const actionRect = firstAction?.getBoundingClientRect()
+    const reasonRect = firstAction?.querySelector('.combat-hud-option-reason')?.getBoundingClientRect()
     const actionsRect = actions?.getBoundingClientRect()
     const overviewRect = overview?.getBoundingClientRect()
     const visibleFirstActionHeight = combatRect && actionRect
@@ -420,38 +499,72 @@ async function assertCompactCombatLayout(page, viewport) {
       combat: box('.combat-hud'),
       combatClientHeight: combat?.clientHeight ?? 0,
       combatScrollHeight: combat?.scrollHeight ?? 0,
+      combatOverflowY: combat ? window.getComputedStyle(combat).overflowY : null,
       composer: box('.action-composer'),
       situationDisplay: window.getComputedStyle(document.querySelector('.session-at-a-glance')).display,
       turnFeed: box('.turn-feed'),
       viewportHeight: window.innerHeight,
       visibleFirstActionHeight,
+      firstActionHeight: actionRect?.height ?? 0,
+      firstActionWidth: actionRect?.width ?? 0,
+      visibleFirstReasonHeight: reasonRect
+        ? Math.max(0, Math.min(reasonRect.bottom, actionRect?.bottom ?? 0) - Math.max(reasonRect.top, actionRect?.top ?? 0))
+        : null,
+      actionsClientWidth: actions?.clientWidth ?? 0,
+      actionsScrollWidth: actions?.scrollWidth ?? 0,
       actionsBottom: actionsRect?.bottom ?? 0,
       overviewTop: overviewRect?.top ?? 0,
+      overviewDisplay: overview ? window.getComputedStyle(overview).display : 'none',
     }
   })
 
-  if (!metrics.combat || metrics.combat.height > 142) {
+  if (!metrics.combat || metrics.combat.height > (phoneLayout ? 124 : 142)) {
     throw new Error(`${viewport.name} compact combat panel is ${metrics.combat?.height ?? 0}px tall`)
   }
-  if (metrics.combatScrollHeight <= metrics.combatClientHeight + 20) {
+  if (phoneLayout && metrics.combatOverflowY !== 'hidden') {
+    throw new Error(`${viewport.name} compact combat still exposes nested vertical scrolling`)
+  }
+  if (!phoneLayout && metrics.combatScrollHeight <= metrics.combatClientHeight + 20) {
     throw new Error(`${viewport.name} compact combat fixture is not using one intentional scroll region`)
   }
-  if (!metrics.turnFeed || metrics.turnFeed.height < 120) {
+  if (!metrics.turnFeed || metrics.turnFeed.height < (phoneLayout ? 180 : 120)) {
     throw new Error(`${viewport.name} combat leaves only ${metrics.turnFeed?.height ?? 0}px for the timeline`)
   }
-  if (!metrics.composer || metrics.composer.bottom > metrics.viewportHeight + 1) {
+  if (
+    !metrics.composer ||
+    (phoneLayout && metrics.composer.height > 220) ||
+    metrics.composer.bottom > metrics.viewportHeight + 1
+  ) {
     throw new Error(`${viewport.name} combat pushes the composer below the viewport`)
+  }
+  if (phoneLayout && metrics.visibleFirstReasonHeight !== null && metrics.visibleFirstReasonHeight < 10) {
+    throw new Error(`${viewport.name} clips the unavailable-action reason`)
   }
   if (metrics.situationDisplay !== 'none') {
     throw new Error(`${viewport.name} compact combat did not replace the redundant situation card`)
   }
-  if (metrics.visibleFirstActionHeight < 40) {
+  if (
+    metrics.visibleFirstActionHeight < (phoneLayout ? 60 : 40) ||
+    (phoneLayout && metrics.visibleFirstActionHeight < metrics.firstActionHeight - 1)
+  ) {
     throw new Error(
       `${viewport.name} exposes only ${metrics.visibleFirstActionHeight}px of the first combat choice`,
     )
   }
-  if (metrics.overviewTop < metrics.actionsBottom) {
+  if (metrics.overviewDisplay !== 'none' && metrics.overviewTop < metrics.actionsBottom) {
     throw new Error(`${viewport.name} combat roster overlaps the action choices`)
+  }
+  if (phoneLayout && metrics.actionsScrollWidth <= metrics.actionsClientWidth + 20) {
+    throw new Error(`${viewport.name} combat choices are not horizontally browsable`)
+  }
+  if (phoneLayout && metrics.firstActionWidth < 0.72 * viewport.width) {
+    throw new Error(`${viewport.name} first combat choice is only ${metrics.firstActionWidth}px wide`)
+  }
+  if (metrics.turnFeed.bottom > metrics.combat.top + 1) {
+    throw new Error(`${viewport.name} timeline overlaps the combat panel`)
+  }
+  if (metrics.combat.bottom > metrics.composer.top + 1) {
+    throw new Error(`${viewport.name} combat panel overlaps the composer`)
   }
 }
 
@@ -510,6 +623,21 @@ async function runVisualFlow(frontendUrl, backendUrl, ids, artifactDir) {
     await page.screenshot({ path: filePath, fullPage: viewport.fullPage })
     screenshots.push(filePath)
   }
+
+  await page.evaluate(() => localStorage.setItem('aidm:theme', 'light'))
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await expect(page.locator('.prototype-shell')).toHaveClass(/theme-light/)
+  for (const viewport of LIGHT_THEME_VIEWPORTS) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await assertLayoutHealth(page, viewport)
+    const fileName = `${viewport.name}.png`
+    const filePath = path.join(artifactDir, fileName)
+    await page.screenshot({ path: filePath, fullPage: viewport.fullPage })
+    screenshots.push(filePath)
+  }
+  await page.evaluate(() => localStorage.setItem('aidm:theme', 'dark'))
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await expect(page.locator('.prototype-shell')).toHaveClass(/theme-dark/)
 
   const combatSession = await postJson(backendUrl, '/api/sessions/start', {
     campaign_id: ids.campaign.campaign_id,

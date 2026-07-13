@@ -2,6 +2,9 @@
   --bg: #081010;
   --surface: #0d1718;
   --surface-2: #111b1c;
+  --surface-raised: #142021;
+  --surface-sunken: #091112;
+  --surface-overlay: rgba(8, 16, 17, 0.98);
   --panel: #101819;
   --paper: #101819;
   --field: #0b1314;
@@ -14,12 +17,36 @@
   --text: #c9d0cc;
   --muted: #8a9793;
   --faint: #63706d;
+  --text-danger: #ffb09a;
+  --text-warning: #fae4a7;
+  --text-success: #a9eba7;
+  --on-accent: #fff8ee;
   --orange: #ff6b2c;
   --accent: #ff6b2c;
   --accent-2: #ffb067;
   --teal: #72b59b;
   --green: #6bdc68;
+  --focus-ring: #ffb067;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --control-height: 36px;
+  --control-height-touch: 44px;
+  --motion-fast: 140ms;
+  --motion-standard: 180ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --z-sticky: 20;
+  --z-popover: 40;
+  --z-overlay: 50;
+  --z-toast: 90;
   --panel-shadow: 0 14px 34px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.022);
+  --overlay-shadow: 0 24px 64px rgba(0, 0, 0, 0.46);
   --sans:
     'Inter', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Helvetica Neue',
     Arial, sans-serif;
@@ -46,6 +73,9 @@
   --bg: #eef0e9;
   --surface: #f7f3ea;
   --surface-2: #efe7da;
+  --surface-raised: #fffaf1;
+  --surface-sunken: #e5e9e1;
+  --surface-overlay: rgba(255, 250, 241, 0.98);
   --panel: #f8f3e9;
   --paper: #fbf7ef;
   --field: #fffaf1;
@@ -54,9 +84,22 @@
   --line-strong: rgba(55, 67, 62, 0.3);
   --heading: #1b211e;
   --text: #34413c;
-  --muted: #5c6762;
-  --faint: #89918d;
+  --muted: #4e5a55;
+  --faint: #68736e;
+  --text-danger: #8e2f1a;
+  --text-warning: #664d12;
+  --text-success: #275f31;
+  --on-accent: #fffaf4;
+  --orange: #a23c12;
+  --accent: #a23c12;
+  --accent-2: #7a3919;
+  --teal: #28705c;
+  --green: #2b702f;
+  --focus-ring: #8e3514;
+  --panel-shadow: 0 12px 30px rgba(45, 56, 51, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  --overlay-shadow: 0 22px 56px rgba(45, 56, 51, 0.2);
   color: var(--text);
+  color-scheme: light;
   background:
     linear-gradient(180deg, rgba(255, 107, 44, 0.055), transparent 190px),
     linear-gradient(135deg, #f6f1e8 0%, #e9eee9 54%, #f7efe3 100%);

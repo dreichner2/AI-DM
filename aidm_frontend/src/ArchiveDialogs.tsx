@@ -156,7 +156,7 @@ export function CampaignArchiveDialog({
               </div>
             )}
           </div>
-          {dialog.error ? <div className="dialog-error">{dialog.error}</div> : null}
+          {dialog.error ? <div className="dialog-error" role="alert">{dialog.error}</div> : null}
           <footer>
             <button
               type="button"
@@ -254,7 +254,7 @@ export function SessionArchiveDialog({
               </div>
             )}
           </div>
-          {dialog.error ? <div className="dialog-error">{dialog.error}</div> : null}
+          {dialog.error ? <div className="dialog-error" role="alert">{dialog.error}</div> : null}
           <footer>
             <button
               type="button"
