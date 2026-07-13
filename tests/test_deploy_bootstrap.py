@@ -13,6 +13,7 @@ from aidm_server.deploy_bootstrap import (
     BootstrapError,
     BootstrapReport,
     _harden_env_local_permissions,
+    _validate_endpoints,
     _validate_auth_config,
     _validate_observability_config,
     _validate_rate_limits,
@@ -66,6 +67,65 @@ def test_deploy_bootstrap_check_only_success(tmp_path):
 
     assert result.returncode == 0, f'STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}'
     assert 'Bootstrap checks passed' in result.stdout
+
+
+def test_deploy_bootstrap_check_only_accepts_workspace_scoped_local_tokens(tmp_path):
+    db_path = tmp_path / 'bootstrap_workspace_tokens.db'
+
+    result = _run_bootstrap(
+        {
+            'AIDM_DATABASE_URI': f'sqlite:///{db_path}',
+            'AIDM_AUTO_CREATE_SCHEMA': 'false',
+            'AIDM_ENV': 'test',
+            'AIDM_DEBUG': 'false',
+            'AIDM_AUTH_REQUIRED': 'true',
+            'AIDM_API_AUTH_TOKENS': 'owner-token,friend-token',
+            'AIDM_API_AUTH_TOKEN_WORKSPACES': 'owner=owner-token,friend=friend-token',
+            'AIDM_SOCKETIO_ASYNC_MODE': 'threading',
+            'AIDM_TELEMETRY_ENABLED': 'false',
+            'AIDM_RATE_LIMIT_WINDOW_SECONDS': '30',
+            'AIDM_RATE_LIMIT_MAX_API_REQUESTS': '120',
+            'AIDM_RATE_LIMIT_MAX_SOCKET_MESSAGES': '40',
+        }
+    )
+
+    assert result.returncode == 0, f'STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}'
+    assert 'Bootstrap checks passed' in result.stdout
+    assert 'local preflight used a temporary in-process operator credential' in result.stdout
+
+
+def test_validate_endpoints_keeps_workspace_tokens_scoped(app):
+    original_tokens = ['owner-token', 'friend-token']
+    app.config.update(
+        AIDM_ENV='test',
+        AIDM_AUTH_REQUIRED=True,
+        AIDM_API_AUTH_TOKENS=original_tokens,
+        AIDM_API_AUTH_TOKEN_WORKSPACES={
+            'owner-token': 'owner',
+            'friend-token': 'friend',
+        },
+    )
+
+    assert _validate_endpoints(app) is True
+    assert app.config['AIDM_API_AUTH_TOKENS'] is original_tokens
+    response = app.test_client().get(
+        '/api/metrics',
+        headers={'Authorization': 'Bearer owner-token'},
+    )
+    assert response.status_code == 403
+    assert response.get_json()['details']['required_capability'] == 'debug_read'
+
+
+def test_validate_endpoints_requires_real_operator_token_in_production(app):
+    app.config.update(
+        AIDM_ENV='production',
+        AIDM_AUTH_REQUIRED=True,
+        AIDM_API_AUTH_TOKENS=['owner-token'],
+        AIDM_API_AUTH_TOKEN_WORKSPACES={'owner-token': 'owner'},
+    )
+
+    with pytest.raises(BootstrapError, match='unscoped global operator token'):
+        _validate_endpoints(app)
 
 
 def test_deploy_bootstrap_fails_when_auth_required_without_tokens(tmp_path):

@@ -10,13 +10,15 @@ This module runs preflight checks before starting the Socket.IO server:
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import dataclass
 import os
 import pathlib
+import secrets
 import subprocess
 import sys
 import stat
-from typing import Iterable
+from typing import Iterable, Iterator
 
 from sqlalchemy import inspect
 
@@ -327,29 +329,64 @@ def _configured_auth_tokens(app) -> list[str]:
     return list(dict.fromkeys(tokens))
 
 
-def _auth_headers_for_app(app) -> dict:
+def _configured_global_operator_tokens(app) -> list[str]:
+    """Return configured bearer tokens that are not scoped to one workspace."""
+    configured = [token for token in app.config.get('AIDM_API_AUTH_TOKENS', []) if token]
+    token_workspaces = app.config.get('AIDM_API_AUTH_TOKEN_WORKSPACES', {})
+    workspace_tokens = set(token_workspaces) if isinstance(token_workspaces, dict) else set()
+    return list(dict.fromkeys(token for token in configured if token not in workspace_tokens))
+
+
+@contextmanager
+def _metrics_probe_headers(app) -> Iterator[tuple[dict[str, str], bool]]:
+    """Provide operator headers for the in-process metrics sanity probe.
+
+    A valid local setup may intentionally contain only workspace-scoped player
+    tokens. Those credentials must continue to receive 403 from operator-only
+    metrics routes, so local/test preflight temporarily adds a random operator
+    credential to the disposable check app only. The long-running runtime is
+    built fresh after preflight and never receives this credential.
+    """
     if not bool(app.config.get('AIDM_AUTH_REQUIRED', False)):
-        return {}
-    tokens = _configured_auth_tokens(app)
-    if not tokens:
-        raise BootstrapError('Auth is required but no API tokens are configured for endpoint checks.')
-    return {'Authorization': f'Bearer {tokens[0]}'}
+        yield {}, False
+        return
+
+    operator_tokens = _configured_global_operator_tokens(app)
+    if operator_tokens:
+        yield {'Authorization': f'Bearer {operator_tokens[0]}'}, False
+        return
+
+    if app.config.get('AIDM_ENV', 'development') == 'production':
+        raise BootstrapError(
+            'Protected endpoint checks require an unscoped global operator token in '
+            'AIDM_API_AUTH_TOKENS; workspace-scoped tokens correctly cannot read /api/metrics.'
+        )
+
+    original_tokens = app.config.get('AIDM_API_AUTH_TOKENS', [])
+    temporary_operator_token = f'bootstrap-probe-{secrets.token_urlsafe(32)}'
+    app.config['AIDM_API_AUTH_TOKENS'] = [*original_tokens, temporary_operator_token]
+    try:
+        yield {'Authorization': f'Bearer {temporary_operator_token}'}, True
+    finally:
+        app.config['AIDM_API_AUTH_TOKENS'] = original_tokens
 
 
 def _validate_endpoints(app):
     client = app.test_client()
-    auth_headers = _auth_headers_for_app(app)
 
     health_payload = _check_endpoint(client, '/api/health')
     if health_payload.get('status') != 'ok':
         raise BootstrapError('Health endpoint returned unexpected status payload.')
 
-    response = client.get('/api/metrics', headers=auth_headers)
-    if response.status_code != 200:
-        raise BootstrapError(f'Sanity check failed for /api/metrics: expected 200, got {response.status_code}.')
-    metrics_payload = response.get_json(silent=True) or {}
-    if 'counters' not in metrics_payload or 'timings' not in metrics_payload:
-        raise BootstrapError('Metrics endpoint payload missing required fields: counters/timings.')
+    with _metrics_probe_headers(app) as (auth_headers, used_temporary_operator):
+        response = client.get('/api/metrics', headers=auth_headers)
+        if response.status_code != 200:
+            raise BootstrapError(f'Sanity check failed for /api/metrics: expected 200, got {response.status_code}.')
+        metrics_payload = response.get_json(silent=True) or {}
+        if 'counters' not in metrics_payload or 'timings' not in metrics_payload:
+            raise BootstrapError('Metrics endpoint payload missing required fields: counters/timings.')
+
+    return used_temporary_operator
 
 
 def _validate_socket_auth_behavior(app, socketio):
@@ -418,7 +455,12 @@ def bootstrap(check_only: bool, host: str, port: int):
     _validate_network_exposure(check_app, host, report)
 
     print('[bootstrap] Running endpoint sanity checks...')
-    _validate_endpoints(check_app)
+    used_temporary_operator = _validate_endpoints(check_app)
+    if used_temporary_operator:
+        report.warnings.append(
+            'No global operator token is configured; local preflight used a temporary in-process '
+            'operator credential for protected endpoint checks. Runtime workspace tokens remain scoped.'
+        )
 
     print('[bootstrap] Verifying socket auth behavior...')
     _validate_socket_auth_behavior(check_app, check_socketio)
