@@ -192,6 +192,16 @@ async function seedWorkspace(baseUrl) {
     char_class: 'Wizard',
     race: 'Human',
     level: 2,
+    stats: {
+      ability_scores: {
+        strength: 8,
+        dexterity: 14,
+        constitution: 13,
+        intelligence: 15,
+        wisdom: 12,
+        charisma: 10,
+      },
+    },
   })
   const session = await postJson(baseUrl, '/api/sessions/start', {
     campaign_id: campaign.campaign_id,

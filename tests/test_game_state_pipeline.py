@@ -541,12 +541,9 @@ def test_enemy_attack_rejects_unbounded_inferred_damage_dice():
         enemy_roller=roller,
     )
 
-    resolved = context['combatState']['enemyResolvedActions'][0]
-    assert roll_calls == [20, 6]
-    assert resolved['hit'] is True
-    assert resolved['damageDice'] == '1d6+2'
-    assert resolved['damageRolls'] == [1]
-    assert resolved['damageTotal'] == 3
+    assert roll_calls == []
+    assert context['combatState']['enemyResolvedActions'] == []
+    assert context['combatState']['enemyResolutionBlockedCount'] == 1
     assert combat_resolution_module.TEXT_DAMAGE_PATTERN.search('deals 1000000d1 fire damage') is None
 
 
@@ -573,13 +570,9 @@ def test_enemy_attack_rejects_unbounded_damage_dice_without_rolling():
         enemy_roller=roller,
     )
 
-    resolved = context['combatState']['enemyResolvedActions'][0]
-    assert roll_calls == [20]
-    assert resolved['hit'] is True
-    assert resolved['damageDice'] is None
-    assert resolved['damageRolls'] == []
-    assert resolved['damageBonus'] == 0
-    assert resolved['damageTotal'] == 0
+    assert roll_calls == []
+    assert context['combatState']['enemyResolvedActions'] == []
+    assert context['combatState']['enemyResolutionBlockedCount'] == 1
 
 
 def test_extract_consume_item_from_player_message(app):
@@ -629,7 +622,7 @@ def test_extract_equipment_actions_from_player_message(app):
     assert unequip_result['declaredActions'][0]['itemName'] == 'iron helmet'
 
 
-def test_item_action_intent_drop_uses_generic_resolution(app):
+def test_item_action_intent_drop_uses_structured_scene_transfer(app):
     with app.app_context():
         result = extract_pre_dm_actions(
             current_state={},
@@ -644,8 +637,9 @@ def test_item_action_intent_drop_uses_generic_resolution(app):
         )
 
     action = result['declaredActions'][0]
-    assert action['type'] == 'generic.intent'
-    assert action['summary'] == 'Player attempts to drop Wooden Shield.'
+    assert action['type'] == 'scene.item.drop'
+    assert action['requiresDMResolution'] is False
+    assert action['itemName'] == 'Wooden Shield'
 
 
 def test_item_action_intent_preserves_selected_inventory_item_id(app):
@@ -1506,6 +1500,105 @@ def test_inventory_transfer_expands_to_atomic_remove_and_add():
     state_log = build_state_log(turn_id=1, post_validation=validation)
     assert len(state_log['lines']) == 1
     assert any('Rope' in line['message'] for line in state_log['lines'])
+
+
+def test_partial_inventory_transfer_uses_distinct_stable_identity_and_retries_once():
+    state = _two_player_state()
+    state['playerCharacters'][0]['inventory']['items'][0]['quantity'] = 2
+    change = {
+        'id': 'transfer_one_rope',
+        'type': 'inventory.transfer',
+        'actorId': 'player_1',
+        'fromActorId': 'player_1',
+        'toActorId': 'player_2',
+        'itemId': 'rope_1',
+        'quantity': 1,
+        'visible': True,
+    }
+
+    validation = validate_state_changes(state=state, changes=[change])
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    next_state = result['nextState']
+    source = next_state['playerCharacters'][0]['inventory']['items'][0]
+    moved = next_state['playerCharacters'][1]['inventory']['items'][0]
+
+    assert validation['rejected'] == []
+    assert source['id'] == 'rope_1'
+    assert source['quantity'] == 1
+    assert moved['id'].startswith('itm_split_')
+    assert moved['id'] != source['id']
+    assert moved['splitFromItemId'] == 'rope_1'
+
+    retry_validation = validate_state_changes(state=next_state, changes=[change])
+    replay = apply_state_changes(next_state, validated_changes_for_application(retry_validation))
+    assert retry_validation['accepted'] == []
+    assert replay['nextState']['playerCharacters'] == next_state['playerCharacters']
+
+
+def test_inventory_add_rejects_incompatible_existing_or_same_batch_identity_collision():
+    state = _state(items=[_item('Rope', item_id='shared_item_id', item_type='gear')])
+    conflicting_adds = [
+        {
+            'id': 'add_conflicting_blade',
+            'type': 'inventory.add',
+            'actorId': 'player_1',
+            'itemId': 'shared_item_id',
+            'item': {'id': 'shared_item_id', 'name': 'Poisoned Blade', 'type': 'weapon', 'quantity': 1},
+            'quantity': 1,
+        },
+        {
+            'id': 'add_batch_one',
+            'type': 'inventory.add',
+            'actorId': 'player_1',
+            'itemId': 'batch_shared_id',
+            'item': {'id': 'batch_shared_id', 'name': 'Torch', 'type': 'gear', 'quantity': 1},
+            'quantity': 1,
+        },
+        {
+            'id': 'add_batch_two',
+            'type': 'inventory.add',
+            'actorId': 'player_1',
+            'itemId': 'batch_shared_id',
+            'item': {'id': 'batch_shared_id', 'name': 'Dagger', 'type': 'weapon', 'quantity': 1},
+            'quantity': 1,
+        },
+    ]
+
+    validation = validate_state_changes(state=state, changes=conflicting_adds)
+
+    assert [entry['change']['id'] for entry in validation['accepted']] == ['add_batch_one']
+    assert {entry['change']['id'] for entry in validation['rejected']} == {
+        'add_conflicting_blade',
+        'add_batch_two',
+    }
+    assert all('conflicts with an existing inventory item' in entry['reason'] for entry in validation['rejected'])
+
+
+def test_exact_item_target_rejects_legacy_duplicate_identity_as_ambiguous():
+    state = _state(
+        items=[
+            _item('Rope', item_id='duplicated_id', item_type='gear'),
+            _item('Dagger', item_id='duplicated_id', item_type='weapon'),
+        ]
+    )
+
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'remove_ambiguous_duplicate',
+                'type': 'inventory.remove',
+                'actorId': 'player_1',
+                'itemId': 'duplicated_id',
+                'quantity': 1,
+            }
+        ],
+    )
+
+    assert validation['accepted'] == []
+    assert validation['rejected'][0]['reason'] == (
+        "Item identity 'duplicated_id' is duplicated in the inventory and cannot be targeted safely."
+    )
 
 
 def test_inventory_transfer_missing_item_rejects_without_partial_add():
@@ -2466,7 +2559,6 @@ def test_missing_location_update_is_applied_as_discovery():
                 'type': 'location.update',
                 'source': 'post_dm',
                 'turnId': 24,
-                'locationId': 'rensira',
                 'name': 'Rensira',
                 'locationType': 'town',
                 'status': 'visited',
@@ -2884,7 +2976,7 @@ def test_pack_record_updates_preserve_campaign_pack_source():
             {
                 'id': 'update_pack_quest_stage',
                 'type': 'quest.update',
-                'source': 'post_dm',
+                'source': 'campaign_pack',
                 'turnId': 34,
                 'questId': 'q_missing_caravan',
                 'stage': 'Follow the lantern tracks',
@@ -2953,7 +3045,7 @@ def test_pack_drift_tags_inventory_flags_routes_and_relationships():
             {
                 'id': 'set_clue_flag',
                 'type': 'flag.set',
-                'source': 'post_dm',
+                'source': 'quest_engine',
                 'turnId': 36,
                 'flagKey': 'clue.muddy_tracks',
                 'value': True,
@@ -3094,7 +3186,7 @@ def test_pack_drift_tags_non_pack_combat_start_as_emergent_encounter():
     assert combat['flags']['rejoinTargetCheckpointId'] == 'cp_old_road'
 
 
-def test_quest_update_updates_stage_and_objective_without_duplicates():
+def test_trusted_quest_update_updates_stage_and_objective_without_duplicates():
     state = _state()
     state['quests'] = [
         {
@@ -3118,7 +3210,7 @@ def test_quest_update_updates_stage_and_objective_without_duplicates():
             {
                 'id': 'update_missing_sailor_stage',
                 'type': 'quest.update',
-                'source': 'post_dm',
+                'source': 'dm_override',
                 'reason': 'The clue changes the quest stage.',
                 'turnId': 25,
                 'questId': 'find_missing_sailor',
@@ -3824,7 +3916,6 @@ def test_missing_named_npc_update_becomes_discovery():
                 'source': 'post_dm',
                 'reason': 'Marta introduces herself after being asked her name.',
                 'turnId': 29,
-                'npcId': 'marta_fenwick',
                 'name': 'Marta Fenwick',
                 'role': 'corner shopkeeper',
                 'disposition': 'friendly',
@@ -3862,7 +3953,7 @@ def test_missing_id_only_npc_update_still_rejects():
     )
 
     assert validation['accepted'] == []
-    assert validation['rejected'][0]['reason'] == 'NPC update target was not found.'
+    assert validation['rejected'][0]['reason'] == 'NPC update target id was stale or not found.'
 
 
 def test_unsupported_world_change_type_is_rejected():
@@ -6660,9 +6751,9 @@ def test_post_dm_pipeline_applies_trusted_enemy_damage_to_non_acting_player(app,
         assert applied_damage[0]['amount'] == 4
         assert applied_damage[0]['actualAmount'] == 4
         assert all(change.get('id') != 'narration_duplicate_damage' for change in result['postAppliedChanges'])
-        assert any(
-            rejection['reason'] == 'Combat participant change actor does not match the current player.'
-            for rejection in result['postValidation']['rejected']
+        assert all(
+            change.get('id') != 'narration_participant_hp'
+            for change in result['postExtraction']['proposedChanges']
         )
         assert alice_actor['health']['currentHp'] == 10
         assert bob_actor['health']['currentHp'] == 8
@@ -7174,7 +7265,9 @@ def test_post_dm_pipeline_retry_does_not_duplicate_item_hp_currency_or_xp(app):
         refreshed_player = db.session.get(Player, ids['player_id'])
         inventory = safe_json_loads(refreshed_player.inventory, [])
         stats = safe_json_loads(refreshed_player.stats, {})
-        assert len([item for item in inventory if item.get('name') == 'rusted key']) == 1
+        # Free-form narration cannot mint an item that was not present in an
+        # authoritative scene/container or granted by a validated subsystem.
+        assert len([item for item in inventory if item.get('name') == 'rusted key']) == 0
         assert stats['copper'] == 12
         assert stats['current_hp'] == 13
         assert stats['xp'] == 8

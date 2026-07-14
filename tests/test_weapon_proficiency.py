@@ -168,6 +168,16 @@ def test_player_creation_persists_private_profile_and_class_change_replaces_it(c
             'name': 'Arden',
             'character_name': 'Arden Vale',
             'char_class': 'Fighter - Champion',
+            'stats': {
+                'ability_scores': {
+                    'strength': 15,
+                    'dexterity': 14,
+                    'constitution': 13,
+                    'intelligence': 12,
+                    'wisdom': 8,
+                    'charisma': 8,
+                }
+            },
             # This is intentionally ignored; the server derives the profile.
             'weapon_proficiencies': ['category:all'],
         },
@@ -187,6 +197,13 @@ def test_player_creation_persists_private_profile_and_class_change_replaces_it(c
     update_response = client.patch(
         f'/api/players/{player_id}',
         json={'char_class': 'Wizard', 'weapon_proficiencies': ['category:all']},
+    )
+    assert update_response.status_code == 400
+    assert update_response.get_json()['error_code'] == 'gameplay_state_write_forbidden'
+
+    update_response = client.patch(
+        f'/api/players/{player_id}',
+        json={'char_class': 'Wizard'},
     )
     assert update_response.status_code == 200
     updated = update_response.get_json()

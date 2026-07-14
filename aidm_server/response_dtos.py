@@ -10,6 +10,8 @@ from sqlalchemy import func, or_
 
 from aidm_server.armor_class import armor_class_details
 from aidm_server.canon_inventory import inventory_payload
+from aidm_server.character_backgrounds import background_from_character_sheet
+from aidm_server.character_state import character_state_for_player
 from aidm_server.combat.legal_actions import with_combat_legal_actions
 from aidm_server.database import db
 from aidm_server.auth import account_display_name
@@ -45,6 +47,7 @@ PARTY_PLAYER_PUBLIC_KEYS = (
     'name',
     'character_name',
     'race',
+    'background',
     'sex',
     'profile_image',
     'class_',
@@ -521,10 +524,19 @@ def player_derived_payload(player: Player) -> dict:
     stats_record = stats if isinstance(stats, dict) else {}
     inventory = inventory_payload(player.inventory)
     armor_details = armor_class_details(stats_record, inventory)
+    character_state = character_state_for_player(player)
     return {
         'armorClass': armor_details['armorClass'],
         'armor_class': armor_details['armorClass'],
         'armorClassBreakdown': armor_details,
+        'background': character_state.get('background'),
+        'skillProficiencies': list(character_state.get('skill_proficiencies') or []),
+        'skillExpertise': list(character_state.get('skill_expertise') or []),
+        'toolProficiencies': list(character_state.get('tool_proficiencies') or []),
+        'toolExpertise': list(character_state.get('tool_expertise') or []),
+        'languages': list(character_state.get('languages') or []),
+        'hitDie': character_state.get('hit_die'),
+        'proficiencyBonus': character_state.get('proficiency_bonus'),
     }
 
 
@@ -543,6 +555,7 @@ def player_summary_payload(player: Player) -> dict:
         'character_name': player.character_name,
         'race': player.race,
         'race_selection': race_selection,
+        'background': background_from_character_sheet(player.character_sheet),
         'sex': player.sex,
         'profile_image': profile_icon_src_for_character(profile_race, player.sex),
         'class_': player.class_,
@@ -554,13 +567,19 @@ def player_summary_payload(player: Player) -> dict:
 
 
 def player_detail_payload(player: Player) -> dict:
+    derived = player_derived_payload(player)
     return {
         **player_summary_payload(player),
         'stats': structured_payload(player.stats),
         'inventory': inventory_payload(player.inventory),
         'weapon_proficiencies': normalize_weapon_proficiencies(player.weapon_proficiencies),
         'character_sheet': structured_payload(player.character_sheet),
-        'derived': player_derived_payload(player),
+        'skill_proficiencies': derived['skillProficiencies'],
+        'skill_expertise': derived['skillExpertise'],
+        'tool_proficiencies': derived['toolProficiencies'],
+        'tool_expertise': derived['toolExpertise'],
+        'languages': derived['languages'],
+        'derived': derived,
     }
 
 

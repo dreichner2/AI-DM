@@ -117,6 +117,8 @@ from aidm_server.turn_segments import SegmentEvaluationRequest, TurnSegmentServi
 
 logger = logging.getLogger(__name__)
 POST_TURN_PERSIST_FAILED_MESSAGE = 'The DM response could not be fully saved. Please retry.'
+COMBAT_BLOCKED_ACTION_KINDS = frozenset({'ability', 'item', 'interact', 'travel', 'rest'})
+AUTHORITATIVE_TYPED_ACTION_KINDS = frozenset({'capability', 'item', 'object', 'rest', 'spell', 'travel'})
 
 
 def _coerce_player_id(value) -> int | None:
@@ -733,11 +735,39 @@ class TurnEngine:
 
     def _prepare_combat_action(self, command: TurnCommand, player: Player, session_obj: Session) -> bool:
         action_intent = command.action_intent
-        if not isinstance(action_intent, dict) or action_intent.get('kind') != 'combat':
+        snapshot = combat_snapshot_from_session(session_obj.state_snapshot)
+        combat = snapshot.get('combat') if isinstance(snapshot.get('combat'), dict) else {}
+        combat_active = str(combat.get('status') or '').strip().lower() in {'starting', 'active'}
+        action_kind = str(action_intent.get('kind') or '').strip().lower() if isinstance(action_intent, dict) else ''
+        if combat_active and action_kind in COMBAT_BLOCKED_ACTION_KINDS:
+            self.emit(
+                'error',
+                socket_error(
+                    'combat_action_required',
+                    'Use an available combat action for this turn. That gameplay action is not legal during active combat.',
+                    {
+                        'session_id': command.session_id,
+                        'player_id': command.player_id,
+                        'action_kind': action_kind,
+                    },
+                ),
+            )
+            telemetry_event(
+                'socket.send_message.combat_non_action_rejected',
+                payload={
+                    'sid': command.sid,
+                    'session_id': command.session_id,
+                    'player_id': command.player_id,
+                    'action_kind': action_kind,
+                },
+                severity='warning',
+            )
+            return False
+        if not isinstance(action_intent, dict) or action_kind != 'combat':
             return True
         requested = action_intent.get('combat') if isinstance(action_intent.get('combat'), dict) else {}
         resolved, error_code, error_message = resolve_combat_legal_action(
-            combat_snapshot_from_session(session_obj.state_snapshot),
+            snapshot,
             player,
             action_id=requested.get('action_id'),
             target_id=requested.get('target_id'),
@@ -910,6 +940,49 @@ class TurnEngine:
             'confidence': confidence,
             'original_rule_type': rules_hint_payload.get('roll_type'),
             'original_reason': rules_hint_payload.get('reason'),
+        }
+
+    @staticmethod
+    def _typed_action_rejection(command: TurnCommand, pre_pipeline_result: dict) -> dict | None:
+        intent = command.action_intent if isinstance(command.action_intent, dict) else {}
+        intent_kind = str(intent.get('kind') or '').strip().lower()
+        if intent_kind not in AUTHORITATIVE_TYPED_ACTION_KINDS:
+            return None
+
+        pre_validation = pre_pipeline_result.get('preValidation')
+        pre_validation = pre_validation if isinstance(pre_validation, dict) else {}
+        relevant_results: list[dict] = []
+        for result in pre_validation.get('validatedActions') or []:
+            if not isinstance(result, dict):
+                continue
+            original = result.get('originalAction') if isinstance(result.get('originalAction'), dict) else {}
+            normalized = result.get('normalizedAction') if isinstance(result.get('normalizedAction'), dict) else {}
+            action_type = str(normalized.get('type') or original.get('type') or '').strip()
+            matches_intent = (
+                (intent_kind == 'spell' and action_type == 'spell.cast')
+                or (intent_kind == 'capability' and action_type == 'class_feature.use')
+                or (intent_kind == 'object' and action_type == 'scene.interactable.action')
+                or (intent_kind == 'rest' and action_type == 'rest.complete')
+                or (intent_kind == 'travel' and action_type == 'world.travel')
+                or (
+                    intent_kind == 'item'
+                    and action_type.startswith(('currency.', 'inventory.', 'scene.item.'))
+                )
+            )
+            if matches_intent:
+                relevant_results.append(result)
+
+        if not relevant_results or any(result.get('status') != 'invalid' for result in relevant_results):
+            return None
+
+        rejected = relevant_results[0]
+        original = rejected.get('originalAction') if isinstance(rejected.get('originalAction'), dict) else {}
+        normalized = rejected.get('normalizedAction') if isinstance(rejected.get('normalizedAction'), dict) else {}
+        return {
+            'intent_kind': intent_kind,
+            'action_id': rejected.get('actionId') or normalized.get('id') or original.get('id'),
+            'action_type': normalized.get('type') or original.get('type'),
+            'reason': str(rejected.get('reason') or 'That action is not legal now.').strip(),
         }
 
     @staticmethod
@@ -1206,6 +1279,18 @@ class TurnEngine:
                     request_sid=command.sid,
                     player_message=command.user_input,
                     clarification_requests=clarification_requests,
+                )
+                return
+            typed_action_rejection = self._typed_action_rejection(
+                command,
+                pre_pipeline_result,
+            )
+            if typed_action_rejection:
+                self._reject_typed_action_before_narration(
+                    command=command,
+                    turn=turn,
+                    rejection=typed_action_rejection,
+                    start_time=start_time,
                 )
                 return
             pre_dm_roll_veto = self._pre_dm_roll_veto(
@@ -1536,6 +1621,7 @@ class TurnEngine:
             )
         )
         rule_hint = apply_action_intent_to_rule_hint(command.action_intent, rule_hint)
+        rule_hint = TurnActionPolicy.apply_spell_rule_hint(rule_hint, command.action_intent, player)
         rule_hint = self._apply_pvp_rule_hint(rule_hint, pvp_payload)
 
         roll_target_pending_turn_id = None
@@ -1992,6 +2078,82 @@ class TurnEngine:
                 payload={'session_id': session_id, 'error': str(exc)},
                 severity='warning',
             )
+
+    def _reject_typed_action_before_narration(
+        self,
+        *,
+        command: TurnCommand,
+        turn: DmTurn,
+        rejection: dict,
+        start_time: float,
+    ) -> None:
+        reason = str(rejection.get('reason') or 'That action is not legal now.').strip()
+        response = f'That action is not legal: {reason}'
+        metadata = safe_json_loads(turn.metadata_json, {})
+        metadata = metadata if isinstance(metadata, dict) else {}
+        metadata['rules_rejection'] = {
+            **rejection,
+            'stage': 'pre_narration',
+        }
+        turn.metadata_json = safe_json_dumps(metadata, {})
+        turn.dm_output = response
+        turn.status = 'completed'
+        turn.outcome_status = 'resolved'
+        turn.completed_at = utc_now()
+        turn.latency_ms = int((time.perf_counter() - start_time) * 1000)
+        turn.llm_provider = 'rules_engine'
+        turn.llm_model = 'authoritative-validator-v1'
+        record_turn_event(
+            session_id=turn.session_id,
+            campaign_id=turn.campaign_id,
+            turn_id=turn.turn_id,
+            player_id=turn.player_id,
+            event_type=DM_RESPONSE_EVENT,
+            payload={
+                'message': response,
+                'metadata': {
+                    'turn_id': turn.turn_id,
+                    'rules_rejection': rejection,
+                    'action_intent': command.action_intent,
+                    'client_message_id': command.client_message_id,
+                    'llm_provider': 'rules_engine',
+                    'llm_model': 'authoritative-validator-v1',
+                },
+            },
+        )
+        commit_with_retry(label='typed action rules rejection')
+
+        details = {
+            'turn_id': turn.turn_id,
+            'action_type': rejection.get('action_type'),
+            'action_id': rejection.get('action_id'),
+        }
+        self.emit(
+            'error',
+            socket_error('gameplay_action_invalid', response, details),
+            room=command.sid,
+        )
+        self._emit_turn_status(
+            command.session_id,
+            turn.turn_id,
+            'rejected',
+            {'stage': 'pre_narration', **details, 'reason': reason},
+        )
+        self.socketio.emit(
+            'session_log_update',
+            session_log_update_payload(command.session_id, turn.turn_id),
+            room=str(command.session_id),
+        )
+        telemetry_event(
+            'socket.send_message.gameplay_action_invalid',
+            payload={
+                'session_id': command.session_id,
+                'campaign_id': command.campaign_id,
+                'player_id': command.player_id,
+                **details,
+            },
+            severity='info',
+        )
 
     def _emit_clarification_request(
         self,

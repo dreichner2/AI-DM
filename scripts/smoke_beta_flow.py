@@ -71,7 +71,22 @@ def main():
 
     player_resp = http.post(
         f'/api/players/campaigns/{campaign_id}/players',
-        json={'name': 'Smoke Player', 'character_name': 'Ember', 'char_class': 'Wizard', 'level': 2},
+        json={
+            'name': 'Smoke Player',
+            'character_name': 'Ember',
+            'char_class': 'Wizard',
+            'level': 2,
+            'stats': {
+                'ability_scores': {
+                    'strength': 8,
+                    'dexterity': 14,
+                    'constitution': 13,
+                    'intelligence': 15,
+                    'wisdom': 12,
+                    'charisma': 10,
+                }
+            },
+        },
     )
     assert player_resp.status_code == 201, player_resp.get_data(as_text=True)
     player_id = player_resp.get_json()['player_id']

@@ -32,6 +32,61 @@ export const DEFAULT_POINT_BUY_SCORES: PointBuyScores = {
   charisma: 8,
 }
 
+const D12_CLASSES = new Set(['barbarian'])
+const D10_CLASSES = new Set([
+  'fighter',
+  'ranger',
+  'paladin',
+  'gunslinger',
+  'swashbuckler',
+  'cavalier',
+  'guardian',
+  'marshal',
+  'inquisitor',
+  'warpriest',
+  'warden',
+  'beastmaster',
+  'shapeshifter',
+  'blood hunter',
+  'rune knight',
+])
+const D6_CLASSES = new Set([
+  'wizard',
+  'sorcerer',
+  'elementalist',
+  'necromancer',
+  'scholar',
+  'mystic theurge',
+  'business professional',
+  'entertainer',
+  'legal professional',
+  'media professional',
+  'educator',
+  'service worker',
+])
+
+function baseClassName(value: string) {
+  return value
+    .split('-', 1)[0]
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+export function hitDieForClass(className: string) {
+  const key = baseClassName(className)
+  if (D12_CLASSES.has(key)) return 12
+  if (D10_CLASSES.has(key)) return 10
+  if (D6_CLASSES.has(key)) return 6
+  return 8
+}
+
+export function proficiencyBonusForLevel(level: number) {
+  const boundedLevel = Math.max(1, Math.min(20, Math.trunc(level) || 1))
+  return 2 + Math.floor((boundedLevel - 1) / 4)
+}
+
 export function clampPointBuyScore(value: number) {
   if (!Number.isFinite(value)) return 8
   return Math.max(8, Math.min(15, Math.trunc(value)))
@@ -49,18 +104,24 @@ export function abilityModifier(score: number) {
   return modifier >= 0 ? `+${modifier}` : String(modifier)
 }
 
-export function maxHpForScores(scores: PointBuyScores, level: number) {
+export function maxHpForScores(scores: PointBuyScores, level: number, className = '') {
   const conModifier = Math.floor((clampPointBuyScore(scores.constitution) - 10) / 2)
-  return Math.max(1, 8 + conModifier + Math.max(0, level - 1) * Math.max(1, 5 + conModifier))
+  const hitDie = hitDieForClass(className)
+  const boundedLevel = Number.isFinite(level)
+    ? Math.max(1, Math.min(20, Math.trunc(level)))
+    : 1
+  const perLevel = Math.max(1, Math.floor(hitDie / 2) + 1 + conModifier)
+  return Math.max(1, hitDie + conModifier + (boundedLevel - 1) * perLevel)
 }
 
-export function pointBuyStatsPayload(scores: PointBuyScores, level: number) {
+export function pointBuyStatsPayload(scores: PointBuyScores, level: number, className = '') {
   const normalizedScores = POINT_BUY_ABILITIES.reduce((next, ability) => {
     next[ability.key] = clampPointBuyScore(scores[ability.key])
     return next
   }, {} as PointBuyScores)
   const spent = pointBuySpent(normalizedScores)
-  const maxHp = maxHpForScores(normalizedScores, level)
+  const hitDie = hitDieForClass(className)
+  const maxHp = maxHpForScores(normalizedScores, level, className)
   return {
     ability_scores: normalizedScores,
     point_buy: {
@@ -70,6 +131,8 @@ export function pointBuyStatsPayload(scores: PointBuyScores, level: number) {
     },
     current_hp: maxHp,
     max_hp: maxHp,
+    hit_die: hitDie,
+    proficiency_bonus: proficiencyBonusForLevel(level),
     gold: 0,
     xp: 0,
   }

@@ -698,6 +698,16 @@ def _seed_play_runtime(http, *, workspace_id: str, csrf_headers: dict[str, str])
             'character_name': 'Cookie Sentinel',
             'char_class': 'Ranger',
             'level': 2,
+            'stats': {
+                'ability_scores': {
+                    'strength': 15,
+                    'dexterity': 14,
+                    'constitution': 13,
+                    'intelligence': 12,
+                    'wisdom': 8,
+                    'charisma': 8,
+                }
+            },
             'inventory': [{'id': 'hosted-cookie-private-item', 'name': private_marker, 'quantity': 1}],
             'character_sheet': {'privateNotes': private_marker},
         },
@@ -773,6 +783,16 @@ def _seed_second_account_player(
             'character_name': 'Privacy Warden',
             'char_class': 'Wizard',
             'level': 2,
+            'stats': {
+                'ability_scores': {
+                    'strength': 8,
+                    'dexterity': 14,
+                    'constitution': 13,
+                    'intelligence': 15,
+                    'wisdom': 12,
+                    'charisma': 10,
+                }
+            },
             'inventory': [
                 {
                     'id': 'hosted-peer-private-item',

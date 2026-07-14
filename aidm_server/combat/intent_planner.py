@@ -10,9 +10,15 @@ from flask import current_app, has_app_context
 from aidm_server.combat.boss_tactics import deterministic_boss_tactic, plan_boss_advisory, plan_boss_candidate_tactic, should_use_boss_tactics_helper
 from aidm_server.combat.difficulty import combat_difficulty_from_state, normalize_combat_difficulty_ai
 from aidm_server.combat.enemy_brain import plan_freeform_enemy_tactic, plan_sentient_enemy_intent, should_use_sentient_enemy_brain
-from aidm_server.combat.morale import living_participants, recalculate_morale
+from aidm_server.combat.morale import actionable_participants, living_participants, recalculate_morale
 from aidm_server.canon_text import int_or_default
-from aidm_server.combat.state import normalize_combat_state
+from aidm_server.combat.state import (
+    combat_ability_is_available,
+    combat_ability_resolution_mode,
+    normalize_combat_state,
+    participant_can_take_turn,
+    participant_is_targetable,
+)
 
 
 _NON_HELPER_BOSS_TACTIC_SOURCES = {'deterministic', 'deterministic_fallback'}
@@ -27,6 +33,10 @@ def _hp_percent(participant: dict[str, Any]) -> int:
 
 def _living_participants(combat: dict[str, Any], team: str | None = None) -> list[dict[str, Any]]:
     return living_participants(combat, team)
+
+
+def _actionable_participants(combat: dict[str, Any], team: str | None = None) -> list[dict[str, Any]]:
+    return actionable_participants(combat, team)
 
 
 def _config_bool(name: str, default: bool) -> bool:
@@ -205,8 +215,21 @@ def choose_target(enemy: dict[str, Any], players: list[dict[str, Any]], settings
     return sorted(reachable_players, key=lambda target: _target_priority_value(enemy, target, settings))[0]
 
 
-def _best_ability(enemy: dict[str, Any], intent_type: str = 'attack') -> dict[str, Any] | None:
-    abilities = [ability for ability in (enemy.get('abilities') or []) if isinstance(ability, dict)]
+def _best_ability(
+    enemy: dict[str, Any],
+    intent_type: str = 'attack',
+    *,
+    round_number: Any = None,
+) -> dict[str, Any] | None:
+    abilities = [
+        ability
+        for ability in (enemy.get('abilities') or [])
+        if (
+            isinstance(ability, dict)
+            and combat_ability_is_available(ability, round_number=round_number)
+            and combat_ability_resolution_mode(ability)
+        )
+    ]
     if intent_type == 'use_ability':
         for ability in abilities:
             if ability.get('type') in {'spell', 'special', 'legendary', 'lair'} and ability.get('cooldown') in {'none', 'turn', 'recharge_5_6', 'once_per_combat'}:
@@ -431,19 +454,17 @@ def _candidate_legality_report(
     enemy: dict[str, Any],
     target: dict[str, Any] | None,
     ability: dict[str, Any] | None,
+    combat: dict[str, Any],
 ) -> dict[str, Any]:
-    hp = enemy.get('hp') if isinstance(enemy.get('hp'), dict) else {}
-    conditions = {str(item).lower() for item in enemy.get('conditions') or []}
-    actor_can_act = (
-        bool(enemy.get('isAlive', True))
-        and bool(enemy.get('isConscious', True))
-        and int_or_default(hp.get('current'), default=1) > 0
-        and not conditions.intersection({'stunned', 'incapacitated', 'unconscious', 'paralyzed'})
-    )
+    actor_can_act = participant_can_take_turn(enemy)
     target_id = intent.get('targetId')
-    target_valid = not target_id or target is not None
+    target_valid = not target_id or (target is not None and participant_is_targetable(target))
     ability_id = intent.get('abilityId')
-    ability_available = not ability_id or ability is not None
+    ability_available = not ability_id or (
+        ability is not None
+        and combat_ability_is_available(ability, round_number=combat.get('round'))
+        and bool(combat_ability_resolution_mode(ability))
+    )
     if target and target.get('team') == 'player':
         target_visible = target_reachable_now(enemy, target)
     else:
@@ -456,7 +477,7 @@ def _candidate_legality_report(
         'target_visible_or_known': target_visible,
         'destination_reachable': destination_reachable,
         'action_economy_valid': True,
-        'resources_available': True,
+        'resources_available': ability_available,
     }
     report['can_resolve_now'] = all(report.values())
     return report
@@ -504,7 +525,7 @@ def _attach_candidate_contracts(
         ability = abilities.get(str(intent.get('abilityId') or ''))
         tags = _candidate_tags(intent, enemy=enemy, target=target, ability=ability, behavior=behavior)
         resolver = _candidate_resolver(intent, enemy=enemy, target=target, ability=ability, combat=combat)
-        legality = _candidate_legality_report(intent, enemy=enemy, target=target, ability=ability)
+        legality = _candidate_legality_report(intent, enemy=enemy, target=target, ability=ability, combat=combat)
         deterministic_score = round(min(1.0, max(0.0, int_or_default(candidate.get('score'), default=0) / 100)), 2)
         contract = {
             'candidateId': candidate_id,
@@ -749,7 +770,7 @@ def _revalidate_candidate(candidate: dict[str, Any], enemy: dict[str, Any], comb
     abilities = _ability_lookup(enemy)
     target = participants.get(str(intent.get('targetId') or ''))
     ability = abilities.get(str(intent.get('abilityId') or ''))
-    report = _candidate_legality_report(intent, enemy=enemy, target=target, ability=ability)
+    report = _candidate_legality_report(intent, enemy=enemy, target=target, ability=ability, combat=combat)
     stale = candidate.get('combatStateVersion') != _combat_state_version(combat)
     return {
         **report,
@@ -1302,7 +1323,7 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
                     enemy,
                     'attack',
                     target=target,
-                    ability=_best_ability(enemy, 'attack'),
+                    ability=_best_ability(enemy, 'attack', round_number=combat.get('round')),
                     reason=f"{enemy.get('name')} focuses the best target based on role and vulnerability.",
                     confidence=0.68,
                     telegraph=f"{enemy.get('name')} tracks {target.get('name') or 'a vulnerable target'}.",
@@ -1310,7 +1331,7 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
                 focus_score,
             )
         )
-    special = _best_ability(enemy, 'use_ability')
+    special = _best_ability(enemy, 'use_ability', round_number=combat.get('round'))
     if special and special.get('type') in {'spell', 'special', 'legendary', 'lair'} and morale >= 30:
         candidates.append(
             _candidate(
@@ -1326,7 +1347,7 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
                 58 + int_or_default(behavior.get('aggression'), default=50) // 5,
             )
         )
-    attack = _best_ability(enemy, 'attack')
+    attack = _best_ability(enemy, 'attack', round_number=combat.get('round'))
     candidates.append(
         _candidate(
             _intent(
@@ -1439,7 +1460,7 @@ def _combat_fact_debug_payload(facts: dict[str, Any]) -> dict[str, Any]:
 def plan_enemy_intents(combat_state: dict[str, Any]) -> dict[str, Any]:
     combat = normalize_combat_state(combat_state)
     settings = combat_difficulty_from_state(combat)
-    living_enemies = _living_participants(combat, 'enemy')
+    living_enemies = _actionable_participants(combat, 'enemy')
     max_selector_calls = max(0, int_or_default(settings.get('maxLlmCallsPerRound'), default=3))
     selector_budget_candidates = [enemy for enemy in living_enemies if should_use_sentient_enemy_brain(enemy, settings)]
     selector_budget_enemy_ids = {

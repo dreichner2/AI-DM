@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const { spawn } = require('node:child_process')
+const { spawn, spawnSync } = require('node:child_process')
 const fs = require('node:fs')
 const http = require('node:http')
 const net = require('node:net')
@@ -16,6 +16,10 @@ const SMOKE_TIMEOUT_MS = Number(process.env.AIDM_BROWSER_SMOKE_TIMEOUT_MS || 90_
 const SMOKE_TOTAL_TIMEOUT_MS = Number(process.env.AIDM_BROWSER_SMOKE_TOTAL_TIMEOUT_MS || 480_000)
 const SHUTDOWN_GRACE_MS = Number(process.env.AIDM_BROWSER_SMOKE_SHUTDOWN_GRACE_MS || 2_000)
 const SINGLE_ORIGIN_BUILD = process.env.AIDM_BROWSER_SMOKE_SINGLE_ORIGIN === 'true'
+const BACKEND_SERVER = (
+  process.env.AIDM_BROWSER_SMOKE_BACKEND_SERVER
+  || (process.platform === 'win32' ? 'werkzeug' : 'gunicorn')
+).trim().toLowerCase()
 const FRONTEND_DIST_DIR = path.join(FRONTEND_ROOT, 'dist')
 const FRONTEND_DIST_INDEX = path.join(FRONTEND_DIST_DIR, 'index.html')
 const REQUIRED_SECURITY_HEADERS = [
@@ -70,6 +74,20 @@ function spawnManaged(command, args, options) {
   child.stderr.on('data', (chunk) => process.stderr.write(chunk))
   child.once('exit', () => children.delete(child))
   return child
+}
+
+function runToCompletion(command, args, options, label) {
+  const result = spawnSync(command, args, {
+    ...options,
+    stdio: 'inherit',
+  })
+  if (result.error) {
+    throw new Error(`${label} could not start: ${result.error.message}`)
+  }
+  if (result.status !== 0) {
+    const exitDescription = result.signal ? `signal ${result.signal}` : `exit code ${result.status}`
+    throw new Error(`${label} failed with ${exitDescription}`)
+  }
 }
 
 function stopManaged(child, signal = 'SIGTERM') {
@@ -361,6 +379,7 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
   const actionInput = page.getByLabel(/Your Action/i)
   await actionInput.fill('I inspect the smoke-lit archway.')
   await expect(actionInput).toHaveValue('I inspect the smoke-lit archway.')
+  await expect(page.locator('.status-dot').filter({ hasText: 'Joined' })).toBeVisible({ timeout: 15_000 })
   const sendButton = page.locator('.send-button')
   await expect(sendButton).toBeEnabled()
   await page.evaluate(() => {
@@ -379,11 +398,32 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
     captureStreamingResponse()
   })
   await sendButton.click()
-  await page.waitForFunction(
-    () => (window.aidmStreamingSmokeProbe?.snapshots.length || 0) >= 2,
-    undefined,
-    { timeout: 15_000 },
-  )
+  try {
+    await page.waitForFunction(
+      () => (window.aidmStreamingSmokeProbe?.snapshots.length || 0) >= 2,
+      undefined,
+      { timeout: 15_000 },
+    )
+  } catch (error) {
+    const diagnostics = await page.evaluate(() => {
+      const currentCard = document.querySelector('.turn-row.current .dm-response-card')
+      const snapshots = [...(window.aidmStreamingSmokeProbe?.snapshots || [])]
+      return {
+        realtime: [...document.querySelectorAll('.status-dot')]
+          .map((element) => element.textContent?.trim() || '')
+          .find((label) => ['Joined', 'Connecting', 'Error', 'Offline', 'Standby'].includes(label)) || 'missing',
+        status: currentCard?.querySelector('.turn-speaker span')?.textContent?.trim() || 'missing',
+        responseLength: currentCard?.querySelector('.response-copy')?.textContent?.trim().length || 0,
+        snapshotCount: snapshots.length,
+        snapshotLengths: snapshots.map((snapshot) => snapshot.length),
+      }
+    })
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(
+      `Timed out waiting for visible incremental DM streaming (${message}); `
+      + `diagnostics=${JSON.stringify({ ...diagnostics, consoleErrors: consoleErrors.slice(-5) })}`,
+    )
+  }
   const streamingSnapshots = await page.evaluate(() => {
     const snapshots = [...(window.aidmStreamingSmokeProbe?.snapshots || [])]
     window.aidmStreamingSmokeProbe?.observer?.disconnect()
@@ -499,6 +539,11 @@ async function main() {
   if (isPathLikeExecutable(PYTHON) && !fs.existsSync(PYTHON)) {
     throw new Error(`Missing Python executable: ${PYTHON}`)
   }
+  if (!['gunicorn', 'werkzeug'].includes(BACKEND_SERVER)) {
+    throw new Error(
+      `Unsupported AIDM_BROWSER_SMOKE_BACKEND_SERVER=${BACKEND_SERVER}; expected gunicorn or werkzeug`,
+    )
+  }
 
   const backendPort = await getFreePort()
   const frontendPort = await getFreePort()
@@ -513,37 +558,73 @@ async function main() {
     throw new Error(`Single-origin browser smoke requires a built frontend at ${FRONTEND_DIST_INDEX}. Run npm run build first.`)
   }
 
-  log(`starting isolated backend on ${backendUrl}`)
-  const backend = spawnManaged(
-    PYTHON,
-    ['-m', 'aidm_server.deploy_bootstrap', '--host', '127.0.0.1', '--port', String(backendPort)],
-    {
-      cwd: REPO_ROOT,
-      env: {
-        ...process.env,
-        PYTHONPATH: REPO_ROOT,
-        FLASK_APP: 'aidm_server.main:create_app',
-        AIDM_ENV: 'test',
-        AIDM_DEBUG: 'false',
-        AIDM_DATABASE_URI: `sqlite:///${dbPath}`,
-        AIDM_AUTO_CREATE_SCHEMA: 'true',
-        AIDM_LLM_PROVIDER: 'fallback',
-        AIDM_LLM_MODEL: 'deterministic-v1',
-        AIDM_LLM_FALLBACK_MODELS: '',
-        AIDM_BUFFERED_STREAM_CHUNK_DELAY_MS: '50',
-        AIDM_DEEPGRAM_API_KEY: '',
-        DEEPGRAM_API_KEY: '',
-        AIDM_AUTH_REQUIRED: 'false',
-        AIDM_TELEMETRY_ENABLED: 'false',
-        AIDM_SECURITY_HEADERS_ENABLED: 'true',
-        AIDM_SERVE_FRONTEND: SINGLE_ORIGIN_BUILD ? 'true' : 'false',
-        AIDM_FRONTEND_DIST_DIR: FRONTEND_DIST_DIR,
-        AIDM_SOCKETIO_ASYNC_MODE: 'threading',
-        AIDM_CORS_ALLOWLIST: SINGLE_ORIGIN_BUILD ? backendUrl : frontendUrl,
-        AIDM_SOCKET_CORS_ALLOWLIST: SINGLE_ORIGIN_BUILD ? backendUrl : frontendUrl,
-      },
-    },
-  )
+  const backendEnv = {
+    ...process.env,
+    PYTHONPATH: REPO_ROOT,
+    FLASK_APP: 'aidm_server.main:create_app',
+    AIDM_ENV: 'test',
+    AIDM_SKIP_REPO_ENV_LOCAL: '1',
+    AIDM_DEBUG: 'false',
+    AIDM_DATABASE_URI: `sqlite:///${dbPath}`,
+    AIDM_AUTO_CREATE_SCHEMA: 'false',
+    AIDM_LLM_PROVIDER: 'fallback',
+    AIDM_LLM_MODEL: 'deterministic-v1',
+    AIDM_LLM_FALLBACK_MODELS: '',
+    AIDM_BUFFERED_STREAM_CHUNK_CHARS: '48',
+    AIDM_BUFFERED_STREAM_CHUNK_DELAY_MS: '100',
+    AIDM_DEEPGRAM_API_KEY: '',
+    DEEPGRAM_API_KEY: '',
+    AIDM_AUTH_REQUIRED: 'false',
+    AIDM_TELEMETRY_ENABLED: 'false',
+    AIDM_SECURITY_HEADERS_ENABLED: 'true',
+    AIDM_SERVE_FRONTEND: SINGLE_ORIGIN_BUILD ? 'true' : 'false',
+    AIDM_FRONTEND_DIST_DIR: FRONTEND_DIST_DIR,
+    AIDM_SOCKETIO_ASYNC_MODE: 'threading',
+    AIDM_SOCKETIO_WORKER_MODEL: 'single',
+    AIDM_CORS_ALLOWLIST: SINGLE_ORIGIN_BUILD ? backendUrl : frontendUrl,
+    AIDM_SOCKET_CORS_ALLOWLIST: SINGLE_ORIGIN_BUILD ? backendUrl : frontendUrl,
+  }
+  const backendOptions = { cwd: REPO_ROOT, env: backendEnv }
+
+  if (BACKEND_SERVER === 'gunicorn') {
+    log(`preparing isolated backend on ${backendUrl}`)
+    runToCompletion(
+      PYTHON,
+      ['-m', 'aidm_server.deploy_bootstrap', '--check-only', '--host', '127.0.0.1', '--port', String(backendPort)],
+      backendOptions,
+      'Backend preflight',
+    )
+    log(`starting isolated backend with Gunicorn gthread on ${backendUrl}`)
+    spawnManaged(
+      PYTHON,
+      [
+        '-m',
+        'gunicorn',
+        '--worker-class',
+        'gthread',
+        '--workers',
+        '1',
+        '--threads',
+        '16',
+        '--bind',
+        `127.0.0.1:${backendPort}`,
+        '--timeout',
+        '60',
+        '--no-control-socket',
+        '--error-logfile',
+        '-',
+        'aidm_server.wsgi:app',
+      ],
+      backendOptions,
+    )
+  } else {
+    log(`starting isolated backend with Werkzeug on ${backendUrl}`)
+    spawnManaged(
+      PYTHON,
+      ['-m', 'aidm_server.deploy_bootstrap', '--host', '127.0.0.1', '--port', String(backendPort)],
+      backendOptions,
+    )
+  }
   const healthResponse = await waitForHttp(`${backendUrl}/api/health`, 'backend health')
   assertSecurityHeaders(healthResponse, 'backend health')
 

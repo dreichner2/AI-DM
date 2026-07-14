@@ -11,6 +11,7 @@ from aidm_server.canon_inventory import inventory_payload
 from aidm_server.character_state import character_state_for_player
 from aidm_server.database import db
 from aidm_server.emergent_memory import build_emergent_context, dormant_threads
+from aidm_server.interactables import project_scene_interactables
 from aidm_server.models import (
     BestiaryEntry,
     Campaign,
@@ -40,6 +41,7 @@ MAX_LIVE_RECENT_KNOWN_NPCS = 8
 MAX_LIVE_FLAGS = 20
 MAX_LIVE_COMBAT_PARTICIPANTS = 12
 MAX_LIVE_SCENE_ITEMS = 12
+MAX_LIVE_SCENE_INTERACTABLES = 12
 MAX_PACK_CHECKPOINTS = 4
 MAX_PACK_LOCATIONS = 6
 MAX_PACK_QUESTS = 4
@@ -101,6 +103,13 @@ def _compact_objectives(value) -> list[dict]:
                 'id': _text_or_none(objective.get('id'), 120),
                 'description': _text_or_none(objective.get('description'), 220),
                 'status': _text_or_none(objective.get('status'), 80),
+                'optional': objective.get('optional') is True,
+                'prerequisiteObjectiveIds': _string_list(
+                    objective.get('prerequisiteObjectiveIds') or objective.get('prerequisites'),
+                    limit=12,
+                ),
+                'completeWhen': objective.get('completeWhen') if isinstance(objective.get('completeWhen'), dict) else None,
+                'failWhen': objective.get('failWhen') if isinstance(objective.get('failWhen'), dict) else None,
             }
         )
         if len(compact) >= MAX_LIVE_OBJECTIVES_PER_QUEST:
@@ -115,6 +124,19 @@ def _compact_quest(quest: dict) -> dict:
         'status': _text_or_none(quest.get('status'), 80),
         'stage': _text_or_none(quest.get('stage'), 180),
         'summary': _text_or_none(quest.get('summary'), 420),
+        'completionPolicy': _text_or_none(quest.get('completionPolicy'), 40) or 'all',
+        'validationMode': 'mechanical'
+        if any(
+            isinstance(objective, dict)
+            and (
+                isinstance(objective.get('completeWhen'), dict)
+                or isinstance(objective.get('failWhen'), dict)
+                or objective.get('prerequisiteObjectiveIds')
+                or objective.get('prerequisites')
+            )
+            for objective in (quest.get('objectives') or [])
+        )
+        else 'legacy_narrative',
         'objectives': _compact_objectives(quest.get('objectives')),
     }
 
@@ -151,6 +173,41 @@ def _compact_scene_item(item: dict) -> dict:
         'type': _text_or_none(item.get('type'), 80),
         'sourceActorId': _text_or_none(item.get('sourceActorId'), 120),
     }
+
+
+def _compact_scene_interactable(item: dict) -> dict:
+    compact: dict[str, Any] = {
+        'id': _text_or_none(item.get('id'), 120),
+        'name': _text_or_none(item.get('name'), 180),
+        'kind': _text_or_none(item.get('kind'), 80),
+        'description': _text_or_none(item.get('description'), 360),
+        'knowledge': 'player_known',
+    }
+    for key in (
+        'open',
+        'locked',
+        'broken',
+        'searched',
+        'inspected',
+        'used',
+        'usedCount',
+        'depleted',
+        'usesRemaining',
+        'active',
+        'triggered',
+        'disarmed',
+        'contentsKnown',
+        'revision',
+    ):
+        if key in item and isinstance(item.get(key), (bool, int, float)):
+            compact[key] = item.get(key)
+    if isinstance(item.get('contents'), list):
+        compact['contents'] = [
+            _compact_scene_item(content)
+            for content in item['contents']
+            if isinstance(content, dict)
+        ][:MAX_LIVE_SCENE_ITEMS]
+    return {key: value for key, value in compact.items() if value is not None}
 
 
 def _compact_flag_value(value):
@@ -197,7 +254,24 @@ def _compact_combat(snapshot: dict) -> dict:
                     'max': hp.get('max'),
                 },
                 'conditions': _string_list(participant.get('conditions'), limit=8),
+                'position': participant.get('position') if isinstance(participant.get('position'), dict) else None,
+                'isPresent': participant.get('isPresent', participant.get('present', True)) is not False,
+                'isAlive': participant.get('isAlive') is not False,
+                'isConscious': participant.get('isConscious') is not False,
                 'morale': participant.get('morale') if isinstance(participant.get('morale'), (int, float)) else None,
+                'availableTactics': [
+                    {
+                        'id': _text_or_none(ability.get('id'), 120),
+                        'name': _text_or_none(ability.get('name'), 160),
+                        'type': _text_or_none(ability.get('type'), 80),
+                        'available': ability.get('available', True) is not False,
+                        'usesRemaining': ability.get('usesRemaining')
+                        if isinstance(ability.get('usesRemaining'), (int, float))
+                        else None,
+                    }
+                    for ability in (participant.get('abilities') or [])
+                    if isinstance(ability, dict)
+                ][:8],
                 'intent': {
                     'intentType': _text_or_none(intent.get('intentType'), 80),
                     'reason': _text_or_none(intent.get('reason'), 220),
@@ -211,9 +285,42 @@ def _compact_combat(snapshot: dict) -> dict:
         if len(participants) >= MAX_LIVE_COMBAT_PARTICIPANTS:
             break
     battlefield = combat.get('battlefield') if isinstance(combat.get('battlefield'), dict) else {}
+    initiative = [
+        {
+            'participantId': _text_or_none(entry.get('participantId') or entry.get('id'), 120),
+            'roll': entry.get('roll'),
+            'modifier': entry.get('modifier'),
+            'total': entry.get('total'),
+            'order': entry.get('order'),
+        }
+        for entry in (combat.get('initiative') or [])
+        if isinstance(entry, dict)
+    ][:MAX_LIVE_COMBAT_PARTICIPANTS]
+    initiative.sort(key=lambda entry: entry.get('order') if isinstance(entry.get('order'), int) else 999)
+    turn_index = combat.get('turnIndex') if isinstance(combat.get('turnIndex'), int) else 0
+    active_actor_id = None
+    if initiative:
+        active_actor_id = initiative[turn_index % len(initiative)].get('participantId')
+    flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+    turn_economy = flags.get('turnEconomy') if isinstance(flags.get('turnEconomy'), dict) else {}
     return {
         'status': _text_or_none(combat.get('status'), 40) or 'none',
         'round': combat.get('round') if isinstance(combat.get('round'), (int, float)) else 1,
+        'turnIndex': turn_index,
+        'activeActorId': _text_or_none(flags.get('activeActorId') or active_actor_id, 120),
+        'initiative': initiative,
+        'turnEconomy': {
+            key: turn_economy.get(key)
+            for key in (
+                'actorId',
+                'round',
+                'actionRemaining',
+                'bonusActionRemaining',
+                'reactionRemaining',
+                'movementRemaining',
+            )
+            if key in turn_economy
+        },
         'battlefield': {
             'environmentType': _text_or_none(battlefield.get('environmentType'), 80),
             'lighting': _text_or_none(battlefield.get('lighting'), 40),
@@ -242,6 +349,7 @@ def _compact_live_world_state(snapshot: dict) -> dict:
         return {}
 
     scene = snapshot.get('currentScene') if isinstance(snapshot.get('currentScene'), dict) else {}
+    projected_objects = project_scene_interactables(snapshot, {'isGm': False})
     active_quest_ids = _string_list(scene.get('activeQuestIds'), limit=20)
     active_quest_order = {quest_id: index for index, quest_id in enumerate(active_quest_ids)}
     quests = [quest for quest in (snapshot.get('quests') or []) if isinstance(quest, dict)]
@@ -287,10 +395,11 @@ def _compact_live_world_state(snapshot: dict) -> dict:
     active_npc_ids = _string_list(scene.get('activeNpcIds'), limit=20)
     active_npc_order = {npc_id: index for index, npc_id in enumerate(active_npc_ids)}
     all_npcs = _unique_records([*party_npcs, *known_npcs])
+    # Scene presence is authoritative. Party membership does not teleport an
+    # absent companion into dialogue or combat, and stale narration cannot do
+    # so either. Legacy snapshots without an activeNpcIds record fail closed.
     active_npcs = [
-        npc
-        for npc in all_npcs
-        if str(npc.get('id') or '').strip() in active_npc_order or npc in party_npcs
+        npc for npc in all_npcs if str(npc.get('id') or '').strip() in active_npc_order
     ]
     active_npcs.sort(
         key=lambda npc: (
@@ -320,6 +429,16 @@ def _compact_live_world_state(snapshot: dict) -> dict:
                 for item in (scene.get('items') or [])
                 if isinstance(item, dict)
             ][:MAX_LIVE_SCENE_ITEMS],
+            'interactables': [
+                _compact_scene_interactable(item)
+                for item in projected_objects.get('interactables', [])
+                if isinstance(item, dict)
+            ][:MAX_LIVE_SCENE_INTERACTABLES],
+            'hazards': [
+                _compact_scene_interactable(item)
+                for item in projected_objects.get('hazards', [])
+                if isinstance(item, dict)
+            ][:MAX_LIVE_SCENE_INTERACTABLES],
         },
         'activeQuests': compact_quests,
         'recentLocations': [_compact_location(location) for location in locations[:MAX_LIVE_RECENT_LOCATIONS]],
@@ -1707,7 +1826,14 @@ def build_dm_context(
         'player_identity_rules': [
             'character_name is the in-world player character identity.',
             'Account/profile names are out-of-character labels and are not characters in the scene.',
-            'Only active_players are currently active in this session unless recent narration explicitly says otherwise.',
+            'Only active_players are currently active in this session; narration and memory cannot add an absent player.',
+        ],
+        'state_authority_rules': [
+            'live_world_state, active_players, pending_checks, and validated current combat state are authoritative.',
+            'Recent narration and memory describe history only; they never override newer structured state.',
+            'Only live_world_state.currentScene.activeNpcIds are physically present NPCs allowed to speak or act.',
+            'Only player-known live_world_state.currentScene interactables and hazards may be described as discovered; their exact IDs, revisions, and state are authoritative.',
+            'Narrate validated gameplay results and legal enemy tactics; do not invent unvalidated mechanical outcomes.',
         ],
         'active_players': active_players,
         'triggered_segments': triggered_segments,

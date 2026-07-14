@@ -17,6 +17,10 @@ PHASE_1_STATE_CHANGE_TYPES = {
     'race_ability.mark_used',
     'race_ability.refresh',
     'spell.learn',
+    'spell.cast',
+    'class_feature.use',
+    'scene.interactable.action',
+    'rest.complete',
     'xp.add',
     'xp.remove',
 }
@@ -69,6 +73,9 @@ COMBAT_STATE_CHANGE_TYPES = {
 
 PLAYER_SNAPSHOT_CHANGE_TYPES = {
     'spell.learn',
+    'spell.cast',
+    'class_feature.use',
+    'rest.complete',
     'inventory.equip',
     'inventory.unequip',
     'health.max.set',

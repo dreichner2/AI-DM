@@ -5,12 +5,15 @@ import {
   type SetStateAction,
 } from 'react'
 import { X } from 'lucide-react'
+import { BackgroundSelector } from './BackgroundSelector'
 import { ClassSelector } from './ClassSelector'
 import {
   POINT_BUY_ABILITIES,
   POINT_BUY_BUDGET,
   abilityModifier,
   clampPointBuyScore,
+  hitDieForClass,
+  maxHpForScores,
   pointBuySpent,
 } from './characterStats'
 import { ModalShell } from './ModalShell'
@@ -38,6 +41,8 @@ export function PlayerEditDialog({
 }: PlayerEditDialogProps) {
   const pointBuySpentTotal = pointBuySpent(dialog.abilityScores)
   const pointBuyRemaining = POINT_BUY_BUDGET - pointBuySpentTotal
+  const hitDie = hitDieForClass(dialog.charClass)
+  const maxHp = maxHpForScores(dialog.abilityScores, Number(dialog.level), dialog.charClass)
   const title = dialog.mode === 'create' ? 'Create Character' : 'Edit Character'
 
   return (
@@ -100,6 +105,13 @@ export function PlayerEditDialog({
                 setDialog((current) => (current ? { ...current, charClass } : current))
               }
           />
+          <BackgroundSelector
+            selectedBackgroundId={dialog.backgroundId}
+            pending={dialog.pending}
+            onBackgroundChange={(backgroundId) =>
+              setDialog((current) => (current ? { ...current, backgroundId } : current))
+            }
+          />
           <div className="dialog-grid two character-level-grid">
             <label>
               Level
@@ -119,7 +131,7 @@ export function PlayerEditDialog({
               <div className="point-buy-summary">
                 <strong>Ability Scores</strong>
                 <span className={pointBuyRemaining < 0 ? 'over-budget' : ''}>
-                  {pointBuyRemaining} / {POINT_BUY_BUDGET} left
+                  {pointBuyRemaining} / {POINT_BUY_BUDGET} left · d{hitDie} hit die · {maxHp} HP
                 </span>
               </div>
               <div className="point-buy-grid">

@@ -25,6 +25,7 @@ Status labels used below:
 | [Block diagram - standalone HTML](block_diagram.html) | Active mirror | Browser-renderable presentation of the block diagram. Keep it aligned with the Markdown version. |
 | [LLM provider routing](llm_provider_routing.md) | Active | Main provider catalog, Codex isolation, helper-task profiles, precedence, and evaluation boundaries. |
 | [Runtime state boundaries](runtime_state_boundaries.md) | Active | Distinguishes live session state, projections, canon memory, authored data, and turn metadata. |
+| [Gameplay systems and mechanical boundaries](gameplay_systems.md) | Active | Implemented character, resource, typed spell/capability/object, combat/reward, quest, travel, AI-context, persistence, and explicitly partial gameplay contract. |
 | [JSON storage policy](json_storage_policy.md) | Active decision | Cross-database policy for structured fields stored as JSON-encoded text. |
 | [Socket.IO worker model](socketio_worker_model.md) | Active decision | Supported single-worker hosted topology and requirements for any future expansion. |
 | [Session snapshot writer inventory](state_snapshot_writer_inventory.md) | Active checked inventory | Classifies every permitted direct `Session.state_snapshot` write; validated by `scripts/check_state_snapshot_writers.py`. |

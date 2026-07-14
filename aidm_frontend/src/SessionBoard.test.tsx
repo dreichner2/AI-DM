@@ -323,6 +323,19 @@ function sessionBoardProps(overrides: Partial<SessionBoardProps> = {}): SessionB
         legalActionBundles: [],
       },
     },
+    gameplayControls: {
+      actorId: '',
+      actorName: '',
+      inCombat: false,
+      activeActorId: '',
+      isActorTurn: true,
+      actionRemaining: null,
+      bonusActionRemaining: null,
+      concentration: '',
+      spells: [],
+      capabilities: [],
+      interactables: [],
+    },
     dmExecutionStats: {
       tokens: 72,
       time: '1.2s',
@@ -405,6 +418,10 @@ describe('SessionBoard visible theater surfaces', () => {
                 isCurrentActor: false,
                 economyTracking: 'turn',
                 subTurnCountersTracked: false,
+                actionRemaining: 0,
+                bonusActionRemaining: 0,
+                movementRemaining: 0,
+                reactionRemaining: 0,
                 actions: [],
               }],
             },
@@ -468,6 +485,46 @@ describe('SessionBoard visible theater surfaces', () => {
     expect(changes).toHaveTextContent('Restored 5 HP.')
     expect(changes).not.toHaveTextContent('Hidden operator fact.')
     expect(screen.queryByText(/^State updated:/)).not.toBeInTheDocument()
+  })
+
+  it('submits exact scene item and adjacent-exit identities from Current Situation', () => {
+    const composer = actionComposerProps()
+    render(<SessionBoard {...sessionBoardProps({ actionComposerProps: composer })} />)
+
+    const situation = screen.getByRole('region', { name: 'Current Situation' })
+    fireEvent.click(within(situation).getByRole('button', { name: 'Show Current Situation details' }))
+    fireEvent.click(within(situation).getByRole('button', { name: 'Pick up Glyph key' }))
+    fireEvent.click(within(situation).getByRole('button', { name: 'Travel to Rain Gate' }))
+    fireEvent.click(within(situation).getByRole('button', { name: 'Take a short rest' }))
+
+    expect(composer.submitAction).toHaveBeenNthCalledWith(
+      1,
+      'Ember picks up Glyph key.',
+      expect.objectContaining({
+        kind: 'item',
+        source: 'scene_panel',
+        inventory_action: 'pick_up',
+        item: { id: 'glyph-key', name: 'Glyph key', quantity: 1 },
+      }),
+    )
+    expect(composer.submitAction).toHaveBeenNthCalledWith(
+      2,
+      'The party travels to Rain Gate.',
+      expect.objectContaining({
+        kind: 'travel',
+        source: 'scene_panel',
+        location: { id: 'rain-gate', name: 'Rain Gate' },
+      }),
+    )
+    expect(composer.submitAction).toHaveBeenNthCalledWith(
+      3,
+      'Ember completes a short rest.',
+      expect.objectContaining({
+        kind: 'rest',
+        source: 'scene_panel',
+        rest_type: 'short_rest',
+      }),
+    )
   })
 
   it('keeps the compact situation summary concise with keyboard-native scene details', () => {

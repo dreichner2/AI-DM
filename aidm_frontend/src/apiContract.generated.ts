@@ -417,6 +417,8 @@ export type SessionContentSettingsUpdateResponse = {
   state: SessionState
 }
 
+export type CharacterBackground = { schemaVersion: number; id: string; name: string; source: 'catalog' | 'legacy'; skillProficiencies: string[]; toolProficiencies: string[]; languages: string[] }
+
 export type Player = {
   player_id: number
   workspace_id: string
@@ -427,6 +429,7 @@ export type Player = {
   character_name: string
   race: string | null
   race_selection?: CharacterRaceSelection | null
+  background?: CharacterBackground | null
   sex: string | null
   profile_image: string
   class_: string | null
@@ -446,6 +449,7 @@ export type PlayerDetail = {
   character_name: string
   race: string | null
   race_selection?: CharacterRaceSelection | null
+  background?: CharacterBackground | null
   sex: string | null
   profile_image: string
   class_: string | null
@@ -457,6 +461,11 @@ export type PlayerDetail = {
   inventory: unknown
   weapon_proficiencies: string[]
   character_sheet: unknown
+  skill_proficiencies?: string[]
+  skill_expertise?: string[]
+  tool_proficiencies?: string[]
+  tool_expertise?: string[]
+  languages?: string[]
   derived?: JsonRecord
 }
 

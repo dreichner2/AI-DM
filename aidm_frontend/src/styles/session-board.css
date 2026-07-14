@@ -2361,6 +2361,13 @@
   font-size: 0.66rem;
 }
 
+.combat-hud-economy {
+  margin: 0;
+  color: #b9ebd0;
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
 .combat-hud-overview {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(190px, 0.8fr);

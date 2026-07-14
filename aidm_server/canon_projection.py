@@ -22,6 +22,14 @@ from aidm_server.time_utils import utc_now
 
 ACTIVE_THREAD_STATUSES = ('open', 'active')
 ACTIVE_QUEST_STATUSES = {'active', 'open', 'available', 'in_progress', 'in-progress', 'started'}
+TERMINAL_QUEST_STATUSES = {'completed', 'failed', 'abandoned'}
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _valid_location_label(value: Any) -> bool:
@@ -354,10 +362,12 @@ def _sync_snapshot_quests(snapshot: dict, open_threads: list[StoryThread]) -> bo
 
     scene = _ensure_scene(snapshot)
     quests = _snapshot_records(snapshot, 'quests')
-    active_quest_ids: list[str] = []
+    # Story threads are remembered narrative hooks. They may create and update
+    # their own projected journal records, but they must not reactivate,
+    # complete, or otherwise take ownership of mechanically-authored quests.
+    canon_active_ids: list[str] = []
     for thread in open_threads:
         quest_id = _thread_quest_id(thread)
-        active_quest_ids.append(quest_id)
         quest = _find_record(quests, record_id=quest_id, title=thread.title)
         if not quest:
             quest = {
@@ -376,6 +386,16 @@ def _sync_snapshot_quests(snapshot: dict, open_threads: list[StoryThread]) -> bo
                 'completedAtTurn': None,
             }
             quests.append(quest)
+        elif _record_source(quest) != 'canon_projection':
+            # A title/id collision with authoritative quest state does not
+            # transfer authority to canon. Preserve its current mechanics.
+            continue
+
+        status = _text(quest.get('status')).lower()
+        if status in TERMINAL_QUEST_STATUSES or (status and status not in ACTIVE_QUEST_STATUSES):
+            continue
+
+        canon_active_ids.append(quest_id)
         quest['id'] = quest_id
         quest['title'] = thread.title
         quest['status'] = 'active'
@@ -384,15 +404,30 @@ def _sync_snapshot_quests(snapshot: dict, open_threads: list[StoryThread]) -> bo
         if thread.last_touched_turn_id:
             quest['updatedAtTurn'] = thread.last_touched_turn_id
 
-    stale_active_ids = set(_string_list(scene.get('activeQuestIds'))) - set(active_quest_ids)
+    prior_active_ids = _string_list(scene.get('activeQuestIds'))
+    stale_canon_ids = set(prior_active_ids) - set(canon_active_ids)
     for quest in quests:
         quest_id = _text(quest.get('id'))
         status = _text(quest.get('status')).lower()
-        if quest_id in stale_active_ids and status in ACTIVE_QUEST_STATUSES:
+        if (
+            quest_id in stale_canon_ids
+            and _record_source(quest) == 'canon_projection'
+            and status in ACTIVE_QUEST_STATUSES
+        ):
             quest['status'] = 'completed'
             quest['completedAtTurn'] = quest.get('completedAtTurn') or quest.get('updatedAtTurn')
 
-    scene['activeQuestIds'] = active_quest_ids
+    mechanical_active_ids: list[str] = []
+    quest_by_id = {_text(quest.get('id')): quest for quest in quests if _text(quest.get('id'))}
+    for quest_id in prior_active_ids:
+        quest = quest_by_id.get(quest_id)
+        if (
+            quest
+            and _record_source(quest) != 'canon_projection'
+            and _text(quest.get('status')).lower() in ACTIVE_QUEST_STATUSES
+        ):
+            mechanical_active_ids.append(quest_id)
+    scene['activeQuestIds'] = list(dict.fromkeys([*mechanical_active_ids, *canon_active_ids]))
     return True
 
 
@@ -402,6 +437,7 @@ def _sync_session_snapshot(
     open_threads: list[StoryThread],
     *,
     fallback_location: str = '',
+    sync_location: bool = True,
 ) -> None:
     session_obj = db.session.get(Session, session_id)
     if not session_obj:
@@ -411,7 +447,8 @@ def _sync_session_snapshot(
         return
 
     changed = False
-    changed = _sync_snapshot_location(snapshot, location_fact, fallback_location=fallback_location) or changed
+    if sync_location:
+        changed = _sync_snapshot_location(snapshot, location_fact, fallback_location=fallback_location) or changed
     changed = _sync_snapshot_quests(snapshot, open_threads) or changed
     if changed:
         session_obj.state_snapshot = safe_json_dumps(snapshot, {})
@@ -422,10 +459,27 @@ def refresh_session_projection(session_id: int, campaign: Campaign, triggered_se
     state = get_or_create_session_state(session_id, campaign)
 
     location_fact = _latest_location_fact(campaign.campaign_id)
-    if location_fact and location_fact.value_text:
+    session_obj = db.session.get(Session, session_id)
+    snapshot = safe_json_loads(session_obj.state_snapshot, {}) if session_obj else {}
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    scene = snapshot.get('currentScene') if isinstance(snapshot.get('currentScene'), dict) else {}
+    scene_location = _text(scene.get('name') or scene.get('locationId'))
+    scene_turn_id = _int(scene.get('updatedAtTurn') or scene.get('updated_at_turn'))
+    # Structured live scene state is authoritative. Canon is a projection of
+    # remembered narrative and may only initialize/repair location state, or
+    # supply a genuinely newer legacy location fact. It must never move a
+    # party backward after a validated travel action.
+    fact_can_update_scene = bool(
+        location_fact
+        and location_fact.value_text
+        and (not _valid_location_label(scene_location) or not scene_turn_id)
+    )
+    if fact_can_update_scene:
         state.current_location = location_fact.value_text
-    elif not state.current_location or not _valid_location_label(state.current_location):
-        fallback_location = campaign.location or _session_snapshot_location(session_id)
+    elif _valid_location_label(scene_location):
+        state.current_location = scene_location
+    else:
+        fallback_location = _session_snapshot_location(session_id) or state.current_location or campaign.location
         state.current_location = fallback_location if _valid_location_label(fallback_location) else campaign.location
 
     open_threads = (
@@ -440,7 +494,13 @@ def refresh_session_projection(session_id: int, campaign: Campaign, triggered_se
         state.current_quest = ' | '.join(thread.title for thread in open_threads[:3])
     else:
         state.current_quest = campaign.current_quest
-    _sync_session_snapshot(session_id, location_fact, open_threads, fallback_location=state.current_location or campaign.location or '')
+    _sync_session_snapshot(
+        session_id,
+        location_fact if fact_can_update_scene else None,
+        open_threads,
+        fallback_location=state.current_location or campaign.location or '',
+        sync_location=fact_can_update_scene or not _valid_location_label(scene_location),
+    )
 
     active_segments = safe_json_loads(state.active_segments, [])
     active_segments = active_segments if isinstance(active_segments, list) else []

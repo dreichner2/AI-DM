@@ -181,7 +181,11 @@ def test_validate_spell_intent_and_applies_spellcasting_rule_hint():
     assert error is None
     assert intent is not None
     assert intent['kind'] == 'spell'
-    assert intent['spell'] == {'name': 'Wild Surge', 'effect': 'lift the bubbles with magic'}
+    assert intent['spell'] == {
+        'name': 'Wild Surge',
+        'effect': 'lift the bubbles with magic',
+        'resource_pool': 'auto',
+    }
 
     updated = apply_action_intent_to_rule_hint(intent, hint)
 

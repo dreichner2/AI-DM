@@ -2602,6 +2602,7 @@ describe('App user workflow regressions', () => {
             race: 'Dwarf',
             sex: 'male',
             char_class: 'Cleric - Life',
+            background: 'folk_hero',
           }),
         }),
       ]),

@@ -246,6 +246,9 @@ If a pack declares `multiSessionGroupKey`, progress changes propagate to other a
 Checkpoint graph fields:
 
 - `nextCheckpointIds`: normal downstream beats.
+- `branchWhen`: optional `{ "flagKey": "...", "equals": ... }` predicate on a
+  candidate checkpoint. The candidate is eligible only when the persisted
+  runtime flag matches with the same scalar type and value.
 - `alternateCheckpointIds`: downstream beats that can complete the current beat when reached by another route.
 - `prerequisiteCheckpointIds`: beats that must be resolved before this checkpoint can become active.
 - `prerequisitePolicy`: `completed`, `completed_or_skipped`, `completed_or_skipped_or_failed`, or `terminal`.
@@ -253,7 +256,8 @@ Checkpoint graph fields:
 - `failureCheckpointIds`: fallback beats used when a checkpoint fails.
 - `terminal`: marks an end/finale checkpoint.
 - `chapter` and `act`: group checkpoints for authored graph views.
-- `priority`: chooses among multiple reachable next checkpoints.
+- `priority`: authoring metadata for director and graph views. Runtime branch
+  selection currently uses the authored `nextCheckpointIds` order.
 - `gate`: declares soft, hard, optional, or no gate behavior.
 - `canCompleteOutOfOrder`: allows a checkpoint to complete without becoming the active spine.
 - `playerTitle` and `playerSummary`: player-safe labels used by filtered progress payloads.
@@ -263,9 +267,94 @@ Checkpoint graph fields:
 
 When `completeWhen` is present, only those explicit predicates complete the checkpoint. Without `completeWhen`, `locationIds` complete a checkpoint only when the checkpoint does not also declare objective, segment, or encounter completion cues.
 
+When several downstream checkpoints are authored, candidates with `branchWhen`
+are selected from authoritative `snapshot.flags`; narration and recent-memory
+text are not branch inputs. Authors should include an unconditional downstream
+candidate as the fallback route. Existing packs without `branchWhen` retain
+their ordered first-available behavior.
+
 Pack encounter completion is tied to checkpoints through `checkpoint.encounterIds` and encounter `completion.anyOf`. Supported completion outcome labels include `defeat`, `bargain`, `negotiate`, `surrender`, `flee`, `objective`, `resolve`, and `success`. This lets a checkpoint complete through combat, negotiation, surrender, flight, or objective resolution without forcing one tactical answer.
 
 Pack encounter activation is also supported. When a `combat.start` change references `campaignPackEncounterId`/`encounterId`, or the active checkpoint has `encounterIds` and no explicit non-pack enemy participants, AIDM materializes the authored encounter, instantiates enemies from the campaign-pack bestiary, preserves player participants, and stamps combat flags with the pack encounter, checkpoint, enemy, and allowed-outcome IDs.
+
+### Encounter rewards and consequences
+
+An encounter may declare common successful-outcome rewards in `rewards` (or the
+compatibility alias `reward`). The compact object form accepts `xp` or
+`experience`, currency keys `pp`/`gp`/`ep`/`sp`/`cp`, `items`, `flags`, and
+`questEvents`; an array of explicit typed reward records is also accepted.
+Outcome-specific rewards may be placed in
+`outcomes.<outcome>.rewards` or `outcomeRewards.<outcome>`.
+
+Use the canonical outcome keys `victory`, `defeat`, `retreat`, `surrender`,
+`negotiation`, and `objective_completion`. Common rewards apply only to
+victory, surrender, negotiation, and objective completion. A consolation reward
+for defeat or a cost/recovery item after retreat must therefore be explicitly
+authored under that outcome.
+
+Actor-bound rewards support `split`, `each`, `first`, and `actor` allocation.
+XP and currency default to `split`, preserving the authored party total; items
+default to `first`. Set `allocation` on one reward, or use
+`partyAllocation` at encounter/outcome scope. An explicit reward `actorId` must
+be an exact eligible participant and never falls back to another character.
+Only present player combat participants receive actor-bound rewards; defeated
+or unconscious participants remain eligible, while absent participants do not.
+Each awarded item instance receives its own deterministic ID.
+
+Outcome consequences may be authored under
+`outcomes.<outcome>.consequences`, `outcomeConsequences.<outcome>`, or the named
+hooks `onVictory`, `onDefeat`, `onRetreat`, `onSurrender`, `onNegotiation`, and
+`onObjectiveCompletion`. The bounded consequence types are `flag.set`,
+`flag.unset`, `npc.update`, `npc.relationship.update`, `npc.move`,
+`location.update`, `scene.update`, `scene.item.add`, and `scene.item.remove`.
+Use quest events rather than direct `quest.complete` or `quest.fail`
+consequences so the quest engine remains authoritative.
+
+Every ID in encounter `questIds` receives a default `combat.outcome` event.
+Additional events may declare exact `questId`, optional `objectiveId`, and
+`eventType` in the encounter or outcome `questEvents` list. These events can
+satisfy authored mechanical quest predicates, but they do not bypass objective
+prerequisites or terminal validation.
+
+Reward derivation runs only after persisted `combat.end` state agrees with the
+stable encounter and end reason. Outputs, quest events, and the final reward
+marker use ledger-stable IDs. A retry after a partial application queues only
+the missing outputs, and the transaction is not finalized until every required
+ID exists. Encounters without a stable ID, interrupted/mismatched outcomes, and
+unsupported records award nothing. Rewards are authored; the engine does not
+infer arbitrary loot or XP from narration.
+
+Example:
+
+```json
+{
+  "id": "enc_bridge_guard",
+  "title": "The Bridge Guard",
+  "questIds": ["q_open_the_road"],
+  "rewards": {
+    "xp": 120,
+    "gp": 18,
+    "items": [{"id": "bridge_seal", "name": "Bridge Seal", "quantity": 1}],
+    "flags": [{"flagKey": "bridge_secured", "flagValue": true}]
+  },
+  "partyAllocation": {"xp": "split", "currency": "split", "item": "first"},
+  "outcomes": {
+    "negotiation": {
+      "questEvents": [
+        {"eventType": "bridge_terms_agreed", "questId": "q_open_the_road"}
+      ],
+      "consequences": [
+        {"type": "flag.set", "flagKey": "guards_spared", "flagValue": true}
+      ]
+    },
+    "defeat": {
+      "consequences": [
+        {"type": "flag.set", "flagKey": "bridge_held_by_enemy", "flagValue": true}
+      ]
+    }
+  }
+}
+```
 
 ## First-Class Pack Content Actions
 

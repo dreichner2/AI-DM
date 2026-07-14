@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from aidm_server.canon_inventory import append_drop_all_inventory_changes_from_text, inventory_change_from_intent_outcome
 from aidm_server.canon_text import int_or_default
+from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
 from aidm_server.combat.pipeline import (
     combat_turn_advance_change,
     finalize_combat_prepare,
@@ -14,6 +15,12 @@ from aidm_server.combat.pipeline import (
     record_combat_debug_from_outcome,
     record_combat_debug_from_prepare,
     sync_combat_encounter_record,
+)
+from aidm_server.combat.state import (
+    combat_summary_for_dm,
+    combat_turn_context,
+    consume_combat_turn_economy,
+    normalize_combat_state,
 )
 from aidm_server.database import db
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY, STATE_PIPELINE_VERSION
@@ -29,6 +36,7 @@ from aidm_server.game_state.orchestration.combat_resolution import (
     build_dm_combat_context,
     combat_participant_update_signature,
     derive_trusted_damage_changes,
+    resolve_authoritative_player_attack,
     without_trusted_damage_overlaps,
 )
 from aidm_server.game_state.models import (
@@ -50,7 +58,25 @@ from aidm_server.turn_events import record_turn_event
 
 STATE_UPDATE_EVENT = 'state_update'
 MANAGED_STATE_DOMAINS = ['inventory', 'currency', 'health', 'xp', 'spells', 'scene', 'quests', 'locations', 'npcs', 'flags', 'combat']
-SAFE_PRE_DM_IMMEDIATE_CHANGE_TYPES = {'inventory.mark_used', 'inventory.equip', 'inventory.unequip'}
+SAFE_PRE_DM_IMMEDIATE_CHANGE_TYPES = {
+    'inventory.mark_used',
+    'inventory.equip',
+    'inventory.unequip',
+    'inventory.add',
+    'inventory.remove',
+    'scene.item.add',
+    'scene.item.remove',
+    'scene.move_location',
+    'scene.interactable.action',
+    'spell.cast',
+    'class_feature.use',
+    'rest.complete',
+}
+AUTHORITATIVE_PRE_NARRATION_CHANGE_TYPES = {
+    'scene.interactable.action',
+    'spell.cast',
+    'class_feature.use',
+}
 CONFIRMATION_DENIAL_PATTERN = re.compile(
     r"\b(?:do not|don't|does not|doesn't|did not|cannot|can't|fail|fails|failed|before you can|instead)\b",
     re.IGNORECASE,
@@ -201,7 +227,127 @@ def _recent_context_strings(recent_timeline: list[dict[str, Any]]) -> list[str]:
 
 def _safe_pre_dm_immediate_change(change: dict[str, Any]) -> bool:
     change_type = str(change.get('type') or '').strip()
+    # Server-owned resolutions must be committed before the DM narrates them.
+    # ``visible`` controls whether the applied result appears in the DM packet;
+    # it must not demote a validated rules result into narration-confirmed state.
+    if change_type in AUTHORITATIVE_PRE_NARRATION_CHANGE_TYPES:
+        return True
     return change_type in SAFE_PRE_DM_IMMEDIATE_CHANGE_TYPES and not bool(change.get('visible', True))
+
+
+def _gate_pre_dm_combat_spells(
+    *,
+    state: dict[str, Any],
+    changes: list[dict[str, Any]],
+    actor_id: str,
+    turn_id: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Reserve one persisted combat action for each accepted spell cast."""
+
+    working_state = deepcopy(state)
+    allowed: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for change in changes:
+        if str(change.get('type') or '').strip() != 'spell.cast':
+            allowed.append(change)
+            continue
+        scene = working_state.get('currentScene') if isinstance(working_state.get('currentScene'), dict) else {}
+        combat = normalize_combat_state(working_state.get('combat'), scene)
+        if str(combat.get('status') or '').strip().lower() not in {'starting', 'active'}:
+            allowed.append(change)
+            continue
+        change_actor_id = str(change.get('actorId') or change.get('actor_id') or '').strip()
+        turn_context = combat_turn_context(combat)
+        current_actor = turn_context.get('currentActor') if isinstance(turn_context.get('currentActor'), dict) else {}
+        current_actor_id = str(current_actor.get('id') or '').strip()
+        if combat.get('turnIndex') is None or not current_actor_id:
+            rejected.append(
+                {
+                    'change': change,
+                    'reason': 'Spell casting is unavailable until combat turn order is established.',
+                }
+            )
+            continue
+        if change_actor_id != actor_id or change_actor_id != current_actor_id:
+            current_name = str(current_actor.get('name') or 'Another combatant').strip()
+            rejected.append(
+                {
+                    'change': change,
+                    'reason': f'{current_name} is acting now; this spell cannot be cast off-turn.',
+                }
+            )
+            continue
+        consumed, reason, economy = consume_combat_turn_economy(
+            combat,
+            actor_id=change_actor_id,
+            action_id=change.get('id'),
+            action_cost=1,
+        )
+        if not consumed:
+            rejected.append({'change': change, 'reason': reason or "This turn's action is already spent."})
+            continue
+        working_state['combat'] = combat
+        allowed.extend(
+            [
+                change,
+                {
+                    'id': stable_change_id(
+                        turn_id,
+                        'combat.spell.action',
+                        change_actor_id,
+                        change.get('id'),
+                    ),
+                    'turnId': turn_id,
+                    'type': 'combat.update',
+                    'round': combat.get('round') or 1,
+                    'turnIndex': combat.get('turnIndex'),
+                    'flags': {'turnEconomy': deepcopy(economy)},
+                    'reason': f"Casting {change.get('spellName') or 'a spell'} consumed the combat action.",
+                    'visible': False,
+                },
+            ]
+        )
+    return allowed, rejected
+
+
+def _with_rejected_pre_dm_changes(
+    pre_validation: dict[str, Any],
+    rejected_changes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not rejected_changes:
+        return pre_validation
+    payload = deepcopy(pre_validation)
+    rejected_by_type_actor: dict[tuple[str, str], str] = {}
+    rejected_ids: set[str] = set()
+    for rejection in rejected_changes:
+        change = rejection.get('change') if isinstance(rejection.get('change'), dict) else {}
+        change_id = str(change.get('id') or '').strip()
+        if change_id:
+            rejected_ids.add(change_id)
+        rejected_by_type_actor[
+            (
+                str(change.get('type') or '').strip(),
+                str(change.get('actorId') or change.get('actor_id') or '').strip(),
+            )
+        ] = str(rejection.get('reason') or 'The action is not legal now.')
+    payload['immediateChanges'] = [
+        change
+        for change in (payload.get('immediateChanges') or [])
+        if isinstance(change, dict) and str(change.get('id') or '').strip() not in rejected_ids
+    ]
+    for result in payload.get('validatedActions') or []:
+        if not isinstance(result, dict):
+            continue
+        original = result.get('originalAction') if isinstance(result.get('originalAction'), dict) else {}
+        normalized = result.get('normalizedAction') if isinstance(result.get('normalizedAction'), dict) else {}
+        key = (
+            str(normalized.get('type') or original.get('type') or '').strip(),
+            str(normalized.get('actorId') or original.get('actorId') or '').strip(),
+        )
+        if key in rejected_by_type_actor:
+            result['status'] = 'invalid'
+            result['reason'] = rejected_by_type_actor[key]
+    return payload
 
 
 def _merge_validation_results(*validations: dict[str, Any]) -> dict[str, Any]:
@@ -397,6 +543,51 @@ def _resolved_player_roll_should_defer_enemy(turn: DmTurn) -> bool:
     return True
 
 
+def _turn_combat_action(turn: DmTurn) -> dict[str, Any] | None:
+    metadata = _metadata(turn)
+    action_intent = metadata.get('action_intent') if isinstance(metadata.get('action_intent'), dict) else None
+    if not isinstance(action_intent, dict):
+        return None
+    combat_action = action_intent.get('combat')
+    if not isinstance(combat_action, dict) or combat_action.get('authoritative') is not True:
+        return None
+    return combat_action
+
+
+def _combat_enemy_deferred_reason(turn: DmTurn) -> str | None:
+    combat_action = _turn_combat_action(turn)
+    if not isinstance(combat_action, dict):
+        return 'player_turn_in_progress'
+    economy = combat_action.get('economy') if isinstance(combat_action.get('economy'), dict) else {}
+    return None if economy.get('endsTurn') is True else 'player_turn_in_progress'
+
+
+def _resolved_player_attack_for_turn(
+    *,
+    turn: DmTurn,
+    state: dict[str, Any],
+    actor_id: str,
+) -> dict[str, Any] | None:
+    metadata = _metadata(turn)
+    action_intent = metadata.get('action_intent') if isinstance(metadata.get('action_intent'), dict) else None
+    authoritative_roll = (
+        metadata.get('authoritative_roll')
+        if isinstance(metadata.get('authoritative_roll'), dict)
+        else None
+    )
+    if authoritative_roll is None:
+        rules_hint = safe_json_loads(turn.rules_hint, {})
+        if isinstance(rules_hint, dict) and isinstance(rules_hint.get('authoritative_roll'), dict):
+            authoritative_roll = rules_hint['authoritative_roll']
+    return resolve_authoritative_player_attack(
+        state=state,
+        actor_id=actor_id,
+        turn_id=turn.turn_id,
+        action_intent=action_intent,
+        authoritative_roll=authoritative_roll,
+    )
+
+
 def _state_change_signature(change: dict[str, Any]) -> tuple[Any, ...] | None:
     change_type = str(change.get('type') or '').strip()
     actor_id = str(change.get('actorId') or change.get('actor_id') or '')
@@ -445,6 +636,25 @@ def _state_change_signature(change: dict[str, Any]) -> tuple[Any, ...] | None:
     if change_type == 'spell.learn':
         spell = change.get('spell') if isinstance(change.get('spell'), dict) else {}
         return (change_type, actor_id, normalize_item_name(change.get('spellName') or spell.get('name')))
+    if change_type == 'spell.cast':
+        return (
+            change_type,
+            actor_id,
+            normalize_item_name(change.get('spellId') or change.get('spellName')),
+            int_or_default(change.get('castLevel'), default=0),
+            normalize_item_name(change.get('resourcePool')),
+        )
+    if change_type == 'rest.complete':
+        return (change_type, actor_id, normalize_item_name(change.get('restType')))
+    if change_type in {'scene.item.add', 'scene.item.remove'}:
+        item = change.get('item') if isinstance(change.get('item'), dict) else {}
+        return (
+            change_type,
+            normalize_item_name(change.get('locationId')),
+            str(change.get('itemId') or item.get('id') or '').strip(),
+            normalize_item_name(change.get('itemName') or item.get('name')),
+            int_or_default(change.get('quantity', item.get('quantity')), default=1),
+        )
     if change_type in {'scene.update', 'scene.move_location'}:
         return (
             change_type,
@@ -714,6 +924,94 @@ def _without_confirmed_inventory_overlaps(
     return filtered
 
 
+def _without_applied_immediate_overlaps(
+    changes: list[dict[str, Any]],
+    applied_immediate: list[dict[str, Any]],
+    *,
+    action_intent: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Keep narration from re-applying or contradicting pre-DM authoritative work."""
+
+    applied = [change for change in applied_immediate if isinstance(change, dict)]
+    intent_kind = str((action_intent or {}).get('kind') or '').strip().lower()
+    inventory_action = str((action_intent or {}).get('inventory_action') or '').strip().lower()
+    raw_intent_item = (
+        action_intent.get('item')
+        if isinstance(action_intent, dict) and isinstance(action_intent.get('item'), dict)
+        else {}
+    )
+    intent_item = {
+        'itemId': raw_intent_item.get('id') or raw_intent_item.get('itemId') or raw_intent_item.get('item_id'),
+        'itemName': raw_intent_item.get('name'),
+        'item': raw_intent_item,
+    }
+    authoritative_move = any(str(change.get('type') or '').strip() == 'scene.move_location' for change in applied)
+    applied_actor_actions = {
+        (str(change.get('type') or '').strip(), _change_actor_id(change))
+        for change in applied
+        if str(change.get('type') or '').strip() in {'spell.cast', 'class_feature.use', 'rest.complete'}
+    }
+    applied_scene_item_signatures = {
+        signature
+        for change in applied
+        if str(change.get('type') or '').strip() in {'scene.item.add', 'scene.item.remove'}
+        for signature in [_state_change_signature(change)]
+        if signature
+    }
+    grounded_scene_removals = [
+        candidate
+        for candidate in changes or []
+        if isinstance(candidate, dict) and str(candidate.get('type') or '').strip() == 'scene.item.remove'
+    ]
+    filtered: list[dict[str, Any]] = []
+    for change in changes or []:
+        if not isinstance(change, dict):
+            continue
+        change_type = str(change.get('type') or '').strip()
+        # These typed actions are adjudicated before narration. This applies
+        # whether validation succeeded (the change is already present) or
+        # failed (narration cannot create a bypass to success).
+        if intent_kind == 'travel' and change_type == 'scene.move_location':
+            continue
+        if intent_kind == 'spell' and change_type == 'spell.cast':
+            continue
+        if intent_kind == 'capability' and change_type == 'class_feature.use':
+            continue
+        if intent_kind == 'object' and change_type == 'scene.interactable.action':
+            continue
+        if intent_kind == 'rest' and change_type == 'rest.complete':
+            continue
+        # A free-form DM response is not an item source. Inventory gains must
+        # come from a validated typed transaction (pickup/commerce/transfer),
+        # the quest engine, or another authoritative subsystem. Otherwise a
+        # sentence such as "you find a sword" could mint equipment directly
+        # into the persistent inventory.
+        if not intent_kind and change_type == 'inventory.add' and str(change.get('source') or '') == 'post_dm':
+            if not any(_item_reference_matches(change, removal) for removal in grounded_scene_removals):
+                continue
+        if intent_kind == 'item' and inventory_action == 'pick_up':
+            if change_type in {'inventory.add', 'scene.item.remove'} and _item_reference_matches(change, intent_item):
+                continue
+        if intent_kind == 'item' and inventory_action == 'drop':
+            if change_type in {'inventory.remove', 'scene.item.add'} and _item_reference_matches(change, intent_item):
+                continue
+        if authoritative_move and change_type == 'scene.move_location':
+            continue
+        if change_type in {'spell.cast', 'class_feature.use', 'rest.complete'}:
+            change_actor_id = _change_actor_id(change)
+            if any(
+                applied_type == change_type
+                and (not change_actor_id or change_actor_id == applied_actor_id)
+                for applied_type, applied_actor_id in applied_actor_actions
+            ):
+                continue
+        signature = _state_change_signature(change)
+        if signature and signature in applied_scene_item_signatures:
+            continue
+        filtered.append(change)
+    return filtered
+
+
 def _intent_confirmed_post_changes(
     *,
     turn: DmTurn,
@@ -771,7 +1069,7 @@ def _intent_confirmed_post_changes(
                 }
             )
 
-    drop_all_patch = {'inventory_changes': []}
+    drop_all_patch = {'inventory_changes': [], 'entities': []}
     append_drop_all_inventory_changes_from_text(turn, dm_response_text, drop_all_patch)
     for change in drop_all_patch.get('inventory_changes') or []:
         if not isinstance(change, dict) or change.get('action') != 'lose':
@@ -804,6 +1102,8 @@ def _dm_context_packet(
     applied_changes: list[dict[str, Any]],
     combat_context: dict[str, Any] | None = None,
     resolved_player_roll: bool = False,
+    player_resolved_action: dict[str, Any] | None = None,
+    enemy_deferred_reason: str | None = None,
     enemy_roller: Callable[[int], int] | None = None,
 ) -> dict[str, Any]:
     compact = compact_state_for_extraction(state)
@@ -813,9 +1113,14 @@ def _dm_context_packet(
         state=state,
         combat_context=combat_context,
         pending_rolls=pending_rolls,
-        resolved_player_roll=resolved_player_roll,
+        resolved_player_roll=resolved_player_roll or bool(enemy_deferred_reason),
         enemy_roller=enemy_roller,
     )
+    if isinstance(dm_combat, dict) and enemy_deferred_reason:
+        dm_combat['enemyActionDeferredReason'] = enemy_deferred_reason
+    if isinstance(dm_combat, dict) and isinstance(player_resolved_action, dict):
+        dm_combat['playerResolvedAction'] = deepcopy(player_resolved_action)
+        dm_combat['trustedDamageEvents'] = [deepcopy(player_resolved_action)]
     validated_actions = []
     valid_actions = []
     invalid_actions = []
@@ -882,6 +1187,33 @@ def _dm_context_packet(
                 'Do not directly mutate game state; narrate concrete outcomes clearly for extraction and validation.',
             ]
         )
+    if isinstance(player_resolved_action, dict):
+        instructions.extend(
+            [
+                'The player attack in combatState.playerResolvedAction is engine-owned.',
+                'Narrate its exact target, hit or miss, attack total, and damage total; do not invent or revise the result.',
+            ]
+        )
+    if any(
+        isinstance(change, dict)
+        and change.get('type') == 'spell.cast'
+        and isinstance(change.get('spellResolution'), dict)
+        for change in applied_changes
+    ):
+        instructions.extend(
+            [
+                'A targeted spell in stateChangesAlreadyApplied was fully resolved by the rules engine.',
+                'Narrate its exact targets, attack or save rolls, damage, healing, conditions, and concentration; do not revise or duplicate them.',
+            ]
+        )
+    scene_summary = compact.get('currentScene') if isinstance(compact.get('currentScene'), dict) else {}
+    if scene_summary.get('interactables') or scene_summary.get('hazards'):
+        instructions.extend(
+            [
+                'Scene interactables and hazards are authoritative persistent objects with exact IDs and state.',
+                'Never narrate an object transition that is absent from validatedActions/stateChangesAlreadyApplied, and never reveal entries marked hidden or not player-known.',
+            ]
+        )
     return {
         'currentStateSummary': compact,
         'playerMessage': player_message,
@@ -902,6 +1234,14 @@ def _dm_context_packet(
                 'npcName': change.get('npcName') or change.get('name'),
                 'flagKey': change.get('flagKey'),
                 'itemName': change.get('itemName'),
+                'spellName': change.get('spellName'),
+                'spellResolution': change.get('spellResolution'),
+                'capabilityName': change.get('capabilityName'),
+                'effectType': change.get('effectType'),
+                'objectAction': change.get('objectAction'),
+                'targetId': change.get('targetId'),
+                'targetName': change.get('targetName'),
+                'eventType': change.get('eventType'),
                 'slot': change.get('slot'),
                 'amount': change.get('actualAmount', change.get('amount')),
                 'currency': change.get('currency'),
@@ -994,14 +1334,55 @@ def pre_dm_pipeline(
         for change in (pre_validation.get('immediateChanges') or [])
         if isinstance(change, dict)
     ]
-    safe_immediate_changes = [change for change in pre_immediate_changes if _safe_pre_dm_immediate_change(change)]
+    safe_immediate_candidates = [change for change in pre_immediate_changes if _safe_pre_dm_immediate_change(change)]
     pending_immediate_changes = [change for change in pre_immediate_changes if not _safe_pre_dm_immediate_change(change)]
-    immediate_validation = validate_state_changes(state=state, changes=safe_immediate_changes, expected_actor_id=actor_id)
+    safe_immediate_changes, combat_spell_rejections = _gate_pre_dm_combat_spells(
+        state=state,
+        changes=safe_immediate_candidates,
+        actor_id=actor_id,
+        turn_id=turn.turn_id,
+    )
+    pre_validation = _with_rejected_pre_dm_changes(pre_validation, combat_spell_rejections)
+    immediate_validation = _merge_validation_results(
+        validate_state_changes(state=state, changes=safe_immediate_changes, expected_actor_id=actor_id),
+        {'accepted': [], 'modified': [], 'rejected': combat_spell_rejections},
+    )
     pending_immediate_validation = validate_state_changes(state=state, changes=pending_immediate_changes, expected_actor_id=actor_id)
     immediate_changes = validated_changes_for_application(immediate_validation)
     apply_result = apply_state_changes(state, immediate_changes)
     state_after_immediate = apply_result['nextState']
     applied_immediate = apply_result['appliedChanges']
+    immediate_combat = (
+        state_after_immediate.get('combat')
+        if isinstance(state_after_immediate.get('combat'), dict)
+        else {}
+    )
+    immediate_end_reason = (
+        check_combat_end(immediate_combat)
+        if any(
+            isinstance(change, dict)
+            and change.get('type') == 'spell.cast'
+            and change.get('spellResolution')
+            for change in applied_immediate
+        )
+        else None
+    )
+    if immediate_end_reason:
+        immediate_end_change = combat_end_change(turn.turn_id, immediate_end_reason)
+        immediate_end_validation = validate_state_changes(
+            state=state_after_immediate,
+            changes=[immediate_end_change],
+        )
+        immediate_end_apply = apply_state_changes(
+            state_after_immediate,
+            validated_changes_for_application(immediate_end_validation),
+        )
+        state_after_immediate = immediate_end_apply['nextState']
+        applied_immediate = [*applied_immediate, *immediate_end_apply['appliedChanges']]
+        immediate_validation = _merge_validation_results(
+            immediate_validation,
+            immediate_end_validation,
+        )
     combat_session_released = False
 
     def _before_combat_provider_call() -> None:
@@ -1037,6 +1418,66 @@ def pre_dm_pipeline(
     combat_apply = apply_state_changes(state_after_immediate, applied_combat_changes)
     state_before_dm = combat_apply['nextState']
     applied_combat = combat_apply['appliedChanges']
+    combat_context_for_dm = (
+        combat_prepare.get('combatContext')
+        if isinstance(combat_prepare.get('combatContext'), dict)
+        else None
+    )
+    player_resolved_action = _resolved_player_attack_for_turn(
+        turn=turn,
+        state=state_before_dm,
+        actor_id=actor_id,
+    )
+    trusted_player_changes: list[dict[str, Any]] = []
+    if isinstance(player_resolved_action, dict):
+        trusted_player_changes = derive_trusted_damage_changes(
+            state=state_before_dm,
+            dm_context_packet={
+                'combatState': {
+                    'playerResolvedAction': player_resolved_action,
+                    'trustedDamageEvents': [player_resolved_action],
+                }
+            },
+            actor_id=actor_id,
+            turn_id=turn.turn_id,
+            already_applied_changes=[*applied_immediate, *applied_combat],
+        ).resolved
+        if trusted_player_changes:
+            trusted_player_validation = validate_state_changes(
+                state=state_before_dm,
+                changes=trusted_player_changes,
+            )
+            trusted_player_apply = apply_state_changes(
+                state_before_dm,
+                validated_changes_for_application(trusted_player_validation),
+            )
+            state_before_dm = trusted_player_apply['nextState']
+            applied_combat = [*applied_combat, *trusted_player_apply['appliedChanges']]
+            combat_changes = [*combat_changes, *trusted_player_changes]
+            combat_validation = _merge_validation_results(combat_validation, trusted_player_validation)
+            combat_after_damage = (
+                state_before_dm.get('combat')
+                if isinstance(state_before_dm.get('combat'), dict)
+                else {}
+            )
+            engine_end_reason = check_combat_end(combat_after_damage)
+            if engine_end_reason:
+                engine_end_change = combat_end_change(turn.turn_id, engine_end_reason)
+                engine_end_validation = validate_state_changes(
+                    state=state_before_dm,
+                    changes=[engine_end_change],
+                )
+                engine_end_apply = apply_state_changes(
+                    state_before_dm,
+                    validated_changes_for_application(engine_end_validation),
+                )
+                if engine_end_apply['appliedChanges']:
+                    state_before_dm = engine_end_apply['nextState']
+                    applied_combat = [*applied_combat, *engine_end_apply['appliedChanges']]
+                    combat_changes = [*combat_changes, engine_end_change]
+                    trusted_player_changes = [*trusted_player_changes, *engine_end_apply['appliedChanges']]
+                    combat_context_for_dm = combat_summary_for_dm(state_before_dm['combat'])
+                combat_validation = _merge_validation_results(combat_validation, engine_end_validation)
     finalize_combat_prepare(
         session_obj=session_obj,
         campaign=campaign,
@@ -1055,6 +1496,7 @@ def pre_dm_pipeline(
         prepare_result=combat_prepare,
     )
 
+    enemy_deferred_reason = _combat_enemy_deferred_reason(turn)
     dm_context = _dm_context_packet(
         state=state_before_dm,
         player_message=player_message,
@@ -1067,9 +1509,13 @@ def pre_dm_pipeline(
             else pre_validation
         ),
         applied_changes=[*applied_immediate, *applied_combat],
-        combat_context=combat_prepare.get('combatContext') if isinstance(combat_prepare.get('combatContext'), dict) else None,
+        combat_context=combat_context_for_dm,
         resolved_player_roll=_turn_awaits_player_roll(turn) or _resolved_player_roll_should_defer_enemy(turn),
+        player_resolved_action=player_resolved_action,
+        enemy_deferred_reason=enemy_deferred_reason,
     )
+    if trusted_player_changes:
+        dm_context['trustedStateChanges'] = deepcopy(trusted_player_changes)
     state_log = build_state_log(
         turn_id=turn.turn_id,
         pre_validation=pre_validation,
@@ -1295,11 +1741,27 @@ def post_dm_pipeline(
             if confirmed_pre_dm_changes and 'pre_dm_confirmed_post_dm' not in notes:
                 notes.append('pre_dm_confirmed_post_dm')
             post_extraction['notes'] = notes
-        proposed_before_dedupe = [
+        proposed_before_authority_filter = [
             change
             for change in (post_extraction.get('proposedChanges') or [])
             if isinstance(change, dict)
         ]
+        proposed_before_dedupe = _without_applied_immediate_overlaps(
+            proposed_before_authority_filter,
+            [
+                change
+                for change in (pipeline.get('immediateAppliedChanges') or [])
+                if isinstance(change, dict)
+            ],
+            action_intent=(metadata.get('action_intent') if isinstance(metadata.get('action_intent'), dict) else None),
+        )
+        if len(proposed_before_dedupe) != len(proposed_before_authority_filter):
+            post_extraction = deepcopy(post_extraction)
+            post_extraction['proposedChanges'] = proposed_before_dedupe
+            notes = list(post_extraction.get('notes') or [])
+            if 'post_dm_authoritative_immediate_filter' not in notes:
+                notes.append('post_dm_authoritative_immediate_filter')
+            post_extraction['notes'] = notes
         proposed_after_dedupe = _merge_state_changes(proposed_before_dedupe, seed_changes=already_applied)
         if len(proposed_after_dedupe) != len(proposed_before_dedupe):
             post_extraction = deepcopy(post_extraction)
@@ -1319,20 +1781,28 @@ def post_dm_pipeline(
         trusted_enemy_damage_changes = trusted_damage.enemy
         trusted_resolved_damage_changes = trusted_damage.resolved
         trusted_damage_changes = trusted_damage.all_changes
-        if trusted_damage_changes:
+        protected_post_changes = without_trusted_damage_overlaps(
+            post_extraction.get('proposedChanges') or [],
+            trusted_damage_changes,
+            dm_context_packet=dm_context_packet,
+        )
+        has_engine_player_resolution = bool(
+            isinstance(dm_context_packet.get('combatState'), dict)
+            and isinstance(dm_context_packet['combatState'].get('playerResolvedAction'), dict)
+        )
+        if trusted_damage_changes or has_engine_player_resolution:
             post_extraction = deepcopy(post_extraction)
             post_extraction['proposedChanges'] = [
                 *trusted_damage_changes,
-                *without_trusted_damage_overlaps(
-                    post_extraction.get('proposedChanges') or [],
-                    trusted_damage_changes,
-                ),
+                *protected_post_changes,
             ]
             notes = list(post_extraction.get('notes') or [])
             if trusted_enemy_damage_changes and 'trusted_enemy_resolved_damage' not in notes:
                 notes.append('trusted_enemy_resolved_damage')
             if trusted_resolved_damage_changes and 'trusted_resolved_damage' not in notes:
                 notes.append('trusted_resolved_damage')
+            if has_engine_player_resolution and 'engine_player_attack_authority' not in notes:
+                notes.append('engine_player_attack_authority')
             post_extraction['notes'] = notes
 
         trusted_damage_ids = {
@@ -1375,6 +1845,32 @@ def post_dm_pipeline(
         post_apply = apply_state_changes(state_before_dm, post_changes)
         final_state = post_apply['nextState']
         applied_post = post_apply['appliedChanges']
+        final_combat = final_state.get('combat') if isinstance(final_state.get('combat'), dict) else {}
+        engine_end_reason = (
+            check_combat_end(final_combat)
+            if trusted_damage_changes or has_engine_player_resolution
+            else None
+        )
+        if engine_end_reason:
+            engine_end_change = combat_end_change(turn.turn_id, engine_end_reason)
+            engine_end_validation = validate_state_changes(state=final_state, changes=[engine_end_change])
+            engine_end_apply = apply_state_changes(
+                final_state,
+                validated_changes_for_application(engine_end_validation),
+            )
+            final_state = engine_end_apply['nextState']
+            applied_post = [*applied_post, *engine_end_apply['appliedChanges']]
+            post_validation = _merge_validation_results(post_validation, engine_end_validation)
+            if engine_end_apply['appliedChanges']:
+                post_extraction = deepcopy(post_extraction)
+                post_extraction['proposedChanges'] = [
+                    *(post_extraction.get('proposedChanges') or []),
+                    engine_end_change,
+                ]
+                notes = list(post_extraction.get('notes') or [])
+                if 'engine_combat_end' not in notes:
+                    notes.append('engine_combat_end')
+                post_extraction['notes'] = notes
         turn_advance_change = combat_turn_advance_change(state=final_state, turn=turn, actor_id=actor_id)
         if turn_advance_change:
             advance_validation = validate_state_changes(state=final_state, changes=[turn_advance_change], expected_actor_id=actor_id)

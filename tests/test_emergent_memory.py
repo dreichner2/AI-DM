@@ -1055,10 +1055,68 @@ def test_projection_syncs_session_state_and_snapshot_quests(app):
         assert scene['dangerLevel'] == 0
         assert scene['combatState'] == 'none'
         assert scene['activeNpcIds'] == []
-        assert scene['activeQuestIds'] == ['flying_lessons_from_master_roshi']
+        assert scene['activeQuestIds'] == [
+            'investigate_underwater_disturbance',
+            'flying_lessons_from_master_roshi',
+        ]
         assert 'mood' not in scene
-        assert quests['investigate_underwater_disturbance']['status'] == 'completed'
+        assert quests['investigate_underwater_disturbance']['status'] == 'active'
         assert quests['flying_lessons_from_master_roshi']['status'] == 'active'
+
+
+def test_story_thread_cannot_reactivate_completed_mechanical_quest(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        turn = _create_turn(
+            app,
+            ids,
+            player_input='I remember the sealed gate.',
+            dm_output='The old task is mentioned again, but remains finished.',
+        )
+        campaign = turn.campaign
+        session = db.session.get(Session, ids['session_id'])
+        session.state_snapshot = safe_json_dumps(
+            {
+                'currentScene': {
+                    'locationId': 'camp',
+                    'name': 'Camp',
+                    'activeQuestIds': [],
+                },
+                'quests': [
+                    {
+                        'id': 'seal_the_gate',
+                        'title': 'Seal the Gate',
+                        'status': 'completed',
+                        'objectives': [{'id': 'seal', 'status': 'completed'}],
+                        'completedAtTurn': turn.turn_id,
+                        'metadata': {'source': 'mechanical'},
+                    }
+                ],
+            },
+            {},
+        )
+        db.session.add(
+            StoryThread(
+                campaign_id=ids['campaign_id'],
+                title='Seal the Gate',
+                summary='A stale recollection still calls the gate unfinished.',
+                status='open',
+                origin_turn_id=turn.turn_id,
+                last_touched_turn_id=turn.turn_id,
+                metadata_json=safe_json_dumps({'questId': 'seal_the_gate'}, {}),
+            )
+        )
+        db.session.commit()
+
+        refresh_session_projection(ids['session_id'], campaign)
+        db.session.commit()
+
+        snapshot = safe_json_loads(db.session.get(Session, ids['session_id']).state_snapshot, {})
+        quest = snapshot['quests'][0]
+        assert quest['status'] == 'completed'
+        assert quest['completedAtTurn'] == turn.turn_id
+        assert snapshot['currentScene']['activeQuestIds'] == []
 
 
 def test_projection_does_not_promote_story_threads_to_active_quests_in_pack_only_mode(app):
@@ -1206,6 +1264,58 @@ def test_refresh_session_projection_ignores_prose_current_location_fact(app):
         assert refreshed_state.current_location == 'Rensira'
         assert refreshed_snapshot['currentScene']['name'] == 'Rensira'
         assert refreshed_snapshot['currentScene']['locationId'] == 'rensira'
+
+
+def test_refresh_session_projection_does_not_override_authoritative_scene_with_newer_canon(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        scene_turn = _create_turn(
+            app,
+            ids,
+            player_input='I remain at camp.',
+            dm_output='The party remains at camp.',
+        )
+        canon_turn = _create_turn(
+            app,
+            ids,
+            player_input='I recall the old ruins.',
+            dm_output='A later recollection mentions the ruins without travel.',
+        )
+        campaign = canon_turn.campaign
+        db.session.add(
+            StoryFact(
+                campaign_id=ids['campaign_id'],
+                predicate='current_location',
+                value_text='Old Ruins',
+                fact_status='accepted',
+                source_turn_id=canon_turn.turn_id,
+            )
+        )
+        session = db.session.get(Session, ids['session_id'])
+        snapshot = safe_json_loads(session.state_snapshot, {})
+        snapshot['currentScene'] = {
+            'locationId': 'camp',
+            'name': 'Camp',
+            'sceneType': 'exploration',
+            'combatState': 'none',
+            'activeNpcIds': [],
+            'activeQuestIds': [],
+            'items': [],
+            'updatedAtTurn': scene_turn.turn_id,
+        }
+        session.state_snapshot = safe_json_dumps(snapshot, {})
+        db.session.commit()
+
+        refresh_session_projection(ids['session_id'], campaign)
+        db.session.commit()
+
+        refreshed_state = SessionState.query.filter_by(session_id=ids['session_id']).one()
+        refreshed_snapshot = safe_json_loads(db.session.get(Session, ids['session_id']).state_snapshot, {})
+
+        assert refreshed_state.current_location == 'Camp'
+        assert refreshed_snapshot['currentScene']['locationId'] == 'camp'
+        assert refreshed_snapshot['currentScene']['name'] == 'Camp'
 
 
 def test_refresh_session_projection_prefers_newer_source_turn_over_newer_fact_id(app):

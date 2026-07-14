@@ -17,6 +17,7 @@ import {
   type InventoryRow,
   type MapPanelMeta,
   type SpellbookSummary,
+  type SpellResourceSummary,
   type StatBlock,
   type WorldStatePanel,
   type XpProgress,
@@ -108,6 +109,7 @@ type InspectorPanelProps = {
   createPlayerPending: boolean
   statBlock: StatBlock
   spellbook: SpellbookSummary
+  spellResources: SpellResourceSummary
   characterTraits: CharacterTraitSummary[]
   inventoryRows: InventoryRow[]
   inventoryWeightLabel: string
@@ -149,6 +151,13 @@ type InspectorPanelProps = {
 
 function displayStatValue(value: string) {
   return value
+}
+
+function mechanicLabel(value: string) {
+  return value
+    .replace(/^tool:/, '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
 }
 
 function inventoryIconName(icon: string) {
@@ -196,6 +205,7 @@ export function InspectorPanel({
   createPlayerPending,
   statBlock,
   spellbook,
+  spellResources,
   characterTraits,
   inventoryRows,
   inventoryWeightLabel,
@@ -232,6 +242,10 @@ export function InspectorPanel({
 }: InspectorPanelProps) {
   const [showAllKnownNpcs, setShowAllKnownNpcs] = useState(false)
   const [showAllKnownLocations, setShowAllKnownLocations] = useState(false)
+  const skillProficiencies = statBlock.skillProficiencies ?? []
+  const skillExpertise = statBlock.skillExpertise ?? []
+  const toolProficiencies = statBlock.toolProficiencies ?? []
+  const languages = statBlock.languages ?? []
   const availableTabs = INSPECTOR_TABS.filter((tab) => canUseOperatorTools || !tab.operatorOnly)
   const activeInspectorTab = availableTabs.some((tab) => tab.id === inspectorTab)
     ? inspectorTab
@@ -415,6 +429,45 @@ export function InspectorPanel({
             <span>Proficiency</span>
             <strong>{displayStatValue(statBlock.proficiency)}</strong>
           </div>
+          {statBlock.background || skillProficiencies.length || toolProficiencies.length ? (
+            <dl className="character-mechanics-grid" aria-label="Character proficiencies">
+              {statBlock.background ? (
+                <div>
+                  <dt>Background</dt>
+                  <dd>{statBlock.background}</dd>
+                </div>
+              ) : null}
+              {statBlock.hitDie ? (
+                <div>
+                  <dt>Hit Die</dt>
+                  <dd>{statBlock.hitDie}</dd>
+                </div>
+              ) : null}
+              {skillProficiencies.length ? (
+                <div>
+                  <dt>Skills</dt>
+                  <dd>
+                    {skillProficiencies.map((skill) => {
+                      const expertise = skillExpertise.includes(skill)
+                      return `${mechanicLabel(skill)}${expertise ? ' (expertise)' : ''}`
+                    }).join(', ')}
+                  </dd>
+                </div>
+              ) : null}
+              {toolProficiencies.length ? (
+                <div>
+                  <dt>Tools</dt>
+                  <dd>{toolProficiencies.map(mechanicLabel).join(', ')}</dd>
+                </div>
+              ) : null}
+              {languages.length ? (
+                <div>
+                  <dt>Languages</dt>
+                  <dd>{languages.join(', ')}</dd>
+                </div>
+              ) : null}
+            </dl>
+          ) : null}
         </section>
       ) : null}
 
@@ -482,6 +535,28 @@ export function InspectorPanel({
             <h3>Spellbook ({spellbook.knownSpells.length})</h3>
             <span>{spellbookSourceLabel}</span>
           </div>
+          {spellResources.slots.length || spellResources.pactSlot || spellResources.arcanum.length || spellResources.concentration ? (
+            <div className="spell-resource-summary" aria-label="Spell resources">
+              {spellResources.slots.map((slot) => (
+                <span key={`slot-${slot.level}`}>
+                  Level {slot.level}: <strong>{slot.current}/{slot.max}</strong>
+                </span>
+              ))}
+              {spellResources.pactSlot ? (
+                <span>
+                  Pact level {spellResources.pactSlot.level}: <strong>{spellResources.pactSlot.current}/{spellResources.pactSlot.max}</strong>
+                </span>
+              ) : null}
+              {spellResources.arcanum.map((use) => (
+                <span key={`arcanum-${use.level}`}>
+                  Arcanum {use.level}: <strong>{use.current}/{use.max}</strong>
+                </span>
+              ))}
+              {spellResources.concentration ? (
+                <span>Concentrating: <strong>{spellResources.concentration}</strong></span>
+              ) : null}
+            </div>
+          ) : null}
           <div className="spellbook-list" aria-label="Known spells">
             {visibleSpells.length ? (
               visibleSpells.map((spell) => (

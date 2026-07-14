@@ -81,8 +81,12 @@ function combatState({ current = true }: { current?: boolean } = {}): CombatStat
         currentActorId: current ? 'player_30' : 'enemy_goblin_1',
         currentActorName: current ? 'Ember' : 'Goblin Sentry',
         isCurrentActor: current,
-        economyTracking: 'turn_order_derived',
-        subTurnCountersTracked: false,
+        economyTracking: 'persisted_turn_economy',
+        subTurnCountersTracked: true,
+        actionRemaining: 1,
+        bonusActionRemaining: 1,
+        movementRemaining: 1,
+        reactionRemaining: 1,
         actions: [
           {
             id: 'combat.attack.blade',
@@ -138,6 +142,9 @@ describe('CombatHud', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Your turn')
     expect(screen.getByRole('heading', { name: 'Combat · Round 2' })).toBeInTheDocument()
     expect(screen.getByText(/Choose an action and, when needed, a target/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Turn resources')).toHaveTextContent(
+      'Action ready · Bonus action ready · Movement ready · Reaction ready',
+    )
     expect(screen.queryByText(/server-issued|server-rolled|sub-turn counters/i)).not.toBeInTheDocument()
     const allies = screen.getByRole('region', { name: 'Allies in combat' })
     expect(allies).toHaveTextContent('Ember')

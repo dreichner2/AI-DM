@@ -7,9 +7,10 @@ from typing import Any
 
 from aidm_server.canon_inventory import INVENTORY_ACTIONS, clean_inventory_item_name, looks_like_inventory_item
 from aidm_server.rules import DC_HINTS, RuleHint
+from aidm_server.interactables import INTERACTABLE_ACTIONS
 
 
-VALID_ACTION_KINDS = {'message', 'roll', 'ability', 'spell', 'item', 'interact', 'combat', 'emote', 'ooc', 'admin'}
+VALID_ACTION_KINDS = {'message', 'roll', 'ability', 'capability', 'spell', 'item', 'object', 'interact', 'travel', 'rest', 'combat', 'emote', 'ooc', 'admin'}
 VALID_DICE = {'d4', 'd6', 'd8', 'd10', 'd12', 'd20', 'd100'}
 VALID_ROLL_MODES = {'normal', 'advantage', 'disadvantage'}
 VALID_RESULT_VISIBILITY = {'hidden_until_landed', 'visible'}
@@ -124,10 +125,39 @@ def _validate_spell_payload(raw_spell: Any) -> tuple[dict[str, Any] | None, str 
     effect = _clean_text(raw_spell.get('effect'), max_length=ACTION_SPELL_EFFECT_MAX_LENGTH)
     if not effect:
         return None, 'spell.effect is required.'
-    return {
+    cast_level = _coerce_int(raw_spell.get('cast_level', raw_spell.get('castLevel')))
+    if cast_level is not None and not 0 <= cast_level <= 9:
+        return None, 'spell.cast_level must be from 0 to 9.'
+    resource_pool = _clean_text(raw_spell.get('resource_pool', raw_spell.get('resourcePool')), max_length=16).lower() or 'auto'
+    if resource_pool not in {'auto', 'standard', 'pact', 'arcanum'}:
+        return None, 'spell.resource_pool must be auto, standard, pact, or arcanum.'
+    payload = {
         'name': name or 'spell',
         'effect': effect,
-    }, None
+        'resource_pool': resource_pool,
+    }
+    if cast_level is not None:
+        payload['cast_level'] = cast_level
+    if raw_spell.get('concentration') is not None:
+        payload['concentration'] = bool(raw_spell.get('concentration'))
+    raw_target_ids = raw_spell.get('target_ids', raw_spell.get('targetIds'))
+    if raw_target_ids is None and raw_spell.get('target_id', raw_spell.get('targetId')):
+        raw_target_ids = [raw_spell.get('target_id', raw_spell.get('targetId'))]
+    if raw_target_ids is not None:
+        if not isinstance(raw_target_ids, list):
+            return None, 'spell.target_ids must be a list of exact target IDs.'
+        target_ids: list[str] = []
+        for raw_target_id in raw_target_ids[:20]:
+            target_id = _clean_text(raw_target_id, max_length=ACTION_ID_MAX_LENGTH)
+            if not target_id or not ACTION_ID_RE.fullmatch(target_id):
+                return None, 'spell.target_ids contains an unsupported target ID.'
+            if target_id in target_ids:
+                return None, 'spell.target_ids cannot contain duplicates.'
+            target_ids.append(target_id)
+        if not target_ids:
+            return None, 'spell.target_ids must contain at least one exact target ID.'
+        payload['target_ids'] = target_ids
+    return payload, None
 
 
 def _coerce_non_negative_int(value: Any) -> int:
@@ -195,6 +225,29 @@ def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | Non
             return None, ability_error
         normalized['ability'] = ability
 
+    if kind == 'capability':
+        raw_capability = value.get('capability')
+        if not isinstance(raw_capability, dict):
+            return None, 'capability action metadata must include a capability object.'
+        capability_id = _clean_text(
+            raw_capability.get('id') or raw_capability.get('capability_id'),
+            max_length=ACTION_ID_MAX_LENGTH,
+        )
+        if not capability_id or not ACTION_ID_RE.fullmatch(capability_id):
+            return None, 'capability.id is required and may contain only supported ID characters.'
+        target_id = _clean_text(
+            raw_capability.get('target_id') or raw_capability.get('targetId'),
+            max_length=ACTION_ID_MAX_LENGTH,
+        )
+        if target_id and not ACTION_ID_RE.fullmatch(target_id):
+            return None, 'capability.target_id contains unsupported characters.'
+        amount = _coerce_int(raw_capability.get('amount'))
+        normalized['capability'] = {
+            'id': capability_id,
+            **({'target_id': target_id} if target_id else {}),
+            **({'amount': max(1, amount)} if amount is not None else {}),
+        }
+
     if kind == 'spell':
         spell, spell_error = _validate_spell_payload(value.get('spell'))
         if spell_error:
@@ -231,6 +284,28 @@ def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | Non
         }
         normalized['inventory_action'] = inventory_action
         normalized['cost_gold'] = cost_gold
+
+    if kind == 'object':
+        raw_object = value.get('object')
+        if not isinstance(raw_object, dict):
+            return None, 'object action metadata must include an object payload.'
+        object_id = _clean_text(
+            raw_object.get('id') or raw_object.get('object_id') or raw_object.get('target_id'),
+            max_length=ACTION_ID_MAX_LENGTH,
+        )
+        object_action = _clean_text(raw_object.get('action'), max_length=32).lower()
+        if not object_id or not ACTION_ID_RE.fullmatch(object_id):
+            return None, 'object.id is required and contains unsupported characters.'
+        if object_action not in INTERACTABLE_ACTIONS:
+            return None, f'object.action must be one of {sorted(INTERACTABLE_ACTIONS)}.'
+        revision = _coerce_int(raw_object.get('revision', raw_object.get('expected_revision')))
+        if revision is not None and revision < 0:
+            return None, 'object.revision must be non-negative.'
+        normalized['object'] = {
+            'id': object_id,
+            'action': object_action,
+            **({'revision': revision} if revision is not None else {}),
+        }
 
     if kind == 'interact':
         interaction = value.get('interaction')
@@ -275,6 +350,29 @@ def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | Non
         else:
             normalized_target['npc_id'] = target_npc_id
         normalized['target'] = normalized_target
+
+    if kind == 'travel':
+        location = value.get('location')
+        if not isinstance(location, dict):
+            return None, 'travel action metadata must include a location object.'
+        location_id = _clean_text(
+            location.get('id') or location.get('location_id') or location.get('locationId'),
+            max_length=ACTION_ID_MAX_LENGTH,
+        )
+        if not location_id:
+            return None, 'location.id is required for travel.'
+        if not ACTION_ID_RE.fullmatch(location_id):
+            return None, 'location.id contains unsupported characters.'
+        normalized['location'] = {
+            'id': location_id,
+            'name': _clean_text(location.get('name'), max_length=ACTION_NAME_MAX_LENGTH),
+        }
+
+    if kind == 'rest':
+        rest_type = _clean_text(value.get('rest_type', value.get('restType')), max_length=24).lower().replace('-', '_').replace(' ', '_')
+        if rest_type not in {'short', 'short_rest', 'long', 'long_rest'}:
+            return None, 'rest_type must be short_rest or long_rest.'
+        normalized['rest_type'] = 'short_rest' if rest_type in {'short', 'short_rest'} else 'long_rest'
 
     if kind == 'combat':
         combat, combat_error = _validate_combat_payload(value.get('combat'))
@@ -349,7 +447,7 @@ def apply_action_intent_to_rule_hint(intent: dict[str, Any] | None, hint: RuleHi
             hint.outcome_deferred = False
         return hint
 
-    if kind in {'ooc', 'emote', 'item', 'admin'}:
+    if kind in {'ooc', 'emote', 'item', 'travel', 'rest', 'admin'}:
         hint.requires_roll = False
         hint.roll_type = None
         hint.dc_hint = None

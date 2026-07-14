@@ -43,6 +43,10 @@ function playerFacingActionDescription(description: string) {
     : copy
 }
 
+function remainingResourceLabel(label: string, remaining: number) {
+  return `${label} ${remaining > 0 ? 'ready' : 'spent'}`
+}
+
 function CombatantList({
   currentActorId,
   label,
@@ -139,6 +143,16 @@ export function CombatHud({ combat, playerId, disabled, submitAction }: CombatHu
         </span>
       </div>
       <p id="combat-hud-action-state" className="combat-hud-note">{actionStateNote}</p>
+      {bundle.isCurrentActor && bundle.subTurnCountersTracked ? (
+        <p className="combat-hud-economy" aria-label="Turn resources">
+          {[
+            remainingResourceLabel('Action', bundle.actionRemaining),
+            remainingResourceLabel('Bonus action', bundle.bonusActionRemaining),
+            remainingResourceLabel('Movement', bundle.movementRemaining),
+            remainingResourceLabel('Reaction', bundle.reactionRemaining),
+          ].join(' · ')}
+        </p>
+      ) : null}
       <div className="combat-hud-overview">
         <div className="combat-hud-roster">
           <CombatantList

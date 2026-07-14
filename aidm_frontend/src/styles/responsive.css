@@ -2016,8 +2016,8 @@
   /* One horizontal choice rail exposes every combat option without stacking
      five full-width cards in the phone's vertical reading budget. */
   .combat-hud {
-    max-height: 122px;
-    gap: 3px;
+    max-height: 124px;
+    gap: 2px;
     padding-block: 5px;
     overflow-y: hidden;
     scrollbar-gutter: auto;
@@ -2036,6 +2036,18 @@
     overflow: hidden;
     clip-path: inset(50%);
     white-space: nowrap;
+  }
+
+  .combat-hud-economy {
+    order: 1;
+    overflow: hidden;
+    font-size: 0.58rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .combat-hud-choice-count {
+    display: none;
   }
 
   .combat-hud-overview {

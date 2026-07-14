@@ -286,6 +286,10 @@ def normalize_declared_action(raw_action: Any, *, fallback_actor_id: str, fallba
         'item_id',
         'targetId',
         'target_id',
+        'objectAction',
+        'object_action',
+        'expectedRevision',
+        'expected_revision',
         'intendedUse',
         'intended_use',
         'targetName',
@@ -303,11 +307,33 @@ def normalize_declared_action(raw_action: Any, *, fallback_actor_id: str, fallba
         'to_actor_id',
         'toActorName',
         'to_actor_name',
+        'locationId',
+        'location_id',
+        'locationName',
+        'location_name',
+        'spellName',
+        'spell_name',
+        'castLevel',
+        'cast_level',
+        'resourcePool',
+        'resource_pool',
+        'restType',
+        'rest_type',
+        'concentration',
+        'capabilityId',
+        'capability_id',
+        'targetId',
+        'target_id',
         'summary',
     ):
         if key in raw_action:
             camel = ''.join([key.split('_')[0], *[part[:1].upper() + part[1:] for part in key.split('_')[1:]]])
             action[camel] = raw_action[key]
+    raw_target_ids = raw_action.get('targetIds', raw_action.get('target_ids'))
+    if isinstance(raw_target_ids, list):
+        action['targetIds'] = list(
+            dict.fromkeys(str(target_id).strip() for target_id in raw_target_ids if str(target_id or '').strip())
+        )[:20]
     currency = _currency_code(raw_action)
     if currency:
         action['currency'] = currency
@@ -343,6 +369,21 @@ def _declared_action_has_required_fields(action: dict[str, Any]) -> bool:
         return bool(str(action.get('itemName') or '').strip()) and 'quantity' in action
     if action_type in {'inventory.equip', 'inventory.unequip'}:
         return bool(str(action.get('itemName') or '').strip())
+    if action_type in {'scene.item.pickup', 'scene.item.drop'}:
+        return bool(str(action.get('itemId') or action.get('itemName') or '').strip()) and 'quantity' in action
+    if action_type == 'world.travel':
+        return bool(str(action.get('locationId') or '').strip())
+    if action_type == 'spell.cast':
+        return bool(str(action.get('spellName') or '').strip())
+    if action_type == 'class_feature.use':
+        return bool(str(action.get('capabilityId') or '').strip())
+    if action_type == 'scene.interactable.action':
+        return bool(
+            str(action.get('targetId') or '').strip()
+            and str(action.get('objectAction') or '').strip()
+        )
+    if action_type == 'rest.complete':
+        return str(action.get('restType') or '') in {'short_rest', 'long_rest'}
     if action_type == 'currency.transfer':
         return bool(str(action.get('currency') or '').strip() and action.get('amount'))
     if action_type == 'combat.attack':
@@ -509,7 +550,10 @@ def normalize_state_change(raw_change: Any, *, fallback_actor_id: str, fallback_
     change_id = raw_change.get('changeId') or raw_change.get('change_id') or (None if is_world_change else raw_id) or fallback_id
     change['id'] = str(change_id)
     change['type'] = change_type
-    change['source'] = str(raw_change.get('source') or source)
+    # Provenance belongs to the pipeline stage, never to helper/LLM output.
+    # Otherwise a post-DM proposal could label itself as ``quest_engine`` and
+    # cross the gameplay-authority boundary enforced by validation.
+    change['source'] = str(source)
     if not is_combat_change:
         change['actorId'] = str(
             _value(raw_change, 'actorId', 'actor_id', None)

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from copy import deepcopy
 import re
+import secrets
 from typing import Any
 
 from aidm_server.canon_text import int_or_default
+from aidm_server.class_capabilities import resolve_capability_use
+from aidm_server.character_resources import spell_cast_legality
 from aidm_server.game_state.equipment import (
     conflict_items,
     equipment_slot_label,
@@ -20,19 +23,35 @@ from aidm_server.game_state.models import (
     find_actor,
     find_actor_by_name,
     normalize_item_name,
+    stable_item_id,
+    stable_item_instance_id,
     stable_slug,
     stable_change_id,
     state_applied_change_ids,
 )
 from aidm_server.combat.morale import MORALE_EVENTS, apply_morale_event
 from aidm_server.combat.state import RANGE_BANDS, normalize_battlefield, normalize_combat_state, normalize_participant
+from aidm_server.spell_effects import resolve_targeted_spell
 from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start
 from aidm_server.game_state.validation.inventory_validator import resolve_inventory_item_reference
-from aidm_server.spellbook import normalize_spellbook, spell_from_change
+from aidm_server.game_state.quest_engine import quest_completion_blocker, quest_failure_blocker
+from aidm_server.interactables import resolve_interactable_action
+from aidm_server.spellbook import class_spell_archetype, normalize_spellbook, spell_from_change
 
 
 CONSUMABLE_TYPES = {'consumable', 'potion', 'food'}
 UNRESOLVED_TARGET_LABELS = {'', 'target', 'someone', 'somebody', 'an npc', 'a npc', 'npc'}
+SPELLCASTING_ABILITY_BY_ARCHETYPE = {
+    'artificer': 'intelligence',
+    'bard': 'charisma',
+    'cleric': 'wisdom',
+    'druid': 'wisdom',
+    'paladin': 'charisma',
+    'ranger': 'wisdom',
+    'sorcerer': 'charisma',
+    'warlock': 'charisma',
+    'wizard': 'intelligence',
+}
 GENERIC_EXTRACTED_REASON = 'Extracted from DM response.'
 TRANSFER_STATE_CHANGE_TYPES = {'inventory.transfer', 'currency.transfer'}
 PLAYER_OWNED_STATE_CHANGE_TYPES = PHASE_1_STATE_CHANGE_TYPES - TRANSFER_STATE_CHANGE_TYPES
@@ -51,8 +70,11 @@ LOCATION_TYPES = {'tavern', 'town', 'dungeon', 'forest', 'road', 'shop', 'castle
 LOCATION_STATUSES = {'known', 'discovered', 'visited', 'hidden', 'inaccessible'}
 GENERIC_RANGED_WEAPON_NAMES = {'ranged weapon', 'ranged attack', 'ranged'}
 RANGED_WEAPON_LABELS = {'ranged', 'bow', 'longbow', 'shortbow', 'crossbow', 'sling'}
-QUEST_STATUSES = {'available', 'active', 'completed', 'failed', 'abandoned', 'hidden'}
-OBJECTIVE_STATUSES = {'open', 'completed', 'failed', 'optional'}
+QUEST_STATUSES = {'available', 'active', 'blocked', 'completed', 'failed', 'abandoned', 'hidden'}
+OBJECTIVE_STATUSES = {'open', 'blocked', 'completed', 'failed', 'optional'}
+TERMINAL_QUEST_UPDATE_STATUSES = {'completed', 'failed'}
+TERMINAL_OBJECTIVE_UPDATE_STATUSES = {'completed', 'failed'}
+NARRATION_AUTHORITY_SOURCES = {'post_dm', 'narration', 'dm_narration', 'helper', 'heuristic'}
 NPC_DISPOSITIONS = {'friendly', 'neutral', 'hostile', 'suspicious', 'afraid', 'loyal', 'unknown'}
 NPC_STATUSES = {'known', 'met', 'allied', 'hostile', 'fleeing', 'dead', 'missing', 'unknown'}
 NPC_DISPOSITION_ALIASES = {
@@ -666,6 +688,815 @@ def _validate_currency_transfer(action: dict[str, Any], state: dict[str, Any]) -
     )
 
 
+def _validate_scene_item_pickup(
+    action: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    current_turn: int,
+) -> dict[str, Any]:
+    actor = find_actor(state, _action_value(action, 'actorId', 'actor_id'))
+    if not actor:
+        return _invalid(action, 'Actor not found.')
+    requested_id = _text(_action_value(action, 'itemId', 'item_id'))
+    requested_name = normalize_item_name(_action_value(action, 'itemName', 'item_name'))
+    scene_items = _scene_items(state)
+    if requested_id:
+        matches = [item for item in scene_items if _text(item.get('id')) == requested_id]
+        if not matches:
+            return _invalid(action, f"Scene item '{requested_id}' is stale or no longer present.")
+    else:
+        matches = [item for item in scene_items if normalize_item_name(item.get('name')) == requested_name]
+        if len(matches) > 1:
+            return _clarification(
+                action,
+                {
+                    'status': 'needs_clarification',
+                    'reason': f"Multiple scene items match '{_action_value(action, 'itemName', 'item_name')}'.",
+                    'query': 'Which exact scene item do you pick up?',
+                    'options': [
+                        {
+                            'itemId': item.get('id'),
+                            'label': item.get('name'),
+                            'description': str(item.get('description') or item.get('type') or 'scene item'),
+                        }
+                        for item in matches
+                    ],
+                },
+            )
+        if not matches:
+            return _invalid(action, f"No scene item matches '{_action_value(action, 'itemName', 'item_name') or 'that item'}'.")
+    item = matches[0]
+    item_id = _text(item.get('id'))
+    if item_id and any(
+        _text(owned.get('id')) == item_id
+        for candidate in _records(state, 'playerCharacters')
+        for owned in actor_items(candidate)
+    ):
+        return _invalid(action, f"Item identity '{item_id}' already exists in an inventory.")
+    quantity = max(1, int_or_default(action.get('quantity'), default=1))
+    available = max(1, int_or_default(item.get('quantity'), default=1))
+    if quantity > available:
+        return _invalid(action, f"Not enough {item.get('name')} in the scene. Available: {available}.")
+    transfer_id = stable_change_id(current_turn, 'pre_dm', action.get('id'), 'scene.item.pickup', item_id, quantity)
+    moved_item_id = (
+        _split_stack_item_id(
+            transfer_id=transfer_id,
+            source_item_id=item_id,
+            destination_id=_text(actor.get('id')),
+        )
+        if quantity < available
+        else item_id
+    )
+    moved_item = {**item, 'id': moved_item_id, 'quantity': quantity}
+    if moved_item_id != item_id:
+        moved_item['splitFromItemId'] = item_id
+    remove_change = {
+        'id': f'{transfer_id}:scene_remove',
+        'turnId': current_turn,
+        'type': 'scene.item.remove',
+        'source': 'pre_dm_world_action',
+        'actorId': actor.get('id'),
+        'itemId': item_id,
+        'itemName': item.get('name'),
+        'quantity': quantity,
+        'item': {**item, 'quantity': quantity},
+        'transferId': transfer_id,
+        'reason': f"{actor_name(actor)} picked up {item.get('name')}.",
+        'visible': False,
+    }
+    add_change = {
+        'id': f'{transfer_id}:inventory_add',
+        'turnId': current_turn,
+        'type': 'inventory.add',
+        'source': 'pre_dm_world_action',
+        'actorId': actor.get('id'),
+        'itemId': moved_item_id,
+        'itemName': item.get('name'),
+        'quantity': quantity,
+        'item': moved_item,
+        **({'sourceItemId': item_id, 'splitFromItemId': item_id} if moved_item_id != item_id else {}),
+        'transferId': transfer_id,
+        'reason': f"{actor_name(actor)} picked up {item.get('name')}.",
+        'visible': False,
+    }
+    return _valid(
+        action,
+        f"{actor_name(actor)} can pick up the exact scene item {item.get('name')}.",
+        normalized_action={**action, 'itemId': item_id, 'itemName': item.get('name')},
+        immediate_changes=[remove_change, add_change],
+    )
+
+
+def _validate_scene_item_drop(
+    action: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    current_turn: int,
+    recent_context: list[str],
+    selected_item_id: str | None,
+) -> dict[str, Any]:
+    item_name = _text(_action_value(action, 'itemName', 'item_name'))
+    actor, item, resolution = _resolve_action_item(
+        action=action,
+        state=state,
+        item_name=item_name,
+        current_turn=current_turn,
+        recent_context=recent_context,
+        selected_item_id=selected_item_id,
+    )
+    if not actor:
+        return _invalid(action, resolution.get('reason') or 'Actor not found.')
+    if resolution.get('status') == 'needs_clarification':
+        return _clarification(action, resolution)
+    if resolution.get('status') == 'missing' or not item:
+        return _invalid(action, f"{actor_name(actor)} does not have {item_name or 'that item'}.")
+    item_id = _text(item.get('id'))
+    if item_id and any(_text(scene_item.get('id')) == item_id for scene_item in _scene_items(state)):
+        return _invalid(action, f"Item identity '{item_id}' already exists in the current scene.")
+    quantity = max(1, int_or_default(action.get('quantity'), default=1))
+    available = max(1, int_or_default(item.get('quantity'), default=1))
+    if quantity > available:
+        return _invalid(action, f"Not enough {item.get('name')}. Available: {available}.")
+    transfer_id = stable_change_id(current_turn, 'pre_dm', action.get('id'), 'scene.item.drop', item_id, quantity)
+    scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
+    moved_item_id = (
+        _split_stack_item_id(
+            transfer_id=transfer_id,
+            source_item_id=item_id,
+            destination_id=_text(scene.get('locationId')) or 'current_scene',
+        )
+        if quantity < available
+        else item_id
+    )
+    moved_item = {**item, 'id': moved_item_id, 'quantity': quantity, 'equipped': False}
+    if moved_item_id != item_id:
+        moved_item['splitFromItemId'] = item_id
+    remove_change = {
+        'id': f'{transfer_id}:inventory_remove',
+        'turnId': current_turn,
+        'type': 'inventory.remove',
+        'source': 'pre_dm_world_action',
+        'actorId': actor.get('id'),
+        'itemId': item_id,
+        'itemName': item.get('name'),
+        'quantity': quantity,
+        'transferId': transfer_id,
+        'reason': f"{actor_name(actor)} dropped {item.get('name')}.",
+        'visible': False,
+    }
+    add_change = {
+        'id': f'{transfer_id}:scene_add',
+        'turnId': current_turn,
+        'type': 'scene.item.add',
+        'source': 'pre_dm_world_action',
+        'actorId': actor.get('id'),
+        'sourceActorId': actor.get('id'),
+        'itemId': moved_item_id,
+        'itemName': item.get('name'),
+        'quantity': quantity,
+        'item': moved_item,
+        **({'sourceItemId': item_id, 'splitFromItemId': item_id} if moved_item_id != item_id else {}),
+        'transferId': transfer_id,
+        'reason': f"{actor_name(actor)} dropped {item.get('name')}.",
+        'visible': False,
+    }
+    return _valid(
+        action,
+        f"{actor_name(actor)} can drop the exact inventory item {item.get('name')}.",
+        normalized_action={**action, 'itemId': item_id, 'itemName': item.get('name'), 'resolution': resolution},
+        immediate_changes=[remove_change, add_change],
+    )
+
+
+def _validate_world_travel(action: dict[str, Any], state: dict[str, Any], *, current_turn: int) -> dict[str, Any]:
+    actor = find_actor(state, _action_value(action, 'actorId', 'actor_id'))
+    if not actor:
+        return _invalid(action, 'Actor not found.')
+    destination_id = _text(_action_value(action, 'locationId', 'location_id'))
+    destination = next(
+        (location for location in _records(state, 'locations') if _text(location.get('id')) == destination_id),
+        None,
+    )
+    if not destination:
+        return _invalid(action, f"Destination '{destination_id or 'unknown'}' is stale, hidden, or undiscovered.")
+    if _text(destination.get('status')).lower() in {'hidden', 'inaccessible'}:
+        return _invalid(action, f"{destination.get('name') or destination_id} is not currently accessible.")
+    scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
+    current_id = _text(scene.get('locationId'))
+    current = next(
+        (location for location in _records(state, 'locations') if _text(location.get('id')) == current_id),
+        None,
+    )
+    if not current:
+        return _invalid(action, 'The current location is not tracked, so adjacency cannot be validated.')
+    connected = {_text(value) for value in _list(current.get('connectedLocationIds')) if _text(value)}
+    if destination_id not in connected:
+        return _invalid(action, f"{destination.get('name') or destination_id} is not adjacent to {current.get('name') or current_id}.")
+    change = {
+        'id': stable_change_id(current_turn, 'pre_dm', action.get('id'), 'world.travel', current_id, destination_id),
+        'turnId': current_turn,
+        'type': 'scene.move_location',
+        'source': 'pre_dm_world_action',
+        'actorId': actor.get('id'),
+        'locationId': destination_id,
+        'name': destination.get('name') or destination_id,
+        'sceneType': destination.get('sceneType') or destination.get('type') or 'exploration',
+        'reason': f"The party traveled from {current.get('name') or current_id} to {destination.get('name') or destination_id}.",
+        'visible': False,
+    }
+    return _valid(
+        action,
+        f"{destination.get('name') or destination_id} is an accessible adjacent destination.",
+        normalized_action={**action, 'locationId': destination_id, 'locationName': destination.get('name')},
+        immediate_changes=[change],
+    )
+
+
+def _interactable_actor_context(state: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
+    items = actor_items(actor)
+    tool_ids = [
+        _text(item.get('id'))
+        for item in items
+        if _text(item.get('id'))
+        and (
+            _text(item.get('type')).lower() == 'tool'
+            or 'tool' in {_text(tag).lower() for tag in (item.get('tags') or [])}
+        )
+    ]
+    capability_ids = [
+        _text(capability.get('id'))
+        for capability in (actor.get('classFeatures') or [])
+        if isinstance(capability, dict) and _text(capability.get('id'))
+    ]
+    return {
+        'id': actor.get('id'),
+        'items': deepcopy(items),
+        'itemIds': [_text(item.get('id')) for item in items if _text(item.get('id'))],
+        'toolIds': tool_ids,
+        'capabilities': capability_ids,
+        'flags': deepcopy(state.get('flags')) if isinstance(state.get('flags'), dict) else {},
+    }
+
+
+def _interactable_request(
+    *,
+    action_id: str,
+    action: dict[str, Any],
+    state: dict[str, Any],
+    current_turn: int,
+) -> dict[str, Any]:
+    scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
+    request = {
+        'actionId': action_id,
+        'action': _text(_action_value(action, 'objectAction', 'object_action')).lower(),
+        'targetId': _text(_action_value(action, 'targetId', 'target_id')),
+        'locationId': _text(scene.get('locationId')),
+        'turnId': current_turn,
+    }
+    expected_revision = _action_value(action, 'expectedRevision', 'expected_revision')
+    if expected_revision is not None:
+        request['expectedRevision'] = max(0, int_or_default(expected_revision, default=0))
+    return request
+
+
+def _validate_interactable_action(
+    action: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    current_turn: int,
+) -> dict[str, Any]:
+    actor = find_actor(state, _action_value(action, 'actorId', 'actor_id'))
+    if not actor:
+        return _invalid(action, 'Actor not found.')
+    action_id = stable_change_id(
+        current_turn,
+        'pre_dm',
+        action.get('id'),
+        'scene.interactable.action',
+        actor.get('id'),
+        _action_value(action, 'targetId', 'target_id'),
+        _action_value(action, 'objectAction', 'object_action'),
+    )
+    request = _interactable_request(
+        action_id=action_id,
+        action=action,
+        state=state,
+        current_turn=current_turn,
+    )
+    resolved = resolve_interactable_action(
+        state,
+        request,
+        _interactable_actor_context(state, actor),
+    )
+    if not resolved.get('ok'):
+        return _invalid(action, _text(resolved.get('message')) or 'That object action is not legal now.')
+    event = resolved.get('events', [None])[0] if resolved.get('events') else None
+    change = {
+        'id': action_id,
+        'turnId': current_turn,
+        'type': 'scene.interactable.action',
+        'source': 'pre_dm_interactable_action',
+        'actorId': actor.get('id'),
+        'targetId': request['targetId'],
+        'locationId': request['locationId'],
+        'objectAction': request['action'],
+        **(
+            {'expectedRevision': request['expectedRevision']}
+            if request.get('expectedRevision') is not None
+            else {}
+        ),
+        'event': deepcopy(event) if isinstance(event, dict) else None,
+        'resolutionAuthority': 'interactable_rules_engine',
+        'reason': _text(resolved.get('message')),
+        'visible': True,
+    }
+    return _valid(
+        action,
+        change['reason'],
+        normalized_action={
+            **action,
+            'targetId': request['targetId'],
+            'objectAction': request['action'],
+            'event': deepcopy(change.get('event')),
+        },
+        immediate_changes=[change],
+    )
+
+
+def _authoritative_spell_definition(spell: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any] | None:
+    if spell.get('authoritativeEffect') is not True:
+        return None
+    definition = deepcopy(spell)
+    delivery = definition.get('delivery') if isinstance(definition.get('delivery'), dict) else {}
+    if _text(delivery.get('type')).lower() in {'attack', 'save'}:
+        casting_ability = SPELLCASTING_ABILITY_BY_ARCHETYPE.get(
+            class_spell_archetype(_text(actor.get('class'))) or ''
+        )
+        if not casting_ability:
+            return None
+        delivery = {**delivery, 'castingAbility': casting_ability}
+        definition['delivery'] = delivery
+    return definition
+
+
+def _spell_resolution_rolls(resolution: Any) -> list[int]:
+    """Flatten trusted rolls in the resolver's exact consumption order."""
+
+    if not isinstance(resolution, dict):
+        return []
+    rolls: list[int] = []
+    for target in resolution.get('targets') or []:
+        if not isinstance(target, dict):
+            continue
+        delivery = target.get('delivery') if isinstance(target.get('delivery'), dict) else {}
+        if delivery.get('naturalRoll') is not None:
+            rolls.append(max(1, int_or_default(delivery.get('naturalRoll'), default=1)))
+        for effect in target.get('effects') or []:
+            if not isinstance(effect, dict):
+                continue
+            roll = effect.get('roll') if isinstance(effect.get('roll'), dict) else {}
+            rolls.extend(
+                max(1, int_or_default(value, default=1))
+                for value in (roll.get('rolls') or [])
+            )
+    return rolls
+
+
+def _resolve_spell_effect(
+    *,
+    state: dict[str, Any],
+    actor: dict[str, Any],
+    spell: dict[str, Any],
+    target_ids: list[str],
+    cast_id: str,
+    current_turn: int,
+    replay_rolls: list[int] | None = None,
+) -> dict[str, Any]:
+    roll_index = 0
+
+    def _roller(sides: int) -> int:
+        nonlocal roll_index
+        if replay_rolls is None:
+            return secrets.randbelow(max(1, sides)) + 1
+        value = replay_rolls[roll_index] if roll_index < len(replay_rolls) else 1
+        roll_index += 1
+        return max(1, min(max(1, sides), int_or_default(value, default=1)))
+
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    return resolve_targeted_spell(
+        combat,
+        caster_id=_text(actor.get('id')),
+        spell=spell,
+        target_ids=target_ids,
+        cast_id=cast_id,
+        roller=_roller,
+        caster_resources=(
+            actor.get('spellResources')
+            if isinstance(actor.get('spellResources'), dict)
+            else {}
+        ),
+        current_turn=current_turn,
+    )
+
+
+def _validate_spell_action(action: dict[str, Any], state: dict[str, Any], *, current_turn: int) -> dict[str, Any]:
+    actor = find_actor(state, _action_value(action, 'actorId', 'actor_id'))
+    if not actor:
+        return _invalid(action, 'Actor not found.')
+    spell_name = _text(_action_value(action, 'spellName', 'spell_name'))
+    cast_level = _action_value(action, 'castLevel', 'cast_level')
+    cast_level = int_or_default(cast_level, default=0) if cast_level is not None else None
+    legality = spell_cast_legality(
+        actor.get('spellbook'),
+        actor.get('spellResources'),
+        spell_name_or_id=spell_name,
+        class_name=_text(actor.get('class')),
+        level=max(1, int_or_default(actor.get('level'), default=1)),
+        cast_level=cast_level,
+        resource_pool=_text(_action_value(action, 'resourcePool', 'resource_pool')) or 'auto',
+    )
+    if not legality.get('legal'):
+        return _invalid(action, _text(legality.get('reason')) or 'That spell cannot be cast now.')
+    spell = legality.get('spell') if isinstance(legality.get('spell'), dict) else {}
+    resource = legality.get('resource') if isinstance(legality.get('resource'), dict) else {}
+    target_ids = [
+        _text(target_id)
+        for target_id in (action.get('targetIds') or action.get('target_ids') or [])
+        if _text(target_id)
+    ]
+    authoritative_spell = _authoritative_spell_definition(spell, actor)
+    # Legacy clients did not send exact targets. Keep their resource-only cast
+    # path compatible; the current typed UI supplies target IDs and therefore
+    # receives the full authoritative effect resolution.
+    if authoritative_spell and not target_ids:
+        authoritative_spell = None
+    change = {
+        'id': stable_change_id(
+            current_turn,
+            'pre_dm',
+            action.get('id'),
+            'spell.cast',
+            actor.get('id'),
+            spell.get('id') or spell.get('name'),
+            resource.get('pool'),
+            resource.get('slotLevel'),
+            *target_ids,
+        ),
+        'turnId': current_turn,
+        'type': 'spell.cast',
+        'source': 'pre_dm_spell_action',
+        'actorId': actor.get('id'),
+        'spellId': spell.get('id'),
+        'spellName': spell.get('name') or spell_name,
+        'castLevel': legality.get('castLevel'),
+        'resourcePool': resource.get('pool') or 'cantrip',
+        'concentration': (
+            authoritative_spell.get('concentration') is True
+            if authoritative_spell
+            else action.get('concentration')
+        ),
+        'targetIds': target_ids,
+        'reason': legality.get('reason'),
+        'visible': False,
+    }
+    if authoritative_spell:
+        effect_result = _resolve_spell_effect(
+            state=state,
+            actor=actor,
+            spell=authoritative_spell,
+            target_ids=target_ids,
+            cast_id=change['id'],
+            current_turn=current_turn,
+        )
+        if not effect_result.get('ok'):
+            return _invalid(
+                action,
+                _text(effect_result.get('reason')) or 'That spell target is not legal now.',
+            )
+        change.update(
+            {
+                'resolutionAuthority': 'spell_effect_engine',
+                'resolution': deepcopy(effect_result.get('resolution')),
+                'visible': True,
+            }
+        )
+    return _valid(
+        action,
+        f"{actor_name(actor)} can cast {spell.get('name') or spell_name}. {legality.get('reason')}",
+        normalized_action={
+            **action,
+            'spellId': spell.get('id'),
+            'spellName': spell.get('name') or spell_name,
+            'castLevel': legality.get('castLevel'),
+            'resourcePool': resource.get('pool'),
+            'targetIds': target_ids,
+            **(
+                {'resolution': deepcopy(change.get('resolution'))}
+                if authoritative_spell
+                else {}
+            ),
+        },
+        immediate_changes=[change],
+    )
+
+
+def _class_feature_target(
+    state: dict[str, Any],
+    actor: dict[str, Any],
+    target_id: Any,
+) -> dict[str, Any] | None:
+    requested = _text(target_id)
+    if not requested or requested == _text(actor.get('id')):
+        return actor
+    target_actor = find_actor(state, requested)
+    if target_actor:
+        return target_actor
+    participant = _combat_participant(state, _resolve_combat_participant_id(state, requested) or requested)
+    if not isinstance(participant, dict):
+        return None
+    linked_actor = find_actor(state, participant.get('id'))
+    return linked_actor or participant
+
+
+def _class_feature_context(state: dict[str, Any], actor: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    in_combat = _text(combat.get('status')).lower() == 'active'
+    flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+    economy = flags.get('turnEconomy') if isinstance(flags.get('turnEconomy'), dict) else {}
+    if in_combat and _text(flags.get('activeActorId')) != _text(actor.get('id')):
+        return True, {}
+    return in_combat, economy
+
+
+def _validate_class_feature_action(
+    action: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    current_turn: int,
+) -> dict[str, Any]:
+    actor = find_actor(state, _action_value(action, 'actorId', 'actor_id'))
+    if not actor:
+        return _invalid(action, 'Actor not found.')
+    target = _class_feature_target(
+        state,
+        actor,
+        _action_value(action, 'targetId', 'target_id'),
+    )
+    if _action_value(action, 'targetId', 'target_id') and not target:
+        return _invalid(action, 'The selected capability target is stale or unavailable.')
+    in_combat, economy = _class_feature_context(state, actor)
+    if in_combat and not economy:
+        return _invalid(action, 'Only the active combat actor can use a class capability.')
+    resolution = resolve_capability_use(
+        actor=actor,
+        capability_id=_action_value(action, 'capabilityId', 'capability_id'),
+        target=target,
+        requested_amount=action.get('amount'),
+        turn_economy=economy,
+        in_combat=in_combat,
+        roller=lambda sides: secrets.randbelow(max(1, sides)) + 1,
+    )
+    if not resolution.get('ok'):
+        return _invalid(action, _text(resolution.get('reason')) or 'That class capability is not legal now.')
+    capability = resolution.get('capability') if isinstance(resolution.get('capability'), dict) else {}
+    trusted_resolution = {
+        key: deepcopy(resolution.get(key))
+        for key in (
+            'targetId',
+            'resourceCost',
+            'actionEconomy',
+            'effectType',
+            'amount',
+            'rolls',
+        )
+        if resolution.get(key) is not None
+    }
+    change = {
+        'id': stable_change_id(
+            current_turn,
+            'pre_dm',
+            action.get('id'),
+            'class_feature.use',
+            actor.get('id'),
+            capability.get('id'),
+            trusted_resolution.get('targetId'),
+        ),
+        'turnId': current_turn,
+        'type': 'class_feature.use',
+        'source': 'pre_dm_class_feature_action',
+        'actorId': actor.get('id'),
+        'capabilityId': capability.get('id'),
+        'capabilityName': capability.get('name'),
+        'targetId': trusted_resolution.get('targetId'),
+        'requestedAmount': action.get('amount'),
+        'resolutionAuthority': 'class_capability_engine',
+        'resolution': trusted_resolution,
+        'reason': f"{capability.get('name')} was validated by the class capability engine.",
+        'visible': True,
+    }
+    return _valid(
+        action,
+        change['reason'],
+        normalized_action={
+            **action,
+            'capabilityId': capability.get('id'),
+            'targetId': trusted_resolution.get('targetId'),
+            'resolution': trusted_resolution,
+        },
+        immediate_changes=[change],
+    )
+
+
+def _validate_class_feature_change(
+    change: dict[str, Any],
+    state: dict[str, Any],
+) -> tuple[str, str, dict[str, Any] | None]:
+    if _text(change.get('source')).lower() != 'pre_dm_class_feature_action':
+        return 'rejected', 'Class capability effects must originate in the pre-narration rules engine.', None
+    if _text(change.get('resolutionAuthority')) != 'class_capability_engine':
+        return 'rejected', 'Class capability resolution authority is missing.', None
+    actor = find_actor(state, _action_value(change, 'actorId', 'actor_id'))
+    if not actor:
+        return 'rejected', 'Class capability actor was not found.', None
+    target = _class_feature_target(state, actor, _action_value(change, 'targetId', 'target_id'))
+    if not target:
+        return 'rejected', 'Class capability target was not found.', None
+    in_combat, economy = _class_feature_context(state, actor)
+    if in_combat and not economy:
+        return 'rejected', 'Only the active combat actor can use a class capability.', None
+    supplied = change.get('resolution') if isinstance(change.get('resolution'), dict) else {}
+    supplied_rolls = [
+        max(1, int_or_default(value, default=1))
+        for value in (supplied.get('rolls') or [])
+    ]
+    roll_index = 0
+
+    def _replay_roll(sides: int) -> int:
+        nonlocal roll_index
+        value = supplied_rolls[roll_index] if roll_index < len(supplied_rolls) else 1
+        roll_index += 1
+        return max(1, min(max(1, sides), value))
+
+    resolved = resolve_capability_use(
+        actor=actor,
+        capability_id=_action_value(change, 'capabilityId', 'capability_id'),
+        target=target,
+        requested_amount=change.get('requestedAmount'),
+        turn_economy=economy,
+        in_combat=in_combat,
+        roller=_replay_roll,
+    )
+    if not resolved.get('ok'):
+        return 'rejected', _text(resolved.get('reason')) or 'Class capability is no longer legal.', None
+    expected = {
+        key: resolved.get(key)
+        for key in ('targetId', 'resourceCost', 'actionEconomy', 'effectType', 'amount', 'rolls')
+        if resolved.get(key) is not None
+    }
+    if supplied != expected:
+        return 'rejected', 'Class capability resolution does not match the authoritative rules result.', None
+    capability = resolved.get('capability') if isinstance(resolved.get('capability'), dict) else {}
+    return (
+        'accepted',
+        'Class capability and resource cost are valid.',
+        {
+            **change,
+            'capabilityId': capability.get('id'),
+            'capabilityName': capability.get('name'),
+            'targetId': expected.get('targetId'),
+            'resolution': expected,
+        },
+    )
+
+
+def _validate_authoritative_spell_change(
+    change: dict[str, Any],
+    state: dict[str, Any],
+    actor: dict[str, Any],
+    legality: dict[str, Any],
+) -> tuple[str, str, dict[str, Any] | None]:
+    spell = legality.get('spell') if isinstance(legality.get('spell'), dict) else {}
+    definition = _authoritative_spell_definition(spell, actor)
+    if not definition:
+        return 'rejected', 'The spell has no server-owned authoritative effect definition.', None
+    if _text(change.get('source')).lower() != 'pre_dm_spell_action':
+        return 'rejected', 'Authoritative spell effects must originate before narration.', None
+    if _text(change.get('resolutionAuthority')) != 'spell_effect_engine':
+        return 'rejected', 'Authoritative spell resolution provenance is missing.', None
+    target_ids = [
+        _text(target_id)
+        for target_id in (change.get('targetIds') or change.get('target_ids') or [])
+        if _text(target_id)
+    ]
+    if not target_ids or len(target_ids) != len(set(target_ids)):
+        return 'rejected', 'Authoritative spell effects require unique exact target IDs.', None
+    supplied_resolution = change.get('resolution') if isinstance(change.get('resolution'), dict) else None
+    if supplied_resolution is None:
+        return 'rejected', 'Authoritative spell resolution is missing.', None
+    replay = _resolve_spell_effect(
+        state=state,
+        actor=actor,
+        spell=definition,
+        target_ids=target_ids,
+        cast_id=_text(change.get('id')),
+        current_turn=max(1, int_or_default(change.get('turnId', change.get('turn_id')), default=1)),
+        replay_rolls=_spell_resolution_rolls(supplied_resolution),
+    )
+    if not replay.get('ok'):
+        return 'rejected', _text(replay.get('reason')) or 'Authoritative spell replay failed.', None
+    if replay.get('resolution') != supplied_resolution:
+        return 'rejected', 'Supplied spell result does not match authoritative roll replay.', None
+    resource = legality.get('resource') if isinstance(legality.get('resource'), dict) else {}
+    normalized = {
+        **change,
+        'spellId': spell.get('id'),
+        'spellName': spell.get('name'),
+        'castLevel': legality.get('castLevel'),
+        'resourcePool': resource.get('pool'),
+        'targetIds': target_ids,
+        'concentration': definition.get('concentration') is True,
+        'resolution': deepcopy(replay.get('resolution')),
+        'resolvedCombat': deepcopy(replay.get('combat')),
+        'effectCasterResources': deepcopy(replay.get('casterResources')),
+    }
+    return 'accepted', 'Spell targets, rolls, and effects match the authoritative rules engine.', normalized
+
+
+def _validate_interactable_change(
+    change: dict[str, Any],
+    state: dict[str, Any],
+) -> tuple[str, str, dict[str, Any] | None]:
+    if _text(change.get('source')).lower() != 'pre_dm_interactable_action':
+        return 'rejected', 'Scene-object transitions must originate before narration.', None
+    if _text(change.get('resolutionAuthority')) != 'interactable_rules_engine':
+        return 'rejected', 'Scene-object resolution provenance is missing.', None
+    actor = find_actor(state, _action_value(change, 'actorId', 'actor_id'))
+    if not actor:
+        return 'rejected', 'Scene-object actor was not found.', None
+    request = _interactable_request(
+        action_id=_text(change.get('id')),
+        action=change,
+        state=state,
+        current_turn=max(0, int_or_default(change.get('turnId', change.get('turn_id')), default=0)),
+    )
+    if request['locationId'] != _text(change.get('locationId')):
+        return 'rejected', 'The scene-object location changed before application.', None
+    resolved = resolve_interactable_action(
+        state,
+        request,
+        _interactable_actor_context(state, actor),
+    )
+    if not resolved.get('ok'):
+        return 'rejected', _text(resolved.get('message')) or 'Scene-object transition is no longer legal.', None
+    expected_event = resolved.get('events', [None])[0] if resolved.get('events') else None
+    supplied_event = change.get('event') if isinstance(change.get('event'), dict) else None
+    if supplied_event != expected_event:
+        return 'rejected', 'Scene-object event does not match the authoritative transition.', None
+    return (
+        'accepted',
+        'Scene-object transition matches the authoritative rules engine.',
+        {
+            **change,
+            'event': deepcopy(expected_event),
+            'resolvedState': deepcopy(resolved.get('nextState')),
+            'resolvedChanges': deepcopy(resolved.get('changes') or []),
+        },
+    )
+
+
+def _validate_rest_action(action: dict[str, Any], state: dict[str, Any], *, current_turn: int) -> dict[str, Any]:
+    actor = find_actor(state, _action_value(action, 'actorId', 'actor_id'))
+    if not actor:
+        return _invalid(action, 'Actor not found.')
+    scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
+    combat = normalize_combat_state(state.get('combat'), scene)
+    if _text(combat.get('status')).lower() in {'starting', 'active'} or _text(scene.get('combatState')).lower() in {'pending', 'active'}:
+        return _invalid(action, 'Rest is unavailable while combat is active.')
+    health = actor.get('health') if isinstance(actor.get('health'), dict) else {}
+    conditions = {_text(value).lower() for value in health.get('conditions') or []}
+    if int_or_default(health.get('currentHp'), default=1) <= 0 or 'dead' in conditions:
+        return _invalid(action, 'A dead or dying character cannot complete a rest.')
+    rest_type = _text(_action_value(action, 'restType', 'rest_type')).lower()
+    if rest_type not in {'short_rest', 'long_rest'}:
+        return _invalid(action, 'Rest type must be short_rest or long_rest.')
+    change = {
+        'id': stable_change_id(current_turn, 'pre_dm', action.get('id'), 'rest.complete', actor.get('id'), rest_type),
+        'turnId': current_turn,
+        'type': 'rest.complete',
+        'source': 'pre_dm_rest_action',
+        'actorId': actor.get('id'),
+        'restType': rest_type,
+        'reason': f"{actor_name(actor)} completed a {'short' if rest_type == 'short_rest' else 'long'} rest.",
+        'visible': False,
+    }
+    return _valid(
+        action,
+        change['reason'],
+        normalized_action={**action, 'restType': rest_type},
+        immediate_changes=[change],
+    )
+
+
 def _validate_attack(
     action: dict[str, Any],
     state: dict[str, Any],
@@ -800,6 +1631,26 @@ def validate_declared_actions(
             )
         elif action_type == 'currency.transfer':
             result = _validate_currency_transfer(action, state)
+        elif action_type == 'scene.item.pickup':
+            result = _validate_scene_item_pickup(action, state, current_turn=current_turn)
+        elif action_type == 'scene.item.drop':
+            result = _validate_scene_item_drop(
+                action,
+                state,
+                current_turn=current_turn,
+                recent_context=recent_context or [],
+                selected_item_id=selected_item_id,
+            )
+        elif action_type == 'world.travel':
+            result = _validate_world_travel(action, state, current_turn=current_turn)
+        elif action_type == 'scene.interactable.action':
+            result = _validate_interactable_action(action, state, current_turn=current_turn)
+        elif action_type == 'spell.cast':
+            result = _validate_spell_action(action, state, current_turn=current_turn)
+        elif action_type == 'class_feature.use':
+            result = _validate_class_feature_action(action, state, current_turn=current_turn)
+        elif action_type == 'rest.complete':
+            result = _validate_rest_action(action, state, current_turn=current_turn)
         elif action_type == 'combat.attack':
             result = _validate_attack(
                 action,
@@ -861,7 +1712,85 @@ def _modified(original: dict[str, Any], modified: dict[str, Any], reason: str) -
     return {'originalChange': original, 'modifiedChange': modified, 'reason': reason}
 
 
-def _validate_inventory_change(state: dict[str, Any], change: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None]:
+def _inventory_add_payload(change: dict[str, Any]) -> dict[str, Any]:
+    raw_item = change.get('item') if isinstance(change.get('item'), dict) else {}
+    name = _text(raw_item.get('name') or change.get('itemName') or change.get('item_name'))
+    item_id = _text(
+        raw_item.get('id')
+        or raw_item.get('itemId')
+        or change.get('itemId')
+        or change.get('item_id')
+        or stable_item_id(name)
+    )
+    return {
+        **raw_item,
+        'id': item_id,
+        'name': name,
+        'quantity': max(1, int_or_default(raw_item.get('quantity', change.get('quantity')), default=1)),
+        'type': raw_item.get('type') or change.get('itemType') or change.get('item_type') or 'misc',
+    }
+
+
+def _inventory_items_are_identity_compatible(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    text_fields = ('name', 'type', 'subtype', 'rarity', 'damageType', 'damage_type', 'slot')
+    for key in text_fields:
+        first_value = normalize_item_name(first.get(key))
+        second_value = normalize_item_name(second.get(key))
+        if first_value and second_value and first_value != second_value:
+            return False
+    structured_fields = ('damage', 'damageDice', 'damage_dice', 'armorClass', 'armor_class', 'acBonus', 'ac_bonus', 'effect', 'effects')
+    for key in structured_fields:
+        first_value = first.get(key)
+        second_value = second.get(key)
+        if first_value not in (None, '', [], {}) and second_value not in (None, '', [], {}) and first_value != second_value:
+            return False
+    return True
+
+
+def _inventory_add_matches(
+    actor: dict[str, Any],
+    payload: dict[str, Any],
+    pending_adds: dict[tuple[str, str], list[dict[str, Any]]] | None,
+) -> list[dict[str, Any]]:
+    item_id = _text(payload.get('id'))
+    if not item_id:
+        return []
+    actor_id = _text(actor.get('id'))
+    matches = [item for item in actor_items(actor) if _text(item.get('id')) == item_id]
+    if pending_adds is not None:
+        matches.extend(pending_adds.get((actor_id, item_id), []))
+    return matches
+
+
+def _quest_reward_collision_item_id(change: dict[str, Any], actor: dict[str, Any], payload: dict[str, Any]) -> str:
+    return stable_item_instance_id(
+        'quest_reward_collision',
+        change.get('id'),
+        actor.get('id'),
+        payload.get('id'),
+        payload.get('name'),
+        prefix='itm_reward',
+    )
+
+
+def _reserve_inventory_add(
+    actor: dict[str, Any],
+    change: dict[str, Any],
+    pending_adds: dict[tuple[str, str], list[dict[str, Any]]],
+) -> None:
+    payload = _inventory_add_payload(change)
+    actor_id = _text(actor.get('id'))
+    item_id = _text(payload.get('id'))
+    if actor_id and item_id:
+        pending_adds.setdefault((actor_id, item_id), []).append(payload)
+
+
+def _validate_inventory_change(
+    state: dict[str, Any],
+    change: dict[str, Any],
+    *,
+    pending_adds: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
+) -> tuple[str, str, dict[str, Any] | None]:
     actor = find_actor(state, _action_value(change, 'actorId', 'actor_id'))
     if not actor:
         return 'rejected', 'Actor not found.', None
@@ -869,15 +1798,46 @@ def _validate_inventory_change(state: dict[str, Any], change: dict[str, Any]) ->
     if quantity <= 0:
         return 'rejected', 'Inventory change quantity must be positive.', None
     if change.get('type') == 'inventory.add':
-        item = change.get('item') if isinstance(change.get('item'), dict) else {}
-        item_name = str(item.get('name') or change.get('itemName') or '').strip()
+        payload = _inventory_add_payload(change)
+        item_name = _text(payload.get('name'))
         if not item_name:
             return 'rejected', 'Inventory add requires an item name.', None
-        return 'accepted', 'Inventory add is valid.', None
+        matches = _inventory_add_matches(actor, payload, pending_adds)
+        existing_identity_matches = [
+            item for item in actor_items(actor) if _text(item.get('id')) == _text(payload.get('id'))
+        ]
+        collision = len(existing_identity_matches) > 1 or any(
+            not _inventory_items_are_identity_compatible(existing, payload)
+            for existing in matches
+        )
+        if collision and _text(change.get('source')).lower() == 'quest_engine':
+            original_id = payload.get('id')
+            payload['id'] = _quest_reward_collision_item_id(change, actor, payload)
+            if _inventory_add_matches(actor, payload, pending_adds):
+                return 'rejected', 'Quest reward item identity collides with an existing inventory item.', None
+            normalized = {
+                **change,
+                'itemId': payload['id'],
+                'itemName': payload['name'],
+                'item': payload,
+                'sourceItemId': original_id,
+            }
+            return 'accepted', 'Quest reward item was assigned a distinct deterministic identity.', normalized
+        if collision:
+            return 'rejected', f"Item identity '{payload.get('id')}' conflicts with an existing inventory item.", None
+        return 'accepted', 'Inventory add is valid.', {
+            **change,
+            'itemId': payload['id'],
+            'itemName': payload['name'],
+            'item': payload,
+        }
     item_id = _action_value(change, 'itemId', 'item_id')
     item_name = _action_value(change, 'itemName', 'item_name')
     if item_id:
-        item = next((candidate for candidate in actor_items(actor) if str(candidate.get('id')) == str(item_id)), None)
+        matches = [candidate for candidate in actor_items(actor) if str(candidate.get('id')) == str(item_id)]
+        if len(matches) > 1:
+            return 'rejected', f"Item identity '{item_id}' is duplicated in the inventory and cannot be targeted safely.", None
+        item = matches[0] if matches else None
     else:
         item = next(
             (
@@ -1049,15 +2009,18 @@ def _records(state: dict[str, Any], key: str) -> list[dict[str, Any]]:
 def _find_record(records: list[dict[str, Any]], *, record_id: Any = None, name: Any = None, title: Any = None) -> dict[str, Any] | None:
     requested_id = _text(record_id)
     requested_name = normalize_item_name(name or title)
-    for record in records:
-        if requested_id and _text(record.get('id')) == requested_id:
-            return record
+    if requested_id:
+        return next((record for record in records if _text(record.get('id')) == requested_id), None)
     if requested_name:
         for record in records:
             record_name = normalize_item_name(record.get('name') or record.get('title'))
             if record_name == requested_name:
                 return record
     return None
+
+
+def _is_narration_authority_change(change: dict[str, Any]) -> bool:
+    return _text(change.get('source')).lower() in NARRATION_AUTHORITY_SOURCES
 
 
 def _find_location(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] | None:
@@ -1811,6 +2774,16 @@ def _scene_items(state: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in items if isinstance(item, dict)]
 
 
+def _split_stack_item_id(*, transfer_id: str, source_item_id: str, destination_id: str) -> str:
+    return stable_item_instance_id(
+        'split_stack',
+        transfer_id,
+        source_item_id,
+        destination_id,
+        prefix='itm_split',
+    )
+
+
 def _scene_item_payload(change: dict[str, Any]) -> dict[str, Any]:
     item = change.get('item') if isinstance(change.get('item'), dict) else {}
     name = _text(item.get('name') or change.get('itemName') or change.get('item_name'))
@@ -2012,7 +2985,19 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
     if change_type in {'location.discover', 'location.update'}:
         if not _valid_location_label(normalized.get('name') or normalized.get('locationName') or normalized.get('locationId')):
             return 'rejected', 'Location name must be a short place name.', None
-        location_id = _stable_id(normalized.get('locationId'), normalized.get('name') or normalized.get('locationName'))
+        explicit_location_id = _text(change.get('locationId') or change.get('location_id'))
+        location_name = normalized.get('name') or normalized.get('locationName')
+        existing_location = _find_record(
+            _records(state, 'locations'),
+            record_id=explicit_location_id,
+            name=None if explicit_location_id else location_name,
+        )
+        if change_type == 'location.update' and explicit_location_id and not existing_location:
+            return 'rejected', 'Location update target id was stale or not found.', None
+        location_id = _stable_id(
+            existing_location.get('id') if existing_location else explicit_location_id,
+            location_name,
+        )
         if not location_id:
             return 'rejected', 'Location change requires a location id or name.', None
         normalized['locationId'] = location_id
@@ -2025,7 +3010,7 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
             normalized['locationType'] = location_type
         if status and status not in LOCATION_STATUSES:
             return 'rejected', f"Unsupported location status '{status}'.", None
-        if change_type == 'location.update' and not _find_location(state, normalized):
+        if change_type == 'location.update' and not existing_location:
             change_type = 'location.discover'
             normalized['type'] = change_type
         normalized['connectedLocationIds'] = [_stable_id(value) for value in _string_list(normalized.get('connectedLocationIds'))]
@@ -2047,14 +3032,40 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
         return 'accepted', 'Location connection is valid.', normalized
 
     if change_type.startswith('quest.'):
-        normalized['questId'] = _stable_id(normalized.get('questId'), normalized.get('title') or normalized.get('name'))
+        explicit_quest_id = _text(change.get('questId') or change.get('quest_id'))
+        quest_title = normalized.get('title') or normalized.get('name')
+        existing_quest = None
+        if change_type != 'quest.add':
+            existing_quest = _find_record(
+                _records(state, 'quests'),
+                record_id=explicit_quest_id,
+                title=None if explicit_quest_id else quest_title,
+            )
+            if not existing_quest:
+                return 'rejected', 'Quest update target id was stale or not found.', None
+        normalized['questId'] = _stable_id(
+            existing_quest.get('id') if existing_quest else explicit_quest_id,
+            quest_title,
+        )
         if not normalized['questId']:
             return 'rejected', 'Quest change requires a quest id or title.', None
         status = _text(normalized.get('status'))
         if change_type not in {'quest.objective.add', 'quest.objective.update'} and status and status not in QUEST_STATUSES:
             return 'rejected', f"Unsupported quest status '{status}'.", None
-        if change_type != 'quest.add' and not _find_quest(state, normalized):
-            return 'rejected', 'Quest update target was not found.', None
+        if (
+            change_type == 'quest.update'
+            and status in TERMINAL_QUEST_UPDATE_STATUSES
+            and _is_narration_authority_change(normalized)
+        ):
+            return 'rejected', 'Narration cannot complete or fail an authoritative quest.', None
+        if change_type == 'quest.complete':
+            blocker = quest_completion_blocker(state, normalized['questId'])
+            if blocker:
+                return 'rejected', blocker, None
+        if change_type == 'quest.fail':
+            blocker = quest_failure_blocker(state, normalized['questId'])
+            if blocker:
+                return 'rejected', blocker, None
         if isinstance(normalized.get('objectives'), list):
             objectives = []
             for objective in normalized.get('objectives') or []:
@@ -2063,7 +3074,26 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
                 objective_status = _text(objective.get('status'))
                 if objective_status and objective_status not in OBJECTIVE_STATUSES:
                     return 'rejected', f"Unsupported quest objective status '{objective_status}'.", None
-                objective_id = _stable_id(objective.get('id') or objective.get('objectiveId'), objective.get('description'))
+                if (
+                    change_type == 'quest.update'
+                    and objective_status in TERMINAL_OBJECTIVE_UPDATE_STATUSES
+                    and _is_narration_authority_change(normalized)
+                ):
+                    return 'rejected', 'Narration cannot complete or fail an authoritative quest objective.', None
+                explicit_objective_id = _text(objective.get('id') or objective.get('objectiveId'))
+                existing_objective = None
+                if change_type == 'quest.update' and isinstance(existing_quest, dict):
+                    existing_objective = _find_record(
+                        _records(existing_quest, 'objectives'),
+                        record_id=explicit_objective_id,
+                        name=None if explicit_objective_id else objective.get('description'),
+                    )
+                    if explicit_objective_id and not existing_objective:
+                        return 'rejected', 'Quest objective update target id was stale or not found.', None
+                objective_id = _stable_id(
+                    existing_objective.get('id') if existing_objective else explicit_objective_id,
+                    objective.get('description'),
+                )
                 if not objective_id and change_type in {'quest.add', 'quest.update'}:
                     return 'rejected', 'Quest objective requires an id or description.', None
                 objectives.append({**objective, 'id': objective_id or objective.get('id')})
@@ -2073,9 +3103,28 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
             objective_status = _text(objective.get('status') or normalized.get('objectiveStatus') or normalized.get('status'))
             if objective_status and objective_status not in OBJECTIVE_STATUSES:
                 return 'rejected', f"Unsupported quest objective status '{objective_status}'.", None
+            if (
+                change_type == 'quest.objective.update'
+                and objective_status in TERMINAL_OBJECTIVE_UPDATE_STATUSES
+                and _is_narration_authority_change(normalized)
+            ):
+                return 'rejected', 'Narration cannot complete or fail an authoritative quest objective.', None
             if objective_status:
                 normalized['objectiveStatus'] = objective_status
-            objective_id = _stable_id(normalized.get('objectiveId'), objective.get('id') or objective.get('description'))
+            explicit_objective_id = _text(normalized.get('objectiveId') or objective.get('id'))
+            existing_objective = None
+            if change_type == 'quest.objective.update' and isinstance(existing_quest, dict):
+                existing_objective = _find_record(
+                    _records(existing_quest, 'objectives'),
+                    record_id=explicit_objective_id,
+                    name=None if explicit_objective_id else objective.get('description') or normalized.get('description'),
+                )
+                if not existing_objective:
+                    return 'rejected', 'Quest objective update target id was stale or not found.', None
+            objective_id = _stable_id(
+                existing_objective.get('id') if existing_objective else explicit_objective_id,
+                objective.get('description') or normalized.get('description'),
+            )
             if not objective_id:
                 return 'rejected', 'Quest objective change requires an objective id or description.', None
             normalized['objectiveId'] = objective_id
@@ -2085,7 +3134,17 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
         return 'accepted', 'Quest change is valid.', normalized
 
     if change_type.startswith('npc.'):
-        normalized['npcId'] = _stable_id(normalized.get('npcId'), normalized.get('name') or normalized.get('npcName'))
+        explicit_npc_id = _text(change.get('npcId') or change.get('npc_id'))
+        npc_name = normalized.get('name') or normalized.get('npcName')
+        existing_npc = _find_record(
+            [*_records(state, 'knownNpcs'), *_records(state, 'partyNpcs')],
+            record_id=explicit_npc_id,
+            name=None if explicit_npc_id else npc_name,
+        )
+        normalized['npcId'] = _stable_id(
+            existing_npc.get('id') if existing_npc else explicit_npc_id,
+            npc_name,
+        )
         if not normalized['npcId']:
             return 'rejected', 'NPC change requires an npc id or name.', None
         player_collision = _player_character_collision_label(state, normalized)
@@ -2098,12 +3157,12 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
             return 'rejected', f"Unsupported NPC disposition '{disposition}'.", None
         if status and status not in NPC_STATUSES:
             return 'rejected', f"Unsupported NPC status '{status}'.", None
-        if change_type != 'npc.discover' and not _find_npc(state, normalized):
-            if change_type == 'npc.update' and _text(normalized.get('name') or normalized.get('npcName')):
+        if change_type != 'npc.discover' and not existing_npc:
+            if change_type == 'npc.update' and not explicit_npc_id and _text(npc_name):
                 change_type = 'npc.discover'
                 normalized['type'] = change_type
                 return 'accepted', 'NPC update target was missing, so it will be applied as a discovery.', normalized
-            return 'rejected', 'NPC update target was not found.', None
+            return 'rejected', 'NPC update target id was stale or not found.', None
         membership_change = _party_membership_change(normalized)
         current_scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
         current_location_id = _stable_id(
@@ -2161,6 +3220,8 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
     if change_type == 'flag.set':
         if not _text(normalized.get('flagKey')):
             return 'rejected', 'Flag set requires flagKey.', None
+        if _is_narration_authority_change(normalized):
+            return 'rejected', 'Narration cannot set authoritative gameplay flags.', None
         normalized['flagKey'] = stable_slug(normalized.get('flagKey'))
         return 'accepted', 'Flag set is valid.', normalized
     if change_type == 'flag.unset':
@@ -2597,6 +3658,7 @@ def _validate_inventory_transfer_change(
     applied_ids: set[str],
     seen_ids: set[str],
     inventory_reservations: dict[tuple[str, str], int],
+    inventory_add_reservations: dict[tuple[str, str], list[dict[str, Any]]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     source = _transfer_source_actor(state, change)
     if not source:
@@ -2630,9 +3692,11 @@ def _validate_inventory_transfer_change(
     parent_id = str(change.get('id') or '').strip()
     source_name = actor_name(source)
     target_name = actor_name(target)
+    remove_change_id = _atomic_change_id(parent_id, 'remove', source.get('id'), source_item.get('id'), quantity)
+    add_change_id = _atomic_change_id(parent_id, 'add', target.get('id'), source_item.get('id'), quantity)
     remove_change = {
         **change,
-        'id': _atomic_change_id(parent_id, 'remove', source.get('id'), source_item.get('id'), quantity),
+        'id': remove_change_id,
         'type': 'inventory.remove',
         'actorId': source.get('id'),
         'fromActorName': source_name,
@@ -2646,32 +3710,59 @@ def _validate_inventory_transfer_change(
     }
     item_payload = deepcopy(source_item)
     item_payload['quantity'] = quantity
+    available = max(1, int_or_default(source_item.get('quantity'), default=1))
+    moved_item_id = (
+        _split_stack_item_id(
+            transfer_id=add_change_id,
+            source_item_id=_text(source_item.get('id')),
+            destination_id=_text(target.get('id')),
+        )
+        if quantity < available
+        else _text(source_item.get('id'))
+    )
+    item_payload['id'] = moved_item_id
+    if moved_item_id != _text(source_item.get('id')):
+        item_payload['splitFromItemId'] = source_item.get('id')
     add_change = {
         **change,
-        'id': _atomic_change_id(parent_id, 'add', target.get('id'), source_item.get('id'), quantity),
+        'id': add_change_id,
         'type': 'inventory.add',
         'actorId': target.get('id'),
         'fromActorName': source_name,
         'toActorName': target_name,
-        'itemId': source_item.get('id'),
+        'itemId': moved_item_id,
         'itemName': source_item.get('name'),
         'quantity': quantity,
         'item': item_payload,
         'reason': _transfer_reason(change, f"{target_name} received {source_item.get('name')} x{quantity} from {source_name}."),
         'transferId': parent_id or None,
         'transferDirection': 'target',
+        **(
+            {'sourceItemId': source_item.get('id'), 'splitFromItemId': source_item.get('id')}
+            if moved_item_id != _text(source_item.get('id'))
+            else {}
+        ),
     }
     if _change_id_already_seen(remove_change, applied_ids, seen_ids) or _change_id_already_seen(add_change, applied_ids, seen_ids):
         return [], [_rejected(change, 'State transfer was already applied.')]
 
-    remove_status, remove_reason, normalized_remove = _validate_inventory_change(state, remove_change)
-    add_status, add_reason, normalized_add = _validate_inventory_change(state, add_change)
+    remove_status, remove_reason, normalized_remove = _validate_inventory_change(
+        state,
+        remove_change,
+        pending_adds=inventory_add_reservations,
+    )
+    add_status, add_reason, normalized_add = _validate_inventory_change(
+        state,
+        add_change,
+        pending_adds=inventory_add_reservations,
+    )
     if remove_status != 'accepted' or add_status != 'accepted':
         reasons = [reason for status, reason in ((remove_status, remove_reason), (add_status, add_reason)) if status != 'accepted']
         return [], [_rejected(change, '; '.join(reasons) or 'Inventory transfer validation failed.')]
     reservation_error = _reserve_inventory_quantity(source, source_item, quantity, inventory_reservations)
     if reservation_error:
         return [], [_rejected(change, reservation_error)]
+    _reserve_inventory_add(target, normalized_add or add_change, inventory_add_reservations)
 
     accepted = [
         _accepted(normalized_remove or remove_change, 'Inventory transfer source removal is valid.'),
@@ -2768,6 +3859,7 @@ def validate_state_changes(
     applied_ids = state_applied_change_ids(state)
     seen_ids: set[str] = set()
     inventory_reservations: dict[tuple[str, str], int] = {}
+    inventory_add_reservations: dict[tuple[str, str], list[dict[str, Any]]] = {}
     currency_reservations: dict[tuple[str, str], int] = {}
     authorized_cross_actor_ids = {
         str(change_id).strip()
@@ -2804,6 +3896,7 @@ def validate_state_changes(
                 applied_ids=applied_ids,
                 seen_ids=seen_ids,
                 inventory_reservations=inventory_reservations,
+                inventory_add_reservations=inventory_add_reservations,
             )
             accepted.extend(transfer_accepted)
             rejected.extend(transfer_rejected)
@@ -2826,7 +3919,11 @@ def validate_state_changes(
             seen_ids.add(change_id)
 
         if change_type in {'inventory.add', 'inventory.remove'}:
-            status, reason, normalized = _validate_inventory_change(state, change)
+            status, reason, normalized = _validate_inventory_change(
+                state,
+                change,
+                pending_adds=inventory_add_reservations,
+            )
             if status == 'accepted' and change_type == 'inventory.add':
                 drift_status, drift_reason, drift_normalized = _apply_campaign_pack_inventory_drift_control(state, normalized or change)
                 if drift_status != 'accepted':
@@ -2843,6 +3940,61 @@ def validate_state_changes(
             status, reason, normalized = _validate_xp_change(state, change)
         elif change_type == 'spell.learn':
             status, reason, normalized = _validate_spell_learn_change(state, change)
+        elif change_type == 'spell.cast':
+            actor = find_actor(state, _action_value(change, 'actorId', 'actor_id'))
+            if not actor:
+                status, reason, normalized = 'rejected', 'Spell cast actor was not found.', None
+            else:
+                requested_level = _action_value(change, 'castLevel', 'cast_level')
+                legality = spell_cast_legality(
+                    actor.get('spellbook'),
+                    actor.get('spellResources'),
+                    spell_name_or_id=_action_value(change, 'spellId', 'spell_id')
+                    or _action_value(change, 'spellName', 'spell_name'),
+                    class_name=_text(actor.get('class')),
+                    level=max(1, int_or_default(actor.get('level'), default=1)),
+                    cast_level=(int_or_default(requested_level, default=0) if requested_level is not None else None),
+                    resource_pool=_text(_action_value(change, 'resourcePool', 'resource_pool')) or 'auto',
+                )
+                if not legality.get('legal'):
+                    status, reason, normalized = 'rejected', _text(legality.get('reason')) or 'Spell cast is not legal.', None
+                elif change.get('resolutionAuthority') or change.get('resolution'):
+                    status, reason, normalized = _validate_authoritative_spell_change(
+                        change,
+                        state,
+                        actor,
+                        legality,
+                    )
+                else:
+                    spell = legality.get('spell') if isinstance(legality.get('spell'), dict) else {}
+                    resource = legality.get('resource') if isinstance(legality.get('resource'), dict) else {}
+                    normalized = {
+                        **change,
+                        'spellId': spell.get('id'),
+                        'spellName': spell.get('name'),
+                        'castLevel': legality.get('castLevel'),
+                        'resourcePool': resource.get('pool'),
+                    }
+                    status, reason = 'accepted', _text(legality.get('reason')) or 'Spell cast resource is available.'
+        elif change_type == 'class_feature.use':
+            status, reason, normalized = _validate_class_feature_change(change, state)
+        elif change_type == 'scene.interactable.action':
+            status, reason, normalized = _validate_interactable_change(change, state)
+        elif change_type == 'rest.complete':
+            rest_result = _validate_rest_action(
+                {
+                    **change,
+                    'type': 'rest.complete',
+                    'restType': _action_value(change, 'restType', 'rest_type'),
+                },
+                state,
+                current_turn=max(1, int_or_default(change.get('turnId', change.get('turn_id')), default=1)),
+            )
+            if rest_result.get('status') != 'valid':
+                status, reason, normalized = 'rejected', _text(rest_result.get('reason')) or 'Rest is not legal.', None
+            else:
+                normalized = {**change, 'restType': (rest_result.get('normalizedAction') or {}).get('restType')}
+                status, reason = 'accepted', _text(rest_result.get('reason')) or 'Rest is valid.'
         elif change_type == 'inventory.mark_used':
             status, reason, normalized = 'accepted', 'Inventory use marker is valid.', None
         elif change_type == 'race_ability.mark_used':
@@ -2895,8 +4047,16 @@ def validate_state_changes(
                 if reservation_error:
                     rejected.append(_rejected(change, reservation_error))
                     continue
+            if change_type == 'inventory.add':
+                actor = find_actor(state, _action_value(accepted_change, 'actorId', 'actor_id'))
+                if actor:
+                    _reserve_inventory_add(actor, accepted_change, inventory_add_reservations)
             accepted.append(_accepted(normalized or change, reason))
         elif status == 'modified' and normalized:
+            if change_type == 'inventory.add':
+                actor = find_actor(state, _action_value(normalized, 'actorId', 'actor_id'))
+                if actor:
+                    _reserve_inventory_add(actor, normalized, inventory_add_reservations)
             modified.append(_modified(change, normalized, reason))
         else:
             rejected.append(_rejected(change, reason))

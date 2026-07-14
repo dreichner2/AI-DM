@@ -309,7 +309,117 @@ def _heuristic_extract(player_message: str, *, actor_id: str) -> dict[str, Any]:
 
 
 def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_id: str, player_message: str) -> dict[str, Any] | None:
-    if not isinstance(action_intent, dict) or action_intent.get('kind') != 'item':
+    if not isinstance(action_intent, dict):
+        return None
+    if action_intent.get('kind') == 'spell':
+        spell = action_intent.get('spell') if isinstance(action_intent.get('spell'), dict) else {}
+        spell_name = str(spell.get('name') or '').strip()
+        if not spell_name:
+            return None
+        return {
+            'declaredActions': [
+                {
+                    'id': 'act_001',
+                    'type': 'spell.cast',
+                    'actorId': actor_id,
+                    'confidence': 1.0,
+                    'sourceText': player_message,
+                    'requiresDMResolution': True,
+                    'spellName': spell_name,
+                    'castLevel': spell.get('cast_level'),
+                    'resourcePool': spell.get('resource_pool') or 'auto',
+                    'targetIds': list(spell.get('target_ids') or []),
+                    **({'concentration': spell.get('concentration')} if spell.get('concentration') is not None else {}),
+                }
+            ],
+            'notes': ['action_intent_pre_dm'],
+        }
+    if action_intent.get('kind') == 'capability':
+        capability = action_intent.get('capability') if isinstance(action_intent.get('capability'), dict) else {}
+        capability_id = str(capability.get('id') or '').strip()
+        if not capability_id:
+            return None
+        return {
+            'declaredActions': [
+                {
+                    'id': 'act_001',
+                    'type': 'class_feature.use',
+                    'actorId': actor_id,
+                    'confidence': 1.0,
+                    'sourceText': player_message,
+                    'requiresDMResolution': False,
+                    'capabilityId': capability_id,
+                    'targetId': capability.get('target_id'),
+                    **(
+                        {'amount': capability.get('amount')}
+                        if capability.get('amount') is not None
+                        else {}
+                    ),
+                }
+            ],
+            'notes': ['action_intent_pre_dm'],
+        }
+    if action_intent.get('kind') == 'object':
+        object_payload = action_intent.get('object') if isinstance(action_intent.get('object'), dict) else {}
+        target_id = str(object_payload.get('id') or '').strip()
+        object_action = str(object_payload.get('action') or '').strip().lower()
+        if not target_id or not object_action:
+            return None
+        return {
+            'declaredActions': [
+                {
+                    'id': 'act_001',
+                    'type': 'scene.interactable.action',
+                    'actorId': actor_id,
+                    'confidence': 1.0,
+                    'sourceText': player_message,
+                    'requiresDMResolution': False,
+                    'targetId': target_id,
+                    'objectAction': object_action,
+                    'expectedRevision': object_payload.get('revision'),
+                }
+            ],
+            'notes': ['action_intent_pre_dm'],
+        }
+    if action_intent.get('kind') == 'rest':
+        rest_type = str(action_intent.get('rest_type') or '').strip()
+        if rest_type not in {'short_rest', 'long_rest'}:
+            return None
+        return {
+            'declaredActions': [
+                {
+                    'id': 'act_001',
+                    'type': 'rest.complete',
+                    'actorId': actor_id,
+                    'confidence': 1.0,
+                    'sourceText': player_message,
+                    'requiresDMResolution': False,
+                    'restType': rest_type,
+                }
+            ],
+            'notes': ['action_intent_pre_dm'],
+        }
+    if action_intent.get('kind') == 'travel':
+        location = action_intent.get('location') if isinstance(action_intent.get('location'), dict) else {}
+        location_id = str(location.get('id') or location.get('locationId') or '').strip()
+        if not location_id:
+            return None
+        return {
+            'declaredActions': [
+                {
+                    'id': 'act_001',
+                    'type': 'world.travel',
+                    'actorId': actor_id,
+                    'confidence': 1.0,
+                    'sourceText': player_message,
+                    'requiresDMResolution': False,
+                    'locationId': location_id,
+                    'locationName': str(location.get('name') or '').strip(),
+                }
+            ],
+            'notes': ['action_intent_pre_dm'],
+        }
+    if action_intent.get('kind') != 'item':
         return None
     item = action_intent.get('item') if isinstance(action_intent.get('item'), dict) else {}
     item_name = str(item.get('name') or '').strip()
@@ -317,7 +427,24 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
     if not item_name:
         return None
     inventory_action = str(action_intent.get('inventory_action') or 'use').strip().lower()
-    if inventory_action in {'pick_up', 'buy'}:
+    if inventory_action == 'pick_up':
+        return {
+            'declaredActions': [
+                {
+                    'id': 'act_001',
+                    'type': 'scene.item.pickup',
+                    'actorId': actor_id,
+                    'confidence': 1.0,
+                    'sourceText': player_message,
+                    'requiresDMResolution': False,
+                    'itemName': item_name,
+                    **({'itemId': item_id} if item_id else {}),
+                    'quantity': int(item.get('quantity') or 1),
+                }
+            ],
+            'notes': ['action_intent_pre_dm'],
+        }
+    if inventory_action == 'buy':
         summary = f"Player attempts to {inventory_action.replace('_', ' ')} {item_name}."
         cost_gold = action_intent.get('cost_gold')
         if inventory_action == 'buy' and cost_gold:
@@ -354,7 +481,24 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
             'notes': ['action_intent_pre_dm'],
         }
 
-    if inventory_action in {'drop', 'give', 'sell'}:
+    if inventory_action == 'drop':
+        return {
+            'declaredActions': [
+                {
+                    'id': 'act_001',
+                    'type': 'scene.item.drop',
+                    'actorId': actor_id,
+                    'confidence': 1.0,
+                    'sourceText': player_message,
+                    'requiresDMResolution': False,
+                    'itemName': item_name,
+                    **({'itemId': item_id} if item_id else {}),
+                    'quantity': int(item.get('quantity') or 1),
+                }
+            ],
+            'notes': ['action_intent_pre_dm'],
+        }
+    if inventory_action in {'give', 'sell'}:
         summary = f"Player attempts to {inventory_action} {item_name}."
         if inventory_action == 'sell' and action_intent.get('cost_gold'):
             summary = f"{summary} Asking price: {action_intent.get('cost_gold')} gold."

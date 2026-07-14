@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from aidm_server.canon_text import int_or_default
+from aidm_server.combat.state import participant_is_present
 from aidm_server.game_state.models import stable_change_id
 
 
@@ -36,7 +37,7 @@ def has_fled(participant: dict[str, Any]) -> bool:
 
 
 def has_surrendered(participant: dict[str, Any]) -> bool:
-    return bool(_conditions(participant) & {'surrendered', 'yielded', 'disarmed'})
+    return bool(_conditions(participant) & {'surrendered', 'yielded'})
 
 
 def negotiated(participant: dict[str, Any]) -> bool:
@@ -47,8 +48,19 @@ def _team(combat_state: dict[str, Any], team: str) -> list[dict[str, Any]]:
     return [
         participant
         for participant in (combat_state.get('participants') or [])
-        if isinstance(participant, dict) and participant.get('team') == team
+        if (
+            isinstance(participant, dict)
+            and participant.get('team') == team
+            and participant_is_present(participant)
+        )
     ]
+
+
+def _has_team_members(combat_state: dict[str, Any], team: str) -> bool:
+    return any(
+        isinstance(participant, dict) and participant.get('team') == team
+        for participant in (combat_state.get('participants') or [])
+    )
 
 
 def check_combat_end(combat_state: dict[str, Any]) -> str | None:
@@ -57,6 +69,13 @@ def check_combat_end(combat_state: dict[str, Any]) -> str | None:
         return None
     enemies = _team(combat_state, 'enemy')
     players = _team(combat_state, 'player')
+    # A participant that has physically left the encounter cannot hold the
+    # initiative lifecycle open forever.  Explicit reserves should be modeled
+    # outside the active participant roster until they enter the scene.
+    if _has_team_members(combat_state, 'enemy') and not enemies:
+        return 'enemies_fled'
+    if _has_team_members(combat_state, 'player') and not players:
+        return 'players_fled'
     if enemies and all(has_fled(enemy) or is_defeated(enemy) for enemy in enemies) and any(has_fled(enemy) for enemy in enemies):
         return 'enemies_fled'
     if enemies and all(has_surrendered(enemy) or is_defeated(enemy) for enemy in enemies) and any(has_surrendered(enemy) for enemy in enemies):
@@ -66,6 +85,8 @@ def check_combat_end(combat_state: dict[str, Any]) -> str | None:
     if enemies and all(is_defeated(enemy) for enemy in enemies):
         return 'all_enemies_defeated'
     if players and all(is_defeated(player) or has_fled(player) for player in players):
+        if any(has_fled(player) for player in players):
+            return 'players_fled'
         return 'objective_failed'
     flags = combat_state.get('flags') if isinstance(combat_state.get('flags'), dict) else {}
     objective_status = str(flags.get('objectiveStatus') or flags.get('objective_status') or '').strip().lower()

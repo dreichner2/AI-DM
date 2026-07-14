@@ -131,6 +131,52 @@ def test_pvp_rules_policy_marks_contested_resolution():
     assert result.confidence == 0.97
 
 
+def test_spell_rule_policy_only_requests_caster_roll_for_explicit_spell_attacks():
+    player = _player(
+        class_='Wizard',
+        character_sheet=json.dumps(
+            {
+                'spellbook': {
+                    'knownSpells': [
+                        {'id': 'magic_missile', 'name': 'Magic Missile', 'level': 1},
+                        {
+                            'id': 'fire_bolt',
+                            'name': 'Fire Bolt',
+                            'level': 0,
+                            'requiresAttackRoll': True,
+                        },
+                    ]
+                }
+            }
+        ),
+    )
+    generic = RuleHint(
+        requires_roll=True,
+        roll_type='spell',
+        dc_hint='14',
+        reason='Generic spell check',
+        confidence=0.5,
+    )
+
+    automatic = TurnActionPolicy.apply_spell_rule_hint(
+        generic,
+        {'kind': 'spell', 'spell': {'name': 'Magic Missile'}},
+        player,
+    )
+    assert automatic.requires_roll is False
+    assert automatic.roll_type is None
+    assert automatic.outcome_deferred is False
+
+    attack = TurnActionPolicy.apply_spell_rule_hint(
+        RuleHint(False, None, None, 'Unknown', 0.2),
+        {'kind': 'spell', 'spell': {'name': 'Fire Bolt'}},
+        player,
+    )
+    assert attack.requires_roll is True
+    assert attack.roll_type == 'spell_attack'
+    assert attack.outcome_deferred is True
+
+
 def test_player_availability_is_scoped_to_workspace_and_campaign():
     campaign = SimpleNamespace(workspace_id='workspace-1', campaign_id=11)
 

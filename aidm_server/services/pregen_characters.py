@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from aidm_server.character_state import serialize_stats_payload
+from aidm_server.character_resources import ensure_character_sheet_spell_resources
 from aidm_server.canon_inventory import inventory_payload
 from aidm_server.models import Player, safe_json_dumps, safe_json_loads
 from aidm_server.profile_icons import profile_icon_src_for_character
@@ -170,12 +171,21 @@ def pregenerated_character_preset(character_id: str | None = None) -> Pregenerat
 
 def pregenerated_character_payload(preset: PregeneratedCharacterPreset) -> dict[str, Any]:
     inventory = starting_inventory_for_class(preset.class_name)
-    stats_payload, stats_error = serialize_stats_payload(_stats_with_metadata(preset), level=preset.level)
+    stats_payload, stats_error = serialize_stats_payload(
+        _stats_with_metadata(preset),
+        level=preset.level,
+        class_name=preset.class_name,
+    )
     stats = safe_json_loads(stats_payload, {}) if stats_payload and not stats_error else _stats_with_metadata(preset)
     sheet, _changed = ensure_character_sheet_spellbook(
         preset.character_sheet,
         class_name=preset.class_name,
         race_name=preset.race,
+        level=preset.level,
+    )
+    sheet, _resources_changed = ensure_character_sheet_spell_resources(
+        sheet,
+        class_name=preset.class_name,
         level=preset.level,
     )
     return {
@@ -207,7 +217,11 @@ def build_player_from_preset(
     campaign_id: int,
     account_id: int | None = None,
 ) -> Player:
-    stats_payload, stats_error = serialize_stats_payload(_stats_with_metadata(preset), level=preset.level)
+    stats_payload, stats_error = serialize_stats_payload(
+        _stats_with_metadata(preset),
+        level=preset.level,
+        class_name=preset.class_name,
+    )
     if stats_error:
         raise ValueError(stats_error)
     inventory = starting_inventory_for_class(preset.class_name)
@@ -215,6 +229,11 @@ def build_player_from_preset(
         preset.character_sheet,
         class_name=preset.class_name,
         race_name=preset.race,
+        level=preset.level,
+    )
+    sheet, _resources_changed = ensure_character_sheet_spell_resources(
+        sheet,
+        class_name=preset.class_name,
         level=preset.level,
     )
     return Player(

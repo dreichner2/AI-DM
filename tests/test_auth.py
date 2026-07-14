@@ -2475,7 +2475,7 @@ def test_non_admin_session_state_keeps_own_detail_and_redacts_other_players(tmp_
             'effect': 'hazardous terrain',
         }
     ]
-    assert snapshot['combat']['flags']['combatDifficultyAI'] == {'tacticalLevel': 'smart'}
+    assert 'combatDifficultyAI' not in snapshot['combat']['flags']
     assert snapshot['combat']['flags']['enemyGroups'] == [
         {'count': 1, 'name': 'Visible Raider', 'label': 'Visible Raider'}
     ]
@@ -2609,6 +2609,7 @@ def test_session_export_scopes_player_detail_and_selection_but_admin_remains_com
         'class_',
         'char_class',
         'level',
+        'background',
     }
     assert 'VICTIM_PRIVATE' not in json.dumps(attacker_payload)
     assert 'VICTIM_RESOURCE' not in json.dumps(attacker_payload)

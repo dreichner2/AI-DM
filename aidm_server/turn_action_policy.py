@@ -5,6 +5,7 @@ import re
 from aidm_server.action_intent import strip_reserved_admin_prefix
 from aidm_server.models import Campaign, Player, Session, safe_json_loads
 from aidm_server.rules import RuleHint
+from aidm_server.spellbook import known_spell, normalize_spellbook, spellbook_from_character_sheet
 
 
 _HARMFUL_PVP_RE = re.compile(
@@ -115,10 +116,29 @@ class TurnActionPolicy:
             f'{cost_line}\n\n'
             'Player message:\n'
             f'{str(user_input or "").strip()}\n\n'
-            'DM handling: Treat this as an attempted inventory action, not an automatic state change. '
-            'Narrate whether it actually succeeds. If it succeeds, explicitly say the character picks up, buys, '
+            'DM handling: First inspect the authoritative state-pipeline packet. If matching pre-DM applied changes '
+            'already moved, equipped, or consumed this exact item, narrate that validated result and do not duplicate '
+            'or reverse it. Otherwise treat this as an attempted inventory action and narrate whether it succeeds. '
+            'If it succeeds, explicitly say the character picks up, buys, '
             'drops, gives, sells, consumes, uses up, equips, or unequips the named item so the state pipeline can update inventory. '
             'If it fails, explicitly say why it fails.'
+        )
+
+    @staticmethod
+    def _travel_model_input(user_input: str, action_intent: dict | None, actor_label: str) -> str:
+        if not isinstance(action_intent, dict) or action_intent.get('kind') != 'travel':
+            return user_input
+        location = action_intent.get('location') if isinstance(action_intent.get('location'), dict) else {}
+        return (
+            'VALIDATED TRAVEL ACTION:\n'
+            f'Acting character: {actor_label}\n'
+            f"Destination ID: {location.get('id') or 'unknown'}\n"
+            f"Destination name: {location.get('name') or location.get('id') or 'unknown'}\n\n"
+            'Player message:\n'
+            f'{str(user_input or "").strip()}\n\n'
+            'DM handling: Inspect the authoritative pre-DM applied changes. If scene.move_location is present, the '
+            'adjacency, accessibility, and combat constraints already passed; narrate arrival at the resulting current '
+            'scene without relocating the party again. If no movement was applied, do not invent a successful trip.'
         )
 
     @staticmethod
@@ -152,6 +172,8 @@ class TurnActionPolicy:
             return cls._item_model_input(user_input, action_intent, actor_label)
         if isinstance(action_intent, dict) and action_intent.get('kind') == 'interact':
             return cls._interaction_model_input(user_input, action_intent, actor_label)
+        if isinstance(action_intent, dict) and action_intent.get('kind') == 'travel':
+            return cls._travel_model_input(user_input, action_intent, actor_label)
         return user_input
 
     @staticmethod
@@ -334,4 +356,75 @@ class TurnActionPolicy:
         rule_hint.reason = f"Harmful PvP action targeting {pvp_payload['target_character_name']}; contested resolution required"
         rule_hint.confidence = max(rule_hint.confidence or 0.0, 0.97)
         rule_hint.outcome_deferred = True
+        return rule_hint
+
+    @staticmethod
+    def apply_spell_rule_hint(
+        rule_hint: RuleHint,
+        action_intent: dict | None,
+        player: Player,
+    ) -> RuleHint:
+        """Do not turn every legal spell cast into a generic player check.
+
+        Casting a spell is normally automatic after preparation and resource
+        validation. Only spells explicitly tagged as spell attacks create a
+        player roll gate; saving-throw spells are resolved against the target,
+        not by asking the caster for an unrelated spell check.
+        """
+
+        if not isinstance(action_intent, dict) or action_intent.get('kind') != 'spell':
+            return rule_hint
+        spell_payload = action_intent.get('spell') if isinstance(action_intent.get('spell'), dict) else {}
+        spell_name = str(spell_payload.get('name') or '').strip()
+        spellbook = normalize_spellbook(
+            spellbook_from_character_sheet(player.character_sheet),
+            class_name=player.class_,
+        )
+        spell = known_spell(spellbook, spell_name) or {}
+        tags = {
+            str(tag or '').strip().lower().replace('-', '_').replace(' ', '_')
+            for tag in (spell.get('tags') or [])
+        }
+        resolution = str(
+            spell.get('resolutionType')
+            or spell.get('resolution_type')
+            or spell.get('resolution')
+            or ''
+        ).strip().lower().replace('-', '_').replace(' ', '_')
+        requires_attack = bool(
+            spell.get('requiresAttackRoll') is True
+            or spell.get('requires_attack_roll') is True
+            or resolution in {'attack', 'spell_attack', 'ranged_spell_attack', 'melee_spell_attack'}
+            or tags.intersection({'attack', 'spell_attack', 'ranged_spell_attack', 'melee_spell_attack'})
+        )
+        target_ids = spell_payload.get('target_ids') or spell_payload.get('targetIds') or []
+        if spell.get('authoritativeEffect') is True and isinstance(target_ids, list) and target_ids:
+            rule_hint.requires_roll = False
+            rule_hint.roll_type = None
+            rule_hint.dc_hint = None
+            rule_hint.reason = (
+                f'{spell_name or "Spell"} uses the authoritative targeted-spell resolver; '
+                'its attack or saving throw is resolved before narration.'
+            )
+            rule_hint.confidence = max(rule_hint.confidence or 0.0, 1.0)
+            rule_hint.roll_value = None
+            rule_hint.outcome_deferred = False
+            return rule_hint
+        if requires_attack:
+            rule_hint.requires_roll = True
+            rule_hint.roll_type = 'spell_attack'
+            rule_hint.reason = f'{spell_name or "Spell"} requires an authoritative spell attack roll.'
+            rule_hint.outcome_deferred = True
+            return rule_hint
+
+        rule_hint.requires_roll = False
+        rule_hint.roll_type = None
+        rule_hint.dc_hint = None
+        rule_hint.reason = (
+            f'{spell_name or "Spell"} casting is automatic after authoritative preparation and resource validation; '
+            'resolve any target saving throw separately.'
+        )
+        rule_hint.confidence = max(rule_hint.confidence or 0.0, 0.99)
+        rule_hint.roll_value = None
+        rule_hint.outcome_deferred = False
         return rule_hint

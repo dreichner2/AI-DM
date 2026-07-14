@@ -83,6 +83,7 @@ import {
   normalizeCharacterTraits,
   normalizeInventory,
   normalizeSpellbook,
+  normalizeSpellResources,
   normalizeStats,
   normalizeXp,
   numberValue,
@@ -94,6 +95,7 @@ import {
   worldStateFromSnapshot,
 } from './gameSelectors'
 import { diceRollMessage } from './gameActions'
+import { gameplayControlsFromSnapshot } from './gameplayControlState'
 import { subscribeToMediaQueryChange } from './mediaQuery'
 import { profileIconSrcForCharacter } from './profileIcons'
 import { BackendTrustDialog, RuntimeSettingsDialog } from './RuntimeSettingsDialog'
@@ -1079,6 +1081,10 @@ function AIDMApp() {
   )
   const spellbook = useMemo(
     () => normalizeSpellbook(playerDetail?.stats, playerDetail?.character_sheet),
+    [playerDetail?.character_sheet, playerDetail?.stats],
+  )
+  const spellResources = useMemo(
+    () => normalizeSpellResources(playerDetail?.character_sheet, playerDetail?.stats),
     [playerDetail?.character_sheet, playerDetail?.stats],
   )
   const characterTraits = useMemo(
@@ -3177,6 +3183,10 @@ function AIDMApp() {
     setSessionState,
   })
   const worldStatePanel = worldStateFromSnapshot(activeSessionSnapshot)
+  const gameplayControls = useMemo(
+    () => gameplayControlsFromSnapshot(activeSessionSnapshot, selectedPlayerId),
+    [activeSessionSnapshot, selectedPlayerId],
+  )
   const recentMemory = recentMemoryFromSnippets(memorySnippets, selectedSessionId)
   const visibleRecentMemory = inspectorTab === 'canon' ? recentMemory : recentMemory.slice(0, 3)
   const selectedSegment =
@@ -3893,6 +3903,7 @@ function AIDMApp() {
         onResolveTurnRecovery={resolveTurnRecovery}
         combatState={worldStatePanel.combat}
         worldState={worldStatePanel}
+        gameplayControls={gameplayControls}
         operationalError={latestPlayError?.message}
         onRecoverOperationalError={async () => {
           setSocketReconnectKey((current) => current + 1)
@@ -4006,6 +4017,7 @@ function AIDMApp() {
         createPlayerPending={createPlayerPending}
         statBlock={statBlock}
         spellbook={spellbook}
+        spellResources={spellResources}
         characterTraits={characterTraits}
         inventoryRows={inventoryRows}
         inventoryWeightLabel={inventoryWeightLabel}

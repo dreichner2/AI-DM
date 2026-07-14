@@ -1,5 +1,6 @@
 import { useCallback, useState, type Dispatch, type FormEvent, type SetStateAction } from 'react'
 import { apiFetch } from './api'
+import { backgroundFromValue } from './backgroundCatalog'
 import {
   DEFAULT_POINT_BUY_SCORES,
   POINT_BUY_BUDGET,
@@ -21,6 +22,7 @@ export type PlayerEditDialogState = {
   raceSelection: CharacterRaceSelection | null
   sex: string
   charClass: string
+  backgroundId: string
   level: string
   abilityScores: PointBuyScores
   error: string
@@ -48,6 +50,7 @@ type UsePlayerProfileActionsOptions = {
 }
 
 function playerDialogStateFromPlayer(player: Player): NonNullable<PlayerEditDialogState> {
+  const background = backgroundFromValue(player.background?.id ?? player.background?.name)
   return {
     mode: 'edit',
     campaignId: player.campaign_id,
@@ -57,6 +60,7 @@ function playerDialogStateFromPlayer(player: Player): NonNullable<PlayerEditDial
     raceSelection: player.race_selection ?? null,
     sex: player.sex ?? 'male',
     charClass: player.char_class || player.class_ || '',
+    backgroundId: background?.id ?? '',
     level: String(player.level ?? 1),
     abilityScores: { ...DEFAULT_POINT_BUY_SCORES },
     error: '',
@@ -100,6 +104,7 @@ export function usePlayerProfileActions({
       raceSelection: null,
       sex: 'male',
       charClass: '',
+      backgroundId: 'folk_hero',
       level: '1',
       abilityScores: { ...DEFAULT_POINT_BUY_SCORES },
       error: '',
@@ -139,9 +144,21 @@ export function usePlayerProfileActions({
       )
       return
     }
+    if (!playerEditDialog.charClass.trim()) {
+      setPlayerEditDialog((current) =>
+        current ? { ...current, error: 'Choose a class.' } : current,
+      )
+      return
+    }
     if (!Number.isInteger(level) || level < 1 || level > 20) {
       setPlayerEditDialog((current) =>
         current ? { ...current, error: 'Level must be 1 through 20.' } : current,
+      )
+      return
+    }
+    if (playerEditDialog.mode === 'create' && !backgroundFromValue(playerEditDialog.backgroundId)) {
+      setPlayerEditDialog((current) =>
+        current ? { ...current, error: 'Choose a background.' } : current,
       )
       return
     }
@@ -193,8 +210,15 @@ export function usePlayerProfileActions({
         char_class: playerEditDialog.charClass.trim(),
         level,
       }
+      if (playerEditDialog.backgroundId) {
+        payload.background = playerEditDialog.backgroundId
+      }
       if (dialogMode === 'create') {
-        payload.stats = pointBuyStatsPayload(playerEditDialog.abilityScores, level)
+        payload.stats = pointBuyStatsPayload(
+          playerEditDialog.abilityScores,
+          level,
+          playerEditDialog.charClass,
+        )
       }
       const body = JSON.stringify(payload)
       if (dialogMode === 'create') {

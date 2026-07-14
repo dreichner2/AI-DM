@@ -6,6 +6,8 @@ from aidm_server.game_state.orchestration.combat_resolution import (
     derive_trusted_damage_changes,
     without_trusted_damage_overlaps,
 )
+from aidm_server.combat.end_conditions import check_combat_end
+from aidm_server.game_state.application.applier import apply_state_changes
 
 
 def _combat_state() -> dict:
@@ -186,3 +188,154 @@ def test_combat_signatures_and_overlap_filter_are_semantic():
     assert filtered == [
         {'id': 'different', 'type': 'health.damage', 'actorId': 'player_2', 'amount': 2}
     ]
+
+
+def test_engine_resolved_targets_reject_narrated_hp_condition_and_consciousness_overrides():
+    packet = {
+        'combatState': {
+            'enemyResolvedActions': [
+                {
+                    'enemyId': 'enemy_wolf',
+                    'targetId': 'player_2',
+                    'hit': True,
+                    'damageTotal': 5,
+                }
+            ]
+        }
+    }
+    proposed = [
+        {'id': 'extra-damage', 'type': 'health.damage', 'actorId': 'player_2', 'amount': 2},
+        {
+            'id': 'narrated-death',
+            'type': 'combat.participant.update',
+            'participantId': 'player_2',
+            'hp': {'current': 0, 'max': 10},
+            'conditions': ['dead'],
+            'isAlive': False,
+            'isConscious': False,
+        },
+        {
+            'id': 'narrated-condition',
+            'type': 'combat.condition.add',
+            'participantId': 'player_2',
+            'condition': 'stunned',
+        },
+        {
+            'id': 'allowed-morale',
+            'type': 'combat.morale.update',
+            'participantId': 'player_2',
+            'morale': 25,
+        },
+    ]
+
+    assert without_trusted_damage_overlaps(
+        proposed,
+        [{'id': 'engine-damage', 'type': 'health.damage', 'actorId': 'player_2', 'amount': 5}],
+        dm_context_packet=packet,
+    ) == [proposed[-1]]
+
+
+def test_engine_owned_player_miss_rejects_narrated_condition_override():
+    packet = {
+        'combatState': {
+            'playerResolvedAction': {
+                'authoritative': True,
+                'targetId': 'enemy_wolf',
+                'hit': False,
+                'damageTotal': 0,
+            }
+        }
+    }
+
+    assert without_trusted_damage_overlaps(
+        [
+            {
+                'id': 'stun-on-miss',
+                'type': 'combat.participant.update',
+                'participantId': 'enemy_wolf',
+                'conditions': ['stunned'],
+                'isConscious': False,
+            }
+        ],
+        [],
+        dm_context_packet=packet,
+    ) == []
+
+
+def test_engine_resolved_enemy_retreat_applies_trusted_condition_and_nonlethal_end():
+    state = {
+        'playerCharacters': [{'id': 'player_1', 'name': 'Kael'}],
+        'combat': {
+            'status': 'active',
+            'round': 1,
+            'turnIndex': 0,
+            'participants': [
+                {
+                    'id': 'player_1',
+                    'name': 'Kael',
+                    'team': 'player',
+                    'kind': 'player_character',
+                    'hp': {'current': 10, 'max': 10},
+                    'isAlive': True,
+                    'isConscious': True,
+                },
+                {
+                    'id': 'enemy_wolf',
+                    'name': 'Dire Wolf',
+                    'team': 'enemy',
+                    'kind': 'creature',
+                    'hp': {'current': 3, 'max': 12},
+                    'conditions': [],
+                    'isAlive': True,
+                    'isConscious': True,
+                },
+            ],
+        },
+    }
+    packet = {
+        'combatState': {
+            'enemyResolvedActions': [
+                {
+                    'enemyId': 'enemy_wolf',
+                    'intentType': 'retreat',
+                    'resolvedWithoutRoll': True,
+                }
+            ]
+        }
+    }
+
+    trusted = derive_trusted_damage_changes(
+        state=state,
+        dm_context_packet=packet,
+        actor_id='player_1',
+        turn_id=55,
+        already_applied_changes=[],
+    ).enemy
+    next_state = apply_state_changes(state, trusted)['nextState']
+    wolf = next(participant for participant in next_state['combat']['participants'] if participant['id'] == 'enemy_wolf')
+
+    assert trusted[0]['type'] == 'combat.condition.add'
+    assert trusted[0]['condition'] == 'fled'
+    assert wolf['conditions'] == ['fled']
+    assert wolf['hp']['current'] == 3
+    assert check_combat_end(next_state['combat']) == 'enemies_fled'
+    assert without_trusted_damage_overlaps(
+        [
+            {
+                'id': 'narrated-fight-on',
+                'type': 'combat.participant.update',
+                'participantId': 'enemy_wolf',
+                'conditions': [],
+                'isAlive': True,
+                'isConscious': True,
+            },
+            {
+                'id': 'narrated-end',
+                'type': 'combat.end',
+                'status': 'ended',
+                'endReason': 'all_enemies_defeated',
+            },
+        ],
+        trusted,
+        dm_context_packet=packet,
+    ) == []
