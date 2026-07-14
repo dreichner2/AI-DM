@@ -151,6 +151,31 @@ def test_pact_and_multiclass_slot_maxima_are_separate_and_conservative():
     assert malformed_split['effectiveCasterLevel'] <= 3
 
 
+@pytest.mark.parametrize(
+    'class_name',
+    [
+        'Wizard 3 / Paladin 2',
+        'Wizard 3 + Paladin 2',
+        'Wizard 3 & Paladin 2',
+        'Wizard 3, Paladin 2',
+        'Wizard 3\tAND\nPaladin 2',
+    ],
+)
+def test_multiclass_parser_accepts_supported_separators_without_ambiguous_whitespace(class_name):
+    parsed = derive_spell_slot_maxima(class_name, 5)
+
+    assert parsed['classLevelInference'] == 'parsed_multiclass'
+    assert parsed['classLevels'] == {'paladin': 2, 'wizard': 3}
+    assert parsed['standard'] == {'1': 4, '2': 3}
+
+
+def test_multiclass_parser_only_splits_and_as_a_standalone_word():
+    parsed = derive_spell_slot_maxima('Land Druid', 5)
+
+    assert parsed['classLevelInference'] == 'single_class'
+    assert parsed['classLevels'] == {'druid': 5}
+
+
 def test_resource_normalization_caps_current_values_and_restores_persisted_multiclass_split():
     normalized = normalize_spell_resources(
         {

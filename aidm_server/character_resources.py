@@ -140,7 +140,7 @@ def normalize_spellcasting_class_levels(
     label = str(class_name or '').strip()
     multiclass_parts = [
         part.strip()
-        for part in re.split(r'\s*(?:/|\+|&|,|\band\b)\s*', label, flags=re.IGNORECASE)
+        for part in re.split(r'[+/&,]|\band\b', label, flags=re.IGNORECASE)
         if part.strip()
     ]
     if len(multiclass_parts) > 1:
