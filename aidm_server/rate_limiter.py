@@ -264,12 +264,12 @@ class DatabaseRateLimitStore:
                 window_start=window_start,
             )
 
-        # PostgreSQL already serializes only matching buckets through the
-        # transaction-scoped advisory lock above. A process-wide lock would
-        # unnecessarily block unrelated accounts. SQLite still needs the
-        # process lock because it has no equivalent per-bucket primitive.
-        if engine.dialect.name == 'postgresql':
-            return execute_hit()
+        # Acquire the process lock before checking out a connection. The
+        # limiter shares the application's SQLAlchemy pool, so allowing a
+        # burst of request threads to enter ``engine.begin()`` concurrently
+        # can consume every pool slot before any endpoint work starts. The
+        # PostgreSQL advisory lock above remains necessary for atomicity across
+        # workers and instances; this lock bounds pool usage within a process.
         with self._hit_lock:
             return execute_hit()
 

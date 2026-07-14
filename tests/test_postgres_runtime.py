@@ -296,7 +296,7 @@ def test_postgres_provider_boundary_rejects_flushed_uncommitted_writes(postgres_
         assert db.engine.pool.checkedout() == 0
 
 
-def test_postgres_rate_limiter_does_not_serialize_different_buckets(postgres_app):
+def test_postgres_rate_limiter_bounds_pool_checkout_for_different_buckets(postgres_app):
     bucket_keys = [f'postgres-independent-{uuid4().hex}' for _index in range(2)]
     limiter = FixedWindowRateLimiter(
         limit=1,
@@ -304,31 +304,52 @@ def test_postgres_rate_limiter_does_not_serialize_different_buckets(postgres_app
         store=DatabaseRateLimitStore(retention_window_seconds=60),
     )
     start = threading.Barrier(2)
-    concurrent_inserts = threading.Barrier(2)
+    attempts_lock = threading.Lock()
+    both_attempting = threading.Event()
+    attempted = 0
+    first_insert_started = threading.Event()
+    release_first_insert = threading.Event()
 
     with postgres_app.app_context():
         engine = db.engine
 
-    def require_overlapping_inserts(_conn, _cursor, statement, _parameters, _context, _executemany):
-        if 'insert into rate_limit_events' in statement.lower():
-            concurrent_inserts.wait(timeout=5)
+    def block_first_insert(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if 'insert into rate_limit_events' not in statement.lower() or first_insert_started.is_set():
+            return
+        first_insert_started.set()
+        assert release_first_insert.wait(timeout=5)
 
     def hit_once(bucket_key: str) -> bool:
+        nonlocal attempted
         start.wait(timeout=5)
+        with attempts_lock:
+            attempted += 1
+            if attempted == len(bucket_keys):
+                both_attempting.set()
         with postgres_app.app_context():
             return limiter.allow(bucket_key).allowed
 
-    event.listen(engine, 'before_cursor_execute', require_overlapping_inserts)
+    event.listen(engine, 'before_cursor_execute', block_first_insert)
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = [executor.submit(hit_once, bucket_key) for bucket_key in bucket_keys]
+            assert first_insert_started.wait(timeout=5)
+            assert both_attempting.wait(timeout=5)
+            assert engine.pool.checkedout() == 1
+            assert all(not future.done() for future in futures)
+            with engine.connect() as connection:
+                assert connection.execute(text('SELECT 1')).scalar_one() == 1
+            assert engine.pool.checkedout() == 1
+            release_first_insert.set()
             results = [future.result(timeout=10) for future in futures]
     finally:
-        event.remove(engine, 'before_cursor_execute', require_overlapping_inserts)
+        release_first_insert.set()
+        event.remove(engine, 'before_cursor_execute', block_first_insert)
         with engine.begin() as connection:
             connection.execute(delete(RateLimitEvent.__table__).where(RateLimitEvent.bucket_key.in_(bucket_keys)))
 
     assert results == [True, True]
+    assert engine.pool.checkedout() == 0
 
 
 def test_postgres_turn_coordinator_serializes_across_instances(postgres_app):

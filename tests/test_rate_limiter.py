@@ -283,21 +283,31 @@ def test_database_rate_limiter_serializes_concurrent_hits(app, monkeypatch):
     assert results.count(False) == 4
 
 
-def test_database_rate_limiter_skips_process_lock_for_postgres(app, monkeypatch):
+def test_database_rate_limiter_acquires_process_lock_before_postgres_transaction(app, monkeypatch):
     class RecordingLock:
         def __init__(self):
             self.entries = 0
+            self.entered = False
 
         def __enter__(self):
             self.entries += 1
+            self.entered = True
 
         def __exit__(self, _exc_type, _exc, _traceback):
+            self.entered = False
             return False
 
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     store = rate_limiter_module.DatabaseRateLimitStore(retention_window_seconds=10)
     recording_lock = RecordingLock()
     monkeypatch.setattr(store, '_hit_lock', recording_lock)
+    original_hit_in_transaction = store._hit_in_transaction
+
+    def hit_in_transaction(*args, **kwargs):
+        assert recording_lock.entered is True
+        return original_hit_in_transaction(*args, **kwargs)
+
+    monkeypatch.setattr(store, '_hit_in_transaction', hit_in_transaction)
 
     with app.app_context():
         from aidm_server.database import db
@@ -307,4 +317,26 @@ def test_database_rate_limiter_skips_process_lock_for_postgres(app, monkeypatch)
         result = store.hit('postgres-bucket', now=now, limit=2, window_seconds=10)
 
     assert result.allowed is True
-    assert recording_lock.entries == 0
+    assert recording_lock.entries == 1
+    assert recording_lock.entered is False
+
+
+def test_database_rate_limiter_releases_process_lock_after_postgres_error(app, monkeypatch):
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = rate_limiter_module.DatabaseRateLimitStore(retention_window_seconds=10)
+
+    with app.app_context():
+        from aidm_server.database import db
+
+        monkeypatch.setattr(db.engine.dialect, 'name', 'postgresql')
+        monkeypatch.setattr(
+            store,
+            '_hit_in_transaction',
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError('database unavailable')),
+        )
+
+        with pytest.raises(RuntimeError, match='database unavailable'):
+            store.hit('postgres-bucket', now=now, limit=2, window_seconds=10)
+
+    assert store._hit_lock.acquire(blocking=False) is True
+    store._hit_lock.release()
