@@ -21,7 +21,8 @@ snapshot. Systems that need current play state should read it for:
   is saved and restored during validated travel (the cache is server-only;
   players receive the filtered `currentScene` projection instead);
 - flags; and
-- `stateChangeLedger`.
+- `stateChangeLedger`, `interactableActionLedger`, `gameplayEventLedger`, and
+  `combatRewardLedger`.
 
 Future live systems should use `Session.state_snapshot` unless they
 intentionally need authored source data, durable campaign-pack progress,
@@ -36,6 +37,13 @@ and application pipeline and are persisted through
 `mutate_session_snapshot_metadata`, so they run under serialized coordination,
 stamp the state revision, record source/change classifications, and create a
 durable audit row.
+
+The ordinary player-profile PATCH route is not a gameplay back door: it rejects
+direct replacement of stats, character sheets, inventories, and weapon
+proficiencies. New characters receive a validated six-score point-buy profile;
+later XP, HP, resources, items, and equipment change through their authoritative
+gameplay paths. Class/race profile respecs are server-reconciled so obsolete
+automatic grants and feature state cannot remain alongside the new build.
 
 Some import, repair, lifecycle, and test paths write snapshots directly. The
 validated inventory of those exceptions is
@@ -108,12 +116,89 @@ The player combat HUD is also a server projection, not persisted client truth.
 and persisted inventory. Stable action and target IDs are re-resolved under the
 session turn lock before a turn is created; forged, stale, out-of-turn,
 out-of-range, hidden, down, or fully covered targets are rejected. Current turn
-order is enforceable. Separate action, movement, bonus-action, and reaction
-counters are not persisted, so the projection marks those sub-turn counters as
-untracked instead of claiming full tabletop action-economy enforcement.
-Unavailable targets remain in the viewer projection with a reason. The frontend
-disables and explains them; omission is reserved for targets the viewer must not
-know exist.
+order is enforceable. Action, movement, bonus-action, and reaction budgets
+persist under `combat.flags.turnEconomy`; a legal action spends the relevant
+budget once, movement does not silently end the turn, and explicit End Turn
+advances the initiative roster and resets the next actor's budget. Unavailable
+targets remain in the viewer projection with a reason. The frontend disables and
+explains them; omission is reserved for targets the viewer must not know exist.
+Private spent-action identifiers and enemy-planning data are removed from player
+projections.
+
+## Typed Gameplay Action Authority
+
+Typed spell, class-capability, scene-object, item, travel, rest, and combat
+intents are pre-DM gameplay requests, not narration hints. The extractor turns
+them into bounded action records; validation re-resolves actor, exact target,
+resource, location, and current turn from the snapshot under the session turn
+lock. A typed action that is invalid for its declared subsystem produces a
+deterministic rules rejection and stops before the DM provider. Post-DM filters
+also remove any attempted duplicate or contradictory mutation for a typed action
+that already resolved before narration.
+
+Spell knowledge, preparation, and slot/pact/Arcanum availability are validated
+for every typed cast. Only spells carrying a server-owned
+`authoritativeEffect` definition and exact `target_ids` enter the targeted spell
+resolver. That path owns attack or save rolls, target relation/range/cover,
+damage, healing, temporary HP, conditions, durations, and concentration, and
+persists the effect together with spell-resource and combat-action consumption.
+`combat.flags.spellResolutionLedger` and the broader state-change ledger make a
+cast ID replay return the prior result instead of rolling twice. A legacy cast
+without exact target IDs remains a resource-only cast; narration is not evidence
+that a target effect applied.
+
+The current class-capability resolver is deliberately bounded to Fighter Second
+Wind and Action Surge and Paladin Lay on Hands. `class_feature.use` must originate
+from the pre-DM capability engine. Validation replays its trusted rolls/result,
+and application consumes `classFeatureState`, applies healing or action
+restoration, updates the matching turn-economy budget, and persists the owning
+player sheet. Short and long rests refresh only capabilities with the matching
+declared refresh policy.
+
+`scene.interactable.action` addresses one exact visible door, lock, container,
+object, or hazard in the current location. The interactable engine verifies
+global ID uniqueness, optional expected revision, item/tool/capability/flag/
+object-state prerequisites, and any caller-resolved check. Successful actions
+replace the current interactable/hazard collections and the active location's
+cached `sceneState` together. The action ledger returns a same-fingerprint
+retry as already applied and rejects reuse of the action ID for a different
+request. Public gameplay events may feed quest predicates; hidden definitions,
+requirements, transitions, and GM events remain server-only.
+
+The session's Mechanical actions panel projects these same authoritative fields
+without creating client-owned state. It exposes exact legal-target selection for
+the seven complete spells, capability target/amount controls with persisted uses,
+and exact-ID/revision scene-object actions. Object-action candidates are inferred
+from public object state because hidden requirements are intentionally not
+projected; the server remains authoritative and fails closed. Scene-object actions
+are disabled during combat until they consume a defined turn-economy budget.
+Authored interactable `mechanicalEffects` are recorded as deferred event data
+until a bounded subsystem explicitly applies them.
+
+## Combat Outcome Transactions
+
+After an authoritative `combat.end` is present in the ended snapshot, the
+combat reward engine verifies the persisted end reason and stable encounter ID
+before deriving anything. Supported reasons map to victory, defeat, retreat,
+surrender, negotiation, or objective completion. Invalid, interrupted,
+mismatched, or encounter-less outcomes fail closed with no reward output.
+
+Authored XP, currency, items, flags, bounded world consequences, and linked
+quest events receive stable IDs scoped to the original combat-end change.
+Actor-bound rewards allocate only among exact present player combat
+participants. Item copies receive distinct deterministic identities. Linked
+quest events are persisted in `gameplayEventLedger` and pass through the same
+mechanical quest predicates as other validated gameplay events; they do not
+directly force terminal quest state.
+
+Outputs are queued before a hidden `combat.reward.finalize` change. The finalize
+change is accepted only when every required output ID is already in
+`stateChangeLedger`, then records the transaction in `combatRewardLedger` and
+`combat.flags.lastOutcomeRewards`. If a process stops after only part of the
+transaction, replaying the already-applied `combat.end` re-derives the same IDs,
+skips completed outputs, and attempts the missing remainder before finalizing.
+This makes reward recovery exact-once without treating a successful narration
+or HTTP response as proof that rewards committed.
 
 ## Player-Visible Projections
 
@@ -124,8 +209,8 @@ list, workspace, state, and export responses are account-scoped projections:
 - other party members expose public identity plus bounded shared combat HP,
   conditions, and alive/conscious state;
 - peer statistics, character sheets, inventory, spells, resources, abilities,
-  armor details, metadata, state-change ledgers, and hidden campaign-pack data
-  are removed;
+  armor details, metadata, state/change/action/event/reward ledgers, and hidden
+  campaign-pack data are removed;
 - accountless workspace/table credentials own no private player record and
   cannot bind a socket to a guessed player;
 - clarification actions, inventory options, and state-pipeline detail remain

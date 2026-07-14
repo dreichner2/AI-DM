@@ -207,6 +207,20 @@
       },
       "uniqueItems": true
     },
+    "flagPredicate": {
+      "description": "A fail-closed predicate evaluated against the persisted authoritative state flags. It does not inspect narration or model output.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["flagKey", "equals"],
+      "properties": {
+        "flagKey": {
+          "$ref": "#/$defs/id"
+        },
+        "equals": {
+          "type": ["string", "number", "boolean"]
+        }
+      }
+    },
     "sourceFields": {
       "type": "object",
       "additionalProperties": true,
@@ -448,6 +462,52 @@
         }
       }
     },
+    "encounterRewardSpec": {
+      "description": "Compact reward object or explicit typed reward records. Supported rewards include XP, currency, items, flags, and quest events.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": true
+        },
+        {
+          "type": "array",
+          "maxItems": 250,
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      ]
+    },
+    "encounterConsequenceList": {
+      "type": "array",
+      "maxItems": 250,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["type"]
+      }
+    },
+    "encounterQuestEventList": {
+      "type": "array",
+      "maxItems": 250,
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "encounterOutcomeRewardMap": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/encounterRewardSpec"
+      }
+    },
+    "encounterOutcomeConsequenceMap": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/encounterConsequenceList"
+      }
+    },
     "encounter": {
       "type": "object",
       "additionalProperties": true,
@@ -479,6 +539,68 @@
         "completion": {
           "type": "object",
           "additionalProperties": true
+        },
+        "reward": {
+          "description": "Compatibility alias for common successful-outcome encounter rewards.",
+          "$ref": "#/$defs/encounterRewardSpec"
+        },
+        "rewards": {
+          "description": "Common rewards for victory, surrender, negotiation, or objective completion.",
+          "$ref": "#/$defs/encounterRewardSpec"
+        },
+        "partyAllocation": {
+          "description": "Default allocation policy by reward type. Supported values are split, each, first, and actor.",
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["split", "each", "first", "actor"]
+            },
+            {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "enum": ["split", "each", "first", "actor"]
+              }
+            }
+          ]
+        },
+        "outcomes": {
+          "description": "Outcome-specific rewards, consequences, quest events, and allocation policy. Prefer victory, defeat, retreat, surrender, negotiation, and objective_completion keys.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "outcomeRewards": {
+          "description": "Compatibility map of combat outcome to reward specification.",
+          "$ref": "#/$defs/encounterOutcomeRewardMap"
+        },
+        "outcomeConsequences": {
+          "description": "Map of combat outcome to bounded state consequences.",
+          "$ref": "#/$defs/encounterOutcomeConsequenceMap"
+        },
+        "questEvents": {
+          "description": "Stable gameplay events offered to linked mechanical quests after the encounter ends.",
+          "$ref": "#/$defs/encounterQuestEventList"
+        },
+        "onVictory": {
+          "$ref": "#/$defs/encounterConsequenceList"
+        },
+        "onDefeat": {
+          "$ref": "#/$defs/encounterConsequenceList"
+        },
+        "onRetreat": {
+          "$ref": "#/$defs/encounterConsequenceList"
+        },
+        "onSurrender": {
+          "$ref": "#/$defs/encounterConsequenceList"
+        },
+        "onNegotiation": {
+          "$ref": "#/$defs/encounterConsequenceList"
+        },
+        "onObjectiveCompletion": {
+          "$ref": "#/$defs/encounterConsequenceList"
         }
       }
     },
@@ -614,6 +736,10 @@
         },
         "nextCheckpointIds": {
           "$ref": "#/$defs/idList"
+        },
+        "branchWhen": {
+          "description": "Makes this checkpoint eligible for automatic branch selection only when the authoritative flag predicate matches.",
+          "$ref": "#/$defs/flagPredicate"
         },
         "alternateCheckpointIds": {
           "$ref": "#/$defs/idList"

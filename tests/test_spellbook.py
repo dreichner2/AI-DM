@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from aidm_server.spellbook import (
     ensure_character_sheet_spellbook,
+    merge_spellbooks,
     original_spell_catalog,
     original_spell_catalog_size,
     spell_from_change,
@@ -127,3 +128,54 @@ def test_saiyan_repair_removes_stale_auto_shapeshifter_spells():
     assert 'Disguise Self' not in names
     assert 'Story Mask' in names
     assert 'Ki Blast' in names
+
+
+def test_respec_removes_only_automatic_spell_provenance_and_is_idempotent():
+    automatic = spellbook_for_character(class_name='Wizard', race_name='Tiefling', level=3)
+    story_fire_bolt = spell_from_change(
+        {
+            'spellName': 'Fire Bolt',
+            'spellLevel': 0,
+            'sourceDetail': 'ember_tutor',
+            'learnedFrom': 'The ember tutor',
+        }
+    )
+    mixed = merge_spellbooks(
+        automatic,
+        {
+            'knownSpells': [
+                story_fire_bolt,
+                {'name': 'Old Nameless Rune', 'level': 1},
+            ]
+        },
+    )
+
+    reconciled, changed = ensure_character_sheet_spellbook(
+        {'spellbook': mixed},
+        class_name='Fighter',
+        race_name='Human',
+        level=3,
+        replace_class_grants=True,
+        replace_race_grants=True,
+        reset_preparation_policy=True,
+    )
+    assert changed is True
+    spells = {spell['name']: spell for spell in reconciled['spellbook']['knownSpells']}
+    assert set(spells) == {'Fire Bolt', 'Old Nameless Rune'}
+    assert spells['Fire Bolt']['sources'] == ['story:ember_tutor']
+    assert spells['Fire Bolt']['sourceType'] == 'story'
+    assert spells['Old Nameless Rune'].get('sources', []) == []
+    assert reconciled['spellbook']['sources'] == ['story:ember_tutor']
+    assert set(reconciled['spellbook']['preparedSpells']) <= set(spells)
+
+    repeated, changed_again = ensure_character_sheet_spellbook(
+        reconciled,
+        class_name='Fighter',
+        race_name='Human',
+        level=3,
+        replace_class_grants=True,
+        replace_race_grants=True,
+        reset_preparation_policy=True,
+    )
+    assert changed_again is False
+    assert repeated == reconciled

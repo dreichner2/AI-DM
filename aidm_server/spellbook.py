@@ -48,6 +48,83 @@ def _source_label(source_type: str | None, source_detail: str | None) -> str | N
     return source_type or source_detail or None
 
 
+# This is intentionally a small catalog of complete rules, not a decorative
+# claim that every spell name below is mechanically implemented. Recognized
+# entries are merged after imported spell data so a campaign cannot replace a
+# server-owned effect with client-authored damage or targeting rules.
+AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
+    'fire bolt': {
+        'delivery': {'type': 'attack'},
+        'target': {'relation': 'enemy', 'rangeBands': ['near', 'far'], 'maxTargets': 1},
+        'effects': [{'kind': 'damage', 'dice': '1d10', 'damageType': 'fire'}],
+    },
+    'magic missile': {
+        'delivery': {'type': 'automatic'},
+        'target': {
+            'relation': 'enemy',
+            'rangeBands': ['near', 'far', 'distant'],
+            'maxTargets': 1,
+            'ignoreCover': True,
+        },
+        'effects': [{'kind': 'damage', 'dice': '3d4+3', 'damageType': 'force'}],
+    },
+    'sacred flame': {
+        'delivery': {'type': 'save', 'ability': 'dexterity', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': ['near', 'far'], 'maxTargets': 1},
+        'effects': [{'kind': 'damage', 'dice': '1d8', 'damageType': 'radiant'}],
+    },
+    'cure wounds': {
+        'delivery': {'type': 'automatic'},
+        'target': {
+            'relation': 'ally',
+            'rangeBands': ['melee'],
+            'maxTargets': 1,
+            'allowSelf': True,
+        },
+        'effects': [{'kind': 'healing', 'dice': '1d8'}],
+    },
+    'healing word': {
+        'delivery': {'type': 'automatic'},
+        'target': {
+            'relation': 'ally',
+            'rangeBands': ['melee', 'near', 'far'],
+            'maxTargets': 1,
+            'allowSelf': True,
+        },
+        'effects': [{'kind': 'healing', 'dice': '1d4'}],
+    },
+    'entangle': {
+        'delivery': {'type': 'save', 'ability': 'strength', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': ['near', 'far'], 'maxTargets': 1},
+        'effects': [
+            {
+                'kind': 'condition',
+                'condition': 'restrained',
+                'duration': {'remaining': 2, 'tick': 'target_turn_end'},
+            }
+        ],
+        'concentration': True,
+    },
+    'ray of frost': {
+        'delivery': {'type': 'attack'},
+        'target': {'relation': 'enemy', 'rangeBands': ['near', 'far'], 'maxTargets': 1},
+        'effects': [
+            {'kind': 'damage', 'dice': '1d8', 'damageType': 'cold'},
+            {
+                'kind': 'condition',
+                'condition': 'slowed',
+                'duration': {'remaining': 1, 'tick': 'target_turn_end'},
+            },
+        ],
+    },
+}
+
+
+def authoritative_spell_effect(name: Any) -> dict[str, Any] | None:
+    effect = AUTHORITATIVE_SPELL_EFFECTS.get(_normalize_text(name).casefold())
+    return deepcopy(effect) if isinstance(effect, dict) else None
+
+
 def spell_payload(
     name: str,
     *,
@@ -89,6 +166,10 @@ def spell_payload(
         payload['learnedAtLevel'] = learned_level
     if learned_from:
         payload['learnedFrom'] = _normalize_text(learned_from)
+    authoritative_effect = authoritative_spell_effect(spell_name)
+    if authoritative_effect:
+        payload.update(authoritative_effect)
+        payload['authoritativeEffect'] = True
     return payload
 
 
@@ -302,6 +383,8 @@ SHAPESHIFT_TRAIT_KEYWORDS = (
 )
 
 STALE_AUTO_RACE_SOURCE_DETAILS = {'shapeshifter'}
+AUTO_CLASS_SPELL_SOURCE_TYPES = frozenset({'class', 'level', 'class_catalog'})
+AUTO_RACE_SPELL_SOURCE_TYPES = frozenset({'race', 'race_catalog'})
 
 
 def _looks_like_shapeshifter_trait(trait_text: str) -> bool:
@@ -714,6 +797,73 @@ def class_spell_archetype(class_name: str | None) -> str | None:
     return None
 
 
+PREPARED_SPELLCASTER_ARCHETYPES = frozenset({'wizard', 'cleric', 'druid', 'paladin', 'artificer'})
+KNOWN_SPELLCASTER_ARCHETYPES = frozenset({'bard', 'ranger', 'sorcerer', 'warlock'})
+
+
+def spell_preparation_policy_for_class(class_name: str | None) -> dict[str, Any]:
+    """Return the persisted known-vs-prepared policy for a class label.
+
+    Unknown and non-spellcasting classes retain the legacy ``known`` behavior.
+    That default is intentionally permissive for old character sheets which had
+    no preparation concept at all; authoritative resource validation can still
+    reject spells that are absent from the known-spell catalog.
+    """
+
+    archetype = class_spell_archetype(class_name)
+    requires_preparation = archetype in PREPARED_SPELLCASTER_ARCHETYPES
+    return {
+        'schemaVersion': 1,
+        'mode': 'prepared' if requires_preparation else 'known',
+        'requiresPreparation': requires_preparation,
+        'classArchetype': archetype,
+        'source': 'class' if archetype in PREPARED_SPELLCASTER_ARCHETYPES | KNOWN_SPELLCASTER_ARCHETYPES else 'legacy',
+    }
+
+
+def normalize_spell_preparation_policy(
+    raw_policy: Any,
+    *,
+    class_name: str | None = None,
+) -> dict[str, Any]:
+    derived = spell_preparation_policy_for_class(class_name)
+    if isinstance(raw_policy, str):
+        mode = _normalize_text(raw_policy).lower()
+        raw_policy = {'mode': mode}
+    if not isinstance(raw_policy, dict):
+        return derived
+
+    archetype = class_spell_archetype(
+        class_name
+        or raw_policy.get('classArchetype')
+        or raw_policy.get('class_archetype')
+    )
+    if archetype in PREPARED_SPELLCASTER_ARCHETYPES:
+        mode = 'prepared'
+    elif archetype in KNOWN_SPELLCASTER_ARCHETYPES:
+        mode = 'known'
+    else:
+        mode = _normalize_text(raw_policy.get('mode') or raw_policy.get('policy')).lower()
+        if mode not in {'known', 'prepared'}:
+            mode = derived['mode']
+    requires_preparation = mode == 'prepared'
+    source = (
+        'class'
+        if archetype in PREPARED_SPELLCASTER_ARCHETYPES | KNOWN_SPELLCASTER_ARCHETYPES
+        else _normalize_text(raw_policy.get('source')) or derived['source']
+    )
+    policy = {
+        'schemaVersion': 1,
+        'mode': mode,
+        'requiresPreparation': requires_preparation,
+        'classArchetype': archetype,
+        'source': source,
+    }
+    if raw_policy.get('legacyDefaultApplied') is True or raw_policy.get('legacy_default_applied') is True:
+        policy['legacyDefaultApplied'] = True
+    return policy
+
+
 def _spell_specs_to_payloads(
     specs: Iterable[SpellSpec],
     *,
@@ -860,27 +1010,84 @@ def normalize_spell(raw_spell: Any) -> dict[str, Any] | None:
         if source:
             normalized['source'] = source
             normalized['sources'] = [source]
+    authoritative_effect = authoritative_spell_effect(name)
+    if authoritative_effect:
+        normalized.update(authoritative_effect)
+        normalized['authoritativeEffect'] = True
     return normalized
 
 
-def normalize_spellbook(raw_spellbook: Any) -> dict[str, Any]:
-    if isinstance(raw_spellbook, dict):
-        raw_known = (
-            raw_spellbook.get('knownSpells')
-            or raw_spellbook.get('known_spells')
-            or raw_spellbook.get('spells')
-            or []
+def _spellbook_field(raw_spellbook: dict[str, Any], *keys: str) -> tuple[Any, bool]:
+    for key in keys:
+        if key in raw_spellbook:
+            return raw_spellbook.get(key), True
+    return None, False
+
+
+def _prepared_spell_name(raw_value: Any) -> str:
+    if isinstance(raw_value, dict):
+        return _normalize_text(
+            raw_value.get('name')
+            or raw_value.get('spellName')
+            or raw_value.get('spell_name')
+            or raw_value.get('id')
         )
-        prepared = raw_spellbook.get('preparedSpells') or raw_spellbook.get('prepared_spells') or []
+    return _normalize_text(raw_value)
+
+
+def _spell_uses_preparation(spell: dict[str, Any]) -> bool:
+    if _bounded_spell_level(spell.get('level')) <= 0:
+        return False
+    source_type = _normalize_text(spell.get('sourceType') or spell.get('source_type')).lower()
+    if source_type in {'race', 'race_catalog', 'ancestry', 'innate'}:
+        return False
+    if spell.get('requiresPreparation') is False or spell.get('requires_preparation') is False:
+        return False
+    return True
+
+
+def normalize_spellbook(
+    raw_spellbook: Any,
+    *,
+    class_name: str | None = None,
+) -> dict[str, Any]:
+    if isinstance(raw_spellbook, dict):
+        raw_known, _known_field_present = _spellbook_field(
+            raw_spellbook,
+            'knownSpells',
+            'known_spells',
+            'spells',
+        )
+        prepared, prepared_field_present = _spellbook_field(
+            raw_spellbook,
+            'preparedSpells',
+            'prepared_spells',
+        )
+        raw_policy, policy_field_present = _spellbook_field(
+            raw_spellbook,
+            'preparationPolicy',
+            'preparation_policy',
+        )
         sources = raw_spellbook.get('sources') or []
     elif isinstance(raw_spellbook, list):
         raw_known = raw_spellbook
         prepared = []
+        prepared_field_present = False
+        raw_policy = None
+        policy_field_present = False
         sources = []
     else:
         raw_known = []
         prepared = []
+        prepared_field_present = False
+        raw_policy = None
+        policy_field_present = False
         sources = []
+
+    if not isinstance(raw_known, list):
+        raw_known = []
+    if not isinstance(prepared, list):
+        prepared = []
 
     known: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -895,7 +1102,26 @@ def normalize_spellbook(raw_spellbook: Any) -> dict[str, Any]:
         seen.add(key)
         seen.add(name_key)
         known.append(spell)
-    prepared_names = [_normalize_text(item) for item in prepared if _normalize_text(item)] if isinstance(prepared, list) else []
+    known_names = {_slug(spell.get('name')): spell['name'] for spell in known if spell.get('name')}
+    known_ids = {_slug(spell.get('id')): spell['name'] for spell in known if spell.get('id')}
+    prepared_names: list[str] = []
+    for raw_prepared in prepared:
+        candidate = _prepared_spell_name(raw_prepared)
+        canonical_name = known_names.get(_slug(candidate)) or known_ids.get(_slug(candidate))
+        if canonical_name and canonical_name not in prepared_names:
+            prepared_names.append(canonical_name)
+
+    policy = normalize_spell_preparation_policy(
+        raw_policy if policy_field_present else None,
+        class_name=class_name,
+    )
+    if policy['requiresPreparation'] and not prepared_field_present:
+        # Legacy sheets treated every known spell as immediately usable. Preserve
+        # that behavior once, but persist the class's real preparation policy so
+        # a future preparation UI can replace this explicit migrated selection.
+        prepared_names = [spell['name'] for spell in known if _spell_uses_preparation(spell)]
+        policy['legacyDefaultApplied'] = True
+
     source_names = [_normalize_text(item) for item in sources if _normalize_text(item)] if isinstance(sources, list) else []
     for spell in known:
         for source in spell.get('sources') or []:
@@ -904,8 +1130,39 @@ def normalize_spellbook(raw_spellbook: Any) -> dict[str, Any]:
     return {
         'knownSpells': known,
         'preparedSpells': prepared_names,
+        'preparationPolicy': policy,
         'sources': source_names,
     }
+
+
+def known_spell(raw_spellbook: Any, spell_name_or_id: Any) -> dict[str, Any] | None:
+    spellbook = normalize_spellbook(raw_spellbook)
+    lookup = _slug(spell_name_or_id)
+    for spell in spellbook['knownSpells']:
+        if lookup in {_slug(spell.get('id')), _slug(spell.get('name'))}:
+            return deepcopy(spell)
+    return None
+
+
+def spell_requires_preparation(raw_spellbook: Any, spell_name_or_id: Any) -> bool:
+    spellbook = normalize_spellbook(raw_spellbook)
+    spell = known_spell(spellbook, spell_name_or_id)
+    return bool(
+        spell
+        and spellbook['preparationPolicy']['requiresPreparation']
+        and _spell_uses_preparation(spell)
+    )
+
+
+def spell_is_prepared(raw_spellbook: Any, spell_name_or_id: Any) -> bool:
+    spellbook = normalize_spellbook(raw_spellbook)
+    spell = known_spell(spellbook, spell_name_or_id)
+    if not spell:
+        return False
+    if not spell_requires_preparation(spellbook, spell.get('id') or spell.get('name')):
+        return True
+    prepared = {_slug(name) for name in spellbook.get('preparedSpells') or []}
+    return _slug(spell.get('name')) in prepared or _slug(spell.get('id')) in prepared
 
 
 def _auto_race_source_details(spell: dict[str, Any]) -> set[str]:
@@ -925,32 +1182,150 @@ def _auto_race_source_details(spell: dict[str, Any]) -> set[str]:
     return details
 
 
+def _spell_source_labels(spell: dict[str, Any]) -> list[str]:
+    labels: list[str] = []
+    raw_sources = spell.get('sources') if isinstance(spell.get('sources'), list) else []
+    for raw_source in [*raw_sources, spell.get('source')]:
+        source = _normalize_text(raw_source)
+        if source and source not in labels:
+            labels.append(source)
+    if labels:
+        return labels
+    source = _source_label(
+        spell.get('sourceType') or spell.get('source_type'),
+        spell.get('sourceDetail') or spell.get('source_detail'),
+    )
+    return [source] if source else []
+
+
+def _source_parts(source: Any) -> tuple[str, str]:
+    source_text = _normalize_text(source)
+    source_type, separator, source_detail = source_text.partition(':')
+    return source_type.lower(), source_detail if separator else ''
+
+
+def _spell_with_sources(spell: dict[str, Any], sources: list[str]) -> dict[str, Any]:
+    updated = deepcopy(spell)
+    for key in ('source', 'sourceType', 'source_type', 'sourceDetail', 'source_detail'):
+        updated.pop(key, None)
+    updated['sources'] = list(sources)
+    primary_source = sources[0]
+    source_type, source_detail = _source_parts(primary_source)
+    updated['source'] = primary_source
+    if source_type:
+        updated['sourceType'] = source_type
+    if source_detail:
+        updated['sourceDetail'] = source_detail
+    return updated
+
+
+def _remove_spell_sources(
+    raw_spellbook: Any,
+    *,
+    remove_source,
+    reset_preparation_policy: bool = False,
+) -> dict[str, Any]:
+    """Remove selected grant provenance without deleting independently learned spells."""
+
+    spellbook = normalize_spellbook(raw_spellbook)
+    filtered_spells: list[dict[str, Any]] = []
+    for spell in spellbook['knownSpells']:
+        sources = _spell_source_labels(spell)
+        removed_sources = [source for source in sources if remove_source(source)]
+        if not removed_sources:
+            filtered_spells.append(deepcopy(spell))
+            continue
+        remaining_sources = [source for source in sources if not remove_source(source)]
+        if remaining_sources:
+            filtered_spells.append(_spell_with_sources(spell, remaining_sources))
+        # A spell with only replaced automatic provenance is intentionally
+        # removed. Source-less legacy entries never reach this branch.
+
+    remaining_names = {_slug(spell.get('name')) for spell in filtered_spells if spell.get('name')}
+    reconciled: dict[str, Any] = {
+        'knownSpells': filtered_spells,
+        'sources': list(
+            dict.fromkeys(
+                source
+                for spell in filtered_spells
+                for source in _spell_source_labels(spell)
+            )
+        ),
+    }
+    if not reset_preparation_policy:
+        reconciled['preparedSpells'] = [
+            spell_name
+            for spell_name in spellbook.get('preparedSpells', [])
+            if _slug(spell_name) in remaining_names
+        ]
+        reconciled['preparationPolicy'] = spellbook.get('preparationPolicy')
+    return reconciled
+
+
+def remove_automatic_spell_grants(
+    raw_spellbook: Any,
+    *,
+    remove_class_grants: bool = False,
+    remove_race_grants: bool = False,
+    reset_preparation_policy: bool = False,
+) -> dict[str, Any]:
+    """Remove replaceable class/race grants while retaining durable provenance.
+
+    Story-learned and source-less legacy spells survive a respec. A spell with
+    mixed provenance survives with only the sources that still justify it.
+    """
+
+    removed_types: set[str] = set()
+    if remove_class_grants:
+        removed_types.update(AUTO_CLASS_SPELL_SOURCE_TYPES)
+    if remove_race_grants:
+        removed_types.update(AUTO_RACE_SPELL_SOURCE_TYPES)
+    if not removed_types:
+        return normalize_spellbook(raw_spellbook)
+    return _remove_spell_sources(
+        raw_spellbook,
+        remove_source=lambda source: _source_parts(source)[0] in removed_types,
+        reset_preparation_policy=reset_preparation_policy,
+    )
+
+
 def _remove_stale_auto_race_spells(raw_spellbook: Any, current_race_key: str | None) -> dict[str, Any]:
     spellbook = normalize_spellbook(raw_spellbook)
     current_key = _normalize_text(current_race_key).lower()
     if current_key in STALE_AUTO_RACE_SOURCE_DETAILS:
         return spellbook
 
-    filtered_spells = [
-        spell
-        for spell in spellbook['knownSpells']
-        if not (_auto_race_source_details(spell) & STALE_AUTO_RACE_SOURCE_DETAILS)
-    ]
-    if len(filtered_spells) == len(spellbook['knownSpells']):
-        return spellbook
-
-    remaining_names = {_slug(spell.get('name')) for spell in filtered_spells if spell.get('name')}
-    prepared = [
-        spell_name
-        for spell_name in spellbook.get('preparedSpells', [])
-        if _slug(spell_name) in remaining_names
-    ]
-    return normalize_spellbook({'knownSpells': filtered_spells, 'preparedSpells': prepared})
+    return normalize_spellbook(
+        _remove_spell_sources(
+            spellbook,
+            remove_source=lambda source: (
+                _source_parts(source)[0] in AUTO_RACE_SPELL_SOURCE_TYPES
+                and _source_parts(source)[1].lower() in STALE_AUTO_RACE_SOURCE_DETAILS
+            ),
+        )
+    )
 
 
 def merge_spellbooks(existing: Any, incoming: Any) -> dict[str, Any]:
+    existing_prepared_explicit = isinstance(existing, dict) and any(
+        key in existing for key in ('preparedSpells', 'prepared_spells')
+    )
+    existing_policy_explicit = isinstance(existing, dict) and any(
+        key in existing for key in ('preparationPolicy', 'preparation_policy')
+    )
     merged = normalize_spellbook(existing)
     incoming_book = normalize_spellbook(incoming)
+    existing_policy = normalize_spell_preparation_policy(merged.get('preparationPolicy'))
+    existing_is_legacy = (
+        existing_policy.get('source') == 'legacy'
+        and existing_policy.get('mode') == 'known'
+        and not existing_policy.get('requiresPreparation')
+    )
+    if existing_is_legacy:
+        # Normalization adds empty compatibility fields. They must not make an
+        # old sheet look as though it explicitly chose a preparation policy.
+        existing_prepared_explicit = False
+        existing_policy_explicit = False
     spells = merged['knownSpells']
     by_name = {_slug(spell.get('name')): spell for spell in spells if spell.get('name')}
     by_id = {_slug(spell.get('id')): spell for spell in spells if spell.get('id')}
@@ -976,7 +1351,33 @@ def merge_spellbooks(existing: Any, incoming: Any) -> dict[str, Any]:
     for source in incoming_book.get('sources') or []:
         if source not in merged['sources']:
             merged['sources'].append(source)
-    return merged
+    incoming_policy = incoming_book.get('preparationPolicy')
+    if not existing_policy_explicit and isinstance(incoming_policy, dict):
+        merged['preparationPolicy'] = deepcopy(incoming_policy)
+
+    prepared_names = list(merged.get('preparedSpells') or [])
+    incoming_policy = normalize_spell_preparation_policy(incoming_book.get('preparationPolicy'))
+    merge_incoming_prepared = not (
+        existing_prepared_explicit and incoming_policy.get('legacyDefaultApplied') is True
+    )
+    if merge_incoming_prepared:
+        for spell_name in incoming_book.get('preparedSpells') or []:
+            if spell_name not in prepared_names:
+                prepared_names.append(spell_name)
+    final_policy = normalize_spell_preparation_policy(merged.get('preparationPolicy'))
+    if final_policy['requiresPreparation'] and not existing_prepared_explicit:
+        for spell in spells:
+            if _spell_uses_preparation(spell) and spell.get('name') not in prepared_names:
+                prepared_names.append(spell['name'])
+        final_policy['legacyDefaultApplied'] = True
+    return normalize_spellbook(
+        {
+            'knownSpells': spells,
+            'preparedSpells': prepared_names,
+            'preparationPolicy': final_policy,
+            'sources': merged.get('sources') or [],
+        }
+    )
 
 
 def spellbook_for_character(
@@ -990,7 +1391,7 @@ def spellbook_for_character(
         *class_spells_for_level(class_name, level),
         *race_spells(race_name, race_selection),
     ]
-    return normalize_spellbook(spells)
+    return normalize_spellbook(spells, class_name=class_name)
 
 
 def character_sheet_record(raw_value: Any) -> dict[str, Any]:
@@ -1025,6 +1426,9 @@ def ensure_character_sheet_spellbook(
     race_name: str | None,
     race_selection: Any = None,
     level: int = 1,
+    replace_class_grants: bool = False,
+    replace_race_grants: bool = False,
+    reset_preparation_policy: bool = False,
 ) -> tuple[dict[str, Any], bool]:
     sheet = character_sheet_record(raw_sheet)
     before = json.dumps(sheet, sort_keys=True, default=str)
@@ -1036,13 +1440,27 @@ def ensure_character_sheet_spellbook(
         race_selection=race_selection,
         level=level,
     )
-    if not baseline.get('knownSpells'):
-        return sheet, False
     existing = sheet.get('spellbook')
     if existing is None:
         existing = sheet.get('knownSpells') or sheet.get('known_spells') or sheet.get('spells')
+    had_existing_spell_data = existing is not None
+    if replace_class_grants or replace_race_grants:
+        existing = remove_automatic_spell_grants(
+            existing,
+            remove_class_grants=replace_class_grants,
+            remove_race_grants=replace_race_grants,
+            reset_preparation_policy=reset_preparation_policy,
+        )
     existing = _remove_stale_auto_race_spells(existing, current_race_key)
-    merged = merge_spellbooks(existing, baseline)
+    if not baseline.get('knownSpells') and not had_existing_spell_data and not (
+        replace_class_grants or replace_race_grants
+    ):
+        return sheet, False
+    merged = (
+        merge_spellbooks(existing, baseline)
+        if baseline.get('knownSpells')
+        else normalize_spellbook(existing, class_name=class_name)
+    )
     sheet['spellbook'] = merged
     sheet['spells'] = known_spell_names(merged)
     after = json.dumps(sheet, sort_keys=True, default=str)

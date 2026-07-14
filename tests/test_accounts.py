@@ -1674,7 +1674,19 @@ def test_account_character_visibility_and_legacy_claim(tmp_path, monkeypatch):
     create_maya = client.post(
         f'/api/players/campaigns/{campaign_id}/players',
         headers=normal_headers,
-        json={'character_name': 'Mira', 'race': 'Human'},
+        json={
+            'character_name': 'Mira',
+            'race': 'Human',
+            'char_class': 'Fighter',
+            'stats': {
+                'strength': 15,
+                'dexterity': 14,
+                'constitution': 13,
+                'intelligence': 12,
+                'wisdom': 8,
+                'charisma': 8,
+            },
+        },
     )
     assert create_maya.status_code == 201
     maya_player_id = create_maya.get_json()['player_id']
@@ -1682,7 +1694,19 @@ def test_account_character_visibility_and_legacy_claim(tmp_path, monkeypatch):
     create_other_maya = client.post(
         f'/api/players/campaigns/{other_campaign_id}/players',
         headers=normal_headers,
-        json={'character_name': 'Mira Elsewhere', 'race': 'Human'},
+        json={
+            'character_name': 'Mira Elsewhere',
+            'race': 'Human',
+            'char_class': 'Fighter',
+            'stats': {
+                'strength': 15,
+                'dexterity': 14,
+                'constitution': 13,
+                'intelligence': 12,
+                'wisdom': 8,
+                'charisma': 8,
+            },
+        },
     )
     assert create_other_maya.status_code == 201
     other_maya_player_id = create_other_maya.get_json()['player_id']

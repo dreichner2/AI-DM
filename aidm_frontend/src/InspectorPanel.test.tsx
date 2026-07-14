@@ -66,6 +66,7 @@ function baseProps(): Omit<InspectorPanelProps, 'inspectorTab' | 'setInspectorTa
       inspiration: true,
     },
     spellbook: { knownSpells: [], preparedSpellNames: [], sources: [] },
+    spellResources: { castingMode: 'none', slots: [], pactSlot: null, arcanum: [], concentration: '' },
     characterTraits: [],
     inventoryRows: [],
     inventoryWeightLabel: '0 lb',

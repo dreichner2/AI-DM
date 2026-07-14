@@ -3,6 +3,19 @@ export type RollMode = 'normal' | 'advantage' | 'disadvantage'
 export type ResultVisibility = 'hidden_until_landed' | 'visible'
 export type InteractionType = 'speak_to' | 'act_on' | 'give_to' | 'take_from'
 export type InventoryAction = 'pick_up' | 'buy' | 'use' | 'equip' | 'unequip' | 'drop' | 'give' | 'sell'
+export type SpellResourcePool = 'auto' | 'standard' | 'pact' | 'arcanum'
+export type SceneObjectAction =
+  | 'inspect'
+  | 'open'
+  | 'close'
+  | 'lock'
+  | 'unlock'
+  | 'search'
+  | 'break'
+  | 'use'
+  | 'disarm'
+  | 'trigger'
+  | 'reset'
 
 export const DICE_OPTIONS = ['d4', 'd6', 'd8', 'd10', 'd12', 'd20', 'd100'] as const
 export const PLAIN_ROLL_ABILITY_KEY = 'plain_roll'
@@ -121,8 +134,8 @@ export type RollResolvedPayload = {
 }
 
 export type ActionIntent = {
-  kind: ComposerMode | 'message' | 'combat'
-  source: 'composer' | 'dice_roller' | 'combat_hud'
+  kind: ComposerMode | 'message' | 'capability' | 'object' | 'travel' | 'rest' | 'combat'
+  source: 'composer' | 'dice_roller' | 'combat_hud' | 'scene_panel'
   text: string
   client_message_id: string
   roll?: {
@@ -145,6 +158,20 @@ export type ActionIntent = {
   spell?: {
     name: string
     effect: string
+    resource_pool?: SpellResourcePool
+    cast_level?: number
+    concentration?: boolean
+    target_ids?: string[]
+  }
+  capability?: {
+    id: string
+    target_id?: string
+    amount?: number
+  }
+  object?: {
+    id: string
+    action: SceneObjectAction
+    revision?: number
   }
   inventory_action?: InventoryAction
   cost_gold?: number
@@ -159,6 +186,11 @@ export type ActionIntent = {
     character_name: string
     player_name: string
   }
+  location?: {
+    id: string
+    name: string
+  }
+  rest_type?: 'short_rest' | 'long_rest'
   combat?: {
     action_id: string
     target_id?: string

@@ -100,6 +100,12 @@ def stable_change_id(*parts: Any) -> str:
     return f'chg_{digest}'
 
 
+def stable_item_instance_id(*parts: Any, prefix: str = 'itm_instance') -> str:
+    """Return a deterministic identity for an item instance created by a state change."""
+
+    return f"{prefix}_{stable_change_id(*parts).removeprefix('chg_')}"
+
+
 def actor_name(actor: dict[str, Any] | None) -> str:
     if not actor:
         return 'Character'
@@ -319,6 +325,7 @@ def player_character_from_model(player: Player) -> dict[str, Any]:
     stats = _as_record(player.stats)
     state = character_state_for_player(player)
     spellbook = state.get('spellbook') if isinstance(state.get('spellbook'), dict) else {}
+    spell_resources = state.get('spell_resources') if isinstance(state.get('spell_resources'), dict) else {}
     ability_scores = dict(state.get('ability_scores') if isinstance(state.get('ability_scores'), dict) else {})
     inventory_items = load_inventory_items(player.inventory)
     actor = {
@@ -330,6 +337,7 @@ def player_character_from_model(player: Player) -> dict[str, Any]:
         'level': int(player.level or 1),
         'health': _health_from_player(player, stats),
         'stats': ability_scores,
+        'savingThrowProficiencies': list(state.get('saving_throw_proficiencies') or []),
         'inventory': {
             'items': inventory_items,
             'currency': currency_from_stats(stats),
@@ -348,6 +356,16 @@ def player_character_from_model(player: Player) -> dict[str, Any]:
     if spellbook.get('knownSpells'):
         actor['spellbook'] = spellbook
         actor['spells'] = known_spell_names(spellbook)
+    if spell_resources:
+        actor['spellResources'] = spell_resources
+    class_capabilities = state.get('class_capabilities') if isinstance(state.get('class_capabilities'), list) else []
+    class_feature_state = state.get('class_feature_state') if isinstance(state.get('class_feature_state'), dict) else {}
+    if class_capabilities:
+        actor['classFeatures'] = deepcopy(class_capabilities)
+        actor['classFeatureState'] = deepcopy(class_feature_state)
+    race_ability_state = stats.get('race_ability_state', stats.get('raceAbilityState'))
+    if isinstance(race_ability_state, dict):
+        actor['raceAbilityState'] = deepcopy(race_ability_state)
     return actor
 
 
@@ -389,6 +407,16 @@ def state_snapshot_for_session(
                 'characterPositions': scene.get('characterPositions') if isinstance(scene.get('characterPositions'), dict) else {},
                 'characterZones': scene.get('characterZones') if isinstance(scene.get('characterZones'), dict) else {},
                 'items': [dict(item) for item in (scene.get('items') or []) if isinstance(item, dict)],
+                'interactables': [
+                    deepcopy(item)
+                    for item in (scene.get('interactables') or [])
+                    if isinstance(item, dict)
+                ],
+                'hazards': [
+                    deepcopy(item)
+                    for item in (scene.get('hazards') or [])
+                    if isinstance(item, dict)
+                ],
                 'musicTag': scene.get('musicTag') or None,
                 'updatedAtTurn': scene.get('updatedAtTurn'),
             },
@@ -416,6 +444,7 @@ def compact_state_for_extraction(state: dict[str, Any]) -> dict[str, Any]:
         health = actor.get('health') if isinstance(actor.get('health'), dict) else {}
         stats = actor.get('stats') if isinstance(actor.get('stats'), dict) else {}
         spellbook = actor.get('spellbook') if isinstance(actor.get('spellbook'), dict) else {}
+        spell_resources = actor.get('spellResources') if isinstance(actor.get('spellResources'), dict) else {}
         players.append(
             {
                 'id': actor.get('id'),
@@ -442,8 +471,39 @@ def compact_state_for_extraction(state: dict[str, Any]) -> dict[str, Any]:
                         for spell in (spellbook.get('knownSpells') or [])
                         if isinstance(spell, dict)
                     ][:30],
+                    'preparedSpells': list(spellbook.get('preparedSpells') or [])[:30],
+                    'preparationPolicy': spellbook.get('preparationPolicy')
+                    if isinstance(spellbook.get('preparationPolicy'), dict)
+                    else {},
                 }
                 if spellbook.get('knownSpells')
+                else {},
+                'spellResources': {
+                    'slots': spell_resources.get('slots') if isinstance(spell_resources.get('slots'), dict) else {},
+                    'pactSlots': spell_resources.get('pactSlots') if isinstance(spell_resources.get('pactSlots'), dict) else {},
+                    'mysticArcanum': spell_resources.get('mysticArcanum')
+                    if isinstance(spell_resources.get('mysticArcanum'), dict)
+                    else {},
+                    'concentration': spell_resources.get('concentration')
+                    if isinstance(spell_resources.get('concentration'), dict)
+                    else None,
+                }
+                if spell_resources
+                else {},
+                'classFeatures': [
+                    {
+                        'id': feature.get('id'),
+                        'name': feature.get('name'),
+                        'actionEconomy': feature.get('actionEconomy'),
+                        'targetPolicy': feature.get('targetPolicy'),
+                        'refreshesOn': feature.get('refreshesOn'),
+                        'description': feature.get('description'),
+                    }
+                    for feature in (actor.get('classFeatures') or [])
+                    if isinstance(feature, dict)
+                ],
+                'classFeatureState': deepcopy(actor.get('classFeatureState'))
+                if isinstance(actor.get('classFeatureState'), dict)
                 else {},
                 'inventory': [
                     {
@@ -477,13 +537,27 @@ def compact_state_for_extraction(state: dict[str, Any]) -> dict[str, Any]:
             'difficulty': quest.get('difficulty'),
             'priority': quest.get('priority'),
             'type': quest.get('type'),
+            'completionPolicy': quest.get('completionPolicy') or 'all',
+            'failOnObjectiveFailure': quest.get('failOnObjectiveFailure') is True,
             'reward': quest.get('reward') if isinstance(quest.get('reward'), dict) else {},
-            'rewards': quest.get('rewards') if isinstance(quest.get('rewards'), dict) else {},
+            'rewards': quest.get('rewards') if isinstance(quest.get('rewards'), (dict, list)) else {},
             'objectives': [
                 {
                     'id': objective.get('id'),
                     'description': objective.get('description'),
                     'status': objective.get('status'),
+                    'optional': objective.get('optional') is True,
+                    'prerequisiteObjectiveIds': objective.get('prerequisiteObjectiveIds')
+                    if isinstance(objective.get('prerequisiteObjectiveIds'), list)
+                    else objective.get('prerequisites')
+                    if isinstance(objective.get('prerequisites'), list)
+                    else [],
+                    'completeWhen': objective.get('completeWhen')
+                    if isinstance(objective.get('completeWhen'), dict)
+                    else {},
+                    'failWhen': objective.get('failWhen')
+                    if isinstance(objective.get('failWhen'), dict)
+                    else {},
                 }
                 for objective in (quest.get('objectives') or [])
                 if isinstance(objective, dict)
@@ -581,6 +655,50 @@ def compact_state_for_extraction(state: dict[str, Any]) -> dict[str, Any]:
                     'sourceActorId': item.get('sourceActorId'),
                 }
                 for item in (scene.get('items') or [])
+                if isinstance(item, dict)
+            ][:20],
+            'interactables': [
+                {
+                    key: deepcopy(item.get(key))
+                    for key in (
+                        'id',
+                        'name',
+                        'kind',
+                        'description',
+                        'open',
+                        'locked',
+                        'broken',
+                        'searched',
+                        'used',
+                        'depleted',
+                        'usesRemaining',
+                        'playerKnown',
+                        'hidden',
+                        'revision',
+                    )
+                    if key in item
+                }
+                for item in (scene.get('interactables') or [])
+                if isinstance(item, dict)
+            ][:20],
+            'hazards': [
+                {
+                    key: deepcopy(item.get(key))
+                    for key in (
+                        'id',
+                        'name',
+                        'kind',
+                        'description',
+                        'active',
+                        'triggered',
+                        'disarmed',
+                        'playerKnown',
+                        'hidden',
+                        'revision',
+                    )
+                    if key in item
+                }
+                for item in (scene.get('hazards') or [])
                 if isinstance(item, dict)
             ][:20],
         },

@@ -212,7 +212,13 @@ def _update_campaign_pack_progress_locked(
 
     active_checkpoint = _checkpoint_by_id(checkpoints, previous_active_id)
     if not active_checkpoint or _checkpoint_id(active_checkpoint) in _terminal_checkpoint_ids(completed_ids, skipped_ids, failed_ids):
-        active_checkpoint = _first_incomplete_checkpoint(checkpoints, completed_ids, skipped_ids, failed_ids)
+        active_checkpoint = _first_incomplete_checkpoint(
+            checkpoints,
+            completed_ids,
+            skipped_ids,
+            failed_ids,
+            snapshot=snapshot,
+        )
 
     triggered_segment_refs = _triggered_segment_refs(
         campaign_id=campaign_id,
@@ -238,7 +244,14 @@ def _update_campaign_pack_progress_locked(
             failure_reason = _checkpoint_failure_reason(active_checkpoint, pack=pack, snapshot=snapshot)
             if failure_reason:
                 _add_unique_id(failed_ids, _checkpoint_id(active_checkpoint))
-                next_checkpoint = _failure_next_checkpoint(active_checkpoint, checkpoints, completed_ids, skipped_ids, failed_ids)
+                next_checkpoint = _failure_next_checkpoint(
+                    active_checkpoint,
+                    checkpoints,
+                    completed_ids,
+                    skipped_ids,
+                    failed_ids,
+                    snapshot=snapshot,
+                )
                 reason = failure_reason
             else:
                 completion_reason = _checkpoint_completion_reason(
@@ -249,7 +262,14 @@ def _update_campaign_pack_progress_locked(
                 )
                 if completion_reason:
                     _add_unique_id(completed_ids, _checkpoint_id(active_checkpoint))
-                    next_checkpoint = _next_checkpoint(active_checkpoint, checkpoints, completed_ids, skipped_ids, failed_ids)
+                    next_checkpoint = _next_checkpoint(
+                        active_checkpoint,
+                        checkpoints,
+                        completed_ids,
+                        skipped_ids,
+                        failed_ids,
+                        snapshot=snapshot,
+                    )
                     reason = completion_reason
     if not reason:
         out_of_order = _completed_out_of_order_checkpoint(
@@ -269,7 +289,15 @@ def _update_campaign_pack_progress_locked(
 
     active_checkpoint_id = _checkpoint_id(next_checkpoint) if next_checkpoint else None
     if active_checkpoint_id in _terminal_checkpoint_ids(completed_ids, skipped_ids, failed_ids):
-        active_checkpoint_id = _checkpoint_id(_first_incomplete_checkpoint(checkpoints, completed_ids, skipped_ids, failed_ids))
+        active_checkpoint_id = _checkpoint_id(
+            _first_incomplete_checkpoint(
+                checkpoints,
+                completed_ids,
+                skipped_ids,
+                failed_ids,
+                snapshot=snapshot,
+            )
+        )
 
     changed = (
         active_checkpoint_id != (previous_active_id or None)
@@ -362,7 +390,12 @@ def _update_campaign_pack_progress_locked(
 
 def campaign_pack_progress_payload(*, session_id: int, include_hidden: bool = True) -> dict:
     snapshot, pack, checkpoints, flags = _session_pack_state(session_id)
-    active_checkpoint, completed_ids, skipped_ids, failed_ids = _current_pack_progress(pack, flags, checkpoints)
+    active_checkpoint, completed_ids, skipped_ids, failed_ids = _current_pack_progress(
+        pack,
+        flags,
+        checkpoints,
+        snapshot=snapshot,
+    )
     skipped_ids = _unique_ids(
         _ids_from(pack, 'skippedCheckpointIds', 'skipped_checkpoint_ids')
         or _ids_from(flags, 'campaignPackSkippedCheckpointIds', 'skippedCheckpointIds')
@@ -483,7 +516,12 @@ def _control_campaign_pack_progress_locked(
     if normalized_action not in {'advance', 'skip', 'fail', 'rewind', 'override', 'set'}:
         raise CampaignPackProgressError('Campaign pack checkpoint action must be advance, skip, fail, rewind, or override.')
 
-    active_checkpoint, completed_ids, skipped_ids, failed_ids = _current_pack_progress(pack, flags, checkpoints)
+    active_checkpoint, completed_ids, skipped_ids, failed_ids = _current_pack_progress(
+        pack,
+        flags,
+        checkpoints,
+        snapshot=snapshot,
+    )
     previous_active_id = _checkpoint_id(active_checkpoint)
     previous_revision = _progress_revision(pack, flags)
     before_snapshot = deepcopy(snapshot)
@@ -501,17 +539,38 @@ def _control_campaign_pack_progress_locked(
     if normalized_action == 'advance':
         if active_checkpoint:
             _add_unique_id(completed_ids, _checkpoint_id(active_checkpoint))
-        next_checkpoint = target_checkpoint or _next_checkpoint(active_checkpoint, checkpoints, completed_ids, skipped_ids, failed_ids)
+        next_checkpoint = target_checkpoint or _next_checkpoint(
+            active_checkpoint,
+            checkpoints,
+            completed_ids,
+            skipped_ids,
+            failed_ids,
+            snapshot=snapshot,
+        )
     elif normalized_action == 'skip':
         if active_checkpoint:
             active_id = _checkpoint_id(active_checkpoint)
             _add_unique_id(completed_ids, active_id)
             _add_unique_id(skipped_ids, active_id)
-        next_checkpoint = target_checkpoint or _next_checkpoint(active_checkpoint, checkpoints, completed_ids, skipped_ids, failed_ids)
+        next_checkpoint = target_checkpoint or _next_checkpoint(
+            active_checkpoint,
+            checkpoints,
+            completed_ids,
+            skipped_ids,
+            failed_ids,
+            snapshot=snapshot,
+        )
     elif normalized_action == 'fail':
         if active_checkpoint:
             _add_unique_id(failed_ids, _checkpoint_id(active_checkpoint))
-        next_checkpoint = target_checkpoint or _failure_next_checkpoint(active_checkpoint, checkpoints, completed_ids, skipped_ids, failed_ids)
+        next_checkpoint = target_checkpoint or _failure_next_checkpoint(
+            active_checkpoint,
+            checkpoints,
+            completed_ids,
+            skipped_ids,
+            failed_ids,
+            snapshot=snapshot,
+        )
     elif normalized_action == 'rewind':
         if target_checkpoint:
             target_id = _checkpoint_id(target_checkpoint)
@@ -531,7 +590,13 @@ def _control_campaign_pack_progress_locked(
             skipped_ids = [value for value in skipped_ids if _id_key(value) != _id_key(target_id)]
             next_checkpoint = _checkpoint_by_id(checkpoints, target_id)
         else:
-            next_checkpoint = active_checkpoint or _first_incomplete_checkpoint(checkpoints, completed_ids, skipped_ids, failed_ids)
+            next_checkpoint = active_checkpoint or _first_incomplete_checkpoint(
+                checkpoints,
+                completed_ids,
+                skipped_ids,
+                failed_ids,
+                snapshot=snapshot,
+            )
     else:
         if not target_checkpoint:
             raise CampaignPackProgressError('checkpointId is required when overriding the active checkpoint.')
@@ -764,7 +829,13 @@ def _record_progress_event(
     return event.event_id
 
 
-def _current_pack_progress(pack: dict, flags: dict, checkpoints: list[dict]) -> tuple[dict | None, list[str], list[str], list[str]]:
+def _current_pack_progress(
+    pack: dict,
+    flags: dict,
+    checkpoints: list[dict],
+    *,
+    snapshot: dict | None = None,
+) -> tuple[dict | None, list[str], list[str], list[str]]:
     completed_ids = _unique_ids(
         _ids_from(pack, 'completedCheckpointIds', 'completed_checkpoint_ids')
         or _ids_from(flags, 'campaignPackCompletedCheckpointIds', 'completedCheckpointIds')
@@ -783,7 +854,13 @@ def _current_pack_progress(pack: dict, flags: dict, checkpoints: list[dict]) -> 
     )
     active_checkpoint = _checkpoint_by_id(checkpoints, active_id)
     if not active_checkpoint or _checkpoint_id(active_checkpoint) in _terminal_checkpoint_ids(completed_ids, skipped_ids, failed_ids):
-        active_checkpoint = _first_incomplete_checkpoint(checkpoints, completed_ids, skipped_ids, failed_ids)
+        active_checkpoint = _first_incomplete_checkpoint(
+            checkpoints,
+            completed_ids,
+            skipped_ids,
+            failed_ids,
+            snapshot=snapshot,
+        )
     return active_checkpoint, completed_ids, skipped_ids, failed_ids
 
 
@@ -995,7 +1072,7 @@ def _matching_downstream_checkpoint(
         candidate = _checkpoint_by_id(checkpoints, checkpoint_id)
         if not candidate or _id_key(_checkpoint_id(candidate)) in terminal_keys:
             continue
-        if not _checkpoint_available(candidate, completed_ids, skipped_ids, failed_ids):
+        if not _checkpoint_available(candidate, completed_ids, skipped_ids, failed_ids, snapshot=snapshot):
             continue
         location_ids = _ids_from(candidate, 'locationId', 'locationIds', 'location_id', 'location_ids', 'locations')
         if _location_ids_match_current(snapshot, location_ids):
@@ -1009,16 +1086,24 @@ def _next_checkpoint(
     completed_ids: list[str],
     skipped_ids: list[str],
     failed_ids: list[str],
+    *,
+    snapshot: dict | None = None,
 ) -> dict | None:
     terminal_keys = {_id_key(checkpoint_id) for checkpoint_id in _terminal_checkpoint_ids(completed_ids, skipped_ids, failed_ids)}
     if not active_checkpoint:
-        return _first_incomplete_checkpoint(checkpoints, completed_ids, skipped_ids, failed_ids)
+        return _first_incomplete_checkpoint(
+            checkpoints,
+            completed_ids,
+            skipped_ids,
+            failed_ids,
+            snapshot=snapshot,
+        )
     for checkpoint_id in _next_checkpoint_ids(active_checkpoint):
         candidate = _checkpoint_by_id(checkpoints, checkpoint_id)
         if (
             candidate
             and _id_key(_checkpoint_id(candidate)) not in terminal_keys
-            and _checkpoint_available(candidate, completed_ids, skipped_ids, failed_ids)
+            and _checkpoint_available(candidate, completed_ids, skipped_ids, failed_ids, snapshot=snapshot)
         ):
             return candidate
     try:
@@ -1028,7 +1113,7 @@ def _next_checkpoint(
     for checkpoint in checkpoints[active_index + 1 :]:
         if (
             _id_key(_checkpoint_id(checkpoint)) not in terminal_keys
-            and _checkpoint_available(checkpoint, completed_ids, skipped_ids, failed_ids)
+            and _checkpoint_available(checkpoint, completed_ids, skipped_ids, failed_ids, snapshot=snapshot)
             and not _checkpoint_optional(checkpoint)
         ):
             return checkpoint
@@ -1037,7 +1122,7 @@ def _next_checkpoint(
             checkpoint
             for checkpoint in checkpoints[active_index + 1 :]
             if _id_key(_checkpoint_id(checkpoint)) not in terminal_keys
-            and _checkpoint_available(checkpoint, completed_ids, skipped_ids, failed_ids)
+            and _checkpoint_available(checkpoint, completed_ids, skipped_ids, failed_ids, snapshot=snapshot)
             and _checkpoint_optional(checkpoint)
         ),
         None,
@@ -1051,6 +1136,8 @@ def _failure_next_checkpoint(
     completed_ids: list[str],
     skipped_ids: list[str],
     failed_ids: list[str],
+    *,
+    snapshot: dict | None = None,
 ) -> dict | None:
     if active_checkpoint:
         terminal_keys = {_id_key(checkpoint_id) for checkpoint_id in _terminal_checkpoint_ids(completed_ids, skipped_ids, failed_ids)}
@@ -1059,10 +1146,17 @@ def _failure_next_checkpoint(
             if (
                 candidate
                 and _id_key(_checkpoint_id(candidate)) not in terminal_keys
-                and _checkpoint_available(candidate, completed_ids, skipped_ids, failed_ids)
+                and _checkpoint_available(candidate, completed_ids, skipped_ids, failed_ids, snapshot=snapshot)
             ):
                 return candidate
-    return _next_checkpoint(active_checkpoint, checkpoints, completed_ids, skipped_ids, failed_ids)
+    return _next_checkpoint(
+        active_checkpoint,
+        checkpoints,
+        completed_ids,
+        skipped_ids,
+        failed_ids,
+        snapshot=snapshot,
+    )
 
 
 def _completed_out_of_order_checkpoint(
@@ -1083,6 +1177,8 @@ def _completed_out_of_order_checkpoint(
         if not checkpoint_id or checkpoint_id == active_id or _id_key(checkpoint_id) in terminal_keys:
             continue
         if not _checkpoint_can_complete_out_of_order(checkpoint):
+            continue
+        if not _checkpoint_available(checkpoint, completed_ids, skipped_ids, failed_ids, snapshot=snapshot):
             continue
         if _checkpoint_completion_reason(checkpoint, pack=pack, snapshot=snapshot, triggered_segment_refs=triggered_segment_refs):
             return checkpoint
@@ -1129,13 +1225,15 @@ def _first_incomplete_checkpoint(
     completed_ids: list[str],
     skipped_ids: list[str],
     failed_ids: list[str],
+    *,
+    snapshot: dict | None = None,
 ) -> dict | None:
     terminal_keys = {_id_key(checkpoint_id) for checkpoint_id in _terminal_checkpoint_ids(completed_ids, skipped_ids, failed_ids)}
     first_optional: dict | None = None
     for checkpoint in checkpoints:
         if _id_key(_checkpoint_id(checkpoint)) in terminal_keys:
             continue
-        if not _checkpoint_available(checkpoint, completed_ids, skipped_ids, failed_ids):
+        if not _checkpoint_available(checkpoint, completed_ids, skipped_ids, failed_ids, snapshot=snapshot):
             continue
         if _checkpoint_optional(checkpoint):
             first_optional = first_optional or checkpoint
@@ -1443,12 +1541,44 @@ def _checkpoint_prerequisite_ids(checkpoint: dict) -> list[str]:
     )
 
 
+def _checkpoint_branch_matches(checkpoint: dict, snapshot: dict | None) -> bool:
+    predicate_keys = ('branchWhen', 'branch_when')
+    if not any(key in checkpoint for key in predicate_keys):
+        return True
+
+    predicate = _first(checkpoint, *predicate_keys)
+    if not isinstance(predicate, dict):
+        return False
+
+    flag_key = _text(_first(predicate, 'flagKey', 'flag_key'))
+    if not flag_key or 'equals' not in predicate:
+        return False
+
+    flags = snapshot.get('flags') if isinstance(snapshot, dict) and isinstance(snapshot.get('flags'), dict) else {}
+    if flag_key not in flags:
+        return False
+
+    actual = flags.get(flag_key)
+    expected = predicate.get('equals')
+    if isinstance(actual, (dict, list)) or isinstance(expected, (dict, list)):
+        return False
+    if isinstance(actual, bool) or isinstance(expected, bool):
+        return isinstance(actual, bool) and isinstance(expected, bool) and actual == expected
+    if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
+        return actual == expected
+    return type(actual) is type(expected) and actual == expected
+
+
 def _checkpoint_available(
     checkpoint: dict,
     completed_ids: list[str],
     skipped_ids: list[str],
     failed_ids: list[str],
+    *,
+    snapshot: dict | None = None,
 ) -> bool:
+    if not _checkpoint_branch_matches(checkpoint, snapshot):
+        return False
     prerequisites = _checkpoint_prerequisite_ids(checkpoint)
     if not prerequisites:
         return True

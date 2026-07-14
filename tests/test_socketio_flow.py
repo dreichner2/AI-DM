@@ -21,6 +21,8 @@ from aidm_server.turn_engine import (
     TurnEngine,
     _state_application_event_details,
 )
+from aidm_server.character_resources import ensure_character_sheet_spell_resources
+from aidm_server.spellbook import normalize_spellbook
 from aidm_server.models import (
     Campaign,
     CampaignSegment,
@@ -546,17 +548,22 @@ def test_combat_hud_action_is_revalidated_canonicalized_and_server_rolled(
             'action_type': 'attack',
             'economy': {
                 'action': 1,
+                'bonusAction': 0,
+                'reaction': 0,
                 'movement': 'optional',
-                'endsTurn': True,
-                'tracking': 'turn_order_derived',
-                'reactionTracked': False,
-                'subTurnCountersTracked': False,
+                'movementCost': 0,
+                'endsTurn': False,
+                'tracking': 'persisted_turn_economy',
+                'reactionTracked': True,
+                'subTurnCountersTracked': True,
             },
             'authoritative': True,
             'target_id': 'enemy_goblin_1',
             'target_name': 'Goblin Sentry',
             'weapon_id': 'blade',
             'weapon_name': 'Longsword',
+            'damage_dice': '1d8',
+            'damage_type': 'slashing',
             'range_band': 'near',
             'message': 'Seraphina attacks Goblin Sentry with Longsword.',
         }
@@ -1569,6 +1576,31 @@ def test_structured_turn_control_waits_when_turn_creates_pending_roll_gate(app, 
     monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
 
     ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        assert player is not None
+        player.class_ = 'Wizard'
+        player.level = 1
+        spellbook = normalize_spellbook(
+            {
+                'knownSpells': [
+                    {
+                        'id': 'spell_starflare',
+                        'name': 'Starflare',
+                        'level': 0,
+                        'requiresAttackRoll': True,
+                    }
+                ]
+            },
+            class_name='Wizard',
+        )
+        sheet, _ = ensure_character_sheet_spell_resources(
+            {'spellbook': spellbook},
+            class_name='Wizard',
+            level=1,
+        )
+        player.character_sheet = safe_json_dumps(sheet, {})
+        db.session.commit()
     second_player_id = _seed_second_player(app, ids['campaign_id'])
 
     first_client = socketio.test_client(app, flask_test_client=app.test_client())
@@ -1612,13 +1644,15 @@ def test_structured_turn_control_waits_when_turn_creates_pending_roll_gate(app, 
     start_payload = _event_payload(received, 'dm_response_start')
 
     assert start_payload is not None
-    assert start_payload['rules_hint']['roll_type'] == 'spell'
+    assert start_payload['rules_hint']['roll_type'] == 'spell_attack'
     assert _event_payload(received, 'turn_control_updated') is None
 
     with app.app_context():
         turn = DmTurn.query.filter_by(session_id=ids['session_id']).order_by(DmTurn.turn_id.desc()).first()
         assert turn is not None
         assert turn.outcome_status == 'deferred'
+        # The durable turn category remains the broad spell type while the
+        # rules hint carries the precise spell-attack resolution.
         assert turn.rule_type == 'spell'
         metadata = safe_json_loads(turn.metadata_json, {})
         assert metadata['roll_gate']['remaining_player_ids'] == [ids['player_id']]
@@ -3687,7 +3721,7 @@ def test_turn_creates_emergent_memory_records(app, socketio, app_runtime, monkey
         assert updates[0].status == 'applied'
 
 
-def test_explicit_inventory_gain_updates_player_inventory(app, socketio, app_runtime, monkeypatch):
+def test_free_form_narration_cannot_mint_an_inventory_item(app, socketio, app_runtime, monkeypatch):
     socketio_module = app_runtime['modules']['socketio_events']
 
     def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
@@ -3719,28 +3753,14 @@ def test_explicit_inventory_gain_updates_player_inventory(app, socketio, app_run
         player = db.session.get(Player, ids['player_id'])
         assert player is not None
         inventory = safe_json_loads(player.inventory, [])
-        assert any(item.get('name') == 'silver key' and item.get('quantity') == 1 for item in inventory)
-
-        item_entities = StoryEntity.query.filter_by(campaign_id=ids['campaign_id'], entity_type='item').all()
-        assert any(entity.name == 'silver key' for entity in item_entities)
-
-        update = TurnCanonUpdate.query.order_by(TurnCanonUpdate.update_id.desc()).first()
-        assert update is not None
-        applied = safe_json_loads(update.applied_patch_json, {})
-        assert applied['inventory_changes_applied'][0]['item_name'] == 'silver key'
+        assert inventory == []
 
     statuses = [event['args'][0]['status'] for event in received if event['name'] == 'turn_status']
-    assert statuses.index('state_applied') < statuses.index('canon_pending')
-    state_status = next(
-        event['args'][0]
-        for event in received
-        if event['name'] == 'turn_status' and event['args'][0]['status'] == 'state_applied'
-    )
-    assert state_status['details']['player_id'] == ids['player_id']
-    assert state_status['details']['inventory_changes_applied'][0]['item_name'] == 'silver key'
+    assert 'state_applied' not in statuses
+    assert 'canon_pending' in statuses
 
 
-def test_item_pickup_intent_adds_item_only_when_dm_confirms(app, socketio, app_runtime, monkeypatch):
+def test_validated_item_pickup_is_applied_before_narration(app, socketio, app_runtime, monkeypatch):
     socketio_module = app_runtime['modules']['socketio_events']
 
     def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
@@ -3749,6 +3769,23 @@ def test_item_pickup_intent_adds_item_only_when_dm_confirms(app, socketio, app_r
     monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
 
     ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        session = db.session.get(Session, ids['session_id'])
+        assert session is not None
+        session.state_snapshot = safe_json_dumps(
+            {
+                'currentScene': {
+                    'locationId': 'old_ruins',
+                    'name': 'Old Ruins',
+                    'sceneType': 'exploration',
+                    'combatState': 'none',
+                    'activeNpcIds': [],
+                    'items': [{'id': 'stick_1', 'name': 'stick', 'type': 'misc', 'quantity': 1, 'weight': 0.5}],
+                }
+            },
+            {},
+        )
+        db.session.commit()
     client = socketio.test_client(app, flask_test_client=app.test_client())
     assert client.is_connected()
 
@@ -3778,7 +3815,7 @@ def test_item_pickup_intent_adds_item_only_when_dm_confirms(app, socketio, app_r
     with app.app_context():
         player = db.session.get(Player, ids['player_id'])
         inventory = safe_json_loads(player.inventory, [])
-        assert inventory == [{'name': 'stick', 'quantity': 1, 'weight': 0.5}]
+        assert inventory == [{'name': 'stick', 'quantity': 1, 'weight': 0.5, 'id': 'stick_1'}]
 
     state_status = next(
         event['args'][0]
@@ -3798,10 +3835,12 @@ def test_item_pickup_intent_adds_item_only_when_dm_confirms(app, socketio, app_r
     assert canon_status['details']['inventory_changes_applied'][0]['already_applied'] is True
 
 
-def test_item_pickup_intent_does_not_add_item_when_dm_denies(app, socketio, app_runtime, monkeypatch):
+def test_item_pickup_intent_rejects_an_item_absent_from_the_scene(app, socketio, app_runtime, monkeypatch):
     socketio_module = app_runtime['modules']['socketio_events']
+    streamed_inputs: list[str] = []
 
     def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        streamed_inputs.append(str(user_input or ''))
         yield 'The stick crumbles before you grab it.'
 
     monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
@@ -3831,14 +3870,24 @@ def test_item_pickup_intent_does_not_add_item_when_dm_denies(app, socketio, app_
             },
         },
     )
-    client.get_received()
+    received = client.get_received()
+
+    error_payload = _event_payload(received, 'error')
+    assert error_payload['error_code'] == 'gameplay_action_invalid'
+    assert 'No scene item matches' in error_payload['error']
+    assert _turn_status_payloads(received, 'state_applied') == []
+    assert streamed_inputs == []
 
     with app.app_context():
         player = db.session.get(Player, ids['player_id'])
         assert safe_json_loads(player.inventory, []) == []
+        turn = DmTurn.query.filter_by(client_message_id='pickup-stick-denied').one()
+        assert turn.status == 'completed'
+        assert turn.llm_provider == 'rules_engine'
+        assert 'No scene item matches' in turn.dm_output
 
 
-def test_item_drop_intent_does_not_remove_item_when_dm_denies(app, socketio, app_runtime, monkeypatch):
+def test_validated_item_drop_remains_authoritative_when_narration_denies_it(app, socketio, app_runtime, monkeypatch):
     socketio_module = app_runtime['modules']['socketio_events']
 
     def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
@@ -3883,10 +3932,12 @@ def test_item_drop_intent_does_not_remove_item_when_dm_denies(app, socketio, app
     received = client.get_received()
 
     statuses = [event['args'][0]['status'] for event in received if event['name'] == 'turn_status']
-    assert 'state_applied' not in statuses
+    assert 'state_applied' in statuses
     with app.app_context():
         player = db.session.get(Player, ids['player_id'])
-        assert safe_json_loads(player.inventory, []) == [{'name': 'Book', 'quantity': 1}]
+        assert safe_json_loads(player.inventory, []) == []
+        snapshot = safe_json_loads(db.session.get(Session, ids['session_id']).state_snapshot, {})
+        assert any(item.get('name') == 'Book' for item in snapshot['currentScene']['items'])
 
 
 def test_buy_item_intent_subtracts_gold_after_dm_confirms(app, socketio, app_runtime, monkeypatch):
@@ -3936,22 +3987,68 @@ def test_buy_item_intent_subtracts_gold_after_dm_confirms(app, socketio, app_run
         assert stats['gold'] == 5
 
 
-def test_explicit_currency_state_updates_inventory_and_currency_realtime(app, socketio, app_runtime, monkeypatch):
+def test_validated_coin_pickup_completes_quest_and_applies_currency_reward_realtime(
+    app,
+    socketio,
+    app_runtime,
+    monkeypatch,
+):
     socketio_module = app_runtime['modules']['socketio_events']
 
     def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
         del user_input, context, speaking_player, rules_hint
-        yield (
-            'Ten cold, weighty disks clink gently as they settle in your grip.\n\n'
-            f'*(State change: Player {ids["player_id"]} **gains** 10 copper pieces (Ancient Copper Coins).)*'
-        )
+        yield 'The validated coins settle in your grip, completing the recovery objective.'
 
     monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
 
     ids = seed_world_campaign_player_session(app)
     with app.app_context():
         player = db.session.get(Player, ids['player_id'])
+        session = db.session.get(Session, ids['session_id'])
+        assert player is not None and session is not None
         player.stats = safe_json_dumps({'gold': 0, 'current_hp': 10, 'max_hp': 10}, {})
+        session.state_snapshot = safe_json_dumps(
+            {
+                'currentScene': {
+                    'locationId': 'old_ruins',
+                    'name': 'Old Ruins',
+                    'sceneType': 'exploration',
+                    'combatState': 'none',
+                    'activeNpcIds': [],
+                    'activeQuestIds': ['recover_coins'],
+                    'items': [
+                        {
+                            'id': 'ancient_copper_coins',
+                            'name': 'Ancient Copper Coins',
+                            'quantity': 10,
+                            'type': 'currency',
+                            'weight': 0.02,
+                        }
+                    ],
+                },
+                'quests': [
+                    {
+                        'id': 'recover_coins',
+                        'title': 'Recover the Ancient Coins',
+                        'status': 'active',
+                        'rewards': {'cp': 10},
+                        'objectives': [
+                            {
+                                'id': 'take_coins',
+                                'description': 'Take the exact ancient coins.',
+                                'status': 'open',
+                                'completeWhen': {
+                                    'eventType': 'inventory.add',
+                                    'itemId': 'ancient_copper_coins',
+                                },
+                            }
+                        ],
+                    }
+                ],
+                'stateChangeLedger': [],
+            },
+            {},
+        )
         db.session.commit()
 
     client = socketio.test_client(app, flask_test_client=app.test_client())
@@ -3966,6 +4063,19 @@ def test_explicit_currency_state_updates_inventory_and_currency_realtime(app, so
             'world_id': ids['world_id'],
             'player_id': ids['player_id'],
             'message': 'I collect the coins.',
+            'action_intent': {
+                'kind': 'item',
+                'source': 'scene_panel',
+                'client_message_id': 'pickup-ancient-coins',
+                'text': 'I collect the coins.',
+                'inventory_action': 'pick_up',
+                'item': {
+                    'id': 'ancient_copper_coins',
+                    'name': 'Ancient Copper Coins',
+                    'quantity': 10,
+                },
+                'cost_gold': 0,
+            },
         },
     )
     received = client.get_received()
@@ -3976,7 +4086,13 @@ def test_explicit_currency_state_updates_inventory_and_currency_realtime(app, so
     with app.app_context():
         player = db.session.get(Player, ids['player_id'])
         assert safe_json_loads(player.inventory, []) == [
-            {'name': 'Ancient Copper Coins', 'quantity': 10, 'weight': 0.02}
+            {
+                'name': 'Ancient Copper Coins',
+                'quantity': 10,
+                'weight': 0.02,
+                'id': 'ancient_copper_coins',
+                'type': 'currency',
+            }
         ]
         assert safe_json_loads(player.stats, {})['copper'] == 10
 
@@ -3990,9 +4106,11 @@ def test_inventory_realtime_stress_add_remove_buy_sell_use_and_explicit_state(
     socketio_module = app_runtime['modules']['socketio_events']
 
     ids = seed_world_campaign_player_session(app)
+    streamed_inputs: list[str] = []
 
     def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
         del context, speaking_player, rules_hint
+        streamed_inputs.append(str(user_input or ''))
         normalized = (user_input or '').lower()
         if 'pick up a feather' in normalized:
             yield 'You pick up the feather before leaving the room.'
@@ -4026,6 +4144,21 @@ def test_inventory_realtime_stress_add_remove_buy_sell_use_and_explicit_state(
             [],
         )
         player.stats = safe_json_dumps({'gold': 10, 'current_hp': 10, 'max_hp': 10}, {})
+        session = db.session.get(Session, ids['session_id'])
+        assert session is not None
+        session.state_snapshot = safe_json_dumps(
+            {
+                'currentScene': {
+                    'locationId': 'old_ruins',
+                    'name': 'Old Ruins',
+                    'sceneType': 'exploration',
+                    'combatState': 'none',
+                    'activeNpcIds': [],
+                    'items': [{'id': 'feather_1', 'name': 'feather', 'type': 'misc', 'quantity': 1}],
+                }
+            },
+            {},
+        )
         db.session.commit()
 
     client = socketio.test_client(app, flask_test_client=app.test_client())
@@ -4097,24 +4230,32 @@ def test_inventory_realtime_stress_add_remove_buy_sell_use_and_explicit_state(
     assert player_gold() == 8
 
     received = send('Apply inventory state.')
-    state_payload = _assert_realtime_state_applied(received, item_name='Bone Shard', action='acquire')
+    state_payload = _turn_status_payloads(received, 'state_applied')[0]
+    assert not any(
+        change['item_name'].lower() == 'bone shard' and change['action'] == 'acquire'
+        for change in state_payload['details']['inventory_changes_applied']
+    )
     assert any(
         change['item_name'].lower() == 'potion' and change['action'] == 'lose'
         for change in state_payload['details']['inventory_changes_applied']
     )
-    assert inventory_by_name() == {'rope': 1, 'bone shard': 2}
+    assert inventory_by_name() == {'rope': 1}
 
     received = send('I drop all my items.')
     drop_all_state = _assert_realtime_state_applied(received, item_name='rope', action='lose')
-    assert any(
-        change['item_name'].lower() == 'bone shard' and change['action'] == 'lose'
+    assert not any(
+        change['item_name'].lower() == 'bone shard'
         for change in drop_all_state['details']['inventory_changes_applied']
     )
     assert inventory_by_name() == {}
 
+    stream_count_before_missing_pickup = len(streamed_inputs)
     received = send('I pick up a shell.', item_intent('pick_up', 'shell'))
-    statuses = [event['args'][0]['status'] for event in received if event['name'] == 'turn_status']
-    assert 'state_applied' not in statuses
+    shell_error = _event_payload(received, 'error')
+    assert shell_error['error_code'] == 'gameplay_action_invalid'
+    assert 'No scene item matches' in shell_error['error']
+    assert _turn_status_payloads(received, 'state_applied') == []
+    assert len(streamed_inputs) == stream_count_before_missing_pickup
     assert inventory_by_name() == {}
 
     with app.app_context():
@@ -4220,16 +4361,19 @@ def test_real_campaign_state_pipeline_stress_transfers_hp_xp_and_currency(
     client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
     client.get_received()
 
-    def send(message):
+    def send(message, action_intent=None):
+        payload = {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': message,
+        }
+        if action_intent is not None:
+            payload['action_intent'] = action_intent
         client.emit(
             'send_message',
-            {
-                'session_id': ids['session_id'],
-                'campaign_id': ids['campaign_id'],
-                'world_id': ids['world_id'],
-                'player_id': ids['player_id'],
-                'message': message,
-            },
+            payload,
         )
         return client.get_received()
 
@@ -4263,12 +4407,34 @@ def test_real_campaign_state_pipeline_stress_transfers_hp_xp_and_currency(
     assert player_stats(ids['player_id'])['copper'] == 20
     assert player_stats(borin_id)['copper'] == 10
 
-    received = send('I buy an Iron Shield.')
+    received = send(
+        'I buy an Iron Shield.',
+        {
+            'kind': 'item',
+            'source': 'composer',
+            'client_message_id': 'buy-iron-shield',
+            'text': 'I buy an Iron Shield.',
+            'inventory_action': 'buy',
+            'item': {'name': 'Iron Shield', 'quantity': 1},
+            'cost_gold': 5,
+        },
+    )
     _assert_realtime_state_applied(received, item_name='Iron Shield', action='acquire')
     assert player_inventory_by_name(ids['player_id'])['iron shield']['quantity'] == 1
     assert player_stats(ids['player_id'])['gold'] == 15
 
-    received = send('I sell the Gem.')
+    received = send(
+        'I sell the Gem.',
+        {
+            'kind': 'item',
+            'source': 'composer',
+            'client_message_id': 'sell-gem',
+            'text': 'I sell the Gem.',
+            'inventory_action': 'sell',
+            'item': {'id': 'gem', 'name': 'Gem', 'quantity': 1},
+            'cost_gold': 3,
+        },
+    )
     _assert_realtime_state_applied(received, item_name='Gem', action='lose')
     assert 'gem' not in player_inventory_by_name(ids['player_id'])
     assert player_stats(ids['player_id'])['gold'] == 18
@@ -5271,6 +5437,20 @@ def test_roll_resolves_pending_turn_and_carries_rule_type(app, socketio, app_run
     assert first_start is not None
     first_turn_id = first_start['turn_id']
     assert first_start['rules_hint']['outcome_deferred'] is True
+
+    client.disconnect()
+    with app.app_context():
+        db.session.expire_all()
+        pending_turn = db.session.get(DmTurn, first_turn_id)
+        assert pending_turn is not None
+        assert pending_turn.requires_roll is True
+        assert pending_turn.rule_type == 'attack'
+        assert pending_turn.outcome_status == 'deferred'
+
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    assert client.is_connected()
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    assert _event_payload(client.get_received(), 'error') is None
 
     client.emit(
         'send_message',

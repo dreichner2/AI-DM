@@ -12,6 +12,7 @@ import {
   normalizeCharacterTraits,
   normalizeInventory,
   normalizeSpellbook,
+  normalizeSpellResources,
   normalizeStats,
   normalizeXp,
   pendingRollNoticeFromTimeline,
@@ -26,6 +27,27 @@ import {
 import type { CampaignSegment, MapItem, Player, SessionLogEntry, TimelineEntry } from './types'
 
 describe('game selector helpers', () => {
+  it('projects exhausted spell resources and concentration for player feedback', () => {
+    expect(normalizeSpellResources({
+      spellResources: {
+        castingMode: 'hybrid',
+        slots: { '1': { current: 0, max: 2 }, '2': { current: 1, max: 1 } },
+        pactSlots: { current: 1, max: 2, slotLevel: 2 },
+        mysticArcanum: { '6': { current: 0, max: 1 } },
+        concentration: { spellName: 'Hex' },
+      },
+    })).toEqual({
+      castingMode: 'hybrid',
+      slots: [
+        { level: 1, current: 0, max: 2 },
+        { level: 2, current: 1, max: 1 },
+      ],
+      pactSlot: { level: 2, current: 1, max: 2 },
+      arcanum: [{ level: 6, current: 0, max: 1 }],
+      concentration: 'Hex',
+    })
+  })
+
   it('labels every persisted system log entry as System without requiring markdown', () => {
     expect(timelineFromLog({
       id: 91,
@@ -779,8 +801,12 @@ describe('game selector helpers', () => {
             currentActorName: 'Ember',
             isCurrentActor: true,
             economy: {
-              tracking: 'turn_order_derived',
-              subTurnCountersTracked: false,
+              tracking: 'persisted_turn_economy',
+              subTurnCountersTracked: true,
+              actionRemaining: 1,
+              bonusActionRemaining: 0,
+              movementRemaining: 1,
+              reactionRemaining: 1,
             },
             actions: [
               {
@@ -819,8 +845,12 @@ describe('game selector helpers', () => {
       playerId: 30,
       actorName: 'Ember',
       isCurrentActor: true,
-      economyTracking: 'turn_order_derived',
-      subTurnCountersTracked: false,
+      economyTracking: 'persisted_turn_economy',
+      subTurnCountersTracked: true,
+      actionRemaining: 1,
+      bonusActionRemaining: 0,
+      movementRemaining: 1,
+      reactionRemaining: 1,
       actions: [
         {
           id: 'combat.attack.blade',

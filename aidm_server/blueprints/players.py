@@ -6,7 +6,12 @@ from flask import Blueprint, g, jsonify, request
 
 from aidm_server.auth import account_display_name
 from aidm_server.canon_inventory import inventory_payload
-from aidm_server.character_state import serialize_stats_payload
+from aidm_server.character_backgrounds import (
+    BackgroundValidationError,
+    character_sheet_with_background,
+    normalize_character_background,
+)
+from aidm_server.character_state import serialize_stats_payload, sync_character_derived_stats
 from aidm_server.database import db
 from aidm_server.errors import error_response
 from aidm_server.game_state.application.applier import apply_state_changes
@@ -18,6 +23,7 @@ from aidm_server.game_state.models import (
     player_character_from_model,
     stable_change_id,
 )
+from aidm_server.game_state.leveling import level_for_xp
 from aidm_server.game_state.validation.validator import validate_state_changes, validated_changes_for_application
 from aidm_server.models import Player, safe_json_dumps, safe_json_loads
 from aidm_server.pagination import jsonify_page, limited_page
@@ -28,6 +34,7 @@ from aidm_server.race_system import (
     race_selection_to_json,
 )
 from aidm_server.spellbook import ensure_character_sheet_spellbook
+from aidm_server.character_resources import ensure_character_sheet_spell_resources
 from aidm_server.starting_inventory import starting_inventory_for_class
 from aidm_server.services.session_state_mutation import (
     expected_state_revision_from_payload,
@@ -75,15 +82,111 @@ def _character_sheet_payload_with_spellbook(
     race: str | None,
     race_selection,
     level: int,
+    background=None,
+    background_provided: bool = False,
+    replace_class_spell_grants: bool = False,
+    replace_race_spell_grants: bool = False,
+    reset_class_resources: bool = False,
+    reset_race_resources: bool = False,
 ):
+    raw_value = character_sheet_with_background(
+        raw_value,
+        background,
+        background_provided=background_provided,
+    )
     sheet, _changed = ensure_character_sheet_spellbook(
         raw_value,
         class_name=class_name,
         race_name=race,
         race_selection=race_selection,
         level=level,
+        replace_class_grants=replace_class_spell_grants,
+        replace_race_grants=replace_race_spell_grants,
+        reset_preparation_policy=reset_class_resources,
+    )
+    if reset_class_resources:
+        for key in (
+            'spellResources',
+            'spell_resources',
+            'spellSlots',
+            'spell_slots',
+            'classFeatureState',
+            'class_feature_state',
+            'classLevels',
+            'class_levels',
+        ):
+            sheet.pop(key, None)
+    if reset_race_resources:
+        sheet.pop('raceAbilityState', None)
+        sheet.pop('race_ability_state', None)
+    sheet, _resources_changed = ensure_character_sheet_spell_resources(
+        sheet,
+        class_name=class_name,
+        level=level,
+        class_levels=sheet.get('classLevels') or sheet.get('class_levels'),
     )
     return safe_json_dumps(sheet, {}) if sheet else _structured_text(raw_value)
+
+
+def _background_payload(payload: dict):
+    if 'background' not in payload:
+        return None, False, None
+    try:
+        background = normalize_character_background(payload.get('background'), allow_legacy=False)
+    except BackgroundValidationError as exc:
+        return None, True, exc.public_message
+    return background, True, None
+
+
+def _sync_player_progression_stats(
+    player: Player,
+    *,
+    previous_class_name: str | None,
+    previous_level: int,
+) -> None:
+    stats = safe_json_loads(player.stats, None)
+    if not isinstance(stats, dict) or not isinstance(stats.get('ability_scores'), dict):
+        return
+    normalized, changed = sync_character_derived_stats(
+        stats,
+        class_name=player.class_,
+        level=player.level or 1,
+        previous_class_name=previous_class_name,
+        previous_level=previous_level,
+    )
+    if changed:
+        player.stats = safe_json_dumps(normalized, {})
+
+
+def _profile_xp(raw_stats):
+    stats = safe_json_loads(raw_stats, {})
+    if not isinstance(stats, dict):
+        return 0
+    return stats.get('xp', stats.get('experience', 0))
+
+
+def _remove_replaced_mechanic_state(
+    player: Player,
+    *,
+    class_changed: bool,
+    race_changed: bool,
+) -> None:
+    stats = safe_json_loads(player.stats, None)
+    if not isinstance(stats, dict):
+        return
+    before = safe_json_dumps(stats, {})
+    if class_changed:
+        for key in ('class_feature_state', 'classFeatureState', 'spell_resources', 'spellResources'):
+            stats.pop(key, None)
+    if race_changed:
+        stats.pop('race_ability_state', None)
+        stats.pop('raceAbilityState', None)
+    if safe_json_dumps(stats, {}) != before:
+        player.stats = safe_json_dumps(stats, {})
+
+
+def _mechanic_key(value) -> str:
+    return str(value or '').strip().casefold()
 
 
 def _race_selection_payload(payload: dict, fallback_race: str | None):
@@ -114,7 +217,13 @@ def _assign_missing_starting_spells(player: Player) -> bool:
         race_selection=player.race_selection,
         level=player.level or 1,
     )
-    if not changed:
+    sheet, resources_changed = ensure_character_sheet_spell_resources(
+        sheet,
+        class_name=player.class_,
+        level=player.level or 1,
+        class_levels=sheet.get('classLevels') or sheet.get('class_levels'),
+    )
+    if not changed and not resources_changed:
         return False
     player.character_sheet = safe_json_dumps(sheet, {})
     return True
@@ -212,7 +321,7 @@ def add_player(campaign_id):
     if sex_error:
         return error_response('validation_error', sex_error, 400)
     sex = sex or 'male'
-    class_name, class_error = _optional_text(
+    class_name, class_error = _required_text(
         payload.get('char_class', payload.get('class_', '')),
         max_length=80,
         field='class',
@@ -222,9 +331,17 @@ def add_player(campaign_id):
     level = coerce_int(payload.get('level'), 1)
     if level is None or level < 1 or level > 20:
         return error_response('validation_error', 'level must be an integer from 1 to 20.', 400)
+    background, background_provided, background_error = _background_payload(payload)
+    if background_error:
+        return error_response('validation_error', background_error, 400)
 
     try:
-        stats_payload, stats_error = serialize_stats_payload(payload.get('stats'), level=level)
+        stats_payload, stats_error = serialize_stats_payload(
+            payload.get('stats'),
+            level=level,
+            class_name=class_name,
+            require_complete_ability_scores=True,
+        )
         if stats_error:
             return error_response('validation_error', stats_error, 400)
 
@@ -262,6 +379,8 @@ def add_player(campaign_id):
                 race=race,
                 race_selection=race_selection,
                 level=level,
+                background=background,
+                background_provided=background_provided,
             ),
         )
         db.session.add(new_player)
@@ -331,7 +450,57 @@ def update_player(player_id):
     player = workspace_player(player_id)
     if not player:
         return error_response('player_not_found', 'Player not found.', 404)
+    direct_gameplay_fields = sorted(
+        field
+        for field in {'stats', 'character_sheet', 'inventory', 'weapon_proficiencies'}
+        if field in payload
+    )
+    if direct_gameplay_fields:
+        return error_response(
+            'gameplay_state_write_forbidden',
+            'Profile editing cannot directly replace authoritative gameplay state.',
+            400,
+            {
+                'fields': direct_gameplay_fields,
+                'guidance': (
+                    'Use validated gameplay actions, progression, equipment, and inventory '
+                    'endpoints for mechanical changes.'
+                ),
+            },
+        )
     original_character_sheet = player.character_sheet
+    original_class_name = player.class_
+    original_level = int(player.level or 1)
+    original_stats = player.stats
+    original_race = player.race
+    original_race_selection = safe_json_loads(player.race_selection, None)
+    background, background_provided, background_error = _background_payload(payload)
+    if background_error:
+        return error_response('validation_error', background_error, 400)
+
+    class_update_requested = 'class_' in payload or 'char_class' in payload
+    requested_class_name = player.class_
+    if class_update_requested:
+        requested_class_name, class_error = _required_text(
+            payload.get('char_class', payload.get('class_')),
+            max_length=80,
+            field='class',
+        )
+        if class_error:
+            return error_response('validation_error', class_error, 400)
+
+    requested_level = original_level
+    if 'level' in payload:
+        requested_level = coerce_int(payload.get('level'))
+        if requested_level is None or requested_level < 1 or requested_level > 20:
+            return error_response('validation_error', 'level must be an integer from 1 to 20.', 400)
+        highest_allowed_level = max(original_level, level_for_xp(_profile_xp(original_stats)))
+        if requested_level > highest_allowed_level:
+            return error_response(
+                'validation_error',
+                'level cannot exceed the character level earned from persisted XP.',
+                400,
+            )
 
     text_fields = {
         'character_name': (80, True),
@@ -371,45 +540,50 @@ def update_player(player_id):
             else:
                 player.race_selection = None
 
-        if 'class_' in payload or 'char_class' in payload:
-            value, error = _optional_text(
-                payload.get('char_class', payload.get('class_')),
-                max_length=80,
-                field='class',
-            )
-            if error:
-                return error_response('validation_error', error, 400)
-            player.class_ = value
+        if class_update_requested:
+            player.class_ = requested_class_name
             player.weapon_proficiencies = serialize_weapon_proficiencies(
-                default_weapon_proficiencies_for_class(value)
+                default_weapon_proficiencies_for_class(requested_class_name)
             )
 
         if 'level' in payload:
-            level = coerce_int(payload.get('level'))
-            if level is None or level < 1 or level > 20:
-                return error_response('validation_error', 'level must be an integer from 1 to 20.', 400)
-            player.level = level
+            player.level = requested_level
 
-        if 'stats' in payload:
-            stats_payload, stats_error = serialize_stats_payload(payload.get('stats'), level=player.level or 1)
-            if stats_error:
-                return error_response('validation_error', stats_error, 400)
-            player.stats = stats_payload
-        if 'character_sheet' in payload:
-            player.character_sheet = _structured_text(payload.get('character_sheet'))
-        if 'inventory' in payload:
-            player.inventory = safe_json_dumps(inventory_payload(payload.get('inventory')), [])
+        class_changed = _mechanic_key(player.class_) != _mechanic_key(original_class_name)
+        level_changed = int(player.level or 1) != original_level
+        current_race_selection = safe_json_loads(player.race_selection, None)
+        race_changed = (
+            _mechanic_key(player.race) != _mechanic_key(original_race)
+            or current_race_selection != original_race_selection
+        )
 
+        if class_changed or level_changed:
+            _sync_player_progression_stats(
+                player,
+                previous_class_name=original_class_name,
+                previous_level=original_level,
+            )
+        _remove_replaced_mechanic_state(
+            player,
+            class_changed=class_changed,
+            race_changed=race_changed,
+        )
         sheet_source = player.character_sheet if player.character_sheet is not None else original_character_sheet
-        sheet, changed = ensure_character_sheet_spellbook(
+        normalized_sheet = _character_sheet_payload_with_spellbook(
             sheet_source,
             class_name=player.class_,
-            race_name=player.race,
+            race=player.race,
             race_selection=player.race_selection,
             level=player.level or 1,
+            background=background,
+            background_provided=background_provided,
+            replace_class_spell_grants=class_changed or level_changed,
+            replace_race_spell_grants=race_changed,
+            reset_class_resources=class_changed,
+            reset_race_resources=race_changed,
         )
-        if changed:
-            player.character_sheet = safe_json_dumps(sheet, {})
+        if normalized_sheet is not None:
+            player.character_sheet = normalized_sheet
 
         db.session.commit()
         return jsonify(player_detail_payload(player))

@@ -17,7 +17,8 @@ import {
 import { ActionComposer, type ActionComposerProps } from './ActionComposer'
 import { ThinIcon, ToolbarButton } from './AppChrome'
 import { CombatHud } from './CombatHud'
-import type { PendingRollGuidance } from './gameActions'
+import { createClientMessageId, type ActionIntent, type PendingRollGuidance } from './gameActions'
+import type { GameplayControlState } from './gameplayControlState'
 import {
   type ContentRating,
   type ContentSettings,
@@ -59,6 +60,9 @@ import type {
 
 const SceneMusicPlayer = lazy(() =>
   import('./SceneMusicPlayer').then((module) => ({ default: module.SceneMusicPlayer })),
+)
+const GameplayControls = lazy(() =>
+  import('./GameplayControls').then((module) => ({ default: module.GameplayControls })),
 )
 
 // App-level callers still pass the retired values while the board normalizes them
@@ -213,6 +217,7 @@ type SessionBoardProps = {
   ) => Promise<void>
   combatState: CombatStatePanel
   worldState: WorldStatePanel
+  gameplayControls: GameplayControlState
   operationalError?: string
   onRecoverOperationalError?: () => void | Promise<void>
   dmExecutionStats: DmExecutionStats
@@ -486,6 +491,7 @@ function SceneHeader({ sceneState }: { sceneState: SceneDisplayState | null }) {
 function CurrentSituation({
   actionComposer,
   activePlayers,
+  gameplayControls,
   pendingRollNotice,
   compact,
   sceneState,
@@ -495,6 +501,7 @@ function CurrentSituation({
 }: {
   actionComposer: ActionComposerProps
   activePlayers: ActivePlayer[]
+  gameplayControls: GameplayControlState
   pendingRollNotice: PendingRollNotice | null
   compact: boolean
   sceneState: SceneDisplayState | null
@@ -544,6 +551,49 @@ function CurrentSituation({
     ['Scene objects', objects.join(', ') || 'None recorded'],
     ['Exits', exits.join(', ') || 'None recorded'],
   ]
+  const worldActionDisabled =
+    sendPending ||
+    streamingTurnActive ||
+    worldState.combat.active ||
+    !actionComposer.selectedPlayerId ||
+    !actionComposer.selectedCharacterName
+  const submitScenePickup = (item: WorldStatePanel['sceneItems'][number]) => {
+    const actorName = actionComposer.selectedCharacterName || 'I'
+    const message = `${actorName} picks up ${item.name}.`
+    const intent: ActionIntent = {
+      kind: 'item',
+      source: 'scene_panel',
+      text: message,
+      client_message_id: createClientMessageId(),
+      inventory_action: 'pick_up',
+      item: { id: item.id, name: item.name, quantity: 1 },
+    }
+    actionComposer.submitAction(message, intent)
+  }
+  const submitTravel = (exit: WorldStatePanel['availableExits'][number]) => {
+    const message = `The party travels to ${exit.name}.`
+    const intent: ActionIntent = {
+      kind: 'travel',
+      source: 'scene_panel',
+      text: message,
+      client_message_id: createClientMessageId(),
+      location: { id: exit.id, name: exit.name },
+    }
+    actionComposer.submitAction(message, intent)
+  }
+  const submitRest = (restType: 'short_rest' | 'long_rest') => {
+    const actorName = actionComposer.selectedCharacterName || 'I'
+    const label = restType === 'short_rest' ? 'short rest' : 'long rest'
+    const message = `${actorName} completes a ${label}.`
+    const intent: ActionIntent = {
+      kind: 'rest',
+      source: 'scene_panel',
+      text: message,
+      client_message_id: createClientMessageId(),
+      rest_type: restType,
+    }
+    actionComposer.submitAction(message, intent)
+  }
 
   return (
     <section className={`current-situation ${compact ? 'compact' : ''}`} aria-labelledby="current-situation-title">
@@ -571,6 +621,57 @@ function CurrentSituation({
               <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
             ))}
           </dl>
+          <Suspense fallback={<p className="gameplay-control-help">Loading mechanical actions…</p>}>
+            <GameplayControls
+              state={gameplayControls}
+              disabled={
+                sendPending ||
+                streamingTurnActive ||
+                Boolean(pendingRollNotice) ||
+                !actionComposer.selectedPlayerHasTurn
+              }
+              onSubmit={actionComposer.submitAction}
+            />
+          </Suspense>
+          {worldState.sceneItems.length ? (
+            <div className="current-situation-world-actions" aria-label="Scene object actions">
+              <strong>Interact with objects</strong>
+              {worldState.sceneItems.map((item) => (
+                <button
+                  type="button"
+                  key={`pickup-${item.id}`}
+                  disabled={worldActionDisabled || !item.id}
+                  onClick={() => submitScenePickup(item)}
+                >
+                  Pick up {item.name}{item.quantity > 1 ? ` (${item.quantity} here)` : ''}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {worldState.availableExits.length ? (
+            <div className="current-situation-world-actions" aria-label="Travel actions">
+              <strong>Travel</strong>
+              {worldState.availableExits.map((exit) => (
+                <button
+                  type="button"
+                  key={`travel-${exit.id}`}
+                  disabled={worldActionDisabled || !exit.id}
+                  onClick={() => submitTravel(exit)}
+                >
+                  Travel to {exit.name}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="current-situation-world-actions" aria-label="Recovery actions">
+            <strong>Recovery</strong>
+            <button type="button" disabled={worldActionDisabled} onClick={() => submitRest('short_rest')}>
+              Take a short rest
+            </button>
+            <button type="button" disabled={worldActionDisabled} onClick={() => submitRest('long_rest')}>
+              Take a long rest
+            </button>
+          </div>
         </div>
       ) : null}
     </section>
@@ -671,6 +772,7 @@ export function SessionBoard({
   onResolveTurnRecovery,
   combatState,
   worldState,
+  gameplayControls,
   operationalError,
   onRecoverOperationalError,
   dmExecutionStats,
@@ -1144,6 +1246,7 @@ export function SessionBoard({
               sendPending={sendPending}
               streamingTurnActive={streamingTurnActive}
               worldState={worldState}
+              gameplayControls={gameplayControls}
             />
           </div>
           <section

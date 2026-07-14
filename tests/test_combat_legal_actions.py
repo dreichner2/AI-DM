@@ -88,22 +88,30 @@ def test_legal_actions_use_stable_weapon_ids_turn_order_and_range_bands():
     assert bundle['round'] == 2
     assert bundle['isCurrentActor'] is True
     assert bundle['economy'] == {
-        'tracking': 'turn_order_derived',
+        'tracking': 'persisted_turn_economy',
         'actionAvailable': True,
+        'bonusActionAvailable': True,
         'movementAvailable': True,
-        'reactionTracked': False,
-        'subTurnCountersTracked': False,
+        'reactionAvailable': True,
+        'actionRemaining': 1,
+        'bonusActionRemaining': 1,
+        'reactionRemaining': 1,
+        'movementRemaining': 1,
+        'reactionTracked': True,
+        'subTurnCountersTracked': True,
     }
     attack = next(action for action in bundle['actions'] if action['type'] == 'attack')
+    assert all(action['type'] != 'defend' for action in bundle['actions'])
     assert attack['id'] == 'combat.attack.blade'
     assert attack['range']['classification'] == 'melee'
     targets = {target['id']: target for target in attack['targets']}
     assert targets['enemy_goblin_1']['available'] is True
     assert targets['enemy_archer_1']['available'] is False
     assert targets['enemy_archer_1']['reason'] == 'Target is at far range.'
-    assert attack['economy']['tracking'] == 'turn_order_derived'
-    assert attack['economy']['reactionTracked'] is False
-    assert attack['economy']['subTurnCountersTracked'] is False
+    assert attack['economy']['tracking'] == 'persisted_turn_economy'
+    assert attack['economy']['endsTurn'] is False
+    assert attack['economy']['reactionTracked'] is True
+    assert attack['economy']['subTurnCountersTracked'] is True
 
 
 def test_ranged_action_allows_far_target_and_resolution_ignores_client_descriptions():
@@ -124,17 +132,22 @@ def test_ranged_action_allows_far_target_and_resolution_ignores_client_descripti
         'action_type': 'attack',
         'economy': {
             'action': 1,
+            'bonusAction': 0,
+            'reaction': 0,
             'movement': 'optional',
-            'endsTurn': True,
-            'tracking': 'turn_order_derived',
-            'reactionTracked': False,
-            'subTurnCountersTracked': False,
+            'movementCost': 0,
+            'endsTurn': False,
+            'tracking': 'persisted_turn_economy',
+            'reactionTracked': True,
+            'subTurnCountersTracked': True,
         },
         'authoritative': True,
         'target_id': 'enemy_archer_1',
         'target_name': 'Distant Archer',
         'weapon_id': 'bow',
         'weapon_name': 'Longbow',
+        'damage_dice': '1d8',
+        'damage_type': 'piercing',
         'range_band': 'far',
         'message': 'Seraphina attacks Distant Archer with Longbow.',
     }
@@ -160,7 +173,7 @@ def test_resolver_rejects_forged_actions_targets_and_out_of_turn_actor():
     out_of_turn, turn_code, turn_message = resolve_combat_legal_action(
         out_of_turn_snapshot,
         player,
-        action_id='combat.defend',
+        action_id='combat.end_turn',
     )
 
     assert forged is None
@@ -172,7 +185,7 @@ def test_resolver_rejects_forged_actions_targets_and_out_of_turn_actor():
     assert turn_message == 'Goblin Sentry is acting now.'
 
 
-def test_missing_persisted_turn_index_never_enables_hud_actions():
+def test_missing_legacy_turn_index_recovers_deterministic_hud_authority():
     player = _player(7)
     combat = _active_combat(7)
     combat.pop('turnIndex')
@@ -181,19 +194,16 @@ def test_missing_persisted_turn_index_never_enables_hud_actions():
     resolved, error_code, error_message = resolve_combat_legal_action(
         {'combat': combat},
         player,
-        action_id='combat.defend',
+        action_id='combat.end_turn',
     )
 
     assert bundle is not None
-    assert bundle['currentActorId'] is None
-    assert bundle['isCurrentActor'] is False
-    assert all(action['available'] is False for action in bundle['actions'])
-    assert {action['reason'] for action in bundle['actions']} == {
-        'Combat turn order is not established.'
-    }
-    assert resolved is None
-    assert error_code == 'combat_action_unavailable'
-    assert error_message == 'Combat turn order is not established.'
+    assert bundle['currentActorId'] == 'player_7'
+    assert bundle['isCurrentActor'] is True
+    assert any(action['available'] is True for action in bundle['actions'])
+    assert resolved is not None
+    assert error_code is None
+    assert error_message is None
 
 
 def test_explicit_participant_player_id_cannot_be_overridden_by_duplicate_character_name():
@@ -208,7 +218,7 @@ def test_explicit_participant_player_id_cannot_be_overridden_by_duplicate_charac
     resolved, error_code, error_message = resolve_combat_legal_action(
         {'combat': combat},
         impersonator,
-        action_id='combat.defend',
+        action_id='combat.end_turn',
     )
 
     assert bundle is None
@@ -234,7 +244,7 @@ def test_legacy_identity_fallback_fails_closed_for_ambiguous_duplicate_names():
     resolved, error_code, error_message = resolve_combat_legal_action(
         {'combat': combat},
         player,
-        action_id='combat.defend',
+        action_id='combat.end_turn',
     )
 
     assert bundle is None

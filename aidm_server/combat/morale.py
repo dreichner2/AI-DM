@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from aidm_server.canon_text import int_or_default
+from aidm_server.combat.state import participant_can_take_turn, participant_is_targetable
 
 
 MORALE_EVENTS = {
@@ -82,6 +83,8 @@ def apply_morale_event(enemy: dict[str, Any], event: str, *, current_morale: int
 
 
 def living_participants(combat: dict[str, Any], team: str | None = None) -> list[dict[str, Any]]:
+    """Return physically present, conscious participants that remain valid targets."""
+
     participants = combat.get('participants') if isinstance(combat.get('participants'), list) else []
     result = []
     for participant in participants:
@@ -89,12 +92,18 @@ def living_participants(combat: dict[str, Any], team: str | None = None) -> list
             continue
         if team and participant.get('team') != team:
             continue
-        if participant.get('isAlive') is False or _hp_percent(participant) <= 0:
-            continue
-        if 'fled' in {str(item).lower() for item in participant.get('conditions') or []}:
+        if not participant_is_targetable(participant):
             continue
         result.append(participant)
     return result
+
+
+def actionable_participants(combat: dict[str, Any], team: str | None = None) -> list[dict[str, Any]]:
+    return [
+        participant
+        for participant in living_participants(combat, team)
+        if participant_can_take_turn(participant)
+    ]
 
 
 def morale_context_events(enemy: dict[str, Any], combat: dict[str, Any]) -> list[str]:

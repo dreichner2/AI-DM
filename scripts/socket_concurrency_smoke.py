@@ -79,6 +79,16 @@ def _post(client, path: str, payload: dict) -> dict:
 
 
 def _seed_runtime(http) -> SeededRuntime:
+    creation_stats = {
+        'ability_scores': {
+            'strength': 15,
+            'dexterity': 14,
+            'constitution': 13,
+            'intelligence': 12,
+            'wisdom': 8,
+            'charisma': 8,
+        }
+    }
     world = _post(http, '/api/worlds', {'name': 'Concurrency Smoke World', 'description': 'Socket smoke realm'})
     campaign = _post(
         http,
@@ -93,17 +103,17 @@ def _seed_runtime(http) -> SeededRuntime:
     player_one = _post(
         http,
         f'/api/players/campaigns/{campaign_id}/players',
-        {'name': 'Aria', 'character_name': 'Aria', 'char_class': 'Wizard', 'level': 2},
+        {'name': 'Aria', 'character_name': 'Aria', 'char_class': 'Wizard', 'level': 2, 'stats': creation_stats},
     )
     player_two = _post(
         http,
         f'/api/players/campaigns/{campaign_id}/players',
-        {'name': 'Borin', 'character_name': 'Borin', 'char_class': 'Cleric', 'level': 2},
+        {'name': 'Borin', 'character_name': 'Borin', 'char_class': 'Cleric', 'level': 2, 'stats': creation_stats},
     )
     player_three = _post(
         http,
         f'/api/players/campaigns/{campaign_id}/players',
-        {'name': 'Cala', 'character_name': 'Cala', 'char_class': 'Ranger', 'level': 2},
+        {'name': 'Cala', 'character_name': 'Cala', 'char_class': 'Ranger', 'level': 2, 'stats': creation_stats},
     )
     session_one = _post(http, '/api/sessions/start', {'campaign_id': campaign_id})
     session_two = _post(http, '/api/sessions/start', {'campaign_id': campaign_id})

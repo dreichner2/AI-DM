@@ -486,6 +486,28 @@ def test_build_dm_context_includes_compact_live_world_state_from_snapshot(app):
                                 'privateNote': 'Hidden item note should not enter context.',
                             }
                         ],
+                        'interactables': [
+                            {
+                                'id': 'tavern_cellar_door',
+                                'name': 'Cellar Door',
+                                'kind': 'door',
+                                'open': False,
+                                'locked': True,
+                                'revision': 2,
+                                'playerKnown': True,
+                            }
+                        ],
+                        'hazards': [
+                            {
+                                'id': 'hidden_bell_tripwire',
+                                'name': 'Bell Tripwire',
+                                'kind': 'hazard',
+                                'active': True,
+                                'hidden': True,
+                                'playerKnown': False,
+                                'revision': 0,
+                            }
+                        ],
                     },
                     'quests': [
                         {
@@ -517,6 +539,30 @@ def test_build_dm_context_includes_compact_live_world_state_from_snapshot(app):
                             'description': 'A noisy tavern near the harbor.',
                             'connectedLocationIds': ['north_docks'],
                             'lastVisitedTurn': 12,
+                            'sceneState': {
+                                'interactables': [
+                                    {
+                                        'id': 'tavern_cellar_door',
+                                        'name': 'Cellar Door',
+                                        'kind': 'door',
+                                        'open': False,
+                                        'locked': True,
+                                        'revision': 2,
+                                        'playerKnown': True,
+                                    }
+                                ],
+                                'hazards': [
+                                    {
+                                        'id': 'hidden_bell_tripwire',
+                                        'name': 'Bell Tripwire',
+                                        'kind': 'hazard',
+                                        'active': True,
+                                        'hidden': True,
+                                        'playerKnown': False,
+                                        'revision': 0,
+                                    }
+                                ],
+                            },
                         }
                     ],
                     'knownNpcs': [
@@ -543,6 +589,14 @@ def test_build_dm_context_includes_compact_live_world_state_from_snapshot(app):
                             'lastSeenTurn': 11,
                         },
                     ],
+                    'partyNpcs': [
+                        {
+                            'id': 'distant_companion',
+                            'name': 'Distant Companion',
+                            'status': 'traveling_elsewhere',
+                            'locationId': 'north_docks',
+                        }
+                    ],
                     'flags': {'velra_met': True},
                     'playerCharacters': [{'id': 'player_1', 'inventory': {'items': [{'name': 'Rope'}]}}],
                     'stateChangeLedger': [{'id': 'secret_change'}],
@@ -568,11 +622,24 @@ def test_build_dm_context_includes_compact_live_world_state_from_snapshot(app):
             'sourceActorId': 'player_2',
         }
     ]
+    assert live_state['currentScene']['interactables'] == [
+        {
+            'id': 'tavern_cellar_door',
+            'name': 'Cellar Door',
+            'kind': 'door',
+            'knowledge': 'player_known',
+            'open': False,
+            'locked': True,
+            'revision': 2,
+        }
+    ]
+    assert live_state['currentScene']['hazards'] == []
     assert live_state['activeQuests'][0]['id'] == 'find_missing_sailor'
     assert live_state['activeQuests'][0]['objectives'][0]['id'] == 'talk_to_velra'
     assert [quest['id'] for quest in live_state['activeQuests']] == ['find_missing_sailor']
     assert live_state['recentLocations'][0]['id'] == 'blackwake_tavern'
     assert live_state['activeNpcs'][0]['id'] == 'captain_velra'
+    assert 'distant_companion' not in {npc['id'] for npc in live_state['activeNpcs']}
     assert live_state['recentKnownNpcs'][0]['id'] == 'marta_fenwick'
     assert live_state['flags'] == {'velra_met': True}
 
@@ -581,6 +648,7 @@ def test_build_dm_context_includes_compact_live_world_state_from_snapshot(app):
     assert 'playerCharacters' not in encoded_live_state
     assert 'Private NPC memory' not in encoded_live_state
     assert 'Hidden item note' not in encoded_live_state
+    assert 'Bell Tripwire' not in encoded_live_state
 
 
 def test_build_dm_context_includes_campaign_pack_director_packet(app):
@@ -1295,6 +1363,16 @@ def test_build_dm_context_shape_snapshot(app):
     assert any(name not in {"Hunter's Mark", 'Cure Wounds', 'Speak with Animals', 'Entangle', 'Goodberry'} for name in known_spell_names)
     spellbook['knownSpells'] = '<known-spells>'
     payload['active_players'][0]['state']['spells'] = '<spells>'
+    assert spellbook.pop('preparationPolicy') == {
+        'schemaVersion': 1,
+        'mode': 'known',
+        'requiresPreparation': False,
+        'classArchetype': 'ranger',
+        'source': 'class',
+    }
+    spell_resources = payload['active_players'][0]['state'].pop('spell_resources')
+    assert spell_resources['castingMode'] == 'standard'
+    assert spell_resources['slots'] == {'1': {'current': 3, 'max': 3}}
 
     assert payload == {
         'context_version': 'v2',
@@ -1342,7 +1420,14 @@ def test_build_dm_context_shape_snapshot(app):
         'player_identity_rules': [
             'character_name is the in-world player character identity.',
             'Account/profile names are out-of-character labels and are not characters in the scene.',
-            'Only active_players are currently active in this session unless recent narration explicitly says otherwise.',
+            'Only active_players are currently active in this session; narration and memory cannot add an absent player.',
+        ],
+        'state_authority_rules': [
+            'live_world_state, active_players, pending_checks, and validated current combat state are authoritative.',
+                'Recent narration and memory describe history only; they never override newer structured state.',
+                'Only live_world_state.currentScene.activeNpcIds are physically present NPCs allowed to speak or act.',
+                'Only player-known live_world_state.currentScene interactables and hazards may be described as discovered; their exact IDs, revisions, and state are authoritative.',
+                'Narrate validated gameplay results and legal enemy tactics; do not invent unvalidated mechanical outcomes.',
         ],
         'active_players': [
                 {
@@ -1382,10 +1467,12 @@ def test_build_dm_context_shape_snapshot(app):
                     'electrum': 0,
                     'platinum': 0,
                     'xp': 0,
-                        'level': 3,
-                        'proficiency_bonus': 2,
-                        'skill_proficiencies': ['perception'],
-                        'saving_throw_proficiencies': ['dexterity', 'strength'],
+                            'level': 3,
+                            'proficiency_bonus': 2,
+                            'hit_die': 10,
+                            'skill_proficiencies': ['perception'],
+                            'languages': ['Common', 'Elvish'],
+                            'saving_throw_proficiencies': ['dexterity', 'strength'],
                         'spellbook': {
                         'knownSpells': '<known-spells>',
                         'preparedSpells': [],

@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from copy import deepcopy
 import re
+import secrets
 from typing import Any
 
 from aidm_server.armor_class import sync_actor_armor_class
 from aidm_server.canon_text import int_or_default
+from aidm_server.class_capabilities import restore_class_capabilities, spend_capability
+from aidm_server.character_resources import (
+    consume_spell_cast,
+    ensure_character_sheet_spell_resources,
+    restore_spell_resources,
+)
+from aidm_server.combat.rewards import SOURCE as COMBAT_REWARD_SOURCE, derive_combat_outcome_rewards
 from aidm_server.combat.state import ensure_combat_state, normalize_battlefield, normalize_combat_state, normalize_participant, normalize_position
 from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start
 from aidm_server.game_state.equipment import conflict_items, equipment_slot_label, infer_equipment_slot
@@ -20,9 +28,11 @@ from aidm_server.game_state.models import (
     parse_actor_player_id,
     stable_slug,
     stable_item_id,
+    stable_item_instance_id,
     stats_with_currency,
 )
 from aidm_server.game_state.leveling import sync_actor_level_for_xp, sync_stats_for_level
+from aidm_server.game_state.quest_engine import derive_quest_changes
 from aidm_server.models import Player, Session, safe_json_dumps, safe_json_loads
 from aidm_server.spellbook import (
     character_sheet_record,
@@ -32,6 +42,7 @@ from aidm_server.spellbook import (
     normalize_spellbook,
     spell_from_change,
 )
+from aidm_server.spell_effects import advance_spell_effect_durations, resolve_concentration_check
 from aidm_server.time_utils import utc_now
 
 
@@ -71,24 +82,32 @@ def _item_payload(change: dict[str, Any]) -> dict[str, Any]:
 
 
 def _items_are_stack_compatible(existing: dict[str, Any], incoming: dict[str, Any]) -> bool:
-    if normalize_item_name(existing.get('name')) != normalize_item_name(incoming.get('name')):
-        return False
-    for key in ('type', 'subtype'):
+    for key in ('name', 'type', 'subtype', 'rarity', 'damageType', 'damage_type', 'slot'):
         existing_value = normalize_item_name(existing.get(key))
         incoming_value = normalize_item_name(incoming.get(key))
         if existing_value and incoming_value and existing_value != incoming_value:
             return False
+    for key in ('damage', 'damageDice', 'damage_dice', 'armorClass', 'armor_class', 'acBonus', 'ac_bonus', 'effect', 'effects'):
+        existing_value = existing.get(key)
+        incoming_value = incoming.get(key)
+        if existing_value not in (None, '', [], {}) and incoming_value not in (None, '', [], {}) and existing_value != incoming_value:
+            return False
     return True
 
 
-def _merge_item(items: list[dict[str, Any]], incoming: dict[str, Any]) -> dict[str, Any]:
+def _merge_item(items: list[dict[str, Any]], incoming: dict[str, Any]) -> dict[str, Any] | None:
     incoming_id = str(incoming.get('id') or '').strip()
+    identity_matches = [item for item in items if incoming_id and str(item.get('id') or '').strip() == incoming_id]
+    if len(identity_matches) > 1:
+        return None
     existing = _find_item(
         items,
         item_id=incoming_id or None,
         item_name=None if incoming_id else str(incoming.get('name') or ''),
     )
-    if existing and _items_are_stack_compatible(existing, incoming):
+    if existing:
+        if not _items_are_stack_compatible(existing, incoming):
+            return None
         existing['quantity'] = max(0, int_or_default(existing.get('quantity'), default=0)) + max(
             1,
             int_or_default(incoming.get('quantity'), default=1),
@@ -101,11 +120,22 @@ def _merge_item(items: list[dict[str, Any]], incoming: dict[str, Any]) -> dict[s
     return incoming
 
 
-def _merge_scene_item(items: list[dict[str, Any]], incoming: dict[str, Any]) -> dict[str, Any]:
+def _merge_scene_item(items: list[dict[str, Any]], incoming: dict[str, Any]) -> dict[str, Any] | None:
     item = _merge_item(items, incoming)
-    if incoming.get('sourceActorId') and not item.get('sourceActorId'):
+    if item and incoming.get('sourceActorId') and not item.get('sourceActorId'):
         item['sourceActorId'] = incoming.get('sourceActorId')
     return item
+
+
+def _quest_reward_collision_item_id(change: dict[str, Any], actor: dict[str, Any], payload: dict[str, Any]) -> str:
+    return stable_item_instance_id(
+        'quest_reward_collision',
+        change.get('id'),
+        actor.get('id'),
+        payload.get('id'),
+        payload.get('name'),
+        prefix='itm_reward',
+    )
 
 
 def _remove_item(items: list[dict[str, Any]], change: dict[str, Any]) -> dict[str, Any] | None:
@@ -286,6 +316,208 @@ def _apply_spell_learn(actor: dict[str, Any], change: dict[str, Any]) -> dict[st
     }
 
 
+def _apply_spell_cast(
+    state: dict[str, Any],
+    actor: dict[str, Any],
+    change: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Consume a validated spell resource on the authoritative actor snapshot."""
+
+    cast_level = _change_value(change, 'castLevel', 'cast_level')
+    result = consume_spell_cast(
+        actor.get('spellbook'),
+        actor.get('spellResources'),
+        spell_name_or_id=(
+            _change_value(change, 'spellId', 'spell_id')
+            or _change_value(change, 'spellName', 'spell_name')
+        ),
+        class_name=_text(actor.get('class')),
+        level=max(1, int_or_default(actor.get('level'), default=1)),
+        cast_level=(int_or_default(cast_level, default=0) if cast_level is not None else None),
+        resource_pool=_text(_change_value(change, 'resourcePool', 'resource_pool')) or 'auto',
+        concentration=(
+            False
+            if _text(change.get('resolutionAuthority')) == 'spell_effect_engine'
+            else (bool(change.get('concentration')) if change.get('concentration') is not None else None)
+        ),
+        caster_actor_id=_text(actor.get('id')) or None,
+        target_ids=[
+            _text(target_id)
+            for target_id in (change.get('targetIds') or change.get('target_ids') or [])
+            if _text(target_id)
+        ],
+        started_at_turn=int_or_default(change.get('turnId', change.get('turn_id')), default=0) or None,
+    )
+    if not result.get('ok'):
+        return None
+    legality = result.get('legality') if isinstance(result.get('legality'), dict) else {}
+    spell = legality.get('spell') if isinstance(legality.get('spell'), dict) else {}
+    consumed = result.get('consumed') if isinstance(result.get('consumed'), dict) else None
+    resources = result['resources']
+    spell_resolution = None
+    if _text(change.get('resolutionAuthority')) == 'spell_effect_engine':
+        resolved_combat = change.get('resolvedCombat') if isinstance(change.get('resolvedCombat'), dict) else None
+        effect_resources = (
+            change.get('effectCasterResources')
+            if isinstance(change.get('effectCasterResources'), dict)
+            else None
+        )
+        if resolved_combat is None or effect_resources is None:
+            return None
+        prior_concentration = deepcopy(resources.get('concentration'))
+        resources['concentration'] = deepcopy(effect_resources.get('concentration'))
+        if prior_concentration != resources.get('concentration'):
+            resources['revision'] = max(
+                int_or_default(resources.get('revision'), default=0),
+                int_or_default(effect_resources.get('revision'), default=0),
+            ) + 1
+        state['combat'] = deepcopy(resolved_combat)
+        for participant in state['combat'].get('participants') or []:
+            if isinstance(participant, dict):
+                _sync_player_actor_from_combat_participant(state, participant)
+        spell_resolution = deepcopy(change.get('resolution'))
+    actor['spellResources'] = resources
+    return {
+        'spellId': spell.get('id'),
+        'spellName': spell.get('name'),
+        'castLevel': legality.get('castLevel'),
+        'resourcePool': (consumed or legality.get('resource') or {}).get('pool'),
+        'resourceSlotLevel': (consumed or legality.get('resource') or {}).get('slotLevel'),
+        'resourceConsumed': bool(consumed),
+        'replacedConcentration': result.get('replacedConcentration'),
+        'remainingSpellResources': deepcopy(resources),
+        **({'spellResolution': spell_resolution} if spell_resolution is not None else {}),
+    }
+
+
+def _apply_class_feature_use(
+    state: dict[str, Any],
+    actor: dict[str, Any],
+    change: dict[str, Any],
+) -> dict[str, Any] | None:
+    resolution = change.get('resolution') if isinstance(change.get('resolution'), dict) else {}
+    effect_type = _text(resolution.get('effectType')).lower()
+    target: dict[str, Any] | None = None
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+    economy = flags.get('turnEconomy') if isinstance(flags.get('turnEconomy'), dict) else {}
+
+    # Resolve every prerequisite before mutating either the resource pool or
+    # combat economy.  Validation normally guarantees these references, but
+    # application remains fail-closed if a stale snapshot slips through.
+    if effect_type == 'heal':
+        target = find_actor(state, resolution.get('targetId'))
+        if not target:
+            return None
+    elif effect_type == 'restore_action':
+        if not economy or _text(combat.get('status')).lower() != 'active':
+            return None
+    else:
+        return None
+
+    resource_cost = max(1, int_or_default(resolution.get('resourceCost'), default=1))
+    next_feature_state = spend_capability(
+        actor.get('classFeatureState'),
+        class_name=actor.get('class'),
+        level=actor.get('level'),
+        capability_id=change.get('capabilityId'),
+        amount=resource_cost,
+        turn_id=change.get('turnId'),
+    )
+    if next_feature_state is None:
+        return None
+
+    economy_kind = _text(resolution.get('actionEconomy')).lower()
+    if _text(combat.get('status')).lower() == 'active':
+        if _text(flags.get('activeActorId')) != _text(actor.get('id')):
+            return None
+        if economy_kind == 'action':
+            economy['actionRemaining'] = 0
+        elif economy_kind == 'bonus_action':
+            economy['bonusActionRemaining'] = 0
+
+    actual_amount = 0
+    if effect_type == 'heal':
+        assert target is not None
+        actual_amount = _apply_health_heal(
+            target,
+            {
+                'amount': resolution.get('amount'),
+                'clearConditions': [],
+            },
+        )
+        _sync_actor_health_to_combat_participant(state, target)
+    elif effect_type == 'restore_action':
+        if not economy:
+            return None
+        economy['actionRemaining'] = max(1, int_or_default(resolution.get('amount'), default=1))
+        actual_amount = 1
+    actor['classFeatureState'] = next_feature_state
+    return {
+        'capabilityId': change.get('capabilityId'),
+        'capabilityName': change.get('capabilityName'),
+        'targetId': resolution.get('targetId'),
+        'effectType': effect_type,
+        'resourceCost': resource_cost,
+        'actualAmount': actual_amount,
+        'remainingClassFeatureState': deepcopy(next_feature_state),
+        'turnEconomy': deepcopy(economy) if economy else None,
+    }
+
+
+def _apply_rest(actor: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
+    """Restore only resources guaranteed by the completed rest type."""
+
+    rest_type = _text(_change_value(change, 'restType', 'rest_type')).lower()
+    before_resources = deepcopy(actor.get('spellResources'))
+    resources = restore_spell_resources(
+        actor.get('spellResources'),
+        rest_type=rest_type,
+        class_name=_text(actor.get('class')),
+        level=max(1, int_or_default(actor.get('level'), default=1)),
+    )
+    actor['spellResources'] = resources
+    before_class_features = deepcopy(actor.get('classFeatureState'))
+    actor['classFeatureState'] = restore_class_capabilities(
+        actor.get('classFeatureState'),
+        class_name=actor.get('class'),
+        level=actor.get('level'),
+        rest_type=rest_type,
+    )
+
+    ability_state = actor.get('raceAbilityState')
+    refreshed_ability_ids: list[str] = []
+    if isinstance(ability_state, dict):
+        refreshable = {'short_rest', 'long_rest'} if rest_type == 'long_rest' else {'short_rest'}
+        for ability_id, raw_state in ability_state.items():
+            if not isinstance(raw_state, dict):
+                continue
+            refreshes_on = _text(raw_state.get('refreshesOn') or raw_state.get('refreshes_on')).lower()
+            if refreshes_on in refreshable and raw_state.get('available') is not True:
+                raw_state['available'] = True
+                raw_state.pop('usedAtTurn', None)
+                refreshed_ability_ids.append(_text(ability_id))
+
+    hp_restored = 0
+    if rest_type == 'long_rest':
+        health = actor.setdefault('health', {})
+        current_hp = max(0, int_or_default(health.get('currentHp'), default=0))
+        max_hp = max(current_hp, int_or_default(health.get('maxHp'), default=current_hp))
+        hp_restored = max(0, max_hp - current_hp)
+        health['currentHp'] = max_hp
+        health['tempHp'] = 0
+
+    return {
+        'restType': rest_type,
+        'hpRestored': hp_restored,
+        'refreshedAbilityIds': refreshed_ability_ids,
+        'spellResourcesChanged': before_resources != resources,
+        'classFeaturesChanged': before_class_features != actor.get('classFeatureState'),
+        'remainingClassFeatureState': deepcopy(actor.get('classFeatureState')),
+        'remainingSpellResources': deepcopy(resources),
+    }
+
+
 def _text(value: Any) -> str:
     return str(value or '').strip()
 
@@ -358,9 +590,8 @@ def _remove_active_quest_id(state: dict[str, Any], quest_id: Any) -> None:
 def _find_record(records: list[dict[str, Any]], *, record_id: Any = None, name: Any = None, title: Any = None) -> dict[str, Any] | None:
     requested_id = _text(record_id)
     requested_name = normalize_item_name(name or title)
-    for record in records:
-        if requested_id and _text(record.get('id')) == requested_id:
-            return record
+    if requested_id:
+        return next((record for record in records if _text(record.get('id')) == requested_id), None)
     if requested_name:
         for record in records:
             record_name = normalize_item_name(record.get('name') or record.get('title'))
@@ -645,7 +876,7 @@ SCENE_LOCAL_SCALAR_FIELDS = (
     'musicTag',
     'updatedAtTurn',
 )
-SCENE_LOCAL_LIST_FIELDS = ('activeNpcIds', 'activeQuestIds', 'items')
+SCENE_LOCAL_LIST_FIELDS = ('activeNpcIds', 'activeQuestIds', 'items', 'interactables', 'hazards')
 SCENE_LOCAL_DICT_FIELDS = ('playerPositions', 'playerZones', 'characterPositions', 'characterZones')
 PUBLIC_AUTHORED_LOCATION_FIELDS = (
     'region',
@@ -1007,6 +1238,20 @@ def _merge_objectives(existing: Any, incoming: Any) -> list[dict[str, Any]]:
         if description_explicit:
             _merge_rich_text(current, 'description', objective.get('description'))
         _set_if_present(current, 'status', objective.get('status'))
+        for key in (
+            'title',
+            'optional',
+            'prerequisiteObjectiveIds',
+            'prerequisites',
+            'completeWhen',
+            'failWhen',
+            'rules',
+            'branchId',
+            'outcomeId',
+            'metadata',
+        ):
+            if key in objective:
+                current[key] = deepcopy(objective.get(key))
     return objectives
 
 
@@ -1030,6 +1275,25 @@ def _quest_payload(change: dict[str, Any]) -> dict[str, Any]:
         'metadata': quest.get('metadata') if isinstance(quest.get('metadata'), dict) else {},
         '_titleExplicit': bool(title),
     }
+    for key in (
+        'completionPolicy',
+        'failOnObjectiveFailure',
+        'validationMode',
+        'rewards',
+        'reward',
+        'xpReward',
+        'rewardXp',
+        'experienceReward',
+        'rewardActorId',
+        'onComplete',
+        'onFail',
+        'completionConsequences',
+        'failureConsequences',
+    ):
+        if key in change:
+            payload[key] = deepcopy(change.get(key))
+        elif key in quest:
+            payload[key] = deepcopy(quest.get(key))
     if isinstance(change.get('flags'), dict):
         payload['flags'] = {**payload['flags'], **change['flags']}
     if isinstance(change.get('metadata'), dict):
@@ -1061,6 +1325,23 @@ def _merge_quest(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, An
             'completedAtTurn': payload.get('completedAtTurn'),
             'metadata': payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {},
         }
+        for key in (
+            'completionPolicy',
+            'failOnObjectiveFailure',
+            'validationMode',
+            'rewards',
+            'reward',
+            'xpReward',
+            'rewardXp',
+            'experienceReward',
+            'rewardActorId',
+            'onComplete',
+            'onFail',
+            'completionConsequences',
+            'failureConsequences',
+        ):
+            if key in payload:
+                record[key] = deepcopy(payload.get(key))
         _merge_record_source(record, payload)
         quests.append(record)
         return record
@@ -1079,6 +1360,23 @@ def _merge_quest(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, An
         flags.update(payload['flags'])
     _merge_metadata(record, payload.get('metadata'))
     _merge_record_source(record, payload)
+    for key in (
+        'completionPolicy',
+        'failOnObjectiveFailure',
+        'validationMode',
+        'rewards',
+        'reward',
+        'xpReward',
+        'rewardXp',
+        'experienceReward',
+        'rewardActorId',
+        'onComplete',
+        'onFail',
+        'completionConsequences',
+        'failureConsequences',
+    ):
+        if key in payload:
+            record[key] = deepcopy(payload.get(key))
     return record
 
 
@@ -1379,6 +1677,55 @@ def _sync_player_actor_from_combat_participant(state: dict[str, Any], participan
         actor.setdefault('health', {})['conditions'] = _string_list(participant.get('conditions'))
 
 
+def _resolve_damage_concentration(
+    state: dict[str, Any],
+    *,
+    participant_id: Any,
+    damage: Any,
+) -> dict[str, Any] | None:
+    damage_amount = max(0, int_or_default(damage, default=0))
+    if damage_amount <= 0:
+        return None
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    participant = _combat_participant(combat, participant_id)
+    if not participant:
+        return None
+    actor = find_actor(state, participant.get('id'))
+    resources = (
+        actor.get('spellResources')
+        if isinstance(actor, dict) and isinstance(actor.get('spellResources'), dict)
+        else participant.get('spellResources')
+        if isinstance(participant.get('spellResources'), dict)
+        else {}
+    )
+    if not isinstance(resources.get('concentration'), dict):
+        return None
+    resolved = resolve_concentration_check(
+        combat,
+        resources,
+        caster_id=_text(participant.get('id')),
+        damage=damage_amount,
+        roller=lambda sides: secrets.randbelow(max(1, sides)) + 1,
+    )
+    if not resolved.get('ok'):
+        return None
+    state['combat'] = deepcopy(resolved['combat'])
+    next_participant = _combat_participant(state['combat'], participant.get('id'))
+    if isinstance(actor, dict):
+        actor['spellResources'] = deepcopy(resolved['casterResources'])
+        if isinstance(next_participant, dict):
+            _sync_player_actor_from_combat_participant(state, next_participant)
+    elif isinstance(next_participant, dict):
+        next_participant['spellResources'] = deepcopy(resolved['casterResources'])
+    return {
+        'required': resolved.get('required'),
+        'maintained': resolved.get('maintained'),
+        'reason': resolved.get('reason'),
+        'check': deepcopy(resolved.get('check')),
+        'removedEffects': deepcopy(resolved.get('removedEffects') or []),
+    }
+
+
 def _sync_actor_level_to_combat_participant(state: dict[str, Any], actor: dict[str, Any]) -> None:
     combat = state.get('combat') if isinstance(state.get('combat'), dict) else None
     if not combat:
@@ -1424,6 +1771,20 @@ def _apply_combat_start(state: dict[str, Any], change: dict[str, Any]) -> dict[s
 
 def _apply_combat_update(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
     combat = ensure_combat_state(state)
+    previous_flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+    previous_economy = (
+        previous_flags.get('turnEconomy')
+        if isinstance(previous_flags.get('turnEconomy'), dict)
+        else {}
+    )
+    previous_actor_id = _text(
+        previous_flags.get('activeActorId')
+        or previous_flags.get('active_actor_id')
+        or previous_economy.get('actorId')
+        or previous_economy.get('actor_id')
+    )
+    previous_turn_index = combat.get('turnIndex')
+    previous_round = combat.get('round')
     for key in ('status', 'round', 'turnIndex', 'lastRoundSummary', 'encounterGoal'):
         _set_if_present(combat, key, change.get(key))
     if isinstance(change.get('flags'), dict):
@@ -1432,6 +1793,32 @@ def _apply_combat_update(state: dict[str, Any], change: dict[str, Any]) -> dict[
             flags = {}
             combat['flags'] = flags
         flags.update(change['flags'])
+    turn_advanced = bool(
+        previous_actor_id
+        and (
+            combat.get('turnIndex') != previous_turn_index
+            or combat.get('round') != previous_round
+        )
+    )
+    if turn_advanced:
+        target_tick = advance_spell_effect_durations(
+            combat,
+            timing='target_turn_end',
+            actor_id=previous_actor_id,
+        )
+        if target_tick.get('ok'):
+            combat = target_tick['combat']
+        source_tick = advance_spell_effect_durations(
+            combat,
+            timing='source_turn_end',
+            actor_id=previous_actor_id,
+        )
+        if source_tick.get('ok'):
+            combat = source_tick['combat']
+        state['combat'] = combat
+        for participant in combat.get('participants') or []:
+            if isinstance(participant, dict):
+                _sync_player_actor_from_combat_participant(state, participant)
     _sync_scene_combat_state(state, combat)
     return combat
 
@@ -1515,6 +1902,7 @@ def _apply_combat_condition(state: dict[str, Any], change: dict[str, Any], *, ad
         participant['isConscious'] = False
     if condition == 'surrendered' and add:
         participant['currentIntent'] = None
+    _sync_player_actor_from_combat_participant(state, participant)
     return participant
 
 
@@ -1536,18 +1924,122 @@ def _apply_combat_ability_mark_used(state: dict[str, Any], change: dict[str, Any
     return None
 
 
+def _combat_reward_transaction_changes(
+    result: dict[str, Any],
+    end_change: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Queue derived outputs followed by an all-outputs-present marker."""
+
+    outcome_ledger_id = _text(result.get('outcomeLedgerId'))
+    if not outcome_ledger_id:
+        return []
+    outputs = [
+        deepcopy(change)
+        for change in [*(result.get('changes') or []), *(result.get('questEvents') or [])]
+        if isinstance(change, dict)
+    ]
+    required_ids = sorted(
+        {
+            _text(value)
+            for value in (result.get('ledgerIds') or [])
+            if _text(value) and _text(value) != outcome_ledger_id
+        }
+    )
+    outputs.append(
+        {
+            'id': outcome_ledger_id,
+            'turnId': end_change.get('turnId') or end_change.get('turn_id'),
+            'type': 'combat.reward.finalize',
+            'source': COMBAT_REWARD_SOURCE,
+            'encounterId': result.get('encounterId'),
+            'combatOutcome': result.get('outcome'),
+            'endReason': result.get('endReason'),
+            'requiredChangeIds': required_ids,
+            'visible': False,
+            'reason': 'Finalize the exact-once encounter reward transaction.',
+        }
+    )
+    return outputs
+
+
+def _apply_interactable_action_state(
+    state: dict[str, Any],
+    change: dict[str, Any],
+) -> dict[str, Any] | None:
+    resolved = change.get('resolvedState') if isinstance(change.get('resolvedState'), dict) else None
+    if resolved is None:
+        return None
+    resolved_scene = resolved.get('currentScene') if isinstance(resolved.get('currentScene'), dict) else None
+    resolved_locations = resolved.get('locations') if isinstance(resolved.get('locations'), list) else None
+    if resolved_scene is None or resolved_locations is None:
+        return None
+    scene = _ensure_scene(state)
+    if _text(scene.get('locationId')) != _text(change.get('locationId')):
+        return None
+    for collection in ('interactables', 'hazards'):
+        scene[collection] = deepcopy(
+            resolved_scene.get(collection)
+            if isinstance(resolved_scene.get(collection), list)
+            else []
+        )
+    state['locations'] = deepcopy(resolved_locations)
+    resolved_ledger = resolved.get('interactableActionLedger')
+    if isinstance(resolved_ledger, dict):
+        state['interactableActionLedger'] = deepcopy(resolved_ledger)
+    event = change.get('event') if isinstance(change.get('event'), dict) else None
+    if event:
+        event_ledger = state.setdefault('gameplayEventLedger', [])
+        if not isinstance(event_ledger, list):
+            event_ledger = []
+            state['gameplayEventLedger'] = event_ledger
+        event_ledger.append(
+            {
+                'id': event.get('id'),
+                'type': event.get('type'),
+                'actorId': event.get('actorId'),
+                'targetId': event.get('targetId'),
+                'locationId': event.get('locationId'),
+                'turnId': change.get('turnId'),
+            }
+        )
+    return {
+        'objectAction': change.get('objectAction'),
+        'targetId': change.get('targetId'),
+        'locationId': change.get('locationId'),
+        'event': deepcopy(event),
+        'eventType': event.get('type') if event else None,
+        'targetName': event.get('targetName') if event else None,
+        'mechanicalEffectsDeferred': bool(event and event.get('mechanicalEffects')),
+    }
+
+
 def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, Any]]) -> dict[str, Any]:
     next_state = deepcopy(previous_state)
     applied: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     seen_ids = {str(entry.get('id')) for entry in next_state.get('stateChangeLedger', []) if isinstance(entry, dict)}
 
-    for raw_change in changes:
+    pending_changes = [deepcopy(change) for change in changes if isinstance(change, dict)]
+    for raw_change in pending_changes:
         if not isinstance(raw_change, dict):
             continue
         change = deepcopy(raw_change)
         change_id = str(change.get('id') or '').strip()
         if change_id and change_id in seen_ids:
+            # A retried terminal combat event is also the recovery hook for a
+            # partially-applied reward transaction. Stable output IDs make the
+            # derivation safe to enqueue again; the ledger filters completed
+            # pieces and the final marker closes only after every piece lands.
+            if str(change.get('type') or '').strip() == 'combat.end':
+                recovered_rewards = derive_combat_outcome_rewards(next_state, change)
+                if recovered_rewards.get('valid') and not recovered_rewards.get('alreadyApplied'):
+                    pending_changes.extend(
+                        _combat_reward_transaction_changes(recovered_rewards, change)
+                    )
+            if str(change.get('type') or '').strip() == 'scene.interactable.action':
+                event = change.get('event') if isinstance(change.get('event'), dict) else None
+                if event:
+                    pending_changes.extend(derive_quest_changes(next_state, event))
             skipped.append({'change': change, 'reason': 'State change was already applied.'})
             continue
 
@@ -1560,7 +2052,21 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
         if change_type == 'inventory.add' and actor:
             inventory = actor.setdefault('inventory', {})
             items = inventory.setdefault('items', [])
-            item = _merge_item(items, _item_payload(change))
+            incoming_item = _item_payload(change)
+            original_item_id = incoming_item.get('id')
+            item = _merge_item(items, incoming_item)
+            if item is None and str(change.get('source') or '').strip().lower() == 'quest_engine':
+                incoming_item = {
+                    **incoming_item,
+                    'id': _quest_reward_collision_item_id(change, actor, incoming_item),
+                    'sourceItemId': original_item_id,
+                }
+                item = _merge_item(items, incoming_item)
+                if item is not None:
+                    applied_change['sourceItemId'] = original_item_id
+            if item is None:
+                skipped.append({'change': change, 'reason': 'Item identity conflicts with an existing inventory item.'})
+                continue
             _sync_actor_and_combat_armor_class(next_state, actor)
             applied_change['itemId'] = item.get('id')
             applied_change['itemName'] = item.get('name')
@@ -1644,6 +2150,13 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             _sync_actor_health_to_combat_participant(next_state, actor)
             applied_change.update(result)
             applied_change['actualAmount'] = result['amount']
+            concentration_check = _resolve_damage_concentration(
+                next_state,
+                participant_id=actor.get('id'),
+                damage=result['amount'],
+            )
+            if concentration_check:
+                applied_change['concentrationCheck'] = concentration_check
         elif change_type == 'xp.add' and actor:
             applied_change['actualAmount'] = _apply_xp(actor, change, 1)
             _sync_actor_level_to_combat_participant(next_state, actor)
@@ -1657,6 +2170,31 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
                 continue
             applied_change.update(result)
             applied_change['actualAmount'] = 0 if result.get('alreadyKnown') else 1
+        elif change_type == 'spell.cast' and actor:
+            result = _apply_spell_cast(next_state, actor, change)
+            if not result:
+                skipped.append({'change': change, 'reason': 'Spell resource was unavailable during cast application.'})
+                continue
+            applied_change.update(result)
+            applied_change['actualAmount'] = 1 if result.get('resourceConsumed') else 0
+        elif change_type == 'class_feature.use' and actor:
+            result = _apply_class_feature_use(next_state, actor, change)
+            if not result:
+                skipped.append({'change': change, 'reason': 'Class capability was unavailable during application.'})
+                continue
+            applied_change.update(result)
+            applied_change['actualAmount'] = result.get('actualAmount', 0)
+        elif change_type == 'rest.complete' and actor:
+            result = _apply_rest(actor, change)
+            _sync_actor_health_to_combat_participant(next_state, actor)
+            applied_change.update(result)
+            applied_change['actualAmount'] = result.get('hpRestored', 0)
+        elif change_type == 'scene.interactable.action' and actor:
+            result = _apply_interactable_action_state(next_state, change)
+            if not result:
+                skipped.append({'change': change, 'reason': 'Scene-object transition was stale during application.'})
+                continue
+            applied_change.update(result)
         elif change_type == 'combat.start':
             combat = _apply_combat_start(next_state, change)
             applied_change['combatStatus'] = combat.get('status')
@@ -1681,12 +2219,31 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             )
             applied_change['battlefieldType'] = combat['battlefield'].get('environmentType')
         elif change_type == 'combat.participant.update':
+            combat_before = ensure_combat_state(next_state)
+            participant_before = _combat_participant(combat_before, change.get('participantId'))
+            hp_before = (
+                int_or_default((participant_before.get('hp') or {}).get('current'), default=0)
+                + int_or_default((participant_before.get('hp') or {}).get('temp'), default=0)
+                if isinstance(participant_before, dict)
+                else 0
+            )
             participant = _apply_combat_participant_update(next_state, change)
             if not participant:
                 skipped.append({'change': change, 'reason': 'Combat participant missing during update.'})
                 continue
             applied_change['participantId'] = participant.get('id')
             applied_change['participantName'] = participant.get('name')
+            hp_after = int_or_default((participant.get('hp') or {}).get('current'), default=hp_before) + int_or_default(
+                (participant.get('hp') or {}).get('temp'),
+                default=0,
+            )
+            concentration_check = _resolve_damage_concentration(
+                next_state,
+                participant_id=participant.get('id'),
+                damage=max(0, hp_before - hp_after),
+            )
+            if concentration_check:
+                applied_change['concentrationCheck'] = concentration_check
         elif change_type == 'combat.move':
             participant = _apply_combat_move(next_state, change)
             if not participant:
@@ -1779,6 +2336,65 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
                         participant['morale'] = min(int_or_default(participant.get('morale'), default=0), 10)
             _sync_scene_combat_state(next_state, combat)
             applied_change['combatStatus'] = combat.get('status')
+        elif change_type == 'combat.reward.finalize' and str(change.get('source') or '') == COMBAT_REWARD_SOURCE:
+            required_ids = {
+                str(value).strip()
+                for value in (change.get('requiredChangeIds') or [])
+                if str(value or '').strip()
+            }
+            if not required_ids.issubset(seen_ids):
+                skipped.append(
+                    {
+                        'change': change,
+                        'reason': 'Encounter reward transaction is incomplete; final marker was not persisted.',
+                    }
+                )
+                continue
+            reward_ledger = next_state.setdefault('combatRewardLedger', [])
+            if not isinstance(reward_ledger, list):
+                reward_ledger = []
+                next_state['combatRewardLedger'] = reward_ledger
+            reward_ledger.append(
+                {
+                    'id': change_id,
+                    'encounterId': change.get('encounterId'),
+                    'combatOutcome': change.get('combatOutcome'),
+                    'endReason': change.get('endReason'),
+                    'turnId': change.get('turnId'),
+                    'rewardChangeIds': sorted(required_ids),
+                }
+            )
+            combat = ensure_combat_state(next_state)
+            combat.setdefault('flags', {})['lastOutcomeRewards'] = {
+                'id': change_id,
+                'encounterId': change.get('encounterId'),
+                'outcome': change.get('combatOutcome'),
+                'endReason': change.get('endReason'),
+                'rewardChangeIds': sorted(required_ids),
+            }
+            applied_change['rewardChangeCount'] = len(required_ids)
+        elif (
+            str(change.get('source') or '') == COMBAT_REWARD_SOURCE
+            and change.get('questId')
+            and change.get('eventType')
+        ):
+            event_ledger = next_state.setdefault('gameplayEventLedger', [])
+            if not isinstance(event_ledger, list):
+                event_ledger = []
+                next_state['gameplayEventLedger'] = event_ledger
+            event_ledger.append(
+                {
+                    'id': change_id,
+                    'type': change_type,
+                    'eventType': change.get('eventType'),
+                    'questId': change.get('questId'),
+                    'objectiveId': change.get('objectiveId'),
+                    'encounterId': change.get('encounterId'),
+                    'turnId': change.get('turnId'),
+                }
+            )
+            applied_change['questId'] = change.get('questId')
+            applied_change['objectiveId'] = change.get('objectiveId')
         elif change_type == 'scene.update':
             scene = _ensure_scene(next_state)
             _apply_scene_fields(scene, change)
@@ -1790,6 +2406,9 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
         elif change_type == 'scene.item.add':
             scene = _ensure_scene(next_state)
             item = _merge_scene_item(_scene_items(scene), _item_payload(change))
+            if item is None:
+                skipped.append({'change': change, 'reason': 'Item identity conflicts with an existing scene item.'})
+                continue
             applied_change['itemId'] = item.get('id')
             applied_change['itemName'] = item.get('name')
             applied_change['actualAmount'] = max(1, int_or_default(change.get('quantity', item.get('quantity')), default=1))
@@ -1805,6 +2424,12 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             applied_change['itemName'] = _change_value(change, 'itemName', 'item_name') or removed.get('name')
             applied_change['actualAmount'] = max(1, int_or_default(change.get('quantity'), default=1))
         elif change_type in {'location.discover', 'location.update'}:
+            if change_type == 'location.update' and not _location_record(
+                next_state,
+                location_id=change.get('locationId'),
+            ):
+                skipped.append({'change': change, 'reason': 'Location update target missing during application.'})
+                continue
             payload = _location_payload(change, status='discovered' if change_type == 'location.discover' else None)
             location = _merge_location(next_state, payload)
             applied_change['locationId'] = location.get('id')
@@ -1830,6 +2455,12 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             applied_change['locationId'] = first.get('id')
             applied_change['connectedLocationId'] = second.get('id')
         elif change_type in {'quest.add', 'quest.update'}:
+            if change_type == 'quest.update' and not _quest_record(
+                next_state,
+                quest_id=change.get('questId'),
+            ):
+                skipped.append({'change': change, 'reason': 'Quest update target missing during application.'})
+                continue
             quest = _merge_quest(next_state, _quest_payload(change))
             applied_change['questId'] = quest.get('id')
             applied_change['questTitle'] = quest.get('title')
@@ -1837,6 +2468,15 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
                 scene = _ensure_scene(next_state)
                 scene['activeQuestIds'] = _merge_unique(scene.get('activeQuestIds'), [quest.get('id')])
         elif change_type in {'quest.objective.add', 'quest.objective.update'}:
+            if change_type == 'quest.objective.update':
+                target_quest = _quest_record(next_state, quest_id=change.get('questId'))
+                target_objective = _find_record(
+                    _ensure_list(target_quest, 'objectives') if isinstance(target_quest, dict) else [],
+                    record_id=change.get('objectiveId'),
+                )
+                if not target_objective:
+                    skipped.append({'change': change, 'reason': 'Quest objective update target missing during application.'})
+                    continue
             quest = _apply_objective_change(next_state, change)
             if not quest:
                 skipped.append({'change': change, 'reason': 'Quest missing during objective update.'})
@@ -1858,6 +2498,12 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             applied_change['questId'] = quest.get('id')
             applied_change['questTitle'] = quest.get('title')
         elif change_type in {'npc.discover', 'npc.update'}:
+            if change_type == 'npc.update' and not _npc_record(
+                next_state,
+                npc_id=change.get('npcId'),
+            ):
+                skipped.append({'change': change, 'reason': 'NPC update target missing during application.'})
+                continue
             previous_npc = _npc_record(next_state, npc_id=change.get('npcId'), name=change.get('name'))
             previous_location_id = previous_npc.get('locationId') if isinstance(previous_npc, dict) else None
             membership_change = _party_membership_change(change)
@@ -1969,6 +2615,15 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
         if change_id:
             seen_ids.add(change_id)
             append_change_ledger(next_state, applied_change)
+        pending_changes.extend(derive_quest_changes(next_state, applied_change))
+        if change_type == 'scene.interactable.action' and isinstance(applied_change.get('event'), dict):
+            pending_changes.extend(derive_quest_changes(next_state, applied_change['event']))
+        if change_type == 'combat.end':
+            reward_result = derive_combat_outcome_rewards(next_state, applied_change)
+            if reward_result.get('valid') and not reward_result.get('alreadyApplied'):
+                pending_changes.extend(
+                    _combat_reward_transaction_changes(reward_result, applied_change)
+                )
 
     next_state['lastUpdatedAt'] = utc_now().isoformat()
     return {'nextState': next_state, 'appliedChanges': applied, 'skippedChanges': skipped}
@@ -2016,6 +2671,10 @@ def persist_state_to_database(
         if int_or_default(actor.get('level'), default=0) > int_or_default(player.level, default=1):
             player.level = int(actor['level'])
         sync_stats_for_level(stats, player.level or 1)
+        if isinstance(actor.get('raceAbilityState'), dict):
+            stats['race_ability_state'] = deepcopy(actor['raceAbilityState'])
+        if isinstance(actor.get('classFeatureState'), dict):
+            stats['class_feature_state'] = deepcopy(actor['classFeatureState'])
         health = actor.setdefault('health', {})
         current_hp = max(0, int_or_default(stats.get('current_hp', stats.get('hp_current')), default=0))
         max_hp = max(current_hp, int_or_default(stats.get('max_hp', stats.get('hp_max')), default=current_hp))
@@ -2031,25 +2690,40 @@ def persist_state_to_database(
         _sync_actor_level_to_combat_participant(state, actor)
         player.stats = safe_json_dumps(stats, {})
         spellbook = actor.get('spellbook') if isinstance(actor.get('spellbook'), dict) else {}
-        sheet_source = player.character_sheet
+        spell_resources = actor.get('spellResources') if isinstance(actor.get('spellResources'), dict) else None
+        sheet = character_sheet_record(player.character_sheet)
         if spellbook.get('knownSpells'):
-            sheet = character_sheet_record(sheet_source)
-            sheet['spellbook'] = normalize_spellbook(spellbook)
+            sheet['spellbook'] = normalize_spellbook(spellbook, class_name=player.class_)
             sheet['spells'] = known_spell_names(sheet['spellbook'])
-            sheet_source = safe_json_dumps(sheet, {})
-        sheet, changed = ensure_character_sheet_spellbook(
-            sheet_source,
+        if spell_resources is not None:
+            sheet['spellResources'] = deepcopy(spell_resources)
+        if isinstance(actor.get('classFeatureState'), dict):
+            sheet['classFeatureState'] = deepcopy(actor['classFeatureState'])
+        sheet, spellbook_changed = ensure_character_sheet_spellbook(
+            sheet,
             class_name=player.class_,
             race_name=player.race,
             race_selection=player.race_selection,
             level=player.level or 1,
         )
-        if changed or spellbook.get('knownSpells'):
+        sheet, resources_changed = ensure_character_sheet_spell_resources(
+            sheet,
+            class_name=player.class_,
+            level=player.level or 1,
+        )
+        if (
+            spellbook_changed
+            or resources_changed
+            or spellbook.get('knownSpells')
+            or spell_resources is not None
+            or isinstance(actor.get('classFeatureState'), dict)
+        ):
             player.character_sheet = safe_json_dumps(sheet, {})
-            synced_spellbook = normalize_spellbook(sheet.get('spellbook'))
+            synced_spellbook = normalize_spellbook(sheet.get('spellbook'), class_name=player.class_)
             if synced_spellbook.get('knownSpells'):
                 actor['spellbook'] = synced_spellbook
                 actor['spells'] = known_spell_names(synced_spellbook)
+            actor['spellResources'] = deepcopy(sheet['spellResources'])
 
     session_obj.state_snapshot = safe_json_dumps(state, {})
 

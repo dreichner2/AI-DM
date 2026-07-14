@@ -5,14 +5,18 @@ from dataclasses import dataclass
 import re
 from typing import Any, Callable
 
+from aidm_server.canon_text import int_or_default
 from aidm_server.combat.difficulty import normalize_combat_difficulty_ai
 from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
 from aidm_server.combat.intent_planner import attach_intents_to_combat, plan_enemy_intents
 from aidm_server.combat.state import (
     combat_summary_for_dm,
     combat_turn_context,
+    consume_combat_turn_economy,
+    default_turn_economy,
     default_battlefield,
     ensure_combat_state,
+    ensure_combat_turn_economy,
     instantiate_creature,
     normalize_combat_state,
     player_combat_participant,
@@ -28,7 +32,7 @@ from aidm_server.creatures.resolver import (
 from aidm_server.database import db
 from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start
 from aidm_server.game_state.models import display_actor_id, stable_change_id, stable_slug
-from aidm_server.models import Campaign, CombatEncounter, DmTurn, Session, safe_json_dumps
+from aidm_server.models import Campaign, CombatEncounter, DmTurn, Session, safe_json_dumps, safe_json_loads
 from aidm_server.provider_priority import foreground_provider_reservation
 from aidm_server.time_utils import utc_now
 
@@ -505,6 +509,83 @@ def _actor_name_by_id(combat: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _turn_combat_action(turn: DmTurn) -> dict[str, Any] | None:
+    metadata = safe_json_loads(turn.metadata_json, {})
+    action_intent = metadata.get('action_intent') if isinstance(metadata, dict) else None
+    if not isinstance(action_intent, dict):
+        return None
+    combat_action = action_intent.get('combat')
+    if not isinstance(combat_action, dict) or combat_action.get('authoritative') is not True:
+        return None
+    return combat_action
+
+
+def _consume_turn_combat_action(
+    combat: dict[str, Any],
+    *,
+    turn: DmTurn,
+    actor_id: str,
+) -> tuple[bool, str]:
+    combat_action = _turn_combat_action(turn)
+    if combat_action is None:
+        return True, ''
+    economy = combat_action.get('economy') if isinstance(combat_action.get('economy'), dict) else {}
+    consumed, reason, _remaining = consume_combat_turn_economy(
+        combat,
+        actor_id=actor_id,
+        action_id=combat_action.get('action_id'),
+        action_claim=safe_json_dumps(
+            {
+                'actionType': combat_action.get('action_type'),
+                'targetId': combat_action.get('target_id'),
+                'weaponId': combat_action.get('weapon_id'),
+            },
+            {},
+        ),
+        action_cost=int_or_default(economy.get('action'), default=0),
+        bonus_action_cost=int_or_default(economy.get('bonusAction'), default=0),
+        reaction_cost=int_or_default(economy.get('reaction'), default=0),
+        movement_cost=int_or_default(economy.get('movementCost'), default=0),
+    )
+    return consumed, reason
+
+
+def _combat_action_movement_change(turn: DmTurn, combat: dict[str, Any], *, actor_id: str) -> dict[str, Any] | None:
+    combat_action = _turn_combat_action(turn)
+    if not isinstance(combat_action, dict) or str(combat_action.get('action_type') or '') not in {'reposition', 'disengage'}:
+        return None
+    participant = next(
+        (
+            item
+            for item in combat.get('participants') or []
+            if isinstance(item, dict) and str(item.get('id') or '') == actor_id
+        ),
+        None,
+    )
+    if not isinstance(participant, dict):
+        return None
+    position = participant.get('position') if isinstance(participant.get('position'), dict) else {}
+    from_range = str(position.get('rangeBand') or 'near').strip().lower()
+    to_range = {
+        'melee': 'near',
+        'near': 'far',
+        'far': 'distant',
+        'distant': 'distant',
+    }.get(from_range, 'far')
+    if to_range == from_range:
+        return None
+    return {
+        'id': stable_change_id(turn.turn_id, 'combat.action.move', actor_id, combat_action.get('action_id'), from_range, to_range),
+        'turnId': turn.turn_id,
+        'type': 'combat.move',
+        'participantId': actor_id,
+        'fromRangeBand': from_range,
+        'toRangeBand': to_range,
+        'reason': f"{combat_action.get('action_type')} consumed movement and changed range band.",
+        'visible': True,
+    }
+
+
 def _combat_turn_flags(turn_context: dict[str, Any], *, submitted_actor_id: str | None = None) -> dict[str, Any]:
     current_actor = turn_context.get('currentActor') if isinstance(turn_context.get('currentActor'), dict) else {}
     next_actor = turn_context.get('immediateNextActor') if isinstance(turn_context.get('immediateNextActor'), dict) else {}
@@ -516,9 +597,14 @@ def _combat_turn_flags(turn_context: dict[str, Any], *, submitted_actor_id: str 
     ]
     submitted_actor_id = str(submitted_actor_id or '').strip()
     current_actor_id = str(current_actor.get('id') or '').strip()
-    off_turn = bool(submitted_actor_id and current_actor_id and submitted_actor_id != current_actor_id)
+    off_turn = bool(
+        submitted_actor_id
+        and current_actor_id
+        and submitted_actor_id != current_actor_id
+        and current_actor.get('team') != 'enemy'
+    )
     return {
-        'turnOrderMode': turn_context.get('mode') or 'players_then_enemies',
+        'turnOrderMode': turn_context.get('mode') or 'initiative_order_with_enemy_blocks',
         'turnOrder': turn_context.get('turnOrderIds') or [],
         'turnOrderText': turn_context.get('turnOrderText') or '',
         'activeActorId': current_actor_id or None,
@@ -544,6 +630,13 @@ def _sync_combat_turn_context(combat: dict[str, Any], *, submitted_actor_id: str
     flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
     flags.update(_combat_turn_flags(turn_context, submitted_actor_id=submitted_actor_id))
     combat['flags'] = flags
+    current_actor = turn_context.get('currentActor') if isinstance(turn_context.get('currentActor'), dict) else {}
+    if current_actor.get('id'):
+        ensure_combat_turn_economy(
+            combat,
+            actor_id=current_actor.get('id'),
+            round_number=combat.get('round'),
+        )
     return turn_context
 
 
@@ -556,6 +649,13 @@ def _combat_turn_update_change(
 ) -> dict[str, Any] | None:
     if turn_context.get('turnIndex') is None:
         return None
+    flags = _combat_turn_flags(
+        turn_context,
+        submitted_actor_id=(combat.get('flags') or {}).get('submittedActorId') if isinstance(combat.get('flags'), dict) else None,
+    )
+    turn_economy = (combat.get('flags') or {}).get('turnEconomy') if isinstance(combat.get('flags'), dict) else None
+    if isinstance(turn_economy, dict):
+        flags['turnEconomy'] = deepcopy(turn_economy)
     return {
         'id': stable_change_id(
             turn_id,
@@ -567,7 +667,7 @@ def _combat_turn_update_change(
         'type': 'combat.update',
         'round': combat.get('round') or 1,
         'turnIndex': turn_context.get('turnIndex'),
-        'flags': _combat_turn_flags(turn_context, submitted_actor_id=(combat.get('flags') or {}).get('submittedActorId') if isinstance(combat.get('flags'), dict) else None),
+        'flags': flags,
         'reason': reason,
         'visible': False,
     }
@@ -576,6 +676,15 @@ def _combat_turn_update_change(
 def combat_turn_advance_change(*, state: dict[str, Any], turn: DmTurn, actor_id: str | None = None) -> dict[str, Any] | None:
     combat = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
     if not _combat_is_active(combat):
+        return None
+    combat_action = _turn_combat_action(turn)
+    # Only a server-issued action belonging to the eligible active actor may
+    # hand initiative to the enemy block.  Chat, item/interact intents, and
+    # other narration-bearing turns must never implicitly end combat turns.
+    if combat_action is None:
+        return None
+    action_economy = combat_action.get('economy') if isinstance(combat_action.get('economy'), dict) else {}
+    if action_economy.get('endsTurn') is not True:
         return None
     flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
     submitted_actor_id = str(flags.get('submittedActorId') or actor_id or display_actor_id(turn.player_id)).strip()
@@ -606,6 +715,7 @@ def combat_turn_advance_change(*, state: dict[str, Any], turn: DmTurn, actor_id:
     handoff_actor = current_context.get('handoffActor') if isinstance(current_context.get('handoffActor'), dict) else {}
     next_context = combat_turn_context(combat, active_actor_id=handoff_actor.get('id'))
     next_round = current_context.get('nextRound') or combat.get('round') or 1
+    next_economy = default_turn_economy(handoff_actor.get('id'), next_round)
     return {
         'id': stable_change_id(
             turn.turn_id,
@@ -620,6 +730,7 @@ def combat_turn_advance_change(*, state: dict[str, Any], turn: DmTurn, actor_id:
         'turnIndex': int(next_index) % max(1, len(order)),
         'flags': {
             **_combat_turn_flags(next_context, submitted_actor_id=None),
+            'turnEconomy': next_economy,
             'submittedActorId': None,
             'offTurnSubmission': False,
             'lastResolvedActorId': active_actor_id or (current_context.get('currentActor') or {}).get('id'),
@@ -845,6 +956,7 @@ def _prepare_campaign_pack_combat_start(
             'flags': {
                 'combatStartedBy': combat_started_by,
                 'initiativeRequired': initiative_required,
+                'initiativeSeed': f'combat:{session_obj.session_id}:{turn.turn_id}:campaign_pack',
                 'combatDifficultyAI': _combat_difficulty_ai(working_state),
             },
         },
@@ -868,6 +980,7 @@ def _prepare_campaign_pack_combat_start(
         {
             'combatStartedBy': combat_started_by,
             'initiativeRequired': initiative_required,
+            'initiativeSeed': f'combat:{session_obj.session_id}:{turn.turn_id}:campaign_pack',
             'combatDifficultyAI': _combat_difficulty_ai(working_state),
             'resolverMethod': 'campaign_pack',
             'creatureSource': 'campaign_pack',
@@ -877,7 +990,7 @@ def _prepare_campaign_pack_combat_start(
     )
     combat_payload['flags'] = flags
     combat_payload = normalize_combat_state(combat_payload, scene)
-    turn_context = _sync_combat_turn_context(combat_payload, submitted_actor_id=submitted_actor_id, active_actor_id=submitted_actor_id)
+    turn_context = _sync_combat_turn_context(combat_payload, submitted_actor_id=submitted_actor_id)
     intent_boundary = _plan_enemy_intents_at_provider_boundary(
         combat_payload,
         session_obj=session_obj,
@@ -1079,6 +1192,19 @@ def prepare_combat_for_turn(
             }
 
     if _combat_is_active(combat):
+        action_consumed, action_block_reason = _consume_turn_combat_action(
+            combat,
+            turn=turn,
+            actor_id=submitted_actor_id,
+        )
+        if not action_consumed:
+            debug['combatActionBlockedReason'] = action_block_reason
+            debug['combatSummary'] = combat_summary_for_dm(combat)
+            return {
+                'changes': [],
+                'debug': debug,
+                'combatContext': debug['combatSummary'],
+            }
         intent_boundary = _plan_enemy_intents_at_provider_boundary(
             combat,
             session_obj=session_obj,
@@ -1107,6 +1233,9 @@ def prepare_combat_for_turn(
             reason='Combat roster prepared before narration.',
         )
         changes = _intent_changes(turn.turn_id, combat_with_intents, intent_plan)
+        movement_change = _combat_action_movement_change(turn, combat, actor_id=submitted_actor_id)
+        if movement_change:
+            changes = [movement_change, *changes]
         if turn_update_change:
             changes = [turn_update_change, *changes]
         return _defer_combat_prepare_finalization({
@@ -1183,10 +1312,12 @@ def prepare_combat_for_turn(
             **encounter_flags,
             'combatStartedBy': 'player_hostile_action',
             'initiativeRequired': True,
+            'initiativeSeed': f'combat:{session_obj.session_id}:{turn.turn_id}:player_hostile_action',
             'combatDifficultyAI': _combat_difficulty_ai(working_state),
         },
     }
-    _sync_combat_turn_context(combat_payload, submitted_actor_id=submitted_actor_id, active_actor_id=submitted_actor_id)
+    combat_payload = normalize_combat_state(combat_payload, scene)
+    _sync_combat_turn_context(combat_payload, submitted_actor_id=submitted_actor_id)
     intent_boundary = _plan_enemy_intents_at_provider_boundary(
         combat_payload,
         session_obj=session_obj,
@@ -1321,10 +1452,12 @@ def prepare_combat_from_dm_response(
             **encounter_flags,
             'combatStartedBy': 'post_dm_adjudicator',
             'initiativeRequired': bool(re.search(r'\binitiative\b', dm_response or '', re.IGNORECASE)),
+            'initiativeSeed': f'combat:{session_obj.session_id}:{turn.turn_id}:post_dm_adjudicator',
             'combatDifficultyAI': _combat_difficulty_ai(working_state),
         },
     }
-    debug['turnContext'] = _sync_combat_turn_context(combat_payload, submitted_actor_id=submitted_actor_id, active_actor_id=submitted_actor_id)
+    combat_payload = normalize_combat_state(combat_payload, scene)
+    debug['turnContext'] = _sync_combat_turn_context(combat_payload, submitted_actor_id=submitted_actor_id)
     intent_boundary = _plan_enemy_intents_at_provider_boundary(
         combat_payload,
         session_obj=session_obj,

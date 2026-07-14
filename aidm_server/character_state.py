@@ -6,12 +6,24 @@ import re
 from typing import Any
 
 from aidm_server.canon_text import int_or_default, normalized_name
+from aidm_server.character_backgrounds import background_from_character_sheet
+from aidm_server.class_capabilities import capabilities_for_class, normalize_class_feature_state
+from aidm_server.character_progression import (
+    DEFAULT_HIT_DIE,
+    class_archetype as progression_class_archetype,
+    class_max_hp,
+    hit_die_for_class,
+    max_hp_for_level,
+    proficiency_bonus_for_level,
+)
+from aidm_server.character_resources import spell_resources_from_character_sheet
 from aidm_server.database import db
 from aidm_server.models import DmTurn, Player, safe_json_dumps, safe_json_loads
 from aidm_server.spellbook import (
     class_spell_archetype,
     known_spell_names,
     merge_spellbooks,
+    normalize_spellbook,
     spellbook_for_character,
     spellbook_from_character_sheet,
 )
@@ -152,6 +164,16 @@ SKILL_NAME_ALIASES = {
     'thieves_tools': 'thieves_tools',
 }
 KNOWN_SKILLS = set(SKILL_ABILITY)
+KNOWN_TOOLS = {
+    'artisan_tools',
+    'calligraphers_supplies',
+    'disguise_kit',
+    'forgery_kit',
+    'gaming_set',
+    'herbalism_kit',
+    'land_vehicles',
+    'thieves_tools',
+}
 
 GOLD_SPEND_PATTERNS = [
     re.compile(r'\b(?:spend|pay|paid|buy|bought|purchase|purchased|hand over|give)\s+(?:[^.!?\n]{0,80}?\s+)?(\d{1,5})\s+(?:gp|gold)\b', re.IGNORECASE),
@@ -305,6 +327,75 @@ def _extract_skill_expertise(stats: dict[str, Any], sheet: dict[str, Any]) -> li
     return sorted(expertise)
 
 
+def _collect_named_proficiencies(raw: Any, proficiencies: set[str]) -> None:
+    if isinstance(raw, str):
+        key = _skill_key(raw)
+        if key:
+            proficiencies.add(key)
+        return
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                if item.get('proficient') is False or item.get('trained') is False:
+                    continue
+                _collect_named_proficiencies(
+                    item.get('name') or item.get('tool') or item.get('id'),
+                    proficiencies,
+                )
+            else:
+                _collect_named_proficiencies(item, proficiencies)
+        return
+    if isinstance(raw, dict):
+        for key, enabled in raw.items():
+            if isinstance(enabled, dict):
+                enabled = enabled.get('proficient', enabled.get('trained', enabled.get('value', True)))
+            if enabled:
+                _collect_named_proficiencies(key, proficiencies)
+
+
+def _extract_tool_proficiencies(stats: dict[str, Any], sheet: dict[str, Any]) -> list[str]:
+    proficiencies: set[str] = set()
+    for source in (stats, sheet):
+        if not isinstance(source, dict):
+            continue
+        for key in ('tool_proficiencies', 'toolProficiencies', 'proficientTools', 'tools'):
+            _collect_named_proficiencies(source.get(key), proficiencies)
+        # Legacy sheets sometimes placed Thieves' Tools beside normal skills.
+        legacy_skills: set[str] = set()
+        for key in ('skill_proficiencies', 'skillProficiencies', 'proficientSkills'):
+            _collect_named_proficiencies(source.get(key), legacy_skills)
+        proficiencies.update(legacy_skills & KNOWN_TOOLS)
+    return sorted(proficiencies)
+
+
+def _extract_tool_expertise(stats: dict[str, Any], sheet: dict[str, Any]) -> list[str]:
+    expertise: set[str] = set()
+    for source in (stats, sheet):
+        if not isinstance(source, dict):
+            continue
+        for key in ('tool_expertise', 'toolExpertise', 'expertTools'):
+            _collect_named_proficiencies(source.get(key), expertise)
+    return sorted(expertise)
+
+
+def _collect_languages(raw: Any, languages: dict[str, str]) -> None:
+    values = raw if isinstance(raw, list) else [raw] if isinstance(raw, str) else []
+    for value in values:
+        language = re.sub(r'\s+', ' ', str(value or '').strip())
+        if language:
+            languages.setdefault(language.casefold(), language[:60])
+
+
+def _extract_languages(stats: dict[str, Any], sheet: dict[str, Any]) -> list[str]:
+    languages: dict[str, str] = {}
+    for source in (stats, sheet):
+        if not isinstance(source, dict):
+            continue
+        for key in ('languages', 'language_proficiencies', 'languageProficiencies'):
+            _collect_languages(source.get(key), languages)
+    return sorted(languages.values(), key=str.casefold)
+
+
 def _collect_ability_values(raw: Any, proficiencies: set[str]) -> None:
     if isinstance(raw, str):
         key = _skill_key(raw).removesuffix('_saving_throw').removesuffix('_save')
@@ -329,6 +420,9 @@ def _collect_ability_values(raw: Any, proficiencies: set[str]) -> None:
 
 
 def _base_class_name(value: Any) -> str:
+    progression_class = progression_class_archetype(value)
+    if progression_class:
+        return progression_class
     class_name = normalized_name(value)
     for candidate in CLASS_SAVING_THROW_PROFICIENCIES:
         if class_name == candidate or class_name.startswith(f'{candidate} '):
@@ -357,15 +451,20 @@ def _extract_saving_throw_proficiencies(
     return sorted(proficiencies)
 
 
-def _race_skill_proficiencies(player: Player) -> list[str]:
+def _race_definition_for_player(player: Player) -> dict[str, Any] | None:
     try:
         from aidm_server.race_system import race_definition_from_selection, race_selection_from_json
 
         selection = race_selection_from_json(player.race_selection, player.race)
         race = race_definition_from_selection(selection, player.race)
     except (TypeError, ValueError):
-        return []
-    if not isinstance(race, dict):
+        return None
+    return race if isinstance(race, dict) else None
+
+
+def _race_skill_proficiencies(player: Player) -> list[str]:
+    race = _race_definition_for_player(player)
+    if not race:
         return []
 
     proficiencies: set[str] = set()
@@ -381,6 +480,15 @@ def _race_skill_proficiencies(player: Player) -> list[str]:
             if skill_key in KNOWN_SKILLS:
                 proficiencies.add(skill_key)
     return sorted(proficiencies)
+
+
+def _race_languages(player: Player) -> list[str]:
+    race = _race_definition_for_player(player)
+    if not race:
+        return []
+    languages: dict[str, str] = {}
+    _collect_languages(race.get('languages'), languages)
+    return sorted(languages.values(), key=str.casefold)
 
 
 def _extract_ability_scores(stats: dict[str, Any]) -> dict[str, int]:
@@ -404,9 +512,21 @@ def point_buy_spent(scores: dict[str, int]) -> int:
     return spent
 
 
-def validate_point_buy_payload(raw_stats: Any, *, level: int) -> tuple[dict[str, Any] | None, str | None]:
+def validate_point_buy_payload(
+    raw_stats: Any,
+    *,
+    level: int,
+    class_name: str | None = None,
+    require_complete_ability_scores: bool = False,
+) -> tuple[dict[str, Any] | None, str | None]:
     stats = _as_record(raw_stats)
-    has_point_buy_shape = isinstance(stats.get('ability_scores'), dict) or isinstance(stats.get('point_buy'), dict)
+    flat_ability_keys = {key for key in ABILITY_KEYS if key in stats}
+    has_point_buy_shape = (
+        isinstance(stats.get('ability_scores'), dict)
+        or isinstance(stats.get('point_buy'), dict)
+        or len(flat_ability_keys) == len(ABILITY_KEYS)
+        or require_complete_ability_scores
+    )
     if not has_point_buy_shape:
         return stats, None
 
@@ -423,11 +543,21 @@ def validate_point_buy_payload(raw_stats: Any, *, level: int) -> tuple[dict[str,
     if spent > POINT_BUY_BUDGET:
         return None, f'stats point buy exceeds {POINT_BUY_BUDGET} points.'
 
-    con_mod = ability_modifier(scores['constitution'])
-    max_hp = int_or_default(
-        stats.get('max_hp', stats.get('hp_max', stats.get('max_hit_points'))),
-        default=max(1, 8 + con_mod + max(0, int(level) - 1) * max(1, 5 + con_mod)),
+    derived_hit_die = hit_die_for_class(class_name)
+    derived_max_hp = class_max_hp(
+        class_name,
+        constitution_score=scores['constitution'],
+        level=level,
     )
+    if str(class_name or '').strip():
+        # Class durability is server-owned for normal character creation. The
+        # client may preview HP, but cannot grant itself a larger hit die.
+        max_hp = derived_max_hp
+    else:
+        max_hp = int_or_default(
+            stats.get('max_hp', stats.get('hp_max', stats.get('max_hit_points'))),
+            default=derived_max_hp,
+        )
     current_hp = int_or_default(
         stats.get('current_hp', stats.get('hp_current', stats.get('hp'))),
         default=max_hp,
@@ -451,7 +581,7 @@ def validate_point_buy_payload(raw_stats: Any, *, level: int) -> tuple[dict[str,
         'gold': gold,
         'xp': xp,
         'experience': xp,
-        'proficiency_bonus': 2 + max(0, int(level) - 1) // 4,
+        'proficiency_bonus': proficiency_bonus_for_level(level),
         'armor_class': int_or_default(stats.get('armor_class', stats.get('ac')), default=10 + ability_modifier(scores['dexterity'])),
         'initiative': int_or_default(stats.get('initiative'), default=ability_modifier(scores['dexterity'])),
         'speed': int_or_default(stats.get('speed'), default=30),
@@ -460,16 +590,108 @@ def validate_point_buy_payload(raw_stats: Any, *, level: int) -> tuple[dict[str,
     for key, score in scores.items():
         normalized[key] = score
         normalized[ABILITY_LABELS[key].lower()] = score
+    if str(class_name or '').strip():
+        normalized['hit_die'] = derived_hit_die
+        normalized['base_max_hp'] = derived_max_hp
+        normalized['max_hp_bonus'] = 0
     return normalized, None
 
 
-def serialize_stats_payload(raw_stats: Any, *, level: int) -> tuple[str | None, str | None]:
-    if raw_stats is None:
+def serialize_stats_payload(
+    raw_stats: Any,
+    *,
+    level: int,
+    class_name: str | None = None,
+    require_complete_ability_scores: bool = False,
+) -> tuple[str | None, str | None]:
+    if raw_stats is None and not require_complete_ability_scores:
         return None, None
-    normalized, error = validate_point_buy_payload(raw_stats, level=level)
+    normalized, error = validate_point_buy_payload(
+        raw_stats,
+        level=level,
+        class_name=class_name,
+        require_complete_ability_scores=require_complete_ability_scores,
+    )
     if error:
         return None, error
     return safe_json_dumps(normalized, {}), None
+
+
+def sync_character_derived_stats(
+    raw_stats: dict[str, Any],
+    *,
+    class_name: str | None,
+    level: int,
+    previous_class_name: str | None = None,
+    previous_level: int | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Update level/class-derived fields without erasing damage or bonuses."""
+
+    stats = dict(raw_stats)
+    before = safe_json_dumps(stats, {})
+    stats['proficiency_bonus'] = proficiency_bonus_for_level(level)
+    next_hit_die = hit_die_for_class(class_name)
+    stats['hit_die'] = next_hit_die
+
+    scores = _extract_ability_scores(stats)
+    constitution = scores.get('constitution')
+    if constitution is None:
+        return stats, safe_json_dumps(stats, {}) != before
+
+    prior_level = previous_level if previous_level is not None else level
+    prior_class = previous_class_name if previous_class_name is not None else class_name
+    previous_hit_die = hit_die_for_class(prior_class)
+    con_mod = ability_modifier(constitution)
+    previous_base = max_hp_for_level(
+        hit_die=previous_hit_die,
+        constitution_modifier=con_mod,
+        level=prior_level,
+    )
+    previous_legacy_base = max_hp_for_level(
+        hit_die=DEFAULT_HIT_DIE,
+        constitution_modifier=con_mod,
+        level=prior_level,
+    )
+    current_max_hp = max(
+        0,
+        int_or_default(
+            stats.get('max_hp', stats.get('hp_max', stats.get('max_hit_points'))),
+            default=previous_base,
+        ),
+    )
+    current_hp = max(
+        0,
+        int_or_default(
+            stats.get('current_hp', stats.get('hp_current', stats.get('hp'))),
+            default=current_max_hp,
+        ),
+    )
+    if 'max_hp_bonus' in stats:
+        max_hp_bonus = max(0, int_or_default(stats.get('max_hp_bonus'), default=0))
+    elif current_max_hp in {previous_base, previous_legacy_base}:
+        max_hp_bonus = 0
+    else:
+        max_hp_bonus = max(0, current_max_hp - previous_base)
+
+    next_base = max_hp_for_level(
+        hit_die=next_hit_die,
+        constitution_modifier=con_mod,
+        level=level,
+    )
+    next_max_hp = next_base + max_hp_bonus
+    hp_delta = next_max_hp - current_max_hp
+    next_current_hp = 0 if current_hp <= 0 else max(0, min(next_max_hp, current_hp + hp_delta))
+    stats.update(
+        {
+            'base_max_hp': next_base,
+            'max_hp_bonus': max_hp_bonus,
+            'max_hp': next_max_hp,
+            'hp_max': next_max_hp,
+            'current_hp': next_current_hp,
+            'hp_current': next_current_hp,
+        }
+    )
+    return stats, safe_json_dumps(stats, {}) != before
 
 
 def character_state_for_player(player: Player | None) -> dict[str, Any]:
@@ -479,10 +701,17 @@ def character_state_for_player(player: Player | None) -> dict[str, Any]:
     stats = _as_record(player.stats)
     sheet = _as_record(player.character_sheet)
     scores = _extract_ability_scores(stats)
-    con_mod = ability_modifier(scores.get('constitution'))
     max_hp = int_or_default(
         stats.get('max_hp', stats.get('hp_max', stats.get('max_hit_points'))),
-        default=(max(1, 8 + con_mod + max(0, int(player.level or 1) - 1) * max(1, 5 + con_mod)) if scores else 0),
+        default=(
+            class_max_hp(
+                player.class_,
+                constitution_score=scores.get('constitution', 10),
+                level=player.level or 1,
+            )
+            if scores
+            else 0
+        ),
     )
     current_hp = int_or_default(
         stats.get('current_hp', stats.get('hp_current', stats.get('hp'))),
@@ -495,7 +724,8 @@ def character_state_for_player(player: Player | None) -> dict[str, Any]:
     platinum = max(0, int_or_default(stats.get('platinum'), default=0))
     xp = max(0, int_or_default(stats.get('xp', stats.get('experience')), default=0))
     spent = point_buy_spent(scores) if scores and all(key in scores for key in ABILITY_KEYS) else None
-    spellbook = merge_spellbooks(
+    background = background_from_character_sheet(sheet)
+    spellbook = normalize_spellbook(merge_spellbooks(
         spellbook_from_character_sheet(player.character_sheet),
         spellbook_for_character(
             class_name=player.class_,
@@ -503,6 +733,24 @@ def character_state_for_player(player: Player | None) -> dict[str, Any]:
             race_selection=player.race_selection,
             level=player.level or 1,
         ),
+    ), class_name=player.class_)
+    spell_resources = spell_resources_from_character_sheet(
+        player.character_sheet,
+        class_name=player.class_,
+        level=player.level or 1,
+        class_levels=sheet.get('classLevels') or sheet.get('class_levels'),
+    )
+    raw_class_feature_state = (
+        sheet.get('classFeatureState')
+        or sheet.get('class_feature_state')
+        or stats.get('class_feature_state')
+        or stats.get('classFeatureState')
+    )
+    class_capabilities = capabilities_for_class(player.class_, player.level or 1)
+    class_feature_state = normalize_class_feature_state(
+        raw_class_feature_state,
+        class_name=player.class_,
+        level=player.level or 1,
     )
 
     state = {
@@ -526,13 +774,20 @@ def character_state_for_player(player: Player | None) -> dict[str, Any]:
         'platinum': platinum,
         'xp': xp,
         'level': int(player.level or 1),
-        'proficiency_bonus': int_or_default(stats.get('proficiency_bonus'), default=2 + max(0, int(player.level or 1) - 1) // 4),
+        'proficiency_bonus': proficiency_bonus_for_level(player.level or 1),
+        'hit_die': hit_die_for_class(player.class_),
     }
+    if background:
+        state['background'] = background
+    background_skill_proficiencies = (
+        background.get('skillProficiencies') if isinstance(background, dict) else []
+    )
     skill_expertise = _extract_skill_expertise(stats, sheet)
     skill_proficiencies = sorted(
         {
             *_extract_skill_proficiencies(stats, sheet),
             *_race_skill_proficiencies(player),
+            *[skill for skill in background_skill_proficiencies or [] if skill in KNOWN_SKILLS],
             *skill_expertise,
         }
     )
@@ -540,6 +795,28 @@ def character_state_for_player(player: Player | None) -> dict[str, Any]:
         state['skill_proficiencies'] = skill_proficiencies
     if skill_expertise:
         state['skill_expertise'] = skill_expertise
+    background_tool_proficiencies = (
+        background.get('toolProficiencies') if isinstance(background, dict) else []
+    )
+    tool_expertise = _extract_tool_expertise(stats, sheet)
+    tool_proficiencies = sorted(
+        {
+            *_extract_tool_proficiencies(stats, sheet),
+            *[_skill_key(tool) for tool in background_tool_proficiencies or [] if _skill_key(tool)],
+            *tool_expertise,
+        }
+    )
+    if tool_proficiencies:
+        state['tool_proficiencies'] = tool_proficiencies
+    if tool_expertise:
+        state['tool_expertise'] = tool_expertise
+    languages_by_key: dict[str, str] = {}
+    _collect_languages(_extract_languages(stats, sheet), languages_by_key)
+    _collect_languages(_race_languages(player), languages_by_key)
+    if isinstance(background, dict):
+        _collect_languages(background.get('languages'), languages_by_key)
+    if languages_by_key:
+        state['languages'] = sorted(languages_by_key.values(), key=str.casefold)
     saving_throw_proficiencies = _extract_saving_throw_proficiencies(player, stats, sheet)
     if saving_throw_proficiencies:
         state['saving_throw_proficiencies'] = saving_throw_proficiencies
@@ -549,6 +826,11 @@ def character_state_for_player(player: Player | None) -> dict[str, Any]:
     if spellbook.get('knownSpells'):
         state['spellbook'] = spellbook
         state['spells'] = known_spell_names(spellbook)
+    if spell_resources.get('castingMode') != 'none' or spellbook.get('knownSpells'):
+        state['spell_resources'] = spell_resources
+    if class_capabilities:
+        state['class_capabilities'] = class_capabilities
+        state['class_feature_state'] = class_feature_state
     return state
 
 
@@ -721,6 +1003,8 @@ def character_roll_spec(
     ability_mod = int_or_default(modifiers.get(ability_key), default=0) if ability_key else 0
     skill_proficiencies = set(state.get('skill_proficiencies') if isinstance(state.get('skill_proficiencies'), list) else [])
     skill_expertise = set(state.get('skill_expertise') if isinstance(state.get('skill_expertise'), list) else [])
+    tool_proficiencies = set(state.get('tool_proficiencies') if isinstance(state.get('tool_proficiencies'), list) else [])
+    tool_expertise = set(state.get('tool_expertise') if isinstance(state.get('tool_expertise'), list) else [])
     saving_throw_proficiencies = set(
         state.get('saving_throw_proficiencies')
         if isinstance(state.get('saving_throw_proficiencies'), list)
@@ -742,12 +1026,18 @@ def character_roll_spec(
         )
         proficiency_multiplier = 1 if matching_proficiencies else 0
     elif normalized_roll_type in SKILL_ABILITY:
-        matching_proficiencies = (
-            [normalized_roll_type]
-            if normalized_roll_type in skill_proficiencies
-            else []
+        matching_proficiencies = []
+        if normalized_roll_type in skill_proficiencies:
+            matching_proficiencies.append(normalized_roll_type)
+        if normalized_roll_type in tool_proficiencies:
+            matching_proficiencies.append(f'tool:{normalized_roll_type}')
+        # Multiple ordinary sources remain one proficiency bonus. Only an
+        # explicit expertise record raises the multiplier to two.
+        has_expertise = (
+            normalized_roll_type in skill_expertise
+            or normalized_roll_type in tool_expertise
         )
-        proficiency_multiplier = 2 if normalized_roll_type in skill_expertise else (1 if matching_proficiencies else 0)
+        proficiency_multiplier = 2 if has_expertise else (1 if matching_proficiencies else 0)
     elif normalized_roll_type == 'spell' and (
         spell_archetype := class_spell_archetype(player.class_ if player else None)
     ) in SPELLCASTING_ABILITY_BY_CLASS:

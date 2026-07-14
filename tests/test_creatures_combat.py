@@ -331,7 +331,26 @@ def test_combat_turn_advance_skips_enemy_block_to_next_player_round():
             },
         },
     }
-    turn = DmTurn(turn_id=44, session_id=1, campaign_id=1, player_id=2, player_input='Himeros attacks.')
+    turn = DmTurn(
+        turn_id=44,
+        session_id=1,
+        campaign_id=1,
+        player_id=2,
+        player_input='Himeros ends the turn.',
+        metadata_json=json.dumps(
+            {
+                'action_intent': {
+                    'kind': 'combat',
+                    'combat': {
+                        'action_id': 'combat.end_turn',
+                        'action_type': 'end_turn',
+                        'authoritative': True,
+                        'economy': {'endsTurn': True},
+                    },
+                }
+            }
+        ),
+    )
 
     change = combat_turn_advance_change(state=state, turn=turn, actor_id='player_2')
 

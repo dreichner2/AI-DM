@@ -1,9 +1,7 @@
 """Server-owned legal combat action descriptors for player clients.
 
-The combat engine currently persists turn order, participant health/position, and
-player inventory, but it does not persist sub-turn action or reaction counters.
-This module deliberately exposes only the legality that can be proven from that
-state.  Every submitted HUD action is resolved again here before turn processing.
+Every submitted HUD action is resolved again against persisted initiative, actor
+state, equipment, targeting, and the active actor's remaining turn economy.
 """
 
 from __future__ import annotations
@@ -14,7 +12,12 @@ from typing import Any, Iterable
 
 from aidm_server.canon_inventory import inventory_payload
 from aidm_server.character_state import server_attack_roll_context
-from aidm_server.combat.state import combat_turn_context, normalize_combat_state
+from aidm_server.combat.state import (
+    combat_turn_context,
+    combat_turn_economy,
+    default_turn_economy,
+    normalize_combat_state,
+)
 from aidm_server.models import Player, safe_json_loads
 
 
@@ -22,6 +25,34 @@ LEGAL_ACTIONS_SCHEMA_VERSION = 1
 ACTIVE_COMBAT_STATUSES = {'starting', 'active'}
 MELEE_RANGE_BANDS = {'melee', 'near'}
 RANGED_RANGE_BANDS = {'melee', 'near', 'far', 'distant'}
+TURN_EXCLUDING_CONDITIONS = {
+    'dead',
+    'fled',
+    'escaped',
+    'retreated',
+    'withdrawn',
+    'surrendered',
+    'yielded',
+    'unconscious',
+    'incapacitated',
+    'paralyzed',
+    'stunned',
+    'absent',
+}
+WEAPON_DAMAGE_PROFILES: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    (('greatsword',), '2d6', 'slashing'),
+    (('greataxe',), '1d12', 'slashing'),
+    (('lance',), '1d12', 'piercing'),
+    (('longsword', 'battleaxe'), '1d8', 'slashing'),
+    (('warhammer',), '1d8', 'bludgeoning'),
+    (('rapier', 'longbow', 'crossbow'), '1d8', 'piercing'),
+    (('shortsword', 'spear', 'javelin'), '1d6', 'piercing'),
+    (('scimitar', 'handaxe'), '1d6', 'slashing'),
+    (('mace', 'quarterstaff'), '1d6', 'bludgeoning'),
+    (('dagger', 'knife', 'dart'), '1d4', 'piercing'),
+    (('club', 'hammer', 'baton', 'wrench'), '1d6', 'bludgeoning'),
+    (('bow', 'firearm', 'pistol', 'rifle', 'sidearm'), '1d8', 'piercing'),
+)
 
 
 def _text(value: Any) -> str:
@@ -80,10 +111,17 @@ def _actor_for_player(combat: dict[str, Any], player: Player) -> dict[str, Any] 
 def _participant_available(participant: dict[str, Any]) -> bool:
     hp = participant.get('hp') if isinstance(participant.get('hp'), dict) else {}
     current_hp = _positive_int(hp.get('current', hp.get('currentHp')))
+    conditions = {
+        _text(condition).lower().replace(' ', '_').replace('-', '_')
+        for condition in participant.get('conditions') or []
+        if _text(condition)
+    }
     return (
         participant.get('isAlive') is not False
         and participant.get('isConscious') is not False
+        and participant.get('isPresent', participant.get('present', True)) is not False
         and (current_hp is None or current_hp > 0)
+        and not conditions.intersection(TURN_EXCLUDING_CONDITIONS)
     )
 
 
@@ -151,15 +189,71 @@ def _availability(
     return True, ''
 
 
-def _economy(*, action: int, movement: str, ends_turn: bool = True) -> dict[str, Any]:
+def _economy(
+    *,
+    action: int = 0,
+    bonus_action: int = 0,
+    reaction: int = 0,
+    movement: str = 'unused',
+    movement_cost: int = 0,
+    ends_turn: bool = False,
+) -> dict[str, Any]:
     return {
         'action': action,
+        'bonusAction': bonus_action,
+        'reaction': reaction,
         'movement': movement,
+        'movementCost': movement_cost,
         'endsTurn': ends_turn,
-        'tracking': 'turn_order_derived',
-        'reactionTracked': False,
-        'subTurnCountersTracked': False,
+        'tracking': 'persisted_turn_economy',
+        'reactionTracked': True,
+        'subTurnCountersTracked': True,
     }
+
+
+def _resource_availability(
+    *,
+    available: bool,
+    reason: str,
+    economy: dict[str, Any],
+    cost: dict[str, Any],
+) -> tuple[bool, str]:
+    if not available:
+        return False, reason
+    checks = (
+        ('actionRemaining', 'action', int(cost.get('action') or 0)),
+        ('bonusActionRemaining', 'bonus action', int(cost.get('bonusAction') or 0)),
+        ('reactionRemaining', 'reaction', int(cost.get('reaction') or 0)),
+        ('movementRemaining', 'movement', int(cost.get('movementCost') or 0)),
+    )
+    for key, label, amount in checks:
+        if amount and int(economy.get(key) or 0) < amount:
+            return False, f"This turn's {label} is already spent."
+    return True, ''
+
+
+def _weapon_damage_profile(weapon: dict[str, Any], classification: str) -> dict[str, str]:
+    explicit = weapon.get('damage') if isinstance(weapon.get('damage'), dict) else {}
+    explicit_dice = _text(explicit.get('dice') or weapon.get('damageDice') or weapon.get('damage_dice'))
+    if explicit_dice:
+        return {
+            'dice': explicit_dice,
+            'type': _text(explicit.get('type') or weapon.get('damageType') or weapon.get('damage_type')).lower()
+            or ('piercing' if classification == 'ranged' else 'slashing'),
+        }
+    labels = ' '.join(
+        _text(value).lower()
+        for value in (weapon.get('subtype'), weapon.get('name'), *(weapon.get('tags') or []))
+        if _text(value)
+    )
+    for markers, dice, damage_type in WEAPON_DAMAGE_PROFILES:
+        if any(marker in labels for marker in markers):
+            if classification == 'ranged' and damage_type == 'slashing':
+                damage_type = 'piercing'
+            return {'dice': dice, 'type': damage_type}
+    if _text(weapon.get('id')) == 'unarmed' or 'unarmed' in labels:
+        return {'dice': '1', 'type': 'bludgeoning'}
+    return {'dice': '1d6', 'type': 'piercing' if classification == 'ranged' else 'slashing'}
 
 
 def _base_action(
@@ -193,6 +287,7 @@ def _weapon_actions(
     player: Player,
     available: bool,
     reason: str,
+    turn_economy: dict[str, Any],
 ) -> list[dict[str, Any]]:
     weapons = [
         item
@@ -223,6 +318,7 @@ def _weapon_actions(
         attack_context = server_attack_roll_context(player, f'I attack with my {weapon_name}.')
         weapon_payload = attack_context.get('weapon') if isinstance(attack_context.get('weapon'), dict) else {}
         classification = _text(weapon_payload.get('classification')).lower() or 'melee'
+        damage = _weapon_damage_profile(weapon, classification)
         allowed_bands = RANGED_RANGE_BANDS if classification == 'ranged' else MELEE_RANGE_BANDS
         targets = [
             _target_option(
@@ -234,16 +330,23 @@ def _weapon_actions(
             for target in enemies
         ]
         has_target = any(target['available'] for target in targets)
-        action_reason = reason if not available else ('' if has_target else 'No target is currently in range.')
+        economy_cost = _economy(action=1, movement='optional')
+        resource_available, resource_reason = _resource_availability(
+            available=available,
+            reason=reason,
+            economy=turn_economy,
+            cost=economy_cost,
+        )
+        action_reason = resource_reason if not resource_available else ('' if has_target else 'No target is currently in range.')
         action = _base_action(
             action_id,
             'attack',
             f'Attack with {weapon_name}',
             'Make one server-rolled weapon attack against a legal target.',
             '',
-            available=available and has_target,
+            available=resource_available and has_target,
             reason=action_reason,
-            economy=_economy(action=1, movement='optional'),
+            economy=economy_cost,
         )
         action.update(
             {
@@ -259,6 +362,7 @@ def _weapon_actions(
                     'id': _text(weapon.get('id')) or weapon_key,
                     'name': weapon_name,
                     'classification': classification,
+                    'damage': damage,
                 },
             }
         )
@@ -282,12 +386,20 @@ def legal_combat_actions_for_player(snapshot: Any, player: Player) -> dict[str, 
         return None
 
     turn_context = combat_turn_context(combat)
+    flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
     current_actor = (
         turn_context.get('currentActor')
-        if combat.get('turnIndex') is not None and isinstance(turn_context.get('currentActor'), dict)
+        if (
+            not flags.get('turnAuthorityRedacted')
+            and isinstance(turn_context.get('currentActor'), dict)
+        )
         else None
     )
     available, reason = _availability(actor=actor, current_actor=current_actor)
+    turn_economy = combat_turn_economy(combat, actor_id=actor.get('id')) or default_turn_economy(
+        actor.get('id'),
+        combat.get('round'),
+    )
     player_name = _text(player.character_name) or _text(actor.get('name')) or 'I'
     actions = _weapon_actions(
         combat=combat,
@@ -295,51 +407,59 @@ def legal_combat_actions_for_player(snapshot: Any, player: Player) -> dict[str, 
         player=player,
         available=available,
         reason=reason,
+        turn_economy=turn_economy,
     )
-    actions.extend(
-        [
-            _base_action(
-                'combat.defend',
-                'defend',
-                'Defend',
-                'Take a defensive stance for this turn.',
-                f'{player_name} takes a defensive stance and watches for the next threat.',
-                available=available,
-                reason=reason,
-                economy=_economy(action=1, movement='optional'),
-            ),
+    generic_actions = [
+        (
             _base_action(
                 'combat.disengage',
                 'disengage',
                 'Disengage',
                 'Withdraw carefully and move to a safer position.',
                 f'{player_name} disengages and moves to a safer position.',
-                available=available,
-                reason=reason,
-                economy=_economy(action=1, movement='used'),
+                available=True,
+                reason='',
+                economy=_economy(action=1, movement='used', movement_cost=1),
             ),
+            _economy(action=1, movement='used', movement_cost=1),
+        ),
+        (
             _base_action(
                 'combat.reposition',
                 'reposition',
                 'Reposition',
                 'Move within the battlefield and ready for the next opening.',
                 f'{player_name} repositions and readies for the next opening.',
-                available=available,
-                reason=reason,
-                economy=_economy(action=1, movement='used'),
+                available=True,
+                reason='',
+                economy=_economy(movement='used', movement_cost=1),
             ),
+            _economy(movement='used', movement_cost=1),
+        ),
+        (
             _base_action(
                 'combat.end_turn',
                 'end_turn',
                 'End turn',
                 'Take no further action and pass the combat turn.',
                 f'{player_name} ends their turn.',
-                available=available,
-                reason=reason,
-                economy=_economy(action=0, movement='unused'),
+                available=True,
+                reason='',
+                economy=_economy(movement='unused', ends_turn=True),
             ),
-        ]
-    )
+            _economy(movement='unused', ends_turn=True),
+        ),
+    ]
+    for action, cost in generic_actions:
+        action_available, action_reason = _resource_availability(
+            available=available,
+            reason=reason,
+            economy=turn_economy,
+            cost=cost,
+        )
+        action['available'] = action_available
+        action['reason'] = action_reason
+        actions.append(action)
     return {
         'schemaVersion': LEGAL_ACTIONS_SCHEMA_VERSION,
         'playerId': int(player.player_id),
@@ -352,11 +472,17 @@ def legal_combat_actions_for_player(snapshot: Any, player: Player) -> dict[str, 
             current_actor and _text(current_actor.get('id')) == _text(actor.get('id'))
         ),
         'economy': {
-            'tracking': 'turn_order_derived',
-            'actionAvailable': available,
-            'movementAvailable': available,
-            'reactionTracked': False,
-            'subTurnCountersTracked': False,
+            'tracking': 'persisted_turn_economy',
+            'actionAvailable': available and int(turn_economy.get('actionRemaining') or 0) > 0,
+            'bonusActionAvailable': available and int(turn_economy.get('bonusActionRemaining') or 0) > 0,
+            'movementAvailable': available and int(turn_economy.get('movementRemaining') or 0) > 0,
+            'reactionAvailable': available and int(turn_economy.get('reactionRemaining') or 0) > 0,
+            'actionRemaining': int(turn_economy.get('actionRemaining') or 0),
+            'bonusActionRemaining': int(turn_economy.get('bonusActionRemaining') or 0),
+            'reactionRemaining': int(turn_economy.get('reactionRemaining') or 0),
+            'movementRemaining': int(turn_economy.get('movementRemaining') or 0),
+            'reactionTracked': True,
+            'subTurnCountersTracked': True,
         },
         'actions': actions,
     }
@@ -437,6 +563,8 @@ def resolve_combat_legal_action(
                 'target_name': target_name,
                 'weapon_id': _text(weapon.get('id')),
                 'weapon_name': weapon_name,
+                'damage_dice': _text((weapon.get('damage') or {}).get('dice')),
+                'damage_type': _text((weapon.get('damage') or {}).get('type')),
                 'range_band': _text(selected_target.get('rangeBand')),
             }
         )

@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any
 
 from aidm_server.combat.state import normalize_battlefield, normalize_position
+from aidm_server.interactables import project_scene_interactables
 from aidm_server.services.campaign_pack_graph import hidden_to_players
 from aidm_server.services.campaign_pack_snapshot import migrate_campaign_pack_snapshot
 
@@ -339,6 +340,9 @@ def filter_session_snapshot_for_player(
             visible_npc_ids=visible_npc_ids,
             visible_quest_ids=visible_quest_ids,
         )
+        filtered['currentScene'].update(
+            project_scene_interactables(migrated, {'isGm': False})
+        )
 
     return filtered
 
@@ -464,9 +468,8 @@ def _npc_for_viewer(
     for key in ('aliases', 'tags'):
         if isinstance(record.get(key), list):
             payload[key] = _public_string_list(record.get(key))
-    relationship = _public_relationship(record.get('relationship'))
-    if relationship:
-        payload['relationship'] = relationship
+    # Exact relationship scores and internal labels are DM-facing mechanics.
+    # Player-visible disposition/status fields above carry only observable state.
     _set_public_text(
         payload,
         'summary',
@@ -895,13 +898,26 @@ def _filter_combat_flags(flags: dict, participants_by_id: dict[str, dict]) -> di
             if _id_key(value) in names_by_id
         )
 
-    difficulty = flags.get('combatDifficultyAI') if isinstance(flags.get('combatDifficultyAI'), dict) else {}
-    tactical_level = _text(_first(difficulty, 'tacticalLevel', 'tactical_level')).lower()
-    if tactical_level in {'simple', 'normal', 'smart', 'brutal'}:
-        payload['combatDifficultyAI'] = {'tacticalLevel': tactical_level}
     groups = _public_enemy_groups(flags.get('enemyGroups'), participants_by_id)
     if groups:
         payload['enemyGroups'] = groups
+    turn_economy = flags.get('turnEconomy') if isinstance(flags.get('turnEconomy'), dict) else {}
+    economy_actor_id = _id_key(_first(turn_economy, 'actorId', 'actor_id'))
+    if economy_actor_id and economy_actor_id in visible_ids:
+        payload['turnEconomy'] = {
+            **_public_scalar_fields(
+                turn_economy,
+                (
+                    'version',
+                    'round',
+                    'actionRemaining',
+                    'bonusActionRemaining',
+                    'reactionRemaining',
+                    'movementRemaining',
+                ),
+            ),
+            'actorId': economy_actor_id,
+        }
     payload['enemyCount'] = sum(
         1
         for record in participants_by_id.values()
@@ -928,6 +944,19 @@ def _public_encounter_goal(value: Any) -> dict | None:
         payload['playerObjective'] = player_objective
         payload['description'] = player_objective
     return payload or None
+
+
+def _battlefield_for_player(value: Any, *, scene: dict) -> dict:
+    raw = deepcopy(value) if isinstance(value, dict) else {}
+    for collection_key in ('zones', 'hazards', 'cover', 'exits', 'interactables'):
+        records = raw.get(collection_key)
+        if isinstance(records, list):
+            raw[collection_key] = [
+                record
+                for record in records
+                if isinstance(record, dict) and _record_player_visible(record)
+            ]
+    return normalize_battlefield(raw, scene)
 
 
 def _filter_combat_for_player(
@@ -961,7 +990,7 @@ def _filter_combat_for_player(
             _filter_combat_reference_record(current_intent, visible_ids)
     payload = _public_scalar_fields(combat, ('status', 'round', 'turnIndex', 'lastRoundSummary'))
     payload['participants'] = participants
-    payload['battlefield'] = normalize_battlefield(combat.get('battlefield'), scene)
+    payload['battlefield'] = _battlefield_for_player(combat.get('battlefield'), scene=scene)
     encounter_goal = _public_encounter_goal(combat.get('encounterGoal'))
     if encounter_goal:
         payload['encounterGoal'] = encounter_goal
@@ -974,6 +1003,7 @@ def _filter_combat_for_player(
         payload['turnIndex'] = visible_turn_order_ids.index(current_actor_id)
     elif 'turnIndex' in payload:
         payload['turnIndex'] = None
+        payload.setdefault('flags', {})['turnAuthorityRedacted'] = True
     combat.clear()
     combat.update(payload)
 

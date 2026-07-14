@@ -39,6 +39,12 @@ export type StatBlock = {
   abilities: Array<[string, string, string]>
   proficiency: string
   inspiration: boolean
+  background?: string
+  skillProficiencies?: string[]
+  skillExpertise?: string[]
+  toolProficiencies?: string[]
+  languages?: string[]
+  hitDie?: string
 }
 
 export type XpProgress = {
@@ -66,6 +72,14 @@ export type SpellbookSummary = {
   knownSpells: SpellSummary[]
   preparedSpellNames: string[]
   sources: string[]
+}
+
+export type SpellResourceSummary = {
+  castingMode: string
+  slots: Array<{ level: number; current: number; max: number }>
+  pactSlot: { level: number; current: number; max: number } | null
+  arcanum: Array<{ level: number; current: number; max: number }>
+  concentration: string
 }
 
 export type CharacterTraitSummary = {
@@ -183,6 +197,10 @@ export type CombatLegalActionBundle = {
   isCurrentActor: boolean
   economyTracking: string
   subTurnCountersTracked: boolean
+  actionRemaining: number
+  bonusActionRemaining: number
+  movementRemaining: number
+  reactionRemaining: number
   actions: CombatLegalAction[]
 }
 
@@ -434,6 +452,10 @@ function combatLegalActionBundle(bundle: JsonRecord): CombatLegalActionBundle | 
     isCurrentActor: Boolean(bundle.isCurrentActor),
     economyTracking: stringValue(economy.tracking, 'turn_order_derived'),
     subTurnCountersTracked: economy.subTurnCountersTracked === true,
+    actionRemaining: numberValue(economy.actionRemaining) ?? 0,
+    bonusActionRemaining: numberValue(economy.bonusActionRemaining) ?? 0,
+    movementRemaining: numberValue(economy.movementRemaining) ?? 0,
+    reactionRemaining: numberValue(economy.reactionRemaining) ?? 0,
     actions: recordArray(bundle.actions)
       .map(combatLegalAction)
       .filter((action): action is CombatLegalAction => action !== null),
@@ -848,6 +870,64 @@ export function normalizeSpellbook(...values: unknown[]): SpellbookSummary {
   return { knownSpells, preparedSpellNames, sources }
 }
 
+function spellResourceRecord(value: unknown): JsonRecord | null {
+  const parsed = parsedJsonValue(value)
+  if (!isRecord(parsed)) return null
+  const nested = parsed.spellResources ?? parsed.spell_resources
+  if (isRecord(nested)) return nested
+  if (isRecord(parsed.character_sheet)) return spellResourceRecord(parsed.character_sheet)
+  if (isRecord(parsed.characterSheet)) return spellResourceRecord(parsed.characterSheet)
+  if (isRecord(parsed.slots) || isRecord(parsed.pactSlots) || isRecord(parsed.pact_slots)) return parsed
+  return null
+}
+
+function normalizedResourceRows(value: unknown) {
+  if (!isRecord(value)) return []
+  return Object.entries(value)
+    .map(([rawLevel, rawEntry]) => {
+      if (!isRecord(rawEntry)) return null
+      const level = numberValue(rawLevel)
+      const maximum = numberValue(rawEntry.max ?? rawEntry.maximum) ?? 0
+      const current = numberValue(rawEntry.current ?? rawEntry.remaining) ?? 0
+      if (level === null || level < 1 || maximum < 1) return null
+      return {
+        level: Math.floor(level),
+        current: Math.max(0, Math.min(maximum, Math.floor(current))),
+        max: Math.max(0, Math.floor(maximum)),
+      }
+    })
+    .filter((entry): entry is { level: number; current: number; max: number } => entry !== null)
+    .sort((left, right) => left.level - right.level)
+}
+
+export function normalizeSpellResources(...values: unknown[]): SpellResourceSummary {
+  const resources = values.map(spellResourceRecord).find((candidate) => candidate !== null) ?? {}
+  const pact = isRecord(resources.pactSlots)
+    ? resources.pactSlots
+    : isRecord(resources.pact_slots)
+      ? resources.pact_slots
+      : {}
+  const pactMax = numberValue(pact.max) ?? 0
+  const pactLevel = numberValue(pact.slotLevel ?? pact.slot_level) ?? 0
+  const pactCurrent = numberValue(pact.current ?? pact.remaining) ?? 0
+  const concentration = isRecord(resources.concentration)
+    ? stringValue(resources.concentration.spellName ?? resources.concentration.spell_name ?? resources.concentration.name)
+    : ''
+  return {
+    castingMode: stringValue(resources.castingMode ?? resources.casting_mode, 'none'),
+    slots: normalizedResourceRows(resources.slots ?? resources.spellSlots ?? resources.spell_slots),
+    pactSlot: pactMax > 0
+      ? {
+          level: Math.max(1, Math.floor(pactLevel)),
+          current: Math.max(0, Math.min(pactMax, Math.floor(pactCurrent))),
+          max: Math.max(0, Math.floor(pactMax)),
+        }
+      : null,
+    arcanum: normalizedResourceRows(resources.mysticArcanum ?? resources.mystic_arcanum),
+    concentration,
+  }
+}
+
 export function normalizeInventory(value: unknown): InventoryRow[] {
   const source = Array.isArray(value)
     ? value
@@ -947,6 +1027,18 @@ export function normalizeStats(
     return [label, String(score), modifier >= 0 ? `+${modifier}` : String(modifier)]
   })
   const proficiencyValue = statLabel(['proficiency_bonus', 'proficiency', 'prof_bonus'])
+  const backgroundValue = findValue(records, ['background'])
+  const backgroundRecord = isRecord(backgroundValue) ? backgroundValue : null
+  const mechanicsRecords = backgroundRecord ? [...records, backgroundRecord] : records
+  const listFor = (keys: string[]) => {
+    const raw = findValue(mechanicsRecords, keys)
+    if (!Array.isArray(raw)) return []
+    return [...new Set(raw.map((value) => stringValue(value)).filter(Boolean))]
+  }
+  const background = backgroundRecord
+    ? stringValue(backgroundRecord.name || backgroundRecord.id)
+    : stringValue(backgroundValue)
+  const hitDieValue = numberValue(findValue(records, ['hitDie', 'hit_die']))
 
   return {
     hp,
@@ -956,6 +1048,12 @@ export function normalizeStats(
     abilities: abilityEntries,
     proficiency: proficiencyValue !== '—' ? proficiencyValue : level ? `+${2 + Math.floor((level - 1) / 4)}` : '—',
     inspiration: Boolean(findValue(records, ['inspiration', 'inspired'])),
+    background,
+    skillProficiencies: listFor(['skillProficiencies', 'skill_proficiencies']),
+    skillExpertise: listFor(['skillExpertise', 'skill_expertise']),
+    toolProficiencies: listFor(['toolProficiencies', 'tool_proficiencies']),
+    languages: listFor(['languages', 'languageProficiencies', 'language_proficiencies']),
+    hitDie: hitDieValue ? `d${hitDieValue}` : '',
   }
 }
 

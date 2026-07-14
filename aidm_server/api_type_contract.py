@@ -510,6 +510,14 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
         ),
     ),
     TypeContract(
+        'CharacterBackground',
+        alias=(
+            "{ schemaVersion: number; id: string; name: string; "
+            "source: 'catalog' | 'legacy'; skillProficiencies: string[]; "
+            "toolProficiencies: string[]; languages: string[] }"
+        ),
+    ),
+    TypeContract(
         'Player',
         fields=(
             field('player_id', 'number'),
@@ -521,6 +529,7 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
             field('character_name', 'string'),
             field('race', 'string | null'),
             field('race_selection', 'CharacterRaceSelection | null', optional=True),
+            field('background', 'CharacterBackground | null', optional=True),
             field('sex', 'string | null'),
             field('profile_image', 'string'),
             field('class_', 'string | null'),
@@ -542,6 +551,7 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
             field('character_name', 'string'),
             field('race', 'string | null'),
             field('race_selection', 'CharacterRaceSelection | null', optional=True),
+            field('background', 'CharacterBackground | null', optional=True),
             field('sex', 'string | null'),
             field('profile_image', 'string'),
             field('class_', 'string | null'),
@@ -553,6 +563,11 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
             field('inventory', 'unknown'),
             field('weapon_proficiencies', 'string[]'),
             field('character_sheet', 'unknown'),
+            field('skill_proficiencies', 'string[]', optional=True),
+            field('skill_expertise', 'string[]', optional=True),
+            field('tool_proficiencies', 'string[]', optional=True),
+            field('tool_expertise', 'string[]', optional=True),
+            field('languages', 'string[]', optional=True),
             field('derived', 'JsonRecord', optional=True),
         ),
     ),

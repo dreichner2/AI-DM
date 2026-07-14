@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import threading
+from copy import deepcopy
 from unittest.mock import Mock
 
 import pytest
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session as SqlAlchemySession
 
 import aidm_server.services.campaign_pack_progress as campaign_pack_progress_module
 import aidm_server.services.campaign_pack_coordination as campaign_pack_coordination_module
+from aidm_server.services.campaign_pack import CampaignPackImportError, _validate_pack_schema_contract
 from aidm_server.services.session_state_mutation import mutate_session_state
 from aidm_server.auth import generate_account_token, hash_secret
 from aidm_server.canon_jobs import _evaluate_state_segments_after_turn
@@ -1353,6 +1355,126 @@ def test_pack_progress_respects_checkpoint_prerequisites_when_branching(app):
 
     assert result.completed_checkpoint_ids == ['cp_gate']
     assert result.active_checkpoint_id == 'cp_open'
+
+
+def test_pack_progress_selects_flag_gated_branch_from_authoritative_state_and_retry_is_idempotent(app):
+    snapshot = _pack_snapshot(
+        location_id='bleakmoor_gate',
+        flags={
+            'campaignPackActiveCheckpointId': 'cp_gate',
+            'missingCaravanOutcome': 'mercy',
+        },
+        checkpoints=[
+            {
+                'id': 'cp_gate',
+                'title': 'Resolve the missing caravan',
+                'locationIds': ['bleakmoor_gate'],
+                'nextCheckpointIds': ['cp_force', 'cp_mercy', 'cp_fallback'],
+            },
+            {
+                'id': 'cp_force',
+                'title': 'Rule through force',
+                'branchWhen': {'flagKey': 'missingCaravanOutcome', 'equals': 'force'},
+            },
+            {
+                'id': 'cp_mercy',
+                'title': 'Honor the negotiated peace',
+                'branchWhen': {'flagKey': 'missingCaravanOutcome', 'equals': 'mercy'},
+            },
+            {'id': 'cp_fallback', 'title': 'Continue without a settled outcome'},
+        ],
+    )
+    snapshot['recentEvents'] = [
+        {
+            'type': 'dm.narration',
+            'text': 'The DM claims the party chose force and should take cp_force.',
+        }
+    ]
+    ids = _seed_pack_session(app, snapshot)
+
+    with app.app_context():
+        first = update_campaign_pack_progress(session_id=ids['session_id'], campaign_id=ids['campaign_id'])
+        db.session.expire_all()
+        persisted = safe_json_loads(db.session.get(Session, ids['session_id']).state_snapshot, {})
+
+        retry = update_campaign_pack_progress(session_id=ids['session_id'], campaign_id=ids['campaign_id'])
+        db.session.expire_all()
+        reloaded = safe_json_loads(db.session.get(Session, ids['session_id']).state_snapshot, {})
+        progress_event_count = TurnEvent.query.filter_by(
+            session_id=ids['session_id'],
+            event_type=PROGRESS_CHANGED_EVENT,
+        ).count()
+
+    assert first.changed is True
+    assert first.reason == 'checkpoint_location_reached'
+    assert first.completed_checkpoint_ids == ['cp_gate']
+    assert first.active_checkpoint_id == 'cp_mercy'
+    assert persisted['campaignPack']['activeCheckpointId'] == 'cp_mercy'
+    assert persisted['campaignPack']['progressRevision'] == 1
+    assert retry.changed is False
+    assert retry.active_checkpoint_id == 'cp_mercy'
+    assert retry.progress_revision == 1
+    assert reloaded['campaignPack']['activeCheckpointId'] == 'cp_mercy'
+    assert reloaded['campaignPack']['completedCheckpointIds'] == ['cp_gate']
+    assert reloaded['flags']['missingCaravanOutcome'] == 'mercy'
+    assert progress_event_count == 1
+
+
+def test_pack_progress_falls_back_when_no_flag_gated_branch_matches(app):
+    ids = _seed_pack_session(
+        app,
+        _pack_snapshot(
+            location_id='bleakmoor_gate',
+            flags={'campaignPackActiveCheckpointId': 'cp_gate'},
+            checkpoints=[
+                {
+                    'id': 'cp_gate',
+                    'title': 'Resolve the missing caravan',
+                    'locationIds': ['bleakmoor_gate'],
+                    'nextCheckpointIds': ['cp_force', 'cp_mercy', 'cp_fallback'],
+                },
+                {
+                    'id': 'cp_force',
+                    'title': 'Rule through force',
+                    'branchWhen': {'flagKey': 'missingCaravanOutcome', 'equals': 'force'},
+                },
+                {
+                    'id': 'cp_mercy',
+                    'title': 'Honor the negotiated peace',
+                    'branchWhen': {'flagKey': 'missingCaravanOutcome', 'equals': 'mercy'},
+                },
+                {'id': 'cp_fallback', 'title': 'Continue without a settled outcome'},
+            ],
+        ),
+    )
+
+    with app.app_context():
+        result = update_campaign_pack_progress(session_id=ids['session_id'], campaign_id=ids['campaign_id'])
+
+    assert result.completed_checkpoint_ids == ['cp_gate']
+    assert result.active_checkpoint_id == 'cp_fallback'
+
+
+def test_campaign_pack_schema_requires_explicit_flag_branch_predicate():
+    valid_pack = {
+        'packId': 'conditional_branch_pack',
+        'title': 'Conditional Branch Pack',
+        'checkpoints': [
+            {'id': 'cp_start', 'title': 'Start', 'nextCheckpointIds': ['cp_mercy']},
+            {
+                'id': 'cp_mercy',
+                'title': 'Mercy route',
+                'branchWhen': {'flagKey': 'questOutcome', 'equals': 'mercy'},
+            },
+        ],
+    }
+
+    _validate_pack_schema_contract(valid_pack)
+
+    invalid_pack = deepcopy(valid_pack)
+    invalid_pack['checkpoints'][1]['branchWhen'] = {'flagKey': 'questOutcome'}
+    with pytest.raises(CampaignPackImportError, match=r'checkpoints\[1\]\.branchWhen\.equals is required'):
+        _validate_pack_schema_contract(invalid_pack)
 
 
 def test_pack_progress_triggered_pack_segment_advances_to_downstream_checkpoint(app):

@@ -3,6 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from aidm_server.canon_text import int_or_default
+from aidm_server.character_progression import (
+    DEFAULT_HIT_DIE,
+    max_hp_for_level,
+    proficiency_bonus_for_level as derived_proficiency_bonus_for_level,
+)
 
 
 XP_THRESHOLDS_BY_LEVEL: dict[int, int] = {
@@ -44,8 +49,7 @@ def next_level_threshold(level: Any) -> int | None:
 
 
 def proficiency_bonus_for_level(level: Any) -> int:
-    current_level = max(1, min(20, int_or_default(level, default=1)))
-    return 2 + (current_level - 1) // 4
+    return derived_proficiency_bonus_for_level(level)
 
 
 def _ability_score(stats: dict[str, Any], key: str) -> int | None:
@@ -67,9 +71,12 @@ def baseline_max_hp_for_level(stats: dict[str, Any], level: Any) -> int | None:
     constitution = _ability_score(stats, 'constitution')
     if constitution is None:
         return None
-    con_mod = ability_modifier(constitution)
-    current_level = max(1, min(20, int_or_default(level, default=1)))
-    return max(1, 8 + con_mod + max(0, current_level - 1) * max(1, 5 + con_mod))
+    return max_hp_for_level(
+        hit_die=stats.get('hit_die', stats.get('hitDie', DEFAULT_HIT_DIE)),
+        constitution_modifier=ability_modifier(constitution),
+        level=level,
+        max_hp_bonus=stats.get('max_hp_bonus', stats.get('maxHpBonus', 0)),
+    )
 
 
 def sync_actor_level_for_xp(actor: dict[str, Any]) -> tuple[int, int]:
