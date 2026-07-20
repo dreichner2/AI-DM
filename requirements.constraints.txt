@@ -8,7 +8,7 @@ flask-cors==6.0.5
 Flask-Migrate==4.1.0
 Flask-SocketIO==5.6.1
 Flask-SQLAlchemy==3.1.1
-google-genai==2.11.0
+google-genai==2.12.1
 greenlet==3.5.3
 gunicorn==26.0.0
 pytest==9.1.1
@@ -19,9 +19,9 @@ python-socketio==5.16.3
 psycopg==3.3.4
 psycopg-binary==3.3.4
 pip-audit==2.10.1
-pip-tools==7.5.3
+pip-tools==7.6.0
 requests==2.34.2
-ruff==0.15.21
+ruff==0.15.22
 simple-websocket==1.1.0
 SQLAlchemy==2.0.51
 websocket-client==1.9.0
