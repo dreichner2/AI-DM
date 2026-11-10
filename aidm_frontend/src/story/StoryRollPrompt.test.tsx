@@ -51,7 +51,49 @@ describe('StoryRollPrompt', () => {
     const region = screen.getByRole('region', { name: 'Pending roll' })
     expect(within(region).getByText('Turn 12')).toBeInTheDocument()
     expect(within(region).getByRole('button', { name: 'Roll stealth check' })).toBeEnabled()
-    expect(within(region).getByText('Dexterity +3 · DC 13')).toBeInTheDocument()
+    expect(within(region).getByText('d20 + 3 against DC 13')).toBeInTheDocument()
+  })
+
+  it('speaks plainly about the server hint and keeps the breakdown for Roll options', () => {
+    const notice = testRollNotice()
+    notice.guidance = {
+      ...notice.guidance,
+      ruleType: 'check',
+      dcHint: '14 (roll mod +4, STR 15 mod +2, proficiency +2 (weapon:longsword))',
+      rollSpec: { ...notice.guidance.rollSpec, ruleType: 'check', ability: { key: 'strength', label: 'STR' } },
+    }
+    render(<StoryRollPrompt notice={notice} composer={testComposer()} onPrepare={vi.fn()} />)
+
+    const region = screen.getByRole('region', { name: 'Pending roll' })
+    expect(within(region).getByText('d20 + 4 against DC 14')).toBeInTheDocument()
+    expect(region).not.toHaveTextContent(/roll mod|STR|weapon:|proficiency/)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Roll options' }))
+    expect(within(region).getByText('Strength +2 · proficiency +2')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['a negative modifier with a wound', 'check', '12 (roll mod -1, DEX 10 mod +0, wounded -1)', 'd20 − 1 against DC 12', 'Dexterity +0 · wounded −1'],
+    ['a stated DC', 'check', '15 (roll mod +2, WIS 14 mod +2, stated DC)', 'd20 + 2 against DC 15', 'Wisdom +2'],
+    ['no DC at all', 'initiative', 'initiative order (roll mod +3, DEX 17 mod +3)', 'd20 + 3', 'Dexterity +3'],
+    ['an attack against a known AC', 'attack', 'AC 13 (roll mod +5, DEX 17 mod +3, proficiency +2 (weapon:longbow))', 'd20 + 5 against AC 13', 'Dexterity +3 · proficiency +2'],
+    ['an attack whose number is not the target AC', 'attack', '14 (roll mod +4, STR 15 mod +2, proficiency +2 (weapon:longsword))', 'd20 + 4', 'Strength +2 · proficiency +2'],
+  ])('reads %s', (_case, ruleType, dcHint, line, breakdown) => {
+    const notice = testRollNotice()
+    notice.guidance = { ...notice.guidance, ruleType, dcHint, rollSpec: { ...notice.guidance.rollSpec, ruleType } }
+    render(<StoryRollPrompt notice={notice} composer={testComposer()} onPrepare={vi.fn()} />)
+
+    expect(screen.getByText(line)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Roll options' }))
+    expect(screen.getByText(breakdown)).toBeInTheDocument()
+  })
+
+  it('says when the check is rolled with advantage', () => {
+    const notice = testRollNotice()
+    notice.guidance = { ...notice.guidance, rollSpec: { ...notice.guidance.rollSpec, mode: 'advantage' } }
+    render(<StoryRollPrompt notice={notice} composer={testComposer()} onPrepare={vi.fn()} />)
+
+    expect(screen.getByText('d20 + 3 against DC 13 with advantage')).toBeInTheDocument()
   })
 
   it('prepares the pending check, then starts the server roll once the composer reflects it', () => {

@@ -191,6 +191,34 @@ describe('gameplayControlsFromSnapshot', () => {
     expect(controls.spells.find((spell) => spell.name === 'Magic Missile')?.reason).toBe('Only one levelled spell can be cast per turn.')
   })
 
+  it('turns an active Spiritual Weapon into a slot-free bonus-action attack', () => {
+    const state = snapshot()
+    const actor = state.playerCharacters[0] as Record<string, unknown>
+    const spellbook = actor.spellbook as { preparedSpells: string[]; knownSpells: Array<Record<string, unknown>> }
+    spellbook.preparedSpells.push('Spiritual Weapon')
+    spellbook.knownSpells.push({
+      id: 'spell_spiritual_weapon',
+      name: 'Spiritual Weapon',
+      level: 2,
+      authoritativeEffect: true,
+      castingTime: 'bonus_action',
+      delivery: { type: 'attack', ranged: false },
+      target: { relation: 'enemy', rangeBands: ['melee', 'near', 'far'], maxTargets: 1 },
+      effects: [{ kind: 'damage', dice: '1d8', damageType: 'force' }, { kind: 'repeat_attack' }],
+    })
+    const economy: Record<string, unknown> = state.combat.flags.turnEconomy
+    economy.leveledSpellCast = true
+    let weapon = gameplayControlsFromSnapshot(state, 30).spells.find((spell) => spell.name === 'Spiritual Weapon')
+    expect(weapon).toMatchObject({ available: false, repeatAttack: false })
+
+    const caster: Record<string, unknown> = state.combat.participants[0]
+    caster.activeEffects = [{
+      id: 'sfx_weapon', sourceId: 'spell_spiritual_weapon', casterId: 'player_30', modifiers: {}, repeatAttack: { castLevel: 2 },
+    }]
+    weapon = gameplayControlsFromSnapshot(state, 30).spells.find((spell) => spell.name === 'Spiritual Weapon')
+    expect(weapon).toMatchObject({ available: true, repeatAttack: true, castLevels: [], resourceLabel: 'Active · no slot needed' })
+  })
+
   it('offers out-of-combat healing to the active party without a range-band check', () => {
     const state = snapshot()
     state.combat.status = 'none'
@@ -526,5 +554,94 @@ describe('gameplayControlsFromSnapshot items and rest', () => {
       longAvailable: false,
       reason: 'It is too dangerous to rest here.',
     })
+  })
+})
+
+describe('gameplayControlsFromSnapshot class capabilities', () => {
+  function monk(state: ReturnType<typeof snapshot>) {
+    const actor = state.playerCharacters[0] as Record<string, unknown>
+    actor.classFeatures = [
+      {
+        id: 'flurry_of_blows', baseId: 'flurry_of_blows', name: 'Flurry of Blows', actionEconomy: 'bonus_action',
+        targetPolicy: 'self', pool: 'ki', cost: { pool: 'ki', amount: 1 }, combatOnly: true, role: 'panel',
+        effect: { type: 'grant_action' },
+      },
+      {
+        id: 'step_of_the_wind:dash', baseId: 'step_of_the_wind', name: 'Step of the Wind: Dash', actionEconomy: 'bonus_action',
+        targetPolicy: 'self', pool: 'ki', cost: { pool: 'ki', amount: 1 }, combatOnly: true, role: 'panel',
+        effect: { type: 'grant_action' },
+      },
+      {
+        id: 'martial_arts_strike', baseId: 'martial_arts_strike', name: 'Martial Arts Strike', actionEconomy: 'bonus_action',
+        targetPolicy: 'self', cost: {}, role: 'combat_action', reason: 'Choose it from the combat actions on your turn.',
+        effect: { type: 'grant_action' },
+      },
+    ]
+    actor.classFeatureState = { ki: { current: 2, max: 3, refreshesOn: 'short_rest' } }
+    return actor
+  }
+
+  it('reads shared pools and explains combat-only and combat-action capabilities', () => {
+    const state = snapshot()
+    monk(state)
+    const inCombat = gameplayControlsFromSnapshot(state, 30).capabilities
+    expect(inCombat.find((feature) => feature.id === 'flurry_of_blows')).toMatchObject({ current: 2, max: 3, available: true })
+    expect(inCombat.find((feature) => feature.id === 'step_of_the_wind:dash')).toMatchObject({ current: 2, refreshesOn: 'short rest' })
+    expect(inCombat.find((feature) => feature.id === 'martial_arts_strike')).toMatchObject({
+      available: false,
+      reason: 'Choose it from the combat actions on your turn.',
+    })
+
+    const outside = snapshot() as Record<string, unknown>
+    monk(outside as ReturnType<typeof snapshot>)
+    outside.combat = { status: 'ended' }
+    expect(gameplayControlsFromSnapshot(outside, 30).capabilities.find((feature) => feature.id === 'flurry_of_blows')).toMatchObject({
+      available: false,
+      reason: 'Available only during active combat.',
+    })
+
+    const broke = snapshot()
+    monk(broke).classFeatureState = { ki: { current: 0, max: 3 } }
+    expect(gameplayControlsFromSnapshot(broke, 30).capabilities.find((feature) => feature.id === 'flurry_of_blows')).toMatchObject({
+      available: false,
+      reason: 'No uses remain.',
+    })
+  })
+
+  it('prefers the server combat action and keeps an ally capability off the user', () => {
+    const state = snapshot() as ReturnType<typeof snapshot> & { combat: Record<string, unknown> }
+    const actor = state.playerCharacters[0] as Record<string, unknown>
+    actor.classFeatures = [
+      {
+        id: 'bardic_inspiration', baseId: 'bardic_inspiration', name: 'Bardic Inspiration', actionEconomy: 'bonus_action',
+        targetPolicy: 'ally', pool: 'bardic_inspiration', cost: { pool: 'bardic_inspiration', amount: 1 }, role: 'panel',
+        effect: { type: 'apply_modifier' },
+      },
+    ]
+    actor.classFeatureState = { bardic_inspiration: { current: 3, max: 3, refreshesOn: 'long_rest' } }
+    const outside = { ...state, combat: { status: 'ended' } }
+    const offline = gameplayControlsFromSnapshot(outside, 30).capabilities[0]
+    expect(offline.targets.map((target) => target.id)).toEqual(['player_31'])
+    expect(offline.available).toBe(true)
+
+    state.combat.legalActions = [
+      {
+        actorId: 'player_30',
+        actions: [
+          {
+            id: 'class.use.bardic_inspiration',
+            available: false,
+            reason: 'Too far away; the ally must be in your range band or the next one.',
+            capability: { id: 'bardic_inspiration' },
+            targets: [{ id: 'player_31', name: 'Borin', available: false, reason: 'Too far away; the ally must be in your range band or the next one.' }],
+          },
+        ],
+      },
+    ]
+    const control = gameplayControlsFromSnapshot(state, 30).capabilities[0]
+    expect(control).toMatchObject({ available: false, reason: 'Too far away; the ally must be in your range band or the next one.' })
+    expect(control.targets).toEqual([
+      expect.objectContaining({ id: 'player_31', currentHp: 10, available: false }),
+    ])
   })
 })

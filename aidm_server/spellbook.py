@@ -48,21 +48,43 @@ def _source_label(source_type: str | None, source_detail: str | None) -> str | N
     return source_type or source_detail or None
 
 
-# This is intentionally a small catalog of complete rules, not a decorative
-# claim that every spell name below is mechanically implemented. Recognized
-# entries are merged after imported spell data so a campaign cannot replace a
-# server-owned effect with client-authored damage or targeting rules.
+# Rules-backed spell definitions: the server resolves these mechanically.
+# Recognized entries are merged after imported spell data so a campaign cannot
+# replace a server-owned effect with client-authored damage or targeting rules.
+# Range bands follow the coarse battlefield: touch is melee, 30 ft reaches near,
+# 60 ft reaches far and 90 ft or more reaches every band.
+TOUCH = ['melee']
+RANGE_30_FT = ['melee', 'near']
+RANGE_60_FT = ['melee', 'near', 'far']
+RANGE_90_FT = ['melee', 'near', 'far', 'distant']
+ONE_MINUTE = {'rounds': 10, 'tickOn': 'target_turn_end'}
+TEN_MINUTES = {'rounds': 100, 'tickOn': 'target_turn_end'}
+UNTIL_ENCOUNTER_ENDS = {'until': 'encounter'}
+UNTIL_LONG_REST = {'until': 'long_rest'}
+CHROMATIC_ORB_DAMAGE_TYPES = ['acid', 'cold', 'fire', 'lightning', 'poison', 'thunder']
+
 AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
     'fire bolt': {
-        'level': 0,
+        'level': 0, 'school': 'evocation', 'classes': ['wizard', 'sorcerer', 'artificer'],
         'delivery': {'type': 'attack'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far', 'distant'], 'maxTargets': 1},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_90_FT, 'maxTargets': 1},
         'effects': [{'kind': 'damage', 'dice': '1d10', 'damageType': 'fire'}],
         'scaling': {'cantrip': True},
     },
+    'ray of frost': {
+        'level': 0, 'school': 'evocation', 'classes': ['wizard', 'sorcerer', 'artificer'],
+        'delivery': {'type': 'attack'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_60_FT, 'maxTargets': 1},
+        'effects': [
+            {'kind': 'damage', 'dice': '1d8', 'damageType': 'cold'},
+            {'kind': 'condition', 'condition': 'slowed', 'duration': {'rounds': 1, 'tickOn': 'target_turn_end'}},
+        ],
+        'scaling': {'cantrip': True},
+    },
     'shocking grasp': {
-        'level': 0, 'delivery': {'type': 'attack'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee'], 'maxTargets': 1},
+        'level': 0, 'school': 'evocation', 'classes': ['wizard', 'sorcerer'],
+        'delivery': {'type': 'attack', 'ranged': False},
+        'target': {'relation': 'enemy', 'rangeBands': TOUCH, 'maxTargets': 1},
         'effects': [
             {'kind': 'damage', 'dice': '1d8', 'damageType': 'lightning'},
             {'kind': 'modifier', 'modifiers': {'cannotReact': True},
@@ -71,8 +93,9 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
         'scaling': {'cantrip': True},
     },
     'chill touch': {
-        'level': 0, 'delivery': {'type': 'attack'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far', 'distant'], 'maxTargets': 1},
+        'level': 0, 'school': 'necromancy', 'classes': ['wizard', 'sorcerer', 'warlock'],
+        'delivery': {'type': 'attack'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_90_FT, 'maxTargets': 1},
         'effects': [
             {'kind': 'damage', 'dice': '1d8', 'damageType': 'necrotic'},
             {'kind': 'modifier', 'modifiers': {'noHealing': True},
@@ -81,20 +104,37 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
         'scaling': {'cantrip': True},
     },
     'poison spray': {
-        'level': 0, 'delivery': {'type': 'save', 'ability': 'constitution', 'onSuccess': 'none'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near'], 'maxTargets': 1},
+        'level': 0, 'school': 'conjuration', 'classes': ['sorcerer', 'warlock', 'druid'],
+        'delivery': {'type': 'save', 'ability': 'constitution', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_30_FT, 'maxTargets': 1},
         'effects': [{'kind': 'damage', 'dice': '1d12', 'damageType': 'poison'}],
         'scaling': {'cantrip': True},
     },
+    'sacred flame': {
+        'level': 0, 'school': 'evocation', 'classes': ['cleric'],
+        'delivery': {'type': 'save', 'ability': 'dexterity', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_60_FT, 'maxTargets': 1, 'ignoreCover': True},
+        'effects': [{'kind': 'damage', 'dice': '1d8', 'damageType': 'radiant'}],
+        'scaling': {'cantrip': True},
+    },
     'toll the dead': {
-        'level': 0, 'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'none'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 1},
+        'level': 0, 'school': 'necromancy', 'classes': ['cleric'],
+        'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_60_FT, 'maxTargets': 1},
         'effects': [{'kind': 'damage', 'dice': '1d8', 'woundedDice': '1d12', 'damageType': 'necrotic'}],
         'scaling': {'cantrip': True},
     },
+    'eldritch blast': {
+        'level': 0, 'school': 'evocation', 'classes': ['warlock'],
+        'delivery': {'type': 'attack', 'attacks': 1},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_90_FT, 'maxTargets': 1},
+        'effects': [{'kind': 'damage', 'dice': '1d10', 'damageType': 'force'}],
+        'scaling': {'cantrip': True},
+    },
     'vicious mockery': {
-        'level': 0, 'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'none'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 1},
+        'level': 0, 'school': 'enchantment', 'classes': ['bard'],
+        'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_60_FT, 'maxTargets': 1},
         'effects': [
             {'kind': 'damage', 'dice': '1d4', 'damageType': 'psychic'},
             {'kind': 'modifier', 'modifiers': {'attackMode': 'disadvantage'}, 'consumeOn': 'attack',
@@ -103,76 +143,134 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
         'scaling': {'cantrip': True},
     },
     'produce flame': {
-        'level': 0, 'delivery': {'type': 'attack'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near'], 'maxTargets': 1},
+        'level': 0, 'school': 'conjuration', 'classes': ['druid'],
+        'delivery': {'type': 'attack'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_30_FT, 'maxTargets': 1},
         'effects': [{'kind': 'damage', 'dice': '1d8', 'damageType': 'fire'}],
         'scaling': {'cantrip': True},
     },
     'thorn whip': {
-        'level': 0, 'delivery': {'type': 'attack', 'ranged': False},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near'], 'maxTargets': 1},
-        'effects': [{'kind': 'damage', 'dice': '1d6', 'damageType': 'piercing'},
-                    {'kind': 'move', 'bands': -1}],
+        'level': 0, 'school': 'transmutation', 'classes': ['druid'],
+        'delivery': {'type': 'attack', 'ranged': False},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_30_FT, 'maxTargets': 1},
+        'effects': [{'kind': 'damage', 'dice': '1d6', 'damageType': 'piercing'}, {'kind': 'move', 'bands': -1}],
         'scaling': {'cantrip': True},
     },
-    'thunderwave': {
-        'level': 1, 'delivery': {'type': 'save', 'ability': 'constitution', 'onSuccess': 'half'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near'], 'area': {'maxTargets': 3}},
-        'effects': [{'kind': 'damage', 'dice': '2d8', 'damageType': 'thunder'},
-                    {'kind': 'move', 'bands': 1}],
-        'scaling': {'upcast': {'dice': '1d8'}},
-    },
-    'dissonant whispers': {
-        'level': 1, 'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'half'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 1},
-        'effects': [{'kind': 'damage', 'dice': '3d6', 'damageType': 'psychic'},
-                    {'kind': 'move', 'bands': 1}],
-        'scaling': {'upcast': {'dice': '1d6'}},
-    },
-    'misty step': {
-        'level': 2, 'castingTime': 'bonus_action', 'delivery': {'type': 'automatic'},
-        'target': {'relation': 'self', 'rangeBands': ['melee'], 'maxTargets': 1, 'allowSelf': True},
-        'effects': [{'kind': 'move', 'teleport': 'away'}],
+    'guidance': {
+        'level': 0, 'school': 'divination', 'classes': ['cleric', 'druid'],
+        'outOfCombat': True, 'concentration': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': TOUCH, 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'modifier', 'modifiers': {'checkBonusDice': '1d4'}, 'consumeOn': 'check',
+                     'duration': ONE_MINUTE}],
+        'scaling': {'cantrip': True},
     },
     'spare the dying': {
-        'level': 0, 'outOfCombat': True, 'delivery': {'type': 'automatic'},
-        'target': {'relation': 'ally', 'rangeBands': ['melee'], 'maxTargets': 1,
-                   'allowSelf': True, 'requiresDying': True},
+        'level': 0, 'school': 'necromancy', 'classes': ['cleric'], 'outOfCombat': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': TOUCH, 'maxTargets': 1, 'allowSelf': True, 'requiresDying': True},
         'effects': [{'kind': 'stabilize'}],
+        'scaling': {'cantrip': True},
     },
-    'lesser restoration': {
-        'level': 2, 'outOfCombat': True, 'delivery': {'type': 'automatic'},
-        'target': {'relation': 'ally', 'rangeBands': ['melee'], 'maxTargets': 1, 'allowSelf': True},
-        'effects': [{'kind': 'remove_condition', 'conditions': ['blinded', 'deafened', 'paralyzed', 'poisoned']}],
+    'magic missile': {
+        'level': 1, 'school': 'evocation', 'classes': ['wizard', 'sorcerer'],
+        'delivery': {'type': 'automatic', 'darts': {'count': 3, 'dice': '1d4+1'}},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_90_FT, 'maxTargets': 3, 'ignoreCover': True},
+        'effects': [{'kind': 'damage', 'dice': '1d4+1', 'damageType': 'force'}],
+        'scaling': {'upcast': {'darts': 1}},
     },
-    'prayer of healing': {
-        'level': 2, 'outOfCombat': True, 'outOfCombatOnly': True, 'delivery': {'type': 'automatic'},
-        'target': {'relation': 'ally', 'rangeBands': ['melee', 'near'], 'maxTargets': 6, 'allowSelf': True},
-        'effects': [{'kind': 'healing', 'dice': '2d8', 'addCastingModifier': True}],
+    'burning hands': {
+        'level': 1, 'school': 'evocation', 'classes': ['wizard', 'sorcerer'],
+        'delivery': {'type': 'save', 'ability': 'dexterity', 'onSuccess': 'half'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_30_FT, 'area': {'maxTargets': 3}},
+        'effects': [{'kind': 'damage', 'dice': '3d6', 'damageType': 'fire'}],
+        'scaling': {'upcast': {'dice': '1d6'}},
+    },
+    'thunderwave': {
+        'level': 1, 'school': 'evocation', 'classes': ['wizard', 'sorcerer', 'druid', 'bard'],
+        'delivery': {'type': 'save', 'ability': 'constitution', 'onSuccess': 'half'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_30_FT, 'area': {'maxTargets': 3}},
+        'effects': [{'kind': 'damage', 'dice': '2d8', 'damageType': 'thunder'}, {'kind': 'move', 'bands': 1}],
         'scaling': {'upcast': {'dice': '1d8'}},
     },
-    'mass healing word': {
-        'level': 3, 'castingTime': 'bonus_action', 'outOfCombat': True, 'delivery': {'type': 'automatic'},
-        'target': {'relation': 'ally', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 6, 'allowSelf': True},
+    'chromatic orb': {
+        'level': 1, 'school': 'evocation', 'classes': ['wizard', 'sorcerer'],
+        'delivery': {'type': 'attack'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_90_FT, 'maxTargets': 1},
+        'effects': [{'kind': 'damage', 'dice': '3d8', 'damageType': 'fire',
+                     'damageTypeChoices': CHROMATIC_ORB_DAMAGE_TYPES}],
+        'scaling': {'upcast': {'dice': '1d8'}},
+    },
+    'sleep': {
+        'level': 1, 'school': 'enchantment', 'classes': ['wizard', 'sorcerer', 'bard'],
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_90_FT, 'area': {'maxTargets': 4}},
+        'effects': [{'kind': 'sleep_pool', 'dice': '5d8', 'duration': ONE_MINUTE}],
+        'scaling': {'upcast': {'dice': '2d8'}},
+    },
+    'mage armor': {
+        'level': 1, 'school': 'abjuration', 'classes': ['wizard', 'sorcerer'], 'outOfCombat': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': TOUCH, 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'modifier', 'modifiers': {'acBase': 13}, 'duration': UNTIL_LONG_REST}],
+    },
+    'false life': {
+        'level': 1, 'school': 'necromancy', 'classes': ['wizard', 'sorcerer', 'artificer'], 'outOfCombat': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'self', 'rangeBands': TOUCH, 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'temporary_hp', 'dice': '1d4+4'}],
+        'scaling': {'upcast': {'flat': 5}},
+    },
+    'shield': {
+        'level': 1, 'school': 'abjuration', 'classes': ['wizard', 'sorcerer'], 'castingTime': 'reaction',
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'self', 'rangeBands': TOUCH, 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'modifier', 'modifiers': {'acBonus': 5},
+                     'duration': {'rounds': 1, 'tickOn': 'target_turn_start'}}],
+    },
+    'cure wounds': {
+        'level': 1, 'school': 'evocation', 'classes': ['cleric', 'druid', 'bard', 'paladin', 'ranger', 'artificer'],
+        'outOfCombat': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': TOUCH, 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'healing', 'dice': '1d8', 'addCastingModifier': True}],
+        'scaling': {'upcast': {'dice': '1d8'}},
+    },
+    'healing word': {
+        'level': 1, 'school': 'evocation', 'classes': ['cleric', 'druid', 'bard'],
+        'castingTime': 'bonus_action', 'outOfCombat': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': RANGE_60_FT, 'maxTargets': 1, 'allowSelf': True},
         'effects': [{'kind': 'healing', 'dice': '1d4', 'addCastingModifier': True}],
         'scaling': {'upcast': {'dice': '1d4'}},
     },
-    'divine favor': {
-        'level': 1, 'castingTime': 'bonus_action', 'delivery': {'type': 'automatic'},
-        'target': {'relation': 'self', 'rangeBands': ['melee'], 'maxTargets': 1, 'allowSelf': True},
-        'effects': [{'kind': 'modifier', 'modifiers': {'bonusWeaponDamage': {'dice': '1d4', 'type': 'radiant'}},
-                     'duration': {'rounds': 10, 'tickOn': 'target_turn_end'}}],
-        'concentration': True,
+    'bless': {
+        'level': 1, 'school': 'enchantment', 'classes': ['cleric', 'paladin'], 'concentration': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': RANGE_30_FT, 'maxTargets': 3, 'allowSelf': True},
+        'effects': [{'kind': 'modifier', 'modifiers': {'attackBonusDice': '1d4', 'saveBonusDice': '1d4'},
+                     'duration': ONE_MINUTE}],
+        'scaling': {'upcast': {'targets': 1}},
     },
-    'inflict wounds': {
-        'level': 1, 'delivery': {'type': 'attack'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee'], 'maxTargets': 1},
-        'effects': [{'kind': 'damage', 'dice': '3d10', 'damageType': 'necrotic'}],
-        'scaling': {'upcast': {'dice': '1d10'}},
+    'bane': {
+        'level': 1, 'school': 'enchantment', 'classes': ['cleric', 'bard'], 'concentration': True,
+        'delivery': {'type': 'save', 'ability': 'charisma', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_30_FT, 'maxTargets': 3},
+        'effects': [{'kind': 'modifier', 'modifiers': {'attackBonusDice': '-1d4', 'saveBonusDice': '-1d4'},
+                     'duration': ONE_MINUTE}],
+        'scaling': {'upcast': {'targets': 1}},
+    },
+    'shield of faith': {
+        'level': 1, 'school': 'abjuration', 'classes': ['cleric', 'paladin'],
+        'castingTime': 'bonus_action', 'concentration': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': RANGE_60_FT, 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'modifier', 'modifiers': {'acBonus': 2}, 'duration': TEN_MINUTES}],
     },
     'guiding bolt': {
-        'level': 1, 'delivery': {'type': 'attack'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far', 'distant'], 'maxTargets': 1},
+        'level': 1, 'school': 'evocation', 'classes': ['cleric'],
+        'delivery': {'type': 'attack'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_90_FT, 'maxTargets': 1},
         'effects': [
             {'kind': 'damage', 'dice': '4d6', 'damageType': 'radiant'},
             {'kind': 'modifier', 'modifiers': {'attackedMode': 'advantage'}, 'consumeOn': 'attacked',
@@ -180,155 +278,398 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
         ],
         'scaling': {'upcast': {'dice': '1d6'}},
     },
-    'bless': {
-        'level': 1, 'delivery': {'type': 'automatic'},
-        'target': {'relation': 'ally', 'rangeBands': ['melee', 'near'], 'maxTargets': 3, 'allowSelf': True},
-        'effects': [{'kind': 'modifier', 'modifiers': {'attackBonusDice': '1d4', 'saveBonusDice': '1d4'},
-                     'duration': {'rounds': 10, 'tickOn': 'target_turn_end'}}],
-        'concentration': True, 'scaling': {'upcast': {'targets': 1}},
-    },
-    'bane': {
-        'level': 1, 'delivery': {'type': 'save', 'ability': 'charisma', 'onSuccess': 'none'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near'], 'maxTargets': 3},
-        'effects': [{'kind': 'modifier', 'modifiers': {'attackBonusDice': '-1d4', 'saveBonusDice': '-1d4'},
-                     'duration': {'rounds': 10, 'tickOn': 'target_turn_end'}}],
-        'concentration': True, 'scaling': {'upcast': {'targets': 1}},
+    'inflict wounds': {
+        'level': 1, 'school': 'necromancy', 'classes': ['cleric'],
+        'delivery': {'type': 'attack', 'ranged': False},
+        'target': {'relation': 'enemy', 'rangeBands': TOUCH, 'maxTargets': 1},
+        'effects': [{'kind': 'damage', 'dice': '3d10', 'damageType': 'necrotic'}],
+        'scaling': {'upcast': {'dice': '1d10'}},
     },
     'command': {
-        'level': 1, 'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'none'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 1},
+        'level': 1, 'school': 'enchantment', 'classes': ['cleric', 'paladin'],
+        'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_60_FT, 'maxTargets': 1},
         'effects': [{'kind': 'modifier', 'modifiers': {'cannotAct': True},
                      'duration': {'rounds': 1, 'tickOn': 'target_turn_end'}}],
         'scaling': {'upcast': {'targets': 1}},
     },
-    'shield of faith': {
-        'level': 1, 'castingTime': 'bonus_action', 'delivery': {'type': 'automatic'},
-        'target': {'relation': 'ally', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 1, 'allowSelf': True},
-        'effects': [{'kind': 'modifier', 'modifiers': {'acBonus': 2},
-                     'duration': {'rounds': 100, 'tickOn': 'target_turn_end'}}],
-        'concentration': True,
+    'entangle': {
+        'level': 1, 'school': 'conjuration', 'classes': ['druid', 'ranger'], 'concentration': True,
+        'delivery': {'type': 'save', 'ability': 'strength', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_90_FT, 'area': {'maxTargets': 4}},
+        'effects': [
+            {'kind': 'condition', 'condition': 'restrained', 'duration': ONE_MINUTE},
+            {'kind': 'recurring', 'repeatSave': 'strength', 'duration': ONE_MINUTE},
+        ],
     },
-    'false life': {
-        'level': 1, 'outOfCombat': True, 'delivery': {'type': 'automatic'},
-        'target': {'relation': 'self', 'rangeBands': ['melee'], 'maxTargets': 1, 'allowSelf': True},
-        'effects': [{'kind': 'temporary_hp', 'dice': '1d4+4'}],
+    'faerie fire': {
+        'level': 1, 'school': 'evocation', 'classes': ['druid', 'bard', 'artificer'], 'concentration': True,
+        'delivery': {'type': 'save', 'ability': 'dexterity', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_60_FT, 'area': {'maxTargets': 4}},
+        'effects': [
+            {'kind': 'modifier', 'modifiers': {'attackedMode': 'advantage'}, 'duration': ONE_MINUTE},
+            {'kind': 'remove_condition', 'conditions': ['invisible', 'hidden'], 'removeAll': True},
+        ],
+    },
+    "hunter's mark": {
+        'level': 1, 'school': 'divination', 'classes': ['ranger'],
+        'castingTime': 'bonus_action', 'concentration': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_90_FT, 'maxTargets': 1},
+        'effects': [{'kind': 'modifier', 'onCaster': True,
+                     'modifiers': {'bonusDamageVs': {'dice': '1d6', 'weaponOnly': True}},
+                     'duration': UNTIL_ENCOUNTER_ENDS}],
+    },
+    'hex': {
+        'level': 1, 'school': 'enchantment', 'classes': ['warlock'],
+        'castingTime': 'bonus_action', 'concentration': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_90_FT, 'maxTargets': 1},
+        'effects': [{'kind': 'modifier', 'onCaster': True,
+                     'modifiers': {'bonusDamageVs': {'dice': '1d6', 'type': 'necrotic'}},
+                     'duration': UNTIL_ENCOUNTER_ENDS}],
+    },
+    'armor of agathys': {
+        'level': 1, 'school': 'abjuration', 'classes': ['warlock'], 'outOfCombat': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'self', 'rangeBands': TOUCH, 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'temporary_hp', 'dice': '5'}],
         'scaling': {'upcast': {'flat': 5}},
     },
-    'magic missile': {
-        'level': 1,
-        'delivery': {'type': 'automatic', 'darts': {'count': 3, 'dice': '1d4+1'}},
-        'target': {
-            'relation': 'enemy',
-            'rangeBands': ['melee', 'near', 'far', 'distant'],
-            'maxTargets': 3,
-            'ignoreCover': True,
-        },
-        'effects': [{'kind': 'damage', 'dice': '1d4+1', 'damageType': 'force'}],
-        'scaling': {'upcast': {'darts': 1}},
+    'charm person': {
+        'level': 1, 'school': 'enchantment', 'classes': ['warlock', 'bard'],
+        'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'none', 'combatSaveMode': 'advantage'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_30_FT, 'maxTargets': 1},
+        'effects': [{'kind': 'condition', 'condition': 'charmed', 'duration': UNTIL_ENCOUNTER_ENDS, 'endsOnHarm': True}],
+        'scaling': {'upcast': {'targets': 1}},
     },
-    'eldritch blast': {
-        'level': 0,
-        'delivery': {'type': 'attack', 'attacks': 1},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far', 'distant'], 'maxTargets': 1},
-        'effects': [{'kind': 'damage', 'dice': '1d10', 'damageType': 'force'}],
-        'scaling': {'cantrip': True},
+    'dissonant whispers': {
+        'level': 1, 'school': 'enchantment', 'classes': ['bard'],
+        'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'half'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_60_FT, 'maxTargets': 1},
+        'effects': [{'kind': 'damage', 'dice': '3d6', 'damageType': 'psychic'}, {'kind': 'move', 'bands': 1}],
+        'scaling': {'upcast': {'dice': '1d6'}},
+    },
+    "tasha's hideous laughter": {
+        'level': 1, 'school': 'enchantment', 'classes': ['bard'], 'concentration': True,
+        'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_30_FT, 'maxTargets': 1},
+        'effects': [
+            {'kind': 'condition', 'condition': 'prone', 'duration': ONE_MINUTE},
+            {'kind': 'condition', 'condition': 'incapacitated', 'duration': ONE_MINUTE},
+            {'kind': 'recurring', 'repeatSave': 'wisdom', 'repeatSaveOnDamage': True, 'duration': ONE_MINUTE},
+        ],
+    },
+    'heroism': {
+        'level': 1, 'school': 'enchantment', 'classes': ['bard', 'paladin'], 'concentration': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': TOUCH, 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'modifier', 'modifiers': {'tempHpPerTurn': 0, 'conditionImmunities': ['frightened']},
+                     'castingModifierKeys': ['tempHpPerTurn'], 'duration': ONE_MINUTE}],
+        'scaling': {'upcast': {'targets': 1}},
+    },
+    'divine favor': {
+        'level': 1, 'school': 'evocation', 'classes': ['paladin'],
+        'castingTime': 'bonus_action', 'concentration': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'self', 'rangeBands': TOUCH, 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'modifier', 'modifiers': {'bonusWeaponDamage': {'dice': '1d4', 'type': 'radiant'}},
+                     'duration': ONE_MINUTE}],
+    },
+    'grease': {
+        'level': 1, 'school': 'conjuration', 'classes': ['artificer'],
+        'delivery': {'type': 'save', 'ability': 'dexterity', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_60_FT, 'area': {'maxTargets': 3}},
+        'effects': [{'kind': 'condition', 'condition': 'prone'}],
     },
     'scorching ray': {
-        'level': 2,
+        'level': 2, 'school': 'evocation', 'classes': ['wizard', 'sorcerer'],
         'delivery': {'type': 'attack', 'attacks': 3},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far', 'distant'], 'maxTargets': 3},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_90_FT, 'maxTargets': 3},
         'effects': [{'kind': 'damage', 'dice': '2d6', 'damageType': 'fire'}],
         'scaling': {'upcast': {'attacks': 1}},
     },
-    'burning hands': {
-        'level': 1,
-        'delivery': {'type': 'save', 'ability': 'dexterity', 'onSuccess': 'half'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near'], 'area': {'maxTargets': 3}},
-        'effects': [{'kind': 'damage', 'dice': '3d6', 'damageType': 'fire'}],
-        'scaling': {'upcast': {'dice': '1d6'}},
-    },
     'shatter': {
-        'level': 2,
+        'level': 2, 'school': 'evocation', 'classes': ['wizard', 'sorcerer', 'warlock', 'bard'],
         'delivery': {'type': 'save', 'ability': 'constitution', 'onSuccess': 'half'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far'], 'area': {'maxTargets': 4}},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_60_FT, 'area': {'maxTargets': 4}},
         'effects': [{'kind': 'damage', 'dice': '3d8', 'damageType': 'thunder'}],
         'scaling': {'upcast': {'dice': '1d8'}},
     },
+    'hold person': {
+        'level': 2, 'school': 'enchantment',
+        'classes': ['wizard', 'sorcerer', 'warlock', 'cleric', 'druid', 'bard'], 'concentration': True,
+        'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_60_FT, 'maxTargets': 1},
+        'effects': [
+            {'kind': 'condition', 'condition': 'paralyzed', 'duration': ONE_MINUTE},
+            {'kind': 'recurring', 'repeatSave': 'wisdom', 'duration': ONE_MINUTE},
+        ],
+        'scaling': {'upcast': {'targets': 1}},
+    },
+    'misty step': {
+        'level': 2, 'school': 'conjuration', 'classes': ['wizard', 'sorcerer', 'warlock'], 'castingTime': 'bonus_action',
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'self', 'rangeBands': TOUCH, 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'move', 'teleport': 'away'}],
+    },
+    'invisibility': {
+        'level': 2, 'school': 'illusion', 'classes': ['wizard', 'sorcerer', 'warlock', 'bard', 'artificer'],
+        'outOfCombat': True, 'concentration': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': TOUCH, 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'condition', 'condition': 'invisible', 'duration': UNTIL_ENCOUNTER_ENDS,
+                     'consumeOn': 'attack', 'endsOnCast': True}],
+        'scaling': {'upcast': {'targets': 1}},
+    },
+    'web': {
+        'level': 2, 'school': 'conjuration', 'classes': ['wizard', 'sorcerer'], 'concentration': True,
+        'delivery': {'type': 'save', 'ability': 'dexterity', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_60_FT, 'area': {'maxTargets': 4}},
+        'effects': [
+            {'kind': 'condition', 'condition': 'restrained', 'duration': ONE_MINUTE},
+            {'kind': 'recurring', 'repeatSave': 'strength', 'duration': ONE_MINUTE},
+        ],
+    },
+    'blindness/deafness': {
+        'level': 2, 'school': 'necromancy', 'classes': ['wizard', 'sorcerer', 'cleric', 'bard'],
+        'delivery': {'type': 'save', 'ability': 'constitution', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_30_FT, 'maxTargets': 1},
+        'effects': [
+            {'kind': 'condition', 'condition': 'blinded', 'duration': ONE_MINUTE},
+            {'kind': 'recurring', 'repeatSave': 'constitution', 'duration': ONE_MINUTE},
+        ],
+        'scaling': {'upcast': {'targets': 1}},
+    },
+    'aid': {
+        'level': 2, 'school': 'abjuration', 'classes': ['cleric', 'paladin', 'artificer'], 'outOfCombat': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': RANGE_30_FT, 'maxTargets': 3, 'allowSelf': True},
+        'effects': [{'kind': 'max_hp_bonus', 'amount': 5, 'duration': UNTIL_LONG_REST}],
+        'scaling': {'upcast': {'flat': 5}},
+    },
+    'lesser restoration': {
+        'level': 2, 'school': 'abjuration', 'classes': ['cleric', 'druid', 'bard', 'paladin', 'ranger', 'artificer'],
+        'outOfCombat': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': TOUCH, 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'remove_condition', 'conditions': ['blinded', 'deafened', 'paralyzed', 'poisoned']}],
+    },
+    'prayer of healing': {
+        'level': 2, 'school': 'evocation', 'classes': ['cleric'], 'outOfCombat': True, 'outOfCombatOnly': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': RANGE_30_FT, 'maxTargets': 6, 'allowSelf': True},
+        'effects': [{'kind': 'healing', 'dice': '2d8', 'addCastingModifier': True}],
+        'scaling': {'upcast': {'dice': '1d8'}},
+    },
+    'spiritual weapon': {
+        'level': 2, 'school': 'evocation', 'classes': ['cleric'], 'castingTime': 'bonus_action',
+        'delivery': {'type': 'attack', 'ranged': False},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_60_FT, 'maxTargets': 1},
+        'effects': [
+            {'kind': 'damage', 'dice': '1d8', 'damageType': 'force', 'addCastingModifier': True},
+            {'kind': 'repeat_attack', 'duration': ONE_MINUTE},
+        ],
+        'scaling': {'upcast': {'dice': '1d8', 'perLevels': 2}},
+    },
+    'moonbeam': {
+        'level': 2, 'school': 'evocation', 'classes': ['druid'], 'concentration': True,
+        'delivery': {'type': 'save', 'ability': 'constitution', 'onSuccess': 'half'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_90_FT, 'area': {'maxTargets': 3}},
+        'effects': [
+            {'kind': 'damage', 'dice': '2d10', 'damageType': 'radiant'},
+            {'kind': 'recurring', 'save': {'ability': 'constitution', 'onSuccess': 'half'},
+             'damage': {'dice': '2d10', 'damageType': 'radiant'}, 'onSuccessfulSave': 'full', 'duration': ONE_MINUTE},
+        ],
+        'scaling': {'upcast': {'dice': '1d10'}},
+    },
+    'barkskin': {
+        'level': 2, 'school': 'transmutation', 'classes': ['druid', 'ranger'], 'outOfCombat': True, 'concentration': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': TOUCH, 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'modifier', 'modifiers': {'acMinimum': 16}, 'duration': UNTIL_ENCOUNTER_ENDS}],
+    },
     'fireball': {
-        'level': 3,
+        'level': 3, 'school': 'evocation', 'classes': ['wizard', 'sorcerer'],
         'delivery': {'type': 'save', 'ability': 'dexterity', 'onSuccess': 'half'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far', 'distant'], 'area': {'maxTargets': 6}},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_90_FT, 'area': {'maxTargets': 6}},
         'effects': [{'kind': 'damage', 'dice': '8d6', 'damageType': 'fire'}],
         'scaling': {'upcast': {'dice': '1d6'}},
     },
     'lightning bolt': {
-        'level': 3,
+        'level': 3, 'school': 'evocation', 'classes': ['wizard', 'sorcerer'],
         'delivery': {'type': 'save', 'ability': 'dexterity', 'onSuccess': 'half'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far', 'distant'], 'area': {'maxTargets': 3}},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_90_FT, 'area': {'maxTargets': 3}},
         'effects': [{'kind': 'damage', 'dice': '8d6', 'damageType': 'lightning'}],
         'scaling': {'upcast': {'dice': '1d6'}},
     },
-    'sacred flame': {
-        'level': 0,
-        'delivery': {'type': 'save', 'ability': 'dexterity', 'onSuccess': 'none'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 1, 'ignoreCover': True},
-        'effects': [{'kind': 'damage', 'dice': '1d8', 'damageType': 'radiant'}],
-        'scaling': {'cantrip': True},
+    'hypnotic pattern': {
+        'level': 3, 'school': 'illusion', 'classes': ['wizard', 'sorcerer', 'warlock', 'bard'], 'concentration': True,
+        'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_90_FT, 'area': {'maxTargets': 4}},
+        'effects': [
+            {'kind': 'condition', 'condition': 'incapacitated', 'duration': ONE_MINUTE, 'endsOnDamage': True},
+            {'kind': 'condition', 'condition': 'charmed', 'duration': ONE_MINUTE, 'endsOnDamage': True},
+        ],
     },
-    'cure wounds': {
-        'level': 1,
-        'outOfCombat': True,
-        'delivery': {'type': 'automatic'},
-        'target': {
-            'relation': 'ally',
-            'rangeBands': ['melee'],
-            'maxTargets': 1,
-            'allowSelf': True,
-        },
-        'effects': [{'kind': 'healing', 'dice': '1d8', 'addCastingModifier': True}],
-        'scaling': {'upcast': {'dice': '1d8'}},
+    'fear': {
+        'level': 3, 'school': 'illusion', 'classes': ['warlock', 'bard'], 'concentration': True,
+        'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': RANGE_30_FT, 'area': {'maxTargets': 4}},
+        'effects': [
+            {'kind': 'condition', 'condition': 'frightened', 'duration': ONE_MINUTE},
+            {'kind': 'recurring', 'repeatSave': 'wisdom', 'duration': ONE_MINUTE},
+        ],
     },
-    'healing word': {
-        'level': 1,
-        'castingTime': 'bonus_action',
-        'outOfCombat': True,
+    'revivify': {
+        'level': 3, 'school': 'necromancy', 'classes': ['cleric', 'paladin'], 'outOfCombat': True,
+        'consumes': {'gp': 300},
         'delivery': {'type': 'automatic'},
-        'target': {
-            'relation': 'ally',
-            'rangeBands': ['melee', 'near', 'far'],
-            'maxTargets': 1,
-            'allowSelf': True,
-        },
+        'target': {'relation': 'ally', 'rangeBands': TOUCH, 'maxTargets': 1, 'requiresDead': True},
+        'effects': [{'kind': 'revive', 'hp': 1}],
+    },
+    'mass healing word': {
+        'level': 3, 'school': 'evocation', 'classes': ['cleric', 'bard'], 'castingTime': 'bonus_action', 'outOfCombat': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': RANGE_60_FT, 'maxTargets': 6, 'allowSelf': True},
         'effects': [{'kind': 'healing', 'dice': '1d4', 'addCastingModifier': True}],
         'scaling': {'upcast': {'dice': '1d4'}},
     },
-    'entangle': {
-        'level': 1,
-        'delivery': {'type': 'save', 'ability': 'strength', 'onSuccess': 'none'},
-        'target': {'relation': 'enemy', 'rangeBands': ['near', 'far'], 'maxTargets': 1},
-        'effects': [
-            {
-                'kind': 'condition',
-                'condition': 'restrained',
-                'duration': {'remaining': 2, 'tick': 'target_turn_end'},
-            }
-        ],
-        'concentration': True,
+    'spirit guardians': {
+        'level': 3, 'school': 'conjuration', 'classes': ['cleric'], 'concentration': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'self', 'rangeBands': TOUCH, 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'recurring', 'save': {'ability': 'wisdom', 'onSuccess': 'half'},
+                     'damage': {'dice': '3d8', 'damageType': 'radiant'},
+                     'aura': {'relation': 'enemy', 'rangeBands': RANGE_30_FT}, 'duration': TEN_MINUTES}],
+        'scaling': {'upcast': {'dice': '1d8'}},
     },
-    'ray of frost': {
-        'level': 0,
-        'delivery': {'type': 'attack'},
-        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 1},
-        'effects': [
-            {'kind': 'damage', 'dice': '1d8', 'damageType': 'cold'},
-            {
-                'kind': 'condition',
-                'condition': 'slowed',
-                'duration': {'remaining': 1, 'tick': 'target_turn_end'},
-            },
-        ],
-        'scaling': {'cantrip': True},
+    'dispel magic': {
+        'level': 3, 'school': 'abjuration',
+        'classes': ['wizard', 'sorcerer', 'warlock', 'cleric', 'druid', 'bard', 'paladin'], 'outOfCombat': True,
+        'delivery': {'type': 'automatic'},
+        'target': {'relation': 'any', 'rangeBands': RANGE_90_FT, 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'dispel'}],
     },
+}
+
+
+# Spells on the class lists that the Dungeon Master adjudicates: no mechanical
+# state, and only levelled ones spend a slot.
+NARRATED_SPELLS: dict[str, dict[str, Any]] = {
+    'mage hand': {'level': 0, 'school': 'conjuration', 'classes': ['wizard', 'sorcerer', 'warlock', 'bard', 'artificer']},
+    'prestidigitation': {'level': 0, 'school': 'transmutation', 'classes': ['wizard']},
+    'minor illusion': {'level': 0, 'school': 'illusion', 'classes': ['sorcerer', 'warlock', 'bard']},
+    'light': {'level': 0, 'school': 'evocation', 'classes': ['wizard', 'sorcerer', 'cleric', 'bard']},
+    'thaumaturgy': {'level': 0, 'school': 'transmutation', 'classes': ['cleric']},
+    'druidcraft': {'level': 0, 'school': 'transmutation', 'classes': ['druid']},
+    'mending': {'level': 0, 'school': 'transmutation', 'classes': ['artificer']},
+    'message': {'level': 0, 'school': 'transmutation', 'classes': ['wizard', 'sorcerer', 'bard']},
+    'dancing lights': {'level': 0, 'school': 'evocation', 'classes': ['wizard', 'sorcerer', 'bard']},
+    'detect magic': {'level': 1, 'school': 'divination', 'classes': ['wizard', 'cleric']},
+    'speak with animals': {'level': 1, 'school': 'divination', 'classes': ['druid', 'ranger']},
+    'goodberry': {'level': 1, 'school': 'transmutation', 'classes': ['druid', 'ranger']},
+    'hellish rebuke': {'level': 1, 'school': 'evocation', 'classes': ['warlock']},
+    'chaos bolt': {'level': 1, 'school': 'evocation', 'classes': ['sorcerer']},
+    'primal shift': {'level': 1, 'school': 'transmutation', 'classes': ['druid']},
+    'arcane tinkering': {'level': 1, 'school': 'transmutation', 'classes': ['artificer']},
+    'pass without trace': {'level': 2, 'school': 'abjuration', 'classes': ['druid', 'ranger']},
+    'mirror image': {'level': 2, 'school': 'illusion', 'classes': ['warlock']},
+    'flaming sphere': {'level': 2, 'school': 'conjuration', 'classes': ['wizard', 'druid']},
+    'heat metal': {'level': 2, 'school': 'transmutation', 'classes': ['artificer']},
+    'counterspell': {'level': 3, 'school': 'abjuration', 'classes': ['wizard', 'warlock']},
+    'fly': {'level': 3, 'school': 'transmutation', 'classes': ['wizard', 'sorcerer', 'warlock']},
+    'haste': {'level': 3, 'school': 'transmutation', 'classes': ['sorcerer', 'artificer']},
+    'call lightning': {'level': 3, 'school': 'conjuration', 'classes': ['druid']},
+}
+
+
+SPELL_DESCRIPTIONS: dict[str, str] = {
+    'fire bolt': 'A precise ranged spark of arcane fire.',
+    'ray of frost': 'A chilling ray that slows a target.',
+    'shocking grasp': 'A touch of lightning prevents reactions.',
+    'chill touch': 'Necrotic magic prevents healing briefly.',
+    'poison spray': 'A short-range poisonous spray.',
+    'sacred flame': 'Radiant fire against a visible foe.',
+    'toll the dead': 'A deathly bell hurts wounded foes more.',
+    'eldritch blast': 'Beams of pact-born force.',
+    'vicious mockery': 'Cutting words backed by enchantment.',
+    'produce flame': 'Hold and throw a small flame.',
+    'thorn whip': 'A thorny lash pulls an enemy closer.',
+    'guidance': 'A small divine boost to an ability check.',
+    'spare the dying': 'Stabilize a dying ally.',
+    'magic missile': 'Reliable darts of arcane force.',
+    'burning hands': 'A short cone of flame.',
+    'thunderwave': 'A concussive burst of sound.',
+    'chromatic orb': 'A sphere of the elemental energy you choose.',
+    'sleep': 'Lull weak creatures into magical sleep.',
+    'mage armor': 'Protective arcane armor until your next long rest.',
+    'false life': 'Gain temporary hit points.',
+    'shield': 'A reflexive ward that turns a hit into a miss.',
+    'cure wounds': 'Touch-based healing.',
+    'healing word': 'Quick ranged healing.',
+    'bless': 'Bolster allies in danger.',
+    'bane': 'Sap the attacks and saves of enemies.',
+    'shield of faith': 'Protect an ally with divine force.',
+    'guiding bolt': 'Radiant magic reveals a target for the next attack.',
+    'inflict wounds': 'Inflict necrotic harm with a touch.',
+    'command': 'Compel an enemy to lose its next turn.',
+    'entangle': 'Grasping plants restrain an area.',
+    'faerie fire': 'Outline creatures in revealing light.',
+    "hunter's mark": 'Mark prey so your weapon strikes bite harder.',
+    'hex': 'Curse a foe so your attacks deal extra necrotic damage.',
+    'armor of agathys': 'A frosty ward of temporary hit points.',
+    'charm person': 'Briefly charm a foe.',
+    'dissonant whispers': 'Psychic fear through sound.',
+    "tasha's hideous laughter": 'A foe collapses in helpless laughter.',
+    'heroism': 'Courage that grants temporary hit points and banishes fear.',
+    'divine favor': 'Imbue weapon attacks with radiant power.',
+    'grease': 'Make a slick hazardous surface.',
+    'scorching ray': 'Fire several rays of flame.',
+    'shatter': 'A burst of destructive sound.',
+    'hold person': 'Paralyze a foe with magic.',
+    'misty step': 'Teleport a short distance you can see.',
+    'invisibility': 'Hide a creature from sight.',
+    'web': 'Fill an area with sticky strands.',
+    'blindness/deafness': 'Rob a foe of its sight.',
+    'aid': 'Bolster allies with extra hit points until a long rest.',
+    'lesser restoration': 'End a lesser affliction.',
+    'prayer of healing': 'Heal allies during a safe pause.',
+    'spiritual weapon': 'Manifest a floating divine weapon that keeps striking.',
+    'moonbeam': 'Call down a radiant column.',
+    'barkskin': 'Toughen a creature\'s skin like bark.',
+    'fireball': 'A large explosive blast of fire.',
+    'lightning bolt': 'A line of lightning through several foes.',
+    'hypnotic pattern': 'Mesmerize creatures with light.',
+    'fear': 'A phantasm drives foes to terror.',
+    'revivify': 'Restore a recently dead ally.',
+    'mass healing word': 'Heal several allies with a word.',
+    'spirit guardians': 'Call protective spirits around you.',
+    'dispel magic': 'End magical effects on a creature.',
+    'mage hand': 'Move or manipulate a small object at a distance.',
+    'prestidigitation': 'Create small harmless sensory magical effects.',
+    'minor illusion': 'Create a small image or sound.',
+    'light': 'Make an object shed bright light.',
+    'thaumaturgy': 'Small divine signs and omens.',
+    'druidcraft': 'Small nature signs and harmless natural magic.',
+    'mending': 'Repair a small break or tear.',
+    'message': 'Whisper a message to a distant creature.',
+    'dancing lights': 'Create floating lights.',
+    'detect magic': 'Sense nearby magic.',
+    'speak with animals': 'Communicate with beasts.',
+    'goodberry': 'Create nourishing healing berries.',
+    'hellish rebuke': 'Retaliatory infernal fire.',
+    'chaos bolt': 'Unstable elemental damage.',
+    'primal shift': 'Brief shapeshifting or bestial adaptation when the story supports it.',
+    'arcane tinkering': 'Imbue a tiny object with a minor magical effect.',
+    'pass without trace': 'Hide the group in nature magic.',
+    'mirror image': 'Create illusory duplicates.',
+    'flaming sphere': 'Roll a sphere of fire.',
+    'heat metal': 'Overheat worked metal.',
+    'counterspell': 'Interrupt another spell.',
+    'fly': 'Grant a creature flight.',
+    'haste': 'Supercharge a willing creature.',
+    'call lightning': 'Command repeated lightning strikes.',
 }
 
 
@@ -337,26 +678,94 @@ def authoritative_spell_effect(name: Any) -> dict[str, Any] | None:
     return deepcopy(effect) if isinstance(effect, dict) else None
 
 
+def _duration_label(duration: Any) -> str:
+    if not isinstance(duration, dict):
+        return ''
+    if duration.get('until') == 'long_rest':
+        return 'until a long rest'
+    if duration.get('until') == 'encounter':
+        return 'until the encounter ends'
+    rounds = int(duration.get('rounds') or 0)
+    if rounds >= 100:
+        return '10 minutes'
+    if rounds >= 10:
+        return '1 minute'
+    return ''
+
+
+def _modifier_summary(effect: dict[str, Any]) -> list[str]:
+    modifiers = effect.get('modifiers') if isinstance(effect.get('modifiers'), dict) else {}
+    parts = []
+    if modifiers.get('cannotReact'):
+        parts.append('prevents reactions')
+    if modifiers.get('cannotAct'):
+        parts.append('prevents the target acting on its next turn')
+    if modifiers.get('noHealing'):
+        parts.append('prevents healing')
+    if modifiers.get('attackMode'):
+        parts.append(f"{modifiers['attackMode']} on next attack")
+    if modifiers.get('attackedMode'):
+        timing = 'next attack' if effect.get('consumeOn') == 'attacked' else 'attacks'
+        parts.append(f"{modifiers['attackedMode']} on {timing} against target")
+    if modifiers.get('attackBonusDice') or modifiers.get('saveBonusDice'):
+        parts.append(f"{modifiers.get('attackBonusDice', '')} to attacks and saves")
+    if modifiers.get('checkBonusDice'):
+        parts.append(f"+{modifiers['checkBonusDice']} to one ability check")
+    if modifiers.get('acBonus'):
+        parts.append(f"+{modifiers['acBonus']} armor class")
+    if modifiers.get('acBase'):
+        parts.append(f"armor class {modifiers['acBase']} + DEX without armour")
+    if modifiers.get('acMinimum'):
+        parts.append(f"armor class at least {modifiers['acMinimum']}")
+    if 'tempHpPerTurn' in modifiers:
+        parts.append('temporary HP each turn')
+    for condition in modifiers.get('conditionImmunities') or []:
+        parts.append(f'immune to {condition}')
+    if isinstance(modifiers.get('bonusDamageVs'), dict):
+        bonus = modifiers['bonusDamageVs']
+        damage = ' '.join(value for value in (bonus.get('dice'), bonus.get('type')) if value)
+        scope = 'weapon hits' if bonus.get('weaponOnly') else 'hits'
+        parts.append(f'+{damage} damage on your {scope} against the target')
+    if isinstance(modifiers.get('bonusWeaponDamage'), dict):
+        bonus = modifiers['bonusWeaponDamage']
+        parts.append(f"{bonus.get('dice', bonus.get('flat', ''))} {bonus.get('type', '')} weapon damage".strip())
+    return parts
+
+
+def _attack_label(delivery: dict[str, Any], target: dict[str, Any]) -> str:
+    ranged = delivery.get('ranged')
+    if not isinstance(ranged, bool):
+        ranged = list(target.get('rangeBands') or []) != ['melee']
+    return 'Ranged spell attack' if ranged else 'Melee spell attack'
+
+
 def spell_effect_summary(definition: dict[str, Any]) -> str:
-    """A short player-facing description derived from the authoritative data."""
+    """A one-line player-facing description derived from the authoritative data."""
 
     delivery = definition.get('delivery') if isinstance(definition.get('delivery'), dict) else {}
+    target = definition.get('target') if isinstance(definition.get('target'), dict) else {}
     delivery_type = _normalize_text(delivery.get('type') or 'automatic').lower()
     if delivery_type == 'save':
         label = f"{_normalize_text(delivery.get('ability'))[:3].upper()} save"
         if delivery.get('onSuccess') == 'half':
             label += ', half on success'
+    elif delivery_type == 'attack':
+        label = _attack_label(delivery, target)
     else:
-        label = 'Spell attack' if delivery_type == 'attack' else 'Automatic'
+        label = 'Automatic reaction when an attack would hit you' if definition.get('castingTime') == 'reaction' else 'Automatic'
     parts = [label]
     darts = delivery.get('darts') if isinstance(delivery.get('darts'), dict) else {}
+    durations: list[str] = []
     for effect in definition.get('effects') or []:
         if not isinstance(effect, dict):
             continue
         kind = _normalize_text(effect.get('kind')).lower()
         dice = _normalize_text(effect.get('dice') or effect.get('amount'))
         if kind == 'damage':
-            damage = ' '.join(value for value in (dice, _normalize_text(effect.get('damageType'))) if value)
+            damage_type = '/'.join(effect['damageTypeChoices']) if effect.get('damageTypeChoices') else _normalize_text(effect.get('damageType'))
+            damage = ' '.join(value for value in (dice, damage_type) if value)
+            if effect.get('addCastingModifier'):
+                damage = f'{dice} + casting modifier {damage_type}'
             if effect.get('woundedDice'):
                 damage += f" ({_normalize_text(effect['woundedDice'])} against a wounded target)"
             attacks = delivery.get('attacks')
@@ -366,6 +775,16 @@ def spell_effect_summary(definition: dict[str, Any]) -> str:
             parts.append(f"{dice}{' + casting modifier' if effect.get('addCastingModifier') else ''} healing")
         elif kind == 'temporary_hp':
             parts.append(f'{dice} temporary HP')
+        elif kind == 'max_hp_bonus':
+            parts.append(f'+{dice} maximum and current HP')
+        elif kind == 'sleep_pool':
+            parts.append(f'{dice} hit points of creatures fall asleep, weakest first')
+        elif kind == 'revive':
+            parts.append(f"returns a dead ally to life with {int(effect.get('hp') or 1)} HP")
+        elif kind == 'dispel':
+            parts.append('ends spell effects of the cast level or lower')
+        elif kind == 'repeat_attack':
+            parts.append('attack again as a bonus action while it lasts')
         elif kind == 'move':
             if effect.get('teleport') == 'away':
                 parts.append('teleport to far range')
@@ -376,34 +795,40 @@ def spell_effect_summary(definition: dict[str, Any]) -> str:
         elif kind == 'stabilize':
             parts.append('stabilizes a dying ally')
         elif kind == 'remove_condition':
-            parts.append('removes one listed condition')
+            conditions = ', '.join(_normalize_text(value) for value in effect.get('conditions') or [])
+            parts.append(f'removes {conditions}' if effect.get('removeAll') else f'removes one of: {conditions}')
         elif kind == 'condition':
             parts.append(_normalize_text(effect.get('condition')).replace('_', ' '))
         elif kind == 'modifier':
-            modifiers = effect.get('modifiers') if isinstance(effect.get('modifiers'), dict) else {}
-            if modifiers.get('cannotReact'):
-                parts.append('prevents reactions')
-            if modifiers.get('cannotAct'):
-                parts.append('prevents the target acting on its next turn')
-            if modifiers.get('noHealing'):
-                parts.append('prevents healing')
-            if modifiers.get('attackMode'):
-                parts.append(f"{modifiers['attackMode']} on next attack")
-            if modifiers.get('attackedMode'):
-                parts.append(f"{modifiers['attackedMode']} on next attack against target")
-            if modifiers.get('attackBonusDice') or modifiers.get('saveBonusDice'):
-                parts.append(f"{modifiers.get('attackBonusDice', '')} to attacks and saves")
-            if modifiers.get('acBonus'):
-                parts.append(f"+{modifiers['acBonus']} armor class")
-            if isinstance(modifiers.get('bonusWeaponDamage'), dict):
-                bonus = modifiers['bonusWeaponDamage']
-                parts.append(f"{bonus.get('dice', bonus.get('flat', ''))} {bonus.get('type', '')} weapon damage".strip())
-    target = definition.get('target') if isinstance(definition.get('target'), dict) else {}
+            parts.extend(_modifier_summary(effect))
+        elif kind == 'recurring':
+            if effect.get('aura'):
+                save = effect.get('save') if isinstance(effect.get('save'), dict) else {}
+                damage = effect.get('damage') if isinstance(effect.get('damage'), dict) else {}
+                parts.append(
+                    f"enemies near you take {damage.get('dice')} {damage.get('damageType')} each turn "
+                    f"({_normalize_text(save.get('ability'))[:3].upper()} save for half)"
+                )
+            elif effect.get('repeatSave'):
+                parts.append(f"repeat {_normalize_text(effect['repeatSave'])[:3].upper()} save each turn to end it")
+            else:
+                parts.append('the save and damage repeat each turn')
+        duration = _duration_label(effect.get('duration'))
+        if duration and duration not in durations:
+            durations.append(duration)
     area = target.get('area') if isinstance(target.get('area'), dict) else {}
     if area.get('maxTargets'):
         parts.append(f"area: up to {int(area['maxTargets'])} enemies")
+    parts.extend(durations)
+    if definition.get('concentration') is True:
+        parts.append('concentration')
+    consumes = definition.get('consumes') if isinstance(definition.get('consumes'), dict) else {}
+    if consumes.get('gp'):
+        parts.append(f"consumes {int(consumes['gp'])} gp")
     scaling = definition.get('scaling') if isinstance(definition.get('scaling'), dict) else {}
-    if scaling.get('cantrip') is True:
+    if scaling.get('cantrip') is True and any(
+        isinstance(effect, dict) and effect.get('kind') == 'damage' for effect in definition.get('effects') or []
+    ):
         parts.append('scales with level')
     return ' · '.join(part for part in parts if part)
 
@@ -416,6 +841,9 @@ def _apply_spell_metadata(payload: dict[str, Any], authoritative_effect: dict[st
     else:
         payload.update({'rulesBacked': False, 'authoritativeEffect': False, 'narrated': True})
         payload['effectSummary'] = _normalize_text(payload.get('description')) or 'Narrated by the Dungeon Master.'
+        narrated = NARRATED_SPELLS.get(_normalize_text(payload.get('name')).casefold())
+        if narrated:
+            payload.setdefault('school', narrated['school'])
     payload.setdefault('castingTime', 'action')
     payload.setdefault('concentration', False)
     payload.setdefault('outOfCombat', False)
@@ -620,20 +1048,8 @@ ORIGINAL_ARCHETYPE_TAGS: dict[str, set[str]] = {
 }
 
 
-ORIGINAL_STARTER_COUNTS = {archetype: 3 for archetype in ORIGINAL_ARCHETYPE_TAGS}
-
-
-ORIGINAL_UNLOCK_COUNTS = {
-    2: 2,
-    3: 4,
-    5: 4,
-    7: 3,
-    9: 3,
-    11: 2,
-    13: 2,
-    15: 2,
-    17: 2,
-}
+# New characters receive this many generated (narrated) spells, once.
+ORIGINAL_STARTER_COUNT = 3
 
 
 ORIGINAL_RACE_TAGS = {
@@ -775,34 +1191,25 @@ def _take_ranked_spells(
     return selected
 
 
-def original_class_spells_for_level(archetype: str, character_level: int = 1) -> list[dict[str, Any]]:
+def original_class_starter_spells(archetype: str) -> list[dict[str, Any]]:
     class_tags = ORIGINAL_ARCHETYPE_TAGS.get(archetype, set())
     if not class_tags:
         return []
-    level = max(1, min(20, int(character_level or 1)))
-    selected: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for unlock_level, count in [(1, ORIGINAL_STARTER_COUNTS.get(archetype, 8)), *ORIGINAL_UNLOCK_COUNTS.items()]:
-        if unlock_level > level:
-            continue
-        max_spell_level = _max_spell_level_for_character(unlock_level)
-        candidates = _catalog_candidates(tags=class_tags, max_spell_level=max_spell_level)
-        picked = _take_ranked_spells(
-            candidates,
-            count=count,
-            seed=f'{archetype}:{unlock_level}:aidm-original',
-            seen=seen,
+    picked = _take_ranked_spells(
+        _catalog_candidates(tags=class_tags, max_spell_level=_max_spell_level_for_character(1)),
+        count=ORIGINAL_STARTER_COUNT,
+        seed=f'{archetype}:1:aidm-original',
+        seen=set(),
+    )
+    return [
+        _retag_catalog_spell(
+            spell,
+            source_type='class_catalog',
+            source_detail=f'{archetype}:original:1',
+            learned_at_level=1,
         )
-        selected.extend(
-            _retag_catalog_spell(
-                spell,
-                source_type='class_catalog',
-                source_detail=f'{archetype}:original:{unlock_level}',
-                learned_at_level=unlock_level,
-            )
-            for spell in picked
-        )
-    return selected
+        for spell in picked
+    ]
 
 
 def _race_catalog_tags(
@@ -859,126 +1266,13 @@ def original_race_spells(
     ]
 
 
-CLASS_STARTING_SPELLS: dict[str, list[SpellSpec]] = {
-    'wizard': [
-        ('Fire Bolt', 0, 'A precise ranged spark of arcane fire.'),
-        ('Ray of Frost', 0, 'A chilling ranged spell that slows a target.'),
-        ('Shocking Grasp', 0, 'A touch of lightning prevents reactions.'),
-        ('Chill Touch', 0, 'Necrotic magic prevents healing briefly.'),
-        ('Mage Hand', 0, 'Move or manipulate a small object at a distance.'),
-        ('Prestidigitation', 0, 'Create small harmless sensory magical effects.'),
-        ('Magic Missile', 1, 'Reliable darts of arcane force.'),
-        ('Shield', 1, 'A sudden defensive ward.'),
-        ('Mage Armor', 1, 'Protective arcane armor.'),
-        ('Detect Magic', 1, 'Sense nearby magic.'),
-        ('Sleep', 1, 'Lull weak creatures into magical sleep.'),
-        ('Burning Hands', 1, 'A short cone of flame.'),
-        ('Thunderwave', 1, 'A concussive burst of sound.'),
-        ('False Life', 1, 'Gain temporary hit points.'),
-    ],
-    'sorcerer': [
-        ('Fire Bolt', 0, 'A ranged blast of innate fire.'),
-        ('Ray of Frost', 0, 'A chilling ranged spell that slows a target.'),
-        ('Shocking Grasp', 0, 'A touch of lightning prevents reactions.'),
-        ('Chill Touch', 0, 'Necrotic magic prevents healing briefly.'),
-        ('Poison Spray', 0, 'A short-range poisonous spray.'),
-        ('Mage Hand', 0, 'Shape minor force at a distance.'),
-        ('Minor Illusion', 0, 'Create a small image or sound.'),
-        ('Magic Missile', 1, 'Reliable darts of force.'),
-        ('Shield', 1, 'A reflexive defensive ward.'),
-        ('Chaos Bolt', 1, 'Unstable elemental damage.'),
-        ('Burning Hands', 1, 'A burst of close flame.'),
-        ('Thunderwave', 1, 'A concussive burst of sound.'),
-        ('False Life', 1, 'Gain temporary hit points.'),
-    ],
-    'warlock': [
-        ('Eldritch Blast', 0, 'A beam of pact-born force.'),
-        ('Chill Touch', 0, 'Necrotic magic prevents healing briefly.'),
-        ('Poison Spray', 0, 'A short-range poisonous spray.'),
-        ('Mage Hand', 0, 'Move a small object at range.'),
-        ('Minor Illusion', 0, 'Create a small image or sound.'),
-        ('Hex', 1, 'Curse a foe and make strikes bite harder.'),
-        ('Armor of Agathys', 1, 'A cold ward that punishes attackers.'),
-        ('Hellish Rebuke', 1, 'Retaliatory infernal fire.'),
-        ('Charm Person', 1, 'Briefly influence a humanoid.'),
-    ],
-    'cleric': [
-        ('Sacred Flame', 0, 'Radiant fire against a visible foe.'),
-        ('Toll the Dead', 0, 'A deathly bell hurts wounded foes more.'),
-        ('Spare the Dying', 0, 'Stabilize a dying ally.'),
-        ('Thaumaturgy', 0, 'Small divine signs and omens.'),
-        ('Guidance', 0, 'A small divine boost to an ability check.'),
-        ('Cure Wounds', 1, 'Touch-based healing.'),
-        ('Healing Word', 1, 'Quick ranged healing.'),
-        ('Bless', 1, 'Bolster allies in danger.'),
-        ('Shield of Faith', 1, 'Protect an ally with divine force.'),
-        ('Bane', 1, 'Sap the attacks and saves of enemies.'),
-        ('Command', 1, 'Compel an enemy to lose its next turn.'),
-        ('Guiding Bolt', 1, 'Radiant magic reveals a target for the next attack.'),
-        ('Inflict Wounds', 1, 'Inflict necrotic harm with a touch.'),
-        ('Detect Magic', 1, 'Sense magical auras.'),
-    ],
-    'druid': [
-        ('Druidcraft', 0, 'Small nature signs and harmless natural magic.'),
-        ('Produce Flame', 0, 'Hold and throw a small flame.'),
-        ('Thorn Whip', 0, 'A thorny lash pulls an enemy closer.'),
-        ('Poison Spray', 0, 'A short-range poisonous spray.'),
-        ('Guidance', 0, 'A small primal boost to an ability check.'),
-        ('Cure Wounds', 1, 'Primal healing by touch.'),
-        ('Entangle', 1, 'Grasping plants restrain an area.'),
-        ('Thunderwave', 1, 'A concussive burst of sound.'),
-        ('Faerie Fire', 1, 'Outline creatures in revealing light.'),
-        ('Speak with Animals', 1, 'Communicate with beasts.'),
-        ('Goodberry', 1, 'Create nourishing healing berries.'),
-        ('Primal Shift', 1, 'Brief shapeshifting or bestial adaptation when the story supports it.'),
-    ],
-    'bard': [
-        ('Vicious Mockery', 0, 'Cutting words backed by enchantment.'),
-        ('Minor Illusion', 0, 'Create a small image or sound.'),
-        ('Mage Hand', 0, 'Manipulate a small object at range.'),
-        ('Healing Word', 1, 'Quick inspirational healing.'),
-        ('Dissonant Whispers', 1, 'Psychic fear through sound.'),
-        ('Faerie Fire', 1, 'Reveal targets in magical light.'),
-        ('Charm Person', 1, 'Briefly influence a humanoid.'),
-        ('Thunderwave', 1, 'A concussive burst of sound.'),
-        ('Bane', 1, 'Sap the attacks and saves of enemies.'),
-    ],
-    'paladin': [
-        ('Divine Sense', 0, 'Sense holy, fiendish, or undead presence nearby.'),
-        ('Lay on Hands', 1, 'Restore health through divine power.'),
-        ('Bless', 1, 'Bolster allies in danger.'),
-        ('Cure Wounds', 1, 'Touch-based healing.'),
-        ('Shield of Faith', 1, 'Protect an ally with divine force.'),
-        ('Divine Favor', 1, 'Imbue weapon attacks with radiant power.'),
-        ('Command', 1, 'Compel an enemy to lose its next turn.'),
-        ('Divine Smite', 1, 'Channel divine power through a weapon hit.'),
-    ],
-    'ranger': [
-        ("Hunter's Mark", 1, 'Mark prey and track strikes against it.'),
-        ('Cure Wounds', 1, 'Practical wilderness healing.'),
-        ('Speak with Animals', 1, 'Communicate with beasts.'),
-        ('Entangle', 1, 'Use terrain and growth to restrain foes.'),
-        ('Goodberry', 1, 'Create nourishing healing berries.'),
-    ],
-    'artificer': [
-        ('Mending', 0, 'Repair a small break or tear.'),
-        ('Mage Hand', 0, 'Manipulate a small object at range.'),
-        ('Fire Bolt', 0, 'A precise ranged spark of arcane fire.'),
-        ('Ray of Frost', 0, 'A chilling ranged spell that slows a target.'),
-        ('Cure Wounds', 1, 'Magical field repair for living allies.'),
-        ('Faerie Fire', 1, 'Reveal targets with glittering light.'),
-        ('Grease', 1, 'Make a slick hazardous surface.'),
-        ('False Life', 1, 'Gain temporary hit points.'),
-        ('Arcane Tinkering', 0, 'Imbue a tiny object with a minor magical effect.'),
-    ],
-}
+SPELLCASTING_ARCHETYPES = ('wizard', 'sorcerer', 'warlock', 'cleric', 'druid', 'bard', 'paladin', 'ranger', 'artificer')
+HALF_CASTER_ARCHETYPES = frozenset({'paladin', 'ranger', 'artificer'})
 
 
-CLASS_LEVEL_UNLOCKS: dict[str, dict[int, list[SpellSpec]]] = {
+# Spells of level 4 and above stay narrated unlocks at the levels their slots arrive.
+CLASS_HIGH_LEVEL_UNLOCKS: dict[str, dict[int, list[SpellSpec]]] = {
     'wizard': {
-        2: [('Identify', 1, 'Learn the nature of magic objects and effects.')],
-        3: [('Misty Step', 2, 'Teleport a short distance you can see.'), ('Scorching Ray', 2, 'Fire several rays of flame.')],
-        5: [('Counterspell', 3, 'Interrupt another spell.'), ('Fireball', 3, 'A large explosive blast of fire.')],
         7: [('Dimension Door', 4, 'Teleport yourself and one companion farther away.')],
         9: [('Wall of Force', 5, 'Create a nearly unbreakable barrier of force.')],
         11: [('Disintegrate', 6, 'A dangerous beam of destructive force.')],
@@ -987,8 +1281,6 @@ CLASS_LEVEL_UNLOCKS: dict[str, dict[int, list[SpellSpec]]] = {
         17: [('Wish', 9, 'Reality-bending high magic.')],
     },
     'sorcerer': {
-        3: [('Misty Step', 2, 'Teleport a short distance.'), ('Shatter', 2, 'A burst of destructive sound.')],
-        5: [('Fireball', 3, 'A large explosive blast of fire.'), ('Haste', 3, 'Supercharge a willing creature.')],
         7: [('Greater Invisibility', 4, 'Turn a creature invisible through battle.')],
         9: [('Telekinesis', 5, 'Move creatures or objects with sustained force.')],
         11: [('Chain Lightning', 6, 'Lightning arcs between multiple targets.')],
@@ -997,8 +1289,6 @@ CLASS_LEVEL_UNLOCKS: dict[str, dict[int, list[SpellSpec]]] = {
         17: [('Meteor Swarm', 9, 'Call down devastating meteors.')],
     },
     'warlock': {
-        3: [('Misty Step', 2, 'Teleport a short distance.'), ('Mirror Image', 2, 'Create illusory duplicates.')],
-        5: [('Counterspell', 3, 'Interrupt another spell.'), ('Hunger of Hadar', 3, 'Open a region of alien dark cold.')],
         7: [('Banishment', 4, 'Send a target out of the scene briefly.')],
         9: [('Hold Monster', 5, 'Paralyze a creature with pact magic.')],
         11: [('Circle of Death', 6, 'A wide burst of necrotic power.')],
@@ -1007,8 +1297,6 @@ CLASS_LEVEL_UNLOCKS: dict[str, dict[int, list[SpellSpec]]] = {
         17: [('Foresight', 9, 'Grant uncanny luck and awareness.')],
     },
     'cleric': {
-        3: [('Lesser Restoration', 2, 'End a lesser affliction.'), ('Prayer of Healing', 2, 'Heal allies during a safe pause.'), ('Spiritual Weapon', 2, 'Manifest a divine weapon.')],
-        5: [('Revivify', 3, 'Restore a recently dead ally.'), ('Spirit Guardians', 3, 'Call protective spirits around you.'), ('Mass Healing Word', 3, 'Heal several allies with a word.')],
         7: [('Death Ward', 4, 'Protect an ally from dropping to death.')],
         9: [('Greater Restoration', 5, 'End a major affliction.'), ('Flame Strike', 5, 'Call down divine fire.')],
         11: [('Heal', 6, 'Massive restorative magic.')],
@@ -1017,9 +1305,6 @@ CLASS_LEVEL_UNLOCKS: dict[str, dict[int, list[SpellSpec]]] = {
         17: [('Mass Heal', 9, 'Restore many allies at once.')],
     },
     'druid': {
-        2: [('Wild Shape', 1, 'Take a beast form when the story supports it.')],
-        3: [('Moonbeam', 2, 'Call down a radiant column.'), ('Lesser Restoration', 2, 'End a lesser affliction.'), ('Pass without Trace', 2, 'Hide the group in nature magic.')],
-        5: [('Call Lightning', 3, 'Command repeated lightning strikes.'), ('Plant Growth', 3, 'Shape or overgrow terrain.')],
         7: [('Polymorph', 4, 'Transform a creature into another form.')],
         9: [('Greater Restoration', 5, 'End a major affliction.'), ('Tree Stride', 5, 'Step through trees.')],
         11: [('Transport via Plants', 6, 'Travel through living plants.')],
@@ -1028,8 +1313,6 @@ CLASS_LEVEL_UNLOCKS: dict[str, dict[int, list[SpellSpec]]] = {
         17: [('Shapechange', 9, 'Assume powerful magical forms.')],
     },
     'bard': {
-        3: [('Invisibility', 2, 'Hide a creature from sight.'), ('Lesser Restoration', 2, 'End a lesser affliction.'), ('Suggestion', 2, 'Magically influence a course of action.')],
-        5: [('Hypnotic Pattern', 3, 'Mesmerize creatures with light.'), ('Dispel Magic', 3, 'End a magical effect.'), ('Mass Healing Word', 3, 'Heal several allies with a word.')],
         7: [('Greater Invisibility', 4, 'Turn a creature invisible through battle.')],
         9: [('Hold Monster', 5, 'Paralyze a creature.'), ('Synaptic Static', 5, 'A psychic blast that muddles minds.')],
         11: [('Mass Suggestion', 6, 'Influence many creatures at once.')],
@@ -1038,24 +1321,64 @@ CLASS_LEVEL_UNLOCKS: dict[str, dict[int, list[SpellSpec]]] = {
         17: [('Power Word Heal', 9, 'Restore an ally with a word.')],
     },
     'paladin': {
-        3: [('Magic Weapon', 2, 'Empower a weapon.')],
-        5: [('Lesser Restoration', 2, 'End a lesser affliction.'), ('Aura of Vitality', 3, 'Sustain healing through divine focus.')],
         9: [('Death Ward', 4, 'Protect an ally from dropping to death.')],
         13: [('Banishing Smite', 5, 'Strike with banishing force.')],
     },
     'ranger': {
-        3: [('Pass without Trace', 2, 'Hide the group in wilderness magic.'), ('Spike Growth', 2, 'Turn ground into painful terrain.')],
-        5: [('Lesser Restoration', 2, 'End a lesser affliction.'), ('Conjure Barrage', 3, 'Create a sweeping ranged attack.'), ('Water Breathing', 3, 'Let allies breathe underwater.')],
         9: [('Freedom of Movement', 4, 'Ignore many restraints and movement hindrances.')],
         13: [('Swift Quiver', 5, 'Attack rapidly with enchanted ammunition.')],
     },
     'artificer': {
-        3: [('Heat Metal', 2, 'Overheat worked metal.'), ('Web', 2, 'Fill an area with sticky strands.')],
-        5: [('Lesser Restoration', 2, 'End a lesser affliction.'), ('Dispel Magic', 3, 'End a magical effect.'), ('Haste', 3, 'Supercharge a willing creature.')],
         7: [('Fabricate', 4, 'Convert raw materials into crafted objects.')],
         9: [('Animate Objects', 5, 'Bring objects to life briefly.')],
     },
 }
+
+
+def catalog_unlock_level(archetype: str, spell_level: int) -> int:
+    """The character level at which a class list gains catalog spells of one spell level."""
+
+    half_caster = archetype in HALF_CASTER_ARCHETYPES
+    if spell_level <= 0:
+        return 1
+    if spell_level == 1:
+        return 2 if archetype in {'paladin', 'ranger'} else 1
+    if spell_level == 2:
+        return 5 if half_caster else 3
+    return 5
+
+
+def _catalog_class_lists() -> tuple[dict[str, list[SpellSpec]], dict[str, dict[int, list[SpellSpec]]]]:
+    """Rebuild the curated class lists from each catalog spell's ``classes``."""
+
+    starting: dict[str, list[SpellSpec]] = {archetype: [] for archetype in SPELLCASTING_ARCHETYPES}
+    unlocks: dict[str, dict[int, list[SpellSpec]]] = {archetype: {} for archetype in SPELLCASTING_ARCHETYPES}
+    catalog = {**AUTHORITATIVE_SPELL_EFFECTS, **NARRATED_SPELLS}
+    for key in sorted(catalog, key=lambda name: (int(catalog[name]['level']), name)):
+        entry = catalog[key]
+        spec: SpellSpec = (_catalog_display_name(key), int(entry['level']), SPELL_DESCRIPTIONS[key])
+        for archetype in entry['classes']:
+            unlock = catalog_unlock_level(archetype, int(entry['level']))
+            if unlock == 1:
+                starting[archetype].append(spec)
+            else:
+                unlocks[archetype].setdefault(unlock, []).append(spec)
+    for archetype, high_levels in CLASS_HIGH_LEVEL_UNLOCKS.items():
+        for unlock, specs in high_levels.items():
+            unlocks[archetype].setdefault(unlock, []).extend(specs)
+    return starting, {archetype: dict(sorted(levels.items())) for archetype, levels in unlocks.items()}
+
+
+def _catalog_display_name(key: str) -> str:
+    small_words = {'of', 'the', 'with', 'without'}
+    words = key.split(' ')
+    return ' '.join(
+        word if index and word in small_words else '/'.join(part[:1].upper() + part[1:] for part in word.split('/'))
+        for index, word in enumerate(words)
+    )
+
+
+CLASS_STARTING_SPELLS, CLASS_LEVEL_UNLOCKS = _catalog_class_lists()
 
 
 CLASS_KEYWORDS: tuple[tuple[tuple[str, ...], str], ...] = (
@@ -1217,7 +1540,7 @@ def class_spells_for_level(class_name: str | None, level: int = 1) -> list[dict[
                     learned_at_level=unlock_level,
                 )
             )
-    spells.extend(original_class_spells_for_level(archetype, character_level))
+    spells.extend(original_class_starter_spells(archetype))
     return spells
 
 

@@ -1026,6 +1026,37 @@ class TurnEngine:
         }
 
     @staticmethod
+    def _no_opponent_roll_veto(pre_pipeline_result: dict, rules_hint_payload: dict) -> dict | None:
+        """Clear a classifier attack roll when nobody is there to fight.
+
+        Applies when no combat is active in the state the narrator sees, which
+        already includes a combat the pre-DM pipeline started this turn.
+        """
+        if not rules_hint_payload.get('requires_roll') or rules_hint_payload.get('roll_type') != 'attack':
+            return None
+        if rules_hint_payload.get('roll_value') is not None:
+            return None
+        if rules_hint_payload.get('resolved_turn_id') is not None:
+            return None
+        if rules_hint_payload.get('target_pending_turn_id') is not None:
+            return None
+        if isinstance(rules_hint_payload.get('pvp'), dict):
+            return None
+        state = pre_pipeline_result.get('stateBeforeDm')
+        if not isinstance(state, dict):
+            return None
+        combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+        if str(combat.get('status') or '').strip().lower() in {'starting', 'active'}:
+            return None
+        return {
+            'source': 'no_opponent',
+            'reason': 'No opponent is present.',
+            'instruction': 'No opponent is present: do not request a roll; say there is no one here to fight.',
+            'original_rule_type': rules_hint_payload.get('roll_type'),
+            'original_reason': rules_hint_payload.get('reason'),
+        }
+
+    @staticmethod
     def _typed_action_rejection(command: TurnCommand, pre_pipeline_result: dict) -> dict | None:
         intent = command.action_intent if isinstance(command.action_intent, dict) else {}
         intent_kind = str(intent.get('kind') or '').strip().lower()
@@ -1082,6 +1113,7 @@ class TurnEngine:
         rules_hint_payload: dict,
         veto: dict,
         pre_pipeline_result: dict,
+        reason: str,
     ) -> None:
         turn.requires_roll = False
         turn.rule_type = None
@@ -1091,7 +1123,7 @@ class TurnEngine:
         rules_hint_payload['roll_type'] = None
         rules_hint_payload['dc_hint'] = None
         rules_hint_payload['outcome_deferred'] = False
-        rules_hint_payload['reason'] = 'Pre-DM helper marked no roll needed'
+        rules_hint_payload['reason'] = reason
         rules_hint_payload.pop('roll_gate', None)
         rules_hint_payload.pop('remaining_player_ids', None)
         rules_hint_payload['roll_requirement_cleared'] = veto
@@ -1104,7 +1136,7 @@ class TurnEngine:
                 'roll_type': None,
                 'dc_hint': None,
                 'outcome_deferred': False,
-                'reason': 'Pre-DM helper marked no roll needed',
+                'reason': reason,
                 'roll_requirement_cleared': veto,
             }
         )
@@ -1553,7 +1585,22 @@ class TurnEngine:
                     rules_hint_payload=rules_hint_payload,
                     veto=pre_dm_roll_veto,
                     pre_pipeline_result=pre_pipeline_result,
+                    reason='Pre-DM helper marked no roll needed',
                 )
+            no_opponent_veto = self._no_opponent_roll_veto(
+                pre_pipeline_result,
+                rules_hint_payload,
+            )
+            if no_opponent_veto:
+                self._clear_turn_roll_requirement_from_pre_dm_veto(
+                    turn=turn,
+                    rules_hint_payload=rules_hint_payload,
+                    veto=no_opponent_veto,
+                    pre_pipeline_result=pre_pipeline_result,
+                    reason=no_opponent_veto['reason'],
+                )
+                rules_hint_payload['no_target'] = True
+                rules_hint_payload['instruction'] = no_opponent_veto['instruction']
             rules_hint_payload = augment_rules_hint_with_state_packet(
                 rules_hint_payload,
                 pre_pipeline_result.get('dmContextPacket') or {},

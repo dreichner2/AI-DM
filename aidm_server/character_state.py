@@ -7,7 +7,14 @@ from typing import Any
 
 from aidm_server.canon_text import int_or_default, normalized_name
 from aidm_server.character_backgrounds import background_from_character_sheet
-from aidm_server.class_capabilities import capabilities_for_class, normalize_class_feature_state
+from aidm_server.class_features import (
+    class_feature_descriptors,
+    default_expertise,
+    fighting_style_for,
+    jack_of_all_trades_bonus,
+    normalize_class_feature_state,
+    primary_class,
+)
 from aidm_server.character_progression import (
     DEFAULT_HIT_DIE,
     class_archetype as progression_class_archetype,
@@ -30,6 +37,7 @@ from aidm_server.spellbook import (
 from aidm_server.weapon_proficiency import (
     match_weapon_proficiency,
     normalize_weapon_proficiencies,
+    weapon_properties,
 )
 
 
@@ -740,17 +748,25 @@ def character_state_for_player(player: Player | None) -> dict[str, Any]:
         level=player.level or 1,
         class_levels=sheet.get('classLevels') or sheet.get('class_levels'),
     )
+    # Play writes spent pools to stats; a sheet copy is only the creation-time seed.
     raw_class_feature_state = (
-        sheet.get('classFeatureState')
-        or sheet.get('class_feature_state')
-        or stats.get('class_feature_state')
+        stats.get('class_feature_state')
         or stats.get('classFeatureState')
+        or sheet.get('classFeatureState')
+        or sheet.get('class_feature_state')
     )
-    class_capabilities = capabilities_for_class(player.class_, player.level or 1)
     class_feature_state = normalize_class_feature_state(
         raw_class_feature_state,
         class_name=player.class_,
         level=player.level or 1,
+        scores=scores,
+    )
+    class_capabilities = class_feature_descriptors(
+        player.class_,
+        player.level or 1,
+        scores=scores,
+        feature_state=class_feature_state,
+        spell_resources=spell_resources,
     )
 
     state = {
@@ -791,6 +807,9 @@ def character_state_for_player(player: Player | None) -> dict[str, Any]:
             *skill_expertise,
         }
     )
+    if not skill_expertise:
+        skill_expertise = default_expertise(player.class_, skill_proficiencies)
+        skill_proficiencies = sorted({*skill_proficiencies, *skill_expertise})
     if skill_proficiencies:
         state['skill_proficiencies'] = skill_proficiencies
     if skill_expertise:
@@ -831,6 +850,16 @@ def character_state_for_player(player: Player | None) -> dict[str, Any]:
     if class_capabilities:
         state['class_capabilities'] = class_capabilities
         state['class_feature_state'] = class_feature_state
+    from aidm_server.canon_inventory import inventory_payload
+
+    fighting_style = fighting_style_for(
+        player.class_,
+        player.level or 1,
+        chosen=sheet.get('fightingStyle') or sheet.get('fighting_style'),
+        items=inventory_payload(player.inventory),
+    )
+    if fighting_style:
+        state['fighting_style'] = fighting_style
     return state
 
 
@@ -892,6 +921,22 @@ def server_attack_roll_context(player: Player | None, action_text: str | None) -
     mentioned = [item for item in weapons if _text_mentions_weapon(str(action_text or ''), item)]
     weapon = mentioned[0] if len(mentioned) == 1 else None
     resolution = 'named_inventory_weapon' if weapon else None
+    monk = primary_class(player.class_ if player else None) == 'monk'
+    strength_modifier = int_or_default(modifiers.get('strength'), default=0)
+    dexterity_modifier = int_or_default(modifiers.get('dexterity'), default=0)
+    martial_arts_ability = 'dexterity' if dexterity_modifier > strength_modifier else 'strength'
+
+    if weapon is None and monk and re.search(r'\bunarmed\b', str(action_text or ''), re.IGNORECASE):
+        # Martial Arts: a monk's unarmed strike is a proficient weapon that may use Dexterity.
+        return {
+            'ability_key': martial_arts_ability,
+            'weapon': {'id': 'unarmed', 'name': 'Unarmed strike', 'classification': 'finesse'},
+            'proficient': True,
+            'proficiency_source': 'martial_arts',
+            'proficiency_selector': None,
+            'source': 'class_feature',
+            'resolution': 'martial_arts_unarmed_strike',
+        }
 
     if weapon is None:
         equipped = [item for item in weapons if item.get('equipped')]
@@ -929,10 +974,8 @@ def server_attack_roll_context(player: Player | None, action_text: str | None) -
     if ranged:
         ability_key = 'dexterity'
         classification = 'ranged'
-    elif finesse:
-        strength_modifier = int_or_default(modifiers.get('strength'), default=0)
-        dexterity_modifier = int_or_default(modifiers.get('dexterity'), default=0)
-        ability_key = 'dexterity' if dexterity_modifier > strength_modifier else 'strength'
+    elif finesse or (monk and weapon_properties(weapon)['monk']):
+        ability_key = martial_arts_ability
         classification = 'finesse'
     else:
         ability_key = 'strength'
@@ -1061,6 +1104,14 @@ def character_roll_spec(
         matching_proficiencies = []
     base_proficiency_bonus = int_or_default(state.get('proficiency_bonus'), default=0)
     proficiency_bonus = base_proficiency_bonus * proficiency_multiplier
+    if (
+        proficiency_multiplier == 0
+        and normalized_roll_type not in {'attack', 'spell'}
+        and not normalized_roll_type.endswith('_saving_throw')
+        and (jack := jack_of_all_trades_bonus(player.class_ if player else None, player.level if player else 1))
+    ):
+        proficiency_bonus = jack
+        matching_proficiencies = ['jack_of_all_trades']
     hp = state.get('hp') if isinstance(state.get('hp'), dict) else {}
     current_hp = int_or_default(hp.get('current'), default=0)
     max_hp = int_or_default(hp.get('max'), default=0)

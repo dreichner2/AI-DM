@@ -6,7 +6,12 @@ import secrets
 from typing import Any
 
 from aidm_server.canon_text import int_or_default
-from aidm_server.class_capabilities import resolve_capability_use
+from aidm_server.class_capabilities import (
+    ATTACK_RIDER_SOURCE,
+    resolve_attack_rider,
+    resolve_capability_use,
+    trusted_resolution,
+)
 from aidm_server.character_resources import spell_cast_legality
 from aidm_server.game_state.equipment import (
     conflict_items,
@@ -36,13 +41,14 @@ from aidm_server.combat.morale import MORALE_EVENTS, apply_morale_event
 from aidm_server.combat.reactions import REACTION_SOURCE
 from aidm_server.combat.vitality import DEATH_SAVE_SOURCE
 from aidm_server.combat.state import RANGE_BANDS, normalize_battlefield, normalize_combat_state, normalize_participant, player_combat_participant
-from aidm_server.spell_effects import resolve_targeted_spell, spell_target_legality
+from aidm_server.spell_effects import active_repeat_attack, resolve_targeted_spell, spell_target_legality
 from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start, story_flag_allows
 from aidm_server.game_state.validation.inventory_validator import resolve_inventory_item_reference
 from aidm_server.game_state.quest_engine import quest_completion_blocker, quest_failure_blocker
 from aidm_server.commerce import (
     COMMERCE_AUTHORITY,
     COMMERCE_SOURCE,
+    payment_deltas,
     resolve_purchase,
     resolve_sale,
     route_purchase,
@@ -62,7 +68,7 @@ from aidm_server.item_effects import (
     item_roller,
     resolve_item_use,
 )
-from aidm_server.spellbook import class_spell_archetype, normalize_spellbook, spell_from_change
+from aidm_server.spellbook import class_spell_archetype, known_spell, normalize_spellbook, spell_from_change
 
 
 CONSUMABLE_TYPES = {'consumable', 'potion', 'food'}
@@ -1160,6 +1166,8 @@ def _spell_resolution_rolls(resolution: Any) -> list[int]:
 
     if not isinstance(resolution, dict):
         return []
+    if isinstance(resolution.get('rollSequence'), list):
+        return [max(1, int_or_default(value, default=1)) for value in resolution['rollSequence']]
     rolls: list[int] = []
     for target in resolution.get('targets') or []:
         if not isinstance(target, dict):
@@ -1219,6 +1227,8 @@ def _resolve_spell_effect(
     current_turn: int,
     cast_level: int | None = None,
     replay_rolls: list[int] | None = None,
+    damage_type: str | None = None,
+    repeat_attack: bool = False,
 ) -> dict[str, Any]:
     roll_index = 0
 
@@ -1250,6 +1260,60 @@ def _resolve_spell_effect(
         },
         current_turn=current_turn,
         cast_level=cast_level,
+        damage_type=damage_type,
+        repeat_attack=repeat_attack,
+    )
+
+
+def _spell_legality_for_actor(
+    state: dict[str, Any],
+    actor: dict[str, Any],
+    spell_name_or_id: Any,
+    *,
+    cast_level: int | None,
+    resource_pool: str,
+    repeat_attack: bool | None = None,
+) -> dict[str, Any]:
+    """Slot legality, or the slot-free repeat attack of an active Spiritual Weapon.
+
+    ``repeat_attack`` None detects an active repeatable effect; True requires it.
+    """
+
+    spell = known_spell(actor.get('spellbook'), spell_name_or_id)
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    repeat = (
+        active_repeat_attack(combat, _text(actor.get('id')), _text(spell.get('id')))
+        if spell and repeat_attack is not False and _text(combat.get('status')).lower() in {'starting', 'active'}
+        else None
+    )
+    if repeat is not None:
+        level = max(1, int_or_default(repeat['repeatAttack'].get('castLevel'), default=1))
+        return {
+            'legal': True, 'errorCode': None, 'spell': spell, 'castLevel': level,
+            'resource': {'pool': 'spell_effect', 'slotLevel': 0}, 'repeatAttack': True,
+            'reason': f"{spell.get('name')} is still active; attacking with it again needs no slot.",
+        }
+    if repeat_attack is True:
+        return {'legal': False, 'reason': 'That spell has no active effect to attack with again.'}
+    return spell_cast_legality(
+        actor.get('spellbook'),
+        actor.get('spellResources'),
+        spell_name_or_id=spell_name_or_id,
+        class_name=_text(actor.get('class')),
+        level=max(1, int_or_default(actor.get('level'), default=1)),
+        cast_level=cast_level,
+        resource_pool=resource_pool,
+    )
+
+
+def _spell_material_cost_problem(spell: dict[str, Any], actor: dict[str, Any]) -> str:
+    consumes = spell.get('consumes') if isinstance(spell.get('consumes'), dict) else {}
+    cost_gp = max(0, int_or_default(consumes.get('gp'), default=0))
+    if not cost_gp or payment_deltas(actor_currency(actor), cost_gp * 100) is not None:
+        return ''
+    return (
+        f"{spell.get('name')} consumes {cost_gp} gp of material components, "
+        f"and {actor_name(actor)} cannot pay it."
     )
 
 
@@ -1262,12 +1326,10 @@ def _validate_spell_action(
     spell_name = _text(_action_value(action, 'spellName', 'spell_name'))
     cast_level = _action_value(action, 'castLevel', 'cast_level')
     cast_level = int_or_default(cast_level, default=0) if cast_level is not None else None
-    legality = spell_cast_legality(
-        actor.get('spellbook'),
-        actor.get('spellResources'),
-        spell_name_or_id=spell_name,
-        class_name=_text(actor.get('class')),
-        level=max(1, int_or_default(actor.get('level'), default=1)),
+    legality = _spell_legality_for_actor(
+        state,
+        actor,
+        spell_name,
         cast_level=cast_level,
         resource_pool=_text(_action_value(action, 'resourcePool', 'resource_pool')) or 'auto',
     )
@@ -1275,12 +1337,22 @@ def _validate_spell_action(
         return _invalid(action, _text(legality.get('reason')) or 'That spell cannot be cast now.')
     spell = legality.get('spell') if isinstance(legality.get('spell'), dict) else {}
     resource = legality.get('resource') if isinstance(legality.get('resource'), dict) else {}
+    repeat_attack = legality.get('repeatAttack') is True
+    damage_type = _text(_action_value(action, 'damageType', 'damage_type')).lower() or None
     target_ids = [
         _text(target_id)
         for target_id in (action.get('targetIds') or action.get('target_ids') or [])
         if _text(target_id)
     ]
     authoritative_spell = _authoritative_spell_definition(spell, actor)
+    if authoritative_spell and _text(authoritative_spell.get('castingTime')) == 'reaction':
+        return _invalid(
+            action,
+            f"{spell.get('name') or spell_name} is a reaction: it is cast automatically when an attack would hit you.",
+        )
+    material_problem = _spell_material_cost_problem(authoritative_spell or {}, actor)
+    if material_problem:
+        return _invalid(action, material_problem)
     if authoritative_spell and not target_ids:
         if selected_target_id:
             target_ids = [_text(selected_target_id)]
@@ -1345,6 +1417,11 @@ def _validate_spell_action(
         'visible': False,
     }
     if authoritative_spell:
+        change['castingTime'] = _text(authoritative_spell.get('castingTime')) or 'action'
+        if repeat_attack:
+            change['repeatAttack'] = True
+        if damage_type:
+            change['damageType'] = damage_type
         effect_result = _resolve_spell_effect(
             state=state,
             actor=actor,
@@ -1353,6 +1430,8 @@ def _validate_spell_action(
             cast_id=change['id'],
             current_turn=current_turn,
             cast_level=legality.get('castLevel'),
+            damage_type=damage_type,
+            repeat_attack=repeat_attack,
         )
         if not effect_result.get('ok'):
             return _invalid(
@@ -1441,22 +1520,12 @@ def _validate_class_feature_action(
         turn_economy=economy,
         in_combat=in_combat,
         roller=lambda sides: secrets.randbelow(max(1, sides)) + 1,
+        state=state,
     )
     if not resolution.get('ok'):
         return _invalid(action, _text(resolution.get('reason')) or 'That class capability is not legal now.')
     capability = resolution.get('capability') if isinstance(resolution.get('capability'), dict) else {}
-    trusted_resolution = {
-        key: deepcopy(resolution.get(key))
-        for key in (
-            'targetId',
-            'resourceCost',
-            'actionEconomy',
-            'effectType',
-            'amount',
-            'rolls',
-        )
-        if resolution.get(key) is not None
-    }
+    trusted = trusted_resolution(resolution)
     change = {
         'id': stable_change_id(
             current_turn,
@@ -1464,19 +1533,19 @@ def _validate_class_feature_action(
             action.get('id'),
             'class_feature.use',
             actor.get('id'),
-            capability.get('id'),
-            trusted_resolution.get('targetId'),
+            trusted.get('capabilityId'),
+            trusted.get('targetId'),
         ),
         'turnId': current_turn,
         'type': 'class_feature.use',
         'source': 'pre_dm_class_feature_action',
         'actorId': actor.get('id'),
-        'capabilityId': capability.get('id'),
+        'capabilityId': trusted.get('capabilityId'),
         'capabilityName': capability.get('name'),
-        'targetId': trusted_resolution.get('targetId'),
+        'targetId': trusted.get('targetId'),
         'requestedAmount': action.get('amount'),
         'resolutionAuthority': 'class_capability_engine',
-        'resolution': trusted_resolution,
+        'resolution': trusted,
         'reason': f"{capability.get('name')} was validated by the class capability engine.",
         'visible': True,
     }
@@ -1485,9 +1554,9 @@ def _validate_class_feature_action(
         change['reason'],
         normalized_action={
             **action,
-            'capabilityId': capability.get('id'),
-            'targetId': trusted_resolution.get('targetId'),
-            'resolution': trusted_resolution,
+            'capabilityId': trusted.get('capabilityId'),
+            'targetId': trusted.get('targetId'),
+            'resolution': trusted,
         },
         immediate_changes=[change],
     )
@@ -1497,7 +1566,8 @@ def _validate_class_feature_change(
     change: dict[str, Any],
     state: dict[str, Any],
 ) -> tuple[str, str, dict[str, Any] | None]:
-    if _text(change.get('source')).lower() != 'pre_dm_class_feature_action':
+    source = _text(change.get('source')).lower()
+    if source not in {'pre_dm_class_feature_action', ATTACK_RIDER_SOURCE}:
         return 'rejected', 'Class capability effects must originate in the pre-narration rules engine.', None
     if _text(change.get('resolutionAuthority')) != 'class_capability_engine':
         return 'rejected', 'Class capability resolution authority is missing.', None
@@ -1523,22 +1593,35 @@ def _validate_class_feature_change(
         roll_index += 1
         return max(1, min(max(1, sides), value))
 
-    resolved = resolve_capability_use(
-        actor=actor,
-        capability_id=_action_value(change, 'capabilityId', 'capability_id'),
-        target=target,
-        requested_amount=change.get('requestedAmount'),
-        turn_economy=economy,
-        in_combat=in_combat,
-        roller=_replay_roll,
-    )
+    capability_id = _action_value(change, 'capabilityId', 'capability_id')
+    if source == ATTACK_RIDER_SOURCE:
+        # The attack itself was resolved by the combat engine; replay the rider's cost and save.
+        base_id, _, option = _text(capability_id).partition(':')
+        rider_target = _combat_participant(state, _action_value(change, 'targetId', 'target_id'))
+        if not in_combat or not isinstance(rider_target, dict):
+            return 'rejected', 'An attack rider needs its target in the active combat.', None
+        resolved = resolve_attack_rider(
+            actor=actor,
+            rider={'capabilityId': base_id, 'option': option},
+            target=rider_target,
+            hit=supplied.get('hit') is True,
+            combat=state.get('combat') if isinstance(state.get('combat'), dict) else {},
+            roller=_replay_roll,
+        )
+    else:
+        resolved = resolve_capability_use(
+            actor=actor,
+            capability_id=capability_id,
+            target=target,
+            requested_amount=change.get('requestedAmount'),
+            turn_economy=economy,
+            in_combat=in_combat,
+            roller=_replay_roll,
+            state=state,
+        )
     if not resolved.get('ok'):
         return 'rejected', _text(resolved.get('reason')) or 'Class capability is no longer legal.', None
-    expected = {
-        key: resolved.get(key)
-        for key in ('targetId', 'resourceCost', 'actionEconomy', 'effectType', 'amount', 'rolls')
-        if resolved.get(key) is not None
-    }
+    expected = trusted_resolution(resolved)
     if supplied != expected:
         return 'rejected', 'Class capability resolution does not match the authoritative rules result.', None
     capability = resolved.get('capability') if isinstance(resolved.get('capability'), dict) else {}
@@ -1547,7 +1630,7 @@ def _validate_class_feature_change(
         'Class capability and resource cost are valid.',
         {
             **change,
-            'capabilityId': capability.get('id'),
+            'capabilityId': expected.get('capabilityId'),
             'capabilityName': capability.get('name'),
             'targetId': expected.get('targetId'),
             'resolution': expected,
@@ -1579,6 +1662,9 @@ def _validate_authoritative_spell_change(
     supplied_resolution = change.get('resolution') if isinstance(change.get('resolution'), dict) else None
     if supplied_resolution is None:
         return 'rejected', 'Authoritative spell resolution is missing.', None
+    material_problem = _spell_material_cost_problem(definition, actor)
+    if material_problem:
+        return 'rejected', material_problem, None
     replay = _resolve_spell_effect(
         state=state,
         actor=actor,
@@ -1588,6 +1674,8 @@ def _validate_authoritative_spell_change(
         current_turn=max(1, int_or_default(change.get('turnId', change.get('turn_id')), default=1)),
         cast_level=legality.get('castLevel'),
         replay_rolls=_spell_resolution_rolls(supplied_resolution),
+        damage_type=_text(change.get('damageType')).lower() or None,
+        repeat_attack=legality.get('repeatAttack') is True,
     )
     if not replay.get('ok'):
         return 'rejected', _text(replay.get('reason')) or 'Authoritative spell replay failed.', None
@@ -4338,15 +4426,13 @@ def validate_state_changes(
                 status, reason, normalized = 'rejected', 'Spell cast actor was not found.', None
             else:
                 requested_level = _action_value(change, 'castLevel', 'cast_level')
-                legality = spell_cast_legality(
-                    actor.get('spellbook'),
-                    actor.get('spellResources'),
-                    spell_name_or_id=_action_value(change, 'spellId', 'spell_id')
-                    or _action_value(change, 'spellName', 'spell_name'),
-                    class_name=_text(actor.get('class')),
-                    level=max(1, int_or_default(actor.get('level'), default=1)),
+                legality = _spell_legality_for_actor(
+                    state,
+                    actor,
+                    _action_value(change, 'spellId', 'spell_id') or _action_value(change, 'spellName', 'spell_name'),
                     cast_level=(int_or_default(requested_level, default=0) if requested_level is not None else None),
                     resource_pool=_text(_action_value(change, 'resourcePool', 'resource_pool')) or 'auto',
+                    repeat_attack=change.get('repeatAttack') is True,
                 )
                 if not legality.get('legal'):
                     status, reason, normalized = 'rejected', _text(legality.get('reason')) or 'Spell cast is not legal.', None

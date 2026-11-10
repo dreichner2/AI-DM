@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from aidm_server.class_capabilities import (
+from aidm_server.class_capabilities import resolve_capability_use
+from aidm_server.class_features import (
     capabilities_for_class,
     normalize_class_feature_state,
-    resolve_capability_use,
     restore_class_capabilities,
     spend_capability,
 )

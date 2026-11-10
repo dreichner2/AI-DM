@@ -69,8 +69,8 @@ their own journal hooks; they cannot reactivate or complete mechanical quests.
   into the session actor on reload.
 - Casts consume once. Exhausted spells fail before narration. During combat a
   legal cast also consumes the actor's persisted action, or its bonus action
-  when the spell definition sets `castingTime: 'bonus_action'` (no catalog spell
-  does yet); a cast is rejected once that budget is spent.
+  when the spell definition sets `castingTime: 'bonus_action'`; a cast is
+  rejected once that budget is spent.
 - Short rest restores pact slots and short-rest abilities. Long rest restores
   standard and pact slots, Arcanum, long-rest abilities, HP, and temporary-HP
   state according to the implemented policy. Rest does not erase persistent
@@ -277,74 +277,140 @@ mechanics the server currently applies, rather than full tabletop coverage.
 
 ### Targeted spell effects
 
-- Fire Bolt, Magic Missile, Sacred Flame, Cure Wounds, Healing Word, Entangle,
-  Ray of Frost, Burning Hands, Shatter, Fireball, Lightning Bolt, Eldritch Blast
-  Scorching Ray, Shocking Grasp, Chill Touch, Poison Spray, Vicious Mockery,
-  Produce Flame, Inflict Wounds, Guiding Bolt, Bless, Bane, Shield of Faith,
-  False Life, Thorn Whip, Thunderwave, Dissonant Whispers, Misty Step, Spare the
-  Dying, Lesser Restoration, Prayer of Healing, Mass Healing Word, Toll the Dead, Command, and Divine
-  Favor have
-  server-owned effect definitions. A typed cast with exact
-  target IDs validates turn ownership, presence, relation, range, cover, target
-  count, spell knowledge/preparation, and casting resources before rolling.
-- The resolver owns attack rolls, target saving throws, automatic delivery,
-  damage, healing, temporary HP, condition add/remove, bounded durations, and
-  concentration replacement, with modes, bonus dice, automatic save failures,
-  cover, and defenses from the modifier engine. Healing and ally spells may
-  target a player character at 0 HP who is not dead; damage spells may not
-  target the defeated. Direct health-damage changes and resolved spell damage
-  trigger server-owned concentration checks; turn advancement expires supported
-  timed effects.
-- Fire Bolt, Ray of Frost and Sacred Flame scale their damage dice with caster
-  level. Cure Wounds and Healing Word add the casting modifier and gain one die
-  per higher slot level; they can also heal the active party outside combat.
-  Healing Word uses a bonus action in combat. The selected slot level reaches
-  validation and replay, and at most one levelled spell is allowed per turn.
-- The four area damage spells above take one primary target, include other legal
-  enemies in the same range band and zone up to their target limit, share one
-  damage roll, and resolve each enemy's save separately. Allies are excluded.
-- Thunderwave uses the same area selection and pushes enemies that fail their
-  saves. Thorn Whip pulls, Dissonant Whispers pushes on a failed save, and
-  Misty Step moves the caster to far range without provoking a reaction.
-- Spare the Dying stabilizes a dying ally, Lesser Restoration removes the first
-  eligible condition, Prayer of Healing works outside combat, and Mass Healing
-  Word heals several allies. Divine Favor adds radiant weapon damage while the
-  caster maintains concentration.
-- Magic Missile rolls each dart separately and distributes darts round-robin
-  across the selected targets, with one extra dart per higher slot. Scorching
-  Ray rolls each attack separately and adds a ray per higher slot; Eldritch
-  Blast gains beams at caster-level tiers.
-- Newly generated class spellbooks start with three AIDM-original sample spells;
-  those samples are marked as narrated. Existing known spells are preserved.
+- The rules-backed catalog (`AUTHORITATIVE_SPELL_EFFECTS` in
+  `aidm_server/spellbook.py`) holds 61 spells of levels 0-3: Fire Bolt, Ray of
+  Frost, Shocking Grasp, Chill Touch, Poison Spray, Sacred Flame, Toll the Dead,
+  Eldritch Blast, Vicious Mockery, Produce Flame, Thorn Whip, Guidance, Spare the
+  Dying; Magic Missile, Burning Hands, Thunderwave, Chromatic Orb, Sleep, Mage
+  Armor, False Life, Shield, Cure Wounds, Healing Word, Bless, Bane, Shield of
+  Faith, Guiding Bolt, Inflict Wounds, Command, Entangle, Faerie Fire, Hunter's
+  Mark, Hex, Armor of Agathys, Charm Person, Dissonant Whispers, Tasha's Hideous
+  Laughter, Heroism, Divine Favor, Grease; Scorching Ray, Shatter, Hold Person,
+  Misty Step, Invisibility, Web, Blindness/Deafness, Aid, Lesser Restoration,
+  Prayer of Healing, Spiritual Weapon, Moonbeam, Barkskin; Fireball, Lightning
+  Bolt, Hypnotic Pattern, Fear, Revivify, Mass Healing Word, Spirit Guardians and
+  Dispel Magic. Each definition stores `level`, `school`, `classes`,
+  `castingTime`, concentration, out-of-combat legality and its effects.
+- Narrated spells (`NARRATED_SPELLS`, e.g. Mage Hand, Detect Magic, Counterspell)
+  stay on class lists with `narrated: true`; levelled ones spend a slot and the
+  Dungeon Master adjudicates them. Every spell payload carries `rulesBacked`
+  (alias `authoritativeEffect`), `castingTime`, `level`, `concentration`,
+  `outOfCombat` and a one-line `effectSummary` generated from the definition.
+- Class lists are rebuilt from each spell's `classes`: cantrips and level-1
+  spells at character level 1 (paladin and ranger level-1 spells at 2), level-2
+  spells at 3 (paladin, ranger, artificer at 5), level-3 spells at 5. Spells of
+  level 4+ remain narrated unlocks. Lay on Hands, Divine Smite, Divine Sense and
+  Wild Shape are no longer granted as spells (they are class abilities) but stay
+  readable on existing sheets. New characters receive three generated
+  AIDM-original sample spells, all narrated; existing known spells are kept.
+- A typed cast with exact target IDs validates turn ownership, presence,
+  relation, range, cover, target count, knowledge/preparation and resources
+  before rolling. A rules-backed spell without a target pauses for a legal
+  target choice before narration or spending a slot; named free-form casts use
+  the same path. Reaction spells are never cast from the action list.
+- The resolver owns attack rolls (ranged spell attacks into the melee band take
+  the engaged disadvantage), saves, automatic delivery, damage, healing,
+  temporary HP, conditions, modifier-engine effects, movement, condition
+  removal, stabilising, revival, maximum-HP bonuses, the Sleep pool, recurring
+  effects, dispelling and Spiritual Weapon's repeat attack. Every value the
+  roller produced is recorded in `rollSequence`, which the change validator
+  replays exactly.
+- Scaling: cantrip damage dice (Eldritch Blast's beams) multiply by the caster
+  tier (levels 1-4, 5-10, 11-16, 17+); upcasting adds dice to the first damage or
+  healing effect (and to a recurring damage effect), targets, attacks, darts or
+  a flat amount; Spiritual Weapon adds a die per two levels. The selected slot
+  level reaches validation, replay and the result's `castLevel`.
+- Area spells take one primary target and add other legal enemies in the same
+  range band and zone up to their limit, share one damage roll and roll each
+  save separately; allies are never caught. Sleep orders the affected creatures
+  by current HP and puts each to sleep (`unconscious`, 10 rounds) while its
+  rolled pool lasts.
+- Effects use the modifier engine's active-effect shape with the cast level
+  (`spellLevel`), so Dispel Magic removes every spell effect of its cast level or
+  lower. Hunter's Mark and Hex mark the target on the caster's own effect (Hex
+  also adds its necrotic die to spell attacks), Chromatic Orb takes the intent's
+  `damage_type`, Charm Person's save has advantage in combat, Heroism grants
+  temporary HP equal to the casting modifier each turn and immunity to
+  `frightened`, Invisibility ends when its bearer attacks or casts, Mage Armor
+  sets an armour base used by armour-class computation, and Revivify needs a
+  dead target and consumes 300 gp, rejecting the cast when the caster cannot pay.
+- Damage dealt by a spell triggers the target's concentration check, ends Sleep
+  and Hypnotic Pattern, ends a charm when the charmer's side deals it, and gives
+  Tasha's Hideous Laughter a save with advantage. `after_damage_spell_effects`
+  does the same for other damage, but the combat damage paths do not call it yet.
+- Recurring effects (Entangle, Hold Person, Web, Blindness/Deafness, Fear and
+  Tasha's repeat saves; Moonbeam's and Spirit Guardians' save-or-take-damage)
+  are resolved by `resolve_turn_start_spell_effects` with deterministic rolls.
+  The combat turn-start processing does not call it yet, so in play these
+  effects currently last their full duration or until concentration ends.
+- Shield is cast automatically by a reaction provider when an enemy's hit
+  total is below the player character's AC + 5 and the character has Shield
+  ready, a slot, its reaction and `autoReactions` not off: the hit misses, a
+  slot is spent through a `spell.cast` change and +5 AC lasts until the start of
+  the character's next turn.
+- One levelled spell per turn: after a levelled spell the caster may cast only
+  cantrips that turn. Spiritual Weapon's later attacks are bonus actions that
+  spend no slot and do not count as casting.
+- Effects that last until a long rest (Mage Armor, Aid) and out-of-combat buffs
+  live on the actor, persist in `Player.stats.active_effects`, shape armour
+  class when the actor is rebuilt, and end on a long rest (Aid's maximum HP
+  returns). Encounter-scoped effects end when combat ends, together with
+  concentration that no longer holds any effect.
 - Slot/action consumption, combat effects, concentration state, player HP, and
   the stable cast-resolution ledger persist together through the normal state
   application path. A repeated cast ID returns the existing resolution rather
   than rolling or applying effects again.
-- A rules-backed spell without an exact target pauses for a legal target choice
-  before narration or spending a slot. Named free-form casts use the same path.
-  Spells marked narrated still rely on the Dungeon Master for their effects.
 
 ### Typed class capabilities
 
-- The mechanically complete catalog is intentionally small: Fighter Second
-  Wind, Fighter Action Surge, and Paladin Lay on Hands.
-- Passive rules also grant Extra Attack at level 5 to Barbarians, Fighters,
-  Monks, Paladins and Rangers; Barbarian Danger Sense from level 2; and the
-  Barbarian and Monk unarmored-defense formulas, including their different
-  shield restrictions. For multiclass labels these features use the primary
-  class only.
-- Typed capability use resolves an exact actor and target, revalidates the
-  current combat actor and action/bonus-action budget, applies server-owned
-  healing or action restoration, consumes the persisted class-feature pool,
-  and refreshes only on its declared short or long rest. Lay on Hands can
-  restore an ally at 0 HP who is not dead; Second Wind is impossible while
-  unconscious.
-- Capability resolution is generated before narration and replay-validated
-  from its trusted rolls and result. Post-DM extraction cannot manufacture a
-  capability use or change its target, cost, or healing amount.
-- The Mechanical actions panel shows exact legal recipients, requested Lay on
-  Hands points, persisted remaining uses, action/bonus-action limits, and rest
-  refresh policy.
+Levels 1-5 of the core classes, single class. On a multiclass label such as
+"Fighter / Wizard" every feature comes from the primary (first) class only.
+`aidm_server/class_features.py` holds the catalog, the class pools and the
+passive rules; `aidm_server/class_capabilities.py` resolves and applies uses
+and registers the combat actions and Uncanny Dodge.
+
+- **Pools** live in `classFeatureState` (`{"current", "max", "refreshesOn"}`):
+  Rage 2 (3 from level 3, long rest), Bardic Inspiration = Charisma modifier
+  (at least 1; long rest, short rest from level 5), Channel Divinity 1 from
+  level 2 (short rest), Second Wind and Action Surge (short rest), ki = monk
+  level from level 2 (short rest), Lay on Hands 5 per level, sorcery points =
+  sorcerer level from level 2, Arcane Recovery once (long rest). A level-up
+  grows a pool by the difference only, never refilling spent uses.
+- **Active capabilities** (ids are what the panel submits; options are
+  `id:option`): Barbarian `rage`, `reckless_attack`; Bard
+  `bardic_inspiration`; Cleric `turn_undead`; Fighter `second_wind`,
+  `action_surge`; Monk `flurry_of_blows`, `patient_defense`,
+  `step_of_the_wind:dash|disengage`; Paladin `lay_on_hands` (and
+  `lay_on_hands:cure_poison`, 5 points); Sorcerer
+  `flexible_casting:slot_to_points.N|points_to_slot.N`, `quickened_spell`,
+  `twinned_spell:N`; Wizard `arcane_recovery[:levels]` (out of combat, after a
+  short rest; lowest missing slots first unless chosen). Each use is resolved
+  before narration with its cost, target and dice, replay-validated, and
+  applied as one `class_feature.use` change. Effects are active effects on the
+  combatant: Rage (10 rounds; +2 weapon damage, resistance to bludgeoning,
+  piercing and slashing, advantage on Strength checks and saves), Reckless
+  Attack, the turned condition, Stunning Strike's stun, Flurry of Blows and the
+  Metamagic markers.
+- **Combat actions** (the legal-action bundle): every capability as
+  `class.use.<id>` with its cost, pool, legal targets and plain reason; Cunning
+  Action as bonus-action Dash, Disengage or Hide; the Martial Arts unarmed
+  strike (1d4, 1d6 from level 5) and the bonus strikes; and each melee attack
+  with Divine Smite (per spell-slot level) or Stunning Strike declared, spent
+  only on a hit.
+- **Passive rules**: Extra Attack (level 5 martial classes), Danger Sense,
+  both Unarmored Defense formulas, Martial Arts (Dexterity for unarmed strikes
+  and monk weapons), Jack of All Trades (half proficiency on unskilled checks),
+  Rogue Expertise (stored choice, else Stealth and the first other proficient
+  skill), Uncanny Dodge (automatic unless `autoReactions` is off), and fighting
+  styles (stored `character_sheet.fightingStyle`, else defaulted from
+  equipment). Sneak Attack, Colossus Slayer, Dueling, Great Weapon Fighting,
+  Archery, Defense, Improved Critical and Agonizing Blast are registered
+  modifier-engine providers that act once the attack resolver passes them the
+  weapon and attack context described in `class_features.py`.
+- Druid Wild Shape stays narrated; there is no new druid capability.
+- The Mechanical actions panel shows each capability variant with its pool,
+  remaining uses, legal recipients and the reason it is unavailable, in and out
+  of combat; in combat it uses the server's bundle entries.
 
 ### Consumable item effects
 
@@ -432,9 +498,10 @@ mechanics the server currently applies, rather than full tabletop coverage.
   languages, and innate spells work, but catalog movement modes, damage
   resistances, and most active ancestry abilities are not yet compiled into
   combat actors.
-- The authoritative class-capability catalog contains only Second Wind, Action
-  Surge, and Lay on Hands. Apart from the passive rules listed above, other
-  class features remain descriptive or resource-only.
+- Class features stop at level 5 and at the core subclass hooks named above
+  (Champion, Hunter). Bardic Inspiration dice, Rage ending early, Rage's spell
+  lock, turned undead fleeing, and Quickened or Twinned spells are recorded on
+  their effects but wait for the attack, roll and spell engines to read them.
 - Thirteen curated spells have server-owned target/effect definitions, with some
   tabletop details still simplified. Other known/prepared spells consume the correct resource
   but remain resource-only or narration-assisted for their effects. The

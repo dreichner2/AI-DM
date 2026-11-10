@@ -131,6 +131,20 @@ describe('GameplayControls', () => {
     }))
   })
 
+  it('labels an active repeat attack and sends it without a cast level', () => {
+    const state = controlState()
+    Object.assign(state.spells[0], { name: 'Spiritual Weapon', castLevels: [], repeatAttack: true })
+    const onSubmit = vi.fn(() => true)
+    render(<GameplayControls state={state} disabled={false} onSubmit={onSubmit} />)
+    expect(screen.getByRole('option', { name: 'Spiritual Weapon · attack again' })).toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Cast level' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Target Goblin' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cast Spiritual Weapon' }))
+    expect(onSubmit).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      spell: expect.not.objectContaining({ cast_level: expect.anything() }),
+    }))
+  })
+
   it('permits the additional target granted by an upcast dart spell', () => {
     const state = controlState()
     const spell = state.spells[0]

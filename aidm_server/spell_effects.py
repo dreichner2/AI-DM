@@ -27,16 +27,21 @@ Supported spell payloads use this compact shape::
 
 ``delivery.type`` may be ``attack``, ``save``, or ``automatic``.  A save
 delivery also requires the target's save ``ability`` and may set ``onSuccess``
-to ``none`` or ``half``.  The effect vocabulary is intentionally small:
-``damage``, ``healing``, ``temporary_hp``, and ``condition`` (add/remove).
-Instead of an explicit attack bonus or save DC, trusted definitions may provide
-``castingAbility`` and let the resolver derive the value from persisted caster
-stats and proficiency.
+to ``none`` or ``half``.  The effect vocabulary is ``damage``, ``healing``,
+``temporary_hp``, ``condition`` (add/remove), ``modifier``, ``move``,
+``remove_condition``, ``stabilize``, ``revive``, ``max_hp_bonus``,
+``sleep_pool``, ``recurring`` (start-of-turn repeat saves or save/damage),
+``dispel`` and ``repeat_attack`` (Spiritual Weapon's later bonus-action
+attacks).  Durations are ``{"rounds", "tickOn"}`` or ``{"until": "long_rest" |
+"encounter"}``.  Instead of an explicit attack bonus or save DC, trusted
+definitions may provide ``castingAbility`` and let the resolver derive the
+value from persisted caster stats and proficiency.
 
 All public resolvers are storage-agnostic and return deep copies.  The caller
 must persist the returned combat/resources together in the same transaction as
 slot consumption and turn-economy consumption.  An injected ``roller(sides)``
-makes every d20 and effect roll deterministic and testable.
+makes every d20 and effect roll deterministic and testable; the resolution
+records every value it consumed in ``rollSequence`` so a replay is exact.
 """
 
 from __future__ import annotations
@@ -46,7 +51,8 @@ import hashlib
 import re
 from typing import Any, Callable, Iterable, Mapping
 
-from aidm_server.character_resources import normalize_concentration
+from aidm_server.armor_class import armor_class_with_spell_armor
+from aidm_server.character_resources import normalize_concentration, spell_cast_legality
 from aidm_server.combat import vitality
 from aidm_server.combat.modifiers import (
     INCAPACITATING_CONDITIONS,
@@ -62,13 +68,17 @@ from aidm_server.combat.modifiers import (
     end_concentration_effects,
     heals_nothing,
     is_hidden,
+    range_band as participant_range_band,
+    remove_active_effects,
     save_context,
     tick_effects,
 )
+from aidm_server.combat.reactions import REACTION_SOURCE, auto_reactions_enabled, register_reaction_provider
 from aidm_server.combat.state import combat_turn_context
 from aidm_server.combat.positioning import RANGE_BANDS, band_index, move_participant
 from aidm_server.creatures.schemas import DAMAGE_TYPES
-from aidm_server.damage_dice import parse_damage_dice_expression, roll_signed_dice
+from aidm_server.damage_dice import deterministic_roller, parse_damage_dice_expression, roll_signed_dice
+from aidm_server.game_state.models import stable_change_id
 
 
 Roller = Callable[[int], int]
@@ -76,16 +86,22 @@ Roller = Callable[[int], int]
 SUPPORTED_DELIVERY_TYPES = frozenset({'attack', 'save', 'automatic'})
 SUPPORTED_EFFECT_KINDS = frozenset({
     'damage', 'healing', 'temporary_hp', 'condition', 'modifier', 'move', 'remove_condition', 'stabilize',
+    'revive', 'max_hp_bonus', 'sleep_pool', 'recurring', 'dispel', 'repeat_attack',
 })
 SUPPORTED_RELATIONS = frozenset({'enemy', 'ally', 'self', 'any'})
 SUPPORTED_SAVE_OUTCOMES = frozenset({'none', 'half'})
 SUPPORTED_DURATION_TICKS = frozenset({'target_turn_start', 'target_turn_end', 'source_turn_end', 'caster_turn_end', 'caster_turn_start'})
+SUPPORTED_DURATION_UNTIL = frozenset({'long_rest', 'encounter'})
+SUPPORTED_CASTING_TIMES = frozenset({'action', 'bonus_action', 'reaction'})
 SUPPORTED_MODIFIER_KEYS = frozenset({
-    'attackBonusDice', 'saveBonusDice', 'checkBonusDice', 'acBonus', 'acMinimum',
+    'attackBonusDice', 'saveBonusDice', 'checkBonusDice', 'acBonus', 'acMinimum', 'acBase',
     'attackMode', 'attackedMode', 'saveMode', 'checkMode', 'bonusDamageVs',
     'bonusWeaponDamage', 'resistances', 'speedZero', 'cannotAct', 'cannotReact',
-    'noHealing', 'tempHpPerTurn',
+    'noHealing', 'tempHpPerTurn', 'conditionImmunities',
 })
+# Fields an effect definition copies onto the active effect it writes.
+EFFECT_LIFECYCLE_FLAGS = ('endsOnDamage', 'endsOnHarm', 'endsOnCast', 'repeatSaveOnDamage')
+SHIELD_SPELL_NAME = 'Shield'
 SUPPORTED_RANGE_BANDS = frozenset({'melee', 'near', 'far', 'distant'})
 ABILITY_KEYS = frozenset(
     {'strength', 'dexterity', 'constitution', 'intelligence', 'wisdom', 'charisma'}
@@ -105,9 +121,16 @@ __all__ = [
     'ABILITY_KEYS',
     'SUPPORTED_DELIVERY_TYPES',
     'SUPPORTED_EFFECT_KINDS',
+    'active_repeat_attack',
     'advance_spell_effect_durations',
+    'after_damage_spell_effects',
+    'end_encounter_spell_effects',
+    'end_long_rest_spell_effects',
+    'normalized_spell_definition',
     'resolve_concentration_check',
     'resolve_targeted_spell',
+    'resolve_turn_start_spell_effects',
+    'shield_reaction_provider',
     'spell_target_legality',
 ]
 
@@ -272,6 +295,7 @@ def _target_spec(spell: Mapping[str, Any]) -> dict[str, Any]:
         'areaMaxTargets': _bounded_int(area.get('maxTargets'), default=1, minimum=1, maximum=20) if area else 0,
         'allowDefeated': raw.get('allowDefeated', raw.get('allow_defeated', False)) is True,
         'requiresDying': raw.get('requiresDying', raw.get('requires_dying', False)) is True,
+        'requiresDead': raw.get('requiresDead', raw.get('requires_dead', False)) is True,
         'requiresPresent': raw.get('requiresPresent', raw.get('requires_present', True)) is not False,
         'requiresLineOfSight': raw.get(
             'requiresLineOfSight', raw.get('requires_line_of_sight', True)
@@ -314,12 +338,37 @@ def _delivery_spec(spell: Mapping[str, Any]) -> dict[str, Any]:
             or spell.get('casting_ability')
         ),
         'onSuccess': _key(raw.get('onSuccess', raw.get('on_success')) or 'none'),
+        'combatSaveMode': _key(raw.get('combatSaveMode')),
         'ranged': raw.get('ranged') if isinstance(raw.get('ranged'), bool) else None,
         'darts': (
             {'count': _bounded_int(darts.get('count'), default=1, minimum=1, maximum=20), 'dice': darts.get('dice')}
             if darts else None
         ),
         'attacks': _bounded_int(raw.get('attacks'), default=1, minimum=1, maximum=20) if raw.get('attacks') is not None else None,
+    }
+
+
+def _recurring_spec(raw: Mapping[str, Any]) -> dict[str, Any] | None:
+    if raw.get('repeatSave') is None and not isinstance(raw.get('save'), Mapping):
+        return None
+    save = raw.get('save') if isinstance(raw.get('save'), Mapping) else {}
+    damage = raw.get('damage') if isinstance(raw.get('damage'), Mapping) else {}
+    aura = raw.get('aura') if isinstance(raw.get('aura'), Mapping) else None
+    parsed = parse_damage_dice_expression(damage.get('dice')) if damage else None
+    return {
+        'repeatSave': raw.get('repeatSave') is not None,
+        'ability': _ability_key(raw.get('repeatSave') or save.get('ability')),
+        'onSuccess': _key(save.get('onSuccess') or 'none'),
+        'damageExpression': str(parsed['dice']) if parsed else None,
+        'hasDamage': bool(damage),
+        'damageType': _key(damage.get('damageType') or damage.get('type')),
+        'aura': (
+            {
+                'relation': _key(aura.get('relation') or 'enemy'),
+                'rangeBands': [_key(band) for band in aura.get('rangeBands') or [] if _key(band)],
+            }
+            if aura is not None else None
+        ),
     }
 
 
@@ -334,50 +383,57 @@ def _effect_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
     elif amount_value is not None:
         parsed = parse_damage_dice_expression(amount_value)
         expression = str(parsed['dice']) if parsed else None
+    recurring = _recurring_spec(raw) if kind == 'recurring' else None
+    if recurring and recurring['damageExpression']:
+        expression = recurring['damageExpression']
 
     wounded_dice = raw.get('woundedDice')
     wounded_parsed = parse_damage_dice_expression(wounded_dice) if wounded_dice is not None else None
 
-    duration_raw = raw.get('duration')
+    duration_raw = raw.get('duration') if isinstance(raw.get('duration'), Mapping) else None
     duration: dict[str, Any] | None = None
-    if isinstance(duration_raw, Mapping):
-        remaining = _int(
-            duration_raw.get('remaining', duration_raw.get('rounds')),
-            default=0,
-        )
-        if remaining > 0:
-            duration = {
-                'remaining': min(1000, remaining),
-                'tick': _key(duration_raw.get('tickOn') or duration_raw.get('tick') or 'target_turn_end'),
-            }
-    elif _int(raw.get('durationRounds', raw.get('duration_rounds')), default=0) > 0:
+    until = _key(duration_raw.get('until')) if duration_raw is not None else ''
+    rounds = (
+        _int(duration_raw.get('remaining', duration_raw.get('rounds')), default=0)
+        if duration_raw is not None
+        else _int(raw.get('durationRounds', raw.get('duration_rounds')), default=0)
+    )
+    if not until and rounds > 0:
         duration = {
-            'remaining': min(
-                1000,
-                _int(raw.get('durationRounds', raw.get('duration_rounds')), default=0),
-            ),
-            'tick': 'target_turn_end',
+            'remaining': min(1000, rounds),
+            'tick': _key((duration_raw or {}).get('tickOn') or (duration_raw or {}).get('tick') or 'target_turn_end'),
         }
 
     damage_type = _key(raw.get('damageType') or raw.get('damage_type') or 'force')
+    if recurring and recurring['hasDamage']:
+        damage_type = recurring['damageType']
     condition = _key(raw.get('condition'))
     operation = _key(raw.get('operation') or 'add')
+    choices = raw.get('damageTypeChoices')
     return {
         'kind': kind,
         'expression': expression,
         'woundedExpression': str(wounded_parsed['dice']) if wounded_parsed else None,
         'hasWoundedDice': wounded_dice is not None,
         'damageType': damage_type,
+        'damageTypeChoices': [_key(value) for value in choices if _key(value)] if isinstance(choices, (list, tuple)) else [],
         'condition': condition,
         'operation': operation,
         'duration': duration,
+        'until': until,
         'modifiers': deepcopy(dict(raw.get('modifiers'))) if isinstance(raw.get('modifiers'), Mapping) else {},
         'consumeOn': _key(raw.get('consumeOn')),
         'bands': _int(raw.get('bands'), default=0),
         'teleport': _key(raw.get('teleport')),
         'conditions': [_key(value) for value in raw.get('conditions') or [] if _key(value)]
         if isinstance(raw.get('conditions'), (list, tuple)) else [],
+        'removeAll': raw.get('removeAll') is True,
         'addCastingModifier': raw.get('addCastingModifier') is True,
+        'castingModifierKeys': [_text(value) for value in raw.get('castingModifierKeys') or [] if _text(value)],
+        'onCaster': raw.get('onCaster') is True,
+        'hp': _int(raw.get('hp'), default=1),
+        'recurring': recurring,
+        **{flag: raw.get(flag) is True for flag in EFFECT_LIFECYCLE_FLAGS},
         'onSuccessfulSave': _key(
             raw.get('onSuccessfulSave', raw.get('on_successful_save')) or ''
         ),
@@ -411,6 +467,14 @@ def _normalized_spell(spell: Mapping[str, Any]) -> tuple[dict[str, Any] | None, 
             return None, 'Save delivery requires a DC or valid castingAbility.'
         if delivery['onSuccess'] not in SUPPORTED_SAVE_OUTCOMES:
             return None, 'Save success behavior must be none or half.'
+        if delivery['combatSaveMode'] not in {'', 'advantage', 'disadvantage'}:
+            return None, 'A combat save mode must be advantage or disadvantage.'
+    casting_time = _key(spell.get('castingTime') or 'action')
+    if casting_time not in SUPPORTED_CASTING_TIMES:
+        return None, 'Casting time must be action, bonus_action, or reaction.'
+    consumes = spell.get('consumes') if isinstance(spell.get('consumes'), Mapping) else {}
+    if set(consumes) - {'gp'} or _int(consumes.get('gp'), default=0) < 0:
+        return None, 'A spell may consume only a non-negative gp cost.'
 
     target = _target_spec(spell)
     if target['relation'] not in SUPPORTED_RELATIONS:
@@ -430,26 +494,52 @@ def _normalized_spell(spell: Mapping[str, Any]) -> tuple[dict[str, Any] | None, 
         effect = _effect_spec(raw_effect)
         if effect['kind'] not in SUPPORTED_EFFECT_KINDS:
             return None, f"Unsupported spell effect kind: {effect['kind'] or 'missing'}."
-        if effect['kind'] in {'damage', 'healing', 'temporary_hp'} and not effect['expression']:
+        if effect['kind'] in {'damage', 'healing', 'temporary_hp', 'sleep_pool', 'max_hp_bonus'} and not effect['expression']:
             return None, f"Spell effect {index + 1} requires a bounded dice or amount expression."
         if effect['hasWoundedDice'] and (effect['kind'] != 'damage' or not effect['woundedExpression']):
             return None, 'Wounded-target damage requires bounded alternate damage dice.'
         if effect['kind'] == 'damage' and effect['damageType'] not in DAMAGE_TYPES:
             return None, f"Unsupported damage type: {effect['damageType'] or 'missing'}."
+        if set(effect['damageTypeChoices']) - DAMAGE_TYPES or (
+            effect['damageTypeChoices'] and effect['damageType'] not in effect['damageTypeChoices']
+        ):
+            return None, 'Damage type choices must be damage types that include the default.'
         if effect['kind'] == 'condition':
             if not effect['condition']:
                 return None, f'Spell effect {index + 1} requires a condition.'
             if effect['operation'] not in {'add', 'remove'}:
                 return None, 'Condition operation must be add or remove.'
-        if effect['kind'] in {'condition', 'modifier'}:
-            duration = effect['duration']
-            if duration and duration['tick'] not in SUPPORTED_DURATION_TICKS:
-                return None, 'Effect duration has an unsupported turn boundary.'
+        duration = effect['duration']
+        if duration and duration['tick'] not in SUPPORTED_DURATION_TICKS:
+            return None, 'Effect duration has an unsupported turn boundary.'
+        if effect['until'] and effect['until'] not in SUPPORTED_DURATION_UNTIL:
+            return None, 'Effect duration must last until a long rest or the end of the encounter.'
         if effect['kind'] == 'modifier':
             if not effect['modifiers'] or set(effect['modifiers']) - SUPPORTED_MODIFIER_KEYS:
                 return None, 'Modifier effects require supported modifier keys.'
-            if effect['consumeOn'] not in {'', 'attack', 'attacked', 'save', 'check'}:
-                return None, 'Modifier consumeOn has an unsupported event.'
+            if set(effect['castingModifierKeys']) - set(effect['modifiers']):
+                return None, 'Casting-modifier keys must name modifiers of the same effect.'
+        if effect['consumeOn'] not in {'', 'attack', 'attacked', 'save', 'check'}:
+            return None, 'Effect consumeOn has an unsupported event.'
+        if effect['kind'] == 'recurring':
+            recurring = effect['recurring']
+            if recurring is None or recurring['ability'] not in ABILITY_KEYS:
+                return None, 'A recurring effect requires a repeat save or a saving throw ability.'
+            if not recurring['repeatSave'] and (
+                not recurring['damageExpression'] or recurring['damageType'] not in DAMAGE_TYPES
+                or recurring['onSuccess'] not in SUPPORTED_SAVE_OUTCOMES
+            ):
+                return None, 'A recurring saving throw requires bounded damage of a known type.'
+            aura = recurring['aura']
+            if aura is not None and (
+                aura['relation'] not in SUPPORTED_RELATIONS
+                or not aura['rangeBands'] or set(aura['rangeBands']) - SUPPORTED_RANGE_BANDS
+            ):
+                return None, 'A recurring aura requires a relation and supported range bands.'
+            if not duration and not effect['until']:
+                return None, 'A recurring effect requires a duration.'
+        if effect['kind'] == 'revive' and effect['hp'] < 1:
+            return None, 'Revival must restore at least one hit point.'
         if effect['kind'] == 'move' and not (
             (effect['bands'] in {-1, 1} and not effect['teleport'])
             or (effect['teleport'] == 'away' and effect['bands'] == 0)
@@ -473,6 +563,8 @@ def _normalized_spell(spell: Mapping[str, Any]) -> tuple[dict[str, Any] | None, 
             'outOfCombat': spell.get('outOfCombat') is True,
             'outOfCombatOnly': spell.get('outOfCombatOnly') is True,
             'concentration': spell.get('concentration') is True,
+            'castingTime': casting_time,
+            'consumes': {'gp': _int(consumes.get('gp'), default=0)} if consumes else {},
             'requireActiveTurn': spell.get(
                 'requireActiveTurn', spell.get('require_active_turn', True)
             ) is not False,
@@ -482,6 +574,12 @@ def _normalized_spell(spell: Mapping[str, Any]) -> tuple[dict[str, Any] | None, 
         },
         '',
     )
+
+
+def normalized_spell_definition(spell: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    """The resolver's normalised view of a definition, or ``None`` and the reason it is invalid."""
+
+    return _normalized_spell(spell)
 
 
 def _legality_failure(code: str, reason: str, **extra: Any) -> dict[str, Any]:
@@ -596,8 +694,12 @@ def spell_target_legality(
         elif target_spec['requiresDying'] and not vitality.is_dying(target):
             code = 'spell_target_not_dying'
             reason = 'This spell requires a dying target.'
+        elif target_spec['requiresDead'] and not vitality.is_dead(target):
+            code = 'spell_target_not_dead'
+            reason = 'This spell can only restore a creature that has died.'
         elif (
-            not target_spec['allowDefeated']
+            not target_spec['requiresDead']
+            and not target_spec['allowDefeated']
             and not _is_alive(target)
             and not _restores_downed_player(normalized_spell, target)
         ):
@@ -742,7 +844,8 @@ def _apply_spell_scaling(spell: dict[str, Any], caster: Mapping[str, Any], cast_
                             return False
                         effect['woundedExpression'] = wounded
     upcast = scaling.get('upcast') if isinstance(scaling.get('upcast'), Mapping) else {}
-    steps = max(0, cast_level - int(spell['level']))
+    levels_above = max(0, cast_level - int(spell['level']))
+    steps = levels_above // max(1, _int(upcast.get('perLevels'), default=1))
     spell['target']['maxTargets'] = min(
         20, spell['target']['maxTargets'] + steps * max(0, _int(upcast.get('targets'), default=0)),
     )
@@ -754,16 +857,21 @@ def _apply_spell_scaling(spell: dict[str, Any], caster: Mapping[str, Any], cast_
         spell['delivery']['attacks'] = min(20, spell['delivery']['attacks'] + steps * max(0, _int(upcast.get('attacks'), default=0)))
         spell['target']['maxTargets'] = spell['delivery']['attacks']
     if steps and (upcast.get('dice') is not None or upcast.get('flat') is not None):
-        first = next((effect for effect in spell['effects'] if effect['kind'] in {'damage', 'healing', 'temporary_hp'}), None)
-        if first is None:
+        # The first damage or healing effect takes the extra dice; a recurring
+        # save/damage effect (Moonbeam) repeats the upcast damage every turn.
+        scaled = [effect for effect in spell['effects'] if effect['expression'] and effect['kind'] in {
+            'damage', 'healing', 'temporary_hp', 'sleep_pool', 'max_hp_bonus', 'recurring',
+        }]
+        if not scaled:
             return False
-        expression = _scaled_expression(
-            str(first['expression']), extra_dice=upcast.get('dice'), steps=steps,
-            flat=_int(upcast.get('flat'), default=0),
-        )
-        if expression is None:
-            return False
-        first['expression'] = expression
+        for effect in [scaled[0], *(item for item in scaled[1:] if item['kind'] == 'recurring')]:
+            expression = _scaled_expression(
+                str(effect['expression']), extra_dice=upcast.get('dice'), steps=steps,
+                flat=_int(upcast.get('flat'), default=0),
+            )
+            if expression is None:
+                return False
+            effect['expression'] = expression
     return True
 
 
@@ -877,13 +985,19 @@ def _save_modifier(participant: Mapping[str, Any], ability: str) -> int:
 
 
 def _condition_immunities(participant: Mapping[str, Any]) -> set[str]:
+    immunities: set[str] = set()
     for key in ('conditionImmunities', 'condition_immunities'):
         values = participant.get(key)
         if isinstance(values, str):
             values = [values]
         if isinstance(values, (list, tuple, set)):
-            return {_key(value) for value in values if _text(value)}
-    return set()
+            immunities = {_key(value) for value in values if _text(value)}
+            break
+    for effect in active_effects(participant):
+        values = effect['modifiers'].get('conditionImmunities')
+        if isinstance(values, (list, tuple)):
+            immunities.update(_key(value) for value in values if _text(value))
+    return immunities
 
 
 def _effect_id(cast_id: str, target_id: str, effect_index: int) -> str:
@@ -978,6 +1092,8 @@ def _resolve_delivery(
         }
     ability = str(delivery['ability'])
     context = save_context(target, ability, combat=combat)
+    if delivery.get('combatSaveMode') and _key(combat.get('status')) in {'starting', 'active'}:
+        context = _with_extra_mode(context, delivery['combatSaveMode'], 'The spell grants this save during combat')
     modifier = _save_modifier(target, ability)
     if context['autoFail']:
         return {
@@ -1018,6 +1134,24 @@ def _resolve_delivery(
         'onSuccess': delivery['onSuccess'],
         'consume': context['consume'],
     }
+
+
+def _with_extra_mode(context: Mapping[str, Any], mode: str, reason: str) -> dict[str, Any]:
+    """Add one advantage or disadvantage source to a finished modifier-engine context.
+
+    A finished context keeps only its net mode, so an opposite net mode cancels
+    to normal; a normal mode with recorded reasons already held both sources.
+    """
+
+    current = _key(context.get('mode')) or 'normal'
+    opposite = 'disadvantage' if mode == 'advantage' else 'advantage'
+    if current == opposite:
+        net = 'normal'
+    elif current == 'normal' and context.get('reasons'):
+        net = 'normal'
+    else:
+        net = mode
+    return {**context, 'mode': net, 'reasons': [*context.get('reasons', []), reason]}
 
 
 def _save_effect_mode(effect: Mapping[str, Any], delivery: Mapping[str, Any]) -> str:
@@ -1164,7 +1298,10 @@ def _apply_condition(
 
     conditions.add(condition)
     active_effect = None
-    if effect.get('duration') or spell.get('concentration') is True:
+    if (
+        effect.get('duration') or effect.get('until') or spell.get('concentration') is True
+        or any(effect.get(flag) for flag in EFFECT_LIFECYCLE_FLAGS)
+    ):
         existing_condition_effects = [
             existing for existing in effects if existing.get('condition') == condition
         ]
@@ -1175,25 +1312,10 @@ def _apply_condition(
                 for existing in existing_condition_effects
             )
         )
-        duration = effect.get('duration')
         active_effect = {
-            'id': _effect_id(cast_id, _participant_id(participant), effect_index),
-            'sourceId': spell['id'],
-            'sourceName': spell['name'],
-            'casterId': caster_id,
-            'castId': cast_id,
+            **_spell_active_effect(participant, effect=effect, cast_id=cast_id, caster_id=caster_id,
+                                   spell=spell, effect_index=effect_index, modifiers={}),
             'condition': condition,
-            'modifiers': {},
-            'duration': (
-                {
-                    'rounds': duration['remaining'],
-                    'tickOn': 'caster_turn_end' if duration['tick'] == 'source_turn_end' else duration['tick'],
-                }
-                if duration
-                else None
-            ),
-            'concentration': spell.get('concentration') is True,
-            'consumeOn': None,
             'preserveConditionOnExpiry': preserve_on_expiry,
         }
         participant['activeEffects'] = [
@@ -1213,27 +1335,81 @@ def _apply_condition(
     }
 
 
-def _apply_modifier(
-    participant: dict[str, Any], *, effect: Mapping[str, Any], cast_id: str,
-    caster_id: str, spell: Mapping[str, Any], effect_index: int,
+def _spell_active_effect(
+    participant: Mapping[str, Any], *, effect: Mapping[str, Any], cast_id: str, caster_id: str,
+    spell: Mapping[str, Any], effect_index: int, modifiers: Mapping[str, Any],
 ) -> dict[str, Any]:
+    """The modifier engine's active-effect shape for one spell effect on one bearer."""
+
     duration = effect.get('duration')
-    active_effect = {
+    active_effect: dict[str, Any] = {
         'id': _effect_id(cast_id, _participant_id(participant), effect_index),
         'sourceId': spell['id'], 'sourceName': spell['name'], 'casterId': caster_id,
-        'castId': cast_id, 'modifiers': deepcopy(effect['modifiers']),
+        'castId': cast_id, 'modifiers': deepcopy(dict(modifiers)),
         'duration': ({
             'rounds': duration['remaining'],
             'tickOn': 'caster_turn_end' if duration['tick'] == 'source_turn_end' else duration['tick'],
         } if duration else None),
         'concentration': spell.get('concentration') is True,
         'consumeOn': effect.get('consumeOn') or None,
+        'spellLevel': _int(spell.get('castLevel'), default=_int(spell.get('level'), default=0)),
     }
+    if effect.get('until'):
+        active_effect['until'] = effect['until']
+    for flag in EFFECT_LIFECYCLE_FLAGS:
+        if effect.get(flag):
+            active_effect[flag] = True
+    return active_effect
+
+
+def _refresh_armor_class(participant: dict[str, Any]) -> None:
+    """Recompute a player participant's AC after an armour-setting effect (Mage Armor) changed."""
+
+    breakdown = participant.get('armorClassBreakdown')
+    if not isinstance(breakdown, Mapping):
+        return
+    armor_class = armor_class_with_spell_armor(breakdown, active_effects(participant))
+    participant['armorClass'] = armor_class
+    if isinstance(participant.get('stats'), dict):
+        participant['stats']['armorClass'] = armor_class
+        participant['stats']['armor_class'] = armor_class
+
+
+def _apply_modifier(
+    participant: dict[str, Any], *, effect: Mapping[str, Any], cast_id: str,
+    caster_id: str, spell: Mapping[str, Any], effect_index: int, casting_modifier: int = 0,
+    bound_target_id: str = '',
+) -> dict[str, Any]:
+    modifiers = deepcopy(effect['modifiers'])
+    for key in effect.get('castingModifierKeys') or []:
+        modifiers[key] = max(0, casting_modifier)
+    if bound_target_id and isinstance(modifiers.get('bonusDamageVs'), dict):
+        modifiers['bonusDamageVs']['targetId'] = bound_target_id
+    active_effect = _spell_active_effect(
+        participant, effect=effect, cast_id=cast_id, caster_id=caster_id, spell=spell,
+        effect_index=effect_index, modifiers=modifiers,
+    )
     participant['activeEffects'] = [
         *[existing for existing in active_effects(participant) if existing['id'] != active_effect['id']],
         active_effect,
     ]
+    if 'acBase' in modifiers:
+        _refresh_armor_class(participant)
     return {'kind': 'modifier', 'applied': True, 'activeEffect': deepcopy(active_effect)}
+
+
+def _remove_spell_effects(participant: dict[str, Any], predicate: Callable[[dict[str, Any]], bool]) -> list[dict[str, Any]]:
+    """Remove spell effects, undoing what they changed beyond the modifier engine."""
+
+    removed = remove_active_effects(participant, predicate)
+    bonus = sum(max(0, _int(effect.get('maxHpBonus'), default=0)) for effect in removed)
+    if bonus:
+        hp = _hp(participant)
+        maximum = max(1, hp['max'] - bonus)
+        participant['hp'] = {**hp, 'max': maximum, 'current': min(hp['current'], maximum)}
+    if any('acBase' in effect['modifiers'] for effect in removed):
+        _refresh_armor_class(participant)
+    return removed
 
 
 def _apply_effect(
@@ -1251,7 +1427,24 @@ def _apply_effect(
     in_combat: bool,
     casting_modifier: int = 0,
     shared_roll: Mapping[str, Any] | None = None,
+    sleep_pool: dict[str, Any] | None = None,
+    recurring_dc: int | None = None,
+    damage_type: str = '',
 ) -> dict[str, Any]:
+    caster = _participant_by_id(combat, caster_id)
+    assert caster is not None  # Proven by legality before any roll or mutation.
+    if effect['kind'] == 'repeat_attack':
+        # The spiritual weapon stays whether or not its first attack hit.
+        active_effect = {
+            **_spell_active_effect(caster, effect=effect, cast_id=cast_id, caster_id=caster_id,
+                                   spell=spell, effect_index=effect_index, modifiers={}),
+            'repeatAttack': {'castLevel': _int(spell.get('castLevel'), default=spell['level'])},
+        }
+        caster['activeEffects'] = [
+            *[existing for existing in active_effects(caster) if existing['sourceId'] != spell['id'] or not existing.get('repeatAttack')],
+            active_effect,
+        ]
+        return {'kind': 'repeat_attack', 'applied': True, 'activeEffect': deepcopy(active_effect)}
     save_succeeded = delivery_result.get('saveSucceeded') is True
     save_mode = _save_effect_mode(effect, delivery) if save_succeeded else 'full'
     if not delivery_result.get('delivered') and not (save_succeeded and save_mode in {'half', 'full'}):
@@ -1273,20 +1466,99 @@ def _apply_effect(
             effect_index=effect_index,
         )
     if effect['kind'] == 'modifier':
+        bearer = caster if effect.get('onCaster') else participant
         return _apply_modifier(
-            participant, effect=effect, cast_id=cast_id, caster_id=caster_id,
-            spell=spell, effect_index=effect_index,
+            bearer, effect=effect, cast_id=cast_id, caster_id=caster_id,
+            spell=spell, effect_index=effect_index, casting_modifier=casting_modifier,
+            bound_target_id=_participant_id(participant) if effect.get('onCaster') else '',
         )
+    if effect['kind'] == 'recurring':
+        recurring = effect['recurring']
+        bearer = caster if recurring['aura'] else participant
+        active_effect = {
+            **_spell_active_effect(bearer, effect=effect, cast_id=cast_id, caster_id=caster_id,
+                                   spell=spell, effect_index=effect_index, modifiers={}),
+            'recurring': {
+                'ability': recurring['ability'],
+                'dc': recurring_dc,
+                'repeatSave': recurring['repeatSave'],
+                **({'damage': {'dice': effect['expression'], 'type': effect['damageType']},
+                    'onSuccess': recurring['onSuccess']} if recurring['hasDamage'] else {}),
+                **({'aura': deepcopy(recurring['aura'])} if recurring['aura'] else {}),
+            },
+        }
+        bearer['activeEffects'] = [
+            *[existing for existing in active_effects(bearer) if existing['id'] != active_effect['id']],
+            active_effect,
+        ]
+        return {'kind': 'recurring', 'applied': True, 'activeEffect': deepcopy(active_effect)}
     if effect['kind'] == 'remove_condition':
-        condition = next((value for value in effect['conditions'] if value in condition_keys(participant)), None)
-        if condition is None:
+        present = [value for value in effect['conditions'] if value in condition_keys(participant)]
+        if not present:
             return {'kind': 'remove_condition', 'applied': False, 'reason': 'no_matching_condition'}
+        before = sorted(condition_keys(participant))
+        removed = present if effect.get('removeAll') else present[:1]
+        for condition in removed:
+            _apply_condition(
+                participant, effect={'condition': condition, 'operation': 'remove'},
+                cast_id=cast_id, caster_id=caster_id, spell=spell, effect_index=effect_index,
+            )
+            if condition == 'hidden' and isinstance(participant.get('position'), dict):
+                participant['position']['isHidden'] = False
+        return {'kind': 'remove_condition', 'operation': 'remove', 'applied': True, 'condition': removed[0],
+                'removed': removed, 'conditionsBefore': before, 'conditionsAfter': sorted(condition_keys(participant))}
+    if effect['kind'] == 'revive':
+        before = sorted(condition_keys(participant))
+        vitality.revive(participant, effect['hp'])
+        return {'kind': 'revive', 'applied': True, 'hpAfter': _hp(participant),
+                'conditionsBefore': before, 'conditionsAfter': sorted(condition_keys(participant))}
+    if effect['kind'] == 'dispel':
+        threshold = _int(spell.get('castLevel'), default=spell['level'])
+        removed = _remove_spell_effects(
+            participant,
+            lambda active: bool(active.get('castId')) and _int(active.get('spellLevel'), default=0) <= threshold,
+        )
+        return {'kind': 'dispel', 'applied': bool(removed), 'removedEffects': [
+            {'id': active['id'], 'sourceName': active['sourceName'], 'spellLevel': active.get('spellLevel')}
+            for active in removed
+        ]}
+    if effect['kind'] == 'sleep_pool':
+        assert sleep_pool is not None  # The resolver opens one pool per cast.
+        if 'roll' not in sleep_pool:
+            sleep_pool['roll'] = _roll_expression(str(effect['expression']), roller)
+            sleep_pool['remaining'] = int(sleep_pool['roll']['total'])
+        hp_now = _hp(participant)['current']
+        if hp_now > sleep_pool['remaining']:
+            return {'kind': 'sleep_pool', 'applied': False, 'reason': 'pool_exhausted',
+                    'poolRoll': deepcopy(sleep_pool['roll']), 'poolRemaining': sleep_pool['remaining']}
         result = _apply_condition(
-            participant, effect={'condition': condition, 'operation': 'remove'},
+            participant, effect={**effect, 'condition': 'unconscious', 'operation': 'add', 'endsOnDamage': True},
             cast_id=cast_id, caster_id=caster_id, spell=spell, effect_index=effect_index,
         )
-        result['kind'] = 'remove_condition'
-        return result
+        if not result.get('immune'):
+            sleep_pool['remaining'] -= hp_now
+        return {**result, 'kind': 'sleep_pool', 'poolRoll': deepcopy(sleep_pool['roll']),
+                'poolRemaining': sleep_pool['remaining']}
+    if effect['kind'] == 'max_hp_bonus':
+        rolled = _roll_expression(str(effect['expression']), roller)
+        hp_before = _hp(participant)
+        # A second casting replaces the first rather than stacking.
+        _remove_spell_effects(participant, lambda active: active['sourceId'] == spell['id'] and bool(active.get('maxHpBonus')))
+        hp = _hp(participant)
+        amount = int(rolled['total'])
+        participant['hp'] = {**hp, 'max': hp['max'] + amount}
+        if vitality.is_player_character(participant):
+            vitality.heal(participant, amount)
+        else:
+            participant['hp']['current'] = hp['current'] + amount
+        active_effect = {
+            **_spell_active_effect(participant, effect=effect, cast_id=cast_id, caster_id=caster_id,
+                                   spell=spell, effect_index=effect_index, modifiers={}),
+            'maxHpBonus': amount,
+        }
+        participant['activeEffects'] = [*active_effects(participant), active_effect]
+        return {'kind': 'max_hp_bonus', 'applied': True, 'roll': rolled, 'amountApplied': amount,
+                'hpBefore': hp_before, 'hpAfter': _hp(participant), 'activeEffect': deepcopy(active_effect)}
     if effect['kind'] == 'stabilize':
         before = sorted(condition_keys(participant))
         applied = vitality.stabilize(participant)
@@ -1318,7 +1590,7 @@ def _apply_effect(
         return _apply_damage(
             participant,
             rolled=rolled,
-            damage_type=str(effect['damageType']),
+            damage_type=damage_type if damage_type in effect['damageTypeChoices'] else str(effect['damageType']),
             save_divisor=2 if save_succeeded and save_mode == 'half' else 1,
             critical=delivery_result.get('critical') is True,
             in_combat=in_combat,
@@ -1355,6 +1627,91 @@ def _area_targets(
     return [primary_id, *sorted(candidates)[:max(0, maximum - 1)]]
 
 
+def active_repeat_attack(combat: Mapping[str, Any], caster_id: str, spell_id: str) -> dict[str, Any] | None:
+    """The caster's still-active effect that lets it repeat this spell's attack (Spiritual Weapon)."""
+
+    caster = _participant_by_id(combat, caster_id)
+    return next(
+        (
+            effect for effect in active_effects(caster)
+            if effect['sourceId'] == _text(spell_id) and effect['casterId'] == _text(caster_id)
+            and isinstance(effect.get('repeatAttack'), Mapping)
+        ),
+        None,
+    )
+
+
+def _spell_attack_bonus_damage(caster: Mapping[str, Any], target_id: str) -> list[dict[str, Any]]:
+    """Damage the caster adds to any attack against a marked target (Hex), not weapon-only marks."""
+
+    bonuses = []
+    for effect in active_effects(caster):
+        spec = effect['modifiers'].get('bonusDamageVs')
+        if not isinstance(spec, Mapping) or _text(spec.get('targetId')) != target_id or spec.get('weaponOnly') is True:
+            continue
+        parsed = parse_damage_dice_expression(spec.get('dice'))
+        if parsed:
+            bonuses.append({'dice': str(parsed['dice']), 'type': _key(spec.get('type')), 'source': effect['sourceName']})
+    return bonuses
+
+
+def _recurring_save(
+    combat: dict[str, Any], target: Mapping[str, Any], ability: str, dc: Any, roller: Roller, *, mode: str = '',
+) -> dict[str, Any]:
+    context = save_context(target, ability, combat=combat)
+    if mode:
+        context = _with_extra_mode(context, mode, 'The spell grants this save advantage')
+    modifier = _save_modifier(target, ability)
+    record: dict[str, Any] = {'ability': ability, 'dc': _int(dc, default=10), 'modifier': modifier, 'modeReasons': context['reasons']}
+    if context['autoFail']:
+        return {**record, 'autoFailed': True, 'rolls': [], 'naturalRoll': None, 'bonusDice': [], 'total': None, 'succeeded': False}
+    natural_roll, rolls = _d20(context['mode'], roller)
+    bonus_dice = _bonus_dice(context['bonusDice'], roller)
+    total = natural_roll + modifier + context['flatBonus'] + sum(item['total'] for item in bonus_dice)
+    consume_modifiers(combat, context['consume'])
+    return {
+        **record, 'mode': context['mode'], 'rolls': rolls, 'naturalRoll': natural_roll,
+        'bonusDice': bonus_dice, 'total': total, 'succeeded': total >= record['dc'],
+    }
+
+
+def _end_cast_on(participant: dict[str, Any], cast_id: str) -> list[str]:
+    return [effect['id'] for effect in _remove_spell_effects(participant, lambda effect: effect.get('castId') == cast_id)]
+
+
+def _after_damage(combat: dict[str, Any], target: dict[str, Any], *, source_id: str, roller: Roller) -> list[dict[str, Any]]:
+    """Spell effects that end, or allow another save, when their bearer takes damage."""
+
+    events: list[dict[str, Any]] = []
+    source = _participant_by_id(combat, source_id)
+
+    def harmed_by_casters_side(effect: Mapping[str, Any]) -> bool:
+        caster = _participant_by_id(combat, effect.get('casterId'))
+        if source is None:
+            return False
+        return _text(effect.get('casterId')) == source_id or (caster is not None and _friendly(caster, source))
+
+    ended = _remove_spell_effects(
+        target,
+        lambda effect: effect.get('endsOnDamage') is True or (effect.get('endsOnHarm') is True and harmed_by_casters_side(effect)),
+    )
+    if ended:
+        events.append({'kind': 'effects_ended', 'reason': 'took_damage', 'effectIds': [effect['id'] for effect in ended],
+                       'sources': sorted({effect['sourceName'] for effect in ended})})
+    for effect in active_effects(target):
+        recurring = effect.get('recurring')
+        if effect.get('repeatSaveOnDamage') is not True or not isinstance(recurring, Mapping):
+            continue
+        if effect['id'] not in {current['id'] for current in active_effects(target)}:
+            continue
+        save = _recurring_save(combat, target, _ability_key(recurring.get('ability')), recurring.get('dc'), roller, mode='advantage')
+        event = {'kind': 'repeat_save', 'reason': 'took_damage', 'effectId': effect['id'], 'sourceName': effect['sourceName'], 'save': save}
+        if save['succeeded']:
+            event['endedEffectIds'] = _end_cast_on(target, _text(effect.get('castId')))
+        events.append(event)
+    return events
+
+
 def resolve_targeted_spell(
     combat: Mapping[str, Any],
     *,
@@ -1367,6 +1724,8 @@ def resolve_targeted_spell(
     target_resources: Mapping[str, Mapping[str, Any]] | None = None,
     current_turn: int | None = None,
     cast_level: int | None = None,
+    damage_type: str | None = None,
+    repeat_attack: bool = False,
 ) -> dict[str, Any]:
     """Resolve one exact-ID spell cast atomically and return JSON-safe state.
 
@@ -1374,6 +1733,8 @@ def resolve_targeted_spell(
     do not roll or mutate it.  ``spellResolutionLedger`` makes retries against
     the returned combat idempotent; callers should still keep the repository's
     broader state-change ledger as the durable cross-system guard.
+    ``damage_type`` picks among a damage effect's ``damageTypeChoices``;
+    ``repeat_attack`` makes the active spiritual weapon attack again.
     """
 
     if not callable(roller):
@@ -1450,15 +1811,46 @@ def resolve_targeted_spell(
         }
 
     normalized_spell = legality['spell']
+    normalized_spell['castLevel'] = selected_level
+    if repeat_attack:
+        if active_repeat_attack(combat, _text(caster_id), normalized_spell['id']) is None:
+            return {
+                'ok': False, 'duplicate': False, 'code': 'spell_repeat_unavailable',
+                'reason': f"{normalized_spell['name']} is not active for this caster.",
+                'combat': deepcopy(dict(combat)), 'casterResources': deepcopy(dict(caster_resources or {})),
+                'resolution': None,
+            }
+        normalized_spell['effects'] = [effect for effect in normalized_spell['effects'] if effect['kind'] != 'repeat_attack']
+        normalized_spell['concentration'] = False
     requested_target_ids = list(normalized_target_ids)
     if normalized_spell['target']['areaMaxTargets']:
         normalized_target_ids = _area_targets(
             combat, _text(caster_id), spell, normalized_target_ids[0], normalized_spell['target']['areaMaxTargets'], selected_level,
         )
+    if any(effect['kind'] == 'sleep_pool' for effect in normalized_spell['effects']):
+        hit_points = {
+            target_id: _hp(_participant_by_id(combat, target_id) or {})['current'] for target_id in normalized_target_ids
+        }
+        normalized_target_ids = sorted(normalized_target_ids, key=lambda target_id: (hit_points[target_id], target_id))
     next_combat = deepcopy(dict(combat))
     caster = _participant_by_id(next_combat, caster_id)
     assert caster is not None  # Proven by legality before any roll or mutation.
     casting_modifier = _ability_modifier(caster, str(normalized_spell['delivery'].get('castingAbility') or '')) or 0
+    roll_sequence: list[int] = []
+
+    def logged_roller(sides: int) -> int:
+        value = roller(sides)
+        roll_sequence.append(_int(value, default=1))
+        return value
+
+    ended_on_cast = [
+        effect['id']
+        for effect in _remove_spell_effects(caster, lambda effect: effect.get('endsOnCast') is True)
+    ]
+    recurring_dc = normalized_spell['delivery']['dc']
+    if recurring_dc is None and any(effect['kind'] == 'recurring' for effect in normalized_spell['effects']):
+        recurring_dc = _spell_save_dc(caster, normalized_spell['delivery']['castingAbility'])
+    sleep_pool: dict[str, Any] = {}
 
     next_resources = deepcopy(dict(caster_resources or {}))
     replaced_concentration = None
@@ -1482,6 +1874,49 @@ def resolve_targeted_spell(
     attack_count = normalized_spell['delivery'].get('attacks') or 0
     repetitions = dart_count or attack_count
     scheduled_targets = [normalized_target_ids[index % len(normalized_target_ids)] for index in range(repetitions)] if repetitions else normalized_target_ids
+    chosen_damage_type = _key(damage_type)
+    spell_damage_type = next(
+        (
+            chosen_damage_type if chosen_damage_type in effect['damageTypeChoices'] else effect['damageType']
+            for effect in normalized_spell['effects'] if effect['kind'] == 'damage'
+        ),
+        '',
+    )
+
+    def check_concentration(effect_result: dict[str, Any], target_id: str, damage: int) -> None:
+        nonlocal next_combat, next_resources, caster
+        target = _participant_by_id(next_combat, target_id)
+        assert target is not None
+        resources_for_target = (
+            next_resources if target_id == _text(caster_id)
+            else updated_target_resources.get(target_id)
+            or (target_resources or {}).get(target_id)
+            or (target.get('spellResources') if isinstance(target.get('spellResources'), Mapping) else {})
+        )
+        if damage <= 0 or not isinstance(resources_for_target.get('concentration'), Mapping):
+            return
+        concentration = resolve_concentration_check(
+            next_combat, resources_for_target, caster_id=target_id, damage=damage, roller=logged_roller,
+        )
+        if not concentration.get('ok'):
+            return
+        effect_result['concentrationCheck'] = {
+            'required': concentration.get('required'),
+            'maintained': concentration.get('maintained'),
+            'reason': concentration.get('reason'),
+            'check': deepcopy(concentration.get('check')),
+            'removedEffects': deepcopy(concentration.get('removedEffects') or []),
+        }
+        next_combat = concentration['combat']
+        updated_target_resources[target_id] = deepcopy(concentration['casterResources'])
+        if target_id == _text(caster_id):
+            next_resources = deepcopy(concentration['casterResources'])
+        target = _participant_by_id(next_combat, target_id)
+        caster = _participant_by_id(next_combat, caster_id)
+        assert target is not None and caster is not None
+        if isinstance(target.get('spellResources'), Mapping):
+            target['spellResources'] = deepcopy(concentration['casterResources'])
+
     for delivery_index, target_id in enumerate(scheduled_targets):
         target = _participant_by_id(next_combat, target_id)
         assert target is not None  # Proven by legality before any roll or mutation.
@@ -1491,7 +1926,7 @@ def resolve_targeted_spell(
             target,
             normalized_spell['delivery'],
             normalized_spell['target'],
-            roller,
+            logged_roller,
         )
         consumed = consume_modifiers(next_combat, delivery_result.pop('consume', []))
         if consumed:
@@ -1499,7 +1934,10 @@ def resolve_targeted_spell(
                 _text(item.get('id') or item.get('condition')) for item in consumed
             ]
         effect_results = []
+        damage_taken = 0
         for index, effect in enumerate(normalized_spell['effects']):
+            target = _participant_by_id(next_combat, target_id)
+            assert target is not None
             shared_roll = shared_damage_rolls.get(index) if normalized_spell['target']['areaMaxTargets'] and effect['kind'] == 'damage' else None
             effect_result = _apply_effect(
                 target,
@@ -1507,7 +1945,7 @@ def resolve_targeted_spell(
                 effect=effect,
                 delivery=normalized_spell['delivery'],
                 delivery_result=delivery_result,
-                roller=roller,
+                roller=logged_roller,
                 cast_id=normalized_cast_id,
                 caster_id=_text(caster_id),
                 spell=normalized_spell,
@@ -1515,40 +1953,40 @@ def resolve_targeted_spell(
                 in_combat=in_combat,
                 casting_modifier=casting_modifier,
                 shared_roll=shared_roll,
+                sleep_pool=sleep_pool,
+                recurring_dc=recurring_dc,
+                damage_type=chosen_damage_type,
             )
             if normalized_spell['target']['areaMaxTargets'] and effect['kind'] == 'damage' and isinstance(effect_result.get('roll'), dict):
                 effect_result['sharedRollReused'] = shared_roll is not None
                 if shared_roll is None:
                     shared_damage_rolls[index] = deepcopy(effect_result['roll'])
             damage = _int(effect_result.get('amountApplied'), default=0) if effect['kind'] == 'damage' else 0
-            resources_for_target = (
-                next_resources if target_id == _text(caster_id)
-                else updated_target_resources.get(target_id)
-                or (target_resources or {}).get(target_id)
-                or (target.get('spellResources') if isinstance(target.get('spellResources'), Mapping) else {})
-            )
-            if damage > 0 and isinstance(resources_for_target.get('concentration'), Mapping):
-                concentration = resolve_concentration_check(
-                    next_combat, resources_for_target, caster_id=target_id, damage=damage, roller=roller,
-                )
-                if concentration.get('ok'):
-                    effect_result['concentrationCheck'] = {
-                        'required': concentration.get('required'),
-                        'maintained': concentration.get('maintained'),
-                        'reason': concentration.get('reason'),
-                        'check': deepcopy(concentration.get('check')),
-                        'removedEffects': deepcopy(concentration.get('removedEffects') or []),
-                    }
-                    next_combat = concentration['combat']
-                    updated_target_resources[target_id] = deepcopy(concentration['casterResources'])
-                    if target_id == _text(caster_id):
-                        next_resources = deepcopy(concentration['casterResources'])
-                    target = _participant_by_id(next_combat, target_id)
-                    caster = _participant_by_id(next_combat, caster_id)
-                    assert target is not None and caster is not None
-                    if isinstance(target.get('spellResources'), Mapping):
-                        target['spellResources'] = deepcopy(concentration['casterResources'])
+            damage_taken += damage
+            check_concentration(effect_result, target_id, damage)
             effect_results.append(effect_result)
+        if delivery_result.get('type') == 'attack' and delivery_result.get('delivered'):
+            for bonus in _spell_attack_bonus_damage(caster, target_id):
+                target = _participant_by_id(next_combat, target_id)
+                assert target is not None
+                bonus_result = _apply_damage(
+                    target,
+                    rolled=_roll_expression(bonus['dice'], logged_roller, critical=delivery_result.get('critical') is True),
+                    damage_type=bonus['type'] or spell_damage_type or 'force',
+                    save_divisor=1,
+                    critical=delivery_result.get('critical') is True,
+                    in_combat=in_combat,
+                )
+                bonus_result['source'] = bonus['source']
+                damage_taken += int(bonus_result['amountApplied'])
+                check_concentration(bonus_result, target_id, int(bonus_result['amountApplied']))
+                effect_results.append(bonus_result)
+        target = _participant_by_id(next_combat, target_id)
+        assert target is not None
+        after_damage = (
+            _after_damage(next_combat, target, source_id=_text(caster_id), roller=logged_roller)
+            if damage_taken > 0 else []
+        )
         target_resolutions.append(
             {
                 'targetId': target_id,
@@ -1557,6 +1995,7 @@ def resolve_targeted_spell(
                 **({'attackIndex': delivery_index + 1, 'attacksTotal': attack_count} if attack_count else {}),
                 'delivery': delivery_result,
                 'effects': effect_results,
+                **({'afterDamage': after_damage} if after_damage else {}),
             }
         )
 
@@ -1566,14 +2005,19 @@ def resolve_targeted_spell(
         'spellId': normalized_spell['id'],
         'spellName': normalized_spell['name'],
         'castLevel': selected_level,
+        'castingTime': normalized_spell['castingTime'],
         'targetIds': normalized_target_ids,
         **({'requestedTargetIds': requested_target_ids} if normalized_spell['target']['areaMaxTargets'] else {}),
+        **({'damageType': spell_damage_type} if any(effect['damageTypeChoices'] for effect in normalized_spell['effects']) else {}),
+        **({'repeatAttack': True} if repeat_attack else {}),
+        **({'endedOnCast': ended_on_cast} if ended_on_cast else {}),
         'targets': target_resolutions,
         'concentration': {
             'started': normalized_spell['concentration'],
             'replaced': replaced_concentration,
             'removedEffects': removed_concentration_effects,
         },
+        'rollSequence': roll_sequence,
         'authoritative': True,
         'instruction': (
             'Narrate these spell targets, rolls, saves, effects, and resulting state exactly; '
@@ -1767,3 +2211,262 @@ def resolve_concentration_check(
         },
         'removedEffects': removed,
     }
+
+
+def _replace_in_place(combat: dict[str, Any], replacement: Mapping[str, Any]) -> None:
+    combat.clear()
+    combat.update(replacement)
+
+
+def _recurring_damage(
+    combat: dict[str, Any], target_id: str, effect: Mapping[str, Any], roller: Roller,
+) -> dict[str, Any]:
+    """One start-of-turn saving throw against a recurring effect's damage, with its consequences."""
+
+    target = _participant_by_id(combat, target_id)
+    assert target is not None
+    recurring = effect['recurring']
+    damage = recurring.get('damage') if isinstance(recurring.get('damage'), Mapping) else {}
+    save = _recurring_save(combat, target, _ability_key(recurring.get('ability')), recurring.get('dc'), roller)
+    result: dict[str, Any] = {'save': save}
+    if save['succeeded'] and _key(recurring.get('onSuccess')) != 'half':
+        return result
+    applied = _apply_damage(
+        target,
+        rolled=_roll_expression(str(damage.get('dice')), roller),
+        damage_type=_key(damage.get('type')),
+        save_divisor=2 if save['succeeded'] else 1,
+        critical=False,
+        in_combat=True,
+    )
+    result['damage'] = applied
+    amount = int(applied['amountApplied'])
+    resources = target.get('spellResources') if isinstance(target.get('spellResources'), Mapping) else {}
+    if amount > 0 and isinstance(resources.get('concentration'), Mapping):
+        concentration = resolve_concentration_check(combat, resources, caster_id=target_id, damage=amount, roller=roller)
+        if concentration.get('ok'):
+            _replace_in_place(combat, concentration['combat'])
+            target = _participant_by_id(combat, target_id)
+            assert target is not None
+            target['spellResources'] = deepcopy(concentration['casterResources'])
+            result['concentrationCheck'] = deepcopy(concentration.get('check'))
+    if amount > 0:
+        target = _participant_by_id(combat, target_id)
+        assert target is not None
+        after = _after_damage(combat, target, source_id=_text(effect.get('casterId')), roller=roller)
+        if after:
+            result['afterDamage'] = after
+    return result
+
+
+def _aura_reaches(bearer: Mapping[str, Any], actor: Mapping[str, Any], aura: Mapping[str, Any]) -> bool:
+    relation = _key(aura.get('relation'))
+    hostile = not _friendly(bearer, actor) and _key(actor.get('team')) != 'neutral'
+    if (relation == 'enemy' and not hostile) or (relation == 'ally' and hostile):
+        return False
+    return participant_range_band(actor) in {_key(band) for band in aura.get('rangeBands') or []}
+
+
+def resolve_turn_start_spell_effects(
+    combat: dict[str, Any],
+    *,
+    actor_id: str,
+    turn_id: Any,
+    round_number: int,
+    roller: Roller | None = None,
+) -> list[dict[str, Any]]:
+    """Run the recurring spell effects that fire as ``actor_id`` starts its turn, mutating ``combat``.
+
+    The actor repeats the save against each of its repeat-save effects (a
+    success ends every effect of that cast on it), saves against recurring
+    damage it bears (Moonbeam), and saves against each hostile aura whose range
+    bands it stands in (Spirit Guardians).  Without an injected ``roller`` every
+    roll is deterministic per turn, round, actor and effect, so an enemy
+    block's working copy and the persisted turn advance reach the same result.
+    """
+
+    actor = _participant_by_id(combat, actor_id)
+    if actor is None or not _is_present(actor) or not _is_alive(actor):
+        return []
+
+    def effect_roller(effect_id: str) -> Roller:
+        return roller or deterministic_roller(f'spell_recurring:{turn_id}:{round_number}:{actor_id}:{effect_id}')
+
+    results: list[dict[str, Any]] = []
+    for effect in active_effects(actor):
+        recurring = effect.get('recurring')
+        if not isinstance(recurring, Mapping) or recurring.get('aura'):
+            continue
+        actor = _participant_by_id(combat, actor_id)
+        if actor is None or not _is_alive(actor) or effect['id'] not in {current['id'] for current in active_effects(actor)}:
+            continue
+        entry: dict[str, Any] = {
+            'participantId': _text(actor_id), 'effectId': effect['id'],
+            'sourceName': effect['sourceName'], 'casterId': effect['casterId'],
+        }
+        if recurring.get('repeatSave'):
+            save = _recurring_save(combat, actor, _ability_key(recurring.get('ability')), recurring.get('dc'), effect_roller(effect['id']))
+            entry.update({'kind': 'repeat_save', 'save': save})
+            if save['succeeded']:
+                entry['endedEffectIds'] = _end_cast_on(actor, _text(effect.get('castId')))
+        else:
+            entry.update({'kind': 'recurring_damage', **_recurring_damage(combat, _text(actor_id), effect, effect_roller(effect['id']))})
+        results.append(entry)
+    for bearer in list(_participants(combat)):
+        bearer_id = _participant_id(bearer)
+        if bearer_id == _text(actor_id):
+            continue
+        for effect in active_effects(bearer):
+            recurring = effect.get('recurring')
+            aura = recurring.get('aura') if isinstance(recurring, Mapping) else None
+            actor = _participant_by_id(combat, actor_id)
+            if not isinstance(aura, Mapping) or actor is None or not _is_alive(actor) or not _aura_reaches(bearer, actor, aura):
+                continue
+            results.append({
+                'participantId': _text(actor_id), 'effectId': effect['id'], 'sourceName': effect['sourceName'],
+                'casterId': effect['casterId'], 'kind': 'aura_damage',
+                **_recurring_damage(combat, _text(actor_id), effect, effect_roller(effect['id'])),
+            })
+    return results
+
+
+def after_damage_spell_effects(
+    combat: dict[str, Any], *, target_id: str, source_id: str, event_id: str, roller: Roller | None = None,
+) -> list[dict[str, Any]]:
+    """End or re-save the spell effects that react to their bearer taking damage, mutating ``combat``.
+
+    Sleep and Hypnotic Pattern end, a charm ends when the charmer's side deals
+    the damage, and Tasha's Hideous Laughter grants a save with advantage.
+    """
+
+    target = _participant_by_id(combat, target_id)
+    if target is None:
+        return []
+    return _after_damage(
+        combat, target, source_id=_text(source_id),
+        roller=roller or deterministic_roller(f'spell_after_damage:{event_id}:{target_id}'),
+    )
+
+
+def shield_reaction_provider(event: Mapping[str, Any], combat: Mapping[str, Any], state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Cast Shield for a player character when it would turn an enemy's hit into a miss.
+
+    The character must have Shield ready, a level 1+ slot, its reaction and
+    ``autoReactions`` not turned off, and the attack total must be below its
+    AC + 5.  The slot is spent by a ``spell.cast`` change and the +5 AC lasts
+    until the start of the character's next turn.
+    """
+
+    if _text(event.get('type')) != 'attack_hit' or event.get('critical') is True:
+        return []
+    target_id = _text(event.get('targetId'))
+    target = _participant_by_id(combat, target_id)
+    if target is None or not vitality.is_player_character(target) or not auto_reactions_enabled(target, state):
+        return []
+    target_ac = _int(event.get('targetAc'), default=0)
+    if _int(event.get('attackTotal'), default=0) >= target_ac + 5:
+        return []
+    actor = next(
+        (candidate for candidate in state.get('playerCharacters') or []
+         if isinstance(candidate, Mapping) and _text(candidate.get('id')) == target_id),
+        None,
+    )
+    if actor is None:
+        return []
+    legality = spell_cast_legality(
+        actor.get('spellbook'), actor.get('spellResources'), spell_name_or_id=SHIELD_SPELL_NAME,
+        class_name=_text(actor.get('class')), level=max(1, _int(actor.get('level'), default=1)),
+    )
+    spell = legality.get('spell') if isinstance(legality.get('spell'), Mapping) else {}
+    if not legality.get('legal') or spell.get('authoritativeEffect') is not True or _key(spell.get('castingTime')) != 'reaction':
+        return []
+    normalized, _error = _normalized_spell(spell)
+    if normalized is None:
+        return []
+    resource = legality['resource']
+    cast_id = stable_change_id('spell_reaction', event.get('turnId'), event.get('eventId'), target_id, normalized['id'])
+    normalized['castLevel'] = legality['castLevel']
+    ward = _spell_active_effect(
+        target, effect=normalized['effects'][0], cast_id=cast_id, caster_id=target_id,
+        spell=normalized, effect_index=0, modifiers=normalized['effects'][0]['modifiers'],
+    )
+    bonus = _int(ward['modifiers'].get('acBonus'), default=0)
+    name = _text(target.get('name')) or target_id
+    return [{
+        'reactorId': target_id,
+        'kind': 'shield',
+        'label': f'{name} casts Shield: armor class {target_ac} becomes {target_ac + bonus} and the attack misses.',
+        'cancelsHit': True,
+        'changes': [
+            {
+                'id': stable_change_id(cast_id, 'effect'), 'turnId': event.get('turnId'),
+                'type': 'combat.effect.add', 'participantId': target_id, 'source': REACTION_SOURCE,
+                'effect': ward, 'reason': 'Shield raises armor class until the start of its caster\'s next turn.',
+                'visible': False,
+            },
+            {
+                'id': cast_id, 'turnId': event.get('turnId'), 'type': 'spell.cast', 'source': 'reaction',
+                'actorId': target_id, 'spellId': normalized['id'], 'spellName': normalized['name'],
+                'castLevel': legality['castLevel'], 'resourcePool': resource['pool'], 'castingTime': 'reaction',
+                'targetIds': [target_id], 'reason': f'{name} cast Shield as a reaction to a hit.', 'visible': True,
+            },
+        ],
+        'consumes': {'reaction': 1, 'spellSlot': legality['castLevel']},
+    }]
+
+
+register_reaction_provider(shield_reaction_provider)
+
+
+def _actor_remove_effects(actor: dict[str, Any], predicate: Callable[[dict[str, Any]], bool]) -> list[dict[str, Any]]:
+    """Remove effects from a state actor (``health`` shape), dropping conditions and HP they granted."""
+
+    retained: list[dict[str, Any]] = []
+    removed: list[dict[str, Any]] = []
+    for effect in active_effects(actor):
+        (removed if predicate(effect) else retained).append(effect)
+    if not removed:
+        return []
+    actor['activeEffects'] = retained
+    health = actor.setdefault('health', {})
+    maintained = {_text(effect.get('condition')) for effect in retained if effect.get('condition')}
+    dropped = {
+        _text(effect.get('condition')) for effect in removed
+        if effect.get('condition') and effect.get('preserveConditionOnExpiry') is not True
+    } - maintained
+    if dropped:
+        health['conditions'] = [value for value in health.get('conditions') or [] if _key(value) not in dropped]
+    bonus = sum(max(0, _int(effect.get('maxHpBonus'), default=0)) for effect in removed)
+    if bonus:
+        maximum = max(1, _int(health.get('maxHp'), default=1) - bonus)
+        health['maxHp'] = maximum
+        health['currentHp'] = min(_int(health.get('currentHp'), default=0), maximum)
+    return removed
+
+
+def end_encounter_spell_effects(actor: dict[str, Any], participant: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Combat ended: keep only the actor's spell effects that last until a long rest.
+
+    When the character took part, its participant's effects are the current
+    ones (an effect dispelled in the fight stays gone).  Returns what ended.
+    """
+
+    if participant is not None:
+        current_ids = {effect['id'] for effect in active_effects(participant)}
+        carried = [
+            effect for effect in active_effects(participant)
+            if effect.get('until') == 'long_rest' and effect['id'] not in {own['id'] for own in active_effects(actor)}
+        ]
+        ended = _actor_remove_effects(
+            actor, lambda effect: bool(effect.get('castId')) and (effect.get('until') != 'long_rest' or effect['id'] not in current_ids),
+        )
+        if carried:
+            actor['activeEffects'] = [*active_effects(actor), *carried]
+        return ended
+    return _actor_remove_effects(actor, lambda effect: bool(effect.get('castId')) and effect.get('until') != 'long_rest')
+
+
+def end_long_rest_spell_effects(actor: dict[str, Any]) -> list[dict[str, Any]]:
+    """A long rest ends every spell effect the actor carries (Mage Armor, Aid, out-of-combat buffs)."""
+
+    return _actor_remove_effects(actor, lambda effect: bool(effect.get('castId')))

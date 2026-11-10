@@ -13,16 +13,31 @@ export type TerrainImage = {
 }
 
 type Color = readonly [number, number, number]
+// Low, middle and high ground. The hues travel further than the brightness does, so the
+// hillshade carries the relief and the land stays dark enough under light labels.
 const PALETTES: Record<TerrainName, readonly [Color, Color, Color]> = {
-  moor: [[30, 27, 24], [57, 47, 51], [70, 73, 55]],
-  forest: [[18, 30, 25], [35, 52, 39], [61, 74, 51]],
-  mountain: [[27, 34, 39], [48, 57, 62], [79, 81, 78]],
-  coast: [[15, 41, 43], [42, 65, 61], [83, 77, 60]],
-  plains: [[42, 34, 25], [73, 61, 40], [95, 82, 53]],
-  marsh: [[18, 32, 28], [39, 55, 39], [67, 73, 49]],
+  moor: [[68, 52, 42], [72, 58, 72], [76, 76, 52]],
+  forest: [[38, 58, 48], [44, 70, 48], [70, 80, 54]],
+  mountain: [[48, 58, 66], [62, 70, 76], [80, 82, 80]],
+  coast: [[20, 52, 60], [50, 72, 64], [86, 80, 60]],
+  plains: [[68, 56, 40], [80, 67, 44], [86, 78, 54]],
+  marsh: [[40, 54, 46], [50, 66, 48], [72, 80, 56]],
 }
+/** Heights between these bounds span the whole palette; most of the land falls inside them. */
+const TONE_LOW = 0.3
+const TONE_HIGH = 0.7
 const TERRAINS: TerrainName[] = ['moor', 'forest', 'mountain', 'coast', 'plains', 'marsh']
 const CACHE_LIMIT = 8
+/** The relief is softened over, and its slope measured across, 1/RELIEF_CELLS of the map width. */
+const RELIEF_CELLS = 120
+const HILLSHADE_GAIN = 0.14
+const HILLSHADE_LIMIT = 0.45
+/** Shadowed slopes darken less than lit slopes brighten, so valleys stay readable. */
+const SHADOW_DEPTH = 0.65
+/** Luma (0–255) above which the land brightens only gently. */
+const HIGHLIGHT_KNEE = 86
+/** Opacity of the deepest fog; the fogged ground keeps well over half its light. */
+export const FOG_MAX = 0.38
 const terrainCache = new Map<string, TerrainImage>()
 
 export function terrainName(value: string): TerrainName {
@@ -76,7 +91,8 @@ export function terrainColor(terrain: TerrainName, height: number): [number, num
     return height > 0.447 ? mix(water, [113, 124, 108], 0.28) : water
   }
   if (terrain === 'marsh' && height < 0.32) return mix([12, 28, 28], palette[0], height / 0.32)
-  return height < 0.5 ? mix(palette[0], palette[1], height * 2) : mix(palette[1], palette[2], (height - 0.5) * 2)
+  const tone = Math.max(0, Math.min(1, (height - TONE_LOW) / (TONE_HIGH - TONE_LOW)))
+  return tone < 0.5 ? mix(palette[0], palette[1], tone * 2) : mix(palette[1], palette[2], tone * 2 - 1)
 }
 
 function randomFor(seed: number): () => number {
@@ -127,6 +143,28 @@ function scatterMarks(seed: number, terrain: TerrainName, nodes: WorldMapNode[],
   return marks
 }
 
+/** One pass of a box blur along rows (stride 1) or columns (stride = width). */
+function boxBlur(values: Float32Array, width: number, height: number, radius: number, stride: number): Float32Array {
+  const result = new Float32Array(values.length)
+  const lines = stride === 1 ? height : width
+  const length = stride === 1 ? width : height
+  const step = stride === 1 ? width : 1
+  for (let line = 0; line < lines; line += 1) {
+    const start = line * step
+    // A running window sum, trimmed at both ends of the line.
+    let total = 0
+    for (let offset = 0; offset <= Math.min(length - 1, radius); offset += 1) total += values[start + offset * stride]
+    for (let index = 0; index < length; index += 1) {
+      const first = Math.max(0, index - radius)
+      const last = Math.min(length - 1, index + radius)
+      result[start + index * stride] = total / (last - first + 1)
+      if (index + radius + 1 < length) total += values[start + (index + radius + 1) * stride]
+      if (index - radius >= 0) total -= values[start + (index - radius) * stride]
+    }
+  }
+  return result
+}
+
 function nearestDistance(x: number, y: number, nodes: WorldMapNode[]): number {
   let squared = 1000000
   for (const node of nodes) {
@@ -144,7 +182,7 @@ function fogPixel(x: number, y: number, seed: number, distance: number, rumourDi
   let fog = smooth(edge)
   const rumourInfluence = 1 - smooth(Math.max(0, Math.min(1, (rumourDistance - 8) / 48)))
   fog = Math.min(fog, 1 - 0.45 * rumourInfluence)
-  return Math.round(fog * 215)
+  return Math.round(fog * FOG_MAX * 255)
 }
 
 /** Build the low-resolution ground and two soft fog layers once per map and size. */
@@ -162,33 +200,43 @@ export function generateTerrain(
   const fogB = new Uint8ClampedArray(w * h * 4)
   const visible = nodes.filter((node) => node.state !== 'rumoured')
   const rumoured = nodes.filter((node) => node.state === 'rumoured')
+  const fogTint = PALETTES[terrain][0].map((channel) => Math.round(channel * 0.35))
   for (let y = 0; y < h; y += 1) {
     for (let x = 0; x < w; x += 1) heights[y * w + x] = terrainHeight(x / w, y / h, seed)
   }
+  // Relief is shaded from a softened copy so hills read as hills rather than grain.
+  const span = Math.max(1, Math.round(w / RELIEF_CELLS))
+  const relief = boxBlur(boxBlur(heights, w, h, span, 1), w, h, span, w)
   for (let y = 0; y < h; y += 1) {
     for (let x = 0; x < w; x += 1) {
       const index = y * w + x
       const value = heights[index]
-      const left = heights[y * w + Math.max(0, x - 1)]
-      const right = heights[y * w + Math.min(w - 1, x + 1)]
-      const up = heights[Math.max(0, y - 1) * w + x]
-      const down = heights[Math.min(h - 1, y + 1) * w + x]
-      const shade = 1 + Math.max(-0.35, Math.min(0.35, ((left - right) + (up - down)) * 4))
+      const left = relief[y * w + Math.max(0, x - span)]
+      const right = relief[y * w + Math.min(w - 1, x + span)]
+      const up = relief[Math.max(0, y - span) * w + x]
+      const down = relief[Math.min(h - 1, y + span) * w + x]
+      // Lit from the north-west: slopes facing up and left brighten, the far sides fall into shadow.
+      const slope = ((right - left) * w + (down - up) * h) / (2 * span) * HILLSHADE_GAIN
+      const shade = 1 + Math.max(-HILLSHADE_LIMIT, Math.min(HILLSHADE_LIMIT, slope > 0 ? slope : slope * SHADOW_DEPTH))
       const nx = x / Math.max(1, w - 1) * 2 - 1
       const ny = y / Math.max(1, h - 1) * 2 - 1
-      const vignette = 1 - Math.min(0.32, (nx * nx + ny * ny) * 0.12)
+      const vignette = 1 - Math.min(0.12, (nx * nx + ny * ny) * 0.06)
       const grain = (lattice(x, y, seed + 817) - 0.5) * 6
       const color = terrainColor(terrain, value)
-      for (let channel = 0; channel < 3; channel += 1) pixels[index * 4 + channel] = color[channel] * shade * vignette + grain
+      const lit = shade * vignette
+      const brightness = (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]) * lit
+      // Highlights roll off above the knee so the brightest land stays dark under light labels.
+      const rolloff = brightness > HIGHLIGHT_KNEE ? (HIGHLIGHT_KNEE + (brightness - HIGHLIGHT_KNEE) * 0.4) / brightness : 1
+      for (let channel = 0; channel < 3; channel += 1) pixels[index * 4 + channel] = color[channel] * lit * rolloff + grain
       pixels[index * 4 + 3] = 255
       const px = x / w * 1000
       const py = y / h * 750
       const distance = nearestDistance(px, py, visible)
       const rumourDistance = nearestDistance(px, py, rumoured)
       for (const [layer, fogSeed] of [[fogA, seed + 303], [fogB, seed + 907]] as const) {
-        layer[index * 4] = 3
-        layer[index * 4 + 1] = 8
-        layer[index * 4 + 2] = 9
+        layer[index * 4] = fogTint[0]
+        layer[index * 4 + 1] = fogTint[1]
+        layer[index * 4 + 2] = fogTint[2]
         layer[index * 4 + 3] = fogPixel(px, py, fogSeed, distance, rumourDistance)
       }
     }

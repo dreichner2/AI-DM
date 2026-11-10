@@ -23,6 +23,8 @@ export type GameplaySpellControl = {
   castingTime: string
   castLevels: number[]
   upcastTargetsPerLevel?: number
+  /** The spell's lasting effect (Spiritual Weapon) lets it attack again without a slot. */
+  repeatAttack?: boolean
   effectLabel: string
   relation: string
   rangeBands: string[]
@@ -435,7 +437,10 @@ function spellControls(
       const maxTargets = Math.max(minTargets, scalingSpec.cantrip === true && integer(deliverySpec.attacks) > 0 ? baseTargets * tier : baseTargets)
       const prepared = spellPrepared(spell, spellbook)
       const spellLevel = Math.max(0, integer(spell.level))
-      const resource = spellResource(spellLevel, resources)
+      const repeatAttack = inCombat && records(caster?.activeEffects).some((effect) => (
+        stringValue(effect.sourceId) === id && stringValue(effect.casterId) === stringValue(actor.id) && isRecord(effect.repeatAttack)
+      ))
+      const resource = repeatAttack ? { available: true, label: 'Active · no slot needed' } : spellResource(spellLevel, resources)
       const castingTime = normalized(spell.castingTime ?? spell.casting_time) || 'action'
       const economyRemaining = castingTime === 'bonus_action' ? bonusActionRemaining : actionRemaining
       const scaling = isRecord(spell.scaling) ? spell.scaling : {}
@@ -468,7 +473,7 @@ function spellControls(
         reason = 'Turn economy is unavailable; refresh the session.'
       } else if (inCombat && economyRemaining !== null && economyRemaining <= 0) {
         reason = castingTime === 'bonus_action' ? 'The bonus action for this turn is already spent.' : 'The action for this turn is already spent.'
-      } else if (inCombat && spellLevel > 0 && leveledSpellCast) {
+      } else if (inCombat && spellLevel > 0 && leveledSpellCast && !repeatAttack) {
         reason = 'Only one levelled spell can be cast per turn.'
       } else if (!prepared) {
         reason = 'Known but not prepared.'
@@ -485,7 +490,8 @@ function spellControls(
         description: stringValue(spell.description),
         delivery: delivery.replace(/_/g, ' ') || 'automatic',
         castingTime,
-        castLevels: availableCastLevels(spellLevel, resources),
+        castLevels: repeatAttack ? [] : availableCastLevels(spellLevel, resources),
+        repeatAttack,
         upcastTargetsPerLevel: Math.max(0, integer(upcast.darts ?? upcast.attacks ?? upcast.targets)),
         effectLabel: stringValue(spell.effectSummary) || effectLabel(spell),
         relation: normalized(targetSpec.relation) || 'enemy',
@@ -524,6 +530,7 @@ function capabilityTargets(
   } else {
     rawTargets = playerCharacters
   }
+  if (policy === 'ally') rawTargets = rawTargets.filter((record) => stringValue(record.id) !== stringValue(actor.id))
   return rawTargets
     .map((record) => recordTarget(record))
     .filter((target): target is GameplayTarget => target !== null)
@@ -542,10 +549,40 @@ function capabilityTargets(
         ) {
           reason = 'Already at full hit points.'
         }
+      } else if (policy === 'ally' && target.conditions.includes('dead')) {
+        reason = 'Choose an ally who can still fight.'
       }
       return { ...target, available: !reason, reason }
     })
 }
+
+/** The server's ``class.use.*`` combat actions for this actor, keyed by capability id. */
+function bundleCapabilityActions(combat: JsonRecord, actorId: string) {
+  const bundle = records(combat.legalActions).find((entry) => stringValue(entry.actorId) === actorId)
+  return new Map(
+    records(bundle?.actions)
+      .filter((action) => stringValue(action.id).startsWith('class.use.') && isRecord(action.capability))
+      .map((action) => [stringValue((action.capability as JsonRecord).id), action] as const),
+  )
+}
+
+/** Server-checked targets of a combat capability action, with the client's target details. */
+function serverCapabilityTargets(action: JsonRecord, combat: JsonRecord, fallback: GameplayTarget[]) {
+  if (!Array.isArray(action.targets)) {
+    const reason = action.available === true ? '' : stringValue(action.reason, 'Not available now.')
+    return fallback.map((target) => ({ ...target, available: !reason, reason }))
+  }
+  const participants = records(combat.participants)
+  return records(action.targets)
+    .map((option) => {
+      const record = participants.find((entry) => stringValue(entry.id) === stringValue(option.id)) ?? option
+      const target = recordTarget(record)
+      return target ? { ...target, available: option.available === true, reason: stringValue(option.reason) } : null
+    })
+    .filter((target): target is GameplayTarget => target !== null)
+}
+
+const SLOT_COSTED_CAPABILITIES = new Set(['flexible_casting', 'arcane_recovery'])
 
 function capabilityControls(
   actor: JsonRecord,
@@ -561,19 +598,27 @@ function capabilityControls(
     : isRecord(actor.class_feature_state)
       ? actor.class_feature_state
       : {}
+  const serverActions = inCombat ? bundleCapabilityActions(combat, stringValue(actor.id)) : new Map<string, JsonRecord>()
   return records(actor.classFeatures ?? actor.class_features)
     .map((feature): GameplayCapabilityControl | null => {
       const id = stringValue(feature.id)
       const name = stringValue(feature.name)
       if (!id || !name) return null
-      const persisted = isRecord(featureState[id]) ? featureState[id] : {}
+      // Several capabilities may share one class pool (ki, sorcery points).
+      const poolId = stringValue(feature.pool) || id
+      const persisted = isRecord(featureState[poolId]) ? featureState[poolId] : {}
       const maximum = Math.max(1, integer(persisted.max ?? feature.maxUses ?? feature.max_uses, 1))
       const current = Math.max(0, Math.min(maximum, integer(persisted.current ?? persisted.remaining, maximum)))
+      const cost = isRecord(feature.cost) ? feature.cost : {}
+      const costAmount = Math.max(1, integer(cost.amount, 1))
+      const pooled = Boolean(stringValue(cost.pool)) || !isRecord(feature.cost)
       const effect = isRecord(feature.effect) ? feature.effect : {}
       const effectType = normalized(effect.type)
       const targetPolicy = normalized(feature.targetPolicy ?? feature.target_policy) || 'self'
       const actionEconomy = normalized(feature.actionEconomy ?? feature.action_economy) || 'action'
-      const targets = capabilityTargets(
+      const role = normalized(feature.role) || 'panel'
+      const serverAction = serverActions.get(id)
+      let targets = capabilityTargets(
         actor,
         playerCharacters,
         combat,
@@ -582,8 +627,21 @@ function capabilityControls(
         effectType,
       )
       let reason = ''
-      if (current <= 0) {
+      if (role !== 'panel') {
+        reason = stringValue(feature.reason, 'Used from the combat actions.')
+      } else if (serverAction) {
+        targets = serverCapabilityTargets(serverAction, combat, targets)
+        reason = serverAction.available === true ? '' : stringValue(serverAction.reason, 'Not available now.')
+      } else if (pooled && current <= 0) {
         reason = 'No uses remain.'
+      } else if (pooled && current < costAmount) {
+        reason = `Needs ${costAmount}; ${current} left.`
+      } else if (SLOT_COSTED_CAPABILITIES.has(stringValue(feature.baseId)) && stringValue(feature.reason)) {
+        reason = stringValue(feature.reason)
+      } else if (feature.combatOnly === true && !inCombat) {
+        reason = 'Available only during active combat.'
+      } else if (feature.outOfCombatOnly === true && inCombat) {
+        reason = 'Available only outside combat.'
       } else if (inCombat && !isActorTurn) {
         reason = 'Only the active combat actor may use this capability.'
       } else if (inCombat && actionEconomy === 'action' && actionRemaining === null) {
@@ -610,7 +668,7 @@ function capabilityControls(
       } else if (effectType === 'restore_action' && (actionRemaining ?? 1) > 0) {
         reason = 'The action for this turn is still available.'
       } else if (targets.every((target) => !target.available)) {
-        reason = 'No legal target is available.'
+        reason = targetPolicy === 'self' || !targets.length ? 'No legal target is available.' : targets[0].reason
       }
       return {
         id,

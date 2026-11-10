@@ -11,6 +11,7 @@ from aidm_server.weapon_proficiency import (
     match_weapon_proficiency,
     normalize_weapon_proficiencies,
     serialize_weapon_proficiencies,
+    weapon_properties,
 )
 from tests.helpers import seed_world_campaign_player_session
 
@@ -228,3 +229,22 @@ def test_player_creation_persists_private_profile_and_class_change_replaces_it(c
     assert export_payload['version'] == 2
     exported_player = next(item for item in export_payload['characters'] if item['player_id'] == player_id)
     assert exported_player['weapon_proficiencies'] == updated['weapon_proficiencies']
+
+
+def test_weapon_properties_drive_class_feature_rules():
+    def props(**item):
+        return weapon_properties(item)
+
+    assert props(name='Rapier')['finesse'] and not props(name='Rapier')['ranged']
+    assert props(name='Longbow')['ranged'] and props(name='Longbow')['two_handed']
+    assert props(name='Light Crossbow')['ranged'] and not props(name='Light Crossbow')['light']
+    assert props(name='Hand Crossbow')['light']
+    assert props(name='Greataxe')['two_handed'] and not props(name='Greataxe')['monk']
+    assert props(name='Longsword', slot='two_hands')['two_handed']
+    assert not props(name='Longsword', slot='main_hand')['two_handed']
+    assert props(name='Quarterstaff', slot='two_hands')['monk']
+    assert props(name='Shortsword')['monk'] and props(name='Shortsword')['light']
+    assert not props(name='Longsword')['monk']
+    assert props(id='unarmed', name='Unarmed strike')['unarmed'] and props(id='unarmed')['monk']
+    assert props(name='Mystery Blade', tags=['finesse', 'light'])['finesse']
+    assert props(name='Mystery Blade', classification='ranged')['ranged']

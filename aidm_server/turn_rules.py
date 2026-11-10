@@ -52,6 +52,13 @@ ROLL_NEGATION_PATTERN = re.compile(
     r"did\s+not|didn't|not\s+required\s+to)(?:\s+(?:need|have)\s+to)?\s*$",
     re.IGNORECASE,
 )
+# A clause that says no roll is wanted is never a request: "No check is needed to make a quick check."
+ROLL_DECLINED_PATTERN = re.compile(
+    r"\bno\s+(?:checks?|rolls?)\b|\bwithout\s+(?:a\s+)?roll\b|\bnot\s+required\b|\bno\s+need\s+to\s+roll\b",
+    re.IGNORECASE,
+)
+# A contrast starts a new clause: "No check is needed here, but make a Stealth check for the guards."
+CLAUSE_CONTRAST_PATTERN = re.compile(r'\b(?:but|however|instead|yet)\b|;', re.IGNORECASE)
 
 
 def _sentence_chunks(text: str) -> list[str]:
@@ -217,10 +224,11 @@ def response_mentions_roll_request(text: str) -> bool:
             continue
         for pattern in ROLL_REQUEST_PATTERNS:
             for match in pattern.finditer(sentence):
-                prefix = sentence[:match.start()]
-                # A contrast starts a new request: "No check is needed here,
-                # but make a Stealth check for the guards" still asks to roll.
-                prefix = re.split(r'\b(?:but|however|instead|yet)\b|;', prefix, flags=re.IGNORECASE)[-1]
-                if not ROLL_NEGATION_PATTERN.search(prefix.strip()):
-                    return True
+                prefix = CLAUSE_CONTRAST_PATTERN.split(sentence[:match.start()])[-1]
+                suffix = CLAUSE_CONTRAST_PATTERN.split(sentence[match.end():])[0]
+                if ROLL_NEGATION_PATTERN.search(prefix.strip()):
+                    continue
+                if ROLL_DECLINED_PATTERN.search(f'{prefix}{match.group(0)}{suffix}'):
+                    continue
+                return True
     return False

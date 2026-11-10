@@ -213,11 +213,39 @@ def _bounded_ac(value: int) -> int:
     return max(1, min(40, value))
 
 
+def spell_armor_base(active_effects: Any) -> int | None:
+    """The highest armour base an active effect sets for an unarmoured body (Mage Armor's 13)."""
+
+    bases = [
+        parsed
+        for effect in (active_effects if isinstance(active_effects, list) else [])
+        if isinstance(effect, dict) and isinstance(effect.get('modifiers'), dict)
+        for parsed in [_coerced_int(effect['modifiers'].get('acBase'))]
+        if parsed is not None
+    ]
+    return max(bases) if bases else None
+
+
+def armor_class_with_spell_armor(breakdown: dict[str, Any], active_effects: Any) -> int:
+    """A breakdown's armour class once current effects set (or stop setting) an armour base."""
+
+    gear = _coerced_int(breakdown.get('gearArmorClass'))
+    if gear is None:
+        gear = _coerced_int(breakdown.get('armorClass')) or 10
+    base = spell_armor_base(active_effects)
+    if base is None or breakdown.get('armorKind') not in {None, 'none'} or breakdown.get('source') == 'explicit':
+        return gear
+    dex_mod = _coerced_int(breakdown.get('dexModifier')) or 0
+    shield = _coerced_int(breakdown.get('shieldBonus')) or 0
+    return _bounded_ac(max(gear, base + dex_mod + shield))
+
+
 def armor_class_details(
     stats: dict[str, Any] | None,
     inventory_items: list[dict[str, Any]] | None = None,
     *,
     class_name: Any = None,
+    active_effects: Any = None,
 ) -> dict[str, Any]:
     safe_stats = stats if isinstance(stats, dict) else {}
     items = [item for item in (inventory_items or []) if isinstance(item, dict)]
@@ -260,9 +288,17 @@ def armor_class_details(
         armor_kind = 'none'
         armor_name = None
 
+    gear_total = _bounded_ac(base_ac + shield_bonus)
+    # An authored (explicit) total already states the character's armour.
+    spell_base = None if body_armor or source == 'explicit' else spell_armor_base(active_effects)
+    if spell_base is not None and spell_base + dex_mod > base_ac:
+        armor_base, max_dex_bonus, dex_bonus = spell_base, None, dex_mod
+        base_ac = spell_base + dex_mod
+        source = 'spell'
     total = _bounded_ac(base_ac + shield_bonus)
     return {
         'armorClass': total,
+        'gearArmorClass': gear_total,
         'source': source,
         'armorName': armor_name,
         'armorKind': armor_kind,
@@ -299,7 +335,7 @@ def actor_armor_class_details(actor: dict[str, Any]) -> dict[str, Any]:
                     stats[key] = prior.get('armorBase')
                 else:
                     stats.pop(key, None)
-    return armor_class_details(stats, items, class_name=actor.get('class'))
+    return armor_class_details(stats, items, class_name=actor.get('class'), active_effects=actor.get('activeEffects'))
 
 
 def sync_actor_armor_class(actor: dict[str, Any] | None) -> int:

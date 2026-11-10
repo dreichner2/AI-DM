@@ -25,7 +25,6 @@ from aidm_server.turn_rules import response_mentions_roll_request
 MIN_WORDS = 40
 MAX_WORDS = 110
 MAX_OPENING_WORDS = 220
-MAX_QUOTED_INPUT_CHARS = 160
 MAX_LEADS = 3
 MAX_OPENING_DETAILS = 3
 OPENING_CLOSING_LINE = 'What do you do?'
@@ -279,15 +278,11 @@ TEMPLATES: dict[str, tuple[str, ...]] = {
         'Despite your effort, it does not come off.',
     ),
     'roll_ack': (
-        'You commit to it, "{action}", and everything around you narrows to this one attempt, the next breath deciding how cleanly you carry it off.',
-        'You set yourself and go for it, "{action}", with no way to take it back once you start and the outcome hanging on nerve and timing.',
-        'You draw a slow breath and make your move, "{action}", knowing the next few heartbeats will show whether you judged this right.',
-    ),
-    'roll_ack_plain': (
         'You commit to the attempt, and everything around you narrows to this one moment, the next breath deciding how cleanly you carry it off.',
         'You set yourself and go for it, with no way to take it back once you start and the outcome hanging on nerve and timing.',
         'You draw a slow breath and make your move, knowing the next few heartbeats will show whether you judged this right.',
     ),
+    'no_target': ('There is no one here to fight.', 'Your blade finds only air; no enemy stands before you.'),
     'npc_manner': (
         '{name}{role} answers {manner}.',
         '{name}{role} meets your eyes and answers {manner}.',
@@ -396,12 +391,14 @@ def narrate(
             result_lines.append(roll_paragraphs[0])
         blocks = [result_lines, roll_paragraphs[1:]]
         return _compose(turn, blocks, fill=_scene_fill(turn), closing=turn.pick('closing'))
+    if turn.rules_hint.get('no_target') is True:
+        return _narrate_action(turn, turn.pick('no_target'))
     if turn.rules_hint.get('requires_roll') is True and turn.rules_hint.get('roll_value') is None:
         return _narrate_roll_request(turn)
     npc = _addressed_npc(turn)
     if npc:
         return _narrate_npc_talk(turn, npc)
-    return _narrate_action(turn)
+    return _narrate_action(turn, turn.pick('action'))
 
 
 # Cases ------------------------------------------------------------------------------------------------------------
@@ -446,9 +443,8 @@ def _narrate_invalid(turn: NarrationInput, invalid_actions: list[dict]) -> str:
 
 
 def _narrate_roll_request(turn: NarrationInput) -> str:
-    action = (_safe_quote(turn.player_input) or '').rstrip('.')
-    acknowledgement = turn.pick('roll_ack', action=action) if action else turn.pick('roll_ack_plain')
-    return _compose(turn, [[acknowledgement]], fill=_scene_fill(turn), closing=_roll_request_line(turn))
+    # The player's own words sit directly above this narration, so they are never quoted back.
+    return _compose(turn, [[turn.pick('roll_ack')]], fill=_scene_fill(turn), closing=_roll_request_line(turn))
 
 
 def _narrate_npc_talk(turn: NarrationInput, npc: dict) -> str:
@@ -467,9 +463,8 @@ def _narrate_npc_talk(turn: NarrationInput, npc: dict) -> str:
     return _compose(turn, [_safe_sentences(lines)], fill=_scene_fill(turn), closing=turn.pick('closing'))
 
 
-def _narrate_action(turn: NarrationInput) -> str:
+def _narrate_action(turn: NarrationInput, acknowledgement: str) -> str:
     # The player's own words sit directly above this narration, so they are never quoted back.
-    acknowledgement = turn.pick('action')
     details = _unused_scene_details(turn)
     leads = _leads_sentence(turn)
     ending = ' '.join(sentence for sentence in (leads, turn.pick('closing')) if sentence)
@@ -1084,13 +1079,6 @@ def requests_roll(text: str) -> bool:
 
 def _safe_sentences(sentences: list[str]) -> list[str]:
     return [sentence for sentence in sentences if sentence and not requests_roll(sentence)]
-
-
-def _safe_quote(text: str) -> str | None:
-    quoted = _clip(re.sub(r'\s+', ' ', str(text or '')).strip().replace('"', "'"), MAX_QUOTED_INPUT_CHARS)
-    if not quoted or requests_roll(quoted):
-        return None
-    return quoted
 
 
 # Small helpers ------------------------------------------------------------------------------------------------------

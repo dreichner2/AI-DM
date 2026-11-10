@@ -722,15 +722,15 @@ def test_consumed_spell_resource_and_race_ability_state_survive_database_reload(
 def test_warlock_pact_slot_returns_on_short_rest() -> None:
     state = _caster_state(class_name='Warlock')
     state['playerCharacters'][0]['spellbook'] = normalize_spellbook(
-        {'knownSpells': [_spell('Hex', 1, concentration=True)]},
+        {'knownSpells': [_spell('Hellish Rebuke', 1)]},
         class_name='Warlock',
     )
     _, _, cast = _run_intent(
         state,
         {
             'kind': 'spell',
-            'text': 'I cast Hex.',
-            'spell': {'name': 'Hex', 'effect': 'I curse the target.'},
+            'text': 'I cast Hellish Rebuke.',
+            'spell': {'name': 'Hellish Rebuke', 'effect': 'Infernal flame answers the insult.'},
         },
         turn_id=1,
     )
@@ -746,3 +746,181 @@ def test_warlock_pact_slot_returns_on_short_rest() -> None:
         'max': 1,
         'slotLevel': 1,
     }
+
+
+def _party_state(class_name: str, level: int, *spells: str) -> dict:
+    """An out-of-combat party: the caster (player_1) and a companion (player_2)."""
+
+    state = _caster_state(class_name=class_name, level=level)
+    caster = state['playerCharacters'][0]
+    caster['stats'] = {'strength': 10, 'dexterity': 14, 'constitution': 12, 'intelligence': 16, 'wisdom': 16, 'charisma': 10}
+    caster['health'] = {'currentHp': 20, 'maxHp': 20, 'tempHp': 0, 'conditions': []}
+    caster['spellbook'] = normalize_spellbook({'knownSpells': [_spell(name, 0) for name in spells]}, class_name=class_name)
+    companion = deepcopy(caster)
+    companion.update({'id': 'player_2', 'playerId': 2, 'name': 'Bram', 'class': 'Fighter', 'spellbook': {}, 'spellResources': {}})
+    state['playerCharacters'].append(companion)
+    state['activePlayerIds'] = [1, 2]
+    return state
+
+
+def _cast(state: dict, name: str, targets: list[str], *, turn_id: int, **spell: object) -> tuple[dict, dict, dict]:
+    return _run_intent(state, {
+        'kind': 'spell', 'text': f'I cast {name}.',
+        'spell': {'name': name, 'effect': f'{name} takes hold.', 'target_ids': targets, **spell},
+    }, turn_id=turn_id)
+
+
+def test_reaction_spells_are_never_cast_from_the_action_list() -> None:
+    state = _party_state('Wizard', 1, 'Shield')
+    declared, _, _ = _cast(state, 'Shield', ['player_1'], turn_id=40)
+    assert declared['validatedActions'][0]['status'] == 'invalid'
+    assert 'cast automatically' in declared['validatedActions'][0]['reason']
+
+
+def test_upcasting_above_the_available_slots_is_rejected_before_narration() -> None:
+    state = _combat_state()
+    declared, _, _ = _cast(state, 'Magic Missile', ['enemy_goblin_1'], turn_id=41, cast_level=3)
+    assert declared['validatedActions'][0]['status'] == 'invalid'
+    assert declared['immediateChanges'] == []
+    assert state['playerCharacters'][0]['spellResources']['slots']['1']['current'] == 2
+
+
+def test_chromatic_orb_resolves_and_replays_the_chosen_damage_type(monkeypatch) -> None:
+    intent, error = validate_action_intent({'kind': 'spell', 'text': 'Orb!', 'spell': {
+        'name': 'Chromatic Orb', 'effect': 'A crackling orb.', 'damage_type': 'Lightning',
+    }})
+    assert error is None and intent['spell']['damage_type'] == 'lightning'
+    assert validate_action_intent({'kind': 'spell', 'spell': {'name': 'Chromatic Orb', 'effect': 'x', 'damage_type': 'mud'}})[1]
+
+    state = _combat_state()
+    state['playerCharacters'][0]['spellbook'] = normalize_spellbook({'knownSpells': [_spell('Chromatic Orb', 1)]}, class_name='Wizard')
+    monkeypatch.setattr('aidm_server.game_state.validation.validator.secrets.randbelow', lambda sides: sides - 1)
+    declared = validate_declared_actions(state=state, current_turn=42, expected_actor_id='player_1', declared_actions=[{
+        'id': 'act_001', 'type': 'spell.cast', 'actorId': 'player_1', 'spellName': 'Chromatic Orb',
+        'targetIds': ['enemy_goblin_1'], 'damageType': 'lightning',
+    }])
+    validation = validate_state_changes(state=state, changes=declared['immediateChanges'], expected_actor_id='player_1')
+    assert validation['rejected'] == []
+    resolution = apply_state_changes(state, validated_changes_for_application(validation))['appliedChanges'][0]['spellResolution']
+    assert resolution['damageType'] == 'lightning'
+    assert resolution['targets'][0]['effects'][0]['damageType'] == 'lightning'
+
+
+def test_revivify_needs_a_dead_ally_and_300_gp_of_components() -> None:
+    state = _party_state('Cleric', 5, 'Revivify')
+    state['playerCharacters'][0]['spellResources'] = normalize_spell_resources(None, class_name='Cleric', level=5)
+    living, _, _ = _cast(state, 'Revivify', ['player_2'], turn_id=43)
+    assert living['validatedActions'][0]['status'] == 'invalid'
+
+    fallen = state['playerCharacters'][1]['health']
+    fallen.update({'currentHp': 0, 'conditions': ['dead'], 'deathSaves': {'successes': 0, 'failures': 3}})
+    state['playerCharacters'][0]['inventory']['currency'] = {'gp': 120}
+    poor, _, _ = _cast(state, 'Revivify', ['player_2'], turn_id=44)
+    assert poor['validatedActions'][0]['status'] == 'invalid'
+    assert '300 gp' in poor['validatedActions'][0]['reason']
+
+    state['playerCharacters'][0]['inventory']['currency'] = {'gp': 350}
+    declared, validation, applied = _cast(state, 'Revivify', ['player_2'], turn_id=45)
+    assert declared['validatedActions'][0]['status'] == 'valid' and validation['rejected'] == []
+    caster, revived = applied['nextState']['playerCharacters']
+    assert caster['inventory']['currency']['gp'] == 50
+    assert caster['spellResources']['slots']['3']['current'] == 1
+    assert (revived['health']['currentHp'], revived['health']['conditions']) == (1, [])
+
+
+def test_aid_raises_maximum_hp_until_a_long_rest() -> None:
+    state = _party_state('Cleric', 3, 'Aid')
+    state['playerCharacters'][0]['spellResources'] = normalize_spell_resources(None, class_name='Cleric', level=3)
+    _, validation, aided = _cast(state, 'Aid', ['player_1', 'player_2'], turn_id=46)
+    assert validation['rejected'] == []
+    for actor in aided['nextState']['playerCharacters']:
+        assert (actor['health']['currentHp'], actor['health']['maxHp']) == (25, 25)
+        assert actor['activeEffects'][0]['until'] == 'long_rest'
+    _, _, rested = _run_intent(aided['nextState'], {'kind': 'rest', 'text': 'We rest.', 'rest_type': 'long_rest'}, turn_id=47)
+    caster = rested['nextState']['playerCharacters'][0]
+    assert (caster['health']['currentHp'], caster['health']['maxHp'], caster['activeEffects']) == (20, 20, [])
+
+
+def test_mage_armor_survives_a_reload_and_ends_on_a_long_rest(app) -> None:
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        session_obj = db.session.get(Session, ids['session_id'])
+        player.class_ = 'Wizard'
+        player.level = 1
+        stats = safe_json_loads(player.stats, {})
+        stats['ability_scores'] = {'strength': 10, 'dexterity': 14, 'constitution': 12, 'intelligence': 16, 'wisdom': 10, 'charisma': 10}
+        player.stats = safe_json_dumps(stats, {})
+        state = _party_state('Wizard', 1, 'Mage Armor')
+        state['playerCharacters'] = state['playerCharacters'][:1]
+        state['activePlayerIds'] = [player.player_id]
+        actor = state['playerCharacters'][0]
+        actor.update({'id': display_actor_id(player.player_id), 'playerId': player.player_id, 'name': player.character_name})
+        player.character_sheet = safe_json_dumps({'spellbook': actor['spellbook'], 'spellResources': actor['spellResources']}, {})
+        db.session.commit()
+        state['sessionId'] = session_obj.session_id
+
+        intent, _ = validate_action_intent({'kind': 'spell', 'text': 'I cast Mage Armor.', 'spell': {
+            'name': 'Mage Armor', 'effect': 'Force armour settles on me.', 'target_ids': [actor['id']],
+        }})
+        extraction = extract_pre_dm_actions(current_state=state, player_message=intent['text'], recent_timeline=[],
+                                            actor_id=actor['id'], action_intent=intent)
+        declared = validate_declared_actions(state=state, declared_actions=extraction['declaredActions'], current_turn=50,
+                                             expected_actor_id=actor['id'])
+        immediate = validate_state_changes(state=state, changes=declared['immediateChanges'], expected_actor_id=actor['id'])
+        cast = apply_state_changes(state, validated_changes_for_application(immediate))
+        assert cast['nextState']['playerCharacters'][0]['stats']['armorClass'] == 15
+        persist_state_to_database(session_obj=session_obj, state=cast['nextState'], players_by_id={player.player_id: player})
+        db.session.commit()
+        db.session.expire_all()
+
+        reloaded = player_character_from_model(db.session.get(Player, player.player_id))
+        assert [effect['sourceName'] for effect in reloaded['activeEffects']] == ['Mage Armor']
+        assert reloaded['stats']['armorClass'] == 15
+
+        rest = {'id': 'rest_long', 'turnId': 51, 'type': 'rest.complete', 'actorId': actor['id'], 'restType': 'long_rest'}
+        rested = apply_state_changes({**cast['nextState'], 'playerCharacters': [reloaded]}, [rest])
+        rested_actor = rested['nextState']['playerCharacters'][0]
+        assert rested_actor['activeEffects'] == [] and rested_actor['stats']['armorClass'] == 12
+        persist_state_to_database(session_obj=session_obj, state=rested['nextState'],
+                                  players_by_id={player.player_id: db.session.get(Player, player.player_id)})
+        db.session.commit()
+        db.session.expire_all()
+        assert 'activeEffects' not in player_character_from_model(db.session.get(Player, player.player_id))
+
+
+def test_spiritual_weapon_attacks_again_as_a_bonus_action_without_a_slot(monkeypatch) -> None:
+    from aidm_server.game_state.orchestration.turn_pipeline import _gate_pre_dm_combat_spells
+
+    state = _combat_state()
+    actor = state['playerCharacters'][0]
+    actor.update({'class': 'Cleric', 'level': 3})
+    actor['spellbook'] = normalize_spellbook({'knownSpells': [_spell('Spiritual Weapon', 2), _spell('Guiding Bolt', 1)]}, class_name='Cleric')
+    actor['spellResources'] = normalize_spell_resources(None, class_name='Cleric', level=3)
+    state['combat']['participants'][0]['level'] = 3
+    monkeypatch.setattr('aidm_server.game_state.validation.validator.secrets.randbelow', lambda sides: sides - 1)
+    _, validation, first = _cast(state, 'Spiritual Weapon', ['enemy_goblin_1'], turn_id=60)
+    assert validation['rejected'] == []
+    after_first = first['nextState']
+    assert after_first['playerCharacters'][0]['spellResources']['slots']['2']['current'] == 1
+
+    after_first['combat']['flags']['turnEconomy'] = {
+        'actorId': 'player_1', 'round': 1, 'actionRemaining': 1, 'bonusActionRemaining': 1,
+        'reactionRemaining': 1, 'movementRemaining': 1, 'spentActionIds': [], 'leveledSpellCast': True,
+    }
+    declared, validation, again = _cast(after_first, 'Spiritual Weapon', ['enemy_goblin_1'], turn_id=61)
+    change = declared['immediateChanges'][0]
+    assert (change['repeatAttack'], change['resourcePool'], change['castLevel']) == (True, 'spell_effect', 2)
+    allowed, rejected = _gate_pre_dm_combat_spells(state=after_first, changes=[change], actor_id='player_1', turn_id=61)
+    assert rejected == [] and allowed[1]['flags']['turnEconomy']['bonusActionRemaining'] == 0
+    assert validation['rejected'] == []
+    assert again['nextState']['playerCharacters'][0]['spellResources']['slots']['2']['current'] == 1
+    assert again['nextState']['combat']['participants'][1]['hp']['current'] < after_first['combat']['participants'][1]['hp']['current']
+
+    levelled = validate_declared_actions(
+        state=after_first, current_turn=62, expected_actor_id='player_1',
+        declared_actions=[{'id': 'act_002', 'type': 'spell.cast', 'actorId': 'player_1', 'spellName': 'Guiding Bolt',
+                           'targetIds': ['enemy_goblin_1']}],
+    )['immediateChanges']
+    _allowed, blocked = _gate_pre_dm_combat_spells(state=after_first, changes=levelled, actor_id='player_1', turn_id=62)
+    assert blocked[0]['reason'] == 'Only one levelled spell can be cast per turn.'

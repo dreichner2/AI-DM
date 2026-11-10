@@ -13,6 +13,7 @@ from aidm_server.character_progression import (
 from aidm_server.character_state import (
     character_roll_spec,
     character_state_for_player,
+    server_attack_roll_context,
     sync_character_derived_stats,
     validate_point_buy_payload,
 )
@@ -282,3 +283,86 @@ def test_unknown_new_background_is_rejected_without_creating_player(client, app)
     assert response.get_json()['error_code'] == 'validation_error'
     with app.app_context():
         assert Player.query.filter_by(character_name='Impossible Hero').count() == 0
+
+
+def _class_player(app, ids, class_name: str, level: int, *, scores=None, sheet=None, inventory=None, **stats_extra):
+    player = db.session.get(Player, ids['player_id'])
+    player.class_ = class_name
+    player.level = level
+    player.stats = safe_json_dumps({**_point_buy_stats(), 'ability_scores': scores or dict(FIGHTER_SCORES), **stats_extra}, {})
+    player.character_sheet = safe_json_dumps(sheet or {}, {})
+    player.inventory = safe_json_dumps(inventory or [], [])
+    db.session.commit()
+    return player
+
+
+def test_jack_of_all_trades_adds_half_proficiency_to_unskilled_bard_checks(app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        bard = _class_player(app, ids, 'Bard', 2, skill_proficiencies=['Persuasion'])
+        unskilled = character_roll_spec(bard, roll_type='athletics')
+        skilled = character_roll_spec(bard, roll_type='persuasion')
+        save = character_roll_spec(bard, roll_type='strength_saving_throw')
+        raw = character_roll_spec(bard, roll_type='strength')
+        bard.level = 1
+        db.session.commit()
+        level_one = character_roll_spec(bard, roll_type='athletics')
+
+    assert unskilled['proficiency'] == {'bonus': 1, 'skills': ['jack_of_all_trades'], 'multiplier': 0}
+    assert unskilled['modifier'] == 2 + 1
+    assert skilled['proficiency']['bonus'] == 2
+    assert save['proficiency']['bonus'] == 0
+    assert raw['proficiency']['bonus'] == 1
+    assert level_one['proficiency']['bonus'] == 0
+
+
+def test_rogue_expertise_defaults_to_stealth_and_first_other_skill_and_keeps_explicit_choices(app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        rogue = _class_player(app, ids, 'Rogue', 1, skill_proficiencies=['Perception', 'Acrobatics'])
+        state = character_state_for_player(rogue)
+        stealth = character_roll_spec(rogue, roll_type='stealth')
+        acrobatics = character_roll_spec(rogue, roll_type='acrobatics')
+        perception = character_roll_spec(rogue, roll_type='perception')
+        chosen = _class_player(app, ids, 'Rogue', 1, skill_proficiencies=['Perception', 'Acrobatics'], skill_expertise=['Perception', 'Acrobatics'])
+        chosen_state = character_state_for_player(chosen)
+        fighter_state = character_state_for_player(_class_player(app, ids, 'Fighter', 1, skill_proficiencies=['Perception']))
+
+    assert state['skill_expertise'] == ['stealth', 'acrobatics']
+    assert (stealth['proficiency']['multiplier'], acrobatics['proficiency']['multiplier'], perception['proficiency']['multiplier']) == (2, 2, 1)
+    assert chosen_state['skill_expertise'] == ['acrobatics', 'perception']
+    assert 'skill_expertise' not in fighter_state
+
+
+def test_fighting_style_is_stored_choice_or_equipment_default_and_class_features_show_pools(app):
+    ids = seed_world_campaign_player_session(app)
+    greatsword = [{'id': 'gs', 'name': 'Greatsword', 'type': 'weapon', 'equipped': True, 'slot': 'two_hands'}]
+    with app.app_context():
+        defaulted = character_state_for_player(_class_player(app, ids, 'Fighter', 1, inventory=greatsword))
+        chosen = character_state_for_player(_class_player(app, ids, 'Fighter', 1, inventory=greatsword, sheet={'fightingStyle': 'archery'}))
+        wizard = character_state_for_player(_class_player(app, ids, 'Wizard', 1))
+        monk = character_state_for_player(_class_player(app, ids, 'Monk', 3, class_feature_state={'ki': {'current': 1, 'max': 3}}))
+
+    assert defaulted['fighting_style'] == 'great_weapon'
+    assert chosen['fighting_style'] == 'archery'
+    assert 'fighting_style' not in wizard
+    features = {feature['id']: feature for feature in monk['class_capabilities']}
+    assert features['flurry_of_blows']['pool'] == 'ki'
+    assert features['step_of_the_wind:dash']['name'] == 'Step of the Wind: Dash'
+    assert monk['class_feature_state']['ki'] == {'current': 1, 'max': 3, 'refreshesOn': 'short_rest'}
+
+
+def test_martial_arts_uses_dexterity_for_unarmed_strikes_and_monk_weapons(app):
+    ids = seed_world_campaign_player_session(app)
+    staff = [{'id': 'staff', 'name': 'Quarterstaff', 'type': 'weapon', 'equipped': True, 'slot': 'main_hand'}]
+    nimble = {'strength': 10, 'dexterity': 15, 'constitution': 13, 'intelligence': 10, 'wisdom': 14, 'charisma': 8}
+    with app.app_context():
+        monk = _class_player(app, ids, 'Monk', 1, scores=nimble, inventory=staff)
+        unarmed = server_attack_roll_context(monk, 'Kai attacks the goblin with Unarmed strike.')
+        staff_attack = server_attack_roll_context(monk, 'Kai attacks the goblin with Quarterstaff.')
+        fighter = _class_player(app, ids, 'Fighter', 1, scores=nimble, inventory=staff)
+        fighter_staff = server_attack_roll_context(fighter, 'Talia attacks the goblin with Quarterstaff.')
+
+    assert (unarmed['ability_key'], unarmed['proficient'], unarmed['weapon']['id']) == ('dexterity', True, 'unarmed')
+    assert (staff_attack['ability_key'], staff_attack['weapon']['classification']) == ('dexterity', 'finesse')
+    assert fighter_staff['ability_key'] == 'strength'

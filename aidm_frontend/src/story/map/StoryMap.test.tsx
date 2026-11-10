@@ -69,6 +69,7 @@ describe('StoryMap', () => {
     map.nodes = [
       { id: 'east', name: 'The Lantern Post Inn', icon: 'inn', x: 92, y: 92, state: 'current' },
       { id: 'west', name: 'The Old North Road', icon: 'road', x: 8, y: 92, state: 'known' },
+      { id: 'north', name: 'Hollin Cross', icon: 'town', x: 50, y: 30, state: 'known' },
     ]
     map.routes = []
     const { container } = render(<StoryMap map={map} travelBlockedReason="" onTravel={vi.fn()} />)
@@ -79,6 +80,56 @@ describe('StoryMap', () => {
     expect(west.querySelector('.story-map-place-label')).toHaveAttribute('text-anchor', 'start')
     const compass = container.querySelector('.story-map-compass')?.parentElement?.getAttribute('transform') ?? ''
     expect(Number(compass.match(/translate\([^ ]+ ([^)]+)\)/)?.[1])).toBeLessThan(695 - 28 * 1000 / 360)
+  })
+
+  it.each([
+    [380, 24, 0.72 * 16],
+    [1100, 40, 16],
+  ])('draws %ipx-wide maps with %ipx glyphs and %spx labels', (width, glyphPx, labelPx) => {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getBoundingClientRect').mockReturnValue({ width } as DOMRect)
+    const { container } = render(<StoryMap map={mapFixture()} travelBlockedReason="" onTravel={vi.fn()} />)
+    const unitsPerPx = 1000 / width
+    const place = screen.getByRole('button', { name: 'Hollin Cross, known' })
+    const glyphTransform = place.querySelector('.story-map-glyph')?.parentElement?.getAttribute('transform') ?? ''
+
+    expect(Number(glyphTransform.match(/scale\(([^)]+)\)/)?.[1])).toBeCloseTo(glyphPx / 24 * unitsPerPx)
+    expect(parseFloat((place.querySelector('.story-map-place-label') as SVGTextElement).style.fontSize)).toBeCloseTo(labelPx * unitsPerPx)
+    expect(container.querySelector('.story-map-ink')).toHaveStyle({ '--story-map-glyph-scale': String(glyphPx / 24) })
+  })
+
+  it('marks a known place without an icon with the generic place mark, keeping ? for rumours', () => {
+    const map = mapFixture()
+    map.nodes = map.nodes.map((node) => (node.id === 'road' ? { ...node, icon: 'unknown' } : node))
+    const { container } = render(<StoryMap map={map} travelBlockedReason="" onTravel={vi.fn()} />)
+
+    const road = screen.getByRole('button', { name: 'The Old North Road, visited' })
+    expect(road.querySelector('.story-map-glyph')).toHaveAttribute('data-glyph', 'place')
+    expect(screen.getByRole('button', { name: 'The Drowned Lantern, current' }).querySelector('.story-map-glyph')).toHaveAttribute('data-glyph', 'inn')
+    const glyphs = [...container.querySelectorAll('.story-map-place-rumoured .story-map-glyph')]
+    expect(glyphs).toHaveLength(2)
+    glyphs.forEach((glyph) => expect(glyph).toHaveAttribute('data-glyph', 'rumoured'))
+    expect(container.querySelectorAll('[data-glyph="rumoured"]')).toHaveLength(2)
+  })
+
+  it('draws an adventure with one or two places in the middle of the map, not its corners', () => {
+    const map = mapFixture()
+    map.nodes = [
+      { id: 'inn', name: 'The Lantern Post Inn', icon: 'unknown', x: 92, y: 92, state: 'current' },
+      { id: 'road', name: 'The Old North Road', icon: 'unknown', x: 8, y: 8, state: 'known' },
+    ]
+    map.routes = [{ from: 'inn', to: 'road', style: 'road', travelable: true }]
+    const { container } = render(<StoryMap map={map} travelBlockedReason="" onTravel={vi.fn()} />)
+
+    const positions = [...container.querySelectorAll('.story-map-place')].map((place) =>
+      (place.getAttribute('transform')?.match(/translate\(([^ ]+) ([^)]+)\)/) ?? []).slice(1).map(Number))
+    expect(positions).toHaveLength(2)
+    for (const [x, y] of positions) {
+      expect(x).toBeGreaterThanOrEqual(200)
+      expect(x).toBeLessThanOrEqual(800)
+      expect(y).toBeGreaterThanOrEqual(150)
+      expect(y).toBeLessThanOrEqual(600)
+    }
+    expect(container.querySelector('.story-map-route-line')?.getAttribute('d')).toMatch(/^M 800\.0 600\.0/)
   })
 
   it('opens the overlay, closes it by Escape, close button or backdrop, and restores focus', async () => {
@@ -99,6 +150,20 @@ describe('StoryMap', () => {
     dialog = screen.getByRole('dialog', { name: 'Map' })
     fireEvent.mouseDown(dialog.parentElement!)
     expect(screen.queryByRole('dialog', { name: 'Map' })).not.toBeInTheDocument()
+  })
+
+  it('shows the map facts line only for facts that exist', () => {
+    const unknown = testInspector({ mapMeta: { explored: '—', threat: 'Unknown', threatTone: 'low', weather: 'Not recorded' } })
+    const { container, rerender } = render(<MapSection inspector={unknown} worldMap={mapFixture()} travelBlockedReason="" onTravel={vi.fn()} />)
+    expect(container.querySelector('.story-sheet-map > .story-sheet-meta')).toBeNull()
+    expect(screen.queryByText(/Threat unknown|Not recorded|Explored —/)).not.toBeInTheDocument()
+
+    const partial = testInspector({ mapMeta: { explored: '—', threat: 'Rising', threatTone: 'medium', weather: 'Not recorded' } })
+    rerender(<MapSection inspector={partial} worldMap={mapFixture()} travelBlockedReason="" onTravel={vi.fn()} />)
+    expect(screen.getByText('Threat rising')).toBeInTheDocument()
+
+    rerender(<MapSection inspector={testInspector()} worldMap={mapFixture()} travelBlockedReason="" onTravel={vi.fn()} />)
+    expect(screen.getByText('Explored 38% · Threat rising · Heavy rain')).toBeInTheDocument()
   })
 
   it('shows a quiet empty state while retaining ways onward', () => {

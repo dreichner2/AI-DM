@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from aidm_server.canon_inventory import INVENTORY_ACTIONS, clean_inventory_item_name, looks_like_inventory_item
+from aidm_server.creatures.schemas import DAMAGE_TYPES
 from aidm_server.rules import DC_HINTS, RuleHint
 from aidm_server.interactables import INTERACTABLE_ACTIONS
 
@@ -142,6 +143,11 @@ def _validate_spell_payload(raw_spell: Any) -> tuple[dict[str, Any] | None, str 
         payload['cast_level'] = cast_level
     if raw_spell.get('concentration') is not None:
         payload['concentration'] = bool(raw_spell.get('concentration'))
+    damage_type = _clean_text(raw_spell.get('damage_type', raw_spell.get('damageType')), max_length=16).lower()
+    if damage_type:
+        if damage_type not in DAMAGE_TYPES:
+            return None, 'spell.damage_type must be a known damage type.'
+        payload['damage_type'] = damage_type
     raw_target_ids = raw_spell.get('target_ids', raw_spell.get('targetIds'))
     if raw_target_ids is None and raw_spell.get('target_id', raw_spell.get('targetId')):
         raw_target_ids = [raw_spell.get('target_id', raw_spell.get('targetId'))]

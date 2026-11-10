@@ -304,7 +304,11 @@ def _gate_pre_dm_combat_spells(
             continue
         bonus_action = _spell_casting_time(working_state, change) == 'bonus_action'
         prior_economy = ensure_combat_turn_economy(combat, actor_id=change_actor_id)
-        levelled = int_or_default(change.get('castLevel', change.get('cast_level')), default=0) > 0
+        # Spiritual Weapon attacking again is not a new casting.
+        levelled = (
+            int_or_default(change.get('castLevel', change.get('cast_level')), default=0) > 0
+            and change.get('repeatAttack') is not True
+        )
         repeated = str(change.get('id') or '') in (prior_economy.get('spentActionIds') or [])
         remaining_key = 'bonusActionRemaining' if bonus_action else 'actionRemaining'
         if levelled and prior_economy.get('leveledSpellCast') is True and not repeated and prior_economy.get(remaining_key, 0) > 0:

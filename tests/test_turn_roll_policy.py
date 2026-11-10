@@ -222,6 +222,8 @@ def test_build_roll_gate_detects_parenthesised_check_request_on_unclassified_tur
     assert gate is not None
     assert gate['rule_type'] == 'perception'
     assert gate['dc_hint'] == 'DC 13'
+    assert response_mentions_roll_request('Make a Wisdom (Perception) check, DC 13.') is True
+    assert response_mentions_roll_request('No check is needed to make a quick check.') is False
 
 
 def test_build_roll_gate_returns_none_for_resolved_or_unrequested_turns():

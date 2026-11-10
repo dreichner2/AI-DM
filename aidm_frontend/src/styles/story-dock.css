@@ -121,6 +121,13 @@
   animation: story-rise var(--story-base) var(--story-ease) both;
 }
 .story-shell .story-roll-prompt-options .story-field { min-width: 200px; text-align: left; }
+.story-shell .story-roll-prompt-breakdown {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--story-muted);
+}
 
 @keyframes story-roll-breathe {
   0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--story-ember-soft) 35%, transparent), 0 10px 40px -8px color-mix(in srgb, var(--story-ember) 55%, transparent); }

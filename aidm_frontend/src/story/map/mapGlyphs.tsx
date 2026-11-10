@@ -15,13 +15,17 @@ const LANDMARKS: Record<string, string> = {
   gate: 'M-12 11 V-10 H-7 V11 M7 11 V-10 H12 V11 M-13-10 H-6 M6-10 H13 M-7-5 Q0-12 7-5 M-5 11 V-3 M0 11 V-6 M5 11 V-3 M-7 3 H7 M-14 11 H14',
   marsh: 'M-14 10 q4-3 8 0 t8 0 t8 0 M-10 6 V-5 M-10 1 l-4-4 M-10-1 l4-5 M0 7 V-10 M0-2 l-4-4 M0-4 l4-4 M10 6 V-4 M10 0 l-3-4 M10-1 l3-4',
   peak: 'M-14 10 L-3-11 2-3 5-7 14 10 M-8 0 L-4-2 -2 0 0-4 M4 1 l2-2 3 2 M-14 10 H14 M-5 6 l2-3',
-  unknown: 'M0-12 A12 12 0 1 1 0 12 A12 12 0 1 1 0-12 M-4-4 Q-4-8 0-8 Q5-8 5-4 Q5-1 1 1 V3 M1 7 v1',
 }
+/** A known place without its own drawing: a small ring around a dot. */
+const PLACE = 'M0-8 A8 8 0 1 1 0 8 A8 8 0 1 1 0-8 M-1.6 0 A1.6 1.6 0 1 1 1.6 0 A1.6 1.6 0 1 1-1.6 0'
+/** Only a rumoured place is a question mark. */
+const RUMOURED = 'M0-12 A12 12 0 1 1 0 12 A12 12 0 1 1 0-12 M-4-4 Q-4-8 0-8 Q5-8 5-4 Q5-1 1 1 V3 M1 7 v1'
 
-export function MapGlyph({ icon }: { icon: string }) {
-  const path = LANDMARKS[icon] ?? LANDMARKS.unknown
+export function MapGlyph({ icon, rumoured = false }: { icon: string; rumoured?: boolean }) {
+  const kind = rumoured ? 'rumoured' : Object.hasOwn(LANDMARKS, icon) ? icon : 'place'
+  const path = kind === 'rumoured' ? RUMOURED : kind === 'place' ? PLACE : LANDMARKS[icon]
   return (
-    <g className="story-map-glyph" fill="none" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <g className="story-map-glyph" data-glyph={kind} fill="none" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path className="story-map-glyph-halo" d={path} />
       <path d={path} />
     </g>

@@ -7,7 +7,8 @@ from typing import Any
 
 from aidm_server.armor_class import sync_actor_armor_class
 from aidm_server.canon_text import int_or_default
-from aidm_server.class_capabilities import restore_class_capabilities, spend_capability
+from aidm_server.class_capabilities import apply_capability_use
+from aidm_server.class_features import restore_class_capabilities
 from aidm_server.character_resources import (
     consume_spell_cast,
     ensure_character_sheet_spell_resources,
@@ -27,7 +28,7 @@ from aidm_server.combat.state import (
     normalize_participant,
     normalize_position,
 )
-from aidm_server.commerce import restock_merchants, take_stock
+from aidm_server.commerce import payment_deltas, restock_merchants, take_stock
 from aidm_server.game_clock import actor_hit_dice, advance_state_clock, record_rest
 from aidm_server.game_state.campaign_pack_encounters import (
     REST_POLICIES,
@@ -57,14 +58,22 @@ from aidm_server.interactables import interactable_followup_changes
 from aidm_server.item_effects import ITEM_EFFECTS, uses_remaining
 from aidm_server.models import Player, Session, safe_json_dumps, safe_json_loads
 from aidm_server.spellbook import (
+    authoritative_spell_effect,
     character_sheet_record,
     ensure_character_sheet_spellbook,
+    known_spell,
     known_spell_names,
     merge_spellbooks,
     normalize_spellbook,
     spell_from_change,
 )
-from aidm_server.spell_effects import advance_spell_effect_durations, resolve_concentration_check
+from aidm_server.spell_effects import (
+    active_repeat_attack,
+    advance_spell_effect_durations,
+    end_encounter_spell_effects,
+    end_long_rest_spell_effects,
+    resolve_concentration_check,
+)
 from aidm_server.time_utils import utc_now
 
 
@@ -386,6 +395,43 @@ def _apply_spell_learn(actor: dict[str, Any], change: dict[str, Any]) -> dict[st
     }
 
 
+def _spell_material_payment(actor: dict[str, Any], resolution: dict[str, Any], change: dict[str, Any]) -> dict[str, int] | None:
+    """Coins a rules-backed spell's material component costs ({} when free, None when unaffordable)."""
+
+    spell = known_spell(actor.get('spellbook'), _change_value(change, 'spellId', 'spell_id') or resolution.get('spellId'))
+    consumes = spell.get('consumes') if isinstance(spell, dict) and isinstance(spell.get('consumes'), dict) else {}
+    cost_gp = max(0, int_or_default(consumes.get('gp'), default=0))
+    return payment_deltas(actor_currency(actor), cost_gp * 100) if cost_gp else {}
+
+
+def _persist_spell_effects_on_actors(state: dict[str, Any], resolved_combat: dict[str, Any]) -> None:
+    """Give player actors the spell effects that must outlast the cast's context.
+
+    Outside combat every effect on the party's working participants is theirs;
+    inside combat only effects lasting until a long rest are copied, so they
+    survive the encounter's end.
+    """
+
+    in_combat = _combat_active(state)
+    for participant in resolved_combat.get('participants') or []:
+        if not isinstance(participant, dict) or participant.get('team') != 'player':
+            continue
+        actor = find_actor(state, participant.get('id'))
+        if actor is None or not isinstance(participant.get('activeEffects'), list):
+            continue
+        if in_combat:
+            owned = {_text(effect.get('id')) for effect in actor.get('activeEffects') or [] if isinstance(effect, dict)}
+            lasting = [
+                deepcopy(effect) for effect in participant['activeEffects']
+                if isinstance(effect, dict) and effect.get('until') == 'long_rest' and _text(effect.get('id')) not in owned
+            ]
+            if lasting:
+                actor['activeEffects'] = [*(actor.get('activeEffects') or []), *lasting]
+        else:
+            actor['activeEffects'] = deepcopy(participant['activeEffects'])
+        sync_actor_armor_class(actor)
+
+
 def _apply_spell_cast(
     state: dict[str, Any],
     actor: dict[str, Any],
@@ -394,37 +440,51 @@ def _apply_spell_cast(
     """Consume a validated spell resource on the authoritative actor snapshot."""
 
     cast_level = _change_value(change, 'castLevel', 'cast_level')
-    result = consume_spell_cast(
-        actor.get('spellbook'),
-        actor.get('spellResources'),
-        spell_name_or_id=(
-            _change_value(change, 'spellId', 'spell_id')
-            or _change_value(change, 'spellName', 'spell_name')
-        ),
-        class_name=_text(actor.get('class')),
-        level=max(1, int_or_default(actor.get('level'), default=1)),
-        cast_level=(int_or_default(cast_level, default=0) if cast_level is not None else None),
-        resource_pool=_text(_change_value(change, 'resourcePool', 'resource_pool')) or 'auto',
-        concentration=(
-            False
-            if _text(change.get('resolutionAuthority')) == 'spell_effect_engine'
-            else (bool(change.get('concentration')) if change.get('concentration') is not None else None)
-        ),
-        caster_actor_id=_text(actor.get('id')) or None,
-        target_ids=[
-            _text(target_id)
-            for target_id in (change.get('targetIds') or change.get('target_ids') or [])
-            if _text(target_id)
-        ],
-        started_at_turn=int_or_default(change.get('turnId', change.get('turn_id')), default=0) or None,
-    )
-    if not result.get('ok'):
-        return None
-    legality = result.get('legality') if isinstance(result.get('legality'), dict) else {}
+    repeat_attack = change.get('repeatAttack') is True
+    if repeat_attack:
+        # Spiritual Weapon attacking again spends no slot, only its live effect.
+        spell_id = _text(_change_value(change, 'spellId', 'spell_id'))
+        combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+        if active_repeat_attack(combat, _text(actor.get('id')), spell_id) is None:
+            return None
+        resources = deepcopy(actor.get('spellResources') or {})
+        consumed = None
+        legality = {'spell': {'id': spell_id, 'name': change.get('spellName')}, 'castLevel': cast_level,
+                    'resource': {'pool': 'spell_effect', 'slotLevel': 0}}
+        result: dict[str, Any] = {'replacedConcentration': None}
+    else:
+        result = consume_spell_cast(
+            actor.get('spellbook'),
+            actor.get('spellResources'),
+            spell_name_or_id=(
+                _change_value(change, 'spellId', 'spell_id')
+                or _change_value(change, 'spellName', 'spell_name')
+            ),
+            class_name=_text(actor.get('class')),
+            level=max(1, int_or_default(actor.get('level'), default=1)),
+            cast_level=(int_or_default(cast_level, default=0) if cast_level is not None else None),
+            resource_pool=_text(_change_value(change, 'resourcePool', 'resource_pool')) or 'auto',
+            concentration=(
+                False
+                if _text(change.get('resolutionAuthority')) == 'spell_effect_engine'
+                else (bool(change.get('concentration')) if change.get('concentration') is not None else None)
+            ),
+            caster_actor_id=_text(actor.get('id')) or None,
+            target_ids=[
+                _text(target_id)
+                for target_id in (change.get('targetIds') or change.get('target_ids') or [])
+                if _text(target_id)
+            ],
+            started_at_turn=int_or_default(change.get('turnId', change.get('turn_id')), default=0) or None,
+        )
+        if not result.get('ok'):
+            return None
+        legality = result.get('legality') if isinstance(result.get('legality'), dict) else {}
+        consumed = result.get('consumed') if isinstance(result.get('consumed'), dict) else None
+        resources = result['resources']
     spell = legality.get('spell') if isinstance(legality.get('spell'), dict) else {}
-    consumed = result.get('consumed') if isinstance(result.get('consumed'), dict) else None
-    resources = result['resources']
     spell_resolution = None
+    material_payment: dict[str, int] = {}
     if _text(change.get('resolutionAuthority')) == 'spell_effect_engine':
         resolved_combat = change.get('resolvedCombat') if isinstance(change.get('resolvedCombat'), dict) else None
         effect_resources = (
@@ -434,6 +494,10 @@ def _apply_spell_cast(
         )
         if resolved_combat is None or effect_resources is None:
             return None
+        payment = _spell_material_payment(actor, change.get('resolution') or {}, change)
+        if payment is None:
+            return None
+        material_payment = payment
         prior_concentration = deepcopy(resources.get('concentration'))
         resources['concentration'] = deepcopy(effect_resources.get('concentration'))
         if prior_concentration != resources.get('concentration'):
@@ -446,10 +510,7 @@ def _apply_spell_cast(
         for participant in resolved_combat.get('participants') or []:
             if isinstance(participant, dict):
                 _sync_player_actor_from_combat_participant(state, participant)
-                if not _combat_active(state):
-                    target_actor = find_actor(state, participant.get('id'))
-                    if target_actor is not None and isinstance(participant.get('activeEffects'), list):
-                        target_actor['activeEffects'] = deepcopy(participant['activeEffects'])
+        _persist_spell_effects_on_actors(state, resolved_combat)
         target_resources = change.get('effectTargetResources') if isinstance(change.get('effectTargetResources'), dict) else {}
         for target_id, target_resource in target_resources.items():
             target_actor = find_actor(state, target_id)
@@ -462,6 +523,11 @@ def _apply_spell_cast(
             else:
                 target_actor['spellResources'] = deepcopy(target_resource)
         spell_resolution = deepcopy(change.get('resolution'))
+    if material_payment:
+        currency = actor.setdefault('inventory', {}).setdefault('currency', {})
+        purse = actor_currency(actor)
+        for code, delta in material_payment.items():
+            currency[code] = purse[code] + delta
     actor['spellResources'] = resources
     return {
         'spellId': spell.get('id'),
@@ -472,8 +538,50 @@ def _apply_spell_cast(
         'resourceConsumed': bool(consumed),
         'replacedConcentration': result.get('replacedConcentration'),
         'remainingSpellResources': deepcopy(resources),
+        **({'materialPayment': material_payment} if material_payment else {}),
         **({'spellResolution': spell_resolution} if spell_resolution is not None else {}),
     }
+
+
+def _end_encounter_spell_effects(state: dict[str, Any], combat: dict[str, Any]) -> list[str]:
+    """Encounter-scoped spell effects end with the combat; those lasting until a long rest stay.
+
+    A caster whose rules-backed concentration spell no longer holds any effect
+    stops concentrating; narrated concentration is the Dungeon Master's to end.
+    """
+
+    participants = {
+        _text(participant.get('id')): participant
+        for participant in combat.get('participants') or []
+        if isinstance(participant, dict)
+    }
+    actors = [actor for actor in state.get('playerCharacters') or [] if isinstance(actor, dict)]
+    ended: list[str] = []
+    for actor in actors:
+        removed = end_encounter_spell_effects(actor, participants.get(_text(actor.get('id'))))
+        if removed:
+            sync_actor_armor_class(actor)
+            ended.extend(effect['id'] for effect in removed)
+    held = {
+        (_text(effect.get('casterId')), _text(effect.get('sourceId')))
+        for actor in actors
+        for effect in actor.get('activeEffects') or []
+        if isinstance(effect, dict)
+    }
+    for actor in actors:
+        resources = actor.get('spellResources') if isinstance(actor.get('spellResources'), dict) else {}
+        concentration = resources.get('concentration') if isinstance(resources.get('concentration'), dict) else None
+        if (
+            concentration
+            and authoritative_spell_effect(concentration.get('spellName')) is not None
+            and (_text(actor.get('id')), _text(concentration.get('spellId'))) not in held
+        ):
+            actor['spellResources'] = {
+                **resources,
+                'concentration': None,
+                'revision': int_or_default(resources.get('revision'), default=0) + 1,
+            }
+    return ended
 
 
 def _apply_class_feature_use(
@@ -483,46 +591,21 @@ def _apply_class_feature_use(
 ) -> dict[str, Any] | None:
     resolution = change.get('resolution') if isinstance(change.get('resolution'), dict) else {}
     effect_type = _text(resolution.get('effectType')).lower()
-    target: dict[str, Any] | None = None
-    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
-    flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
-    economy = flags.get('turnEconomy') if isinstance(flags.get('turnEconomy'), dict) else {}
 
-    # Resolve every prerequisite before mutating either the resource pool or
-    # combat economy.  Validation normally guarantees these references, but
-    # application remains fail-closed if a stale snapshot slips through.
+    # Resolve every prerequisite before mutating the pools, slots or combat
+    # economy.  Validation normally guarantees these references, but
+    # application remains fail-closed if a stale snapshot slips through; the
+    # capability engine checks its own prerequisites the same way.
+    target: dict[str, Any] | None = None
     if effect_type == 'heal':
         target = find_actor(state, resolution.get('targetId'))
         if not target:
             return None
-    elif effect_type == 'restore_action':
-        if not economy or _text(combat.get('status')).lower() != 'active':
-            return None
-    else:
+    result = apply_capability_use(state, actor, change)
+    if result is None:
         return None
 
-    resource_cost = max(1, int_or_default(resolution.get('resourceCost'), default=1))
-    next_feature_state = spend_capability(
-        actor.get('classFeatureState'),
-        class_name=actor.get('class'),
-        level=actor.get('level'),
-        capability_id=change.get('capabilityId'),
-        amount=resource_cost,
-        turn_id=change.get('turnId'),
-    )
-    if next_feature_state is None:
-        return None
-
-    economy_kind = _text(resolution.get('actionEconomy')).lower()
-    if _text(combat.get('status')).lower() == 'active':
-        if _text(flags.get('activeActorId')) != _text(actor.get('id')):
-            return None
-        if economy_kind == 'action':
-            economy['actionRemaining'] = 0
-        elif economy_kind == 'bonus_action':
-            economy['bonusActionRemaining'] = 0
-
-    actual_amount = 0
+    actual_amount = 1
     if effect_type == 'heal':
         assert target is not None
         if _is_player_actor(state, target):
@@ -530,22 +613,12 @@ def _apply_class_feature_use(
         else:
             actual_amount = _apply_health_heal(target, {'amount': resolution.get('amount')})
             _sync_actor_health_to_combat_participant(state, target)
-    elif effect_type == 'restore_action':
-        if not economy:
-            return None
-        economy['actionRemaining'] = max(1, int_or_default(resolution.get('amount'), default=1))
-        actual_amount = 1
-    actor['classFeatureState'] = next_feature_state
-    return {
-        'capabilityId': change.get('capabilityId'),
-        'capabilityName': change.get('capabilityName'),
-        'targetId': resolution.get('targetId'),
-        'effectType': effect_type,
-        'resourceCost': resource_cost,
-        'actualAmount': actual_amount,
-        'remainingClassFeatureState': deepcopy(next_feature_state),
-        'turnEconomy': deepcopy(economy) if economy else None,
-    }
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    for participant_id in result['affectedParticipantIds']:
+        participant = _combat_participant(combat, participant_id)
+        if participant:
+            _sync_player_actor_from_combat_participant(state, participant)
+    return {**result, 'actualAmount': actual_amount}
 
 
 def _apply_rest(actor: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
@@ -566,6 +639,7 @@ def _apply_rest(actor: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]
         class_name=actor.get('class'),
         level=actor.get('level'),
         rest_type=rest_type,
+        scores=actor.get('stats'),
     )
 
     ability_state = actor.get('raceAbilityState')
@@ -582,6 +656,9 @@ def _apply_rest(actor: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]
                 refreshed_ability_ids.append(_text(ability_id))
 
     actor.setdefault('health', {})
+    ended_spell_effects = end_long_rest_spell_effects(actor) if rest_type == 'long_rest' else []
+    if ended_spell_effects:
+        sync_actor_armor_class(actor)
     hp_restored = vitality.recover_on_rest(actor, rest_type)
     hit_dice = actor_hit_dice(actor)
     resolution = change.get('hitDiceResolution') if isinstance(change.get('hitDiceResolution'), dict) else {}
@@ -611,6 +688,7 @@ def _apply_rest(actor: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]
         'hitDice': deepcopy(hit_dice),
         'refreshedAbilityIds': refreshed_ability_ids,
         'spellResourcesChanged': before_resources != resources,
+        'endedSpellEffects': [effect['id'] for effect in ended_spell_effects],
         'classFeaturesChanged': before_class_features != actor.get('classFeatureState'),
         'remainingClassFeatureState': deepcopy(actor.get('classFeatureState')),
         'remainingSpellResources': deepcopy(resources),
@@ -2740,6 +2818,9 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
                 elif not lethal_defeat and vitality.is_player_character(participant) and vitality.stabilize(participant):
                     stabilized.append(_text(participant.get('id')))
                     _sync_player_actor_from_combat_participant(next_state, participant)
+            ended_spell_effects = _end_encounter_spell_effects(next_state, combat)
+            if ended_spell_effects:
+                applied_change['endedSpellEffects'] = ended_spell_effects
             _sync_scene_combat_state(next_state, combat)
             applied_change['combatStatus'] = combat.get('status')
             if stabilized:

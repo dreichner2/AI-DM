@@ -45,7 +45,7 @@ def test_magical_classes_receive_original_catalog_spells():
     original_spells = [spell for spell in spells if spell.get('catalog') == 'aidm-original']
     names = {spell['name'] for spell in spells}
 
-    assert len(original_spells) == 13  # Three starters plus the existing level 2, 3 and 5 unlocks.
+    assert len(original_spells) == 3  # New characters get the three-spell starter sample only.
     assert all(spell['narrated'] is True and spell['rulesBacked'] is False for spell in original_spells)
     assert 'Magic Missile' in names
     assert any(name not in {'Magic Missile', 'Shield', 'Fireball', 'Counterspell'} for name in names)

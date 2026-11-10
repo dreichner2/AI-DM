@@ -47,13 +47,30 @@ COMBAT_TRIGGER_PATTERN = re.compile(
     r'roll initiative|initiative|bandit|goblin|wolf|zombie|skeleton|cultist|guard)\b',
     re.IGNORECASE,
 )
-DIRECT_HOSTILE_ACTION_PATTERN = re.compile(
-    r'\b(?:i|we|[A-Z][A-Za-z0-9\'-]{1,40})\s+'
+_HOSTILE_VERB = (
     r'(?:attack|attacks|stab|stabs|strike|strikes|shoot|shoots|slash|slashes|swing|swings|'
-        r'cut|cuts|lunge|lunges|punch|punches|kick|kicks|smite|smites|kill|kills|throw|throws|hurl|hurls|'
-        r'smash|smashes|smack|smacks|slam|slams|bash|bashes|crush|crushes|'
-        r'grab|grabs|grapple|grapples|slice|slices|stomp|stomps|cripple|cripples|disable|disables)\b|'
-    r'\b(?:roll initiative|initiative)\b',
+    r'cut|cuts|lunge|lunges|punch|punches|kick|kicks|smite|smites|kill|kills|throw|throws|hurl|hurls|'
+    r'smash|smashes|smack|smacks|slam|slams|bash|bashes|crush|crushes|'
+    r'grab|grabs|grapple|grapples|slice|slices|stomp|stomps|cripple|cripples|disable|disables)'
+)
+_HOSTILE_NEGATION = r"(?:not|never|cannot|refuses?|(?:do|does|did|wo|ca|should|would|could|is|are|was|were)n['’]?t)"
+_HOSTILE_HYPOTHETICAL = r'(?:if|unless|whether|until|before|should|would|could|might|may|wonders?)'
+# A subject straight after one of these is asked about or imagined, not acting: "should I attack".
+_HOSTILE_QUESTION_LEADS = (
+    'if', 'unless', 'whether', 'when', 'whenever', 'before', 'until',
+    'should', 'would', 'could', 'might', 'may', 'must', 'shall', 'can', 'will', 'do', 'does', 'did',
+)
+# "I", "we" or a capitalised name, then up to six words, then a hostile verb ("I draw my
+# longsword and attack the nearest cutthroat"). None of those words may negate the action or
+# make it hypothetical ("I do not attack", "we should attack", "if they attack").
+DIRECT_HOSTILE_ACTION_PATTERN = re.compile(
+    r"(?<![\w'’])"
+    + ''.join(rf'(?<!\b{lead}\s)' for lead in _HOSTILE_QUESTION_LEADS)
+    + rf"(?!(?:{_HOSTILE_NEGATION}|{_HOSTILE_HYPOTHETICAL}|{'|'.join(_HOSTILE_QUESTION_LEADS)})\b)"
+    + r"(?:i|we|(?-i:[A-Z][A-Za-z0-9'’-]{1,40}))(?:['’]ll)?"
+    + rf"(?:\s+(?!(?:{_HOSTILE_NEGATION}|{_HOSTILE_HYPOTHETICAL})\b)[\w'’-]+,?){{0,6}}"
+    + rf"\s+(?:(?:try|tries|attempt|attempts)\s+to\s+)?{_HOSTILE_VERB}\b"
+    + r'|\b(?:roll initiative|initiative)\b',
     re.IGNORECASE,
 )
 DM_COMBAT_START_PATTERN = re.compile(

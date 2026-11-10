@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
 import type { WorldMap, WorldMapNode } from '../../gameSelectors'
 import { subscribeToMediaQueryChange } from '../../mediaQuery'
 import { CompassRose, MapGlyph } from './mapGlyphs'
+import {
+  HERE_CAPTION, MAP_HEIGHT, MAP_WIDTH, centredNodes, compassPosition, compassScale, glyphScale, inkSizes, nodePoint, placeLabels, reservedBoxes,
+} from './mapLayout'
 import { drawRoutes } from './mapRoutes'
 import { generateTerrain, terrainName, type ScatterMark, type TerrainImage } from './mapTerrain'
 
@@ -175,19 +178,6 @@ function useCanvas(map: WorldMap, routes: ReturnType<typeof drawRoutes>) {
   return { canvasRef, width }
 }
 
-function labelLines(name: string): string[] {
-  if (name.length <= 19) return [name]
-  const words = name.split(/\s+/)
-  if (words.length === 1) return [name.slice(0, Math.ceil(name.length / 2)), name.slice(Math.ceil(name.length / 2))]
-  let best = 1
-  let difference = Infinity
-  for (let index = 1; index < words.length; index += 1) {
-    const delta = Math.abs(words.slice(0, index).join(' ').length - words.slice(index).join(' ').length)
-    if (delta < difference) { difference = delta; best = index }
-  }
-  return [words.slice(0, best).join(' '), words.slice(best).join(' ')].filter(Boolean)
-}
-
 function nearestNode(current: WorldMapNode, nodes: WorldMapNode[], key: string): WorldMapNode | undefined {
   const direction = key === 'ArrowLeft' ? [-1, 0] : key === 'ArrowRight' ? [1, 0] : key === 'ArrowUp' ? [0, -1] : [0, 1]
   return nodes.filter((node) => node.id !== current.id && node.state !== 'rumoured').map((node) => {
@@ -199,13 +189,18 @@ function nearestNode(current: WorldMapNode, nodes: WorldMapNode[], key: string):
 }
 
 /** The player-safe world map: terrain on canvas, accessible places and roads on SVG. */
-export function StoryMap({ map, travelBlockedReason, onTravel }: StoryMapProps) {
+export function StoryMap({ map: sourceMap, travelBlockedReason, onTravel }: StoryMapProps) {
+  const map = useMemo(() => ({ ...sourceMap, nodes: centredNodes(sourceMap.nodes) }), [sourceMap])
   const routes = useMemo(() => drawRoutes(map.nodes, map.routes, map.seed), [map.nodes, map.routes, map.seed])
   const { canvasRef, width } = useCanvas(map, routes)
   const [selected, setSelected] = useState<string | null>(null)
   const nodes = useRef(new Map<string, SVGGElement>())
   const current = map.nodes.find((node) => node.state === 'current')
-  const scale = 1000 / (width || 1000)
+  const sizes = inkSizes(width)
+  const scale = sizes.unitsPerPx
+  const glyph = glyphScale(sizes)
+  const compass = compassPosition(map.nodes, sizes)
+  const labels = placeLabels(map.nodes, sizes, reservedBoxes(sizes, compass))
   const isTravelable = (node: WorldMapNode) => Boolean(current && node.id !== current.id && map.routes.some((route) =>
     route.travelable && ((route.from === current.id && route.to === node.id) || (route.to === current.id && route.from === node.id)),
   ))
@@ -225,13 +220,14 @@ export function StoryMap({ map, travelBlockedReason, onTravel }: StoryMapProps) 
   const selectedNode = map.nodes.find((node) => node.id === selected && node.state !== 'rumoured')
   const selectedTravelable = selectedNode ? isTravelable(selectedNode) : false
   const tooltipWidth = selectedNode ? Math.max(120, Math.min(230, selectedNode.name.length * 7 + 30)) : 120
-  const compassX = 944 - 28 * scale
-  const compassY = [695 - 28 * scale, 695 - 98 * scale, 695 - 168 * scale]
-    .find((candidate) => map.nodes.every((node) => Math.hypot(node.x * 10 - compassX, node.y * 7.5 - candidate) > 105 * scale)) ?? 695 - 168 * scale
+  const tooltipOffset = sizes.glyphPx * 0.6 + 6
   return (
     <div className="story-map" aria-label={map.title || 'World map'}>
       <canvas ref={canvasRef} className="story-map-ground" aria-hidden="true" />
-      <svg className="story-map-ink" viewBox="0 0 1000 750" role="group" aria-label={map.title || 'World map'}>
+      <svg
+        className="story-map-ink" viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`} role="group" aria-label={map.title || 'World map'}
+        style={{ '--story-map-glyph-scale': glyph / scale } as CSSProperties}
+      >
         {routes.map((route) => (
           <g key={`${route.from}:${route.to}`} className={`story-map-route story-map-route-${route.style}`} data-current={route.current || undefined}>
             <path className="story-map-route-under" d={route.path} />
@@ -239,16 +235,9 @@ export function StoryMap({ map, travelBlockedReason, onTravel }: StoryMapProps) 
           </g>
         ))}
         {map.nodes.map((node) => {
-          const x = node.x * 10
-          const y = node.y * 7.5
+          const { x, y } = nodePoint(node)
           const rumoured = node.state === 'rumoured'
-          const label = labelLines(node.name)
-          const labelHalfWidth = Math.max(...label.map((line) => line.length), 0) * 3.5 * scale
-          const anchor = x < labelHalfWidth + 5 ? 'start' : x > 995 - labelHalfWidth ? 'end' : 'middle'
-          const bottomLabel = node.state === 'current' ? (label.length > 1 ? 58 : 44) : (label.length > 1 ? 41 : 26)
-          const above = y + bottomLabel * scale > 740
-          const labelY = (above ? -24 - 15 * (label.length - 1) : 26) * scale
-          const hereY = (above ? -44 - 15 * (label.length - 1) : label.length > 1 ? 58 : 44) * scale
+          const label = labels.get(node.id)
           return (
             <g key={node.id} transform={`translate(${x} ${y})`} className={`story-map-place story-map-place-${node.state}`}>
               <g
@@ -261,29 +250,31 @@ export function StoryMap({ map, travelBlockedReason, onTravel }: StoryMapProps) 
                 onMouseEnter={() => { if (!rumoured) setSelected(node.id) }} onMouseLeave={() => setSelected(null)}
                 onClick={() => { if (!rumoured) activate(node) }} onKeyDown={(event) => keyDown(event, node)}
               >
-                <circle className="story-map-hit" r={22 * scale} />
-                {node.state === 'current' ? <circle className="story-map-current-ring" r={20 * scale} /> : null}
-                <g transform={`scale(${scale})`}><MapGlyph icon={rumoured ? 'unknown' : node.icon} /></g>
-                {!rumoured ? (
-                  <text className="story-map-place-label" x={0} y={labelY} textAnchor={anchor} style={{ fontSize: 13 * scale }}>
-                    {label.map((line, index) => <tspan key={line} x={0} dy={index ? 15 * scale : 0}>{line}</tspan>)}
+                <circle className="story-map-hit" r={22 * glyph} />
+                {node.state === 'current' ? <circle className="story-map-current-ring" r={20 * glyph} /> : null}
+                <g transform={`scale(${glyph})`}><MapGlyph icon={node.icon} rumoured={rumoured} /></g>
+                {label ? (
+                  <text className="story-map-place-label" x={label.x} y={label.y} textAnchor={label.anchor} style={{ fontSize: label.fontSize }}>
+                    {label.lines.map((line, index) => <tspan key={line} x={label.x} dy={index ? label.lineHeight : 0}>{line}</tspan>)}
                   </text>
                 ) : null}
-                {node.state === 'current' ? <text className="story-map-here" y={hereY} textAnchor={anchor} style={{ fontSize: 10 * scale }}>You are here</text> : null}
+                {label?.hereY != null ? (
+                  <text className="story-map-here" x={label.x} y={label.hereY} textAnchor={label.anchor} style={{ fontSize: label.hereFontSize }}>{HERE_CAPTION}</text>
+                ) : null}
               </g>
             </g>
           )
         })}
-        <g transform={`translate(${compassX} ${compassY}) scale(${scale})`}><CompassRose /></g>
+        <g transform={`translate(${compass.x} ${compass.y}) scale(${compassScale(sizes)})`}><CompassRose /></g>
         {selectedNode ? (
-          <g className="story-map-tooltip" transform={`translate(${Math.max(10, Math.min(1000 - tooltipWidth * scale - 10, selectedNode.x * 10 + 24 * scale))} ${Math.max(10, Math.min(750 - (selectedTravelable ? 52 : 34) * scale - 10, selectedNode.y * 7.5 - 50 * scale))}) scale(${scale})`} pointerEvents="none">
+          <g className="story-map-tooltip" transform={`translate(${Math.max(10, Math.min(MAP_WIDTH - tooltipWidth * scale - 10, nodePoint(selectedNode).x + tooltipOffset * scale))} ${Math.max(10, Math.min(MAP_HEIGHT - (selectedTravelable ? 52 : 34) * scale - 10, nodePoint(selectedNode).y - (tooltipOffset + 28) * scale))}) scale(${scale})`} pointerEvents="none">
             <rect x="0" y="0" width={tooltipWidth} height={selectedTravelable ? 52 : 34} rx="5" />
             <text x="10" y="19">{selectedNode.name} · {selectedNode.state}</text>
             {selectedTravelable ? <text className="story-map-tooltip-action" x="10" y="39">{travelBlockedReason || `Travel to ${selectedNode.name}`}</text> : null}
           </g>
         ) : null}
       </svg>
-      {map.title ? <div className="story-map-cartouche" aria-hidden="true">{map.title}</div> : null}
+      {map.title ? <div className="story-map-cartouche" aria-hidden="true" style={{ fontSize: sizes.labelPx * 1.3 }}>{map.title}</div> : null}
     </div>
   )
 }

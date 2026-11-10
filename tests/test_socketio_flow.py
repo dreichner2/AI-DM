@@ -6221,6 +6221,59 @@ def test_pre_dm_helper_veto_clears_classifier_roll_before_dm(app, socketio, app_
         assert rules_hint['state_pipeline']['pendingRolls'] == []
 
 
+def test_attack_roll_is_cleared_before_narration_when_no_opponent_is_present(app, socketio, app_runtime, monkeypatch):
+    socketio_module = app_runtime['modules']['socketio_events']
+    narrated_hints = []
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player
+        narrated_hints.append(rules_hint)
+        yield 'Your blow lands on nothing but straw.'
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+
+    ids = seed_world_campaign_player_session(app)
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    assert client.is_connected()
+
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'world_id': ids['world_id'],
+            'player_id': ids['player_id'],
+            'message': 'I hit the straw practice dummy as hard as I can.',
+        },
+    )
+    events = client.get_received()
+    start_payload = _event_payload(events, 'dm_response_start')
+    assert start_payload is not None
+    assert _event_payload(events, 'roll_required') is None
+
+    assert len(narrated_hints) == 1
+    live_hint = narrated_hints[0]
+    assert live_hint['requires_roll'] is False
+    assert live_hint['roll_type'] is None
+    assert live_hint['no_target'] is True
+    assert live_hint['reason'] == 'No opponent is present.'
+    assert 'do not request a roll' in live_hint['instruction']
+    assert live_hint['state_pipeline']['pendingRolls'] == []
+
+    with app.app_context():
+        turn = db.session.get(DmTurn, start_payload['turn_id'])
+        metadata = safe_json_loads(turn.metadata_json, {})
+        rules_hint = safe_json_loads(turn.rules_hint, {})
+        assert turn.requires_roll is False
+        assert turn.outcome_status == 'resolved'
+        assert 'roll_gate' not in metadata
+        assert rules_hint['no_target'] is True
+        assert rules_hint['roll_requirement_cleared']['source'] == 'no_opponent'
+        assert rules_hint['roll_requirement_cleared']['original_rule_type'] == 'attack'
+
+
 def test_character_resource_limits_block_missing_items_and_gold_spend(app, socketio, app_runtime, monkeypatch):
     socketio_module = app_runtime['modules']['socketio_events']
 

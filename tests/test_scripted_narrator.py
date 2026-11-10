@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import json
+import re
+import string
 from types import SimpleNamespace
 
 import pytest
@@ -436,7 +438,7 @@ def test_h_required_roll_ends_with_check_request_the_server_turns_into_a_gate():
 
     _assert_turn_shape(text)
     assert text.endswith('Make a Dexterity (Stealth) check, DC 13.')
-    assert '"I creep around the back of the wagon"' in text
+    assert 'creep around the back of the wagon' not in text
     turn = SimpleNamespace(
         requires_roll=True,
         outcome_status='deferred',
@@ -557,6 +559,70 @@ def test_j_input_that_reads_as_a_roll_request_is_not_quoted():
     _assert_turn_shape(text)
     assert 'roll' not in text.lower()
     assert requests_roll(text) is False
+
+
+NO_TARGET_LINES = ('There is no one here to fight.', 'Your blade finds only air; no enemy stands before you.')
+
+
+def test_an_attack_with_no_opponent_present_says_so_and_names_the_leads_without_a_roll():
+    lines = set()
+    for number in range(6):
+        hint = _hint(turn_number=number, requires_roll=False, roll_type=None, no_target=True)
+        text = narrate(_context(), hint, 'I draw my longsword and attack the nearest cutthroat.', SPEAKER)
+
+        _assert_turn_shape(text)
+        assert text.startswith(NO_TARGET_LINES)
+        assert 'Mara Reedwake, the Iron Strongbox, and the way to the Old North Road.' in text
+        assert 'cutthroat' not in text
+        assert requests_roll(text) is False
+        lines.update(line for line in NO_TARGET_LINES if text.startswith(line))
+
+    assert lines == set(NO_TARGET_LINES)
+
+
+PLAYER_WORDS = 'I draw my longsword and attack the nearest cutthroat'
+
+
+@pytest.mark.parametrize(
+    'hint',
+    [
+        pytest.param(_hint(requires_roll=True, roll_type='attack', dc_hint='14 (roll mod +4)'), id='roll-request'),
+        pytest.param(_hint(requires_roll=False, no_target=True), id='no-target'),
+        pytest.param(_hint(), id='free-action'),
+        pytest.param(_resolved_roll_hint('athletics', 15, outcome='success'), id='resolved-roll'),
+        pytest.param(
+            _hint(state_pipeline=_pipeline(invalidActions=[{'status': 'invalid', 'reason': 'No weapon is drawn.'}])),
+            id='invalid',
+        ),
+    ],
+)
+def test_no_narration_quotes_the_players_words_back(hint):
+    for number in range(6):
+        text = narrate(_context(), {**hint, 'turn_number': number}, f'{PLAYER_WORDS}.', SPEAKER)
+        quoted = re.findall(r'["“]([^"”]*)["”]', text)
+
+        assert PLAYER_WORDS not in text
+        assert not [span for span in quoted if 'longsword' in span or 'cutthroat' in span], text
+
+
+def test_no_template_has_a_slot_for_the_players_words():
+    slots = {
+        field
+        for templates in TEMPLATES.values()
+        for template in templates
+        for _, field, _, _ in string.Formatter().parse(template)
+        if field
+    }
+    quoted_slots = {
+        field
+        for templates in TEMPLATES.values()
+        for template in templates
+        for field in re.findall(r'"\{(\w+)\}', template)
+    }
+
+    assert not slots & {'action', 'input', 'player_input', 'words'}
+    # NPC facts are the only quoted speech; nothing the player typed fills a quoted slot.
+    assert quoted_slots == {'fact'}
 
 
 def test_narration_is_deterministic_and_varies_by_turn_number():

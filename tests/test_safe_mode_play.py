@@ -157,3 +157,29 @@ def test_safe_mode_plays_the_play_now_opening_actions_and_rolls_without_network(
     narrated_turns = 4
     assert generate_calls.count('deterministic-v1') == narrated_turns
     assert set(generate_calls) <= {'deterministic-v1', 'state-helper-fallback-v1'}
+
+
+def test_safe_mode_attack_with_no_opponent_asks_for_no_roll(app, socketio, safe_mode_session):
+    ids, _generate_calls = safe_mode_session
+    socket_client = socketio.test_client(app, flask_test_client=app.test_client())
+    socket_client.emit(
+        'join_session',
+        {'session_id': ids['session_id'], 'player_id': ids['player_id'], 'workspace_id': ids['workspace_id']},
+    )
+    socket_client.get_received()
+    _send(socket_client, ids, 'Please narrate the opening scene.', message_kind='opening', client_message_id='opening-1')
+
+    swing = _send(socket_client, ids, 'I hit the empty wagon bench with the flat of my blade.', client_message_id='turn-2')
+    swing_text = _payload(swing, 'dm_response_end')['text']
+    swing_turn = _latest_turn(app, ids['session_id'])
+
+    assert _payloads(swing, 'roll_required') == []
+    assert swing_text.startswith(('There is no one here to fight.', 'Your blade finds only air; no enemy stands before you.'))
+    assert 'Mara Reedwake' in swing_text
+    assert requests_roll(swing_text) is False
+    assert swing_turn['outcome_status'] != 'deferred'
+    assert swing_turn['roll_gate'] is None
+    assert swing_turn['rules_hint']['requires_roll'] is False
+    assert swing_turn['rules_hint']['no_target'] is True
+    assert swing_turn['rules_hint']['reason'] == 'No opponent is present.'
+    assert swing_turn['rules_hint']['roll_requirement_cleared']['original_rule_type'] == 'attack'

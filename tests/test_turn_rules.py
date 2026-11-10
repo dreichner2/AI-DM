@@ -119,3 +119,30 @@ def test_turn_rules_build_roll_prompt_and_detect_roll_requests():
 )
 def test_make_a_check_requests_accept_the_standard_phrasing(text):
     assert response_mentions_roll_request(text)
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        'No check is needed to make a quick check.',
+        'No check needed, you simply make a quick check of the straps.',
+        'No roll required, you make a quick Strength check of the rope by hand.',
+        'You make a quick check of the rope without a roll.',
+        'A roll is not required to make a Dexterity check here.',
+        'There is no need to roll for initiative.',
+    ],
+)
+def test_a_clause_that_declines_a_roll_is_not_a_request(text):
+    assert response_mentions_roll_request(text) is False
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        'No roll is needed for the door, but make a Stealth check for the guards.',
+        'The door needs no check; make a Stealth check for the guards.',
+        'Make a Dexterity saving throw, DC 14.',
+    ],
+)
+def test_a_request_in_its_own_clause_still_counts(text):
+    assert response_mentions_roll_request(text) is True

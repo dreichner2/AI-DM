@@ -359,6 +359,15 @@ def player_character_from_model(player: Player) -> dict[str, Any]:
             'weaponProficiencies': list(state.get('weapon_proficiencies') or []),
         },
     }
+    if isinstance(stats.get('active_effects'), list) and stats['active_effects']:
+        # Effects that outlast an encounter (Mage Armor, Aid, out-of-combat
+        # buffs) shape armour class and keep the conditions they maintain.
+        actor['activeEffects'] = deepcopy(stats['active_effects'])
+        conditions = actor['health']['conditions'] = list(actor['health']['conditions'])
+        for effect in actor['activeEffects']:
+            condition = str(effect.get('condition') or '').strip() if isinstance(effect, dict) else ''
+            if condition and condition not in conditions:
+                conditions.append(condition)
     sync_actor_armor_class(actor)
     if spellbook.get('knownSpells'):
         actor['spellbook'] = spellbook
@@ -378,8 +387,6 @@ def player_character_from_model(player: Player) -> dict[str, Any]:
     from aidm_server.item_effects import item_effect_descriptor
 
     actor['hitDice'] = hit_dice_for(class_name=player.class_, level=player.level, stored=stats.get('hit_dice'))
-    if isinstance(stats.get('active_effects'), list) and stats['active_effects']:
-        actor['activeEffects'] = deepcopy(stats['active_effects'])
     for item in inventory_items:
         descriptor = item_effect_descriptor(item, class_name=player.class_)
         if descriptor:

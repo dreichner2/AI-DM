@@ -7,6 +7,7 @@ import threading
 import time
 
 from flask import has_app_context
+import pytest
 
 import aidm_server.combat.boss_tactics as boss_tactics_module
 import aidm_server.combat.intent_planner as intent_planner_module
@@ -370,6 +371,43 @@ def test_direct_hostile_action_pattern_covers_thrown_or_smashing_attacks():
     assert DIRECT_HOSTILE_ACTION_PATTERN.search('I grab his head and try to crush it')
     assert DIRECT_HOSTILE_ACTION_PATTERN.search('I stomp the crawling ghoul')
     assert DIRECT_HOSTILE_ACTION_PATTERN.search('I take out my sword and try to cut its throat')
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        'I draw my longsword and attack the nearest cutthroat.',
+        'I ready my bow, step out and shoot the nearest raider',
+        'We charge across the yard and slash at the raiders',
+        "I'll attack the bandit",
+        'Mara draws her knife and stabs the cultist',
+        'I wait until the guard sleeps, then I stab him',
+    ],
+)
+def test_direct_hostile_action_pattern_allows_up_to_six_words_before_the_verb(text):
+    assert DIRECT_HOSTILE_ACTION_PATTERN.search(text)
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        'I do not attack',
+        "I don't attack the guard",
+        'I would never strike first',
+        'I refuse to attack',
+        'should I attack',
+        'Should I attack the guard?',
+        'Do I attack?',
+        'if they attack',
+        'If Mara attacks the guard',
+        'We should attack them at dawn',
+        'I ask if we attack now',
+        'I walk over to the wagons and sit down by the fire with the others',
+        'I draw my longsword and walk slowly along the line of wagons to attack',
+    ],
+)
+def test_direct_hostile_action_pattern_ignores_negations_hypotheticals_and_distant_verbs(text):
+    assert not DIRECT_HOSTILE_ACTION_PATTERN.search(text)
 
 
 def test_default_encounter_request_prefers_hostile_scene_npc_over_weapon_phrase(app):

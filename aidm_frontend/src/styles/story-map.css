@@ -30,7 +30,8 @@
   width: 38%;
   height: 25%;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.16);
+  /* Faint enough that fog and cloud together keep over half the ground's light. */
+  background: rgba(0, 0, 0, 0.08);
   filter: blur(24px);
   content: '';
   pointer-events: none;
@@ -74,8 +75,12 @@
 .story-shell .story-map-place-current { color: var(--story-ember-soft); }
 .story-shell .story-map-place [role='button'] { cursor: pointer; outline: none; }
 .story-shell .story-map-hit { fill: transparent; stroke: none; }
-.story-shell .story-map-glyph path { stroke: currentColor; stroke-width: 1.4px; vector-effect: non-scaling-stroke; }
-.story-shell .story-map-glyph .story-map-glyph-halo { stroke: #080d0c; stroke-width: 4.4px; }
+.story-shell .story-map-glyph path {
+  stroke: currentColor;
+  stroke-width: calc(1.4px * var(--story-map-glyph-scale, 1));
+  vector-effect: non-scaling-stroke;
+}
+.story-shell .story-map-glyph .story-map-glyph-halo { stroke: #080d0c; stroke-width: calc(4.4px * var(--story-map-glyph-scale, 1)); }
 .story-shell .story-map-place-label,
 .story-shell .story-map-here {
   fill: currentColor;
@@ -91,7 +96,7 @@
 .story-shell .story-map-current-ring {
   fill: rgba(255, 107, 44, 0.08);
   stroke: var(--story-ember-soft);
-  stroke-width: 1px;
+  stroke-width: calc(1px * var(--story-map-glyph-scale, 1));
   vector-effect: non-scaling-stroke;
   animation: story-map-breathe 3s ease-in-out infinite;
 }
@@ -126,7 +131,6 @@
 @media (max-width: 700px) {
   .story-shell .story-map-stage { padding: 0; }
   .story-shell .story-map-dialog { width: 100%; }
-  .story-shell .story-map-cartouche { font-size: 1rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

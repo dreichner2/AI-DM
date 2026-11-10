@@ -124,7 +124,7 @@ export function GameplayControls({ state, disabled, onSubmit }: GameplayControls
             >
               {state.spells.map((spell) => (
                 <option key={spell.id} value={spell.id}>
-                  {spell.name}{spell.level ? ` · level ${spell.level}` : ' · cantrip'}
+                  {spell.name}{spell.repeatAttack ? ' · attack again' : spell.level ? ` · level ${spell.level}` : ' · cantrip'}
                 </option>
               ))}
             </select>

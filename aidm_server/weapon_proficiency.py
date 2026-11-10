@@ -77,6 +77,16 @@ FIREARM_MARKERS = frozenset(
         'sidearm',
     }
 )
+RANGED_WEAPON_MARKERS = frozenset({'bow', 'blowgun', 'dart', 'sling', *FIREARM_MARKERS})
+FINESSE_WEAPONS = frozenset({'dagger', 'dart', 'knife', 'rapier', 'scimitar', 'shortsword', 'whip'})
+LIGHT_WEAPONS = frozenset({'club', 'dagger', 'hand crossbow', 'handaxe', 'light hammer', 'scimitar', 'shortsword', 'sickle'})
+TWO_HANDED_WEAPONS = frozenset(
+    {'glaive', 'greataxe', 'greatclub', 'greatsword', 'halberd', 'heavy crossbow', 'light crossbow', 'longbow', 'maul', 'pike', 'shortbow'}
+)
+# Shortswords and simple melee weapons without the two-handed or heavy property.
+MONK_WEAPONS = frozenset(
+    {'club', 'dagger', 'handaxe', 'javelin', 'light hammer', 'mace', 'quarterstaff', 'shortsword', 'sickle', 'spear'}
+)
 
 
 _CLASS_SELECTORS: dict[str, tuple[str, ...]] = {
@@ -278,6 +288,40 @@ def weapon_categories(item: dict[str, Any]) -> set[str]:
     if labels.intersection(MARTIAL_WEAPONS):
         categories.add('martial')
     return categories
+
+
+def _names_weapon(labels: set[str], names: frozenset[str]) -> bool:
+    return any(re.search(rf'(?:^| ){re.escape(name)}(?: |$)', label) for label in labels for name in names)
+
+
+def weapon_properties(item: Any) -> dict[str, bool]:
+    """Rules properties of an inventory weapon or a HUD weapon descriptor (``classification``)."""
+
+    record = item if isinstance(item, dict) else {}
+    labels = {
+        normalized_name(record.get('name')),
+        normalized_name(record.get('subtype')),
+        *[normalized_name(alias) for alias in record.get('aliases') or []],
+        *[normalized_name(tag) for tag in record.get('tags') or []],
+    }
+    labels.discard('')
+    classification = normalized_name(record.get('classification'))
+    unarmed = normalized_name(record.get('id')) == 'unarmed' or any('unarmed' in label for label in labels)
+    ranged = classification == 'ranged' or any(marker in label for label in labels for marker in RANGED_WEAPON_MARKERS)
+    # A versatile weapon held in both hands counts as wielded two-handed.
+    two_handed = (
+        normalized_name(record.get('slot') or record.get('equipmentSlot')) == 'two hands'
+        or 'two handed' in labels
+        or _names_weapon(labels, TWO_HANDED_WEAPONS)
+    )
+    return {
+        'unarmed': unarmed,
+        'ranged': ranged,
+        'finesse': classification == 'finesse' or 'finesse' in labels or _names_weapon(labels, FINESSE_WEAPONS),
+        'light': 'light' in labels or _names_weapon(labels, LIGHT_WEAPONS),
+        'two_handed': two_handed,
+        'monk': unarmed or _names_weapon(labels, MONK_WEAPONS),
+    }
 
 
 def match_weapon_proficiency(raw_profile: Any, item: dict[str, Any]) -> tuple[bool, str | None]:

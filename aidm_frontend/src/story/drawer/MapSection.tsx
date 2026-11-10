@@ -13,14 +13,23 @@ type MapSectionProps = {
   onTravel: (exit: { id: string; name: string }) => void
 }
 
+/** Placeholders the map record uses when it has no value; they are not facts worth a line. */
+const UNKNOWN_META = new Set(['', '—', '-', 'unknown', 'not recorded'])
+
+function knownMeta(value: string) {
+  return UNKNOWN_META.has(value.trim().toLowerCase()) ? '' : value.trim()
+}
+
 export function MapSection({ inspector, worldMap, travelBlockedReason, onTravel }: MapSectionProps) {
   const reasonId = useId()
   const [expanded, setExpanded] = useState(false)
   const { availableExits, knownLocations } = inspector.worldStatePanel
+  const explored = knownMeta(inspector.mapMeta.explored)
+  const threat = knownMeta(inspector.mapMeta.threat)
   const meta = [
-    inspector.mapMeta.explored ? `Explored ${inspector.mapMeta.explored}` : '',
-    inspector.mapMeta.threat ? `Threat ${inspector.mapMeta.threat.toLowerCase()}` : '',
-    inspector.mapMeta.weather,
+    explored ? `Explored ${explored}` : '',
+    threat ? `Threat ${threat.toLowerCase()}` : '',
+    knownMeta(inspector.mapMeta.weather),
   ].filter(Boolean)
   const exits = availableExits.filter((exit) => exit.id)
   const exitIds = new Set(exits.map((exit) => exit.id))
