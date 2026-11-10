@@ -141,6 +141,34 @@ describe('StoryDrawer', () => {
     expect(within(table).getByText('typing…')).toBeInTheDocument()
   })
 
+  it('signs the proficiency bonus and initiative and shows HP against its maximum when one is known', () => {
+    mockViewportWidth(1440)
+    const vital = (label: string) => screen.getByText(label, { selector: 'dt' }).nextElementSibling
+    const base = testInspector()
+    const [viewer, other] = base.activePlayers
+    renderDrawer({
+      inspector: testInspector({
+        statBlock: { ...base.statBlock, hp: '14', init: '1', proficiency: '2' },
+        activePlayers: [{ ...viewer, health: { tone: 'uninjured', label: 'Uninjured', currentHp: 14, maxHp: 14 } }, other],
+      }),
+    })
+    expect(vital('HP')).toHaveTextContent(/^14\/14$/)
+    expect(vital('Initiative')).toHaveTextContent(/^\+1$/)
+    expect(vital('Proficiency bonus')).toHaveTextContent(/^\+2$/)
+    cleanup()
+
+    const unknownHealth = [{ ...viewer, health: null }, other]
+    renderDrawer({ inspector: testInspector({ statBlock: { ...base.statBlock, hp: '7 / 12', init: '-1', proficiency: '+3' }, activePlayers: unknownHealth }) })
+    expect(vital('HP')).toHaveTextContent(/^7\/12$/)
+    expect(vital('Initiative')).toHaveTextContent(/^-1$/)
+    expect(vital('Proficiency bonus')).toHaveTextContent(/^\+3$/)
+    cleanup()
+
+    renderDrawer({ inspector: testInspector({ statBlock: { ...base.statBlock, hp: '12', init: '0' }, activePlayers: unknownHealth }) })
+    expect(vital('HP')).toHaveTextContent(/^12$/)
+    expect(vital('Initiative')).toHaveTextContent(/^\+0$/)
+  })
+
   it('shows conditions from combat on the character', () => {
     mockViewportWidth(1440)
     const combat = testCombat()

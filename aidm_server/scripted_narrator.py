@@ -303,8 +303,7 @@ TEMPLATES: dict[str, tuple[str, ...]] = {
         '{first} hears you out and offers nothing more for now.',
         '{first} thinks it over, then shakes their head.',
     ),
-    'action': ('You go ahead: "{action}"', 'You do it: "{action}"', 'You follow through: "{action}"'),
-    'action_plain': ('You take a moment and act.', 'You follow through.', 'You go ahead with it.'),
+    'action': ('You set to it.', 'You take your time over it.', 'Nothing stops you.', 'You do just that.'),
     'leads': ('Within reach are {leads}.', 'Close at hand: {leads}.', 'Your options sit nearby: {leads}.'),
     'fill': (
         'The air is still, and every small sound seems to carry.',
@@ -416,8 +415,9 @@ def _narrate_opening(turn: NarrationInput) -> str:
         brief_scene.get('description') or scene.get('description')
     )
     details = _string_items(brief_scene.get('visibleDetails')) or _string_items(scene.get('visibleDetails'))
+    # Roles are authoring labels ("accidental witness"); the cast is introduced by name only.
     npcs = [
-        (_text(npc.get('name')), _humanize(npc.get('role')))
+        _text(npc.get('name'))
         for npc in _dicts(brief.get('presentNpcs')) or turn.present_npcs
         if _text(npc.get('name'))
     ]
@@ -426,7 +426,7 @@ def _narrate_opening(turn: NarrationInput) -> str:
         _safe_sentences([_sentence(detail) for detail in details[:MAX_OPENING_DETAILS]]),
     ]
     if npcs:
-        listed = _join_words([f'{name} ({role})' if role else name for name, role in npcs])
+        listed = _join_words(npcs)
         blocks.append(_safe_sentences([turn.pick('opening_npcs', npcs=listed, verb='is' if len(npcs) == 1 else 'are')]))
     return _compose(
         turn,
@@ -468,15 +468,14 @@ def _narrate_npc_talk(turn: NarrationInput, npc: dict) -> str:
 
 
 def _narrate_action(turn: NarrationInput) -> str:
-    action = _safe_quote(turn.player_input)
-    if action and action[-1] not in '.!?…':
-        action = f'{action}.'
-    opening_line = turn.pick('action', action=action) if action else turn.pick('action_plain')
+    # The player's own words sit directly above this narration, so they are never quoted back.
+    acknowledgement = turn.pick('action')
     details = _unused_scene_details(turn)
-    core = [opening_line, *details[:1]]
     leads = _leads_sentence(turn)
-    fill = [*([leads] if leads else []), *details[1:]]
-    return _compose(turn, [_safe_sentences(core)], fill=fill, closing=turn.pick('closing'))
+    ending = ' '.join(sentence for sentence in (leads, turn.pick('closing')) if sentence)
+    # A second scene detail joins the first when one detail is not enough to reach the word floor.
+    shown = 2 if _word_count(' '.join([acknowledgement, *details[:1], ending])) < MIN_WORDS else 1
+    return _compose(turn, [[acknowledgement, *details[:shown]]], fill=details[shown:], closing=ending)
 
 
 # Mechanical results ---------------------------------------------------------------------------------------------

@@ -145,11 +145,27 @@ def test_a_opening_narrates_authored_scene_and_present_npcs_without_a_roll():
     assert 'One wagon bell rings three times though no hand touches it.' in text
     assert "A cloth-wrapped chip of pale stone rests beneath the driver's bench." in text
     assert 'A faint ash mark stains the rear signboard.' not in text
-    assert 'Mara Reedwake (innkeeper and local witness)' in text
-    assert 'Tovin Bell (stablehand)' in text
+    assert 'Mara Reedwake and Tovin Bell are here with you.' in text
     assert text.endswith('What do you do?')
     assert 'Secret notes' not in text
     assert requests_roll(text) is False
+
+
+def test_a_opening_names_the_cast_without_their_authoring_roles():
+    brief = {
+        'scene': {'summary': 'At dusk, an empty caravan rolls into the Lantern Post.'},
+        'presentNpcs': [
+            {'name': 'Mara Reedwake', 'role': 'innkeeper_and_local_witness'},
+            {'name': 'Tovin Bell', 'role': 'stablehand and accidental witness'},
+            {'name': 'Osric Hale', 'role': 'local_reeve'},
+        ],
+    }
+
+    text = narrate(_context(), _hint(message_kind='opening', turn_number=1), '(The adventure begins.)', SPEAKER, brief)
+
+    assert 'Within earshot are Mara Reedwake, Tovin Bell, and Osric Hale.' in text
+    for role_word in ('innkeeper', 'witness', 'stablehand', 'reeve', '('):
+        assert role_word not in text
 
 
 def test_b_invalid_action_is_explained_plainly():
@@ -479,15 +495,20 @@ def test_i_talking_to_a_present_npc_shares_what_they_know_in_order():
         assert requests_roll(text) is False
 
 
-def test_j_any_other_action_quotes_it_adds_a_fresh_detail_and_names_leads():
+ACTION_ACKNOWLEDGEMENTS = ('You set to it.', 'You take your time over it.', 'Nothing stops you.', 'You do just that.')
+
+
+def test_j_any_other_action_is_acknowledged_without_quoting_adds_a_fresh_detail_and_names_leads():
     previous = 'At dusk, an empty caravan rolls in. One wagon bell rings though no hand touches it.'
     context = _context(recent_turns=[{'turn_id': 3, 'player_input': 'I look.', 'dm_output': previous}])
 
     text = narrate(context, _hint(), 'I walk slowly along the line of wagons, ' + 'looking closely ' * 20, SPEAKER)
 
     _assert_turn_shape(text)
-    quoted = text.split('"')[1]
-    assert len(quoted) <= 160
+    assert text.startswith(ACTION_ACKNOWLEDGEMENTS)
+    assert '"' not in text
+    assert 'line of wagons' not in text
+    assert 'looking closely' not in text
     assert 'One wagon bell rings' not in text
     assert 'The wheel rims are packed with cold road-mud.' in text
     assert 'Mara Reedwake' in text
@@ -495,6 +516,39 @@ def test_j_any_other_action_quotes_it_adds_a_fresh_detail_and_names_leads():
     assert 'the way to the Old North Road' in text
     assert 'Hidden Barrow' not in text
     assert requests_roll(text) is False
+
+
+def test_j_acknowledgement_is_chosen_by_turn_from_the_four_short_lines():
+    acknowledgements = set()
+    for number in range(10):
+        hint = _hint(turn_number=number)
+        text = narrate(_context(), hint, 'I look around.', SPEAKER)
+        assert text == narrate(_context(), hint, 'I look around.', SPEAKER)
+        acknowledgements.update(line for line in ACTION_ACKNOWLEDGEMENTS if text.startswith(line))
+
+    assert acknowledgements == set(ACTION_ACKNOWLEDGEMENTS)
+
+
+def test_j_second_scene_detail_is_added_only_when_the_word_floor_needs_it():
+    short_text = narrate(_context(), _hint(), 'I look around.', SPEAKER)
+    long_detail = (
+        'Every wagon in the line has been unhitched with care, its harness hung on the same peg and its lamp trimmed '
+        'and cold, as if the drivers meant to come back before dark.'
+    )
+    long_context = _context()
+    long_context['live_world_state']['currentScene']['visibleDetails'] = [long_detail, 'The wheel rims are packed with cold road-mud.']
+    long_text = narrate(long_context, _hint(), 'I look around.', SPEAKER)
+
+    first_paragraph, leads_paragraph = short_text.split('\n\n')
+    assert first_paragraph.startswith(ACTION_ACKNOWLEDGEMENTS)
+    assert 'One wagon bell rings though no hand touches it.' in first_paragraph
+    assert 'The wheel rims are packed with cold road-mud.' in first_paragraph
+    assert leads_paragraph.startswith('Close at hand: Mara Reedwake, the Iron Strongbox, and the way to the Old North Road.')
+    assert long_text.split('\n\n')[0].endswith(long_detail)
+    assert 'cold road-mud' not in long_text
+    assert 'Close at hand: Mara Reedwake' in long_text.split('\n\n')[1]
+    _assert_turn_shape(short_text)
+    _assert_turn_shape(long_text)
 
 
 def test_j_input_that_reads_as_a_roll_request_is_not_quoted():

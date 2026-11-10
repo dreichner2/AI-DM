@@ -96,6 +96,8 @@ const DC_RE = /(?:dc\s*)?(\d{1,2})/i
 const CONDITION_RE =
   /\b(?:spell|slot|condition|concentrat|cantrip|blinded|charmed|deafened|exhaust|frightened|grappled|incapacitated|invisible|paralyzed|petrified|poisoned|prone|restrained|stunned|unconscious)/
 const LEADING_LABEL_RE =/^([A-Za-z][\w .'-]{0,31}?):\s+(?=\S)/
+/** A bare word such as "calm": a mood-only scene update logged by older servers, not a change worth a chip. */
+const BARE_WORD_RE = /^[a-z]+$/
 const ATTACK_RULE_TYPES = new Set(['attack', 'spell_attack'])
 
 function metadataRecord(metadata: JsonRecord, key: string): JsonRecord | null {
@@ -310,7 +312,7 @@ export function storyChanges(entry: TimelineEntry): StoryChange[] {
     if (!isRecord(line) || line.visibleToPlayer === false) return []
     const message = stringValue(line.message).trim()
     const text = chipText(message)
-    if (!text) return []
+    if (!text || BARE_WORD_RE.test(text)) return []
     const style =
       stringValue(line.status).toLowerCase() === 'rejected'
         ? { tone: 'fail' as const, glyph: 'mark' as const }

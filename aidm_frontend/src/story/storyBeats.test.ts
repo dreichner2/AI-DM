@@ -226,4 +226,28 @@ describe('storyChanges', () => {
   it('returns nothing for entries without a state log', () => {
     expect(storyChanges(entry('log-1', 'system', 'System', 'State updated'))).toEqual([])
   })
+
+  it('drops a line that reads as a single lowercase word, such as a stored mood-only scene update', () => {
+    const moodOnly = entry('log-2', 'system', 'System', 'State updated:\n- Updated scene mood: calm.', {
+      turn_id: 1,
+      state_log: { lines: [{ status: 'applied', message: 'Updated scene mood: calm.', changeType: 'scene.update' }] },
+    })
+    expect(storyChanges(moodOnly)).toEqual([])
+    expect(kinds(buildStoryBeats([entry('log-1', 'dm', 'DM', 'The horses are calm.', { turn_id: 1 }), moodOnly]))).toEqual([
+      'narration',
+    ])
+
+    const mixed = storyChanges(
+      entry('log-3', 'system', 'System', 'State updated:', {
+        state_log: {
+          lines: [
+            { status: 'applied', message: 'tense', changeType: 'scene.update' },
+            { status: 'applied', message: 'Updated scene: The Lantern Post.', changeType: 'scene.update' },
+            { status: 'applied', message: 'Learned spell: Shield.', changeType: 'spell.learn' },
+          ],
+        },
+      }),
+    )
+    expect(mixed.map((change) => change.text)).toEqual(['The Lantern Post', 'Shield'])
+  })
 })

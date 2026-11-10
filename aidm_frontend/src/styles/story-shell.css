@@ -98,6 +98,7 @@
 
 /* The composer dock: centred, a little wider than the prose measure. */
 .story-shell .story-composer-slot {
+  --story-slot-bottom: max(14px, env(safe-area-inset-bottom, 0px));
   justify-self: center;
   box-sizing: border-box;
   width: 100%;
@@ -105,10 +106,15 @@
     calc(var(--story-measure) + 10ch + 2 * var(--story-gutter)),
     calc(100% - 2 * var(--story-hud-clearance))
   );
-  padding: 0 max(var(--story-gutter), env(safe-area-inset-right, 0px)) max(14px, env(safe-area-inset-bottom, 0px))
+  padding: 0 max(var(--story-gutter), env(safe-area-inset-right, 0px)) var(--story-slot-bottom)
     max(var(--story-gutter), env(safe-area-inset-left, 0px));
   font-family: var(--story-prose);
   font-size: var(--story-prose-size);
+}
+/* The dock's fade reaches through the slot's bottom padding to the screen edge; stopping at the dock let the
+   mood glow show through as a pale strip along the bottom. */
+.story-shell .story-composer-slot > .story-dock::before {
+  bottom: calc(-1 * var(--story-slot-bottom));
 }
 .story-shell :where(.story-composer-slot > *) {
   /* Back to the shell's UI type; the slot's prose font only sizes its measure. */
@@ -267,7 +273,7 @@
 
 .story-shell .story-safe-mode {
   margin-right: 10px;
-  color: var(--story-gold);
+  color: var(--story-muted);
   cursor: help;
 }
 

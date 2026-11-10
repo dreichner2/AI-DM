@@ -5,10 +5,35 @@ from typing import Any
 from aidm_server.canon_text import int_or_default
 
 GENERIC_EXTRACTED_REASON = 'Extracted from DM response.'
+SCENE_UPDATE_FIELDS = (
+    'locationId',
+    'name',
+    'sceneType',
+    'dangerLevel',
+    'mood',
+    'combatState',
+    'description',
+    'activeNpcIds',
+    'activeQuestIds',
+    'playerPositions',
+    'playerZones',
+    'characterPositions',
+    'characterZones',
+    'musicTag',
+)
+# Scene fields that only steer presentation (atmosphere, music); changing them tells the player nothing.
+SCENE_PRESENTATION_FIELDS = frozenset({'mood', 'dangerLevel', 'musicTag'})
 
 
 def _change_type(change: dict[str, Any]) -> str:
     return str(change.get('type') or '').strip()
+
+
+def _is_presentation_only_scene_update(change: dict[str, Any]) -> bool:
+    if _change_type(change) != 'scene.update':
+        return False
+    changed = {key for key in SCENE_UPDATE_FIELDS if change.get(key) not in (None, '', [], {})}
+    return bool(changed) and changed <= SCENE_PRESENTATION_FIELDS
 
 
 def _item_name(change: dict[str, Any]) -> str:
@@ -173,12 +198,12 @@ def _change_message(change: dict[str, Any], *, status: str, reason: str | None =
     return f"{change_type or 'state'} update applied."
 
 
-def _line(status: str, change: dict[str, Any], message: str, *, visible: bool | None = None) -> dict[str, Any]:
+def _line(status: str, change: dict[str, Any], message: str) -> dict[str, Any]:
     return {
         'status': status,
         'message': message,
         'changeType': _change_type(change),
-        'visibleToPlayer': bool(change.get('visible', True) if visible is None else visible),
+        'visibleToPlayer': bool(change.get('visible', True)) and not _is_presentation_only_scene_update(change),
         'changeId': change.get('id'),
     }
 

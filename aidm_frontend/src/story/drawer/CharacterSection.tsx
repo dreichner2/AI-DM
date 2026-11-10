@@ -20,6 +20,23 @@ function mechanicLabel(value: string) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase())
 }
 
+/** A bonus with its sign: "2" reads "+2", "-1" stays "-1"; anything that is not a number is shown as it is. */
+function signed(value: string) {
+  const trimmed = value.trim().replace(/^\+/, '')
+  const number = Number(trimmed)
+  if (!trimmed || !Number.isFinite(number)) return value
+  return number >= 0 ? `+${number}` : String(number)
+}
+
+/**
+ * HP as current/max: the live roster first, then the sheet. The sheet drops its maximum when the
+ * character is at full health, so only the roster can supply it then.
+ */
+function hpLabel(hp: string, player: ActivePlayer | undefined) {
+  if (player?.health && player.health.maxHp > 0) return `${player.health.currentHp}/${player.health.maxHp}`
+  return hp.replace(/\s*\/\s*/, '/')
+}
+
 /** Health tone for the HP numeral: the live roster first, then the sheet's own numbers. */
 function hpTone(hp: string, player: ActivePlayer | undefined) {
   if (player?.health) return player.health.tone
@@ -53,16 +70,16 @@ export function CharacterSection({ board, inspector }: CharacterSectionProps) {
     `${mechanicLabel(skill)}${(statBlock.skillExpertise ?? []).includes(skill) ? ' (expertise)' : ''}`,
   )
   const facts: Array<[string, string]> = [
-    ['Proficiency bonus', statBlock.proficiency !== '—' ? statBlock.proficiency : ''],
+    ['Proficiency bonus', statBlock.proficiency !== '—' ? signed(statBlock.proficiency) : ''],
     ['Skills', skills.join(', ')],
     ['Tools', (statBlock.toolProficiencies ?? []).map(mechanicLabel).join(', ')],
     ['Languages', (statBlock.languages ?? []).join(', ')],
     ['Background', statBlock.background ?? ''],
   ]
   const vitals: Array<[string, string]> = [
-    ['HP', statBlock.hp.replace(/\s*\/\s*/, '/')],
+    ['HP', hpLabel(statBlock.hp, viewer)],
     ['AC', statBlock.ac],
-    ['Initiative', statBlock.init],
+    ['Initiative', signed(statBlock.init)],
     ['Speed', statBlock.speed],
   ]
 

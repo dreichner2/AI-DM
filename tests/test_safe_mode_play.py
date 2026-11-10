@@ -71,13 +71,15 @@ def _send(socket_client, ids, message, **extra):
 def _latest_turn(app, session_id):
     with app.app_context():
         turn = DmTurn.query.filter_by(session_id=session_id).order_by(DmTurn.turn_id.desc()).first()
+        metadata = safe_json_loads(turn.metadata_json, {})
         return {
             'turn_id': turn.turn_id,
             'outcome_status': turn.outcome_status,
             'rule_type': turn.rule_type,
             'llm_model': turn.llm_model,
-            'roll_gate': safe_json_loads(turn.metadata_json, {}).get('roll_gate'),
+            'roll_gate': metadata.get('roll_gate'),
             'rules_hint': safe_json_loads(turn.rules_hint, {}),
+            'state_log': (metadata.get('state_pipeline') or {}).get('stateLog') or {},
         }
 
 
@@ -101,8 +103,11 @@ def test_safe_mode_plays_the_play_now_opening_actions_and_rolls_without_network(
     opening_turn = _latest_turn(app, ids['session_id'])
 
     assert 'empty caravan' in opening_text
-    assert 'Mara Reedwake' in opening_text
+    assert 'Within earshot are Mara Reedwake, Tovin Bell, and Osric Hale.' in opening_text
+    assert 'witness' not in opening_text
     assert opening_text.endswith('What do you do?')
+    # "its horses are calm" proposes a mood-only scene update; it must not reach the player as a change line.
+    assert [line for line in opening_turn['state_log'].get('lines', []) if line.get('changeType') == 'scene.update'] == []
     assert requests_roll(opening_text) is False
     assert opening_turn['roll_gate'] is None
     assert opening_turn['outcome_status'] != 'deferred'
@@ -114,7 +119,9 @@ def test_safe_mode_plays_the_play_now_opening_actions_and_rolls_without_network(
 
     assert _payloads(plain, 'roll_required') == []
     assert not [error for error in _payloads(plain, 'error') if error.get('error_code') == 'roll_required']
-    assert '"I walk over to the wagons."' in plain_text
+    assert 'I walk over to the wagons' not in plain_text
+    assert plain_text.startswith(('You set to it.', 'You take your time over it.', 'Nothing stops you.', 'You do just that.'))
+    assert 'Mara Reedwake' in plain_text.split('\n\n')[-1]
     assert _latest_turn(app, ids['session_id'])['roll_gate'] is None
 
     sneak = _send(socket_client, ids, 'I sneak around behind the last wagon.', client_message_id='turn-3')
