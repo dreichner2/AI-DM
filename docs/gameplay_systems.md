@@ -286,9 +286,9 @@ mechanics the server currently applies, rather than full tabletop coverage.
   concentration replacement, with modes, bonus dice, automatic save failures,
   cover, and defenses from the modifier engine. Healing and ally spells may
   target a player character at 0 HP who is not dead; damage spells may not
-  target the defeated. Direct health-damage changes trigger a server-owned
-  concentration check; spell damage does not yet do so. Turn advancement
-  expires supported timed effects.
+  target the defeated. Direct health-damage changes and resolved spell damage
+  trigger server-owned concentration checks; turn advancement expires supported
+  timed effects.
 - Fire Bolt, Ray of Frost and Sacred Flame scale their damage dice with caster
   level. Cure Wounds and Healing Word add the casting modifier and gain one die
   per higher slot level; they can also heal the active party outside combat.

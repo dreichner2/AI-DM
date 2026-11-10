@@ -61,6 +61,39 @@ def test_upcast_healing_adds_dice_and_the_casting_modifier_and_binds_level_to_ca
     assert conflict['code'] == 'spell_cast_id_conflict'
 
 
+def test_spell_damage_checks_concentration_and_removes_its_effects():
+    caster = _participant('player_mage', team='player', activeEffects=[{
+        'id': 'enemy_spell_effect', 'sourceId': 'spell_web', 'sourceName': 'Web',
+        'casterId': 'enemy_mage', 'concentration': True, 'modifiers': {'acBonus': 1},
+    }])
+    target = _participant('enemy_mage', team='enemy', hp=20, maximum=20)
+    resources = {'concentration': {'active': True, 'spellId': 'spell_web', 'spellName': 'Web',
+                                   'casterActorId': 'enemy_mage', 'targetIds': ['player_mage']}}
+    result = resolve_targeted_spell(_combat(caster, target), caster_id='player_mage', spell=_damage_spell(),
+                                    target_ids=['enemy_mage'], cast_id='break_concentration',
+                                    roller=SequenceRoller(10, 3, 1), target_resources={'enemy_mage': resources})
+    assert result['ok'] is True
+    damage = result['resolution']['targets'][0]['effects'][0]
+    assert damage['concentrationCheck']['check']['rolls'] == [1]
+    assert damage['concentrationCheck']['maintained'] is False
+    assert result['targetResources']['enemy_mage']['concentration'] is None
+    assert result['combat']['participants'][0]['activeEffects'] == []
+
+
+def test_spell_damage_to_temporary_hp_checks_player_concentration_and_can_succeed():
+    enemy = _participant('enemy_mage', team='enemy')
+    player = _participant('player_ally', team='player', hp=20, maximum=20, temporary=4)
+    resources = {'concentration': {'active': True, 'spellId': 'spell_bless', 'spellName': 'Bless',
+                                   'casterActorId': 'player_ally', 'targetIds': ['player_ally']}}
+    result = resolve_targeted_spell(_combat(enemy, player, active_actor_id='enemy_mage'), caster_id='enemy_mage',
+                                    spell=_damage_spell(), target_ids=['player_ally'], cast_id='temp_damage',
+                                    roller=SequenceRoller(10, 3, 15), target_resources={'player_ally': resources})
+    damage = result['resolution']['targets'][0]['effects'][0]
+    assert damage['tempHpDamage'] == 3 and damage['hpDamage'] == 0
+    assert damage['concentrationCheck']['maintained'] is True
+    assert result['targetResources']['player_ally']['concentration']['spellId'] == 'spell_bless'
+
+
 def _participant(
     participant_id: str,
     *,

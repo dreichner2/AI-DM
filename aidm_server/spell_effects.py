@@ -1201,6 +1201,7 @@ def resolve_targeted_spell(
     cast_id: str,
     roller: Roller,
     caster_resources: Mapping[str, Any] | None = None,
+    target_resources: Mapping[str, Mapping[str, Any]] | None = None,
     current_turn: int | None = None,
     cast_level: int | None = None,
 ) -> dict[str, Any]:
@@ -1311,6 +1312,7 @@ def resolve_targeted_spell(
         )
 
     in_combat = _key(next_combat.get('status')) in {'starting', 'active'}
+    updated_target_resources: dict[str, dict[str, Any]] = {}
     target_resolutions: list[dict[str, Any]] = []
     for target_id in normalized_target_ids:
         target = _participant_by_id(next_combat, target_id)
@@ -1328,8 +1330,9 @@ def resolve_targeted_spell(
             delivery_result['consumedEffects'] = [
                 _text(item.get('id') or item.get('condition')) for item in consumed
             ]
-        effect_results = [
-            _apply_effect(
+        effect_results = []
+        for index, effect in enumerate(normalized_spell['effects']):
+            effect_result = _apply_effect(
                 target,
                 effect=effect,
                 delivery=normalized_spell['delivery'],
@@ -1342,8 +1345,35 @@ def resolve_targeted_spell(
                 in_combat=in_combat,
                 casting_modifier=casting_modifier,
             )
-            for index, effect in enumerate(normalized_spell['effects'])
-        ]
+            damage = _int(effect_result.get('amountApplied'), default=0) if effect['kind'] == 'damage' else 0
+            resources_for_target = (
+                next_resources if target_id == _text(caster_id)
+                else updated_target_resources.get(target_id)
+                or (target_resources or {}).get(target_id)
+                or (target.get('spellResources') if isinstance(target.get('spellResources'), Mapping) else {})
+            )
+            if damage > 0 and isinstance(resources_for_target.get('concentration'), Mapping):
+                concentration = resolve_concentration_check(
+                    next_combat, resources_for_target, caster_id=target_id, damage=damage, roller=roller,
+                )
+                if concentration.get('ok'):
+                    effect_result['concentrationCheck'] = {
+                        'required': concentration.get('required'),
+                        'maintained': concentration.get('maintained'),
+                        'reason': concentration.get('reason'),
+                        'check': deepcopy(concentration.get('check')),
+                        'removedEffects': deepcopy(concentration.get('removedEffects') or []),
+                    }
+                    next_combat = concentration['combat']
+                    updated_target_resources[target_id] = deepcopy(concentration['casterResources'])
+                    if target_id == _text(caster_id):
+                        next_resources = deepcopy(concentration['casterResources'])
+                    target = _participant_by_id(next_combat, target_id)
+                    caster = _participant_by_id(next_combat, caster_id)
+                    assert target is not None and caster is not None
+                    if isinstance(target.get('spellResources'), Mapping):
+                        target['spellResources'] = deepcopy(concentration['casterResources'])
+            effect_results.append(effect_result)
         target_resolutions.append(
             {
                 'targetId': target_id,
@@ -1393,6 +1423,7 @@ def resolve_targeted_spell(
         'reason': '',
         'combat': next_combat,
         'casterResources': next_resources,
+        'targetResources': updated_target_resources,
         'resolution': resolution,
         'legality': legality,
     }

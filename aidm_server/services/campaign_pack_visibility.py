@@ -947,6 +947,7 @@ def _filter_combat_flags(flags: dict, participants_by_id: dict[str, dict]) -> di
                     'bonusActionRemaining',
                     'reactionRemaining',
                     'movementRemaining',
+                    'leveledSpellCast',
                 ),
             ),
             'actorId': economy_actor_id,

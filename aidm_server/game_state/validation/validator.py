@@ -1182,6 +1182,12 @@ def _spell_resolution_rolls(resolution: Any) -> list[int]:
                 max(1, int_or_default(value, default=1))
                 for value in (roll.get('rolls') or [])
             )
+            concentration = effect.get('concentrationCheck') if isinstance(effect.get('concentrationCheck'), dict) else {}
+            check = concentration.get('check') if isinstance(concentration.get('check'), dict) else {}
+            rolls.extend(max(1, int_or_default(value, default=1)) for value in check.get('rolls') or [])
+            for bonus in check.get('bonusDice') or []:
+                if isinstance(bonus, dict):
+                    rolls.extend(max(1, int_or_default(value, default=1)) for value in bonus.get('rolls') or [])
     return rolls
 
 
@@ -1233,6 +1239,11 @@ def _resolve_spell_effect(
             if isinstance(actor.get('spellResources'), dict)
             else {}
         ),
+        target_resources={
+            _text(candidate.get('id')): candidate['spellResources']
+            for candidate in state.get('playerCharacters') or []
+            if isinstance(candidate, dict) and _text(candidate.get('id')) and isinstance(candidate.get('spellResources'), dict)
+        },
         current_turn=current_turn,
         cast_level=cast_level,
     )
@@ -1559,6 +1570,7 @@ def _validate_authoritative_spell_change(
         'resolution': deepcopy(replay.get('resolution')),
         'resolvedCombat': deepcopy(replay.get('combat')),
         'effectCasterResources': deepcopy(replay.get('casterResources')),
+        'effectTargetResources': deepcopy(replay.get('targetResources') or {}),
     }
     return 'accepted', 'Spell targets, rolls, and effects match the authoritative rules engine.', normalized
 

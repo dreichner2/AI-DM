@@ -287,6 +287,36 @@ def test_out_of_combat_healing_targets_active_party_and_preserves_combat_state(m
     assert unchanged['nextState']['playerCharacters'][0]['spellResources']['slots']['1']['current'] == 2
 
 
+def test_spell_damage_concentration_check_is_replayed_and_applied_once(monkeypatch) -> None:
+    state = _combat_state()
+    caster, enemy = state['combat']['participants']
+    caster['activeEffects'] = [{
+        'id': 'enemy_buff', 'sourceId': 'spell_hex', 'sourceName': 'Hex',
+        'casterId': 'enemy_goblin_1', 'concentration': True, 'modifiers': {'acBonus': 1},
+    }]
+    enemy['spellResources'] = {'concentration': {
+        'active': True, 'spellId': 'spell_hex', 'spellName': 'Hex',
+        'casterActorId': 'enemy_goblin_1', 'targetIds': ['player_1'],
+    }}
+    monkeypatch.setattr('aidm_server.game_state.validation.validator.secrets.randbelow', lambda _sides: 0)
+    declared, validation, applied = _run_intent(state, {
+        'kind': 'spell', 'text': 'I cast Magic Missile at the goblin.', 'spell': {
+            'name': 'Magic Missile', 'effect': 'Force darts strike.', 'target_ids': ['enemy_goblin_1'],
+        },
+    }, turn_id=27)
+    assert declared['validatedActions'][0]['status'] == 'valid'
+    assert validation['rejected'] == []
+    damage = applied['appliedChanges'][0]['spellResolution']['targets'][0]['effects'][0]
+    assert damage['concentrationCheck']['check']['rolls'] == [1]
+    assert damage['concentrationCheck']['maintained'] is False
+    participants = applied['nextState']['combat']['participants']
+    assert participants[0]['activeEffects'] == []
+    assert participants[1]['spellResources']['concentration'] is None
+    assert 'effectTargetResources' not in applied['appliedChanges'][0]
+    retried = apply_state_changes(applied['nextState'], validated_changes_for_application(validation))
+    assert retried['nextState']['combat']['participants'][1]['hp'] == participants[1]['hp']
+
+
 def test_targeted_spell_stale_target_fails_without_spending_slot() -> None:
     state = _combat_state()
     declared, validation, applied = _run_intent(

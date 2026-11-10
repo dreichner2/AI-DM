@@ -450,6 +450,17 @@ def _apply_spell_cast(
                     target_actor = find_actor(state, participant.get('id'))
                     if target_actor is not None and isinstance(participant.get('activeEffects'), list):
                         target_actor['activeEffects'] = deepcopy(participant['activeEffects'])
+        target_resources = change.get('effectTargetResources') if isinstance(change.get('effectTargetResources'), dict) else {}
+        for target_id, target_resource in target_resources.items():
+            target_actor = find_actor(state, target_id)
+            if not isinstance(target_actor, dict) or not isinstance(target_resource, dict):
+                continue
+            if target_actor is actor:
+                resources['concentration'] = deepcopy(target_resource.get('concentration'))
+                resources['revision'] = max(int_or_default(resources.get('revision'), default=0),
+                                            int_or_default(target_resource.get('revision'), default=0))
+            else:
+                target_actor['spellResources'] = deepcopy(target_resource)
         spell_resolution = deepcopy(change.get('resolution'))
     actor['spellResources'] = resources
     return {
@@ -2518,6 +2529,8 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             if not result:
                 skipped.append({'change': change, 'reason': 'Spell resource was unavailable during cast application.'})
                 continue
+            # Target resources are a trusted replay input, not player-facing turn output.
+            applied_change.pop('effectTargetResources', None)
             applied_change.update(result)
             applied_change['actualAmount'] = 1 if result.get('resourceConsumed') else 0
         elif change_type == 'class_feature.use' and actor:

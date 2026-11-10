@@ -28,6 +28,7 @@ from aidm_server.game_state.orchestration.turn_pipeline import _gate_pre_dm_comb
 from aidm_server.models import Campaign, DmTurn, Player, Session, safe_json_dumps
 from aidm_server.player_rolls import canonical_roll_sentence, resolve_authoritative_player_roll
 from aidm_server.roll_visibility import public_roll_payload
+from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
 from aidm_server.spell_effects import resolve_targeted_spell, spell_target_legality
 from tests.helpers import seed_world_campaign_player_session
 
@@ -718,6 +719,8 @@ def test_only_one_levelled_spell_per_turn_but_cantrips_remain_legal():
     assert rejected[0]['reason'] == 'Only one levelled spell can be cast per turn.'
     state['combat']['flags']['turnEconomy'] = allowed[1]['flags']['turnEconomy']
     assert state['combat']['flags']['turnEconomy']['leveledSpellCast'] is True
+    projected = filter_session_snapshot_for_player(state, private_player_ids={1})
+    assert projected['combat']['flags']['turnEconomy']['leveledSpellCast'] is True
     allowed, rejected = _gate_pre_dm_combat_spells(state=state, changes=[cantrip], actor_id='player_1', turn_id=4)
     assert not rejected
     assert allowed[0]['id'] == 'cantrip'
