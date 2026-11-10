@@ -441,10 +441,15 @@ def _apply_spell_cast(
                 int_or_default(resources.get('revision'), default=0),
                 int_or_default(effect_resources.get('revision'), default=0),
             ) + 1
-        state['combat'] = deepcopy(resolved_combat)
-        for participant in state['combat'].get('participants') or []:
+        if _combat_active(state):
+            state['combat'] = deepcopy(resolved_combat)
+        for participant in resolved_combat.get('participants') or []:
             if isinstance(participant, dict):
                 _sync_player_actor_from_combat_participant(state, participant)
+                if not _combat_active(state):
+                    target_actor = find_actor(state, participant.get('id'))
+                    if target_actor is not None and isinstance(participant.get('activeEffects'), list):
+                        target_actor['activeEffects'] = deepcopy(participant['activeEffects'])
         spell_resolution = deepcopy(change.get('resolution'))
     actor['spellResources'] = resources
     return {

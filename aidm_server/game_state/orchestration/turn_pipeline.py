@@ -20,6 +20,7 @@ from aidm_server.combat.state import (
     combat_summary_for_dm,
     combat_turn_context,
     consume_combat_turn_economy,
+    ensure_combat_turn_economy,
     normalize_combat_state,
 )
 from aidm_server.database import db
@@ -302,6 +303,13 @@ def _gate_pre_dm_combat_spells(
             )
             continue
         bonus_action = _spell_casting_time(working_state, change) == 'bonus_action'
+        prior_economy = ensure_combat_turn_economy(combat, actor_id=change_actor_id)
+        levelled = int_or_default(change.get('castLevel', change.get('cast_level')), default=0) > 0
+        repeated = str(change.get('id') or '') in (prior_economy.get('spentActionIds') or [])
+        remaining_key = 'bonusActionRemaining' if bonus_action else 'actionRemaining'
+        if levelled and prior_economy.get('leveledSpellCast') is True and not repeated and prior_economy.get(remaining_key, 0) > 0:
+            rejected.append({'change': change, 'reason': 'Only one levelled spell can be cast per turn.'})
+            continue
         consumed, reason, economy = consume_combat_turn_economy(
             combat,
             actor_id=change_actor_id,
@@ -312,6 +320,9 @@ def _gate_pre_dm_combat_spells(
         if not consumed:
             rejected.append({'change': change, 'reason': reason or "This turn's action is already spent."})
             continue
+        if levelled:
+            economy['leveledSpellCast'] = True
+            combat['flags']['turnEconomy'] = economy
         working_state['combat'] = combat
         allowed.extend(
             [

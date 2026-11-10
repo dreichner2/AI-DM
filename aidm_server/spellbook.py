@@ -54,11 +54,14 @@ def _source_label(source_type: str | None, source_detail: str | None) -> str | N
 # server-owned effect with client-authored damage or targeting rules.
 AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
     'fire bolt': {
+        'level': 0,
         'delivery': {'type': 'attack'},
-        'target': {'relation': 'enemy', 'rangeBands': ['near', 'far'], 'maxTargets': 1},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far', 'distant'], 'maxTargets': 1},
         'effects': [{'kind': 'damage', 'dice': '1d10', 'damageType': 'fire'}],
+        'scaling': {'cantrip': True},
     },
     'magic missile': {
+        'level': 1,
         'delivery': {'type': 'automatic'},
         'target': {
             'relation': 'enemy',
@@ -69,11 +72,15 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
         'effects': [{'kind': 'damage', 'dice': '3d4+3', 'damageType': 'force'}],
     },
     'sacred flame': {
+        'level': 0,
         'delivery': {'type': 'save', 'ability': 'dexterity', 'onSuccess': 'none'},
-        'target': {'relation': 'enemy', 'rangeBands': ['near', 'far'], 'maxTargets': 1},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 1, 'ignoreCover': True},
         'effects': [{'kind': 'damage', 'dice': '1d8', 'damageType': 'radiant'}],
+        'scaling': {'cantrip': True},
     },
     'cure wounds': {
+        'level': 1,
+        'outOfCombat': True,
         'delivery': {'type': 'automatic'},
         'target': {
             'relation': 'ally',
@@ -81,9 +88,13 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
             'maxTargets': 1,
             'allowSelf': True,
         },
-        'effects': [{'kind': 'healing', 'dice': '1d8'}],
+        'effects': [{'kind': 'healing', 'dice': '1d8', 'addCastingModifier': True}],
+        'scaling': {'upcast': {'dice': '1d8'}},
     },
     'healing word': {
+        'level': 1,
+        'castingTime': 'bonus_action',
+        'outOfCombat': True,
         'delivery': {'type': 'automatic'},
         'target': {
             'relation': 'ally',
@@ -91,9 +102,11 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
             'maxTargets': 1,
             'allowSelf': True,
         },
-        'effects': [{'kind': 'healing', 'dice': '1d4'}],
+        'effects': [{'kind': 'healing', 'dice': '1d4', 'addCastingModifier': True}],
+        'scaling': {'upcast': {'dice': '1d4'}},
     },
     'entangle': {
+        'level': 1,
         'delivery': {'type': 'save', 'ability': 'strength', 'onSuccess': 'none'},
         'target': {'relation': 'enemy', 'rangeBands': ['near', 'far'], 'maxTargets': 1},
         'effects': [
@@ -106,8 +119,9 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
         'concentration': True,
     },
     'ray of frost': {
+        'level': 0,
         'delivery': {'type': 'attack'},
-        'target': {'relation': 'enemy', 'rangeBands': ['near', 'far'], 'maxTargets': 1},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 1},
         'effects': [
             {'kind': 'damage', 'dice': '1d8', 'damageType': 'cold'},
             {
@@ -116,6 +130,7 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
                 'duration': {'remaining': 1, 'tick': 'target_turn_end'},
             },
         ],
+        'scaling': {'cantrip': True},
     },
 }
 

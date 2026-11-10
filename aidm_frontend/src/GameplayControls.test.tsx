@@ -22,6 +22,8 @@ function controlState(): GameplayControlState {
         level: 1,
         description: 'Reliable force darts.',
         delivery: 'automatic',
+        castingTime: 'action',
+        castLevels: [1],
         effectLabel: 'damage · force',
         relation: 'enemy',
         rangeBands: ['near', 'far', 'distant'],
@@ -116,6 +118,19 @@ function controlState(): GameplayControlState {
 afterEach(() => cleanup())
 
 describe('GameplayControls', () => {
+  it('sends the selected cast level with an exact-target spell', () => {
+    const state = controlState()
+    state.spells[0].castLevels = [1, 2, 3]
+    const onSubmit = vi.fn(() => true)
+    render(<GameplayControls state={state} disabled={false} onSubmit={onSubmit} />)
+    fireEvent.change(screen.getByRole('combobox', { name: 'Cast level' }), { target: { value: '3' } })
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Target Goblin' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cast Magic Missile' }))
+    expect(onSubmit).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      spell: expect.objectContaining({ cast_level: 3, target_ids: ['enemy_goblin_1'] }),
+    }))
+  })
+
   it('submits exact-target spell, capability, and revision-bound object intents', () => {
     const onSubmit = vi.fn(() => true)
     render(<GameplayControls state={controlState()} disabled={false} onSubmit={onSubmit} />)

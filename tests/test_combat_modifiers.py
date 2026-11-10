@@ -703,6 +703,32 @@ def test_casting_cost_follows_the_spell_definition_casting_time():
     assert (economy['actionRemaining'], economy['bonusActionRemaining']) == (0, 1)
 
 
+def test_only_one_levelled_spell_per_turn_but_cantrips_remain_legal():
+    state = _casting_state('bonus_action')
+    state['playerCharacters'][0]['spellbook']['knownSpells'].extend([
+        {'id': 'spell_action', 'name': 'Action Spell', 'level': 1},
+        {'id': 'spell_cantrip', 'name': 'Cantrip', 'level': 0},
+    ])
+    bonus = {**_cast('bonus'), 'castLevel': 1}
+    action = {**_cast('action'), 'spellId': 'spell_action', 'spellName': 'Action Spell', 'castLevel': 1}
+    cantrip = {**_cast('cantrip'), 'spellId': 'spell_cantrip', 'spellName': 'Cantrip', 'castLevel': 0}
+
+    allowed, rejected = _gate_pre_dm_combat_spells(state=state, changes=[bonus, action], actor_id='player_1', turn_id=4)
+    assert [change['id'] for change in allowed if change['type'] == 'spell.cast'] == ['bonus']
+    assert rejected[0]['reason'] == 'Only one levelled spell can be cast per turn.'
+    state['combat']['flags']['turnEconomy'] = allowed[1]['flags']['turnEconomy']
+    assert state['combat']['flags']['turnEconomy']['leveledSpellCast'] is True
+    allowed, rejected = _gate_pre_dm_combat_spells(state=state, changes=[cantrip], actor_id='player_1', turn_id=4)
+    assert not rejected
+    assert allowed[0]['id'] == 'cantrip'
+
+    reverse = _casting_state('bonus_action')
+    reverse['playerCharacters'][0]['spellbook']['knownSpells'].append({'id': 'spell_action', 'name': 'Action Spell', 'level': 1})
+    allowed, rejected = _gate_pre_dm_combat_spells(state=reverse, changes=[action, bonus], actor_id='player_1', turn_id=5)
+    assert allowed[0]['id'] == 'action'
+    assert rejected[0]['reason'] == 'Only one levelled spell can be cast per turn.'
+
+
 def test_operator_api_combat_start_uses_seeded_initiative_with_modifiers(client, app, monkeypatch):
     ids = seed_world_campaign_player_session(app)
     monkeypatch.setattr(creatures_blueprint, 'plan_enemy_intents', lambda _combat: {'intents': [], 'summaryForDm': ''})

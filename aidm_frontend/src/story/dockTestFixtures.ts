@@ -52,6 +52,8 @@ export function testControls(overrides: Partial<GameplayControlState> = {}): Gam
         level: 1,
         description: 'Force darts.',
         delivery: 'automatic',
+        castingTime: 'action',
+        castLevels: [1],
         effectLabel: 'damage · force',
         relation: 'enemy',
         rangeBands: ['near', 'far'],

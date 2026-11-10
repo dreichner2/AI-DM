@@ -52,6 +52,7 @@ export function spellCastSubmission(
   actorName: string,
   spell: GameplaySpellControl,
   targetIds: string[],
+  castLevel?: number,
 ): ActionSubmission {
   const names = spell.targets
     .filter((target) => targetIds.includes(target.id))
@@ -71,6 +72,7 @@ export function spellCastSubmission(
         resource_pool: 'auto',
         concentration: spell.concentration,
         target_ids: targetIds,
+        ...(castLevel === undefined ? {} : { cast_level: castLevel }),
       },
     },
   }

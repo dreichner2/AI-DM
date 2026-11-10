@@ -166,6 +166,46 @@ function snapshot() {
 }
 
 describe('gameplayControlsFromSnapshot', () => {
+  it('uses bonus-action economy and lists the available upcast levels', () => {
+    const state = snapshot()
+    const actor = state.playerCharacters[0] as Record<string, unknown>
+    const spellbook = actor.spellbook as { knownSpells: Array<Record<string, unknown>> }
+    spellbook.knownSpells[1].castingTime = 'bonus_action'
+    const resources = actor.spellResources as { slots: Record<string, { current: number; max: number }> }
+    resources.slots['2'] = { current: 2, max: 2 }
+    state.combat.flags.turnEconomy.actionRemaining = 0
+    let missile = gameplayControlsFromSnapshot(state, 30).spells.find((spell) => spell.name === 'Magic Missile')
+    expect(missile).toMatchObject({ available: true, castingTime: 'bonus_action', castLevels: [1, 2] })
+    state.combat.flags.turnEconomy.bonusActionRemaining = 0
+    missile = gameplayControlsFromSnapshot(state, 30).spells.find((spell) => spell.name === 'Magic Missile')
+    expect(missile).toMatchObject({ available: false, reason: 'The bonus action for this turn is already spent.' })
+  })
+
+  it('allows a cantrip but blocks another levelled spell after a levelled cast', () => {
+    const state = snapshot()
+    const economy: Record<string, unknown> = state.combat.flags.turnEconomy
+    economy.leveledSpellCast = true
+    const controls = gameplayControlsFromSnapshot(state, 30)
+    expect(controls.spells.find((spell) => spell.name === 'Fire Bolt')?.available).toBe(true)
+    expect(controls.spells.find((spell) => spell.name === 'Magic Missile')?.reason).toBe('Only one levelled spell can be cast per turn.')
+  })
+
+  it('offers out-of-combat healing to the active party without a range-band check', () => {
+    const state = snapshot()
+    state.combat.status = 'none'
+    const root: Record<string, unknown> = state
+    root.activePlayerIds = [30, 31]
+    const actor = state.playerCharacters[0] as Record<string, unknown>
+    const spellbook = actor.spellbook as { preparedSpells: string[]; knownSpells: Array<Record<string, unknown>> }
+    spellbook.preparedSpells = ['Cure Wounds']
+    spellbook.knownSpells[2].outOfCombat = true
+    const ally = state.playerCharacters[1] as Record<string, unknown>
+    ally.health = { currentHp: 0, maxHp: 12, conditions: ['dying'] }
+    const healing = gameplayControlsFromSnapshot(state, 30).spells.find((spell) => spell.name === 'Cure Wounds')
+    expect(healing?.available).toBe(true)
+    expect(healing?.targets.find((target) => target.id === 'player_31')?.available).toBe(true)
+  })
+
   it('projects authoritative spells with exact visible target and resource legality', () => {
     const state = gameplayControlsFromSnapshot(snapshot(), 30)
 

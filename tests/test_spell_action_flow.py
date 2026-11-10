@@ -220,6 +220,73 @@ def test_targeted_spell_resolves_exact_effect_before_narration_and_retries_once(
     assert retried['nextState']['playerCharacters'][0]['spellResources']['slots']['1']['current'] == 1
 
 
+def test_upcast_healing_replays_exact_rolls_and_consumes_the_chosen_slot(monkeypatch) -> None:
+    state = _combat_state()
+    actor = state['playerCharacters'][0]
+    actor['class'] = 'Cleric'
+    actor['level'] = 5
+    actor['stats']['wisdom'] = 16
+    actor['health']['maxHp'] = 30
+    actor['spellbook'] = normalize_spellbook({'knownSpells': [_spell('Healing Word', 1)]}, class_name='Cleric')
+    actor['spellResources'] = normalize_spell_resources(None, class_name='Cleric', level=5)
+    participant = state['combat']['participants'][0]
+    participant['level'] = 5
+    participant['stats']['wisdom'] = 16
+    participant['hp']['max'] = 30
+    monkeypatch.setattr('aidm_server.game_state.validation.validator.secrets.randbelow', lambda _sides: 2)
+    declared, validation, applied = _run_intent(
+        state,
+        {'kind': 'spell', 'text': 'I cast Healing Word on myself.', 'spell': {
+            'name': 'Healing Word', 'effect': 'Heal myself.', 'target_ids': ['player_1'], 'cast_level': 3,
+        }},
+        turn_id=24,
+    )
+    assert declared['validatedActions'][0]['status'] == 'valid'
+    assert validation['rejected'] == []
+    resolution = applied['appliedChanges'][0]['spellResolution']
+    assert resolution['castLevel'] == 3
+    healing = resolution['targets'][0]['effects'][0]
+    assert healing['roll']['rolls'] == [3, 3, 3]
+    assert healing['roll']['castingModifier'] == 3
+    assert healing['amountApplied'] == 12
+    assert applied['nextState']['playerCharacters'][0]['spellResources']['slots']['3']['current'] == 1
+    assert applied['nextState']['playerCharacters'][0]['health']['currentHp'] == 15
+
+
+def test_out_of_combat_healing_targets_active_party_and_preserves_combat_state(monkeypatch) -> None:
+    state = _caster_state(class_name='Cleric', level=1)
+    actor = state['playerCharacters'][0]
+    actor['stats'] = {'wisdom': 16}
+    actor['spellbook'] = normalize_spellbook({'knownSpells': [_spell('Cure Wounds', 1)]}, class_name='Cleric')
+    state['activePlayerIds'] = [1, 2]
+    state['playerCharacters'].append({
+        'id': 'player_2', 'playerId': 2, 'name': 'Borin', 'class': 'Fighter', 'level': 1,
+        'stats': {}, 'health': {'currentHp': 0, 'maxHp': 10, 'conditions': ['dying']},
+        'inventory': {'items': []},
+    })
+    state['playerCharacters'].append({
+        'id': 'player_3', 'playerId': 3, 'name': 'Absent', 'class': 'Fighter', 'level': 1,
+        'stats': {}, 'health': {'currentHp': 1, 'maxHp': 10, 'conditions': []},
+        'inventory': {'items': []},
+    })
+    monkeypatch.setattr('aidm_server.game_state.validation.validator.secrets.randbelow', lambda _sides: 0)
+    intent = {'kind': 'spell', 'text': 'I heal Borin.', 'spell': {
+        'name': 'Cure Wounds', 'effect': 'Heal my companion.', 'target_ids': ['player_2'],
+    }}
+    declared, validation, applied = _run_intent(state, intent, turn_id=25)
+    assert declared['validatedActions'][0]['status'] == 'valid'
+    assert validation['rejected'] == []
+    healed = applied['nextState']['playerCharacters'][1]
+    assert healed['health']['currentHp'] == 4
+    assert 'dying' not in healed['health']['conditions']
+    assert applied['nextState']['playerCharacters'][0]['spellResources']['slots']['1']['current'] == 1
+    assert applied['nextState'].get('combat', {}).get('status') not in {'active', 'starting'}
+    intent['spell']['target_ids'] = ['player_3']
+    rejected, _, unchanged = _run_intent(state, intent, turn_id=26)
+    assert rejected['validatedActions'][0]['status'] == 'invalid'
+    assert unchanged['nextState']['playerCharacters'][0]['spellResources']['slots']['1']['current'] == 2
+
+
 def test_targeted_spell_stale_target_fails_without_spending_slot() -> None:
     state = _combat_state()
     declared, validation, applied = _run_intent(

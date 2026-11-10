@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 
+import pytest
+
 from aidm_server.spell_effects import (
     advance_spell_effect_durations,
     resolve_concentration_check,
@@ -20,6 +22,43 @@ class SequenceRoller:
         self.sides.append(sides)
         assert self.values, f'Unexpected d{sides} roll.'
         return self.values.pop(0)
+
+
+@pytest.mark.parametrize(('level', 'dice'), [(1, 1), (5, 2), (11, 3), (17, 4)])
+def test_cantrip_damage_scales_with_caster_level(level, dice):
+    caster = _participant('player_mage', team='player', level=level)
+    target = _participant('enemy_ogre', team='enemy', hp=100, armor_class=5)
+    spell = _damage_spell(level=0, scaling={'cantrip': True})
+    roller = SequenceRoller(10, *([2] * dice))
+    result = resolve_targeted_spell(_combat(caster, target), caster_id='player_mage', spell=spell,
+                                    target_ids=['enemy_ogre'], cast_id='scaled', roller=roller)
+    assert result['ok'] is True
+    assert result['resolution']['castLevel'] == 0
+    assert result['resolution']['targets'][0]['effects'][0]['roll']['rolls'] == [2] * dice
+
+
+def test_upcast_healing_adds_dice_and_the_casting_modifier_and_binds_level_to_cast_id():
+    caster = _participant('player_mage', team='player', hp=1, maximum=30)
+    spell = {
+        'id': 'spell_mend', 'name': 'Mend', 'level': 1,
+        'delivery': {'type': 'automatic', 'castingAbility': 'intelligence'},
+        'target': {'relation': 'ally', 'rangeBands': ['melee', 'near'], 'allowSelf': True},
+        'effects': [{'kind': 'healing', 'dice': '1d8', 'addCastingModifier': True}],
+        'scaling': {'upcast': {'dice': '1d8'}},
+    }
+    result = resolve_targeted_spell(_combat(caster), caster_id='player_mage', spell=spell,
+                                    target_ids=['player_mage'], cast_id='heal', cast_level=3,
+                                    roller=SequenceRoller(2, 3, 4))
+    assert result['ok'] is True
+    healing = result['resolution']['targets'][0]['effects'][0]
+    assert healing['roll']['rolls'] == [2, 3, 4]
+    assert healing['roll']['castingModifier'] == 3
+    assert healing['amountApplied'] == 12
+    assert result['combat']['participants'][0]['hp']['current'] == 13
+    conflict = resolve_targeted_spell(result['combat'], caster_id='player_mage', spell=spell,
+                                      target_ids=['player_mage'], cast_id='heal', cast_level=2,
+                                      roller=SequenceRoller())
+    assert conflict['code'] == 'spell_cast_id_conflict'
 
 
 def _participant(

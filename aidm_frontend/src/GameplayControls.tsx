@@ -36,9 +36,13 @@ function spellTargetCountLabel(spell: GameplaySpellControl) {
 export function GameplayControls({ state, disabled, onSubmit }: GameplayControlsProps) {
   const [selectedSpellId, setSelectedSpellId] = useState('')
   const [selectedSpellTargets, setSelectedSpellTargets] = useState<string[]>([])
+  const [selectedCastLevels, setSelectedCastLevels] = useState<Record<string, number>>({})
   const [selectedCapabilityTargets, setSelectedCapabilityTargets] = useState<Record<string, string>>({})
   const [capabilityAmounts, setCapabilityAmounts] = useState<Record<string, string>>({})
   const selectedSpell = state.spells.find((spell) => spell.id === selectedSpellId) ?? state.spells[0] ?? null
+  const castLevels = selectedSpell?.castLevels ?? []
+  const chosenLevel = selectedSpell && castLevels.includes(selectedCastLevels[selectedSpell.id])
+    ? selectedCastLevels[selectedSpell.id] : castLevels[0]
   const eligibleSpellTargetIds = new Set(
     selectedSpell?.targets.filter((target) => target.available).map((target) => target.id) ?? [],
   )
@@ -69,7 +73,7 @@ export function GameplayControls({ state, disabled, onSubmit }: GameplayControls
 
   const castSelectedSpell = () => {
     if (!selectedSpell || !spellTargetCountValid) return
-    const { message, intent } = spellCastSubmission(state.actorName, selectedSpell, spellTargets)
+    const { message, intent } = spellCastSubmission(state.actorName, selectedSpell, spellTargets, castLevels.length > 1 ? chosenLevel : undefined)
     if (onSubmit(message, intent)) setSelectedSpellTargets([])
   }
 
@@ -122,9 +126,18 @@ export function GameplayControls({ state, disabled, onSubmit }: GameplayControls
               ))}
             </select>
           </label>
+          {castLevels.length > 1 ? (
+            <label className="gameplay-control-field">
+              <span>Cast level</span>
+              <select aria-label="Cast level" value={chosenLevel} disabled={busy || !selectedSpell.available}
+                onChange={(event) => setSelectedCastLevels((current) => ({ ...current, [selectedSpell.id]: Number(event.target.value) }))}>
+                {castLevels.map((level) => <option key={level} value={level}>Level {level}</option>)}
+              </select>
+            </label>
+          ) : null}
           <div className="gameplay-control-summary">
-            <strong>{selectedSpell.delivery} · {selectedSpell.effectLabel}</strong>
-            <span>{selectedSpell.resourceLabel}</span>
+            <strong>{selectedSpell.castingTime.replace(/_/g, ' ')} · {selectedSpell.delivery} · {selectedSpell.effectLabel}</strong>
+            <span>{castLevels.length > 1 ? `Level ${chosenLevel} slot` : selectedSpell.resourceLabel}</span>
             <span>{spellTargetCountLabel(selectedSpell)} · {selectedSpell.rangeBands.join(', ')}</span>
             {selectedSpell.description ? <p>{selectedSpell.description}</p> : null}
           </div>

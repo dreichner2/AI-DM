@@ -35,7 +35,7 @@ from aidm_server.combat.modifiers import MODIFIER_ENGINE_SOURCE, normalize_activ
 from aidm_server.combat.morale import MORALE_EVENTS, apply_morale_event
 from aidm_server.combat.reactions import REACTION_SOURCE
 from aidm_server.combat.vitality import DEATH_SAVE_SOURCE
-from aidm_server.combat.state import RANGE_BANDS, normalize_battlefield, normalize_combat_state, normalize_participant
+from aidm_server.combat.state import RANGE_BANDS, normalize_battlefield, normalize_combat_state, normalize_participant, player_combat_participant
 from aidm_server.spell_effects import resolve_targeted_spell
 from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start, story_flag_allows
 from aidm_server.game_state.validation.inventory_validator import resolve_inventory_item_reference
@@ -1146,12 +1146,12 @@ def _authoritative_spell_definition(spell: dict[str, Any], actor: dict[str, Any]
         return None
     definition = deepcopy(spell)
     delivery = definition.get('delivery') if isinstance(definition.get('delivery'), dict) else {}
-    if _text(delivery.get('type')).lower() in {'attack', 'save'}:
-        casting_ability = SPELLCASTING_ABILITY_BY_ARCHETYPE.get(
-            class_spell_archetype(_text(actor.get('class'))) or ''
-        )
-        if not casting_ability:
-            return None
+    casting_ability = SPELLCASTING_ABILITY_BY_ARCHETYPE.get(
+        class_spell_archetype(_text(actor.get('class'))) or ''
+    )
+    if _text(delivery.get('type')).lower() in {'attack', 'save'} and not casting_ability:
+        return None
+    if casting_ability:
         delivery = {**delivery, 'castingAbility': casting_ability}
         definition['delivery'] = delivery
     return definition
@@ -1193,6 +1193,7 @@ def _resolve_spell_effect(
     target_ids: list[str],
     cast_id: str,
     current_turn: int,
+    cast_level: int | None = None,
     replay_rolls: list[int] | None = None,
 ) -> dict[str, Any]:
     roll_index = 0
@@ -1206,6 +1207,20 @@ def _resolve_spell_effect(
         return max(1, min(max(1, sides), int_or_default(value, default=1)))
 
     combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    if _text(combat.get('status')).lower() not in {'starting', 'active'} and spell.get('outOfCombat') is True:
+        active_ids = {
+            int_or_default(value, default=0) for value in state.get('activePlayerIds') or []
+            if int_or_default(value, default=0) > 0
+        }
+        participants = [
+            player_combat_participant(candidate)
+            for candidate in state.get('playerCharacters') or []
+            if isinstance(candidate, dict) and (
+                _text(candidate.get('id')) == _text(actor.get('id'))
+                or int_or_default(candidate.get('playerId'), default=0) in active_ids
+            )
+        ]
+        combat = {'status': 'none', 'participants': participants, 'flags': {}}
     return resolve_targeted_spell(
         combat,
         caster_id=_text(actor.get('id')),
@@ -1219,6 +1234,7 @@ def _resolve_spell_effect(
             else {}
         ),
         current_turn=current_turn,
+        cast_level=cast_level,
     )
 
 
@@ -1290,6 +1306,7 @@ def _validate_spell_action(action: dict[str, Any], state: dict[str, Any], *, cur
             target_ids=target_ids,
             cast_id=change['id'],
             current_turn=current_turn,
+            cast_level=legality.get('castLevel'),
         )
         if not effect_result.get('ok'):
             return _invalid(
@@ -1523,6 +1540,7 @@ def _validate_authoritative_spell_change(
         target_ids=target_ids,
         cast_id=_text(change.get('id')),
         current_turn=max(1, int_or_default(change.get('turnId', change.get('turn_id')), default=1)),
+        cast_level=legality.get('castLevel'),
         replay_rolls=_spell_resolution_rolls(supplied_resolution),
     )
     if not replay.get('ok'):

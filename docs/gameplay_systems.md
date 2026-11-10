@@ -272,9 +272,8 @@ their own journal hooks; they cannot reactivate or complete mechanical quests.
 
 These mechanics are connected to the typed request, validation, application,
 persistence, projection, AI-context, and standard session UI paths. The
-implemented catalogs are intentionally bounded; the listed spells, capabilities,
-and public scene-object actions are complete player-facing slices, not claims of
-full tabletop rules coverage.
+implemented catalogs are intentionally bounded; each entry describes the
+mechanics the server currently applies, rather than full tabletop coverage.
 
 ### Targeted spell effects
 
@@ -287,9 +286,14 @@ full tabletop rules coverage.
   concentration replacement, with modes, bonus dice, automatic save failures,
   cover, and defenses from the modifier engine. Healing and ally spells may
   target a player character at 0 HP who is not dead; damage spells may not
-  target the defeated. Damage to a concentrating caster triggers a
-  server-owned concentration check; turn advancement expires supported timed
-  effects.
+  target the defeated. Direct health-damage changes trigger a server-owned
+  concentration check; spell damage does not yet do so. Turn advancement
+  expires supported timed effects.
+- Fire Bolt, Ray of Frost and Sacred Flame scale their damage dice with caster
+  level. Cure Wounds and Healing Word add the casting modifier and gain one die
+  per higher slot level; they can also heal the active party outside combat.
+  Healing Word uses a bonus action in combat. The selected slot level reaches
+  validation and replay, and at most one levelled spell is allowed per turn.
 - Slot/action consumption, combat effects, concentration state, player HP, and
   the stable cast-resolution ledger persist together through the normal state
   application path. A repeated cast ID returns the existing resolution rather

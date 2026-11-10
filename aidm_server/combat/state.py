@@ -513,7 +513,7 @@ def _normalized_turn_economy(value: Any) -> dict[str, Any] | None:
         for action_id, claim in (raw_claims.items() if isinstance(raw_claims, dict) else [])
         if _text(action_id) and _text(claim)
     }
-    return {
+    result = {
         'version': TURN_ECONOMY_VERSION,
         'actorId': actor_id,
         'round': max(1, int_or_default(value.get('round'), default=1)),
@@ -531,6 +531,9 @@ def _normalized_turn_economy(value: Any) -> dict[str, Any] | None:
             if action_id in spent_action_claims
         },
     }
+    if value.get('leveledSpellCast') is True:
+        result['leveledSpellCast'] = True
+    return result
 
 
 def ensure_combat_turn_economy(

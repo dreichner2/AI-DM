@@ -347,6 +347,7 @@ def _effect_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
         'condition': condition,
         'operation': operation,
         'duration': duration,
+        'addCastingModifier': raw.get('addCastingModifier') is True,
         'onSuccessfulSave': _key(
             raw.get('onSuccessfulSave', raw.get('on_successful_save')) or ''
         ),
@@ -415,9 +416,13 @@ def _normalized_spell(spell: Mapping[str, Any]) -> tuple[dict[str, Any] | None, 
         {
             'id': spell_id,
             'name': spell_name,
+            'level': _bounded_int(spell.get('level'), default=0, minimum=0, maximum=9),
             'delivery': delivery,
             'target': target,
             'effects': effects,
+            'scaling': deepcopy(spell.get('scaling')) if isinstance(spell.get('scaling'), Mapping) else {},
+            'outOfCombat': spell.get('outOfCombat') is True,
+            'outOfCombatOnly': spell.get('outOfCombatOnly') is True,
             'concentration': spell.get('concentration') is True,
             'requireActiveTurn': spell.get(
                 'requireActiveTurn', spell.get('require_active_turn', True)
@@ -479,13 +484,16 @@ def spell_target_legality(
             )
 
     status = _key(combat.get('status'))
-    if normalized_spell['requireActiveCombat'] and status not in {'starting', 'active'}:
+    in_combat = status in {'starting', 'active'}
+    if in_combat and normalized_spell['outOfCombatOnly']:
+        return _legality_failure('spell_combat_forbidden', 'This spell can only be cast outside combat.', targets=[])
+    if normalized_spell['requireActiveCombat'] and not in_combat and not normalized_spell['outOfCombat']:
         return _legality_failure(
             'spell_combat_inactive',
             'This spell action requires an active encounter.',
             targets=[],
         )
-    if normalized_spell['requireActiveTurn']:
+    if normalized_spell['requireActiveTurn'] and (in_combat or not normalized_spell['outOfCombat']):
         active_actor_id = _active_actor_id(combat)
         if not active_actor_id:
             return _legality_failure(
@@ -536,6 +544,9 @@ def spell_target_legality(
         ):
             code = 'spell_target_defeated'
             reason = 'The selected target is already defeated.'
+        elif not in_combat and normalized_spell['outOfCombat'] and not _friendly(caster, target):
+            code = 'spell_target_relation_invalid'
+            reason = 'Outside combat, this spell can target only the party.'
         elif _harmful(normalized_spell) and attack_block_reason(caster, target):
             code = 'spell_target_charmer'
             reason = attack_block_reason(caster, target)
@@ -554,7 +565,7 @@ def spell_target_legality(
             code = 'spell_target_relation_invalid'
             reason = 'This spell cannot target its caster.'
 
-        if target is not None and not code and target_id != _text(caster_id):
+        if target is not None and not code and target_id != _text(caster_id) and in_combat:
             position = _position(target)
             range_band = _key(position.get('rangeBand') or position.get('range_band') or 'near')
             caster_zone = _text(_position(caster).get('zoneId') or _position(caster).get('zone_id'))
@@ -628,6 +639,54 @@ def _roll_expression(expression: str, roller: Roller, *, critical: bool = False)
         'bonus': bonus,
         'total': total,
     }
+
+
+def _scaled_expression(expression: str, *, multiplier: int = 1, extra_dice: Any = None, steps: int = 0, flat: int = 0) -> str | None:
+    """Combine compatible bounded dice without introducing a second roll path."""
+
+    base = parse_damage_dice_expression(expression)
+    extra = parse_damage_dice_expression(extra_dice) if extra_dice is not None else None
+    if not base or (extra_dice is not None and not extra):
+        return None
+    count = int(base['count']) * multiplier
+    sides = int(base['sides'])
+    bonus = int(base['bonus']) + flat * steps
+    if extra and steps:
+        if sides and int(extra['sides']) and sides != int(extra['sides']):
+            return None
+        sides = sides or int(extra['sides'])
+        count += int(extra['count']) * steps
+        bonus += int(extra['bonus']) * steps
+    expression = f'{count}d{sides}{bonus:+d}' if count and bonus else f'{count}d{sides}' if count else str(bonus)
+    parsed = parse_damage_dice_expression(expression)
+    return str(parsed['dice']) if parsed else None
+
+
+def _apply_spell_scaling(spell: dict[str, Any], caster: Mapping[str, Any], cast_level: int) -> bool:
+    scaling = spell.get('scaling') if isinstance(spell.get('scaling'), Mapping) else {}
+    if scaling.get('cantrip') is True and spell['level'] == 0:
+        level = _bounded_int(caster.get('level'), default=1, minimum=1, maximum=20)
+        tier = 4 if level >= 17 else 3 if level >= 11 else 2 if level >= 5 else 1
+        for effect in spell['effects']:
+            if effect['kind'] == 'damage':
+                expression = _scaled_expression(str(effect['expression']), multiplier=tier)
+                if expression is None:
+                    return False
+                effect['expression'] = expression
+    upcast = scaling.get('upcast') if isinstance(scaling.get('upcast'), Mapping) else {}
+    steps = max(0, cast_level - int(spell['level']))
+    if steps and (upcast.get('dice') is not None or upcast.get('flat') is not None):
+        first = next((effect for effect in spell['effects'] if effect['kind'] in {'damage', 'healing', 'temporary_hp'}), None)
+        if first is None:
+            return False
+        expression = _scaled_expression(
+            str(first['expression']), extra_dice=upcast.get('dice'), steps=steps,
+            flat=_int(upcast.get('flat'), default=0),
+        )
+        if expression is None:
+            return False
+        first['expression'] = expression
+    return True
 
 
 def _armor_class(target: Mapping[str, Any], context: Mapping[str, Any]) -> int:
@@ -1087,6 +1146,7 @@ def _apply_effect(
     spell: Mapping[str, Any],
     effect_index: int,
     in_combat: bool,
+    casting_modifier: int = 0,
 ) -> dict[str, Any]:
     save_succeeded = delivery_result.get('saveSucceeded') is True
     save_mode = _save_effect_mode(effect, delivery) if save_succeeded else 'full'
@@ -1113,6 +1173,11 @@ def _apply_effect(
         roller,
         critical=delivery_result.get('critical') is True and effect['kind'] == 'damage',
     )
+    if effect.get('addCastingModifier') is True:
+        bonus = max(0, casting_modifier)
+        rolled['castingModifier'] = bonus
+        rolled['bonus'] += bonus
+        rolled['total'] += bonus
     if effect['kind'] == 'damage':
         return _apply_damage(
             participant,
@@ -1137,6 +1202,7 @@ def resolve_targeted_spell(
     roller: Roller,
     caster_resources: Mapping[str, Any] | None = None,
     current_turn: int | None = None,
+    cast_level: int | None = None,
 ) -> dict[str, Any]:
     """Resolve one exact-ID spell cast atomically and return JSON-safe state.
 
@@ -1162,6 +1228,15 @@ def resolve_targeted_spell(
 
     normalized_target_ids = [_text(value) for value in target_ids if _text(value)]
     requested_spell_id = _spell_id(spell)
+    spell_level = _bounded_int(spell.get('level'), default=0, minimum=0, maximum=9)
+    selected_level = spell_level if cast_level is None else _int(cast_level, default=-1)
+    if selected_level < spell_level or selected_level > 9 or (spell_level == 0 and selected_level != 0):
+        return {
+            'ok': False, 'duplicate': False, 'code': 'invalid_cast_level',
+            'reason': 'The selected cast level is not valid for this spell.',
+            'combat': deepcopy(dict(combat)), 'casterResources': deepcopy(dict(caster_resources or {})),
+            'resolution': None,
+        }
     for prior in _ledger(combat):
         if _text(prior.get('castId')) != normalized_cast_id:
             continue
@@ -1169,6 +1244,7 @@ def resolve_targeted_spell(
             _text(prior.get('casterId')) == _text(caster_id)
             and _text(prior.get('spellId')) == requested_spell_id
             and list(prior.get('targetIds') or []) == normalized_target_ids
+            and _int(prior.get('castLevel'), default=spell_level) == selected_level
         )
         if not same_request:
             return {
@@ -1212,6 +1288,14 @@ def resolve_targeted_spell(
     next_combat = deepcopy(dict(combat))
     caster = _participant_by_id(next_combat, caster_id)
     assert caster is not None  # Proven by legality before any roll or mutation.
+    if not _apply_spell_scaling(normalized_spell, caster, selected_level):
+        return {
+            'ok': False, 'duplicate': False, 'code': 'spell_scaling_invalid',
+            'reason': 'This spell has an invalid scaling definition.',
+            'combat': deepcopy(dict(combat)), 'casterResources': deepcopy(dict(caster_resources or {})),
+            'resolution': None,
+        }
+    casting_modifier = _ability_modifier(caster, str(normalized_spell['delivery'].get('castingAbility') or '')) or 0
 
     next_resources = deepcopy(dict(caster_resources or {}))
     replaced_concentration = None
@@ -1256,6 +1340,7 @@ def resolve_targeted_spell(
                 spell=normalized_spell,
                 effect_index=index,
                 in_combat=in_combat,
+                casting_modifier=casting_modifier,
             )
             for index, effect in enumerate(normalized_spell['effects'])
         ]
@@ -1273,6 +1358,7 @@ def resolve_targeted_spell(
         'casterId': _text(caster_id),
         'spellId': normalized_spell['id'],
         'spellName': normalized_spell['name'],
+        'castLevel': selected_level,
         'targetIds': normalized_target_ids,
         'targets': target_resolutions,
         'concentration': {
@@ -1294,6 +1380,7 @@ def resolve_targeted_spell(
             'castId': normalized_cast_id,
             'casterId': _text(caster_id),
             'spellId': normalized_spell['id'],
+            'castLevel': selected_level,
             'targetIds': normalized_target_ids,
             'resolution': deepcopy(resolution),
         }

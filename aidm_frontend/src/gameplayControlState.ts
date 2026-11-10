@@ -20,6 +20,8 @@ export type GameplaySpellControl = {
   level: number
   description: string
   delivery: string
+  castingTime: string
+  castLevels: number[]
   effectLabel: string
   relation: string
   rangeBands: string[]
@@ -233,6 +235,7 @@ function targetForSpell(
   target: JsonRecord,
   spellTarget: JsonRecord,
   restoresDowned: boolean,
+  ignoreBattlefieldRange = false,
 ): GameplayTarget | null {
   const summary = recordTarget(target, normalized(target.team) || 'player')
   if (!summary) return null
@@ -271,18 +274,18 @@ function targetForSpell(
     reason = 'Requires a hostile target.'
   } else if (summary.id === casterId && !allowSelf) {
     reason = 'Cannot target the caster.'
-  } else if (summary.id !== casterId && !rangeBands.includes(summary.rangeBand)) {
+  } else if (!ignoreBattlefieldRange && summary.id !== casterId && !rangeBands.includes(summary.rangeBand)) {
     reason = `Out of range (${summary.rangeBand}).`
-  } else if (summary.id !== casterId && requiresSameZone && casterZone && targetZone !== casterZone) {
+  } else if (!ignoreBattlefieldRange && summary.id !== casterId && requiresSameZone && casterZone && targetZone !== casterZone) {
     reason = 'In another battlefield zone.'
   } else if (
-    summary.id !== casterId &&
+    !ignoreBattlefieldRange && summary.id !== casterId &&
     requiresLineOfSight &&
     (targetPosition.isHidden ?? targetPosition.is_hidden) === true
   ) {
     reason = 'Hidden from the caster.'
   } else if (
-    summary.id !== casterId &&
+    !ignoreBattlefieldRange && summary.id !== casterId &&
     requiresLineOfSight &&
     !ignoreCover &&
     coverTypeForTarget(combat, target) === 'full'
@@ -362,6 +365,21 @@ function spellResource(spellLevel: number, rawResources: JsonRecord) {
   return { available: false, label: `No level ${spellLevel}+ resource remains` }
 }
 
+function availableCastLevels(spellLevel: number, resources: JsonRecord): number[] {
+  if (spellLevel <= 0) return []
+  const levels = new Set<number>()
+  const slots = isRecord(resources.slots) ? resources.slots : {}
+  for (const [level, value] of Object.entries(slots)) {
+    const available = isRecord(value) ? integer(value.current ?? value.remaining) : integer(value)
+    const parsed = integer(level)
+    if (available > 0 && parsed >= spellLevel && parsed <= 9) levels.add(parsed)
+  }
+  const pact = isRecord(resources.pactSlots) ? resources.pactSlots : isRecord(resources.pact_slots) ? resources.pact_slots : {}
+  const pactLevel = integer(pact.slotLevel ?? pact.slot_level)
+  if (integer(pact.current ?? pact.remaining) > 0 && pactLevel >= spellLevel && pactLevel <= 9) levels.add(pactLevel)
+  return [...levels].sort((a, b) => a - b)
+}
+
 function effectLabel(spell: JsonRecord) {
   const labels = records(spell.effects).map((effect) => {
     const kind = normalized(effect.kind).replace(/_/g, ' ')
@@ -373,10 +391,14 @@ function effectLabel(spell: JsonRecord) {
 
 function spellControls(
   actor: JsonRecord,
+  playerCharacters: JsonRecord[],
+  activePlayerIds: Set<number>,
   combat: JsonRecord,
   inCombat: boolean,
   isActorTurn: boolean,
   actionRemaining: number | null,
+  bonusActionRemaining: number | null,
+  leveledSpellCast: boolean,
 ) {
   const spellbook = isRecord(actor.spellbook) ? actor.spellbook : {}
   const resources = isRecord(actor.spellResources)
@@ -384,7 +406,9 @@ function spellControls(
     : isRecord(actor.spell_resources)
       ? actor.spell_resources
       : {}
-  const participants = records(combat.participants)
+  const participants: JsonRecord[] = inCombat ? records(combat.participants) : playerCharacters
+    .filter((candidate) => stringValue(candidate.id) === stringValue(actor.id) || activePlayerIds.has(integer(candidate.playerId ?? candidate.player_id, -1)))
+    .map((candidate) => ({ ...candidate, team: 'player', kind: 'player_character' }))
   const caster = participants.find((participant) => stringValue(participant.id) === stringValue(actor.id))
   const casterConditions = caster ? conditions(caster) : []
   const casterHp = caster ? health(caster) : health(actor)
@@ -402,15 +426,18 @@ function spellControls(
       const minTargets = Math.max(1, integer(targetSpec.minTargets ?? targetSpec.min_targets, 1))
       const maxTargets = Math.max(minTargets, integer(targetSpec.maxTargets ?? targetSpec.max_targets, 1))
       const prepared = spellPrepared(spell, spellbook)
-      const resource = spellResource(Math.max(0, integer(spell.level)), resources)
+      const spellLevel = Math.max(0, integer(spell.level))
+      const resource = spellResource(spellLevel, resources)
+      const castingTime = normalized(spell.castingTime ?? spell.casting_time) || 'action'
+      const economyRemaining = castingTime === 'bonus_action' ? bonusActionRemaining : actionRemaining
       const restoresDowned = spellRestoresDowned(spell)
       const targets = caster
         ? participants
-            .map((participant) => targetForSpell(combat, caster, participant, targetSpec, restoresDowned))
+            .map((participant) => targetForSpell(combat, caster, participant, targetSpec, restoresDowned, !inCombat))
             .filter((target): target is GameplayTarget => target !== null)
         : []
-      const requiresCombat = spell.requireActiveCombat !== false && spell.require_active_combat !== false
-      const requiresTurn = spell.requireActiveTurn !== false && spell.require_active_turn !== false
+      const requiresCombat = spell.outOfCombat !== true && spell.requireActiveCombat !== false && spell.require_active_combat !== false
+      const requiresTurn = inCombat && spell.requireActiveTurn !== false && spell.require_active_turn !== false
       let reason = ''
       if (requiresCombat && !inCombat) {
         reason = 'Requires an active encounter.'
@@ -425,10 +452,14 @@ function spellControls(
         reason = 'Caster cannot act.'
       } else if (requiresTurn && !isActorTurn) {
         reason = 'Only the active combat actor may cast.'
-      } else if (inCombat && actionRemaining === null) {
+      } else if (castingTime === 'reaction') {
+        reason = 'This reaction triggers automatically.'
+      } else if (inCombat && economyRemaining === null) {
         reason = 'Turn economy is unavailable; refresh the session.'
-      } else if (inCombat && actionRemaining !== null && actionRemaining <= 0) {
-        reason = 'The action for this turn is already spent.'
+      } else if (inCombat && economyRemaining !== null && economyRemaining <= 0) {
+        reason = castingTime === 'bonus_action' ? 'The bonus action for this turn is already spent.' : 'The action for this turn is already spent.'
+      } else if (inCombat && spellLevel > 0 && leveledSpellCast) {
+        reason = 'Only one levelled spell can be cast per turn.'
       } else if (!prepared) {
         reason = 'Known but not prepared.'
       } else if (!resource.available) {
@@ -440,10 +471,12 @@ function spellControls(
       return {
         id,
         name,
-        level: Math.max(0, integer(spell.level)),
+        level: spellLevel,
         description: stringValue(spell.description),
         delivery: delivery.replace(/_/g, ' ') || 'automatic',
-        effectLabel: effectLabel(spell),
+        castingTime,
+        castLevels: availableCastLevels(spellLevel, resources),
+        effectLabel: stringValue(spell.effectSummary) || effectLabel(spell),
         relation: normalized(targetSpec.relation) || 'enemy',
         rangeBands,
         minTargets,
@@ -823,6 +856,7 @@ export function gameplayControlsFromSnapshot(
 ): GameplayControlState {
   const root = isRecord(snapshot) ? snapshot : {}
   const playerCharacters = records(root.playerCharacters)
+  const activePlayerIds = new Set(Array.isArray(root.activePlayerIds) ? root.activePlayerIds.map((value) => integer(value, -1)) : [])
   const actor = selectedPlayerId === null
     ? undefined
     : playerCharacters.find((entry) =>
@@ -862,7 +896,7 @@ export function gameplayControlsFromSnapshot(
     bonusActionRemaining,
     concentration,
     spells: actor
-      ? spellControls(actor, combat, inCombat, isActorTurn, actionRemaining)
+      ? spellControls(actor, playerCharacters, activePlayerIds, combat, inCombat, isActorTurn, actionRemaining, bonusActionRemaining, economy.leveledSpellCast === true)
       : [],
     capabilities: actor
       ? capabilityControls(
