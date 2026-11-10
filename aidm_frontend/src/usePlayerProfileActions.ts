@@ -9,6 +9,7 @@ import {
   type PointBuyScores,
 } from './characterStats'
 import type { PlayableRace } from './raceCatalog'
+import type { CreateHeroPayload } from './story/create/createHeroModel'
 import type { CharacterRaceSelection, Player, PlayerDetail } from './types'
 
 type ValueUpdater<T> = T | ((current: T) => T)
@@ -251,6 +252,26 @@ export function usePlayerProfileActions({
     }
   }
 
+  /** Creates a hero from the creation flow and selects it, which joins the campaign. Errors reach the caller. */
+  const createHeroCharacter = useCallback(
+    async (campaignId: number, payload: CreateHeroPayload) => {
+      const created = await apiFetch<{ player_id: number }>(
+        baseUrl,
+        `/api/players/campaigns/${campaignId}/players`,
+        auth,
+        {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        },
+      )
+      const detail = await apiFetch<PlayerDetail>(baseUrl, `/api/players/${created.player_id}`, auth)
+      playerUpserted(detail)
+      setPlayerDetail(detail)
+      setSelectedPlayerId(detail.player_id)
+    },
+    [auth, baseUrl, playerUpserted, setPlayerDetail, setSelectedPlayerId],
+  )
+
   const submitPlayerDeleteDialog = async () => {
     if (!playerDeleteDialog) return
     const player = playerDeleteDialog.player
@@ -276,6 +297,7 @@ export function usePlayerProfileActions({
   return {
     closePlayerDeleteDialog,
     closePlayerEditDialog,
+    createHeroCharacter,
     openCreatePlayerDialog,
     openPlayerDeleteDialog,
     openPlayerEditDialog,

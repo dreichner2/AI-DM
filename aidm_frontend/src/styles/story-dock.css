@@ -63,6 +63,12 @@
 .story-shell .story-dock-status[data-tone='busy'] { color: var(--story-ember-soft); }
 .story-shell .story-dock-status[data-tone='fail'],
 .story-shell .story-dock-status[data-tone='alert'] { color: var(--story-fail); }
+.story-shell .story-dock-status[data-tone='down'] {
+  font-family: var(--story-prose);
+  font-size: 1.04rem;
+  font-style: italic;
+  color: var(--story-fail);
+}
 .story-shell .story-dock-status .story-link { font-size: 0.84rem; color: var(--story-ink); }
 .story-shell .story-dock-status .story-link:disabled { color: var(--story-muted); cursor: default; }
 .story-shell .story-dock-status .story-dots { margin-left: 2px; }
@@ -157,6 +163,7 @@
   color: var(--story-ink-soft);
 }
 .story-shell .story-combatants {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 6px;
@@ -248,6 +255,45 @@
   color: var(--story-muted);
 }
 .story-shell .story-combatant[data-current] .story-combatant-name { color: var(--story-ink); }
+.story-shell .story-combatant-range {
+  margin-top: -4px;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  color: var(--dock-quiet);
+}
+.story-shell .story-combatant[data-vitality] .story-combatant-disc { --ring: var(--story-faint); }
+.story-shell .story-combatant[data-vitality] .story-combatant-disc img,
+.story-shell .story-combatant[data-vitality] .story-combatant-initial { filter: grayscale(1) brightness(0.62); }
+.story-shell .story-combatant-vitality {
+  flex-direction: column;
+  gap: 4px;
+  margin-top: -3px;
+}
+.story-shell .story-combatant-vitality .story-vitality-label { font-size: 0.56rem; letter-spacing: 0.1em; }
+.story-shell .story-combatant-vitality .story-vitality-saves { gap: 5px; }
+.story-shell .story-combatant-vitality .story-vitality-pips i { width: 5px; height: 5px; }
+
+/* Engagement: a thin ember arc from the viewer to each foe locked in melee with them. */
+.story-shell .story-engagements-slot {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.story-shell .story-engagements {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.story-shell .story-engagements path {
+  fill: none;
+  stroke: var(--story-ember);
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  opacity: 0.85;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--story-ember) 60%, transparent));
+}
 .story-shell .story-combatant-divider {
   flex: none;
   width: 1px;
@@ -256,17 +302,20 @@
   background: var(--story-hairline-strong);
 }
 
+/* The turn: what is left to spend and End turn on one line, every choice below it. */
 .story-shell .story-ribbon-turn {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: 'economy end' 'choices choices';
   align-items: center;
-  gap: 6px 22px;
+  gap: 2px 22px;
   min-height: 40px;
 }
 .story-shell .story-economy {
+  grid-area: economy;
   display: flex;
-  flex: none;
-  gap: 14px;
+  flex-wrap: wrap;
+  gap: 4px 14px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -290,16 +339,33 @@
   box-shadow: inset 0 0 0 1px var(--story-muted);
 }
 .story-shell .story-ribbon-choices {
+  grid-area: choices;
   display: flex;
-  flex: 1 1 220px;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px 18px;
+  gap: 2px 18px;
   min-width: 0;
   padding: 2px;
 }
 .story-shell .story-ribbon-choices .story-chip { flex: none; }
+/* What an action costs (A, B, M), after its label. */
+.story-shell .story-chip-cost {
+  margin-left: 1px;
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--story-muted);
+}
+/* Between groups of actions: attacks | spells and abilities | movement | other. */
+.story-shell .story-ribbon-gap {
+  flex: none;
+  align-self: center;
+  width: 1px;
+  height: 18px;
+  background: var(--story-hairline-strong);
+}
 .story-shell .story-ribbon-back { display: inline-flex; align-items: center; gap: 2px; flex: none; font-size: 0.82rem; }
-.story-shell .story-end-turn { flex: none; margin-left: auto; }
+.story-shell .story-end-turn { grid-area: end; justify-self: end; }
 .story-shell .story-ribbon .story-primary.story-end-turn {
   min-height: 40px;
   padding: 0 20px;
@@ -636,6 +702,116 @@
 .story-shell .story-tray-object-heading { display: flex; align-items: baseline; gap: 12px; }
 .story-shell .story-tray-admin { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 22px; }
 .story-shell .story-tray-admin .story-field { min-width: 200px; }
+/* What a spell, ability or item does, in one quiet line. */
+.story-shell .story-tray-row-summary {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--story-muted);
+}
+.story-shell .story-tray-subhead { margin-top: 2px; }
+
+/* ---- magic: cast level, narrated spells ---- */
+
+.story-shell .story-level-picker {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 0.9rem;
+}
+.story-shell .story-level-picker .story-link { color: var(--story-muted); }
+.story-shell .story-level-picker .story-link[aria-checked='true'] {
+  color: var(--story-arcane);
+  background-size: 100% 1px;
+}
+.story-shell .story-level-dot { color: var(--story-faint); }
+.story-shell .story-narrated-magic { gap: 0; }
+.story-shell .story-narrated-magic .story-tray-note { margin: 2px 0 2px; }
+.story-shell .story-narrated-magic .story-tray-list { margin-top: 0; }
+.story-shell .story-narrated-magic .story-tray-row-name { color: var(--story-ink-soft); }
+
+/* ---- abilities: class pools ---- */
+
+.story-shell .story-pools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 26px;
+  padding-bottom: 2px;
+}
+.story-shell .story-pool { display: inline-flex; align-items: center; gap: 9px; }
+.story-shell .story-pool-name { font-family: var(--story-prose); font-size: 1.04rem; color: var(--story-ink); }
+.story-shell .story-pool-count { font-size: 0.74rem; font-variant-numeric: tabular-nums; color: var(--story-muted); }
+
+/* ---- rest ---- */
+
+.story-shell .story-rest { gap: 8px; }
+.story-shell .story-rest-option { display: flex; flex-direction: column; align-items: flex-start; gap: 0; }
+.story-shell .story-rest-line { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 22px; }
+.story-shell .story-rest .story-tray-reason { margin-top: 2px; }
+.story-shell .story-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.86rem;
+  color: var(--story-ink-soft);
+}
+.story-shell .story-stepper-button { width: 30px; height: 30px; }
+.story-shell .story-stepper-value {
+  min-width: 1.1em;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--story-ink);
+}
+
+/* ---- trade ---- */
+
+.story-shell .story-trade { display: flex; flex-direction: column; gap: 14px; }
+.story-shell .story-trade-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+  margin: 0;
+}
+.story-shell .story-trade-merchant { font-family: var(--story-prose); font-size: 1.24rem; line-height: 1.2; color: var(--story-ink); }
+.story-shell .story-price {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.86rem;
+  font-variant-numeric: tabular-nums lining-nums;
+  white-space: nowrap;
+  color: var(--story-gold);
+}
+.story-shell .story-price svg { flex: none; }
+.story-shell .story-trade-purse { display: inline-flex; align-items: baseline; gap: 10px; }
+.story-shell .story-trade-purse .story-label { font-size: 0.62rem; }
+.story-shell .story-trade-group { display: flex; flex-direction: column; gap: 0; }
+.story-shell .story-trade-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.story-shell .story-trade-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 4.2em auto;
+  align-items: baseline;
+  gap: 2px 16px;
+  padding: 9px 0;
+}
+.story-shell .story-trade-list li + li { border-top: 1px solid var(--story-hairline); }
+.story-shell .story-trade-name { min-width: 0; font-family: var(--story-prose); font-size: 1.06rem; color: var(--story-ink); }
+.story-shell .story-trade-stock { font-size: 0.74rem; font-variant-numeric: tabular-nums; text-align: right; color: var(--story-muted); }
+.story-shell .story-trade-action { font-size: 0.88rem; color: var(--story-ember-soft); }
+.story-shell .story-trade-action:disabled { color: var(--story-faint); background-size: 0 1px; cursor: default; }
+.story-shell .story-trade-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--story-muted);
+}
+.story-shell .story-trade-note[data-refused] { color: var(--story-fail); }
 
 /* ---- narrow screens ---- */
 
@@ -656,7 +832,8 @@
   .story-shell .story-segmented .story-link,
   .story-shell .story-tray-aside,
   .story-shell .story-ribbon-back { min-height: 40px; }
-  .story-shell .story-economy { width: 100%; }
+  .story-shell .story-economy { gap: 4px 10px; }
+  .story-shell .story-ribbon-choices { flex-wrap: nowrap; }
   .story-shell .story-combatant { width: 50px; }
 
   /* The tray becomes a bottom sheet. */

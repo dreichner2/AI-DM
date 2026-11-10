@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { JsonRecord, TimelineEntry } from '../types'
-import { buildStoryBeats, isEmptyStory, rollFromEntry, storyChanges, type StoryBeat } from './storyBeats'
+import { buildStoryBeats, deathSaveRolls, isEmptyStory, rollFromEntry, storyChanges, type StoryBeat } from './storyBeats'
 
 function entry(
   id: string,
@@ -249,5 +249,48 @@ describe('storyChanges', () => {
       }),
     )
     expect(mixed.map((change) => change.text)).toEqual(['The Lantern Post', 'Shield'])
+  })
+})
+
+describe('death saves', () => {
+  it('reads the engine’s death saving throws as roll lines and keeps the other changes as chips', () => {
+    const update = entry('log-9', 'system', 'System', 'State updated:', {
+      turn_id: 7,
+      state_log: {
+        lines: [
+          {
+            status: 'applied',
+            changeType: 'combat.death_save',
+            message: 'Death saving throw: Ysolde Marrow rolled 14 (success); 1 success, 0 failure.',
+          },
+          {
+            status: 'applied',
+            changeType: 'combat.death_save',
+            message: 'Death saving throw: Brannoc rolled 1 (critical failure); 0 success, 3 failure.',
+          },
+          { status: 'applied', changeType: 'health.damage', message: 'Took 4 damage.' },
+        ],
+      },
+    })
+
+    expect(deathSaveRolls(update)).toEqual([
+      expect.objectContaining({ name: 'Ysolde Marrow', checkLabel: 'Death save', total: 14, outcome: 'success', natural: null }),
+      expect.objectContaining({ name: 'Brannoc', checkLabel: 'Death save', total: 1, outcome: 'failure', natural: 'one' }),
+    ])
+    expect(storyChanges(update)).toEqual([{ text: 'Took 4 damage', tone: 'fail', glyph: 'heart' }])
+    const beats = buildStoryBeats([entry('log-8', 'dm', 'DM', 'The goblin strikes.', { turn_id: 6 }), update])
+    expect(kinds(beats)).toEqual(['narration', 'roll', 'roll', 'changes'])
+  })
+
+  it('shows a lone death save without an empty change row', () => {
+    const update = entry('log-2', 'system', 'System', 'State updated:', {
+      turn_id: 3,
+      state_log: {
+        lines: [{ status: 'applied', changeType: 'combat.death_save', message: 'Death saving throw: Wren rolled 20 (critical success); 0 success, 0 failure.' }],
+      },
+    })
+    const beats = buildStoryBeats([update])
+    expect(kinds(beats)).toEqual(['roll'])
+    expect(beats[0]).toMatchObject({ roll: { name: 'Wren', total: 20, outcome: 'success', natural: 'twenty' } })
   })
 })

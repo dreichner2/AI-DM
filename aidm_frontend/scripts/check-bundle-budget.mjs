@@ -13,17 +13,20 @@ const mebibyte = 1024 * 1024
 // budgets intentionally accommodate the current long-form soundtrack while
 // preventing additional unbounded media or image growth.
 const budgets = {
-  jsRaw: 620 * 1024,
-  jsGzip: 185 * 1024,
+  // The new rules in Story view (W3-STORY2: trade, rest, vitality, grouped combat
+  // actions) measured 638.3 KiB raw / 192.1 KiB gzip for the entry chunk; plus 4%.
+  jsRaw: 664 * 1024,
+  jsGzip: 199.8 * 1024,
   // Story mode is the first screen and loads with the app; the classic console
-  // (rail, board, inspector) is a lazy chunk. These four ceilings are the sizes
-  // measured when that split landed (initial JS 181.0, async JS 262.4, initial
-  // assets 223.5, total assets 486.8 KiB) plus 4%.
-  initialJsGzip: 188.3 * 1024,
+  // (rail, board, inspector) is a lazy chunk. These ceilings are the sizes
+  // measured when that split landed (async JS 262.4 KiB) or, for initial JS
+  // 192.1, initial assets 237.0 and total assets 510.4 KiB, after W3-STORY2,
+  // each plus 4%.
+  initialJsGzip: 199.8 * 1024,
   asyncJsGzip: 273 * 1024,
   cssGzip: 48 * 1024,
-  initialAssetGzip: 232.5 * 1024,
-  totalAssetGzip: 506.3 * 1024,
+  initialAssetGzip: 246.5 * 1024,
+  totalAssetGzip: 530.8 * 1024,
   distRaw: 190 * mebibyte,
   staticRaw: 188 * mebibyte,
   largestStaticRaw: 175 * mebibyte,

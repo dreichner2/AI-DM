@@ -153,7 +153,7 @@ describe('Story fixes for the integrated app', () => {
       }),
     ]
     const { container } = render(
-      <StoryFeed board={testBoard({ turnRows: entries, currentResponseEntry: null, sessionLogHasMore: false })} textSize="default" />,
+      <StoryFeed board={testBoard({ turnRows: entries, currentResponseEntry: null, sessionLogHasMore: false })} textSize="default" onExitToTitle={vi.fn()} />,
     )
     const outcomes = [...container.querySelectorAll('.story-roll-outcome')].map((element) => element.textContent)
     expect(outcomes).toEqual(['hit vs AC 13', 'success vs DC 12'])

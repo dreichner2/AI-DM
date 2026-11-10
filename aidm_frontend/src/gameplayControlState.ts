@@ -26,6 +26,12 @@ export type GameplaySpellControl = {
   /** The spell's lasting effect (Spiritual Weapon) lets it attack again without a slot. */
   repeatAttack?: boolean
   effectLabel: string
+  /** The server's one-line summary of what the spell does. */
+  effectSummary?: string
+  /** True for spells the rules engine resolves; narrated ones are in `narratedSpells`. */
+  rulesBacked?: boolean
+  /** The spell may be cast outside an encounter. */
+  outOfCombat?: boolean
   relation: string
   rangeBands: string[]
   minTargets: number
@@ -36,6 +42,20 @@ export type GameplaySpellControl = {
   available: boolean
   reason: string
   targets: GameplayTarget[]
+}
+
+/** A known spell the Dungeon Master adjudicates (no rules-engine effect). */
+export type GameplayNarratedSpell = {
+  id: string
+  name: string
+  level: number
+  castingTime: string
+  effectSummary: string
+  concentration: boolean
+  rulesBacked: false
+  resourceLabel: string
+  available: boolean
+  reason: string
 }
 
 export type GameplayCapabilityControl = {
@@ -51,6 +71,11 @@ export type GameplayCapabilityControl = {
   available: boolean
   reason: string
   targets: GameplayTarget[]
+  /** The class pool the capability spends (ki, rage…); '' when it has none. */
+  poolId?: string
+  poolName?: string
+  /** Points the use costs from the pool; null when chosen at use or set by the option. */
+  poolCost?: number | null
 }
 
 export type GameplayObjectAction = {
@@ -81,13 +106,25 @@ export type GameplayItemControl = {
   available: boolean
   reason: string
   targets: GameplayTarget[]
+  /** In combat, the server's `item.use.<id>` action that uses the item. */
+  actionId?: string
 }
 
 export type GameplayRestControl = {
   shortAvailable: boolean
+  shortReason: string
   longAvailable: boolean
-  reason: string
+  longReason: string
   hitDice: { current: number; max: number; die: string } | null
+}
+
+/** An unequipped item the character could offer a merchant. */
+export type GameplayTradeGood = {
+  id: string
+  name: string
+  quantity: number
+  /** The server's listed price, when it sends one. */
+  price: Record<string, number> | null
 }
 
 export type GameplayControlState = {
@@ -100,11 +137,15 @@ export type GameplayControlState = {
   bonusActionRemaining: number | null
   concentration: string
   spells: GameplaySpellControl[]
+  narratedSpells?: GameplayNarratedSpell[]
   capabilities: GameplayCapabilityControl[]
   interactables: GameplayInteractableControl[]
   /** Usable items: the server's combat bundle in combat, the server's item effects otherwise. */
   items?: GameplayItemControl[]
   rest?: GameplayRestControl
+  /** The character's purse, by coin (pp, gp, ep, sp, cp). */
+  currency?: Record<string, number>
+  tradeGoods?: GameplayTradeGood[]
 }
 
 const BLOCKING_CAST_CONDITIONS = new Set([
@@ -494,6 +535,9 @@ function spellControls(
         repeatAttack,
         upcastTargetsPerLevel: Math.max(0, integer(upcast.darts ?? upcast.attacks ?? upcast.targets)),
         effectLabel: stringValue(spell.effectSummary) || effectLabel(spell),
+        effectSummary: stringValue(spell.effectSummary),
+        rulesBacked: true,
+        outOfCombat: spell.outOfCombat === true,
         relation: normalized(targetSpec.relation) || 'enemy',
         rangeBands,
         minTargets,
@@ -507,6 +551,41 @@ function spellControls(
       }
     })
     .filter((spell): spell is GameplaySpellControl => spell !== null)
+    .sort((left, right) => left.level - right.level || left.name.localeCompare(right.name))
+}
+
+/** Known spells without a rules-engine effect: cast in words, adjudicated by the Dungeon Master. */
+function narratedSpellControls(actor: JsonRecord): GameplayNarratedSpell[] {
+  const spellbook = isRecord(actor.spellbook) ? actor.spellbook : {}
+  const resources = isRecord(actor.spellResources)
+    ? actor.spellResources
+    : isRecord(actor.spell_resources)
+      ? actor.spell_resources
+      : {}
+  return records(spellbook.knownSpells ?? spellbook.known_spells)
+    .filter((spell) => spell.authoritativeEffect !== true && spell.rulesBacked !== true)
+    .map((spell): GameplayNarratedSpell | null => {
+      const id = stringValue(spell.id)
+      const name = stringValue(spell.name)
+      if (!id || !name) return null
+      const level = Math.max(0, integer(spell.level))
+      const resource = spellResource(level, resources)
+      const prepared = spellPrepared(spell, spellbook)
+      const reason = !prepared ? 'Known but not prepared.' : resource.available ? '' : resource.label
+      return {
+        id,
+        name,
+        level,
+        castingTime: normalized(spell.castingTime ?? spell.casting_time) || 'action',
+        effectSummary: stringValue(spell.effectSummary) || stringValue(spell.description),
+        concentration: spell.concentration === true,
+        rulesBacked: false,
+        resourceLabel: resource.label,
+        available: !reason,
+        reason,
+      }
+    })
+    .filter((spell): spell is GameplayNarratedSpell => spell !== null)
     .sort((left, right) => left.level - right.level || left.name.localeCompare(right.name))
 }
 
@@ -670,6 +749,7 @@ function capabilityControls(
       } else if (targets.every((target) => !target.available)) {
         reason = targetPolicy === 'self' || !targets.length ? 'No legal target is available.' : targets[0].reason
       }
+      const spentPool = stringValue(feature.pool ?? cost.pool)
       return {
         id,
         name,
@@ -684,9 +764,25 @@ function capabilityControls(
         available: !reason,
         reason,
         targets,
+        poolId: spentPool,
+        poolName: spentPool ? stringValue(feature.poolName) || poolLabel(spentPool) : '',
+        poolCost: stringValue(cost.pool) && typeof cost.amount === 'number' ? cost.amount : null,
       }
     })
     .filter((feature): feature is GameplayCapabilityControl => feature !== null)
+}
+
+const POOL_LABEL_SMALL_WORDS = new Set(['of', 'on', 'the'])
+
+/** "lay_on_hands" reads "Lay on Hands" when the server sends no pool name. */
+function poolLabel(poolId: string) {
+  return poolId
+    .split('_')
+    .filter(Boolean)
+    .map((word, index) =>
+      index > 0 && POOL_LABEL_SMALL_WORDS.has(word) ? word : `${word.charAt(0).toUpperCase()}${word.slice(1)}`,
+    )
+    .join(' ')
 }
 
 function objectStates(entry: JsonRecord) {
@@ -808,6 +904,7 @@ function bundleItemControls(combat: JsonRecord, actorId: string): GameplayItemCo
         cost: economyCostLabel(isRecord(action.economy) ? action.economy : {}),
         available: action.available === true,
         reason: stringValue(action.reason),
+        actionId: stringValue(action.id),
         targets: records(action.targets).map((target) => ({
           id: stringValue(target.id),
           name: stringValue(target.name, 'Target'),
@@ -907,8 +1004,9 @@ function restControl(actor: JsonRecord, root: JsonRecord, scene: JsonRecord, inC
   if (!longReason && lastLongRestDay !== null && day <= lastLongRestDay) longReason = 'You have already rested today.'
   return {
     shortAvailable: !shortReason,
+    shortReason,
     longAvailable: !longReason,
-    reason: longReason || shortReason,
+    longReason,
     hitDice: rawHitDice
       ? {
           current: Math.max(0, integer(rawHitDice.current)),
@@ -917,6 +1015,33 @@ function restControl(actor: JsonRecord, root: JsonRecord, scene: JsonRecord, inC
         }
       : null,
   }
+}
+
+const COINS = ['pp', 'gp', 'ep', 'sp', 'cp']
+
+function coinRecord(value: unknown): Record<string, number> {
+  const raw = isRecord(value) ? value : {}
+  const coins: Record<string, number> = {}
+  for (const coin of COINS) {
+    const amount = Math.max(0, integer(raw[coin]))
+    if (amount > 0) coins[coin] = amount
+  }
+  return coins
+}
+
+function tradeGoods(actor: JsonRecord): GameplayTradeGood[] {
+  const inventory = isRecord(actor.inventory) ? actor.inventory : {}
+  return records(inventory.items)
+    .filter((item) => item.equipped !== true && Boolean(stringValue(item.id)))
+    .map((item) => {
+      const price = coinRecord(item.price)
+      return {
+        id: stringValue(item.id),
+        name: stringValue(item.name, 'Item'),
+        quantity: Math.max(1, integer(item.quantity, 1)),
+        price: Object.keys(price).length ? price : null,
+      }
+    })
 }
 
 export function gameplayControlsFromSnapshot(
@@ -967,6 +1092,7 @@ export function gameplayControlsFromSnapshot(
     spells: actor
       ? spellControls(actor, playerCharacters, activePlayerIds, combat, inCombat, isActorTurn, actionRemaining, bonusActionRemaining, economy.leveledSpellCast === true)
       : [],
+    narratedSpells: actor ? narratedSpellControls(actor) : [],
     capabilities: actor
       ? capabilityControls(
           actor,
@@ -981,5 +1107,7 @@ export function gameplayControlsFromSnapshot(
     interactables: interactableControls(scene, inCombat),
     items: actor ? itemControls(actor, playerCharacters, combat, inCombat) : [],
     rest: actor ? restControl(actor, root, scene, inCombat) : undefined,
+    currency: actor ? coinRecord(isRecord(actor.inventory) ? actor.inventory.currency : null) : {},
+    tradeGoods: actor ? tradeGoods(actor) : [],
   }
 }

@@ -14,38 +14,66 @@ import {
   type InventoryAction,
   type RollMode,
 } from '../../gameActions'
-import {
-  abilityOptionsFromStatBlock,
-  itemOptionsFromInventory,
-  type CombatLegalAction,
-} from '../../gameSelectors'
+import { abilityOptionsFromStatBlock, itemOptionsFromInventory } from '../../gameSelectors'
 import type { InspectorPanelProps } from '../../InspectorPanel'
 import type { SessionBoardProps } from '../../SessionBoard'
 import { StoryComposer } from '../StoryComposer'
 import { StoryDrawer } from '../StoryDrawer'
 import { StoryView } from '../StoryView'
 import type { StoryDrawerTab } from '../types'
-import { makeBoardFixture, makeInspectorFixture } from './fixtures'
+import { isStoryPreviewState, makeBoardFixture, makeInspectorFixture, type StoryPreviewState } from './fixtures'
 
 /**
  * Development-only harness for the Story dock and drawer (story-dock-preview.html).
- * `?state=idle|tray|roll|combat|combat-waiting|narrating|uncertain|ended`, plus
- * `drawer=character|pack|magic|journal|map`, `operator=1` and `shell=1` (inside the real
- * StoryView instead of a bare column). The composer state
- * is simulated locally so typing, the tray and the drawer can be exercised.
+ * `?state=idle|tray|roll|combat|combat-waiting|narrating|uncertain|ended|dying|trade|rest|ending`,
+ * plus `drawer=character|pack|magic|journal|map`, `section=<tray section>` (opens the tray there),
+ * `operator=1` and `shell=1` (inside the real StoryView instead of a bare column). The composer
+ * state is simulated locally so typing, the tray and the drawer can be exercised.
  */
 
-type DockPreviewState = 'idle' | 'tray' | 'roll' | 'combat' | 'combat-waiting' | 'narrating' | 'uncertain' | 'ended'
+type DockPreviewState =
+  | 'idle'
+  | 'tray'
+  | 'roll'
+  | 'combat'
+  | 'combat-waiting'
+  | 'narrating'
+  | 'uncertain'
+  | 'ended'
+  | 'dying'
+  | 'trade'
+  | 'rest'
+  | 'ending'
 
-const DOCK_STATES: DockPreviewState[] = ['idle', 'tray', 'roll', 'combat', 'combat-waiting', 'narrating', 'uncertain', 'ended']
+const DOCK_STATES: DockPreviewState[] = [
+  'idle',
+  'tray',
+  'roll',
+  'combat',
+  'combat-waiting',
+  'narrating',
+  'uncertain',
+  'ended',
+  'dying',
+  'trade',
+  'rest',
+  'ending',
+]
 const DRAWER_TABS: StoryDrawerTab[] = ['character', 'pack', 'magic', 'journal', 'map']
 const params = new URLSearchParams(window.location.search)
 const dockState = DOCK_STATES.find((state) => state === params.get('state')) ?? 'idle'
 const initialDrawer = DRAWER_TABS.find((tab) => tab === params.get('drawer')) ?? null
+const traySection = params.get('section')
 const operator = params.get('operator') === '1'
 const inShell = params.get('shell') === '1'
 document.body.style.margin = '0'
-const combatState = dockState === 'combat' || dockState === 'combat-waiting'
+const combatState = dockState === 'combat' || dockState === 'combat-waiting' || dockState === 'dying'
+
+function fixtureState(): StoryPreviewState {
+  if (dockState === 'combat-waiting') return 'combat'
+  if (dockState === 'narrating') return 'streaming'
+  return isStoryPreviewState(dockState) ? dockState : 'exploration'
+}
 
 const pageStyle: CSSProperties = {
   position: 'fixed',
@@ -88,36 +116,17 @@ const proseStyle: CSSProperties = {
 const noop = () => {}
 
 function previewBoard(): SessionBoardProps {
-  const fixtureState = combatState ? 'combat' : dockState === 'narrating' ? 'streaming' : dockState === 'ended' ? 'ended' : 'exploration'
-  const board = makeBoardFixture(fixtureState)
-  if (!combatState) return board
+  const board = makeBoardFixture(fixtureState())
+  if (dockState !== 'combat-waiting') return board
   const [bundle] = board.combatState.legalActionBundles
-  const endTurn: CombatLegalAction = {
-    ...bundle.actions[0],
-    id: 'combat.end_turn',
-    type: 'end_turn',
-    label: 'End turn',
-    description: 'Take no further action and pass the combat turn.',
-    message: 'Ysolde Marrow ends their turn.',
-    requiresTarget: false,
-    targets: [],
-  }
-  const actions = [
-    ...bundle.actions.map((action) =>
-      action.id === 'dash' ? { ...action, available: false, reason: 'Your movement is already spent.' } : action,
-    ),
-    endTurn,
-  ]
-  const waiting = dockState === 'combat-waiting'
   const combat = {
     ...board.combatState,
+    turnOrder: board.combatState.turnOrder?.map((entry) => ({ ...entry, isCurrent: entry.id === 'lanternman-2' })),
     legalActionBundles: [{
       ...bundle,
-      actions,
-      movementRemaining: 0,
-      isCurrentActor: !waiting,
-      currentActorId: waiting ? 'lanternman-2' : bundle.currentActorId,
-      currentActorName: waiting ? 'Lanternman' : bundle.currentActorName,
+      isCurrentActor: false,
+      currentActorId: 'lanternman-2',
+      currentActorName: 'Lanternman',
     }],
   }
   return {
@@ -302,7 +311,16 @@ export function DockPreview() {
   }
 
   useEffect(() => {
-    if (dockState === 'tray') document.querySelector<HTMLButtonElement>('button[aria-label="Actions"]')?.click()
+    const button = (selector: string, text?: string) =>
+      [...document.querySelectorAll<HTMLButtonElement>(selector)].find((candidate) => !text || candidate.textContent?.startsWith(text))
+    if (dockState === 'trade' && !traySection) {
+      button('.story-suggestions button', 'Trade with')?.click()
+      return
+    }
+    const section = traySection ?? (dockState === 'rest' ? 'Scene' : dockState === 'tray' ? '' : null)
+    if (section === null) return
+    button('button[aria-label="Actions"]')?.click()
+    if (section) window.setTimeout(() => button('.story-tray-nav-link', section)?.click(), 0)
   }, [])
 
   const endedChapter = dockState === 'ended' ? { onContinue: () => console.info('[dock preview] continue') } : null

@@ -1,5 +1,4 @@
 import { type RefObject } from 'react'
-import { X } from 'lucide-react'
 import { ModalShell } from './ModalShell'
 import type { PlayerDeleteDialogState } from './usePlayerProfileActions'
 
@@ -18,57 +17,42 @@ export function PlayerDeleteDialog({
 }: PlayerDeleteDialogProps) {
   return (
     <ModalShell
-      className="campaign-dialog player-delete-dialog"
+      size="narrow"
       closeDisabled={dialog.pending}
+      closeLabel="Close character delete"
       dialogRef={dialogRef}
       labelledBy="player-delete-title"
       describedBy="player-delete-description"
       onClose={onClose}
+      title="Delete Character"
     >
-        <header>
-          <div>
-            <span>Character</span>
-            <h2 id="player-delete-title">Delete Character</h2>
-          </div>
+      <div className="story-dialog-body">
+        <p className="story-dialog-subject">{dialog.player.character_name || dialog.player.name}</p>
+        <p id="player-delete-description" className="story-dialog-note">
+          This permanently removes the character from this table. Past chapters stay readable, but
+          they will no longer link to this character.
+        </p>
+        {dialog.error ? <p className="story-dialog-error" role="alert">{dialog.error}</p> : null}
+        <footer className="story-dialog-footer">
           <button
             type="button"
-            aria-label="Close character delete"
+            className="story-link"
+            data-autofocus
             onClick={onClose}
             disabled={dialog.pending}
           >
-            <X size={18} />
+            Cancel
           </button>
-        </header>
-        <div className="dialog-body">
-          <div id="player-delete-description" className="dialog-warning">
-            <strong>{dialog.player.character_name || dialog.player.name}</strong>
-            <span>
-              This permanently removes the character from this workspace. Past
-              turn history stays readable, but it will no longer point at this
-              character record.
-            </span>
-          </div>
-          {dialog.error ? <div className="dialog-error" role="alert">{dialog.error}</div> : null}
-          <footer>
-            <button
-              type="button"
-              className="secondary"
-              data-autofocus
-              onClick={onClose}
-              disabled={dialog.pending}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="danger"
-              onClick={onConfirm}
-              disabled={dialog.pending}
-            >
-              {dialog.pending ? 'Deleting...' : 'Delete Character'}
-            </button>
-          </footer>
-        </div>
+          <button
+            type="button"
+            className="story-link story-link-danger"
+            onClick={onConfirm}
+            disabled={dialog.pending}
+          >
+            {dialog.pending ? 'Deleting...' : 'Delete Character'}
+          </button>
+        </footer>
+      </div>
     </ModalShell>
   )
 }

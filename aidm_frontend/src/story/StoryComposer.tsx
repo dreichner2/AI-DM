@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import {
   ArrowUp,
   Backpack,
+  Coins,
   Dices,
   Drama,
   Eye,
@@ -16,6 +17,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import type { ComposerMode } from '../gameActions'
+import { partyVitalityFromSnapshot } from '../gameSelectors'
 import { objectActionSubmission, travelSubmission, type ActionSubmission } from './actionIntents'
 import { StoryActionTray, type TraySection } from './StoryActionTray'
 import { StoryCombatRibbon } from './StoryCombatRibbon'
@@ -49,11 +51,14 @@ const MODE_SECTIONS: Partial<Record<ComposerMode, TraySection>> = {
 }
 
 const SUGGESTION_ICONS: Record<StorySuggestion['kind'], LucideIcon> = {
+  trade: Coins,
   talk: MessageCircle,
   object: Hand,
   examine: Eye,
   travel: Footprints,
 }
+
+const DOWN_STATUS = 'You are down. Your companions can still reach you.'
 
 const CONNECTION_LABELS = {
   connecting: 'Connecting…',
@@ -110,12 +115,16 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
     () => (board.gameplayControls.spells.length ? 'magic' : 'roll'),
   )
   const [sentCount, setSentCount] = useState(readSentCount)
+  const [tradeMerchantId, setTradeMerchantId] = useState('')
   const stage = useStagedComposerAction(composer)
   const suggestionsRef = useEdgeFades<HTMLDivElement>()
+  const snapshot = board.sessionState?.state_snapshot
+  const vitality = useMemo(() => partyVitalityFromSnapshot(snapshot), [snapshot])
 
   const notice = board.pendingRollNotice
   const rollPromptActive = Boolean(notice?.isWaitingOnSelectedPlayer)
   const hasCharacter = Boolean(composer.selectedPlayerId)
+  const viewerDown = composer.selectedPlayerId !== null && vitality[composer.selectedPlayerId]?.state === 'dying'
   const dmWorking = board.sendPending || board.streamingTurnActive
   const deliveryUncertain = Boolean(composer.queuedActionRetryable)
   const connected = chrome.connection === 'ready'
@@ -123,11 +132,12 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
     ? board.combatState.legalActionBundles.find((bundle) => bundle.playerId === board.playerId)
     : undefined
   const ribbonActive = !rollPromptActive && Boolean(combatBundle)
-  const inputDisabled = !hasCharacter || Boolean(board.turnRecoveryGate)
+  const inputDisabled = !hasCharacter || Boolean(board.turnRecoveryGate) || viewerDown
   const sendBlocked =
     inputDisabled || dmWorking || deliveryUncertain || !connected || !actionText.trim()
   const quietMoment =
     hasCharacter &&
+    !viewerDown &&
     composer.selectedPlayerHasTurn &&
     connected &&
     !notice &&
@@ -191,6 +201,12 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
   }
 
   const chooseSuggestion = (suggestion: StorySuggestion) => {
+    if (suggestion.kind === 'trade') {
+      setTradeMerchantId(suggestion.merchant.id)
+      setTraySection('trade')
+      setTrayOpen(true)
+      return
+    }
     if (suggestion.kind === 'object') {
       submitTyped(objectActionSubmission(board.gameplayControls.actorName, suggestion.object, suggestion.action))
       return
@@ -290,6 +306,9 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
           ) : null}
         </p>
       )
+    }
+    if (viewerDown) {
+      return <p className="story-dock-status" data-tone="down" role="status">{DOWN_STATUS}</p>
     }
     if (notice && !notice.isWaitingOnSelectedPlayer) {
       return (
@@ -408,6 +427,8 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
                 canUseOperatorTools={chrome.canUseOperatorTools}
                 section={traySection}
                 onSectionChange={setTraySection}
+                tradeMerchantId={tradeMerchantId}
+                onTradeMerchantChange={setTradeMerchantId}
                 stage={stage}
                 onDone={() => closeTray('input')}
                 onDismiss={() => closeTray('toggle')}

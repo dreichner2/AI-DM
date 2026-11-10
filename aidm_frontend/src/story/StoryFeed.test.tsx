@@ -53,6 +53,7 @@ describe('StoryFeed', () => {
           ],
         })}
         textSize="default"
+        onExitToTitle={vi.fn()}
       />,
     )
     expect(container.querySelector('.story-narration')).toHaveTextContent(longNarration)
@@ -68,6 +69,7 @@ describe('StoryFeed', () => {
           sendPending: true,
         })}
         textSize="large"
+        onExitToTitle={vi.fn()}
       />,
     )
     expect(container.querySelector('.narrative-dialogue')).toHaveTextContent('“Stay close,”')
@@ -84,6 +86,7 @@ describe('StoryFeed', () => {
           currentResponseEntry: entry('log-2', 'dm', 'DM', '"Stay close," Mira says. It\'s cold.', { turn_id: 1 }),
         })}
         textSize="large"
+        onExitToTitle={vi.fn()}
       />,
     )
     expect(container.querySelector('.story-caret')).toBeNull()
@@ -112,6 +115,7 @@ describe('StoryFeed', () => {
           ],
         })}
         textSize="default"
+        onExitToTitle={vi.fn()}
       />,
     )
     const changes = screen.getByRole('list', { name: 'What changed' })
@@ -137,6 +141,7 @@ describe('StoryFeed', () => {
           ],
         })}
         textSize="default"
+        onExitToTitle={vi.fn()}
       />,
     )
     expect(screen.getByText('sending…')).toBeInTheDocument()
@@ -150,6 +155,7 @@ describe('StoryFeed', () => {
       <StoryFeed
         board={board({ turnRows: [entry('log-1', 'dm', 'DM', 'Rain.', { turn_id: 1, persistence_status: 'failed' })] })}
         textSize="default"
+        onExitToTitle={vi.fn()}
       />,
     )
     expect(screen.getByText('not saved')).toBeInTheDocument()
@@ -165,7 +171,7 @@ describe('StoryFeed', () => {
       submitTurnQuality,
       reportBadTurn,
     })
-    const { rerender } = render(<StoryFeed board={props} textSize="default" />)
+    const { rerender } = render(<StoryFeed board={props} textSize="default" onExitToTitle={vi.fn()} />)
 
     expect(screen.getAllByRole('button', { name: 'Rate this turn' })).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: 'Rate this turn' }))
@@ -183,6 +189,7 @@ describe('StoryFeed', () => {
       <StoryFeed
         board={{ ...props, ratedTurnQualityIds: new Set([3]), reportedBadTurnIds: new Set([3]) }}
         textSize="default"
+        onExitToTitle={vi.fn()}
       />,
     )
     expect(screen.getByText('Feedback sent.')).toBeInTheDocument()
@@ -192,18 +199,18 @@ describe('StoryFeed', () => {
   it('offers the empty session a way to begin, then waits for the story', () => {
     const onStartAdventure = vi.fn()
     const turnRows = [entry('log-1', 'system', 'System', 'Welcome to the table.', { kind: 'session_welcome' })]
-    const { rerender } = render(<StoryFeed board={board({ turnRows, onStartAdventure })} textSize="default" />)
+    const { rerender } = render(<StoryFeed board={board({ turnRows, onStartAdventure })} textSize="default" onExitToTitle={vi.fn()} />)
     expect(screen.getByText('The Lantern Road')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Begin the adventure' }))
     expect(onStartAdventure).toHaveBeenCalledTimes(1)
 
-    rerender(<StoryFeed board={board({ turnRows, onStartAdventure, sendPending: true })} textSize="default" />)
+    rerender(<StoryFeed board={board({ turnRows, onStartAdventure, sendPending: true })} textSize="default" onExitToTitle={vi.fn()} />)
     expect(screen.queryByRole('button', { name: 'Begin the adventure' })).toBeNull()
     expect(screen.getByText('The story is beginning')).toBeInTheDocument()
   })
 
   it('shows shimmering lines while the session loads', () => {
-    const { container } = render(<StoryFeed board={board({ sessionLoading: true })} textSize="default" />)
+    const { container } = render(<StoryFeed board={board({ sessionLoading: true })} textSize="default" onExitToTitle={vi.fn()} />)
     expect(screen.getByLabelText('Loading the story')).toBeInTheDocument()
     expect(container.querySelector('.story-empty')).toBeNull()
   })
@@ -218,6 +225,7 @@ describe('StoryFeed', () => {
           turnRows: [entry('log-9', 'dm', 'DM', 'Rain.', { turn_id: 9 })],
         })}
         textSize="default"
+        onExitToTitle={vi.fn()}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Earlier in the story' }))
@@ -236,6 +244,7 @@ describe('StoryFeed', () => {
           ],
         })}
         textSize="default"
+        onExitToTitle={vi.fn()}
       />,
     )
     expect(screen.getByText('Chapter 3')).toBeInTheDocument()
@@ -253,9 +262,44 @@ describe('StoryFeed', () => {
           ],
         })}
         textSize="default"
+        onExitToTitle={vi.fn()}
       />,
     )
     expect(screen.getByText('The Drowned Lantern')).toBeInTheDocument()
     expect(screen.queryByText('Previously')).toBeNull()
+  })
+
+  it('ends the feed with the epilogue once the adventure reaches its ending, and can be dismissed for the session', () => {
+    window.sessionStorage.clear()
+    const onExitToTitle = vi.fn()
+    const ended = board({
+      turnRows: [entry('log-2', 'dm', 'DM', 'The names return to the road.', { turn_id: 9 })],
+      worldState: {
+        ...makeBoardFixture('exploration').worldState,
+        ending: { title: 'The Road Remembers', summary: 'Every erased name is spoken again.' },
+      },
+      downloadSessionChronicle: vi.fn(async () => {}),
+    })
+    render(<StoryFeed board={ended} textSize="default" onExitToTitle={onExitToTitle} />)
+
+    const epilogue = screen.getByRole('region', { name: 'The Road Remembers' })
+    expect(within(epilogue).getByText('The end')).toHaveClass('story-label')
+    expect(within(epilogue).getByRole('heading', { name: 'The Road Remembers' })).toHaveClass('story-epilogue-title')
+    expect(within(epilogue).getByText('Every erased name is spoken again.')).toBeInTheDocument()
+    fireEvent.click(within(epilogue).getByRole('button', { name: 'Download the Chronicle' }))
+    expect(ended.downloadSessionChronicle).toHaveBeenCalledTimes(1)
+    fireEvent.click(within(epilogue).getByRole('button', { name: 'Start another adventure' }))
+    expect(onExitToTitle).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(within(epilogue).getByRole('button', { name: 'Keep playing' }))
+    expect(screen.queryByRole('region', { name: 'The Road Remembers' })).not.toBeInTheDocument()
+    cleanup()
+    render(<StoryFeed board={ended} textSize="default" onExitToTitle={onExitToTitle} />)
+    expect(screen.queryByRole('region', { name: 'The Road Remembers' })).not.toBeInTheDocument()
+  })
+
+  it('has no epilogue before the ending', () => {
+    render(<StoryFeed board={board({ turnRows: [entry('log-2', 'dm', 'DM', 'Rain.', { turn_id: 1 })] })} textSize="default" onExitToTitle={vi.fn()} />)
+    expect(screen.queryByText('The end')).not.toBeInTheDocument()
   })
 })

@@ -182,6 +182,70 @@ describe('gameplayControlsFromSnapshot', () => {
     expect(missile).toMatchObject({ available: false, reason: 'The bonus action for this turn is already spent.' })
   })
 
+  it('passes the server summary through and lists narrated spells apart from rules-backed ones', () => {
+    const state = snapshot()
+    const actor = state.playerCharacters[0] as Record<string, unknown>
+    const spellbook = actor.spellbook as { preparedSpells: string[]; knownSpells: Array<Record<string, unknown>> }
+    Object.assign(spellbook.knownSpells[2], {
+      rulesBacked: true,
+      outOfCombat: true,
+      effectSummary: 'heals 1d8 + modifier',
+    })
+    spellbook.preparedSpells.push('Detect Magic')
+    spellbook.knownSpells.push(
+      {
+        id: 'spell_detect_magic',
+        name: 'Detect Magic',
+        level: 1,
+        rulesBacked: false,
+        authoritativeEffect: false,
+        narrated: true,
+        castingTime: 'action',
+        concentration: true,
+        effectSummary: 'Sense magic within 30 feet.',
+      },
+      { id: 'spell_mage_hand', name: 'Mage Hand', level: 0, rulesBacked: false, description: 'A spectral hand.' },
+      { id: 'spell_shield', name: 'Shield', level: 1, rulesBacked: false, castingTime: 'reaction' },
+    )
+    const controls = gameplayControlsFromSnapshot(state, 30)
+
+    expect(controls.spells.map((spell) => spell.name)).toEqual(['Fire Bolt', 'Cure Wounds', 'Magic Missile'])
+    expect(controls.spells.find((spell) => spell.name === 'Cure Wounds')).toMatchObject({
+      effectSummary: 'heals 1d8 + modifier',
+      effectLabel: 'heals 1d8 + modifier',
+      rulesBacked: true,
+      outOfCombat: true,
+    })
+    expect(controls.spells.find((spell) => spell.name === 'Fire Bolt')).toMatchObject({ effectSummary: '', outOfCombat: false })
+    expect(controls.narratedSpells).toEqual([
+      {
+        id: 'spell_mage_hand',
+        name: 'Mage Hand',
+        level: 0,
+        castingTime: 'action',
+        effectSummary: 'A spectral hand.',
+        concentration: false,
+        rulesBacked: false,
+        resourceLabel: 'Cantrip',
+        available: true,
+        reason: '',
+      },
+      {
+        id: 'spell_detect_magic',
+        name: 'Detect Magic',
+        level: 1,
+        castingTime: 'action',
+        effectSummary: 'Sense magic within 30 feet.',
+        concentration: true,
+        rulesBacked: false,
+        resourceLabel: 'Level 1 slot · 1 left',
+        available: true,
+        reason: '',
+      },
+      expect.objectContaining({ name: 'Shield', available: false, reason: 'Known but not prepared.' }),
+    ])
+  })
+
   it('allows a cantrip but blocks another levelled spell after a levelled cast', () => {
     const state = snapshot()
     const economy: Record<string, unknown> = state.combat.flags.turnEconomy
@@ -511,23 +575,30 @@ describe('gameplayControlsFromSnapshot items and rest', () => {
     const state = gameplayControlsFromSnapshot(snapshot, 30)
 
     expect(state.items).toHaveLength(1)
-    expect(state.items?.[0]).toMatchObject({ id: 'potion_1', cost: 'bonus action', available: true })
+    expect(state.items?.[0]).toMatchObject({
+      id: 'potion_1',
+      cost: 'bonus action',
+      available: true,
+      actionId: 'item.use.potion_1',
+    })
     expect(state.items?.[0].targets.map((target) => [target.id, target.reason])).toEqual([
       ['player_30', ''],
       ['player_31', 'Too far away.'],
     ])
     expect(state.rest).toMatchObject({
       shortAvailable: false,
+      shortReason: 'Rest is unavailable while combat is active.',
       longAvailable: false,
-      reason: 'Rest is unavailable while combat is active.',
+      longReason: 'Rest is unavailable while combat is active.',
     })
   })
 
-  it('mirrors the rest limits, the scene rest policy and hit dice', () => {
+  it('mirrors the rest limits, the scene rest policy and hit dice, with a reason for each kind of rest', () => {
     expect(gameplayControlsFromSnapshot(itemSnapshot(), 30).rest).toEqual({
       shortAvailable: true,
+      shortReason: '',
       longAvailable: true,
-      reason: '',
+      longReason: '',
       hitDice: { current: 2, max: 3, die: 'd8' },
     })
 
@@ -535,25 +606,49 @@ describe('gameplayControlsFromSnapshot items and rest', () => {
     limited.clock = { day: 2, phase: 'evening', shortRestsSinceLong: 2, lastLongRestDay: 2 }
     expect(gameplayControlsFromSnapshot(limited, 30).rest).toMatchObject({
       shortAvailable: false,
+      shortReason: 'You need a long rest before another short rest helps.',
       longAvailable: false,
-      reason: 'You have already rested today.',
+      longReason: 'You have already rested today.',
     })
 
     const risky = itemSnapshot()
     risky.currentScene = { name: 'Moor', dangerLevel: 4 }
     expect(gameplayControlsFromSnapshot(risky, 30).rest).toMatchObject({
       shortAvailable: true,
+      shortReason: '',
       longAvailable: false,
-      reason: "This place is too dangerous for a full night's rest.",
+      longReason: "This place is too dangerous for a full night's rest.",
     })
 
     const unsafe = itemSnapshot()
     unsafe.currentScene = { name: 'Lair', restPolicy: 'none' }
     expect(gameplayControlsFromSnapshot(unsafe, 30).rest).toMatchObject({
       shortAvailable: false,
+      shortReason: 'It is too dangerous to rest here.',
       longAvailable: false,
-      reason: 'It is too dangerous to rest here.',
+      longReason: 'It is too dangerous to rest here.',
     })
+  })
+
+  it('reads the purse and the unequipped goods a merchant could buy', () => {
+    const snapshot = itemSnapshot()
+    const actor = (snapshot.playerCharacters as Array<Record<string, unknown>>)[0]
+    actor.inventory = {
+      currency: { gp: 12, sp: 5, cp: 0, pp: 'x' },
+      items: [
+        { id: 'potion_1', name: 'Potion of Healing', quantity: 2, price: { gp: 50 } },
+        { id: 'sword_1', name: 'Longsword', quantity: 1, equipped: true, price: { gp: 15 } },
+        { id: 'rope_1', name: 'Rope' },
+        { name: 'No id' },
+      ],
+    }
+    const state = gameplayControlsFromSnapshot(snapshot, 30)
+
+    expect(state.currency).toEqual({ gp: 12, sp: 5 })
+    expect(state.tradeGoods).toEqual([
+      { id: 'potion_1', name: 'Potion of Healing', quantity: 2, price: { gp: 50 } },
+      { id: 'rope_1', name: 'Rope', quantity: 1, price: null },
+    ])
   })
 })
 
@@ -606,6 +701,31 @@ describe('gameplayControlsFromSnapshot class capabilities', () => {
       available: false,
       reason: 'No uses remain.',
     })
+  })
+
+  it('names the pool each capability spends and what one use costs', () => {
+    const state = snapshot()
+    const actor = monk(state)
+    ;(actor.classFeatures as Array<Record<string, unknown>>).push(
+      {
+        id: 'lay_on_hands', baseId: 'lay_on_hands', name: 'Lay on Hands', actionEconomy: 'action', targetPolicy: 'self_or_ally',
+        pool: 'lay_on_hands', cost: { pool: 'lay_on_hands', amount: 'requested' }, role: 'panel', effect: { type: 'healing_pool' },
+      },
+      {
+        id: 'rage', baseId: 'rage', name: 'Rage', actionEconomy: 'bonus_action', targetPolicy: 'self', pool: 'rage',
+        poolName: 'Battle Fury', cost: { pool: 'rage', amount: 1 }, role: 'panel', effect: { type: 'apply_modifier' },
+      },
+    )
+    const capabilities = gameplayControlsFromSnapshot(state, 30).capabilities
+    const pools = capabilities.map((feature) => [feature.id, feature.poolId, feature.poolName, feature.poolCost])
+
+    expect(pools).toEqual([
+      ['flurry_of_blows', 'ki', 'Ki', 1],
+      ['step_of_the_wind:dash', 'ki', 'Ki', 1],
+      ['martial_arts_strike', '', '', null],
+      ['lay_on_hands', 'lay_on_hands', 'Lay on Hands', null],
+      ['rage', 'rage', 'Battle Fury', 1],
+    ])
   })
 
   it('prefers the server combat action and keeps an ally capability off the user', () => {

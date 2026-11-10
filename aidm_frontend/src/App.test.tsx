@@ -1603,19 +1603,19 @@ describe('App user workflow regressions', () => {
     addCampaignButton.focus()
     fireEvent.click(addCampaignButton)
 
-    const dialog = await screen.findByRole('dialog', { name: 'Create New Campaign' })
+    const dialog = await screen.findByRole('dialog', { name: 'New adventure' })
     expect(campaignRail).toHaveAttribute('inert')
     expect(campaignRail).not.toHaveAttribute('role', 'dialog')
     expect(campaignRail).not.toHaveAttribute('aria-modal')
 
     const closeButton = within(dialog).getByRole('button', { name: 'Close create campaign' })
-    const submitButton = within(dialog).getByRole('button', { name: 'Create Campaign' })
-    submitButton.focus()
+    const blankPageButton = within(dialog).getByRole('button', { name: 'Begin with a blank page' })
+    blankPageButton.focus()
     fireEvent.keyDown(document, { key: 'Tab' })
     expect(closeButton).toHaveFocus()
 
     fireEvent.keyDown(document, { key: 'Escape' })
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Create New Campaign' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New adventure' })).not.toBeInTheDocument())
     expect(campaignRail).not.toHaveAttribute('inert')
     expect(campaignRail).toHaveAttribute('role', 'dialog')
     expect(addCampaignButton).toHaveFocus()
@@ -2203,7 +2203,7 @@ describe('App user workflow regressions', () => {
 
     await renderLoadedApp()
 
-    await screen.findByRole('dialog', { name: 'Join Campaign' })
+    await screen.findByRole('dialog', { name: 'Choose your character' })
     await waitFor(() => expect(localStorage.getItem('aidm:selectedPlayerId')).toBeNull())
     expect(socketMock.socket.emit).not.toHaveBeenCalledWith(
       'join_session',
@@ -2217,7 +2217,7 @@ describe('App user workflow regressions', () => {
 
     const characterActions = screen.getByLabelText('Character actions')
     fireEvent.click(within(characterActions).getByRole('button', { name: 'Load' }))
-    expect(await screen.findByRole('dialog', { name: 'Join Campaign' })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: 'Choose your character' })).toBeInTheDocument()
     fireEvent.click(screen.getByLabelText('Close character chooser'))
 
     fireEvent.click(within(characterActions).getByRole('button', { name: 'Edit' }))
@@ -2225,7 +2225,8 @@ describe('App user workflow regressions', () => {
     fireEvent.click(screen.getByLabelText('Close character editor'))
 
     fireEvent.click(within(characterActions).getByRole('button', { name: 'New' }))
-    expect(await screen.findByRole('dialog', { name: 'Create Character' })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: /^A new hero/ })).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Create Character' })).not.toBeInTheDocument()
   })
 
   it('closes the character delete confirmation with Escape without deleting', async () => {
@@ -2310,7 +2311,7 @@ describe('App user workflow regressions', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Share Session' })
     const shareInput = within(dialog).getByLabelText('Session share link')
     expect(dialog).toHaveAccessibleDescription(
-      'Send this to someone who can open this frontend and reach this backend. They can choose or create their own character after it opens.',
+      'Send this link to a friend. It opens this table, where they choose or create their own character.',
     )
     await waitFor(() => expect(shareInput).toHaveFocus())
 
@@ -2348,7 +2349,7 @@ describe('App user workflow regressions', () => {
 
     const dialog = await screen.findByRole('dialog', { name: 'Connect to Shared Backend' })
     expect(dialog).toHaveAccessibleDescription(
-      'Only continue if you recognize and trust this backend. AIDM will not contact it before you confirm.',
+      'Only continue if you know and trust this game server. Nothing is sent to it until you confirm.',
     )
     expect(within(dialog).getByText('https://backend-tunnel.ngrok-free.app')).toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Username')).not.toBeInTheDocument()
@@ -2434,12 +2435,12 @@ describe('App user workflow regressions', () => {
 
     await renderLoadedApp()
 
-    const dialog = await screen.findByRole('dialog', { name: 'Join Campaign' })
+    const dialog = await screen.findByRole('dialog', { name: 'Choose your character' })
     expect(within(dialog).getByRole('button', { name: 'Join as Ember' })).toBeInTheDocument()
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Join as Ember' }))
 
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Join Campaign' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Choose your character' })).not.toBeInTheDocument())
     await waitFor(() => expect(socketMock.socket.on).toHaveBeenCalledWith('connect', expect.any(Function)))
     await act(async () => {
       socketHandler<void>('connect')()
@@ -2753,58 +2754,48 @@ describe('App user workflow regressions', () => {
 
     await renderLoadedApp()
 
-    const chooser = await screen.findByRole('dialog', { name: 'Join Campaign' })
+    const chooser = await screen.findByRole('dialog', { name: 'Choose your character' })
     fireEvent.click(within(chooser).getByRole('button', { name: 'Create Character' }))
 
-    const creator = await screen.findByRole('dialog', { name: 'Create Character' })
-    fireEvent.change(within(creator).getByLabelText('Character Name'), {
+    // New characters are made in the four-step hero creation flow.
+    const creator = await screen.findByRole('dialog', { name: /^A new hero/ })
+    fireEvent.change(within(creator).getByLabelText('Hero name'), {
       target: { value: 'Borin' },
     })
-    fireEvent.click(within(creator).getByRole('button', { name: 'View Dwarf details' }))
-    const dwarfDetails = await screen.findByRole('dialog', { name: 'Dwarf' })
-    expect(within(dwarfDetails).getByText(/Dwarves are stone-wise, craft-proud/)).toBeInTheDocument()
-    expect(within(dwarfDetails).getByText('Common, Dwarvish')).toBeInTheDocument()
-    expect(within(dwarfDetails).getByText(/Average height:/)).toBeInTheDocument()
-    fireEvent.click(within(dwarfDetails).getByRole('button', { name: 'Select Dwarf' }))
-    fireEvent.click(within(creator).getByRole('button', { name: 'Male Dwarf' }))
-    fireEvent.click(within(creator).getByRole('button', { name: 'Preview Cleric class' }))
-    const clericDetails = await screen.findByRole('dialog', { name: 'Cleric' })
-    expect(within(clericDetails).getByText(/Clerics heal, protect/)).toBeInTheDocument()
-    expect(within(clericDetails).getByText('Life')).toBeInTheDocument()
-    fireEvent.click(within(clericDetails).getByRole('button', { name: 'Select Cleric - Life' }))
-    fireEvent.click(within(creator).getByRole('button', { name: 'Create Character' }))
+    fireEvent.click(within(creator).getByRole('radio', { name: 'Dwarf' }))
+    fireEvent.click(within(creator).getByRole('button', { name: 'Continue' }))
+    fireEvent.click(within(creator).getByRole('radio', { name: /^Cleric/ }))
+    fireEvent.click(within(creator).getByRole('button', { name: 'Continue' }))
+    expect(within(creator).getByRole('radio', { name: /^Acolyte/ })).toBeChecked()
+    fireEvent.click(within(creator).getByRole('checkbox', { name: 'Medicine' }))
+    fireEvent.click(within(creator).getByRole('checkbox', { name: 'Persuasion' }))
+    fireEvent.click(within(creator).getByRole('button', { name: 'Continue' }))
+    fireEvent.click(within(creator).getByRole('button', { name: 'Begin as Borin' }))
 
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Create Character' })).not.toBeInTheDocument())
-    expect(appTestState.fetchCalls).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          method: 'POST',
-          path: '/api/players/campaigns/10/players',
-          body: expect.objectContaining({
-            character_name: 'Borin',
-            race: 'Dwarf',
-            sex: 'male',
-            char_class: 'Cleric - Life',
-            background: 'folk_hero',
-          }),
-        }),
-      ]),
-    )
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /^A new hero/ })).not.toBeInTheDocument())
     const createCall = appTestState.fetchCalls.find(
       (call) => call.method === 'POST' && call.path === '/api/players/campaigns/10/players',
     )
-    expect(createCall?.body).not.toHaveProperty('name')
+    expect(createCall?.body).toEqual({
+      character_name: 'Borin',
+      race: 'Dwarf',
+      race_selection: { raceId: 'dwarf', raceName: 'Dwarf', source: 'curated', selectedOptions: {} },
+      sex: 'male',
+      char_class: 'Cleric',
+      level: 1,
+      background: 'acolyte',
+      stats: expect.objectContaining({
+        ability_scores: { wisdom: 15, constitution: 14, strength: 13, dexterity: 12, charisma: 10, intelligence: 8 },
+      }),
+      skill_choices: ['medicine', 'persuasion'],
+    })
     expect(await screen.findByRole('heading', { name: 'Borin' })).toBeInTheDocument()
   })
 
   it('keeps focus in the edited character field instead of snapping back to player name', async () => {
     await renderLoadedApp()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Account' }))
-    fireEvent.click(within(screen.getByRole('group', { name: 'Account options' })).getByRole('button', {
-      name: 'Profile settings',
-    }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit character' }))
+    fireEvent.click(within(screen.getByLabelText('Character actions')).getByRole('button', { name: 'Edit' }))
 
     const dialog = await screen.findByRole('dialog', { name: 'Edit Character' })
     const raceInput = within(dialog).getByLabelText('Search races')
@@ -2818,24 +2809,23 @@ describe('App user workflow regressions', () => {
     await renderLoadedApp()
 
     fireEvent.click(screen.getByRole('button', { name: 'Add campaign' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Create New Campaign' })
-    fireEvent.change(within(dialog).getByLabelText('Campaign Name'), {
+    const dialog = await screen.findByRole('dialog', { name: 'New adventure' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Begin with a blank page' }))
+    fireEvent.change(within(dialog).getByLabelText('Name'), {
       target: { value: 'Crystal Road' },
     })
-    fireEvent.change(within(dialog).getByLabelText('Description'), {
+    fireEvent.change(within(dialog).getByLabelText('What is it about?'), {
       target: { value: 'Find the lantern city.' },
     })
-    fireEvent.change(within(dialog).getByLabelText('New World Name'), {
-      target: { value: 'Crystal Reach' },
-    })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create Campaign' }))
+    expect(within(dialog).getByRole('radio', { name: /A new world/ })).toBeChecked()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Begin the adventure' }))
 
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Create New Campaign' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New adventure' })).not.toBeInTheDocument())
     await waitFor(() => expect(screen.getAllByText('Crystal Road').length).toBeGreaterThan(0))
-    expect(await screen.findByRole('dialog', { name: 'Join Campaign' })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: 'Choose your character' })).toBeInTheDocument()
     expect(appTestState.fetchCalls).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ method: 'POST', path: '/api/worlds' }),
+        expect.objectContaining({ method: 'POST', path: '/api/worlds', body: expect.objectContaining({ name: 'Crystal Road' }) }),
         expect.objectContaining({ method: 'POST', path: '/api/campaigns' }),
       ]),
     )
@@ -2845,20 +2835,19 @@ describe('App user workflow regressions', () => {
     await renderLoadedApp()
 
     fireEvent.click(screen.getByRole('button', { name: 'Add campaign' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Create New Campaign' })
-    fireEvent.change(within(dialog).getByLabelText('Campaign Name'), {
+    const dialog = await screen.findByRole('dialog', { name: 'New adventure' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Begin with a blank page' }))
+    fireEvent.change(within(dialog).getByLabelText('Name'), {
       target: { value: 'Lantern Annex' },
     })
-    fireEvent.change(within(dialog).getByLabelText('Description'), {
+    fireEvent.change(within(dialog).getByLabelText('What is it about?'), {
       target: { value: 'A side story in the smoke world.' },
     })
-    fireEvent.change(within(dialog).getByLabelText('World'), {
-      target: { value: '5' },
-    })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create Campaign' }))
+    fireEvent.click(within(dialog).getByRole('radio', { name: /Smoke World/ }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Begin the adventure' }))
 
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Create New Campaign' })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('dialog', { name: 'New adventure' })).not.toBeInTheDocument(),
     )
     const worldCreates = appTestState.fetchCalls.filter(
       (call) => call.method === 'POST' && call.path === '/api/worlds',
@@ -2876,23 +2865,16 @@ describe('App user workflow regressions', () => {
     await renderLoadedApp()
 
     fireEvent.click(screen.getByRole('button', { name: 'Add campaign' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Create New Campaign' })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Campaign Pack' }))
-    fireEvent.click(await within(dialog).findByRole('button', { name: /Shadow Under Eryn Luin/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'New adventure' })
+    const begin = await within(dialog).findByRole('button', { name: 'Begin Shadow Under Eryn Luin' })
+    const row = begin.closest('li') as HTMLElement
+    expect(row).toHaveTextContent('Shadow Under Eryn Luin')
+    expect(row).toHaveTextContent(/An original Lord of the Rings-inspired campaign in Middle-earth\./)
 
-    expect(within(dialog).getAllByText('Shadow Under Eryn Luin').length).toBeGreaterThan(0)
-    expect(
-      within(dialog).getAllByText(
-        'An original Lord of the Rings-inspired campaign in Middle-earth. The company is drawn into a quiet borderland crisis where old Dwarf-roads beneath the Blue Mountains have awakened, a forgotten oath is being exploited, and a remnant servant of the Shadow seeks a buried seeing-stone shard before the Free Peoples can seal it away.',
-      ).length,
-    ).toBeGreaterThan(0)
-    expect(within(dialog).getAllByText('Medium campaign / 4-6 sessions').length).toBeGreaterThan(0)
-    expect(within(dialog).getAllByText('12-18 hours / 6 checkpoints').length).toBeGreaterThan(0)
-
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create Campaign' }))
+    fireEvent.click(begin)
 
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Create New Campaign' })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('dialog', { name: 'New adventure' })).not.toBeInTheDocument(),
     )
     await waitFor(() => expect(screen.getAllByText('Shadow Under Eryn Luin').length).toBeGreaterThan(0))
     const importCall = appTestState.fetchCalls.find(
@@ -3467,7 +3449,7 @@ describe('App user workflow regressions', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'New adventure' }))
 
-    await screen.findByRole('dialog', { name: 'Create New Campaign' })
+    await screen.findByRole('dialog', { name: 'New adventure' })
     expect(workspaceSurfaces).not.toHaveAttribute('inert')
     expect(workspaceSurfaces).not.toHaveAttribute('aria-hidden')
   })
@@ -3501,18 +3483,17 @@ describe('App user workflow regressions', () => {
     addCampaignButton.focus()
     fireEvent.click(addCampaignButton)
 
-    const dialog = await screen.findByRole('dialog', { name: 'Create New Campaign' })
-    const campaignNameInput = within(dialog).getByLabelText('Campaign Name')
-    await waitFor(() => expect(document.activeElement).toBe(campaignNameInput))
+    const dialog = await screen.findByRole('dialog', { name: 'New adventure' })
+    await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement))
 
     const closeButton = within(dialog).getByRole('button', { name: 'Close create campaign' })
-    const submitButton = within(dialog).getByRole('button', { name: 'Create Campaign' })
+    const blankPageButton = within(dialog).getByRole('button', { name: 'Begin with a blank page' })
     closeButton.focus()
     fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
-    expect(document.activeElement).toBe(submitButton)
+    expect(document.activeElement).toBe(blankPageButton)
 
     fireEvent.keyDown(document, { key: 'Escape' })
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Create New Campaign' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New adventure' })).not.toBeInTheDocument())
     expect(document.activeElement).toBe(addCampaignButton)
   })
 

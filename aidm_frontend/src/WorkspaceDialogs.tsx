@@ -1,5 +1,4 @@
 import { type RefObject } from 'react'
-import { X } from 'lucide-react'
 import { ModalShell } from './ModalShell'
 import type { AccountWorkspace } from './types'
 import { savedWorkspaceDisplayName } from './workspaceLabels'
@@ -27,50 +26,29 @@ export function SavedWorkspaceDeleteDialog({
 }: SavedWorkspaceDeleteDialogProps) {
   return (
     <ModalShell
-      className="campaign-dialog saved-workspace-delete-dialog"
+      size="narrow"
       closeDisabled={dialog.pending}
+      closeLabel="Close saved table delete"
       dialogRef={dialogRef}
       labelledBy="saved-workspace-delete-title"
       onClose={onClose}
+      title={deletesTable ? 'Delete Table' : 'Remove Saved Table'}
     >
-      <header>
-        <div>
-          <span>{deletesTable ? 'Delete' : 'Remove'}</span>
-          <h2 id="saved-workspace-delete-title">
-            {deletesTable ? 'Delete Table' : 'Remove Saved Table'}
-          </h2>
-        </div>
-        <button
-          type="button"
-          aria-label="Close saved table delete"
-          onClick={onClose}
-          disabled={dialog.pending}
-        >
-          <X size={18} />
-        </button>
-      </header>
-      <div className="dialog-body">
-        <div className="dialog-warning">
-          <strong>{savedWorkspaceDisplayName(dialog.workspace)}</strong>
-          <span>
-            {deletesTable
-              ? 'This permanently deletes the table for everyone. This cannot be undone.'
-              : 'This removes the table from your saved tables only.'}
-          </span>
-        </div>
-        {dialog.error ? <div className="dialog-error" role="alert">{dialog.error}</div> : null}
-        <footer>
-          <button
-            type="button"
-            className="secondary"
-            onClick={onClose}
-            disabled={dialog.pending}
-          >
+      <div className="story-dialog-body">
+        <p className="story-dialog-subject">{savedWorkspaceDisplayName(dialog.workspace)}</p>
+        <p className="story-dialog-note">
+          {deletesTable
+            ? 'This permanently deletes the table for everyone. This cannot be undone.'
+            : 'This removes the table from your saved tables only.'}
+        </p>
+        {dialog.error ? <p className="story-dialog-error" role="alert">{dialog.error}</p> : null}
+        <footer className="story-dialog-footer">
+          <button type="button" className="story-link" onClick={onClose} disabled={dialog.pending}>
             Cancel
           </button>
           <button
             type="button"
-            className={deletesTable ? 'danger' : undefined}
+            className={deletesTable ? 'story-link story-link-danger' : 'story-primary'}
             onClick={onConfirm}
             disabled={dialog.pending}
           >
@@ -103,43 +81,36 @@ export function ShareSessionDialog({
 }: ShareSessionDialogProps) {
   return (
     <ModalShell
-      className="campaign-dialog share-session-dialog"
+      size="narrow"
+      closeLabel="Close share session"
       describedBy="share-session-description"
+      description="Send this link to a friend. It opens this table, where they choose or create their own character."
       dialogRef={dialogRef}
       labelledBy="share-session-title"
       onClose={onClose}
+      title="Share Session"
     >
-      <header>
-        <div>
-          <span>Table Link</span>
-          <h2 id="share-session-title">Share Session</h2>
-        </div>
-        <button type="button" aria-label="Close share session" onClick={onClose}>
-          <X size={18} />
-        </button>
-      </header>
-      <label>
-        Session Link
-        <input
-          data-autofocus
-          readOnly
-          aria-label="Session share link"
-          value={url}
-          onFocus={(event) => event.currentTarget.select()}
-        />
-      </label>
-      <p id="share-session-description">
-        Send this to someone who can open this frontend and reach this backend. They can choose or
-        create their own character after it opens.
-      </p>
-      <footer>
-        <button type="button" className="secondary" onClick={onClose}>
-          Close
-        </button>
-        <button type="button" onClick={onCopy}>
-          Copy Link
-        </button>
-      </footer>
+      <div className="story-dialog-body">
+        <label className="story-dialog-field">
+          <span className="story-label">Invite link</span>
+          <input
+            data-autofocus
+            readOnly
+            aria-label="Session share link"
+            className="story-dialog-link-field"
+            value={url}
+            onFocus={(event) => event.currentTarget.select()}
+          />
+        </label>
+        <footer className="story-dialog-footer">
+          <button type="button" className="story-link" onClick={onClose}>
+            Close
+          </button>
+          <button type="button" className="story-primary" onClick={onCopy}>
+            Copy Link
+          </button>
+        </footer>
+      </div>
     </ModalShell>
   )
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
-import { X } from 'lucide-react'
 import type { RollResolvedPayload } from './gameActions'
+import { ModalShell } from './ModalShell'
 import {
   Body,
   ContactMaterial,
@@ -988,6 +988,7 @@ export default function DiceRollDialog({
   onRetry,
 }: DiceRollDialogProps) {
   const [landedRollKey, setLandedRollKey] = useState<number | null>(null)
+  const ownDialogRef = useRef<HTMLElement | null>(null)
   const hasLanded = landedRollKey === rollKey
   const authoritativeResult = result !== null && modifier !== null && total !== null
   const modifierLabel = signedModifier(modifier ?? 0)
@@ -1014,22 +1015,16 @@ export default function DiceRollDialog({
     : `${die.toUpperCase()} rolling. ${statusText}`
 
   return (
-    <section
-      ref={dialogRef}
+    <ModalShell
+      size="narrow"
       className={`dice-dialog ${status}`}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="dice-roll-title"
+      closeLabel="Close dice roller"
+      description={`${die.toUpperCase()} roll`}
+      dialogRef={dialogRef ?? ownDialogRef}
+      labelledBy="dice-roll-title"
+      onClose={onCancel}
+      title={title}
     >
-      <header>
-        <div>
-          <span>{die.toUpperCase()} roll</span>
-          <h2 id="dice-roll-title">{title}</h2>
-        </div>
-        <button type="button" aria-label="Close dice roller" onClick={onCancel} data-autofocus>
-          <X size={18} />
-        </button>
-      </header>
       <div className="dice-stage">
         {status === 'rolling' && authoritativeResult ? (
           <DiceCanvas
@@ -1083,12 +1078,12 @@ export default function DiceRollDialog({
           <small>{statusText}</small>
           {targetLabel ? <small>Target: {targetLabel}</small> : null}
           {status === 'failed' ? (
-            <button type="button" className="dice-retry-button" onClick={onRetry} data-autofocus>
+            <button type="button" className="story-link dice-retry-button" onClick={onRetry} data-autofocus>
               Retry safely
             </button>
           ) : null}
         </div>
       </div>
-    </section>
+    </ModalShell>
   )
 }

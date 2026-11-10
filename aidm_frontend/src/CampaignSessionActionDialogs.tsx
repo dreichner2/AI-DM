@@ -1,5 +1,4 @@
 import { type FormEventHandler, type RefObject } from 'react'
-import { X } from 'lucide-react'
 import { ModalShell } from './ModalShell'
 import type { CampaignActionDialogState } from './useCampaignActions'
 import type { SessionActionDialogState, StartChapterDialogState } from './useSessionActions'
@@ -18,21 +17,27 @@ const CAMPAIGN_ACTION_LABELS = {
     title: 'Rename Campaign',
     pending: 'Saving...',
     submit: 'Save Campaign',
+    consequence: '',
   },
   archive: {
     title: 'Archive Campaign',
     pending: 'Archiving...',
     submit: 'Archive Campaign',
+    consequence:
+      'Archiving hides this adventure and its chapters from your list. Nothing is lost; you can restore it later.',
   },
   restore: {
     title: 'Restore Campaign',
     pending: 'Restoring...',
     submit: 'Restore Campaign',
+    consequence: 'Restoring brings this adventure, and the chapters archived with it, back into play.',
   },
   delete: {
     title: 'Delete Campaign',
     pending: 'Deleting...',
     submit: 'Delete Campaign',
+    consequence:
+      'This permanently deletes the adventure with its chapters, maps and notes. Characters stay at this table but leave the adventure.',
   },
 } as const
 
@@ -45,33 +50,22 @@ export function CampaignActionDialog({
   onTitleChange,
 }: CampaignActionDialogProps) {
   const labels = CAMPAIGN_ACTION_LABELS[dialog.mode]
+  const destructive = dialog.mode === 'archive' || dialog.mode === 'delete'
   return (
     <ModalShell
-      className="campaign-dialog campaign-action-dialog"
+      size={dialog.mode === 'rename' ? 'standard' : 'narrow'}
       closeDisabled={dialog.pending}
+      closeLabel="Close campaign action"
       dialogRef={dialogRef}
       labelledBy="campaign-action-title"
       onClose={onClose}
+      title={labels.title}
     >
-      <header>
-        <div>
-          <span>Campaign</span>
-          <h2 id="campaign-action-title">{labels.title}</h2>
-        </div>
-        <button
-          type="button"
-          aria-label="Close campaign action"
-          onClick={onClose}
-          disabled={dialog.pending}
-        >
-          <X size={18} />
-        </button>
-      </header>
-      <form onSubmit={onSubmit}>
+      <form className="story-dialog-body" onSubmit={onSubmit}>
         {dialog.mode === 'rename' ? (
           <>
-            <label>
-              Campaign Name
+            <label className="story-dialog-field">
+              <span className="story-label">Campaign Name</span>
               <input
                 autoFocus
                 data-autofocus
@@ -80,8 +74,8 @@ export function CampaignActionDialog({
                 disabled={dialog.pending}
               />
             </label>
-            <label>
-              Description
+            <label className="story-dialog-field">
+              <span className="story-label">Description</span>
               <textarea
                 value={dialog.description}
                 onChange={(event) => onDescriptionChange(event.target.value)}
@@ -90,30 +84,19 @@ export function CampaignActionDialog({
             </label>
           </>
         ) : (
-          <div className="dialog-warning">
-            <strong>{dialog.title}</strong>
-            <span>
-              {dialog.mode === 'archive'
-                ? 'Archiving hides this campaign and its sessions from the normal workspace list without destroying saved history.'
-                : dialog.mode === 'restore'
-                  ? 'Restoring makes this campaign and sessions archived with it available for normal play again.'
-                  : 'This permanently deletes the campaign, its sessions, maps, and campaign notes from this workspace. Characters stay in the workspace but are detached from it.'}
-            </span>
-          </div>
+          <>
+            <p className="story-dialog-subject">{dialog.title}</p>
+            <p className="story-dialog-note">{labels.consequence}</p>
+          </>
         )}
-        {dialog.error ? <div className="dialog-error" role="alert">{dialog.error}</div> : null}
-        <footer>
-          <button
-            type="button"
-            className="secondary"
-            onClick={onClose}
-            disabled={dialog.pending}
-          >
+        {dialog.error ? <p className="story-dialog-error" role="alert">{dialog.error}</p> : null}
+        <footer className="story-dialog-footer">
+          <button type="button" className="story-link" onClick={onClose} disabled={dialog.pending}>
             Cancel
           </button>
           <button
             type="submit"
-            className={dialog.mode === 'archive' || dialog.mode === 'delete' ? 'danger' : undefined}
+            className={destructive ? 'story-link story-link-danger' : 'story-primary'}
             disabled={dialog.pending}
           >
             {dialog.pending ? labels.pending : labels.submit}
@@ -142,30 +125,18 @@ export function SessionActionDialog({
   const rename = dialog.mode === 'rename'
   return (
     <ModalShell
-      className="campaign-dialog session-action-dialog"
+      size={rename ? 'standard' : 'narrow'}
       closeDisabled={dialog.pending}
+      closeLabel="Close session action"
       dialogRef={dialogRef}
       labelledBy="session-action-title"
       onClose={onClose}
+      title={rename ? 'Rename Session' : 'Delete Session'}
     >
-      <header>
-        <div>
-          <span>Session</span>
-          <h2 id="session-action-title">{rename ? 'Rename Session' : 'Delete Session'}</h2>
-        </div>
-        <button
-          type="button"
-          aria-label="Close session action"
-          onClick={onClose}
-          disabled={dialog.pending}
-        >
-          <X size={18} />
-        </button>
-      </header>
-      <form onSubmit={onSubmit}>
+      <form className="story-dialog-body" onSubmit={onSubmit}>
         {rename ? (
-          <label>
-            Session Name
+          <label className="story-dialog-field">
+            <span className="story-label">Session Name</span>
             <input
               autoFocus
               data-autofocus
@@ -175,27 +146,22 @@ export function SessionActionDialog({
             />
           </label>
         ) : (
-          <div className="dialog-warning">
-            <strong>{dialog.name}</strong>
-            <span>
-              This permanently deletes this session and its saved turn history. Use the archive
-              button if you only want to hide it.
-            </span>
-          </div>
+          <>
+            <p className="story-dialog-subject">{dialog.name}</p>
+            <p className="story-dialog-note">
+              This permanently deletes this chapter and everything said in it. Archive the chapter
+              instead if you only want to hide it.
+            </p>
+          </>
         )}
-        {dialog.error ? <div className="dialog-error" role="alert">{dialog.error}</div> : null}
-        <footer>
-          <button
-            type="button"
-            className="secondary"
-            onClick={onClose}
-            disabled={dialog.pending}
-          >
+        {dialog.error ? <p className="story-dialog-error" role="alert">{dialog.error}</p> : null}
+        <footer className="story-dialog-footer">
+          <button type="button" className="story-link" onClick={onClose} disabled={dialog.pending}>
             Cancel
           </button>
           <button
             type="submit"
-            className={rename ? undefined : 'danger'}
+            className={rename ? 'story-primary' : 'story-link story-link-danger'}
             disabled={dialog.pending}
           >
             {dialog.pending
@@ -234,33 +200,18 @@ export function StartChapterDialog({
 }: StartChapterDialogProps) {
   return (
     <ModalShell
-      className="campaign-dialog chapter-start-dialog"
+      size="narrow"
       closeDisabled={dialog.pending}
+      closeLabel="Close start chapter"
       describedBy="chapter-start-description"
+      description="The story continues: the world, your quests and your progress carry over. The current chapter is closed and kept for reading."
       dialogRef={dialogRef}
       labelledBy="chapter-start-title"
       onClose={onClose}
+      title="Start the next chapter"
     >
-      <header>
-        <div>
-          <span>Chapter</span>
-          <h2 id="chapter-start-title">Start the next chapter</h2>
-        </div>
-        <button
-          type="button"
-          aria-label="Close start chapter"
-          onClick={onClose}
-          disabled={dialog.pending}
-        >
-          <X size={18} />
-        </button>
-      </header>
-      <form onSubmit={onSubmit}>
-        <p id="chapter-start-description" className="chapter-start-copy">
-          The story continues: the world, your quests and your progress carry over. The current
-          chapter is closed and kept for reading.
-        </p>
-        <label className="chapter-start-option">
+      <form className="story-dialog-body" onSubmit={onSubmit}>
+        <label className="story-dialog-check">
           <input
             type="checkbox"
             checked={dialog.fresh}
@@ -270,13 +221,13 @@ export function StartChapterDialog({
           <span>Start over from the beginning instead</span>
         </label>
         {dialog.fresh ? (
-          <div className="dialog-warning" role="note">
-            <span>The world resets to the adventure&apos;s opening. Your characters keep their progress.</span>
-          </div>
+          <p className="story-dialog-note story-dialog-warning" role="note">
+            The world resets to the adventure&apos;s opening. Your characters keep their progress.
+          </p>
         ) : null}
-        {dialog.error ? <div className="dialog-error" role="alert">{dialog.error}</div> : null}
+        {dialog.error ? <p className="story-dialog-error" role="alert">{dialog.error}</p> : null}
         {dialog.unsettled && canForce ? (
-          <label className="chapter-start-option">
+          <label className="story-dialog-check">
             <input
               type="checkbox"
               checked={dialog.force}
@@ -286,20 +237,11 @@ export function StartChapterDialog({
             <span>Start anyway and drop the unfinished fight or roll</span>
           </label>
         ) : null}
-        <footer>
-          <button
-            type="button"
-            className="secondary"
-            onClick={onClose}
-            disabled={dialog.pending}
-          >
+        <footer className="story-dialog-footer">
+          <button type="button" className="story-link" onClick={onClose} disabled={dialog.pending}>
             Cancel
           </button>
-          <button
-            type="submit"
-            data-autofocus
-            disabled={dialog.pending}
-          >
+          <button type="submit" className="story-primary" data-autofocus disabled={dialog.pending}>
             {dialog.pending ? 'Starting...' : 'Start chapter'}
           </button>
         </footer>

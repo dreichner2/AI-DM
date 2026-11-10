@@ -35,7 +35,7 @@ describe('WorkspaceDialogs', () => {
     expect(within(dialog).getByText('Ember Table')).toBeInTheDocument()
     expect(within(dialog).getByText('Deletion failed.')).toBeInTheDocument()
     const deleteButton = within(dialog).getByRole('button', { name: 'Delete Table' })
-    expect(deleteButton).toHaveClass('danger')
+    expect(deleteButton).toHaveClass('story-link-danger')
     fireEvent.click(deleteButton)
     expect(onConfirm).toHaveBeenCalledTimes(1)
     fireEvent.mouseDown(dialog.parentElement as HTMLElement)
@@ -72,7 +72,7 @@ describe('WorkspaceDialogs', () => {
       />,
     )
     const removeDialog = screen.getByRole('dialog', { name: 'Remove Saved Table' })
-    expect(within(removeDialog).getByRole('button', { name: 'Remove' })).not.toHaveClass('danger')
+    expect(within(removeDialog).getByRole('button', { name: 'Remove' })).not.toHaveClass('story-link-danger')
     expect(within(removeDialog).getByText(/saved tables only/i)).toBeInTheDocument()
 
     const shareProps: ComponentProps<typeof ShareSessionDialog> = {
@@ -83,6 +83,7 @@ describe('WorkspaceDialogs', () => {
     }
     rerender(<ShareSessionDialog {...shareProps} />)
     const shareDialog = screen.getByRole('dialog', { name: 'Share Session' })
+    expect(shareDialog).toHaveAccessibleDescription(/Send this link to a friend/)
     expect(within(shareDialog).getByLabelText('Session share link')).toHaveValue(shareProps.url)
     fireEvent.click(within(shareDialog).getByRole('button', { name: 'Copy Link' }))
     expect(shareProps.onCopy).toHaveBeenCalledTimes(1)

@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { partyVitalityFromSnapshot } from '../gameSelectors'
 import { StoryAtmosphere } from './StoryAtmosphere'
 import { StoryFeed, type StoryTextSize } from './StoryFeed'
 import { storyMood } from './storyMood'
@@ -76,6 +77,8 @@ export function StoryView({
   const mood = storyMood(board.worldState, board.sceneState, board.combatState)
   const viewerPlayerId = board.selectedPlayer?.player_id ?? board.playerId ?? inspector.selectedPlayerId
   const viewer = board.activePlayers.find((player) => player.id === viewerPlayerId)
+  const snapshot = board.sessionState?.state_snapshot
+  const vitality = useMemo(() => partyVitalityFromSnapshot(snapshot), [snapshot])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -103,7 +106,12 @@ export function StoryView({
   }
 
   return (
-    <div className="story-shell" data-mood={mood} data-drawer-open={drawerOpen ? '' : undefined}>
+    <div
+      className="story-shell"
+      data-mood={mood}
+      data-phase={board.worldState.clock?.phase}
+      data-drawer-open={drawerOpen ? '' : undefined}
+    >
       <StoryAtmosphere mood={mood} viewerHp={viewer?.health?.currentHp ?? null} />
       <h1 className="story-sr-only">{board.activeSessionTitle}</h1>
       <div className="story-stage">
@@ -117,7 +125,7 @@ export function StoryView({
           onTextSizeChange={changeTextSize}
         />
         <main className="story-main" aria-label="Story">
-          <StoryFeed board={board} textSize={textSize} />
+          <StoryFeed board={board} textSize={textSize} onExitToTitle={chrome.onExitToTitle} />
           <div className="story-composer-slot">{composer}</div>
         </main>
         <aside
@@ -132,6 +140,7 @@ export function StoryView({
       <StoryPartyHud
         activePlayers={board.activePlayers}
         viewerPlayerId={viewerPlayerId}
+        vitality={vitality}
         onDrawerOpenChange={onDrawerOpenChange}
       />
     </div>

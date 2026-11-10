@@ -15,6 +15,7 @@ import {
   normalizeSpellResources,
   normalizeStats,
   normalizeXp,
+  partyVitalityFromSnapshot,
   pendingRollNoticeFromTimeline,
   pendingRollOptionsFromTimeline,
   speakerDetail,
@@ -130,6 +131,84 @@ describe('game selector helpers', () => {
     )
 
     expect(statBlock.ac).toBe('17')
+  })
+
+  it('keeps HP against its maximum and reads saves, death saves, hit dice and conditions', () => {
+    const statBlock = normalizeStats(
+      {
+        strength: 18,
+        dexterity: 12,
+        constitution: 16,
+        intelligence: 8,
+        wisdom: 10,
+        charisma: 9,
+        max_hp: 31,
+        hit_dice: 1,
+        conditions: ['poisoned', ' '],
+        death_saves: { successes: 2, failures: 7 },
+        saving_throw_proficiencies: ['strength', 'constitution_saving_throw'],
+      },
+      {},
+      5,
+      { hitDie: 10, proficiencyBonus: 3 },
+    )
+
+    expect(statBlock.hp).toBe('31 / 31')
+    expect(statBlock.savingThrows).toEqual([
+      { ability: 'STR', modifier: '+7', proficient: true },
+      { ability: 'DEX', modifier: '+1', proficient: false },
+      { ability: 'CON', modifier: '+6', proficient: true },
+      { ability: 'INT', modifier: '-1', proficient: false },
+      { ability: 'WIS', modifier: '+0', proficient: false },
+      { ability: 'CHA', modifier: '-1', proficient: false },
+    ])
+    expect(statBlock.deathSaves).toEqual({ successes: 2, failures: 3 })
+    expect(statBlock.hitDice).toEqual({ current: 1, max: 5, die: 'd10' })
+    expect(statBlock.conditions).toEqual(['poisoned'])
+
+    const fresh = normalizeStats({ current_hp: 9, max_hp: 9, savingThrows: { dex: true, int: { proficient: true }, wis: false } }, {}, 2, { hitDie: 6 })
+    expect(fresh.hp).toBe('9 / 9')
+    expect(fresh.savingThrows).toEqual([])
+    expect(fresh.hitDice).toEqual({ current: 2, max: 2, die: 'd6' })
+    expect(fresh.deathSaves).toBeNull()
+
+    const proficient = normalizeStats({ dexterity: 14, intelligence: 10, wisdom: 10, savingThrows: { dex: true, int: { proficient: true }, wis: false } }, {}, 1)
+    expect(proficient.savingThrows?.filter((save) => save.proficient).map((save) => [save.ability, save.modifier])).toEqual([
+      ['DEX', '+4'],
+      ['INT', '+2'],
+    ])
+    expect(proficient.savingThrows?.[0]).toEqual({ ability: 'STR', modifier: '—', proficient: false })
+    expect(proficient.hitDice).toBeNull()
+  })
+
+  it('reads each downed party member from combat first, then from the viewer’s own sheet', () => {
+    expect(
+      partyVitalityFromSnapshot({
+        combat: {
+          status: 'active',
+          participants: [
+            { id: 'player_30', team: 'player', conditions: ['unconscious', 'dying'], deathSaves: { successes: 1, failures: 2 } },
+            { id: 'player_31', team: 'player', conditions: ['unconscious', 'stable'], deathSaves: { successes: 3, failures: 0 } },
+            { id: 'player_32', team: 'player', conditions: [] },
+            { id: 'goblin_1', team: 'enemy', conditions: ['dead'] },
+          ],
+        },
+        playerCharacters: [
+          { id: 'player_32', playerId: 32, health: { conditions: ['dead'] } },
+          { id: 'player_33', playerId: 33, health: { conditions: ['dead'] } },
+        ],
+      }),
+    ).toEqual({
+      30: { state: 'dying', successes: 1, failures: 2 },
+      31: { state: 'stable', successes: 0, failures: 0 },
+      33: { state: 'dead', successes: 0, failures: 0 },
+    })
+    expect(
+      partyVitalityFromSnapshot({
+        combat: { status: 'ended', participants: [{ id: 'player_30', team: 'player', conditions: ['dying'] }] },
+        playerCharacters: [{ playerId: 30, health: { conditions: ['unconscious', 'stable'] } }],
+      }),
+    ).toEqual({ 30: { state: 'stable', successes: 0, failures: 0 } })
   })
 
   it('normalizes spellbooks from character sheets and dedupes known spells', () => {
@@ -737,6 +816,7 @@ describe('game selector helpers', () => {
           status: 'active',
           stage: 'Investigate the docks',
           objective: '',
+          objectives: [],
         },
       ],
       presentNpcs: [],
@@ -782,7 +862,83 @@ describe('game selector helpers', () => {
       },
       clock: { day: 1, phase: 'morning', label: 'Day 1 · Morning' },
       merchants: [],
+      finishedQuests: [],
+      clues: [],
+      handouts: [],
+      lore: [],
+      ending: null,
     })
+  })
+
+  it('carries every objective, the finished quests, what the party has discovered and the ending', () => {
+    const panel = worldStateFromSnapshot({
+      currentScene: { name: 'Waystation', activeQuestIds: ['road', 'bell'] },
+      quests: [
+        {
+          id: 'road',
+          title: 'The Road of Unremembered Kings',
+          status: 'active',
+          stage: 'Follow the road',
+          objectives: [
+            { id: 'stone', description: 'Recover the road-stone fragment', status: 'completed' },
+            { id: 'names', description: 'Learn why the names were erased', status: 'open' },
+            { id: 'cairns', title: 'Pass the cairns', status: 'blocked' },
+            { id: 'ward', description: 'Spare the wardens', status: 'failed' },
+            { id: 'shrine', description: 'Light the roadside shrine', status: 'optional' },
+            { id: 'empty', status: 'open' },
+          ],
+        },
+        { id: 'bell', title: 'The Bell at Third Mile', status: 'completed', stage: 'Silenced' },
+        { id: 'escort', title: 'Escort the Drivers', status: 'failed', objectives: [{ id: 'drivers', description: 'Bring them home', status: 'failed' }] },
+      ],
+      clues: [
+        { id: 'clue_stone', name: 'Pale Road-Stone Fragment', description: 'Half a name-rune.' },
+        { id: 'clue_ledger', title: 'Ledger', summary: 'Every name scratched away.', status: 'discovered' },
+        { id: 'clue_secret', title: 'Hidden mark', status: 'undiscovered' },
+        { title: 'No id' },
+      ],
+      handouts: [{ id: 'handout_page', title: 'Page from the Ledger', summary: 'A ledger page.', text: 'Route: Lantern Post by dusk.' }],
+      lore: [{ id: 'lore_oath', title: 'The Roadward Oath', summary: 'Protect travellers without price.' }],
+      campaignPack: {
+        title: 'The Road',
+        checkpoints: [
+          { id: 'cp_06', title: 'The Last Road-Stone', status: 'completed' },
+          { id: 'cp_07', title: 'The Road Remembers', summary: 'The names return to the road.', status: 'active', terminal: true },
+        ],
+      },
+    })
+
+    expect(panel.activeQuests).toHaveLength(1)
+    expect(panel.activeQuests[0]).toMatchObject({ id: 'road', objective: 'Learn why the names were erased' })
+    expect(panel.activeQuests[0].objectives).toEqual([
+      { id: 'stone', description: 'Recover the road-stone fragment', status: 'completed', optional: false },
+      { id: 'names', description: 'Learn why the names were erased', status: 'open', optional: false },
+      { id: 'cairns', description: 'Pass the cairns', status: 'blocked', optional: false },
+      { id: 'ward', description: 'Spare the wardens', status: 'failed', optional: false },
+      { id: 'shrine', description: 'Light the roadside shrine', status: 'open', optional: true },
+    ])
+    expect(panel.finishedQuests?.map((quest) => [quest.id, quest.status])).toEqual([
+      ['bell', 'completed'],
+      ['escort', 'failed'],
+    ])
+    expect(panel.clues).toEqual([
+      { id: 'clue_stone', title: 'Pale Road-Stone Fragment', summary: 'Half a name-rune.' },
+      { id: 'clue_ledger', title: 'Ledger', summary: 'Every name scratched away.' },
+    ])
+    expect(panel.handouts).toEqual([
+      { id: 'handout_page', title: 'Page from the Ledger', summary: 'A ledger page.', text: 'Route: Lantern Post by dusk.' },
+    ])
+    expect(panel.lore).toEqual([{ id: 'lore_oath', title: 'The Roadward Oath', summary: 'Protect travellers without price.' }])
+    expect(panel.ending).toEqual({ title: 'The Road Remembers', summary: 'The names return to the road.' })
+  })
+
+  it('has no ending until a terminal checkpoint is active or completed', () => {
+    const pack = (status: string, extra: Record<string, unknown> = {}) => ({
+      campaignPack: { title: 'The Road', checkpoints: [{ id: 'cp_end', status, ...extra }] },
+    })
+    expect(worldStateFromSnapshot(pack('open', { terminal: true })).ending).toBeNull()
+    expect(worldStateFromSnapshot(pack('completed')).ending).toBeNull()
+    expect(worldStateFromSnapshot(pack('completed', { type: 'finale' })).ending).toEqual({ title: 'The Road', summary: '' })
   })
 
   it('reads the day clock and the merchants open in the scene', () => {

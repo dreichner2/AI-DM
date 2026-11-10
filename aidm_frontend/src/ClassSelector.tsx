@@ -16,6 +16,10 @@ type ClassSelectorProps = {
   selectedClass: string
   pending?: boolean
   onClassChange: (charClass: string) => void
+  /** Opens with the catalog expanded in this view instead of the collapsed starter paths. */
+  initialView?: ClassViewMode
+  /** A line shown on a class's card and in its details, such as how its features are run. */
+  classNote?: (classEntry: PlayableClass) => string | null
 }
 
 const ALL_FILTER = 'All' as const
@@ -36,12 +40,14 @@ function ClassChips({ classEntry }: { classEntry: PlayableClass }) {
 
 function ClassDetailsModal({
   classEntry,
+  note,
   selectedValue,
   pending,
   onClose,
   onSelect,
 }: {
   classEntry: PlayableClass
+  note: string | null
   selectedValue: string
   pending: boolean
   onClose: () => void
@@ -79,6 +85,7 @@ function ClassDetailsModal({
             <span>{classEntry.powerSource}</span>
             <p>{classEntry.shortDescription}</p>
           </section>
+          {note ? <p className="class-note">{note}</p> : null}
           <p>{classEntry.longDescription}</p>
           <dl className="race-detail-grid class-detail-grid">
             <div>
@@ -137,11 +144,17 @@ function ClassDetailsModal({
   )
 }
 
-export function ClassSelector({ selectedClass, pending = false, onClassChange }: ClassSelectorProps) {
-  const [expanded, setExpanded] = useState(false)
+export function ClassSelector({
+  selectedClass,
+  pending = false,
+  onClassChange,
+  initialView,
+  classNote,
+}: ClassSelectorProps) {
+  const [expanded, setExpanded] = useState(Boolean(initialView))
   const [query, setQuery] = useState('')
   const [selectedFilter, setSelectedFilter] = useState<ClassCategory | typeof ALL_FILTER>(ALL_FILTER)
-  const [viewMode, setViewMode] = useState<ClassViewMode>('starter')
+  const [viewMode, setViewMode] = useState<ClassViewMode>(initialView ?? 'starter')
   const [detailsClass, setDetailsClass] = useState<PlayableClass | null>(null)
   const [customClass, setCustomClass] = useState('')
 
@@ -287,6 +300,7 @@ export function ClassSelector({ selectedClass, pending = false, onClassChange }:
                         <small>
                           {classEntry.subclasses.length} subclasses: {classEntry.subclasses.slice(0, 3).map((subclass) => subclass.name).join(', ')}
                         </small>
+                        {classNote?.(classEntry) ? <small className="class-note">{classNote(classEntry)}</small> : null}
                       </span>
                     </button>
                   )
@@ -321,6 +335,7 @@ export function ClassSelector({ selectedClass, pending = false, onClassChange }:
       {detailsClass ? (
         <ClassDetailsModal
           classEntry={detailsClass}
+          note={classNote?.(detailsClass) ?? null}
           selectedValue={selectedClass}
           pending={pending}
           onClose={() => setDetailsClass(null)}

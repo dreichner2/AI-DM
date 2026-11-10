@@ -1,8 +1,13 @@
-import { useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
+import { characterVitality, partyVitalityFromSnapshot, type SavingThrowSummary } from '../../gameSelectors'
 import type { InspectorPanelProps } from '../../InspectorPanel'
 import type { SessionBoardProps } from '../../SessionBoard'
 import { profileIconSrcForCharacter } from '../../profileIcons'
 import type { ActivePlayer } from '../../types'
+import { StoryVitality } from '../StoryVitality'
+
+/** Conditions the vitality mark already shows. */
+const VITALITY_CONDITIONS = new Set(['dying', 'stable', 'dead', 'unconscious'])
 
 const ABILITY_NAMES: Record<string, string> = {
   STR: 'Strength',
@@ -47,6 +52,21 @@ function hpTone(hp: string, player: ActivePlayer | undefined) {
   return ratio <= 0.25 ? 'critical' : ratio <= 0.6 ? 'hurt' : 'healthy'
 }
 
+/** Proficient saves first, each group in the usual STR…CHA order. */
+function orderedSaves(saves: SavingThrowSummary[]) {
+  return [...saves.filter((save) => save.proficient), ...saves.filter((save) => !save.proficient)]
+}
+
+function uniqueConditions(...lists: string[][]) {
+  const seen = new Set<string>()
+  return lists.flat().filter((condition) => {
+    const key = condition.trim().toLowerCase()
+    if (!key || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 function playerAvatar(player: ActivePlayer) {
   return (
     player.profile_image ||
@@ -64,8 +84,19 @@ export function CharacterSection({ board, inspector }: CharacterSectionProps) {
   const [manageOpen, setManageOpen] = useState(false)
   const { displayCharacter, statBlock, xpProgress } = inspector
   const viewer = inspector.activePlayers.find((player) => player.id === inspector.selectedPlayerId)
-  const conditions =
+  const snapshot = board.sessionState?.state_snapshot
+  const partyVitality = useMemo(() => partyVitalityFromSnapshot(snapshot), [snapshot])
+  const combatConditions =
     board.combatState.allies.find((ally) => ally.name === displayCharacter.name)?.conditions ?? []
+  const allConditions = uniqueConditions(statBlock.conditions ?? [], combatConditions)
+  const vitality =
+    (inspector.selectedPlayerId !== null ? partyVitality[inspector.selectedPlayerId] : undefined) ??
+    characterVitality(allConditions, statBlock.deathSaves)
+  const conditions = vitality
+    ? allConditions.filter((condition) => !VITALITY_CONDITIONS.has(condition.trim().toLowerCase()))
+    : allConditions
+  const saves = orderedSaves(statBlock.savingThrows ?? [])
+  const hitDice = statBlock.hitDice ?? null
   const skills = (statBlock.skillProficiencies ?? []).map((skill) =>
     `${mechanicLabel(skill)}${(statBlock.skillExpertise ?? []).includes(skill) ? ' (expertise)' : ''}`,
   )
@@ -86,7 +117,7 @@ export function CharacterSection({ board, inspector }: CharacterSectionProps) {
   return (
     <div className="story-sheet story-sheet-character">
       <div className="story-character-head">
-        <div className="story-sheet-portrait">
+        <div className="story-character-portrait">
           <img src={inspector.characterAvatarSrc} alt="" />
         </div>
         <div className="story-character-title">
@@ -118,6 +149,12 @@ export function CharacterSection({ board, inspector }: CharacterSectionProps) {
         ))}
       </dl>
 
+      {vitality ? (
+        <p className="story-sheet-vitality">
+          <StoryVitality vitality={vitality} />
+        </p>
+      ) : null}
+
       <dl className="story-abilities">
         {statBlock.abilities.map(([label, score, modifier]) => (
           <div key={label} title={ABILITY_NAMES[label]}>
@@ -127,6 +164,36 @@ export function CharacterSection({ board, inspector }: CharacterSectionProps) {
           </div>
         ))}
       </dl>
+
+      {saves.length || hitDice ? (
+        <dl className="story-sheet-lines">
+          {saves.length ? (
+            <div>
+              <dt className="story-label">Saves</dt>
+              <dd className="story-saves">
+                {saves.map((save, index) => (
+                  <Fragment key={save.ability}>
+                    {index ? <span className="story-saves-dot" aria-hidden="true">·</span> : null}
+                    <span
+                      className="story-save"
+                      data-proficient={save.proficient || undefined}
+                      title={save.proficient ? `${ABILITY_NAMES[save.ability]} save (proficient)` : `${ABILITY_NAMES[save.ability]} save`}
+                    >
+                      {save.ability} {save.modifier}
+                    </span>
+                  </Fragment>
+                ))}
+              </dd>
+            </div>
+          ) : null}
+          {hitDice ? (
+            <div>
+              <dt className="story-label">Hit dice</dt>
+              <dd className="story-hit-dice">{hitDice.current}/{hitDice.max} {hitDice.die}</dd>
+            </div>
+          ) : null}
+        </dl>
+      ) : null}
 
       {conditions.length ? (
         <div className="story-sheet-conditions" aria-label="Conditions">
@@ -199,11 +266,16 @@ export function CharacterSection({ board, inspector }: CharacterSectionProps) {
           <ul className="story-table-list">
             {inspector.activePlayers.map((player) => {
               const isViewer = player.id === inspector.selectedPlayerId
+              const downed = partyVitality[player.id] ?? null
               return (
-                <li key={player.id} data-health={player.health?.tone}>
+                <li key={player.id} data-health={player.health?.tone} data-vitality={downed?.state}>
                   <img src={playerAvatar(player)} alt="" />
                   <span className="story-table-name">{player.character_name || player.name}</span>
-                  {player.health ? <span className="story-table-health">{player.health.label}</span> : null}
+                  {downed ? (
+                    <StoryVitality vitality={downed} />
+                  ) : player.health ? (
+                    <span className="story-table-health">{player.health.label}</span>
+                  ) : null}
                   <span className="story-table-badge">
                     {isViewer ? 'You' : player.is_typing ? 'typing…' : ''}
                   </span>

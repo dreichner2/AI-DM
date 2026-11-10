@@ -312,6 +312,36 @@ describe('StoryComposer', () => {
     expect(props.board.actionComposerProps.toggleAdminTools).toHaveBeenCalledTimes(1)
   })
 
+  it('tells a dying viewer they are down and keeps the input closed until they are back up', () => {
+    const fixture = testBoard()
+    const sessionState = fixture.sessionState
+    if (!sessionState) throw new Error('fixture has a session state')
+    const downed = {
+      ...sessionState,
+      state_snapshot: {
+        combat: {
+          status: 'active',
+          participants: [{ id: 'player_30', team: 'player', conditions: ['unconscious', 'dying'], deathSaves: { successes: 0, failures: 1 } }],
+        },
+      },
+    }
+    const { container } = renderComposer({
+      board: { sessionState: downed, worldState: testWorld({ combat: testCombat() }) },
+      composer: { actionText: 'I crawl.' },
+    })
+
+    expect(statusLine(container)).toBe('You are down. Your companions can still reach you.')
+    expect(screen.getByLabelText('Your Action')).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Actions' })).toBeDisabled()
+    cleanup()
+
+    const stable = { ...downed, state_snapshot: { playerCharacters: [{ playerId: 30, health: { conditions: ['unconscious', 'stable'] } }] } }
+    const { container: stableDock } = renderComposer({ board: { sessionState: stable }, composer: { actionText: 'I wait.' } })
+    expect(statusLine(stableDock)).not.toContain('You are down')
+    expect(screen.getByLabelText('Your Action')).toBeEnabled()
+  })
+
   it('shows the keyboard hint until three actions have been sent from this browser', () => {
     window.localStorage.setItem('aidm:storyHintsSeen', '2')
     const { props } = renderComposer({ composer: { actionText: 'I wait.' } })

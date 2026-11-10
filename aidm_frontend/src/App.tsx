@@ -26,7 +26,6 @@ import {
   UserCircle,
   Volume2,
   VolumeX,
-  X,
 } from 'lucide-react'
 import {
   CampaignActionDialog,
@@ -42,11 +41,9 @@ import { BetaRuntimeNotesPanel } from './BetaRuntimeNotesPanel'
 import type { CampaignCard, PlayabilityStatus, SessionCard } from './CampaignRail'
 import type { CampaignPackControlAction } from './CampaignPackPanel'
 import type { InspectorPanelProps, InspectorTab } from './InspectorPanel'
+import { ModalShell } from './ModalShell'
 import { PlayerDeleteDialog } from './PlayerDeleteDialog'
-import {
-  CharacterJoinDialog,
-  ProfileSettingsDialog,
-} from './ProfileCharacterDialogs'
+import { CharacterJoinDialog } from './ProfileCharacterDialogs'
 import { useModalFocusTrap } from './useModalFocusTrap'
 import { ApiClientError, WORKSPACE_ID_HEADER, apiFetch, storedRuntimeAccessSnapshot } from './api'
 import { actorCapabilitiesAllowOperatorTools } from './capabilities'
@@ -98,8 +95,12 @@ import { StoryClarification } from './story/StoryClarification'
 import { StoryComposer } from './story/StoryComposer'
 import { StoryDrawer } from './story/StoryDrawer'
 import { StoryNotices, type StoryNotice } from './story/StoryNotices'
+import { StoryAccountSheet, type AccountSummary } from './story/sheets/StoryAccountSheet'
+import { StorySettingsSheet, type NarrationSetting } from './story/sheets/StorySettingsSheet'
+import { useStoryPreferences } from './story/sheets/storyPreferences'
 import { StoryView } from './story/StoryView'
 import type { StoryChromeProps, StoryConnection, StoryDrawerTab } from './story/types'
+import type { CreateHeroPayload } from './story/create/createHeroModel'
 import { TitleScreen } from './TitleScreen'
 import { turnControlFromSnapshot, turnControlWithActiveName } from './turnControl'
 import {
@@ -203,14 +204,17 @@ const DiceRollDialog = lazy(loadDiceRollDialog)
 const PlayerEditDialog = lazy(() =>
   import('./PlayerEditDialog').then((module) => ({ default: module.PlayerEditDialog })),
 )
-const CreateCampaignDialog = lazy(() =>
-  import('./OperatorTools').then((module) => ({ default: module.CreateCampaignDialog })),
+const CreateHero = lazy(() =>
+  import('./story/create/CreateHero').then((module) => ({ default: module.CreateHero })),
+)
+const NewAdventureSheet = lazy(() =>
+  import('./story/sheets/NewAdventureSheet').then((module) => ({ default: module.NewAdventureSheet })),
 )
 const CampaignPackImportDialog = lazy(() =>
   import('./OperatorTools').then((module) => ({ default: module.CampaignPackImportDialog })),
 )
-const CampaignChooserDialog = lazy(() =>
-  import('./CampaignChooserDialog').then((module) => ({ default: module.CampaignChooserDialog })),
+const AdventuresSheet = lazy(() =>
+  import('./story/sheets/AdventuresSheet').then((module) => ({ default: module.AdventuresSheet })),
 )
 const CampaignArchiveDialog = lazy(() =>
   import('./OperatorTools').then((module) => ({ default: module.CampaignArchiveDialog })),
@@ -234,20 +238,25 @@ function ModalLoading({
   label: string
 }) {
   return (
-    <div className="modal-backdrop" role="presentation">
-      <section
-        ref={dialogRef}
-        className="campaign-dialog modal-loading-dialog"
-        role="dialog"
-        aria-label={label}
-        aria-modal="true"
-        aria-busy="true"
-      >
-        <span className="modal-loading-mark" aria-hidden="true" />
-        <strong data-autofocus tabIndex={-1} role="status" aria-live="polite">{label}</strong>
-        <p>The requested tools are loading. Your current table state is preserved.</p>
-      </section>
-    </div>
+    <ModalShell
+      busy
+      size="narrow"
+      className="modal-loading-dialog"
+      dialogRef={dialogRef}
+      labelledBy="modal-loading-title"
+      title={label}
+    >
+      <div className="story-dialog-body">
+        <p className="story-dialog-help" data-autofocus tabIndex={-1} role="status" aria-live="polite">
+          <span className="story-dots" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+          </span>{' '}
+          One moment. Your adventure is safe.
+        </p>
+      </div>
+    </ModalShell>
   )
 }
 
@@ -745,6 +754,7 @@ function AIDMApp() {
   const [savedWorkspaceDeleteDialog, setSavedWorkspaceDeleteDialog] =
     useState<SavedWorkspaceDeleteDialogState>(null)
   const [profileSettingsOpen, setProfileSettingsOpen] = useState(false)
+  const [accountSheetOpen, setAccountSheetOpen] = useState(false)
   const [campaignArchiveDialog, setCampaignArchiveDialog] =
     useState<CampaignArchiveDialogState>(null)
   const [sessionArchiveDialog, setSessionArchiveDialog] =
@@ -1259,7 +1269,10 @@ function AIDMApp() {
   )
   const sceneMusicWorkspaceReady =
     health?.auth_required === false || hostedWorkspaceAccessReady
+  // Settings › Music off removes the player, and with it the music.
+  const { musicEnabled } = useStoryPreferences()
   const showSceneMusicPlayer =
+    musicEnabled &&
     Boolean(activeSessionId && selectedPlayerDetailId && sceneMusicWorkspaceReady) &&
     !(runtimeSettingsOpen && runtimeSettingsMode === 'auth')
   // An ended chapter is read-only: it is read over REST and never joined live.
@@ -2386,10 +2399,25 @@ function AIDMApp() {
     setProfileSettingsOpen(false)
   }, [])
 
+  // Account shows who you are and where; signed out of a hosted table it is the log-in form.
+  const openAccountSheet = () => {
+    rememberDialogTrigger()
+    setAccountMenuOpen(false)
+    if (runtimeAccount || health?.auth_required === false) {
+      setAccountSheetOpen(true)
+      return
+    }
+    openRuntimeSettings('auth')
+  }
+
+  const closeAccountSheet = useCallback(() => {
+    setAccountSheetOpen(false)
+  }, [])
+
   const {
     closePlayerDeleteDialog,
     closePlayerEditDialog,
-    openCreatePlayerDialog,
+    createHeroCharacter,
     openPlayerDeleteDialog,
     openPlayerEditDialog,
     playerDeleteDialog,
@@ -2411,10 +2439,30 @@ function AIDMApp() {
     pushError,
   })
 
+  // New characters are made in the hero creation flow; editing one keeps the character dialog.
+  const [createHeroCampaignId, setCreateHeroCampaignId] = useState<number | null>(null)
+  const openCreateHero = useCallback(
+    (campaignId: number | null) => {
+      if (!campaignId) return
+      rememberDialogTrigger()
+      setProfileSettingsOpen(false)
+      setCreateHeroCampaignId(campaignId)
+    },
+    [rememberDialogTrigger],
+  )
+  const createHero = useCallback(
+    async (payload: CreateHeroPayload) => {
+      if (!createHeroCampaignId) return
+      await createHeroCharacter(createHeroCampaignId, payload)
+      setCreateHeroCampaignId(null)
+    },
+    [createHeroCampaignId, createHeroCharacter],
+  )
+
   const promptCreatePlayer = useCallback(() => {
-    openCreatePlayerDialog(selectedCampaignId)
+    openCreateHero(selectedCampaignId)
     return Promise.resolve()
-  }, [openCreatePlayerDialog, selectedCampaignId])
+  }, [openCreateHero, selectedCampaignId])
 
   const campaignChooserKey = useMemo(
     () => `${storedSelectionScope}:${campaigns.map((item) => item.campaign_id).join(',')}`,
@@ -2466,8 +2514,8 @@ function AIDMApp() {
 
   const createCharacterFromJoinDialog = useCallback(() => {
     setCharacterJoinDialogOpen(false)
-    openCreatePlayerDialog(selectedCampaignId)
-  }, [openCreatePlayerDialog, selectedCampaignId])
+    openCreateHero(selectedCampaignId)
+  }, [openCreateHero, selectedCampaignId])
 
   const clearAuthToken = () => {
     clearRuntimeAuthToken()
@@ -2617,6 +2665,10 @@ function AIDMApp() {
       closeProfileSettingsDialog()
       return
     }
+    if (accountSheetOpen) {
+      closeAccountSheet()
+      return
+    }
     if (playerDeleteDialog) {
       if (!playerDeleteDialog.pending) {
         closePlayerDeleteDialog()
@@ -2633,6 +2685,8 @@ function AIDMApp() {
       closeCreateCampaignDialog()
     }
   }, [
+    accountSheetOpen,
+    closeAccountSheet,
     closeCreateCampaignDialog,
     closeDiceRoll,
     closePlayerDeleteDialog,
@@ -2707,9 +2761,13 @@ function AIDMApp() {
                                     ? 'share-session'
                                     : profileSettingsOpen
                                       ? 'profile-settings'
-                                      : createCampaignOpen
-                                        ? 'create-campaign'
-                                        : null
+                                      : accountSheetOpen
+                                        ? 'account'
+                                        : createCampaignOpen
+                                          ? 'create-campaign'
+                                          : createHeroCampaignId
+                                            ? 'create-hero'
+                                            : null
   const modalOpen = Boolean(activeModalKey)
   const runtime = llmConfig?.current ?? health?.llm ?? null
   const configuredProvider = stringValue(runtime?.provider, 'Unknown')
@@ -3540,7 +3598,6 @@ function AIDMApp() {
     health === null && !healthUnreachable ? 'Checking' : backendReachable ? 'Connected' : 'Offline'
   const backendStatusTone =
     health === null && !healthUnreachable ? 'neutral' : backendReachable ? 'good' : 'warn'
-  const backendDisplayUrl = baseUrl || 'Same origin'
   const tableDisplayName = health?.auth_required === false
     ? 'Local Table'
     : tableStatusDisplayName(runtimeAccount, workspaceId)
@@ -3956,9 +4013,35 @@ function AIDMApp() {
     onSwitchAdventure: openCampaignChooserDialog,
     onExitToTitle: returnToTitle,
     onOpenSettings: openProfileSettingsDialog,
-    onOpenAccount: openRuntimeSettingsDialog,
+    onOpenAccount: openAccountSheet,
     onStartNextChapter: canUseOperatorTools ? openStartChapterDialog : undefined,
     endedChapter,
+  }
+  const localTable = health?.auth_required === false
+  const accountSummary: AccountSummary = runtimeAccount
+    ? { name: runtimeAccount.displayName, table: tableDisplayName, role: runtimeAccount.workspaceRole }
+    : null
+  const narrationSetting: NarrationSetting = ttsConfig?.configured
+    ? {
+        enabled: ttsEnabled,
+        problem: effectiveTtsStatus === 'failed' ? 'The narration voice could not be played just now.' : '',
+      }
+    : ttsConfigLoadFailed
+      ? { enabled: false, problem: 'Could not check whether narration is available. Refresh to try again.' }
+      : null
+  const settingsDiagnostics = {
+    player: runtimeAccount
+      ? `You are ${runtimeAccount.displayName}${selectedPlayer ? `, playing ${displayCharacter.name}` : ''}.`
+      : selectedPlayer
+        ? `You are playing ${displayCharacter.name}.`
+        : 'You have not chosen a character yet.',
+    table: localTable ? 'At a local table on this computer.' : `At ${tableDisplayName}.`,
+    connection: {
+      ready: 'Connected to the game server.',
+      connecting: 'Connecting to the game server…',
+      reconnecting: 'Reconnecting to the game server…',
+      offline: 'Not connected to the game server.',
+    }[storyChrome.connection],
   }
   const sharedRollPlayerName = sharedRollNotice
     ? activePlayers.find((player) => player.id === sharedRollNotice.playerId)?.character_name
@@ -4459,44 +4542,29 @@ function AIDMApp() {
       )}
 
       {diceRoll ? (
-        <div
-          className="modal-backdrop dice-roll-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeDiceRoll()
-            }
-          }}
+        <Suspense
+          fallback={
+            <ModalLoading dialogRef={modalDialogRef} label={`Preparing the ${diceRoll.die.toUpperCase()}…`} />
+          }
         >
-          <Suspense
-            fallback={
-              <section className="dice-dialog dice-loading" role="status" aria-live="polite">
-                <div className="dice-loading-body">
-                  <strong>Preparing dice...</strong>
-                  <span>{diceRoll.die.toUpperCase()}</span>
-                </div>
-              </section>
-            }
-          >
-            <DiceRollDialog
-              die={diceRoll.die}
-              result={diceRoll.roll?.kept ?? null}
-              rolls={diceRoll.roll?.rolls ?? null}
-              mode={diceRoll.roll?.mode ?? 'normal'}
-              modifier={diceRoll.roll?.modifier ?? null}
-              total={diceRoll.roll?.total ?? null}
-              provenance={diceRoll.provenance}
-              targetLabel={diceRoll.targetLabel}
-              rollKey={diceRoll.rollKey}
-              status={diceRoll.status}
-              dialogRef={modalDialogRef}
-              error={diceRoll.error}
-              onCancel={closeDiceRoll}
-              onComplete={completeDiceRoll}
-              onRetry={retryDiceRoll}
-            />
-          </Suspense>
-        </div>
+          <DiceRollDialog
+            die={diceRoll.die}
+            result={diceRoll.roll?.kept ?? null}
+            rolls={diceRoll.roll?.rolls ?? null}
+            mode={diceRoll.roll?.mode ?? 'normal'}
+            modifier={diceRoll.roll?.modifier ?? null}
+            total={diceRoll.roll?.total ?? null}
+            provenance={diceRoll.provenance}
+            targetLabel={diceRoll.targetLabel}
+            rollKey={diceRoll.rollKey}
+            status={diceRoll.status}
+            dialogRef={modalDialogRef}
+            error={diceRoll.error}
+            onCancel={closeDiceRoll}
+            onComplete={completeDiceRoll}
+            onRetry={retryDiceRoll}
+          />
+        </Suspense>
       ) : null}
 
       <RuntimeSettingsDialog
@@ -4504,30 +4572,56 @@ function AIDMApp() {
         dialogRef={modalDialogRef}
         error={runtimeSettingsError}
         form={runtimeSettingsForm}
-        legacyPasswordSetupRequired={legacyPasswordSetupRequired}
-        mode={runtimeSettingsMode}
-        onAuthIntentChange={setRuntimeAuthIntent}
-        onAuthStepChange={setRuntimeAuthStep}
         onClose={closeRuntimeSettingsDialog}
-        onErrorChange={setRuntimeSettingsError}
         onFormChange={setRuntimeSettingsForm}
-        onLegacyPasswordSetupRequiredChange={setLegacyPasswordSetupRequired}
-        onOpenSavedWorkspaceDelete={openSavedWorkspaceDeleteDialog}
-        onSelectSavedWorkspace={selectSavedWorkspace}
         onSubmit={submitRuntimeSettings}
-        onWorkspaceActionChange={setRuntimeWorkspaceAction}
-        onWorkspaceCreateAccessModeChange={setRuntimeWorkspaceCreateAccessMode}
-        onWorkspaceJoinMethodChange={setRuntimeWorkspaceJoinMethod}
-        open={runtimeSettingsOpen}
-        runtimeAccount={runtimeAccount}
-        runtimeAuthIntent={runtimeAuthIntent}
-        runtimeAuthStep={runtimeAuthStep}
-        runtimeCreatedWorkspaceToken={runtimeCreatedWorkspaceToken}
-        runtimeWorkspaceAction={runtimeWorkspaceAction}
-        runtimeWorkspaceCreateAccessMode={runtimeWorkspaceCreateAccessMode}
-        runtimeWorkspaceJoinMethod={runtimeWorkspaceJoinMethod}
-        workspaceId={workspaceId}
+        open={runtimeSettingsOpen && runtimeSettingsMode === 'settings'}
       />
+
+      {accountSheetOpen || (runtimeSettingsOpen && runtimeSettingsMode === 'auth') ? (
+        <StoryAccountSheet
+          access={{
+            error: runtimeSettingsError,
+            form: runtimeSettingsForm,
+            legacyPasswordSetupRequired,
+            onAuthIntentChange: setRuntimeAuthIntent,
+            onAuthStepChange: setRuntimeAuthStep,
+            onErrorChange: setRuntimeSettingsError,
+            onFormChange: setRuntimeSettingsForm,
+            onLegacyPasswordSetupRequiredChange: setLegacyPasswordSetupRequired,
+            onOpenSavedWorkspaceDelete: openSavedWorkspaceDeleteDialog,
+            onSelectSavedWorkspace: selectSavedWorkspace,
+            onSubmit: submitRuntimeSettings,
+            onWorkspaceActionChange: setRuntimeWorkspaceAction,
+            onWorkspaceCreateAccessModeChange: setRuntimeWorkspaceCreateAccessMode,
+            onWorkspaceJoinMethodChange: setRuntimeWorkspaceJoinMethod,
+            runtimeAccount,
+            runtimeAuthIntent,
+            runtimeAuthStep,
+            runtimeCreatedWorkspaceToken,
+            runtimeWorkspaceAction,
+            runtimeWorkspaceCreateAccessMode,
+            runtimeWorkspaceJoinMethod,
+            workspaceId,
+          }}
+          account={accountSummary}
+          dialogRef={modalDialogRef}
+          onClose={runtimeSettingsOpen ? closeRuntimeSettingsDialog : closeAccountSheet}
+          onConnectionSettings={() => {
+            setAccountSheetOpen(false)
+            openRuntimeSettingsDialog()
+          }}
+          onLogOut={() => {
+            setAccountSheetOpen(false)
+            clearAuthToken()
+          }}
+          onSwitchTable={() => {
+            setAccountSheetOpen(false)
+            openWorkspaceAuthDialog()
+          }}
+          view={runtimeSettingsOpen && runtimeSettingsMode === 'auth' ? 'access' : 'summary'}
+        />
+      ) : null}
 
       {savedWorkspaceDeleteDialog ? (
         <SavedWorkspaceDeleteDialog
@@ -4548,41 +4642,32 @@ function AIDMApp() {
         />
       ) : null}
 
-      <ProfileSettingsDialog
-        canEditCharacter={Boolean(selectedPlayer)}
-        canSwitchCharacter={Boolean(selectedCampaignId)}
-        dialogRef={modalDialogRef}
-        onBackendSettings={() => {
-          setProfileSettingsOpen(false)
-          openRuntimeSettingsDialog()
-        }}
-        onClose={closeProfileSettingsDialog}
-        onEditCharacter={openPlayerEditDialog}
-        onReconnectRealtime={() => {
-          setSocketReconnectKey((current) => current + 1)
-          closeProfileSettingsDialog()
-        }}
-        onRefreshWorkspace={() => void refreshCurrentWorkspace()}
-        onSignOut={clearAuthToken}
-        onSwitchCharacter={openCharacterJoinDialog}
-        open={profileSettingsOpen}
-        signedIn={Boolean(authToken)}
-        summary={{
-          account: runtimeAccount?.displayName ?? selectedPlayer?.name ?? 'No account connected',
-          table: runtimeAccount?.workspaceId
-            ? `${runtimeAccount.workspaceId}${runtimeAccount.workspaceRole ? ` / ${runtimeAccount.workspaceRole}` : ''}`
-            : workspaceId
-              ? workspaceId
-              : workspaceToken
-                ? 'Token set'
-                : 'No table token',
-          character: displayCharacter.name,
-          campaign: campaign?.title ?? 'No campaign selected',
-          session: activeSessionName,
-          backend: backendDisplayUrl,
-          narration: `${ttsStatusLabel}${ttsLatencyLabel ? ` / ${ttsLatencyLabel}` : ''}`,
-        }}
-      />
+      {profileSettingsOpen ? (
+        <StorySettingsSheet
+          diagnostics={settingsDiagnostics}
+          dialogRef={modalDialogRef}
+          fullscreen={fullscreenActive}
+          narration={narrationSetting}
+          onClose={closeProfileSettingsDialog}
+          onConnectionSettings={() => {
+            setProfileSettingsOpen(false)
+            openRuntimeSettingsDialog()
+          }}
+          onFullscreenChange={(fullscreen) => {
+            if (fullscreen !== fullscreenActive) void toggleFullscreen()
+          }}
+          onNarrationChange={(enabled) => {
+            if (enabled !== ttsEnabled) toggleTts()
+          }}
+          onReconnect={() => {
+            setSocketReconnectKey((current) => current + 1)
+            closeProfileSettingsDialog()
+          }}
+          onRefresh={() => void refreshCurrentWorkspace()}
+          onViewChange={(view) => (view === 'story' ? openStoryView() : openConsoleView())}
+          view={storyView ? 'story' : 'console'}
+        />
+      ) : null}
 
       <CharacterJoinDialog
         campaignTitle={campaign?.title ?? null}
@@ -4624,57 +4709,63 @@ function AIDMApp() {
       ) : null}
 
       {campaignPackImportOpen ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeCampaignPackImportDialog()
-            }
-          }}
+        <ModalShell
+          size="wide"
+          closeLabel="Close campaign pack import"
+          description="Check an adventure pack file, or forge one from a premise, then create the adventure."
+          dialogRef={modalDialogRef}
+          labelledBy="campaign-pack-import-title"
+          onClose={closeCampaignPackImportDialog}
+          title="Import Campaign Pack"
         >
-          <section
-            ref={modalDialogRef}
-            className="campaign-dialog campaign-pack-import-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="campaign-pack-import-title"
+          <Suspense
+            fallback={
+              <p className="story-dialog-help" role="status">
+                Loading the pack tools…
+              </p>
+            }
           >
-            <header>
-              <div>
-                <span>Campaign Pack</span>
-                <h2 id="campaign-pack-import-title">Import Campaign Pack</h2>
-              </div>
-              <button
-                type="button"
-                aria-label="Close campaign pack import"
-                onClick={closeCampaignPackImportDialog}
-              >
-                <X size={18} />
-              </button>
-            </header>
-            <Suspense fallback={<div role="status">Loading campaign pack tools...</div>}>
-              <CampaignPackImportDialog
-                auth={auth}
-                baseUrl={baseUrl}
-                onClose={closeCampaignPackImportDialog}
-                onImported={handleCampaignPackImported}
-                pushError={pushError}
-              />
-            </Suspense>
-          </section>
-        </div>
+            <CampaignPackImportDialog
+              auth={auth}
+              baseUrl={baseUrl}
+              onClose={closeCampaignPackImportDialog}
+              onImported={handleCampaignPackImported}
+              pushError={pushError}
+            />
+          </Suspense>
+        </ModalShell>
       ) : null}
 
       {campaignChooserOpen ? (
-        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening your campaigns…" />}>
-          <CampaignChooserDialog
+        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening your adventures…" />}>
+          <AdventuresSheet
             campaigns={campaigns}
-            canCreateCampaign={canUseOperatorTools}
+            chapterMeta={campaignSessionMeta}
+            currentCampaignId={selectedCampaignId}
             dialogRef={modalDialogRef}
-            onChoose={chooseCampaign}
             onClose={closeCampaignChooserDialog}
-            onCreate={createCampaignFromChooser}
+            onContinue={chooseCampaign}
+            onImportPack={
+              canUseOperatorTools
+                ? () => {
+                    closeCampaignChooserDialog()
+                    openCampaignPackImportDialog()
+                  }
+                : undefined
+            }
+            onNewAdventure={createCampaignFromChooser}
+            onOpenArchive={
+              canUseOperatorTools
+                ? () => {
+                    closeCampaignChooserDialog()
+                    openCampaignArchiveManager()
+                  }
+                : undefined
+            }
+            onPlayReadyMade={() => {
+              closeCampaignChooserDialog()
+              returnToTitle()
+            }}
             worldNameById={worldNameById}
           />
         </Suspense>
@@ -4690,6 +4781,19 @@ function AIDMApp() {
             onClose={closePlayerEditDialog}
             onSubmit={(event) => void submitPlayerEditDialog(event)}
             setDialog={setPlayerEditDialog}
+          />
+        </Suspense>
+      ) : null}
+
+      {createHeroCampaignId ? (
+        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening hero creation…" />}>
+          <CreateHero
+            auth={auth}
+            baseUrl={baseUrl}
+            campaignTitle={campaign?.title ?? null}
+            dialogRef={modalDialogRef}
+            onClose={() => setCreateHeroCampaignId(null)}
+            onCreate={createHero}
           />
         </Suspense>
       ) : null}
@@ -4787,19 +4891,18 @@ function AIDMApp() {
       ) : null}
 
       {createCampaignOpen ? (
-        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Preparing campaign creation…" />}>
-          <CreateCampaignDialog
-            defaultWorldId={campaignWorldId}
+        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Preparing a new adventure…" />}>
+          <NewAdventureSheet
             dialogRef={modalDialogRef}
             error={createCampaignError}
             form={createCampaignForm}
             onClose={closeCreateCampaignDialog}
-            onSubmit={(event) => void submitCreateCampaign(event)}
+            onSubmit={() => void submitCreateCampaign()}
             packOptions={createCampaignPackOptions}
             packOptionsPending={createCampaignPackOptionsPending}
             pending={createCampaignPending}
             setForm={setCreateCampaignForm}
-            worldSelectOptions={worldSelectOptions}
+            worlds={worldSelectOptions}
           />
         </Suspense>
       ) : null}

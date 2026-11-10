@@ -1,20 +1,33 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { ChevronLeft } from 'lucide-react'
 import type { ActionIntent } from '../gameActions'
-import type {
-  CombatLegalAction,
-  CombatLegalActionBundle,
-  CombatLegalTarget,
-  CombatParticipantSummary,
-  CombatStatePanel,
+import {
+  characterVitality,
+  type CharacterVitality,
+  type CombatActionCost,
+  type CombatLegalAction,
+  type CombatLegalActionBundle,
+  type CombatLegalTarget,
+  type CombatParticipantSummary,
+  type CombatStatePanel,
 } from '../gameSelectors'
 import type { ActivePlayer } from '../types'
 import { combatActionSubmission } from './actionIntents'
+import { StoryVitality } from './StoryVitality'
 import { useEdgeFades } from './useEdgeFades'
 
 const RESOLVING_REASON = 'Actions are unavailable while the current turn resolves.'
 const MAX_TELEGRAPHS = 2
 const MAX_CONDITION_DOTS = 2
+const RANGE_BANDS = new Set(['melee', 'near', 'far', 'distant'])
+/** Shown by the vitality mark, so not repeated as condition dots. */
+const VITALITY_CONDITIONS = new Set(['dying', 'stable', 'dead', 'unconscious'])
+const MOVEMENT_ACTION_TYPES = new Set(['advance', 'reposition', 'dash', 'disengage'])
+const ACTION_GROUPS = ['attack', 'ability', 'movement', 'other'] as const
+/** How high an engagement arc rises above the discs it links. */
+const ARC_RISE = 11
+
+type ActionGroup = (typeof ACTION_GROUPS)[number]
 
 type StoryCombatRibbonProps = {
   combat: CombatStatePanel
@@ -28,26 +41,62 @@ function isEndTurn(action: CombatLegalAction) {
   return action.type === 'end_turn' || action.id === 'combat.end_turn'
 }
 
+/** Attacks; spells and class abilities; movement; everything else (Dodge, Help, Hide, Stabilize, items). */
+function actionGroup(action: CombatLegalAction): ActionGroup {
+  if (action.type === 'attack') return 'attack'
+  if (action.type === 'class_feature' || action.type === 'spell' || /^(class|spell)\./.test(action.id)) return 'ability'
+  if (MOVEMENT_ACTION_TYPES.has(action.type)) return 'movement'
+  return 'other'
+}
+
+/** What an action spends: A(ction), B(onus action), M(ovement), R(eaction). */
+function costLetters(cost: CombatActionCost | undefined) {
+  if (!cost) return ''
+  return [cost.action ? 'A' : '', cost.bonusAction ? 'B' : '', cost.movement ? 'M' : '', cost.reaction ? 'R' : ''].join('')
+}
+
 function combatantLabel(participant: CombatParticipantSummary) {
   const conditions = participant.conditions.length ? `, ${participant.conditions.join(', ')}` : ''
   return `${participant.name}: ${participant.health}${conditions}`
+}
+
+/** Allies then enemies, or the initiative order when the server sends one. */
+function orderedCombatants(combat: CombatStatePanel) {
+  const participants = [...combat.allies, ...combat.enemies]
+  const order = combat.turnOrder ?? []
+  if (!order.length) return { combatants: participants, dividerAfter: combat.enemies.length ? combat.allies.length : 0 }
+  const byId = new Map(participants.map((participant) => [participant.id, participant]))
+  const inOrder = order.flatMap((entry) => byId.get(entry.id) ?? [])
+  const placed = new Set(inOrder.map((participant) => participant.id))
+  return {
+    combatants: [...inOrder, ...participants.filter((participant) => !placed.has(participant.id))],
+    dividerAfter: 0,
+  }
 }
 
 function Combatant({
   participant,
   portrait,
   current,
+  vitality,
 }: {
   participant: CombatParticipantSummary
   portrait: string
   current: boolean
+  vitality: CharacterVitality | null
 }) {
   const ally = participant.team !== 'enemy'
+  const dots = vitality
+    ? participant.conditions.filter((condition) => !VITALITY_CONDITIONS.has(condition.toLowerCase()))
+    : participant.conditions
+  const band = participant.rangeBand && RANGE_BANDS.has(participant.rangeBand) ? participant.rangeBand : ''
   return (
     <li
       className="story-combatant"
+      data-combatant-id={participant.id}
       data-team={ally ? 'ally' : 'enemy'}
       data-health={participant.healthTone}
+      data-vitality={vitality?.state}
       data-current={current || undefined}
       aria-label={combatantLabel(participant)}
       aria-current={current ? 'true' : undefined}
@@ -59,16 +108,90 @@ function Combatant({
         ) : (
           <span className="story-combatant-initial">{participant.name.trim().charAt(0).toUpperCase()}</span>
         )}
-        {participant.conditions.length ? (
+        {dots.length ? (
           <span className="story-combatant-conditions">
-            {participant.conditions.slice(0, MAX_CONDITION_DOTS).map((condition) => (
+            {dots.slice(0, MAX_CONDITION_DOTS).map((condition) => (
               <i key={condition} title={condition} />
             ))}
           </span>
         ) : null}
       </span>
       <span className="story-combatant-name" aria-hidden="true">{participant.name}</span>
+      {vitality ? (
+        <StoryVitality vitality={vitality} className="story-combatant-vitality" />
+      ) : band ? (
+        <span className="story-combatant-range" aria-hidden="true">{band}</span>
+      ) : null}
     </li>
+  )
+}
+
+/**
+ * Thin ember arcs from the viewer's disc to each combatant locked in melee
+ * with them. Measured from the laid-out discs and redrawn when they move.
+ */
+function EngagementArcs({
+  viewerId,
+  engagedIds,
+  layoutKey,
+}: {
+  viewerId: string
+  engagedIds: string[]
+  /** Changes whenever the roster's order or current actor does. */
+  layoutKey: string
+}) {
+  const svgRef = useRef<SVGSVGElement | null>(null)
+  const engagedKey = engagedIds.join('|')
+
+  useLayoutEffect(() => {
+    const svg = svgRef.current
+    // The roster list this overlay sits in (its own ref is not attached yet on first mount).
+    const list = svg?.parentElement?.closest('ul') ?? null
+    if (!list || !svg) return undefined
+    const discFor = (id: string) =>
+      [...list.querySelectorAll<HTMLElement>('[data-combatant-id]')]
+        .find((element) => element.dataset.combatantId === id)
+        ?.querySelector<HTMLElement>('.story-combatant-disc') ?? null
+    const draw = () => {
+      const box = list.getBoundingClientRect()
+      // The point on a disc's rim up and towards the other disc (its "shoulder").
+      const shoulder = (disc: HTMLElement, towards: number) => {
+        const rect = disc.getBoundingClientRect()
+        const radius = rect.width / 2
+        const centreX = rect.left - box.left + radius
+        return { x: centreX + Math.sign(towards - centreX) * radius * 0.6, y: rect.top - box.top + radius * 0.2 }
+      }
+      const centreOf = (disc: HTMLElement) => {
+        const rect = disc.getBoundingClientRect()
+        return rect.left - box.left + rect.width / 2
+      }
+      const from = discFor(viewerId)
+      svg.querySelectorAll<SVGPathElement>('path[data-target]').forEach((path) => {
+        const to = discFor(path.dataset.target ?? '')
+        if (!from || !to) {
+          path.removeAttribute('d')
+          return
+        }
+        const start = shoulder(from, centreOf(to))
+        const end = shoulder(to, centreOf(from))
+        const top = Math.min(start.y, end.y) - ARC_RISE
+        path.setAttribute('d', `M ${start.x} ${start.y} Q ${(start.x + end.x) / 2} ${top} ${end.x} ${end.y}`)
+      })
+    }
+    draw()
+    list.addEventListener('transitionend', draw)
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(draw) : null
+    observer?.observe(list)
+    return () => {
+      list.removeEventListener('transitionend', draw)
+      observer?.disconnect()
+    }
+  }, [viewerId, engagedKey, layoutKey])
+
+  return (
+    <svg ref={svgRef} className="story-engagements" aria-hidden="true" focusable="false">
+      {engagedIds.map((id) => <path key={id} data-target={id} />)}
+    </svg>
   )
 }
 
@@ -79,6 +202,7 @@ function EconomyPips({ bundle }: { bundle: CombatLegalActionBundle }) {
     ['Move', bundle.movementRemaining],
     ['Reaction', bundle.reactionRemaining],
   ]
+  const attacks = bundle.attacksRemaining ?? 0
   return (
     <ul className="story-economy" aria-label="Turn resources">
       {pips.map(([label, remaining]) => (
@@ -88,6 +212,13 @@ function EconomyPips({ bundle }: { bundle: CombatLegalActionBundle }) {
           <span className="story-sr-only">{remaining > 0 ? ' ready' : ' spent'}</span>
         </li>
       ))}
+      {attacks > 1 ? (
+        <li data-attacks="">
+          <i aria-hidden="true" />
+          Attacks ×{attacks}
+          <span className="story-sr-only"> left</span>
+        </li>
+      ) : null}
     </ul>
   )
 }
@@ -127,8 +258,20 @@ export function StoryCombatRibbon({
   const viewersTurn = bundle.isCurrentActor
   const endTurn = bundle.actions.find(isEndTurn) ?? null
   const choices = bundle.actions.filter((action) => !isEndTurn(action))
+  const groupedChoices = ACTION_GROUPS
+    .map((group) => choices.filter((action) => actionGroup(action) === group))
+    .filter((group) => group.length)
   const actionSpent = bundle.subTurnCountersTracked && bundle.actionRemaining <= 0
   const telegraphs = combat.telegraphs.slice(0, MAX_TELEGRAPHS)
+  const { combatants, dividerAfter } = orderedCombatants(combat)
+  const viewer = combatants.find((participant) => participant.id === bundle.actorId)
+  const engagedIds = combatants
+    .filter((participant) =>
+      participant.id !== bundle.actorId &&
+      (viewer?.engagedWith?.includes(participant.id) || participant.engagedWith?.includes(bundle.actorId)),
+    )
+    .map((participant) => participant.id)
+  const layoutKey = `${combatants.map((participant) => participant.id).join('|')}@${bundle.currentActorId}`
 
   const actionBlockedReason = (action: CombatLegalAction) => [
     action.available ? '' : action.reason || 'This action is not currently legal.',
@@ -184,25 +327,28 @@ export function StoryCombatRibbon({
       <div ref={rosterRef} className="story-ribbon-roster story-scroll-row">
         <span className="story-label story-ribbon-round">Round {bundle.round}</span>
         <ul className="story-combatants" aria-label="Combatants">
-          {combat.allies.map((participant) => (
-            <Combatant
-              key={participant.id || participant.name}
-              participant={participant}
-              portrait={portraitFor(participant)}
-              current={participant.id === bundle.currentActorId}
-            />
+          {combatants.map((participant, index) => (
+            <Fragment key={participant.id || participant.name}>
+              {dividerAfter && index === dividerAfter ? (
+                <li className="story-combatant-divider" aria-hidden="true" />
+              ) : null}
+              <Combatant
+                participant={participant}
+                portrait={participant.team === 'enemy' ? '' : portraitFor(participant)}
+                current={participant.id === bundle.currentActorId}
+                vitality={participant.team === 'enemy' ? null : characterVitality(participant.conditions, participant.deathSaves)}
+              />
+            </Fragment>
           ))}
-          {combat.allies.length && combat.enemies.length ? (
-            <li className="story-combatant-divider" aria-hidden="true" />
+          {engagedIds.length ? (
+            <li className="story-engagements-slot" aria-hidden="true">
+              <EngagementArcs
+                viewerId={bundle.actorId}
+                engagedIds={engagedIds}
+                layoutKey={layoutKey}
+              />
+            </li>
           ) : null}
-          {combat.enemies.map((participant) => (
-            <Combatant
-              key={participant.id || participant.name}
-              participant={participant}
-              portrait=""
-              current={participant.id === bundle.currentActorId}
-            />
-          ))}
         </ul>
       </div>
 
@@ -248,21 +394,29 @@ export function StoryCombatRibbon({
                 </button>
               </>
             ) : (
-              choices.map((action) => {
-                const reason = actionBlockedReason(action)
-                const key = `action-${action.id}`
-                return (
-                  <button
-                    key={action.id}
-                    type="button"
-                    className="story-chip"
-                    {...blockedChip(key, reason)}
-                    onClick={() => chooseAction(action, reason)}
-                  >
-                    {action.label}
-                  </button>
-                )
-              })
+              groupedChoices.map((group, groupIndex) => (
+                <Fragment key={actionGroup(group[0])}>
+                  {groupIndex ? <span className="story-ribbon-gap" aria-hidden="true" /> : null}
+                  {group.map((action) => {
+                    const reason = actionBlockedReason(action)
+                    const key = `action-${action.id}`
+                    const cost = costLetters(action.cost)
+                    return (
+                      <button
+                        key={action.id}
+                        type="button"
+                        className="story-chip"
+                        data-group={actionGroup(action)}
+                        {...blockedChip(key, reason)}
+                        onClick={() => chooseAction(action, reason)}
+                      >
+                        {action.label}
+                        {cost ? <span className="story-chip-cost" aria-hidden="true">{cost}</span> : null}
+                      </button>
+                    )
+                  })}
+                </Fragment>
+              ))
             )}
           </div>
           {endTurn && !targetingAction ? (

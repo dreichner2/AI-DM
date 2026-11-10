@@ -74,6 +74,13 @@ describe('StoryTopBar', () => {
     expect(screen.getByText('The Drowned Lantern')).toBeInTheDocument()
   })
 
+  it('shows the day clock after the scene name', () => {
+    renderTopBar()
+    const clock = screen.getByText('Day 2 · Evening')
+    expect(clock).toHaveClass('story-clock')
+    expect(clock.previousElementSibling).toHaveTextContent('The Drowned Lantern')
+  })
+
   it('lists the adventure menu in order for a player', () => {
     renderTopBar()
     expect(screen.getAllByRole('button', { name: 'Adventure menu' })[1]).toHaveAttribute('aria-haspopup', 'menu')

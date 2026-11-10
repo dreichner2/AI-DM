@@ -1,11 +1,18 @@
 import { createClientMessageId, type ActionIntent } from '../gameActions'
-import type { CombatLegalAction, CombatLegalTarget } from '../gameSelectors'
+import type {
+  CombatLegalAction,
+  CombatLegalTarget,
+  WorldMerchantStockEntry,
+  WorldMerchantSummary,
+} from '../gameSelectors'
 import type {
   GameplayCapabilityControl,
   GameplayInteractableControl,
+  GameplayItemControl,
   GameplayObjectAction,
   GameplaySpellControl,
   GameplayTarget,
+  GameplayTradeGood,
 } from '../gameplayControlState'
 
 /**
@@ -15,6 +22,28 @@ import type {
 export type ActionSubmission = {
   message: string
   intent: ActionIntent
+}
+
+/**
+ * Intent fields the server validates (aidm_server/action_intent.py) that the
+ * shared ActionIntent type does not declare: shop trades, the hit dice of a
+ * short rest and the target of an item use.
+ */
+type ServerIntentFields = Omit<ActionIntent, 'kind' | 'item'> & {
+  kind: ActionIntent['kind'] | 'shop'
+  item?: NonNullable<ActionIntent['item']> & { target_id?: string }
+  hit_dice?: number
+  shop?: {
+    action: 'buy' | 'sell'
+    merchant_id: string
+    stock_id?: string
+    item_id?: string
+    quantity: number
+  }
+}
+
+function serverIntent(intent: ServerIntentFields) {
+  return intent as ActionIntent
 }
 
 function combatClientMessageId() {
@@ -29,9 +58,11 @@ export function combatActionSubmission(
   target: CombatLegalTarget | null,
 ): ActionSubmission | null {
   if (action.requiresTarget && !target) return null
-  const message = target
-    ? `${actorName} attacks ${target.name} with ${action.weaponName || 'their weapon'}.`
-    : action.message
+  const message = !target
+    ? action.message
+    : action.type === 'attack'
+      ? `${actorName} attacks ${target.name} with ${action.weaponName || 'their weapon'}.`
+      : `${actorName}: ${action.label} on ${target.name}.`
   return {
     message,
     intent: {
@@ -173,21 +204,101 @@ export function travelSubmission(exit: { id: string; name: string }): ActionSubm
   }
 }
 
-/** A short or long rest (the classic Current Situation "Recovery" actions). */
+/**
+ * A short or long rest (the classic Current Situation "Recovery" actions). A
+ * short rest may say how many hit dice to spend; without it the server spends
+ * as many as reach full HP.
+ */
 export function restSubmission(
   actorName: string,
   restType: 'short_rest' | 'long_rest',
+  hitDice?: number,
 ): ActionSubmission {
   const label = restType === 'short_rest' ? 'short rest' : 'long rest'
   const message = `${actorName} completes a ${label}.`
   return {
     message,
-    intent: {
+    intent: serverIntent({
       kind: 'rest',
       source: 'scene_panel',
       text: message,
       client_message_id: createClientMessageId(),
       rest_type: restType,
-    },
+      ...(restType === 'short_rest' && hitDice !== undefined ? { hit_dice: hitDice } : {}),
+    }),
+  }
+}
+
+/**
+ * A rules-backed consumable used on one target: through the server's combat
+ * action in combat, as a typed item use otherwise.
+ */
+export function itemUseSubmission(
+  actorName: string,
+  item: GameplayItemControl,
+  target: GameplayTarget,
+): ActionSubmission {
+  const targetText = target.name === actorName ? '' : ` on ${target.name}`
+  const message = `${actorName} uses ${item.name}${targetText}.`
+  if (item.actionId) {
+    return {
+      message,
+      intent: {
+        kind: 'combat',
+        source: 'combat_hud',
+        text: message,
+        client_message_id: combatClientMessageId(),
+        combat: { action_id: item.actionId, target_id: target.id },
+      },
+    }
+  }
+  return {
+    message,
+    intent: serverIntent({
+      kind: 'item',
+      source: 'scene_panel',
+      text: message,
+      client_message_id: createClientMessageId(),
+      inventory_action: 'use',
+      item: { id: item.id, name: item.name, quantity: 1, target_id: target.id },
+    }),
+  }
+}
+
+/** Buy one of a merchant's stock lines at the server's price. */
+export function buySubmission(
+  actorName: string,
+  merchant: WorldMerchantSummary,
+  entry: WorldMerchantStockEntry,
+): ActionSubmission {
+  const message = `${actorName} buys ${entry.name} from ${merchant.name}.`
+  return {
+    message,
+    intent: serverIntent({
+      kind: 'shop',
+      source: 'scene_panel',
+      text: message,
+      client_message_id: createClientMessageId(),
+      shop: { action: 'buy', merchant_id: merchant.id, stock_id: entry.stockId, quantity: 1 },
+    }),
+  }
+}
+
+/** Sell one of an inventory item to a merchant at the server's offer. */
+export function sellSubmission(
+  actorName: string,
+  merchant: WorldMerchantSummary,
+  good: GameplayTradeGood,
+): ActionSubmission {
+  const message = `${actorName} sells ${good.name} to ${merchant.name}.`
+  return {
+    message,
+    intent: serverIntent({
+      kind: 'shop',
+      source: 'scene_panel',
+      text: message,
+      client_message_id: createClientMessageId(),
+      shop: { action: 'sell', merchant_id: merchant.id, item_id: good.id, quantity: 1 },
+    }),
   }
 }

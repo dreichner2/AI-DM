@@ -99,6 +99,8 @@ const LEADING_LABEL_RE =/^([A-Za-z][\w .'-]{0,31}?):\s+(?=\S)/
 /** A bare word such as "calm": a mood-only scene update logged by older servers, not a change worth a chip. */
 const BARE_WORD_RE = /^[a-z]+$/
 const ATTACK_RULE_TYPES = new Set(['attack', 'spell_attack'])
+const DEATH_SAVE_CHANGE = 'combat.death_save'
+const DEATH_SAVE_RE = /^death saving throw:\s*(.+?)\s+rolled\s+(\d{1,2})\s*\(([^)]*)\)/i
 
 function metadataRecord(metadata: JsonRecord, key: string): JsonRecord | null {
   const value = metadata[key]
@@ -304,12 +306,47 @@ function chipText(message: string) {
   return message.replace(LEADING_LABEL_RE, '').replace(/\.\s*$/, '').trim()
 }
 
-/** "What changed" lines of a state-update entry, as chips. Hidden lines are skipped. */
-export function storyChanges(entry: TimelineEntry): StoryChange[] {
+function visibleStateLines(entry: TimelineEntry): JsonRecord[] {
   const stateLog = metadataRecord(entry.metadata, 'state_log')
   const lines = stateLog && Array.isArray(stateLog.lines) ? stateLog.lines : []
-  return lines.flatMap((line): StoryChange[] => {
-    if (!isRecord(line) || line.visibleToPlayer === false) return []
+  return lines.filter((line): line is JsonRecord => isRecord(line) && line.visibleToPlayer !== false)
+}
+
+function isDeathSaveLine(line: JsonRecord) {
+  return stringValue(line.changeType) === DEATH_SAVE_CHANGE && stringValue(line.status) !== 'rejected'
+}
+
+/**
+ * The engine's death saving throws in a state update, as roll lines. The
+ * server logs each as "Death saving throw: <name> rolled <d20> (<result>); …".
+ */
+export function deathSaveRolls(entry: TimelineEntry): StoryRoll[] {
+  return visibleStateLines(entry).filter(isDeathSaveLine).flatMap((line): StoryRoll[] => {
+    const match = DEATH_SAVE_RE.exec(stringValue(line.message))
+    if (!match) return []
+    const [, name, rollText, result] = match
+    const roll = Number(rollText)
+    return [{
+      name: name.trim(),
+      checkLabel: 'Death save',
+      die: 'd20',
+      faces: [roll],
+      kept: null,
+      modifier: null,
+      total: roll,
+      dc: null,
+      attack: false,
+      mode: 'normal',
+      outcome: /success/i.test(result) ? 'success' : 'failure',
+      natural: roll === 20 ? 'twenty' : roll === 1 ? 'one' : null,
+    }]
+  })
+}
+
+/** "What changed" lines of a state-update entry, as chips. Hidden lines and death saves (roll lines) are skipped. */
+export function storyChanges(entry: TimelineEntry): StoryChange[] {
+  return visibleStateLines(entry).flatMap((line): StoryChange[] => {
+    if (isDeathSaveLine(line) && DEATH_SAVE_RE.test(stringValue(line.message))) return []
     const message = stringValue(line.message).trim()
     const text = chipText(message)
     if (!text || BARE_WORD_RE.test(text)) return []
@@ -487,9 +524,17 @@ export function buildStoryBeats(
       return
     }
 
+    const deathSaves = deathSaveRolls(entry)
+    deathSaves.forEach((deathSave, index) => {
+      beats.push({ kind: 'roll', key: uniqueKey(`death-${entry.id}-${index}`), entry, roll: deathSave })
+    })
     const changes = storyChanges(entry)
     if (changes.length) {
       beats.push({ kind: 'changes', key: uniqueKey(`chg-${entry.id}`), entry, changes })
+      return
+    }
+    if (deathSaves.length) {
+      sawStory = true
       return
     }
     if (!sawStory && isChapterEntry(entry) && !beats.some((beat) => beat.kind === 'chapter')) {

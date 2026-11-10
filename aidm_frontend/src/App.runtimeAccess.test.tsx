@@ -23,8 +23,8 @@ describe('App runtime and workspace access', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open table settings' }))
 
-    const dialog = await screen.findByRole('dialog', { name: 'Log In' })
-    expect(within(dialog).getByText('Access')).toBeInTheDocument()
+    const dialog = await screen.findByRole('dialog', { name: 'Account' })
+    expect(within(dialog).getByRole('button', { name: 'Log in' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.queryByRole('button', { name: 'Open table settings' })).toBeInTheDocument()
   }, 10_000)
 
@@ -46,7 +46,7 @@ describe('App runtime and workspace access', () => {
         expect.arrayContaining([expect.objectContaining({ method: 'GET', path: '/api/campaigns' })]),
       ),
     )
-    expect(screen.queryByRole('dialog', { name: 'Choose Campaign' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Your adventures' })).not.toBeInTheDocument()
   })
 
   it('opens campaign selection for an authenticated cookie session without a bearer token', async () => {
@@ -85,13 +85,13 @@ describe('App runtime and workspace access', () => {
 
     render(<App />)
 
-    const chooser = await screen.findByRole('dialog', { name: 'Choose Campaign' })
+    const chooser = await screen.findByRole('dialog', { name: 'Your adventures' })
     expect(screen.queryByRole('heading', { name: 'AI-DM' })).not.toBeInTheDocument()
 
-    fireEvent.click(within(chooser).getByRole('button', { name: 'Choose Smoke Campaign' }))
+    fireEvent.click(within(chooser).getByRole('button', { name: 'Continue Smoke Campaign' }))
 
     await screen.findByRole('heading', { name: /Session Alpha/i })
-    const characterDialog = await screen.findByRole('dialog', { name: 'Join Campaign' })
+    const characterDialog = await screen.findByRole('dialog', { name: 'Choose your character' })
     fireEvent.click(within(characterDialog).getByRole('button', { name: 'Join as Ember' }))
     expect(await screen.findByLabelText('Scene music player')).toBeInTheDocument()
   })
@@ -105,11 +105,11 @@ describe('App runtime and workspace access', () => {
 
     await screen.findByRole('button', { name: /^Play now/i })
     fireEvent.click(screen.getByRole('button', { name: 'Log in' }))
-    let dialog = await screen.findByRole('dialog', { name: 'Log In' })
+    let dialog = await screen.findByRole('dialog', { name: 'Account' })
     expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
-    expect(within(dialog).queryByLabelText('Table Token')).not.toBeInTheDocument()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Sign Up' }))
+    expect(within(dialog).queryByLabelText('Table code')).not.toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create account' }))
 
     const usernameInput = within(dialog).getByLabelText('Username')
     await waitFor(() => expect(usernameInput).toHaveFocus())
@@ -119,17 +119,18 @@ describe('App runtime and workspace access', () => {
     fireEvent.change(within(dialog).getByLabelText('Password'), { target: { value: 'secret' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
 
-    dialog = await screen.findByRole('dialog', { name: 'Join Table' })
+    dialog = await screen.findByRole('dialog', { name: 'Account' })
+    const tableCode = await within(dialog).findByLabelText('Table code')
     expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Username')).not.toBeInTheDocument()
-    fireEvent.change(within(dialog).getByLabelText('Table Token'), { target: { value: 'shared-token' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Join Table' }))
+    fireEvent.change(tableCode, { target: { value: 'shared-token' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Join table' }))
 
     await screen.findByRole('heading', { name: /Session Alpha/i })
     expect(await screen.findByLabelText('Scene music player')).toBeInTheDocument()
     expect(sessionStorage.getItem('aidm:authToken')).toBe('account-token')
     expect(sessionStorage.getItem('aidm:workspaceToken')).toBe('shared-token')
-    expect(screen.queryByRole('dialog', { name: 'Join Table' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Account' })).not.toBeInTheDocument()
     await waitFor(() =>
       expect(screen.queryByText('Table token required. Enter the table token to connect.')).not.toBeInTheDocument(),
     )
@@ -165,7 +166,7 @@ describe('App runtime and workspace access', () => {
     fireEvent.click(playNow)
 
     expect(await screen.findByRole('heading', { name: /Session Alpha/i })).toBeInTheDocument()
-    expect(screen.queryByRole('dialog', { name: 'Log In' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Account' })).not.toBeInTheDocument()
     expect(sessionStorage.getItem('aidm:authToken')).toBe('guest-token')
     expect(sessionStorage.getItem('aidm:accountTokenTransport')).toBe('bearer')
     expect(localStorage.getItem('aidm:workspaceId')).toBe('owner')
@@ -237,7 +238,7 @@ describe('App runtime and workspace access', () => {
     localStorage.setItem('aidm:workspaceId', 'owner')
 
     render(<App />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Choose Smoke Campaign' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue Smoke Campaign' }))
     await screen.findByRole('heading', { name: /Session Alpha/i })
     await waitFor(() => expect(screen.getAllByText('Ember').length).toBeGreaterThan(0))
 
@@ -355,8 +356,9 @@ describe('App runtime and workspace access', () => {
     for (let index = 0; index < 5; index += 1) fireEvent.click(actionLabel)
     expect(screen.queryByRole('button', { name: 'Admin mode' })).not.toBeInTheDocument()
 
-    expect(screen.queryByRole('button', { name: 'Create Campaign' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Choose Smoke Campaign' }))
+    expect(screen.queryByRole('button', { name: 'Import an adventure pack' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Archived adventures' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue Smoke Campaign' }))
     await screen.findByRole('heading', { name: /Session Alpha/i })
     fireEvent.click(within(inspector).getByRole('tab', { name: 'Map' }))
     expect(screen.getByRole('heading', { name: 'Revealed Crossing' })).toBeInTheDocument()
@@ -525,7 +527,8 @@ describe('App runtime and workspace access', () => {
 
     render(<App />)
 
-    const dialog = await screen.findByRole('dialog', { name: 'Sign Up' })
+    const dialog = await screen.findByRole('dialog', { name: 'Account' })
+    expect(within(dialog).getByRole('button', { name: 'Create account' })).toHaveAttribute('aria-pressed', 'true')
     expect(within(dialog).getAllByText(LEGACY_PASSWORD_SETUP_MESSAGE)).not.toHaveLength(0)
     expect(within(dialog).queryByLabelText('First Name')).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Last Name')).not.toBeInTheDocument()
@@ -542,11 +545,11 @@ describe('App runtime and workspace access', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Change table access' }))
 
-    const dialog = await screen.findByRole('dialog', { name: 'Log In' })
+    const dialog = await screen.findByRole('dialog', { name: 'Account' })
     expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
-    expect(within(dialog).queryByLabelText('Table Token')).not.toBeInTheDocument()
-    expect(within(dialog).getByRole('button', { name: 'Sign Up' })).toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Table code')).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Create account' })).toBeInTheDocument()
   })
 
   it('opens table auth from the backend gear when an account is active', async () => {
@@ -584,13 +587,13 @@ describe('App runtime and workspace access', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Change table access' }))
 
-    const dialog = await screen.findByRole('dialog', { name: 'Join Table' })
+    const dialog = await screen.findByRole('dialog', { name: 'Account' })
     expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
-    expect(within(dialog).getByRole('group', { name: 'Saved tables' })).toBeInTheDocument()
-    expect(within(dialog).getByRole('button', { name: 'Test admin' })).toBeInTheDocument()
+    const savedTables = within(dialog).getByRole('group', { name: 'Saved tables' })
+    expect(within(savedTables).getByText('Here now')).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Delete Test' })).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Remove Friend Table' })).toBeInTheDocument()
-    expect(within(dialog).getByLabelText('Table Token')).toHaveValue('old-workspace')
+    expect(within(dialog).getByLabelText('Table code')).toHaveValue('old-workspace')
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove Friend Table' }))
     let confirmDialog = await screen.findByRole('dialog', { name: 'Remove Saved Table' })
@@ -657,21 +660,21 @@ describe('App runtime and workspace access', () => {
     await screen.findByRole('button', { name: 'Change table access' })
 
     fireEvent.click(screen.getByRole('button', { name: 'Change table access' }))
-    let dialog = await screen.findByRole('dialog', { name: 'Join Table' })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Account' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create a table' }))
 
-    dialog = await screen.findByRole('dialog', { name: 'Create Table' })
-    fireEvent.change(within(dialog).getByLabelText('Table Name'), { target: { value: 'Token Table' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Token' }))
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create Table' }))
+    fireEvent.change(await within(dialog).findByLabelText('Table Name'), { target: { value: 'Token Table' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Code' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create table' }))
 
-    dialog = await screen.findByRole('dialog', { name: 'Save Table Token' })
-    expect(within(dialog).getByLabelText('Generated table token')).toHaveValue('generated-token-for-Token_Table')
-    expect(within(dialog).getByText('You will not be able to view it after you leave this page.')).toBeInTheDocument()
+    expect(await within(dialog).findByLabelText('Generated table code')).toHaveValue('generated-token-for-Token_Table')
+    expect(dialog).toHaveAccessibleDescription(
+      'Save this table code now. You will not be able to see it after you leave this page.',
+    )
     expect(sessionStorage.getItem('aidm:workspaceToken')).toBeNull()
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }))
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Save Table Token' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Account' })).not.toBeInTheDocument())
   })
   it('clears stale owner selections after connecting to an empty auth workspace', async () => {
     appTestState.health.auth_required = true
@@ -690,13 +693,12 @@ describe('App runtime and workspace access', () => {
 
     await screen.findByRole('button', { name: /^Play now/i })
     fireEvent.click(screen.getByRole('button', { name: 'Log in' }))
-    let dialog = await screen.findByRole('dialog', { name: 'Log In' })
+    const dialog = await screen.findByRole('dialog', { name: 'Account' })
     fireEvent.change(within(dialog).getByLabelText('Username'), { target: { value: 'Aidan' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
 
-    dialog = await screen.findByRole('dialog', { name: 'Join Table' })
-    fireEvent.change(within(dialog).getByLabelText('Table Token'), { target: { value: 'aidan_test' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Join Table' }))
+    fireEvent.change(await within(dialog).findByLabelText('Table code'), { target: { value: 'aidan_test' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Join table' }))
 
     await screen.findByText('No campaigns yet.')
     await waitFor(() => {

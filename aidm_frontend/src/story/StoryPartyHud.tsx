@@ -1,9 +1,13 @@
+import type { CharacterVitality } from '../gameSelectors'
 import type { ActivePlayer } from '../types'
+import { StoryVitality } from './StoryVitality'
 import type { StoryDrawerTab } from './types'
 
 type StoryPartyHudProps = {
   activePlayers: ActivePlayer[]
   viewerPlayerId: number | null
+  /** Downed party members by player id. */
+  vitality: Record<number, CharacterVitality>
   onDrawerOpenChange: (open: boolean, tab?: StoryDrawerTab) => void
 }
 
@@ -14,7 +18,17 @@ function displayName(player: ActivePlayer) {
   return player.character_name || player.name || 'Adventurer'
 }
 
-function Portrait({ player, size, onOpen }: { player: ActivePlayer; size: number; onOpen: () => void }) {
+function Portrait({
+  player,
+  size,
+  vitality,
+  onOpen,
+}: {
+  player: ActivePlayer
+  size: number
+  vitality: CharacterVitality | null
+  onOpen: () => void
+}) {
   const name = displayName(player)
   const health = player.health ?? null
   const ratio = health && health.maxHp > 0 ? Math.max(0, Math.min(1, health.currentHp / health.maxHp)) : 1
@@ -29,6 +43,7 @@ function Portrait({ player, size, onOpen }: { player: ActivePlayer; size: number
       aria-label={label}
       title={label}
       data-health={health?.tone ?? 'uninjured'}
+      data-vitality={vitality?.state}
       data-typing={player.is_typing ? '' : undefined}
       onClick={onOpen}
     >
@@ -55,7 +70,7 @@ function Portrait({ player, size, onOpen }: { player: ActivePlayer; size: number
 }
 
 /** The party at a glance: portraits with health rings, the viewer's own character first. */
-export function StoryPartyHud({ activePlayers, viewerPlayerId, onDrawerOpenChange }: StoryPartyHudProps) {
+export function StoryPartyHud({ activePlayers, viewerPlayerId, vitality, onDrawerOpenChange }: StoryPartyHudProps) {
   if (!activePlayers.length) return null
   const viewer = activePlayers.find((player) => player.id === viewerPlayerId) ?? null
   const others = activePlayers.filter((player) => player !== viewer)
@@ -69,18 +84,23 @@ export function StoryPartyHud({ activePlayers, viewerPlayerId, onDrawerOpenChang
       <ul className="story-party-list">
         {visible.map((player) => {
           const isViewer = player === viewer
+          const downed = vitality[player.id] ?? null
           return (
             <li key={player.id} className="story-party-member" data-viewer={isViewer ? '' : undefined}>
-              <Portrait player={player} size={isViewer ? 56 : 46} onOpen={openCharacter} />
+              <Portrait player={player} size={isViewer ? 56 : 46} vitality={downed} onOpen={openCharacter} />
               {isViewer ? (
                 <span className="story-party-viewer">
                   <span className="story-label story-party-name">{displayName(player)}</span>
-                  {player.health ? (
+                  {downed ? (
+                    <StoryVitality vitality={downed} />
+                  ) : player.health ? (
                     <span className="story-party-hp">
                       HP {player.health.currentHp} / {player.health.maxHp}
                     </span>
                   ) : null}
                 </span>
+              ) : downed ? (
+                <StoryVitality vitality={downed} />
               ) : null}
             </li>
           )

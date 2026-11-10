@@ -73,7 +73,9 @@ describe('CampaignSessionActionDialogs', () => {
     fireEvent.change(within(dialog).getByLabelText('Description'), {
       target: { value: 'New description' },
     })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Save Campaign' }))
+    const saveButton = within(dialog).getByRole('button', { name: 'Save Campaign' })
+    expect(saveButton).toHaveClass('story-primary')
+    fireEvent.click(saveButton)
     expect(props.onTitleChange).toHaveBeenCalledWith('Ember Reborn')
     expect(props.onDescriptionChange).toHaveBeenCalledWith('New description')
     expect(onSubmit).toHaveBeenCalledTimes(1)
@@ -100,9 +102,9 @@ describe('CampaignSessionActionDialogs', () => {
     )
 
     const dialog = screen.getByRole('dialog', { name: 'Delete Campaign' })
-    expect(within(dialog).getByText(/permanently deletes the campaign/i)).toBeInTheDocument()
+    expect(within(dialog).getByText(/permanently deletes the adventure/i)).toBeInTheDocument()
     expect(within(dialog).getByText('Cannot delete.')).toBeInTheDocument()
-    expect(within(dialog).getByRole('button', { name: 'Deleting...' })).toHaveClass('danger')
+    expect(within(dialog).getByRole('button', { name: 'Deleting...' })).toHaveClass('story-link-danger')
     fireEvent.mouseDown(dialog.parentElement as HTMLElement)
     expect(onClose).not.toHaveBeenCalled()
   })
@@ -139,8 +141,8 @@ describe('CampaignSessionActionDialogs', () => {
       />,
     )
     const deleteDialog = screen.getByRole('dialog', { name: 'Delete Session' })
-    expect(within(deleteDialog).getByText(/saved turn history/i)).toBeInTheDocument()
+    expect(within(deleteDialog).getByText(/deletes this chapter and everything said in it/i)).toBeInTheDocument()
     expect(within(deleteDialog).getByText('Delete failed.')).toBeInTheDocument()
-    expect(within(deleteDialog).getByRole('button', { name: 'Delete Session' })).toHaveClass('danger')
+    expect(within(deleteDialog).getByRole('button', { name: 'Delete Session' })).toHaveClass('story-link-danger')
   })
 })

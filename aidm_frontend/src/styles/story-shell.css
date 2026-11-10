@@ -50,6 +50,19 @@
   background:
     radial-gradient(60% 36% at 50% 108%, var(--mood-ember), transparent 70%),
     radial-gradient(120% 62% at 50% 112%, var(--mood-glow), transparent 62%);
+  transition: opacity 1.2s var(--story-ease);
+}
+/* The day clock: evening warms the light a little; night lowers it by a third and cools it. */
+.story-shell[data-phase='evening'] .story-atmosphere-glow {
+  background:
+    radial-gradient(60% 36% at 50% 108%, color-mix(in srgb, var(--mood-ember) 80%, rgba(255, 150, 60, 0.3)), transparent 70%),
+    radial-gradient(120% 62% at 50% 112%, color-mix(in srgb, var(--mood-glow) 84%, #4a2c12), transparent 62%);
+}
+.story-shell[data-phase='night'] .story-atmosphere-glow {
+  opacity: 0.67;
+  background:
+    radial-gradient(60% 36% at 50% 108%, color-mix(in srgb, var(--mood-ember) 62%, rgba(120, 150, 255, 0.16)), transparent 70%),
+    radial-gradient(120% 62% at 50% 112%, color-mix(in srgb, var(--mood-glow) 58%, #0e1d46), transparent 62%);
 }
 .story-shell .story-atmosphere-vignette {
   background: radial-gradient(ellipse at 50% 42%, transparent 52%, rgba(0, 0, 0, 0.62) 100%);
@@ -222,9 +235,23 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+.story-shell .story-scene-line {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
 .story-shell .story-scene-name {
   display: grid;
   min-width: 0;
+}
+.story-shell .story-clock {
+  flex: none;
+  font-size: 0.78rem;
+  font-variant-numeric: lining-nums;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  color: var(--story-muted);
 }
 .story-shell .story-scene-name-text {
   grid-area: 1 / 1;
@@ -469,6 +496,11 @@
   50% { opacity: 0.35; }
 }
 .story-shell .story-portrait[data-health='dead'] .story-portrait-image { filter: grayscale(1) brightness(0.6); }
+/* Down (dying, stable or dead): the colour drains out and the ring goes faint. */
+.story-shell .story-portrait[data-vitality] { --ring: var(--story-faint); }
+.story-shell .story-portrait[data-vitality] .story-portrait-image,
+.story-shell .story-portrait[data-vitality] .story-portrait-initial { filter: grayscale(1) brightness(0.62); }
+.story-shell .story-portrait[data-vitality] .story-portrait-track { stroke: var(--story-faint); }
 
 .story-shell .story-party-viewer {
   display: grid;
@@ -508,4 +540,7 @@
   .story-shell .story-safe-mode { display: none; }
   .story-shell .story-topbar-lead { gap: 6px; }
   .story-shell .story-scene-name-text { font-size: 1rem; }
+  /* The campaign line is gone here, so the clock takes its place under the scene name. */
+  .story-shell .story-scene-line { flex-direction: column; align-items: flex-start; gap: 0; }
+  .story-shell .story-clock { font-size: 0.7rem; line-height: 1.25; }
 }

@@ -138,6 +138,13 @@ describe('storySuggestions', () => {
     expect(suggestions).toEqual([])
   })
 
+  it('leads with trading at each open merchant', () => {
+    const merchant = { id: 'marta_larder', name: 'Marta Vell', npcId: 'marta', buyRate: 0.5, stock: [] }
+    const suggestions = storySuggestions(world({ merchants: [merchant] }), controls())
+    expect(suggestions[0]).toEqual({ kind: 'trade', key: 'trade:marta_larder', label: 'Trade with Marta Vell', merchant })
+    expect(suggestions[1].label).toBe('Talk to Marta Vell')
+  })
+
   it('suggests nothing in combat', () => {
     expect(storySuggestions(world({ combat: combat(true) }), controls())).toEqual([])
     expect(storySuggestions(world(), controls({ inCombat: true }))).toEqual([])

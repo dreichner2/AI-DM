@@ -1,0 +1,1196 @@
+/*
+ * Sheets: every menu and dialog, in the Story design language whichever view
+ * opened it. ModalShell renders the frame:
+ *   .story-shell.story-dialog        the dimmed, blurred backdrop (also carries the Story tokens)
+ *     .story-dialog-panel            the glass panel; it scrolls, header and footer stay put
+ *       .story-dialog-header         title in the prose serif, one muted line, close button
+ *       .story-dialog-body           the content
+ *         .story-dialog-footer       primary action as .story-primary, the rest as .story-link
+ * Inside a sheet there are no tiles, cards or bordered groups: sections are
+ * divided by .story-rule hairlines and .story-label headings; fields are a
+ * single hairline; lists of things to pick are rows.
+ * The legacy rules at the end restyle dialogs that still render the classic
+ * console markup (the character editor and its selectors, the support bundle).
+ */
+
+/* ---- frame ---- */
+
+.story-shell.story-dialog {
+  --sheet-gutter: 32px;
+  --sheet-surface: rgb(10 15 16 / 0.9);
+  --sheet-bar: rgb(10 15 16 / 0.97);
+  --sheet-row-rule: color-mix(in srgb, var(--story-ember) 70%, transparent);
+
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  height: auto;
+  overflow: hidden;
+  padding: 24px;
+  color: var(--story-ink-soft);
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 42%, rgba(255, 107, 44, 0.07), transparent 70%),
+    color-mix(in srgb, var(--story-bg) 62%, transparent);
+  -webkit-backdrop-filter: blur(7px) saturate(0.85);
+  backdrop-filter: blur(7px) saturate(0.85);
+  animation: story-dialog-fade var(--story-base) var(--story-ease) both;
+  transition: none;
+}
+
+.story-shell.story-dialog *,
+.story-shell.story-dialog *::before,
+.story-shell.story-dialog *::after { box-sizing: border-box; }
+
+.story-dialog .story-dialog-panel {
+  --sheet-width: 680px;
+
+  position: relative;
+  width: min(var(--sheet-width), 100%);
+  max-height: 86dvh;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 var(--sheet-gutter);
+  border: 1px solid var(--story-glass-edge);
+  border-radius: 18px;
+  color: var(--story-ink-soft);
+  background:
+    radial-gradient(ellipse 90% 140px at 12% 0%, rgba(255, 140, 70, 0.075), transparent 100%),
+    var(--sheet-surface);
+  -webkit-backdrop-filter: blur(var(--story-glass-blur)) saturate(1.15);
+  backdrop-filter: blur(var(--story-glass-blur)) saturate(1.15);
+  box-shadow:
+    0 1px 0 rgba(255, 220, 180, 0.04) inset,
+    0 48px 120px -36px rgba(0, 0, 0, 0.85);
+  font-family: var(--story-ui);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  scrollbar-width: thin;
+  scrollbar-color: var(--story-hairline-strong) transparent;
+  animation: story-dialog-rise var(--story-slow) var(--story-ease) both;
+}
+.story-dialog .story-dialog-panel:not(:has(.story-dialog-footer, footer)) { padding-bottom: 30px; }
+.story-dialog .story-dialog-panel[data-size='narrow'] { --sheet-width: 520px; }
+.story-dialog .story-dialog-panel[data-size='wide'] { --sheet-width: 980px; }
+
+@keyframes story-dialog-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes story-dialog-rise {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes story-dialog-up {
+  from { transform: translateY(100%); }
+  to { transform: none; }
+}
+
+/* ---- header ---- */
+
+.story-dialog .story-dialog-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 calc(-1 * var(--sheet-gutter));
+  padding: 26px 14px 16px var(--sheet-gutter);
+  border: 0;
+  background: linear-gradient(to bottom, var(--sheet-bar) 78%, transparent);
+}
+.story-dialog .story-dialog-heading { min-width: 0; }
+.story-dialog .story-dialog-title {
+  margin: 0;
+  font-family: var(--story-prose);
+  font-size: 1.5rem;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.005em;
+  color: var(--story-ink);
+}
+.story-dialog .story-dialog-description {
+  margin: 6px 0 0;
+  max-width: 56ch;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--story-muted);
+}
+.story-dialog .story-dialog-close { flex: none; margin-top: -6px; }
+
+/* ---- body ---- */
+
+.story-dialog .story-dialog-body {
+  display: grid;
+  gap: 18px;
+  margin: 0;
+  padding: 6px 0 0;
+}
+.story-dialog .story-dialog-panel > .story-rule { margin: 26px 0 20px; }
+.story-dialog .story-dialog-body > .story-rule { margin: 6px 0; }
+.story-dialog .story-dialog-section { display: grid; gap: 4px; margin: 0; }
+.story-dialog .story-dialog-section > h3.story-label,
+.story-dialog .story-dialog-body > h3.story-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+}
+.story-dialog .story-dialog-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.story-dialog .story-dialog-section-head h3 { margin: 0; }
+
+.story-dialog .story-dialog-subject {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-family: var(--story-prose);
+  font-size: 1.36rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  color: var(--story-ink);
+}
+.story-dialog .story-dialog-subject svg { flex: none; color: var(--story-success); }
+.story-dialog .story-dialog-note {
+  margin: 0;
+  max-width: 60ch;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--story-ink-soft);
+}
+.story-dialog .story-dialog-warning {
+  padding-left: 14px;
+  border-left: 2px solid color-mix(in srgb, var(--story-gold) 70%, transparent);
+  color: var(--story-ink-soft);
+}
+.story-dialog .story-dialog-help,
+.story-dialog .story-dialog-line {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: var(--story-muted);
+}
+.story-dialog .story-dialog-line { color: var(--story-ink-soft); }
+.story-dialog .story-dialog-error {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--story-fail);
+}
+.story-dialog .story-dialog-error::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 10px 2px 0;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 10px currentColor;
+}
+.story-dialog .story-dialog-empty {
+  margin: 4px 0;
+  font-family: var(--story-prose);
+  font-size: 1.06rem;
+  font-style: italic;
+  color: var(--story-muted);
+}
+.story-dialog .story-dialog-loading { min-height: 48px; display: flex; align-items: center; }
+
+/* ---- fields ---- */
+
+.story-dialog .story-dialog-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+}
+.story-dialog .story-dialog-field-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 18px 28px;
+}
+
+.story-dialog input:not([type='checkbox'], [type='radio'], [type='range'], [type='file']),
+.story-dialog textarea,
+.story-dialog select {
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  min-height: 44px;
+  margin: 0;
+  padding: 8px 0 9px;
+  border: 0;
+  border-bottom: 1px solid var(--story-hairline-strong);
+  border-radius: 0;
+  outline: none;
+  color: var(--story-ink);
+  background: transparent;
+  box-shadow: 0 1px 0 transparent;
+  font-family: var(--story-prose);
+  font-size: 1.14rem;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  transition: border-color var(--story-fast) var(--story-ease), box-shadow var(--story-base) var(--story-ease);
+}
+.story-dialog textarea {
+  min-height: 84px;
+  line-height: 1.5;
+  resize: none;
+  field-sizing: content;
+}
+.story-dialog select {
+  appearance: none;
+  padding-right: 28px;
+  background: no-repeat right 4px center / 14px
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2386908c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+}
+.story-dialog select option { color: var(--story-ink); background: var(--story-bg-raised); }
+.story-dialog input:not([type='checkbox'], [type='radio'], [type='range'], [type='file']):hover,
+.story-dialog textarea:hover,
+.story-dialog select:hover { border-bottom-color: color-mix(in srgb, var(--story-ink) 34%, transparent); }
+.story-dialog input:not([type='checkbox'], [type='radio'], [type='range'], [type='file']):focus,
+.story-dialog textarea:focus,
+.story-dialog select:focus {
+  outline: none;
+  border-bottom-color: var(--story-ember);
+  box-shadow: 0 1px 0 var(--story-ember), 0 10px 18px -16px rgba(255, 107, 44, 0.9);
+}
+.story-dialog input::placeholder,
+.story-dialog textarea::placeholder {
+  font-style: italic;
+  color: var(--story-faint);
+  opacity: 1;
+}
+.story-dialog input:disabled,
+.story-dialog textarea:disabled,
+.story-dialog select:disabled { color: var(--story-muted); cursor: default; }
+
+.story-dialog input.story-dialog-link-field,
+.story-dialog textarea.story-dialog-code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  color: var(--story-ink-soft);
+}
+.story-dialog textarea.story-dialog-code { min-height: 140px; }
+
+.story-dialog input[type='file'] {
+  width: 100%;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--story-hairline-strong);
+  font: inherit;
+  font-size: 0.88rem;
+  color: var(--story-muted);
+}
+.story-dialog input[type='file']::file-selector-button {
+  margin-right: 14px;
+  padding: 0;
+  border: 0;
+  font: inherit;
+  color: var(--story-ember-soft);
+  background: none;
+  cursor: pointer;
+}
+
+/* ---- choices: text options, the chosen one in ember with a check ---- */
+
+.story-dialog .story-dialog-choices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 24px;
+}
+.story-dialog .story-dialog-choice {
+  position: relative;
+  min-height: 32px;
+  font-size: 0.92rem;
+  color: var(--story-muted);
+}
+.story-dialog .story-dialog-choice[aria-pressed='true'] {
+  color: var(--story-ember-soft);
+  background-size: 0 1px;
+}
+.story-dialog .story-dialog-choice[aria-pressed='true']::before,
+.story-dialog .story-dialog-option:has(input:checked) > span::before {
+  content: '';
+  position: absolute;
+  left: -1.15em;
+  top: 50%;
+  width: 0.8em;
+  height: 0.8em;
+  translate: 0 -50%;
+  background: currentColor;
+  -webkit-mask: center / contain no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+  mask: center / contain no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+}
+.story-dialog .story-dialog-choice:disabled { color: var(--story-faint); cursor: default; background-size: 0 1px; }
+.story-dialog .story-dialog-choice[aria-pressed='true']:disabled { color: color-mix(in srgb, var(--story-ember-soft) 55%, var(--story-faint)); }
+
+/* Tabs over a form: the chosen one in ember on the hairline, like the drawer's tabs. */
+.story-dialog .story-dialog-tabs {
+  gap: 4px 26px;
+  border-bottom: 1px solid var(--story-hairline);
+}
+.story-dialog .story-dialog-tabs .story-dialog-choice { min-height: 40px; font-size: 0.98rem; }
+.story-dialog .story-dialog-tabs .story-dialog-choice[aria-pressed='true'] {
+  color: var(--story-ember-soft);
+  background-size: 0 1px;
+  box-shadow: inset 0 -1px 0 var(--story-ember);
+}
+.story-dialog .story-dialog-tabs .story-dialog-choice[aria-pressed='true']::before { content: none; }
+
+/* One setting: name on the left, choices on the right (below it when there is no room). */
+.story-dialog .story-dialog-setting {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0 20px;
+  min-height: 42px;
+  margin: 0;
+}
+.story-dialog .story-settings { gap: 10px; }
+.story-dialog .story-settings > .story-rule { margin: 6px 0; }
+.story-dialog .story-settings .story-dialog-section > h3.story-label { margin-bottom: 2px; }
+.story-dialog .story-dialog-setting-name {
+  font-family: var(--story-prose);
+  font-size: 1.12rem;
+  color: var(--story-ink);
+}
+.story-dialog .story-dialog-setting .story-dialog-choices { justify-content: flex-end; margin-left: auto; }
+.story-dialog .story-dialog-setting-note {
+  flex-basis: 100%;
+  margin: -2px 0 6px;
+  font-size: 0.84rem;
+  color: var(--story-gold);
+}
+
+/* Volume: a hairline with an ember fill and a glowing bead. */
+.story-dialog .story-dialog-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+}
+.story-dialog .story-dialog-range output {
+  min-width: 3.2em;
+  font-size: 0.84rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--story-muted);
+}
+.story-dialog input[type='range'] {
+  --range-fill: 70%;
+  width: clamp(120px, 34vw, 220px);
+  height: 28px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  appearance: none;
+}
+.story-dialog input[type='range']::-webkit-slider-runnable-track {
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--story-ember) var(--range-fill), var(--story-hairline-strong) var(--range-fill));
+}
+.story-dialog input[type='range']::-moz-range-track { height: 2px; border-radius: 2px; background: var(--story-hairline-strong); }
+.story-dialog input[type='range']::-moz-range-progress { height: 2px; border-radius: 2px; background: var(--story-ember); }
+.story-dialog input[type='range']::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -6px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--story-ember-soft);
+  box-shadow: 0 0 0 4px rgba(255, 107, 44, 0.16), 0 0 14px rgba(255, 107, 44, 0.55);
+  appearance: none;
+}
+.story-dialog input[type='range']::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--story-ember-soft);
+  box-shadow: 0 0 0 4px rgba(255, 107, 44, 0.16), 0 0 14px rgba(255, 107, 44, 0.55);
+}
+.story-dialog input[type='range']:disabled { cursor: default; opacity: 0.4; }
+.story-dialog input[type='range']:focus-visible { outline-offset: 4px; border-radius: 999px; }
+
+/* A checkbox: a small hairline square that fills with ember. */
+.story-dialog .story-dialog-check {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  font-family: var(--story-prose);
+  font-size: 1.08rem;
+  color: var(--story-ink);
+  cursor: pointer;
+}
+.story-dialog input[type='checkbox'] {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  border: 1px solid var(--story-hairline-strong);
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+  appearance: none;
+  transition: background-color var(--story-fast) var(--story-ease), border-color var(--story-fast) var(--story-ease);
+}
+.story-dialog input[type='checkbox']:checked {
+  border-color: var(--story-ember-soft);
+  background: var(--story-ember);
+  box-shadow: 0 0 14px -2px rgba(255, 107, 44, 0.6);
+}
+.story-dialog input[type='checkbox']:checked::after {
+  content: '';
+  width: 11px;
+  height: 11px;
+  background: #1a0d05;
+  -webkit-mask: center / contain no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+  mask: center / contain no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+}
+.story-dialog input[type='checkbox']:disabled { opacity: 0.45; cursor: default; }
+
+/* An option list: rows of text, the chosen one in ember with a check. */
+.story-dialog .story-dialog-options { display: grid; gap: 2px; }
+.story-dialog .story-dialog-option {
+  display: block;
+  min-height: 40px;
+  padding: 7px 0;
+  cursor: pointer;
+}
+.story-dialog .story-dialog-option input[type='radio'] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+}
+.story-dialog .story-dialog-option > span {
+  position: relative;
+  display: grid;
+  gap: 1px;
+  font-family: var(--story-prose);
+  font-size: 1.1rem;
+  color: var(--story-ink-soft);
+  transition: color var(--story-fast) var(--story-ease);
+}
+.story-dialog .story-dialog-option:has(input:checked) > span::before { top: 0.78em; }
+.story-dialog .story-dialog-option > span small {
+  overflow: hidden;
+  font-family: var(--story-ui);
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--story-muted);
+}
+.story-dialog .story-dialog-option:hover > span { color: var(--story-ink); }
+.story-dialog .story-dialog-option:has(input:checked) > span { color: var(--story-ember-soft); }
+.story-dialog .story-dialog-option:has(input:focus-visible) > span {
+  outline: 2px solid var(--story-ember-soft);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+.story-dialog .story-dialog-option:has(input:disabled) { cursor: default; opacity: 0.6; }
+
+/* A collapsed group of plain lines. */
+.story-dialog .story-dialog-disclosure > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  color: var(--story-muted);
+  list-style: none;
+  cursor: pointer;
+}
+.story-dialog .story-dialog-disclosure > summary::-webkit-details-marker { display: none; }
+.story-dialog .story-dialog-disclosure > summary svg { transition: transform var(--story-base) var(--story-ease); }
+.story-dialog .story-dialog-disclosure[open] > summary svg { transform: rotate(90deg); }
+.story-dialog .story-dialog-disclosure > summary:hover,
+.story-dialog .story-dialog-disclosure > summary:hover .story-label { color: var(--story-ink-soft); }
+.story-dialog .story-dialog-disclosure-body {
+  display: grid;
+  gap: 4px;
+  padding: 8px 0 0 22px;
+  animation: story-rise var(--story-base) var(--story-ease) both;
+}
+
+.story-dialog .story-dialog-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 26px;
+  margin-top: 4px;
+  font-size: 0.92rem;
+}
+.story-dialog .story-dialog-links .story-link { min-height: 36px; }
+.story-dialog .story-dialog-links-quiet { margin-top: -10px; font-size: 0.86rem; }
+.story-dialog .story-dialog-links-quiet .story-link { color: var(--story-muted); }
+.story-dialog .story-dialog-links-quiet .story-link:hover,
+.story-dialog .story-dialog-links-quiet .story-link:focus-visible { color: var(--story-ink-soft); }
+
+/* ---- rows: things to pick ---- */
+
+.story-dialog .story-dialog-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.story-dialog .story-dialog-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 24px;
+  min-height: 64px;
+  padding: 12px 0;
+}
+.story-dialog .story-dialog-row + .story-dialog-row { border-top: 1px solid var(--story-hairline); }
+.story-dialog .story-dialog-row::before {
+  content: '';
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: calc(-1 * var(--sheet-gutter) + 12px);
+  width: 2px;
+  border-radius: 2px;
+  background: var(--sheet-row-rule);
+  box-shadow: 0 0 12px rgba(255, 107, 44, 0.5);
+  opacity: 0;
+  transition: opacity var(--story-base) var(--story-ease);
+}
+.story-dialog .story-dialog-row:hover::before,
+.story-dialog .story-dialog-row:focus-within::before { opacity: 0.6; }
+.story-dialog .story-dialog-row[data-current]::before { opacity: 0.9; }
+.story-dialog .story-dialog-row-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.story-dialog .story-dialog-row-name {
+  overflow: hidden;
+  font-family: var(--story-prose);
+  font-size: 1.22rem;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--story-ink);
+}
+.story-dialog .story-dialog-row-meta {
+  overflow: hidden;
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--story-muted);
+}
+.story-dialog .story-dialog-row-summary {
+  display: -webkit-box;
+  max-width: 62ch;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.story-dialog .story-dialog-row-actions {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 18px;
+  font-size: 0.92rem;
+  white-space: nowrap;
+}
+.story-dialog .story-dialog-row-actions .story-link { min-height: 36px; }
+.story-dialog .story-dialog-row-actions .story-link:disabled { color: var(--story-faint); cursor: default; background-size: 0 1px; }
+.story-dialog .story-dialog-quiet { color: var(--story-muted); }
+.story-dialog .story-dialog-here {
+  font-size: var(--story-label-size);
+  font-weight: 560;
+  letter-spacing: var(--story-label-tracking);
+  text-transform: uppercase;
+  color: var(--story-ember-soft);
+}
+.story-dialog .story-dialog-row-portrait { grid-template-columns: 44px minmax(0, 1fr) auto; gap: 4px 18px; }
+.story-dialog .story-dialog-portrait {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--story-bg-raised);
+  box-shadow: 0 0 0 1px var(--story-bg), 0 0 0 2px var(--story-hairline-strong);
+  transition: box-shadow var(--story-base) var(--story-ease);
+}
+.story-dialog .story-dialog-row-portrait:hover .story-dialog-portrait,
+.story-dialog .story-dialog-row-portrait:focus-within .story-dialog-portrait {
+  box-shadow: 0 0 0 1px var(--story-bg), 0 0 0 2px var(--story-ember-soft), 0 0 18px -2px rgba(255, 107, 44, 0.55);
+}
+
+.story-dialog .story-dialog-identity { display: grid; gap: 4px; padding: 4px 0 6px; }
+.story-dialog .story-dialog-identity .story-dialog-subject { font-size: 1.7rem; }
+
+.story-dialog .story-dialog-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px 28px;
+  margin: 6px 0;
+}
+.story-dialog .story-dialog-facts dd {
+  margin: 4px 0 0;
+  font-family: var(--story-prose);
+  font-size: 1.04rem;
+  color: var(--story-ink-soft);
+}
+.story-dialog .story-dialog-facts dd.story-dialog-row-meta { margin-top: 0; font-family: var(--story-ui); }
+.story-dialog .story-dialog-inline-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.84rem;
+  color: var(--story-muted);
+}
+
+/* ---- footer ---- */
+
+.story-dialog .story-dialog-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px 28px;
+  margin: 10px calc(-1 * var(--sheet-gutter)) 0;
+  padding: 22px var(--sheet-gutter) 26px;
+  background: linear-gradient(to top, var(--sheet-bar) 80%, transparent);
+}
+.story-dialog .story-dialog-footer .story-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  font-size: 0.95rem;
+}
+.story-dialog .story-dialog-footer .story-link:disabled,
+.story-dialog .story-dialog-links .story-link:disabled { color: var(--story-faint); cursor: default; background-size: 0 1px; }
+.story-dialog .story-dialog-footer .story-link-danger { font-weight: 560; color: var(--story-fail); }
+.story-dialog .story-dialog-footer .story-link-danger:disabled { color: color-mix(in srgb, var(--story-fail) 45%, var(--story-faint)); }
+.story-dialog .story-dialog-footer .story-primary { min-height: 46px; }
+.story-dialog .story-primary:disabled { opacity: 1; }
+
+/* ---- loading ---- */
+
+.story-dialog .story-dialog-panel.modal-loading-dialog { text-align: left; }
+.story-dialog .modal-loading-dialog .story-dialog-body { padding-bottom: 4px; }
+.story-dialog .modal-loading-dialog .story-dots { margin-left: 2px; }
+
+/* ---- dice: the frame only, the dice keep their stage ---- */
+
+.story-dialog .story-dialog-panel.dice-dialog { padding-bottom: 0; }
+.story-dialog .dice-dialog .dice-stage {
+  margin: 4px calc(-1 * var(--sheet-gutter)) 0;
+  border-top: 1px solid var(--story-hairline);
+  background: radial-gradient(ellipse at 50% 40%, rgba(255, 107, 44, 0.06), transparent 70%), rgba(4, 8, 9, 0.6);
+}
+.story-dialog .dice-dialog .dice-readout {
+  border-color: var(--story-glass-edge);
+  border-radius: 12px;
+  background: var(--story-glass);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+.story-dialog .dice-dialog .dice-readout strong { font-family: var(--story-prose); color: var(--story-ink); }
+.story-dialog .dice-dialog .dice-readout span { letter-spacing: var(--story-label-tracking); color: var(--story-muted); }
+.story-dialog .dice-dialog.resolved .dice-readout { border-color: color-mix(in srgb, var(--story-success) 40%, transparent); }
+.story-dialog .dice-dialog .dice-retry-button {
+  justify-self: start;
+  margin-top: 10px;
+  padding: 2px 0;
+  border: 0;
+  font-size: 0.9rem;
+  font-weight: 560;
+  color: var(--story-ember-soft);
+  background-color: transparent;
+}
+
+/* ---- pack import ---- */
+
+.story-dialog .pack-lint-title span {
+  margin-left: auto;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--story-faint);
+}
+.story-dialog .pack-lint[data-state='ok'] .pack-lint-title svg { color: var(--story-success); }
+.story-dialog .pack-lint[data-state='has-errors'] .pack-lint-title svg { color: var(--story-fail); }
+.story-dialog .pack-lint-list .story-dialog-row { min-height: 0; }
+.story-dialog .pack-lint-list .story-dialog-row[data-severity='error'] .story-dialog-row-name { color: var(--story-fail); }
+.story-dialog .pack-lint-list .story-dialog-row[data-severity='warning'] .story-dialog-row-name { color: var(--story-gold); }
+.story-dialog .pack-lint-list .story-dialog-row-name { font-family: var(--story-ui); font-size: 0.92rem; }
+.story-dialog .story-dialog-line svg { vertical-align: -2px; color: var(--story-muted); }
+
+/* ---- the classic console markup, inside a sheet ---- */
+
+/* A panel that still carries the console's dialog class. */
+.story-shell.story-dialog > .story-dialog-panel.campaign-dialog {
+  max-height: 86dvh;
+  border: 1px solid var(--story-glass-edge);
+  border-radius: 18px;
+  background:
+    radial-gradient(ellipse 90% 140px at 12% 0%, rgba(255, 140, 70, 0.075), transparent 100%),
+    var(--sheet-surface);
+  box-shadow: 0 48px 120px -36px rgba(0, 0, 0, 0.85);
+}
+.story-shell.story-dialog > .story-dialog-panel.player-edit-dialog { --sheet-width: 980px; }
+
+.story-shell.story-dialog > .story-dialog-panel > header:not(.story-dialog-header) {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 calc(-1 * var(--sheet-gutter));
+  padding: 26px 14px 16px var(--sheet-gutter);
+  border: 0;
+  background: linear-gradient(to bottom, var(--sheet-bar) 78%, transparent);
+}
+.story-shell.story-dialog > .story-dialog-panel > header:not(.story-dialog-header) > div > span:first-child { display: none; }
+.story-shell.story-dialog > .story-dialog-panel > header:not(.story-dialog-header) h2 {
+  margin: 0;
+  font-family: var(--story-prose);
+  font-size: 1.5rem;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--story-ink);
+}
+.story-shell.story-dialog > .story-dialog-panel > header:not(.story-dialog-header) > button {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-top: -6px;
+  border: 0;
+  border-radius: 50%;
+  color: var(--story-ink-soft);
+  background: transparent;
+}
+.story-shell.story-dialog > .story-dialog-panel > header:not(.story-dialog-header) > button:hover {
+  color: var(--story-ink);
+  background: rgba(236, 229, 211, 0.06);
+}
+
+.story-shell.story-dialog .campaign-dialog form,
+.story-shell.story-dialog .campaign-dialog .dialog-body {
+  display: grid;
+  gap: 18px;
+  padding: 6px 0 0;
+}
+.story-shell.story-dialog .campaign-dialog label {
+  display: grid;
+  gap: 4px;
+  font-size: var(--story-label-size);
+  font-weight: 560;
+  letter-spacing: var(--story-label-tracking);
+  text-transform: uppercase;
+  color: var(--story-muted);
+}
+.story-shell.story-dialog .campaign-dialog p {
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--story-muted);
+}
+.story-shell.story-dialog .dialog-grid.two {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px 28px;
+}
+.story-shell.story-dialog .dialog-warning {
+  display: grid;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font-size: 0.95rem;
+  color: var(--story-ink-soft);
+}
+.story-shell.story-dialog .dialog-warning strong {
+  font-family: var(--story-prose);
+  font-size: 1.36rem;
+  font-weight: 400;
+  color: var(--story-ink);
+}
+.story-shell.story-dialog .dialog-warning span { color: var(--story-ink-soft); }
+.story-shell.story-dialog .dialog-error {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 0.9rem;
+  color: var(--story-fail);
+}
+
+.story-shell.story-dialog .campaign-dialog footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px 28px;
+  margin: 10px calc(-1 * var(--sheet-gutter)) 0;
+  padding: 22px var(--sheet-gutter) 26px;
+  background: linear-gradient(to top, var(--sheet-bar) 80%, transparent);
+}
+.story-shell.story-dialog .campaign-dialog footer button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 0 26px;
+  border: 0;
+  border-radius: 999px;
+  font-family: var(--story-ui);
+  font-size: 0.98rem;
+  font-weight: 600;
+  color: #1a0d05;
+  background: linear-gradient(180deg, #ffb067, #ff6b2c);
+  box-shadow: 0 0 0 1px rgba(255, 176, 103, 0.35), 0 10px 40px -8px rgba(255, 107, 44, 0.55);
+}
+.story-shell.story-dialog .campaign-dialog footer button.secondary,
+.story-shell.story-dialog .campaign-dialog footer button.danger {
+  min-height: 40px;
+  padding: 2px 0;
+  border-radius: 0;
+  font-size: 0.95rem;
+  font-weight: 400;
+  color: var(--story-ink-soft);
+  background: none;
+  box-shadow: none;
+}
+.story-shell.story-dialog .campaign-dialog footer button.secondary:hover { color: var(--story-ink); }
+.story-shell.story-dialog .campaign-dialog footer button.danger { font-weight: 560; color: var(--story-fail); }
+
+/* Character editor: name, then race, class and background as open sections. */
+.story-shell.story-dialog .player-edit-dialog form > label:first-child input {
+  font-size: 1.5rem;
+}
+.story-shell.story-dialog .race-selector {
+  gap: 14px;
+  padding: 22px 0 0;
+  border: 0;
+  border-top: 1px solid var(--story-hairline);
+  border-radius: 0;
+  background: none;
+}
+.story-shell.story-dialog .race-selector-heading span { display: none; }
+.story-shell.story-dialog .gender-portrait-picker > div:first-child span {
+  font-size: var(--story-label-size);
+  font-weight: 560;
+  letter-spacing: var(--story-label-tracking);
+  color: var(--story-muted);
+}
+.story-shell.story-dialog .gender-portrait-picker strong {
+  margin-top: 4px;
+  font-family: var(--story-prose);
+  font-size: 1.12rem;
+  font-weight: 400;
+  color: var(--story-ink-soft);
+}
+.story-shell.story-dialog .gender-portrait-options span { font-size: 0.82rem; font-weight: 500; }
+.story-shell.story-dialog .race-selector-heading h3 {
+  margin: 0;
+  font-family: var(--story-ui);
+  font-size: var(--story-label-size);
+  font-weight: 560;
+  letter-spacing: var(--story-label-tracking);
+  text-transform: uppercase;
+  color: var(--story-muted);
+}
+.story-shell.story-dialog .race-selector-heading strong,
+.story-shell.story-dialog .race-selector-heading strong.muted {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: var(--story-prose);
+  font-size: 1.12rem;
+  font-weight: 400;
+  color: var(--story-ember-soft);
+}
+.story-shell.story-dialog .race-selector-heading strong.muted { color: var(--story-muted); }
+
+.story-shell.story-dialog .race-mode-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 26px;
+  border-bottom: 1px solid var(--story-hairline);
+}
+.story-shell.story-dialog .race-mode-tabs button,
+.story-shell.story-dialog .race-filter-row button,
+.story-shell.story-dialog .class-browse-toggle,
+.story-shell.story-dialog .custom-class-panel button,
+.story-shell.story-dialog .custom-race-actions button,
+.story-shell.story-dialog .custom-race-review-actions button {
+  min-height: 34px;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 0;
+  font-family: var(--story-ui);
+  font-size: 0.9rem;
+  font-weight: 400;
+  color: var(--story-muted);
+  background: none;
+  box-shadow: none;
+}
+.story-shell.story-dialog .race-mode-tabs button:hover,
+.story-shell.story-dialog .race-filter-row button:hover,
+.story-shell.story-dialog .class-browse-toggle:hover,
+.story-shell.story-dialog .custom-class-panel button:hover,
+.story-shell.story-dialog .custom-race-actions button:hover,
+.story-shell.story-dialog .custom-race-review-actions button:hover { color: var(--story-ink); background: none; }
+.story-shell.story-dialog .race-mode-tabs button.selected,
+.story-shell.story-dialog .race-filter-row button.selected,
+.story-shell.story-dialog .class-browse-toggle[aria-expanded='true'] {
+  color: var(--story-ember-soft);
+  background: none;
+  box-shadow: inset 0 -1px 0 var(--story-ember);
+}
+.story-shell.story-dialog .race-filter-row { gap: 2px 18px; max-height: none; padding: 0; }
+.story-shell.story-dialog .race-filter-row button { min-height: 28px; font-size: 0.82rem; }
+
+.story-shell.story-dialog .race-search-field > div {
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--story-hairline-strong);
+  border-radius: 0;
+  background: none;
+}
+.story-shell.story-dialog .race-search-field > div:focus-within { border-bottom-color: var(--story-ember); }
+.story-shell.story-dialog .race-search-field input { border-bottom: 0; box-shadow: none; }
+.story-shell.story-dialog .race-search-field input:focus { box-shadow: none; }
+
+.story-shell.story-dialog .race-card-grid {
+  max-height: none;
+  gap: 16px;
+  overflow: visible;
+}
+.story-shell.story-dialog .race-card {
+  border: 0;
+  border-radius: 14px;
+  background: var(--story-bg-raised);
+  box-shadow: 0 0 0 1px var(--story-hairline);
+  transition: box-shadow var(--story-base) var(--story-ease);
+}
+.story-shell.story-dialog .race-card:hover,
+.story-shell.story-dialog .race-card:focus-visible {
+  outline: none;
+  background: var(--story-bg-raised);
+  box-shadow: 0 0 0 1px var(--story-hairline-strong), 0 18px 40px -24px rgba(0, 0, 0, 0.8);
+}
+.story-shell.story-dialog .race-card.selected {
+  background: var(--story-bg-raised);
+  box-shadow: 0 0 0 1px var(--story-ember-soft), 0 0 28px -6px rgba(255, 107, 44, 0.55);
+}
+/* Portrait cards: the name over a fade at the foot of the portrait (phones lay them out in rows). */
+@media (min-width: 561px) {
+  .story-shell.story-dialog .race-card-copy {
+    border-top: 0;
+    background: linear-gradient(to top, rgba(4, 7, 8, 0.92) 40%, transparent);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .story-shell.story-dialog .race-card:hover .race-card-copy,
+  .story-shell.story-dialog .race-card:focus-visible .race-card-copy,
+  .story-shell.story-dialog .race-card.selected .race-card-copy {
+    background: linear-gradient(to top, rgba(4, 7, 8, 0.94) 55%, transparent);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+.story-shell.story-dialog .race-card-copy strong {
+  font-family: var(--story-prose);
+  font-size: 1.18rem;
+  font-weight: 500;
+  color: var(--story-ink);
+}
+.story-shell.story-dialog .race-card.selected .race-card-copy strong { color: var(--story-ember-soft); }
+.story-shell.story-dialog .race-trait-row span {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--story-success);
+}
+.story-shell.story-dialog .race-trait-row span + span::before { content: '· '; color: var(--story-faint); }
+.story-shell.story-dialog .race-trait-row { gap: 2px 6px; min-height: 0; }
+.story-shell.story-dialog .race-empty-state {
+  border: 0;
+  font-family: var(--story-prose);
+  font-style: italic;
+  color: var(--story-muted);
+}
+
+/* Text choices (classes, subclasses, saved races): no tiles, the chosen one in ember on a left rule. */
+.story-shell.story-dialog .class-quick-grid button,
+.story-shell.story-dialog .class-card,
+.story-shell.story-dialog .class-subclass-option,
+.story-shell.story-dialog .custom-race-library-card {
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: inset 2px 0 0 transparent;
+  transition: box-shadow var(--story-base) var(--story-ease);
+}
+.story-shell.story-dialog .class-quick-grid button:hover,
+.story-shell.story-dialog .class-quick-grid button:focus-visible,
+.story-shell.story-dialog .class-card:hover,
+.story-shell.story-dialog .class-card:focus-visible,
+.story-shell.story-dialog .class-subclass-option:hover,
+.story-shell.story-dialog .custom-race-library-card:hover {
+  background: none;
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--story-ember) 45%, transparent);
+}
+.story-shell.story-dialog .class-quick-grid button.selected,
+.story-shell.story-dialog .class-card.selected,
+.story-shell.story-dialog .class-subclass-option.selected,
+.story-shell.story-dialog .custom-race-library-card.selected {
+  background: none;
+  box-shadow: inset 2px 0 0 var(--story-ember);
+}
+/* Portraits keep a frame edge; the chosen one glows. */
+.story-shell.story-dialog .gender-portrait-options button {
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  box-shadow: 0 0 0 1px var(--story-hairline);
+}
+.story-shell.story-dialog .gender-portrait-options button:hover { background: none; box-shadow: 0 0 0 1px var(--story-hairline-strong); }
+.story-shell.story-dialog .gender-portrait-options button.selected {
+  background: none;
+  box-shadow: 0 0 0 1px var(--story-ember-soft), 0 0 24px -8px rgba(255, 107, 44, 0.55);
+}
+.story-shell.story-dialog .class-quick-grid strong,
+.story-shell.story-dialog .class-card-copy strong,
+.story-shell.story-dialog .class-subclass-option strong {
+  font-family: var(--story-prose);
+  font-size: 1.08rem;
+  font-weight: 500;
+  color: var(--story-ink);
+}
+.story-shell.story-dialog .class-quick-grid button.selected strong,
+.story-shell.story-dialog .class-card.selected .class-card-copy strong,
+.story-shell.story-dialog .class-subclass-option.selected strong { color: var(--story-ember-soft); }
+.story-shell.story-dialog .class-subclass-panel,
+.story-shell.story-dialog .custom-class-panel,
+.story-shell.story-dialog .custom-race-panel,
+.story-shell.story-dialog .custom-race-review,
+.story-shell.story-dialog .custom-race-library,
+.story-shell.story-dialog .custom-race-metadata,
+.story-shell.story-dialog .gender-portrait-picker,
+.story-shell.story-dialog .race-lore-panel,
+.story-shell.story-dialog .point-buy-panel {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.story-shell.story-dialog .background-selector,
+.story-shell.story-dialog .character-level-grid,
+.story-shell.story-dialog .point-buy-panel {
+  padding-top: 22px;
+  border-top: 1px solid var(--story-hairline);
+}
+.story-shell.story-dialog .character-level-grid input { max-width: 120px; }
+.story-shell.story-dialog .point-buy-summary strong {
+  font-size: var(--story-label-size);
+  font-weight: 560;
+  letter-spacing: var(--story-label-tracking);
+  text-transform: uppercase;
+  color: var(--story-muted);
+}
+.story-shell.story-dialog .point-buy-summary span { color: var(--story-ink-soft); }
+.story-shell.story-dialog .point-buy-summary span.over-budget { color: var(--story-fail); }
+
+/* ---- phones: sheets come up from the bottom edge ---- */
+
+@media (max-width: 700px) {
+  .story-shell.story-dialog {
+    --sheet-gutter: 20px;
+    place-items: end stretch;
+    padding: 0;
+  }
+  .story-dialog .story-dialog-panel,
+  .story-shell.story-dialog > .story-dialog-panel.campaign-dialog {
+    width: 100%;
+    max-height: 92dvh;
+    border-width: 1px 0 0;
+    border-radius: 18px 18px 0 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    animation-name: story-dialog-up;
+  }
+  .story-dialog .story-dialog-header,
+  .story-shell.story-dialog > .story-dialog-panel > header:not(.story-dialog-header) { padding-top: 22px; }
+  .story-dialog .story-dialog-title,
+  .story-shell.story-dialog > .story-dialog-panel > header:not(.story-dialog-header) h2 { font-size: 1.36rem; }
+  .story-dialog .story-dialog-field-pair,
+  .story-shell.story-dialog .dialog-grid.two { grid-template-columns: minmax(0, 1fr); }
+  .story-dialog .story-dialog-footer,
+  .story-shell.story-dialog .campaign-dialog footer {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    gap: 4px;
+    padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  }
+  .story-dialog .story-dialog-footer > *,
+  .story-shell.story-dialog .campaign-dialog footer > button {
+    justify-content: center;
+    width: 100%;
+    min-height: 46px;
+  }
+  .story-dialog .story-dialog-footer .story-primary { min-height: 50px; }
+  .story-dialog .story-dialog-choice { min-height: 40px; }
+  .story-dialog .story-dialog-row { gap: 2px 14px; }
+  .story-dialog .story-dialog-row-meta { white-space: normal; }
+  .story-dialog .story-dialog-row-actions .story-link { min-height: 44px; }
+  .story-dialog .story-dialog-row::before { left: -12px; }
+}
+
+/* ---- motion ---- */
+
+/* The player's choice (Settings › Reduce motion); the system preference is handled in story-tokens.css. */
+.story-shell[data-reduce-motion] *,
+.story-shell[data-reduce-motion] *::before,
+.story-shell[data-reduce-motion] *::after,
+.story-shell.story-dialog[data-reduce-motion] {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}
+.story-shell[data-reduce-motion] .story-atmosphere-motes { display: none; }

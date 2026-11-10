@@ -183,6 +183,61 @@ describe('StoryDrawer', () => {
     expect(within(screen.getByLabelText('Conditions')).getByText('poisoned')).toBeInTheDocument()
   })
 
+  it('shows saving throws on one line with the proficient ones first, hit dice, and conditions outside combat', () => {
+    mockViewportWidth(1440)
+    const base = testInspector()
+    renderDrawer({
+      inspector: testInspector({
+        statBlock: {
+          ...base.statBlock,
+          savingThrows: [
+            { ability: 'STR', modifier: '+4', proficient: true },
+            { ability: 'DEX', modifier: '+1', proficient: false },
+            { ability: 'CON', modifier: '+4', proficient: true },
+          ],
+          hitDice: { current: 2, max: 3, die: 'd10' },
+          conditions: ['poisoned'],
+        },
+      }),
+    })
+
+    const saves = screen.getByText('Saves', { selector: 'dt' }).nextElementSibling as HTMLElement
+    expect(saves).toHaveTextContent(/^STR \+4·CON \+4·DEX \+1$/)
+    expect(within(saves).getByText('STR +4')).toHaveAttribute('data-proficient')
+    expect(within(saves).getByText('DEX +1')).not.toHaveAttribute('data-proficient')
+    expect(screen.getByText('Hit dice', { selector: 'dt' }).nextElementSibling).toHaveTextContent(/^2\/3 d10$/)
+    expect(within(screen.getByLabelText('Conditions')).getByText('poisoned')).toBeInTheDocument()
+  })
+
+  it('shows a dying character’s death saves on the sheet and at the table', () => {
+    mockViewportWidth(1440)
+    const board = testBoard()
+    const sessionState = board.sessionState
+    if (!sessionState) throw new Error('fixture has a session state')
+    renderDrawer({
+      board: {
+        ...board,
+        sessionState: {
+          ...sessionState,
+          state_snapshot: {
+            combat: {
+              status: 'active',
+              participants: [
+                { id: 'player_30', team: 'player', conditions: ['unconscious', 'dying'], deathSaves: { successes: 2, failures: 1 } },
+                { id: 'player_31', team: 'player', conditions: ['unconscious', 'stable'] },
+              ],
+            },
+          },
+        },
+      },
+      inspector: testInspector({ statBlock: { ...testInspector().statBlock, conditions: ['unconscious', 'dying', 'poisoned'] } }),
+    })
+
+    expect(screen.getAllByRole('img', { name: 'Dying: 2 successes, 1 failure' })).toHaveLength(2)
+    expect(screen.getByRole('img', { name: 'Stable' })).toBeInTheDocument()
+    expect(within(screen.getByLabelText('Conditions')).getAllByText(/./).map((chip) => chip.textContent)).toEqual(['poisoned'])
+  })
+
   it('toggles equipment from the pack and shows progress while it saves', () => {
     mockViewportWidth(1440)
     const { inspector } = renderDrawer({ tab: 'pack' })
@@ -237,6 +292,62 @@ describe('StoryDrawer', () => {
     expect(within(narrated as HTMLElement).queryByLabelText('Resolved by the rules engine')).not.toBeInTheDocument()
     expect(screen.getAllByText('conc.')).toHaveLength(2)
     expect(screen.getByText('Favored Foe')).toBeInTheDocument()
+  })
+
+  it('shows every objective with its state, the finished quests, clues and papers', () => {
+    mockViewportWidth(1440)
+    renderDrawer({
+      tab: 'journal',
+      inspector: testInspector({
+        worldStatePanel: testWorld({
+          activeQuests: [
+            {
+              id: 'road',
+              title: 'The Road of Unremembered Kings',
+              status: 'active',
+              stage: 'Follow the road',
+              objective: 'Learn why the names were erased',
+              objectives: [
+                { id: 'stone', description: 'Recover the road-stone fragment', status: 'completed', optional: false },
+                { id: 'names', description: 'Learn why the names were erased', status: 'open', optional: false },
+                { id: 'cairns', description: 'Pass the cairns', status: 'blocked', optional: false },
+                { id: 'wardens', description: 'Spare the wardens', status: 'failed', optional: false },
+                { id: 'shrine', description: 'Light the roadside shrine', status: 'open', optional: true },
+              ],
+            },
+          ],
+          finishedQuests: [{ id: 'bell', title: 'The Bell at Third Mile', status: 'completed', stage: '', objective: '' }],
+          clues: [{ id: 'clue', title: 'Pale Road-Stone Fragment', summary: 'Half a name-rune.' }],
+          handouts: [{ id: 'page', title: 'Page from the Ledger', summary: 'A ledger page.', text: 'Route: Lantern Post by dusk.' }],
+          lore: [{ id: 'oath', title: 'The Roadward Oath', summary: 'Protect travellers without price.' }],
+        }),
+      }),
+    })
+
+    const objectives = screen.getByText('Recover the road-stone fragment').closest('ul') as HTMLElement
+    expect(within(objectives).getAllByRole('img').map((glyph) => glyph.getAttribute('aria-label'))).toEqual([
+      'Completed objective',
+      'Open objective',
+      'Blocked objective',
+      'Failed objective',
+      'Open objective',
+    ])
+    expect(within(objectives).getByText(/Light the roadside shrine/)).toHaveTextContent('Light the roadside shrine optional')
+
+    const finished = screen.getByRole('button', { name: 'Finished · 1' })
+    expect(screen.queryByText('The Bell at Third Mile')).not.toBeInTheDocument()
+    fireEvent.click(finished)
+    expect(finished).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('The Bell at Third Mile')).toBeInTheDocument()
+
+    expect(screen.getByRole('heading', { name: 'Clues' })).toBeInTheDocument()
+    expect(screen.getByText('Half a name-rune.')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Papers' })).toBeInTheDocument()
+    expect(screen.queryByText('Route: Lantern Post by dusk.')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Page from the Ledger' }))
+    expect(screen.getByText('Route: Lantern Post by dusk.')).toHaveClass('story-paper-text')
+    fireEvent.click(screen.getByRole('button', { name: 'The Roadward Oath' }))
+    expect(screen.getByText('Protect travellers without price.')).toBeInTheDocument()
   })
 
   it('lists quests, people, places and memory, and downloads the chronicle', () => {

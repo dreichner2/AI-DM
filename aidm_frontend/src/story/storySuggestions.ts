@@ -1,4 +1,4 @@
-import type { WorldLocationSummary, WorldStatePanel } from '../gameSelectors'
+import type { WorldLocationSummary, WorldMerchantSummary, WorldStatePanel } from '../gameSelectors'
 import type {
   GameplayControlState,
   GameplayInteractableControl,
@@ -9,9 +9,11 @@ export const STORY_SUGGESTION_LIMIT = 5
 
 /**
  * One thing the player could do next. `talk` and `examine` fill the composer so
- * the player can finish the sentence; `object` and `travel` submit typed intents.
+ * the player can finish the sentence; `object` and `travel` submit typed intents;
+ * `trade` opens the merchant's wares.
  */
 export type StorySuggestion =
+  | { kind: 'trade'; key: string; label: string; merchant: WorldMerchantSummary }
   | { kind: 'talk'; key: string; label: string; text: string }
   | { kind: 'examine'; key: string; label: string; text: string }
   | {
@@ -26,15 +28,22 @@ export type StorySuggestion =
 const UNREACHABLE_NPC_STATUSES = new Set(['dead', 'deceased', 'destroyed'])
 
 /**
- * Contextual suggestions for the Story dock, in priority order: people present,
- * scene objects with something to do, loose items, then ways onward. Combat has
- * its own ribbon, so nothing is suggested while it lasts.
+ * Contextual suggestions for the Story dock, in priority order: open merchants,
+ * people present, scene objects with something to do, loose items, then ways
+ * onward. Combat has its own ribbon, so nothing is suggested while it lasts.
  */
 export function storySuggestions(
   worldState: WorldStatePanel,
   gameplayControls: GameplayControlState,
 ): StorySuggestion[] {
   if (worldState.combat.active || gameplayControls.inCombat) return []
+
+  const trade: StorySuggestion[] = (worldState.merchants ?? []).map((merchant) => ({
+    kind: 'trade',
+    key: `trade:${merchant.id}`,
+    label: `Trade with ${merchant.name}`,
+    merchant,
+  }))
 
   const talk: StorySuggestion[] = worldState.presentNpcs
     .filter((npc) => npc.name && !UNREACHABLE_NPC_STATUSES.has(npc.status.toLowerCase()))
@@ -77,5 +86,5 @@ export function storySuggestions(
       exit,
     }))
 
-  return [...talk, ...objects, ...examine, ...travel].slice(0, STORY_SUGGESTION_LIMIT)
+  return [...trade, ...talk, ...objects, ...examine, ...travel].slice(0, STORY_SUGGESTION_LIMIT)
 }

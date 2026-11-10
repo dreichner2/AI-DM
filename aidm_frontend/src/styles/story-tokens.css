@@ -233,6 +233,31 @@
 .story-shell [data-health='critical'], .story-shell [data-health='badly-wounded'] { --ring: var(--story-fail); }
 .story-shell [data-health='down'], .story-shell [data-health='dead'] { --ring: var(--story-faint); }
 
+/* A downed character (party HUD, combat ribbon, drawer): the word, and for the
+   dying three success and three failure pips, filled as death saves land. */
+.story-shell .story-vitality {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.story-shell .story-vitality .story-vitality-label { font-size: 0.64rem; letter-spacing: 0.14em; }
+.story-shell .story-vitality[data-state='dying'] .story-vitality-label { color: var(--story-fail); }
+.story-shell .story-vitality[data-state='dead'] .story-vitality-label { color: var(--story-faint); }
+.story-shell .story-vitality-saves { display: inline-flex; gap: 7px; }
+.story-shell .story-vitality-pips { --pip: var(--story-success); display: inline-flex; gap: 3px; }
+.story-shell .story-vitality-pips[data-outcome='failure'] { --pip: var(--story-fail); }
+.story-shell .story-vitality-pips i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pip) 50%, transparent);
+}
+.story-shell .story-vitality-pips i[data-filled] {
+  background: var(--pip);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--pip) 55%, transparent);
+}
+
 /* Waiting dots: three embers. */
 .story-shell .story-dots { display: inline-flex; gap: 5px; vertical-align: middle; }
 .story-shell .story-dots i {

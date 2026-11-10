@@ -396,6 +396,48 @@
   text-align: center;
 }
 
+/* ---- the ending ---- */
+
+.story-shell .story-epilogue {
+  display: grid;
+  justify-items: center;
+  margin-top: var(--story-gap-7);
+  padding-bottom: var(--story-gap-6);
+  text-align: center;
+  animation: story-rise var(--story-slow) var(--story-ease) backwards;
+}
+.story-shell .story-epilogue-label {
+  margin: 12px 0 0;
+  letter-spacing: 0.28em;
+  color: var(--story-ink-soft);
+}
+.story-shell .story-epilogue-title {
+  margin: 16px 0 0;
+  font-family: var(--story-prose);
+  font-size: 2rem;
+  font-weight: 500;
+  line-height: 1.15;
+  color: var(--story-ink);
+  text-wrap: balance;
+}
+.story-shell .story-epilogue-summary {
+  max-width: 32em;
+  margin: 14px 0 0;
+  font-style: italic;
+  line-height: 1.62;
+  color: var(--story-ink-soft);
+  text-wrap: pretty;
+}
+.story-shell .story-epilogue-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px 28px;
+  margin-top: 30px;
+  font-family: var(--story-ui);
+  font-size: 0.9rem;
+}
+
 /* ---- history, jump, empty, loading ---- */
 
 .story-shell .story-earlier {

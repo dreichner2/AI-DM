@@ -4,7 +4,6 @@ import {
   type RefObject,
   type SetStateAction,
 } from 'react'
-import { X } from 'lucide-react'
 import { ModalShell } from './ModalShell'
 import type { World } from './types'
 import type { WorldDeleteDialogState, WorldFormState } from './worldDialogState'
@@ -42,134 +41,116 @@ export function WorldManagerDialog({
   setForm,
   worlds,
 }: WorldManagerDialogProps) {
+  const locked = form.pending || deleteDialogOpen
   return (
     <ModalShell
-      className="campaign-dialog world-manager-dialog"
+      closeDisabled={locked}
+      closeLabel="Close world manager"
+      description="Worlds hold the places and history that adventures share."
       dialogRef={dialogRef}
       labelledBy="world-manager-title"
       onClose={onClose}
+      title="Manage Worlds"
     >
-        <header>
-          <div>
-            <span>Worlds</span>
-            <h2 id="world-manager-title">Manage Worlds</h2>
-          </div>
-          <button
-            type="button"
-            aria-label="Close world manager"
-            onClick={onClose}
-            disabled={form.pending || deleteDialogOpen}
-          >
-            <X size={18} />
-          </button>
-        </header>
-        <div className="world-manager-list" aria-label="World list">
-          {worlds.length ? (
-            worlds.map((world) => {
+      <div className="story-dialog-body">
+        {worlds.length ? (
+          <ul className="story-dialog-list" aria-label="World list">
+            {worlds.map((world) => {
               const isEditing = form.mode === 'edit' && form.worldId === world.world_id
               return (
-                <div
+                <li
                   key={world.world_id}
-                  className={`world-manager-row ${isEditing ? 'active' : ''}`}
+                  className="story-dialog-row"
+                  data-current={isEditing ? '' : undefined}
                 >
-                  <span>
-                    <strong>{world.name}</strong>
-                    <small>{world.description || 'No description yet'}</small>
+                  <span className="story-dialog-row-copy">
+                    <span className="story-dialog-row-name">{world.name}</span>
+                    <span className="story-dialog-row-meta">{world.description || 'No description yet'}</span>
                   </span>
-                  <div>
+                  <span className="story-dialog-row-actions">
                     <button
                       type="button"
+                      className="story-link"
                       onClick={() => onEditWorld(world)}
-                      disabled={form.pending || deleteDialogOpen}
+                      disabled={locked}
                     >
                       Edit
                     </button>
                     <button
                       type="button"
-                      className="danger"
+                      className="story-link story-link-danger"
                       onClick={() => onOpenDelete(world)}
-                      disabled={form.pending || deleteDialogOpen}
+                      disabled={locked}
                     >
                       Delete
                     </button>
-                  </div>
-                </div>
+                  </span>
+                </li>
               )
-            })
-          ) : (
-            <div className="dialog-warning">
-              <strong>No worlds yet.</strong>
-              <span>Create a world below, then attach campaigns to it.</span>
-            </div>
-          )}
+            })}
+          </ul>
+        ) : (
+          <p className="story-dialog-empty">No worlds yet. Create one below, then set adventures in it.</p>
+        )}
+      </div>
+      <hr className="story-rule" />
+      <form className="story-dialog-body" onSubmit={onSubmit}>
+        <div className="story-dialog-section-head">
+          <h3 className="story-label">{form.mode === 'edit' ? 'Edit World' : 'Create World'}</h3>
+          {form.mode === 'edit' ? (
+            <button type="button" className="story-link" onClick={onResetForm} disabled={form.pending}>
+              New World
+            </button>
+          ) : null}
         </div>
-        <form className="world-manager-form" onSubmit={onSubmit}>
-          <div className="world-manager-form-heading">
-            <strong>{form.mode === 'edit' ? 'Edit World' : 'Create World'}</strong>
-            {form.mode === 'edit' ? (
-              <button
-                type="button"
-                className="secondary"
-                onClick={onResetForm}
-                disabled={form.pending}
-              >
-                New World
-              </button>
-            ) : null}
-          </div>
-          <label>
-            World Name
-            <input
-              data-autofocus
-              value={form.name}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  name: event.target.value,
-                  error: '',
-                }))
-              }
-              placeholder="Crystal Reach"
-              disabled={form.pending}
-            />
-          </label>
-          <label>
-            Description
-            <textarea
-              value={form.description}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  description: event.target.value,
-                  error: '',
-                }))
-              }
-              rows={3}
-              placeholder="Realm premise, tone, or key conflicts..."
-              disabled={form.pending}
-            />
-          </label>
-          {form.error ? <div className="dialog-error" role="alert">{form.error}</div> : null}
-          <footer>
-            <button
-              type="button"
-              className="secondary"
-              onClick={onClose}
-              disabled={form.pending || deleteDialogOpen}
-            >
-              Close
-            </button>
-            <button type="submit" disabled={form.pending}>
-              {form.pending
-                ? form.mode === 'edit'
-                  ? 'Saving...'
-                  : 'Creating...'
-                : form.mode === 'edit'
-                  ? 'Save World'
-                  : 'Create World'}
-            </button>
-          </footer>
-        </form>
+        <label className="story-dialog-field">
+          <span className="story-label">World Name</span>
+          <input
+            data-autofocus
+            value={form.name}
+            onChange={(event) =>
+              setForm((current) => ({
+                ...current,
+                name: event.target.value,
+                error: '',
+              }))
+            }
+            placeholder="Crystal Reach"
+            disabled={form.pending}
+          />
+        </label>
+        <label className="story-dialog-field">
+          <span className="story-label">Description</span>
+          <textarea
+            value={form.description}
+            onChange={(event) =>
+              setForm((current) => ({
+                ...current,
+                description: event.target.value,
+                error: '',
+              }))
+            }
+            rows={3}
+            placeholder="The land, its mood, the trouble brewing…"
+            disabled={form.pending}
+          />
+        </label>
+        {form.error ? <p className="story-dialog-error" role="alert">{form.error}</p> : null}
+        <footer className="story-dialog-footer">
+          <button type="button" className="story-link" onClick={onClose} disabled={locked}>
+            Close
+          </button>
+          <button type="submit" className="story-primary" disabled={form.pending}>
+            {form.pending
+              ? form.mode === 'edit'
+                ? 'Saving...'
+                : 'Creating...'
+              : form.mode === 'edit'
+                ? 'Save World'
+                : 'Create World'}
+          </button>
+        </footer>
+      </form>
     </ModalShell>
   )
 }
@@ -183,64 +164,47 @@ export function WorldDeleteDialog({
 }: WorldDeleteDialogProps) {
   return (
     <ModalShell
+      size="narrow"
+      closeDisabled={dialog.pending}
+      closeLabel="Close delete world"
       dialogRef={dialogRef}
       labelledBy="world-delete-title"
       describedBy="world-delete-description"
       onClose={onClose}
+      title="Delete World"
     >
-        <header>
-          <div>
-            <span>World</span>
-            <h2 id="world-delete-title">Delete World</h2>
-          </div>
+      <div className="story-dialog-body">
+        <p className="story-dialog-subject">{dialog.world.name}</p>
+        <p id="world-delete-description" className="story-dialog-note">
+          A world nothing uses can be deleted straight away. If adventures are set in it, deleting
+          the world and its adventures removes those adventures first.
+        </p>
+        {dialog.error ? <p className="story-dialog-error" role="alert">{dialog.error}</p> : null}
+        <footer className="story-dialog-footer">
+          <button type="button" className="story-link" onClick={onClose} disabled={dialog.pending}>
+            Cancel
+          </button>
           <button
             type="button"
-            aria-label="Close delete world"
-            onClick={onClose}
+            className="story-link story-link-danger"
+            data-autofocus
+            onClick={onDelete}
             disabled={dialog.pending}
           >
-            <X size={18} />
+            {dialog.pending ? 'Deleting...' : 'Delete World'}
           </button>
-        </header>
-        <div className="dialog-body">
-          <div id="world-delete-description" className="dialog-warning">
-            <strong>{dialog.world.name}</strong>
-            <span>
-              This world can be deleted directly when nothing is using it.
-              If campaigns are linked, force delete removes those linked campaigns first.
-            </span>
-          </div>
-          {dialog.error ? <div className="dialog-error" role="alert">{dialog.error}</div> : null}
-          <footer>
+          {dialog.canForce ? (
             <button
               type="button"
-              className="secondary"
-              onClick={onClose}
+              className="story-link story-link-danger"
+              onClick={onForceDelete}
               disabled={dialog.pending}
             >
-              Cancel
+              {dialog.pending ? 'Deleting...' : 'Delete World and Campaigns'}
             </button>
-            <button
-              type="button"
-              className="danger"
-              data-autofocus
-              onClick={onDelete}
-              disabled={dialog.pending}
-            >
-              {dialog.pending ? 'Deleting...' : 'Delete World'}
-            </button>
-            {dialog.canForce ? (
-              <button
-                type="button"
-                className="danger"
-                onClick={onForceDelete}
-                disabled={dialog.pending}
-              >
-                {dialog.pending ? 'Deleting...' : 'Delete World and Campaigns'}
-              </button>
-            ) : null}
-          </footer>
-        </div>
+          ) : null}
+        </footer>
+      </div>
     </ModalShell>
   )
 }

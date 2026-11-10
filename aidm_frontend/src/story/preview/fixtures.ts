@@ -21,7 +21,17 @@ import type { ActivePlayer, Campaign, JsonRecord, Player, TimelineEntry } from '
  * real prose rather than lorem ipsum.
  */
 
-export type StoryPreviewState = 'empty' | 'opening' | 'exploration' | 'streaming' | 'combat' | 'ended'
+export type StoryPreviewState =
+  | 'empty'
+  | 'opening'
+  | 'exploration'
+  | 'streaming'
+  | 'combat'
+  | 'ended'
+  | 'dying'
+  | 'trade'
+  | 'rest'
+  | 'ending'
 
 export const STORY_PREVIEW_STATES: readonly StoryPreviewState[] = [
   'empty',
@@ -30,7 +40,16 @@ export const STORY_PREVIEW_STATES: readonly StoryPreviewState[] = [
   'streaming',
   'combat',
   'ended',
+  'dying',
+  'trade',
+  'rest',
+  'ending',
 ]
+
+/** The viewer's character is in a fight (`dying`: down in one). */
+function inCombat(state: StoryPreviewState) {
+  return state === 'combat' || state === 'dying'
+}
 
 export function isStoryPreviewState(value: unknown): value is StoryPreviewState {
   return typeof value === 'string' && (STORY_PREVIEW_STATES as readonly string[]).includes(value)
@@ -116,6 +135,26 @@ const COMBAT_REPLY = [
   'Your arrow takes the lead lanternman under the jaw and the black glass of his face cracks like river ice. Light spills out of the fracture — not warm, but cold and green — and he staggers, clawing at it, as though he can push the flame back in.',
   'The second one does not hesitate. It is on Brannoc before the dwarf can set his shield, and a fist of marsh water hammers into his side hard enough to fold him over the wagon wheel. Behind them both, the third lanternman lifts its burning hand toward you, and the cold finds your ribs.',
 ].join('\n\n')
+
+const DOWN_NARRATION = [
+  'The burning hand closes. Cold pours into you the way the river pours into a holed boat, and the causeway tilts up to meet your cheek. The longbow slides out of your fingers and over the edge into the reeds.',
+  'Somewhere above you Brannoc is shouting your name. It reaches you from a long way off, muffled, as if through ice.',
+].join('\n\n')
+
+const TRADE_NARRATION = [
+  'Marta wipes her hands on her apron and lifts the hatch behind the bar. “If you are walking that causeway tonight you will want more than courage,” she says, and sets out what she has: a coil of good hemp rope, a hooded lantern, lamp oil, and two stoppered vials of something red that glows faintly when the firelight finds it.',
+  '“Fen prices,” she adds. “Coin first. I will buy back anything you would rather not carry.”',
+].join('\n\n')
+
+const ENDING_NARRATION = [
+  'At first light the last lantern on the causeway catches by itself — a small, ordinary flame, yellow and warm — and then the next, and the next, all the way back to the inn. The mill bell does not ring again.',
+  'Six drivers walk up the road out of the mist, wet to the knee and blinking, with no memory of the night. Teodor counts them twice. Then he opens the ledger, finds the last name on the page, and lets you strike it out yourself.',
+].join('\n\n')
+
+export const FIXTURE_ENDING = {
+  title: 'The Lanterns Relit',
+  summary: 'The drowned bell is silent, the six drivers came home along a lit road, and the name in the ledger was struck out by your own hand.',
+}
 
 const ENDED_CLOSING = [
   'By the time the mill bell falls silent, the eastern sky has gone the colour of pewter and the rain has thinned to a fine, apologetic mist. The wagons are still in the yard. The mules have stopped pulling. Teodor sits on the inn step with the ledger closed across his knees and does not say whether he expected you back.',
@@ -215,6 +254,18 @@ function rollEntries(
       },
     ),
   ]
+}
+
+function deathSaveEntry(id: string, turnId: number, saves: Array<[number, string, number, number]>, minute: number): TimelineEntry {
+  return stateLogEntry(
+    id,
+    turnId,
+    saves.map(([roll, result, successes, failures]) => [
+      'combat.death_save',
+      `Death saving throw: Ysolde Marrow rolled ${roll} (${result}); ${successes} success, ${failures} failure.`,
+    ]),
+    minute,
+  )
 }
 
 function stateLogEntry(id: string, turnId: number, lines: Array<[string, string]>, minute: number): TimelineEntry {
@@ -321,8 +372,8 @@ function streamingTimeline(): Timeline {
   return { rows, current: streaming }
 }
 
-function combatTimeline(): Timeline {
-  const rows = [
+function combatRows(): TimelineEntry[] {
+  return [
     welcomeEntry(),
     dmEntry('log-2', 1, COMBAT_OPENING, 2),
     noticeEntry('log-3', 'Combat started. Roll for initiative.', 3, { kind: 'combat_start' }),
@@ -348,7 +399,59 @@ function combatTimeline(): Timeline {
       ['spell.slot', 'Spell slot used: Shield of Faith (1st level).'],
     ], 6),
   ]
+}
+
+function combatTimeline(): Timeline {
+  return { rows: combatRows(), current: null }
+}
+
+function dyingTimeline(): Timeline {
+  const rows = [
+    ...combatRows(),
+    dmEntry('log-9', 4, DOWN_NARRATION, 8),
+    stateLogEntry('log-10', 4, [['health.damage', 'Took 12 damage.']], 8),
+    deathSaveEntry('log-11', 5, [[6, 'failure', 0, 1]], 10),
+    deathSaveEntry('log-12', 6, [[14, 'success', 1, 1]], 12),
+  ]
   return { rows, current: null }
+}
+
+function tradeTimeline(): Timeline {
+  const attempt = 'Ysolde Marrow buys Hooded lantern from Marta Vell.'
+  const rows = [
+    ...explorationRows().slice(0, -1),
+    entry('log-12', 'player', 'Ysolde Marrow', attempt, 14, {
+      turn_id: 5,
+      turn_number: 5,
+      persistence_status: 'saved',
+      action_intent: {
+        kind: 'shop',
+        text: attempt,
+        shop: { action: 'buy', merchant_id: 'marta-larder', stock_id: 'marta-1', quantity: 1 },
+      },
+    }),
+    entry('log-13', 'system', 'System', 'State updated', 14, {
+      turn_id: 5,
+      state_log: {
+        lines: [{
+          status: 'rejected',
+          changeType: 'shop.buy',
+          message: `${attempt} rejected: Marta Vell is not open for trade right now.`,
+          visibleToPlayer: true,
+        }],
+      },
+    }),
+  ]
+  return { rows, current: dmEntry('log-14', 6, TRADE_NARRATION, 15) }
+}
+
+function endingTimeline(): Timeline {
+  const rows = [
+    ...explorationRows(),
+    dmEntry('log-13', 5, HEARTH_NARRATION, 15),
+    playerEntry('log-14', 6, 'Ysolde Marrow', 'I take the pen from Teodor and strike my own name out of the ledger.', 50),
+  ]
+  return { rows, current: dmEntry('log-15', 6, ENDING_NARRATION, 52) }
 }
 
 function endedTimeline(): Timeline {
@@ -368,6 +471,7 @@ function timelineFor(state: StoryPreviewState): Timeline {
     case 'opening':
       return openingTimeline()
     case 'exploration':
+    case 'rest':
       return explorationTimeline()
     case 'streaming':
       return streamingTimeline()
@@ -375,6 +479,12 @@ function timelineFor(state: StoryPreviewState): Timeline {
       return combatTimeline()
     case 'ended':
       return endedTimeline()
+    case 'dying':
+      return dyingTimeline()
+    case 'trade':
+      return tradeTimeline()
+    case 'ending':
+      return endingTimeline()
   }
 }
 
@@ -387,7 +497,8 @@ function health(currentHp: number, maxHp: number): ActivePlayer['health'] {
 }
 
 export function makeActivePlayers(state: StoryPreviewState = 'exploration'): ActivePlayer[] {
-  const combat = state === 'combat'
+  const combat = inCombat(state)
+  const viewerHp = state === 'dying' ? 0 : combat ? 19 : state === 'rest' ? 13 : 24
   return [
     {
       id: VIEWER_PLAYER_ID,
@@ -397,7 +508,7 @@ export function makeActivePlayers(state: StoryPreviewState = 'exploration'): Act
       sex: 'female',
       profile_image: '/profile-icons/elf_female.png',
       char_class: 'Ranger',
-      health: health(combat ? 19 : 24, 24),
+      health: health(viewerHp, 24),
     },
     {
       id: 31,
@@ -479,7 +590,7 @@ const campaign: Campaign = {
 }
 
 function sceneStateFor(state: StoryPreviewState): SceneDisplayState {
-  if (state === 'combat') {
+  if (inCombat(state)) {
     return {
       sessionId: SESSION_ID,
       locationId: 'mill-causeway',
@@ -571,13 +682,18 @@ function legalAction(
   }
 }
 
+const NO_COST = { action: 0, bonusAction: 0, movement: 0, reaction: 0 }
+
 function combatStateFor(state: StoryPreviewState): CombatStatePanel {
-  const active = state === 'combat'
+  const active = inCombat(state)
+  const dying = state === 'dying'
   const lanternTargets: CombatLegalTarget[] = [
-    { id: 'lanternman-1', name: 'Cracked lanternman', rangeBand: 'near', available: true, reason: '' },
+    { id: 'lanternman-1', name: 'Cracked lanternman', rangeBand: 'melee', available: true, reason: '' },
     { id: 'lanternman-2', name: 'Lanternman', rangeBand: 'near', available: true, reason: '' },
     { id: 'lanternman-3', name: 'Burning-hand lanternman', rangeBand: 'far', available: true, reason: '' },
   ]
+  const self = { rangeClassification: 'self', allowedRangeBands: [] }
+  const viewer = `player-${VIEWER_PLAYER_ID}`
   return {
     active,
     status: active ? 'active' : 'none',
@@ -597,52 +713,117 @@ function combatStateFor(state: StoryPreviewState): CombatStatePanel {
           combatant('lanternman-1', 'Cracked lanternman', 'enemy', '4 / 22', 'critical', {
             conditions: ['marked'],
             morale: 'shaken',
+            rangeBand: 'melee',
+            engagedWith: dying ? [] : [viewer],
           }),
           combatant('lanternman-2', 'Lanternman', 'enemy', '22 / 22', 'healthy', {
             intent: 'Press the dwarf against the wagon',
+            rangeBand: 'melee',
+            engagedWith: ['player-31'],
           }),
           combatant('lanternman-3', 'Burning-hand lanternman', 'enemy', '22 / 22', 'healthy', {
             position: 'far',
+            rangeBand: 'far',
             telegraph: 'Its hand is lifting toward Ysolde',
           }),
         ]
       : [],
     allies: active
       ? [
-          combatant('player-30', 'Ysolde Marrow', 'ally', '19 / 24', 'hurt'),
-          combatant('player-31', 'Brannoc Deepvale', 'ally', '9 / 27', 'critical', { conditions: ['prone'] }),
-          combatant('player-32', 'Wren Tallowmere', 'ally', '18 / 20', 'healthy', { position: 'far' }),
+          dying
+            ? combatant(viewer, 'Ysolde Marrow', 'ally', 'Down', 'down', {
+                conditions: ['unconscious', 'dying'],
+                rangeBand: 'melee',
+                deathSaves: { successes: 1, failures: 1 },
+              })
+            : combatant(viewer, 'Ysolde Marrow', 'ally', '19 / 24', 'hurt', {
+                rangeBand: 'melee',
+                engagedWith: ['lanternman-1'],
+              }),
+          combatant('player-31', 'Brannoc Deepvale', 'ally', '9 / 27', 'critical', {
+            conditions: ['prone'],
+            rangeBand: 'melee',
+            engagedWith: ['lanternman-2'],
+          }),
+          combatant('player-32', 'Wren Tallowmere', 'ally', '18 / 20', 'healthy', { position: 'far', rangeBand: 'far' }),
         ]
       : [],
     telegraphs: active ? ['The burning-hand lanternman is gathering cold light.'] : [],
+    turnOrder: active
+      ? [
+          { id: 'player-32', name: 'Wren Tallowmere', team: 'player', isCurrent: false },
+          { id: viewer, name: 'Ysolde Marrow', team: 'player', isCurrent: !dying },
+          { id: 'lanternman-1', name: 'Cracked lanternman', team: 'enemy', isCurrent: false },
+          { id: 'player-31', name: 'Brannoc Deepvale', team: 'player', isCurrent: false },
+          { id: 'lanternman-2', name: 'Lanternman', team: 'enemy', isCurrent: false },
+          { id: 'lanternman-3', name: 'Burning-hand lanternman', team: 'enemy', isCurrent: dying },
+        ]
+      : [],
     legalActionBundles: active
       ? [
           {
             schemaVersion: 1,
             playerId: VIEWER_PLAYER_ID,
-            actorId: `player-${VIEWER_PLAYER_ID}`,
+            actorId: viewer,
             actorName: 'Ysolde Marrow',
-            round: 2,
-            currentActorId: `player-${VIEWER_PLAYER_ID}`,
-            currentActorName: 'Ysolde Marrow',
-            isCurrentActor: true,
+            round: dying ? 3 : 2,
+            currentActorId: dying ? 'lanternman-3' : viewer,
+            currentActorName: dying ? 'Burning-hand lanternman' : 'Ysolde Marrow',
+            isCurrentActor: !dying,
             economyTracking: 'per_turn',
             subTurnCountersTracked: true,
             actionRemaining: 1,
             bonusActionRemaining: 1,
-            movementRemaining: 35,
+            movementRemaining: 0,
             reactionRemaining: 1,
+            attacksRemaining: 0,
             actions: [
-              legalAction('attack-longbow', 'attack', 'Longbow', 'Loose an arrow at a lanternman.', lanternTargets, {
+              legalAction('combat.attack.longbow', 'attack', 'Attack with Longbow', 'Loose an arrow at a lanternman.', lanternTargets, {
                 weaponName: 'Longbow',
+                cost: { ...NO_COST, action: 1 },
               }),
-              legalAction('dash', 'dash', 'Dash', 'Double your movement this turn.', [], {
-                rangeClassification: 'self',
-                allowedRangeBands: [],
+              legalAction('combat.advance', 'advance', 'Advance', 'Close into melee with an enemy.', [], {
+                ...self,
+                available: false,
+                reason: 'Your movement is already spent.',
+                cost: { ...NO_COST, movement: 1 },
               }),
-              legalAction('disengage', 'disengage', 'Disengage', 'Move without provoking opportunity attacks.', [], {
-                rangeClassification: 'self',
-                allowedRangeBands: [],
+              legalAction('combat.reposition', 'reposition', 'Fall back', 'Move one band away from the fight.', [], {
+                ...self,
+                available: false,
+                reason: 'Your movement is already spent.',
+                cost: { ...NO_COST, movement: 1 },
+              }),
+              legalAction('combat.dash', 'dash', 'Dash', 'Gain one more movement this turn.', [], {
+                ...self,
+                cost: { ...NO_COST, action: 1 },
+              }),
+              legalAction('combat.disengage', 'disengage', 'Disengage', 'Move without provoking opportunity attacks.', [], {
+                ...self,
+                cost: { ...NO_COST, action: 1 },
+              }),
+              legalAction('combat.dodge', 'dodge', 'Dodge', 'Attacks against you have disadvantage until your next turn.', [], {
+                ...self,
+                cost: { ...NO_COST, action: 1 },
+              }),
+              legalAction('combat.help', 'help', 'Help', 'Give an ally advantage on their next attack.', [], {
+                ...self,
+                cost: { ...NO_COST, action: 1 },
+              }),
+              legalAction('combat.hide', 'hide', 'Hide', 'Try to slip out of sight.', [], {
+                ...self,
+                available: false,
+                reason: 'You cannot hide in melee without cover.',
+                cost: { ...NO_COST, action: 1 },
+              }),
+              legalAction('item.use.healing-potion', 'item', 'Use Potion of Healing', 'Restores 2d4+2 hit points.', [], {
+                ...self,
+                cost: { ...NO_COST, bonusAction: 1 },
+              }),
+              legalAction('combat.end_turn', 'end_turn', 'End turn', 'Take no further action and pass the combat turn.', [], {
+                ...self,
+                message: 'Ysolde Marrow ends their turn.',
+                cost: NO_COST,
               }),
             ],
           },
@@ -656,13 +837,28 @@ function gameplayTarget(id: string, name: string, team: string, currentHp: numbe
 }
 
 function gameplayControlsFor(state: StoryPreviewState): GameplayControlState {
-  const combat = state === 'combat'
+  const combat = inCombat(state)
   const enemyTargets = combat
     ? [
         gameplayTarget('lanternman-1', 'Cracked lanternman', 'enemy', 4, 22),
         gameplayTarget('lanternman-2', 'Lanternman', 'enemy', 22, 22),
       ]
     : []
+  const party = [
+    gameplayTarget(`player-${VIEWER_PLAYER_ID}`, 'Ysolde Marrow', 'player', state === 'rest' ? 13 : 24, 24),
+    gameplayTarget('player-31', 'Brannoc Deepvale', 'player', combat ? 9 : 27, 27),
+  ]
+  const potion = {
+    id: 'healing-potion',
+    name: 'Potion of Healing',
+    quantity: 2,
+    effectSummary: 'Restores 2d4+2 hit points.',
+    cost: combat ? 'bonus action' : 'bonus action; action for an ally',
+    available: true,
+    reason: '',
+    targets: combat ? party.slice(0, 1) : party,
+    ...(combat ? { actionId: 'item.use.healing-potion' } : {}),
+  }
   return {
     actorId: `player-${VIEWER_PLAYER_ID}`,
     actorName: 'Ysolde Marrow',
@@ -678,40 +874,60 @@ function gameplayControlsFor(state: StoryPreviewState): GameplayControlState {
         name: "Hunter's Mark",
         level: 1,
         description: 'Mark a creature as your quarry; your weapon hits deal an extra 1d6 damage to it.',
-        delivery: 'bonus_action',
+        delivery: 'automatic',
         castingTime: 'bonus_action',
         castLevels: [1],
-        effectLabel: '+1d6 damage',
-        relation: 'hostile',
+        effectLabel: 'your weapon hits deal +1d6 to the target · concentration',
+        effectSummary: 'your weapon hits deal +1d6 to the target · concentration',
+        rulesBacked: true,
+        outOfCombat: false,
+        relation: 'enemy',
         rangeBands: ['near', 'far'],
         minTargets: 1,
         maxTargets: 1,
         concentration: true,
         prepared: true,
-        resourceLabel: '1st-level slot (2 left)',
+        resourceLabel: 'Level 1 slot · 2 left',
         available: combat,
         reason: combat ? '' : 'No hostile creature in sight.',
         targets: enemyTargets,
       },
       {
+        id: 'cure-wounds',
+        name: 'Cure Wounds',
+        level: 1,
+        description: 'A creature you touch regains hit points.',
+        delivery: 'automatic',
+        castingTime: 'action',
+        castLevels: [1],
+        effectLabel: 'heals 1d8 + your casting modifier',
+        effectSummary: 'heals 1d8 + your casting modifier',
+        rulesBacked: true,
+        outOfCombat: true,
+        relation: 'ally',
+        rangeBands: ['melee'],
+        minTargets: 1,
+        maxTargets: 1,
+        concentration: false,
+        prepared: true,
+        resourceLabel: 'Level 1 slot · 2 left',
+        available: true,
+        reason: '',
+        targets: party,
+      },
+    ],
+    narratedSpells: [
+      {
         id: 'fog-cloud',
         name: 'Fog Cloud',
         level: 1,
-        description: 'A 20-foot sphere of fog that heavily obscures the area.',
-        delivery: 'action',
         castingTime: 'action',
-        castLevels: [1],
-        effectLabel: 'Heavily obscured area',
-        relation: 'area',
-        rangeBands: ['near', 'far'],
-        minTargets: 0,
-        maxTargets: 0,
+        effectSummary: 'A 20-foot sphere of fog that heavily obscures the area.',
         concentration: true,
-        prepared: true,
-        resourceLabel: '1st-level slot (2 left)',
+        rulesBacked: false,
+        resourceLabel: 'Level 1 slot · 2 left',
         available: true,
         reason: '',
-        targets: [],
       },
     ],
     capabilities: [
@@ -728,7 +944,28 @@ function gameplayControlsFor(state: StoryPreviewState): GameplayControlState {
         available: combat,
         reason: combat ? '' : 'Only in combat.',
         targets: enemyTargets,
+        poolId: 'favored_foe',
+        poolName: 'Favored Foe',
+        poolCost: 1,
       },
+    ],
+    items: [potion],
+    rest: {
+      shortAvailable: !combat,
+      shortReason: combat ? 'Rest is unavailable while combat is active.' : '',
+      longAvailable: !combat && state !== 'rest',
+      longReason: combat
+        ? 'Rest is unavailable while combat is active.'
+        : state === 'rest'
+          ? 'You have already rested today.'
+          : '',
+      hitDice: { current: state === 'rest' ? 2 : 3, max: 3, die: 'd10' },
+    },
+    currency: { gp: 43, sp: 6 },
+    tradeGoods: [
+      { id: 'arrows', name: 'Arrows', quantity: 17, price: { cp: 5 } },
+      { id: 'healing-potion', name: 'Potion of Healing', quantity: 2, price: { gp: 50 } },
+      { id: 'ledger', name: 'Waxed caravan ledger', quantity: 1, price: null },
     ],
     interactables: combat
       ? []
@@ -762,8 +999,19 @@ function gameplayControlsFor(state: StoryPreviewState): GameplayControlState {
   }
 }
 
+const CLOCKS: Partial<Record<StoryPreviewState, [number, 'morning' | 'afternoon' | 'evening' | 'night']>> = {
+  combat: [2, 'night'],
+  dying: [2, 'night'],
+  ending: [3, 'morning'],
+}
+
+function clockFor(state: StoryPreviewState) {
+  const [day, phase] = CLOCKS[state] ?? [2, 'evening']
+  return { day, phase, label: `Day ${day} · ${phase.charAt(0).toUpperCase()}${phase.slice(1)}` }
+}
+
 function worldStateFor(state: StoryPreviewState): WorldStatePanel {
-  const combat = state === 'combat'
+  const combat = inCombat(state)
   return {
     sceneName: combat ? 'The Mill Causeway' : 'The Drowned Lantern',
     sceneDescription: combat
@@ -779,8 +1027,56 @@ function worldStateFor(state: StoryPreviewState): WorldStatePanel {
         status: 'active',
         stage: 'Find out where the drivers went',
         objective: 'Follow the dark lanterns toward the mill',
+        objectives: [
+          { id: 'ledger', description: 'Search the abandoned wagons', status: 'completed', optional: false },
+          { id: 'lanterns', description: 'Follow the dark lanterns toward the mill', status: 'open', optional: false },
+          { id: 'bell', description: 'Silence the drowned bell', status: 'blocked', optional: false },
+          { id: 'whip', description: 'Return the driver’s whip to his family', status: 'open', optional: true },
+        ],
       },
     ],
+    finishedQuests: [
+      { id: 'toll', title: 'The Toll at Hollin Cross', status: 'completed', stage: 'Paid half a crown', objective: '', objectives: [] },
+      { id: 'boot', title: 'Wren’s Lost Boot', status: 'failed', stage: 'The marsh kept it', objective: '', objectives: [] },
+    ],
+    clues: [
+      { id: 'clue-ledger', title: 'The wet name', summary: 'The last name in the drivers’ ledger is MARROW, and the ink was still wet.' },
+      { id: 'clue-lanterns', title: 'Six lanterns', summary: 'Six causeway lanterns went dark at dusk — one for each missing driver.' },
+    ],
+    handouts: [
+      {
+        id: 'handout-ledger',
+        title: 'Last page of the caravan ledger',
+        summary: 'Six names in six hands, each beside a lantern drawn upside down.',
+        text: 'Hask — Odile — Brennet — Tam Wicker — the widow Saul —\nMARROW\n\nBeside every name, the same small drawing: a lantern with its flame turned downward.',
+      },
+    ],
+    lore: [
+      {
+        id: 'lore-lamplighters',
+        title: 'The Lamplighters’ Oath',
+        summary: 'The brothers of the causeway swear to keep one flame lit for every traveller still on the road, and to put none out until the traveller is home.',
+      },
+    ],
+    clock: clockFor(state),
+    merchants: state === 'trade'
+      ? [
+          {
+            id: 'marta-larder',
+            name: 'Marta Vell',
+            npcId: 'marta',
+            buyRate: 0.5,
+            stock: [
+              { stockId: 'marta-0', name: 'Potion of Healing', type: 'potion', price: { gp: 50 }, priceLabel: '50 gp', quantity: 2 },
+              { stockId: 'marta-1', name: 'Hooded lantern', type: 'gear', price: { gp: 5 }, priceLabel: '5 gp', quantity: 1 },
+              { stockId: 'marta-2', name: 'Lamp oil (flask)', type: 'gear', price: { sp: 1 }, priceLabel: '1 sp', quantity: null },
+              { stockId: 'marta-3', name: 'Hempen rope, 50 feet', type: 'gear', price: { gp: 1 }, priceLabel: '1 gp', quantity: 0 },
+              { stockId: 'marta-4', name: 'Fen-silver ring', type: 'trinket', price: { gp: 75 }, priceLabel: '75 gp', quantity: 1 },
+            ],
+          },
+        ]
+      : [],
+    ending: state === 'ending' ? FIXTURE_ENDING : null,
     presentNpcs: [
       { id: 'marta', name: 'Marta Vell', race: 'Human', role: 'Innkeeper', disposition: 'wary', status: 'present' },
       { id: 'teodor', name: 'Old Teodor', race: 'Human', role: 'Ferryman', disposition: 'guarded', status: 'present' },
@@ -797,6 +1093,27 @@ function worldStateFor(state: StoryPreviewState): WorldStatePanel {
     ],
     knownNpcs: [],
     combat: combatStateFor(state),
+  }
+}
+
+/** The player-safe snapshot: the drawn map, and in a fight the participants' vitality. */
+function snapshotFor(state: StoryPreviewState): JsonRecord {
+  if (state !== 'dying') return { worldMap: mapFixture() }
+  return {
+    worldMap: mapFixture(),
+    combat: {
+      status: 'active',
+      participants: [
+        {
+          id: `player-${VIEWER_PLAYER_ID}`,
+          team: 'player',
+          conditions: ['unconscious', 'dying'],
+          deathSaves: { successes: 1, failures: 1 },
+        },
+        { id: 'player-31', team: 'player', conditions: ['prone'] },
+        { id: 'player-32', team: 'player', conditions: [] },
+      ],
+    },
   }
 }
 
@@ -817,12 +1134,12 @@ function actionComposerFixture(state: StoryPreviewState, activePlayers: ActivePl
     selectedDie: 'd20',
     sendPending: state === 'streaming',
     turnControl: {
-      mode: state === 'combat' ? 'structured' : 'free',
+      mode: inCombat(state) ? 'structured' : 'free',
       source: 'auto',
-      activePlayerId: state === 'combat' ? VIEWER_PLAYER_ID : null,
-      activePlayerName: state === 'combat' ? viewerPlayer.character_name : null,
+      activePlayerId: inCombat(state) ? VIEWER_PLAYER_ID : null,
+      activePlayerName: inCombat(state) ? viewerPlayer.character_name : null,
     },
-    turnControlStatusLabel: state === 'combat' ? 'Your turn' : 'Free play',
+    turnControlStatusLabel: inCombat(state) ? 'Your turn' : 'Free play',
     selectedPlayerHasTurn: true,
     queuedActionText: '',
     retryRecoverableSubmission: () => false,
@@ -994,7 +1311,7 @@ export function makeBoardFixture(state: StoryPreviewState | string = 'exploratio
       rolling_summary: sessionRecap,
       active_segments: [],
       memory_snippets: [],
-      state_snapshot: { worldMap: mapFixture() },
+      state_snapshot: snapshotFor(previewState),
       updated_at: '2026-11-09T19:15:00.000Z',
     },
     campaign,
@@ -1057,6 +1374,17 @@ export function makeInspectorFixture(): InspectorPanelProps {
       toolProficiencies: ['Herbalism kit'],
       languages: ['Common', 'Elvish', 'Sylvan'],
       hitDie: 'd10',
+      savingThrows: [
+        { ability: 'STR', modifier: '+3', proficient: true },
+        { ability: 'DEX', modifier: '+5', proficient: true },
+        { ability: 'CON', modifier: '+1', proficient: false },
+        { ability: 'INT', modifier: '+0', proficient: false },
+        { ability: 'WIS', modifier: '+2', proficient: false },
+        { ability: 'CHA', modifier: '-1', proficient: false },
+      ],
+      deathSaves: null,
+      hitDice: { current: 3, max: 3, die: 'd10' },
+      conditions: [],
     },
     spellbook: {
       knownSpells: [

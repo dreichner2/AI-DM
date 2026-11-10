@@ -118,6 +118,23 @@ describe('StoryView', () => {
     expect(container.querySelector('.story-shell')).toHaveAttribute('data-mood', 'combat')
   })
 
+  it('marks the time of day on the shell so the light can follow it', () => {
+    const { container, rerenderBoard } = renderView()
+    expect(container.querySelector('.story-shell')).toHaveAttribute('data-phase', 'evening')
+    rerenderBoard(makeBoardFixture('combat'))
+    expect(container.querySelector('.story-shell')).toHaveAttribute('data-phase', 'night')
+  })
+
+  it('drains a dying party member of colour and shows their death saves beside the portrait', () => {
+    renderView({ board: makeBoardFixture('dying') })
+    const party = screen.getByRole('group', { name: 'Party' })
+    const [viewer, brannoc] = within(party).getAllByRole('button')
+    expect(viewer).toHaveAttribute('data-vitality', 'dying')
+    expect(brannoc).not.toHaveAttribute('data-vitality')
+    expect(within(party).getByRole('img', { name: 'Dying: 1 success, 1 failure' })).toBeInTheDocument()
+    expect(within(party).queryByText(/^HP /)).not.toBeInTheDocument()
+  })
+
   it('flashes the screen edge when the viewer loses HP', () => {
     const board = makeBoardFixture('combat')
     const { container, rerenderBoard } = renderView({ board })

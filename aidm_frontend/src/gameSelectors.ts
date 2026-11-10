@@ -31,6 +31,20 @@ export type InventoryRow = {
   equippable: boolean
 }
 
+export type SavingThrowSummary = {
+  /** STR, DEX, CON, INT, WIS or CHA. */
+  ability: string
+  /** The signed save bonus ("+4"), or "—" when the ability score is unknown. */
+  modifier: string
+  proficient: boolean
+}
+
+export type HitDiceSummary = {
+  current: number
+  max: number
+  die: string
+}
+
 export type StatBlock = {
   hp: string
   ac: string
@@ -45,6 +59,10 @@ export type StatBlock = {
   toolProficiencies?: string[]
   languages?: string[]
   hitDie?: string
+  savingThrows?: SavingThrowSummary[]
+  deathSaves?: CombatDeathSaves | null
+  hitDice?: HitDiceSummary | null
+  conditions?: string[]
 }
 
 export type XpProgress = {
@@ -101,12 +119,37 @@ export type MapPanelMeta = {
   weather: string
 }
 
+export type QuestObjectiveStatus = 'open' | 'blocked' | 'completed' | 'failed'
+
+export type QuestObjectiveSummary = {
+  id: string
+  description: string
+  status: QuestObjectiveStatus
+  optional: boolean
+}
+
 export type WorldQuestSummary = {
   id: string
   title: string
   status: string
   stage: string
+  /** The first objective still open (kept for the console's one-line summary). */
   objective: string
+  objectives?: QuestObjectiveSummary[]
+}
+
+/** A discovered clue, handout or piece of lore. `text` is a handout's full wording. */
+export type WorldRecordSummary = {
+  id: string
+  title: string
+  summary: string
+  text?: string
+}
+
+/** The adventure's ending, once a terminal checkpoint is active or completed. */
+export type WorldEnding = {
+  title: string
+  summary: string
 }
 
 export type WorldLocationSummary = {
@@ -161,6 +204,13 @@ export type CombatParticipantSummary = {
 export type CombatDeathSaves = {
   successes: number
   failures: number
+}
+
+export type CharacterVitalityState = 'dying' | 'stable' | 'dead'
+
+/** A player character at 0 HP: dying (with its death-save tally), stable or dead. */
+export type CharacterVitality = CombatDeathSaves & {
+  state: CharacterVitalityState
 }
 
 export type CombatLegalTarget = {
@@ -295,6 +345,12 @@ export type WorldStatePanel = {
   clock?: WorldClockSummary
   /** Merchants open for trade in the current scene (the server projects only those). */
   merchants?: WorldMerchantSummary[]
+  /** Completed and failed quests. */
+  finishedQuests?: WorldQuestSummary[]
+  clues?: WorldRecordSummary[]
+  handouts?: WorldRecordSummary[]
+  lore?: WorldRecordSummary[]
+  ending?: WorldEnding | null
 }
 
 export type PendingRollOption = {
@@ -457,13 +513,79 @@ function combatParticipantSummary(participant: JsonRecord): CombatParticipantSum
     engagedWith: Array.isArray(position.engagedWith)
       ? position.engagedWith.map((value) => stringValue(value)).filter(Boolean)
       : [],
-    deathSaves: isRecord(participant.deathSaves)
-      ? {
-          successes: Math.max(0, Math.min(3, numberValue(participant.deathSaves.successes) ?? 0)),
-          failures: Math.max(0, Math.min(3, numberValue(participant.deathSaves.failures) ?? 0)),
-        }
-      : null,
+    deathSaves: deathSavesValue(participant.deathSaves),
   }
+}
+
+function deathSavesValue(value: unknown): CombatDeathSaves | null {
+  if (!isRecord(value)) return null
+  return {
+    successes: Math.max(0, Math.min(3, numberValue(value.successes) ?? 0)),
+    failures: Math.max(0, Math.min(3, numberValue(value.failures) ?? 0)),
+  }
+}
+
+/** Dying, stable or dead from a character's conditions; null for anyone still on their feet. */
+export function characterVitality(
+  conditions: readonly string[],
+  deathSaves: CombatDeathSaves | null | undefined,
+): CharacterVitality | null {
+  const keys = new Set(conditions.map((condition) => condition.trim().toLowerCase()))
+  const state: CharacterVitalityState | null = keys.has('dead')
+    ? 'dead'
+    : keys.has('dying')
+      ? 'dying'
+      : keys.has('stable')
+        ? 'stable'
+        : null
+  if (!state) return null
+  return {
+    state,
+    successes: state === 'dying' ? deathSaves?.successes ?? 0 : 0,
+    failures: state === 'dying' ? deathSaves?.failures ?? 0 : 0,
+  }
+}
+
+function stringList(value: unknown) {
+  return Array.isArray(value) ? value.map((item) => stringValue(item)).filter(Boolean) : []
+}
+
+const PLAYER_ACTOR_ID_RE = /^player[_-](\d+)$/i
+
+/** The player id of a character record: its own field, else the `player_<id>` actor id. */
+function recordPlayerId(record: JsonRecord) {
+  const direct = numberValue(record.playerId ?? record.player_id)
+  if (direct !== null && direct > 0) return direct
+  const match = PLAYER_ACTOR_ID_RE.exec(stringValue(record.id))
+  return match ? Number(match[1]) : null
+}
+
+/**
+ * Each downed player character's vitality, keyed by player id. Combat
+ * participants are read first (every visible party member, live during a
+ * fight); the viewer's own character sheet fills in outside combat.
+ */
+export function partyVitalityFromSnapshot(snapshot: unknown): Record<number, CharacterVitality> {
+  const root = isRecord(snapshot) ? snapshot : {}
+  const combat = isRecord(root.combat) ? root.combat : {}
+  const combatActive = ACTIVE_COMBAT_STATUSES.includes(stringValue(combat.status).toLowerCase())
+  const vitality: Record<number, CharacterVitality> = {}
+  const seen = new Set<number>()
+  const read = (record: JsonRecord, conditions: unknown, deathSaves: unknown) => {
+    const playerId = recordPlayerId(record)
+    if (playerId === null || seen.has(playerId)) return
+    seen.add(playerId)
+    const state = characterVitality(stringList(conditions), deathSavesValue(deathSaves))
+    if (state) vitality[playerId] = state
+  }
+  recordArray(combatActive ? combat.participants : [])
+    .filter((participant) => stringValue(participant.team).toLowerCase() === 'player')
+    .forEach((participant) => read(participant, participant.conditions, participant.deathSaves))
+  recordArray(root.playerCharacters).forEach((character) => {
+    const health = isRecord(character.health) ? character.health : {}
+    read(character, health.conditions ?? character.conditions, health.deathSaves)
+  })
+  return vitality
 }
 
 function costUnit(value: unknown) {
@@ -546,6 +668,8 @@ function combatLegalActionBundle(bundle: JsonRecord): CombatLegalActionBundle | 
   }
 }
 
+const ACTIVE_COMBAT_STATUSES = ['starting', 'active']
+
 function combatStateFromSnapshot(snapshot: JsonRecord): CombatStatePanel {
   const combat = isRecord(snapshot.combat) ? snapshot.combat : {}
   const status = stringValue(combat.status, 'none')
@@ -562,7 +686,7 @@ function combatStateFromSnapshot(snapshot: JsonRecord): CombatStatePanel {
   const allies = participants.filter((participant) => participant.team !== 'enemy')
   const telegraphs = enemies.map((enemy) => enemy.telegraph).filter(Boolean).slice(0, 4)
   return {
-    active: ['starting', 'active'].includes(status) && enemies.length > 0,
+    active: ACTIVE_COMBAT_STATUSES.includes(status) && enemies.length > 0,
     status,
     round: stringValue(combat.round, '1'),
     battlefield: [
@@ -1104,7 +1228,8 @@ export function normalizeStats(
     stringValue(findValue(records, keys), fallback)
   const hpCurrent = statLabel(['current_hp', 'hp_current', 'hp', 'hit_points', 'currentHitPoints'])
   const hpMax = statLabel(['max_hp', 'hp_max', 'max_hit_points', 'maxHitPoints'])
-  const hp = hpMax !== '—' && hpMax !== hpCurrent ? `${hpCurrent} / ${hpMax}` : hpCurrent
+  // The server stores no current HP for an unhurt character: it is then the maximum.
+  const hp = hpMax !== '—' ? `${hpCurrent === '—' ? hpMax : hpCurrent} / ${hpMax}` : hpCurrent
   const abilityEntries: Array<[string, string, string]> = [
     ['STR', 'strength', 'str'],
     ['DEX', 'dexterity', 'dex'],
@@ -1131,6 +1256,23 @@ export function normalizeStats(
     ? stringValue(backgroundRecord.name || backgroundRecord.id)
     : stringValue(backgroundValue)
   const hitDieValue = numberValue(findValue(records, ['hitDie', 'hit_die']))
+  const proficiencyBonus =
+    (proficiencyValue !== '—' ? numberValue(proficiencyValue) : null) ?? (level ? 2 + Math.floor((level - 1) / 4) : 0)
+  const saveProficiencies = savingThrowProficiencies(
+    findValue(mechanicsRecords, SAVING_THROW_PROFICIENCY_KEYS),
+  )
+  const savingThrows = abilityEntries.some(([, score]) => score !== '—')
+    ? abilityEntries.map(([label, , modifier]): SavingThrowSummary => {
+        const proficient = saveProficiencies.has(label)
+        const base = modifier === '—' ? null : numberValue(modifier)
+        return {
+          ability: label,
+          modifier: base === null ? '—' : signedNumber(base + (proficient ? proficiencyBonus : 0)),
+          proficient,
+        }
+      })
+    : []
+  const rawConditions = findValue(records, ['conditions'])
 
   return {
     hp,
@@ -1146,7 +1288,76 @@ export function normalizeStats(
     toolProficiencies: listFor(['toolProficiencies', 'tool_proficiencies']),
     languages: listFor(['languages', 'languageProficiencies', 'language_proficiencies']),
     hitDie: hitDieValue ? `d${hitDieValue}` : '',
+    savingThrows,
+    deathSaves: deathSavesValue(findValue(records, ['death_saves', 'deathSaves'])),
+    hitDice: hitDiceSummary(findValue(records, ['hit_dice', 'hitDice']), hitDieValue, level),
+    conditions: stringList(rawConditions),
   }
+}
+
+const SAVING_THROW_PROFICIENCY_KEYS = [
+  'savingThrowProficiencies',
+  'saving_throw_proficiencies',
+  'proficientSavingThrows',
+  'saving_throws',
+  'savingThrows',
+]
+
+const ABILITY_LABELS: Record<string, string> = {
+  str: 'STR',
+  strength: 'STR',
+  dex: 'DEX',
+  dexterity: 'DEX',
+  con: 'CON',
+  constitution: 'CON',
+  int: 'INT',
+  intelligence: 'INT',
+  wis: 'WIS',
+  wisdom: 'WIS',
+  cha: 'CHA',
+  charisma: 'CHA',
+}
+
+function signedNumber(value: number) {
+  return value >= 0 ? `+${value}` : String(value)
+}
+
+/** Ability labels (STR…) with saving-throw proficiency, from a list, a map or a list of records. */
+function savingThrowProficiencies(value: unknown): Set<string> {
+  const labels = new Set<string>()
+  const add = (raw: unknown) => {
+    const key = stringValue(raw).toLowerCase().replace(/^save:/, '').replace(/[_ ](saving_throw|save)$/, '')
+    const label = ABILITY_LABELS[key]
+    if (label) labels.add(label)
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry) => {
+      if (!isRecord(entry)) {
+        add(entry)
+      } else if (entry.proficient !== false && entry.trained !== false) {
+        add(entry.ability ?? entry.name ?? entry.id)
+      }
+    })
+  } else if (isRecord(value)) {
+    Object.entries(value).forEach(([key, enabled]) => {
+      const flag = isRecord(enabled) ? enabled.proficient ?? enabled.trained ?? true : enabled
+      if (flag) add(key)
+    })
+  }
+  return labels
+}
+
+/**
+ * Hit dice from the stored count (`Player.stats.hit_dice`, absent until first
+ * spent) or a `{current, max, die}` record, against a maximum of the level.
+ */
+function hitDiceSummary(stored: unknown, hitDie: number | null, level: number | null): HitDiceSummary | null {
+  const record = isRecord(stored) ? stored : {}
+  const max = Math.floor(numberValue(record.max) ?? level ?? 0)
+  const die = stringValue(record.die) || (hitDie ? `d${hitDie}` : '')
+  if (max < 1 || !die) return null
+  const current = numberValue(isRecord(stored) ? record.current : stored)
+  return { current: Math.max(0, Math.min(max, Math.floor(current ?? max))), max, die }
 }
 
 export function abilityOptionsFromStatBlock(statBlock: StatBlock): AbilityOption[] {
@@ -1296,22 +1507,14 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
   )
   const currentLocationId = stringValue(scene.locationId)
   const currentLocationName = normalizedLookup(scene.name)
+  const finished = (quest: JsonRecord) => FINISHED_QUEST_STATUSES.has(stringValue(quest.status).toLowerCase())
   const activeQuests = quests
     .filter((quest) => {
       const id = stringValue(quest.id)
       const status = stringValue(quest.status).toLowerCase()
-      return activeQuestIds.has(id) || status === 'active' || status === 'available'
+      return !finished(quest) && (activeQuestIds.has(id) || status === 'active' || status === 'available')
     })
-    .map((quest) => ({
-      id: stringValue(quest.id),
-      title: stringValue(quest.title, 'Untitled quest'),
-      status: stringValue(quest.status, 'unknown'),
-      stage: stringValue(quest.stage, 'No stage recorded'),
-      objective:
-        recordArray(quest.objectives)
-          .find((objective) => !['complete', 'completed', 'failed'].includes(stringValue(objective.status).toLowerCase()))
-          ?.description?.toString().trim() || '',
-    }))
+    .map(questSummary)
 
   const knownLocations = locations
     .map((location, index) => {
@@ -1422,6 +1625,79 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
     combat: combatStateFromSnapshot(root),
     clock: worldClockFromSnapshot(root),
     merchants: recordArray(scene.merchants).map(merchantSummary).filter((merchant) => Boolean(merchant.id)),
+    finishedQuests: quests.filter(finished).map(questSummary),
+    clues: discoveredRecords(root.clues),
+    handouts: discoveredRecords(root.handouts),
+    lore: discoveredRecords(root.lore),
+    ending: endingFromSnapshot(root),
+  }
+}
+
+const FINISHED_QUEST_STATUSES = new Set(['complete', 'completed', 'failed'])
+const UNDISCOVERED_RECORD_STATUSES = new Set(['hidden', 'undiscovered', 'unknown'])
+const TERMINAL_CHECKPOINT_KINDS = new Set(['terminal', 'end', 'finale'])
+const ENDING_CHECKPOINT_STATUSES = new Set(['active', 'completed'])
+
+function objectiveStatus(objective: JsonRecord): QuestObjectiveStatus {
+  const status = stringValue(objective.status).toLowerCase()
+  if (['complete', 'completed', 'done'].includes(status)) return 'completed'
+  if (status === 'failed') return 'failed'
+  if (['blocked', 'locked'].includes(status)) return 'blocked'
+  return 'open'
+}
+
+function questSummary(quest: JsonRecord): WorldQuestSummary {
+  const objectives = recordArray(quest.objectives)
+    .map((objective, index): QuestObjectiveSummary => ({
+      id: stringValue(objective.id, `objective-${index + 1}`),
+      description: stringValue(objective.description) || stringValue(objective.title) || stringValue(objective.name),
+      status: objectiveStatus(objective),
+      optional: objective.optional === true || stringValue(objective.status).toLowerCase() === 'optional',
+    }))
+    .filter((objective) => Boolean(objective.description))
+  return {
+    id: stringValue(quest.id),
+    title: stringValue(quest.title, 'Untitled quest'),
+    status: stringValue(quest.status, 'unknown'),
+    stage: stringValue(quest.stage, 'No stage recorded'),
+    objective: objectives.find((objective) => objective.status === 'open')?.description ?? '',
+    objectives,
+  }
+}
+
+/** Clues, handouts or lore the players know: every record the server shows that is not still undiscovered. */
+function discoveredRecords(value: unknown): WorldRecordSummary[] {
+  return recordArray(value).flatMap((record): WorldRecordSummary[] => {
+    const id = stringValue(record.id)
+    const title = stringValue(record.title) || stringValue(record.name)
+    if (!id || !title || UNDISCOVERED_RECORD_STATUSES.has(stringValue(record.status).toLowerCase())) return []
+    const text = stringValue(record.text)
+    return [{
+      id,
+      title,
+      summary: stringValue(record.summary) || stringValue(record.description),
+      ...(text ? { text } : {}),
+    }]
+  })
+}
+
+function isTerminalCheckpoint(checkpoint: JsonRecord) {
+  if (checkpoint.terminal === true || checkpoint.isTerminal === true || checkpoint.end === true) return true
+  const kind = stringValue(checkpoint.type ?? checkpoint.kind ?? checkpoint.checkpointType).toLowerCase()
+  return TERMINAL_CHECKPOINT_KINDS.has(kind)
+}
+
+/** The ending the party has reached: a terminal checkpoint of the campaign pack that is active or completed. */
+function endingFromSnapshot(root: JsonRecord): WorldEnding | null {
+  const pack = isRecord(root.campaignPack) ? root.campaignPack : {}
+  const checkpoint = recordArray(pack.checkpoints).find(
+    (candidate) =>
+      isTerminalCheckpoint(candidate) && ENDING_CHECKPOINT_STATUSES.has(stringValue(candidate.status).toLowerCase()),
+  )
+  if (!checkpoint) return null
+  return {
+    title: stringValue(checkpoint.title) || stringValue(pack.title, 'The end'),
+    summary: stringValue(checkpoint.summary),
   }
 }
 

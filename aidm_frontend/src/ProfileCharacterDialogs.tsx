@@ -1,124 +1,6 @@
 import { type RefObject } from 'react'
-import { X } from 'lucide-react'
 import { ModalShell } from './ModalShell'
 import type { Player } from './types'
-
-export type ProfileSettingsSummary = {
-  account: string
-  backend: string
-  campaign: string
-  character: string
-  narration: string
-  session: string
-  table: string
-}
-
-type ProfileSettingsDialogProps = {
-  canEditCharacter: boolean
-  canSwitchCharacter: boolean
-  dialogRef: RefObject<HTMLElement | null>
-  onBackendSettings: () => void
-  onClose: () => void
-  onEditCharacter: () => void
-  onReconnectRealtime: () => void
-  onRefreshWorkspace: () => void
-  onSignOut: () => void
-  onSwitchCharacter: () => void
-  open: boolean
-  signedIn: boolean
-  summary: ProfileSettingsSummary
-}
-
-export function ProfileSettingsDialog({
-  canEditCharacter,
-  canSwitchCharacter,
-  dialogRef,
-  onBackendSettings,
-  onClose,
-  onEditCharacter,
-  onReconnectRealtime,
-  onRefreshWorkspace,
-  onSignOut,
-  onSwitchCharacter,
-  open,
-  signedIn,
-  summary,
-}: ProfileSettingsDialogProps) {
-  if (!open) return null
-
-  return (
-    <ModalShell
-      className="campaign-dialog profile-dialog"
-      dialogRef={dialogRef}
-      labelledBy="profile-settings-title"
-      onClose={onClose}
-    >
-      <header>
-        <div>
-          <span>Profile</span>
-          <h2 id="profile-settings-title">Profile Settings</h2>
-        </div>
-        <button type="button" aria-label="Close profile settings" onClick={onClose}>
-          <X size={18} />
-        </button>
-      </header>
-      <div className="profile-dialog-body">
-        <dl className="profile-summary-grid">
-          <div>
-            <dt>Account</dt>
-            <dd>{summary.account}</dd>
-          </div>
-          <div>
-            <dt>Table</dt>
-            <dd>{summary.table}</dd>
-          </div>
-          <div>
-            <dt>Character</dt>
-            <dd>{summary.character}</dd>
-          </div>
-          <div>
-            <dt>Campaign</dt>
-            <dd>{summary.campaign}</dd>
-          </div>
-          <div>
-            <dt>Session</dt>
-            <dd>{summary.session}</dd>
-          </div>
-          <div>
-            <dt>Backend</dt>
-            <dd>{summary.backend}</dd>
-          </div>
-          <div>
-            <dt>Narration</dt>
-            <dd>{summary.narration}</dd>
-          </div>
-        </dl>
-        <div className="profile-action-list">
-          <button type="button" onClick={onEditCharacter} disabled={!canEditCharacter}>
-            Edit character
-          </button>
-          <button type="button" onClick={onSwitchCharacter} disabled={!canSwitchCharacter}>
-            Switch character
-          </button>
-          <button type="button" onClick={onRefreshWorkspace}>
-            Refresh workspace
-          </button>
-          <button type="button" onClick={onReconnectRealtime}>
-            Reconnect realtime
-          </button>
-          <button type="button" onClick={onBackendSettings}>
-            Backend settings
-          </button>
-          {signedIn ? (
-            <button type="button" onClick={onSignOut}>
-              Sign out
-            </button>
-          ) : null}
-        </div>
-      </div>
-    </ModalShell>
-  )
-}
 
 type CharacterJoinDialogProps = {
   campaignTitle: string | null
@@ -145,69 +27,59 @@ export function CharacterJoinDialog({
 
   return (
     <ModalShell
-      className="campaign-dialog character-join-dialog"
+      closeLabel="Close character chooser"
+      description={
+        campaignTitle ? `Choose who you are playing in ${campaignTitle}.` : 'Choose who you are playing.'
+      }
       dialogRef={dialogRef}
       labelledBy="character-join-title"
       onClose={onClose}
+      title="Choose your character"
     >
-      <header>
-        <div>
-          <span>Character</span>
-          <h2 id="character-join-title">Join Campaign</h2>
-        </div>
-        <button type="button" aria-label="Close character chooser" onClick={onClose}>
-          <X size={18} />
-        </button>
-      </header>
-      <div className="character-join-body">
-        <p>
-          {campaignTitle
-            ? `Choose who you are playing in ${campaignTitle}.`
-            : 'Choose who you are playing.'}
-        </p>
+      <div className="story-dialog-body">
         {players.length ? (
-          <div className="character-choice-list" aria-label="Existing characters">
+          <ul className="story-dialog-list" aria-label="Existing characters">
             {players.map((player) => {
               const characterName =
                 player.character_name || player.name || `Player ${player.player_id}`
               const playerName = player.name || 'Unknown player'
               const characterClass = player.char_class || player.class_ || 'Adventurer'
               return (
-                <button
-                  key={player.player_id}
-                  type="button"
-                  className="character-choice-card"
-                  aria-label={`Join as ${characterName}`}
-                  onClick={() => onJoinPlayer(player)}
-                >
+                <li key={player.player_id} className="story-dialog-row story-dialog-row-portrait">
                   <img
-                    className="character-choice-portrait"
+                    className="story-dialog-portrait"
                     src={portraitSrcForPlayer(player)}
                     alt=""
                     aria-hidden="true"
                   />
-                  <span>
-                    <strong>{characterName}</strong>
-                    <small>
-                      {playerName} / Level {player.level} {characterClass}
-                    </small>
+                  <span className="story-dialog-row-copy">
+                    <span className="story-dialog-row-name">{characterName}</span>
+                    <span className="story-dialog-row-meta">
+                      Level {player.level} {characterClass} · {playerName}
+                    </span>
                   </span>
-                  <em>Join</em>
-                </button>
+                  <span className="story-dialog-row-actions">
+                    <button
+                      type="button"
+                      className="story-link"
+                      aria-label={`Join as ${characterName}`}
+                      onClick={() => onJoinPlayer(player)}
+                    >
+                      Join
+                    </button>
+                  </span>
+                </li>
               )
             })}
-          </div>
+          </ul>
         ) : (
-          <div className="dialog-warning">
-            <strong>No characters yet.</strong>
-            <span>Create the first character for this campaign.</span>
-          </div>
+          <p className="story-dialog-empty">No characters yet. Create the first one for this adventure.</p>
         )}
-        <footer>
-          <button type="button" className="secondary" onClick={onClose}>
+        <footer className="story-dialog-footer">
+          <button type="button" className="story-link" onClick={onClose}>
             Cancel
           </button>
-          <button type="button" onClick={onCreateCharacter}>
+          <button type="button" className="story-primary" onClick={onCreateCharacter}>
             Create Character
           </button>
         </footer>

@@ -343,15 +343,15 @@ export function CampaignPackImportDialog({
   }, [auth, baseUrl, onImported, packPayload, pushError])
 
   return (
-    <form className="campaign-pack-import-form" onSubmit={(event) => void submitPreview(event)}>
-      <section className="campaign-pack-forge" aria-labelledby="campaign-pack-forge-title">
-        <div className="campaign-pack-forge-title">
-          <Sparkles size={16} aria-hidden="true" />
-          <strong id="campaign-pack-forge-title">Pack Forge</strong>
-        </div>
-        <div className="campaign-pack-forge-fields">
-          <label>
-            Pack Title
+    <form className="story-dialog-body" onSubmit={(event) => void submitPreview(event)}>
+      <section className="story-dialog-section" aria-labelledby="campaign-pack-forge-title">
+        <h3 id="campaign-pack-forge-title" className="story-label">
+          <Sparkles size={13} aria-hidden="true" />
+          Pack Forge
+        </h3>
+        <div className="story-dialog-field-pair">
+          <label className="story-dialog-field">
+            <span className="story-label">Pack Title</span>
             <input
               type="text"
               value={forgeTitle}
@@ -361,31 +361,33 @@ export function CampaignPackImportDialog({
               placeholder="Lanterns under Blackwater"
             />
           </label>
-          <label>
-            Premise
+          <label className="story-dialog-field">
+            <span className="story-label">Premise</span>
             <textarea
               value={forgePrompt}
               onChange={(event) => setForgePrompt(event.target.value)}
-              rows={3}
+              rows={2}
               disabled={pending}
               maxLength={1200}
               placeholder="Harbor intrigue, a drowned archive, and a guide with divided loyalties."
             />
           </label>
         </div>
-        <button
-          type="button"
-          className="secondary campaign-pack-forge-button"
-          onClick={() => void forgePack()}
-          disabled={pending || !forgeTitle.trim()}
-        >
-          <Sparkles size={15} aria-hidden="true" />
-          {forgePending ? 'Forging...' : 'Forge Pack'}
-        </button>
+        <div className="story-dialog-links">
+          <button
+            type="button"
+            className="story-link"
+            onClick={() => void forgePack()}
+            disabled={pending || !forgeTitle.trim()}
+          >
+            {forgePending ? 'Forging...' : 'Forge Pack'}
+          </button>
+        </div>
       </section>
 
-      <label className="file-picker-field">
-        Campaign Pack JSON
+      <hr className="story-rule" />
+      <label className="story-dialog-field story-dialog-file">
+        <span className="story-label">Campaign Pack JSON</span>
         <input
           data-autofocus
           type="file"
@@ -394,9 +396,10 @@ export function CampaignPackImportDialog({
           disabled={pending}
         />
       </label>
-      <label>
-        JSON Preview
+      <label className="story-dialog-field">
+        <span className="story-label">JSON Preview</span>
         <textarea
+          className="story-dialog-code"
           value={packText}
           onChange={(event) => {
             setPackText(event.target.value)
@@ -413,135 +416,137 @@ export function CampaignPackImportDialog({
       </label>
 
       {preview ? (
-        <div className="campaign-pack-preview" aria-live="polite">
-          <div className="campaign-pack-preview-title">
+        <section className="story-dialog-section" aria-live="polite">
+          <p className="story-dialog-subject">
             <CheckCircle2 size={16} aria-hidden="true" />
-            <span>
-              <strong>{preview.preview?.title || preview.pack_id}</strong>
-              <small>{preview.pack_id} / schema {preview.schema_version || '1'} / version {preview.pack_version || '1.0.0'}</small>
-            </span>
-          </div>
-          <div className="campaign-pack-preview-grid">
+            {preview.preview?.title || preview.pack_id}
+          </p>
+          <p className="story-dialog-row-meta">
+            {preview.pack_id} · schema {preview.schema_version || '1'} · version {preview.pack_version || '1.0.0'}
+          </p>
+          <dl className="story-dialog-facts">
             <div>
-              <span>World</span>
-              <strong>{worldLabel}</strong>
+              <dt className="story-label">World</dt>
+              <dd>{worldLabel}</dd>
             </div>
             <div>
-              <span>Start</span>
-              <strong>{preview.preview?.starting_location || preview.preview?.starting_location_id || 'Unset'}</strong>
+              <dt className="story-label">Start</dt>
+              <dd>{preview.preview?.starting_location || preview.preview?.starting_location_id || 'Unset'}</dd>
             </div>
             <div>
-              <span>Quest</span>
-              <strong>{preview.preview?.starting_quest || preview.preview?.starting_quest_id || 'Unset'}</strong>
+              <dt className="story-label">Quest</dt>
+              <dd>{preview.preview?.starting_quest || preview.preview?.starting_quest_id || 'Unset'}</dd>
             </div>
-          </div>
-          <div className="campaign-pack-counts">
-            {countKeys.map(([key, label]) => (
-              <div key={key}>
-                <span>{label}</span>
-                <strong>{preview.counts[key] ?? 0}</strong>
-              </div>
-            ))}
-          </div>
-          <div className="campaign-pack-visible">
-            <span>Visible at start</span>
-            <strong>{formatVisibleIds(preview.preview?.visible_at_start?.locations)}</strong>
-            <strong>{formatVisibleIds(preview.preview?.visible_at_start?.npcs)}</strong>
-            <strong>{formatVisibleIds(preview.preview?.visible_at_start?.quests)}</strong>
-          </div>
-        </div>
+          </dl>
+          <p className="story-dialog-line">
+            {countKeys.map(([key, label]) => `${preview.counts[key] ?? 0} ${label}`).join(' · ')}
+          </p>
+          <p className="story-dialog-line">
+            Visible at start: {formatVisibleIds(preview.preview?.visible_at_start?.locations)} ·{' '}
+            {formatVisibleIds(preview.preview?.visible_at_start?.npcs)} ·{' '}
+            {formatVisibleIds(preview.preview?.visible_at_start?.quests)}
+          </p>
+        </section>
       ) : null}
 
       {lintResult ? (
-        <div className={`campaign-pack-lint ${lintResult.ok ? 'ok' : 'has-errors'}`} aria-live="polite">
-          <div className="campaign-pack-lint-title">
-            {lintResult.ok ? <CheckCircle2 size={15} aria-hidden="true" /> : <AlertTriangle size={15} aria-hidden="true" />}
-            <strong>{lintResult.ok ? 'Authoring checks passed' : 'Authoring checks need attention'}</strong>
+        <section
+          className="story-dialog-section pack-lint"
+          data-state={lintResult.ok ? 'ok' : 'has-errors'}
+          aria-live="polite"
+        >
+          <h3 className="story-label pack-lint-title">
+            {lintResult.ok ? <CheckCircle2 size={13} aria-hidden="true" /> : <AlertTriangle size={13} aria-hidden="true" />}
+            {lintResult.ok ? 'Authoring checks passed' : 'Authoring checks need attention'}
             <span>{lintResult.issues.length} issues</span>
-          </div>
+          </h3>
           {lintResult.issues.length ? (
-            <div className="campaign-pack-lint-list">
+            <ul className="story-dialog-list pack-lint-list">
               {lintResult.issues.slice(0, 5).map((issue, index) => (
-                <div key={`${issue.code}-${issue.path}-${index}`} className={issue.severity === 'error' ? 'error' : 'warning'}>
-                  <span>{issue.severity}</span>
-                  <strong>{issue.code}</strong>
-                  <small>{issue.path}</small>
-                  <p>{issue.message}</p>
-                </div>
+                <li
+                  key={`${issue.code}-${issue.path}-${index}`}
+                  className="story-dialog-row"
+                  data-severity={issue.severity === 'error' ? 'error' : 'warning'}
+                >
+                  <span className="story-dialog-row-copy">
+                    <span className="story-dialog-row-name">{issue.code}</span>
+                    <span className="story-dialog-row-meta">
+                      {issue.severity} · {issue.path}
+                    </span>
+                    <span className="story-dialog-line">{issue.message}</span>
+                  </span>
+                </li>
               ))}
-            </div>
+            </ul>
           ) : null}
           {lintResult.graph ? (
-            <div className="campaign-pack-graph-summary">
-              <GitBranch size={14} aria-hidden="true" />
-              <span>{lintResult.graph.nodes?.length ?? 0} nodes</span>
-              <span>{lintResult.graph.edges?.length ?? 0} edges</span>
-              <span>{lintResult.graph.reachable?.length ?? 0} reachable</span>
-            </div>
+            <p className="story-dialog-line">
+              <GitBranch size={14} aria-hidden="true" /> {lintResult.graph.nodes?.length ?? 0} nodes ·{' '}
+              {lintResult.graph.edges?.length ?? 0} edges · {lintResult.graph.reachable?.length ?? 0} reachable
+            </p>
           ) : null}
           {authoringReport ? (
-            <div className="campaign-pack-authoring-report" aria-label="Campaign pack authoring report">
-              <div className="campaign-pack-authoring-report-grid">
+            <div aria-label="Campaign pack authoring report">
+              <dl className="story-dialog-facts">
                 <div>
-                  <span>Checkpoint Spine</span>
-                  <strong>
+                  <dt className="story-label">Checkpoint Spine</dt>
+                  <dd>
                     {checkpointReport?.reachable ?? 0} / {checkpointReport?.total ?? 0} reachable
-                  </strong>
-                  <small>
-                    {(checkpointReport?.optionalIds?.length ?? 0)} optional /{' '}
+                  </dd>
+                  <dd className="story-dialog-row-meta">
+                    {(checkpointReport?.optionalIds?.length ?? 0)} optional ·{' '}
                     {(checkpointReport?.terminalIds?.length ?? 0)} terminal
-                  </small>
+                  </dd>
                 </div>
                 <div>
-                  <span>Encounters</span>
-                  <strong>
+                  <dt className="story-label">Encounters</dt>
+                  <dd>
                     {encounterReport?.linkedToCheckpoint ?? 0} / {encounterReport?.total ?? 0} linked
-                  </strong>
-                  <small>{formatVisibleIds(encounterReport?.unlinkedIds)}</small>
+                  </dd>
+                  <dd className="story-dialog-row-meta">{formatVisibleIds(encounterReport?.unlinkedIds)}</dd>
                 </div>
                 <div>
-                  <span>Authored Records</span>
-                  <strong>{reportCollectionRows.reduce((total, row) => total + (row.count ?? 0), 0)}</strong>
-                  <small>{reportCollectionRows.length} populated groups</small>
+                  <dt className="story-label">Authored Records</dt>
+                  <dd>{reportCollectionRows.reduce((total, row) => total + (row.count ?? 0), 0)}</dd>
+                  <dd className="story-dialog-row-meta">{reportCollectionRows.length} populated groups</dd>
                 </div>
-              </div>
+              </dl>
               {reportCollectionRows.length ? (
-                <div className="campaign-pack-authoring-collections">
+                <ul className="story-dialog-inline-list">
                   {reportCollectionRows.slice(0, 8).map((row) => (
-                    <span key={row.collection}>
+                    <li key={row.collection}>
                       {row.collection}: {row.count}
                       {row.visibleAtStartCount ? ` / ${row.visibleAtStartCount} visible` : ''}
                       {row.hiddenToPlayersCount ? ` / ${row.hiddenToPlayersCount} hidden` : ''}
-                    </span>
+                    </li>
                   ))}
-                </div>
+                </ul>
               ) : null}
               {checkpointReport?.unreachableIds?.length ? (
-                <div className="campaign-pack-authoring-warning">
+                <p className="story-dialog-note story-dialog-warning">
                   Unreachable checkpoints: {formatVisibleIds(checkpointReport.unreachableIds)}
-                </div>
+                </p>
               ) : null}
             </div>
           ) : null}
-        </div>
+        </section>
       ) : null}
 
       {error ? (
-        <div className="dialog-error" role="alert">
-          <AlertTriangle size={14} aria-hidden="true" />
+        <p className="story-dialog-error" role="alert">
           {error}
-        </div>
+        </p>
       ) : null}
 
-      <footer>
-        <button type="button" className="secondary" onClick={onClose} disabled={pending}>
+      <footer className="story-dialog-footer">
+        <button type="button" className="story-link" onClick={onClose} disabled={pending}>
           Cancel
         </button>
-        <button type="submit" className="secondary" disabled={previewPending || importPending}>
+        <button type="submit" className="story-link" disabled={previewPending || importPending}>
           <FileJson size={15} aria-hidden="true" />
           {previewPending ? 'Checking...' : fileName ? 'Check Again' : 'Check Pack'}
         </button>
-        <button type="button" onClick={() => void importPack()} disabled={!canImport}>
+        <button type="button" className="story-primary" onClick={() => void importPack()} disabled={!canImport}>
           <Upload size={15} aria-hidden="true" />
           {importPending ? 'Importing...' : 'Create Campaign from Pack'}
         </button>

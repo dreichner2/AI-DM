@@ -55,6 +55,9 @@ export function testControls(overrides: Partial<GameplayControlState> = {}): Gam
         castingTime: 'action',
         castLevels: [1],
         effectLabel: 'damage · force',
+        effectSummary: 'three darts of force, 1d4+1 each',
+        rulesBacked: true,
+        outOfCombat: true,
         relation: 'enemy',
         rangeBands: ['near', 'far'],
         minTargets: 1,
@@ -88,6 +91,9 @@ export function testControls(overrides: Partial<GameplayControlState> = {}): Gam
           target('player_30', 'Ysolde', 'player', { currentHp: 7, maxHp: 14 }),
           target('player_31', 'Brannoc', 'player', { currentHp: 3, maxHp: 20 }),
         ],
+        poolId: 'lay_on_hands',
+        poolName: 'Lay on Hands',
+        poolCost: null,
       },
     ],
     interactables: [
@@ -107,6 +113,13 @@ export function testControls(overrides: Partial<GameplayControlState> = {}): Gam
         ],
       },
     ],
+    rest: {
+      shortAvailable: true,
+      shortReason: '',
+      longAvailable: true,
+      longReason: '',
+      hitDice: { current: 3, max: 3, die: 'd10' },
+    },
     ...overrides,
   }
 }

@@ -28,6 +28,26 @@ export function D20Glyph({ size = 18, className }: GlyphProps) {
   )
 }
 
+/** A coin seen face-on: rim and milled edge, for prices. */
+export function CoinGlyph({ size = 13, className }: GlyphProps) {
+  return (
+    <svg
+      className={className}
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      aria-hidden="true"
+      focusable="false"
+    >
+      <circle cx="12" cy="12" r="9" fill="currentColor" fillOpacity={0.14} />
+      <circle cx="12" cy="12" r="5.6" strokeOpacity={0.7} />
+    </svg>
+  )
+}
+
 /** AI-DM's ember: a small banked flame with a hot core. */
 export function EmberMark({ size = 22, className }: GlyphProps) {
   const id = useId()

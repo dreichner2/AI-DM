@@ -9,6 +9,7 @@ import {
   type RefObject,
 } from 'react'
 import { Backpack, Coins, Flag, Heart, MapPin, ScrollText, Sparkles, Star, Swords, UserRound } from 'lucide-react'
+import type { WorldEnding } from '../gameSelectors'
 import { NarrativeProse } from '../NarrativeProse'
 import type { SessionBoardProps, TurnQualityScores } from '../SessionBoard'
 import type { TimelineEntry } from '../types'
@@ -30,6 +31,31 @@ export type StoryTextSize = 'default' | 'large' | 'extra'
 type StoryFeedProps = {
   board: SessionBoardProps
   textSize: StoryTextSize
+  /** Leaves the adventure for the title screen (the epilogue's "Start another adventure"). */
+  onExitToTitle: () => void
+}
+
+/** Session storage key under which a dismissed epilogue is remembered for one session. */
+const ENDING_DISMISSED_KEY = 'aidm:storyEndingDismissed'
+
+function endingDismissedKey(sessionId: number | null) {
+  return `${ENDING_DISMISSED_KEY}:${sessionId ?? 'none'}`
+}
+
+function readEndingDismissed(sessionId: number | null) {
+  try {
+    return window.sessionStorage.getItem(endingDismissedKey(sessionId)) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeEndingDismissed(sessionId: number | null) {
+  try {
+    window.sessionStorage.setItem(endingDismissedKey(sessionId), '1')
+  } catch {
+    // Without storage the epilogue stays dismissed until the page reloads.
+  }
 }
 
 /** Where a new narration's anchor (the action that triggered it) settles, below the feed's top edge. */
@@ -576,6 +602,33 @@ function EmptyStory({ board }: { board: SessionBoardProps }) {
   )
 }
 
+/** The adventure's last beat: its ending, and what to do next. */
+function EpilogueBeat({
+  ending,
+  onDownloadChronicle,
+  onExitToTitle,
+  onKeepPlaying,
+}: {
+  ending: WorldEnding
+  onDownloadChronicle: () => void
+  onExitToTitle: () => void
+  onKeepPlaying: () => void
+}) {
+  return (
+    <section className="story-epilogue" aria-labelledby="story-epilogue-title">
+      <Ornament className="story-chapter-ornament" />
+      <p className="story-label story-epilogue-label">The end</p>
+      <h2 id="story-epilogue-title" className="story-epilogue-title">{ending.title}</h2>
+      {ending.summary ? <p className="story-epilogue-summary">{ending.summary}</p> : null}
+      <div className="story-epilogue-links">
+        <button type="button" className="story-link" onClick={onDownloadChronicle}>Download the Chronicle</button>
+        <button type="button" className="story-link" onClick={onExitToTitle}>Start another adventure</button>
+        <button type="button" className="story-link" onClick={onKeepPlaying}>Keep playing</button>
+      </div>
+    </section>
+  )
+}
+
 function LoadingStory() {
   return (
     <div className="story-loading" aria-label="Loading the story">
@@ -586,8 +639,9 @@ function LoadingStory() {
   )
 }
 
-export function StoryFeed({ board, textSize }: StoryFeedProps) {
+export function StoryFeed({ board, textSize, onExitToTitle }: StoryFeedProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  const [dismissedEndings, setDismissedEndings] = useState<ReadonlySet<number | null>>(() => new Set())
   const { turnRows, currentResponseEntry, sessionLogHasMore } = board
   const selectedPlayerName = board.selectedPlayer?.character_name ?? null
   const entries = useMemo(
@@ -608,6 +662,14 @@ export function StoryFeed({ board, textSize }: StoryFeedProps) {
     [...beats].reverse().find(
       (beat): beat is NarrationBeat => beat.kind === 'narration' && !beat.streaming && beat.turnId !== null,
     )?.key ?? null
+  const ending = board.worldState.ending ?? null
+  const showEnding =
+    Boolean(ending) && !loading && !empty &&
+    !dismissedEndings.has(board.sessionId) && !readEndingDismissed(board.sessionId)
+  const keepPlaying = () => {
+    writeEndingDismissed(board.sessionId)
+    setDismissedEndings((current) => new Set(current).add(board.sessionId))
+  }
   const announcement =
     board.sendPending || board.streamingTurnActive
       ? 'Dungeon Master response in progress.'
@@ -666,6 +728,14 @@ export function StoryFeed({ board, textSize }: StoryFeedProps) {
                 </div>
               ))
             : null}
+          {showEnding && ending ? (
+            <EpilogueBeat
+              ending={ending}
+              onDownloadChronicle={() => void board.downloadSessionChronicle()}
+              onExitToTitle={onExitToTitle}
+              onKeepPlaying={keepPlaying}
+            />
+          ) : null}
         </div>
       </div>
       <span className="story-sr-only" role="status" aria-live="polite">

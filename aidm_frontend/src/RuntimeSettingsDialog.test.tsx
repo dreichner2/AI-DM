@@ -3,8 +3,7 @@ import '@testing-library/jest-dom/vitest'
 import { createRef, type ComponentProps } from 'react'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { RuntimeSettingsDialog } from './RuntimeSettingsDialog'
-import { LEGACY_PASSWORD_SETUP_MESSAGE } from './useRuntimeSettings'
+import { BackendTrustDialog, RuntimeSettingsDialog } from './RuntimeSettingsDialog'
 
 type RuntimeSettingsDialogProps = ComponentProps<typeof RuntimeSettingsDialog>
 
@@ -24,29 +23,10 @@ function dialogProps(overrides: Partial<RuntimeSettingsDialogProps> = {}): Runti
       password: '',
       recoveryCode: '',
     },
-    legacyPasswordSetupRequired: false,
-    mode: 'settings',
-    onAuthIntentChange: vi.fn(),
-    onAuthStepChange: vi.fn(),
     onClose: vi.fn(),
-    onErrorChange: vi.fn(),
     onFormChange: vi.fn(),
-    onLegacyPasswordSetupRequiredChange: vi.fn(),
-    onOpenSavedWorkspaceDelete: vi.fn(),
-    onSelectSavedWorkspace: vi.fn(),
     onSubmit: vi.fn((event) => event.preventDefault()),
-    onWorkspaceActionChange: vi.fn(),
-    onWorkspaceCreateAccessModeChange: vi.fn(),
-    onWorkspaceJoinMethodChange: vi.fn(),
     open: true,
-    runtimeAccount: null,
-    runtimeCreatedWorkspaceToken: '',
-    runtimeAuthIntent: 'login',
-    runtimeAuthStep: 'account',
-    runtimeWorkspaceAction: 'join',
-    runtimeWorkspaceCreateAccessMode: 'password',
-    runtimeWorkspaceJoinMethod: 'token',
-    workspaceId: '',
     ...overrides,
   }
 }
@@ -63,6 +43,7 @@ describe('RuntimeSettingsDialog', () => {
     render(<RuntimeSettingsDialog {...props} />)
 
     const dialog = screen.getByRole('dialog', { name: 'Backend Settings' })
+    expect(within(dialog).getByText('Only change this if you run the game server somewhere else.')).toBeInTheDocument()
     const backendUrl = within(dialog).getByLabelText('Backend URL')
     expect(backendUrl).toHaveValue('http://127.0.0.1:5050')
     expect(backendUrl).toHaveAttribute('data-autofocus', 'true')
@@ -92,107 +73,30 @@ describe('RuntimeSettingsDialog', () => {
     expect(props.onClose).toHaveBeenCalledTimes(2)
   })
 
-  it('preserves account choices and legacy password recovery affordances', () => {
-    const props = dialogProps({
-      error: LEGACY_PASSWORD_SETUP_MESSAGE,
-      form: {
-        ...dialogProps().form,
-        username: 'legacy-player',
-      },
-      legacyPasswordSetupRequired: true,
-      mode: 'auth',
-      runtimeAuthIntent: 'signup',
-    })
-    render(<RuntimeSettingsDialog {...props} />)
+  it('renders nothing while closed', () => {
+    render(<RuntimeSettingsDialog {...dialogProps({ open: false })} />)
 
-    const dialog = screen.getByRole('dialog', { name: 'Sign Up' })
-    expect(within(dialog).getByRole('button', { name: 'Close account prompt' })).toBeInTheDocument()
-    expect(within(dialog).getAllByText(LEGACY_PASSWORD_SETUP_MESSAGE)).not.toHaveLength(0)
-    expect(within(dialog).getByLabelText('New Password')).toHaveAttribute('autocomplete', 'new-password')
-    expect(within(dialog).getByLabelText('Recovery Code')).toHaveAttribute('autocomplete', 'one-time-code')
-    expect(within(dialog).queryByLabelText('First Name')).not.toBeInTheDocument()
-    expect(within(dialog).queryByLabelText('Last Name')).not.toBeInTheDocument()
-
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Log In' }))
-    expect(props.onAuthIntentChange).toHaveBeenCalledWith('login')
-    expect(props.onLegacyPasswordSetupRequiredChange).toHaveBeenCalledWith(false)
-    expect(props.onErrorChange).toHaveBeenCalledWith('')
-
-    fireEvent.change(within(dialog).getByLabelText('Username'), {
-      target: { value: 'updated-player' },
-    })
-    expect(props.onLegacyPasswordSetupRequiredChange).toHaveBeenLastCalledWith(false)
-    expect(props.onErrorChange).toHaveBeenLastCalledWith('')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
-  it('preserves saved-table actions and generated-token completion state', () => {
-    const adminWorkspace = {
-      workspace_id: 'ember-table',
-      workspace_name: 'Ember Workspace',
-      table_name: 'Ember Table',
-      access_mode: 'token' as const,
-      workspace_role: 'owner',
-      is_workspace_admin: true,
-      created_at: null,
-      updated_at: null,
-    }
-    const memberWorkspace = {
-      workspace_id: 'moon-table',
-      workspace_name: 'Moon Table',
-      access_mode: 'configured' as const,
-      workspace_role: 'player',
-      is_workspace_admin: false,
-      created_at: null,
-      updated_at: null,
-    }
-    const props = dialogProps({
-      mode: 'auth',
-      runtimeAccount: {
-        accountId: 7,
-        username: 'ember',
-        firstName: 'Ember',
-        lastName: 'Vale',
-        displayName: 'Ember Vale',
-        workspaceId: adminWorkspace.workspace_id,
-        workspaceRole: 'owner',
-        isWorkspaceAdmin: true,
-        requiresPasswordSetup: false,
-        workspaces: [adminWorkspace, memberWorkspace],
-      },
-      runtimeAuthStep: 'workspace',
-      workspaceId: adminWorkspace.workspace_id,
-    })
-    const { rerender } = render(<RuntimeSettingsDialog {...props} />)
-
-    const dialog = screen.getByRole('dialog', { name: 'Join Table' })
-    const savedTables = within(dialog).getByRole('group', { name: 'Saved tables' })
-    const selectedTable = within(savedTables).getByRole('button', {
-      name: 'Ember Table owner / admin',
-    })
-    expect(selectedTable).toHaveAttribute('aria-pressed', 'true')
-    fireEvent.click(selectedTable)
-    expect(props.onSelectSavedWorkspace).toHaveBeenCalledWith('ember-table')
-
-    fireEvent.click(within(savedTables).getByRole('button', { name: 'Delete Ember Table' }))
-    expect(props.onOpenSavedWorkspaceDelete).toHaveBeenCalledWith(adminWorkspace)
-    expect(within(savedTables).getByRole('button', { name: 'Remove Moon Table' })).toBeInTheDocument()
-
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Password' }))
-    expect(props.onWorkspaceJoinMethodChange).toHaveBeenCalledWith('password')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
-    expect(props.onWorkspaceActionChange).toHaveBeenCalledWith('create')
-
-    rerender(
-      <RuntimeSettingsDialog
-        {...props}
-        runtimeCreatedWorkspaceToken="generated-secret-token"
+  it('asks before trusting a shared game server', () => {
+    const onConfirm = vi.fn()
+    const onReject = vi.fn()
+    render(
+      <BackendTrustDialog
+        backend={{ origin: 'https://friend.example.test', baseUrl: 'https://friend.example.test/api' }}
+        dialogRef={createRef<HTMLElement>()}
+        onConfirm={onConfirm}
+        onReject={onReject}
       />,
     )
-    const tokenDialog = screen.getByRole('dialog', { name: 'Save Table Token' })
-    expect(within(tokenDialog).getByLabelText('Generated table token')).toHaveValue(
-      'generated-secret-token',
-    )
-    expect(within(tokenDialog).getByRole('button', { name: 'Done' })).toBeInTheDocument()
-    expect(within(tokenDialog).queryByRole('button', { name: 'Back' })).not.toBeInTheDocument()
+
+    const dialog = screen.getByRole('dialog', { name: 'Connect to Shared Backend' })
+    expect(within(dialog).getByText('https://friend.example.test')).toBeInTheDocument()
+    expect(within(dialog).getByText('Server address: https://friend.example.test/api')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(onReject).toHaveBeenCalledOnce()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Trust and Connect' }))
+    expect(onConfirm).toHaveBeenCalledOnce()
   })
 })

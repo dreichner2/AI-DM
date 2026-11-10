@@ -137,6 +137,7 @@ export function StoryTopBar({
   const sceneName =
     board.sceneState?.locationName?.trim() || board.worldState.sceneName?.trim() || board.activeSessionTitle
   const characterOpen = drawerOpen && drawerTab === 'character'
+  const clockLabel = board.worldState.clock?.label ?? ''
 
   useEffect(() => {
     if (!menuOpen) return
@@ -266,7 +267,10 @@ export function StoryTopBar({
         </button>
         <div className="story-titles">
           <span className="story-label story-campaign-title">{board.campaignTitle || board.activeSessionTitle}</span>
-          <SceneName name={sceneName} />
+          <span className="story-scene-line">
+            <SceneName name={sceneName} />
+            {clockLabel ? <span className="story-clock">{clockLabel}</span> : null}
+          </span>
         </div>
       </div>
 

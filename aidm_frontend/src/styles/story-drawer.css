@@ -125,7 +125,7 @@
   align-items: center;
   gap: 20px;
 }
-.story-shell .story-sheet-portrait {
+.story-shell .story-character-portrait {
   position: relative;
   width: 112px;
   height: 112px;
@@ -133,8 +133,8 @@
   border-radius: 16px;
   background: var(--story-bg-raised);
 }
-.story-shell .story-sheet-portrait img { display: block; width: 100%; height: 100%; object-fit: cover; }
-.story-shell .story-sheet-portrait::after {
+.story-shell .story-character-portrait img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.story-shell .story-character-portrait::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -205,6 +205,21 @@
 .story-shell .story-abilities dt { order: 3; margin-top: 3px; }
 .story-shell .story-sheet-conditions { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: var(--story-gap-4); }
 .story-shell .story-sheet-conditions .story-chip { text-transform: capitalize; }
+.story-shell .story-sheet-vitality { display: flex; justify-content: center; margin: var(--story-gap-4) 0 0; }
+
+/* Saves and hit dice: each a label over one quiet line, proficient saves in ink. */
+.story-shell .story-sheet-lines { display: flex; flex-direction: column; gap: 12px; margin: var(--story-gap-5) 0 0; }
+.story-shell .story-sheet-lines dd {
+  margin: 4px 0 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.story-shell .story-saves { color: var(--story-muted); }
+.story-shell .story-save { white-space: nowrap; }
+.story-shell .story-save[data-proficient] { color: var(--story-ink); }
+.story-shell .story-saves-dot { margin: 0 0.36em; color: var(--story-faint); }
+.story-shell .story-hit-dice { color: var(--story-ink); }
 
 .story-shell .story-facts { display: flex; flex-direction: column; gap: 14px; margin: 0; }
 .story-shell .story-facts dd {
@@ -230,6 +245,8 @@
   object-fit: cover;
   box-shadow: 0 0 0 1px var(--story-bg), 0 0 0 2px var(--ring, var(--story-hairline-strong));
 }
+.story-shell .story-table-list li[data-vitality] { --ring: var(--story-faint); }
+.story-shell .story-table-list li[data-vitality] img { filter: grayscale(1) brightness(0.62); }
 .story-shell .story-table-name { overflow: hidden; font-size: 0.92rem; text-overflow: ellipsis; white-space: nowrap; color: var(--story-ink); }
 .story-shell .story-table-health { font-size: 0.76rem; color: var(--ring, var(--story-muted)); }
 .story-shell .story-table-badge { min-width: 3.5em; font-size: 0.74rem; text-align: right; color: var(--story-muted); }
@@ -298,19 +315,59 @@
 /* ---- journal ---- */
 
 .story-shell .story-quest-list { display: flex; flex-direction: column; gap: 18px; margin: 0; padding: 0; list-style: none; }
-.story-shell .story-quest-list li { display: flex; flex-direction: column; gap: 4px; }
+.story-shell .story-quest-list > li { display: flex; flex-direction: column; gap: 4px; }
 .story-shell .story-quest-title { font-family: var(--story-prose); font-size: 1.2rem; line-height: 1.25; color: var(--story-ink); }
 .story-shell .story-quest-summary { font-size: 0.88rem; line-height: 1.45; color: var(--story-ink-soft); }
+.story-shell .story-objective-list { display: flex; flex-direction: column; gap: 3px; margin: 6px 0 0; padding: 0; list-style: none; }
 .story-shell .story-quest-objective {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  margin-top: 4px;
   font-family: var(--story-prose);
   font-size: 1rem;
+  line-height: 1.4;
   color: var(--story-ink-soft);
 }
 .story-shell .story-objective-glyph { flex: none; align-self: center; color: var(--story-gold); }
+.story-shell .story-objective-glyph[data-status='completed'] { color: var(--story-success); }
+.story-shell .story-objective-glyph[data-status='failed'] { color: var(--story-fail); }
+.story-shell .story-objective-glyph[data-status='blocked'] { color: var(--story-faint); }
+.story-shell .story-quest-objective:not([data-status='open']) .story-objective-text { color: var(--story-muted); }
+.story-shell .story-objective-optional {
+  font-family: var(--story-ui);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  color: var(--story-muted);
+}
+.story-shell .story-finished { margin-top: 18px; }
+.story-shell .story-finished-toggle { font-size: 0.84rem; color: var(--story-muted); }
+.story-shell .story-finished-list { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
+.story-shell .story-finished-list li { display: flex; align-items: baseline; gap: 10px; }
+.story-shell .story-finished-title { font-family: var(--story-prose); font-size: 1.02rem; color: var(--story-ink-soft); }
+.story-shell .story-clue-list,
+.story-shell .story-paper-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.story-shell .story-clue-list { gap: 12px; }
+.story-shell .story-clue-list li { display: flex; flex-direction: column; gap: 2px; }
+.story-shell .story-clue-summary { font-size: 0.86rem; line-height: 1.45; color: var(--story-ink-soft); }
+.story-shell .story-paper-list { gap: 4px; }
+.story-shell .story-paper-title {
+  font-family: var(--story-prose);
+  font-size: 1.04rem;
+  text-align: left;
+  color: var(--story-ink);
+}
+.story-shell .story-paper-title[aria-expanded='true'] { color: var(--story-ember-soft); background-size: 100% 1px; }
+.story-shell .story-paper-text {
+  margin: 6px 0 12px;
+  padding-left: 1em;
+  border-left: 1px solid var(--story-hairline-strong);
+  font-family: var(--story-prose);
+  font-size: 1.04rem;
+  line-height: 1.6;
+  white-space: pre-line;
+  color: var(--story-ink-soft);
+  animation: story-rise var(--story-base) var(--story-ease) both;
+}
 .story-shell .story-journal-list,
 .story-shell .story-memory-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .story-shell .story-journal-list li { font-size: 0.9rem; line-height: 1.4; }
@@ -348,7 +405,7 @@
   .story-shell .story-sheet-actions .story-link,
   .story-shell .story-pack-equip { min-height: 40px; }
   .story-shell .story-character-head { grid-template-columns: 88px minmax(0, 1fr); gap: 16px; }
-  .story-shell .story-sheet-portrait { width: 88px; height: 88px; border-radius: 14px; }
+  .story-shell .story-character-portrait { width: 88px; height: 88px; border-radius: 14px; }
   .story-shell .story-vitals dd { font-size: 1.42rem; }
   .story-shell .story-ability-modifier { font-size: 1.24rem; }
 }
