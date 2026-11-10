@@ -663,7 +663,8 @@ def test_fallback_provider_narrates_parsed_prompt_and_holds_on_unparsed_prompt()
 
     text = provider.generate(request).text
 
-    assert '"I walk to the altar."' in text
+    assert '"I walk to the altar."' not in text
+    assert text.startswith(('You set to it.', 'You take your time over it.', 'Nothing stops you.', 'You do just that.'))
     assert 'A cracked censer lies on its side.' in text
     assert provider.generate(ProviderRequest(prompt='hello')).text == 'The moment holds. What do you do?'
 
@@ -692,7 +693,8 @@ def test_emergency_fallback_uses_scripted_narrator_when_context_and_hint_are_ava
 
     assert len(narrated) == 1
     assert isinstance(narrated[0], EmergencyFallbackChunk)
-    assert '"I knock on the gate."' in narrated[0]
+    assert '"I knock on the gate."' not in narrated[0]
+    assert narrated[0].startswith(('You set to it.', 'You take your time over it.', 'Nothing stops you.', 'You do just that.'))
     assert 'Rain hammers the gatehouse roof.' in narrated[0]
     assert 'model' not in narrated[0].lower()
     assert 'reconnect' not in narrated[0].lower()
@@ -2357,7 +2359,10 @@ def test_intentionally_configured_deterministic_provider_is_not_emergency_fallba
     assert len(chunks) >= 2
     assert all(0 < len(chunk) <= DISPLAY_STREAM_CHUNK_CHARS for chunk in chunks)
     assert not any(isinstance(chunk, EmergencyFallbackChunk) for chunk in chunks)
-    assert '"open the gate."' in ''.join(chunks)
+    text = ''.join(chunks)
+    assert '"open the gate."' not in text
+    assert text.startswith(('You set to it.', 'You take your time over it.', 'Nothing stops you.', 'You do just that.'))
+    assert text.endswith('What do you do?')
 
 
 def test_get_provider_uses_phase_timeout_env(monkeypatch):

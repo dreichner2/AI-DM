@@ -22,6 +22,7 @@ import {
   truncateText,
   turnNumber,
   turnPersistenceLabel,
+  worldMapFromSnapshot,
   worldStateFromSnapshot,
 } from './gameSelectors'
 import type { CampaignSegment, MapItem, Player, SessionLogEntry, TimelineEntry } from './types'
@@ -777,7 +778,51 @@ describe('game selector helpers', () => {
         allies: [],
         telegraphs: [],
         legalActionBundles: [],
+        turnOrder: [],
       },
+      clock: { day: 1, phase: 'morning', label: 'Day 1 · Morning' },
+      merchants: [],
+    })
+  })
+
+  it('reads the day clock and the merchants open in the scene', () => {
+    const panel = worldStateFromSnapshot({
+      clock: { day: 3, phase: 'evening', shortRestsSinceLong: 1, label: 'Day 3 · Evening' },
+      currentScene: {
+        name: 'Market',
+        merchants: [
+          {
+            id: 'mara_shop',
+            name: "Mara's Sundries",
+            npcId: 'mara',
+            buyRate: 0.5,
+            stock: [
+              { stockId: 'mara_0', name: 'Potion of Healing', type: 'potion', price: { gp: 50 }, quantity: 2 },
+              { stockId: 'mara_1', name: 'Lantern', type: 'gear', price: { gp: 5, sp: 5 }, quantity: null },
+            ],
+          },
+          { name: 'No id' },
+        ],
+      },
+    })
+
+    expect(panel.clock).toEqual({ day: 3, phase: 'evening', label: 'Day 3 · Evening' })
+    expect(panel.merchants).toEqual([
+      {
+        id: 'mara_shop',
+        name: "Mara's Sundries",
+        npcId: 'mara',
+        buyRate: 0.5,
+        stock: [
+          { stockId: 'mara_0', name: 'Potion of Healing', type: 'potion', price: { gp: 50 }, priceLabel: '50 gp', quantity: 2 },
+          { stockId: 'mara_1', name: 'Lantern', type: 'gear', price: { gp: 5, sp: 5 }, priceLabel: '5 gp, 5 sp', quantity: null },
+        ],
+      },
+    ])
+    expect(worldStateFromSnapshot({ clock: { day: 0, phase: 'dusk' } }).clock).toEqual({
+      day: 1,
+      phase: 'morning',
+      label: 'Day 1 · Morning',
     })
   })
 
@@ -862,6 +907,79 @@ describe('game selector helpers', () => {
         },
       ],
     })
+  })
+
+  it('normalises engagement, death saves, action costs, extra attacks and the initiative ribbon', () => {
+    const panel = worldStateFromSnapshot({
+      combat: {
+        status: 'active',
+        round: 3,
+        participants: [
+          {
+            id: 'player_30',
+            name: 'Ember',
+            team: 'player',
+            hp: { current: 0, max: 20 },
+            conditions: ['unconscious', 'dying'],
+            deathSaves: { successes: 1, failures: 5 },
+            position: { rangeBand: 'melee', engagedWith: ['enemy_goblin_1', ''] },
+          },
+          {
+            id: 'enemy_goblin_1',
+            name: 'Goblin',
+            team: 'enemy',
+            hp: { current: 7, max: 7 },
+            position: { rangeBand: 'melee', engagedWith: ['player_30'] },
+          },
+          { id: 'enemy_archer_1', name: 'Archer', team: 'enemy', hp: { current: 5, max: 5 }, position: { rangeBand: 'far' } },
+        ],
+        turnOrder: [
+          { id: 'player_30', name: 'Ember', team: 'player', isCurrent: true },
+          { id: 'enemy_goblin_1', name: 'Goblin', team: 'enemy', isCurrent: false },
+          { name: 'Nameless' },
+        ],
+        legalActions: [
+          {
+            playerId: 30,
+            actorId: 'player_30',
+            attacksRemaining: 1,
+            reactionRemaining: 0,
+            economy: { actionRemaining: 0, reactionRemaining: 1 },
+            actions: [
+              {
+                id: 'combat.attack.blade',
+                type: 'attack',
+                economy: { action: 0, movement: 'optional' },
+                cost: { action: 0, bonusAction: 0, movement: 0, reaction: 0 },
+              },
+              {
+                id: 'combat.offhand_attack',
+                type: 'attack',
+                economy: { action: 0, bonusAction: 1, movement: 'optional' },
+              },
+              { id: 'combat.advance', type: 'advance', cost: { action: 0, bonusAction: 0, movement: 1, reaction: 0 } },
+            ],
+          },
+        ],
+      },
+    })
+
+    const [ember, goblin, archer] = [...panel.combat.allies, ...panel.combat.enemies]
+    expect(ember).toMatchObject({ rangeBand: 'melee', engagedWith: ['enemy_goblin_1'], deathSaves: { successes: 1, failures: 3 } })
+    expect(goblin).toMatchObject({ rangeBand: 'melee', engagedWith: ['player_30'], deathSaves: null })
+    expect(archer).toMatchObject({ rangeBand: 'far', engagedWith: [] })
+    const bundle = panel.combat.legalActionBundles[0]
+    expect(bundle.attacksRemaining).toBe(1)
+    expect(bundle.reactionRemaining).toBe(0)
+    expect(bundle.actions.map((action) => action.cost)).toEqual([
+      { action: 0, bonusAction: 0, movement: 0, reaction: 0 },
+      { action: 0, bonusAction: 1, movement: 0, reaction: 0 },
+      { action: 0, bonusAction: 0, movement: 1, reaction: 0 },
+    ])
+    expect(panel.combat.turnOrder).toEqual([
+      { id: 'player_30', name: 'Ember', team: 'player', isCurrent: true },
+      { id: 'enemy_goblin_1', name: 'Goblin', team: 'enemy', isCurrent: false },
+    ])
   })
 
   it('prioritizes active and recent NPCs while hiding player-character duplicates', () => {
@@ -1053,3 +1171,61 @@ describe('opening request visibility', () => {
   })
 })
 
+describe('worldMapFromSnapshot', () => {
+  it('returns the projected map typed, dropping malformed nodes and dangling routes', () => {
+    const map = worldMapFromSnapshot({
+      worldMap: {
+        title: 'The Western Roadlands',
+        terrain: 'moor',
+        seed: 7,
+        nodes: [
+          { id: 'inn', name: 'Lantern Post Inn', icon: 'inn', x: 20, y: 30, state: 'current' },
+          { id: 'road', name: 'Old North Road', icon: 'road', x: '55', y: 140, state: 'visited' },
+          { id: 'ridge', name: '?', icon: 'unknown', x: 80, y: 70, state: 'rumoured' },
+          { id: 'bad_state', name: 'Nowhere', x: 10, y: 10, state: 'secret' },
+          { id: '', name: 'No id', x: 10, y: 10, state: 'known' },
+        ],
+        routes: [
+          { from: 'inn', to: 'road', style: 'road', travelable: true },
+          { from: 'road', to: 'ridge', style: 'trail', travelable: false },
+          { from: 'road', to: 'bad_state', style: 'road', travelable: true },
+          { from: 'inn', to: 'ridge', style: 'teleport' },
+        ],
+      },
+    })
+
+    expect(map).toEqual({
+      title: 'The Western Roadlands',
+      terrain: 'moor',
+      seed: 7,
+      nodes: [
+        { id: 'inn', name: 'Lantern Post Inn', icon: 'inn', x: 20, y: 30, state: 'current' },
+        { id: 'road', name: 'Old North Road', icon: 'road', x: 55, y: 100, state: 'visited' },
+        { id: 'ridge', name: '?', icon: 'unknown', x: 80, y: 70, state: 'rumoured' },
+      ],
+      routes: [
+        { from: 'inn', to: 'road', style: 'road', travelable: true },
+        { from: 'road', to: 'ridge', style: 'trail', travelable: false },
+      ],
+    })
+  })
+
+  it('defaults the route style to road and is null without a drawable map', () => {
+    const map = worldMapFromSnapshot({
+      worldMap: {
+        nodes: [
+          { id: 'a', name: 'A', x: 8, y: 8, state: 'known' },
+          { id: 'b', name: 'B', x: 92, y: 92, state: 'known' },
+        ],
+        routes: [{ from: 'a', to: 'b' }],
+      },
+    })
+
+    expect(map?.terrain).toBe('plains')
+    expect(map?.nodes[0].icon).toBe('unknown')
+    expect(map?.routes).toEqual([{ from: 'a', to: 'b', style: 'road', travelable: false }])
+    expect(worldMapFromSnapshot({})).toBeNull()
+    expect(worldMapFromSnapshot({ worldMap: { nodes: [] } })).toBeNull()
+    expect(worldMapFromSnapshot(null)).toBeNull()
+  })
+})

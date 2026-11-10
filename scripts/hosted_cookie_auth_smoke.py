@@ -855,8 +855,13 @@ def _assert_two_account_rest_privacy(
         headers=headers,
         expected=200,
     )
-    if own_export.get('selectedPlayer', {}).get('player_id') != own_player_id:
-        raise AssertionError(f'Second account export did not select its own player: {own_export}')
+    exported_player_ids = {
+        character.get('player_id')
+        for character in own_export.get('characters', [])
+        if isinstance(character, dict)
+    }
+    if exported_player_ids != {own_player_id}:
+        raise AssertionError(f'Second account export did not contain only its own player: {own_export}')
     if seeded.private_marker in json.dumps(own_export, sort_keys=True):
         raise AssertionError('Second account export leaked the owner player private marker.')
 

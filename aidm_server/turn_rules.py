@@ -45,6 +45,13 @@ RESOLVED_ROLL_RESULT_PATTERNS = [
     re.compile(r'\broll(?:s|ed)?\s+(?:an?\s+)?\d+\s*(?:,|and)?\s*(?:hits?|misses?|succeeds?|fails?)\b', re.IGNORECASE),
     re.compile(r'\b(?:hits?|misses?|succeeds?|fails?)\s+(?:with\s+)?(?:an?\s+)?(?:attack\s+)?roll\s+of\s+\d+\b', re.IGNORECASE),
 ]
+ROLL_NEGATION_PATTERN = re.compile(
+    r"\b(?:no|without)\s+(?:[a-z]+\s+){0,3}(?:check|roll|save|saving\s+throw)\s+"
+    r"(?:is|was|will\s+be)\s+(?:needed|required|necessary)\b"
+    r"|\b(?:no\s+need\s+to|need\s+not|do\s+not|don't|does\s+not|doesn't|"
+    r"did\s+not|didn't|not\s+required\s+to)(?:\s+(?:need|have)\s+to)?\s*$",
+    re.IGNORECASE,
+)
 
 
 def _sentence_chunks(text: str) -> list[str]:
@@ -208,6 +215,12 @@ def response_mentions_roll_request(text: str) -> bool:
     for sentence in _sentence_chunks(_normalize_roll_text(text)):
         if _resolved_roll_result_sentence(sentence):
             continue
-        if any(pattern.search(sentence) for pattern in ROLL_REQUEST_PATTERNS):
-            return True
+        for pattern in ROLL_REQUEST_PATTERNS:
+            for match in pattern.finditer(sentence):
+                prefix = sentence[:match.start()]
+                # A contrast starts a new request: "No check is needed here,
+                # but make a Stealth check for the guards" still asks to roll.
+                prefix = re.split(r'\b(?:but|however|instead|yet)\b|;', prefix, flags=re.IGNORECASE)[-1]
+                if not ROLL_NEGATION_PATTERN.search(prefix.strip()):
+                    return True
     return False

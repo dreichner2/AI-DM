@@ -159,15 +159,13 @@ function currentChapterSession(sessions: SessionSummary[]) {
 
 function resumeChapterFromWorkspace(campaignId: number, workspace: CampaignWorkspace): ResumeChapter {
   const session = currentChapterSession(workspace.sessions ?? [])
-  const snapshot = isRecord(session?.state_snapshot) ? session.state_snapshot : {}
-  const scene = isRecord(snapshot.currentScene) ? text(snapshot.currentScene.name) : ''
   // A chapter with no turns yet has nothing to recap; its summary is only the import note.
-  const summary = session && session.turn_count > 0 ? text(session.latest_summary) : ''
+  const summary = session && session.turn_count > 0 ? text(session.summary_excerpt) : ''
   return {
     campaignId,
     sessionId: session?.session_id ?? null,
     chapterNumber: session?.chapter_number ?? null,
-    scene: scene || text(workspace.campaign?.location) || null,
+    scene: text(session?.scene_title) || text(workspace.campaign?.location) || null,
     lastPlayedAt: session?.latest_activity_at ?? null,
     recap: text(session?.chapter_recap) || summary || null,
   }

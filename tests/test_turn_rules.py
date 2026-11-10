@@ -101,6 +101,11 @@ def test_turn_rules_build_roll_prompt_and_detect_roll_requests():
     assert not response_mentions_roll_request('Right-Flank Raider rolls a 17 and hits Legoless.')
     assert not response_mentions_roll_request("On a hit, you'll roll `1d8 + 2` piercing damage.")
     assert not response_mentions_roll_request('The ward glows silently.')
+    assert not response_mentions_roll_request('No check is needed to make a quick check.')
+    assert not response_mentions_roll_request("You don't need to make a Stealth check.")
+    assert not response_mentions_roll_request('Do not roll a d20 for this.')
+    assert response_mentions_roll_request('No check is needed for the door, but make a Stealth check for the guards.')
+    assert response_mentions_roll_request('No check is needed here. Make a Stealth check for the guards.')
 
 
 @pytest.mark.parametrize(

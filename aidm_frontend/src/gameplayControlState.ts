@@ -67,6 +67,24 @@ export type GameplayInteractableControl = {
   actions: GameplayObjectAction[]
 }
 
+export type GameplayItemControl = {
+  id: string
+  name: string
+  quantity: number
+  effectSummary: string
+  cost: string
+  available: boolean
+  reason: string
+  targets: GameplayTarget[]
+}
+
+export type GameplayRestControl = {
+  shortAvailable: boolean
+  longAvailable: boolean
+  reason: string
+  hitDice: { current: number; max: number; die: string } | null
+}
+
 export type GameplayControlState = {
   actorId: string
   actorName: string
@@ -79,6 +97,9 @@ export type GameplayControlState = {
   spells: GameplaySpellControl[]
   capabilities: GameplayCapabilityControl[]
   interactables: GameplayInteractableControl[]
+  /** Usable items: the server's combat bundle in combat, the server's item effects otherwise. */
+  items?: GameplayItemControl[]
+  rest?: GameplayRestControl
 }
 
 const BLOCKING_CAST_CONDITIONS = new Set([
@@ -658,6 +679,144 @@ function interactableControls(scene: JsonRecord, inCombat: boolean) {
   }).filter((entry) => Boolean(entry.id))
 }
 
+const COST_LABELS: Record<string, string> = { action: 'action', bonus_action: 'bonus action' }
+
+function costLabel(effect: JsonRecord) {
+  const self = COST_LABELS[normalized(effect.cost)] ?? 'action'
+  const ally = COST_LABELS[normalized(effect.allyCost ?? effect.ally_cost)]
+  return ally && ally !== self ? `${self}; ${ally} for an ally` : self
+}
+
+function economyCostLabel(economy: JsonRecord) {
+  if (integer(economy.bonusAction) > 0) return 'bonus action'
+  return integer(economy.action) > 0 ? 'action' : 'no action'
+}
+
+function bundleItemControls(combat: JsonRecord, actorId: string): GameplayItemControl[] {
+  const bundle = records(combat.legalActions).find((entry) => stringValue(entry.actorId) === actorId)
+  return records(bundle?.actions)
+    .filter((action) => stringValue(action.id).startsWith('item.use.'))
+    .map((action) => {
+      const item = isRecord(action.item) ? action.item : {}
+      return {
+        id: stringValue(item.id),
+        name: stringValue(item.name, 'Item'),
+        quantity: Math.max(1, integer(item.quantity, 1)),
+        effectSummary: stringValue(action.description),
+        cost: economyCostLabel(isRecord(action.economy) ? action.economy : {}),
+        available: action.available === true,
+        reason: stringValue(action.reason),
+        targets: records(action.targets).map((target) => ({
+          id: stringValue(target.id),
+          name: stringValue(target.name, 'Target'),
+          team: 'unknown',
+          rangeBand: normalized(target.rangeBand) || 'near',
+          currentHp: null,
+          maxHp: null,
+          conditions: [],
+          available: target.available === true,
+          reason: stringValue(target.reason),
+        })),
+      }
+    })
+}
+
+function itemTargets(actor: JsonRecord, playerCharacters: JsonRecord[], rule: string) {
+  const actorId = stringValue(actor.id)
+  let candidates: JsonRecord[] = []
+  if (rule === 'self' || rule === 'spell_self') candidates = [actor]
+  else if (rule === 'self_or_ally' || rule === 'spell_ally') candidates = playerCharacters
+  else if (rule === 'dying_ally') candidates = playerCharacters.filter((entry) => stringValue(entry.id) !== actorId)
+  return candidates
+    .map((record) => recordTarget(record))
+    .filter((target): target is GameplayTarget => target !== null)
+    .map((target) => {
+      let reason = ''
+      if (rule === 'self_or_ally' && target.conditions.includes('dead')) reason = 'Healing cannot restore the dead.'
+      if (rule === 'dying_ally' && !target.conditions.includes('dying')) reason = 'Not dying.'
+      return { ...target, available: !reason, reason }
+    })
+}
+
+function itemControls(
+  actor: JsonRecord,
+  playerCharacters: JsonRecord[],
+  combat: JsonRecord,
+  inCombat: boolean,
+): GameplayItemControl[] {
+  if (inCombat) return bundleItemControls(combat, stringValue(actor.id))
+  const inventory = isRecord(actor.inventory) ? actor.inventory : {}
+  return records(inventory.items)
+    .filter((item) => isRecord(item.itemEffect) && Boolean(stringValue(item.id)))
+    .map((item) => {
+      const effect = item.itemEffect as JsonRecord
+      const rule = normalized(effect.target)
+      const targets = itemTargets(actor, playerCharacters, rule)
+      let reason = stringValue(effect.unusableReason)
+      if (!reason && (rule === 'enemy' || rule === 'spell_enemy')) reason = 'Requires an active encounter.'
+      if (!reason && !targets.some((target) => target.available)) reason = 'No legal target is available.'
+      return {
+        id: stringValue(item.id),
+        name: stringValue(item.name, 'Item'),
+        quantity: Math.max(1, integer(item.quantity, 1)),
+        effectSummary: stringValue(effect.summary),
+        cost: costLabel(effect),
+        available: !reason,
+        reason,
+        targets,
+      }
+    })
+}
+
+const MAX_SHORT_RESTS_BETWEEN_LONG = 2
+
+function scenePolicy(scene: JsonRecord) {
+  const authored = normalized(scene.restPolicy)
+  if (['safe', 'risky', 'none'].includes(authored)) return authored
+  const danger = integer(scene.dangerLevel)
+  if (danger >= 6) return 'none'
+  return danger >= 3 ? 'risky' : 'safe'
+}
+
+function restControl(actor: JsonRecord, root: JsonRecord, scene: JsonRecord, inCombat: boolean): GameplayRestControl {
+  const clock = isRecord(root.clock) ? root.clock : {}
+  const day = Math.max(1, integer(clock.day, 1))
+  const lastLongRestDay = numberValue(clock.lastLongRestDay)
+  const actorConditions = conditions(actor)
+  const hp = health(actor)
+  const rawHitDice = isRecord(actor.hitDice) ? actor.hitDice : null
+  const policy = scenePolicy(scene)
+  let general = ''
+  if (inCombat) general = 'Rest is unavailable while combat is active.'
+  else if (
+    actorConditions.includes('dead') ||
+    actorConditions.includes('dying') ||
+    (hp.current !== null && hp.current <= 0 && !actorConditions.includes('stable'))
+  ) {
+    general = 'A dead or dying character cannot complete a rest.'
+  } else if (policy === 'none') general = 'It is too dangerous to rest here.'
+  const shortReason = general || (
+    integer(clock.shortRestsSinceLong) >= MAX_SHORT_RESTS_BETWEEN_LONG
+      ? 'You need a long rest before another short rest helps.'
+      : ''
+  )
+  let longReason = general
+  if (!longReason && policy === 'risky') longReason = "This place is too dangerous for a full night's rest."
+  if (!longReason && lastLongRestDay !== null && day <= lastLongRestDay) longReason = 'You have already rested today.'
+  return {
+    shortAvailable: !shortReason,
+    longAvailable: !longReason,
+    reason: longReason || shortReason,
+    hitDice: rawHitDice
+      ? {
+          current: Math.max(0, integer(rawHitDice.current)),
+          max: Math.max(1, integer(rawHitDice.max, 1)),
+          die: stringValue(rawHitDice.die),
+        }
+      : null,
+  }
+}
+
 export function gameplayControlsFromSnapshot(
   snapshot: unknown,
   selectedPlayerId: number | null,
@@ -717,5 +876,7 @@ export function gameplayControlsFromSnapshot(
         )
       : [],
     interactables: interactableControls(scene, inCombat),
+    items: actor ? itemControls(actor, playerCharacters, combat, inCombat) : [],
+    rest: actor ? restControl(actor, root, scene, inCombat) : undefined,
   }
 }

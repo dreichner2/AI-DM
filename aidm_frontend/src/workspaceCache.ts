@@ -4,15 +4,25 @@ import type {
   CampaignWorkspace,
   MapItem,
   Player,
+  SessionListResponse,
   SessionSummary,
 } from './types'
 
 type EntityMap<T> = Record<number, T>
 
+/** How far a campaign's session list has been paged past the workspace's first page. */
+export type SessionPaging = {
+  /** Cursor for the next older page; null once every session is listed. */
+  cursor: string | null
+  /** Sessions listed after the first page: loaded older pages, or ones a refresh pushed off it. */
+  olderIds: number[]
+}
+
 export type WorkspaceCache = {
   campaignIds: number[]
   campaignsById: EntityMap<Campaign>
   sessionIdsByCampaignId: Record<number, number[]>
+  sessionPagingByCampaignId: Record<number, SessionPaging>
   sessionsById: EntityMap<SessionSummary>
   playerIdsByCampaignId: Record<number, number[]>
   playersById: EntityMap<Player>
@@ -27,6 +37,7 @@ export function createWorkspaceCache(): WorkspaceCache {
     campaignIds: [],
     campaignsById: {},
     sessionIdsByCampaignId: {},
+    sessionPagingByCampaignId: {},
     sessionsById: {},
     playerIdsByCampaignId: {},
     playersById: {},
@@ -60,7 +71,7 @@ function removeKeys<T>(current: EntityMap<T>, idsToRemove: number[]) {
   return next
 }
 
-function removeCampaignScopedIds(current: Record<number, number[]>, campaignId: number) {
+function removeCampaignScopedIds<T>(current: Record<number, T>, campaignId: number) {
   const next = { ...current }
   delete next[campaignId]
   return next
@@ -82,11 +93,26 @@ export function cacheRootCampaigns(cache: WorkspaceCache, campaigns: Campaign[])
   }
 }
 
+/**
+ * Caches a campaign workspace. Its sessions are the first page; while the
+ * server reports more, sessions listed before stay listed after that page (a
+ * refresh never drops an older chapter someone is reading) and an older-page
+ * cursor already in use is kept.
+ */
 export function cacheCampaignWorkspace(cache: WorkspaceCache, workspace: CampaignWorkspace): WorkspaceCache {
   const campaignId = workspace.campaign.campaign_id
   const campaignIds = cache.campaignIds.includes(campaignId)
     ? cache.campaignIds
     : [campaignId, ...cache.campaignIds]
+  const firstPageIds = workspace.sessions.map((session) => session.session_id)
+  const previousPaging = cache.sessionPagingByCampaignId[campaignId]
+  const morePages = workspace.has_more.sessions
+  const paging: SessionPaging = {
+    cursor: morePages && previousPaging?.olderIds.length ? previousPaging.cursor : workspace.next_cursor.sessions,
+    olderIds: morePages
+      ? (cache.sessionIdsByCampaignId[campaignId] ?? []).filter((id) => !firstPageIds.includes(id))
+      : [],
+  }
 
   return {
     ...cache,
@@ -97,7 +123,11 @@ export function cacheCampaignWorkspace(cache: WorkspaceCache, workspace: Campaig
     },
     sessionIdsByCampaignId: {
       ...cache.sessionIdsByCampaignId,
-      [campaignId]: workspace.sessions.map((session) => session.session_id),
+      [campaignId]: uniqueIds([...firstPageIds, ...paging.olderIds]),
+    },
+    sessionPagingByCampaignId: {
+      ...cache.sessionPagingByCampaignId,
+      [campaignId]: paging,
     },
     sessionsById: mergeEntities(cache.sessionsById, workspace.sessions, (session) => session.session_id),
     playerIdsByCampaignId: {
@@ -115,6 +145,47 @@ export function cacheCampaignWorkspace(cache: WorkspaceCache, workspace: Campaig
       [campaignId]: workspace.segments.map((segment) => segment.segment_id),
     },
     segmentsById: mergeEntities(cache.segmentsById, workspace.segments, (segment) => segment.segment_id),
+  }
+}
+
+/** Appends an older page of a campaign's sessions after those already listed. */
+export function cacheOlderSessions(cache: WorkspaceCache, page: SessionListResponse): WorkspaceCache {
+  const campaignId = page.campaign_id
+  const listedIds = cache.sessionIdsByCampaignId[campaignId] ?? []
+  const newIds = page.sessions.map((session) => session.session_id).filter((id) => !listedIds.includes(id))
+  const paging = cache.sessionPagingByCampaignId[campaignId]
+  return {
+    ...cache,
+    sessionIdsByCampaignId: {
+      ...cache.sessionIdsByCampaignId,
+      [campaignId]: [...listedIds, ...newIds],
+    },
+    sessionPagingByCampaignId: {
+      ...cache.sessionPagingByCampaignId,
+      [campaignId]: { cursor: page.next_cursor, olderIds: [...(paging?.olderIds ?? []), ...newIds] },
+    },
+    sessionsById: mergeEntities(cache.sessionsById, page.sessions, (session) => session.session_id),
+  }
+}
+
+/** Drops a deleted or archived session from its campaign's list. */
+export function removeSession(cache: WorkspaceCache, sessionId: number): WorkspaceCache {
+  const campaignId = cache.sessionsById[sessionId]?.campaign_id
+  if (campaignId === undefined) return cache
+  const paging = cache.sessionPagingByCampaignId[campaignId]
+  return {
+    ...cache,
+    sessionIdsByCampaignId: {
+      ...cache.sessionIdsByCampaignId,
+      [campaignId]: (cache.sessionIdsByCampaignId[campaignId] ?? []).filter((id) => id !== sessionId),
+    },
+    sessionPagingByCampaignId: paging
+      ? {
+          ...cache.sessionPagingByCampaignId,
+          [campaignId]: { ...paging, olderIds: paging.olderIds.filter((id) => id !== sessionId) },
+        }
+      : cache.sessionPagingByCampaignId,
+    sessionsById: removeKeys(cache.sessionsById, [sessionId]),
   }
 }
 
@@ -141,6 +212,7 @@ export function removeCampaign(cache: WorkspaceCache, campaignId: number): Works
     campaignIds: cache.campaignIds.filter((id) => id !== campaignId),
     campaignsById: removeKeys(cache.campaignsById, [campaignId]),
     sessionIdsByCampaignId: removeCampaignScopedIds(cache.sessionIdsByCampaignId, campaignId),
+    sessionPagingByCampaignId: removeCampaignScopedIds(cache.sessionPagingByCampaignId, campaignId),
     sessionsById: removeKeys(cache.sessionsById, sessionIds),
     playerIdsByCampaignId: removeCampaignScopedIds(cache.playerIdsByCampaignId, campaignId),
     mapIdsByCampaignId: removeCampaignScopedIds(cache.mapIdsByCampaignId, campaignId),
@@ -211,6 +283,11 @@ export function selectCampaign(cache: WorkspaceCache, campaignId: number | null)
 export function selectSessions(cache: WorkspaceCache, campaignId: number | null) {
   if (!campaignId) return []
   return selectMany(cache.sessionIdsByCampaignId[campaignId], cache.sessionsById)
+}
+
+export function selectSessionsCursor(cache: WorkspaceCache, campaignId: number | null) {
+  if (!campaignId) return null
+  return cache.sessionPagingByCampaignId[campaignId]?.cursor ?? null
 }
 
 export function selectPlayers(cache: WorkspaceCache, campaignId: number | null) {

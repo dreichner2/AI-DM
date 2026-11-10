@@ -43,6 +43,10 @@ ARCHIVED_STATUS = 'archived'
 ENDED_STATUS = 'ended'
 DELETED_STATUS = 'deleted'
 
+ARCHIVE_NAME_PREFIX = 'Archive — '
+SESSION_SCENE_TITLE_MAX_LENGTH = 120
+SESSION_SUMMARY_EXCERPT_MAX_LENGTH = 280
+
 PARTY_PLAYER_PUBLIC_KEYS = (
     'player_id',
     'campaign_id',
@@ -263,6 +267,22 @@ def session_campaign_ordinal(session_obj: Session) -> int:
     return int(count or 1)
 
 
+def session_is_imported(snapshot: dict) -> bool:
+    return snapshot.get('imported') is True
+
+
+def _snapshot_chapter(snapshot: dict) -> dict:
+    chapter = snapshot.get('chapter')
+    return chapter if isinstance(chapter, dict) else {}
+
+
+def _snapshot_chapter_number(snapshot: dict) -> int | None:
+    number = _snapshot_chapter(snapshot).get('number')
+    if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+        return None
+    return number
+
+
 def session_display_name(
     session_obj: Session,
     snapshot: dict | None = None,
@@ -271,7 +291,34 @@ def session_display_name(
     source_snapshot = snapshot if snapshot is not None else session_snapshot(session_obj)
     raw_name = session_obj.name or source_snapshot.get('name') or source_snapshot.get('title')
     name = str(raw_name or '').strip()
-    return name or f"Session {campaign_ordinal or session_campaign_ordinal(session_obj)}"
+    if not name:
+        chapter_number = _snapshot_chapter_number(source_snapshot)
+        name = (
+            f'Chapter {chapter_number}'
+            if chapter_number
+            else f'Session {campaign_ordinal or session_campaign_ordinal(session_obj)}'
+        )
+    if session_is_imported(source_snapshot) and not name.startswith(ARCHIVE_NAME_PREFIX):
+        return f'{ARCHIVE_NAME_PREFIX}{name}'
+    return name
+
+
+def text_excerpt(value, limit: int) -> str:
+    """Collapse whitespace and cut at a word boundary so the result fits in ``limit``."""
+
+    text = ' '.join(str(value or '').split())
+    if len(text) <= limit:
+        return text
+    window = text[: limit - 1]
+    cut = window.rsplit(' ', 1)[0] if ' ' in window else window
+    return f'{cut.rstrip()}…'
+
+
+def session_scene_title(snapshot: dict) -> str | None:
+    scene = snapshot.get('currentScene')
+    name = scene.get('name') if isinstance(scene, dict) else None
+    title = text_excerpt(name, SESSION_SCENE_TITLE_MAX_LENGTH) if isinstance(name, str) else ''
+    return title or None
 
 
 def session_chapter_positions(session_ids: list[int]) -> dict[int, dict]:
@@ -312,6 +359,7 @@ def session_summaries(session_ids: list[int]) -> dict[int, dict]:
     summaries = {
         session_id: {
             'session_state': None,
+            'state_updated_at': None,
             'latest_log_at': None,
             'latest_turn_created_at': None,
             'latest_turn_completed_at': None,
@@ -330,6 +378,7 @@ def session_summaries(session_ids: list[int]) -> dict[int, dict]:
     states = SessionState.query.filter(SessionState.session_id.in_(ids)).all()
     for session_state in states:
         summaries[int(session_state.session_id)]['session_state'] = session_state
+        summaries[int(session_state.session_id)]['state_updated_at'] = session_state.updated_at
 
     log_rows = (
         db.session.query(SessionLogEntry.session_id, func.max(SessionLogEntry.timestamp))
@@ -390,69 +439,73 @@ def session_payload(
     viewer_account_id: int | None = None,
     private_player_ids: set[int] | frozenset[int] | None = None,
 ) -> dict:
+    """A session list item (``SessionSummary``): a summary, never the snapshot.
+
+    Nothing in a summary depends on the viewer. The viewer keywords are still
+    accepted because lifecycle, Play Now and pack-import callers pass them.
+    """
+
     snapshot = session_snapshot(session_obj)
-    if include_hidden_state:
-        payload_snapshot = snapshot
-    else:
-        player_ids = private_player_ids
-        if player_ids is None:
-            player_ids = account_player_ids_by_campaign(
-                [session_obj.campaign_id],
-                viewer_account_id,
-            ).get(session_obj.campaign_id, frozenset())
-        payload_snapshot = filter_session_snapshot_for_player(
-            snapshot,
-            private_player_ids=frozenset(player_ids),
-        )
     summary = summary or session_summaries([session_obj.session_id]).get(session_obj.session_id, {})
     session_state = summary.get('session_state')
-    turn_count = summary.get('turn_count') or 0
-    latest_activity = session_latest_activity_at(session_obj, snapshot, summary)
-    latest_summary = ''
-    if session_state and session_state.rolling_summary:
-        latest_summary = session_state.rolling_summary
-    elif isinstance(snapshot.get('recap'), str):
-        latest_summary = snapshot['recap']
-    elif isinstance(snapshot.get('summary'), str):
-        latest_summary = snapshot['summary']
+    latest_activity = session_activity_at(session_obj.created_at, session_obj.updated_at, summary)
+    rolling_summary = session_state.rolling_summary if session_state else ''
+    recap = snapshot.get('recap') if isinstance(snapshot.get('recap'), str) else ''
+    play_now = snapshot.get('playNow')
 
     return {
         'session_id': session_obj.session_id,
         'campaign_id': session_obj.campaign_id,
+        'name': session_obj.name,
+        'display_name': session_display_name(session_obj, snapshot, summary.get('campaign_ordinal')),
+        **session_chapter_fields(session_obj, snapshot, summary),
+        'is_archived': session_obj.status == ARCHIVED_STATUS or bool(snapshot.get('is_archived') or snapshot.get('archived')),
         'created_at': isoformat(session_obj.created_at),
-        'deleted_at': isoformat(session_obj.deleted_at),
         'updated_at': latest_activity,
         'latest_activity_at': latest_activity,
-        'display_name': session_display_name(session_obj, snapshot, summary.get('campaign_ordinal')),
-        'turn_count': int(turn_count),
-        'latest_summary': latest_summary,
-        'is_archived': session_obj.status == ARCHIVED_STATUS or bool(snapshot.get('is_archived') or snapshot.get('archived')),
-        **session_chapter_fields(session_obj, snapshot, summary),
-        'state_snapshot': payload_snapshot,
+        'turn_count': int(summary.get('turn_count') or 0),
+        'scene_title': session_scene_title(snapshot),
+        'summary_excerpt': text_excerpt(rolling_summary or recap, SESSION_SUMMARY_EXCERPT_MAX_LENGTH),
+        'imported': session_is_imported(snapshot),
+        'play_now': isinstance(play_now, dict) and bool(play_now),
     }
 
 
-def session_latest_activity_at(session_obj: Session, snapshot: dict, summary: dict) -> str | None:
-    session_state = summary.get('session_state')
-    snapshot_updated_at = snapshot.get('updated_at')
+def session_activity_at(created_at, updated_at, summary: dict) -> str | None:
+    """A session's latest activity from its columns and ``session_summaries`` aggregates.
+
+    Session lists sort and page by this value.
+    """
+
     return latest_isoformat(
-        session_obj.created_at,
-        session_obj.updated_at,
-        snapshot_updated_at if isinstance(snapshot_updated_at, str) else None,
-        session_state.updated_at if session_state else None,
+        created_at,
+        updated_at,
+        summary.get('state_updated_at'),
         summary.get('latest_log_at'),
         summary.get('latest_turn_created_at'),
         summary.get('latest_turn_completed_at'),
     )
 
 
+def session_latest_activity_at(session_obj: Session, snapshot: dict, summary: dict) -> str | None:
+    """``session_activity_at`` plus the legacy snapshot ``updated_at`` key, for chapter ranking."""
+
+    snapshot_updated_at = snapshot.get('updated_at')
+    return latest_isoformat(
+        session_activity_at(session_obj.created_at, session_obj.updated_at, summary),
+        snapshot_updated_at if isinstance(snapshot_updated_at, str) else None,
+    )
+
+
 def session_chapter_fields(session_obj: Session, snapshot: dict, positions: dict) -> dict:
     """Chapter view of a session; ``positions`` comes from ``session_chapter_positions``."""
 
-    chapter = snapshot.get('chapter') if isinstance(snapshot.get('chapter'), dict) else {}
-    chapter_number = chapter.get('number')
-    if isinstance(chapter_number, bool) or not isinstance(chapter_number, int) or chapter_number < 1:
-        chapter_number = positions.get('campaign_ordinal') or session_campaign_ordinal(session_obj)
+    chapter = _snapshot_chapter(snapshot)
+    chapter_number = (
+        _snapshot_chapter_number(snapshot)
+        or positions.get('campaign_ordinal')
+        or session_campaign_ordinal(session_obj)
+    )
     ended_at = snapshot.get('ended_at')
     chapter_recap = chapter.get('recap')
     return {
@@ -481,31 +534,9 @@ def session_start_payload(session_obj: Session, *, idempotent_replay: bool) -> d
     }
 
 
-def session_payloads(
-    session_objs: list[Session],
-    *,
-    include_hidden_state: bool = True,
-    viewer_account_id: int | None = None,
-) -> list[dict]:
+def session_payloads(session_objs: list[Session]) -> list[dict]:
     summaries = session_summaries([session_obj.session_id for session_obj in session_objs])
-    player_ids_by_campaign = (
-        {}
-        if include_hidden_state
-        else account_player_ids_by_campaign(
-            {session_obj.campaign_id for session_obj in session_objs},
-            viewer_account_id,
-        )
-    )
-    return [
-        session_payload(
-            session_obj,
-            summaries.get(session_obj.session_id),
-            include_hidden_state=include_hidden_state,
-            viewer_account_id=viewer_account_id,
-            private_player_ids=player_ids_by_campaign.get(session_obj.campaign_id),
-        )
-        for session_obj in session_objs
-    ]
+    return [session_payload(session_obj, summaries.get(session_obj.session_id)) for session_obj in session_objs]
 
 
 def session_state_payload(

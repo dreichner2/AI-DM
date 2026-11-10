@@ -26,16 +26,22 @@ const campaign: Campaign = {
 const session: SessionSummary = {
   session_id: 20,
   campaign_id: 10,
+  name: 'The Sealed Door',
   created_at: null,
   status: 'active',
-  deleted_at: null,
   updated_at: null,
   latest_activity_at: null,
   display_name: 'The Sealed Door',
   turn_count: 2,
-  latest_summary: '',
+  summary_excerpt: '',
+  scene_title: null,
   is_archived: false,
-  state_snapshot: {},
+  is_current: true,
+  chapter_number: 1,
+  chapter_recap: '',
+  ended_at: null,
+  imported: false,
+  play_now: false,
 }
 
 describe('CampaignSessionActionDialogs', () => {

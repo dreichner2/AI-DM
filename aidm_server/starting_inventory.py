@@ -517,6 +517,7 @@ KEYWORD_KITS: tuple[tuple[tuple[str, ...], str], ...] = (
     (('professional',), 'professional'),
     (('entertainer', 'skald'), 'entertainer'),
 )
+HEALERS_KIT_CLASSES = frozenset({'cleric', 'druid'})
 
 
 def _normalize_text(value: str | None) -> str:
@@ -791,10 +792,37 @@ def _subclass_starting_items(kit_key: str, class_name: str | None) -> list[dict[
     return additions
 
 
+def _consumable_starter_items(kit_key: str) -> list[dict[str, Any]]:
+    """Every kit carries a Potion of Healing; healers also carry a Healer's Kit."""
+
+    items: list[dict[str, Any]] = [
+        {
+            'id': f'starter_{kit_key}_potion_healing',
+            'name': 'Potion of Healing',
+            'quantity': 1,
+            'type': 'potion',
+            'aliases': ['Healing Potion'],
+            'metadata': {'effectId': 'potion_healing'},
+        }
+    ]
+    if kit_key in HEALERS_KIT_CLASSES:
+        items.append(
+            {
+                'id': f'starter_{kit_key}_healers_kit',
+                'name': "Healer's Kit",
+                'quantity': 1,
+                'type': 'tool',
+                'weight': 3,
+                'metadata': {'effectId': 'healers_kit', 'usesRemaining': 10},
+            }
+        )
+    return items
+
+
 def starting_inventory_for_class(class_name: str | None) -> list[dict[str, Any]]:
     kit_key = _starter_kit_key(class_name)
     if not kit_key:
         return []
-    items = deepcopy(STARTER_KITS[kit_key])
+    items = [*deepcopy(STARTER_KITS[kit_key]), *_consumable_starter_items(kit_key)]
     items = _apply_subclass_items(items, _subclass_starting_items(kit_key, class_name))
     return inventory_payload(items)

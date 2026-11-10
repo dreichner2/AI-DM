@@ -90,19 +90,22 @@ function chapter(overrides: Partial<SessionSummary>): SessionSummary {
   return {
     session_id: 20,
     campaign_id: 11,
-    created_at: null,
-    status: 'active',
-    deleted_at: null,
-    updated_at: null,
-    latest_activity_at: null,
+    name: null,
     display_name: 'Chapter',
-    turn_count: 0,
-    latest_summary: '',
-    is_archived: false,
+    status: 'active',
     is_current: false,
+    is_archived: false,
     chapter_number: 1,
     chapter_recap: '',
-    state_snapshot: {},
+    ended_at: null,
+    created_at: null,
+    updated_at: null,
+    latest_activity_at: null,
+    turn_count: 0,
+    scene_title: null,
+    summary_excerpt: '',
+    imported: false,
+    play_now: false,
     ...overrides,
   }
 }
@@ -144,20 +147,7 @@ function playNowResponse(): PlayNowResponse {
       latest_session_id: 20,
       latest_activity_at: null,
     },
-    session: {
-      session_id: 20,
-      campaign_id: 10,
-      created_at: null,
-      status: 'active',
-      deleted_at: null,
-      updated_at: null,
-      latest_activity_at: null,
-      display_name: 'Play Now',
-      turn_count: 0,
-      latest_summary: '',
-      is_archived: false,
-      state_snapshot: {},
-    },
+    session: chapter({ campaign_id: 10, display_name: 'Play Now', is_current: true, play_now: true }),
     player: {
       player_id: 30,
       workspace_id: 'owner',
@@ -631,16 +621,16 @@ describe('usePlayNowOnboarding', () => {
     })
     const archived = campaign({ campaign_id: 12, title: 'Archived', is_archived: true, latest_activity_at: '2026-11-10T09:00:00Z' })
     const workspace = workspaceFor(latest, [
-      chapter({ session_id: 201, chapter_number: 1, status: 'ended', turn_count: 40, latest_summary: 'Old news.' }),
+      chapter({ session_id: 201, chapter_number: 1, status: 'ended', turn_count: 40, summary_excerpt: 'Old news.' }),
       chapter({
         session_id: 202,
         chapter_number: 2,
         is_current: true,
         turn_count: 6,
-        latest_summary: 'The party left the inn at dawn.',
+        summary_excerpt: 'The party left the inn at dawn.',
         chapter_recap: 'The ledger named every traveller but one.',
         latest_activity_at: '2026-11-09T12:00:00Z',
-        state_snapshot: { currentScene: { name: 'The Old North Road' } },
+        scene_title: 'The Old North Road',
       }),
     ])
     routeApi({ [HEROES_PATH]: heroLibrary, '/api/campaigns/11/workspace': () => workspace })
@@ -680,7 +670,7 @@ describe('usePlayNowOnboarding', () => {
 
   it('recaps a chapter from its summary only once it has been played', async () => {
     const latest = campaign({ campaign_id: 11 })
-    const sessions = [chapter({ session_id: 202, is_current: true, turn_count: 0, latest_summary: 'Campaign pack imported.' })]
+    const sessions = [chapter({ session_id: 202, is_current: true, turn_count: 0, summary_excerpt: 'Campaign pack imported.' })]
     routeApi({ '/api/campaigns/11/workspace': () => workspaceFor(latest, sessions) })
     const options = createOptions({ campaignCount: 1, campaigns: [latest] })
     const { result, rerender } = renderHook(
@@ -690,7 +680,7 @@ describe('usePlayNowOnboarding', () => {
     await waitFor(() => expect(result.current.titleScreenProps.resume?.chapterNumber).toBe(1))
     expect(result.current.titleScreenProps.resume?.recap).toBeNull()
 
-    sessions[0] = { ...sessions[0], turn_count: 3, latest_summary: 'The caravan was searched.' }
+    sessions[0] = { ...sessions[0], turn_count: 3, summary_excerpt: 'The caravan was searched.' }
     rerender({ values: { ...options, modalOpen: true } })
     rerender({ values: options })
     await waitFor(() => expect(result.current.titleScreenProps.resume?.recap).toBe('The caravan was searched.'))

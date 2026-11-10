@@ -22,7 +22,8 @@ Supported ``modifiers`` keys: attackBonusDice, saveBonusDice, checkBonusDice
 (dice strings, sign allowed), acBonus, acMinimum, attackMode, attackedMode,
 saveMode ({"abilities": [...], "mode"}), checkMode, bonusDamageVs ({"targetId",
 "dice", "type"}), bonusWeaponDamage ({"dice" | "flat", "type"}), resistances
-(damage types or ["all"]), speedZero, cannotAct, noHealing, tempHpPerTurn.
+(damage types or ["all"]), speedZero, cannotAct, cannotReact, noHealing,
+tempHpPerTurn.
 
 Modifier providers registered with :func:`register_modifier_provider` are
 called as ``fn(participant, role, context)`` where role is ``attacker``,
@@ -31,6 +32,11 @@ called as ``fn(participant, role, context)`` where role is ``attacker``,
 participant).  They return a partial result dict whose keys are merged into the
 result being built: ``mode`` adds one advantage/disadvantage source, lists
 extend, integers add and booleans combine with ``or``.
+
+Attacks-per-action providers registered with
+:func:`register_attacks_per_action_provider` are called as
+``fn(participant, combat)`` and return the number of weapon attacks one Attack
+action grants (Extra Attack); the highest answer, never below 1, wins.
 """
 
 from __future__ import annotations
@@ -44,6 +50,7 @@ from aidm_server.damage_dice import parse_signed_dice
 
 ModifierProvider = Callable[[Mapping[str, Any], str, Mapping[str, Any]], Mapping[str, Any] | None]
 ExtraDamageProvider = Callable[[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]], Iterable[Mapping[str, Any]] | None]
+AttacksPerActionProvider = Callable[[Mapping[str, Any], Mapping[str, Any] | None], int | None]
 
 ABILITY_ALIASES = {
     'str': 'strength',
@@ -85,6 +92,7 @@ COVER_BONUSES = {'half': 2, 'three_quarters': 5}
 
 _MODIFIER_PROVIDERS: list[ModifierProvider] = []
 _EXTRA_DAMAGE_PROVIDERS: list[ExtraDamageProvider] = []
+_ATTACKS_PER_ACTION_PROVIDERS: list[AttacksPerActionProvider] = []
 
 
 def _text(value: Any) -> str:
@@ -136,6 +144,22 @@ def range_band(participant: Mapping[str, Any] | None) -> str:
 def is_hidden(participant: Mapping[str, Any] | None) -> bool:
     position = _position(participant)
     return 'hidden' in condition_keys(participant) or position.get('isHidden', position.get('is_hidden')) is True
+
+
+def engaged_with(participant: Mapping[str, Any] | None) -> list[str]:
+    """Ids of the participants this one is locked in melee with."""
+
+    values = _position(participant).get('engagedWith')
+    if not isinstance(values, (list, tuple)):
+        return []
+    return list(dict.fromkeys(_text(value) for value in values if _text(value)))
+
+
+def _engaged_by_threat(participant: Mapping[str, Any], combat: Mapping[str, Any] | None) -> bool:
+    engaged = engaged_with(participant)
+    if not isinstance(combat, Mapping):
+        return bool(engaged)
+    return any(can_act(_combat_participant(combat, other_id)) for other_id in engaged)
 
 
 def _hp_current(participant: Mapping[str, Any]) -> int:
@@ -341,6 +365,26 @@ def unregister_extra_damage_provider(fn: ExtraDamageProvider) -> None:
         _EXTRA_DAMAGE_PROVIDERS.remove(fn)
 
 
+def register_attacks_per_action_provider(fn: AttacksPerActionProvider) -> AttacksPerActionProvider:
+    if fn not in _ATTACKS_PER_ACTION_PROVIDERS:
+        _ATTACKS_PER_ACTION_PROVIDERS.append(fn)
+    return fn
+
+
+def unregister_attacks_per_action_provider(fn: AttacksPerActionProvider) -> None:
+    if fn in _ATTACKS_PER_ACTION_PROVIDERS:
+        _ATTACKS_PER_ACTION_PROVIDERS.remove(fn)
+
+
+def attacks_per_action(participant: Mapping[str, Any] | None, combat: Mapping[str, Any] | None = None) -> int:
+    """Weapon attacks one Attack action grants this participant (1 without Extra Attack)."""
+
+    if not isinstance(participant, Mapping):
+        return 1
+    granted = [int_or_default(provider(participant, combat), default=1) for provider in list(_ATTACKS_PER_ACTION_PROVIDERS)]
+    return max(1, min(4, max(granted, default=1)))
+
+
 def cover_bonus(combat: Mapping[str, Any] | None, target: Mapping[str, Any] | None) -> int:
     cover_id = _text(_position(target).get('coverId') or _position(target).get('cover_id'))
     battlefield = combat.get('battlefield') if isinstance(combat, Mapping) and isinstance(combat.get('battlefield'), Mapping) else {}
@@ -401,6 +445,8 @@ def attack_context(
     if is_hidden(attacker):
         _add_mode(result, 'advantage', 'Attacker is hidden')
         result['consume'].append({'participantId': _participant_id(attacker), 'condition': 'hidden'})
+    if ranged and _engaged_by_threat(attacker, combat):
+        _add_mode(result, 'disadvantage', 'Ranged attack while engaged in melee')
     for effect in _effects_with(attacker, 'attackMode'):
         _add_mode(result, effect['modifiers']['attackMode'], f'Attacker has {_effect_label(effect)}')
     for effect in _effects_with(attacker, 'attackBonusDice'):
@@ -628,6 +674,10 @@ def can_act(participant: Mapping[str, Any] | None) -> bool:
         and _hp_current(participant) > 0
         and not cannot_act_reasons(participant)
     )
+
+
+def cannot_react(participant: Mapping[str, Any] | None) -> bool:
+    return bool(_effects_with(participant, 'cannotReact'))
 
 
 def speed_zero_reasons(participant: Mapping[str, Any]) -> list[str]:

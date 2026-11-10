@@ -19,6 +19,7 @@ import {
   lightThemeContrastBackgrounds,
   lightThemeContrastForegrounds,
   renderLoadedApp,
+  sessionSummaryFixture,
   setupAppTest,
   socketHandler,
   socketMock,
@@ -1849,12 +1850,6 @@ describe('App user workflow regressions', () => {
   })
 
   it('renders Scene State from the live session state snapshot without a workspace reload', async () => {
-    appTestState.sessionsByCampaign[10] = [
-      {
-        ...appTestState.sessionsByCampaign[10][0],
-        state_snapshot: {},
-      },
-    ]
     appTestState.sessionStates[20] = {
       ...appTestState.sessionStates[20],
       state_snapshot: {
@@ -2944,7 +2939,7 @@ describe('App user workflow regressions', () => {
     )
   })
 
-  it('imports an exported session JSON file and selects the restored session', async () => {
+  it('imports an older exported session file as a read-only archive and selects it', async () => {
     await renderLoadedApp()
 
     const importPayload = {
@@ -2957,7 +2952,6 @@ describe('App user workflow regressions', () => {
       selectedSession: {
         session_id: 20,
         display_name: 'Restored Trial',
-        state_snapshot: {},
       },
       sessionState: {
         current_location: 'Restored Hall',
@@ -2986,19 +2980,133 @@ describe('App user workflow regressions', () => {
       target: { files: [file] },
     })
 
-    expect(await screen.findByRole('heading', { name: /Restored Trial/i })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /Archive — Restored Trial/i })).toBeInTheDocument()
     expect(await screen.findByText('Imported log entry')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Import a save' })).not.toBeInTheDocument()
     expect(appTestState.fetchCalls).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           method: 'POST',
           path: '/api/sessions/import',
           body: expect.objectContaining({
+            mode: 'archive',
             selectedSession: expect.objectContaining({ display_name: 'Restored Trial' }),
           }),
         }),
       ]),
     )
+    const list = document.querySelector('.session-list') as HTMLElement
+    expect(within(list).getByRole('button', { name: /^Chapter 2\s*Archive · Archive — Restored Trial$/ })).toBeInTheDocument()
+  })
+
+  it('exports the server save document for the selected chapter', async () => {
+    const downloads: string[] = []
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      downloads.push(this.download)
+    })
+    Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:save'), revokeObjectURL: vi.fn() })
+    await renderLoadedApp()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }))
+
+    await waitFor(() => expect(downloads).toEqual(['smoke-campaign-chapter-1.aidm-save.json']))
+    expect(appTestState.fetchCalls).toEqual(
+      expect.arrayContaining([expect.objectContaining({ method: 'GET', path: '/api/sessions/20/export' })]),
+    )
+    expect(appTestState.fetchCalls.some((call) => call.path === '/api/sessions/20/events')).toBe(false)
+    click.mockRestore()
+  })
+
+  it('lets an operator restore a save of the open campaign as a new chapter', async () => {
+    await renderLoadedApp()
+    const save = {
+      format: 'aidm.save',
+      version: 2,
+      exported_at: fixedNow.toISOString(),
+      campaign: { id: 10, title: 'Smoke Campaign' },
+      session: appTestState.sessionsByCampaign[10][0],
+      state_snapshot: { flags: { gate_opened: true } },
+      session_state: { rolling_summary: 'Saved summary.', current_location: 'Ash Hall', current_quest: null, memory_snippets: [] },
+      log: [],
+      characters: [],
+      unsettled: { pending_roll: false, active_combat: false },
+    }
+
+    fireEvent.change(screen.getByLabelText('Import session file'), {
+      target: { files: [new File([JSON.stringify(save)], 'smoke.aidm-save.json', { type: 'application/json' })] },
+    })
+    const dialog = await screen.findByRole('dialog', { name: 'Import a save' })
+    expect(within(dialog).getByRole('radio', { name: 'Keep as a read-only archive' })).toBeChecked()
+    fireEvent.click(within(dialog).getByRole('radio', { name: 'Restore as a new chapter' }))
+    const restoreCharacters = within(dialog).getByRole('checkbox', { name: 'Also restore characters to their saved state' })
+    expect(restoreCharacters).not.toBeChecked()
+    expect(within(dialog).queryByText(/replaces the characters' current hit points/)).not.toBeInTheDocument()
+    fireEvent.click(restoreCharacters)
+    expect(
+      within(dialog).getByText(
+        "This replaces the characters' current hit points, inventory and resources with the saved values.",
+      ),
+    ).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore chapter' }))
+
+    expect(await screen.findByRole('heading', { name: /Chapter 2/i })).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Import a save' })).not.toBeInTheDocument()
+    expect(appTestState.fetchCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: 'POST',
+          path: '/api/sessions/import',
+          body: expect.objectContaining({ mode: 'restore', restore_characters: true, campaign_id: 10 }),
+        }),
+      ]),
+    )
+    const list = document.querySelector('.session-list') as HTMLElement
+    expect(within(list).getByRole('button', { name: /^Chapter 2\s*Current$/ })).toHaveClass('active')
+  })
+
+  it("shows the server's reason when a save cannot be restored", async () => {
+    appTestState.importRestoreRefusal = 'This save belongs to a different campaign. Import it as a read-only archive instead.'
+    await renderLoadedApp()
+    const save = {
+      format: 'aidm.save',
+      version: 2,
+      campaign: { id: 10, title: 'Smoke Campaign' },
+      session: appTestState.sessionsByCampaign[10][0],
+    }
+
+    fireEvent.change(screen.getByLabelText('Import session file'), {
+      target: { files: [new File([JSON.stringify(save)], 'smoke.aidm-save.json', { type: 'application/json' })] },
+    })
+    const dialog = await screen.findByRole('dialog', { name: 'Import a save' })
+    fireEvent.click(within(dialog).getByRole('radio', { name: 'Restore as a new chapter' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore chapter' }))
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      'This save belongs to a different campaign. Import it as a read-only archive instead.',
+    )
+  })
+
+  it('shows older chapters on request and never reads scene data from a list item', async () => {
+    appTestState.sessionPageSize = 2
+    appTestState.sessionsByCampaign[10] = [
+      sessionSummaryFixture({ session_id: 20, campaign_id: 10, display_name: 'Session Alpha', chapter_number: 3, scene_title: 'Listed Scene' }),
+      sessionSummaryFixture({ session_id: 19, campaign_id: 10, display_name: 'Chapter 2', chapter_number: 2, status: 'ended', is_current: false }),
+      sessionSummaryFixture({ session_id: 18, campaign_id: 10, display_name: 'Chapter 1', chapter_number: 1, status: 'ended', is_current: false }),
+    ]
+    await renderLoadedApp()
+
+    const list = document.querySelector('.session-list') as HTMLElement
+    expect(within(list).queryByRole('button', { name: /^Chapter 1\b/ })).not.toBeInTheDocument()
+    fireEvent.click(within(list).getByRole('button', { name: 'Show older chapters' }))
+
+    expect(await within(list).findByRole('button', { name: /^Chapter 1\s*Ended$/ })).toBeInTheDocument()
+    expect(within(list).queryByRole('button', { name: 'Show older chapters' })).not.toBeInTheDocument()
+    expect(appTestState.fetchCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ method: 'GET', path: '/api/sessions/campaigns/10/sessions' }),
+      ]),
+    )
+    expect(screen.queryByText('Listed Scene')).not.toBeInTheDocument()
   })
 
   it('keeps long DM responses visible in the Turns feed', async () => {
@@ -3057,7 +3165,7 @@ describe('App user workflow regressions', () => {
         chapter_number: 4,
         status: 'ended',
         is_current: false,
-        state_snapshot: { imported: true },
+        imported: true,
       },
       { ...selected, session_id: 24, chapter_number: 5, status: 'archived', is_archived: true, is_current: false },
       { ...selected, chapter_number: 1, is_current: false },

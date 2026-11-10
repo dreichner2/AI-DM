@@ -167,20 +167,30 @@ export type SessionChapterStatus = 'active' | 'ended' | 'archived'
 export type SessionSummary = {
   session_id: number
   campaign_id: number
-  created_at: string | null
+  name: string | null
+  display_name: string
   status: SessionChapterStatus
-  deleted_at: string | null
+  is_current: boolean
+  is_archived: boolean
+  chapter_number: number
+  chapter_recap: string
+  ended_at: string | null
+  created_at: string | null
   updated_at: string | null
   latest_activity_at: string | null
-  display_name: string
   turn_count: number
-  latest_summary: string
-  is_archived: boolean
-  is_current?: boolean
-  chapter_number?: number
-  ended_at?: string | null
-  chapter_recap?: string
-  state_snapshot: JsonRecord | null
+  scene_title: string | null
+  summary_excerpt: string
+  imported: boolean
+  play_now: boolean
+}
+
+export type SessionListResponse = {
+  campaign_id: number
+  sessions: SessionSummary[]
+  limit: number
+  has_more: boolean
+  next_cursor: string | null
 }
 
 export type SessionStartResponse = {
@@ -194,24 +204,28 @@ export type SessionStartResponse = {
   continued_from_session_id: number | null
 }
 
+export type SessionImportMode = 'archive' | 'restore'
+
 export type SessionImportResponse = {
   imported: boolean
+  mode: SessionImportMode
   session_id: number
   session: SessionSummary
   counts: { turn_events: number; projected_log_entries: number; log_entries: number; session_state: number }
+  restored_player_ids: number[]
 }
 
-export type SessionExportResponse = {
-  exportedAt: string
-  selectedIds: { campaignId: number; sessionId: number; playerId: number | null }
-  campaign: Campaign
-  selectedSession: SessionSummary
-  players: PlayerDetail[]
-  selectedPlayer: PlayerDetail | null
-  sessionState: SessionState
-  logEntries: SessionLogEntry[]
-  turnEvents: TurnEventPayload[]
-  warnings: string[]
+export type SessionSaveDocument = {
+  format: 'aidm.save'
+  version: 2
+  exported_at: string
+  campaign: { id: number; title: string; pack_id?: string }
+  session: SessionSummary
+  state_snapshot: JsonRecord | null
+  session_state: { rolling_summary: string; current_location: string | null; current_quest: string | null; memory_snippets: unknown[] }
+  log: SessionLogEntry[]
+  characters: PlayerDetail[]
+  unsettled: { pending_roll: boolean; active_combat: boolean }
 }
 
 export type CampaignWorkspace = {
@@ -222,7 +236,7 @@ export type CampaignWorkspace = {
   segments: CampaignSegment[]
   summary: { session_count: number; player_count: number; map_count: number; segment_count: number; latest_session_id: number | null; latest_activity_at: string | null }
   has_more: { sessions: boolean; players: boolean; maps: boolean; segments: boolean }
-  next_cursor: { sessions: number | null; players: number | null; maps: number | null; segments: number | null }
+  next_cursor: { sessions: string | null; players: number | null; maps: number | null; segments: number | null }
   limits: { sessions: number | null; players: number | null; maps: number | null; segments: number | null }
 }
 

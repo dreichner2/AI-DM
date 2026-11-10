@@ -19,36 +19,34 @@ class _FakeResponse:
         return self._payload
 
 
+SAVED_LOG = [
+    {'message': 'The table gathers.', 'entry_type': 'system'},
+    {'message': 'DM: The gate opens.', 'entry_type': 'dm'},
+]
+
+
 class _FakeHttp:
-    def __init__(self, *, log_message: str = 'Projected cleanly.'):
+    def __init__(self, *, imported_messages: list[str] | None = None, archive_status: str = 'ended'):
         self.calls = []
-        self.log_message = log_message
+        self.imported_messages = (
+            imported_messages if imported_messages is not None else [entry['message'] for entry in SAVED_LOG]
+        )
+        self.archive_status = archive_status
 
     def get(self, path: str, *, headers: dict[str, str]):
         self.calls.append(('GET', path, headers, None))
-        if path.startswith('/api/sessions/12/export'):
+        if path == '/api/sessions/12/export':
             return _FakeResponse(
                 200,
                 {
-                    'turnEvents': [
-                        {
-                            'event_id': 1,
-                            'turn_id': 2,
-                            'event_type': 'player_message',
-                            'payload': {'message': 'hello'},
-                            'created_at': '2026-06-19T00:00:00+00:00',
-                        }
-                    ],
-                    'logEntries': [
-                        {
-                            'message': 'This stale source log should not be duplicated when turn events are present.',
-                            'entry_type': 'system',
-                        }
-                    ],
+                    'format': 'aidm.save',
+                    'version': 2,
+                    'log': SAVED_LOG,
+                    'characters': [{'player_id': 56}],
                 },
             )
         if path == '/api/sessions/34/log?limit=200':
-            return _FakeResponse(200, {'entries': [{'message': self.log_message}]})
+            return _FakeResponse(200, {'entries': [{'message': message} for message in self.imported_messages]})
         return _FakeResponse(404, {'error_code': 'not_found'})
 
     def post(self, path: str, *, headers: dict[str, str], json_payload: dict):
@@ -57,10 +55,12 @@ class _FakeHttp:
             201,
             {
                 'session_id': 34,
+                'mode': 'archive',
+                'session': {'status': self.archive_status, 'is_current': False},
                 'counts': {
-                    'turn_events': 1,
-                    'projected_log_entries': 1,
-                    'log_entries': 0,
+                    'turn_events': 0,
+                    'projected_log_entries': 0,
+                    'log_entries': len(SAVED_LOG),
                     'session_state': 0,
                 },
             },
@@ -71,7 +71,7 @@ class _FakeHttp:
         return _FakeResponse(200, {'deleted': True})
 
 
-def test_run_round_trip_proves_events_project_without_raw_log_duplication():
+def test_run_round_trip_imports_the_save_as_a_read_only_archive():
     http = _FakeHttp()
 
     _payload, result = session_export_import_smoke.run_round_trip(
@@ -82,21 +82,39 @@ def test_run_round_trip_proves_events_project_without_raw_log_duplication():
     )
 
     assert result.ok is True
-    assert result.imported_turn_events == 1
-    assert result.projected_log_entries == 1
-    assert result.imported_log_entries == 0
-    assert result.duplicate_marker_found is False
-    assert http.calls[0] == ('GET', '/api/sessions/12/export?player_id=56', {'Authorization': 'Bearer token'}, None)
+    assert result.save_format == 'aidm.save/2'
+    assert result.imported_log_entries == 2
+    assert result.imported_log_matches is True
+    assert result.archive_status == 'ended'
+    assert result.selected_player_exported is True
+    assert http.calls[0] == ('GET', '/api/sessions/12/export', {'Authorization': 'Bearer token'}, None)
+    assert http.calls[1][3]['mode'] == 'archive'
     assert http.calls[-1][0] == 'DELETE'
 
 
-def test_run_round_trip_flags_duplicate_source_log_marker():
-    http = _FakeHttp(log_message='This stale source log should not be duplicated when turn events are present.')
+def test_run_round_trip_flags_a_lost_log_line_a_playable_archive_and_a_missing_player():
+    lost_line = session_export_import_smoke.run_round_trip(
+        _FakeHttp(imported_messages=['DM: Something else.']),
+        headers={},
+        session_id=12,
+    )[1]
+    playable = session_export_import_smoke.run_round_trip(
+        _FakeHttp(archive_status='active'),
+        headers={},
+        session_id=12,
+    )[1]
+    missing_player = session_export_import_smoke.run_round_trip(
+        _FakeHttp(),
+        headers={},
+        session_id=12,
+        player_id=99,
+    )[1]
 
-    _payload, result = session_export_import_smoke.run_round_trip(http, headers={}, session_id=12)
-
-    assert result.ok is False
-    assert result.duplicate_marker_found is True
+    assert lost_line.ok is False
+    assert lost_line.imported_log_matches is False
+    assert playable.ok is False
+    assert missing_player.ok is False
+    assert missing_player.selected_player_exported is False
 
 
 def test_run_round_trip_cleans_imported_session_when_post_import_validation_fails():
@@ -149,13 +167,14 @@ def test_session_export_import_smoke_dispatches_live_target_mode(monkeypatch):
             result=session_export_import_smoke.ExportImportSmokeResult(
                 source_session_id=kwargs['session_id'],
                 imported_session_id=999,
-                exported_turn_events=1,
+                save_format='aidm.save/2',
                 exported_log_entries=1,
-                imported_turn_events=1,
-                projected_log_entries=1,
-                imported_log_entries=0,
+                imported_log_entries=1,
                 imported_log_entry_count=1,
-                duplicate_marker_found=False,
+                imported_log_matches=True,
+                archive_status='ended',
+                archive_is_current=False,
+                selected_player_exported=True,
                 cleanup_status_code=200,
                 ok=True,
             ),

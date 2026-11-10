@@ -1201,31 +1201,6 @@ def _sum_currency_patterns(text: str, patterns: list[re.Pattern]) -> dict[str, i
     return totals
 
 
-def _intent_confirmed_gold_delta(turn: DmTurn, dm_output: str, *, gold_gain: int, gold_loss: int) -> int:
-    metadata = safe_json_loads(turn.metadata_json, {})
-    action_intent = metadata.get('action_intent') if isinstance(metadata, dict) else None
-    if not isinstance(action_intent, dict) or action_intent.get('kind') != 'item':
-        return 0
-
-    inventory_action = str(action_intent.get('inventory_action') or '').strip().lower()
-    if inventory_action not in {'buy', 'sell'}:
-        return 0
-
-    cost_gold = max(0, int_or_default(action_intent.get('cost_gold'), default=0))
-    if not cost_gold:
-        return 0
-
-    from aidm_server.canon_inventory import inventory_change_from_intent_outcome
-
-    if not inventory_change_from_intent_outcome(turn, dm_output):
-        return 0
-    if inventory_action == 'buy' and gold_loss <= 0:
-        return -cost_gold
-    if inventory_action == 'sell' and gold_gain <= 0:
-        return cost_gold
-    return 0
-
-
 def _stats_with_state(player: Player) -> dict[str, Any]:
     stats = _as_record(player.stats)
     state = character_state_for_player(player)
@@ -1309,7 +1284,7 @@ def apply_character_state_changes(turn: DmTurn, dm_output: str) -> list[dict[str
     text = re.sub(r'\*+', '', dm_output or '')
     gold_gain = _sum_patterns(text, GOLD_GAIN_PATTERNS)
     gold_loss = _sum_patterns(text, GOLD_LOSS_PATTERNS)
-    gold_delta = gold_gain - gold_loss + _intent_confirmed_gold_delta(turn, text, gold_gain=gold_gain, gold_loss=gold_loss)
+    gold_delta = gold_gain - gold_loss
     currency_gain = _sum_currency_patterns(text, CURRENCY_GAIN_PATTERNS)
     currency_loss = _sum_currency_patterns(text, CURRENCY_LOSS_PATTERNS)
     currency_delta = {

@@ -8,9 +8,10 @@ from pathlib import Path
 import re
 from typing import Any
 
+from aidm_server.game_state.campaign_pack_encounters import CATALOG_CONSEQUENCES, ENCOUNTER_TRIGGER_TYPES
 from aidm_server.game_state.models import stable_slug
-from aidm_server.game_state.quest_engine import objective_is_mechanical
-from aidm_server.interactables import validate_interactable_catalog
+from aidm_server.game_state.quest_engine import CONSEQUENCE_CHANGE_TYPES, objective_is_mechanical
+from aidm_server.interactables import INTERACTABLE_ACTIONS, validate_interactable_catalog
 from aidm_server.segment_triggers import KEYWORD_TRIGGER_TYPES, LOCATION_TRIGGER_TYPE, SUPPORTED_TRIGGER_TYPES
 from aidm_server.services.campaign_pack import (
     PACK_BOUNDS_ERROR_CODE,
@@ -201,7 +202,17 @@ AUTHORING_COLLECTIONS = (
     'maps',
     'handouts',
     'lore',
+    'merchants',
 )
+# The id each encounter trigger type names, and the collection it must exist in.
+TRIGGER_REFERENCE_FIELDS = {
+    'on_enter': ('locationId', 'locations'),
+    'on_checkpoint': ('checkpointId', 'checkpoints'),
+    'on_interactable': ('targetId', 'interactables'),
+}
+# Interactable fields keyed by action that name catalog records.
+INTERACTABLE_DISCOVERY_FIELDS = {'discoversClueIds': 'clues', 'discoversLocationIds': 'locations'}
+MERCHANT_PRICE_KEYS = ('gp', 'sp', 'cp')
 
 
 @dataclass(frozen=True)
@@ -362,6 +373,11 @@ def _engine_contract_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]
     issues.extend(_location_connection_issues(pack))
     issues.extend(_branch_flag_issues(pack))
     issues.extend(_director_rule_issues(pack))
+    issues.extend(_encounter_trigger_issues(pack, ids))
+    issues.extend(_world_consequence_issues(pack, ids))
+    issues.extend(_merchant_issues(pack, ids))
+    issues.extend(_story_flag_issues(pack))
+    issues.extend(_route_issues(pack, ids))
     starting_state = _dict(_first(pack, 'startingState', 'starting_state'))
     if 'campaignFlags' in starting_state or 'campaign_flags' in starting_state:
         issues.append(
@@ -393,7 +409,31 @@ def _pack_id_sets(pack: dict[str, Any]) -> dict[str, set[str]]:
         for objective in _records(quest.get('objectives'))
         if _text(objective.get('id'))
     }
+    ids['interactables'] = {
+        _text(record.get('id')) for _path, record in _pack_interactables(pack) if _text(record.get('id'))
+    }
     return ids
+
+
+def _pack_interactables(pack: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Every authored scene object with its JSON path."""
+
+    found: list[tuple[str, dict[str, Any]]] = []
+    for index, location in enumerate(_records(pack.get('locations'))):
+        scene_state = _dict(location.get('sceneState'))
+        for collection in ('interactables', 'hazards'):
+            for source, path in ((location, f'locations[{index}]'), (scene_state, f'locations[{index}].sceneState')):
+                found.extend(
+                    (f'{path}.{collection}[{record_index}]', record)
+                    for record_index, record in enumerate(_records(source.get(collection)))
+                )
+    current_scene = _dict(_first(_dict(_first(pack, 'startingState', 'starting_state')), 'currentScene', 'current_scene'))
+    for collection in ('interactables', 'hazards'):
+        found.extend(
+            (f'startingState.currentScene.{collection}[{record_index}]', record)
+            for record_index, record in enumerate(_records(current_scene.get(collection)))
+        )
+    return found
 
 
 def _record_id_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
@@ -716,6 +756,120 @@ def _director_rule_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
     ]
 
 
+def _encounter_trigger_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[CampaignPackLintIssue]:
+    issues: list[CampaignPackLintIssue] = []
+    for index, encounter in enumerate(_records(pack.get('encounters'))):
+        if 'trigger' not in encounter:
+            continue
+        path = f'encounters[{index}].trigger'
+        trigger = encounter.get('trigger')
+        trigger_type = _text(_dict(trigger).get('type'))
+        if trigger_type not in ENCOUNTER_TRIGGER_TYPES:
+            issues.append(
+                _error(
+                    'invalid_encounter_trigger',
+                    f'{path}.type',
+                    f'Trigger type "{trigger_type}" is not one of: {", ".join(ENCOUNTER_TRIGGER_TYPES)}.',
+                )
+            )
+            continue
+        if trigger_type == 'on_flag' and not _text(trigger.get('flagKey')):
+            issues.append(_error('invalid_encounter_trigger', f'{path}.flagKey', 'An on_flag trigger needs a flagKey.'))
+        if trigger_type == 'on_interactable' and _text(trigger.get('action')) and trigger.get('action') not in INTERACTABLE_ACTIONS:
+            issues.append(
+                _error('invalid_encounter_trigger', f'{path}.action', f'"{trigger.get("action")}" is not an object action.')
+            )
+        if trigger_type in TRIGGER_REFERENCE_FIELDS:
+            field, target = TRIGGER_REFERENCE_FIELDS[trigger_type]
+            if not _text(trigger.get(field)):
+                issues.append(_error('invalid_encounter_trigger', f'{path}.{field}', f'An {trigger_type} trigger needs {field}.'))
+            else:
+                issues.extend(_missing_reference_issues(trigger.get(field), path=f'{path}.{field}', target=target, ids=ids))
+    return issues
+
+
+def _consequence_issues(
+    consequences: Any,
+    *,
+    path: str,
+    ids: dict[str, set[str]],
+) -> list[CampaignPackLintIssue]:
+    issues: list[CampaignPackLintIssue] = []
+    for index, consequence in enumerate(_records(consequences)):
+        consequence_path = f'{path}[{index}]'
+        consequence_type = _text(consequence.get('type'))
+        if consequence_type not in CONSEQUENCE_CHANGE_TYPES:
+            issues.append(
+                _error(
+                    'unsupported_consequence_type',
+                    f'{consequence_path}.type',
+                    f'Consequence type "{consequence_type}" is not applied; use one of: {", ".join(sorted(CONSEQUENCE_CHANGE_TYPES))}.',
+                )
+            )
+        elif consequence_type in CATALOG_CONSEQUENCES:
+            collection, id_key, _embedded = CATALOG_CONSEQUENCES[consequence_type]
+            issues.extend(
+                _missing_reference_issues(consequence.get(id_key), path=f'{consequence_path}.{id_key}', target=collection, ids=ids)
+            )
+    return issues
+
+
+def _world_consequence_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[CampaignPackLintIssue]:
+    issues: list[CampaignPackLintIssue] = []
+    for index, location in enumerate(_records(pack.get('locations'))):
+        if 'onEnter' in location:
+            issues.extend(_consequence_issues(location.get('onEnter'), path=f'locations[{index}].onEnter', ids=ids))
+    for path, interactable in _pack_interactables(pack):
+        for field, target in INTERACTABLE_DISCOVERY_FIELDS.items():
+            for action, referenced in _dict(interactable.get(field)).items():
+                issues.extend(_missing_reference_issues(referenced, path=f'{path}.{field}.{action}', target=target, ids=ids))
+    return issues
+
+
+def _merchant_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[CampaignPackLintIssue]:
+    issues: list[CampaignPackLintIssue] = []
+    for index, merchant in enumerate(_records(pack.get('merchants'))):
+        path = f'merchants[{index}]'
+        if not _text(merchant.get('npcId')) and not _text(merchant.get('locationId')):
+            issues.append(
+                _error('merchant_without_place', path, 'A merchant needs an npcId or a locationId to open for trade.')
+            )
+        issues.extend(_field_reference_issues(merchant, {'npcId': 'npcs', 'locationId': 'locations'}, path=path, ids=ids))
+        for stock_index, entry in enumerate(_records(merchant.get('stock'))):
+            if _text(entry.get('catalog')):
+                continue
+            price = entry.get('price')
+            amounts = [_dict(price).get(key) for key in MERCHANT_PRICE_KEYS if key in _dict(price)]
+            if not amounts or not all(isinstance(amount, int) and not isinstance(amount, bool) and amount > 0 for amount in amounts):
+                issues.append(
+                    _error(
+                        'invalid_merchant_price',
+                        f'{path}.stock[{stock_index}].price',
+                        'A stock price needs positive whole gp, sp or cp amounts.',
+                    )
+                )
+    return issues
+
+
+def _story_flag_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    return [
+        _error(
+            'invalid_story_flag_key',
+            f'storyFlags[{index}].key',
+            f'Story flag key "{_text(story_flag.get("key"))}" must use only lowercase letters, digits and underscores.',
+        )
+        for index, story_flag in enumerate(_records(_first(pack, 'storyFlags', 'story_flags')))
+        if not ID_PATTERN.fullmatch(_text(story_flag.get('key')))
+    ]
+
+
+def _route_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[CampaignPackLintIssue]:
+    issues: list[CampaignPackLintIssue] = []
+    for index, route in enumerate(_records(pack.get('routes'))):
+        issues.extend(_field_reference_issues(route, {'from': 'locations', 'to': 'locations'}, path=f'routes[{index}]', ids=ids))
+    return issues
+
+
 def _walk_dicts(value: Any) -> Iterator[dict[str, Any]]:
     if isinstance(value, dict):
         yield value
@@ -743,7 +897,15 @@ def _flag_keys_set_by_pack(pack: dict[str, Any]) -> set[str]:
         for source in ('flags', 'campaignFlags', 'campaign_flags')
         for key in _dict(starting_state.get(source))
     }
-    for record in [*_records(pack.get('quests')), *_records(pack.get('encounters'))]:
+    keys.update(_text(story_flag.get('key')) for story_flag in _records(_first(pack, 'storyFlags', 'story_flags')))
+    for _path, interactable in _pack_interactables(pack):
+        for flags in _dict(interactable.get('setsFlags')).values():
+            keys.update(stable_slug(key) for key in _dict(flags))
+    for record in [
+        *_records(pack.get('quests')),
+        *_records(pack.get('encounters')),
+        *(_dict({'onEnter': location.get('onEnter')}) for location in _records(pack.get('locations'))),
+    ]:
         for node in _walk_dicts(record):
             if _text(node.get('type')) in {'flag.set', 'flag'} and _text(node.get('flagKey') or node.get('key')):
                 keys.add(stable_slug(node.get('flagKey') or node.get('key')))

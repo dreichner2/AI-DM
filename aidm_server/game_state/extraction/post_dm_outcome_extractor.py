@@ -7,11 +7,14 @@ from flask import current_app, has_app_context
 
 from aidm_server.canon_text import int_or_default
 from aidm_server.contracts import ProviderRequest
+from aidm_server.database import db
+from aidm_server.game_state.campaign_pack_encounters import declared_story_flags, values_match
 from aidm_server.game_state.change_types import PHASE_1_STATE_CHANGE_TYPES
 from aidm_server.game_state.extraction.prompts import POST_DM_SYSTEM_MESSAGE, build_post_dm_prompt
 from aidm_server.game_state.extraction.schemas import extract_json_object, normalize_post_extraction
 from aidm_server.game_state.models import normalize_item_name, stable_change_id, stable_slug
 from aidm_server.llm_providers import get_helper_provider
+from aidm_server.models import Session, safe_json_loads
 from aidm_server.provider_priority import foreground_provider_reservation
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 
@@ -2686,6 +2689,93 @@ def _heuristic_extract(
     }
 
 
+STORY_FLAG_HELPER_INSTRUCTION = (
+    'These story flags are declared by the campaign pack. When the DM response makes one condition '
+    'unmistakably true, propose flag.set with its key as flagKey and one of its values as flagValue. '
+    'Never propose any other flag.'
+)
+STORY_FLAG_STOPWORDS = frozenset({'a', 'an', 'and', 'the', 'of', 'to', 'is', 'has', 'have', 'with', 'in', 'on', 'at'})
+STORY_FLAG_NEGATION_PATTERN = re.compile(
+    r"\b(?:not|never|no longer|refuses?|won't|doesn't|does not|didn't|did not|cannot|can't)\b",
+    re.IGNORECASE,
+)
+
+
+def _story_flags_for(state_before_dm: dict[str, Any]) -> list[dict[str, Any]]:
+    """The pack's declared story flags with the flags' current values.
+
+    The compact extraction state carries the flags but not the pack, so the
+    declarations come from the session's persisted snapshot.
+    """
+
+    if isinstance(state_before_dm.get('campaignPack'), dict):
+        return declared_story_flags(state_before_dm)
+    session_id = state_before_dm.get('sessionId')
+    if not has_app_context() or isinstance(session_id, bool) or not isinstance(session_id, int):
+        return []
+    session = db.session.get(Session, session_id)
+    snapshot = safe_json_loads(session.state_snapshot, {}) if session is not None else {}
+    if not isinstance(snapshot, dict):
+        return []
+    flags = state_before_dm.get('flags') if isinstance(state_before_dm.get('flags'), dict) else {}
+    return declared_story_flags({**snapshot, 'flags': flags})
+
+
+def _with_story_flags(state_before_dm: dict[str, Any], story_flags: list[dict[str, Any]]) -> dict[str, Any]:
+    if not story_flags:
+        return state_before_dm
+    return {
+        **state_before_dm,
+        'storyFlags': {'instruction': STORY_FLAG_HELPER_INSTRUCTION, 'flags': story_flags},
+    }
+
+
+def _story_flag_stems(key: str) -> list[str]:
+    return [token[:5] for token in key.split('_') if token and token not in STORY_FLAG_STOPWORDS]
+
+
+def _sentence_makes_story_flag_true(sentence: str, stems: list[str]) -> bool:
+    words = re.findall(r"[a-z0-9]+", sentence.lower())
+    return (
+        bool(stems)
+        and all(any(word.startswith(stem) for word in words) for stem in stems)
+        and not STORY_FLAG_NEGATION_PATTERN.search(sentence)
+    )
+
+
+def _heuristic_story_flag_changes(
+    *,
+    dm_response: str,
+    story_flags: list[dict[str, Any]],
+    turn_id: int,
+) -> list[dict[str, Any]]:
+    """Propose a declared story flag when two consecutive sentences name every
+    word of its key without negating it."""
+
+    sentences = [sentence for sentence in re.split(r'(?<=[.!?])\s+', re.sub(r'\*+', '', dm_response or '')) if sentence]
+    windows = [' '.join(sentences[index:index + 2]) for index in range(len(sentences))]
+    changes = []
+    for story_flag in story_flags:
+        value = story_flag['values'][0]
+        stems = _story_flag_stems(story_flag['key'])
+        if values_match(story_flag.get('value'), value):
+            continue
+        if any(_sentence_makes_story_flag_true(window, stems) for window in windows):
+            changes.append(
+                {
+                    'id': stable_change_id(turn_id, 'post_dm', 'story_flag', story_flag['key']),
+                    'turnId': turn_id,
+                    'type': 'flag.set',
+                    'source': 'post_dm',
+                    'flagKey': story_flag['key'],
+                    'flagValue': value,
+                    'reason': f"Narration made this true: {story_flag['when']}",
+                    'visible': False,
+                }
+            )
+    return changes
+
+
 def extract_post_dm_outcomes(
     *,
     state_before_dm: dict[str, Any],
@@ -2698,6 +2788,7 @@ def extract_post_dm_outcomes(
     turn_id: int,
     before_provider_call: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
+    declared_flags = _story_flags_for(state_before_dm)
     helper_payload: dict[str, Any] | None = None
     helper_attempted = False
     helper_schema_valid = False
@@ -2716,7 +2807,7 @@ def extract_post_dm_outcomes(
                 before_provider_call()
             try:
                 prompt = build_post_dm_prompt(
-                    state_before_dm=state_before_dm,
+                    state_before_dm=_with_story_flags(state_before_dm, declared_flags),
                     player_message=player_message,
                     validated_actions=validated_actions,
                     already_applied_changes=already_applied_changes,
@@ -2934,6 +3025,14 @@ def extract_post_dm_outcomes(
         turn_id=turn_id,
         already_applied_changes=already_applied_changes,
     )
+    story_flag_changes = _heuristic_story_flag_changes(
+        dm_response=dm_response,
+        story_flags=declared_flags,
+        turn_id=turn_id,
+    )
+    if story_flag_changes:
+        fallback['proposedChanges'] = [*fallback['proposedChanges'], *story_flag_changes]
+        fallback['notes'] = [*fallback['notes'], 'heuristic_story_flags']
     normalized = normalize_post_extraction(fallback, fallback_actor_id=actor_id)
     if fallback.get('authorizedCrossActorChangeIds'):
         normalized['authorizedCrossActorChangeIds'] = fallback.get('authorizedCrossActorChangeIds')

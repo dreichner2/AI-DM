@@ -41,7 +41,8 @@ def test_model_input_for_action_keeps_policy_specific_prompts_together():
     )
     assert 'Attempted action: buy' in item_prompt
     assert 'Item: lantern x2' in item_prompt
-    assert 'Known price/value: 5 gold' in item_prompt
+    assert 'Known price/value' not in item_prompt
+    assert '5 gold' not in item_prompt
 
 
 def test_model_input_for_action_prioritizes_pvp_target_context():

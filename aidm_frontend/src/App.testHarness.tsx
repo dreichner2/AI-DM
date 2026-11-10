@@ -19,7 +19,9 @@ import type {
   Player,
   PlayerDetail,
   SessionImportResponse,
+  SessionListResponse,
   SessionLogEntry,
+  SessionSaveDocument,
   SessionState,
   SessionSummary,
   TtsRuntimeConfig,
@@ -225,6 +227,10 @@ let segmentsByCampaign: Record<number, CampaignSegment[]>
 let sessionLogs: Record<number, SessionLogEntry[]>
 let sessionStates: Record<number, SessionState>
 let playerDetails: Record<number, PlayerDetail>
+// Sessions per page of the workspace and session list responses.
+let sessionPageSize: number
+// When set, a restore import is refused with this reason.
+let importRestoreRefusal: string | null
 let fetchCalls: Array<{
   method: string
   path: string
@@ -320,20 +326,17 @@ function resetApiData() {
     latest_session_id: 20,
     latest_activity_at: '2026-06-06T10:45:00.000Z',
   }
-  const session: SessionSummary = {
+  const session = sessionSummaryFixture({
     session_id: 20,
     campaign_id: 10,
     created_at: '2026-06-06T10:35:00.000Z',
     updated_at: '2026-06-06T10:40:00.000Z',
     latest_activity_at: '2026-06-06T10:45:00.000Z',
+    name: 'Session Alpha',
     display_name: 'Session Alpha',
-    status: 'active',
-    deleted_at: null,
     turn_count: 2,
-    latest_summary: 'The party is testing a sealed door.',
-    is_archived: false,
-    state_snapshot: {},
-  }
+    summary_excerpt: 'The party is testing a sealed door.',
+  })
   const player: Player = {
     player_id: 30,
     workspace_id: 'owner',
@@ -417,10 +420,75 @@ function resetApiData() {
       character_sheet: { hp: 14, max_hp: 16, ac: 13, speed: 30 },
     },
   }
+  sessionPageSize = 30
+  importRestoreRefusal = null
   fetchCalls = []
   ttsFetchHandler = null
   ttsConfigFetchError = null
   requiredAuthToken = null
+}
+
+/** A session list item; anything not given is a fresh, current first chapter. */
+function sessionSummaryFixture(
+  fields: Partial<SessionSummary> & Pick<SessionSummary, 'session_id' | 'campaign_id'>,
+): SessionSummary {
+  return {
+    name: null,
+    display_name: 'Chapter 1',
+    status: 'active',
+    is_current: true,
+    is_archived: false,
+    chapter_number: 1,
+    chapter_recap: '',
+    ended_at: null,
+    created_at: fixedNow.toISOString(),
+    updated_at: fixedNow.toISOString(),
+    latest_activity_at: fixedNow.toISOString(),
+    turn_count: 0,
+    scene_title: null,
+    summary_excerpt: '',
+    imported: false,
+    play_now: false,
+    ...fields,
+  }
+}
+
+/** One page of a campaign's sessions; the cursor is the index of the next one. */
+function sessionPage(campaignId: number, cursor: string | null, limit: number): SessionListResponse {
+  const sessions = sessionsByCampaign[campaignId] ?? []
+  const start = cursor ? Number(cursor) : 0
+  const end = start + limit
+  return {
+    campaign_id: campaignId,
+    sessions: sessions.slice(start, end),
+    limit,
+    has_more: end < sessions.length,
+    next_cursor: end < sessions.length ? String(end) : null,
+  }
+}
+
+function saveDocument(sessionId: number): SessionSaveDocument | null {
+  const session = Object.values(sessionsByCampaign).flat().find((item) => item.session_id === sessionId)
+  const campaign = campaigns.find((item) => item.campaign_id === session?.campaign_id)
+  if (!session || !campaign) return null
+  const state = sessionStates[sessionId]
+  return {
+    format: 'aidm.save',
+    version: 2,
+    exported_at: fixedNow.toISOString(),
+    campaign: { id: campaign.campaign_id, title: campaign.title },
+    session,
+    state_snapshot: state?.state_snapshot ?? {},
+    session_state: {
+      rolling_summary: state?.rolling_summary ?? '',
+      current_location: state?.current_location ?? null,
+      current_quest: state?.current_quest ?? null,
+      memory_snippets: state?.memory_snippets ?? [],
+    },
+    log: sessionLogs[sessionId] ?? [],
+    characters: Object.values(playerDetails).filter((player) => player.campaign_id === campaign.campaign_id),
+    unsettled: { pending_roll: false, active_combat: false },
+  }
 }
 
 function jsonResponse(payload: unknown, init: ResponseInit = {}) {
@@ -477,6 +545,8 @@ function workspacePayload(campaignId: number): CampaignWorkspace {
   if (!campaign) throw new Error(`Unknown campaign ${campaignId}`)
   const sessions = sessionsByCampaign[campaignId] ?? []
   const players = playersByCampaign[campaignId] ?? []
+  const firstPage = sessionPage(campaignId, null, sessionPageSize)
+  const current = sessions.find((session) => session.is_current)
   return {
     campaign: {
       ...campaign,
@@ -484,7 +554,8 @@ function workspacePayload(campaignId: number): CampaignWorkspace {
       latest_session_id: sessions[0]?.session_id ?? null,
       latest_activity_at: sessions[0]?.latest_activity_at ?? campaign.updated_at ?? campaign.created_at,
     },
-    sessions,
+    sessions:
+      current && !firstPage.sessions.includes(current) ? [...firstPage.sessions, current] : firstPage.sessions,
     players,
     maps: mapsByCampaign[campaignId] ?? [],
     segments: segmentsByCampaign[campaignId] ?? [],
@@ -496,9 +567,9 @@ function workspacePayload(campaignId: number): CampaignWorkspace {
       latest_session_id: sessions[0]?.session_id ?? null,
       latest_activity_at: sessions[0]?.latest_activity_at ?? campaign.updated_at ?? campaign.created_at,
     },
-    has_more: { sessions: false, players: false, maps: false, segments: false },
-    next_cursor: { sessions: null, players: null, maps: null, segments: null },
-    limits: { sessions: null, players: null, maps: null, segments: null },
+    has_more: { sessions: firstPage.has_more, players: false, maps: false, segments: false },
+    next_cursor: { sessions: firstPage.next_cursor, players: null, maps: null, segments: null },
+    limits: { sessions: sessionPageSize, players: null, maps: null, segments: null },
   }
 }
 
@@ -1217,6 +1288,25 @@ function installFetchMock() {
         return jsonResponse(workspacePayload(campaignId))
       }
 
+      const sessionListMatch = path.match(/^\/api\/sessions\/campaigns\/(\d+)\/sessions$/)
+      if (method === 'GET' && sessionListMatch) {
+        return jsonResponse(
+          sessionPage(
+            Number(sessionListMatch[1]),
+            url.searchParams.get('cursor'),
+            Number(url.searchParams.get('limit') ?? 30),
+          ),
+        )
+      }
+
+      const exportMatch = path.match(/^\/api\/sessions\/(\d+)\/export$/)
+      if (method === 'GET' && exportMatch) {
+        const save = saveDocument(Number(exportMatch[1]))
+        return save
+          ? jsonResponse(save)
+          : jsonResponse({ error: 'Session not found.', error_code: 'session_not_found' }, { status: 404 })
+      }
+
       const logMatch = path.match(/^\/api\/sessions\/(\d+)\/log$/)
       if (method === 'GET' && logMatch) {
         const sessionId = Number(logMatch[1])
@@ -1244,7 +1334,7 @@ function installFetchMock() {
             rolling_summary: '',
             active_segments: [],
             memory_snippets: [],
-            state_snapshot: session?.state_snapshot ?? {},
+            state_snapshot: {},
             updated_at: fixedNow.toISOString(),
           },
         )
@@ -1437,20 +1527,12 @@ function installFetchMock() {
           latest_session_id: sessionId,
           latest_activity_at: fixedNow.toISOString(),
         }
-        const session: SessionSummary = {
+        const session = sessionSummaryFixture({
           session_id: sessionId,
           campaign_id: campaignId,
-          created_at: fixedNow.toISOString(),
-          updated_at: fixedNow.toISOString(),
-          latest_activity_at: fixedNow.toISOString(),
+          name: pack.title,
           display_name: pack.title,
-          status: 'active',
-          deleted_at: null,
-          turn_count: 0,
-          latest_summary: '',
-          is_archived: false,
-          state_snapshot: { campaignPack: { packId: pack.pack_id, title: pack.title } },
-        }
+        })
         campaigns = [campaign, ...campaigns]
         sessionsByCampaign[campaignId] = [session]
         playersByCampaign[campaignId] = []
@@ -1507,20 +1589,13 @@ function installFetchMock() {
 
       if (method === 'POST' && path === '/api/sessions/start') {
         const sessionId = 21
-        const session: SessionSummary = {
+        const session = sessionSummaryFixture({
           session_id: sessionId,
           campaign_id: body.campaign_id,
-          created_at: fixedNow.toISOString(),
-          updated_at: fixedNow.toISOString(),
-          latest_activity_at: fixedNow.toISOString(),
+          name: 'Session Beta',
           display_name: 'Session Beta',
-          status: 'active',
-          deleted_at: null,
-          turn_count: 0,
-          latest_summary: '',
-          is_archived: false,
-          state_snapshot: {},
-        }
+          chapter_number: 2,
+        })
         sessionsByCampaign[body.campaign_id] = [
           session,
           ...(sessionsByCampaign[body.campaign_id] ?? []),
@@ -1534,72 +1609,82 @@ function installFetchMock() {
           rolling_summary: '',
           active_segments: [],
           memory_snippets: [],
-          state_snapshot: session.state_snapshot,
+          state_snapshot: {},
           updated_at: fixedNow.toISOString(),
         }
         return jsonResponse({ session_id: sessionId })
       }
 
       if (method === 'POST' && path === '/api/sessions/import') {
+        const isSave = body.format === 'aidm.save'
+        const restoring = body.mode === 'restore'
+        if (restoring && importRestoreRefusal) {
+          return jsonResponse(
+            { error: importRestoreRefusal, error_code: 'save_not_restorable' },
+            { status: 409 },
+          )
+        }
         const campaignId = Number(
           body.campaign_id ??
-            body.campaignId ??
+            body.campaign?.id ??
             body.selectedIds?.campaignId ??
             body.selectedIds?.campaign_id ??
             body.campaign?.campaign_id ??
             10,
         )
         const sessionId = 30
-        const session: SessionSummary = {
+        const savedName = isSave ? body.session?.display_name : body.selectedSession?.display_name ?? body.name
+        const savedState = isSave ? body.session_state : body.sessionState
+        const savedLog: SessionLogEntry[] = (isSave ? body.log : body.logEntries) ?? []
+        const existing = sessionsByCampaign[campaignId] ?? []
+        const session = sessionSummaryFixture({
           session_id: sessionId,
           campaign_id: campaignId,
-          created_at: fixedNow.toISOString(),
-          updated_at: fixedNow.toISOString(),
-          latest_activity_at: fixedNow.toISOString(),
-          display_name: body.selectedSession?.display_name ?? body.name ?? 'Imported Session',
-          status: 'active',
-          deleted_at: null,
-          turn_count: Array.isArray(body.turnEvents) ? body.turnEvents.length : 0,
-          latest_summary: body.sessionState?.rolling_summary ?? '',
-          is_archived: false,
-          state_snapshot: {
-            imported: true,
-          },
-        }
+          name: restoring ? null : savedName ?? 'Imported Session',
+          display_name: restoring ? `Chapter ${existing.length + 1}` : `Archive — ${savedName ?? 'Imported Session'}`,
+          status: restoring ? 'active' : 'ended',
+          is_current: restoring,
+          chapter_number: existing.length + 1,
+          turn_count: savedLog.length,
+          summary_excerpt: savedState?.rolling_summary ?? '',
+          imported: !restoring,
+        })
         sessionsByCampaign[campaignId] = [
           session,
-          ...(sessionsByCampaign[campaignId] ?? []),
+          ...existing.map((item) => (restoring ? { ...item, is_current: false, status: 'ended' as const } : item)),
         ]
-        sessionLogs[sessionId] = Array.isArray(body.logEntries)
-          ? body.logEntries.map((entry: SessionLogEntry, index: number) => ({
+        sessionLogs[sessionId] = restoring
+          ? []
+          : savedLog.map((entry, index) => ({
               id: 700 + index,
               message: entry.message,
               entry_type: entry.entry_type,
               metadata: entry.metadata ?? {},
               timestamp: entry.timestamp ?? fixedNow.toISOString(),
             }))
-          : []
         sessionStates[sessionId] = {
           session_id: sessionId,
           campaign_id: campaignId,
-          current_location: body.sessionState?.current_location ?? null,
-          current_quest: body.sessionState?.current_quest ?? null,
-          rolling_summary: body.sessionState?.rolling_summary ?? '',
-          active_segments: body.sessionState?.active_segments ?? [],
-          memory_snippets: body.sessionState?.memory_snippets ?? [],
-          state_snapshot: session.state_snapshot,
+          current_location: savedState?.current_location ?? null,
+          current_quest: savedState?.current_quest ?? null,
+          rolling_summary: savedState?.rolling_summary ?? '',
+          active_segments: [],
+          memory_snippets: savedState?.memory_snippets ?? [],
+          state_snapshot: isSave ? body.state_snapshot ?? {} : body.selectedSession?.state_snapshot ?? {},
           updated_at: fixedNow.toISOString(),
         }
         const response: SessionImportResponse = {
           imported: true,
+          mode: restoring ? 'restore' : 'archive',
           session_id: sessionId,
           session,
           counts: {
-            turn_events: Array.isArray(body.turnEvents) ? body.turnEvents.length : 0,
+            turn_events: 0,
             projected_log_entries: 0,
-            log_entries: Array.isArray(body.logEntries) ? body.logEntries.length : 0,
-            session_state: body.sessionState ? 1 : 0,
+            log_entries: restoring ? 0 : savedLog.length,
+            session_state: savedState ? 1 : 0,
           },
+          restored_player_ids: [],
         }
         return jsonResponse(response, { status: 201 })
       }
@@ -1607,7 +1692,12 @@ function installFetchMock() {
       const sessionMatch = path.match(/^\/api\/sessions\/(\d+)$/)
       if (method === 'PATCH' && sessionMatch) {
         const sessionId = Number(sessionMatch[1])
-        const updated = { ...sessionsByCampaign[10][0], display_name: body.name, updated_at: fixedNow.toISOString() }
+        const updated = {
+          ...sessionsByCampaign[10][0],
+          name: body.name,
+          display_name: body.name,
+          updated_at: fixedNow.toISOString(),
+        }
         sessionsByCampaign[10] = sessionsByCampaign[10].map((session) =>
           session.session_id === sessionId ? updated : session,
         )
@@ -1796,6 +1886,18 @@ export const appTestState = {
   set playerDetails(value: Record<number, PlayerDetail>) {
     playerDetails = value
   },
+  get sessionPageSize() {
+    return sessionPageSize
+  },
+  set sessionPageSize(value: number) {
+    sessionPageSize = value
+  },
+  get importRestoreRefusal() {
+    return importRestoreRefusal
+  },
+  set importRestoreRefusal(value: string | null) {
+    importRestoreRefusal = value
+  },
   get fetchCalls() {
     return fetchCalls
   },
@@ -1879,6 +1981,7 @@ export {
   AppUnderTest as App,
   contrastRatio,
   fixedNow,
+  sessionSummaryFixture,
   installLegacyMatchMediaMock,
   installMatchMediaMock,
   jsonResponse,

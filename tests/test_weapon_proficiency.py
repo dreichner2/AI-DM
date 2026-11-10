@@ -224,6 +224,7 @@ def test_player_creation_persists_private_profile_and_class_change_replaces_it(c
     )
     assert export_response.status_code == 200
     export_payload = export_response.get_json()
-    assert export_payload['selectedPlayer']['weapon_proficiencies'] == updated['weapon_proficiencies']
-    exported_player = next(item for item in export_payload['players'] if item['player_id'] == player_id)
+    assert export_payload['format'] == 'aidm.save'
+    assert export_payload['version'] == 2
+    exported_player = next(item for item in export_payload['characters'] if item['player_id'] == player_id)
     assert exported_player['weapon_proficiencies'] == updated['weapon_proficiencies']

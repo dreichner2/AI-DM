@@ -30,15 +30,38 @@ from aidm_server.game_state.models import (
     state_applied_change_ids,
 )
 from aidm_server.combat import vitality
-from aidm_server.combat.modifiers import MODIFIER_ENGINE_SOURCE
+from aidm_server.combat.actions import COMBAT_ACTION_SOURCE
+from aidm_server.combat.modifiers import MODIFIER_ENGINE_SOURCE, normalize_active_effect
 from aidm_server.combat.morale import MORALE_EVENTS, apply_morale_event
+from aidm_server.combat.reactions import REACTION_SOURCE
 from aidm_server.combat.vitality import DEATH_SAVE_SOURCE
 from aidm_server.combat.state import RANGE_BANDS, normalize_battlefield, normalize_combat_state, normalize_participant
 from aidm_server.spell_effects import resolve_targeted_spell
-from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start
+from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start, story_flag_allows
 from aidm_server.game_state.validation.inventory_validator import resolve_inventory_item_reference
 from aidm_server.game_state.quest_engine import quest_completion_blocker, quest_failure_blocker
-from aidm_server.interactables import resolve_interactable_action
+from aidm_server.commerce import (
+    COMMERCE_AUTHORITY,
+    COMMERCE_SOURCE,
+    resolve_purchase,
+    resolve_sale,
+    route_purchase,
+    route_sale,
+)
+from aidm_server.game_clock import (
+    REST_TYPES,
+    long_rest_hit_dice_regained,
+    rest_block_reason,
+    resolve_short_rest_hit_dice,
+)
+from aidm_server.interactables import interactable_actor_context, object_rolls, resolve_interactable_action
+from aidm_server.item_effects import (
+    ITEM_EFFECT_AUTHORITY,
+    ITEM_USE_SOURCE,
+    item_effect_id,
+    item_roller,
+    resolve_item_use,
+)
 from aidm_server.spellbook import class_spell_archetype, normalize_spellbook, spell_from_change
 
 
@@ -383,6 +406,114 @@ def _resolve_generic_ranged_attack_weapon(actor: dict[str, Any], weapon_name: st
     }
 
 
+def _resolve_item_effect(
+    state: dict[str, Any],
+    *,
+    actor_id: Any,
+    item_id: Any,
+    target_id: Any,
+    use_id: str,
+    current_turn: int,
+    replay_rolls: list[int] | None = None,
+) -> dict[str, Any]:
+    roller, rolls = item_roller(replay_rolls)
+    result = resolve_item_use(
+        state,
+        actor_id=actor_id,
+        item_id=item_id,
+        target_id=target_id,
+        use_id=use_id,
+        current_turn=current_turn,
+        roller=roller,
+    )
+    if result.get('ok'):
+        result['resolution']['rolls'] = list(rolls)
+    return result
+
+
+def _validate_item_effect_use(
+    action: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    actor: dict[str, Any],
+    item: dict[str, Any],
+    resolution: dict[str, Any],
+    current_turn: int,
+) -> dict[str, Any]:
+    """A catalog item is used by the rules engine: rolls, removal and effect in one change."""
+
+    target_id = _text(_action_value(action, 'targetId', 'target_id'))
+    change_id = stable_change_id(current_turn, 'pre_dm', action.get('id'), 'item.use', actor.get('id'), item.get('id'), target_id)
+    result = _resolve_item_effect(
+        state,
+        actor_id=actor.get('id'),
+        item_id=item.get('id'),
+        target_id=target_id,
+        use_id=change_id,
+        current_turn=current_turn,
+    )
+    if not result.get('ok'):
+        return _invalid(action, _text(result.get('reason')) or f"{item.get('name')} cannot be used now.")
+    item_resolution = result['resolution']
+    change = {
+        'id': change_id,
+        'turnId': current_turn,
+        'type': 'item.use',
+        'source': ITEM_USE_SOURCE,
+        'actorId': actor.get('id'),
+        'itemId': item.get('id'),
+        'itemName': item.get('name'),
+        'targetId': item_resolution['targetId'],
+        'effectId': item_resolution['effectId'],
+        'resolutionAuthority': ITEM_EFFECT_AUTHORITY,
+        'resolution': deepcopy(item_resolution),
+        'reason': item_resolution['summary'],
+        'visible': True,
+    }
+    return _valid(
+        action,
+        item_resolution['summary'],
+        normalized_action={
+            **action,
+            'itemId': item.get('id'),
+            'itemName': item.get('name'),
+            'targetId': item_resolution['targetId'],
+            'effectId': item_resolution['effectId'],
+            'summary': item_resolution['summary'],
+            'resolution': resolution,
+        },
+        immediate_changes=[change],
+    )
+
+
+def _validate_item_use_change(change: dict[str, Any], state: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None]:
+    if _text(change.get('source')).lower() != ITEM_USE_SOURCE:
+        return 'rejected', 'Item effects must be resolved by the rules engine before narration.', None
+    if _text(change.get('resolutionAuthority')) != ITEM_EFFECT_AUTHORITY:
+        return 'rejected', 'Item effect resolution authority is missing.', None
+    supplied = change.get('resolution') if isinstance(change.get('resolution'), dict) else None
+    if supplied is None:
+        return 'rejected', 'Item effect resolution is missing.', None
+    replay = _resolve_item_effect(
+        state,
+        actor_id=_action_value(change, 'actorId', 'actor_id'),
+        item_id=change.get('itemId'),
+        target_id=change.get('targetId'),
+        use_id=_text(change.get('id')),
+        current_turn=max(1, int_or_default(change.get('turnId', change.get('turn_id')), default=1)),
+        replay_rolls=[int_or_default(value, default=1) for value in supplied.get('rolls') or []],
+    )
+    if not replay.get('ok'):
+        return 'rejected', _text(replay.get('reason')) or 'The item can no longer be used.', None
+    if replay['resolution'] != supplied:
+        return 'rejected', 'Item result does not match the authoritative roll replay.', None
+    normalized = {**change, 'resolution': deepcopy(replay['resolution'])}
+    if replay.get('resolvedCombat') is not None:
+        normalized['resolvedCombat'] = deepcopy(replay['resolvedCombat'])
+        normalized['effectCasterResources'] = deepcopy(replay.get('casterResources'))
+    return 'accepted', 'Item use matches the authoritative rules engine.', normalized
+
+
 def _validate_consume_item(
     action: dict[str, Any],
     state: dict[str, Any],
@@ -409,6 +540,8 @@ def _validate_consume_item(
         return _invalid(action, f"{actor_name(actor)} does not have {item_name or 'that item'}.")
     if int_or_default(item.get('quantity'), default=1) < quantity:
         return _invalid(action, f"Not enough {item.get('name')}. Available: {item.get('quantity')}.")
+    if item_effect_id(item):
+        return _validate_item_effect_use(action, state, actor=actor, item=item, resolution=resolution, current_turn=current_turn)
     item_type = normalize_item_name(item.get('type'))
     item_subtype = normalize_item_name(item.get('subtype'))
     item_labels = {item_type, item_subtype, *[normalize_item_name(tag) for tag in item.get('tags') or []]}
@@ -466,6 +599,8 @@ def _validate_use_or_transfer_item(
         return _invalid(action, f"{actor_name(actor)} does not have {item_name or 'that item'}.")
     if int_or_default(item.get('quantity'), default=1) < quantity:
         return _invalid(action, f"Not enough {item.get('name')}. Available: {item.get('quantity')}.")
+    if item_effect_id(item):
+        return _validate_item_effect_use(action, state, actor=actor, item=item, resolution=resolution, current_turn=current_turn)
     return _pending(
         action,
         f"{actor_name(actor)} has {item.get('name')} x{item.get('quantity')}.",
@@ -916,29 +1051,9 @@ def _validate_world_travel(action: dict[str, Any], state: dict[str, Any], *, cur
 
 
 def _interactable_actor_context(state: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
-    items = actor_items(actor)
-    tool_ids = [
-        _text(item.get('id'))
-        for item in items
-        if _text(item.get('id'))
-        and (
-            _text(item.get('type')).lower() == 'tool'
-            or 'tool' in {_text(tag).lower() for tag in (item.get('tags') or [])}
-        )
-    ]
-    capability_ids = [
-        _text(capability.get('id'))
-        for capability in (actor.get('classFeatures') or [])
-        if isinstance(capability, dict) and _text(capability.get('id'))
-    ]
-    return {
-        'id': actor.get('id'),
-        'items': deepcopy(items),
-        'itemIds': [_text(item.get('id')) for item in items if _text(item.get('id'))],
-        'toolIds': tool_ids,
-        'capabilities': capability_ids,
-        'flags': deepcopy(state.get('flags')) if isinstance(state.get('flags'), dict) else {},
-    }
+    # Object checks and effect saves are rolled by the server when the action
+    # is submitted and again, identically, when its change is re-validated.
+    return {**interactable_actor_context(state, actor), 'rolls': object_rolls(state)}
 
 
 def _interactable_request(
@@ -1472,25 +1587,44 @@ def _validate_interactable_change(
     )
 
 
-def _validate_rest_action(action: dict[str, Any], state: dict[str, Any], *, current_turn: int) -> dict[str, Any]:
+def _rest_summary(actor: dict[str, Any], rest_type: str, hit_dice: dict[str, Any]) -> str:
+    name = actor_name(actor)
+    if rest_type == 'long_rest':
+        regained = int_or_default(hit_dice.get('regained'), default=0)
+        return f"{name} completed a long rest, regaining full hit points and {regained} hit {'die' if regained == 1 else 'dice'}."
+    if not hit_dice.get('spent'):
+        return f'{name} completed a short rest without spending hit dice.'
+    spent = int(hit_dice['spent'])
+    return (
+        f"{name} completed a short rest, spending {spent} hit {'die' if spent == 1 else 'dice'} "
+        f"({hit_dice['die']} rolls {hit_dice['rolls']}, CON {hit_dice['conModifier']:+d} each) "
+        f"to regain up to {hit_dice['healing']} hit points."
+    )
+
+
+def _validate_rest_action(
+    action: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    current_turn: int,
+    replay_rolls: list[int] | None = None,
+) -> dict[str, Any]:
     actor = find_actor(state, _action_value(action, 'actorId', 'actor_id'))
     if not actor:
         return _invalid(action, 'Actor not found.')
-    scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
-    combat = normalize_combat_state(state.get('combat'), scene)
-    if _text(combat.get('status')).lower() in {'starting', 'active'} or _text(scene.get('combatState')).lower() in {'pending', 'active'}:
-        return _invalid(action, 'Rest is unavailable while combat is active.')
-    health = actor.get('health') if isinstance(actor.get('health'), dict) else {}
-    conditions = {_text(value).lower() for value in health.get('conditions') or []}
-    # A stable character at 0 HP may rest; the dying and the dead may not.
-    if (
-        conditions.intersection({'dead', 'dying'})
-        or (int_or_default(health.get('currentHp'), default=1) <= 0 and 'stable' not in conditions)
-    ):
-        return _invalid(action, 'A dead or dying character cannot complete a rest.')
     rest_type = _text(_action_value(action, 'restType', 'rest_type')).lower()
-    if rest_type not in {'short_rest', 'long_rest'}:
+    if rest_type not in REST_TYPES:
         return _invalid(action, 'Rest type must be short_rest or long_rest.')
+    blocked = rest_block_reason(state, actor, rest_type)
+    if blocked:
+        return _invalid(action, blocked)
+    raw_requested = _action_value(action, 'hitDice', 'hit_dice')
+    requested = max(0, int_or_default(raw_requested, default=0)) if raw_requested is not None else None
+    if rest_type == 'short_rest':
+        roller, _rolls = item_roller(replay_rolls)
+        hit_dice = resolve_short_rest_hit_dice(actor, requested, roller)
+    else:
+        hit_dice = {'regained': long_rest_hit_dice_regained(actor)}
     change = {
         'id': stable_change_id(current_turn, 'pre_dm', action.get('id'), 'rest.complete', actor.get('id'), rest_type),
         'turnId': current_turn,
@@ -1498,15 +1632,122 @@ def _validate_rest_action(action: dict[str, Any], state: dict[str, Any], *, curr
         'source': 'pre_dm_rest_action',
         'actorId': actor.get('id'),
         'restType': rest_type,
-        'reason': f"{actor_name(actor)} completed a {'short' if rest_type == 'short_rest' else 'long'} rest.",
+        'hitDiceRequested': requested,
+        'hitDiceResolution': hit_dice,
+        'reason': _rest_summary(actor, rest_type, hit_dice),
         'visible': False,
     }
     return _valid(
         action,
         change['reason'],
-        normalized_action={**action, 'restType': rest_type},
+        normalized_action={**action, 'restType': rest_type, 'hitDiceResolution': hit_dice},
         immediate_changes=[change],
     )
+
+
+def _shop_transaction(state: dict[str, Any], actor: dict[str, Any], *, buy: bool, merchant_id: Any, reference: Any, quantity: Any) -> dict[str, Any]:
+    if buy:
+        return resolve_purchase(state, actor, merchant_id=merchant_id, stock_id=reference, quantity=quantity)
+    return resolve_sale(state, actor, merchant_id=merchant_id, item_id=reference, quantity=quantity)
+
+
+def _validate_shop_action(
+    action: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    current_turn: int,
+    recent_context: list[str],
+    selected_item_id: str | None,
+    buy: bool,
+) -> dict[str, Any]:
+    """Buy or sell at an open merchant; a free-text trade with no merchant is left to the DM."""
+
+    actor = find_actor(state, _action_value(action, 'actorId', 'actor_id'))
+    if not actor:
+        return _invalid(action, 'Actor not found.')
+    item_name = _text(_action_value(action, 'itemName', 'item_name'))
+    merchant_id = _text(_action_value(action, 'merchantId', 'merchant_id'))
+    quantity = max(1, int_or_default(action.get('quantity'), default=1))
+    verb = 'buy' if buy else 'sell'
+    unrouted = _pending(
+        action,
+        f'No open merchant trades in {item_name or "that"}; the DM adjudicates the trade and its price.',
+        normalized_action={**action, 'summary': f'Player attempts to {verb} {item_name or "an item"}.'},
+    )
+    if buy:
+        reference = _text(_action_value(action, 'stockId', 'stock_id'))
+        if not merchant_id:
+            routed = route_purchase(state, item_name)
+            if routed is None:
+                return unrouted
+            merchant_id, reference = routed[0]['id'], routed[1]['stockId']
+    else:
+        if not merchant_id:
+            merchant = route_sale(state)
+            if merchant is None:
+                return unrouted
+            merchant_id = merchant['id']
+        _actor, item, resolution = _resolve_action_item(
+            action=action,
+            state=state,
+            item_name=item_name,
+            current_turn=current_turn,
+            recent_context=recent_context,
+            selected_item_id=selected_item_id,
+        )
+        if resolution.get('status') == 'needs_clarification':
+            return _clarification(action, resolution)
+        if not item:
+            return _invalid(action, f"{actor_name(actor)} does not have {item_name or 'that item'}.")
+        reference = _text(item.get('id'))
+    result = _shop_transaction(state, actor, buy=buy, merchant_id=merchant_id, reference=reference, quantity=quantity)
+    if not result.get('ok'):
+        return _invalid(action, _text(result.get('reason')) or 'That trade is not possible now.')
+    transaction = result['transaction']
+    change_type = f'shop.{verb}'
+    change = {
+        'id': stable_change_id(current_turn, 'pre_dm', action.get('id'), change_type, actor.get('id'), merchant_id, reference, quantity),
+        'turnId': current_turn,
+        'type': change_type,
+        'source': COMMERCE_SOURCE,
+        'actorId': actor.get('id'),
+        'merchantId': merchant_id,
+        ('stockId' if buy else 'itemId'): reference,
+        'itemName': transaction['itemName'],
+        'quantity': quantity,
+        'resolutionAuthority': COMMERCE_AUTHORITY,
+        'transaction': deepcopy(transaction),
+        'reason': result['reason'],
+        'visible': True,
+    }
+    return _valid(
+        action,
+        result['reason'],
+        normalized_action={**action, 'merchantId': merchant_id, 'summary': result['reason'], 'transaction': deepcopy(transaction)},
+        immediate_changes=[change],
+    )
+
+
+def _validate_shop_change(change: dict[str, Any], state: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None]:
+    if _text(change.get('source')).lower() != COMMERCE_SOURCE or _text(change.get('resolutionAuthority')) != COMMERCE_AUTHORITY:
+        return 'rejected', 'Trades must be settled by the commerce engine before narration.', None
+    actor = find_actor(state, _action_value(change, 'actorId', 'actor_id'))
+    if not actor:
+        return 'rejected', 'Actor not found.', None
+    buy = change.get('type') == 'shop.buy'
+    result = _shop_transaction(
+        state,
+        actor,
+        buy=buy,
+        merchant_id=change.get('merchantId'),
+        reference=change.get('stockId' if buy else 'itemId'),
+        quantity=change.get('quantity'),
+    )
+    if not result.get('ok'):
+        return 'rejected', _text(result.get('reason')) or 'That trade is no longer possible.', None
+    if result['transaction'] != change.get('transaction'):
+        return 'rejected', 'Trade terms do not match the merchant and purse as they stand.', None
+    return 'accepted', 'Trade matches the commerce engine.', None
 
 
 def _validate_attack(
@@ -1663,6 +1904,15 @@ def validate_declared_actions(
             result = _validate_class_feature_action(action, state, current_turn=current_turn)
         elif action_type == 'rest.complete':
             result = _validate_rest_action(action, state, current_turn=current_turn)
+        elif action_type in {'shop.buy', 'shop.sell'}:
+            result = _validate_shop_action(
+                action,
+                state,
+                current_turn=current_turn,
+                recent_context=recent_context or [],
+                selected_item_id=selected_item_id,
+                buy=action_type == 'shop.buy',
+            )
         elif action_type == 'combat.attack':
             result = _validate_attack(
                 action,
@@ -3236,7 +3486,12 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
     if change_type == 'flag.set':
         if not _text(normalized.get('flagKey')):
             return 'rejected', 'Flag set requires flagKey.', None
-        if _is_narration_authority_change(normalized):
+        # Narration may set only a pack-declared story flag to a declared value.
+        if _is_narration_authority_change(normalized) and not story_flag_allows(
+            state,
+            normalized.get('flagKey'),
+            normalized.get('flagValue'),
+        ):
             return 'rejected', 'Narration cannot set authoritative gameplay flags.', None
         normalized['flagKey'] = stable_slug(normalized.get('flagKey'))
         return 'accepted', 'Flag set is valid.', normalized
@@ -3522,7 +3777,37 @@ def _normalize_combat_change(change: dict[str, Any], state: dict[str, Any]) -> t
             return 'rejected', 'Combat movement fromRangeBand is invalid.', None
         if from_range:
             normalized['fromRangeBand'] = from_range
+        engage_with = _string_list(normalized.get('engageWith'))
+        if engage_with:
+            if to_range != 'melee':
+                return 'rejected', 'Only a move into melee can engage an enemy.', None
+            if set(engage_with) - _combat_participant_ids(state) or resolved_participant_id in engage_with:
+                return 'rejected', 'Combat movement engages an unknown participant.', None
+            normalized['engageWith'] = engage_with
+        else:
+            normalized.pop('engageWith', None)
         return 'accepted', 'Combat movement is valid.', normalized
+
+    if change_type == 'combat.reaction.use':
+        if _text(normalized.get('source')) != REACTION_SOURCE:
+            return 'rejected', 'Reactions are spent only by the reaction engine.', None
+        return 'accepted', 'Reaction use is valid.', normalized
+
+    if change_type == 'combat.effect.add':
+        if _text(normalized.get('source')) not in {COMBAT_ACTION_SOURCE, REACTION_SOURCE}:
+            return 'rejected', 'Active effects are added only by the combat engine.', None
+        effect = normalize_active_effect(normalized.get('effect'))
+        if effect is None:
+            return 'rejected', 'Active effect payload is invalid.', None
+        normalized['effect'] = effect
+        return 'accepted', 'Active effect is valid.', normalized
+
+    if change_type == 'combat.stabilize':
+        if _text(normalized.get('source')) not in {COMBAT_ACTION_SOURCE, REACTION_SOURCE}:
+            return 'rejected', 'Stabilizing is resolved only by the combat engine.', None
+        if not vitality.is_dying(_combat_participant(state, resolved_participant_id)):
+            return 'rejected', 'Stabilize target is not dying.', None
+        return 'accepted', 'Stabilize is valid.', normalized
 
     if change_type in {'combat.condition.add', 'combat.condition.remove'}:
         condition = _text(normalized.get('condition') or normalized.get('conditionName') or normalized.get('condition_name')).lower().replace(' ', '_')
@@ -4023,20 +4308,38 @@ def validate_state_changes(
         elif change_type == 'scene.interactable.action':
             status, reason, normalized = _validate_interactable_change(change, state)
         elif change_type == 'rest.complete':
+            supplied_hit_dice = change.get('hitDiceResolution') if isinstance(change.get('hitDiceResolution'), dict) else None
             rest_result = _validate_rest_action(
                 {
                     **change,
                     'type': 'rest.complete',
                     'restType': _action_value(change, 'restType', 'rest_type'),
+                    'hitDice': change.get('hitDiceRequested'),
                 },
                 state,
                 current_turn=max(1, int_or_default(change.get('turnId', change.get('turn_id')), default=1)),
+                replay_rolls=(
+                    [int_or_default(value, default=1) for value in supplied_hit_dice.get('rolls') or []]
+                    if supplied_hit_dice is not None
+                    else None
+                ),
             )
+            resolved_hit_dice = (rest_result.get('normalizedAction') or {}).get('hitDiceResolution')
             if rest_result.get('status') != 'valid':
                 status, reason, normalized = 'rejected', _text(rest_result.get('reason')) or 'Rest is not legal.', None
+            elif supplied_hit_dice is not None and supplied_hit_dice != resolved_hit_dice:
+                status, reason, normalized = 'rejected', 'Hit dice result does not match the authoritative roll replay.', None
             else:
-                normalized = {**change, 'restType': (rest_result.get('normalizedAction') or {}).get('restType')}
+                normalized = {
+                    **change,
+                    'restType': (rest_result.get('normalizedAction') or {}).get('restType'),
+                    'hitDiceResolution': resolved_hit_dice,
+                }
                 status, reason = 'accepted', _text(rest_result.get('reason')) or 'Rest is valid.'
+        elif change_type == 'item.use':
+            status, reason, normalized = _validate_item_use_change(change, state)
+        elif change_type in {'shop.buy', 'shop.sell'}:
+            status, reason, normalized = _validate_shop_change(change, state)
         elif change_type == 'inventory.mark_used':
             status, reason, normalized = 'accepted', 'Inventory use marker is valid.', None
         elif change_type == 'race_ability.mark_used':

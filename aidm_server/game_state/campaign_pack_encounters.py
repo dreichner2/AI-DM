@@ -1,13 +1,42 @@
+"""Campaign-pack world rules: encounter materialisation, scaling and triggers.
+
+Besides building pack combat, this module derives the trusted follow-up
+changes the applier queues after an applied change: an encounter whose
+authored trigger is due starts, a location's ``onEnter`` consequences run on
+first arrival, and authored consequences that name catalog records are
+materialised from the pack catalog.
+"""
+
 from __future__ import annotations
 
 from copy import deepcopy
+from fractions import Fraction
+import math
 from typing import Any
 
-from aidm_server.combat.state import instantiate_creature, player_combat_participant
-from aidm_server.game_state.models import stable_slug
+from aidm_server.combat.difficulty import normalize_combat_difficulty_ai
+from aidm_server.combat.state import default_battlefield, instantiate_creature, player_combat_participant
+from aidm_server.game_state.models import stable_change_id, stable_slug
+from aidm_server.game_state.quest_engine import CONSEQUENCE_CHANGE_TYPES
 
 MAX_CAMPAIGN_PACK_ENEMIES_PER_GROUP = 12
 MAX_CAMPAIGN_PACK_ENEMY_PARTICIPANTS = 24
+AUTHORED_PARTY_SIZE = 4
+ENCOUNTER_TRIGGER_TYPES = ('on_enter', 'on_checkpoint', 'on_flag', 'on_interactable')
+# Applied change types that can make an event trigger due.
+TRIGGER_EVENT_CHANGE_TYPES = frozenset({'scene.move_location', 'scene.interactable.action', 'flag.set'})
+TRIGGERED_ENCOUNTERS_FLAG = 'campaignPackTriggeredEncounterIds'
+LOCATION_ENTERED_FLAG = 'locationEnteredIds'
+TRIGGER_STARTED_BY = 'campaign_pack_trigger'
+WORLD_CHANGE_SOURCE = 'campaign_pack_world'
+REST_POLICIES = ('safe', 'risky', 'none')
+# Change type -> (catalog collection, id key, embedded record key).
+CATALOG_CONSEQUENCES = {
+    'clue.discover': ('clues', 'clueId', 'clue'),
+    'quest.add': ('quests', 'questId', 'quest'),
+    'location.discover': ('locations', 'locationId', 'location'),
+    'location.update': ('locations', 'locationId', 'location'),
+}
 
 
 def materialize_campaign_pack_combat_start(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
@@ -29,14 +58,20 @@ def materialize_campaign_pack_combat_start(state: dict[str, Any], change: dict[s
     if not encounter:
         return change
 
-    enemies = _instantiate_pack_enemies(pack, encounter, turn_id=_positive_int(change.get('turnId') or change.get('turn_id')))
+    players = _player_participants(state, combat)
+    scaling = party_scaling(encounter, party_size=sum(1 for player in players if _present_player(player)))
+    enemies = _instantiate_pack_enemies(
+        pack,
+        encounter,
+        turn_id=_positive_int(change.get('turnId') or change.get('turn_id')),
+        scaling=scaling,
+    )
     if not enemies:
         return change
 
     updated = deepcopy(change)
     combat = updated.get('combat') if isinstance(updated.get('combat'), dict) else {}
-    participants = _player_participants(state, combat)
-    participants.extend(enemies)
+    participants = [*players, *enemies]
     flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
     flags.update(
         {
@@ -46,6 +81,7 @@ def materialize_campaign_pack_combat_start(state: dict[str, Any], change: dict[s
             'campaignPackEncounterId': _record_id(encounter),
             'campaignPackCheckpointIds': _checkpoint_ids_for_encounter(checkpoint, encounter),
             'campaignPackEnemyIds': [_text(enemy.get('campaignPackEnemyId')) for enemy in enemies if enemy.get('campaignPackEnemyId')],
+            'partyScaling': scaling,
         }
     )
     completion = encounter.get('completion') if isinstance(encounter.get('completion'), dict) else {}
@@ -83,6 +119,53 @@ def materialize_campaign_pack_combat_start(state: dict[str, Any], change: dict[s
     return updated
 
 
+def party_scaling(encounter: dict[str, Any], *, party_size: int) -> dict[str, Any]:
+    """How an encounter authored for four PCs scales to the present party.
+
+    Each group keeps ``max(1, round(count * party / 4))`` enemies (halves round
+    up) and every enemy's HP is multiplied by ``0.55 + 0.1125 * party``,
+    rounded up. A full party, an empty one, or ``scaling: false`` changes
+    nothing.
+    """
+
+    applied = encounter.get('scaling') is not False and 1 <= party_size < AUTHORED_PARTY_SIZE
+    hp_multiplier = Fraction(55, 100) + Fraction(1125, 10000) * party_size if applied else Fraction(1)
+    return {
+        'partySize': party_size,
+        'applied': applied,
+        'hpMultiplier': float(hp_multiplier),
+        'groups': [
+            {
+                'enemyId': enemy_id,
+                'authoredCount': count,
+                'count': _scaled_count(count, party_size) if applied else count,
+            }
+            for enemy_id, count in _encounter_enemy_specs(encounter)
+        ],
+    }
+
+
+def _scaled_count(count: int, party_size: int) -> int:
+    return max(1, math.floor(Fraction(count * party_size, AUTHORED_PARTY_SIZE) + Fraction(1, 2)))
+
+
+def _scaled_hp(max_hp: Any, scaling: dict[str, Any]) -> int:
+    hp = max(0, _positive_int(max_hp) or 0)
+    if not scaling.get('applied'):
+        return hp
+    multiplier = Fraction(55, 100) + Fraction(1125, 10000) * int(scaling['partySize'])
+    return math.ceil(Fraction(hp) * multiplier)
+
+
+def _present_player(participant: dict[str, Any]) -> bool:
+    conditions = {_text(value).lower() for value in (participant.get('conditions') or [])}
+    return (
+        participant.get('team') == 'player'
+        and participant.get('isPresent', participant.get('present', True)) is not False
+        and 'absent' not in conditions
+    )
+
+
 def _combat_already_materialized_for_encounter(combat: dict[str, Any], encounter_id: str) -> bool:
     encounter_key = _text(encounter_id)
     if not encounter_key:
@@ -102,14 +185,18 @@ def _combat_already_materialized_for_encounter(combat: dict[str, Any], encounter
     )
 
 
-def _active_checkpoint(state: dict[str, Any], pack: dict[str, Any]) -> dict[str, Any]:
+def _active_checkpoint_id(state: dict[str, Any], pack: dict[str, Any]) -> str:
     flags = state.get('flags') if isinstance(state.get('flags'), dict) else {}
-    active_id = _text(
+    return _text(
         pack.get('activeCheckpointId')
         or pack.get('active_checkpoint_id')
         or pack.get('currentCheckpointId')
         or flags.get('campaignPackActiveCheckpointId')
     )
+
+
+def _active_checkpoint(state: dict[str, Any], pack: dict[str, Any]) -> dict[str, Any]:
+    active_id = _active_checkpoint_id(state, pack)
     checkpoints = [checkpoint for checkpoint in (pack.get('checkpoints') or []) if isinstance(checkpoint, dict)]
     return next((checkpoint for checkpoint in checkpoints if _record_id(checkpoint) == active_id), {}) if active_id else {}
 
@@ -156,26 +243,43 @@ def _pack_record(pack: dict[str, Any], key: str, record_id: str) -> dict[str, An
     return {}
 
 
-def _instantiate_pack_enemies(pack: dict[str, Any], encounter: dict[str, Any], *, turn_id: int | None) -> list[dict[str, Any]]:
-    enemy_specs = _encounter_enemy_specs(encounter)
+def catalog_record(state: dict[str, Any], key: str, record_id: Any) -> dict[str, Any]:
+    """The pack catalog record of ``key`` with this id (exact or slugged)."""
+
+    pack = state.get('campaignPack') if isinstance(state.get('campaignPack'), dict) else {}
+    return _pack_record(pack, key, _text(record_id)) or _pack_record(pack, key, stable_slug(record_id) if _text(record_id) else '')
+
+
+def _instantiate_pack_enemies(
+    pack: dict[str, Any],
+    encounter: dict[str, Any],
+    *,
+    turn_id: int | None,
+    scaling: dict[str, Any],
+) -> list[dict[str, Any]]:
     participants: list[dict[str, Any]] = []
     sequence = 1
-    for enemy_id, count in enemy_specs:
-        enemy = _pack_record(pack, 'enemies', enemy_id)
+    remaining = MAX_CAMPAIGN_PACK_ENEMY_PARTICIPANTS
+    for group in scaling['groups']:
+        enemy = _pack_record(pack, 'enemies', group['enemyId'])
         if not enemy:
             continue
-        for _index in range(max(1, count)):
+        for _index in range(min(group['count'], remaining)):
             participant = instantiate_creature(
                 enemy,
-                instance_id=f"enemy_{stable_slug(enemy_id)}_{sequence}",
+                instance_id=f"enemy_{stable_slug(group['enemyId'])}_{sequence}",
                 team='enemy',
                 current_turn=turn_id,
             )
+            max_hp = _scaled_hp(participant['hp']['max'], scaling)
+            participant['hp'] = {**participant['hp'], 'current': max_hp, 'max': max_hp}
+            participant['stats'] = {**participant['stats'], 'maxHp': max_hp}
             participant['source'] = 'campaign_pack'
             participant['campaignPackEnemyId'] = _record_id(enemy)
             participant['campaignPackEncounterId'] = _record_id(encounter)
             participants.append(participant)
             sequence += 1
+            remaining -= 1
     return participants
 
 
@@ -203,15 +307,7 @@ def _encounter_enemy_specs(encounter: dict[str, Any]) -> list[tuple[str, int]]:
                 enemy_id = _text(group.get('enemyId') or group.get('enemy_id') or group.get('id') or group.get('creatureId'))
                 if enemy_id:
                     add_spec(enemy_id, group.get('count'), override=True)
-    bounded_specs: list[tuple[str, int]] = []
-    remaining = MAX_CAMPAIGN_PACK_ENEMY_PARTICIPANTS
-    for enemy_id in ordered_ids:
-        if remaining <= 0:
-            break
-        count = min(specs_by_id[enemy_id], remaining)
-        bounded_specs.append((enemy_id, count))
-        remaining -= count
-    return bounded_specs
+    return [(enemy_id, specs_by_id[enemy_id]) for enemy_id in ordered_ids]
 
 
 def _bounded_enemy_count(value: Any) -> int:
@@ -239,6 +335,291 @@ def _checkpoint_ids_for_encounter(checkpoint: dict[str, Any], encounter: dict[st
     if checkpoint_id and checkpoint_id not in ids:
         ids.insert(0, checkpoint_id)
     return ids
+
+
+def flag_matches(flags: dict[str, Any], flag_key: Any, expected: Any) -> bool:
+    """``branchWhen`` comparison: the flag exists and equals ``expected``
+    with the same scalar type (numbers compare numerically)."""
+
+    key = _text(flag_key)
+    if not key:
+        return False
+    for candidate in (key, stable_slug(key)):
+        if candidate in flags:
+            return values_match(flags[candidate], expected)
+    return False
+
+
+def values_match(actual: Any, expected: Any) -> bool:
+    if isinstance(expected, bool) or isinstance(actual, bool):
+        return isinstance(expected, bool) and isinstance(actual, bool) and actual == expected
+    if isinstance(expected, (int, float)) or isinstance(actual, (int, float)):
+        return isinstance(expected, (int, float)) and isinstance(actual, (int, float)) and float(actual) == float(expected)
+    return type(actual) is type(expected) and actual == expected
+
+
+def _same_id(first: Any, second: Any) -> bool:
+    return bool(_text(first)) and bool(_text(second)) and (
+        _text(first) == _text(second) or stable_slug(first) == stable_slug(second)
+    )
+
+
+def _flag_condition_holds(flags: dict[str, Any], condition: Any) -> bool:
+    return isinstance(condition, dict) and flag_matches(
+        flags,
+        condition.get('flagKey'),
+        condition.get('equals', True),
+    )
+
+
+def _trigger_matches(state: dict[str, Any], trigger: dict[str, Any], changes: list[dict[str, Any]]) -> bool:
+    trigger_type = _text(trigger.get('type')).lower()
+    if trigger_type == 'on_checkpoint':
+        pack = state.get('campaignPack') if isinstance(state.get('campaignPack'), dict) else {}
+        return _same_id(_active_checkpoint_id(state, pack), trigger.get('checkpointId'))
+    for change in changes:
+        change_type = _text(change.get('type'))
+        if trigger_type == 'on_enter' and change_type == 'scene.move_location':
+            if _same_id(change.get('locationId'), trigger.get('locationId')):
+                return True
+        elif trigger_type == 'on_flag' and change_type == 'flag.set':
+            if _same_id(change.get('flagKey'), trigger.get('flagKey')) and values_match(
+                change.get('flagValue'),
+                trigger.get('equals', True),
+            ):
+                return True
+        elif trigger_type == 'on_interactable' and change_type == 'scene.interactable.action':
+            event = change.get('event') if isinstance(change.get('event'), dict) else {}
+            succeeded = not _text(event.get('type')).endswith('.check_failed')
+            action = _text(trigger.get('action')).lower()
+            if (
+                succeeded
+                and _same_id(change.get('targetId'), trigger.get('targetId'))
+                and (not action or action == _text(change.get('objectAction')).lower())
+            ):
+                return True
+    return False
+
+
+def due_encounter(state: dict[str, Any], changes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The first authored encounter whose ``trigger`` is due after ``changes``.
+
+    ``on_checkpoint`` holds while its checkpoint is active; the other trigger
+    types match one of the given applied changes. ``once`` (default true)
+    skips encounters already triggered, ``when`` must hold and ``unless`` must
+    not.
+    """
+
+    pack = state.get('campaignPack') if isinstance(state.get('campaignPack'), dict) else {}
+    if not _text(pack.get('packId')):
+        return None
+    catalog = pack.get('catalog') if isinstance(pack.get('catalog'), dict) else {}
+    flags = state.get('flags') if isinstance(state.get('flags'), dict) else {}
+    triggered = set(_string_list(flags.get(TRIGGERED_ENCOUNTERS_FLAG)))
+    applied_changes = [change for change in changes if isinstance(change, dict)]
+    for encounter in catalog.get('encounters') or []:
+        if not isinstance(encounter, dict) or not isinstance(encounter.get('trigger'), dict):
+            continue
+        if encounter.get('once', True) is not False and _record_id(encounter) in triggered:
+            continue
+        if 'when' in encounter and not _flag_condition_holds(flags, encounter.get('when')):
+            continue
+        if _flag_condition_holds(flags, encounter.get('unless')):
+            continue
+        if _trigger_matches(state, encounter['trigger'], applied_changes):
+            return encounter
+    return None
+
+
+def combat_is_active(state: dict[str, Any]) -> bool:
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    return _text(combat.get('status')).lower() in {'starting', 'active'}
+
+
+def triggered_encounter_start(
+    state: dict[str, Any],
+    encounter: dict[str, Any],
+    *,
+    turn_id: Any,
+    cause_id: Any,
+) -> dict[str, Any] | None:
+    """A materialised ``combat.start`` for a due encounter, or None when the
+    encounter has no enemies or no player character is present. ``cause_id``
+    (the change that made it due) keeps a repeatable encounter's starts apart."""
+
+    encounter_id = _record_id(encounter)
+    trigger_type = _text((encounter.get('trigger') or {}).get('type')).lower()
+    scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
+    settings = state.get('settings') if isinstance(state.get('settings'), dict) else {}
+    change = materialize_campaign_pack_combat_start(
+        state,
+        {
+            'id': stable_change_id(turn_id, 'combat.start', TRIGGER_STARTED_BY, encounter_id, cause_id),
+            'turnId': turn_id,
+            'type': 'combat.start',
+            'campaignPackEncounterId': encounter_id,
+            'campaignPackTrigger': {'encounterId': encounter_id, 'type': trigger_type},
+            'combat': {
+                'status': 'active',
+                'round': 1,
+                'turnIndex': 0,
+                'participants': [],
+                'battlefield': default_battlefield(scene),
+                'encounterGoal': None,
+                'initiative': [],
+                'flags': {
+                    'combatStartedBy': TRIGGER_STARTED_BY,
+                    'initiativeRequired': True,
+                    'initiativeSeed': f"combat:{state.get('sessionId')}:{turn_id}:{TRIGGER_STARTED_BY}:{encounter_id}",
+                    'combatDifficultyAI': normalize_combat_difficulty_ai(settings.get('combatDifficultyAI')),
+                    'resolverMethod': 'campaign_pack',
+                    'creatureSource': 'campaign_pack',
+                },
+            },
+            'reason': f"{_text(encounter.get('title') or encounter.get('name')) or 'An authored encounter'} begins.",
+            'visible': True,
+        },
+    )
+    participants = (change.get('combat') or {}).get('participants') or []
+    enemy_count = sum(1 for participant in participants if participant.get('team') == 'enemy')
+    if not enemy_count or not any(_present_player(participant) for participant in participants):
+        return None
+    change['combat']['flags']['enemyCount'] = enemy_count
+    return change
+
+
+def record_triggered_encounter(state: dict[str, Any], applied_change: dict[str, Any]) -> None:
+    """Remember an applied trigger start so a ``once`` encounter never repeats."""
+
+    trigger = applied_change.get('campaignPackTrigger')
+    if _text(applied_change.get('type')) != 'combat.start' or not isinstance(trigger, dict):
+        return
+    flags = state.setdefault('flags', {})
+    triggered = _string_list(flags.get(TRIGGERED_ENCOUNTERS_FLAG))
+    if _text(trigger.get('encounterId')) and _text(trigger.get('encounterId')) not in triggered:
+        flags[TRIGGERED_ENCOUNTERS_FLAG] = [*triggered, _text(trigger.get('encounterId'))]
+
+
+def location_entry_changes(state: dict[str, Any], location_id: Any, *, turn_id: Any) -> list[dict[str, Any]]:
+    """Record a first arrival and return the location's ``onEnter`` consequences."""
+
+    location_key = _text(location_id)
+    flags = state.setdefault('flags', {})
+    entered = _string_list(flags.get(LOCATION_ENTERED_FLAG))
+    if not location_key or location_key in entered:
+        return []
+    flags[LOCATION_ENTERED_FLAG] = [*entered, location_key]
+    location = catalog_record(state, 'locations', location_key) or next(
+        (
+            record
+            for record in (state.get('locations') or [])
+            if isinstance(record, dict) and _text(record.get('id')) == location_key
+        ),
+        {},
+    )
+    consequences = location.get('onEnter') if isinstance(location.get('onEnter'), list) else []
+    return [
+        {
+            **deepcopy(consequence),
+            'id': stable_change_id('location_enter', location_key, index),
+            'turnId': turn_id,
+            'source': WORLD_CHANGE_SOURCE,
+            'reason': consequence.get('reason') or f"Arrival at {location.get('name') or location_key}.",
+        }
+        for index, consequence in enumerate(consequences)
+        if isinstance(consequence, dict) and _text(consequence.get('type')) in CONSEQUENCE_CHANGE_TYPES
+    ]
+
+
+def campaign_pack_followup_changes(
+    state: dict[str, Any],
+    applied_change: dict[str, Any],
+    *,
+    combat_start_pending: bool,
+) -> list[dict[str, Any]]:
+    """Trusted changes that follow one applied change in a pack campaign."""
+
+    pack = state.get('campaignPack') if isinstance(state.get('campaignPack'), dict) else {}
+    if not _text(pack.get('packId')):
+        return []
+    record_triggered_encounter(state, applied_change)
+    change_type = _text(applied_change.get('type'))
+    turn_id = applied_change.get('turnId') or applied_change.get('turn_id')
+    followups: list[dict[str, Any]] = []
+    if change_type == 'scene.move_location':
+        followups.extend(location_entry_changes(state, applied_change.get('locationId'), turn_id=turn_id))
+    if change_type in TRIGGER_EVENT_CHANGE_TYPES and not combat_start_pending and not combat_is_active(state):
+        encounter = due_encounter(state, [applied_change])
+        start = (
+            triggered_encounter_start(state, encounter, turn_id=turn_id, cause_id=applied_change.get('id'))
+            if encounter
+            else None
+        )
+        if start:
+            followups.append(start)
+    return followups
+
+
+def materialize_catalog_consequence(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
+    """Embed the catalog record a bare authored consequence names.
+
+    ``clue.discover``, ``quest.add`` and ``location.discover`` with only an id
+    become the authored record; a ``location.update`` naming a catalog
+    location that is not yet known first discovers it.
+    """
+
+    change_type = _text(change.get('type'))
+    if change_type not in CATALOG_CONSEQUENCES:
+        return change
+    collection, id_key, embedded_key = CATALOG_CONSEQUENCES[change_type]
+    if isinstance(change.get(embedded_key), dict):
+        return change
+    record = catalog_record(state, collection, change.get(id_key))
+    if not record:
+        return change
+    if change_type == 'location.update':
+        known = any(
+            isinstance(location, dict) and _text(location.get('id')) == _record_id(record)
+            for location in (state.get('locations') or [])
+        )
+        if known:
+            return change
+    pack = state.get('campaignPack') if isinstance(state.get('campaignPack'), dict) else {}
+    updated = deepcopy(change)
+    updated[embedded_key] = {**deepcopy(record), 'source': 'campaign_pack', 'packId': _text(pack.get('packId'))}
+    updated[id_key] = _record_id(record)
+    label_key = 'title' if embedded_key in {'clue', 'quest'} else 'name'
+    updated.setdefault(label_key, record.get(label_key) or record.get('name') or record.get('title'))
+    if change_type == 'location.update':
+        updated['type'] = 'location.discover'
+    return updated
+
+
+def declared_story_flags(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """The pack's story flags with each one's current value."""
+
+    pack = state.get('campaignPack') if isinstance(state.get('campaignPack'), dict) else {}
+    flags = state.get('flags') if isinstance(state.get('flags'), dict) else {}
+    return [
+        {
+            'key': _text(story_flag.get('key')),
+            'when': _text(story_flag.get('when')),
+            'values': deepcopy(story_flag.get('values')) if isinstance(story_flag.get('values'), list) else [True],
+            'value': deepcopy(flags.get(_text(story_flag.get('key')))),
+        }
+        for story_flag in (pack.get('storyFlags') if isinstance(pack.get('storyFlags'), list) else [])
+        if isinstance(story_flag, dict) and _text(story_flag.get('key'))
+    ]
+
+
+def story_flag_allows(state: dict[str, Any], flag_key: Any, value: Any) -> bool:
+    """Whether narration may set this flag: it is a declared story flag and
+    the value is one of its declared values."""
+
+    return any(
+        _same_id(story_flag['key'], flag_key) and any(values_match(value, allowed) for allowed in story_flag['values'])
+        for story_flag in declared_story_flags(state)
+    )
 
 
 def _record_id(record: dict[str, Any]) -> str:

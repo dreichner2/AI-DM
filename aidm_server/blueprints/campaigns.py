@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import logging
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import joinedload
 
 from aidm_server.canon_jobs import canon_job_status_counts
@@ -24,7 +25,7 @@ from aidm_server.models import (
     InstalledCampaignPack,
     safe_json_loads,
 )
-from aidm_server.pagination import limited_page
+from aidm_server.pagination import InvalidCursorError, decode_cursor, encode_cursor, limited_page, page_limit
 from aidm_server.response_dtos import (
     campaign_is_archived,
     campaign_payload,
@@ -47,7 +48,12 @@ from aidm_server.services.campaign_lifecycle import (
 )
 from aidm_server.services.chronicle_export import chronicle_html_response, export_campaign_chronicle_html
 from aidm_server.services.pack_forge import CampaignPackForgeError, forge_campaign_pack
-from aidm_server.services.workspace import campaign_workspace_payload
+from aidm_server.services.workspace import (
+    SESSION_PAGE_DEFAULT_LIMIT,
+    SESSION_PAGE_MAX_LIMIT,
+    campaign_workspace_payload,
+    decode_session_cursor,
+)
 from aidm_server.time_utils import utc_now
 from aidm_server.validation import (
     coerce_int,
@@ -635,20 +641,75 @@ def _include_hidden_session_state() -> bool:
     return current_actor_has_capability('dm_authoring')
 
 
+def _naive_utc(value: datetime | None) -> datetime | None:
+    """Timestamps are stored as naive UTC; compare cursors in the same form."""
+
+    if value is None or value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _campaign_list_cursor() -> tuple[datetime | None, int] | None:
+    """The (updated_at, campaign_id) the requested page starts after, if any.
+
+    ``before_id`` is deprecated: it names the last campaign of the previous page
+    and is translated to that campaign's cursor when no ``cursor`` is sent.
+    """
+
+    token = request.args.get('cursor')
+    if token:
+        updated_at, campaign_id = decode_cursor(token, size=2)
+        if isinstance(campaign_id, bool) or not isinstance(campaign_id, int):
+            raise InvalidCursorError('cursor is invalid.')
+        if updated_at is None:
+            return None, campaign_id
+        if not isinstance(updated_at, str):
+            raise InvalidCursorError('cursor is invalid.')
+        try:
+            return _naive_utc(datetime.fromisoformat(updated_at)), campaign_id
+        except ValueError:
+            raise InvalidCursorError('cursor is invalid.') from None
+    before_id = coerce_int(request.args.get('before_id'))
+    if before_id is None:
+        return None
+    anchor = campaign_query().filter(Campaign.campaign_id == before_id).first()
+    if anchor is None:
+        raise InvalidCursorError('before_id does not match a campaign.')
+    return _naive_utc(anchor.updated_at), anchor.campaign_id
+
+
+def _after_campaign_cursor(updated_at: datetime | None, campaign_id: int):
+    # Campaigns without updated_at sort last (NULLS LAST below).
+    if updated_at is None:
+        return and_(Campaign.updated_at.is_(None), Campaign.campaign_id < campaign_id)
+    return or_(
+        Campaign.updated_at < updated_at,
+        and_(Campaign.updated_at == updated_at, Campaign.campaign_id < campaign_id),
+        Campaign.updated_at.is_(None),
+    )
+
+
 @campaigns_bp.route('', methods=['GET'])
 def list_campaigns():
     query = campaign_query() if _include_archived() else _active_campaigns_query()
-    before_id = coerce_int(request.args.get('before_id'))
-    if before_id is not None:
-        query = query.filter(Campaign.campaign_id < before_id)
+    try:
+        cursor = _campaign_list_cursor()
+    except InvalidCursorError as exc:
+        return error_response('validation_error', str(exc), 400)
+    if cursor is not None:
+        query = query.filter(_after_campaign_cursor(*cursor))
     limit = _optional_limit_arg('limit')
-    query = query.order_by(Campaign.updated_at.desc(), Campaign.created_at.desc(), Campaign.campaign_id.desc())
+    query = query.order_by(Campaign.updated_at.desc().nulls_last(), Campaign.campaign_id.desc())
     campaigns = limited_page(query, limit=limit)
     payloads = campaign_payloads(list(campaigns))
     response = jsonify(payloads)
     response.headers['X-AIDM-Has-More'] = 'true' if campaigns._has_more else 'false'
     if campaigns._has_more and campaigns:
-        response.headers['X-AIDM-Next-Cursor'] = str(campaigns[-1].campaign_id)
+        last = campaigns[-1]
+        response.headers['X-AIDM-Next-Cursor'] = encode_cursor(
+            isoformat(_naive_utc(last.updated_at)),
+            last.campaign_id,
+        )
     return response
 
 
@@ -831,16 +892,25 @@ def get_campaign_workspace(campaign_id):
     if campaign_is_archived(campaign) and not _include_archived():
         return error_response('campaign_not_found', 'Campaign not found.', 404)
 
+    try:
+        sessions_cursor = decode_session_cursor(request.args.get('sessions_cursor'))
+    except InvalidCursorError as exc:
+        return error_response('validation_error', str(exc), 400)
+
     return jsonify(
         campaign_workspace_payload(
             campaign,
             include_archived=_include_archived(),
-            session_limit=_optional_limit_arg('session_limit'),
+            sessions_limit=page_limit(
+                request.args.get('sessions_limit'),
+                default=SESSION_PAGE_DEFAULT_LIMIT,
+                maximum=SESSION_PAGE_MAX_LIMIT,
+            ),
+            sessions_cursor=sessions_cursor,
             player_limit=_optional_limit_arg('player_limit'),
             map_limit=_optional_limit_arg('map_limit'),
             segment_limit=_optional_limit_arg('segment_limit'),
             include_hidden_state=_include_hidden_session_state(),
-            viewer_account_id=current_account_id(),
         )
     )
 

@@ -411,9 +411,10 @@ def _rest_state(conditions: list[str], hp: int = 0) -> dict:
 
 
 def _rest(state: dict, rest_type: str) -> dict:
+    # No hit dice are spent, so a short rest shows only the wake-up to 1 HP.
     return validate_declared_actions(
         state=state,
-        declared_actions=[{'id': 'act_rest', 'type': 'rest.complete', 'actorId': 'player_1', 'restType': rest_type}],
+        declared_actions=[{'id': 'act_rest', 'type': 'rest.complete', 'actorId': 'player_1', 'restType': rest_type, 'hitDice': 0}],
         current_turn=8,
         expected_actor_id='player_1',
     )

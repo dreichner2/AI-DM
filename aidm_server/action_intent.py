@@ -10,7 +10,9 @@ from aidm_server.rules import DC_HINTS, RuleHint
 from aidm_server.interactables import INTERACTABLE_ACTIONS
 
 
-VALID_ACTION_KINDS = {'message', 'roll', 'ability', 'capability', 'spell', 'item', 'object', 'interact', 'travel', 'rest', 'combat', 'emote', 'ooc', 'admin'}
+VALID_ACTION_KINDS = {'message', 'roll', 'ability', 'capability', 'spell', 'item', 'object', 'interact', 'travel', 'rest', 'shop', 'combat', 'emote', 'ooc', 'admin'}
+VALID_SHOP_ACTIONS = {'buy', 'sell'}
+MAX_HIT_DICE_REQUEST = 20
 VALID_DICE = {'d4', 'd6', 'd8', 'd10', 'd12', 'd20', 'd100'}
 VALID_ROLL_MODES = {'normal', 'advantage', 'disadvantage'}
 VALID_RESULT_VISIBILITY = {'hidden_until_landed', 'visible'}
@@ -160,13 +162,6 @@ def _validate_spell_payload(raw_spell: Any) -> tuple[dict[str, Any] | None, str 
     return payload, None
 
 
-def _coerce_non_negative_int(value: Any) -> int:
-    parsed = _coerce_int(value)
-    if parsed is None:
-        return 0
-    return max(0, parsed)
-
-
 def _validate_combat_payload(raw_combat: Any) -> tuple[dict[str, Any] | None, str | None]:
     if not isinstance(raw_combat, dict):
         return None, 'combat action metadata must include a combat object.'
@@ -182,6 +177,29 @@ def _validate_combat_payload(raw_combat: Any) -> tuple[dict[str, Any] | None, st
     if target_id:
         payload['target_id'] = target_id
     return payload, None
+
+
+def _validate_shop_payload(raw_shop: Any) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(raw_shop, dict):
+        return None, 'shop action metadata must include a shop object.'
+    action = _clean_text(raw_shop.get('action'), max_length=8).lower()
+    if action not in VALID_SHOP_ACTIONS:
+        return None, 'shop.action must be buy or sell.'
+    reference_key = 'stock_id' if action == 'buy' else 'item_id'
+    ids = {
+        'merchant_id': _clean_text(raw_shop.get('merchant_id') or raw_shop.get('merchantId'), max_length=ACTION_ID_MAX_LENGTH),
+        reference_key: _clean_text(
+            raw_shop.get(reference_key) or raw_shop.get('stockId' if action == 'buy' else 'itemId'),
+            max_length=ACTION_ID_MAX_LENGTH,
+        ),
+    }
+    for key, identifier in ids.items():
+        if not identifier or not ACTION_ID_RE.fullmatch(identifier):
+            return None, f'shop.{key} is required and may contain only supported ID characters.'
+    quantity = _coerce_int(raw_shop.get('quantity'))
+    if quantity is not None and quantity < 1:
+        return None, 'shop.quantity must be a positive number.'
+    return {'action': action, **ids, 'quantity': quantity or 1}, None
 
 
 def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | None]:
@@ -267,23 +285,27 @@ def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | Non
         item = value.get('item')
         if not isinstance(item, dict):
             return None, 'item action metadata must include an item object.'
-        name = clean_inventory_item_name(_clean_text(item.get('name'), max_length=ACTION_ITEM_MAX_LENGTH))
-        if not name:
-            return None, 'item.name is required.'
-        if not looks_like_inventory_item(name):
-            return None, 'item.name must be a tangible inventory item.'
-        quantity = _coerce_int(item.get('quantity'))
         item_id = _clean_text(item.get('id') or item.get('item_id') or item.get('itemId'), max_length=ACTION_ID_MAX_LENGTH)
         if item_id and not ACTION_ID_RE.fullmatch(item_id):
             return None, 'item.id contains unsupported characters.'
-        cost_gold = _coerce_non_negative_int(value.get('cost_gold', value.get('price_gold')))
+        name = clean_inventory_item_name(_clean_text(item.get('name'), max_length=ACTION_ITEM_MAX_LENGTH))
+        if not name and not (inventory_action == 'use' and item_id):
+            return None, 'item.name is required.'
+        if name and not looks_like_inventory_item(name):
+            return None, 'item.name must be a tangible inventory item.'
+        quantity = _coerce_int(item.get('quantity'))
+        target_id = _clean_text(item.get('target_id') or item.get('targetId'), max_length=ACTION_ID_MAX_LENGTH)
+        if target_id and not ACTION_ID_RE.fullmatch(target_id):
+            return None, 'item.target_id contains unsupported characters.'
+        # A client-supplied price (cost_gold) is deliberately not carried: shop
+        # prices come from the server and unpriced trades from the narration.
         normalized['item'] = {
             **({'id': item_id} if item_id else {}),
             'name': name,
             'quantity': quantity if quantity is not None and quantity > 0 else 1,
+            **({'target_id': target_id} if target_id else {}),
         }
         normalized['inventory_action'] = inventory_action
-        normalized['cost_gold'] = cost_gold
 
     if kind == 'object':
         raw_object = value.get('object')
@@ -373,6 +395,19 @@ def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | Non
         if rest_type not in {'short', 'short_rest', 'long', 'long_rest'}:
             return None, 'rest_type must be short_rest or long_rest.'
         normalized['rest_type'] = 'short_rest' if rest_type in {'short', 'short_rest'} else 'long_rest'
+        raw_hit_dice = value.get('hit_dice', value.get('hitDice'))
+        if raw_hit_dice not in (None, ''):
+            hit_dice = _coerce_int(raw_hit_dice)
+            if hit_dice is None or not 0 <= hit_dice <= MAX_HIT_DICE_REQUEST:
+                return None, f'hit_dice must be a whole number from 0 to {MAX_HIT_DICE_REQUEST}.'
+            if normalized['rest_type'] == 'short_rest':
+                normalized['hit_dice'] = hit_dice
+
+    if kind == 'shop':
+        shop, shop_error = _validate_shop_payload(value.get('shop'))
+        if shop_error:
+            return None, shop_error
+        normalized['shop'] = shop
 
     if kind == 'combat':
         combat, combat_error = _validate_combat_payload(value.get('combat'))
@@ -447,7 +482,7 @@ def apply_action_intent_to_rule_hint(intent: dict[str, Any] | None, hint: RuleHi
             hint.outcome_deferred = False
         return hint
 
-    if kind in {'ooc', 'emote', 'item', 'travel', 'rest', 'admin'}:
+    if kind in {'ooc', 'emote', 'item', 'travel', 'rest', 'shop', 'admin'}:
         hint.requires_roll = False
         hint.roll_type = None
         hint.dc_hint = None

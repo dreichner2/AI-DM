@@ -1,7 +1,8 @@
-import { type RefObject } from 'react'
+import { type FormEvent, type RefObject } from 'react'
 import { X } from 'lucide-react'
 import { ModalShell } from './ModalShell'
-import type { Campaign, JsonRecord, SessionSummary } from './types'
+import type { Campaign, SessionImportMode, SessionSummary } from './types'
+import type { SaveImportDialogState } from './useSessionActions'
 
 export type CampaignArchiveDialogState = {
   items: Campaign[]
@@ -35,29 +36,15 @@ type SessionArchiveDialogProps = {
   onArchiveSelected: () => void
   onClose: () => void
   onRestore: (sessionId: number) => void
-  selectedCampaignId: number | null
 }
 
-function isRecord(value: unknown): value is JsonRecord {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
-}
-
-function stringValue(value: unknown) {
-  return typeof value === 'string' && value.trim() ? value.trim() : ''
-}
-
-function snapshotRecord(session: SessionSummary | null | undefined) {
-  return isRecord(session?.state_snapshot) ? session.state_snapshot : {}
-}
-
-function sessionDisplayName(session: SessionSummary, fallbackPrefix: string | number | null) {
-  const snapshot = snapshotRecord(session)
-  return (
-    stringValue(session.display_name) ||
-    stringValue(snapshot.name) ||
-    stringValue(snapshot.title) ||
-    `S${fallbackPrefix ?? '-'}E${session.session_id}`
-  )
+type SaveImportDialogProps = {
+  dialog: NonNullable<SaveImportDialogState>
+  dialogRef: RefObject<HTMLElement | null>
+  onClose: () => void
+  onModeChange: (mode: SessionImportMode) => void
+  onRestoreCharactersChange: (restoreCharacters: boolean) => void
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void
 }
 
 function formatShortAge(value: string | null) {
@@ -187,7 +174,6 @@ export function SessionArchiveDialog({
   onArchiveSelected,
   onClose,
   onRestore,
-  selectedCampaignId,
 }: SessionArchiveDialogProps) {
   return (
     <ModalShell
@@ -224,7 +210,7 @@ export function SessionArchiveDialog({
               </div>
             ) : dialog.items.length ? (
               dialog.items.map((item) => {
-                const title = sessionDisplayName(item, campaign?.world_id ?? selectedCampaignId)
+                const title = item.display_name
                 const pending = dialog.pendingId === item.session_id
                 return (
                   <div key={item.session_id} className="world-manager-row">
@@ -273,6 +259,90 @@ export function SessionArchiveDialog({
             </button>
           </footer>
         </div>
+    </ModalShell>
+  )
+}
+
+/** Offered when an operator opens a save of the open campaign. */
+export function SaveImportDialog({
+  dialog,
+  dialogRef,
+  onClose,
+  onModeChange,
+  onRestoreCharactersChange,
+  onSubmit,
+}: SaveImportDialogProps) {
+  const restoring = dialog.mode === 'restore'
+  return (
+    <ModalShell
+      className="campaign-dialog chapter-start-dialog"
+      closeDisabled={dialog.pending}
+      describedBy="save-import-description"
+      dialogRef={dialogRef}
+      labelledBy="save-import-title"
+      onClose={onClose}
+    >
+      <header>
+        <div>
+          <span>Import</span>
+          <h2 id="save-import-title">Import a save</h2>
+        </div>
+        <button type="button" aria-label="Close import save" onClick={onClose} disabled={dialog.pending}>
+          <X size={18} />
+        </button>
+      </header>
+      <form onSubmit={onSubmit}>
+        <p id="save-import-description" className="chapter-start-copy">
+          {dialog.save.campaign.title} · {dialog.save.session.display_name} · {dialog.fileName}
+        </p>
+        <label className="chapter-start-option">
+          <input
+            type="radio"
+            name="save-import-mode"
+            checked={!restoring}
+            disabled={dialog.pending}
+            onChange={() => onModeChange('archive')}
+          />
+          <span>Keep as a read-only archive</span>
+        </label>
+        <label className="chapter-start-option">
+          <input
+            type="radio"
+            name="save-import-mode"
+            checked={restoring}
+            disabled={dialog.pending}
+            onChange={() => onModeChange('restore')}
+          />
+          <span>Restore as a new chapter</span>
+        </label>
+        {restoring ? (
+          <label className="chapter-start-option">
+            <input
+              type="checkbox"
+              checked={dialog.restoreCharacters}
+              disabled={dialog.pending}
+              onChange={(event) => onRestoreCharactersChange(event.target.checked)}
+            />
+            <span>Also restore characters to their saved state</span>
+          </label>
+        ) : null}
+        {restoring && dialog.restoreCharacters ? (
+          <div className="dialog-warning" role="note">
+            <span>
+              This replaces the characters&apos; current hit points, inventory and resources with the saved values.
+            </span>
+          </div>
+        ) : null}
+        {dialog.error ? <div className="dialog-error" role="alert">{dialog.error}</div> : null}
+        <footer>
+          <button type="button" className="secondary" onClick={onClose} disabled={dialog.pending}>
+            Cancel
+          </button>
+          <button type="submit" data-autofocus disabled={dialog.pending}>
+            {dialog.pending ? 'Importing...' : restoring ? 'Restore chapter' : 'Keep archive'}
+          </button>
+        </footer>
+      </form>
     </ModalShell>
   )
 }

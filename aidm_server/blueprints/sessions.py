@@ -23,11 +23,11 @@ from aidm_server.models import (
     safe_json_dumps,
     safe_json_loads,
 )
+from aidm_server.pagination import InvalidCursorError, page_limit
 from aidm_server.response_dtos import (
     account_player_ids_by_campaign,
-    campaign_payload,
     isoformat,
-    party_player_payload,
+    player_detail_payload,
     session_log_entry_payload,
     session_payload,
     session_start_payload,
@@ -36,6 +36,7 @@ from aidm_server.response_dtos import (
 )
 from aidm_server.provider_priority import foreground_provider_reservation
 from aidm_server.services.session_chapters import (
+    ACTIVE_COMBAT_STATUSES,
     CHAPTER_CONTINUE,
     CHAPTER_CONTINUITY_MODES,
     ChapterStartError,
@@ -69,8 +70,22 @@ from aidm_server.services.content_settings import (
     content_settings_payload,
     session_content_settings,
 )
-from aidm_server.services.session_import import SessionImportError, import_session_export
-from aidm_server.services.workspace import list_campaign_session_payloads
+from aidm_server.services.session_import import (
+    IMPORT_ARCHIVE,
+    IMPORT_MODES,
+    IMPORT_RESTORE,
+    SAVE_FORMAT,
+    SAVE_VERSION,
+    SessionImportError,
+    import_session_export,
+    restore_session_save,
+)
+from aidm_server.services.workspace import (
+    SESSION_PAGE_DEFAULT_LIMIT,
+    SESSION_PAGE_MAX_LIMIT,
+    decode_session_cursor,
+    list_campaign_session_payloads,
+)
 from aidm_server.socket_contracts import session_recovery_resolved_payload
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 from aidm_server.time_utils import utc_now
@@ -90,8 +105,6 @@ sessions_bp = Blueprint('sessions', __name__)
 RECAP_RECENT_ENTRY_LIMIT = 80
 RECAP_SOURCE_CHAR_BUDGET = 12_000
 SESSION_IDEMPOTENCY_KEY_MAX_LENGTH = 80
-SESSION_EXPORT_MAX_LOG_ENTRIES = 1000
-SESSION_EXPORT_MAX_TURN_EVENTS = 1000
 
 
 @dataclass(frozen=True)
@@ -219,140 +232,87 @@ def _turn_player_ids_for_log_entries(entries: list[SessionLogEntry]) -> dict[int
     }
 
 
-def _session_export_log_entries(
+def _session_save_log(
     session_id: int,
     *,
     include_private: bool,
     private_player_ids: frozenset[int],
-) -> tuple[list[dict], bool]:
+) -> list[dict]:
     rows = (
         SessionLogEntry.query.filter_by(session_id=session_id)
         .order_by(SessionLogEntry.timestamp.asc(), SessionLogEntry.id.asc())
-        .limit(SESSION_EXPORT_MAX_LOG_ENTRIES + 1)
         .all()
     )
-    truncated = len(rows) > SESSION_EXPORT_MAX_LOG_ENTRIES
-    if truncated:
-        rows = rows[:SESSION_EXPORT_MAX_LOG_ENTRIES]
     turn_player_ids = _turn_player_ids_for_log_entries(rows)
-    return (
-        [
-            session_log_entry_payload(
-                entry,
-                include_private=include_private,
-                private_player_ids=private_player_ids,
-                turn_player_ids=turn_player_ids,
-            )
-            for entry in rows
-        ],
-        truncated,
-    )
-
-
-def _session_export_turn_events(
-    session_id: int,
-    *,
-    include_private: bool,
-    private_player_ids: frozenset[int],
-) -> tuple[list[dict], bool]:
-    query = TurnEvent.query.filter_by(session_id=session_id)
-    if not _campaign_pack_operator_view():
-        query = query.filter(TurnEvent.event_type != PROGRESS_CHANGED_EVENT)
-    rows = query.order_by(TurnEvent.created_at.asc(), TurnEvent.event_id.asc()).limit(SESSION_EXPORT_MAX_TURN_EVENTS + 1).all()
-    truncated = len(rows) > SESSION_EXPORT_MAX_TURN_EVENTS
-    if truncated:
-        rows = rows[:SESSION_EXPORT_MAX_TURN_EVENTS]
     return [
-        turn_event_payload(
-            event,
+        session_log_entry_payload(
+            entry,
             include_private=include_private,
             private_player_ids=private_player_ids,
+            turn_player_ids=turn_player_ids,
         )
-        for event in rows
-    ], truncated
+        for entry in rows
+    ]
 
 
-def _session_export_payload(
+def _session_save_document(
     session_obj: Session,
     *,
-    selected_player_id: int | None = None,
     include_hidden_state: bool,
     viewer_account_id: int | None,
 ) -> dict:
+    """The ``aidm.save`` version 2 document for one session.
+
+    Players get exactly what they can read elsewhere: the state endpoint's
+    projected snapshot and only their own characters.
+    """
+
     campaign = session_obj.campaign
-    players = (
-        Player.query.filter_by(campaign_id=campaign.campaign_id)
-        .order_by(Player.player_id.asc())
-        .all()
-    )
-    private_player_ids = frozenset(
-        player.player_id
-        for player in players
+    characters = [
+        player
+        for player in Player.query.filter_by(campaign_id=campaign.campaign_id).order_by(Player.player_id.asc()).all()
         if include_hidden_state or (viewer_account_id is not None and player.account_id == viewer_account_id)
-    )
-    selectable_players = players if include_hidden_state else [
-        player for player in players if player.player_id in private_player_ids
     ]
-    selected_player = None
-    if selected_player_id is not None:
-        selected_player = next(
-            (player for player in selectable_players if player.player_id == selected_player_id),
-            None,
-        )
-    if selected_player is None and selectable_players:
-        selected_player = selectable_players[0]
-    session_state = SessionState.query.filter_by(session_id=session_obj.session_id).first()
-    log_entries, log_truncated = _session_export_log_entries(
-        session_obj.session_id,
-        include_private=include_hidden_state,
-        private_player_ids=private_player_ids,
+    own_player_ids = frozenset(player.player_id for player in characters)
+    state = session_state_payload(
+        session_obj,
+        SessionState.query.filter_by(session_id=session_obj.session_id).first(),
+        include_hidden_state=include_hidden_state,
+        viewer_account_id=viewer_account_id,
+        private_player_ids=own_player_ids,
     )
-    turn_events, turn_events_truncated = _session_export_turn_events(
-        session_obj.session_id,
-        include_private=include_hidden_state,
-        private_player_ids=private_player_ids,
-    )
-    warnings = []
-    if log_truncated:
-        warnings.append(f'log entries truncated to {SESSION_EXPORT_MAX_LOG_ENTRIES}')
-    if turn_events_truncated:
-        warnings.append(f'turn events truncated to {SESSION_EXPORT_MAX_TURN_EVENTS}')
+    raw_snapshot = _state_snapshot_dict(session_obj.state_snapshot)
+    campaign_pack = raw_snapshot.get('campaignPack') if isinstance(raw_snapshot.get('campaignPack'), dict) else {}
+    pack_id = campaign_pack.get('packId')
+    combat = raw_snapshot.get('combat') if isinstance(raw_snapshot.get('combat'), dict) else {}
     return {
-        'exportedAt': utc_now().isoformat(),
-        'selectedIds': {
-            'campaignId': campaign.campaign_id,
-            'sessionId': session_obj.session_id,
-            'playerId': selected_player.player_id if selected_player else None,
+        'format': SAVE_FORMAT,
+        'version': SAVE_VERSION,
+        'exported_at': utc_now().isoformat(),
+        'campaign': {
+            'id': campaign.campaign_id,
+            'title': campaign.title,
+            **({'pack_id': pack_id} if isinstance(pack_id, str) and pack_id else {}),
         },
-        'campaign': campaign_payload(campaign),
-        'selectedSession': session_payload(
-            session_obj,
-            include_hidden_state=include_hidden_state,
-            viewer_account_id=viewer_account_id,
-            private_player_ids=private_player_ids,
+        'session': session_payload(session_obj),
+        'state_snapshot': state['state_snapshot'],
+        'session_state': {
+            key: state[key]
+            for key in ('rolling_summary', 'current_location', 'current_quest', 'memory_snippets')
+        },
+        'log': _session_save_log(
+            session_obj.session_id,
+            include_private=include_hidden_state,
+            private_player_ids=own_player_ids,
         ),
-        'players': [
-            party_player_payload(
-                player,
-                include_private=(include_hidden_state or player.player_id in private_player_ids),
-            )
-            for player in players
-        ],
-        'selectedPlayer': (
-            party_player_payload(selected_player, include_private=True)
-            if selected_player
-            else None
-        ),
-        'sessionState': session_state_payload(
-            session_obj,
-            session_state,
-            include_hidden_state=include_hidden_state,
-            viewer_account_id=viewer_account_id,
-            private_player_ids=private_player_ids,
-        ),
-        'logEntries': log_entries,
-        'turnEvents': turn_events,
-        'warnings': warnings,
+        'characters': [player_detail_payload(player) for player in characters],
+        'unsettled': {
+            'pending_roll': DmTurn.query.filter_by(
+                session_id=session_obj.session_id,
+                outcome_status='deferred',
+            ).first() is not None,
+            'active_combat': str(combat.get('status') or '').strip().lower() in ACTIVE_COMBAT_STATUSES,
+        },
     }
 
 
@@ -647,14 +607,20 @@ def list_campaign_sessions(campaign_id):
         telemetry_event('sessions.list.campaign_not_found', payload={'campaign_id': campaign_id}, severity='warning')
         return error_response('campaign_not_found', 'Campaign not found.', 404)
 
-    limit = coerce_int(request.args.get('limit'))
+    try:
+        cursor = decode_session_cursor(request.args.get('cursor'))
+    except InvalidCursorError as exc:
+        return error_response('validation_error', str(exc), 400)
     return jsonify(
         list_campaign_session_payloads(
             campaign_id,
             include_archived=_include_archived(),
-            limit=(max(1, min(500, limit)) if limit is not None else None),
-            include_hidden_state=_campaign_pack_operator_view(),
-            viewer_account_id=current_account_id(),
+            limit=page_limit(
+                request.args.get('limit'),
+                default=SESSION_PAGE_DEFAULT_LIMIT,
+                maximum=SESSION_PAGE_MAX_LIMIT,
+            ),
+            cursor=cursor,
         )
     )
 
@@ -667,17 +633,31 @@ def import_session():
         telemetry_event('sessions.import.validation_error', payload={'field': 'body'}, severity='warning')
         return error_response('validation_error', 'Expected JSON request body.', 400)
 
+    mode = payload.get('mode', IMPORT_ARCHIVE)
+    if mode not in IMPORT_MODES:
+        return error_response('validation_error', 'mode must be archive or restore.', 400)
+    restore_characters = payload.get('restore_characters', False)
+    if not isinstance(restore_characters, bool):
+        return error_response('validation_error', 'restore_characters must be true or false.', 400)
+
     try:
         operator_view = _campaign_pack_operator_view()
-        account_id = current_account_id()
-        result = import_session_export(
-            payload,
-            workspace_id=current_workspace_id(),
-            include_hidden_state=operator_view,
-            allow_campaign_pack_state=operator_view,
-            required_player_account_id=(account_id if account_id is not None and not operator_view else None),
-        )
-        db.session.commit()
+        if mode == IMPORT_RESTORE:
+            result = restore_session_save(
+                payload,
+                workspace_id=current_workspace_id(),
+                operator=operator_view,
+                restore_characters=restore_characters,
+            )
+        else:
+            account_id = current_account_id()
+            result = import_session_export(
+                payload,
+                workspace_id=current_workspace_id(),
+                allow_campaign_pack_state=operator_view,
+                required_player_account_id=(account_id if account_id is not None and not operator_view else None),
+            )
+            db.session.commit()
         telemetry_metric('sessions.import.success_total', 1)
         return jsonify(result.payload), 201
     except SessionImportError as exc:
@@ -688,6 +668,14 @@ def import_session():
             severity='warning',
         )
         return error_response(exc.error_code, exc.public_message, exc.status_code)
+    except ChapterStartError as exc:
+        db.session.rollback()
+        telemetry_event(
+            f'sessions.import.{exc.error_code}',
+            payload={'mode': mode, **exc.details},
+            severity='warning',
+        )
+        return error_response(exc.error_code, exc.public_message, exc.status_code, exc.details or None)
     except Exception as exc:
         db.session.rollback()
         logger.error('Failed to import session: %s', str(exc))
@@ -703,29 +691,39 @@ def export_session(session_id):
         telemetry_event('sessions.export.session_not_found', payload={'session_id': session_id}, severity='warning')
         return error_response('session_not_found', 'Session not found.', 404)
 
-    selected_player_id = coerce_int(request.args.get('player_id'))
     include_hidden_state = _campaign_pack_operator_view()
     viewer_account_id = current_account_id()
-    if selected_player_id is not None and not include_hidden_state:
-        selected_player = (
-            Player.query.filter_by(
-                player_id=selected_player_id,
-                campaign_id=session_obj.campaign_id,
-                account_id=viewer_account_id,
-            ).first()
-            if viewer_account_id is not None
-            else None
+    # A turn commits its snapshot, log and character rows together; holding the
+    # session's turn lock keeps the whole document on one side of that commit.
+    with session_turn_coordinator.serialized(session_id):
+        session_obj = db.session.get(Session, session_id, populate_existing=True)
+        if session_obj is None:
+            db.session.rollback()
+            return error_response('session_not_found', 'Session not found.', 404)
+        # Keep the existing player-id privacy boundary for callers that still
+        # send it, even though v2 saves contain all of the viewer's characters.
+        selected_player_id = coerce_int(request.args.get('player_id'))
+        if selected_player_id is not None and not include_hidden_state:
+            selected_player = (
+                Player.query.filter_by(
+                    player_id=selected_player_id,
+                    campaign_id=session_obj.campaign_id,
+                    account_id=viewer_account_id,
+                ).first()
+                if viewer_account_id is not None
+                else None
+            )
+            if selected_player is None:
+                db.session.rollback()
+                return error_response('player_not_found', 'Player not found.', 404)
+        document = _session_save_document(
+            session_obj,
+            include_hidden_state=include_hidden_state,
+            viewer_account_id=viewer_account_id,
         )
-        if selected_player is None:
-            return error_response('player_not_found', 'Player not found.', 404)
-    payload = _session_export_payload(
-        session_obj,
-        selected_player_id=selected_player_id,
-        include_hidden_state=include_hidden_state,
-        viewer_account_id=viewer_account_id,
-    )
+        db.session.rollback()
     telemetry_metric('sessions.export.success_total', 1)
-    return jsonify(payload)
+    return jsonify(document)
 
 
 @sessions_bp.route('/<int:session_id>/chronicle', methods=['GET'])

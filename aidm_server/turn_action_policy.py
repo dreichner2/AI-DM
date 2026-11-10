@@ -96,8 +96,6 @@ class TurnActionPolicy:
         item_name = str(item.get('name') or 'item').strip()
         quantity = item.get('quantity') or 1
         inventory_action = str(action_intent.get('inventory_action') or 'use').strip()
-        cost_gold = action_intent.get('cost_gold')
-        cost_line = f'\nKnown price/value: {cost_gold} gold' if cost_gold else ''
         action_labels = {
             'pick_up': 'pick up',
             'buy': 'buy',
@@ -112,8 +110,7 @@ class TurnActionPolicy:
             'PLAYER INVENTORY INTENT:\n'
             f'Acting character: {actor_label}\n'
             f'Attempted action: {action_labels.get(inventory_action, inventory_action)}\n'
-            f'Item: {item_name} x{quantity}'
-            f'{cost_line}\n\n'
+            f'Item: {item_name} x{quantity}\n\n'
             'Player message:\n'
             f'{str(user_input or "").strip()}\n\n'
             'DM handling: First inspect the authoritative state-pipeline packet. If matching pre-DM applied changes '

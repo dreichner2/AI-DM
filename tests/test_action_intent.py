@@ -145,7 +145,8 @@ def test_validate_ability_and_item_intents():
     assert item['item']['name'] == 'Healing Potion'
     assert item['item']['id'] == 'healing-potion-1'
     assert item['inventory_action'] == 'buy'
-    assert item['cost_gold'] == 5
+    # Prices come from the server; a client price is not carried.
+    assert 'cost_gold' not in item
 
 
 def test_validate_item_intent_rejects_unsafe_item_id():

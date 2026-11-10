@@ -206,6 +206,8 @@ def initial_campaign_pack_snapshot(manifest: dict, *, campaign_id: int, imported
         path='startingState',
     )
     locations = records('locations', ('locations',), 'location')
+    world_settings = pack_importer.pack_world_settings(manifest, pack_id=pack_id)
+    pack_importer._place_locations(locations, world_settings)
     npcs = records('npcs', ('npcs', 'knownNpcs', 'known_npcs'), 'npc', required_name=True)
     quests = records('quests', ('quests',), 'quest')
     starting_location_id = pack_importer._clean_id(
@@ -265,6 +267,7 @@ def initial_campaign_pack_snapshot(manifest: dict, *, campaign_id: int, imported
         mods=pack_importer._record_list(first(manifest, 'mods'), path='mods'),
         marketplace=pack_importer._optional_bounded_json(first(manifest, 'marketplace', 'library'), path='marketplace'),
         extra_catalog_records=pack_importer._future_records_by_type(manifest, pack_id=pack_id),
+        world_settings=world_settings,
         segments=pack_importer._segment_records(first(manifest, 'segments'), pack_id=pack_id),
         session_id=None,
         campaign_id=campaign_id,

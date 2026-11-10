@@ -12,6 +12,8 @@ from aidm_server.combat.difficulty import combat_difficulty_from_state, normaliz
 from aidm_server.combat.enemy_brain import plan_freeform_enemy_tactic, plan_sentient_enemy_intent, should_use_sentient_enemy_brain
 from aidm_server.combat.morale import actionable_participants, living_participants, recalculate_morale
 from aidm_server.canon_text import int_or_default
+from aidm_server.combat.attacks import ability_reach_profile
+from aidm_server.combat.positioning import enemy_approach, targeting_block_reason
 from aidm_server.combat.state import (
     combat_ability_is_available,
     combat_ability_resolution_mode,
@@ -22,6 +24,7 @@ from aidm_server.combat.state import (
 
 
 _NON_HELPER_BOSS_TACTIC_SOURCES = {'deterministic', 'deterministic_fallback'}
+OFFENSIVE_RESOLUTION_MODES = {'attack', 'attack_with_save', 'save'}
 
 
 def _hp_percent(participant: dict[str, Any]) -> int:
@@ -130,14 +133,43 @@ def _zone_id(participant: dict[str, Any]) -> str:
     return str(position.get('zoneId') or position.get('zone_id') or '').strip()
 
 
-def target_reachable_now(enemy: dict[str, Any], target: dict[str, Any]) -> bool:
+def _offensive_abilities(enemy: dict[str, Any], round_number: Any = None) -> list[dict[str, Any]]:
+    return [
+        ability
+        for ability in enemy.get('abilities') or []
+        if isinstance(ability, dict)
+        and combat_ability_is_available(ability, round_number=round_number)
+        and combat_ability_resolution_mode(ability) in OFFENSIVE_RESOLUTION_MODES
+    ]
+
+
+def _ability_approach(enemy: dict[str, Any], target: dict[str, Any], ability: dict[str, Any], combat: dict[str, Any] | None) -> dict[str, Any]:
+    melee, bands = ability_reach_profile(ability)
+    return enemy_approach(enemy, target, melee=melee, allowed_bands=bands, combat=combat, can_move=True)
+
+
+def target_reachable_now(enemy: dict[str, Any], target: dict[str, Any], combat: dict[str, Any] | None = None) -> bool:
+    """Whether the enemy may pick this target, judged as the player HUD judges its own targets.
+
+    Down, hidden and fully covered targets are out; so is one no ability of the
+    enemy can reach, after the movement it gets this turn, from the bands both
+    stand in.  An enemy without resolvable abilities is limited by zone only.
+    """
+
     enemy_zone = _zone_id(enemy)
     target_zone = _zone_id(target)
-    return not (enemy_zone and target_zone and enemy_zone != target_zone)
+    if enemy_zone and target_zone and enemy_zone != target_zone:
+        return False
+    if combat is None:
+        return True
+    if targeting_block_reason(enemy, target, combat):
+        return False
+    abilities = _offensive_abilities(enemy, combat.get('round'))
+    return not abilities or any(_ability_approach(enemy, target, ability, combat)['reachable'] for ability in abilities)
 
 
-def reachable_players_for_enemy(enemy: dict[str, Any], players: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [player for player in players if target_reachable_now(enemy, player)]
+def reachable_players_for_enemy(enemy: dict[str, Any], players: list[dict[str, Any]], combat: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    return [player for player in players if target_reachable_now(enemy, player, combat)]
 
 
 def _battlefield_items(combat: dict[str, Any], key: str) -> list[dict[str, Any]]:
@@ -162,7 +194,7 @@ def _visible_targets(enemy: dict[str, Any], combat: dict[str, Any], players: lis
     battlefield = combat.get('battlefield') if isinstance(combat.get('battlefield'), dict) else {}
     if battlefield.get('visibility') == 'magical_darkness' and not (enemy.get('senses') or {}).get('blindsight'):
         return []
-    return reachable_players_for_enemy(enemy, players)
+    return reachable_players_for_enemy(enemy, players, combat)
 
 
 def build_combat_facts(enemy: dict[str, Any], combat: dict[str, Any], settings: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -204,8 +236,13 @@ def build_combat_facts(enemy: dict[str, Any], combat: dict[str, Any], settings: 
     }
 
 
-def choose_target(enemy: dict[str, Any], players: list[dict[str, Any]], settings: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    reachable_players = reachable_players_for_enemy(enemy, players)
+def choose_target(
+    enemy: dict[str, Any],
+    players: list[dict[str, Any]],
+    settings: dict[str, Any] | None = None,
+    combat: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    reachable_players = reachable_players_for_enemy(enemy, players, combat)
     if not reachable_players:
         return None
     raw_settings = settings if isinstance(settings, dict) else {}
@@ -221,15 +258,7 @@ def _best_ability(
     *,
     round_number: Any = None,
 ) -> dict[str, Any] | None:
-    abilities = [
-        ability
-        for ability in (enemy.get('abilities') or [])
-        if (
-            isinstance(ability, dict)
-            and combat_ability_is_available(ability, round_number=round_number)
-            and combat_ability_resolution_mode(ability)
-        )
-    ]
+    abilities = _offensive_abilities(enemy, round_number)
     if intent_type == 'use_ability':
         for ability in abilities:
             if ability.get('type') in {'spell', 'special', 'legendary', 'lair'} and ability.get('cooldown') in {'none', 'turn', 'recharge_5_6', 'once_per_combat'}:
@@ -238,6 +267,61 @@ def _best_ability(
         if ability.get('damage'):
             return ability
     return abilities[0] if abilities else None
+
+
+def _best_attack_ability(enemy: dict[str, Any], target: dict[str, Any] | None, combat: dict[str, Any]) -> dict[str, Any] | None:
+    """The best attack that can strike this target this turn, else one that can close on it."""
+
+    best = _best_ability(enemy, 'attack', round_number=combat.get('round'))
+    if not target:
+        return best
+    abilities = sorted(_offensive_abilities(enemy, combat.get('round')), key=lambda ability: not ability.get('damage'))
+    approaches = [(ability, _ability_approach(enemy, target, ability, combat)) for ability in abilities]
+    for wanted in ('attack', 'reachable'):
+        for ability, approach in approaches:
+            if approach[wanted]:
+                return ability
+    return best
+
+
+def _hp_fraction(participant: dict[str, Any]) -> float:
+    hp = participant.get('hp') if isinstance(participant.get('hp'), dict) else {}
+    return max(0, int_or_default(hp.get('current'), default=0)) / max(1, int_or_default(hp.get('max'), default=1))
+
+
+def _heal_candidate(enemy: dict[str, Any], combat: dict[str, Any]) -> dict[str, Any] | None:
+    """Use a healing ability when the enemy or an ally it can heal is at half HP or less."""
+
+    ability = next(
+        (
+            item
+            for item in enemy.get('abilities') or []
+            if isinstance(item, dict)
+            and combat_ability_is_available(item, round_number=combat.get('round'))
+            and combat_ability_resolution_mode(item) == 'heal'
+        ),
+        None,
+    )
+    if ability is None:
+        return None
+    self_only = str(ability.get('targetType') or '').strip().lower() == 'self'
+    patients = [enemy] if self_only else _living_participants(combat, enemy.get('team') or 'enemy')
+    wounded = [patient for patient in patients if 0 < _hp_fraction(patient) <= 0.5]
+    if not wounded:
+        return None
+    patient = min(wounded, key=lambda participant: (_hp_fraction(participant), str(participant.get('id') or '')))
+    return _candidate(
+        _intent(
+            enemy,
+            'use_ability',
+            target=patient,
+            ability=ability,
+            reason=f"{enemy.get('name')} tends to {patient.get('name') or 'an ally'}, badly hurt.",
+            confidence=0.74,
+            telegraph=f"{enemy.get('name')} turns to mend {patient.get('name') or 'its wounds'}.",
+        ),
+        60 + round((0.5 - _hp_fraction(patient)) * 60),
+    )
 
 
 def _intent(
@@ -466,7 +550,7 @@ def _candidate_legality_report(
         and bool(combat_ability_resolution_mode(ability))
     )
     if target and target.get('team') == 'player':
-        target_visible = target_reachable_now(enemy, target)
+        target_visible = target_reachable_now(enemy, target, combat)
     else:
         target_visible = target_valid
     destination_reachable = not intent.get('movementGoal') or bool(str(intent.get('movementGoal')).strip())
@@ -1165,9 +1249,9 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
     behavior = enemy.get('behavior') if isinstance(enemy.get('behavior'), dict) else {}
     intelligence = str(behavior.get('intelligenceProfile') or 'average')
     players = _living_participants(combat, 'player')
-    target = choose_target(enemy, players, settings)
+    target = choose_target(enemy, players, settings, combat)
     facts = build_combat_facts(enemy, combat, settings)
-    allowed_target_ids = {str(player.get('id')) for player in reachable_players_for_enemy(enemy, players) if player.get('id')}
+    allowed_target_ids = {str(player.get('id')) for player in reachable_players_for_enemy(enemy, players, combat) if player.get('id')}
     morale = _morale_after_context(enemy, combat)
     hp = _hp_percent(enemy)
     self_preservation = int_or_default(behavior.get('selfPreservation'), default=50)
@@ -1274,6 +1358,9 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
                 72 + max(0, negotiate_threshold - morale) + self_preservation // 8,
             )
         )
+    heal_candidate = _heal_candidate(enemy, combat)
+    if heal_candidate:
+        candidates.append(heal_candidate)
     if call_help_threshold > 0 and hp <= call_help_threshold and intelligence not in {'mindless', 'animal'} and morale >= 20:
         call_help_score = 76 + int_or_default(behavior.get('discipline'), default=50) // 8 + max(0, call_help_threshold - hp) // 2
         candidates.append(
@@ -1323,7 +1410,7 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
                     enemy,
                     'attack',
                     target=target,
-                    ability=_best_ability(enemy, 'attack', round_number=combat.get('round')),
+                    ability=_best_attack_ability(enemy, target, combat),
                     reason=f"{enemy.get('name')} focuses the best target based on role and vulnerability.",
                     confidence=0.68,
                     telegraph=f"{enemy.get('name')} tracks {target.get('name') or 'a vulnerable target'}.",
@@ -1347,7 +1434,7 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
                 58 + int_or_default(behavior.get('aggression'), default=50) // 5,
             )
         )
-    attack = _best_ability(enemy, 'attack', round_number=combat.get('round'))
+    attack = _best_attack_ability(enemy, target, combat)
     candidates.append(
         _candidate(
             _intent(

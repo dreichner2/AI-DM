@@ -12,6 +12,8 @@ from typing import Any
 
 from aidm_server.creatures.repository import save_bestiary_entry
 from aidm_server.database import db
+from aidm_server.game_state.application.applier import apply_state_changes
+from aidm_server.game_state.campaign_pack_encounters import REST_POLICIES, location_entry_changes
 from aidm_server.game_state.models import stable_slug
 from aidm_server.models import (
     Campaign,
@@ -27,6 +29,7 @@ from aidm_server.response_dtos import campaign_payload, session_payload
 from aidm_server.services.campaign_pack_storage import sync_campaign_pack_progress, upsert_campaign_pack_definition
 from aidm_server.time_utils import utc_now
 from aidm_server.validation import coerce_int
+from aidm_server.world_map import DEFAULT_TERRAIN, ROUTE_STYLES, TERRAINS, layout, map_position, numeric_seed
 
 
 MAX_PACK_RECORDS = 250
@@ -58,6 +61,7 @@ PACK_RECORD_COLLECTIONS = (
     ('maps', ('maps',)),
     ('handouts', ('handouts',)),
     ('lore', ('lore',)),
+    ('merchants', ('merchants',)),
 )
 # Pack-level JSON values copied into the snapshot as a whole.
 PACK_BOUNDED_FIELDS = (
@@ -66,10 +70,13 @@ PACK_BOUNDED_FIELDS = (
     ('gmNotes', ('gmNotes', 'gm_notes', 'hiddenNotes', 'hidden_notes')),
     ('hiddenSceneNotes', ('hiddenSceneNotes', 'hidden_scene_notes')),
     ('marketplace', ('marketplace', 'library')),
+    ('map', ('map',)),
 )
 PACK_BOUNDED_RECORD_LISTS = (
     ('dependencies', ('dependencies',)),
     ('mods', ('mods',)),
+    ('storyFlags', ('storyFlags', 'story_flags')),
+    ('routes', ('routes',)),
 )
 CATALOG_KEYS_BY_RECORD_TYPE = {
     'clue': 'clues',
@@ -77,7 +84,11 @@ CATALOG_KEYS_BY_RECORD_TYPE = {
     'map': 'maps',
     'handout': 'handouts',
     'lore': 'lore',
+    'merchant': 'merchants',
 }
+MERCHANT_PRICE_KEYS = ('gp', 'sp', 'cp')
+DEFAULT_MERCHANT_BUY_RATE = 0.5
+MERCHANT_RESTOCK_POLICIES = ('long_rest', 'never')
 SEGMENT_CATALOG_FIELDS = (
     'id',
     'title',
@@ -171,6 +182,8 @@ def import_campaign_pack(
         required_name=False,
     )
     future_records_by_type = _future_records_by_type(pack, pack_id=pack_id)
+    world_settings = pack_world_settings(pack, pack_id=pack_id)
+    _place_locations(locations, world_settings)
     director_rules = _bounded_json_value(_record(_first(pack, 'directorRules', 'director_rules')), path='directorRules')
     multi_session_group_key = _optional_text(
         _first(pack, 'multiSessionGroupKey', 'multi_session_group_key'),
@@ -310,6 +323,7 @@ def import_campaign_pack(
                 mods=mods,
                 marketplace=marketplace,
                 extra_catalog_records=future_records_by_type,
+                world_settings=world_settings,
                 segments=segments,
                 session_id=None,
                 campaign_id=campaign.campaign_id,
@@ -347,6 +361,7 @@ def import_campaign_pack(
         mods=mods,
         marketplace=marketplace,
         extra_catalog_records=future_records_by_type,
+        world_settings=world_settings,
         segments=segments,
         session_id=session_obj.session_id,
         campaign_id=campaign.campaign_id,
@@ -918,6 +933,7 @@ def _future_records_by_type(pack: dict[str, Any], *, pack_id: str) -> dict[str, 
         'map': ('maps', 'map'),
         'handout': ('handouts', 'handout'),
         'lore': ('lore', 'lore'),
+        'merchant': ('merchants', 'merchant'),
     }
     records_by_type: dict[str, list[dict[str, Any]]] = {}
     for record_type, (field, fallback_prefix) in domains.items():
@@ -931,6 +947,120 @@ def _future_records_by_type(pack: dict[str, Any], *, pack_id: str) -> dict[str, 
         if records:
             records_by_type[record_type] = records
     return records_by_type
+
+
+def pack_world_settings(pack: dict[str, Any], *, pack_id: str) -> dict[str, Any]:
+    """The pack-level map, route styles and story flags in runtime shape."""
+
+    authored_map = _record(_optional_bounded_json(_first(pack, 'map'), path='map'))
+    terrain = (_optional_text(authored_map.get('terrain'), max_length=40) or '').lower()
+    seed = authored_map.get('seed')
+    routes = []
+    for route in _record_list(_first(pack, 'routes'), path='routes'):
+        first, second = _clean_id(route.get('from')), _clean_id(route.get('to'))
+        style = (_optional_text(route.get('style'), max_length=40) or 'road').lower()
+        if first and second and style in ROUTE_STYLES:
+            routes.append({'from': first, 'to': second, 'style': style})
+    story_flags = []
+    for story_flag in _record_list(_first(pack, 'storyFlags', 'story_flags'), path='storyFlags'):
+        key = _optional_text(story_flag.get('key'), max_length=MAX_ID_LENGTH)
+        values = story_flag.get('values')
+        if key:
+            story_flags.append(
+                {
+                    'key': key,
+                    'when': _optional_text(story_flag.get('when'), max_length=MAX_TEXT_LENGTH) or '',
+                    'values': values if isinstance(values, list) and values else [True],
+                }
+            )
+    return {
+        'map': {
+            'title': _optional_text(authored_map.get('title'), max_length=MAX_TITLE_LENGTH) or '',
+            'terrain': terrain if terrain in TERRAINS else DEFAULT_TERRAIN,
+            'seed': seed if isinstance(seed, int) and not isinstance(seed, bool) else numeric_seed(pack_id),
+        },
+        'routes': routes,
+        'storyFlags': story_flags,
+    }
+
+
+def _place_locations(locations: list[dict[str, Any]], world_settings: dict[str, Any]) -> None:
+    """Store a computed ``mapPosition`` on every location the author did not place."""
+
+    partners: dict[str, list[str]] = {}
+    for route in world_settings['routes']:
+        partners.setdefault(route['from'], []).append(route['to'])
+        partners.setdefault(route['to'], []).append(route['from'])
+    positions = layout(
+        [
+            {
+                **location,
+                'connectedLocationIds': [
+                    *_string_list(location.get('connectedLocationIds')),
+                    *partners.get(location['id'], []),
+                ],
+            }
+            for location in locations
+        ],
+        world_settings['map']['seed'],
+    )
+    for location in locations:
+        if map_position(location.get('mapPosition')) is None and location['id'] in positions:
+            location['mapPosition'] = positions[location['id']]
+
+
+def _runtime_merchants(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Merchants in the shape the trade rules read; catalog stock is priced there."""
+
+    merchants: dict[str, dict[str, Any]] = {}
+    for record in records:
+        merchant_id = record['id']
+        stock: list[dict[str, Any]] = []
+        for index, entry in enumerate(record.get('stock') if isinstance(record.get('stock'), list) else []):
+            if not isinstance(entry, dict):
+                continue
+            quantity = entry.get('quantity')
+            quantity = quantity if isinstance(quantity, int) and not isinstance(quantity, bool) and quantity >= 0 else None
+            stock_id = stable_slug(f'{merchant_id}_{index}')
+            catalog_key = _optional_text(entry.get('catalog'), max_length=MAX_ID_LENGTH)
+            if catalog_key:
+                stock.append({'stockId': stock_id, 'catalog': catalog_key, 'quantity': quantity})
+                continue
+            price = _record(entry.get('price'))
+            item = {
+                'stockId': stock_id,
+                'name': _optional_text(entry.get('name'), max_length=MAX_NAME_LENGTH) or stock_id,
+                'type': _optional_text(entry.get('type'), max_length=80) or 'gear',
+                'price': {
+                    key: price[key]
+                    for key in MERCHANT_PRICE_KEYS
+                    if isinstance(price.get(key), int) and not isinstance(price.get(key), bool) and price[key] > 0
+                },
+                'quantity': quantity,
+            }
+            effect_id = _optional_text(entry.get('effectId'), max_length=MAX_ID_LENGTH)
+            if effect_id:
+                item['effectId'] = effect_id
+            if isinstance(entry.get('metadata'), dict):
+                item['metadata'] = deepcopy(entry['metadata'])
+            stock.append(item)
+        buy_rate = record.get('buyRate')
+        restock = (_optional_text(record.get('restock'), max_length=40) or 'long_rest').lower()
+        merchants[merchant_id] = {
+            'id': merchant_id,
+            'name': _optional_text(_first(record, 'name', 'title'), max_length=MAX_NAME_LENGTH) or merchant_id,
+            'npcId': _clean_id(record.get('npcId')),
+            'locationId': _clean_id(record.get('locationId')),
+            'buyRate': (
+                float(buy_rate)
+                if isinstance(buy_rate, (int, float)) and not isinstance(buy_rate, bool)
+                else DEFAULT_MERCHANT_BUY_RATE
+            ),
+            'restock': restock if restock in MERCHANT_RESTOCK_POLICIES else 'long_rest',
+            'stock': stock,
+            'initialStock': deepcopy(stock),
+        }
+    return merchants
 
 
 def _definition_records_by_type(
@@ -1311,6 +1441,7 @@ def _initial_snapshot(
     campaign_id: int,
     imported_at: str,
     segments: list[dict] | None = None,
+    world_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     current_scene = _record(_first(starting_state, 'currentScene', 'current_scene'))
     scene_path = 'startingState.currentScene'
@@ -1380,6 +1511,13 @@ def _initial_snapshot(
         'musicTag': _optional_text(_first(current_scene, 'musicTag', 'music_tag'), max_length=120) or None,
         'updatedAtTurn': None,
     }
+    rest_policy = (
+        _optional_text(_first(current_scene, 'restPolicy'), max_length=20)
+        or _optional_text(_first(starting_location or {}, 'restPolicy'), max_length=20)
+        or ''
+    ).lower()
+    if rest_policy in REST_POLICIES:
+        scene['restPolicy'] = rest_policy
     scene_summary = _optional_text(_first(current_scene, 'summary'), max_length=MAX_TEXT_LENGTH)
     if scene_summary:
         scene['summary'] = scene_summary
@@ -1390,7 +1528,8 @@ def _initial_snapshot(
         value = _optional_bounded_json(_first(current_scene, *aliases), path=f'{scene_path}.{key}')
         if value is not None:
             scene[key] = value
-    return {
+    settings = world_settings or {'map': {}, 'routes': [], 'storyFlags': []}
+    snapshot = {
         'schemaVersion': 1,
         'sessionId': session_id,
         'campaignId': campaign_id,
@@ -1446,10 +1585,17 @@ def _initial_snapshot(
             'checkpoints': checkpoints,
             'encounters': encounters,
             'catalog': catalog,
+            'map': settings['map'],
+            'routes': settings['routes'],
+            'storyFlags': settings['storyFlags'],
         },
+        'merchants': _runtime_merchants(extra_catalog_records.get('merchant') or []),
         'stateChangeLedger': [],
         'lastUpdatedAt': imported_at,
     }
+    # The party arrives at the starting location when the campaign begins.
+    arrival = location_entry_changes(snapshot, scene_location_id, turn_id=None)
+    return apply_state_changes(snapshot, arrival)['nextState'] if arrival else snapshot
 
 
 def _initial_checkpoint_id(

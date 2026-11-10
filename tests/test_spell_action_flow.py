@@ -301,8 +301,12 @@ def test_short_and_long_rest_restore_only_their_resources_and_preserve_consequen
     short_actor = short_rest['nextState']['playerCharacters'][0]
     assert short_validation['rejected'] == []
     assert short_actor['spellResources']['slots']['1']['current'] == 0
+    # A short rest spends the wizard's one hit die (d6, CON +0) towards full hit points.
+    hit_dice = short_validation['accepted'][0]['change']['hitDiceResolution']
+    assert hit_dice['spent'] == 1 and 1 <= hit_dice['healing'] <= 6
+    assert short_actor['hitDice'] == {'current': 0, 'max': 1, 'die': 'd6'}
     assert short_actor['health'] == {
-        'currentHp': 3,
+        'currentHp': 3 + hit_dice['healing'],
         'maxHp': 10,
         'tempHp': 2,
         'conditions': ['poisoned'],
@@ -324,6 +328,7 @@ def test_short_and_long_rest_restore_only_their_resources_and_preserve_consequen
         'tempHp': 0,
         'conditions': ['poisoned'],
     }
+    assert long_actor['hitDice']['current'] == 1
     assert long_actor['raceAbilityState']['daily_ward']['available'] is True
 
 

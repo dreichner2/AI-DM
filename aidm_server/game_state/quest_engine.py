@@ -24,7 +24,10 @@ CONSEQUENCE_CHANGE_TYPES = {
     'npc.update',
     'npc.relationship.update',
     'location.update',
+    'location.discover',
     'scene.update',
+    'clue.discover',
+    'quest.add',
 }
 
 

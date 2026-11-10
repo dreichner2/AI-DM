@@ -134,7 +134,7 @@ from aidm_server.turn_segments import SegmentEvaluationRequest, TurnSegmentServi
 logger = logging.getLogger(__name__)
 POST_TURN_PERSIST_FAILED_MESSAGE = 'The DM response could not be fully saved. Please retry.'
 COMBAT_BLOCKED_ACTION_KINDS = frozenset({'ability', 'item', 'interact', 'travel', 'rest'})
-AUTHORITATIVE_TYPED_ACTION_KINDS = frozenset({'capability', 'item', 'object', 'rest', 'spell', 'travel'})
+AUTHORITATIVE_TYPED_ACTION_KINDS = frozenset({'capability', 'item', 'object', 'rest', 'shop', 'spell', 'travel'})
 
 
 def _coerce_player_id(value) -> int | None:
@@ -887,13 +887,11 @@ class TurnEngine:
 
     def _validate_character_limits(self, command: TurnCommand, player: Player) -> bool:
         action_intent = command.action_intent if isinstance(command.action_intent, dict) else {}
-        item_cost_gold = 0
         if action_intent.get('kind') == 'item':
             item = action_intent.get('item') if isinstance(action_intent.get('item'), dict) else {}
             item_name = str(item.get('name') or '').strip()
             quantity = int(item.get('quantity') or 1)
             inventory_action = str(action_intent.get('inventory_action') or 'use').strip().lower()
-            item_cost_gold = int(action_intent.get('cost_gold') or 0)
             if inventory_action in OWNED_ITEM_ACTIONS and not inventory_contains(player, item_name, quantity):
                 self.emit(
                     'error',
@@ -915,7 +913,9 @@ class TurnEngine:
                 )
                 return False
 
-        spend = max(item_cost_gold if action_intent.get('inventory_action') == 'buy' else 0, requested_gold_spend(command.user_input))
+        # Shop prices are checked against the whole purse by the commerce engine;
+        # this only guards gold amounts the player names in free text.
+        spend = requested_gold_spend(command.user_input)
         if spend:
             state = character_state_for_player(player)
             gold = int(state.get('gold') or 0)
@@ -1047,9 +1047,10 @@ class TurnEngine:
                 or (intent_kind == 'object' and action_type == 'scene.interactable.action')
                 or (intent_kind == 'rest' and action_type == 'rest.complete')
                 or (intent_kind == 'travel' and action_type == 'world.travel')
+                or (intent_kind == 'shop' and action_type.startswith('shop.'))
                 or (
                     intent_kind == 'item'
-                    and action_type.startswith(('currency.', 'inventory.', 'scene.item.'))
+                    and action_type.startswith(('currency.', 'inventory.', 'scene.item.', 'shop.'))
                 )
             )
             if matches_intent:

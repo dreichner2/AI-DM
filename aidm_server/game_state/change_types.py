@@ -21,6 +21,9 @@ PHASE_1_STATE_CHANGE_TYPES = {
     'class_feature.use',
     'scene.interactable.action',
     'rest.complete',
+    'item.use',
+    'shop.buy',
+    'shop.sell',
     'xp.add',
     'xp.remove',
 }
@@ -69,7 +72,10 @@ COMBAT_STATE_CHANGE_TYPES = {
     'combat.morale.event',
     'combat.battlefield.update',
     'combat.death_save',
+    'combat.effect.add',
     'combat.effect.consume',
+    'combat.reaction.use',
+    'combat.stabilize',
     'combat.end',
 }
 
@@ -78,6 +84,9 @@ PLAYER_SNAPSHOT_CHANGE_TYPES = {
     'spell.cast',
     'class_feature.use',
     'rest.complete',
+    'item.use',
+    'shop.buy',
+    'shop.sell',
     'inventory.equip',
     'inventory.unequip',
     'health.max.set',

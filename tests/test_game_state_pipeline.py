@@ -11,7 +11,7 @@ import aidm_server.game_state.orchestration.turn_pipeline as turn_pipeline_modul
 from aidm_server.game_state.extraction.post_dm_outcome_extractor import extract_post_dm_outcomes
 from aidm_server.game_state.extraction.pre_dm_action_extractor import extract_pre_dm_actions
 from aidm_server.game_state.extraction.schemas import normalize_post_extraction, normalize_pre_extraction
-from aidm_server.game_state.logging.state_log_builder import build_state_log
+from aidm_server.game_state.logging.state_log_builder import build_state_log, state_log_message
 from aidm_server.game_state.models import compact_state_for_extraction, display_actor_id
 from aidm_server.game_state.orchestration.turn_pipeline import post_dm_pipeline
 from aidm_server.game_state.validation.inventory_validator import resolve_inventory_item_reference
@@ -757,6 +757,39 @@ def test_confirmed_item_intent_mutation_keeps_selected_item_id():
     assert len(changes) == 1
     assert changes[0]['type'] == 'inventory.remove'
     assert changes[0]['itemId'] == 'torch-blue'
+
+
+def test_server_item_and_trade_results_are_applied_before_narration_and_not_repeated():
+    item = {
+        'type': 'item.use', 'actorId': 'player_1', 'itemId': 'potion_1', 'itemName': 'Potion of Healing',
+        'targetId': 'player_2', 'resolution': {'healing': {'total': 6}}, 'visible': True,
+    }
+    trade = {
+        'type': 'shop.buy', 'actorId': 'player_1', 'itemName': 'Rope', 'visible': True,
+    }
+    assert turn_pipeline_module._safe_pre_dm_immediate_change(item)
+    assert turn_pipeline_module._safe_pre_dm_immediate_change(trade)
+    proposals = [
+        {'id': 'consume_again', 'type': 'inventory.remove', 'actorId': 'player_1', 'itemName': 'Potion of Healing'},
+        {'id': 'heal_again', 'type': 'health.heal', 'actorId': 'player_2', 'amount': 6},
+        {'id': 'other_heal', 'type': 'health.heal', 'actorId': 'player_3', 'amount': 2},
+        {'id': 'buy_again', 'type': 'inventory.add', 'actorId': 'player_1', 'itemName': 'Rope'},
+        {'id': 'pay_again', 'type': 'currency.remove', 'actorId': 'player_1', 'amount': 5, 'currency': 'gp'},
+    ]
+    assert turn_pipeline_module._without_applied_immediate_overlaps(proposals, [item, trade]) == [proposals[2]]
+
+
+def test_legacy_trade_does_not_create_currency_from_client_price():
+    turn = DmTurn(
+        turn_id=78,
+        metadata_json=safe_json_dumps({
+            'action_intent': {'kind': 'item', 'inventory_action': 'buy', 'item': {'name': 'Rope'}, 'cost_gold': 999}
+        }, {}),
+    )
+    changes = turn_pipeline_module._intent_confirmed_post_changes(
+        turn=turn, dm_response_text='You buy the rope.', actor_id='player_1'
+    )
+    assert [change['type'] for change in changes] == ['inventory.add']
 
 
 def test_post_dm_extracts_equipment_outcomes(app):
@@ -7578,6 +7611,41 @@ def test_build_visible_state_log():
     state_log = build_state_log(turn_id=1, immediate_validation=validation)
 
     assert state_log['lines'][0]['message'] == 'Removed Minor Healing Potion x1.'
+
+
+def test_presentation_only_scene_update_produces_no_player_visible_state_log_line():
+    validation = {
+        'accepted': [
+            {
+                'change': {
+                    'id': 'scene_calm',
+                    'type': 'scene.update',
+                    'visible': True,
+                    'dangerLevel': 0,
+                    'mood': 'calm',
+                    'activeQuestIds': [],
+                }
+            },
+            {'change': {'id': 'scene_music', 'type': 'scene.update', 'musicTag': 'tavern_evening'}},
+            {'change': {'id': 'scene_named', 'type': 'scene.update', 'name': 'The Lantern Post', 'mood': 'tense'}},
+        ],
+        'modified': [
+            {
+                'modifiedChange': {'id': 'scene_danger', 'type': 'scene.update', 'dangerLevel': 10},
+                'reason': 'Danger level capped.',
+            }
+        ],
+        'rejected': [
+            {'change': {'id': 'scene_bad_mood', 'type': 'scene.update', 'mood': 'jubilant'}, 'reason': "Unsupported scene mood 'jubilant'."}
+        ],
+    }
+
+    state_log = build_state_log(turn_id=1, post_validation=validation)
+
+    visible = [line['message'] for line in state_log['lines'] if line['visibleToPlayer']]
+    assert visible == ['Updated scene: The Lantern Post.']
+    assert state_log_message(state_log) == 'State updated:\n- Updated scene: The Lantern Post.'
+    assert state_log_message(build_state_log(turn_id=2, post_validation={**validation, 'accepted': validation['accepted'][:2]})) == ''
 
 
 def test_post_dm_semantic_merge_dedupes_exact_duplicate_combat_outcomes():

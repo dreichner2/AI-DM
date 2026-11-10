@@ -4,9 +4,12 @@ from copy import deepcopy
 from typing import Any
 
 from aidm_server.combat.state import normalize_battlefield, normalize_position
+from aidm_server.commerce import open_merchant_projections
+from aidm_server.game_clock import public_clock, scene_rest_policy
 from aidm_server.interactables import project_scene_interactables
 from aidm_server.services.campaign_pack_graph import hidden_to_players
 from aidm_server.services.campaign_pack_snapshot import migrate_campaign_pack_snapshot
+from aidm_server.world_map import project_world_map
 
 
 PLAYER_REVEALED_CHECKPOINT_STATUSES = frozenset({'active', 'completed', 'skipped', 'failed'})
@@ -136,6 +139,8 @@ PUBLIC_SCENE_ITEM_KEYS = (
     'slot',
     'weight',
     'value',
+    'containerId',
+    'containerName',
 )
 
 PUBLIC_COMBAT_FLAG_SCALAR_KEYS = (
@@ -307,6 +312,9 @@ def filter_session_snapshot_for_player(
                 )
                 for record in _visible_records(migrated.get(key))
             ]
+    world_map = project_world_map(migrated, record_visible=_record_player_visible)
+    if world_map is not None:
+        filtered['worldMap'] = world_map
 
     if isinstance(migrated.get('turnControl'), dict) or isinstance(migrated.get('turn_control'), dict):
         filtered['turnControl'] = _turn_control_for_viewer(
@@ -343,7 +351,11 @@ def filter_session_snapshot_for_player(
         filtered['currentScene'].update(
             project_scene_interactables(migrated, {'isGm': False})
         )
+        # Trade and rest: only open merchants, and the rest policy in effect here.
+        filtered['currentScene']['merchants'] = open_merchant_projections(migrated)
+        filtered['currentScene']['restPolicy'] = scene_rest_policy(raw_scene)
 
+    filtered['clock'] = public_clock(migrated.get('clock'))
     return filtered
 
 

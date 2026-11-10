@@ -219,6 +219,46 @@
     "marketplace": {
       "type": "object",
       "additionalProperties": true
+    },
+    "merchants": {
+      "type": "array",
+      "maxItems": 250,
+      "items": {
+        "$ref": "#/$defs/merchant"
+      }
+    },
+    "storyFlags": {
+      "type": "array",
+      "maxItems": 150,
+      "items": {
+        "$ref": "#/$defs/storyFlag"
+      }
+    },
+    "map": {
+      "description": "World map settings: title, terrain and the layout seed.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "title": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "terrain": {
+          "type": "string",
+          "enum": ["moor", "forest", "mountain", "coast", "plains", "marsh"]
+        },
+        "seed": {
+          "type": "integer"
+        }
+      }
+    },
+    "routes": {
+      "description": "Route styles between connected locations (default road for every adjacency).",
+      "type": "array",
+      "maxItems": 150,
+      "items": {
+        "$ref": "#/$defs/route"
+      }
     }
   },
   "$defs": {
@@ -407,6 +447,36 @@
             },
             "visibleAtStart": {
               "type": "boolean"
+            },
+            "onEnter": {
+              "description": "Trusted consequences applied once, on the first arrival.",
+              "$ref": "#/$defs/encounterConsequenceList"
+            },
+            "restPolicy": {
+              "type": "string",
+              "enum": ["safe", "risky", "none"]
+            },
+            "mapPosition": {
+              "description": "Position on the 0-100 world map grid; computed at import when missing.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["x", "y"],
+              "properties": {
+                "x": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                }
+              }
+            },
+            "mapIcon": {
+              "type": "string",
+              "enum": ["inn", "town", "road", "bridge", "ruin", "tower", "forest", "cave", "camp", "shrine", "cairn", "valley", "gate", "marsh", "peak", "unknown"]
             }
           }
         }
@@ -757,6 +827,25 @@
         },
         "onObjectiveCompletion": {
           "$ref": "#/$defs/encounterConsequenceList"
+        },
+        "trigger": {
+          "$ref": "#/$defs/encounterTrigger"
+        },
+        "once": {
+          "description": "Fire the trigger only once (default true).",
+          "type": "boolean"
+        },
+        "when": {
+          "description": "The trigger fires only while this flag holds.",
+          "$ref": "#/$defs/flagPredicate"
+        },
+        "unless": {
+          "description": "The trigger does not fire while this flag holds.",
+          "$ref": "#/$defs/flagPredicate"
+        },
+        "scaling": {
+          "description": "Counts and HP are authored for four player characters and scale down for a smaller party; false disables that.",
+          "type": "boolean"
         }
       }
     },
@@ -1185,6 +1274,164 @@
             "type": "object",
             "additionalProperties": true
           }
+        }
+      }
+    },
+    "encounterTrigger": {
+      "description": "Starts the encounter by itself: on first entering a location, while a checkpoint is active, when a flag is set to a value, or when an object action succeeds.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["on_enter", "on_checkpoint", "on_flag", "on_interactable"]
+        },
+        "locationId": {
+          "$ref": "#/$defs/id"
+        },
+        "checkpointId": {
+          "$ref": "#/$defs/id"
+        },
+        "flagKey": {
+          "$ref": "#/$defs/id"
+        },
+        "equals": {
+          "type": ["string", "number", "boolean"]
+        },
+        "targetId": {
+          "$ref": "#/$defs/id"
+        },
+        "action": {
+          "type": "string",
+          "enum": ["break", "close", "disarm", "inspect", "lock", "open", "reset", "search", "trigger", "unlock", "use"]
+        }
+      }
+    },
+    "merchantStockEntry": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "type": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "effectId": {
+          "$ref": "#/$defs/id"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "price": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "gp": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sp": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "cp": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "quantity": {
+          "description": "Omit for unlimited stock.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "catalog": {
+          "description": "A price-list key; priced by the trade rules.",
+          "type": "string",
+          "maxLength": 120
+        }
+      }
+    },
+    "merchant": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "name", "stock"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "npcId": {
+          "$ref": "#/$defs/id"
+        },
+        "locationId": {
+          "$ref": "#/$defs/id"
+        },
+        "buyRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "restock": {
+          "type": "string",
+          "enum": ["long_rest", "never"]
+        },
+        "stock": {
+          "type": "array",
+          "maxItems": 150,
+          "items": {
+            "$ref": "#/$defs/merchantStockEntry"
+          }
+        }
+      }
+    },
+    "storyFlag": {
+      "description": "A flag narration may set: only this key, only to one of values (default [true]).",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["key", "when"],
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "when": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": ["string", "number", "boolean"]
+          }
+        }
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["from", "to", "style"],
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "style": {
+          "type": "string",
+          "enum": ["road", "trail", "hidden"]
         }
       }
     }

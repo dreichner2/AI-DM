@@ -1229,7 +1229,9 @@ def test_campaign_workspace_endpoint_returns_aggregate_payload(client, app):
         'segments': None,
     }
     assert payload['sessions'][0]['turn_count'] == 1
-    assert payload['sessions'][0]['latest_summary'] == 'The party found the Ash Gate.'
+    assert payload['sessions'][0]['summary_excerpt'] == 'The party found the Ash Gate.'
+    assert 'state_snapshot' not in payload['sessions'][0]
+    assert payload['limits']['sessions'] == 30
     assert payload['players'][0]['player_id'] == ids['player_id']
     assert payload['maps'][0]['map_data'] == {'tiles': []}
     assert payload['segments'][0]['title'] == 'Hidden Chamber'
@@ -1287,7 +1289,7 @@ def test_campaign_workspace_summary_counts_full_collection_when_lists_are_limite
 
     response = client.get(
         f"/api/campaigns/{ids['campaign_id']}/workspace"
-        "?session_limit=1&player_limit=1&map_limit=1&segment_limit=1"
+        "?sessions_limit=1&player_limit=1&map_limit=1&segment_limit=1"
     )
 
     assert response.status_code == 200

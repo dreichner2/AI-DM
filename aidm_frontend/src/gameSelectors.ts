@@ -150,6 +150,17 @@ export type CombatParticipantSummary = {
   position: string
   selectionScore: string
   selectionMethod: string
+  /** Raw band (melee, near, far, distant) for range-aware display. */
+  rangeBand?: string
+  /** Ids of the visible participants this one is locked in melee with. */
+  engagedWith?: string[]
+  /** Death saving throws of a downed player character; null for everyone else. */
+  deathSaves?: CombatDeathSaves | null
+}
+
+export type CombatDeathSaves = {
+  successes: number
+  failures: number
 }
 
 export type CombatLegalTarget = {
@@ -169,6 +180,14 @@ export type CombatActionEconomy = {
   subTurnCountersTracked: boolean
 }
 
+/** What one action spends from the turn: each 0 or 1. */
+export type CombatActionCost = {
+  action: number
+  bonusAction: number
+  movement: number
+  reaction: number
+}
+
 export type CombatLegalAction = {
   id: string
   type: string
@@ -184,6 +203,7 @@ export type CombatLegalAction = {
   rangeClassification: string
   allowedRangeBands: string[]
   weaponName: string
+  cost?: CombatActionCost
 }
 
 export type CombatLegalActionBundle = {
@@ -201,7 +221,16 @@ export type CombatLegalActionBundle = {
   bonusActionRemaining: number
   movementRemaining: number
   reactionRemaining: number
+  /** Weapon attacks left from an Attack action already taken this turn (Extra Attack). */
+  attacksRemaining?: number
   actions: CombatLegalAction[]
+}
+
+export type CombatTurnOrderEntry = {
+  id: string
+  name: string
+  team: string
+  isCurrent: boolean
 }
 
 export type CombatStatePanel = {
@@ -222,6 +251,32 @@ export type CombatStatePanel = {
   allies: CombatParticipantSummary[]
   telegraphs: string[]
   legalActionBundles: CombatLegalActionBundle[]
+  /** Initiative order for the turn ribbon (visible participants only). */
+  turnOrder?: CombatTurnOrderEntry[]
+}
+
+export type WorldClockSummary = {
+  day: number
+  phase: string
+  label: string
+}
+
+export type WorldMerchantStockEntry = {
+  stockId: string
+  name: string
+  type: string
+  price: Record<string, number>
+  priceLabel: string
+  /** null means the merchant never runs out. */
+  quantity: number | null
+}
+
+export type WorldMerchantSummary = {
+  id: string
+  name: string
+  npcId: string
+  buyRate: number
+  stock: WorldMerchantStockEntry[]
 }
 
 export type WorldStatePanel = {
@@ -237,6 +292,9 @@ export type WorldStatePanel = {
   knownLocations: WorldLocationSummary[]
   knownNpcs: WorldNpcSummary[]
   combat: CombatStatePanel
+  clock?: WorldClockSummary
+  /** Merchants open for trade in the current scene (the server projects only those). */
+  merchants?: WorldMerchantSummary[]
 }
 
 export type PendingRollOption = {
@@ -395,6 +453,30 @@ function combatParticipantSummary(participant: JsonRecord): CombatParticipantSum
     position: [rangeBand, zoneId].filter(Boolean).join(' / '),
     selectionScore: intent.selectionScore === undefined || intent.selectionScore === null ? '' : stringValue(intent.selectionScore),
     selectionMethod: stringValue(intent.selectionMethod).replace(/_/g, ' '),
+    rangeBand: stringValue(position.rangeBand),
+    engagedWith: Array.isArray(position.engagedWith)
+      ? position.engagedWith.map((value) => stringValue(value)).filter(Boolean)
+      : [],
+    deathSaves: isRecord(participant.deathSaves)
+      ? {
+          successes: Math.max(0, Math.min(3, numberValue(participant.deathSaves.successes) ?? 0)),
+          failures: Math.max(0, Math.min(3, numberValue(participant.deathSaves.failures) ?? 0)),
+        }
+      : null,
+  }
+}
+
+function costUnit(value: unknown) {
+  return (numberValue(value) ?? 0) > 0 ? 1 : 0
+}
+
+function combatActionCost(action: JsonRecord, economy: JsonRecord): CombatActionCost {
+  const cost = isRecord(action.cost) ? action.cost : null
+  return {
+    action: costUnit(cost ? cost.action : economy.action),
+    bonusAction: costUnit(cost ? cost.bonusAction : economy.bonusAction),
+    movement: costUnit(cost ? cost.movement : economy.movementCost),
+    reaction: costUnit(cost ? cost.reaction : economy.reaction),
   }
 }
 
@@ -434,6 +516,7 @@ function combatLegalAction(action: JsonRecord): CombatLegalAction | null {
       ? range.allowedBands.map((value) => stringValue(value)).filter(Boolean)
       : [],
     weaponName: stringValue(weapon.name),
+    cost: combatActionCost(action, economy),
   }
 }
 
@@ -455,7 +538,8 @@ function combatLegalActionBundle(bundle: JsonRecord): CombatLegalActionBundle | 
     actionRemaining: numberValue(economy.actionRemaining) ?? 0,
     bonusActionRemaining: numberValue(economy.bonusActionRemaining) ?? 0,
     movementRemaining: numberValue(economy.movementRemaining) ?? 0,
-    reactionRemaining: numberValue(economy.reactionRemaining) ?? 0,
+    reactionRemaining: numberValue(bundle.reactionRemaining ?? economy.reactionRemaining) ?? 0,
+    attacksRemaining: numberValue(bundle.attacksRemaining) ?? 0,
     actions: recordArray(bundle.actions)
       .map(combatLegalAction)
       .filter((action): action is CombatLegalAction => action !== null),
@@ -509,6 +593,14 @@ function combatStateFromSnapshot(snapshot: JsonRecord): CombatStatePanel {
     allies,
     telegraphs,
     legalActionBundles,
+    turnOrder: recordArray(combat.turnOrder)
+      .map((entry) => ({
+        id: stringValue(entry.id),
+        name: stringValue(entry.name, 'Unknown combatant'),
+        team: stringValue(entry.team),
+        isCurrent: entry.isCurrent === true,
+      }))
+      .filter((entry) => Boolean(entry.id)),
   }
 }
 
@@ -1328,6 +1420,50 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
     knownLocations,
     knownNpcs,
     combat: combatStateFromSnapshot(root),
+    clock: worldClockFromSnapshot(root),
+    merchants: recordArray(scene.merchants).map(merchantSummary).filter((merchant) => Boolean(merchant.id)),
+  }
+}
+
+const CLOCK_PHASES = ['morning', 'afternoon', 'evening', 'night']
+const COIN_ORDER = ['pp', 'gp', 'ep', 'sp', 'cp']
+
+function worldClockFromSnapshot(root: JsonRecord): WorldClockSummary {
+  const clock = isRecord(root.clock) ? root.clock : {}
+  const day = Math.max(1, Math.floor(numberValue(clock.day) ?? 1))
+  const rawPhase = stringValue(clock.phase).toLowerCase()
+  const phase = CLOCK_PHASES.includes(rawPhase) ? rawPhase : 'morning'
+  return { day, phase, label: `Day ${day} · ${phase.charAt(0).toUpperCase()}${phase.slice(1)}` }
+}
+
+function merchantPrice(value: unknown) {
+  const raw = isRecord(value) ? value : {}
+  const price: Record<string, number> = {}
+  for (const coin of COIN_ORDER) {
+    const amount = Math.floor(numberValue(raw[coin]) ?? 0)
+    if (amount > 0) price[coin] = amount
+  }
+  return price
+}
+
+function merchantSummary(record: JsonRecord): WorldMerchantSummary {
+  return {
+    id: stringValue(record.id),
+    name: stringValue(record.name, 'Merchant'),
+    npcId: stringValue(record.npcId),
+    buyRate: numberValue(record.buyRate) ?? 0.5,
+    stock: recordArray(record.stock).map((entry) => {
+      const price = merchantPrice(entry.price)
+      const quantity = numberValue(entry.quantity)
+      return {
+        stockId: stringValue(entry.stockId),
+        name: stringValue(entry.name, 'Unknown item'),
+        type: stringValue(entry.type, 'gear'),
+        price,
+        priceLabel: Object.entries(price).map(([coin, amount]) => `${amount} ${coin}`).join(', ') || 'free',
+        quantity: quantity === null ? null : Math.max(0, Math.floor(quantity)),
+      }
+    }),
   }
 }
 
@@ -1679,4 +1815,71 @@ export function recentMemoryFromSnippets(memorySnippets: JsonRecord[], selectedS
         `S${selectedSessionId ?? '—'}E${source}`,
       ] as [string, string]
     })
+}
+
+export type WorldMapNodeState = 'current' | 'visited' | 'known' | 'rumoured'
+
+export type WorldMapRouteStyle = 'road' | 'trail' | 'hidden'
+
+export type WorldMapNode = {
+  id: string
+  name: string
+  icon: string
+  x: number
+  y: number
+  state: WorldMapNodeState
+}
+
+export type WorldMapRoute = {
+  from: string
+  to: string
+  style: WorldMapRouteStyle
+  travelable: boolean
+}
+
+export type WorldMap = {
+  title: string
+  terrain: string
+  seed: number
+  nodes: WorldMapNode[]
+  routes: WorldMapRoute[]
+}
+
+const WORLD_MAP_NODE_STATES: readonly WorldMapNodeState[] = ['current', 'visited', 'known', 'rumoured']
+const WORLD_MAP_ROUTE_STYLES: readonly WorldMapRouteStyle[] = ['road', 'trail', 'hidden']
+
+function mapCoordinate(value: unknown) {
+  const parsed = numberValue(value)
+  return parsed === null ? null : Math.min(100, Math.max(0, parsed))
+}
+
+/** The server's player-safe `worldMap` projection, or null when there is no map to draw. */
+export function worldMapFromSnapshot(snapshot: unknown): WorldMap | null {
+  const root = isRecord(snapshot) ? snapshot : {}
+  const raw = isRecord(root.worldMap) ? root.worldMap : null
+  if (!raw) return null
+  const nodes = recordArray(raw.nodes).flatMap((node): WorldMapNode[] => {
+    const id = stringValue(node.id)
+    const x = mapCoordinate(node.x)
+    const y = mapCoordinate(node.y)
+    const state = WORLD_MAP_NODE_STATES.find((candidate) => candidate === node.state)
+    if (!id || x === null || y === null || !state) return []
+    return [{ id, name: stringValue(node.name, '?'), icon: stringValue(node.icon, 'unknown'), x, y, state }]
+  })
+  if (!nodes.length) return null
+  const nodeIds = new Set(nodes.map((node) => node.id))
+  const routes = recordArray(raw.routes).flatMap((route): WorldMapRoute[] => {
+    const from = stringValue(route.from)
+    const to = stringValue(route.to)
+    const style = WORLD_MAP_ROUTE_STYLES.find((candidate) => candidate === stringValue(route.style, 'road'))
+    if (!nodeIds.has(from) || !nodeIds.has(to) || !style) return []
+    return [{ from, to, style, travelable: route.travelable === true }]
+  })
+  return {
+    title: stringValue(raw.title),
+    terrain: stringValue(raw.terrain, 'plains'),
+    seed: numberValue(raw.seed) ?? 0,
+    nodes,
+    routes,
+  }
 }

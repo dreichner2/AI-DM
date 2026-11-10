@@ -15,6 +15,8 @@ PRE_DM_ACTION_TYPES = {
     'scene.interactable.action',
     'class_feature.use',
     'rest.complete',
+    'shop.buy',
+    'shop.sell',
     'race_ability.use',
     'combat.attack',
     'generic.intent',

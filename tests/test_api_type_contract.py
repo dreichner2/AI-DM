@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from aidm_server.api_type_contract import API_TYPE_CONTRACT_BY_NAME
 from aidm_server.database import db
-from aidm_server.models import CampaignSegment, Map, Session, safe_json_dumps
+from aidm_server.models import CampaignSegment, Map, Session, SessionLogEntry, safe_json_dumps
 from scripts.generate_api_types import OUTPUT, main as generate_api_types_main, render_types
 from tests.helpers import seed_world_campaign_player_session
 
@@ -75,7 +75,13 @@ def test_frontend_api_contract_matches_backend_endpoint_payloads(client, app):
             tags='contract',
             is_triggered=False,
         )
-        db.session.add_all([map_obj, segment])
+        db.session.add_all(
+            [
+                map_obj,
+                segment,
+                SessionLogEntry(session_id=ids['session_id'], message='Contract log line.', entry_type='system'),
+            ]
+        )
         session = db.session.get(Session, ids['session_id'])
         session.state_snapshot = safe_json_dumps(
             {
@@ -142,7 +148,17 @@ def test_frontend_api_contract_matches_backend_endpoint_payloads(client, app):
     _assert_contract_payload('CampaignSegment', client.get(f'/api/segments/{segment_id}').get_json())
 
     session_list = client.get(f"/api/sessions/campaigns/{ids['campaign_id']}/sessions").get_json()
-    _assert_contract_payload('SessionSummary', session_list[0])
+    _assert_contract_payload('SessionListResponse', session_list)
+    _assert_contract_payload('SessionSummary', session_list['sessions'][0])
+
+    save = client.get(f"/api/sessions/{ids['session_id']}/export").get_json()
+    _assert_contract_payload('SessionSaveDocument', save)
+    _assert_contract_payload('SessionSummary', save['session'])
+    _assert_contract_payload('SessionLogEntry', save['log'][0])
+    _assert_contract_payload('PlayerDetail', save['characters'][0])
+    imported = client.post('/api/sessions/import', json=save).get_json()
+    _assert_contract_payload('SessionImportResponse', imported)
+    _assert_contract_payload('SessionSummary', imported['session'])
 
     workspace = client.get(f"/api/campaigns/{ids['campaign_id']}/workspace").get_json()
     _assert_contract_payload('CampaignWorkspace', workspace)
@@ -159,7 +175,7 @@ def test_frontend_api_contract_matches_backend_endpoint_payloads(client, app):
     _assert_contract_payload('SessionStartResponse', started)
     ended_session = next(
         item
-        for item in client.get(f"/api/sessions/campaigns/{ids['campaign_id']}/sessions").get_json()
+        for item in client.get(f"/api/sessions/campaigns/{ids['campaign_id']}/sessions").get_json()['sessions']
         if item['session_id'] == ids['session_id']
     )
     _assert_contract_payload('SessionSummary', ended_session)

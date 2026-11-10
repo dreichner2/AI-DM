@@ -73,6 +73,10 @@ type CampaignRailProps = {
   onStartSession: () => void
   onSelectCampaign: (campaignId: number) => void
   onSelectSession: (sessionId: number) => void
+  /** The server has older chapters than the ones listed. */
+  hasOlderSessions: boolean
+  olderSessionsLoading: boolean
+  onShowOlderSessions: () => void
   playability: PlayabilityStatus
   lastSavedLabel: string
   onRefreshWorkspace: () => void
@@ -122,6 +126,9 @@ export function CampaignRail({
   onStartSession,
   onSelectCampaign,
   onSelectSession,
+  hasOlderSessions,
+  olderSessionsLoading,
+  onShowOlderSessions,
   playability,
   lastSavedLabel,
   onRefreshWorkspace,
@@ -320,6 +327,17 @@ export function CampaignRail({
               ) : null}
             </div>
           )}
+          {sessionCards.length && hasOlderSessions ? (
+            <button
+              type="button"
+              className="empty-rail"
+              aria-busy={olderSessionsLoading}
+              disabled={olderSessionsLoading}
+              onClick={onShowOlderSessions}
+            >
+              {olderSessionsLoading ? 'Loading older chapters…' : 'Show older chapters'}
+            </button>
+          ) : null}
         </div>
       </section>
 

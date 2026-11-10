@@ -77,6 +77,23 @@ their own journal hooks; they cannot reactivate or complete mechanical quests.
   conditions, except that it wakes a `stable` character: a short rest brings it
   to 1 HP, a long rest to full HP, and both remove `stable` and `unconscious`.
   Dying and dead characters cannot rest.
+- Hit dice (`actor.hitDice = {current, max, die}`, max = level, die from class,
+  persisted as `Player.stats.hit_dice`) heal on a short rest: the typed rest
+  intent's `hit_dice` says how many to spend (default: as many as needed to reach
+  full HP); each heals one server-rolled die + CON modifier, minimum 1, and the
+  rolls are replayed before the result is accepted. A long rest regains half of
+  the maximum (minimum 1).
+- The party day clock (`snapshot.clock = {day, phase, shortRestsSinceLong,
+  lastLongRestDay}`, phases morning/afternoon/evening/night, default day 1
+  morning) advances one phase on a short rest or structured travel and to the
+  next morning on a long rest. At most two short rests count between long rests
+  ("You need a long rest before another short rest helps.") and one long rest is
+  allowed per day ("You have already rested today."). The clock is in the player
+  projection and the DM context.
+- `currentScene.restPolicy` (`safe` | `risky` | `none`, authored on locations,
+  otherwise danger ≥ 3 is `risky` and ≥ 6 is `none`): `none` rejects any rest,
+  `risky` allows only a short rest. Combat still blocks rest. A long rest also
+  ends effects that last "until the next rest" and restocks merchants.
 
 ### Structured combat lifecycle
 
@@ -128,15 +145,75 @@ their own journal hooks; they cannot reactivate or complete mechanical quests.
   an explicit End Turn, which advances through the legal enemy block and then
   resets economy for the next round. The advance processes every turn end and
   start it crosses, each enemy of a grouped block included: effect durations
-  tick, temporary HP per turn is granted, `dodging` ends, a prone creature that
-  can act stands (spending its movement), and `recharge_5_6` abilities used
-  earlier roll a deterministic d6 (5-6 recharges; unavailable until then).
+  tick, the actor's reaction returns, temporary HP per turn is granted,
+  `dodging` ends, a prone creature that can act stands (spending its movement),
+  and `recharge_5_6` abilities used earlier roll a deterministic d6 (5-6
+  recharges; unavailable until then).
+- Range bands and engagement (`combat/positioning.py`): every participant
+  stands in `melee`, `near`, `far` or `distant`. The melee band is the press of
+  close combat; a participant in it is engaged with the enemies it closed on or
+  that closed on it (`position.engagedWith`, kept on both sides). Closing on a
+  target from `near` (or from inside melee) puts both in melee and engages them;
+  the target must stand in `melee` or `near`. Any move out of melee ends all of
+  the mover's engagements. Melee weapon attacks need the target engaged with
+  the attacker or both in melee; weapons tagged `reach` may target the `melee`
+  and `near` bands. Ranged weapons reach every band; a ranged weapon or ranged
+  spell attack made while engaged with an enemy that can act has disadvantage.
+  Down, hidden and fully covered targets cannot be targeted.
+- Every character's HUD bundle carries the universal actions, each with a
+  `cost` (`action`, `bonusAction`, `movement`, `reaction`, each 0 or 1) and,
+  when unavailable, a plain reason: Advance (movement; one band inward, or close
+  into melee on a chosen enemy), Fall back (`combat.reposition`; movement; one
+  band outward), Dash (action; one more movement this turn), Disengage (action;
+  no opportunity attacks this turn, no movement of its own), Dodge (action;
+  `dodging` until the actor's next turn), Help (action; an ally in the same or
+  an adjacent band gets advantage on its next attack before the helper's next
+  turn), Hide (action; not in melee without cover; server-rolled Dexterity
+  (Stealth) against the highest passive Perception, 10 + WIS modifier, of the
+  conscious enemies; success makes the actor `hidden`) and Stabilize (action; a
+  dying ally in the same or an adjacent band; server-rolled Wisdom (Medicine)
+  DC 10; success makes it `stable`). Standing from prone stays automatic. The
+  pipeline re-resolves each action under the turn lock, applies its trusted
+  changes before narration and hands the DM a `playerResolvedCombatAction`
+  block with the exact outcome, check and reactions. Actions dispatch on their
+  type, so class features that grant Dash, Disengage or Hide at another cost
+  reuse them. Replaying the same turn record never spends or applies twice.
+- Extra Attack: the first weapon attack spends the action and sets
+  `turnEconomy.attacksRemaining` to the actor's attacks per action minus one
+  (1 by default; class features raise it with
+  `register_attacks_per_action_provider`); later attacks spend those.
+  Two-weapon fighting: with a light melee weapon in each hand and an attack
+  already made with one of them this turn, `combat.offhand_attack` strikes with
+  the other as a bonus action, adding the ability modifier to damage only when
+  it is negative.
+- Reactions (`combat/reactions.py`): each participant has one reaction
+  (`reactionRemaining`), back at the start of its own turn and spent by every
+  reaction; a participant that cannot act or has `cannotReact` takes none.
+  Providers registered with `register_reaction_provider` answer the
+  `attack_hit`, `leaves_melee` and `damage_taken` events raised by player and
+  enemy attacks and movement; at most one reaction per reactor per event (first
+  provider wins), each recorded with its changes in the turn's results. The
+  built-in provider makes opportunity attacks: leaving melee while engaged,
+  unless disengaged this turn, draws one melee attack from each engaged enemy
+  that can react (an enemy's first ready melee attack ability; a player
+  character's main-hand melee weapon, automatically unless its sheet sets
+  `autoReactions: false`). A mover dropped by the strike stays where it is.
 - Enemy execution shares the turn engine's present/actionable/targetable
   predicates, revalidates limited-use resources, and supports bounded
-  single-target attacks, saving throws, damage, and conditions. Unsupported
-  delivery shapes fail closed and are removed from narration context instead of
-  becoming invented damage. Player projections expose public turn/economy state
-  but not spent-action IDs or private planning data.
+  single-target attacks, saving throws, damage, conditions and healing
+  (`healing.dice` with `targetType` self or single: the enemy itself or its most
+  wounded ally). The block resolves in initiative order on one working copy, so
+  later enemies see earlier moves, reactions and heals. An enemy with a melee
+  attack that is not in reach moves inward one band and attacks when that
+  brings the target into reach, or spends its turn on a second move otherwise;
+  a retreating enemy moves one band outward (provoking as above) before it
+  flees. Enemy targeting, in planning and at resolution, applies the same
+  range-band, engagement, cover and hidden rules as the player HUD, using each
+  ability's declared range. Unsupported delivery shapes fail closed and are
+  removed from narration context instead of becoming invented damage. Player
+  projections expose public turn/economy state, the initiative ribbon
+  (`combat.turnOrder`), each participant's band and engagements with visible
+  participants, but not spent-action IDs or private planning data.
 - Engine-selected enemy retreat/flee, surrender, and negotiation intents apply
   authoritative conditions and feed the same combat end-condition engine as
   defeat; narration cannot substitute a different ending.
@@ -238,6 +315,45 @@ full tabletop rules coverage.
   Hands points, persisted remaining uses, action/bonus-action limits, and rest
   refresh policy.
 
+### Consumable item effects
+
+- `aidm_server/item_effects.py` holds the catalog: Potions of Healing, Greater
+  and Superior Healing, Antitoxin, Healer's Kit (10 uses in
+  `metadata.usesRemaining`), Holy Water, Alchemist's Fire, Acid, and spell
+  scrolls. An item has an effect when `metadata.effectId` names an entry or its
+  normalised name/alias matches one (scrolls: `Scroll of <Spell>` or
+  `metadata.spellId`). Starter kits carry a Potion of Healing; clerics and
+  druids also carry a Healer's Kit.
+- Using a catalog item (typed `inventory_action: use` with an exact item id and
+  optional `target_id`, a free-text request that resolves to exactly one item, or
+  the combat HUD's `item.use.<itemId>` action) produces one `item.use` change:
+  server-rolled dice, one quantity or use removed together with the effect, the
+  combat cost charged by that change, replay-checked before it is accepted.
+  Potions cost a bonus action on oneself and an action for an ally in the same or
+  an adjacent range band; healing follows the vitality rules (a dying ally wakes,
+  the dead cannot be healed). Thrown items make a DEX + proficiency ranged attack
+  through the modifier engine. Scrolls cast their rules-backed spell at base
+  level without a slot, only for readers whose class list has the spell.
+- Items without an effect keep the DM-adjudicated path, and narration never
+  repeats the removal of a server-resolved item.
+
+### Shops
+
+- `aidm_server/commerce.py` reads `snapshot.merchants` (written by the campaign
+  pack importer). A merchant is open when its NPC is present in the scene (or,
+  without an NPC, when the party is at its location) and no combat is running;
+  only open merchants are projected to players (`currentScene.merchants`) and
+  given to the DM.
+- `shop.buy` and `shop.sell` settle in one atomic, replay-safe change: prices come
+  from the server (stock entries or `aidm_server/price_list.py` for
+  `{"catalog": key}` entries), funds are checked across all denominations with
+  change given in gp/sp/cp, stock is decremented, and bought items keep their
+  `effectId`/`metadata`. Selling pays the listed price × `buyRate`, rounded down
+  to the copper; unpriced items and equipped items are refused.
+- A free-text buy or sell is routed to an open merchant that trades the item; with
+  none, the DM adjudicates and coins change only by the amount the narration
+  states. A client-supplied `cost_gold` is never used.
+
 ### Persistent scene interactables
 
 - Exact-ID doors, locks, containers, objects, and hazards support inspect, open,
@@ -305,11 +421,11 @@ full tabletop rules coverage.
   `lethalDefeat`, the dying stay dying after combat ends, and nothing outside
   combat rolls their death saves.
 - Equipment affects armor class and weapon actions, but armor proficiency is not
-  yet a first-class class rule. Consumable removal is not yet atomically bound to
-  a general catalog of validated item effects.
-- Buy and sell retain the older DM-confirmed transaction path. Funds are checked,
-  but merchant presence, stock, and server-authored prices are not yet a complete
-  commerce model.
+  yet a first-class class rule. Only the catalog items above have rules
+  effects; Alchemist's Fire records its burning effect on the target, but the
+  start-of-turn damage it describes is not yet applied by the combat turn loop.
+- Merchants have unlimited coin, sold items do not enter their stock, and prices
+  are fixed (no haggling). Trades outside a merchant record stay narration-only.
 - Actor-to-actor transfers are atomic when a recipient is resolved, but the
   standard item composer does not yet provide a complete item-plus-recipient UI.
 - The scene-object UI infers candidate transitions from player-visible state;
@@ -328,7 +444,6 @@ full tabletop rules coverage.
 
 ## Data-Only or Narration-Only Areas
 
-- Shop inventories, price lists, scarcity, and restocking are not authoritative.
 - Relationships and many social consequences can be stored, but most do not yet
   feed a complete contested social-resolution system.
 - General reinforcements, negotiation objectives, surrender terms, and retreat

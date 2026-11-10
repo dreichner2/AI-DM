@@ -44,6 +44,9 @@ function railProps(
     onStartSession: vi.fn(),
     onSelectCampaign: vi.fn(),
     onSelectSession: vi.fn(),
+    hasOlderSessions: false,
+    olderSessionsLoading: false,
+    onShowOlderSessions: vi.fn(),
     playability: { label: 'Ready to play', tone: 'good' },
     lastSavedLabel: 'just now',
     onRefreshWorkspace: vi.fn(),
@@ -149,5 +152,25 @@ describe('CampaignRail', () => {
     rerender(<CampaignRail {...railProps({ selectedCampaignId: 10, onStartSession })} />)
     expect(screen.queryByRole('button', { name: 'Start next chapter' })).not.toBeInTheDocument()
   })
-})
 
+  it('offers older chapters quietly while the server has more', () => {
+    const onShowOlderSessions = vi.fn()
+    const sessionCards = [{ id: 22, label: 'Chapter 31', state: 'Current', name: '' }]
+    const { rerender } = render(
+      <CampaignRail {...railProps({ sessionCards, hasOlderSessions: true, onShowOlderSessions })} />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show older chapters' }))
+    expect(onShowOlderSessions).toHaveBeenCalledTimes(1)
+
+    rerender(
+      <CampaignRail
+        {...railProps({ sessionCards, hasOlderSessions: true, olderSessionsLoading: true, onShowOlderSessions })}
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'Loading older chapters…' })).toBeDisabled()
+
+    rerender(<CampaignRail {...railProps({ sessionCards, hasOlderSessions: false, onShowOlderSessions })} />)
+    expect(screen.queryByRole('button', { name: /older chapters/ })).not.toBeInTheDocument()
+  })
+})

@@ -16,9 +16,26 @@ from aidm_server.character_resources import (
 from aidm_server.combat import vitality
 from aidm_server.combat.modifiers import consume_modifiers
 from aidm_server.combat.pipeline import apply_turn_boundaries
+from aidm_server.combat.positioning import move_participant
 from aidm_server.combat.rewards import SOURCE as COMBAT_REWARD_SOURCE, derive_combat_outcome_rewards
-from aidm_server.combat.state import ensure_combat_state, normalize_battlefield, normalize_combat_state, normalize_participant, normalize_position
-from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start
+from aidm_server.combat.working_state import add_active_effect, spend_reaction
+from aidm_server.combat.state import (
+    consume_combat_turn_economy,
+    ensure_combat_state,
+    normalize_battlefield,
+    normalize_combat_state,
+    normalize_participant,
+    normalize_position,
+)
+from aidm_server.commerce import restock_merchants, take_stock
+from aidm_server.game_clock import actor_hit_dice, advance_state_clock, record_rest
+from aidm_server.game_state.campaign_pack_encounters import (
+    REST_POLICIES,
+    campaign_pack_followup_changes,
+    catalog_record,
+    materialize_campaign_pack_combat_start,
+    materialize_catalog_consequence,
+)
 from aidm_server.game_state.equipment import conflict_items, equipment_slot_label, infer_equipment_slot
 from aidm_server.game_state.models import (
     CURRENCY_CODES,
@@ -36,6 +53,8 @@ from aidm_server.game_state.models import (
 )
 from aidm_server.game_state.leveling import sync_actor_level_for_xp, sync_stats_for_level
 from aidm_server.game_state.quest_engine import derive_quest_changes
+from aidm_server.interactables import interactable_followup_changes
+from aidm_server.item_effects import ITEM_EFFECTS, uses_remaining
 from aidm_server.models import Player, Session, safe_json_dumps, safe_json_loads
 from aidm_server.spellbook import (
     character_sheet_record,
@@ -548,6 +567,8 @@ def _apply_rest(actor: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]
 
     actor.setdefault('health', {})
     hp_restored = vitality.recover_on_rest(actor, rest_type)
+    hit_dice = actor_hit_dice(actor)
+    resolution = change.get('hitDiceResolution') if isinstance(change.get('hitDiceResolution'), dict) else {}
     if rest_type == 'long_rest':
         health = actor['health']
         current_hp = max(0, int_or_default(health.get('currentHp'), default=0))
@@ -555,15 +576,203 @@ def _apply_rest(actor: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]
         hp_restored += max(0, max_hp - current_hp)
         health['currentHp'] = max_hp
         health['tempHp'] = 0
+        hit_dice['current'] = min(hit_dice['max'], hit_dice['current'] + max(0, int_or_default(resolution.get('regained'), default=0)))
+    else:
+        spent = min(hit_dice['current'], max(0, int_or_default(resolution.get('spent'), default=0)))
+        if spent:
+            hp_restored += vitality.heal(actor, int_or_default(resolution.get('healing'), default=0))
+            hit_dice['current'] -= spent
+    actor['hitDice'] = hit_dice
+    # Effects that last "until the next rest" (antitoxin out of combat) end now.
+    if isinstance(actor.get('activeEffects'), list):
+        actor['activeEffects'] = [
+            effect for effect in actor['activeEffects'] if not (isinstance(effect, dict) and effect.get('expiresOn') == 'rest')
+        ]
 
     return {
         'restType': rest_type,
         'hpRestored': hp_restored,
+        'hitDice': deepcopy(hit_dice),
         'refreshedAbilityIds': refreshed_ability_ids,
         'spellResourcesChanged': before_resources != resources,
         'classFeaturesChanged': before_class_features != actor.get('classFeatureState'),
         'remainingClassFeatureState': deepcopy(actor.get('classFeatureState')),
         'remainingSpellResources': deepcopy(resources),
+    }
+
+
+def _remove_record_condition(record: dict[str, Any], condition: str) -> None:
+    """Drop a condition from a combat participant or, out of combat, an actor's health."""
+
+    holder = record['health'] if isinstance(record.get('health'), dict) and not isinstance(record.get('hp'), dict) else record
+    holder['conditions'] = [value for value in _string_list(holder.get('conditions')) if value.lower() != condition]
+
+
+def _consume_item(actor: dict[str, Any], item: dict[str, Any], *, by_use: bool, turn_id: Any) -> None:
+    item['lastUsedAtTurn'] = turn_id or item.get('lastUsedAtTurn')
+    if by_use:
+        remaining = (uses_remaining(item) or 0) - 1
+        metadata = item.setdefault('metadata', {})
+        if remaining > 0:
+            metadata['usesRemaining'] = remaining
+            return
+        # The last use spends this one; another in the stack starts full.
+        metadata.pop('usesRemaining', None)
+    _remove_item(actor_items(actor), {'itemId': item.get('id'), 'quantity': 1})
+
+
+def _apply_item_effect_to_target(
+    state: dict[str, Any],
+    actor: dict[str, Any],
+    change: dict[str, Any],
+    resolution: dict[str, Any],
+) -> int:
+    """Apply a trusted item resolution to its target; returns HP restored or damage dealt."""
+
+    kind = resolution.get('kind')
+    target_id = resolution.get('targetId')
+    target_actor = find_actor(state, target_id)
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    if kind == 'healing':
+        amount = int_or_default((resolution.get('healing') or {}).get('total'), default=0)
+        if _is_player_actor(state, target_actor):
+            return _apply_player_heal(state, target_actor, amount)
+        participant = _combat_participant(combat, target_id)
+        return vitality.heal(participant, amount) if participant else 0
+    if kind == 'stabilize':
+        record = _player_vitality_record(state, target_actor) if target_actor else _combat_participant(combat, target_id)
+        if record is not None and vitality.stabilize(record) and target_actor:
+            _sync_player_vitality(state, target_actor, record)
+        return 0
+    if kind == 'antitoxin':
+        record = _player_vitality_record(state, actor)
+        _remove_record_condition(record, 'poisoned')
+        effect = {
+            'id': f"{change.get('id')}:antitoxin",
+            'sourceId': 'antitoxin',
+            'sourceName': ITEM_EFFECTS['antitoxin']['name'],
+            'casterId': _text(actor.get('id')),
+            'modifiers': {'saveMode': {'abilities': ['constitution'], 'mode': 'advantage'}},
+            'duration': None,
+        }
+        if record is actor:
+            effect['expiresOn'] = 'rest'
+        record.setdefault('activeEffects', []).append(effect)
+        _sync_player_vitality(state, actor, record)
+        return 0
+    if kind == 'thrown':
+        participant = _combat_participant(combat, target_id)
+        if participant is None:
+            return 0
+        consume_modifiers(combat, resolution.get('consume') or [])
+        damage = resolution.get('damage') if isinstance(resolution.get('damage'), dict) else {}
+        amount = max(0, int_or_default(damage.get('total'), default=0))
+        hp = participant.setdefault('hp', {})
+        temp = max(0, int_or_default(hp.get('temp'), default=0))
+        absorbed = min(temp, amount)
+        current = max(0, int_or_default(hp.get('current'), default=0))
+        dealt = min(current, amount - absorbed)
+        hp['temp'] = temp - absorbed
+        hp['current'] = current - dealt
+        participant['isAlive'] = participant['isConscious'] = hp['current'] > 0
+        burning = resolution.get('burning') if isinstance(resolution.get('burning'), dict) else None
+        if burning and hp['current'] > 0:
+            participant.setdefault('activeEffects', []).append(
+                {
+                    'id': f"{change.get('id')}:burning",
+                    'sourceId': resolution.get('effectId'),
+                    'sourceName': ITEM_EFFECTS['alchemists_fire']['name'],
+                    'casterId': _text(actor.get('id')),
+                    'modifiers': {'damagePerTurn': {'dice': burning['dice'], 'type': burning['type']}},
+                    'duration': {'rounds': int(burning['turns']), 'tickOn': 'target_turn_end'},
+                }
+            )
+        return absorbed + dealt
+    if kind == 'scroll':
+        state['combat'] = deepcopy(change.get('resolvedCombat'))
+        for participant in state['combat'].get('participants') or []:
+            if isinstance(participant, dict):
+                _sync_player_actor_from_combat_participant(state, participant)
+        caster_resources = change.get('effectCasterResources') if isinstance(change.get('effectCasterResources'), dict) else {}
+        resources = actor.get('spellResources') if isinstance(actor.get('spellResources'), dict) else {}
+        if caster_resources.get('concentration') != resources.get('concentration'):
+            actor['spellResources'] = {**resources, 'concentration': deepcopy(caster_resources.get('concentration'))}
+    return 0
+
+
+def _apply_item_use(state: dict[str, Any], actor: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] | None:
+    """Consume one quantity (or one use) together with its rules-engine effect."""
+
+    resolution = change.get('resolution') if isinstance(change.get('resolution'), dict) else {}
+    item = _find_item(actor_items(actor), item_id=_change_value(change, 'itemId', 'item_id'))
+    if not item or int_or_default(item.get('quantity'), default=1) < 1:
+        return None
+    scroll = resolution.get('kind') == 'scroll'
+    if scroll and not isinstance(change.get('resolvedCombat'), dict):
+        return None
+    cost = _text(resolution.get('cost')) if _combat_active(state) else ''
+    economy_cost = {
+        'actor_id': actor.get('id'),
+        'action_id': change.get('id'),
+        'action_cost': 1 if cost == 'action' else 0,
+        'bonus_action_cost': 1 if cost == 'bonus_action' else 0,
+    }
+    if cost and not consume_combat_turn_economy(deepcopy(state['combat']), **economy_cost)[0]:
+        return None
+    if scroll:
+        _apply_item_effect_to_target(state, actor, change, resolution)
+    turn_economy = consume_combat_turn_economy(state['combat'], **economy_cost)[2] if cost else None
+    _consume_item(actor, item, by_use=resolution.get('consumes') == 'use', turn_id=change.get('turnId'))
+    amount = 0 if resolution.get('kind') == 'scroll' else _apply_item_effect_to_target(state, actor, change, resolution)
+    _sync_actor_and_combat_armor_class(state, actor)
+    return {
+        'itemName': item.get('name'),
+        'targetId': resolution.get('targetId'),
+        'targetName': resolution.get('targetName'),
+        'effectType': resolution.get('kind'),
+        'itemResult': resolution.get('summary'),
+        'actualAmount': amount,
+        'turnEconomy': deepcopy(turn_economy) if turn_economy else None,
+    }
+
+
+def _apply_trade(state: dict[str, Any], actor: dict[str, Any], change: dict[str, Any], *, buy: bool) -> dict[str, Any] | None:
+    """Settle a validated purchase or sale: coins, stock and the item move together."""
+
+    transaction = change.get('transaction') if isinstance(change.get('transaction'), dict) else {}
+    deltas = {
+        code: int_or_default(amount, default=0)
+        for code, amount in (transaction.get('currencyDeltas') or {}).items()
+        if code in CURRENCY_CODES
+    }
+    purse = actor_currency(actor)
+    if any(purse[code] + delta < 0 for code, delta in deltas.items()):
+        return None
+    quantity = max(1, int_or_default(transaction.get('quantity'), default=1))
+    inventory = actor.setdefault('inventory', {})
+    items = inventory.setdefault('items', [])
+    if buy:
+        if not take_stock(state, _text(transaction.get('merchantId')), _text(transaction.get('stockId')), quantity):
+            return None
+        incoming = deepcopy(transaction.get('item') or {})
+        existing = _find_item(items, item_id=incoming.get('id'))
+        if existing:
+            existing['quantity'] = max(0, int_or_default(existing.get('quantity'), default=0)) + quantity
+        else:
+            items.append(incoming)
+    else:
+        item = _find_item(items, item_id=transaction.get('itemId'))
+        if not item or item.get('equipped') or int_or_default(item.get('quantity'), default=1) < quantity:
+            return None
+        _remove_item(items, {'itemId': item.get('id'), 'quantity': quantity})
+    currency = inventory.setdefault('currency', {})
+    for code, delta in deltas.items():
+        currency[code] = purse[code] + delta
+    return {
+        'itemName': transaction.get('itemName'),
+        'merchantName': transaction.get('merchantName'),
+        'actualAmount': quantity,
+        'currencyDeltas': deltas,
     }
 
 
@@ -1232,6 +1441,16 @@ def _apply_scene_move(state: dict[str, Any], change: dict[str, Any]) -> dict[str
     for key in ('mood', 'musicTag', 'updatedAtTurn'):
         if key in target_state:
             scene[key] = deepcopy(target_state.get(key))
+    rest_policy = next(
+        (
+            _text(record.get('restPolicy')).lower()
+            for record in (location_payload, location, catalog_record(state, 'locations', target_location_id))
+            if _text(record.get('restPolicy')).lower() in REST_POLICIES
+        ),
+        None,
+    )
+    if rest_policy:
+        scene['restPolicy'] = rest_policy
     _apply_scene_fields(
         scene,
         {
@@ -1830,7 +2049,7 @@ def _apply_combat_start(state: dict[str, Any], change: dict[str, Any]) -> dict[s
     return combat
 
 
-def _apply_combat_update(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
+def _apply_combat_update(state: dict[str, Any], change: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     combat = ensure_combat_state(state)
     previous_flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
     previous_economy = (
@@ -1862,8 +2081,9 @@ def _apply_combat_update(state: dict[str, Any], change: dict[str, Any]) -> dict[
         )
     )
     boundaries = change.get('turnBoundaries')
+    boundary_events = []
     if isinstance(boundaries, list) and boundaries:
-        apply_turn_boundaries(combat, boundaries, turn_id=change.get('turnId'))
+        boundary_events = apply_turn_boundaries(combat, boundaries, turn_id=change.get('turnId'))
         for participant in combat.get('participants') or []:
             if isinstance(participant, dict):
                 _sync_player_actor_from_combat_participant(state, participant)
@@ -1887,7 +2107,7 @@ def _apply_combat_update(state: dict[str, Any], change: dict[str, Any]) -> dict[
             if isinstance(participant, dict):
                 _sync_player_actor_from_combat_participant(state, participant)
     _sync_scene_combat_state(state, combat)
-    return combat
+    return combat, boundary_events
 
 
 def _apply_combat_participant_update(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] | None:
@@ -1947,14 +2167,34 @@ def _apply_combat_morale(state: dict[str, Any], change: dict[str, Any]) -> dict[
 
 def _apply_combat_move(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] | None:
     combat = ensure_combat_state(state)
-    participant = _combat_participant(combat, change.get('participantId'))
+    participant = move_participant(
+        combat,
+        change.get('participantId'),
+        change.get('toRangeBand'),
+        engage_with=change.get('engageWith') or [],
+    )
     if not participant:
         return None
-    position = normalize_position({**(participant.get('position') if isinstance(participant.get('position'), dict) else {}), 'rangeBand': change.get('toRangeBand')})
+    position = normalize_position(participant.get('position'))
     for key in ('zoneId', 'coverId', 'isHidden'):
         if key in change:
             position[key] = change[key]
     participant['position'] = position
+    return participant
+
+
+def _apply_combat_participant_effect(state: dict[str, Any], change: dict[str, Any], change_type: str) -> dict[str, Any] | None:
+    combat = ensure_combat_state(state)
+    participant = _combat_participant(combat, change.get('participantId'))
+    if not participant:
+        return None
+    if change_type == 'combat.reaction.use':
+        spend_reaction(combat, participant)
+    elif change_type == 'combat.effect.add':
+        add_active_effect(participant, change.get('effect'))
+    elif change_type == 'combat.stabilize' and not vitality.stabilize(participant):
+        return None
+    _sync_player_actor_from_combat_participant(state, participant)
     return participant
 
 
@@ -1980,8 +2220,8 @@ def _apply_combat_condition(state: dict[str, Any], change: dict[str, Any], *, ad
             participant[f'{condition}By'] = _merge_unique(participant.get(f'{condition}By'), [source_id])
         elif not add:
             participant.pop(f'{condition}By', None)
-    if condition == 'hidden' and not add and isinstance(participant.get('position'), dict):
-        participant['position']['isHidden'] = False
+    if condition == 'hidden' and isinstance(participant.get('position'), dict):
+        participant['position']['isHidden'] = add
     if vitality.is_player_character(participant):
         participant['isAlive'] = not vitality.is_dead(participant)
         if not participant['isAlive']:
@@ -2073,6 +2313,10 @@ def _apply_interactable_action_state(
     if isinstance(resolved_ledger, dict):
         state['interactableActionLedger'] = deepcopy(resolved_ledger)
     event = change.get('event') if isinstance(change.get('event'), dict) else None
+    # Container contents the action revealed become exact-id scene items.
+    for item in (event.get('revealedItems') if event and isinstance(event.get('revealedItems'), list) else []):
+        if isinstance(item, dict) and _text(item.get('id')) and not _find_item(_scene_items(scene), item_id=item.get('id')):
+            _scene_items(scene).append(deepcopy(item))
     if event:
         event_ledger = state.setdefault('gameplayEventLedger', [])
         if not isinstance(event_ledger, list):
@@ -2095,7 +2339,6 @@ def _apply_interactable_action_state(
         'event': deepcopy(event),
         'eventType': event.get('type') if event else None,
         'targetName': event.get('targetName') if event else None,
-        'mechanicalEffectsDeferred': bool(event and event.get('mechanicalEffects')),
     }
 
 
@@ -2109,7 +2352,7 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
     for raw_change in pending_changes:
         if not isinstance(raw_change, dict):
             continue
-        change = deepcopy(raw_change)
+        change = materialize_catalog_consequence(next_state, deepcopy(raw_change))
         change_id = str(change.get('id') or '').strip()
         if change_id and change_id in seen_ids:
             # A retried terminal combat event is also the recovery hook for a
@@ -2284,6 +2527,21 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             _sync_actor_health_to_combat_participant(next_state, actor)
             applied_change.update(result)
             applied_change['actualAmount'] = result.get('hpRestored', 0)
+            applied_change['clock'] = deepcopy(record_rest(next_state, result['restType']))
+            if result['restType'] == 'long_rest':
+                applied_change['restockedMerchantIds'] = restock_merchants(next_state)
+        elif change_type == 'item.use' and actor:
+            result = _apply_item_use(next_state, actor, change)
+            if not result:
+                skipped.append({'change': change, 'reason': 'Item, target or turn economy was unavailable during item use.'})
+                continue
+            applied_change.update(result)
+        elif change_type in {'shop.buy', 'shop.sell'} and actor:
+            result = _apply_trade(next_state, actor, change, buy=change_type == 'shop.buy')
+            if not result:
+                skipped.append({'change': change, 'reason': 'Stock, item or funds changed before the trade settled.'})
+                continue
+            applied_change.update(result)
         elif change_type == 'scene.interactable.action' and actor:
             result = _apply_interactable_action_state(next_state, change)
             if not result:
@@ -2295,9 +2553,11 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             applied_change['combatStatus'] = combat.get('status')
             applied_change['participantCount'] = len(combat.get('participants') or [])
         elif change_type == 'combat.update':
-            combat = _apply_combat_update(next_state, change)
+            combat, boundary_events = _apply_combat_update(next_state, change)
             applied_change['combatStatus'] = combat.get('status')
             applied_change['round'] = combat.get('round')
+            if boundary_events:
+                applied_change['turnBoundaryEvents'] = boundary_events
         elif change_type == 'combat.round.advance':
             combat = ensure_combat_state(next_state)
             combat['round'] = max(1, int_or_default(change.get('round'), default=int_or_default(combat.get('round'), default=1) + 1))
@@ -2415,6 +2675,13 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
                 if isinstance(participant, dict):
                     _sync_player_actor_from_combat_participant(next_state, participant)
             applied_change['consumed'] = removed
+        elif change_type in {'combat.reaction.use', 'combat.effect.add', 'combat.stabilize'}:
+            participant = _apply_combat_participant_effect(next_state, change, change_type)
+            if not participant:
+                skipped.append({'change': change, 'reason': 'Combat participant missing or no longer eligible.'})
+                continue
+            applied_change['participantId'] = participant.get('id')
+            applied_change['participantName'] = participant.get('name')
         elif change_type == 'combat.end':
             combat = ensure_combat_state(next_state)
             combat['status'] = change.get('status') or 'ended'
@@ -2526,6 +2793,9 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             location = _apply_scene_move(next_state, change)
             applied_change['locationId'] = location.get('id')
             applied_change['locationName'] = location.get('name')
+            if _text(change.get('source')) == 'pre_dm_world_action':
+                # Structured travel between locations takes one phase of the day.
+                applied_change['clock'] = deepcopy(advance_state_clock(next_state, 1))
         elif change_type == 'scene.item.add':
             scene = _ensure_scene(next_state)
             item = _merge_scene_item(_scene_items(scene), _item_payload(change))
@@ -2741,6 +3011,19 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
         pending_changes.extend(derive_quest_changes(next_state, applied_change))
         if change_type == 'scene.interactable.action' and isinstance(applied_change.get('event'), dict):
             pending_changes.extend(derive_quest_changes(next_state, applied_change['event']))
+        pending_changes.extend(interactable_followup_changes(next_state, applied_change))
+        pending_changes.extend(
+            campaign_pack_followup_changes(
+                next_state,
+                applied_change,
+                combat_start_pending=any(
+                    isinstance(pending, dict)
+                    and str(pending.get('type') or '') == 'combat.start'
+                    and str(pending.get('id') or '') not in seen_ids
+                    for pending in pending_changes
+                ),
+            )
+        )
         if change_type == 'combat.end':
             reward_result = derive_combat_outcome_rewards(next_state, applied_change)
             if reward_result.get('valid') and not reward_result.get('alreadyApplied'):
@@ -2810,6 +3093,10 @@ def persist_state_to_database(
             stats['race_ability_state'] = deepcopy(actor['raceAbilityState'])
         if isinstance(actor.get('classFeatureState'), dict):
             stats['class_feature_state'] = deepcopy(actor['classFeatureState'])
+        if isinstance(actor.get('hitDice'), dict):
+            stats['hit_dice'] = actor_hit_dice(actor)['current']
+        if isinstance(actor.get('activeEffects'), list):
+            stats['active_effects'] = deepcopy(actor['activeEffects'])
         health = actor.setdefault('health', {})
         current_hp = max(0, int_or_default(stats.get('current_hp', stats.get('hp_current')), default=0))
         max_hp = max(current_hp, int_or_default(stats.get('max_hp', stats.get('hp_max')), default=current_hp))

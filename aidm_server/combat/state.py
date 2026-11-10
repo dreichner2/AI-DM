@@ -34,6 +34,9 @@ ENVIRONMENT_TYPES = {
 }
 LIMITED_USE_COOLDOWNS = {'once_per_combat', 'short_rest', 'long_rest'}
 TURN_ECONOMY_VERSION = 1
+# One base movement plus a Dash from the action and another from a bonus action.
+MAX_MOVEMENT_PER_TURN = 3
+MAX_ATTACKS_PER_ACTION = 4
 
 
 def _text(value: Any, default: str = '') -> str:
@@ -206,6 +209,11 @@ def normalize_position(value: Any) -> dict[str, Any]:
         position['coverId'] = _text(raw.get('coverId') or raw.get('cover_id'))
     if raw.get('isHidden') is not None or raw.get('is_hidden') is not None:
         position['isHidden'] = bool(raw.get('isHidden', raw.get('is_hidden')))
+    engaged = raw.get('engagedWith', raw.get('engaged_with'))
+    if position['rangeBand'] == 'melee' and isinstance(engaged, list):
+        engaged_ids = list(dict.fromkeys(_text(value) for value in engaged if _text(value)))
+        if engaged_ids:
+            position['engagedWith'] = engaged_ids
     return position
 
 
@@ -218,7 +226,7 @@ def player_combat_participant(player_actor: dict[str, Any]) -> dict[str, Any]:
     stats['armorClass'] = ac_details['armorClass']
     stats['armor_class'] = ac_details['armorClass']
     conditions = _string_list(health.get('conditions'))
-    return {
+    participant = {
         'id': _text(player_actor.get('id')) or f"player_{player_actor.get('playerId') or 'unknown'}",
         'name': _text(player_actor.get('name') or player_actor.get('characterName'), 'Player'),
         'team': 'player',
@@ -237,6 +245,7 @@ def player_combat_participant(player_actor: dict[str, Any]) -> dict[str, Any]:
         ),
         'armorClassBreakdown': ac_details,
         'conditions': conditions,
+        'activeEffects': deepcopy(player_actor.get('activeEffects') or []),
         'deathSaves': normalize_death_saves(health.get('deathSaves')),
         'position': normalize_position({'rangeBand': 'near'}),
         'abilities': [],
@@ -244,6 +253,12 @@ def player_combat_participant(player_actor: dict[str, Any]) -> dict[str, Any]:
         'isAlive': 'dead' not in conditions,
         'isConscious': int_or_default(health.get('currentHp'), default=1) > 0 and 'dead' not in conditions,
     }
+    # Class-feature providers (Extra Attack, Rage) read the class from the participant.
+    if _text(player_actor.get('class')):
+        participant['class'] = _text(player_actor.get('class'))
+    if player_actor.get('autoReactions') is False:
+        participant['autoReactions'] = False
+    return participant
 
 
 def instantiate_creature(
@@ -475,6 +490,9 @@ def default_turn_economy(actor_id: Any, round_number: Any) -> dict[str, Any]:
         'bonusActionRemaining': 1,
         'reactionRemaining': 1,
         'movementRemaining': 1,
+        'attacksRemaining': 0,
+        'disengaged': False,
+        'attackWeaponIds': [],
         'spentActionIds': [],
         'spentActionClaims': {},
     }
@@ -504,7 +522,10 @@ def _normalized_turn_economy(value: Any) -> dict[str, Any] | None:
         'actionRemaining': max(0, min(1, int_or_default(value.get('actionRemaining'), default=1))),
         'bonusActionRemaining': max(0, min(1, int_or_default(value.get('bonusActionRemaining'), default=1))),
         'reactionRemaining': max(0, min(1, int_or_default(value.get('reactionRemaining'), default=1))),
-        'movementRemaining': max(0, min(1, int_or_default(value.get('movementRemaining'), default=1))),
+        'movementRemaining': max(0, min(MAX_MOVEMENT_PER_TURN, int_or_default(value.get('movementRemaining'), default=1))),
+        'attacksRemaining': max(0, min(MAX_ATTACKS_PER_ACTION, int_or_default(value.get('attacksRemaining'), default=0))),
+        'disengaged': value.get('disengaged') is True,
+        'attackWeaponIds': _string_list(value.get('attackWeaponIds'))[:10],
         'spentActionIds': spent_action_ids[:20],
         'spentActionClaims': {
             action_id: spent_action_claims[action_id]
@@ -675,6 +696,21 @@ def combat_ability_is_available(ability: dict[str, Any], *, round_number: Any = 
     return True
 
 
+def ability_heals(ability: Any) -> bool:
+    """A pure healing ability: healing dice and no damage, attack or save to resolve."""
+
+    if not isinstance(ability, dict):
+        return False
+    healing = ability.get('healing') if isinstance(ability.get('healing'), dict) else {}
+    return bool(
+        normalize_damage_dice_expression(healing.get('dice'))
+        and not ability.get('damage')
+        and not isinstance(ability.get('save'), dict)
+        and _text(ability.get('type')).lower() != 'attack'
+        and ability.get('attackBonus', ability.get('toHitBonus')) is None
+    )
+
+
 def combat_ability_resolution_mode(ability: dict[str, Any]) -> str:
     """Describe the small enemy-ability subset the authoritative engine resolves.
 
@@ -685,6 +721,8 @@ def combat_ability_resolution_mode(ability: dict[str, Any]) -> str:
     if not isinstance(ability, dict):
         return ''
     target_type = _text(ability.get('targetType', ability.get('target_type')), 'single').lower().replace(' ', '_')
+    if ability_heals(ability) and target_type in {'self', 'single', 'one', 'creature'}:
+        return 'heal'
     if target_type not in {'single', 'one', 'creature'}:
         return ''
     damage = ability.get('damage')
@@ -893,11 +931,17 @@ def combat_summary_for_dm(combat: dict[str, Any]) -> dict[str, Any]:
     for participant in normalized.get('participants') or []:
         hp = participant.get('hp') if isinstance(participant.get('hp'), dict) else {}
         intent = participant.get('currentIntent') if isinstance(participant.get('currentIntent'), dict) else {}
+        position = participant.get('position') if isinstance(participant.get('position'), dict) else {}
+        engaged_names = [
+            str(participants_by_id[other_id].get('name') or other_id)
+            for other_id in position.get('engagedWith') or []
+            if other_id in participants_by_id
+        ]
+        engaged = f", engaged with {', '.join(engaged_names)}" if engaged_names else ''
         if participant.get('team') == 'enemy':
-            position = participant.get('position') if isinstance(participant.get('position'), dict) else {}
             zone = f", zone {position.get('zoneId')}" if position.get('zoneId') else ''
             participants_summary.append(
-                f"{participant.get('name')}: {hp.get('current')}/{hp.get('max')} HP, morale {participant.get('morale')}, {position.get('rangeBand', 'near')}{zone}"
+                f"{participant.get('name')}: {hp.get('current')}/{hp.get('max')} HP, morale {participant.get('morale')}, {position.get('rangeBand', 'near')}{zone}{engaged}"
             )
             if intent.get('visibleTelegraph'):
                 telegraphs.append(str(intent.get('visibleTelegraph')))
@@ -908,7 +952,9 @@ def combat_summary_for_dm(combat: dict[str, Any]) -> dict[str, Any]:
                 saves = normalize_death_saves(participant.get('deathSaves'))
                 status = f"dying, death saves {saves['successes']} success / {saves['failures']} failure"
             suffix = f' ({status})' if status else ''
-            participants_summary.append(f"{participant.get('name')}: {hp.get('current')}/{hp.get('max')} HP{suffix}")
+            participants_summary.append(
+                f"{participant.get('name')}: {hp.get('current')}/{hp.get('max')} HP, {position.get('rangeBand', 'near')}{engaged}{suffix}"
+            )
     battlefield = normalized.get('battlefield') or {}
     intent_summaries = []
     required_actions = []

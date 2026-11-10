@@ -31,13 +31,14 @@ class SeededExportImportRuntime:
 class ExportImportSmokeResult:
     source_session_id: int
     imported_session_id: int
-    exported_turn_events: int
+    save_format: str
     exported_log_entries: int
-    imported_turn_events: int
-    projected_log_entries: int
     imported_log_entries: int
     imported_log_entry_count: int
-    duplicate_marker_found: bool
+    imported_log_matches: bool
+    archive_status: str
+    archive_is_current: bool
+    selected_player_exported: bool
     cleanup_status_code: int | None
     ok: bool
 
@@ -82,7 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--auth-token', default=os.getenv('AIDM_EXPORT_IMPORT_AUTH_TOKEN') or os.getenv('AIDM_API_AUTH_TOKEN') or '')
     parser.add_argument('--workspace-id', default=os.getenv('AIDM_EXPORT_IMPORT_WORKSPACE_ID') or os.getenv('AIDM_WORKSPACE_ID') or '')
     parser.add_argument('--session-id', type=int, default=int(os.getenv('AIDM_EXPORT_IMPORT_SESSION_ID') or 0))
-    parser.add_argument('--player-id', type=int, default=int(os.getenv('AIDM_EXPORT_IMPORT_PLAYER_ID') or 0))
+    parser.add_argument(
+        '--player-id',
+        type=int,
+        default=int(os.getenv('AIDM_EXPORT_IMPORT_PLAYER_ID') or 0),
+        help='Require this player\'s character in the exported save.',
+    )
     parser.add_argument('--timeout-seconds', type=float, default=10.0)
     parser.add_argument(
         '--keep-imported-session',
@@ -199,7 +205,7 @@ def _seed_isolated_runtime(database_uri: str) -> tuple[object, SeededExportImpor
         db.session.add(
             SessionLogEntry(
                 session_id=session.session_id,
-                message='This stale source log should not be duplicated when turn events are present.',
+                message='The smoke table gathered at the export gate.',
                 entry_type='system',
                 metadata_json=safe_json_dumps({'source': 'export_import_smoke'}, {}),
             )
@@ -235,33 +241,32 @@ def run_round_trip(
     player_id: int | None = None,
     keep_imported_session: bool = False,
 ) -> tuple[dict, ExportImportSmokeResult]:
+    """Export a session's save document and import it back as a read-only archive."""
+
     export_path = f'/api/sessions/{session_id}/export'
-    if player_id:
-        export_path = f'{export_path}?player_id={player_id}'
-    export_payload = _assert_status(http.get(export_path, headers=headers), 200, label=f'GET {export_path}')
-    turn_events = export_payload.get('turnEvents') if isinstance(export_payload.get('turnEvents'), list) else []
-    log_entries = export_payload.get('logEntries') if isinstance(export_payload.get('logEntries'), list) else []
-    if not turn_events:
-        raise AssertionError('Exported session has no turnEvents; choose a session with persisted turn events for duplication proof.')
+    document = _assert_status(http.get(export_path, headers=headers), 200, label=f'GET {export_path}')
+    log_entries = document.get('log') if isinstance(document.get('log'), list) else []
+    characters = document.get('characters') if isinstance(document.get('characters'), list) else []
+    if not log_entries:
+        raise AssertionError('Exported save has no log entries; choose a session with a recorded story.')
 
     imported_session_id: int | None = None
     cleanup_status_code = None
     try:
         import_payload = _assert_status(
-            http.post('/api/sessions/import', headers=headers, json_payload=export_payload),
+            http.post('/api/sessions/import', headers=headers, json_payload={**document, 'mode': 'archive'}),
             201,
             label='POST /api/sessions/import',
         )
         imported_session_id = int(import_payload['session_id'])
         counts = import_payload.get('counts') if isinstance(import_payload.get('counts'), dict) else {}
+        archive = import_payload.get('session') if isinstance(import_payload.get('session'), dict) else {}
         imported_log_payload = _assert_status(
             http.get(f'/api/sessions/{imported_session_id}/log?limit=200', headers=headers),
             200,
             label=f'GET /api/sessions/{imported_session_id}/log',
         )
         imported_logs = imported_log_payload.get('entries') if isinstance(imported_log_payload.get('entries'), list) else []
-        joined_logs = '\n'.join(str(entry.get('message') or '') for entry in imported_logs if isinstance(entry, dict))
-        duplicate_marker_found = 'This stale source log should not be duplicated' in joined_logs
     finally:
         had_prior_error = sys.exc_info()[0] is not None
         cleanup_error = ''
@@ -281,26 +286,34 @@ def run_round_trip(
 
     assert imported_session_id is not None
 
+    exported_messages = [str(entry.get('message') or '') for entry in log_entries if isinstance(entry, dict)]
+    imported_messages = [str(entry.get('message') or '') for entry in imported_logs if isinstance(entry, dict)]
+    imported_log_matches = bool(imported_messages) and imported_messages == exported_messages[-len(imported_messages):]
+    character_ids = {character.get('player_id') for character in characters if isinstance(character, dict)}
+    save_format = f"{document.get('format')}/{document.get('version')}"
     result = ExportImportSmokeResult(
         source_session_id=session_id,
         imported_session_id=imported_session_id,
-        exported_turn_events=len(turn_events),
+        save_format=save_format,
         exported_log_entries=len(log_entries),
-        imported_turn_events=int(counts.get('turn_events') or 0),
-        projected_log_entries=int(counts.get('projected_log_entries') or 0),
         imported_log_entries=int(counts.get('log_entries') or 0),
         imported_log_entry_count=len(imported_logs),
-        duplicate_marker_found=duplicate_marker_found,
+        imported_log_matches=imported_log_matches,
+        archive_status=str(archive.get('status') or ''),
+        archive_is_current=archive.get('is_current') is True,
+        selected_player_exported=player_id is None or player_id in character_ids,
         cleanup_status_code=cleanup_status_code,
         ok=(
-            int(counts.get('turn_events') or 0) == len(turn_events)
-            and int(counts.get('projected_log_entries') or 0) > 0
-            and int(counts.get('log_entries') or 0) == 0
-            and not duplicate_marker_found
+            save_format == 'aidm.save/2'
+            and int(counts.get('log_entries') or 0) == len(log_entries)
+            and imported_log_matches
+            and archive.get('status') == 'ended'
+            and archive.get('is_current') is False
+            and (player_id is None or player_id in character_ids)
             and (keep_imported_session or cleanup_status_code == 200)
         ),
     )
-    return export_payload, result
+    return document, result
 
 
 def evidence_payload(
@@ -334,13 +347,14 @@ def render_evidence_markdown(payload: dict) -> str:
             f"- Workspace ID: `{payload['workspace_id'] or 'owner'}`",
             f"- Source session ID: {result['source_session_id']}",
             f"- Imported session ID: {result['imported_session_id']}",
-            f"- Exported turn events: {result['exported_turn_events']}",
+            f"- Save format: {result['save_format']}",
             f"- Exported log entries: {result['exported_log_entries']}",
-            f"- Imported turn events: {result['imported_turn_events']}",
-            f"- Projected log entries: {result['projected_log_entries']}",
-            f"- Imported raw log entries: {result['imported_log_entries']}",
-            f"- Imported log entry count: {result['imported_log_entry_count']}",
-            f"- Duplicate source log marker found: {result['duplicate_marker_found']}",
+            f"- Imported log entries: {result['imported_log_entries']}",
+            f"- Imported log entries read back: {result['imported_log_entry_count']}",
+            f"- Imported log matches the save: {result['imported_log_matches']}",
+            f"- Archive status: {result['archive_status']}",
+            f"- Archive is the current chapter: {result['archive_is_current']}",
+            f"- Selected player exported: {result['selected_player_exported']}",
             f"- Cleanup status code: {result['cleanup_status_code']}",
             '',
         ]
@@ -407,8 +421,8 @@ def _print_summary(payload: dict) -> None:
     result = payload['result']
     if payload['status'] == 'passed':
         print(
-            'Session export/import smoke passed: exported turn events imported into a new active session, '
-            'projected logs were recreated, raw source logs were not duplicated, and cleanup completed.'
+            'Session export/import smoke passed: the save document imported as a read-only archive '
+            'with its log intact, and cleanup completed.'
         )
         return
     print('[session-export-import-smoke][error] Export/import smoke failed:', file=sys.stderr)

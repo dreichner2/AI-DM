@@ -6,6 +6,7 @@ import type {
   CampaignWorkspace,
   Health,
   LlmRuntimeConfig,
+  SessionListResponse,
   SessionLogResponse,
   SessionLogEntry,
   SessionState,
@@ -17,6 +18,9 @@ import type {
 } from './types'
 import { useLatest } from './useLatest'
 import type { SessionPage } from './useWorkspaceStore'
+
+/** Sessions per page in a campaign's chapter list; the workspace loads the first page. */
+export const SESSION_PAGE_SIZE = 30
 
 export type CampaignSessionMeta = {
   count: number
@@ -35,12 +39,20 @@ type OlderLogLoadingScope = {
   sessionId: number
 }
 
+type OlderSessionsLoadingScope = {
+  auth: string
+  baseUrl: string
+  campaignId: number
+}
+
 type UseWorkspaceQueriesOptions = {
   auth: string
   baseUrl: string
   operatorDataEnabled: boolean
   runtimeConfigHeaders?: HeadersInit
   sessions: SessionSummary[]
+  /** Cursor for the selected campaign's next older page of sessions. */
+  sessionsCursor: string | null
   selectedCampaignId: number | null
   selectedSessionId: number | null
   sessionLogCursor: number | null
@@ -67,6 +79,7 @@ type UseWorkspaceQueriesOptions = {
   pendingSubmissionCampaignId: () => number | null
   rootCampaignsLoaded: (campaigns: Campaign[]) => void
   campaignWorkspaceLoaded: (workspace: CampaignWorkspace) => void
+  olderSessionsLoaded: (page: SessionListResponse) => void
   setOptimisticEntries: Dispatch<SetStateAction<TimelineEntry[]>>
   setStreamingTurn: Dispatch<SetStateAction<StreamingTurn | null>>
   setSendPending: Dispatch<SetStateAction<boolean>>
@@ -110,6 +123,7 @@ export function useWorkspaceQueries({
   operatorDataEnabled,
   runtimeConfigHeaders,
   sessions,
+  sessionsCursor,
   selectedCampaignId,
   selectedSessionId,
   sessionLogCursor,
@@ -136,6 +150,7 @@ export function useWorkspaceQueries({
   pendingSubmissionCampaignId,
   rootCampaignsLoaded,
   campaignWorkspaceLoaded,
+  olderSessionsLoaded,
   setOptimisticEntries,
   setStreamingTurn,
   setSendPending,
@@ -153,6 +168,8 @@ export function useWorkspaceQueries({
   const sessionRequestRef = useRef(0)
   const olderLogRequestRef = useRef(0)
   const olderLogLoadingRef = useRef(false)
+  const olderSessionsRequestRef = useRef(0)
+  const olderSessionsLoadingRef = useRef(false)
   const runtimeScopeRef = useRef({ auth, baseUrl })
   const selectedCampaignIdRef = useRef(selectedCampaignId)
   const selectedSessionIdRef = useRef(selectedSessionId)
@@ -165,6 +182,13 @@ export function useWorkspaceQueries({
     olderLogLoadingScope.baseUrl === baseUrl &&
     olderLogLoadingScope.sessionId === selectedSessionId,
   )
+  const [olderSessionsLoadingScope, setOlderSessionsLoadingScope] = useState<OlderSessionsLoadingScope | null>(null)
+  const olderSessionsLoading = Boolean(
+    olderSessionsLoadingScope &&
+    olderSessionsLoadingScope.auth === auth &&
+    olderSessionsLoadingScope.baseUrl === baseUrl &&
+    olderSessionsLoadingScope.campaignId === selectedCampaignId,
+  )
 
   useEffect(() => {
     runtimeScopeRef.current = { auth, baseUrl }
@@ -174,6 +198,8 @@ export function useWorkspaceQueries({
     const invalidatedSessionRequestId = ++sessionRequestRef.current
     olderLogRequestRef.current += 1
     olderLogLoadingRef.current = false
+    olderSessionsRequestRef.current += 1
+    olderSessionsLoadingRef.current = false
     rootLoadingRequestRef.current = null
     campaignLoadingRequestRef.current = null
     let cancelled = false
@@ -198,9 +224,12 @@ export function useWorkspaceQueries({
     selectedCampaignIdRef.current = selectedCampaignId
     workspaceRequestRef.current += 1
     campaignLoadingRequestRef.current = null
+    olderSessionsRequestRef.current += 1
+    olderSessionsLoadingRef.current = false
     let cancelled = false
     queueMicrotask(() => {
       if (cancelled) return
+      setOlderSessionsLoadingScope(null)
       const campaignRequest = campaignLoadingRequestRef.current
       setWorkspaceLoading(rootLoadingRequestRef.current !== null || campaignRequest !== null)
       setLoadingCampaignId(campaignRequest?.campaignId ?? null)
@@ -426,6 +455,58 @@ export function useWorkspaceQueries({
     setSessionLogHasMore,
   ])
 
+  const loadOlderSessions = useCallback(async () => {
+    const campaignId = selectedCampaignId
+    if (!campaignId || !sessionsCursor || olderSessionsLoadingRef.current) return
+    const requestId = ++olderSessionsRequestRef.current
+    const requestAuth = auth
+    const requestBaseUrl = baseUrl
+    const requestAccessSnapshot = storedRuntimeAccessSnapshot(requestAuth)
+    olderSessionsLoadingRef.current = true
+    setOlderSessionsLoadingScope({ auth: requestAuth, baseUrl: requestBaseUrl, campaignId })
+    try {
+      const page = await apiFetch<SessionListResponse>(
+        requestBaseUrl,
+        `/api/sessions/campaigns/${campaignId}/sessions?limit=${SESSION_PAGE_SIZE}&cursor=${encodeURIComponent(sessionsCursor)}`,
+        requestAuth,
+      )
+      if (!isCurrentRequest(
+        olderSessionsRequestRef,
+        requestId,
+        requestAuth,
+        requestBaseUrl,
+        requestAccessSnapshot,
+      )) return
+      olderSessionsLoaded(page)
+    } catch (error) {
+      if (!isCurrentRequest(
+        olderSessionsRequestRef,
+        requestId,
+        requestAuth,
+        requestBaseUrl,
+        requestAccessSnapshot,
+      )) return
+      if (isUnauthorizedError(error)) {
+        onUnauthorized()
+      }
+      pushError('workspace', `Older chapters failed to load: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      if (olderSessionsRequestRef.current === requestId) {
+        olderSessionsLoadingRef.current = false
+        setOlderSessionsLoadingScope(null)
+      }
+    }
+  }, [
+    auth,
+    baseUrl,
+    isCurrentRequest,
+    olderSessionsLoaded,
+    onUnauthorized,
+    pushError,
+    selectedCampaignId,
+    sessionsCursor,
+  ])
+
   const refreshOperatorData = useCallback(async () => {
     if (!operatorDataEnabledRef.current) return
 
@@ -630,6 +711,12 @@ export function useWorkspaceQueries({
         const campaignData = workspace.campaign
         const sessionData = workspace.sessions
         const playerData = workspace.players
+        // Sessions listed past the first page stay listed while more pages exist.
+        const retainedSessionIds = workspace.has_more.sessions
+          ? latest.current.sessions
+              .filter((item) => item.campaign_id === campaignId)
+              .map((item) => item.session_id)
+          : []
         campaignWorkspaceLoaded(workspace)
         setCampaignSessionMeta((current) => ({
           ...current,
@@ -640,7 +727,10 @@ export function useWorkspaceQueries({
           },
         }))
         setSelectedSessionId((current) => {
-          if (sessionData.some((item) => item.session_id === current)) {
+          if (
+            sessionData.some((item) => item.session_id === current) ||
+            (current !== null && retainedSessionIds.includes(current))
+          ) {
             return current
           }
           return (sessionData.find((item) => item.is_current) ?? sessionData[0])?.session_id ?? null
@@ -726,8 +816,10 @@ export function useWorkspaceQueries({
   return {
     clearSessionData,
     loadOlderSessionLog,
+    loadOlderSessions,
     loadSessionData,
     olderLogLoading,
+    olderSessionsLoading,
     refreshCampaignWorkspace,
     refreshCurrentWorkspace,
     refreshRoot,

@@ -550,9 +550,12 @@ def test_real_socket_spell_exhaustion_rest_retry_and_reload(
     with app.app_context():
         actor = _snapshot(ids)['playerCharacters'][0]
         assert actor['spellResources']['slots']['1']['current'] == 0
-        assert actor['health']['currentHp'] == 3
+        # The short rest spends the wizard's one hit die (d6) towards full hit points.
+        assert actor['hitDice'] == {'current': 0, 'max': 1, 'die': 'd6'}
+        assert 3 < actor['health']['currentHp'] <= 10
         assert actor['health']['tempHp'] == 2
         assert actor['health']['conditions'] == ['scarred']
+        assert _snapshot(ids)['clock'] == {'day': 1, 'phase': 'afternoon', 'shortRestsSinceLong': 1}
 
     long_rest = _send(
         client,
@@ -569,6 +572,8 @@ def test_real_socket_spell_exhaustion_rest_retry_and_reload(
         assert actor['health']['currentHp'] == 10
         assert actor['health']['tempHp'] == 0
         assert actor['health']['conditions'] == ['scarred']
+        assert actor['hitDice']['current'] == 1
+        assert state['clock']['day'] == 2
         sheet = safe_json_loads(db.session.get(Player, ids['player_id']).character_sheet, {})
         assert sheet['spellResources']['slots']['1'] == {'current': 2, 'max': 2}
 
@@ -1090,7 +1095,7 @@ def test_real_socket_combat_lifecycle_tactic_change_nonlethal_end_and_reload(
                 'armorClass': 12,
                 'stats': {'strength': 18, 'dexterity': 14},
                 'conditions': [],
-                'position': {'rangeBand': 'near'},
+                'position': {'rangeBand': 'melee'},
                 'isAlive': True,
                 'isConscious': True,
             }
@@ -1098,6 +1103,7 @@ def test_real_socket_combat_lifecycle_tactic_change_nonlethal_end_and_reload(
         enemy = next(
             participant for participant in combat['participants'] if participant['id'] == enemy_id
         )
+        enemy['position'] = {'rangeBand': 'melee'}
         enemy['hp'] = {'current': 20, 'max': 20, 'temp': 0}
         enemy['behavior']['fleeThreshold'] = 40
         enemy['behavior']['survivalRules'].update(

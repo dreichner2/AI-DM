@@ -5,9 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   Campaign,
   CampaignWorkspace,
+  SessionListResponse,
   SessionLogEntry,
   SessionLogResponse,
   SessionState,
+  SessionSummary,
 } from './types'
 import { ApiClientError } from './api'
 import { useWorkspaceQueries } from './useWorkspaceQueries'
@@ -72,6 +74,42 @@ function workspace(campaignId: number): CampaignWorkspace {
     has_more: { sessions: false, players: false, maps: false, segments: false },
     next_cursor: { sessions: null, players: null, maps: null, segments: null },
     limits: { sessions: null, players: null, maps: null, segments: null },
+  }
+}
+
+function summary(sessionId: number, fields: Partial<SessionSummary> = {}): SessionSummary {
+  return {
+    session_id: sessionId,
+    campaign_id: 1,
+    name: null,
+    display_name: `Chapter ${sessionId}`,
+    status: 'ended',
+    is_current: false,
+    is_archived: false,
+    chapter_number: sessionId,
+    chapter_recap: '',
+    ended_at: null,
+    created_at: null,
+    updated_at: null,
+    latest_activity_at: null,
+    turn_count: 0,
+    scene_title: null,
+    summary_excerpt: '',
+    imported: false,
+    play_now: false,
+    ...fields,
+  }
+}
+
+/** Campaign 1's first page of chapters: 30 is current, older ones follow the cursor. */
+function pagedWorkspace(): CampaignWorkspace {
+  const base = workspace(1)
+  return {
+    ...base,
+    sessions: [summary(30, { status: 'active', is_current: true }), summary(29)],
+    has_more: { ...base.has_more, sessions: true },
+    next_cursor: { ...base.next_cursor, sessions: 'after 29' },
+    limits: { ...base.limits, sessions: 30 },
   }
 }
 
@@ -187,6 +225,25 @@ function useStoreQueryHarness(callbacks: ReturnType<typeof createCallbacks>) {
     setSessionLogHasMore: store.setSessionLogHasMore,
     setSessionState: store.setSessionState,
     setWorkspaceLoading: store.setWorkspaceLoading,
+  } as unknown as Parameters<typeof useWorkspaceQueries>[0])
+  return { queries, store }
+}
+
+function usePagedSessionsHarness(callbacks: ReturnType<typeof createCallbacks>) {
+  const store = useWorkspaceStore({ selectedCampaignId: 1, selectedSessionId: null, selectedPlayerId: null })
+  const queries = useWorkspaceQueries({
+    ...defaultScope,
+    ...callbacks,
+    sessions: store.sessions,
+    sessionsCursor: store.sessionsCursor,
+    selectedCampaignId: store.selectedCampaignId,
+    selectedSessionId: store.selectedSessionId,
+    campaignWorkspaceLoaded: store.campaignWorkspaceLoaded,
+    olderSessionsLoaded: store.olderSessionsLoaded,
+    setLoadingCampaignId: store.setLoadingCampaignId,
+    setSelectedSessionId: store.setSelectedSessionId,
+    setWorkspaceLoading: store.setWorkspaceLoading,
+    setSessionLoading: store.setSessionLoading,
   } as unknown as Parameters<typeof useWorkspaceQueries>[0])
   return { queries, store }
 }
@@ -692,5 +749,37 @@ describe('useWorkspaceQueries request ownership', () => {
 
     expect(callbacks.setLogEntries).not.toHaveBeenCalled()
     expect(result.current.queries.olderLogLoading).toBe(false)
+  })
+
+  it('pages older chapters from the workspace cursor and keeps an older chapter selected through a refresh', async () => {
+    const olderPage: SessionListResponse = {
+      campaign_id: 1,
+      sessions: [summary(28), summary(27)],
+      limit: 30,
+      has_more: false,
+      next_cursor: null,
+    }
+    apiFetchMock.mockImplementation((_baseUrl: string, path: string) => {
+      if (path === '/api/campaigns/1/workspace') return Promise.resolve(pagedWorkspace())
+      if (path === '/api/sessions/campaigns/1/sessions?limit=30&cursor=after%2029') return Promise.resolve(olderPage)
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const { result } = renderHook(() => usePagedSessionsHarness(createCallbacks()))
+
+    await act(async () => result.current.queries.refreshCampaignWorkspace(1))
+    expect(result.current.store.sessions.map((item) => item.session_id)).toEqual([30, 29])
+    expect(result.current.store.selectedSessionId).toBe(30)
+    expect(result.current.store.sessionsCursor).toBe('after 29')
+
+    await act(async () => result.current.queries.loadOlderSessions())
+    expect(result.current.store.sessions.map((item) => item.session_id)).toEqual([30, 29, 28, 27])
+    expect(result.current.store.sessionsCursor).toBeNull()
+    expect(result.current.queries.olderSessionsLoading).toBe(false)
+
+    act(() => result.current.store.setSelectedSessionId(28))
+    await act(async () => result.current.queries.refreshCampaignWorkspace(1))
+
+    expect(result.current.store.selectedSessionId).toBe(28)
+    expect(result.current.store.sessions.map((item) => item.session_id)).toEqual([30, 29, 28, 27])
   })
 })

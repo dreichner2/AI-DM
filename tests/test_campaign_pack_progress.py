@@ -1935,14 +1935,12 @@ def test_campaign_pack_progress_filters_player_reads_and_blocks_player_controls(
     assert admin_snapshot['campaignPack']['directorRules']['offTrackPolicy'] == 'improvise_and_reconnect'
 
     assert player_workspace.status_code == 200
-    workspace_snapshot = player_workspace.get_json()['sessions'][0]['state_snapshot']
-    assert workspace_snapshot['campaignPack']['visibility'] == 'player'
-    assert 'catalog' not in workspace_snapshot['campaignPack']
+    assert 'state_snapshot' not in player_workspace.get_json()['sessions'][0]
+    assert 'catalog' not in safe_json_dumps(player_workspace.get_json()['sessions'], [])
 
     assert player_sessions.status_code == 200
-    session_list_snapshot = player_sessions.get_json()[0]['state_snapshot']
-    assert session_list_snapshot['campaignPack']['visibility'] == 'player'
-    assert 'catalog' not in session_list_snapshot['campaignPack']
+    assert 'state_snapshot' not in player_sessions.get_json()['sessions'][0]
+    assert 'catalog' not in safe_json_dumps(player_sessions.get_json()['sessions'], [])
 
     assert player_events.status_code == 200
     assert [event['event_type'] for event in player_events.get_json()['events']] == []

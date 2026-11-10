@@ -78,6 +78,9 @@ AUTHORITATIVE_PRE_NARRATION_CHANGE_TYPES = {
     'scene.interactable.action',
     'spell.cast',
     'class_feature.use',
+    'item.use',
+    'shop.buy',
+    'shop.sell',
 }
 CONFIRMATION_DENIAL_PATTERN = re.compile(
     r"\b(?:do not|don't|does not|doesn't|did not|cannot|can't|fail|fails|failed|before you can|instead)\b",
@@ -959,6 +962,8 @@ def _without_applied_immediate_overlaps(
     """Keep narration from re-applying or contradicting pre-DM authoritative work."""
 
     applied = [change for change in applied_immediate if isinstance(change, dict)]
+    applied_items = [change for change in applied if change.get('type') == 'item.use']
+    applied_trades = [change for change in applied if change.get('type') in {'shop.buy', 'shop.sell'}]
     intent_kind = str((action_intent or {}).get('kind') or '').strip().lower()
     inventory_action = str((action_intent or {}).get('inventory_action') or '').strip().lower()
     raw_intent_item = (
@@ -1006,6 +1011,31 @@ def _without_applied_immediate_overlaps(
         if intent_kind == 'object' and change_type == 'scene.interactable.action':
             continue
         if intent_kind == 'rest' and change_type == 'rest.complete':
+            continue
+        if change_type == 'inventory.remove' and any(
+            _change_actor_id(change) == _change_actor_id(item)
+            and _confirmed_item_reference_matches(change, item)
+            for item in applied_items
+        ):
+            continue
+        if change_type in {'health.heal', 'health.damage'} and any(
+            _change_actor_id(change) == str(item.get('targetId') or _change_actor_id(item)).strip()
+            and isinstance(item.get('resolution'), dict)
+            and ('healing' if change_type == 'health.heal' else 'damage') in item['resolution']
+            for item in applied_items
+        ):
+            continue
+        if any(
+            _change_actor_id(change) == _change_actor_id(trade)
+            and (
+                (change_type in {'currency.add', 'currency.remove'})
+                or (
+                    change_type == ('inventory.add' if trade.get('type') == 'shop.buy' else 'inventory.remove')
+                    and _confirmed_item_reference_matches(change, trade)
+                )
+            )
+            for trade in applied_trades
+        ):
             continue
         # A free-form DM response is not an item source. Inventory gains must
         # come from a validated typed transaction (pickup/commerce/transfer),
@@ -1073,27 +1103,6 @@ def _intent_confirmed_post_changes(
                     'type': 'misc',
                 }
             changes.append(change)
-
-    metadata = _metadata(turn)
-    action_intent = metadata.get('action_intent') if isinstance(metadata.get('action_intent'), dict) else None
-    if isinstance(action_intent, dict) and inventory_change:
-        inventory_action = str(action_intent.get('inventory_action') or '').strip().lower()
-        cost_gold = max(0, int_or_default(action_intent.get('cost_gold'), default=0))
-        if cost_gold and inventory_action in {'buy', 'sell'}:
-            change_type = 'currency.remove' if inventory_action == 'buy' else 'currency.add'
-            changes.append(
-                {
-                    'id': stable_change_id(turn.turn_id, 'post_dm_intent', change_type, actor_id, 'gp', cost_gold),
-                    'turnId': turn.turn_id,
-                    'type': change_type,
-                    'source': 'post_dm',
-                    'actorId': actor_id,
-                    'amount': cost_gold,
-                    'currency': 'gp',
-                    'reason': f"DM confirmed {inventory_action} action with known price/value.",
-                    'visible': True,
-                }
-            )
 
     drop_all_patch = {'inventory_changes': [], 'entities': []}
     append_drop_all_inventory_changes_from_text(turn, dm_response_text, drop_all_patch)
@@ -2009,6 +2018,24 @@ def post_dm_pipeline(
             if 'combat_turn_roster_advanced' not in notes:
                 notes.append('combat_turn_roster_advanced')
             post_extraction['notes'] = notes
+            # Turn-start effects can defeat the last combatant after the first
+            # end check. End the encounter here as well so its ordinary reward
+            # transaction runs once on the same turn.
+            advanced_combat = final_state.get('combat') if isinstance(final_state.get('combat'), dict) else {}
+            advance_end_reason = check_combat_end(advanced_combat) if advance_apply['appliedChanges'] else None
+            if advance_end_reason:
+                advance_end_change = combat_end_change(turn.turn_id, advance_end_reason)
+                advance_end_validation = validate_state_changes(state=final_state, changes=[advance_end_change])
+                advance_end_apply = apply_state_changes(
+                    final_state, validated_changes_for_application(advance_end_validation),
+                )
+                final_state = advance_end_apply['nextState']
+                applied_post = [*applied_post, *advance_end_apply['appliedChanges']]
+                post_validation = _merge_validation_results(post_validation, advance_end_validation)
+                if advance_end_apply['appliedChanges']:
+                    post_extraction['proposedChanges'].append(advance_end_change)
+                    if 'engine_combat_end' not in post_extraction['notes']:
+                        post_extraction['notes'].append('engine_combat_end')
         finalized_encounter = finalize_combat_prepare(
             session_obj=session_obj,
             campaign=campaign,

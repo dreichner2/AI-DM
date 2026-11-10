@@ -160,6 +160,22 @@ def test_prone_creature_that_can_act_stands_at_turn_start_spending_movement():
     assert combat['participants'][1]['conditions'] == ['prone', 'stunned']
 
 
+def test_ongoing_damage_uses_defenses_temporary_hp_and_player_vitality(monkeypatch):
+    monkeypatch.setattr(combat_pipeline, 'deterministic_roller', lambda _seed: lambda _sides: 4)
+    effect = _effect('burn', damagePerTurn={'dice': '1d4', 'type': 'fire'})
+    player = _p('player_1', team='player', effects=[effect], resistances=['fire'],
+                hp={'current': 1, 'max': 10, 'temp': 1})
+    combat = {'participants': [player], 'flags': {}}
+    events = apply_turn_boundaries(combat, [{'actorId': 'player_1', 'phase': 'start', 'round': 2}], turn_id=7)
+    result = events[0]['ongoingDamage'][0]
+    assert (result['rolls'], result['defense'], result['damage']) == ([4], 'resistant', 2)
+    assert (result['tempHpDamage'], result['hpDamage'], result['vitality']) == (1, 1, 'dying')
+    assert player['hp']['current'] == 0
+    assert 'dying' in player['conditions'] and player['isAlive']
+    apply_turn_boundaries(combat, [{'actorId': 'player_1', 'phase': 'start', 'round': 3}], turn_id=8)
+    assert player['deathSaves']['failures'] == 1
+
+
 def test_restrained_stops_movement_and_shifts_attacks_and_dex_saves():
     restrained = _p('t', conditions=['restrained'])
     assert modifiers.speed_is_zero(restrained)
@@ -403,26 +419,27 @@ def _player(player_id: int = 7) -> Player:
 
 
 def test_action_provider_and_resolver_registries_extend_the_hud_bundle():
-    def dodge_provider(snapshot, actor, combat):
-        return [{'id': 'combat.dodge', 'type': 'dodge', 'label': 'Dodge', 'economy': {'action': 1}}]
+    def feint_provider(snapshot, actor, combat):
+        return [{'id': 'combat.feint', 'type': 'feint', 'label': 'Feint', 'economy': {'action': 1}}]
 
-    def dodge_resolver(snapshot, player, action, target_id):
-        return {'action_id': action['id'], 'action_type': 'dodge', 'authoritative': True}, None, None
+    def feint_resolver(snapshot, player, action, target_id):
+        return {'action_id': action['id'], 'action_type': 'feint', 'authoritative': True}, None, None
 
-    register_action_provider(dodge_provider)
-    register_action_resolver('combat.dodge', dodge_resolver)
+    register_action_provider(feint_provider)
+    register_action_resolver('combat.feint', feint_resolver)
     try:
         bundle = legal_combat_actions_for_player({'combat': _legal_combat()}, _player())
-        dodge = next(action for action in bundle['actions'] if action['id'] == 'combat.dodge')
-        assert dodge['available'] is True
-        resolved, code, _message = resolve_combat_legal_action({'combat': _legal_combat()}, _player(), action_id='combat.dodge')
+        feint = next(action for action in bundle['actions'] if action['id'] == 'combat.feint')
+        assert feint['available'] is True
+        assert feint['cost'] == {'action': 1, 'bonusAction': 0, 'movement': 0, 'reaction': 0}
+        resolved, code, _message = resolve_combat_legal_action({'combat': _legal_combat()}, _player(), action_id='combat.feint')
         assert code is None
-        assert resolved == {'action_id': 'combat.dodge', 'action_type': 'dodge', 'authoritative': True}
+        assert resolved == {'action_id': 'combat.feint', 'action_type': 'feint', 'authoritative': True}
     finally:
-        unregister_action_provider(dodge_provider)
-        unregister_action_resolver('combat.dodge')
+        unregister_action_provider(feint_provider)
+        unregister_action_resolver('combat.feint')
     bundle = legal_combat_actions_for_player({'combat': _legal_combat()}, _player())
-    assert all(action['id'] != 'combat.dodge' for action in bundle['actions'])
+    assert all(action['id'] != 'combat.feint' for action in bundle['actions'])
 
 
 def test_hud_reasons_come_from_the_modifier_engine():

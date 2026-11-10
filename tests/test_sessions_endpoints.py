@@ -28,6 +28,7 @@ from aidm_server.models import (
     safe_json_dumps,
     safe_json_loads,
 )
+from aidm_server.response_dtos import text_excerpt
 from aidm_server.services.campaign_pack_progress import PROGRESS_CHANGED_EVENT
 from aidm_server.services.session_recovery import activate_turn_recovery_gate
 from aidm_server.turn_coordinator import session_turn_coordinator
@@ -384,12 +385,14 @@ def test_end_session_recap_persists_snapshot(client, app):
     payload = response.get_json()
     assert 'recap' in payload
 
+    state_snapshot = client.get(f"/api/sessions/{ids['session_id']}/state").get_json()['state_snapshot']
+    assert state_snapshot['recap'] == payload['recap']
+    assert state_snapshot['custom'] == {'keep': True}
     sessions_response = client.get(f"/api/sessions/campaigns/{ids['campaign_id']}/sessions")
     assert sessions_response.status_code == 200
-    sessions_payload = sessions_response.get_json()
-    assert isinstance(sessions_payload[0]['state_snapshot'], dict)
-    assert sessions_payload[0]['state_snapshot']['recap'] == payload['recap']
-    assert sessions_payload[0]['state_snapshot']['custom'] == {'keep': True}
+    listed = sessions_response.get_json()['sessions'][0]
+    assert 'state_snapshot' not in listed
+    assert listed['summary_excerpt'] == text_excerpt(payload['recap'], 280)
 
     with app.app_context():
         events = (
@@ -707,7 +710,11 @@ def test_import_session_from_export_restores_state_events_and_projected_log(clie
     payload = response.get_json()
     imported_session_id = payload['session_id']
     assert imported_session_id != ids['session_id']
-    assert payload['session']['display_name'] == 'Ash Gate Alpha'
+    assert payload['mode'] == 'archive'
+    assert payload['session']['display_name'] == 'Archive — Ash Gate Alpha'
+    assert payload['session']['status'] == 'ended'
+    assert payload['session']['imported'] is True
+    assert payload['session']['is_current'] is False
     assert payload['counts'] == {
         'turn_events': 2,
         'projected_log_entries': 2,
@@ -723,6 +730,7 @@ def test_import_session_from_export_restores_state_events_and_projected_log(clie
         imported_snapshot = json.loads(imported_session.state_snapshot)
         assert imported_snapshot['recap'] == 'Old recap'
         assert imported_snapshot['imported'] is True
+        assert imported_snapshot['ended_at']
         assert imported_snapshot['source_session_id'] == ids['session_id']
         assert imported_snapshot['sessionId'] == imported_session_id
         assert imported_snapshot['campaignId'] == ids['campaign_id']
@@ -756,7 +764,7 @@ def test_import_session_from_export_restores_state_events_and_projected_log(clie
         assert 'This should not be duplicated' not in '\n'.join(entry.message for entry in log_entries)
 
 
-def test_export_session_returns_importable_shape_and_round_trips_without_log_duplication(client, app):
+def test_export_session_returns_save_document_and_imports_it_as_an_archive(client, app):
     ids = seed_world_campaign_player_session(app)
 
     with app.app_context():
@@ -776,7 +784,7 @@ def test_export_session_returns_importable_shape_and_round_trips_without_log_dup
         db.session.add(
             SessionLogEntry(
                 session_id=ids['session_id'],
-                message='This source-only log should not be duplicated on import.',
+                message='A source log line is exported once.',
                 entry_type='system',
                 metadata_json=json.dumps({'source': 'export_route_test'}),
             )
@@ -797,45 +805,47 @@ def test_export_session_returns_importable_shape_and_round_trips_without_log_dup
         )
         db.session.commit()
 
-    export_response = client.get(f"/api/sessions/{ids['session_id']}/export?player_id={ids['player_id']}")
+    export_response = client.get(f"/api/sessions/{ids['session_id']}/export")
 
     assert export_response.status_code == 200
-    export_payload = export_response.get_json()
-    assert export_payload['selectedIds'] == {
-        'campaignId': ids['campaign_id'],
-        'sessionId': ids['session_id'],
-        'playerId': ids['player_id'],
+    document = export_response.get_json()
+    assert document['format'] == 'aidm.save'
+    assert document['version'] == 2
+    assert document['campaign'] == {'id': ids['campaign_id'], 'title': 'Test Campaign'}
+    assert document['session']['session_id'] == ids['session_id']
+    assert document['session']['display_name'] == 'Exportable Ash Gate'
+    assert document['session_state'] == {
+        'rolling_summary': 'The party prepared an export proof.',
+        'current_location': 'Ash Gate',
+        'current_quest': 'Prove export/import',
+        'memory_snippets': [{'summary': 'Export memory'}],
     }
-    assert export_payload['campaign']['campaign_id'] == ids['campaign_id']
-    assert export_payload['selectedSession']['display_name'] == 'Exportable Ash Gate'
-    assert export_payload['selectedPlayer']['player_id'] == ids['player_id']
-    assert [player['player_id'] for player in export_payload['players']] == [ids['player_id']]
-    assert export_payload['sessionState']['current_location'] == 'Ash Gate'
-    assert 'This source-only log should not be duplicated' in '\n'.join(
-        entry['message'] for entry in export_payload['logEntries']
-    )
-    assert [event['event_type'] for event in export_payload['turnEvents']] == [
-        PLAYER_MESSAGE_EVENT,
-        DM_RESPONSE_EVENT,
+    assert [entry['message'] for entry in document['log']] == [
+        'A source log line is exported once.',
+        'Seraphina: I test the export gate.',
+        'DM: The export gate answers.',
     ]
+    assert [character['player_id'] for character in document['characters']] == [ids['player_id']]
+    assert document['unsettled'] == {'pending_roll': False, 'active_combat': False}
 
-    import_response = client.post('/api/sessions/import', json=export_payload)
+    import_response = client.post('/api/sessions/import', json=document)
 
     assert import_response.status_code == 201
     import_payload = import_response.get_json()
+    assert import_payload['mode'] == 'archive'
     assert import_payload['counts'] == {
-        'turn_events': 2,
-        'projected_log_entries': 2,
-        'log_entries': 0,
+        'turn_events': 0,
+        'projected_log_entries': 0,
+        'log_entries': 3,
         'session_state': 1,
     }
+    assert import_payload['session']['display_name'] == 'Archive — Exportable Ash Gate'
     imported_session_id = import_payload['session_id']
     imported_log_response = client.get(f'/api/sessions/{imported_session_id}/log?limit=100')
     assert imported_log_response.status_code == 200
-    imported_messages = '\n'.join(entry['message'] for entry in imported_log_response.get_json()['entries'])
-    assert 'I test the export gate.' in imported_messages
-    assert 'The export gate answers.' in imported_messages
-    assert 'This source-only log should not be duplicated' not in imported_messages
+    assert [entry['message'] for entry in imported_log_response.get_json()['entries']] == [
+        entry['message'] for entry in document['log']
+    ]
 
 
 def test_import_session_preserves_campaign_pack_state_progress_events_and_archive_restore(client, app):
@@ -1021,7 +1031,7 @@ def test_import_session_falls_back_to_log_entries_when_events_are_absent(client,
     assert response.status_code == 201
     payload = response.get_json()
     imported_session_id = payload['session_id']
-    assert payload['session']['display_name'] == 'Legacy Snapshot'
+    assert payload['session']['display_name'] == 'Archive — Legacy Snapshot'
     assert payload['counts']['turn_events'] == 0
     assert payload['counts']['log_entries'] == 2
 
@@ -1077,20 +1087,21 @@ def test_update_session_persists_name_in_metadata_columns(client, app):
     response = client.patch(f"/api/sessions/{ids['session_id']}", json={'name': 'Pyres at Dawn'})
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload['state_snapshot'] == {}
+    assert 'state_snapshot' not in payload
+    assert payload['name'] == 'Pyres at Dawn'
     assert payload['display_name'] == 'Pyres at Dawn'
     assert payload['updated_at']
     assert payload['status'] == 'active'
 
     sessions_response = client.get(f"/api/sessions/campaigns/{ids['campaign_id']}/sessions")
     assert sessions_response.status_code == 200
-    sessions_payload = sessions_response.get_json()
+    sessions_payload = sessions_response.get_json()['sessions']
     renamed = next(item for item in sessions_payload if item['session_id'] == ids['session_id'])
-    assert renamed['state_snapshot'] == {}
+    assert 'state_snapshot' not in renamed
     assert renamed['display_name'] == 'Pyres at Dawn'
     assert renamed['latest_activity_at']
     assert renamed['turn_count'] == 0
-    assert renamed['latest_summary'] == ''
+    assert renamed['summary_excerpt'] == ''
 
 
 def test_update_session_rejects_stale_expected_updated_at(client, app):
@@ -1127,16 +1138,22 @@ def test_list_campaign_sessions_includes_display_metadata(client, app):
     response = client.get(f"/api/sessions/campaigns/{ids['campaign_id']}/sessions")
 
     assert response.status_code == 200
-    payload = response.get_json()[0]
+    body = response.get_json()
+    assert body['limit'] == 30
+    assert body['has_more'] is False
+    assert body['next_cursor'] is None
+    payload = body['sessions'][0]
     assert payload['session_id'] == ids['session_id']
+    assert payload['name'] is None
     assert payload['display_name'] == 'Session 1'
     assert payload['turn_count'] == 1
-    assert payload['latest_summary'] == 'The relic started glowing.'
+    assert payload['summary_excerpt'] == 'The relic started glowing.'
     assert payload['latest_activity_at']
     assert payload['updated_at']
     assert payload['is_archived'] is False
     assert payload['status'] == 'active'
-    assert payload['deleted_at'] is None
+    assert payload['imported'] is False
+    assert payload['play_now'] is False
 
 
 def test_unnamed_sessions_display_campaign_relative_numbers(client, app):
@@ -1164,8 +1181,8 @@ def test_unnamed_sessions_display_campaign_relative_numbers(client, app):
 
     assert first_response.status_code == 200
     assert second_response.status_code == 200
-    first_payload = {session['session_id']: session for session in first_response.get_json()}
-    second_payload = {session['session_id']: session for session in second_response.get_json()}
+    first_payload = {session['session_id']: session for session in first_response.get_json()['sessions']}
+    second_payload = {session['session_id']: session for session in second_response.get_json()['sessions']}
     assert first_payload[first_session_id]['display_name'] == 'Session 1'
     assert first_payload[second_session_id]['display_name'] == 'Session 2'
     assert second_payload[other_session_id]['display_name'] == 'Session 1'
@@ -1349,15 +1366,15 @@ def test_delete_session_archives_and_restore_resurfaces_in_lists(client, app):
     assert first_payload['deleted'] is True
     assert first_payload['archived'] is True
     assert first_payload['session']['is_archived'] is True
-    assert first_payload['session']['deleted_at']
+    assert first_payload['session']['status'] == 'archived'
 
     default_list = client.get(f"/api/sessions/campaigns/{ids['campaign_id']}/sessions")
     assert default_list.status_code == 200
-    assert default_list.get_json() == []
+    assert default_list.get_json()['sessions'] == []
 
     archived_list = client.get(f"/api/sessions/campaigns/{ids['campaign_id']}/sessions?include_archived=true")
     assert archived_list.status_code == 200
-    archived_payload = archived_list.get_json()[0]
+    archived_payload = archived_list.get_json()['sessions'][0]
     assert archived_payload['session_id'] == ids['session_id']
     assert archived_payload['status'] == 'archived'
 
@@ -1366,7 +1383,7 @@ def test_delete_session_archives_and_restore_resurfaces_in_lists(client, app):
     restore_payload = restore_response.get_json()
     assert restore_payload['restored'] is True
     assert restore_payload['session']['status'] == 'active'
-    assert restore_payload['session']['deleted_at'] is None
+    assert restore_payload['session']['is_archived'] is False
     with app.app_context():
         audits = (
             OperatorActionAudit.query.filter_by(session_id=ids['session_id'])

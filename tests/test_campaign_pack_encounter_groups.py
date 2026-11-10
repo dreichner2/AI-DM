@@ -34,6 +34,7 @@ def _pack_state() -> dict:
                     {
                         'id': 'enc_wagons',
                         'title': 'Wagon Trouble',
+                        'scaling': False,
                         'enemyIds': ['enemy_cutthroats'],
                         'enemyGroups': [
                             {'enemyId': 'enemy_cutthroats', 'count': 2},

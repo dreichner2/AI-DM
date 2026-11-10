@@ -4,21 +4,25 @@ import type {
   CampaignWorkspace,
   Player,
   PlayerDetail,
+  SessionListResponse,
   SessionLogEntry,
   SessionState,
   SessionSummary,
 } from './types'
 import {
   cacheCampaignWorkspace,
+  cacheOlderSessions,
   cacheRootCampaigns,
   createWorkspaceCache,
   removeCampaign,
+  removeSession,
   selectCampaign,
   selectCampaigns,
   selectMaps,
   selectPlayers,
   selectSegments,
   selectSessions,
+  selectSessionsCursor,
   upsertCampaign,
   upsertPlayer,
   upsertSession,
@@ -80,6 +84,8 @@ type WorkspaceStoreAction =
   | { type: 'sessionPageLoaded'; page: SessionPage }
   | { type: 'rootCampaignsLoaded'; campaigns: Campaign[] }
   | { type: 'campaignWorkspaceLoaded'; workspace: CampaignWorkspace }
+  | { type: 'olderSessionsLoaded'; page: SessionListResponse }
+  | { type: 'sessionRemoved'; sessionId: number }
   | { type: 'campaignUpserted'; campaign: Campaign }
   | { type: 'campaignRemoved'; campaignId: number }
   | { type: 'sessionUpserted'; session: SessionSummary }
@@ -185,6 +191,10 @@ function workspaceStoreReducer(
       return { ...state, cache: cacheRootCampaigns(state.cache, action.campaigns) }
     case 'campaignWorkspaceLoaded':
       return { ...state, cache: cacheCampaignWorkspace(state.cache, action.workspace) }
+    case 'olderSessionsLoaded':
+      return { ...state, cache: cacheOlderSessions(state.cache, action.page) }
+    case 'sessionRemoved':
+      return { ...state, cache: removeSession(state.cache, action.sessionId) }
     case 'campaignUpserted':
       return { ...state, cache: upsertCampaign(state.cache, action.campaign) }
     case 'campaignRemoved':
@@ -235,6 +245,10 @@ export function useWorkspaceStore(selection: WorkspaceStoreInitialSelection) {
         dispatch({ type: 'rootCampaignsLoaded', campaigns }),
       campaignWorkspaceLoaded: (workspace: CampaignWorkspace) =>
         dispatch({ type: 'campaignWorkspaceLoaded', workspace }),
+      olderSessionsLoaded: (page: SessionListResponse) =>
+        dispatch({ type: 'olderSessionsLoaded', page }),
+      sessionRemoved: (sessionId: number) =>
+        dispatch({ type: 'sessionRemoved', sessionId }),
       campaignUpserted: (campaign: Campaign) =>
         dispatch({ type: 'campaignUpserted', campaign }),
       campaignRemoved: (campaignId: number) =>
@@ -256,6 +270,7 @@ export function useWorkspaceStore(selection: WorkspaceStoreInitialSelection) {
     () => selectSessions(state.cache, state.selectedCampaignId),
     [state.cache, state.selectedCampaignId],
   )
+  const sessionsCursor = selectSessionsCursor(state.cache, state.selectedCampaignId)
   const players = useMemo(
     () => selectPlayers(state.cache, state.selectedCampaignId),
     [state.cache, state.selectedCampaignId],
@@ -280,6 +295,7 @@ export function useWorkspaceStore(selection: WorkspaceStoreInitialSelection) {
     campaigns,
     campaign,
     sessions,
+    sessionsCursor,
     players,
     maps,
     segments,

@@ -7,31 +7,28 @@ import re
 from typing import Any, Callable
 
 from aidm_server.canon_text import int_or_default
-from aidm_server.combat.modifiers import (
-    MODIFIER_ENGINE_SOURCE,
-    ability_key,
-    apply_damage_multiplier,
-    armor_class_with_context,
-    attack_block_reason,
-    attack_context,
-    damage_multiplier,
-    extra_damage,
-    save_context,
+from aidm_server.combat.attacks import (
+    TEXT_DAMAGE_PATTERN,
+    ability_damage,
+    ability_reach_profile,
+    bounded_int,
+    resolve_attack,
+    resolve_enemy_ability,
+    resolve_enemy_healing,
 )
-from aidm_server.combat.pipeline import death_saves_due, participant_at_turn_start
+from aidm_server.combat.modifiers import MODIFIER_ENGINE_SOURCE, can_act, condition_keys, engaged_with, range_band, speed_is_zero, temp_hp_per_turn
+from aidm_server.combat.pipeline import apply_start_turn_damage, death_saves_due, participant_at_turn_start, turn_boundaries
+from aidm_server.combat.positioning import band_outward, enemy_approach, move_participant, participant_by_id
+from aidm_server.combat.reactions import collect_reactions, reaction_changes
 from aidm_server.combat.vitality import DEATH_SAVE_SOURCE, death_save_change_id
 from aidm_server.combat.state import (
     combat_ability_is_available,
     combat_ability_resolution_mode,
+    combat_turn_context,
     participant_can_take_turn,
     participant_is_targetable,
 )
-from aidm_server.damage_dice import (
-    deterministic_roller,
-    normalize_damage_dice_expression,
-    parse_damage_dice_expression,
-    roll_signed_dice,
-)
+from aidm_server.damage_dice import deterministic_roller, normalize_damage_dice_expression
 from aidm_server.game_state.models import normalize_item_name, stable_change_id
 
 
@@ -54,11 +51,7 @@ _TRUSTED_DAMAGE_SOURCE_TYPES = {
     'hazard': 'trusted_environmental_hazard',
     'trap': 'trusted_environmental_hazard',
 }
-TEXT_DAMAGE_PATTERN = re.compile(
-    r'\b(?:deals?|does|for)\s+(\d{0,2}d\d{1,3}(?:\s*[+-]\s*\d{1,4})?)\s+'
-    r'(acid|cold|fire|force|lightning|necrotic|poison|psychic|radiant|thunder|bludgeoning|piercing|slashing)\s+damage\b',
-    re.IGNORECASE,
-)
+ENEMY_RESOLVED_SOURCE = 'enemy_resolved_action'
 
 
 @dataclass(frozen=True)
@@ -170,85 +163,8 @@ def _ability_by_id(participant: dict[str, Any] | None, ability_id: Any) -> dict[
     return abilities[0] if abilities and isinstance(abilities[0], dict) else None
 
 
-def _roll_die(sides: int, roller: Callable[[int], int] | None) -> int:
-    sides = max(1, int_or_default(sides, default=1))
-    raw_value = roller(sides) if roller else random.randint(1, sides)
-    value = int_or_default(raw_value, default=1)
-    return max(1, min(sides, value))
-
-
-def _roll_damage_expression(dice_expression: Any, roller: Callable[[int], int] | None) -> dict[str, Any]:
-    expression = str(dice_expression or '').strip().replace(' ', '')
-    parsed = parse_damage_dice_expression(expression)
-    if not parsed:
-        return {'dice': expression[:24], 'rolls': [], 'bonus': 0, 'total': 0}
-
-    count = int(parsed['count'])
-    sides = int(parsed['sides'])
-    bonus = int(parsed['bonus'])
-    rolls = [_roll_die(sides, roller) for _ in range(count)] if sides > 0 and count > 0 else []
-    return {'dice': parsed['dice'], 'rolls': rolls, 'bonus': bonus, 'total': max(0, sum(rolls) + bonus)}
-
-
-def _critical_damage_expression(value: Any) -> str:
-    """Double the dice (never the flat bonus) of a critical hit's damage expression."""
-
-    parsed = parse_damage_dice_expression(value)
-    if not parsed or int(parsed.get('count') or 0) <= 0:
-        return str(value or '').strip()
-    count = min(100, int(parsed['count']) * 2)
-    sides = int(parsed['sides'])
-    bonus = int(parsed.get('bonus') or 0)
-    return f'{count}d{sides}{bonus:+d}' if bonus else f'{count}d{sides}'
-
-
-def _d20_with_mode(first: int, mode: str, roller: Callable[[int], int] | None) -> tuple[int, list[int]]:
-    """Keep the higher (advantage) or lower (disadvantage) of two d20s; ``first`` is already rolled."""
-
-    if mode not in {'advantage', 'disadvantage'}:
-        return first, [first]
-    second = _roll_die(20, roller)
-    kept = max(first, second) if mode == 'advantage' else min(first, second)
-    return kept, [first, second]
-
-
-def _rolled_bonus_dice(dice: list[str], roller: Callable[[int], int] | None) -> list[dict[str, Any]]:
-    rolled: list[dict[str, Any]] = []
-    for expression in dice:
-        result = roll_signed_dice(expression, lambda sides: _roll_die(sides, roller))
-        if result:
-            rolled.append(result)
-    return rolled
-
-
-def _damage_component(
-    *,
-    dice: Any = None,
-    flat: Any = None,
-    bonus: int = 0,
-    damage_type: str,
-    source: str,
-    target: dict[str, Any],
-    critical: bool,
-    roller: Callable[[int], int] | None,
-) -> dict[str, Any]:
-    if dice:
-        expression = _critical_damage_expression(dice) if critical else str(dice)
-        rolled = _roll_damage_expression(expression, roller)
-    else:
-        expression = str(int_or_default(flat, default=0))
-        rolled = {'dice': expression, 'rolls': [], 'bonus': int_or_default(flat, default=0), 'total': max(0, int_or_default(flat, default=0))}
-    before = max(0, int(rolled.get('total') or 0) + bonus)
-    multiplier = damage_multiplier(target, damage_type)
-    return {
-        'source': source,
-        'dice': rolled.get('dice') or expression,
-        'rolls': rolled.get('rolls') or [],
-        'bonus': int(rolled.get('bonus') or 0) + bonus,
-        'type': damage_type,
-        'multiplier': multiplier,
-        'total': apply_damage_multiplier(before, multiplier),
-    }
+def _random_roll(sides: int) -> int:
+    return random.randint(1, max(1, int(sides)))
 
 
 def resolve_authoritative_player_attack(
@@ -260,7 +176,11 @@ def resolve_authoritative_player_attack(
     authoritative_roll: dict[str, Any] | None,
     damage_roller: Callable[[int], int] | None = None,
 ) -> dict[str, Any] | None:
-    """Resolve a canonical HUD attack before the DM is allowed to narrate it."""
+    """Resolve a canonical HUD attack before the DM is allowed to narrate it.
+
+    An off-hand attack adds the ability modifier to damage only when it is
+    negative.  Reactions the hit provokes are returned in ``reactions``.
+    """
 
     if not isinstance(action_intent, dict) or not isinstance(authoritative_roll, dict):
         return None
@@ -290,31 +210,10 @@ def resolve_authoritative_player_attack(
     if active_actor_id and active_actor_id != actor_id:
         return None
 
-    player_die = _bounded_int(authoritative_roll.get('kept'), default=1, minimum=1, maximum=20)
+    player_die = bounded_int(authoritative_roll.get('kept'), default=1, minimum=1, maximum=20)
     attack_bonus = int_or_default(authoritative_roll.get('total'), default=player_die) - player_die
     weapon_id = str(combat_action.get('weapon_id') or '').strip()
     damage_type = str(combat_action.get('damage_type') or 'slashing').strip().lower()
-    modifiers = attack_context(
-        actor,
-        target,
-        kind='weapon_attack',
-        ranged=combat_action.get('ranged') is True,
-        combat=combat,
-    )
-    # The player's server-rolled d20 is the first die; advantage or disadvantage
-    # adds a second die from the engine's deterministic roller.
-    attack_roller = deterministic_roller(f'player_attack_roll:{turn_id}:{actor_id}:{target_id}:{weapon_id}')
-    natural_roll, attack_rolls = _d20_with_mode(player_die, modifiers['mode'], attack_roller)
-    bonus_dice = _rolled_bonus_dice(modifiers['attackBonusDice'], attack_roller)
-    attack_total = (
-        natural_roll
-        + attack_bonus
-        + sum(int(item['total']) for item in bonus_dice)
-        + int(modifiers['attackFlatBonus'])
-    )
-    target_ac = armor_class_with_context(_target_armor_class(target), modifiers)
-    hit = natural_roll != 1 and (natural_roll == 20 or attack_total >= target_ac)
-    critical = hit and (natural_roll == 20 or modifiers['autoCrit'])
     damage_dice = normalize_damage_dice_expression(combat_action.get('damage_dice')) or '1d6'
     modifier_breakdown = (
         authoritative_roll.get('modifier_breakdown')
@@ -322,232 +221,103 @@ def resolve_authoritative_player_attack(
         else {}
     )
     damage_bonus = int_or_default(modifier_breakdown.get('ability_modifier'), default=0)
-    roller = damage_roller or deterministic_roller(
-        f'player_attack:{turn_id}:{actor_id}:{target_id}:{weapon_id}'
+    offhand = combat_action.get('offhand') is True
+    if offhand:
+        damage_bonus = min(0, damage_bonus)
+    weapon_name = str(combat_action.get('weapon_name') or 'weapon').strip() or 'weapon'
+    working_combat = deepcopy(combat)
+    working = working_combat['participants'] if isinstance(working_combat.get('participants'), list) else []
+    # The player's server-rolled d20 is the first die; advantage or disadvantage
+    # adds a second die from the engine's deterministic roller.
+    attack = resolve_attack(
+        attacker=_participant_by_id(working, actor_id) or actor,
+        target=_participant_by_id(working, target_id) or target,
+        combat=working_combat,
+        state={**state, 'combat': working_combat},
+        kind='weapon_attack',
+        ranged=combat_action.get('ranged') is True,
+        first_d20=player_die,
+        attack_bonus=attack_bonus,
+        attack_roller=deterministic_roller(f'player_attack_roll:{turn_id}:{actor_id}:{target_id}:{weapon_id}'),
+        damage={'dice': damage_dice, 'type': damage_type, 'bonus': damage_bonus, 'source': weapon_name},
+        damage_roller=damage_roller or deterministic_roller(f'player_attack:{turn_id}:{actor_id}:{target_id}:{weapon_id}'),
+        event_id=f'player_attack:{turn_id}:{actor_id}:{target_id}:{weapon_id}',
+        turn_id=turn_id,
     )
-    components: list[dict[str, Any]] = []
-    if hit:
-        components.append(
-            _damage_component(
-                dice=damage_dice,
-                bonus=damage_bonus,
-                damage_type=damage_type,
-                source=str(combat_action.get('weapon_name') or 'weapon'),
-                target=target,
-                critical=critical,
-                roller=roller,
-            )
-        )
-        for extra in extra_damage(actor, target, kind='weapon_attack', weapon={'damageType': damage_type}):
-            components.append(
-                _damage_component(
-                    dice=extra.get('dice'),
-                    flat=extra.get('flat'),
-                    damage_type=str(extra.get('type') or damage_type),
-                    source=str(extra.get('source') or 'effect'),
-                    target=target,
-                    critical=critical,
-                    roller=roller,
-                )
-            )
-    base = components[0] if components else {}
-    return {
+    result = {
         'sourceType': 'player_attack',
         'sourceActorId': actor_id,
         'sourceActorName': _participant_name(actor, actor_id),
         'targetId': target_id,
         'targetName': _participant_name(target, target_id),
         'weaponId': weapon_id or None,
-        'weaponName': str(combat_action.get('weapon_name') or 'weapon').strip() or 'weapon',
-        'attackMode': modifiers['mode'],
-        'attackRolls': attack_rolls,
-        'modeReasons': modifiers['reasons'],
-        'attackRoll': natural_roll,
-        'attackBonus': attack_bonus,
-        'attackBonusDice': bonus_dice,
-        'attackTotal': attack_total,
-        'targetArmorClass': target_ac,
-        'coverBonus': modifiers['coverBonus'],
-        'hit': hit,
-        'critical': critical,
+        'weaponName': weapon_name,
+        **attack,
         'damageDice': damage_dice,
-        'damageRolls': base.get('rolls') or [],
         'damageBonus': damage_bonus,
-        'damageComponents': components,
-        'damageTotal': sum(int(component['total']) for component in components),
         'damageType': damage_type,
-        'consume': modifiers['consume'],
         'authoritative': True,
         'instruction': 'Narrate this player attack exactly as resolved by the engine; do not alter hit, damage, or target.',
     }
+    if offhand:
+        result['offhand'] = True
+    return result
 
 
-def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
-    parsed = int_or_default(value, default=default)
-    return max(minimum, min(maximum, parsed))
+def _enemy_reach(enemy: dict[str, Any], target: dict[str, Any], ability: dict[str, Any], combat: dict[str, Any], *, can_move: bool) -> dict[str, Any]:
+    melee, bands = ability_reach_profile(ability)
+    return enemy_approach(enemy, target, melee=melee, allowed_bands=bands, combat=combat, can_move=can_move)
 
 
-def _target_armor_class(target: dict[str, Any] | None) -> int:
-    if not isinstance(target, dict):
-        return 10
-    stats = target.get('stats') if isinstance(target.get('stats'), dict) else {}
-    return _bounded_int(target.get('armorClass', stats.get('armorClass')), default=10, minimum=1, maximum=40)
+def _move_enemy(combat: dict[str, Any], enemy_id: str, steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    movement: list[dict[str, Any]] = []
+    for step in steps:
+        enemy = participant_by_id(combat, enemy_id)
+        from_band = range_band(enemy)
+        move_participant(combat, enemy_id, step['toRangeBand'], engage_with=step.get('engageWith') or [])
+        movement.append({'fromRangeBand': from_band, 'toRangeBand': step['toRangeBand'], 'engageWith': list(step.get('engageWith') or [])})
+    return movement
 
 
-def _ability_modifier(score: int) -> int:
-    return (int(score) - 10) // 2
+def _begin_enemy_turn(enemy: dict[str, Any]) -> bool:
+    """Apply the turn-start view to the working enemy; True when it may still move."""
+
+    started = participant_at_turn_start(enemy)
+    stood_up = 'prone' in condition_keys(enemy) and 'prone' not in condition_keys(started)
+    enemy['conditions'] = started['conditions']
+    enemy['reactionRemaining'] = started['reactionRemaining']
+    return not stood_up and not speed_is_zero(enemy)
 
 
-def _ability_is_ranged(ability: dict[str, Any] | None) -> bool:
-    text = normalize_item_name(
-        ' '.join(
-            str(value or '')
-            for value in [
-                (ability or {}).get('name') if isinstance(ability, dict) else '',
-                (ability or {}).get('description') if isinstance(ability, dict) else '',
-                (ability or {}).get('range') if isinstance(ability, dict) else '',
-            ]
-        )
-    )
-    return bool(re.search(r'\b(?:bow|crossbow|sling|dart|javelin|ranged|shot|arrow)\b', text))
-
-
-def _attack_stat_modifier(enemy: dict[str, Any] | None, ability: dict[str, Any] | None) -> int:
-    stats = enemy.get('stats') if isinstance(enemy, dict) and isinstance(enemy.get('stats'), dict) else {}
-    strength = int_or_default(stats.get('strength'), default=10)
-    dexterity = int_or_default(stats.get('dexterity'), default=10)
-    if _ability_is_ranged(ability):
-        return _ability_modifier(dexterity)
-    return max(_ability_modifier(strength), _ability_modifier(dexterity))
-
-
-def _proficiency_bonus(enemy: dict[str, Any] | None) -> int:
-    level = int_or_default((enemy or {}).get('level'), default=1) if isinstance(enemy, dict) else 1
-    return 2 + max(0, (level - 1) // 4)
-
-
-def _ability_attack_bonus(enemy: dict[str, Any] | None, ability: dict[str, Any] | None) -> int:
-    if isinstance(ability, dict):
-        explicit = ability.get('attackBonus', ability.get('toHitBonus'))
-        if explicit is not None:
-            return int_or_default(explicit, default=0)
-    return _proficiency_bonus(enemy) + _attack_stat_modifier(enemy, ability)
-
-
-def _ability_damage(enemy: dict[str, Any] | None, ability: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(ability, dict):
-        return {}
-    damage = ability.get('damage')
-    if isinstance(damage, dict):
-        normalized_dice = normalize_damage_dice_expression(damage.get('dice'))
-        result = {'type': damage.get('type') or damage.get('damageType')}
-        if normalized_dice:
-            result['dice'] = normalized_dice
-        return result
-    if isinstance(damage, str):
-        normalized_dice = normalize_damage_dice_expression(damage)
-        return {'dice': normalized_dice} if normalized_dice else {}
-    match = TEXT_DAMAGE_PATTERN.search(str(ability.get('description') or ''))
-    if match:
-        normalized_dice = normalize_damage_dice_expression(match.group(1).replace(' ', ''))
-        if normalized_dice:
-            return {'dice': normalized_dice, 'type': match.group(2).lower()}
-    return {}
-
-
-def _ability_conditions(ability: dict[str, Any] | None) -> list[str]:
-    if not isinstance(ability, dict):
-        return []
-    raw = ability.get('conditionsApplied', ability.get('conditions'))
-    values = raw if isinstance(raw, list) else [raw]
-    conditions: list[str] = []
-    for value in values:
-        condition = re.sub(r'[^a-z0-9]+', '_', str(value or '').strip().lower()).strip('_')
-        if condition and condition not in conditions:
-            conditions.append(condition)
-    return conditions
-
-
-def _saving_throw_modifier(target: dict[str, Any] | None, ability_name: Any) -> int:
-    if not isinstance(target, dict):
-        return 0
-    ability = ability_key(ability_name)
-    short = ability[:3]
-    stats = target.get('stats') if isinstance(target.get('stats'), dict) else {}
-    save_sources = [
-        target.get('savingThrows'),
-        target.get('saving_throws'),
-        stats.get('savingThrows'),
-        stats.get('saving_throws'),
-    ]
-    for source in save_sources:
-        if not isinstance(source, dict):
-            continue
-        for key in (ability, short, f'{ability}Save', f'{ability}_save'):
-            if source.get(key) is not None:
-                return int_or_default(source.get(key), default=0)
-    score = int_or_default(stats.get(ability, target.get(ability)), default=10)
-    modifier = _ability_modifier(score)
-    proficiencies = {
-        ability_key(value)
-        for value in (target.get('savingThrowProficiencies') or stats.get('savingThrowProficiencies') or [])
-    }
-    if ability in proficiencies:
-        modifier += _proficiency_bonus(target)
-    return modifier
-
-
-def _resolve_save(
-    target: dict[str, Any],
-    save: dict[str, Any],
+def _retreat(
+    *,
+    enemy: dict[str, Any],
     combat: dict[str, Any],
-    roller: Callable[[int], int] | None,
+    state: dict[str, Any],
+    can_move: bool,
+    event_id: str,
+    turn_id: int | None,
 ) -> dict[str, Any]:
-    """Roll one saving throw for a target through the modifier engine."""
+    """Move a retreating enemy one band outward; leaving melee while engaged provokes."""
 
-    context = save_context(target, save['ability'], combat=combat)
-    modifier = _saving_throw_modifier(target, save['ability'])
-    if context['autoFail']:
-        return {
-            'saveAbility': save['ability'],
-            'saveDC': save['dc'],
-            'saveRoll': None,
-            'saveRolls': [],
-            'saveMode': context['mode'],
-            'saveModifier': modifier,
-            'saveBonusDice': [],
-            'saveTotal': None,
-            'saveSucceeded': False,
-            'saveAutoFailed': True,
-            'saveReasons': context['reasons'],
-            'consume': context['consume'],
-        }
-    natural, rolls = _d20_with_mode(_roll_die(20, roller), context['mode'], roller)
-    bonus_dice = _rolled_bonus_dice(context['bonusDice'], roller)
-    total = natural + modifier + int(context['flatBonus']) + sum(int(item['total']) for item in bonus_dice)
-    return {
-        'saveAbility': save['ability'],
-        'saveDC': save['dc'],
-        'saveRoll': natural,
-        'saveRolls': rolls,
-        'saveMode': context['mode'],
-        'saveModifier': modifier,
-        'saveBonusDice': bonus_dice,
-        'saveTotal': total,
-        'saveSucceeded': total >= save['dc'],
-        'saveAutoFailed': False,
-        'saveReasons': context['reasons'],
-        'consume': context['consume'],
-    }
-
-
-def _ability_save(ability: dict[str, Any] | None) -> dict[str, Any]:
-    save = ability.get('save') if isinstance(ability, dict) and isinstance(ability.get('save'), dict) else {}
-    return {
-        'ability': str(save.get('ability') or '').strip().lower(),
-        'dc': max(1, min(40, int_or_default(save.get('dc'), default=10))),
-        'effectOnSuccess': str(save.get('effectOnSuccess') or save.get('effect_on_success') or 'none').strip().lower(),
-    }
+    enemy_id = str(enemy.get('id') or '')
+    band = range_band(enemy)
+    if not can_move or band == 'distant':
+        return {}
+    engaged = engaged_with(enemy)
+    reactions = []
+    if band == 'melee' and engaged:
+        reactions = collect_reactions(
+            {'type': 'leaves_melee', 'moverId': enemy_id, 'fromEngagedWith': engaged, 'eventId': f'{event_id}:leaves_melee', 'turnId': turn_id},
+            combat,
+            state,
+        )
+    outcome: dict[str, Any] = {'reactions': reactions} if reactions else {}
+    if not can_act(participant_by_id(combat, enemy_id)):
+        outcome['droppedByReaction'] = True
+        return outcome
+    outcome['movement'] = _move_enemy(combat, enemy_id, [{'toRangeBand': band_outward(band), 'engageWith': []}])
+    return outcome
 
 
 def _resolve_enemy_required_actions(
@@ -555,7 +325,15 @@ def _resolve_enemy_required_actions(
     state: dict[str, Any],
     combat_context: dict[str, Any] | None,
     roller: Callable[[int], int] | None = None,
+    turn_id: int | None = None,
 ) -> list[dict[str, Any]]:
+    """Resolve the enemy block in initiative order against one working copy.
+
+    Each enemy begins its turn (reaction back, standing up), closes on a melee
+    target or retreats, then rolls; moves, reactions and healing it causes are
+    seen by the enemies after it.
+    """
+
     if not isinstance(combat_context, dict):
         return []
     actions = combat_context.get('enemyRequiredActions') if isinstance(combat_context.get('enemyRequiredActions'), list) else []
@@ -577,24 +355,51 @@ def _resolve_enemy_required_actions(
         if not actions:
             return []
 
-    participants = _combat_participants(state)
-    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    working_state = deepcopy(state)
+    combat = working_state.get('combat') if isinstance(working_state.get('combat'), dict) else {}
+    working_state['combat'] = combat
+    roll = roller or _random_roll
     resolved: list[dict[str, Any]] = []
-    for action in actions:
+    # Enemy actions are planned before the persisted turn-advance change.  Use
+    # the same deterministic turn-start damage on this working copy so an
+    # enemy defeated by an effect cannot attack before that change is applied.
+    starts = {
+        str(boundary.get('actorId')): boundary.get('round')
+        for boundary in turn_boundaries(combat, combat_turn_context(combat))
+        if boundary.get('phase') == 'start'
+    }
+    started: set[str] = set()
+    for index, action in enumerate(actions):
         if not isinstance(action, dict):
             continue
         intent_type = str(action.get('intentType') or action.get('type') or '').strip().lower()
         enemy_id = str(action.get('enemyId') or action.get('actorId') or action.get('participantId') or '').strip()
         target_id = str(action.get('targetId') or action.get('targetActorId') or '').strip()
         ability_id = str(action.get('abilityId') or action.get('ability_id') or '').strip()
-        enemy = _participant_by_id(participants, enemy_id)
-        target = _participant_by_id(participants, target_id)
+        enemy = participant_by_id(combat, enemy_id)
+        target = participant_by_id(combat, target_id)
         ability = _ability_by_id(enemy, ability_id)
+        ongoing_damage = []
+        if isinstance(enemy, dict) and enemy_id in starts and enemy_id not in started:
+            started.add(enemy_id)
+            hp = enemy.setdefault('hp', {})
+            hp['temp'] = max(int_or_default(hp.get('temp'), default=0), temp_hp_per_turn(enemy))
+            ongoing_damage = apply_start_turn_damage(enemy, turn_id=turn_id, round_number=starts[enemy_id])
         if (
             not isinstance(enemy, dict)
             or str(enemy.get('team') or '').strip().lower() != 'enemy'
             or not participant_can_take_turn(enemy)
         ):
+            if ongoing_damage:
+                resolved.append({
+                    'enemyId': enemy_id,
+                    'enemyName': _participant_name(enemy, enemy_id or 'Enemy'),
+                    'resolvedWithoutRoll': True,
+                    'ongoingDamage': ongoing_damage,
+                    'turnLost': True,
+                    'authoritative': True,
+                    'instruction': 'Narrate the ongoing damage and lost turn exactly as resolved by the engine.',
+                })
             continue
         ability_name = str((ability or {}).get('name') or action.get('abilityName') or ability_id or '').strip()
         entry: dict[str, Any] = {
@@ -609,117 +414,64 @@ def _resolve_enemy_required_actions(
             'authoritative': True,
             'instruction': 'Narrate this enemy result as already resolved by the engine; do not ask the player to roll it.',
         }
+        if ongoing_damage:
+            entry['ongoingDamage'] = ongoing_damage
+        event_id = f'enemy_turn:{turn_id}:{index}:{enemy_id}'
 
         if intent_type in {'attack', 'use_ability'}:
-            if (
-                not isinstance(target, dict)
-                or str(target.get('team') or '').strip().lower() not in {'player', 'ally'}
-                or not participant_is_targetable(target)
-                or attack_block_reason(enemy, target)
-                or not isinstance(ability, dict)
-                or not combat_ability_is_available(ability, round_number=combat.get('round'))
-            ):
+            if not isinstance(ability, dict) or not combat_ability_is_available(ability, round_number=combat.get('round')):
                 continue
             resolution_mode = combat_ability_resolution_mode(ability)
-            if not resolution_mode:
-                continue
-            damage = _ability_damage(enemy, ability)
-            damage_type = str(damage.get('type') or damage.get('damageType') or '').strip().lower()
-            conditions = _ability_conditions(ability)
-            entry['resolutionMode'] = resolution_mode
-            consumed: list[dict[str, Any]] = []
-
-            if resolution_mode in {'attack', 'attack_with_save'}:
-                if not damage.get('dice'):
+            if resolution_mode == 'heal':
+                _begin_enemy_turn(enemy)
+                healing = resolve_enemy_healing(enemy=enemy, ability=ability, combat=combat, roller=roll)
+                if healing is None:
                     continue
-                modifiers = attack_context(
-                    participant_at_turn_start(enemy),
-                    target,
-                    kind='enemy_attack',
-                    ranged=_ability_is_ranged(ability),
-                    combat=combat,
-                )
-                consumed.extend(modifiers['consume'])
-                attack_bonus = _ability_attack_bonus(enemy, ability)
-                attack_roll, attack_rolls = _d20_with_mode(_roll_die(20, roller), modifiers['mode'], roller)
-                bonus_dice = _rolled_bonus_dice(modifiers['attackBonusDice'], roller)
-                attack_total = (
-                    attack_roll
-                    + attack_bonus
-                    + int(modifiers['attackFlatBonus'])
-                    + sum(int(item['total']) for item in bonus_dice)
-                )
-                target_ac = armor_class_with_context(_target_armor_class(target), modifiers)
-                hit = attack_roll != 1 and (attack_roll == 20 or attack_total >= target_ac)
-                critical = hit and (attack_roll == 20 or modifiers['autoCrit'])
-                damage_roll = (
-                    _roll_damage_expression(
-                        _critical_damage_expression(damage.get('dice')) if critical else damage.get('dice'),
-                        roller,
-                    )
-                    if hit
-                    else {'dice': damage.get('dice'), 'rolls': [], 'bonus': 0, 'total': 0}
-                )
-                entry.update(
-                    {
-                        'attackMode': modifiers['mode'],
-                        'attackRolls': attack_rolls,
-                        'modeReasons': modifiers['reasons'],
-                        'attackRoll': attack_roll,
-                        'attackBonus': attack_bonus,
-                        'attackBonusDice': bonus_dice,
-                        'attackTotal': attack_total,
-                        'targetArmorClass': target_ac,
-                        'hit': hit,
-                        'critical': critical,
-                        'damageDice': damage_roll.get('dice') or damage.get('dice'),
-                        'damageRolls': damage_roll.get('rolls') or [],
-                        'damageBonus': damage_roll.get('bonus') or 0,
-                        'damageTotal': apply_damage_multiplier(
-                            int(damage_roll.get('total') or 0),
-                            damage_multiplier(target, damage_type),
-                        ),
-                        'damageType': damage_type or None,
-                        'conditionsApplied': [],
-                    }
-                )
-                if hit and resolution_mode == 'attack_with_save':
-                    save_result = _resolve_save(target, _ability_save(ability), combat, roller)
-                    consumed.extend(save_result.pop('consume'))
-                    entry.update(save_result)
-                    entry['conditionsApplied'] = [] if save_result['saveSucceeded'] else conditions
-            else:
-                save = _ability_save(ability)
-                save_result = _resolve_save(target, save, combat, roller)
-                consumed.extend(save_result.pop('consume'))
-                save_succeeded = save_result['saveSucceeded']
-                damage_roll = (
-                    _roll_damage_expression(damage.get('dice'), roller)
-                    if damage.get('dice')
-                    else {'dice': None, 'rolls': [], 'bonus': 0, 'total': 0}
-                )
-                damage_total = int_or_default(damage_roll.get('total'), default=0)
-                if save_succeeded:
-                    if save['effectOnSuccess'] in {'half', 'half_damage'}:
-                        damage_total //= 2
-                    else:
-                        damage_total = 0
-                damage_total = apply_damage_multiplier(damage_total, damage_multiplier(target, damage_type))
-                entry.update(save_result)
-                entry.update(
-                    {
-                        'hit': damage_total > 0,
-                        'critical': False,
-                        'damageDice': damage.get('dice'),
-                        'damageRolls': damage_roll.get('rolls') or [],
-                        'damageBonus': damage_roll.get('bonus') or 0,
-                        'damageTotal': damage_total,
-                        'damageType': damage_type or None,
-                        'conditionsApplied': [] if save_succeeded else conditions,
-                    }
-                )
-            entry['consume'] = consumed
+                healed = participant_by_id(combat, healing['healTargetId'])
+                if healed is not None:
+                    healed['hp'] = dict(healing['resultingHp'])
+                entry.update(healing)
+                entry['targetId'] = healing['healTargetId']
+                entry['targetName'] = healing['healTargetName']
+                resolved.append(entry)
+                continue
+            if (
+                not resolution_mode
+                or not isinstance(target, dict)
+                or str(target.get('team') or '').strip().lower() not in {'player', 'ally'}
+                or (resolution_mode in {'attack', 'attack_with_save'} and not ability_damage(ability).get('dice'))
+            ):
+                continue
+            can_move = _begin_enemy_turn(enemy)
+            approach = _enemy_reach(enemy, target, ability, combat, can_move=can_move)
+            if not approach['reachable']:
+                continue
+            movement = _move_enemy(combat, enemy_id, approach['steps'])
+            if movement:
+                entry['movement'] = movement
+            if not approach['attack']:
+                entry.update({'resolvedWithoutRoll': True, 'moveOnly': True})
+                resolved.append(entry)
+                continue
+            result = resolve_enemy_ability(
+                enemy=enemy,
+                target=target,
+                ability=ability,
+                combat=combat,
+                state=working_state,
+                roller=roll,
+                event_id=event_id,
+                turn_id=turn_id,
+            )
+            if result is None:
+                continue
+            entry.update(result)
+        elif intent_type in {'retreat', 'flee'}:
+            can_move = _begin_enemy_turn(enemy)
+            entry.update(_retreat(enemy=enemy, combat=combat, state=working_state, can_move=can_move, event_id=event_id, turn_id=turn_id))
+            entry['resolvedWithoutRoll'] = True
         else:
+            _begin_enemy_turn(enemy)
             entry['resolvedWithoutRoll'] = True
         resolved.append(entry)
     return resolved
@@ -744,7 +496,7 @@ def build_dm_combat_context(
         context['enemyResolvedActions'] = []
         context['enemyActionDeferredReason'] = 'pending_player_roll' if pending_rolls else 'player_roll_resolution'
         return context
-    resolved_actions = _resolve_enemy_required_actions(state=state, combat_context=context, roller=enemy_roller)
+    resolved_actions = _resolve_enemy_required_actions(state=state, combat_context=context, roller=enemy_roller, turn_id=turn_id)
     requested_count = len(context.get('enemyRequiredActions') or [])
     # Once the engine has attempted resolution, narration may consume only the
     # validated results.  Leaving unresolved requests in context would let the
@@ -769,6 +521,64 @@ def _player_actors_by_id(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
         if actor_id:
             actors[actor_id] = actor
     return actors
+
+
+def _enemy_movement_changes(action: dict[str, Any], enemy: dict[str, Any], *, turn_id: int | None, index: int) -> list[dict[str, Any]]:
+    enemy_id = str(enemy.get('id') or '')
+    changes: list[dict[str, Any]] = []
+    for step_index, step in enumerate(action.get('movement') or []):
+        if not isinstance(step, dict):
+            continue
+        change = {
+            'id': stable_change_id('trusted_enemy_movement', turn_id, index, enemy_id, step_index, step.get('fromRangeBand'), step.get('toRangeBand')),
+            'turnId': turn_id,
+            'type': 'combat.move',
+            'participantId': enemy_id,
+            'fromRangeBand': step.get('fromRangeBand'),
+            'toRangeBand': step.get('toRangeBand'),
+            'source': ENEMY_RESOLVED_SOURCE,
+            'sourceEnemyId': enemy_id,
+            'reason': f"Engine-resolved enemy movement: {_participant_name(enemy, enemy_id)} moved from {step.get('fromRangeBand')} to {step.get('toRangeBand')} range.",
+            'visible': True,
+        }
+        if step.get('engageWith'):
+            change['engageWith'] = list(step['engageWith'])
+        changes.append(change)
+    return changes
+
+
+def _enemy_heal_change(
+    action: dict[str, Any],
+    enemy: dict[str, Any],
+    *,
+    participants: list[dict[str, Any]],
+    turn_id: int | None,
+    index: int,
+) -> dict[str, Any] | None:
+    # ``resultingHp`` was computed on the enemy block's working copy, so several
+    # heals on one ally in the same block accumulate.
+    target_id = str(action.get('healTargetId') or '').strip()
+    target = _participant_by_id(participants, target_id)
+    resulting_hp = action.get('resultingHp') if isinstance(action.get('resultingHp'), dict) else {}
+    if not isinstance(target, dict) or target.get('team') != enemy.get('team') or int_or_default(action.get('healingTotal'), default=0) <= 0:
+        return None
+    hp = target.get('hp') if isinstance(target.get('hp'), dict) else {}
+    current = max(0, int_or_default(hp.get('current'), default=0))
+    maximum = max(current, int_or_default(hp.get('max'), default=current))
+    resulting = max(current, min(maximum, int_or_default(resulting_hp.get('current'), default=current)))
+    return {
+        'id': stable_change_id('trusted_enemy_healing', turn_id, index, enemy.get('id'), target_id, resulting),
+        'turnId': turn_id,
+        'type': 'combat.participant.update',
+        'participantId': target_id,
+        'hp': {'current': resulting, 'max': maximum, 'temp': max(0, int_or_default(hp.get('temp'), default=0))},
+        'isAlive': resulting > 0,
+        'isConscious': resulting > 0,
+        'source': ENEMY_RESOLVED_SOURCE,
+        'sourceEnemyId': str(enemy.get('id') or ''),
+        'reason': f"Engine-resolved enemy healing: {_participant_name(enemy, str(enemy.get('id') or ''))} restored {resulting - current} HP to {_participant_name(target, target_id)}.",
+        'visible': True,
+    }
 
 
 def _trusted_enemy_resolved_damage_changes(
@@ -801,6 +611,13 @@ def _trusted_enemy_resolved_damage_changes(
     }
 
     changes: list[dict[str, Any]] = []
+
+    def append(change: dict[str, Any]) -> None:
+        change_id = str(change.get('id') or '').strip()
+        if change_id and change_id not in already_ids:
+            changes.append(change)
+            already_ids.add(change_id)
+
     for index, action in enumerate(resolved_actions):
         if not isinstance(action, dict):
             continue
@@ -812,6 +629,12 @@ def _trusted_enemy_resolved_damage_changes(
             or str(enemy.get('team') or '').strip().lower() != 'enemy'
             or not participant_can_take_turn(enemy)
         ):
+            continue
+        for change in _enemy_movement_changes(action, enemy, turn_id=turn_id, index=index):
+            append(change)
+        for change in reaction_changes(action.get('reactions')):
+            append(change)
+        if action.get('droppedByReaction') or action.get('moveOnly'):
             continue
 
         outcome_condition = {
@@ -882,6 +705,11 @@ def _trusted_enemy_resolved_damage_changes(
             if consume_change and consume_change['id'] not in already_ids:
                 changes.append(consume_change)
                 already_ids.add(consume_change['id'])
+            if action.get('resolutionMode') == 'heal':
+                heal_change = _enemy_heal_change(action, enemy, participants=participants, turn_id=turn_id, index=index)
+                if heal_change:
+                    append(heal_change)
+                continue
 
         target_id = str(action.get('targetId') or action.get('targetActorId') or '').strip()
         target_participant = _participant_by_id(participants, target_id)
@@ -1222,6 +1050,11 @@ def derive_trusted_damage_changes(
                 turn_id=turn_id,
                 already_applied_changes=already_applied_changes,
             ),
+            *_trusted_player_reaction_changes(
+                dm_context_packet=dm_context_packet,
+                actor_id=actor_id,
+                already_applied_changes=already_applied_changes,
+            ),
         ],
         death_saves=_trusted_death_save_changes(
             state=state,
@@ -1254,6 +1087,29 @@ def _trusted_player_consume_changes(
         )
         if change and change['id'] not in already_ids and change['id'] not in {item['id'] for item in changes}:
             changes.append(change)
+    return changes
+
+
+def _trusted_player_reaction_changes(
+    *,
+    dm_context_packet: dict[str, Any],
+    actor_id: str,
+    already_applied_changes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The changes of reactions a player attack provoked (spent reactions and their effects)."""
+
+    seen = {str(change.get('id') or '').strip() for change in already_applied_changes if isinstance(change, dict)}
+    changes: list[dict[str, Any]] = []
+    for event in _trusted_damage_events(dm_context_packet):
+        if _TRUSTED_DAMAGE_SOURCE_TYPES.get(str(event.get('sourceType') or '').strip().lower()) != 'trusted_player_attack':
+            continue
+        if str(event.get('sourceActorId') or '').strip() != str(actor_id or '').strip():
+            continue
+        for change in reaction_changes(event.get('reactions')):
+            change_id = str(change.get('id') or '').strip()
+            if change_id and change_id not in seen:
+                seen.add(change_id)
+                changes.append(change)
     return changes
 
 
@@ -1342,7 +1198,7 @@ def without_trusted_damage_overlaps(
             protected_fields = {'hp', 'conditions', 'isAlive', 'isConscious'}
             if protected_fields.intersection(change) or protected_fields.intersection(replacement):
                 continue
-        if participant_id in protected_target_ids and change_type in {'combat.condition.add', 'combat.condition.remove'}:
+        if participant_id in protected_target_ids and change_type in {'combat.condition.add', 'combat.condition.remove', 'combat.move'}:
             continue
         if actor_id in protected_target_ids and change_type in {'health.damage', 'health.heal', 'health.max.set'}:
             continue

@@ -121,10 +121,12 @@ import type {
   ClarificationRequest,
   CoherenceFeedbackResponse,
   Health,
+  JsonRecord,
   LlmRuntimeConfig,
   Player,
   PlayerDetail,
   PlayerEquipmentUpdateResponse,
+  SessionListResponse,
   SessionLogEntry,
   SessionRecapResponse,
   SessionState,
@@ -215,6 +217,9 @@ const CampaignArchiveDialog = lazy(() =>
 )
 const SessionArchiveDialog = lazy(() =>
   import('./OperatorTools').then((module) => ({ default: module.SessionArchiveDialog })),
+)
+const SaveImportDialog = lazy(() =>
+  import('./ArchiveDialogs').then((module) => ({ default: module.SaveImportDialog })),
 )
 function preloadDiceRollDialog() {
   if (import.meta.env.MODE === 'test') return
@@ -436,16 +441,10 @@ function endedChapterTarget(errorCode: unknown, details: unknown): { currentSess
   }
 }
 
-/** An imported save: kept for reading, never playable. */
-function sessionIsImportedArchive(session: SessionSummary) {
-  // Summaries are gaining an `imported` flag; until then the snapshot carries it.
-  const fields: Record<string, unknown> = session
-  return fields.imported === true || snapshotRecord(session).imported === true
-}
-
 function sessionCardState(session: SessionSummary) {
   if (session.is_archived || session.status === 'archived') return 'Archived'
-  if (sessionIsImportedArchive(session)) return 'Archive'
+  // An imported save: kept for reading, never playable.
+  if (session.imported) return 'Archive'
   if (session.status === 'ended') return 'Ended'
   return session.is_current ? 'Current' : ''
 }
@@ -515,19 +514,10 @@ function SessionDuration({ startedAt }: { startedAt: string | null }) {
   return <>{formatDurationFrom(startedAt, nowMs)}</>
 }
 
-function snapshotRecord(session: SessionSummary | null | undefined) {
-  return isRecord(session?.state_snapshot) ? session.state_snapshot : {}
-}
-
-function sessionDisplayName(session: SessionSummary, fallbackPrefix: string | number | null) {
-  const snapshot = snapshotRecord(session)
-  return (
-    stringValue(session.display_name) ||
-    stringValue(snapshot.name) ||
-    stringValue(snapshot.title) ||
-    `S${fallbackPrefix ?? '—'}E${session.session_id}`
-  )
-}
+/** Scene data comes only from the loaded session state; before it arrives there is none. */
+const NO_SESSION_SNAPSHOT: JsonRecord = {}
+/** The session archive pages through every session of the campaign. */
+const ARCHIVE_PAGE_SIZE = 100
 
 function parsePositiveInt(value: string | null) {
   if (!value) return null
@@ -1036,9 +1026,12 @@ function AIDMApp() {
     setSessionLoading,
     rootCampaignsLoaded,
     campaignWorkspaceLoaded,
+    olderSessionsLoaded,
+    sessionsCursor,
     campaignUpserted,
     campaignRemoved,
     sessionUpserted,
+    sessionRemoved,
     playerUpserted,
   } = useWorkspaceStore({
     selectedCampaignId: readInitialSelection(storedSelectionScope, 'selectedCampaignId', 'campaign'),
@@ -1273,9 +1266,7 @@ function AIDMApp() {
   const endedChapterOpen = activeSession?.status === 'ended'
   const socketSessionId = endedChapterOpen ? null : activeSessionId
   const socketCampaignId = socketSessionId && selectedPlayerDetailId ? selectedCampaignId : null
-  const activeSessionName = activeSession
-    ? sessionDisplayName(activeSession, campaign?.world_id ?? selectedCampaignId)
-    : 'No session selected'
+  const activeSessionName = activeSession ? activeSession.display_name : 'No session selected'
   const latestDmEntry =
     [...timeline].reverse().find((entry) => entry.role === 'dm') ?? null
   const latestTimelineEntry = timeline.length ? timeline[timeline.length - 1] : null
@@ -1558,7 +1549,7 @@ function AIDMApp() {
 
   const campaignTitle = campaign?.title ?? 'No campaign selected'
   const activeSessionTitle = activeSession
-    ? sessionDisplayName(activeSession, campaign?.world_id ?? selectedCampaignId)
+    ? activeSession.display_name
     : selectedCampaignId
       ? 'No session selected'
       : 'Select a campaign'
@@ -1593,8 +1584,10 @@ function AIDMApp() {
   const {
     clearSessionData,
     loadOlderSessionLog,
+    loadOlderSessions,
     loadSessionData,
     olderLogLoading,
+    olderSessionsLoading,
     refreshCampaignWorkspace,
     refreshCurrentWorkspace,
     refreshRoot,
@@ -1604,6 +1597,7 @@ function AIDMApp() {
     operatorDataEnabled,
     runtimeConfigHeaders,
     sessions,
+    sessionsCursor,
     selectedCampaignId,
     selectedSessionId,
     sessionLogCursor,
@@ -1631,6 +1625,7 @@ function AIDMApp() {
     pendingSubmissionCampaignId,
     rootCampaignsLoaded,
     campaignWorkspaceLoaded,
+    olderSessionsLoaded,
     setOptimisticEntries,
     setStreamingTurn,
     setSendPending,
@@ -1768,6 +1763,7 @@ function AIDMApp() {
   }, [])
 
   const {
+    closeSaveImportDialog,
     closeShareSessionDialog,
     closeSessionActionDialog,
     closeStartChapterDialog,
@@ -1779,40 +1775,33 @@ function AIDMApp() {
     openDeleteSessionDialog,
     openRenameSessionDialog,
     openStartChapterDialog,
+    saveImportDialog,
     sessionActionDialog,
     sessionImportPending,
     setSessionActionDialog,
     shareSession,
     shareSessionUrl,
     startChapterDialog,
+    submitSaveImportDialog,
     submitSessionActionDialog,
     submitStartChapterDialog,
+    updateSaveImportDialog,
     updateStartChapterDialog,
   } = useSessionActions({
     auth,
     baseUrl,
-    campaign,
     activeSession,
-    sessionDisplayFallback: campaign?.world_id ?? selectedCampaignId,
     selectedCampaignId,
     selectedSessionId,
-    selectedPlayerId,
-    players,
-    selectedPlayer,
-    playerDetail,
-    sessionState,
-    logEntries,
-    maps: viewerMaps,
-    segments,
-    metrics,
+    canRestoreSaves: canUseOperatorTools,
     rememberDialogTrigger,
     sessionMenuButton: () =>
       sessionMenuRef.current?.querySelector<HTMLElement>('button[aria-label="Session menu"]') ?? null,
-    sessionDisplayName,
     loadSessionData,
     refreshRoot,
     refreshCampaignWorkspace,
     sessionUpserted,
+    sessionRemoved,
     setSelectedCampaignId,
     setSelectedSessionId,
     setLogEntries,
@@ -2098,11 +2087,19 @@ function AIDMApp() {
         return
       }
       try {
-        const allSessions = await apiFetch<SessionSummary[]>(
-          baseUrl,
-          `/api/sessions/campaigns/${campaignId}/sessions?include_archived=true`,
-          auth,
-        )
+        const allSessions: SessionSummary[] = []
+        let cursor: string | null = null
+        do {
+          const page: SessionListResponse = await apiFetch<SessionListResponse>(
+            baseUrl,
+            `/api/sessions/campaigns/${campaignId}/sessions?include_archived=true&limit=${ARCHIVE_PAGE_SIZE}${
+              cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''
+            }`,
+            auth,
+          )
+          allSessions.push(...page.sessions)
+          cursor = page.next_cursor
+        } while (cursor)
         setSessionArchiveDialog({
           items: allSessions.filter((item) => item.is_archived),
           loading: false,
@@ -2153,6 +2150,7 @@ function AIDMApp() {
         auth,
         { method: 'POST' },
       )
+      sessionRemoved(sessionId)
       setSelectedSessionId(null)
       setLogEntries([])
       setSessionState(null)
@@ -2175,6 +2173,7 @@ function AIDMApp() {
     pushError,
     refreshCampaignWorkspace,
     selectedCampaignId,
+    sessionRemoved,
     setLogEntries,
     setOptimisticEntries,
     setSelectedSessionId,
@@ -2570,6 +2569,10 @@ function AIDMApp() {
       closeStartChapterDialog()
       return
     }
+    if (saveImportDialog) {
+      closeSaveImportDialog()
+      return
+    }
     if (savedWorkspaceDeleteDialog) {
       closeSavedWorkspaceDeleteDialog()
       return
@@ -2645,6 +2648,7 @@ function AIDMApp() {
     closeSessionArchiveDialog,
     closeCampaignPackImportDialog,
     closeCampaignChooserDialog,
+    closeSaveImportDialog,
     closeStartChapterDialog,
     campaignArchiveDialog,
     campaignPackImportOpen,
@@ -2656,6 +2660,7 @@ function AIDMApp() {
     playerEditDialog,
     profileSettingsOpen,
     runtimeSettingsOpen,
+    saveImportDialog,
     savedWorkspaceDeleteDialog,
     setCampaignActionDialog,
     setSessionActionDialog,
@@ -2674,35 +2679,37 @@ function AIDMApp() {
         ? 'session-action'
         : startChapterDialog
           ? 'start-chapter'
-          : worldDeleteDialog
-            ? 'world-delete'
-            : worldManagerOpen
-              ? 'world-manager'
-              : campaignArchiveDialog
-                ? 'campaign-archive'
-                : sessionArchiveDialog
-                  ? 'session-archive'
-                  : campaignPackImportOpen
-                    ? 'campaign-pack-import'
-                    : campaignChooserOpen
-                      ? 'campaign-chooser'
-                      : characterJoinDialogOpen
-                        ? 'character-join'
-                        : playerDeleteDialog
-                          ? 'player-delete'
-                          : playerEditDialog
-                            ? `player-edit-${playerEditDialog.mode}`
-                            : savedWorkspaceDeleteDialog
-                              ? 'saved-workspace-delete'
-                              : runtimeSettingsOpen
-                                ? 'runtime-settings'
-                                : shareSessionUrl
-                                  ? 'share-session'
-                                  : profileSettingsOpen
-                                    ? 'profile-settings'
-                                    : createCampaignOpen
-                                      ? 'create-campaign'
-                                      : null
+          : saveImportDialog
+            ? 'save-import'
+            : worldDeleteDialog
+              ? 'world-delete'
+              : worldManagerOpen
+                ? 'world-manager'
+                : campaignArchiveDialog
+                  ? 'campaign-archive'
+                  : sessionArchiveDialog
+                    ? 'session-archive'
+                    : campaignPackImportOpen
+                      ? 'campaign-pack-import'
+                      : campaignChooserOpen
+                        ? 'campaign-chooser'
+                        : characterJoinDialogOpen
+                          ? 'character-join'
+                          : playerDeleteDialog
+                            ? 'player-delete'
+                            : playerEditDialog
+                              ? `player-edit-${playerEditDialog.mode}`
+                              : savedWorkspaceDeleteDialog
+                                ? 'saved-workspace-delete'
+                                : runtimeSettingsOpen
+                                  ? 'runtime-settings'
+                                  : shareSessionUrl
+                                    ? 'share-session'
+                                    : profileSettingsOpen
+                                      ? 'profile-settings'
+                                      : createCampaignOpen
+                                        ? 'create-campaign'
+                                        : null
   const modalOpen = Boolean(activeModalKey)
   const runtime = llmConfig?.current ?? health?.llm ?? null
   const configuredProvider = stringValue(runtime?.provider, 'Unknown')
@@ -3344,7 +3351,7 @@ function AIDMApp() {
   const memorySnippets = memorySnippetRecords(sessionState?.memory_snippets)
   const activeSessionSnapshot = isRecord(sessionState?.state_snapshot)
     ? sessionState.state_snapshot
-    : snapshotRecord(activeSession)
+    : NO_SESSION_SNAPSHOT
   const turnRecoveryGate = useMemo(
     () => turnRecoveryGateFromSnapshot(activeSessionSnapshot),
     [activeSessionSnapshot],
@@ -3475,7 +3482,7 @@ function AIDMApp() {
     viewerMaps[0]?.title || selectedSegment?.title || (sessionState?.current_location ? 'Current Location' : mapTitle)
   const mapMeta = buildMapMeta(viewerMaps[0], selectedSegment)
   const sessionCards: SessionCard[] = sessions.map((session) => {
-    const name = sessionDisplayName(session, campaign?.world_id ?? selectedCampaignId)
+    const name = session.display_name
     const label = session.chapter_number ? `Chapter ${session.chapter_number}` : name
     return {
       id: session.session_id,
@@ -4407,6 +4414,9 @@ function AIDMApp() {
                   setMainTab('turns')
                   closeMobilePanelsAndRestoreFocus()
                 }}
+                hasOlderSessions={Boolean(sessionsCursor)}
+                olderSessionsLoading={olderSessionsLoading}
+                onShowOlderSessions={() => void loadOlderSessions()}
                 playability={playability}
                 lastSavedLabel={formatShortAge(lastSaved)}
                 onRefreshWorkspace={() => void refreshCurrentWorkspace()}
@@ -4609,7 +4619,6 @@ function AIDMApp() {
             onArchiveSelected={() => void archiveSelectedSessionFromManager()}
             onClose={closeSessionArchiveDialog}
             onRestore={(sessionId) => void restoreSessionFromArchive(sessionId)}
-            selectedCampaignId={selectedCampaignId}
           />
         </Suspense>
       ) : null}
@@ -4725,6 +4734,19 @@ function AIDMApp() {
           }
           onSubmit={(event) => void submitSessionActionDialog(event)}
         />
+      ) : null}
+
+      {saveImportDialog ? (
+        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening save…" />}>
+          <SaveImportDialog
+            dialog={saveImportDialog}
+            dialogRef={modalDialogRef}
+            onClose={closeSaveImportDialog}
+            onModeChange={(mode) => updateSaveImportDialog({ mode })}
+            onRestoreCharactersChange={(restoreCharacters) => updateSaveImportDialog({ restoreCharacters })}
+            onSubmit={(event) => void submitSaveImportDialog(event)}
+          />
+        </Suspense>
       ) : null}
 
       {startChapterDialog ? (

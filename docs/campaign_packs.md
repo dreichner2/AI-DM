@@ -36,7 +36,7 @@ Successful import creates:
 
 The catalog (`campaignPack.catalog`) holds every authored record under
 `locations`, `npcs`, `quests`, `enemies`, `encounters`, `segments`, `clues`,
-`factions`, `maps`, `handouts`, and `lore`. Records are copied whole: nested
+`factions`, `maps`, `handouts`, `lore`, and `merchants`. Records are copied whole: nested
 predicates, reward lists, and interactable requirements are imported exactly as
 authored, or the import is rejected (see Current Limits); nothing is silently
 truncated. Older snapshots that stored lore under `catalog.lores` are migrated
@@ -50,7 +50,13 @@ name (or `title`), `description`, `summary`, `visibleDetails`,
 used, in the same form as when a location is restored on arrival (a
 `sceneState` collection wins over the top-level one). `startingState.flags`
 seeds the authoritative flags; `campaignFlags` is accepted as an alias, and
-keys in `flags` win on conflict.
+keys in `flags` win on conflict. The starting location's `restPolicy` (or one on
+`startingState.currentScene`) becomes `currentScene.restPolicy`, and the start
+counts as the party's first arrival there: its `onEnter` consequences are
+applied at import.
+
+The snapshot also gets `merchants` (see Merchants), and `campaignPack` keeps
+the world `map` settings, `routes`, and `storyFlags`.
 
 ## Bundled Example Library
 
@@ -106,6 +112,9 @@ Recommended fields:
 - `maps`
 - `handouts`
 - `lore`
+- `merchants`
+- `storyFlags`
+- `map` and `routes`
 - `directorRules`
 - `dependencies`
 - `mods`
@@ -192,6 +201,9 @@ consumer.
 | pack | `title`, `description`, `version` | mechanical, player |
 | pack | `directorRules` (six keys above) | mechanical, prompt |
 | pack | `gmNotes`, `hiddenSceneNotes` | prompt |
+| pack | `merchants` | mechanical (runtime `snapshot.merchants`) |
+| pack | `storyFlags` | mechanical, prompt (never player) |
+| pack | `map`, `routes` | mechanical, player (`worldMap`) |
 | startingState | `locationId`, `questId`, `checkpointId`, `known*Ids`, `active*Ids`, `partyNpcs`, `combat` | mechanical |
 | startingState | `flags` (alias `campaignFlags`) | mechanical |
 | startingState | `partyStatus`, `partyNotes` | stored (`campaignPack.startingBrief`) |
@@ -201,6 +213,8 @@ consumer.
 | currentScene | `hiddenSceneNotes` | stored (on the opening scene) |
 | location | `id`, `name`, `status`, `connectedLocationIds`, `npcIds`, `questIds`, scene fields, `items`, `interactables`, `hazards`, `sceneState`, `visibleAtStart` | mechanical |
 | location | `description`, `type` | prompt, player |
+| location | `onEnter`, `restPolicy` | mechanical |
+| location | `mapPosition`, `mapIcon` | player (`worldMap`) |
 | location | `region`, `playerSummary`, `playerDescription`, `tags` | player |
 | location | `gmNotes` | stored |
 | npc | `id`, `name`, `locationId`, `status`, `disposition`, visibility flags | mechanical |
@@ -212,7 +226,7 @@ consumer.
 | quest | `playerSummary`, `description` | player |
 | objective | `id`, `status`, `optional`, `prerequisiteObjectiveIds`, `completeWhen`, `failWhen` | mechanical |
 | objective | `description` | prompt, player |
-| encounter | `id`, `enemyIds`, `enemyGroups`, `completion`, `rewards`, `partyAllocation`, `outcomes`, `outcomeRewards`, `outcomeConsequences`, `questEvents`, `on*` hooks, `questIds` | mechanical |
+| encounter | `id`, `enemyIds`, `enemyGroups`, `completion`, `rewards`, `partyAllocation`, `outcomes`, `outcomeRewards`, `outcomeConsequences`, `questEvents`, `on*` hooks, `questIds`, `trigger`, `once`, `when`, `unless`, `scaling` | mechanical |
 | encounter | `title`, `summary`/`description`, `locationIds`, `checkpointIds` | prompt |
 | encounter | `setup`, `stakes`, `gmNotes`, `difficulty`, `tags` | stored |
 | enemy | creature fields (`stats`, `abilities`, `behavior`, ...), `xpReward` | mechanical |
@@ -251,8 +265,9 @@ that location. Triggered segments complete checkpoints that list them.
 ## Quest Predicate Language
 
 Objective `completeWhen` and `failWhen` are predicates evaluated by the quest
-engine after every applied change. Narration cannot complete objectives or set
-flags; objectives progress only through predicates or operator tools.
+engine after every applied change. Narration cannot complete objectives, and it
+can set only declared story flags (see Story Flags); objectives progress only
+through predicates or operator tools.
 
 Event keys match the single applied change: `eventType` (or `event`,
 `changeType`) is the change type, and `actorId`, `targetActorId`, `targetId`,
@@ -314,9 +329,34 @@ An interactable (on `location.interactables` or `location.sceneState.interactabl
 ```json
 {"id": "ws_lockbox", "name": "Iron Lockbox", "kind": "container",
  "playerDescription": "A locked iron box.", "locked": true, "breakable": true,
- "requirements": {"unlock": {"anyItemIds": ["rusted_key"]}, "*": {"flags": {"brokk_helping": true}}},
+ "requirements": {"unlock": {"anyOf": [{"anyItemIds": ["rusted_key"]},
+                                       {"check": {"id": "pick_lockbox", "dc": 14, "skill": "sleight_of_hand"}}]}},
  "contents": [{"id": "ledger_page", "name": "Ledger Page", "type": "gear"}],
+ "discoversClueIds": {"search": ["clue_scratched_names"]},
+ "setsFlags": {"unlock": {"lockbox_open": true}},
+ "discoversLocationIds": {"search": ["loc_hidden_valley"]},
  "reveals": ["ws_hidden_niche"], "eventVisibility": "players"}
+```
+
+A trapped hazard:
+
+```json
+{"id": "ws_needle_trap", "name": "Needle Trap", "kind": "hazard", "active": true, "disarmable": true,
+ "requirements": {"disarm": {"check": {"id": "disarm_needle", "dc": 13, "ability": "dexterity"}}},
+ "mechanicalEffects": {
+   "failure:disarm": {"damage": {"dice": "2d6", "type": "piercing",
+                                 "save": {"ability": "dexterity", "dc": 12, "onSuccess": "half"}}},
+   "trigger": {"damage": {"dice": "1d6", "type": "poison"},
+               "conditions": [{"condition": "poisoned", "rounds": 3}], "targets": "party"}}}
+```
+
+An encounter that starts itself, scaled to the party:
+
+```json
+{"id": "enc_bridge_guard", "title": "The Bridge Guard",
+ "enemyGroups": [{"enemyId": "enemy_bridge_guard", "count": 4}],
+ "trigger": {"type": "on_enter", "locationId": "loc_bridge"},
+ "unless": {"flagKey": "has_road_seal", "equals": true}}
 ```
 
 A checkpoint with a flag-gated branch:
@@ -370,14 +410,19 @@ The linter uses the same import dry-run validator as the API, then adds authorin
 | --- | --- | --- |
 | error | `pack_content_out_of_bounds` | a value exceeds a nesting, string, key, or list limit (one issue per JSON path) |
 | error | `invalid_id` | a record or objective `id` is not `[a-z0-9_]+` (the importer rewrites IDs but not references) |
-| error | `unknown_reference` | `connectedLocationIds`, `npcIds`, `questIds`, `encounterIds`, `enemyIds` (and `enemyGroups[].enemyId`), `locationIds`, `checkpointIds`, segment `locationId`, checkpoint id lists (also inside `completeWhen`/`failWhen`), `startingState` ids, objective prerequisites, or a predicate `encounterId`, `objectiveId(s)`, `questId`, `locationId`, `atLocationId`, `npcId`, `checkpointId` names no record |
+| error | `unknown_reference` | `connectedLocationIds`, `npcIds`, `questIds`, `encounterIds`, `enemyIds` (and `enemyGroups[].enemyId`), `locationIds`, `checkpointIds`, segment `locationId`, checkpoint id lists (also inside `completeWhen`/`failWhen`), `startingState` ids, objective prerequisites, a predicate `encounterId`, `objectiveId(s)`, `questId`, `locationId`, `atLocationId`, `npcId`, `checkpointId`, an encounter trigger's `locationId`/`checkpointId`/`targetId`, an `onEnter` consequence's `clueId`/`questId`/`locationId`, an object's `discoversClueIds`/`discoversLocationIds`, a merchant's `npcId`/`locationId`, or a route's `from`/`to` names no record |
+| error | `invalid_encounter_trigger` | an encounter trigger has an unknown type, or lacks the id or `flagKey` its type needs, or names an unknown object action |
+| error | `unsupported_consequence_type` | an `onEnter` consequence type is not applied |
+| error | `merchant_without_place` | a merchant has neither `npcId` nor `locationId` |
+| error | `invalid_merchant_price` | a stock entry without `catalog` has no positive whole `gp`/`sp`/`cp` price |
+| error | `invalid_story_flag_key` | a story flag key is not `[a-z0-9_]+` |
 | error | `invalid_interactable_catalog` | `interactables.validate_interactable_catalog` rejects a location's or the opening scene's objects |
 | error | `unknown_predicate_key` | an objective `completeWhen`/`failWhen` uses a key outside the predicate language, or a key next to a combinator |
 | error | `invalid_predicate_entry` | a predicate is not an object or is empty, or a combinator is not a list or holds no predicate |
 | error | `invalid_segment_trigger` | a segment trigger has an unknown type, or a keyword trigger has no keywords, or a location trigger has no `locationId` |
 | warning | `objective_without_mechanics` | an objective has no `completeWhen`, `failWhen`, or prerequisites (only an operator can complete it) |
 | warning | `location_without_connections` | a location has no `connectedLocationIds` (structured travel cannot reach or leave it) |
-| warning | `branch_flag_never_set` | a `branchWhen.flagKey` is set by nothing in the pack (starting flags, rewards, or `flag.set` consequences) |
+| warning | `branch_flag_never_set` | a `branchWhen.flagKey` is set by nothing in the pack (starting flags, rewards, `flag.set` consequences, `onEnter`, object `setsFlags`, or a declared story flag) |
 | warning | `possesses_encounter_reward_item_id` | a predicate `possessesItemId` names an encounter-reward item (use `possessesItemName`) |
 | warning | `unread_director_rule` | a director-rule key the engine does not read |
 | warning | `prose_in_complete_when` | checkpoint `completeWhen.anyOf` holds prose instead of encounter outcome labels |
@@ -485,7 +530,80 @@ their ordered first-available behavior.
 
 Pack encounter completion is tied to checkpoints through `checkpoint.encounterIds` and encounter `completion.anyOf`. Supported completion outcome labels include `defeat`, `bargain`, `negotiate`, `surrender`, `flee`, `objective`, `resolve`, and `success`. This lets a checkpoint complete through combat, negotiation, surrender, flight, or objective resolution without forcing one tactical answer.
 
-Pack encounter activation is also supported. When a `combat.start` change references `campaignPackEncounterId`/`encounterId`, or the active checkpoint has `encounterIds` and no explicit non-pack enemy participants, AIDM materializes the authored encounter, instantiates enemies from the campaign-pack bestiary, preserves player participants, and stamps combat flags with the pack encounter, checkpoint, enemy, and allowed-outcome IDs.
+Pack encounter activation is also supported. When a `combat.start` change references `campaignPackEncounterId`/`encounterId`, or the active checkpoint has `encounterIds` and no explicit non-pack enemy participants, AIDM materializes the authored encounter, instantiates enemies from the campaign-pack bestiary, preserves player participants, and stamps combat flags with the pack encounter, checkpoint, enemy, and allowed-outcome IDs. A hostile player action starts the active checkpoint's encounter this way.
+
+### Encounters that start themselves
+
+An encounter may carry a `trigger`:
+
+- `{"type": "on_enter", "locationId": "..."}`: the party arrives at the location;
+- `{"type": "on_checkpoint", "checkpointId": "..."}`: the checkpoint is active;
+- `{"type": "on_flag", "flagKey": "...", "equals": <value>}`: the flag is set to
+  that value (`equals` defaults to `true`);
+- `{"type": "on_interactable", "targetId": "...", "action": "open"}`: that
+  object action succeeds (any action when `action` is omitted).
+
+`once` (default `true`) fires the trigger only once; `when`
+(`{"flagKey", "equals"}`) must hold and `unless` must not, with the
+`branchWhen` comparison rules. Triggers are evaluated against the changes
+applied before narration and again against the changes narration produces.
+When one is due and no combat is active, combat starts in that turn through
+the same pack-encounter materialization a hostile action uses; before
+narration the DM receives the started combat (participants and initiative) as
+an authoritative result. The encounter id is recorded in
+`flags.campaignPackTriggeredEncounterIds`. `on_checkpoint` encounters start
+during the first turn's combat preparation after the checkpoint becomes
+active.
+
+### Encounters fit the party
+
+Enemy counts are authored for four player characters. With fewer present PCs
+each group keeps `max(1, round(count × party / 4))` enemies (halves round up)
+and every enemy's maximum and starting HP is multiplied by
+`0.55 + 0.1125 × party` (one PC 0.66, two 0.775, three 0.89), rounded up.
+`scaling: false` on the encounter keeps the authored numbers. The result is
+recorded in `combat.flags.partyScaling`
+(`{"partySize", "applied", "hpMultiplier", "groups"}`).
+
+## Arrival, Objects, and Discoveries
+
+A location's `onEnter` list holds trusted consequences applied once, on the
+party's first arrival (recorded in `flags.locationEnteredIds`; the starting
+location counts at import). It accepts the quest consequence types below.
+
+Quest `onComplete`/`onFail` and location `onEnter` consequences may be
+`flag.set`, `flag.unset`, `npc.update`, `npc.relationship.update`,
+`location.update`, `scene.update`, `clue.discover` (`{"clueId"}`), `quest.add`
+(`{"questId"}`), and `location.discover` (`{"locationId"}`). Records named by id
+are materialized from the catalog, and a `location.update` naming a catalog
+location that is not yet known discovers it first.
+
+Objects resolve themselves on the server:
+
+- A requirement `check` (`{"id", "dc", "ability", "skill"}`) is rolled when the
+  action is submitted: one d20 seeded from the action id plus the character's
+  modifier (proficiency and wounds from the character sheet, advantage and
+  bonus dice from the modifier engine). The roll, total, DC, and outcome are
+  stored on the event (`event.check`) and returned with the action result. A
+  failed check is an applied attempt (`interactable.check_failed` or
+  `hazard.check_failed`); the character is remembered in the object's
+  `failedCheckActorIds` and cannot try a check on it again ("You have already
+  tried that; something has to change first.") until the object's revision
+  changes.
+- `mechanicalEffects` keyed by action, or by `failure:<action>` for a failed
+  check, apply `damage` (`{"dice", "type", "save": {"ability", "dc",
+  "onSuccess": "half" | "none"}}`) and `conditions` (`[{"condition",
+  "rounds"}]`) to the `actor` (default) or the whole `party`. Damage follows
+  the vitality rules; conditions apply to combatants only.
+- On a successful action, `discoversClueIds`, `setsFlags`, and
+  `discoversLocationIds` (each keyed by action) discover catalog clues, set
+  flags, and add catalog locations to the known places with status
+  `discovered`.
+- Contents a container reveals (on open, or all of them on search) become
+  scene items with `containerId`, so each can be taken with the exact-id scene
+  pickup; the container still lists them until they are taken.
+- In combat, object actions are offered with the combat actions: `inspect` is
+  free, every other action costs the actor's action.
 
 ### Encounter rewards and consequences
 
@@ -581,6 +699,71 @@ Campaign packs can now drive mystery, faction, map, handout, and lore state thro
 
 Pack-authored records are materialized from `campaignPack.catalog`; non-pack additions are tagged as emergent or blocked according to the active director rules.
 
+## Merchants
+
+The top-level `merchants` list:
+
+```json
+{"id": "mara_counter", "name": "Mara's Counter", "npcId": "npc_mara", "locationId": "loc_inn",
+ "buyRate": 0.5, "restock": "long_rest",
+ "stock": [{"name": "Potion of Healing", "type": "consumable", "effectId": "potion_healing",
+            "price": {"gp": 50}, "quantity": 3},
+           {"catalog": "torch", "quantity": 10}]}
+```
+
+`buyRate` defaults to 0.5 and `restock` to `long_rest` (or `never`); a stock
+`quantity` defaults to unlimited. The importer writes `snapshot.merchants[<id>]`
+in the runtime trade shape: every stock entry gets a stable `stockId`
+(`<merchant id>_<index>`), a priced entry keeps `name`, `type` (default
+`gear`), `effectId`, `metadata`, `price`, and `quantity` (`null` = unlimited),
+and a `{"catalog": key}` entry is stored as `{"stockId", "catalog", "quantity"}`
+for the trade rules to price. `initialStock` is a copy of the stock. A merchant
+needs an `npcId` or a `locationId`, and prices must be positive whole `gp`,
+`sp`, or `cp` amounts.
+
+## Rest Policy
+
+A location may carry `restPolicy` (`safe`, `risky`, or `none`); it is copied to
+`currentScene.restPolicy` at import and on every arrival.
+
+## World Map
+
+The top-level `map` (`{"title", "terrain", "seed"}`, terrain one of `moor`,
+`forest`, `mountain`, `coast`, `plains`, `marsh`), per-location `mapPosition`
+(`{"x", "y"}` on a 0-100 grid) and `mapIcon` (`inn`, `town`, `road`, `bridge`,
+`ruin`, `tower`, `forest`, `cave`, `camp`, `shrine`, `cairn`, `valley`, `gate`,
+`marsh`, `peak`, `unknown`), and top-level `routes`
+(`[{"from", "to", "style": "road" | "trail" | "hidden"}]`, default `road` for
+every adjacency) describe the map. Locations without a position are placed at
+import by a seeded force-directed layout over the adjacency graph (normalized
+to 8-92 on both axes, at least 14 apart while the map has room) and the
+positions are stored.
+
+The player snapshot carries `worldMap`:
+`{"title", "terrain", "seed", "nodes": [{"id", "name", "icon", "x", "y",
+"state"}], "routes": [{"from", "to", "style", "travelable"}]}`. A node is
+`current`, `visited` (the party has been there), `known` (discovered, not
+visited), or `rumoured` (an undiscovered neighbour of a visited place, shown as
+`?`); nothing else appears. `hidden` routes appear only when both ends are
+discovered. Campaigns without a pack map their known locations with a computed
+layout.
+
+## Story Flags
+
+`storyFlags` declares the flags narration may set:
+
+```json
+[{"key": "mara_trusts_party", "when": "Mara decides she can trust the party with what she saw.",
+  "values": [true]}]
+```
+
+`values` defaults to `[true]`; keys must be `[a-z0-9_]+`. A narrated `flag.set`
+is accepted only for a declared key and one of its values; every other narrated
+flag change is rejected. The DM context lists the flags with their `when` text
+and current value under `campaign_pack_director.storyFlags`, and the
+post-narration extraction may propose them. Players never see `storyFlags`. A
+`branchWhen` on a story flag does not raise `branch_flag_never_set`.
+
 ## Hidden Information
 
 Operator/DM views can see the full catalog, `gmNotes`, `hiddenSceneNotes`, future checkpoints, and progress-event audit data. Player-facing session state and progress payloads filter hidden catalog records, future checkpoint details, alternate routes, director rules, hidden notes, the starting brief, and the raw `stateChangeLedger`. The player projection is an allowlist: it shows the opening scene's `summary` and `visibleDetails` but never `hiddenSceneNotes`, and never shows NPC `personality`, `motivation`, `knows`, `secret`, `useInPlay`, `ifSkipped`, `trueName`, encounter `setup` or `stakes`, or any `gmNotes`.
@@ -613,7 +796,7 @@ The DM prompt receives those details with the active checkpoint, next checkpoint
 
 ## Current Limits
 
-- Locations, NPCs, quests, segments, checkpoints, encounters, clues, factions, maps, handouts, and lore: 250 records each.
+- Locations, NPCs, quests, segments, checkpoints, encounters, clues, factions, maps, handouts, lore, and merchants: 250 records each.
 - Enemies: 150 records.
 - Record IDs: 120 characters; use lowercase `[a-z0-9_]` IDs everywhere.
 - Titles: 120 characters.

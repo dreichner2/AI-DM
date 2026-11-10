@@ -52,7 +52,7 @@ def test_session_chapter_fields_match_across_list_workspace_and_state(client, ap
 
     listed = {
         item['session_id']: item
-        for item in client.get(f"/api/sessions/campaigns/{ids['campaign_id']}/sessions").get_json()
+        for item in client.get(f"/api/sessions/campaigns/{ids['campaign_id']}/sessions").get_json()['sessions']
     }
     workspace = {
         item['session_id']: item
@@ -72,7 +72,8 @@ def test_session_chapter_fields_match_across_list_workspace_and_state(client, ap
     assert listed[ids['session_id']]['chapter_number'] == 1
     assert listed[ids['session_id']]['ended_at']
     assert listed[ids['session_id']]['chapter_recap'] == ''
-    assert 'state_snapshot' in listed[ids['session_id']]
+    assert 'state_snapshot' not in listed[ids['session_id']]
+    assert listed[chapter_two_id]['display_name'] == 'Chapter 2'
 
 
 def test_shared_world_dto_matches_list_and_detail_endpoints(client):

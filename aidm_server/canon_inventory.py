@@ -6,6 +6,7 @@ import re
 
 from aidm_server.canon_text import int_or_default, normalized_name, positive_int
 from aidm_server.database import db
+from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY
 from aidm_server.models import DmTurn, Player, safe_json_dumps, safe_json_loads
 
 
@@ -136,6 +137,7 @@ NON_ITEM_TOKENS = {
 }
 INVENTORY_ACTIONS = {'pick_up', 'buy', 'use', 'drop', 'give', 'sell', 'equip', 'unequip'}
 OWNED_ITEM_ACTIONS = {'use', 'drop', 'give', 'sell', 'equip', 'unequip'}
+SERVER_RESOLVED_ITEM_CHANGE_TYPES = frozenset({'item.use', 'shop.buy', 'shop.sell'})
 
 INVENTORY_GAIN_PATTERNS = [
     re.compile(
@@ -648,6 +650,32 @@ def _sentence_confirms_action(sentence: str, inventory_action: str) -> bool:
     return False
 
 
+def _server_resolved_item_action(metadata: dict, inventory_action: str, item_name: str) -> bool:
+    """True when the rules engine owned this item action (its effect or trade), so
+    narration must neither repeat nor invent the inventory change."""
+
+    from aidm_server.item_effects import item_name_has_effect
+
+    if inventory_action == 'use' and item_name_has_effect(item_name):
+        return True
+    pipeline = metadata.get(STATE_PIPELINE_METADATA_KEY) if isinstance(metadata.get(STATE_PIPELINE_METADATA_KEY), dict) else {}
+    if any(
+        isinstance(change, dict) and change.get('type') in SERVER_RESOLVED_ITEM_CHANGE_TYPES
+        for change in pipeline.get('immediateAppliedChanges') or []
+    ):
+        return True
+    validation = pipeline.get('preDmValidation') if isinstance(pipeline.get('preDmValidation'), dict) else {}
+    # A routed trade was decided by the merchant rules whether it succeeded or not;
+    # only an unrouted (pending) trade is left to the DM.
+    return any(
+        isinstance(result, dict)
+        and isinstance(result.get('originalAction'), dict)
+        and result['originalAction'].get('type') in {'shop.buy', 'shop.sell'}
+        and result.get('status') != 'pending'
+        for result in validation.get('validatedActions') or []
+    )
+
+
 def inventory_change_from_intent_outcome(turn: DmTurn, dm_output: str) -> dict | None:
     metadata = safe_json_loads(turn.metadata_json, {})
     action_intent = metadata.get('action_intent') if isinstance(metadata, dict) else None
@@ -667,6 +695,7 @@ def inventory_change_from_intent_outcome(turn: DmTurn, dm_output: str) -> dict |
             if isinstance(resolved_metadata, dict)
             else None
         )
+        metadata = resolved_metadata
     if not isinstance(action_intent, dict) or action_intent.get('kind') != 'item':
         return None
 
@@ -678,6 +707,8 @@ def inventory_change_from_intent_outcome(turn: DmTurn, dm_output: str) -> dict |
     item_name = clean_inventory_item_name(item_payload.get('name'))
     item_id = str(item_payload.get('id') or item_payload.get('itemId') or '').strip()
     if not item_name or not looks_like_inventory_item(item_name):
+        return None
+    if _server_resolved_item_action(metadata if isinstance(metadata, dict) else {}, inventory_action, item_name):
         return None
 
     sentences = _sentences_with_item(dm_output or '', item_name)

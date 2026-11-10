@@ -1859,7 +1859,9 @@ def test_example_campaign_pack_import_requires_workspace_admin_account(tmp_path,
     assert admin_import.status_code == 201
     payload = admin_import.get_json()
     assert payload['pack_id'] == 'bleakmoor_intro'
-    assert payload['session']['state_snapshot']['campaignPack']['packId'] == 'bleakmoor_intro'
+    assert 'state_snapshot' not in payload['session']
+    state = client.get(f"/api/sessions/{payload['session_id']}/state", headers=headers).get_json()
+    assert state['state_snapshot']['campaignPack']['packId'] == 'bleakmoor_intro'
 
 
 def test_session_import_strips_campaign_pack_state_for_non_admin_account(tmp_path, monkeypatch):
@@ -1934,7 +1936,7 @@ def test_session_import_strips_campaign_pack_state_for_non_admin_account(tmp_pat
     assert snapshot['flags'] == {'ordinaryFlag': 'kept'}
     assert snapshot['importMetadata']['campaignPackStateStripped'] is True
     assert imported_pack_events == 0
-    assert 'campaignPack' not in response.get_json()['session']['state_snapshot']
+    assert 'state_snapshot' not in response.get_json()['session']
 
 
 def _seed_session_player_privacy_fixture(app):
@@ -2533,7 +2535,8 @@ def test_non_admin_session_state_keeps_own_detail_and_redacts_other_players(tmp_
     assert 'DM_ONLY_ENEMY' not in json.dumps(snapshot)
     assert 'DM_ONLY_PROJECTION_FIELD' not in json.dumps(snapshot)
     assert session_list_response.status_code == 200
-    assert 'ATTACKER_PRIVATE_ITEM' in json.dumps(session_list_response.get_json())
+    assert all('state_snapshot' not in item for item in session_list_response.get_json()['sessions'])
+    assert 'ATTACKER_PRIVATE_ITEM' not in json.dumps(session_list_response.get_json())
     assert 'VICTIM_PRIVATE' not in json.dumps(session_list_response.get_json())
     assert 'DM_ONLY_HIDDEN' not in json.dumps(session_list_response.get_json())
     assert 'DM_ONLY_SCENE_ITEM' not in json.dumps(session_list_response.get_json())
@@ -2541,7 +2544,7 @@ def test_non_admin_session_state_keeps_own_detail_and_redacts_other_players(tmp_
     assert 'DM_ONLY_ENEMY' not in json.dumps(session_list_response.get_json())
     assert 'DM_ONLY_PROJECTION_FIELD' not in json.dumps(session_list_response.get_json())
     assert workspace_response.status_code == 200
-    assert 'ATTACKER_PRIVATE_ITEM' in json.dumps(workspace_response.get_json())
+    assert all('state_snapshot' not in item for item in workspace_response.get_json()['sessions'])
     assert 'VICTIM_PRIVATE' not in json.dumps(workspace_response.get_json())
     assert 'DM_ONLY_HIDDEN' not in json.dumps(workspace_response.get_json())
     assert 'DM_ONLY_SCENE_ITEM' not in json.dumps(workspace_response.get_json())
@@ -2550,7 +2553,7 @@ def test_non_admin_session_state_keeps_own_detail_and_redacts_other_players(tmp_
     assert 'DM_ONLY_PROJECTION_FIELD' not in json.dumps(workspace_response.get_json())
 
 
-def test_session_export_scopes_player_detail_and_selection_but_admin_remains_complete(tmp_path, monkeypatch):
+def test_session_export_scopes_characters_to_the_player_but_admin_remains_complete(tmp_path, monkeypatch):
     app, _socketio = _build_auth_runtime(
         tmp_path,
         monkeypatch,
@@ -2575,42 +2578,16 @@ def test_session_export_scopes_player_detail_and_selection_but_admin_remains_com
     }
 
     attacker_export = client.get(f"/api/sessions/{ids['session_id']}/export", headers=attacker_headers)
-    victim_selection = client.get(
-        f"/api/sessions/{ids['session_id']}/export?player_id={ids['victim_player_id']}",
-        headers=attacker_headers,
-    )
-    own_selection = client.get(
-        f"/api/sessions/{ids['session_id']}/export?player_id={ids['attacker_player_id']}",
-        headers=attacker_headers,
-    )
-    admin_export = client.get(
-        f"/api/sessions/{ids['session_id']}/export?player_id={ids['victim_player_id']}",
-        headers=admin_headers,
-    )
-    table_token_selection = client.get(
-        f"/api/sessions/{ids['session_id']}/export?player_id={ids['victim_player_id']}",
-        headers=table_token_headers,
-    )
+    attacker_state = client.get(f"/api/sessions/{ids['session_id']}/state", headers=attacker_headers)
+    admin_export = client.get(f"/api/sessions/{ids['session_id']}/export", headers=admin_headers)
+    table_token_export = client.get(f"/api/sessions/{ids['session_id']}/export", headers=table_token_headers)
 
     assert attacker_export.status_code == 200
     attacker_payload = attacker_export.get_json()
-    assert attacker_payload['selectedPlayer']['player_id'] == ids['attacker_player_id']
-    assert attacker_payload['selectedPlayer']['inventory'][0]['name'] == 'ATTACKER_PRIVATE_ITEM'
-    attacker_players = {player['player_id']: player for player in attacker_payload['players']}
-    assert attacker_players[ids['attacker_player_id']]['character_sheet']['privateNotes'] == 'ATTACKER_PRIVATE_SHEET'
-    assert set(attacker_players[ids['victim_player_id']]) == {
-        'player_id',
-        'campaign_id',
-        'name',
-        'character_name',
-        'race',
-        'sex',
-        'profile_image',
-        'class_',
-        'char_class',
-        'level',
-        'background',
-    }
+    assert [player['player_id'] for player in attacker_payload['characters']] == [ids['attacker_player_id']]
+    assert attacker_payload['characters'][0]['inventory'][0]['name'] == 'ATTACKER_PRIVATE_ITEM'
+    assert attacker_payload['characters'][0]['character_sheet']['privateNotes'] == 'ATTACKER_PRIVATE_SHEET'
+    assert attacker_payload['state_snapshot'] == attacker_state.get_json()['state_snapshot']
     assert 'VICTIM_PRIVATE' not in json.dumps(attacker_payload)
     assert 'VICTIM_RESOURCE' not in json.dumps(attacker_payload)
     assert 'DM_ONLY_TRIGGER' not in json.dumps(attacker_payload)
@@ -2620,28 +2597,23 @@ def test_session_export_scopes_player_detail_and_selection_but_admin_remains_com
     assert 'DM_ONLY_ENEMY' not in json.dumps(attacker_payload)
     assert 'DM_ONLY_PROJECTION_FIELD' not in json.dumps(attacker_payload)
 
-    assert victim_selection.status_code == 404
-    assert victim_selection.get_json()['error_code'] == 'player_not_found'
-    assert own_selection.status_code == 200
-    assert own_selection.get_json()['selectedPlayer']['player_id'] == ids['attacker_player_id']
-    assert table_token_selection.status_code == 404
-    assert table_token_selection.get_json()['error_code'] == 'player_not_found'
+    assert table_token_export.status_code == 200
+    assert table_token_export.get_json()['characters'] == []
+    assert 'VICTIM_PRIVATE' not in json.dumps(table_token_export.get_json())
 
     assert admin_export.status_code == 200
     admin_payload = admin_export.get_json()
-    assert admin_payload['selectedPlayer']['player_id'] == ids['victim_player_id']
-    assert admin_payload['selectedPlayer']['inventory'][0]['name'] == 'VICTIM_PRIVATE_ITEM'
-    assert admin_payload['selectedPlayer']['character_sheet']['privateNotes'] == 'VICTIM_PRIVATE_SHEET'
-    admin_players = {player['player_id']: player for player in admin_payload['players']}
-    assert admin_players[ids['victim_player_id']]['stats']['privateResource'] == 'VICTIM_RESOURCE'
-    assert admin_players[ids['attacker_player_id']]['inventory'][0]['name'] == 'ATTACKER_PRIVATE_ITEM'
-    assert 'DM_ONLY_LEDGER' in json.dumps(admin_payload['sessionState']['state_snapshot'])
-    assert 'DM_ONLY_TRIGGER_REASON' in json.dumps(admin_payload['sessionState']['active_segments'])
-    assert 'DM_ONLY_HIDDEN_ASSASSIN' in json.dumps(admin_payload['sessionState']['state_snapshot'])
-    assert 'DM_ONLY_SCENE_ITEM' in json.dumps(admin_payload['sessionState']['state_snapshot'])
-    assert 'DM_ONLY_CACHED_SCENE_ITEM' in json.dumps(admin_payload['sessionState']['state_snapshot'])
-    assert 'DM_ONLY_ENEMY_BRAIN' in json.dumps(admin_payload['sessionState']['state_snapshot'])
-    assert 'DM_ONLY_PROJECTION_FIELD' in json.dumps(admin_payload['sessionState']['state_snapshot'])
+    admin_characters = {player['player_id']: player for player in admin_payload['characters']}
+    assert admin_characters[ids['victim_player_id']]['inventory'][0]['name'] == 'VICTIM_PRIVATE_ITEM'
+    assert admin_characters[ids['victim_player_id']]['character_sheet']['privateNotes'] == 'VICTIM_PRIVATE_SHEET'
+    assert admin_characters[ids['victim_player_id']]['stats']['privateResource'] == 'VICTIM_RESOURCE'
+    assert admin_characters[ids['attacker_player_id']]['inventory'][0]['name'] == 'ATTACKER_PRIVATE_ITEM'
+    assert 'DM_ONLY_LEDGER' in json.dumps(admin_payload['state_snapshot'])
+    assert 'DM_ONLY_HIDDEN_ASSASSIN' in json.dumps(admin_payload['state_snapshot'])
+    assert 'DM_ONLY_SCENE_ITEM' in json.dumps(admin_payload['state_snapshot'])
+    assert 'DM_ONLY_CACHED_SCENE_ITEM' in json.dumps(admin_payload['state_snapshot'])
+    assert 'DM_ONLY_ENEMY_BRAIN' in json.dumps(admin_payload['state_snapshot'])
+    assert 'DM_ONLY_PROJECTION_FIELD' in json.dumps(admin_payload['state_snapshot'])
 
 
 def test_accountless_table_token_cannot_read_mutate_or_socket_bind_guessed_player(
@@ -3009,12 +2981,9 @@ def test_player_read_logs_events_and_exports_redact_peer_roll_provenance_but_kee
 
     assert player_export.status_code == 200
     export_payload = player_export.get_json()
-    assert 'OWN_PRIVATE_SKILL' in json.dumps(export_payload['turnEvents'])
-    assert 'OWN_PRIVATE_SKILL' in json.dumps(export_payload['logEntries'])
-    assert 'PEER_PRIVATE_SKILL' not in json.dumps(export_payload['turnEvents'])
-    assert 'PEER_PRIVATE_SKILL' not in json.dumps(export_payload['logEntries'])
-    assert 'PEER_PRIVATE_CLARIFICATION_ITEM' not in json.dumps(export_payload['turnEvents'])
-    assert 'PEER_PRIVATE_CLARIFICATION_ITEM' not in json.dumps(export_payload['logEntries'])
+    assert 'OWN_PRIVATE_SKILL' in json.dumps(export_payload['log'])
+    assert 'PEER_PRIVATE_SKILL' not in json.dumps(export_payload)
+    assert 'PEER_PRIVATE_CLARIFICATION_ITEM' not in json.dumps(export_payload)
 
     assert admin_events.status_code == 200
     assert 'PEER_PRIVATE_SKILL' in json.dumps(admin_events.get_json())

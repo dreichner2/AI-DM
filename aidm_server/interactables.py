@@ -1,9 +1,10 @@
-"""Pure rules for persistent scene interactables.
+"""Rules for persistent scene interactables.
 
-The module deliberately does not know about Flask, SQLAlchemy, Socket.IO, or the
-DM.  Callers pass an authoritative state snapshot and receive a deep-copied next
-state plus deterministic changes and events.  Narration can describe those
-results, but it is never an input to the transition.
+Transitions are pure: callers pass an authoritative state snapshot and receive
+a deep-copied next state plus deterministic changes and events.  Narration can
+describe those results, but it is never an input to the transition.  Only
+:func:`object_rolls` reads the persisted character (when a database session is
+available) for check and save modifiers.
 
 Canonical scene shape::
 
@@ -27,17 +28,35 @@ are updated as compatibility mirrors, but new state is written to ``sceneState``
 Requirements are action-scoped under ``requirements``.  They may contain
 ``allOf``/``anyOf`` groups and exact ``allItemIds``, ``anyItemIds``,
 ``allToolIds``, ``anyToolIds``, ``allCapabilities``, ``anyCapabilities``,
-``flags``, ``objectStates``, and ``check`` predicates.  Check results in the
-actor context must have been authoritatively resolved by the caller.
+``flags``, ``objectStates``, and ``check`` predicates.  A check is either
+pre-resolved in the actor context (``resolvedChecks``) or rolled by the
+``rolls`` the caller supplies (:func:`object_rolls`): one d20 seeded from the
+action id.  A failed roll is itself an applied attempt: the actor is
+remembered in ``failedCheckActorIds`` until the object's revision changes.
+
+``mechanicalEffects`` (``{action | "failure:<action>": {damage, conditions,
+targets}}``) are resolved with the action and turned into trusted changes by
+:func:`interactable_followup_changes`, together with authored
+``discoversClueIds``, ``setsFlags`` and ``discoversLocationIds``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 import hashlib
 import json
 from typing import Any
+
+from flask import has_app_context
+
+from aidm_server.character_state import SKILL_ABILITY, ability_modifier, character_roll_spec
+from aidm_server.combat.legal_actions import register_action_provider, register_action_resolver
+from aidm_server.combat.modifiers import ability_key, check_context, condition_key, save_context
+from aidm_server.damage_dice import deterministic_roller, normalize_damage_dice_expression, roll_signed_dice
+from aidm_server.database import db
+from aidm_server.game_state.models import actor_items, stable_change_id
+from aidm_server.models import Player
 
 
 __all__ = [
@@ -45,6 +64,9 @@ __all__ = [
     "INTERACTABLE_ACTIONS",
     "INTERACTABLE_KINDS",
     "available_actions_for_target",
+    "interactable_actor_context",
+    "interactable_followup_changes",
+    "object_rolls",
     "project_interactable_event",
     "project_scene_interactables",
     "resolve_interactable_action",
@@ -71,6 +93,25 @@ INTERACTABLE_ACTIONS = frozenset(
 )
 ACTION_LEDGER_KEY = "interactableActionLedger"
 ACTION_LEDGER_LIMIT = 256
+FAILED_CHECK_ACTORS_KEY = "failedCheckActorIds"
+REPEAT_CHECK_MESSAGE = "You have already tried that; something has to change first."
+DEFAULT_CHECK_DC = 10
+EFFECT_SOURCE = "interactable_effect"
+COMBAT_ACTION_PREFIX = "object."
+FREE_COMBAT_ACTIONS = frozenset({"inspect"})
+ACTION_LABELS = {
+    "inspect": "Inspect",
+    "open": "Open",
+    "close": "Close",
+    "lock": "Lock",
+    "unlock": "Unlock",
+    "search": "Search",
+    "break": "Break",
+    "use": "Use",
+    "disarm": "Disarm",
+    "trigger": "Trigger",
+    "reset": "Reset",
+}
 
 _SAFE_TRANSITION_FIELDS = frozenset(
     {
@@ -158,6 +199,10 @@ _NEVER_PUBLIC_FIELDS = frozenset(
         "controlsTargetId",
         "allowedActions",
         "disabledActions",
+        "discoversClueIds",
+        "discoversLocationIds",
+        "setsFlags",
+        FAILED_CHECK_ACTORS_KEY,
     }
 )
 
@@ -363,7 +408,178 @@ def _actor_context(actor: Mapping[str, Any]) -> dict[str, Any]:
         "isGm": actor.get("isGm") is True,
         "canTargetHidden": actor.get("canTargetHidden") is True,
         "knownIds": _string_set(actor.get("knownInteractableIds")),
+        "rolls": actor.get("rolls") if isinstance(actor.get("rolls"), Mapping) else None,
     }
+
+
+def interactable_actor_context(state: Mapping[str, Any], actor: Mapping[str, Any]) -> dict[str, Any]:
+    """The exact item, tool, capability and flag ids an actor brings to objects."""
+
+    items = actor_items(dict(actor))
+    tool_ids = [
+        _text(item.get("id"))
+        for item in items
+        if _text(item.get("id"))
+        and (
+            _text(item.get("type")).lower() == "tool"
+            or "tool" in {_text(tag).lower() for tag in (item.get("tags") or [])}
+        )
+    ]
+    return {
+        "id": actor.get("id"),
+        "items": deepcopy(items),
+        "itemIds": [_text(item.get("id")) for item in items if _text(item.get("id"))],
+        "toolIds": tool_ids,
+        "capabilities": [
+            _text(capability.get("id"))
+            for capability in (actor.get("classFeatures") or [])
+            if isinstance(capability, Mapping) and _text(capability.get("id"))
+        ],
+        "flags": deepcopy(state.get("flags")) if isinstance(state.get("flags"), Mapping) else {},
+    }
+
+
+def _state_actor(state: Mapping[str, Any], actor_id: Any) -> dict[str, Any]:
+    return next(
+        (
+            actor
+            for actor in (state.get("playerCharacters") or [])
+            if isinstance(actor, dict) and _text(actor.get("id")) == _text(actor_id)
+        ),
+        {},
+    )
+
+
+def _combat_participant(state: Mapping[str, Any], actor_id: Any) -> dict[str, Any] | None:
+    combat = state.get("combat") if isinstance(state.get("combat"), Mapping) else {}
+    if _text(combat.get("status")).lower() not in {"starting", "active"}:
+        return None
+    return next(
+        (
+            participant
+            for participant in (combat.get("participants") or [])
+            if isinstance(participant, dict) and _text(participant.get("id")) == _text(actor_id)
+        ),
+        None,
+    )
+
+
+def _roll_subject(state: Mapping[str, Any], actor: Mapping[str, Any]) -> dict[str, Any]:
+    participant = _combat_participant(state, actor.get("id"))
+    if participant is not None:
+        return participant
+    health = actor.get("health") if isinstance(actor.get("health"), Mapping) else {}
+    return {
+        "id": actor.get("id"),
+        "conditions": list(health.get("conditions") or []),
+        "activeEffects": list(actor.get("activeEffects") or []),
+    }
+
+
+def _player_row(actor: Mapping[str, Any]) -> Player | None:
+    player_id = actor.get("playerId")
+    if not has_app_context() or isinstance(player_id, bool) or not isinstance(player_id, int) or player_id <= 0:
+        return None
+    return db.session.get(Player, player_id)
+
+
+def _d20(roller: Callable[[int], int], mode: str) -> tuple[int, list[int]]:
+    rolls = [roller(20)]
+    if mode in {"advantage", "disadvantage"}:
+        rolls.append(roller(20))
+    pick = max if mode == "advantage" else min
+    return pick(rolls), rolls
+
+
+def _modifier(actor: Mapping[str, Any], *, roll_type: str, ability: str) -> tuple[int, str]:
+    player = _player_row(actor)
+    if player is not None:
+        spec = character_roll_spec(player, roll_type=roll_type, requested_ability_key=ability or None)
+        spec_ability = spec.get("ability") if isinstance(spec.get("ability"), Mapping) else {}
+        return int(spec.get("modifier") or 0), ability or _text(spec_ability.get("key"))
+    ability = ability or SKILL_ABILITY.get(roll_type, "")
+    stats = actor.get("stats") if isinstance(actor.get("stats"), Mapping) else {}
+    score = stats.get(ability)
+    return ability_modifier(score if isinstance(score, int) and not isinstance(score, bool) else None), ability
+
+
+def _roll(
+    state: Mapping[str, Any],
+    actor: Mapping[str, Any],
+    *,
+    roll_type: str,
+    ability: str,
+    context: dict[str, Any],
+    seed: str,
+) -> dict[str, Any]:
+    modifier, ability = _modifier(actor, roll_type=roll_type, ability=ability)
+    roller = deterministic_roller(seed)
+    roll, rolls = _d20(roller, context["mode"])
+    bonus = sum(
+        rolled["total"]
+        for dice in context.get("bonusDice") or []
+        if (rolled := roll_signed_dice(dice, roller)) is not None
+    )
+    return {
+        "ability": ability,
+        "roll": roll,
+        "rolls": rolls,
+        "mode": context["mode"],
+        "modifier": modifier,
+        "bonus": bonus,
+        "total": roll + modifier + bonus,
+    }
+
+
+def object_rolls(state: Mapping[str, Any]) -> dict[str, Callable[..., dict[str, Any]]]:
+    """Server rolls for object checks and effect saves against ``state``.
+
+    Modifiers come from the persisted character (``character_roll_spec``) when
+    a database session is available, otherwise from the snapshot's ability
+    scores; roll mode and bonus dice come from the modifier engine.
+    """
+
+    combat = state.get("combat") if isinstance(state.get("combat"), Mapping) else None
+
+    def check(actor_id: Any, check_spec: Mapping[str, Any], seed: str) -> dict[str, Any]:
+        actor = _state_actor(state, actor_id)
+        ability = ability_key(check_spec.get("ability"))
+        skill = condition_key(check_spec.get("skill"))
+        dc = check_spec.get("dc") if isinstance(check_spec.get("dc"), int) else DEFAULT_CHECK_DC
+        rolled = _roll(
+            state,
+            actor,
+            roll_type=skill or "check",
+            ability=ability,
+            context=check_context(_roll_subject(state, actor), ability=ability, skill=skill, combat=combat),
+            seed=seed,
+        )
+        passed = rolled["total"] >= dc
+        return {
+            "id": _text(check_spec.get("id")),
+            **rolled,
+            "skill": skill or None,
+            "dc": dc,
+            "outcome": "success" if passed else "failure",
+            "passed": passed,
+        }
+
+    def save(actor_id: Any, ability: Any, dc: int, seed: str) -> dict[str, Any]:
+        actor = _state_actor(state, actor_id)
+        normalized = ability_key(ability)
+        context = save_context(_roll_subject(state, actor), normalized, combat=combat)
+        rolled = _roll(
+            state,
+            actor,
+            roll_type=f"{normalized}_saving_throw",
+            ability=normalized,
+            context=context,
+            seed=seed,
+        )
+        passed = not context.get("autoFail") and rolled["total"] >= dc
+        return {**rolled, "dc": dc, "autoFail": context.get("autoFail") is True, "passed": passed}
+
+    return {"check": check, "save": save}
 
 
 def _target_is_visible(target: dict[str, Any], actor: dict[str, Any]) -> bool:
@@ -387,6 +603,7 @@ def _failure(code: str, message: str, **details: Any) -> dict[str, Any]:
 
 def _requirement_failure_priority(failure: dict[str, Any]) -> int:
     return {
+        "check_already_attempted": 5,
         "authoritative_check_mismatch": 4,
         "check_failed": 3,
         "check_required": 2,
@@ -399,6 +616,9 @@ def _evaluate_requirement(
     *,
     actor: dict[str, Any],
     objects: dict[str, tuple[dict[str, Any], str]],
+    roll_check: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    check_blocked: bool = False,
+    rolled_checks: list[dict[str, Any]] | None = None,
     depth: int = 0,
 ) -> dict[str, Any]:
     if requirement in (None, {}, []):
@@ -416,7 +636,13 @@ def _evaluate_requirement(
             )
         for child in all_of:
             result = _evaluate_requirement(
-                child, actor=actor, objects=objects, depth=depth + 1
+                child,
+                actor=actor,
+                objects=objects,
+                roll_check=roll_check,
+                check_blocked=check_blocked,
+                rolled_checks=rolled_checks,
+                depth=depth + 1,
             )
             if not result["ok"]:
                 return result
@@ -431,7 +657,13 @@ def _evaluate_requirement(
         failures: list[dict[str, Any]] = []
         for child in any_of:
             result = _evaluate_requirement(
-                child, actor=actor, objects=objects, depth=depth + 1
+                child,
+                actor=actor,
+                objects=objects,
+                roll_check=roll_check,
+                check_blocked=check_blocked,
+                rolled_checks=rolled_checks,
+                depth=depth + 1,
             )
             if result["ok"]:
                 break
@@ -517,23 +749,33 @@ def _evaluate_requirement(
             )
         check_id = _text(check.get("id"))
         resolved = actor["checks"].get(check_id)
-        if not isinstance(resolved, Mapping):
+        if isinstance(resolved, Mapping):
+            for field in ("dc", "ability", "skill"):
+                if field in check and resolved.get(field) != check.get(field):
+                    return _failure(
+                        "authoritative_check_mismatch",
+                        "The supplied check result does not match the required check.",
+                        checkId=check_id,
+                        field=field,
+                    )
+        elif check_blocked:
+            return _failure("check_already_attempted", REPEAT_CHECK_MESSAGE, checkId=check_id)
+        elif roll_check is None:
             return _failure(
                 "check_required",
                 "An authoritative check must be resolved before this action.",
                 check=dict(check),
             )
-        for field in ("dc", "ability", "skill"):
-            if field in check and resolved.get(field) != check.get(field):
-                return _failure(
-                    "authoritative_check_mismatch",
-                    "The supplied check result does not match the required check.",
-                    checkId=check_id,
-                    field=field,
-                )
+        else:
+            resolved = roll_check(dict(check))
+            if rolled_checks is not None:
+                rolled_checks.append(dict(resolved))
         if resolved.get("passed") is not True:
             return _failure(
-                "check_failed", "The authoritative check failed.", checkId=check_id
+                "check_failed",
+                "The authoritative check failed.",
+                checkId=check_id,
+                check=dict(resolved),
             )
 
     return {"ok": True}
@@ -701,6 +943,8 @@ def _action_legality(
     *,
     actor: dict[str, Any],
     objects: dict[str, tuple[dict[str, Any], str]],
+    roll_check: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    rolled_checks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     invariant_error = _invariant_error(target, collection)
     if invariant_error:
@@ -813,7 +1057,14 @@ def _action_legality(
             return _failure("invalid_transition", "The hazard is already reset.")
 
     requirement = _requirements_for(target, action)
-    return _evaluate_requirement(requirement, actor=actor, objects=objects)
+    return _evaluate_requirement(
+        requirement,
+        actor=actor,
+        objects=objects,
+        roll_check=roll_check,
+        check_blocked=actor["id"] in _string_set(target.get(FAILED_CHECK_ACTORS_KEY)),
+        rolled_checks=rolled_checks,
+    )
 
 
 def _mark_contents_known(target: dict[str, Any], *, include_hidden: bool) -> None:
@@ -937,9 +1188,18 @@ def _tracking_patch(
     return patch
 
 
+def _touch(target: dict[str, Any], *, request: dict[str, Any], actor_id: str) -> None:
+    """Bump an object's revision; a new revision clears failed check attempts."""
+
+    target.update(_tracking_patch(target, request=request, actor_id=actor_id))
+    target.pop(FAILED_CHECK_ACTORS_KEY, None)
+
+
 def _diff_patch(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     fields = (
-        _SAFE_TRANSITION_FIELDS | _TRACKING_FIELDS | {"contents", "playerKnownFields"}
+        _SAFE_TRANSITION_FIELDS
+        | _TRACKING_FIELDS
+        | {"contents", "playerKnownFields", FAILED_CHECK_ACTORS_KEY}
     )
     return {
         field: deepcopy(after.get(field))
@@ -1184,9 +1444,35 @@ def resolve_interactable_action(
             **common,
         )
 
+    rolls = actor_ctx["rolls"]
+    rolled_checks: list[dict[str, Any]] = []
     legality = _action_legality(
-        target, collection, action, actor=actor_ctx, objects=objects
+        target,
+        collection,
+        action,
+        actor=actor_ctx,
+        objects=objects,
+        roll_check=(
+            (lambda check: rolls["check"](actor_id, check, f"{action_id}:check:{_text(check.get('id'))}"))
+            if rolls
+            else None
+        ),
+        rolled_checks=rolled_checks,
     )
+    if not legality["ok"] and legality["code"] == "check_failed":
+        return _failed_attempt(
+            state,
+            next_state,
+            location=location,
+            scene=scene,
+            target=target,
+            collection=collection,
+            request=dict(request),
+            actor_id=actor_id,
+            fingerprint=fingerprint,
+            check=dict((legality.get("details") or {}).get("check") or {}),
+            rolls=rolls,
+        )
     if not legality["ok"]:
         return _result(
             state,
@@ -1243,20 +1529,23 @@ def resolve_interactable_action(
     }
     primary_patch = _primary_patch(target, collection, action)
     target.update(primary_patch)
+    revealed_items: list[dict[str, Any]] = []
     if (
         action == "open"
         and target_kind == "container"
         and target.get("revealsContentsOnOpen") is not False
     ):
         _mark_contents_known(target, include_hidden=False)
+        revealed_items = _move_revealed_contents(target, scene, include_hidden=False)
     if action == "search":
         _mark_contents_known(target, include_hidden=True)
+        revealed_items = _move_revealed_contents(target, scene, include_hidden=True)
     known_fields = _string_set(target.get("playerKnownFields")) | _reveal_fields(
         target, action
     )
     if known_fields:
         target["playerKnownFields"] = sorted(known_fields)
-    target.update(_tracking_patch(target, request=dict(request), actor_id=actor_id))
+    _touch(target, request=dict(request), actor_id=actor_id)
 
     for transition in transitions:
         secondary, secondary_collection = objects[transition["targetId"]]
@@ -1272,16 +1561,12 @@ def resolve_interactable_action(
                 **common,
             )
         secondary.update(deepcopy(transition["patch"]))
-        secondary.update(
-            _tracking_patch(secondary, request=dict(request), actor_id=actor_id)
-        )
+        _touch(secondary, request=dict(request), actor_id=actor_id)
 
     for revealed_id in reveal_ids:
         revealed = objects[revealed_id][0]
         revealed.update({"playerKnown": True, "hidden": False})
-        revealed.update(
-            _tracking_patch(revealed, request=dict(request), actor_id=actor_id)
-        )
+        _touch(revealed, request=dict(request), actor_id=actor_id)
 
     final_invariant = _invariant_error(target, collection)
     if final_invariant:
@@ -1312,60 +1597,300 @@ def resolve_interactable_action(
             }
         )
 
-    event_type_prefix = "hazard" if target_kind == "hazard" else "interactable"
-    event_verb = {
-        "inspect": "inspected",
-        "open": "opened",
-        "close": "closed",
-        "lock": "locked",
-        "unlock": "unlocked",
-        "search": "searched",
-        "break": "broken",
-        "use": "used",
-        "disarm": "disarmed",
-        "trigger": "triggered",
-        "reset": "reset",
-    }[action]
-    event: dict[str, Any] = {
-        "id": event_id,
-        "type": f"{event_type_prefix}.{event_verb}",
-        "actionId": action_id,
-        "action": action,
-        "actorId": actor_id,
-        "locationId": location_id,
-        "targetId": target_id,
-        "targetKind": target_kind,
-        "targetName": _text(target.get("name")) or target_id,
-        "visibility": _text(target.get("eventVisibility")).lower()
-        if _text(target.get("eventVisibility")).lower() in {"players", "actor", "gm"}
-        else "players",
-        "revealedTargetIds": reveal_ids,
-    }
-    mechanical_effects = target.get("mechanicalEffects")
-    if isinstance(mechanical_effects, Mapping) and action in mechanical_effects:
-        event["mechanicalEffects"] = deepcopy(mechanical_effects[action])
+    event = _event(
+        event_id,
+        f"{_event_prefix(target_kind)}.{EVENT_VERBS[action]}",
+        request=dict(request),
+        actor_id=actor_id,
+        target=target,
+        target_kind=target_kind,
+        reveal_ids=reveal_ids,
+    )
+    message = "The interactable action was applied."
+    if rolled_checks:
+        event["check"] = rolled_checks[-1]
+        message = f"{_check_message(rolled_checks[-1])} {message}"
+    if revealed_items:
+        event["revealedItems"] = revealed_items
+    _attach_effects(event, state, target, action, actor_id=actor_id, rolls=rolls)
 
     _record_action(
         next_state, action_id=action_id, fingerprint=fingerprint, event_ids=[event_id]
     )
-    changes.append(
-        {
-            "id": _stable_id("chg", event_id, "ledger"),
-            "type": "interactable.action.recorded",
-            "actionId": action_id,
-            "fingerprint": fingerprint,
-            "eventIds": [event_id],
-        }
-    )
+    changes.append(_ledger_change(event_id, action_id=action_id, fingerprint=fingerprint))
     return _result(
         state,
         ok=True,
         code="applied",
-        message="The interactable action was applied.",
+        message=message,
         changes=changes,
         events=[event],
         next_state=next_state,
         **common,
+    )
+
+
+EVENT_VERBS = {
+    "inspect": "inspected",
+    "open": "opened",
+    "close": "closed",
+    "lock": "locked",
+    "unlock": "unlocked",
+    "search": "searched",
+    "break": "broken",
+    "use": "used",
+    "disarm": "disarmed",
+    "trigger": "triggered",
+    "reset": "reset",
+}
+
+
+def _event_prefix(target_kind: str) -> str:
+    return "hazard" if target_kind == "hazard" else "interactable"
+
+
+def _event(
+    event_id: str,
+    event_type: str,
+    *,
+    request: dict[str, Any],
+    actor_id: str,
+    target: dict[str, Any],
+    target_kind: str,
+    reveal_ids: list[str],
+) -> dict[str, Any]:
+    target_id = _text(request.get("targetId"))
+    visibility = _text(target.get("eventVisibility")).lower()
+    return {
+        "id": event_id,
+        "type": event_type,
+        "actionId": _text(request.get("actionId")),
+        "action": _text(request.get("action")).lower(),
+        "actorId": actor_id,
+        "locationId": _text(request.get("locationId")),
+        "targetId": target_id,
+        "targetKind": target_kind,
+        "targetName": _text(target.get("name")) or target_id,
+        "visibility": visibility if visibility in {"players", "actor", "gm"} else "players",
+        "revealedTargetIds": reveal_ids,
+    }
+
+
+def _ledger_change(event_id: str, *, action_id: str, fingerprint: str) -> dict[str, Any]:
+    return {
+        "id": _stable_id("chg", event_id, "ledger"),
+        "type": "interactable.action.recorded",
+        "actionId": action_id,
+        "fingerprint": fingerprint,
+        "eventIds": [event_id],
+    }
+
+
+def _check_message(check: Mapping[str, Any]) -> str:
+    label = (_text(check.get("skill")) or _text(check.get("ability")) or "ability").replace("_", " ").title()
+    adjustment = int(check.get("modifier") or 0) + int(check.get("bonus") or 0)
+    sign = "+" if adjustment >= 0 else "-"
+    return (
+        f"{label} check: {check.get('roll')} {sign} {abs(adjustment)} = {check.get('total')} "
+        f"against DC {check.get('dc')}, {check.get('outcome')}."
+    )
+
+
+def _move_revealed_contents(
+    target: dict[str, Any], scene: dict[str, Any], *, include_hidden: bool
+) -> list[dict[str, Any]]:
+    """Move newly known container contents into the scene's items so each can
+    be taken with the exact-id scene pickup; the container lists them while
+    they stay there."""
+
+    contents = target.get("contents")
+    if not isinstance(contents, list):
+        return []
+    scene_items = scene.get("items")
+    if not isinstance(scene_items, list):
+        scene_items = []
+        scene["items"] = scene_items
+    taken_ids = {_text(item.get("id")) for item in scene_items if isinstance(item, dict)}
+    moved: list[dict[str, Any]] = []
+    kept: list[Any] = []
+    for item in contents:
+        item_id = _text(item.get("id")) if isinstance(item, dict) else ""
+        if (
+            not item_id
+            or item_id in taken_ids
+            or item.get("gmOnly") is True
+            or (item.get("hidden") is True and not include_hidden)
+        ):
+            kept.append(item)
+            continue
+        entry = {key: deepcopy(value) for key, value in item.items() if key != "hidden"}
+        entry.update(
+            {
+                "playerKnown": True,
+                "containerId": _text(target.get("id")),
+                "containerName": _text(target.get("name")) or _text(target.get("id")),
+            }
+        )
+        moved.append(entry)
+        taken_ids.add(item_id)
+    target["contents"] = kept
+    scene_items.extend(deepcopy(moved))
+    return moved
+
+
+def _party_actor_ids(state: Mapping[str, Any]) -> list[str]:
+    active_ids = {
+        value for value in (state.get("activePlayerIds") or []) if isinstance(value, int) and not isinstance(value, bool)
+    }
+    return [
+        _text(actor.get("id"))
+        for actor in (state.get("playerCharacters") or [])
+        if isinstance(actor, Mapping)
+        and _text(actor.get("id"))
+        and (not active_ids or actor.get("playerId") in active_ids)
+    ]
+
+
+def _resolve_effects(
+    state: Mapping[str, Any],
+    spec: Any,
+    *,
+    actor_id: str,
+    seed: str,
+    rolls: Mapping[str, Callable[..., dict[str, Any]]],
+) -> dict[str, Any] | None:
+    if not isinstance(spec, Mapping):
+        return None
+    damage = spec.get("damage") if isinstance(spec.get("damage"), Mapping) else {}
+    rolled = roll_signed_dice(damage.get("dice"), deterministic_roller(f"{seed}:damage")) if damage else None
+    conditions = [
+        {"condition": condition_key(entry.get("condition")), "rounds": entry.get("rounds")}
+        for entry in (spec.get("conditions") if isinstance(spec.get("conditions"), list) else [])
+        if isinstance(entry, Mapping) and condition_key(entry.get("condition"))
+    ]
+    if rolled is None and not conditions:
+        return None
+    save = damage.get("save") if isinstance(damage.get("save"), Mapping) else {}
+    save_dc = save.get("dc") if isinstance(save.get("dc"), int) else DEFAULT_CHECK_DC
+    on_success = _text(save.get("onSuccess")).lower() or "half"
+    target_ids = _party_actor_ids(state) if _text(spec.get("targets")).lower() == "party" else [actor_id]
+    targets = []
+    for target_id in target_ids:
+        amount = max(0, rolled["total"]) if rolled else 0
+        save_result = (
+            rolls["save"](target_id, save.get("ability"), save_dc, f"{seed}:save:{target_id}")
+            if save.get("ability")
+            else None
+        )
+        saved = bool(save_result and save_result["passed"])
+        if saved:
+            amount = amount // 2 if on_success == "half" else 0
+        targets.append(
+            {
+                "actorId": target_id,
+                "damage": amount,
+                "save": save_result,
+                "conditions": [] if saved else deepcopy(conditions),
+            }
+        )
+    return {
+        "damage": (
+            {
+                "dice": normalize_damage_dice_expression(damage.get("dice")),
+                "rolls": rolled["rolls"],
+                "total": rolled["total"],
+                "type": _text(damage.get("type")).lower() or None,
+            }
+            if rolled
+            else None
+        ),
+        "targets": targets,
+    }
+
+
+def _attach_effects(
+    event: dict[str, Any],
+    state: Mapping[str, Any],
+    target: dict[str, Any],
+    key: str,
+    *,
+    actor_id: str,
+    rolls: Mapping[str, Callable[..., dict[str, Any]]] | None,
+) -> None:
+    effects = target.get("mechanicalEffects")
+    if not isinstance(effects, Mapping) or key not in effects:
+        return
+    event["mechanicalEffects"] = deepcopy(effects[key])
+    results = _resolve_effects(
+        state,
+        effects[key],
+        actor_id=actor_id,
+        seed=event["id"],
+        rolls=rolls or object_rolls(state),
+    )
+    if results:
+        event["effectResults"] = results
+
+
+def _failed_attempt(
+    state: Mapping[str, Any],
+    next_state: dict[str, Any],
+    *,
+    location: dict[str, Any],
+    scene: dict[str, Any],
+    target: dict[str, Any],
+    collection: str,
+    request: dict[str, Any],
+    actor_id: str,
+    fingerprint: str,
+    check: dict[str, Any],
+    rolls: Mapping[str, Callable[..., dict[str, Any]]] | None,
+) -> dict[str, Any]:
+    """Record a failed check as an applied attempt with its failure effects."""
+
+    action_id = _text(request.get("actionId"))
+    action = _text(request.get("action")).lower()
+    target_id = _text(request.get("targetId"))
+    location_id = _text(request.get("locationId"))
+    before = deepcopy(target)
+    target[FAILED_CHECK_ACTORS_KEY] = sorted(_string_set(target.get(FAILED_CHECK_ACTORS_KEY)) | {actor_id})
+    _sync_location_scene(location, scene)
+    target_kind = _entry_kind(target, collection)
+    event_id = _stable_id("evt", action_id, action, target_id, location_id, actor_id)
+    event = _event(
+        event_id,
+        f"{_event_prefix(target_kind)}.check_failed",
+        request=request,
+        actor_id=actor_id,
+        target=target,
+        target_kind=target_kind,
+        reveal_ids=[],
+    )
+    event["check"] = check
+    _attach_effects(event, state, target, f"failure:{action}", actor_id=actor_id, rolls=rolls)
+    _record_action(next_state, action_id=action_id, fingerprint=fingerprint, event_ids=[event_id])
+    return _result(
+        state,
+        ok=True,
+        code="check_failed",
+        message=f"{_check_message(check)} The attempt fails." if "roll" in check else "The authoritative check failed.",
+        action_id=action_id,
+        action=action,
+        target_id=target_id,
+        location_id=location_id,
+        changes=[
+            {
+                "id": _stable_id("chg", event_id, target_id),
+                "type": "scene.interactable.update",
+                "locationId": location_id,
+                "collection": collection,
+                "targetId": target_id,
+                "patch": _diff_patch(before, target),
+            },
+            _ledger_change(event_id, action_id=action_id, fingerprint=fingerprint),
+        ],
+        events=[event],
+        next_state=next_state,
     )
 
 
@@ -1428,12 +1953,19 @@ def available_actions_for_target(
         if legality.get("code") == "check_required":
             entry["requiresCheck"] = True
             entry["check"] = deepcopy((legality.get("details") or {}).get("check"))
+        if legality.get("code") == "check_already_attempted":
+            entry["reason"] = legality["message"]
         actions.append(entry)
     return {
         "ok": True,
         "code": "resolved",
         "targetId": _text(target_id),
         "actions": actions,
+        "take": [
+            {"itemId": _text(item.get("id")), "name": _text(item.get("name"))}
+            for item in (scene.get("items") if isinstance(scene.get("items"), list) else [])
+            if isinstance(item, dict) and _text(item.get("containerId")) == _text(target_id) and _text(item.get("id"))
+        ],
     }
 
 
@@ -1454,7 +1986,11 @@ def _project_content_item(item: dict[str, Any], *, gm: bool) -> dict[str, Any] |
 
 
 def _project_entry(
-    entry: dict[str, Any], collection: str, *, viewer: dict[str, Any]
+    entry: dict[str, Any],
+    collection: str,
+    *,
+    viewer: dict[str, Any],
+    scene_items: list[Any],
 ) -> dict[str, Any] | None:
     if viewer["isGm"]:
         return deepcopy(entry)
@@ -1486,7 +2022,14 @@ def _project_entry(
     ):
         projected_contents = [
             projected_item
-            for item in contents
+            for item in [
+                *contents,
+                *(
+                    item
+                    for item in scene_items
+                    if isinstance(item, dict) and _text(item.get("containerId")) == entry_id
+                ),
+            ]
             if isinstance(item, dict)
             for projected_item in [_project_content_item(item, gm=False)]
             if projected_item is not None
@@ -1538,7 +2081,12 @@ def project_scene_interactables(
         for entry in scene[collection]:
             if _text(entry.get("id")) in duplicates:
                 continue
-            value = _project_entry(entry, collection, viewer=viewer_ctx)
+            value = _project_entry(
+                entry,
+                collection,
+                viewer=viewer_ctx,
+                scene_items=scene.get("items") if isinstance(scene.get("items"), list) else [],
+            )
             if value is not None:
                 projected[collection].append(value)
     return projected
@@ -1573,6 +2121,8 @@ def project_interactable_event(
         "targetName",
         "visibility",
         "revealedTargetIds",
+        "check",
+        "effectResults",
     )
     return {
         field: deepcopy(event.get(field)) for field in public_fields if field in event
@@ -1851,3 +2401,198 @@ def validate_interactable_catalog(
     return sorted(
         errors, key=lambda error: (error["path"], error["code"], error["message"])
     )
+
+
+def _action_entries(value: Any, action: str) -> Any:
+    return value.get(action) if isinstance(value, Mapping) else None
+
+
+def interactable_followup_changes(
+    state: Mapping[str, Any], applied_change: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Trusted changes that follow one applied object action.
+
+    Resolved ``effectResults`` become damage (and, in combat, condition)
+    changes; a successful action also discovers its ``discoversClueIds`` and
+    ``discoversLocationIds`` and sets its ``setsFlags``.
+    """
+
+    if _text(applied_change.get("type")) != "scene.interactable.action":
+        return []
+    event = applied_change.get("event")
+    if not isinstance(event, Mapping):
+        return []
+    event_id = _text(event.get("id"))
+    target_name = _text(event.get("targetName")) or _text(event.get("targetId"))
+    base = {"turnId": applied_change.get("turnId"), "source": EFFECT_SOURCE, "visible": True}
+    changes: list[dict[str, Any]] = []
+    results = event.get("effectResults") if isinstance(event.get("effectResults"), Mapping) else {}
+    damage_type = _text((results.get("damage") or {}).get("type")) or None
+    for target in results.get("targets") or []:
+        actor_id = _text(target.get("actorId"))
+        amount = target.get("damage") if isinstance(target.get("damage"), int) else 0
+        if actor_id and amount > 0:
+            changes.append(
+                {
+                    **base,
+                    "id": stable_change_id(event_id, "effect_damage", actor_id),
+                    "type": "health.damage",
+                    "actorId": actor_id,
+                    "amount": amount,
+                    "damageType": damage_type,
+                    "reason": f"{target_name} deals {amount} {damage_type or ''} damage.".replace("  ", " "),
+                }
+            )
+        if _combat_participant(state, actor_id) is None:
+            continue
+        for condition in target.get("conditions") or []:
+            changes.append(
+                {
+                    **base,
+                    "id": stable_change_id(event_id, "effect_condition", actor_id, condition.get("condition")),
+                    "type": "combat.condition.add",
+                    "participantId": actor_id,
+                    "condition": condition.get("condition"),
+                    "rounds": condition.get("rounds"),
+                    "reason": f"{target_name} leaves the target {condition.get('condition')}.",
+                }
+            )
+    if _text(event.get("type")).endswith(".check_failed"):
+        return changes
+    scene = state.get("currentScene") if isinstance(state.get("currentScene"), Mapping) else {}
+    target_object = next(
+        (
+            entry
+            for collection in COLLECTIONS
+            for entry in (scene.get(collection) or [])
+            if isinstance(entry, Mapping) and _text(entry.get("id")) == _text(event.get("targetId"))
+        ),
+        {},
+    )
+    action = _text(event.get("action")).lower()
+    for clue_id in sorted(_string_set(_action_entries(target_object.get("discoversClueIds"), action))):
+        changes.append(
+            {
+                **base,
+                "id": stable_change_id(event_id, "clue", clue_id),
+                "type": "clue.discover",
+                "clueId": clue_id,
+                "reason": f"Found at the {target_name}.",
+            }
+        )
+    flags = _action_entries(target_object.get("setsFlags"), action)
+    for flag_key, flag_value in (flags.items() if isinstance(flags, Mapping) else []):
+        changes.append(
+            {
+                **base,
+                "id": stable_change_id(event_id, "flag", flag_key),
+                "type": "flag.set",
+                "flagKey": _text(flag_key),
+                "flagValue": deepcopy(flag_value),
+                "visible": False,
+                "reason": f"{target_name}: {action}.",
+            }
+        )
+    for location_id in sorted(_string_set(_action_entries(target_object.get("discoversLocationIds"), action))):
+        changes.append(
+            {
+                **base,
+                "id": stable_change_id(event_id, "location", location_id),
+                "type": "location.discover",
+                "locationId": location_id,
+                "status": "discovered",
+                "reason": f"Learned of at the {target_name}.",
+            }
+        )
+    return changes
+
+
+def _verb_phrase(action: str) -> str:
+    return f"{action}es" if action.endswith(("ch", "sh", "s")) else f"{action}s"
+
+
+def _combat_object_economy(action: str) -> dict[str, Any]:
+    return {
+        "action": 0 if action in FREE_COMBAT_ACTIONS else 1,
+        "bonusAction": 0,
+        "reaction": 0,
+        "movement": "unused",
+        "movementCost": 0,
+        "endsTurn": False,
+        "tracking": "persisted_turn_economy",
+        "reactionTracked": True,
+        "subTurnCountersTracked": True,
+    }
+
+
+def combat_object_actions(
+    snapshot: dict[str, Any], participant: dict[str, Any], combat: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Scene-object actions for the combat HUD: inspect is free, the rest
+    cost the actor's action."""
+
+    actor = _state_actor(snapshot, participant.get("id"))
+    scene = snapshot.get("currentScene") if isinstance(snapshot.get("currentScene"), dict) else {}
+    if not actor or not _text(scene.get("locationId")):
+        return []
+    rules_state = {
+        "currentScene": scene,
+        "locations": snapshot.get("locations") if isinstance(snapshot.get("locations"), list) else [],
+        "flags": snapshot.get("flags") if isinstance(snapshot.get("flags"), dict) else {},
+    }
+    context = interactable_actor_context(rules_state, actor)
+    actor_name = _text(participant.get("name")) or _text(actor.get("name")) or "I"
+    projected = project_scene_interactables(rules_state, {"id": actor.get("id")})
+    actions: list[dict[str, Any]] = []
+    for collection in COLLECTIONS:
+        for entry in projected[collection]:
+            target_id = _text(entry.get("id"))
+            name = _text(entry.get("name")) or target_id
+            options = available_actions_for_target(
+                rules_state,
+                location_id=_text(scene.get("locationId")),
+                target_id=target_id,
+                actor=context,
+            )
+            for option in options.get("actions") or []:
+                if not option.get("legal") and not option.get("requiresCheck"):
+                    continue
+                action = option["action"]
+                cost = "Free." if action in FREE_COMBAT_ACTIONS else "Uses your action."
+                actions.append(
+                    {
+                        "id": f"{COMBAT_ACTION_PREFIX}{target_id}.{action}",
+                        "type": "object",
+                        "label": f"{ACTION_LABELS[action]} {name}",
+                        "description": f"{cost} Needs a check." if option.get("requiresCheck") else cost,
+                        "message": f"{actor_name} {_verb_phrase(action)} the {name}.",
+                        "available": True,
+                        "reason": "",
+                        "economy": _combat_object_economy(action),
+                        "object": {"id": target_id, "action": action, "revision": entry.get("revision")},
+                    }
+                )
+    return actions
+
+
+def resolve_combat_object_action(
+    snapshot: dict[str, Any], player: Any, action: dict[str, Any], target_id: str
+) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    if target_id:
+        return None, "combat_target_invalid", "That combat action does not accept a target."
+    return (
+        {
+            "action_id": action["id"],
+            "action_type": "object",
+            "economy": deepcopy(action["economy"]),
+            "authoritative": True,
+            "object": deepcopy(action.get("object") or {}),
+            "message": _text(action.get("message")),
+        },
+        None,
+        None,
+    )
+
+
+register_action_provider(combat_object_actions)
+register_action_resolver(COMBAT_ACTION_PREFIX, resolve_combat_object_action)

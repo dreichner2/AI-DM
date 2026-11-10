@@ -45,6 +45,72 @@ status codes, and less common subroutes.
 | TTS and feedback | TTS config/speak/stream and coherence/bad-turn feedback under `/api/tts` and `/api/feedback` | `system.py` |
 | Metrics and beta operations | Metrics, Prometheus text, beta summary/SLO/incidents/quality/audits/support bundle under `/api/metrics*` and `/api/beta/*` | `system.py` |
 
+## Session Lists, Paging, And Saves
+
+Session list items are `SessionSummary` summaries: identity, `name`, the
+server-computed `display_name` (name, else the legacy snapshot name/title, else
+`Chapter {n}` or `Session {n}`; imported archives are prefixed `Archive — `),
+chapter fields, timestamps, `turn_count`, `scene_title` (at most 120
+characters), `summary_excerpt` (rolling summary or recap, at most 280
+characters), `imported` and `play_now`. They never carry `state_snapshot`; the
+full snapshot comes only from `GET /api/sessions/<session_id>/state` and the
+export endpoint. The same summary is returned by the campaign workspace, the
+session list, rename, archive, restore, content-settings, Play Now and import
+responses.
+
+Paging:
+
+- `GET /api/sessions/campaigns/<campaign_id>/sessions` accepts `limit`
+  (default 30, at most 100), an opaque `cursor` and `include_archived`, and
+  returns `{campaign_id, sessions, limit, has_more, next_cursor}`;
+  `next_cursor` is null on the last page. Sessions sort by
+  `latest_activity_at` then `session_id`, both descending. The cursor retains
+  that key and the remaining chapter IDs in their initial order, so an edited
+  chapter is not skipped while paging. Newly created chapters appear after a
+  fresh first-page request.
+- `GET /api/campaigns/<campaign_id>/workspace` accepts `sessions_limit`
+  (default 30, at most 100) and `sessions_cursor`, reports the page in
+  `has_more.sessions` / `next_cursor.sessions` / `limits.sessions`, and always
+  includes the campaign's current chapter even when it falls outside the page.
+  Player, map and segment lists inside the workspace are unchanged.
+- `GET /api/campaigns` sorts by `updated_at` then `campaign_id`, both
+  descending. With `limit`, the `X-AIDM-Next-Cursor` header carries an opaque
+  cursor to send back as `cursor`. `before_id` is deprecated and accepted for
+  one release: without `cursor` it is translated to the cursor of that
+  campaign. An unknown `before_id` or a malformed cursor returns
+  `validation_error`.
+
+`GET /api/sessions/<session_id>/export` returns one save document, built while
+holding the session's turn lock so it never straddles a turn's commit:
+`{format: "aidm.save", version: 2, exported_at, campaign: {id, title,
+pack_id?}, session: SessionSummary, state_snapshot, session_state:
+{rolling_summary, current_location, current_quest, memory_snippets}, log,
+characters, unsettled: {pending_roll, active_combat}}`. Players receive the
+snapshot exactly as the state endpoint projects it for them and only their own
+characters; workspace administrators receive the full snapshot and every
+character. The client downloads this document unchanged.
+
+`POST /api/sessions/import` takes a save (or the older client-assembled
+export) with `mode`:
+
+- `archive` (default) creates an `ended` session marked `imported`, never
+  current and never playable; its log and summary are readable. No character
+  row changes.
+- `restore` (`dm_runtime_control` only, version 2 saves of the target campaign
+  only; otherwise 409 `save_not_restorable` with the reason) starts the next
+  chapter from the saved world under the same rules and fences as
+  `POST /api/sessions/start` (the current chapter closes; an unfinished fight or
+  roll in it returns 409 `chapter_unsettled`; the save's transient combat and
+  pending rolls are not restored, and a save taken mid-scene adds a system log
+  line saying so). Only with `restore_characters: true` are the matching
+  campaign Player rows (by `player_id`, then character name) overwritten with
+  the saved hit points, XP, level, inventory, currency, spell and class
+  resources and conditions, recorded as a `session.restore_characters`
+  operator audit.
+
+The response is `{imported, mode, session_id, session, counts,
+restored_player_ids}`.
+
 Private `PlayerDetail` payloads include canonical `weapon_proficiencies`
 selectors such as `category:martial` and `weapon:rapier`. Character creation and
 class changes derive this list on the server; request payloads cannot directly
@@ -84,12 +150,11 @@ members and scoped bearer credentials receive player capabilities. When auth is
 disabled for an explicitly local run, the local operator path receives the
 local capability set.
 
-Player-readable session responses are also object-scoped. Session list,
-workspace, state, and export projections keep full character detail only for
-player records owned by the requesting account. Party peers are reduced to
-public identity and bounded shared combat status. An explicit export request for
-another account's player returns `player_not_found`; a workspace administrator
-receives the complete inspection/export view. Accountless workspace tokens can
+Player-readable session responses are also object-scoped. Workspace, state,
+and export projections keep full character detail only for player records
+owned by the requesting account. Party peers are reduced to public identity and
+bounded shared combat status. A workspace administrator receives the complete
+inspection/export view. Accountless workspace tokens can
 still read public party summaries, but direct player reads/mutations and socket
 player bindings return not-found/invalid-player semantics because those tokens
 own no private character.
@@ -105,10 +170,8 @@ unspecified maps default to `player` for compatibility. Player map collections,
 direct lookup, campaign workspace counts/cursors, and the map inspector omit
 `dm` records entirely and direct lookup returns `map_not_found`; DM authors see
 both states and can reveal or hide a map with `PATCH /api/maps/<map_id>`.
-Authored `Map` records are not serialized in Socket.IO or the backend session-
-export contract. The browser's richer JSON export includes only its defensive
-viewer-filtered map list, so a stale DM cache entry cannot bypass the server
-projection during an account/role transition.
+Authored `Map` records are not serialized in Socket.IO or the session save
+document.
 
 Raw campaign canon plus campaign and region bestiary catalogs are `debug_read`;
 the core bestiary remains `player_read`. Chronicle routes are still

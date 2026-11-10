@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import type { FormEvent } from 'react'
+import type { ChangeEvent, FormEvent } from 'react'
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiClientError } from './api'
+import type { SessionImportResponse, SessionSaveDocument, SessionSummary } from './types'
 import { useSessionActions } from './useSessionActions'
 
 const apiFetchMock = vi.hoisted(() => vi.fn())
@@ -20,31 +21,77 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+function chapter(fields: Partial<SessionSummary> = {}): SessionSummary {
+  return {
+    session_id: 20,
+    campaign_id: 7,
+    name: null,
+    display_name: 'Chapter 3',
+    status: 'active',
+    is_current: true,
+    is_archived: false,
+    chapter_number: 3,
+    chapter_recap: '',
+    ended_at: null,
+    created_at: null,
+    updated_at: '2026-11-10T10:00:00Z',
+    latest_activity_at: null,
+    turn_count: 4,
+    scene_title: 'Ash Gate',
+    summary_excerpt: '',
+    imported: false,
+    play_now: false,
+    ...fields,
+  }
+}
+
+function save(fields: Partial<SessionSaveDocument> = {}): SessionSaveDocument {
+  return {
+    format: 'aidm.save',
+    version: 2,
+    exported_at: '2026-11-10T10:00:00Z',
+    campaign: { id: 7, title: 'The Lanterns of Bleakmoor!' },
+    session: chapter(),
+    state_snapshot: { flags: { gate_opened: true } },
+    session_state: { rolling_summary: '', current_location: null, current_quest: null, memory_snippets: [] },
+    log: [],
+    characters: [],
+    unsettled: { pending_roll: false, active_combat: false },
+    ...fields,
+  }
+}
+
+function importResponse(mode: 'archive' | 'restore', session: SessionSummary): SessionImportResponse {
+  return {
+    imported: true,
+    mode,
+    session_id: session.session_id,
+    session,
+    counts: { turn_events: 0, projected_log_entries: 0, log_entries: 0, session_state: 1 },
+    restored_player_ids: [],
+  }
+}
+
+function fileEvent(contents: unknown) {
+  const file = new File([JSON.stringify(contents)], 'bleakmoor.aidm-save.json', { type: 'application/json' })
+  return { currentTarget: { files: [file], value: 'bleakmoor.aidm-save.json' } } as unknown as ChangeEvent<HTMLInputElement>
+}
+
 function createOptions() {
   return {
     auth: 'token',
     baseUrl: 'https://backend.example.test',
-    campaign: null,
     activeSession: null,
-    sessionDisplayFallback: null,
     selectedCampaignId: 7,
     selectedSessionId: null,
-    selectedPlayerId: null,
-    players: [],
-    selectedPlayer: null,
-    playerDetail: null,
-    sessionState: null,
-    logEntries: [],
-    maps: [],
-    segments: [],
-    metrics: null,
+    canRestoreSaves: true,
     rememberDialogTrigger: vi.fn(),
     sessionMenuButton: vi.fn(() => null),
-    sessionDisplayName: vi.fn(() => 'Session'),
     loadSessionData: vi.fn(),
     refreshRoot: vi.fn(),
     refreshCampaignWorkspace: vi.fn(() => Promise.resolve()),
     sessionUpserted: vi.fn(),
+    sessionRemoved: vi.fn(),
     setSelectedCampaignId: vi.fn(),
     setSelectedSessionId: vi.fn(),
     setLogEntries: vi.fn(),
@@ -193,6 +240,141 @@ describe('useSessionActions', () => {
 
       expect(result.current.startChapterDialog).toMatchObject({ error: 'Network down', unsettled: false, pending: false })
       expect(options.pushError).toHaveBeenCalledWith('persistence', 'Could not start the next chapter: Network down')
+    })
+  })
+
+  it('renames from the stored name and deletes by the server display name', () => {
+    const { result, rerender } = renderHook(
+      ({ activeSession }) => useSessionActions({ ...createOptions(), activeSession }),
+      { initialProps: { activeSession: chapter({ name: 'Old save', display_name: 'Archive — Old save' }) } },
+    )
+
+    act(() => result.current.openRenameSessionDialog())
+    expect(result.current.sessionActionDialog).toMatchObject({ mode: 'rename', name: 'Old save' })
+
+    rerender({ activeSession: chapter() })
+    act(() => result.current.openRenameSessionDialog())
+    expect(result.current.sessionActionDialog).toMatchObject({ mode: 'rename', name: 'Chapter 3' })
+    act(() => result.current.openDeleteSessionDialog())
+    expect(result.current.sessionActionDialog).toMatchObject({ mode: 'delete', name: 'Chapter 3' })
+  })
+
+  it('downloads the server save document unchanged under the campaign and chapter name', async () => {
+    const document = save()
+    apiFetchMock.mockResolvedValueOnce(document)
+    const blobs: Blob[] = []
+    const downloads: string[] = []
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: vi.fn((blob: Blob) => {
+        blobs.push(blob)
+        return 'blob:save'
+      }),
+      revokeObjectURL: vi.fn(),
+    })
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      downloads.push(this.download)
+    })
+    const { result } = renderHook(() => useSessionActions({ ...createOptions(), selectedSessionId: 20 }))
+
+    await act(async () => result.current.downloadSessionJson())
+
+    expect(apiFetchMock).toHaveBeenCalledWith('https://backend.example.test', '/api/sessions/20/export', 'token')
+    expect(downloads).toEqual(['the-lanterns-of-bleakmoor-chapter-3.aidm-save.json'])
+    expect(JSON.parse(await blobs[0].text())).toEqual(document)
+    click.mockRestore()
+    vi.unstubAllGlobals()
+  })
+
+  describe('importing a save', () => {
+    const submitEvent = () => ({ preventDefault: vi.fn() }) as unknown as FormEvent<HTMLFormElement>
+    const importBody = () => JSON.parse(apiFetchMock.mock.calls[0][3].body)
+
+    it('posts other files straight in as a read-only archive', async () => {
+      const archive = chapter({ session_id: 31, status: 'ended', is_current: false, imported: true, display_name: 'Archive — Old' })
+      apiFetchMock.mockResolvedValueOnce(importResponse('archive', archive))
+      const options = createOptions()
+      const { result } = renderHook(() => useSessionActions(options))
+
+      await act(async () => result.current.importSessionJson(fileEvent({ selectedSession: {}, campaign_id: 7 })))
+
+      expect(importBody()).toMatchObject({ mode: 'archive', campaign_id: 7 })
+      expect(result.current.saveImportDialog).toBeNull()
+      expect(options.setSelectedSessionId).toHaveBeenCalledWith(31)
+      expect(options.pushError).toHaveBeenCalledWith('system', 'Imported "Archive — Old" as a read-only archive.')
+    })
+
+    it('archives a save of another campaign, or any save for a player, without asking', async () => {
+      const archive = chapter({ session_id: 31, imported: true })
+      apiFetchMock.mockResolvedValue(importResponse('archive', archive))
+      const { result: operator } = renderHook(() => useSessionActions(createOptions()))
+      const { result: player } = renderHook(() => useSessionActions({ ...createOptions(), canRestoreSaves: false }))
+
+      await act(async () => operator.current.importSessionJson(fileEvent(save({ campaign: { id: 99, title: 'Other' } }))))
+      await act(async () => player.current.importSessionJson(fileEvent(save())))
+
+      expect(operator.current.saveImportDialog).toBeNull()
+      expect(player.current.saveImportDialog).toBeNull()
+      expect(apiFetchMock.mock.calls.map((call) => JSON.parse(call[3].body).mode)).toEqual(['archive', 'archive'])
+    })
+
+    it('offers an operator the choice for a save of the open campaign and keeps it as an archive by default', async () => {
+      const archive = chapter({ session_id: 31, imported: true })
+      apiFetchMock.mockResolvedValueOnce(importResponse('archive', archive))
+      const { result } = renderHook(() => useSessionActions(createOptions()))
+
+      await act(async () => result.current.importSessionJson(fileEvent(save())))
+      expect(apiFetchMock).not.toHaveBeenCalled()
+      expect(result.current.saveImportDialog).toMatchObject({
+        fileName: 'bleakmoor.aidm-save.json',
+        mode: 'archive',
+        restoreCharacters: false,
+      })
+
+      await act(async () => result.current.submitSaveImportDialog(submitEvent()))
+      expect(importBody()).toMatchObject({ mode: 'archive', format: 'aidm.save' })
+      expect(importBody()).not.toHaveProperty('restore_characters')
+      expect(result.current.saveImportDialog).toBeNull()
+    })
+
+    it('restores as a new chapter, with characters only when asked, and selects it', async () => {
+      const restored = chapter({ session_id: 32, display_name: 'Chapter 4', chapter_number: 4 })
+      apiFetchMock.mockResolvedValueOnce(importResponse('restore', restored))
+      const options = createOptions()
+      const { result } = renderHook(() => useSessionActions(options))
+
+      await act(async () => result.current.importSessionJson(fileEvent(save())))
+      act(() => result.current.updateSaveImportDialog({ mode: 'restore' }))
+      act(() => result.current.updateSaveImportDialog({ restoreCharacters: true }))
+      await act(async () => result.current.submitSaveImportDialog(submitEvent()))
+
+      expect(importBody()).toMatchObject({ mode: 'restore', restore_characters: true, campaign_id: 7 })
+      expect(options.setSelectedSessionId).toHaveBeenCalledWith(32)
+      expect(options.refreshCampaignWorkspace).toHaveBeenCalledWith(7)
+      expect(options.pushError).toHaveBeenCalledWith('system', 'Restored the save as Chapter 4.')
+      expect(result.current.saveImportDialog).toBeNull()
+    })
+
+    it("shows the server's reason when a save cannot be restored", async () => {
+      apiFetchMock.mockRejectedValueOnce(
+        new ApiClientError('This save belongs to a different campaign.', 409, {
+          error: 'This save belongs to a different campaign.',
+          error_code: 'save_not_restorable',
+        }),
+      )
+      const options = createOptions()
+      const { result } = renderHook(() => useSessionActions(options))
+
+      await act(async () => result.current.importSessionJson(fileEvent(save())))
+      act(() => result.current.updateSaveImportDialog({ mode: 'restore' }))
+      await act(async () => result.current.submitSaveImportDialog(submitEvent()))
+
+      expect(importBody()).toMatchObject({ mode: 'restore', restore_characters: false })
+      expect(result.current.saveImportDialog).toMatchObject({
+        pending: false,
+        error: 'This save belongs to a different campaign.',
+      })
+      expect(options.setSelectedSessionId).not.toHaveBeenCalled()
     })
   })
 })

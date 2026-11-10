@@ -6,12 +6,14 @@ import re
 from typing import Any, Callable
 
 from aidm_server.canon_text import int_or_default
+from aidm_server.combat.actions import resolve_combat_action
 from aidm_server.combat.difficulty import normalize_combat_difficulty_ai
 from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
 from aidm_server.combat.intent_planner import attach_intents_to_combat, plan_enemy_intents
-from aidm_server.combat.modifiers import can_act, condition_keys, temp_hp_per_turn, tick_turn_boundary
-from aidm_server.combat.vitality import apply_death_save, death_save_roll, is_dying, is_player_character
+from aidm_server.combat.modifiers import active_effects, apply_damage_multiplier, attacks_per_action, can_act, condition_keys, damage_defense, temp_hp_per_turn, tick_turn_boundary
+from aidm_server.combat.vitality import apply_death_save, death_save_roll, is_dying, is_player_character, take_damage
 from aidm_server.combat.state import (
+    MAX_MOVEMENT_PER_TURN,
     combat_summary_for_dm,
     combat_turn_context,
     consume_combat_turn_economy,
@@ -24,7 +26,7 @@ from aidm_server.combat.state import (
     player_combat_participant,
 )
 from aidm_server.creatures.repository import record_combat_debug_event
-from aidm_server.damage_dice import deterministic_roller
+from aidm_server.damage_dice import deterministic_roller, parse_damage_dice_expression
 from aidm_server.creatures.resolver import (
     CreatureResolutionPlan,
     default_request_from_session,
@@ -33,7 +35,7 @@ from aidm_server.creatures.resolver import (
     resolve_creatures_for_encounter,  # noqa: F401 - compatibility monkeypatch seam
 )
 from aidm_server.database import db
-from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start
+from aidm_server.game_state.campaign_pack_encounters import TRIGGER_STARTED_BY, due_encounter, materialize_campaign_pack_combat_start
 from aidm_server.game_state.models import display_actor_id, stable_change_id, stable_slug
 from aidm_server.models import Campaign, CombatEncounter, DmTurn, Session, safe_json_dumps, safe_json_loads
 from aidm_server.provider_priority import foreground_provider_reservation
@@ -523,70 +525,90 @@ def _turn_combat_action(turn: DmTurn) -> dict[str, Any] | None:
     return combat_action
 
 
+def _turn_action_ledger_id(turn: DmTurn, combat_action: dict[str, Any]) -> str:
+    # One submission is one turn record: the same HUD action id may be taken
+    # again in a later submission (Extra Attack, a second move after Dash), but
+    # replaying the same turn record never spends twice.
+    return f"{combat_action.get('action_id')}@turn:{turn.turn_id}"
+
+
+def _turn_action_already_spent(combat: dict[str, Any], *, turn: DmTurn, actor_id: str) -> bool:
+    combat_action = _turn_combat_action(turn)
+    if combat_action is None:
+        return False
+    flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+    economy = flags.get('turnEconomy') if isinstance(flags.get('turnEconomy'), dict) else {}
+    return (
+        str(economy.get('actorId') or '') == actor_id
+        and _turn_action_ledger_id(turn, combat_action) in (economy.get('spentActionIds') or [])
+    )
+
+
 def _consume_turn_combat_action(
     combat: dict[str, Any],
     *,
     turn: DmTurn,
     actor_id: str,
 ) -> tuple[bool, str]:
+    """Spend the submitted action's cost and record what it grants this turn.
+
+    The first weapon attack spends the action and sets ``attacksRemaining`` to
+    the actor's attacks per action minus one; later attacks spend those.  Dash
+    adds a movement and Disengage marks the turn disengaged.
+    """
+
     combat_action = _turn_combat_action(turn)
     if combat_action is None:
         return True, ''
     economy = combat_action.get('economy') if isinstance(combat_action.get('economy'), dict) else {}
-    consumed, reason, _remaining = consume_combat_turn_economy(
+    action_type = str(combat_action.get('action_type') or '')
+    ledger_id = _turn_action_ledger_id(turn, combat_action)
+    replay = _turn_action_already_spent(combat, turn=turn, actor_id=actor_id)
+    current = ensure_combat_turn_economy(combat, actor_id=actor_id)
+    weapon_attack = action_type == 'attack' and combat_action.get('offhand') is not True
+    action_cost = int_or_default(economy.get('action'), default=0)
+    if weapon_attack:
+        action_cost = 0 if int(current.get('attacksRemaining') or 0) > 0 else 1
+    claim = safe_json_dumps(
+        {
+            'actionType': action_type,
+            'targetId': combat_action.get('target_id'),
+            'weaponId': combat_action.get('weapon_id'),
+        },
+        {},
+    )
+    consumed, reason, remaining = consume_combat_turn_economy(
         combat,
         actor_id=actor_id,
-        action_id=combat_action.get('action_id'),
-        action_claim=safe_json_dumps(
-            {
-                'actionType': combat_action.get('action_type'),
-                'targetId': combat_action.get('target_id'),
-                'weaponId': combat_action.get('weapon_id'),
-            },
-            {},
-        ),
-        action_cost=int_or_default(economy.get('action'), default=0),
+        action_id=ledger_id,
+        action_claim=claim,
+        action_cost=action_cost,
         bonus_action_cost=int_or_default(economy.get('bonusAction'), default=0),
         reaction_cost=int_or_default(economy.get('reaction'), default=0),
         movement_cost=int_or_default(economy.get('movementCost'), default=0),
     )
-    return consumed, reason
-
-
-def _combat_action_movement_change(turn: DmTurn, combat: dict[str, Any], *, actor_id: str) -> dict[str, Any] | None:
-    combat_action = _turn_combat_action(turn)
-    if not isinstance(combat_action, dict) or str(combat_action.get('action_type') or '') not in {'reposition', 'disengage'}:
-        return None
-    participant = next(
-        (
-            item
-            for item in combat.get('participants') or []
-            if isinstance(item, dict) and str(item.get('id') or '') == actor_id
-        ),
-        None,
-    )
-    if not isinstance(participant, dict):
-        return None
-    position = participant.get('position') if isinstance(participant.get('position'), dict) else {}
-    from_range = str(position.get('rangeBand') or 'near').strip().lower()
-    to_range = {
-        'melee': 'near',
-        'near': 'far',
-        'far': 'distant',
-        'distant': 'distant',
-    }.get(from_range, 'far')
-    if to_range == from_range:
-        return None
-    return {
-        'id': stable_change_id(turn.turn_id, 'combat.action.move', actor_id, combat_action.get('action_id'), from_range, to_range),
-        'turnId': turn.turn_id,
-        'type': 'combat.move',
-        'participantId': actor_id,
-        'fromRangeBand': from_range,
-        'toRangeBand': to_range,
-        'reason': f"{combat_action.get('action_type')} consumed movement and changed range band.",
-        'visible': True,
-    }
+    if not consumed or replay:
+        return consumed, reason
+    if ledger_id not in remaining['spentActionIds']:
+        remaining['spentActionIds'].append(ledger_id)
+        remaining['spentActionClaims'][ledger_id] = claim
+    if weapon_attack:
+        if action_cost:
+            actor = next(
+                (item for item in combat.get('participants') or [] if isinstance(item, dict) and str(item.get('id') or '') == actor_id),
+                None,
+            )
+            remaining['attacksRemaining'] = attacks_per_action(actor, combat) - 1
+        else:
+            remaining['attacksRemaining'] = max(0, int(remaining.get('attacksRemaining') or 0) - 1)
+    if action_type == 'attack' and str(combat_action.get('weapon_id') or ''):
+        remaining['attackWeaponIds'] = list(dict.fromkeys([*remaining.get('attackWeaponIds', []), str(combat_action['weapon_id'])]))
+    if action_type == 'dash':
+        remaining['movementRemaining'] = min(MAX_MOVEMENT_PER_TURN, int(remaining.get('movementRemaining') or 0) + 1)
+    if action_type == 'disengage':
+        remaining['disengaged'] = True
+    combat['flags']['turnEconomy'] = remaining
+    return True, ''
 
 
 def _combat_turn_flags(turn_context: dict[str, Any], *, submitted_actor_id: str | None = None) -> dict[str, Any]:
@@ -718,27 +740,70 @@ def turn_boundaries(combat: dict[str, Any], turn_context: dict[str, Any]) -> lis
 
 
 def participant_at_turn_start(participant: dict[str, Any]) -> dict[str, Any]:
-    """A copy of an actor as it begins its turn: standing up if it can, no longer dodging.
+    """A copy of an actor as it begins its turn: standing up if it can, no longer
+    dodging, its reaction back.
 
     Enemy blocks resolve before the advance that records their turn boundaries,
-    so their own attack rolls read this view.
+    so their own rolls read this view.
     """
 
     view = deepcopy(participant)
     keys = condition_keys(view)
     ended = {'dodging'} | ({'prone'} if can_act(view) else set())
     view['conditions'] = [value for value in view.get('conditions') or [] if str(value).strip().lower() not in (keys & ended)]
+    view['reactionRemaining'] = 1
     return view
+
+
+def apply_start_turn_damage(participant: dict[str, Any], *, turn_id: Any, round_number: int) -> list[dict[str, Any]]:
+    """Resolve each ongoing damage effect with a reproducible, recorded roll."""
+    actor_id = str(participant.get('id') or '')
+    results = []
+    for effect in active_effects(participant):
+        modifiers = effect.get('modifiers') if isinstance(effect.get('modifiers'), dict) else {}
+        damage = modifiers.get('damagePerTurn') if isinstance(modifiers.get('damagePerTurn'), dict) else {}
+        dice = parse_damage_dice_expression(damage.get('dice'))
+        if not dice:
+            continue
+        roll = deterministic_roller(f"turn_damage:{turn_id}:{round_number}:{actor_id}:{effect['id']}")
+        rolls = [roll(int(dice['sides'])) for _ in range(int(dice['count']))]
+        rolled = max(0, sum(rolls) + int(dice['bonus']))
+        damage_type = str(damage.get('type') or '').strip().lower()
+        multiplier, defense = damage_defense(participant, damage_type)
+        amount = apply_damage_multiplier(rolled, multiplier)
+        if is_player_character(participant):
+            applied = take_damage(participant, amount, in_combat=True)
+        else:
+            hp = participant.setdefault('hp', {})
+            temp = max(0, int_or_default(hp.get('temp'), default=0))
+            current = max(0, int_or_default(hp.get('current'), default=0))
+            absorbed = min(temp, amount)
+            dealt = min(current, amount - absorbed)
+            hp['temp'] = temp - absorbed
+            hp['current'] = current - dealt
+            if hp['current'] <= 0:
+                participant['isAlive'] = False
+                participant['isConscious'] = False
+            applied = {'amount': absorbed + dealt, 'tempHpDamage': absorbed, 'hpDamage': dealt}
+        results.append({
+            'effectId': effect['id'], 'dice': dice['dice'], 'rolls': rolls, 'damageType': damage_type,
+            'rolled': rolled, 'defense': defense, 'damage': amount, **applied,
+        })
+    return results
 
 
 def _start_turn(combat: dict[str, Any], participant: dict[str, Any], *, turn_id: Any, round_number: int) -> dict[str, Any]:
     actor_id = str(participant.get('id'))
     result: dict[str, Any] = {}
+    participant['reactionRemaining'] = 1
     granted = temp_hp_per_turn(participant)
     hp = participant.setdefault('hp', {})
     if granted > int_or_default(hp.get('temp'), default=0):
         hp['temp'] = granted
         result['tempHpGranted'] = granted
+    ongoing_damage = apply_start_turn_damage(participant, turn_id=turn_id, round_number=round_number)
+    if ongoing_damage:
+        result['ongoingDamage'] = ongoing_damage
     keys = condition_keys(participant)
     removed = {'dodging'} & keys
     if 'prone' in keys and can_act(participant):
@@ -769,9 +834,10 @@ def apply_turn_boundaries(combat: dict[str, Any], boundaries: list[dict[str, Any
 
     Turn end ticks effects held by (``target_turn_end``) or cast by
     (``caster_turn_end``) the actor.  Turn start ticks ``caster_turn_start``
-    effects, grants ``tempHpPerTurn``, ends ``dodging``, stands a prone actor
-    that can act (spending its movement) and rolls recharge for abilities
-    marked ``needsRecharge`` (5-6 on the deterministic d6 recharges).
+    effects, restores the actor's reaction, grants ``tempHpPerTurn``, ends
+    ``dodging``, stands a prone actor that can act (spending its movement) and
+    rolls recharge for abilities marked ``needsRecharge`` (5-6 on the
+    deterministic d6 recharges).
     """
 
     events: list[dict[str, Any]] = []
@@ -1105,6 +1171,7 @@ def _prepare_campaign_pack_combat_start(
     reason: str,
     before_intent_provider_call: Callable[[], None] | None,
     reload_orm_after_intent_provider_call: CombatOrmReloader | None,
+    trigger: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     scene = working_state.get('currentScene') if isinstance(working_state.get('currentScene'), dict) else {}
     enemy_position = _scene_position_for_actor(working_state, actor_record) if actor_record else {'rangeBand': 'near'}
@@ -1113,6 +1180,8 @@ def _prepare_campaign_pack_combat_start(
         'turnId': turn.turn_id,
         'type': 'combat.start',
         'source': 'campaign_pack',
+        # A due trigger names its encounter; the applier records it as triggered.
+        **({'campaignPackEncounterId': trigger['encounterId'], 'campaignPackTrigger': trigger} if trigger else {}),
         'combat': {
             'status': 'active',
             'round': 1,
@@ -1360,11 +1429,25 @@ def prepare_combat_for_turn(
             }
 
     if _combat_is_active(combat):
-        action_consumed, action_block_reason = _consume_turn_combat_action(
-            combat,
-            turn=turn,
-            actor_id=submitted_actor_id,
+        combat_action = _turn_combat_action(turn)
+        action_resolution = (
+            resolve_combat_action(
+                state=working_state,
+                combat_action=combat_action,
+                actor_id=submitted_actor_id,
+                turn_id=turn.turn_id,
+            )
+            if combat_action is not None and not _turn_action_already_spent(combat, turn=turn, actor_id=submitted_actor_id)
+            else None
         )
+        if action_resolution is not None and not action_resolution['ok']:
+            action_consumed, action_block_reason = False, action_resolution['reason']
+        else:
+            action_consumed, action_block_reason = _consume_turn_combat_action(
+                combat,
+                turn=turn,
+                actor_id=submitted_actor_id,
+            )
         if not action_consumed:
             debug['combatActionBlockedReason'] = action_block_reason
             debug['combatSummary'] = combat_summary_for_dm(combat)
@@ -1401,21 +1484,19 @@ def prepare_combat_for_turn(
             reason='Combat roster prepared before narration.',
         )
         changes = _intent_changes(turn.turn_id, combat_with_intents, intent_plan)
-        movement_change = _combat_action_movement_change(turn, combat, actor_id=submitted_actor_id)
-        if movement_change:
-            changes = [movement_change, *changes]
+        combat_context = debug['combatSummary']
+        if action_resolution is not None:
+            changes = [*action_resolution['changes'], *changes]
+            combat_context = {**combat_context, 'playerResolvedCombatAction': action_resolution['result']}
+            debug['combatActionResolution'] = action_resolution['result']
         if turn_update_change:
             changes = [turn_update_change, *changes]
         return _defer_combat_prepare_finalization({
             'changes': changes,
             'debug': debug,
-            'combatContext': debug['combatSummary'],
+            'combatContext': combat_context,
         })
 
-    if not _should_start_combat(working_state, player_message):
-        return {'changes': [], 'debug': debug, 'combatContext': None}
-
-    debug['triggered'] = True
     actor_record = next(
         (
             actor
@@ -1424,6 +1505,30 @@ def prepare_combat_for_turn(
         ),
         {},
     )
+    # An encounter whose checkpoint trigger is due starts before narration.
+    due = due_encounter(working_state, [])
+    if due is not None:
+        trigger_start = _prepare_campaign_pack_combat_start(
+            working_state=working_state,
+            session_obj=session_obj,
+            campaign=campaign,
+            turn=turn,
+            submitted_actor_id=submitted_actor_id,
+            actor_record=actor_record,
+            combat_started_by=TRIGGER_STARTED_BY,
+            initiative_required=True,
+            reason='Campaign pack encounter started by its authored trigger.',
+            before_intent_provider_call=before_intent_provider_call,
+            reload_orm_after_intent_provider_call=reload_orm_after_intent_provider_call,
+            trigger={'encounterId': str(due.get('id') or ''), 'type': str((due.get('trigger') or {}).get('type') or '')},
+        )
+        if trigger_start:
+            return trigger_start
+
+    if not _should_start_combat(working_state, player_message):
+        return {'changes': [], 'debug': debug, 'combatContext': None}
+
+    debug['triggered'] = True
     pack_start = _prepare_campaign_pack_combat_start(
         working_state=working_state,
         session_obj=session_obj,

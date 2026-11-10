@@ -1,3 +1,9 @@
+"""Importing saves: a read-only archive by default, or a restored chapter.
+
+An ``aidm.save`` version 2 document comes from ``GET /api/sessions/<id>/export``.
+The older client-assembled export shape is still accepted as an archive.
+"""
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -7,13 +13,35 @@ from itertools import islice
 from typing import Any
 
 from aidm_server.database import db
-from aidm_server.models import Campaign, Player, Session, SessionLogEntry, SessionState, TurnEvent, safe_json_dumps
+from aidm_server.game_state.models import CURRENCY_STAT_KEYS, dump_inventory_items, load_inventory_items
+from aidm_server.models import (
+    Campaign,
+    Player,
+    Session,
+    SessionLogEntry,
+    SessionState,
+    TurnEvent,
+    safe_json_dumps,
+    safe_json_loads,
+)
 from aidm_server.operator_audit import record_operator_action
-from aidm_server.response_dtos import session_payload
+from aidm_server.response_dtos import ARCHIVE_NAME_PREFIX, ENDED_STATUS, session_is_open, session_payload
+from aidm_server.services import session_chapters
 from aidm_server.services.campaign_pack_snapshot import migrate_campaign_pack_snapshot
+from aidm_server.spellbook import character_sheet_record
 from aidm_server.time_utils import utc_now
-from aidm_server.turn_events import project_turn_event
+from aidm_server.turn_coordinator import SessionTurnTargetMissingError, TurnLeaseLostError, session_turn_coordinator
+from aidm_server.turn_events import STATE_UPDATE_EVENT, project_turn_event, record_turn_event
 from aidm_server.validation import coerce_int
+
+SAVE_FORMAT = 'aidm.save'
+SAVE_VERSION = 2
+IMPORT_ARCHIVE = 'archive'
+IMPORT_RESTORE = 'restore'
+IMPORT_MODES = (IMPORT_ARCHIVE, IMPORT_RESTORE)
+RESTORED_MID_SCENE_MESSAGE = (
+    'Restored from a save taken mid-scene: the interrupted fight or roll was not carried over.'
+)
 
 MAX_IMPORTED_EVENTS = 1000
 MAX_IMPORTED_LOG_ENTRIES = 1000
@@ -26,6 +54,24 @@ MAX_IMPORTED_STATE_NESTED_DEPTH = 4
 VALID_LOG_ENTRY_TYPES = {'dm', 'player', 'system'}
 CAMPAIGN_PACK_SNAPSHOT_KEYS = {'campaignPack', 'campaign_pack'}
 CAMPAIGN_PACK_METADATA_FLAG = 'campaignPackStateStripped'
+
+# Mechanical Player fields a restore may overwrite: hit points, XP, currency,
+# class feature uses, conditions (Player.stats); spell and class resources
+# (Player.character_sheet); level and inventory are columns.
+RESTORED_STAT_KEYS = (
+    'current_hp',
+    'hp_current',
+    'max_hp',
+    'hp_max',
+    'temp_hp',
+    'xp',
+    'experience',
+    *CURRENCY_STAT_KEYS.values(),
+    'class_feature_state',
+    'conditions',
+    'death_saves',
+)
+RESTORED_SHEET_KEYS = ('spellResources', 'classFeatureState')
 
 
 class SessionImportError(ValueError):
@@ -41,84 +87,95 @@ class SessionImportResult:
     payload: dict
 
 
+def _not_restorable(reason: str) -> SessionImportError:
+    return SessionImportError(reason, error_code='save_not_restorable', status_code=409)
+
+
+def save_document(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Return ``payload`` when it is a version 2 save, None for the legacy export shape."""
+
+    if payload.get('format') != SAVE_FORMAT:
+        return None
+    if payload.get('version') != SAVE_VERSION:
+        raise SessionImportError('This save was written by a different version of AI-DM and cannot be imported.')
+    return payload
+
+
 def import_session_export(
     payload: dict[str, Any],
     *,
     workspace_id: str | None = None,
-    include_hidden_state: bool = True,
     allow_campaign_pack_state: bool = True,
     required_player_account_id: int | None = None,
 ) -> SessionImportResult:
+    """Import a save as a read-only archive: an ended session that never becomes current.
+
+    Character rows are never touched.
+    """
+
     if not isinstance(payload, dict):
         raise SessionImportError('Expected JSON request body.')
-
-    campaign_id = _campaign_id(payload)
-    if campaign_id is None:
-        raise SessionImportError('Import file must include a campaign id.')
-
-    campaign = db.session.get(Campaign, campaign_id)
-    if not campaign:
-        raise SessionImportError('Campaign not found.', error_code='campaign_not_found', status_code=404)
-    if workspace_id is not None and (campaign.workspace_id or 'owner') != workspace_id:
-        raise SessionImportError('Campaign not found.', error_code='campaign_not_found', status_code=404)
+    document = save_document(payload)
+    campaign = _workspace_campaign(_campaign_id(payload), workspace_id)
 
     now = utc_now()
-    source_session = _record(payload.get('selectedSession'))
-    exported_at = _optional_text(payload.get('exportedAt'), max_length=80)
-    source_snapshot = _record(source_session.get('state_snapshot'))
+    if document is not None:
+        source_session = _record(document.get('session'))
+        exported_at = _optional_text(document.get('exported_at'), max_length=80)
+        source_snapshot = _record(document.get('state_snapshot'))
+        raw_session_state = document.get('session_state')
+    else:
+        source_session = _record(payload.get('selectedSession'))
+        exported_at = _optional_text(payload.get('exportedAt'), max_length=80)
+        source_snapshot = _record(source_session.get('state_snapshot'))
+        raw_session_state = payload.get('sessionState')
 
     session_obj = Session(
         campaign_id=campaign.campaign_id,
         name=_session_name(payload, source_session),
-        status='active',
+        status=ENDED_STATUS,
         state_snapshot=safe_json_dumps({}, {}),
         created_at=now,
         updated_at=now,
     )
     db.session.add(session_obj)
     db.session.flush()
-    session_obj.state_snapshot = safe_json_dumps(
-        _imported_state_snapshot(
-            source_snapshot=source_snapshot,
-            session_obj=session_obj,
-            campaign=campaign,
-            exported_at=exported_at,
-            source_session_id=_coerce_positive(source_session.get('session_id')),
-            imported_at=now,
-            allow_campaign_pack_state=allow_campaign_pack_state,
-        ),
-        {},
+    snapshot = _imported_state_snapshot(
+        source_snapshot=source_snapshot,
+        session_obj=session_obj,
+        campaign=campaign,
+        exported_at=exported_at,
+        source_session_id=_coerce_positive(source_session.get('session_id')),
+        imported_at=now,
+        allow_campaign_pack_state=allow_campaign_pack_state,
     )
+    if not isinstance(snapshot.get('ended_at'), str):
+        snapshot['ended_at'] = now.isoformat()
+    session_obj.state_snapshot = safe_json_dumps(snapshot, {})
 
-    state_imported = _import_session_state(session_obj, campaign, payload.get('sessionState'), now)
-    events_imported, projected_log_entries = _import_turn_events(
-        session_obj,
-        campaign,
-        _list(payload.get('turnEvents'))[:MAX_IMPORTED_EVENTS],
-        allow_campaign_pack_events=allow_campaign_pack_state,
-        required_player_account_id=required_player_account_id,
-    )
-    log_entries_imported = 0
-    if events_imported == 0:
-        log_entries_imported = _import_log_entries(
+    state_imported = _import_session_state(session_obj, campaign, raw_session_state, now)
+    events_imported = projected_log_entries = log_entries_imported = 0
+    if document is not None:
+        log_entries_imported = _import_log_entries(session_obj, _list(document.get('log'))[:MAX_IMPORTED_LOG_ENTRIES])
+    else:
+        events_imported, projected_log_entries = _import_turn_events(
             session_obj,
-            _list(payload.get('logEntries'))[:MAX_IMPORTED_LOG_ENTRIES],
+            campaign,
+            _list(payload.get('turnEvents'))[:MAX_IMPORTED_EVENTS],
+            allow_campaign_pack_events=allow_campaign_pack_state,
+            required_player_account_id=required_player_account_id,
         )
+        if events_imported == 0:
+            log_entries_imported = _import_log_entries(
+                session_obj,
+                _list(payload.get('logEntries'))[:MAX_IMPORTED_LOG_ENTRIES],
+            )
 
-    result_payload = {
-        'imported': True,
-        'session_id': session_obj.session_id,
-        'session': session_payload(
-            session_obj,
-            include_hidden_state=include_hidden_state,
-            viewer_account_id=required_player_account_id,
-        ),
-        'counts': {
-            'turn_events': events_imported,
-            'projected_log_entries': projected_log_entries,
-            'log_entries': log_entries_imported,
-            'session_state': 1 if state_imported else 0,
-        },
+    counts = {
+        'turn_events': events_imported,
+        'projected_log_entries': projected_log_entries,
+        'log_entries': log_entries_imported,
+        'session_state': 1 if state_imported else 0,
     }
     record_operator_action(
         action='session.import',
@@ -128,6 +185,8 @@ def import_session_export(
         session_id=session_obj.session_id,
         resource_id=session_obj.session_id,
         details={
+            'mode': IMPORT_ARCHIVE,
+            'saveVersion': SAVE_VERSION if document is not None else None,
             'turnEventsImported': events_imported,
             'projectedLogEntries': projected_log_entries,
             'logEntriesImported': log_entries_imported,
@@ -135,7 +194,251 @@ def import_session_export(
             'campaignPackStateAllowed': allow_campaign_pack_state,
         },
     )
-    return SessionImportResult(payload=result_payload)
+    return SessionImportResult(payload=_import_payload(session_obj, IMPORT_ARCHIVE, counts, restored_player_ids=[]))
+
+
+def restore_session_save(
+    payload: dict[str, Any],
+    *,
+    workspace_id: str | None,
+    operator: bool,
+    restore_characters: bool,
+) -> SessionImportResult:
+    """Start a new chapter of the save's own campaign from the saved world, and commit it.
+
+    The chapter starts through ``session_chapters`` exactly as a continued
+    chapter does (same carried keys, the current chapter closes, transient
+    combat and pending rolls stay behind) and is fenced the same way.
+    """
+
+    if not isinstance(payload, dict):
+        raise SessionImportError('Expected JSON request body.')
+    document = save_document(payload)
+    if document is None:
+        raise _not_restorable('Only a save exported by this version of AI-DM can be restored as a chapter.')
+    if not operator:
+        raise _not_restorable("Only the campaign's operators can restore a save as a chapter.")
+    saved_campaign_id = _coerce_positive(_record(document.get('campaign')).get('id'))
+    target_campaign_id = _coerce_positive(payload.get('campaign_id') or payload.get('campaignId')) or saved_campaign_id
+    if saved_campaign_id is None or saved_campaign_id != target_campaign_id:
+        raise _not_restorable(
+            'This save belongs to a different campaign. Import it as a read-only archive instead.'
+        )
+    campaign_id = _workspace_campaign(saved_campaign_id, workspace_id).campaign_id
+
+    try:
+        session_chapters._locked_active_campaign(campaign_id, workspace_id)
+        fence_session_ids = session_chapters._chapter_fence_session_ids(campaign_id)
+    finally:
+        db.session.rollback()
+
+    try:
+        with session_turn_coordinator.try_serialized_many(fence_session_ids) as held:
+            if held is None:
+                raise session_chapters._session_busy_error()
+            try:
+                campaign = session_chapters._locked_active_campaign(campaign_id, workspace_id)
+                if session_chapters._chapter_fence_session_ids(campaign_id) != fence_session_ids:
+                    raise session_chapters._session_busy_error()
+                session_obj = _restore_chapter_locked(campaign, document)
+                restored_player_ids = (
+                    _restore_characters(campaign, session_obj, _list(document.get('characters')))
+                    if restore_characters
+                    else []
+                )
+                record_operator_action(
+                    action='session.import',
+                    resource_type='session',
+                    workspace_id=campaign.workspace_id or 'owner',
+                    campaign_id=campaign.campaign_id,
+                    session_id=session_obj.session_id,
+                    resource_id=session_obj.session_id,
+                    details={
+                        'mode': IMPORT_RESTORE,
+                        'saveVersion': SAVE_VERSION,
+                        'sourceSessionId': _coerce_positive(_record(document.get('session')).get('session_id')),
+                        'restoredPlayerIds': restored_player_ids,
+                    },
+                )
+                result = SessionImportResult(
+                    payload=_import_payload(
+                        session_obj,
+                        IMPORT_RESTORE,
+                        {'turn_events': 0, 'projected_log_entries': 0, 'log_entries': 0, 'session_state': 1},
+                        restored_player_ids=restored_player_ids,
+                    )
+                )
+                # Database-backed coordinator leases fence this commit.
+                db.session.commit()
+                return result
+            except Exception:
+                db.session.rollback()
+                raise
+    except (SessionTurnTargetMissingError, TurnLeaseLostError):
+        db.session.rollback()
+        raise session_chapters._session_busy_error() from None
+
+
+def _restore_chapter_locked(campaign: Campaign, document: dict[str, Any]) -> Session:
+    source = session_chapters.chapter_source_session(campaign.campaign_id)
+    if source is not None and session_is_open(source.status):
+        reason = session_chapters.chapter_unsettled_reason(source)
+        if reason:
+            raise session_chapters.ChapterStartError(
+                'chapter_unsettled',
+                session_chapters.CHAPTER_UNSETTLED_MESSAGE,
+                409,
+                {'session_id': source.session_id, 'reason': reason},
+            )
+
+    now = utc_now()
+    now_iso = now.isoformat()
+    chapter_number = session_chapters._next_chapter_number(campaign.campaign_id)
+    saved_snapshot, _migrations_applied = migrate_campaign_pack_snapshot(
+        deepcopy(_record(document.get('state_snapshot')))
+    )
+    saved_state = _record(document.get('session_state'))
+    recap_text = session_chapters.chapter_recap_text(
+        saved_snapshot,
+        _optional_text(saved_state.get('rolling_summary'), max_length=MAX_IMPORTED_TEXT_LENGTH),
+    )
+    snapshot = session_chapters.chapter_snapshot_from(
+        saved_snapshot,
+        new_client_session_id=None,
+        chapter_number=chapter_number,
+        previous_session_id=source.session_id if source is not None else None,
+        recap_text=recap_text,
+        now_iso=now_iso,
+    )
+    snapshot['chapter']['restoredFrom'] = {
+        'sessionId': _coerce_positive(_record(document.get('session')).get('session_id')),
+        'exportedAt': _optional_text(document.get('exported_at'), max_length=80) or None,
+    }
+
+    session_chapters._close_open_chapters(campaign.campaign_id, now=now)
+    session_obj = session_chapters._create_chapter_session(
+        campaign,
+        name=f'Chapter {chapter_number}',
+        client_session_id=None,
+        snapshot=snapshot,
+        welcome_message=session_chapters.chapter_welcome_message(chapter_number, recap_text),
+        welcome_metadata={'chapter_number': chapter_number, 'continuity': IMPORT_RESTORE},
+    )
+    # The restored chapter's summary state starts now, from the saved values.
+    _import_session_state(session_obj, campaign, {**saved_state, 'updated_at': None}, now)
+    if source is not None:
+        session_chapters._carry_campaign_pack_progress(source, session_obj)
+    unsettled = _record(document.get('unsettled'))
+    if unsettled.get('pending_roll') is True or unsettled.get('active_combat') is True:
+        record_turn_event(
+            session_id=session_obj.session_id,
+            campaign_id=campaign.campaign_id,
+            event_type=STATE_UPDATE_EVENT,
+            payload={'message': RESTORED_MID_SCENE_MESSAGE, 'metadata': {'kind': 'restored_mid_scene'}},
+        )
+    return session_obj
+
+
+def _restore_characters(campaign: Campaign, session_obj: Session, characters: list[Any]) -> list[int]:
+    """Overwrite matching Player rows' mechanical fields with the saved characters.
+
+    A saved character matches the campaign's row with its ``player_id`` first,
+    then (for the rows still unmatched) the row with its character name.
+    """
+
+    players = {
+        player.player_id: player
+        for player in Player.query.filter_by(campaign_id=campaign.campaign_id)
+        .order_by(Player.player_id.asc())
+        .all()
+    }
+    saved_records = [_record(character) for character in characters if isinstance(character, dict)]
+    matches: list[tuple[Player, dict[str, Any]]] = []
+    unmatched_records = []
+    for record in saved_records:
+        player = players.pop(_coerce_positive(record.get('player_id')) or 0, None)
+        if player is not None:
+            matches.append((player, record))
+        else:
+            unmatched_records.append(record)
+    for record in unmatched_records:
+        name_key = _name_key(record.get('character_name'))
+        player = next(
+            (row for row in players.values() if name_key and _name_key(row.character_name) == name_key),
+            None,
+        )
+        if player is not None:
+            players.pop(player.player_id)
+            matches.append((player, record))
+
+    for player, record in matches:
+        _apply_saved_character(player, record)
+    restored_player_ids = sorted(player.player_id for player, _record_value in matches)
+    if restored_player_ids:
+        record_operator_action(
+            action='session.restore_characters',
+            resource_type='player',
+            workspace_id=campaign.workspace_id or 'owner',
+            campaign_id=campaign.campaign_id,
+            session_id=session_obj.session_id,
+            resource_id=','.join(str(player_id) for player_id in restored_player_ids),
+            details={
+                'playerIds': restored_player_ids,
+                'statFields': list(RESTORED_STAT_KEYS),
+                'sheetFields': list(RESTORED_SHEET_KEYS),
+                'columns': ['level', 'inventory'],
+            },
+        )
+    return restored_player_ids
+
+
+def _apply_saved_character(player: Player, record: dict[str, Any]) -> None:
+    saved_stats = _record(record.get('stats'))
+    stats = safe_json_loads(player.stats, {})
+    stats = stats if isinstance(stats, dict) else {}
+    _replace_keys(stats, saved_stats, RESTORED_STAT_KEYS)
+    player.stats = safe_json_dumps(stats, {})
+
+    sheet = character_sheet_record(player.character_sheet)
+    _replace_keys(sheet, _record(record.get('character_sheet')), RESTORED_SHEET_KEYS)
+    player.character_sheet = safe_json_dumps(sheet, {})
+
+    level = record.get('level')
+    if isinstance(level, int) and not isinstance(level, bool) and level >= 1:
+        player.level = level
+    player.inventory = dump_inventory_items(load_inventory_items(record.get('inventory')))
+
+
+def _replace_keys(target: dict[str, Any], saved: dict[str, Any], keys: tuple[str, ...]) -> None:
+    for key in keys:
+        if key in saved:
+            target[key] = deepcopy(saved[key])
+        else:
+            target.pop(key, None)
+
+
+def _name_key(value: Any) -> str:
+    return ' '.join(str(value or '').split()).casefold()
+
+
+def _import_payload(session_obj: Session, mode: str, counts: dict, *, restored_player_ids: list[int]) -> dict:
+    return {
+        'imported': True,
+        'mode': mode,
+        'session_id': session_obj.session_id,
+        'session': session_payload(session_obj),
+        'counts': counts,
+        'restored_player_ids': restored_player_ids,
+    }
+
+
+def _workspace_campaign(campaign_id: int | None, workspace_id: str | None) -> Campaign:
+    if campaign_id is None:
+        raise SessionImportError('Import file must include a campaign id.')
+    campaign = db.session.get(Campaign, campaign_id)
+    if not campaign or (workspace_id is not None and (campaign.workspace_id or 'owner') != workspace_id):
+        raise SessionImportError('Campaign not found.', error_code='campaign_not_found', status_code=404)
+    return campaign
 
 
 def _imported_state_snapshot(
@@ -205,6 +508,7 @@ def _campaign_id(payload: dict[str, Any]) -> int | None:
         selected_ids.get('campaignId'),
         selected_ids.get('campaign_id'),
         campaign.get('campaign_id'),
+        campaign.get('id'),
     ):
         campaign_id = _coerce_positive(value)
         if campaign_id is not None:
@@ -216,13 +520,16 @@ def _session_name(payload: dict[str, Any], source_session: dict[str, Any]) -> st
     for value in (
         payload.get('name'),
         payload.get('sessionName'),
-        source_session.get('display_name'),
         source_session.get('name'),
+        source_session.get('display_name'),
         source_session.get('title'),
     ):
-        text = _optional_text(value, max_length=MAX_IMPORTED_NAME_LENGTH)
+        text = _optional_text(value, max_length=MAX_IMPORTED_TEXT_LENGTH)
+        # An archive's display name carries the prefix; the stored name does not.
+        if text.startswith(ARCHIVE_NAME_PREFIX):
+            text = text[len(ARCHIVE_NAME_PREFIX):].strip()
         if text:
-            return text
+            return text[:MAX_IMPORTED_NAME_LENGTH]
     return 'Imported Session'
 
 

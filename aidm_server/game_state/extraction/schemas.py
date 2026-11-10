@@ -284,6 +284,12 @@ def normalize_declared_action(raw_action: Any, *, fallback_actor_id: str, fallba
         'item_name',
         'itemId',
         'item_id',
+        'merchantId',
+        'merchant_id',
+        'stockId',
+        'stock_id',
+        'hitDice',
+        'hit_dice',
         'targetId',
         'target_id',
         'objectAction',
@@ -366,7 +372,11 @@ def _declared_action_has_required_fields(action: dict[str, Any]) -> bool:
         return False
     action_type = str(action.get('type') or '')
     if action_type in {'inventory.consume', 'inventory.use', 'inventory.transfer'}:
-        return bool(str(action.get('itemName') or '').strip()) and 'quantity' in action
+        return bool(str(action.get('itemId') or action.get('itemName') or '').strip()) and 'quantity' in action
+    if action_type == 'shop.buy':
+        return bool(str(action.get('stockId') or action.get('itemName') or '').strip()) and 'quantity' in action
+    if action_type == 'shop.sell':
+        return bool(str(action.get('itemId') or action.get('itemName') or '').strip()) and 'quantity' in action
     if action_type in {'inventory.equip', 'inventory.unequip'}:
         return bool(str(action.get('itemName') or '').strip())
     if action_type in {'scene.item.pickup', 'scene.item.drop'}:

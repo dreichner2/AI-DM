@@ -9,8 +9,11 @@ from sqlalchemy import func
 
 from aidm_server.canon_inventory import inventory_payload
 from aidm_server.character_state import character_state_for_player
+from aidm_server.commerce import merchant_context
 from aidm_server.database import db
+from aidm_server.game_clock import public_clock
 from aidm_server.emergent_memory import build_emergent_context, dormant_threads
+from aidm_server.game_state.campaign_pack_encounters import declared_story_flags
 from aidm_server.interactables import project_scene_interactables
 from aidm_server.models import (
     BestiaryEntry,
@@ -54,6 +57,7 @@ MAX_PACK_ENCOUNTERS = 2
 MAX_PACK_ENEMIES = 3
 MAX_PACK_SEGMENTS = 3
 MAX_PACK_CLUES = 4
+STORY_FLAG_INSTRUCTION = 'When one of these conditions becomes true in the fiction, make it unmistakable in the narration.'
 MAX_PACK_AUTHOR_TEXT = 240
 MAX_TRIMMED_FACTS = 10
 MAX_TRIMMED_RECENT_LOCATIONS = 4
@@ -516,6 +520,8 @@ def _compact_live_world_state(snapshot: dict) -> dict:
         'recentKnownNpcs': [_compact_npc(npc) for npc in recent_known_npcs[:MAX_LIVE_RECENT_KNOWN_NPCS]],
         'combat': _compact_combat(snapshot),
         'flags': _compact_flags(snapshot.get('flags')),
+        'clock': public_clock(snapshot.get('clock')),
+        'merchants': merchant_context(snapshot),
     }
 
 
@@ -1558,6 +1564,7 @@ def _campaign_pack_director_for_session(campaign_id: int, session_id) -> dict:
         failed_ids=failed_checkpoint_ids,
         rejoin_target_id=rejoin_target,
     )
+    story_flags = declared_story_flags(snapshot)
 
     return {
         'enabled': True,
@@ -1621,6 +1628,19 @@ def _campaign_pack_director_for_session(campaign_id: int, session_id) -> dict:
             'offTrackDetails': off_track,
             'rejoinTargetCheckpointId': rejoin_target,
         },
+        **(
+            {
+                'storyFlags': {
+                    'instruction': STORY_FLAG_INSTRUCTION,
+                    'flags': [
+                        {'key': story_flag['key'], 'when': story_flag['when'], 'value': story_flag['value']}
+                        for story_flag in story_flags
+                    ],
+                }
+            }
+            if story_flags
+            else {}
+        ),
     }
 
 

@@ -481,7 +481,7 @@ def test_combat_hud_action_is_revalidated_canonicalized_and_server_rolled(
                             'team': 'player',
                             'kind': 'player_character',
                             'hp': {'current': 20, 'max': 20},
-                            'position': {'rangeBand': 'near'},
+                            'position': {'rangeBand': 'melee'},
                             'isAlive': True,
                             'isConscious': True,
                         },
@@ -492,7 +492,7 @@ def test_combat_hud_action_is_revalidated_canonicalized_and_server_rolled(
                             'kind': 'creature',
                             'hp': {'current': 7, 'max': 7},
                             'armorClass': 12,
-                            'position': {'rangeBand': 'near'},
+                            'position': {'rangeBand': 'melee'},
                             'isAlive': True,
                             'isConscious': True,
                         },
@@ -565,7 +565,7 @@ def test_combat_hud_action_is_revalidated_canonicalized_and_server_rolled(
             'damage_dice': '1d8',
             'damage_type': 'slashing',
             'ranged': False,
-            'range_band': 'near',
+            'range_band': 'melee',
             'message': 'Seraphina attacks Goblin Sentry with Longsword.',
         }
 
@@ -3945,11 +3945,14 @@ def test_validated_item_drop_remains_authoritative_when_narration_denies_it(app,
         assert any(item.get('name') == 'Book' for item in snapshot['currentScene']['items'])
 
 
-def test_buy_item_intent_subtracts_gold_after_dm_confirms(app, socketio, app_runtime, monkeypatch):
+def test_unrouted_buy_changes_gold_only_by_the_narrated_amount(app, socketio, app_runtime, monkeypatch):
     socketio_module = app_runtime['modules']['socketio_events']
 
     def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
-        yield 'The merchant nods. You buy the rope and add it to your pack.'
+        if 'rope' in (user_input or '').lower():
+            yield 'The merchant nods. You pay 5 gold and buy the rope.'
+        else:
+            yield 'The merchant nods. You buy the torch and add it to your pack.'
 
     monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
 
@@ -3963,32 +3966,38 @@ def test_buy_item_intent_subtracts_gold_after_dm_confirms(app, socketio, app_run
     assert client.is_connected()
     client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
     client.get_received()
-    client.emit(
-        'send_message',
-        {
-            'session_id': ids['session_id'],
-            'campaign_id': ids['campaign_id'],
-            'world_id': ids['world_id'],
-            'player_id': ids['player_id'],
-            'message': 'I buy rope for 5 gold.',
-            'action_intent': {
-                'kind': 'item',
-                'source': 'composer',
-                'client_message_id': 'buy-rope',
-                'text': 'I buy rope for 5 gold.',
-                'inventory_action': 'buy',
-                'item': {'name': 'rope', 'quantity': 1},
-                'cost_gold': 5,
+
+    def buy(item_name: str, client_price: int):
+        client.emit(
+            'send_message',
+            {
+                'session_id': ids['session_id'],
+                'campaign_id': ids['campaign_id'],
+                'world_id': ids['world_id'],
+                'player_id': ids['player_id'],
+                'message': f'I buy {item_name}.',
+                'action_intent': {
+                    'kind': 'item',
+                    'source': 'composer',
+                    'client_message_id': f'buy-{item_name}',
+                    'text': f'I buy {item_name}.',
+                    'inventory_action': 'buy',
+                    'item': {'name': item_name, 'quantity': 1},
+                    'cost_gold': client_price,
+                },
             },
-        },
-    )
-    client.get_received()
+        )
+        client.get_received()
+
+    # With no merchant present the DM adjudicates; the client-supplied price is ignored.
+    buy('rope', 9)
+    buy('torch', 3)
 
     with app.app_context():
         player = db.session.get(Player, ids['player_id'])
-        inventory = safe_json_loads(player.inventory, [])
+        inventory = {item['name']: item['quantity'] for item in safe_json_loads(player.inventory, [])}
         stats = safe_json_loads(player.stats, {})
-        assert inventory == [{'name': 'rope', 'quantity': 1, 'weight': 10}]
+        assert inventory == {'rope': 1, 'torch': 1}
         assert stats['gold'] == 5
 
 
@@ -4120,13 +4129,14 @@ def test_inventory_realtime_stress_add_remove_buy_sell_use_and_explicit_state(
         if 'pick up a feather' in normalized:
             yield 'You pick up the feather before leaving the room.'
         elif 'buy rope' in normalized:
-            yield 'The merchant nods. You buy the rope and add it to your pack.'
+            # No merchant is present, so only the narrated price moves gold.
+            yield 'The merchant nods. You pay 5 gold and buy the rope.'
         elif 'drop feather' in normalized:
             yield 'You drop the feather beside the door.'
         elif 'drink potion' in normalized or 'use potion' in normalized:
             yield 'You drink the potion and feel steadier.'
         elif 'sell the gem' in normalized:
-            yield 'You sell the gem to the trader.'
+            yield 'You sell the gem to the trader and receive 3 gold.'
         elif 'apply inventory state' in normalized:
             yield (
                 f'*(State change: Player {ids["player_id"]} **gains** 2 Bone Shard to inventory.)*\n'
@@ -4272,7 +4282,8 @@ def test_inventory_realtime_stress_add_remove_buy_sell_use_and_explicit_state(
         assert DmTurn.query.filter_by(session_id=ids['session_id']).count() == turn_count_before_reject
     assert inventory_by_name() == {}
 
-    received = send('I buy diamond.', item_intent('buy', 'Diamond', cost_gold=20))
+    # The client price is ignored; the gold the player names is still checked.
+    received = send('I buy diamond for 20 gold.', item_intent('buy', 'Diamond', cost_gold=1))
     error_payload = _event_payload(received, 'error')
     assert error_payload['error_code'] == 'insufficient_gold'
     with app.app_context():

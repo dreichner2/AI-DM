@@ -318,3 +318,140 @@ describe('gameplayControlsFromSnapshot', () => {
     )
   })
 })
+
+function itemSnapshot(): Record<string, unknown> {
+  return {
+    clock: { day: 2, phase: 'evening', shortRestsSinceLong: 0 },
+    currentScene: { name: 'Camp', dangerLevel: 0 },
+    combat: { status: 'none' },
+    playerCharacters: [
+      {
+        id: 'player_30',
+        playerId: 30,
+        name: 'Ilyra',
+        health: { currentHp: 5, maxHp: 14, conditions: [] },
+        hitDice: { current: 2, max: 3, die: 'd8' },
+        inventory: {
+          items: [
+            {
+              id: 'potion_1',
+              name: 'Potion of Healing',
+              quantity: 2,
+              itemEffect: {
+                id: 'potion_healing',
+                summary: 'Restores 2d4+2 hit points.',
+                cost: 'bonus_action',
+                allyCost: 'action',
+                target: 'self_or_ally',
+              },
+            },
+            {
+              id: 'acid_1',
+              name: 'Acid',
+              quantity: 1,
+              itemEffect: { id: 'acid_vial', summary: 'Thrown: 2d6 acid damage.', cost: 'action', target: 'enemy' },
+            },
+            { id: 'rope_1', name: 'Rope', quantity: 1 },
+          ],
+        },
+      },
+      { id: 'player_31', playerId: 31, name: 'Bram', health: { conditions: ['dead'] } },
+    ],
+  }
+}
+
+describe('gameplayControlsFromSnapshot items and rest', () => {
+  it('offers items with server effects out of combat and checks their targets', () => {
+    const state = gameplayControlsFromSnapshot(itemSnapshot(), 30)
+
+    expect(state.items?.map((item) => item.id)).toEqual(['potion_1', 'acid_1'])
+    const potion = state.items?.[0]
+    expect(potion).toMatchObject({
+      name: 'Potion of Healing',
+      quantity: 2,
+      effectSummary: 'Restores 2d4+2 hit points.',
+      cost: 'bonus action; action for an ally',
+      available: true,
+      reason: '',
+    })
+    expect(potion?.targets.map((target) => [target.id, target.available, target.reason])).toEqual([
+      ['player_30', true, ''],
+      ['player_31', false, 'Healing cannot restore the dead.'],
+    ])
+    expect(state.items?.[1]).toMatchObject({ available: false, reason: 'Requires an active encounter.' })
+  })
+
+  it('uses the server combat bundle for items during combat', () => {
+    const snapshot = itemSnapshot()
+    snapshot.combat = {
+      status: 'active',
+      legalActions: [
+        {
+          actorId: 'player_30',
+          actions: [
+            { id: 'combat.end_turn', type: 'end_turn', available: true },
+            {
+              id: 'item.use.potion_1',
+              type: 'item',
+              description: 'Restores 2d4+2 hit points.',
+              available: true,
+              reason: '',
+              economy: { action: 0, bonusAction: 1 },
+              item: { id: 'potion_1', name: 'Potion of Healing', quantity: 2 },
+              targets: [
+                { id: 'player_30', name: 'Ilyra', rangeBand: 'near', available: true, reason: '' },
+                { id: 'player_31', name: 'Bram', rangeBand: 'distant', available: false, reason: 'Too far away.' },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+    const state = gameplayControlsFromSnapshot(snapshot, 30)
+
+    expect(state.items).toHaveLength(1)
+    expect(state.items?.[0]).toMatchObject({ id: 'potion_1', cost: 'bonus action', available: true })
+    expect(state.items?.[0].targets.map((target) => [target.id, target.reason])).toEqual([
+      ['player_30', ''],
+      ['player_31', 'Too far away.'],
+    ])
+    expect(state.rest).toMatchObject({
+      shortAvailable: false,
+      longAvailable: false,
+      reason: 'Rest is unavailable while combat is active.',
+    })
+  })
+
+  it('mirrors the rest limits, the scene rest policy and hit dice', () => {
+    expect(gameplayControlsFromSnapshot(itemSnapshot(), 30).rest).toEqual({
+      shortAvailable: true,
+      longAvailable: true,
+      reason: '',
+      hitDice: { current: 2, max: 3, die: 'd8' },
+    })
+
+    const limited = itemSnapshot()
+    limited.clock = { day: 2, phase: 'evening', shortRestsSinceLong: 2, lastLongRestDay: 2 }
+    expect(gameplayControlsFromSnapshot(limited, 30).rest).toMatchObject({
+      shortAvailable: false,
+      longAvailable: false,
+      reason: 'You have already rested today.',
+    })
+
+    const risky = itemSnapshot()
+    risky.currentScene = { name: 'Moor', dangerLevel: 4 }
+    expect(gameplayControlsFromSnapshot(risky, 30).rest).toMatchObject({
+      shortAvailable: true,
+      longAvailable: false,
+      reason: "This place is too dangerous for a full night's rest.",
+    })
+
+    const unsafe = itemSnapshot()
+    unsafe.currentScene = { name: 'Lair', restPolicy: 'none' }
+    expect(gameplayControlsFromSnapshot(unsafe, 30).rest).toMatchObject({
+      shortAvailable: false,
+      longAvailable: false,
+      reason: 'It is too dangerous to rest here.',
+    })
+  })
+})

@@ -9,6 +9,7 @@ from aidm_server.contracts import ProviderRequest
 from aidm_server.game_state.extraction.prompts import PRE_DM_SYSTEM_MESSAGE, build_pre_dm_prompt
 from aidm_server.game_state.extraction.schemas import extract_json_object, normalize_pre_extraction
 from aidm_server.game_state.models import normalize_item_name
+from aidm_server.item_effects import ITEM_USE_ACTION_PREFIX
 from aidm_server.llm_providers import get_helper_provider
 from aidm_server.provider_priority import foreground_provider_reservation
 from aidm_server.telemetry import telemetry_event, telemetry_metric
@@ -395,10 +396,70 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
                     'sourceText': player_message,
                     'requiresDMResolution': False,
                     'restType': rest_type,
+                    **({'hitDice': action_intent['hit_dice']} if action_intent.get('hit_dice') is not None else {}),
                 }
             ],
             'notes': ['action_intent_pre_dm'],
         }
+    if action_intent.get('kind') == 'shop':
+        shop = action_intent.get('shop') if isinstance(action_intent.get('shop'), dict) else {}
+        shop_action = str(shop.get('action') or '').strip().lower()
+        if shop_action not in {'buy', 'sell'}:
+            return None
+        return {
+            'declaredActions': [
+                {
+                    'id': 'act_001',
+                    'type': f'shop.{shop_action}',
+                    'actorId': actor_id,
+                    'confidence': 1.0,
+                    'sourceText': player_message,
+                    'requiresDMResolution': False,
+                    'merchantId': shop.get('merchant_id'),
+                    **(
+                        {'stockId': shop.get('stock_id')}
+                        if shop_action == 'buy'
+                        else {'itemId': shop.get('item_id')}
+                    ),
+                    'quantity': int(shop.get('quantity') or 1),
+                }
+            ],
+            'notes': ['action_intent_pre_dm'],
+        }
+    combat_action = (
+        action_intent.get('combat')
+        if action_intent.get('kind') == 'combat' and isinstance(action_intent.get('combat'), dict)
+        else {}
+    )
+    if str(combat_action.get('action_id') or '').startswith(ITEM_USE_ACTION_PREFIX):
+        return {
+            'declaredActions': [
+                {
+                    'id': 'act_001',
+                    'type': 'inventory.use',
+                    'actorId': actor_id,
+                    'confidence': 1.0,
+                    'sourceText': player_message,
+                    'requiresDMResolution': False,
+                    'itemId': combat_action.get('item_id'),
+                    'itemName': combat_action.get('item_name'),
+                    'targetId': combat_action.get('target_id'),
+                    'quantity': 1,
+                }
+            ],
+            'notes': ['action_intent_pre_dm'],
+        }
+    if str(combat_action.get('action_id') or '') in {
+        'combat.advance',
+        'combat.dash',
+        'combat.dodge',
+        'combat.help',
+        'combat.hide',
+        'combat.stabilize',
+    }:
+        # The combat engine resolves these tactical actions and hands the DM its
+        # result; their canonical message declares nothing else.
+        return {'declaredActions': [], 'notes': ['combat_action_engine_resolved']}
     if action_intent.get('kind') == 'travel':
         location = action_intent.get('location') if isinstance(action_intent.get('location'), dict) else {}
         location_id = str(location.get('id') or location.get('locationId') or '').strip()
@@ -424,9 +485,9 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
     item = action_intent.get('item') if isinstance(action_intent.get('item'), dict) else {}
     item_name = str(item.get('name') or '').strip()
     item_id = str(item.get('id') or item.get('itemId') or '').strip()
-    if not item_name:
-        return None
     inventory_action = str(action_intent.get('inventory_action') or 'use').strip().lower()
+    if not item_name and not (inventory_action == 'use' and item_id):
+        return None
     if inventory_action == 'pick_up':
         return {
             'declaredActions': [
@@ -444,21 +505,21 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
             ],
             'notes': ['action_intent_pre_dm'],
         }
-    if inventory_action == 'buy':
-        summary = f"Player attempts to {inventory_action.replace('_', ' ')} {item_name}."
-        cost_gold = action_intent.get('cost_gold')
-        if inventory_action == 'buy' and cost_gold:
-            summary = f"{summary} Known price: {cost_gold} gold."
+    if inventory_action in {'buy', 'sell'}:
+        # The validator routes the trade to an open merchant (server price) or,
+        # without one, leaves it to the DM.
         return {
             'declaredActions': [
                 {
                     'id': 'act_001',
-                    'type': 'generic.intent',
+                    'type': f'shop.{inventory_action}',
                     'actorId': actor_id,
                     'confidence': 0.94,
                     'sourceText': player_message,
-                    'requiresDMResolution': True,
-                    'summary': summary,
+                    'requiresDMResolution': False,
+                    'itemName': item_name,
+                    **({'itemId': item_id} if item_id else {}),
+                    'quantity': int(item.get('quantity') or 1),
                 }
             ],
             'notes': ['action_intent_pre_dm'],
@@ -498,10 +559,7 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
             ],
             'notes': ['action_intent_pre_dm'],
         }
-    if inventory_action in {'give', 'sell'}:
-        summary = f"Player attempts to {inventory_action} {item_name}."
-        if inventory_action == 'sell' and action_intent.get('cost_gold'):
-            summary = f"{summary} Asking price: {action_intent.get('cost_gold')} gold."
+    if inventory_action == 'give':
         return {
             'declaredActions': [
                 {
@@ -511,13 +569,14 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
                     'confidence': 0.92,
                     'sourceText': player_message,
                     'requiresDMResolution': True,
-                    'summary': summary,
+                    'summary': f'Player attempts to give {item_name}.',
                 }
             ],
             'notes': ['action_intent_pre_dm'],
         }
 
     action_type = 'inventory.consume' if inventory_action == 'use' and 'potion' in normalize_item_name(item_name) else 'inventory.use'
+    target_id = str(item.get('target_id') or '').strip()
     return {
         'declaredActions': [
             {
@@ -529,6 +588,7 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
                 'requiresDMResolution': action_type != 'inventory.consume',
                 'itemName': item_name,
                 **({'itemId': item_id} if item_id else {}),
+                **({'targetId': target_id} if target_id else {}),
                 'quantity': int(item.get('quantity') or 1),
             }
         ],

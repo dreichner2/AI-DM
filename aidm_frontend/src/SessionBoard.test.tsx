@@ -205,16 +205,22 @@ function sessionBoardProps(overrides: Partial<SessionBoardProps> = {}): SessionB
     activeSession: {
       session_id: 20,
       campaign_id: 10,
+      name: 'Session Alpha',
       created_at: '2026-06-06T10:35:00.000Z',
       updated_at: '2026-06-06T10:40:00.000Z',
       latest_activity_at: '2026-06-06T10:45:00.000Z',
       display_name: 'Session Alpha',
       status: 'active',
-      deleted_at: null,
       turn_count: 2,
-      latest_summary: 'The party is testing a sealed door.',
+      summary_excerpt: 'The party is testing a sealed door.',
+      scene_title: null,
       is_archived: false,
-      state_snapshot: {},
+      is_current: true,
+      chapter_number: 1,
+      chapter_recap: '',
+      ended_at: null,
+      imported: false,
+      play_now: false,
     },
     openRenameSessionDialog: vi.fn(),
     openDeleteSessionDialog: vi.fn(),
@@ -564,7 +570,7 @@ describe('SessionBoard visible theater surfaces', () => {
       <SessionBoard
         {...props}
         sessionRecap=""
-        activeSession={{ ...props.activeSession!, latest_summary: 'Stale session-card summary.' }}
+        activeSession={{ ...props.activeSession!, summary_excerpt: 'Stale session-card summary.' }}
         sessionState={{ ...props.sessionState!, rolling_summary: 'T1 | P30: raw state ledger' }}
       />,
     )

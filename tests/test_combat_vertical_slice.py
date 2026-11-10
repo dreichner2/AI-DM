@@ -198,8 +198,8 @@ def test_persisted_turn_economy_supports_action_then_move_then_handoff_and_round
             'round': 1,
             'turnIndex': 0,
             'participants': [
-                _participant('player_1', 'player', name='Aric', player_id=1),
-                _participant('enemy_wolf', 'enemy', name='Wolf'),
+                {**_participant('player_1', 'player', name='Aric', player_id=1), 'position': {'rangeBand': 'melee'}},
+                {**_participant('enemy_wolf', 'enemy', name='Wolf'), 'position': {'rangeBand': 'melee'}},
                 _participant('player_2', 'player', name='Borin', player_id=2),
             ],
             'initiative': _initiative(['player_1', 'enemy_wolf', 'player_2']),
