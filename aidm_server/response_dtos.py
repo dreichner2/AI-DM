@@ -674,7 +674,7 @@ def player_derived_payload(player: Player) -> dict:
     stats = structured_payload(player.stats)
     stats_record = stats if isinstance(stats, dict) else {}
     inventory = inventory_payload(player.inventory)
-    armor_details = armor_class_details(stats_record, inventory)
+    armor_details = armor_class_details(stats_record, inventory, class_name=player.class_)
     character_state = character_state_for_player(player)
     return {
         'armorClass': armor_details['armorClass'],

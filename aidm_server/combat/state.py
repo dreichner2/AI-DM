@@ -4,7 +4,7 @@ from copy import deepcopy
 import hashlib
 from typing import Any
 
-from aidm_server.armor_class import armor_class_details
+from aidm_server.armor_class import actor_armor_class_details
 from aidm_server.canon_text import int_or_default
 from aidm_server.combat.modifiers import TARGET_EXCLUDING_CONDITIONS, can_act, condition_keys
 from aidm_server.combat.vitality import normalize_death_saves
@@ -220,9 +220,7 @@ def normalize_position(value: Any) -> dict[str, Any]:
 def player_combat_participant(player_actor: dict[str, Any]) -> dict[str, Any]:
     health = player_actor.get('health') if isinstance(player_actor.get('health'), dict) else {}
     stats = dict(player_actor.get('stats') if isinstance(player_actor.get('stats'), dict) else {})
-    inventory = player_actor.get('inventory') if isinstance(player_actor.get('inventory'), dict) else {}
-    inventory_items = inventory.get('items') if isinstance(inventory.get('items'), list) else []
-    ac_details = armor_class_details(stats, inventory_items)
+    ac_details = actor_armor_class_details(player_actor)
     stats['armorClass'] = ac_details['armorClass']
     stats['armor_class'] = ac_details['armorClass']
     conditions = _string_list(health.get('conditions'))

@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from aidm_server.canon_text import int_or_default
+from aidm_server.class_features import primary_class
 
 
 ArmorProfile = tuple[int, int | None, str]
@@ -212,7 +213,12 @@ def _bounded_ac(value: int) -> int:
     return max(1, min(40, value))
 
 
-def armor_class_details(stats: dict[str, Any] | None, inventory_items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def armor_class_details(
+    stats: dict[str, Any] | None,
+    inventory_items: list[dict[str, Any]] | None = None,
+    *,
+    class_name: Any = None,
+) -> dict[str, Any]:
     safe_stats = stats if isinstance(stats, dict) else {}
     items = [item for item in (inventory_items or []) if isinstance(item, dict)]
     dexterity = _stat_value(safe_stats, 'dexterity', 'dex')
@@ -220,6 +226,10 @@ def armor_class_details(stats: dict[str, Any] | None, inventory_items: list[dict
     unarmored_ac = 10 + dex_mod
     body_armor = _equipped_body_armor(items)
     shield, shield_bonus = _best_equipped_shield(items)
+    archetype = primary_class(class_name)
+    class_ability = 'constitution' if archetype == 'barbarian' else 'wisdom' if archetype == 'monk' else ''
+    has_unarmored_defense = bool(class_ability) and not body_armor and (archetype != 'monk' or not shield)
+    class_bonus = ability_modifier(_stat_value(safe_stats, class_ability, class_ability[:3])) if has_unarmored_defense else 0
 
     if body_armor:
         armor_base, max_dex_bonus, armor_kind = _armor_profile(body_armor)
@@ -227,6 +237,15 @@ def armor_class_details(stats: dict[str, Any] | None, inventory_items: list[dict
         base_ac = armor_base + dex_bonus
         source = 'armor'
         armor_name = body_armor.get('name')
+    elif has_unarmored_defense:
+        armor_base = 10
+        max_dex_bonus = None
+        dex_bonus = dex_mod
+        base_ac = 10 + dex_mod + class_bonus
+        unarmored_ac = base_ac
+        source = 'unarmored_defense'
+        armor_kind = 'none'
+        armor_name = None
     else:
         explicit_ac = None
         for key in STAT_AC_FIELD_KEYS:
@@ -254,12 +273,33 @@ def armor_class_details(stats: dict[str, Any] | None, inventory_items: list[dict
         'maxDexBonus': max_dex_bonus,
         'shieldName': shield.get('name') if shield else None,
         'shieldBonus': shield_bonus,
+        'classDefenseBonus': class_bonus,
         'unarmoredArmorClass': _bounded_ac(unarmored_ac),
     }
 
 
-def calculate_armor_class(stats: dict[str, Any] | None, inventory_items: list[dict[str, Any]] | None = None) -> int:
-    return int(armor_class_details(stats, inventory_items).get('armorClass') or 10)
+def calculate_armor_class(
+    stats: dict[str, Any] | None, inventory_items: list[dict[str, Any]] | None = None, *, class_name: Any = None,
+) -> int:
+    return int(armor_class_details(stats, inventory_items, class_name=class_name).get('armorClass') or 10)
+
+
+def actor_armor_class_details(actor: dict[str, Any]) -> dict[str, Any]:
+    """Recalculate without treating our last derived total as an authored base."""
+
+    stats = dict(actor.get('stats') if isinstance(actor.get('stats'), dict) else {})
+    inventory = actor.get('inventory') if isinstance(actor.get('inventory'), dict) else {}
+    items = inventory.get('items') if isinstance(inventory.get('items'), list) else []
+    metadata = actor.get('metadata') if isinstance(actor.get('metadata'), dict) else {}
+    prior = metadata.get('armorClassBreakdown') if isinstance(metadata.get('armorClassBreakdown'), dict) else {}
+    if prior:
+        for key in ('armorClass', 'armor_class'):
+            if stats.get(key) == prior.get('armorClass'):
+                if prior.get('source') == 'explicit':
+                    stats[key] = prior.get('armorBase')
+                else:
+                    stats.pop(key, None)
+    return armor_class_details(stats, items, class_name=actor.get('class'))
 
 
 def sync_actor_armor_class(actor: dict[str, Any] | None) -> int:
@@ -269,9 +309,7 @@ def sync_actor_armor_class(actor: dict[str, Any] | None) -> int:
     if not isinstance(stats, dict):
         stats = {}
         actor['stats'] = stats
-    inventory = actor.get('inventory') if isinstance(actor.get('inventory'), dict) else {}
-    items = inventory.get('items') if isinstance(inventory.get('items'), list) else []
-    details = armor_class_details(stats, items)
+    details = actor_armor_class_details(actor)
     stats['armorClass'] = details['armorClass']
     stats['armor_class'] = details['armorClass']
     metadata = actor.setdefault('metadata', {})

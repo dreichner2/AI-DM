@@ -407,6 +407,15 @@ def test_extra_attack_spends_the_action_once_then_counts_attacks():
     assert modifiers.attacks_per_action(actor) == 1
 
 
+def test_level_five_fighter_gets_extra_attack_in_the_actual_turn():
+    actor = _p(ACTOR, 'player', level=5, **{'class': 'Fighter'})
+    enemy = _enemy()
+    _engage(actor, enemy)
+    state, _result = _take(_state(actor, enemy), 'combat.attack.blade', target_id='enemy_1', turn_id=100)
+    assert (_economy(state)['actionRemaining'], _economy(state)['attacksRemaining']) == (0, 1)
+    assert _action(_bundle(state), 'combat.attack.blade')['available'] is True
+
+
 DUAL_WIELD = [
     {'id': 'fang', 'name': 'Dagger', 'type': 'weapon', 'subtype': 'dagger', 'equipped': True, 'slot': 'main_hand'},
     {'id': 'sting', 'name': 'Shortsword', 'type': 'weapon', 'subtype': 'shortsword', 'equipped': True, 'slot': 'off_hand'},

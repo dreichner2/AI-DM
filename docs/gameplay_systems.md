@@ -302,6 +302,11 @@ full tabletop rules coverage.
 
 - The mechanically complete catalog is intentionally small: Fighter Second
   Wind, Fighter Action Surge, and Paladin Lay on Hands.
+- Passive rules also grant Extra Attack at level 5 to Barbarians, Fighters,
+  Monks, Paladins and Rangers; Barbarian Danger Sense from level 2; and the
+  Barbarian and Monk unarmored-defense formulas, including their different
+  shield restrictions. For multiclass labels these features use the primary
+  class only.
 - Typed capability use resolves an exact actor and target, revalidates the
   current combat actor and action/bonus-action budget, applies server-owned
   healing or action restoration, consumes the persisted class-feature pool,
@@ -402,8 +407,8 @@ full tabletop rules coverage.
   resistances, and most active ancestry abilities are not yet compiled into
   combat actors.
 - The authoritative class-capability catalog contains only Second Wind, Action
-  Surge, and Lay on Hands. Other class features remain descriptive or
-  resource-only.
+  Surge, and Lay on Hands. Apart from the passive rules listed above, other
+  class features remain descriptive or resource-only.
 - Only seven curated spells have complete server-owned target/effect
   definitions. Other known/prepared spells still consume the correct resource
   but remain resource-only or narration-assisted for their effects. The

@@ -11,10 +11,13 @@ from copy import deepcopy
 from typing import Any, Callable
 
 from aidm_server.canon_text import int_or_default
+from aidm_server.class_features import register_class_feature_providers
 from aidm_server.character_progression import class_archetype
 
 
 Roller = Callable[[int], int]
+
+register_class_feature_providers()
 
 
 CLASS_CAPABILITY_CATALOG: dict[str, tuple[dict[str, Any], ...]] = {
