@@ -92,6 +92,7 @@ const BLOCKING_CAST_CONDITIONS = new Set([
   'unconscious',
   'incapacitated',
   'paralyzed',
+  'petrified',
   'stunned',
   'absent',
 ])
@@ -175,6 +176,19 @@ function participantAlive(record: JsonRecord) {
   return record.isAlive !== false && (hp.current === null || hp.current > 0)
 }
 
+function playerCharacter(record: JsonRecord) {
+  return normalized(record.kind) === 'player_character' || normalized(record.team) === 'player'
+}
+
+// Healing and ally spells may reach a player character at 0 HP who is not dead.
+function spellRestoresDowned(spell: JsonRecord) {
+  const targetSpec = isRecord(spell.target) ? spell.target : {}
+  return (
+    normalized(targetSpec.relation ?? targetSpec.team) === 'ally' ||
+    records(spell.effects).some((effect) => normalized(effect.kind) === 'healing')
+  )
+}
+
 function friendly(caster: JsonRecord, target: JsonRecord) {
   const casterTeam = normalized(caster.team) || 'player'
   const targetTeam = normalized(target.team) || 'player'
@@ -197,9 +211,12 @@ function targetForSpell(
   caster: JsonRecord,
   target: JsonRecord,
   spellTarget: JsonRecord,
+  restoresDowned: boolean,
 ): GameplayTarget | null {
   const summary = recordTarget(target, normalized(target.team) || 'player')
   if (!summary) return null
+  const dead = summary.conditions.includes('dead')
+  const reachesDowned = restoresDowned && playerCharacter(target) && !dead
   const casterId = stringValue(caster.id)
   const relation = normalized(spellTarget.relation ?? spellTarget.team) || 'enemy'
   const allowSelfValue = spellTarget.allowSelf ?? spellTarget.allow_self
@@ -223,8 +240,8 @@ function targetForSpell(
   let reason = ''
   if (requiresPresent && !participantPresent(target)) {
     reason = 'Not physically present.'
-  } else if (!allowDefeated && !participantAlive(target)) {
-    reason = 'Already defeated.'
+  } else if (!allowDefeated && !participantAlive(target) && !reachesDowned) {
+    reason = restoresDowned && dead ? 'Healing cannot restore the dead.' : 'Already defeated.'
   } else if (relation === 'self' && summary.id !== casterId) {
     reason = 'Requires the caster.'
   } else if (relation === 'ally' && !friendly(caster, target)) {
@@ -365,9 +382,10 @@ function spellControls(
       const maxTargets = Math.max(minTargets, integer(targetSpec.maxTargets ?? targetSpec.max_targets, 1))
       const prepared = spellPrepared(spell, spellbook)
       const resource = spellResource(Math.max(0, integer(spell.level)), resources)
+      const restoresDowned = spellRestoresDowned(spell)
       const targets = caster
         ? participants
-            .map((participant) => targetForSpell(combat, caster, participant, targetSpec))
+            .map((participant) => targetForSpell(combat, caster, participant, targetSpec, restoresDowned))
             .filter((target): target is GameplayTarget => target !== null)
         : []
       const requiresCombat = spell.requireActiveCombat !== false && spell.require_active_combat !== false
@@ -447,7 +465,10 @@ function capabilityTargets(
     .map((target) => {
       let reason = ''
       if (effectType === 'heal' || effectType === 'healing_pool') {
-        if (target.currentHp !== null && target.currentHp <= 0) {
+        // Lay on Hands reaches a downed ally; Second Wind cannot be used while down.
+        if (effectType === 'healing_pool' && target.conditions.includes('dead')) {
+          reason = 'Healing cannot restore the dead.'
+        } else if (effectType === 'heal' && target.currentHp !== null && target.currentHp <= 0) {
           reason = 'Cannot restore a defeated target.'
         } else if (
           target.currentHp !== null &&

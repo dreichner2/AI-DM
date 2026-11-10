@@ -236,6 +236,65 @@ describe('gameplayControlsFromSnapshot', () => {
     })
   })
 
+  it('lets healing reach a downed ally but never the dead', () => {
+    const state = snapshot()
+    const actor = state.playerCharacters[0] as Record<string, unknown>
+    actor.spellbook = { ...(actor.spellbook as Record<string, unknown>), preparedSpells: ['Cure Wounds'] }
+    actor.classFeatures = [
+      {
+        id: 'lay_on_hands',
+        name: 'Lay on Hands',
+        actionEconomy: 'action',
+        targetPolicy: 'touch',
+        refreshesOn: 'long_rest',
+        effect: { type: 'healing_pool' },
+      },
+    ]
+    actor.classFeatureState = { lay_on_hands: { current: 5, max: 5, refreshesOn: 'long_rest' } }
+    const downed = state.combat.participants[1] as Record<string, unknown>
+    Object.assign(downed, {
+      kind: 'player_character',
+      hp: { current: 0, max: 10 },
+      conditions: ['unconscious', 'dying'],
+      isAlive: true,
+      isConscious: false,
+      position: { rangeBand: 'melee', zoneId: 'crypt' },
+    })
+    state.combat.participants[2].hp.current = 0
+
+    const controls = gameplayControlsFromSnapshot(state, 30)
+    const cure = controls.spells.find((spell) => spell.name === 'Cure Wounds')
+    expect(cure?.targets.find((target) => target.id === 'player_31')).toMatchObject({ available: true, reason: '' })
+    expect(cure).toMatchObject({ available: true })
+    expect(
+      controls.spells.find((spell) => spell.name === 'Fire Bolt')?.targets.find((target) => target.id === 'enemy_goblin'),
+    ).toMatchObject({ available: false, reason: 'Already defeated.' })
+    const layOnHands = controls.capabilities.find((feature) => feature.id === 'lay_on_hands')
+    expect(layOnHands?.targets.find((target) => target.id === 'player_31')).toMatchObject({ available: true })
+
+    Object.assign(downed, { conditions: ['dead'], isAlive: false })
+    const afterDeath = gameplayControlsFromSnapshot(state, 30)
+    expect(
+      afterDeath.spells.find((spell) => spell.name === 'Cure Wounds')?.targets.find((target) => target.id === 'player_31'),
+    ).toMatchObject({ available: false, reason: 'Healing cannot restore the dead.' })
+    expect(
+      afterDeath.capabilities.find((feature) => feature.id === 'lay_on_hands')?.targets.find((target) => target.id === 'player_31'),
+    ).toMatchObject({ available: false, reason: 'Healing cannot restore the dead.' })
+  })
+
+  it('treats a petrified caster as unable to act', () => {
+    const state = snapshot()
+    Object.assign(state.combat.participants[0], { conditions: ['petrified'] })
+
+    const controls = gameplayControlsFromSnapshot(state, 30)
+
+    expect(controls.spells.map((spell) => spell.reason)).toEqual([
+      'Caster cannot act.',
+      'Caster cannot act.',
+      'Caster cannot act.',
+    ])
+  })
+
   it('keeps projected object IDs, state, candidate actions, and revisions together', () => {
     const outOfCombat = snapshot()
     outOfCombat.combat.status = 'none'
