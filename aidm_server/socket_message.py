@@ -134,11 +134,11 @@ def prepare_socket_message(
 
     playability_error = session_playability_error(session_obj)
     if playability_error:
-        error_code, message = playability_error
         return SocketMessageFailure(
-            error_code=error_code,
-            message=message,
-            telemetry_suffix=error_code,
+            error_code=playability_error.error_code,
+            message=playability_error.message,
+            telemetry_suffix=playability_error.error_code,
+            details=playability_error.details or None,
             telemetry_payload={'session_id': session_id, 'campaign_id': campaign_id},
         )
 

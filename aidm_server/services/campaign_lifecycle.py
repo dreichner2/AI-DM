@@ -24,8 +24,9 @@ from aidm_server.models import (
     StoryThread,
     TurnCanonUpdate,
     TurnEvent,
+    safe_json_loads,
 )
-from aidm_server.response_dtos import campaign_payload
+from aidm_server.response_dtos import ENDED_STATUS, campaign_payload
 from aidm_server.operator_audit import record_operator_action
 from aidm_server.services.session_lifecycle import delete_session_record
 from aidm_server.time_utils import utc_now
@@ -156,22 +157,22 @@ def restore_campaign_record(campaign: Campaign) -> dict:
     campaign_id = campaign.campaign_id
     campaign.status = ACTIVE_STATUS
     campaign.updated_at = utc_now()
-    restored_sessions = Session.query.filter_by(campaign_id=campaign_id, archived_by_campaign_id=campaign_id).update(
-        {
-            Session.status: ACTIVE_STATUS,
-            Session.deleted_at: None,
-            Session.updated_at: campaign.updated_at,
-            Session.archived_by_campaign_id: None,
-        },
-        synchronize_session=False,
-    )
+    restored_sessions = Session.query.filter_by(campaign_id=campaign_id, archived_by_campaign_id=campaign_id).all()
+    for session_obj in restored_sessions:
+        snapshot = safe_json_loads(session_obj.state_snapshot, {})
+        # Chapters closed before the archive come back ended, like a single-session restore.
+        chapter_ended = isinstance(snapshot, dict) and bool(snapshot.get('ended_at'))
+        session_obj.status = ENDED_STATUS if chapter_ended else ACTIVE_STATUS
+        session_obj.deleted_at = None
+        session_obj.updated_at = campaign.updated_at
+        session_obj.archived_by_campaign_id = None
     record_operator_action(
         action='campaign.restore',
         resource_type='campaign',
         workspace_id=campaign.workspace_id or 'owner',
         campaign_id=campaign_id,
         resource_id=campaign_id,
-        details={'restoredSessionCount': restored_sessions},
+        details={'restoredSessionCount': len(restored_sessions)},
     )
     return campaign_payload(campaign)
 

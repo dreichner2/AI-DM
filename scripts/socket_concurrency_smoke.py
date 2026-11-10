@@ -19,7 +19,8 @@ if str(REPO_ROOT) not in sys.path:
 @dataclass(frozen=True)
 class SeededRuntime:
     world_id: int
-    campaign_id: int
+    campaign_one_id: int
+    campaign_two_id: int
     session_one_id: int
     session_two_id: int
     player_one_id: int
@@ -90,41 +91,41 @@ def _seed_runtime(http) -> SeededRuntime:
         }
     }
     world = _post(http, '/api/worlds', {'name': 'Concurrency Smoke World', 'description': 'Socket smoke realm'})
-    campaign = _post(
-        http,
-        '/api/campaigns',
-        {
-            'title': 'Concurrency Smoke Campaign',
-            'description': 'Validates concurrent socket turns.',
-            'world_id': world['world_id'],
-        },
-    )
-    campaign_id = int(campaign['campaign_id'])
-    player_one = _post(
-        http,
-        f'/api/players/campaigns/{campaign_id}/players',
-        {'name': 'Aria', 'character_name': 'Aria', 'char_class': 'Wizard', 'level': 2, 'stats': creation_stats},
-    )
-    player_two = _post(
-        http,
-        f'/api/players/campaigns/{campaign_id}/players',
-        {'name': 'Borin', 'character_name': 'Borin', 'char_class': 'Cleric', 'level': 2, 'stats': creation_stats},
-    )
-    player_three = _post(
-        http,
-        f'/api/players/campaigns/{campaign_id}/players',
-        {'name': 'Cala', 'character_name': 'Cala', 'char_class': 'Ranger', 'level': 2, 'stats': creation_stats},
-    )
-    session_one = _post(http, '/api/sessions/start', {'campaign_id': campaign_id})
-    session_two = _post(http, '/api/sessions/start', {'campaign_id': campaign_id})
+
+    def create_campaign(title: str) -> int:
+        campaign = _post(
+            http,
+            '/api/campaigns',
+            {'title': title, 'description': 'Validates concurrent socket turns.', 'world_id': world['world_id']},
+        )
+        return int(campaign['campaign_id'])
+
+    def create_player(campaign_id: int, name: str, char_class: str) -> int:
+        player = _post(
+            http,
+            f'/api/players/campaigns/{campaign_id}/players',
+            {'name': name, 'character_name': name, 'char_class': char_class, 'level': 2, 'stats': creation_stats},
+        )
+        return int(player['player_id'])
+
+    # A campaign has one playable chapter at a time, so the different-session
+    # turn runs in a second campaign with its own player.
+    campaign_one_id = create_campaign('Concurrency Smoke Campaign')
+    campaign_two_id = create_campaign('Concurrency Smoke Second Campaign')
+    player_one_id = create_player(campaign_one_id, 'Aria', 'Wizard')
+    player_two_id = create_player(campaign_one_id, 'Borin', 'Cleric')
+    player_three_id = create_player(campaign_two_id, 'Cala', 'Ranger')
+    session_one = _post(http, '/api/sessions/start', {'campaign_id': campaign_one_id})
+    session_two = _post(http, '/api/sessions/start', {'campaign_id': campaign_two_id})
     return SeededRuntime(
         world_id=int(world['world_id']),
-        campaign_id=campaign_id,
+        campaign_one_id=campaign_one_id,
+        campaign_two_id=campaign_two_id,
         session_one_id=int(session_one['session_id']),
         session_two_id=int(session_two['session_id']),
-        player_one_id=int(player_one['player_id']),
-        player_two_id=int(player_two['player_id']),
-        player_three_id=int(player_three['player_id']),
+        player_one_id=player_one_id,
+        player_two_id=player_two_id,
+        player_three_id=player_three_id,
     )
 
 
@@ -195,7 +196,7 @@ def _assert_queue_wait_metric(http, seeded: SeededRuntime) -> None:
         for key, timing in timings.items()
         if key.startswith('socket.turn_queue_wait_ms|')
         and f'session_id={seeded.session_one_id}' in key
-        and f'campaign_id={seeded.campaign_id}' in key
+        and f'campaign_id={seeded.campaign_one_id}' in key
     ]
     if not matching:
         raise AssertionError(f'No socket.turn_queue_wait_ms timing found for session {seeded.session_one_id}.')
@@ -236,7 +237,7 @@ def run_smoke(*, database_uri: str, stream_sleep_seconds: float) -> None:
                 client_one,
                 {
                     'session_id': seeded.session_one_id,
-                    'campaign_id': seeded.campaign_id,
+                    'campaign_id': seeded.campaign_one_id,
                     'world_id': seeded.world_id,
                     'player_id': seeded.player_one_id,
                     'message': 'I inspect the locked gate.',
@@ -248,7 +249,7 @@ def run_smoke(*, database_uri: str, stream_sleep_seconds: float) -> None:
                 client_two,
                 {
                     'session_id': seeded.session_one_id,
-                    'campaign_id': seeded.campaign_id,
+                    'campaign_id': seeded.campaign_one_id,
                     'world_id': seeded.world_id,
                     'player_id': seeded.player_two_id,
                     'message': 'I watch the corridor for trouble.',
@@ -260,7 +261,7 @@ def run_smoke(*, database_uri: str, stream_sleep_seconds: float) -> None:
                 client_three,
                 {
                     'session_id': seeded.session_two_id,
-                    'campaign_id': seeded.campaign_id,
+                    'campaign_id': seeded.campaign_two_id,
                     'world_id': seeded.world_id,
                     'player_id': seeded.player_three_id,
                     'message': 'I study the second chamber.',

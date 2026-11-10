@@ -128,20 +128,11 @@ def test_outgoing_turn_payload_contracts_are_stable():
         'rules_hint': rules_hint,
         'context_version': 'v2',
     }
-    assert dm_chunk_payload(
-        chunk='A blade flashes.',
-        session_id=1,
-        turn_id=2,
-        requires_roll=True,
-        rules_hint=rules_hint,
-        context_version='v2',
-    ) == {
-        'chunk': 'A blade flashes.',
+    assert dm_chunk_payload(session_id=1, turn_id=2, chunk='A blade flashes.', index=0) == {
         'session_id': 1,
         'turn_id': 2,
-        'requires_roll': True,
-        'rules_hint': rules_hint,
-        'context_version': 'v2',
+        'chunk': 'A blade flashes.',
+        'index': 0,
     }
     assert dm_response_end_payload(
         session_id=1,
@@ -314,6 +305,23 @@ def test_outgoing_status_and_side_effect_payload_contracts_are_stable():
         'reason': 'keyword',
         'trigger_spec': {'trigger_type': 'keywords'},
     }
+
+
+def test_new_message_payload_names_an_opening_message():
+    payload = new_message_payload(
+        message='Begin the adventure.',
+        speaker='Ember',
+        turn_id=1,
+        requires_roll=False,
+        rules_hint={'requires_roll': False, 'message_kind': 'opening'},
+        context_version='v2',
+        action_intent=None,
+        client_message_id='opening-1',
+        include_private_provenance=False,
+        message_kind='opening',
+    )
+
+    assert payload['message_kind'] == 'opening'
 
 
 def test_new_message_payload_contract_is_stable():

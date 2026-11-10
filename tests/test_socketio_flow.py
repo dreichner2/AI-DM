@@ -1165,6 +1165,8 @@ def test_ai_conductor_adds_player_to_spotlight_conversation(app, socketio, app_r
             }
         )
     )
+    # The conductor helper runs only with a non-fallback main provider.
+    app.config['AIDM_LLM_PROVIDER'] = 'gemini'
     app.config['AIDM_TURN_CONDUCTOR_HELPER_IN_TESTS'] = True
     monkeypatch.setattr(turn_control_module, 'get_helper_provider', lambda: provider)
 
@@ -1240,6 +1242,8 @@ def test_ai_conductor_switches_spotlight_interrupt_to_structured(app, socketio, 
             }
         )
     )
+    # The conductor helper runs only with a non-fallback main provider.
+    app.config['AIDM_LLM_PROVIDER'] = 'gemini'
     app.config['AIDM_TURN_CONDUCTOR_HELPER_IN_TESTS'] = True
     monkeypatch.setattr(turn_control_module, 'get_helper_provider', lambda: provider)
 

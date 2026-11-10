@@ -2,6 +2,7 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from aidm_server.models import safe_json_loads
 from aidm_server.socket_contracts import segment_triggered_payload
 from aidm_server.turn_engine import TurnCommand, TurnEngine
 from aidm_server.turn_segments import (
@@ -55,7 +56,7 @@ def _request(*, manual_segment_ids=frozenset()):
 
 
 def _turn():
-    return SimpleNamespace(turn_id=13, campaign_id=5, player_id=11)
+    return SimpleNamespace(turn_id=13, campaign_id=5, player_id=11, metadata_json=None)
 
 
 def test_turn_segment_service_activates_only_allowed_automatic_trigger_types():
@@ -211,6 +212,8 @@ def test_turn_engine_segment_helpers_remain_thin_compatible_delegates():
         session_id=7,
         segments_to_activate=activation,
     ) == [{'segment_id': 17}]
+    # Activated segments are recorded on the turn so a resumed turn still has them.
+    assert safe_json_loads(turn.metadata_json, {})['triggered_segments'] == [{'segment_id': 17}]
 
     command = TurnCommand(
         sid='socket-1',

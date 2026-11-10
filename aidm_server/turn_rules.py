@@ -31,7 +31,12 @@ ROLL_REQUEST_PATTERNS = [
         re.IGNORECASE,
     ),
     re.compile(r'\broll\s+(?:for\s+)?initiative\b', re.IGNORECASE),
-    re.compile(r'\bmake\s+(?:an?\s+)?[a-z][a-z \'-]{0,40}\s+check\b', re.IGNORECASE),
+    # "Make a Wisdom (Perception) check, DC 13." is the form the DM prompt asks
+    # for, so check names may carry parentheses and slashes.
+    re.compile(
+        r"\bmake\s+(?:an?\s+)?[a-z][a-z ()/'-]{0,60}\s+(?:check|saving\s+throw|save)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r'\bwhat\s+did\s+you\s+roll\b', re.IGNORECASE),
     re.compile(r'\broll\s+for\b', re.IGNORECASE),
 ]

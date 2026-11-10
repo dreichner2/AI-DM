@@ -51,6 +51,7 @@ class TurnControlFailure:
     message: str
     telemetry_suffix: str
     telemetry_payload: dict[str, Any]
+    details: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -83,12 +84,12 @@ def _apply_turn_control_update_locked(
 
     playability_error = session_playability_error(session_obj)
     if playability_error:
-        error_code, message = playability_error
         return TurnControlFailure(
-            error_code,
-            message,
-            error_code,
+            playability_error.error_code,
+            playability_error.message,
+            playability_error.error_code,
             {'session_id': session_id},
+            playability_error.details or None,
         )
 
     player = dependencies.workspace_player(player_id, workspace_id)
@@ -239,7 +240,7 @@ def register_socket_turn_control_events(
                 dependencies=dependencies,
             )
             if isinstance(outcome, TurnControlFailure):
-                emit('error', socket_error(outcome.error_code, outcome.message))
+                emit('error', socket_error(outcome.error_code, outcome.message, outcome.details))
                 telemetry_event(
                     f'socket.turn_control.{outcome.telemetry_suffix}',
                     payload={'sid': request.sid, **outcome.telemetry_payload},

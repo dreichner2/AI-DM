@@ -50,6 +50,7 @@ from aidm_server.models import (
 from aidm_server.operator_audit import record_operator_action
 from aidm_server.provider_priority import foreground_provider_reservation
 from aidm_server.services.campaign_pack_progress import update_campaign_pack_progress
+from aidm_server.services.session_lifecycle import session_playability_error
 from aidm_server.services.session_state_mutation import (
     SessionStateBeforePersistContext,
     SessionStateMutationPlan,
@@ -85,6 +86,18 @@ def _combat_operator_forbidden_response():
     return capability_forbidden_response(
         'dm_runtime_control',
         'Only workspace admins can manage combat state and debug logs.',
+    )
+
+
+def _session_playability_response(session_obj: Session):
+    playability_error = session_playability_error(session_obj)
+    if playability_error is None:
+        return None
+    return error_response(
+        playability_error.error_code,
+        playability_error.message,
+        playability_error.status_code,
+        playability_error.details or None,
     )
 
 
@@ -738,6 +751,9 @@ def start_session_combat(session_id: int):
     forbidden = _combat_operator_forbidden_response()
     if forbidden:
         return forbidden
+    unplayable = _session_playability_response(session_obj)
+    if unplayable:
+        return unplayable
     payload = parse_json_body(request) or {}
     release_clean_scoped_session(boundary='combat start coordinator')
 
@@ -1022,6 +1038,9 @@ def apply_session_combat_morale_event(session_id: int):
     forbidden = _combat_operator_forbidden_response()
     if forbidden:
         return forbidden
+    unplayable = _session_playability_response(session_obj)
+    if unplayable:
+        return unplayable
     payload = parse_json_body(request) or {}
     participant_id = payload.get('participantId') or payload.get('participant_id') or payload.get('enemyId') or payload.get('enemy_id')
     event = payload.get('event') or payload.get('moraleEvent') or payload.get('morale_event')
@@ -1067,6 +1086,9 @@ def check_session_combat_end(session_id: int):
         forbidden = _combat_operator_forbidden_response()
         if forbidden:
             return forbidden
+        unplayable = _session_playability_response(session_obj)
+        if unplayable:
+            return unplayable
 
         def build_end_change(_locked_session: Session, state: dict[str, Any]) -> SessionStateMutationPlan:
             combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
@@ -1117,6 +1139,9 @@ def apply_session_combat_changes(session_id: int):
     forbidden = _combat_operator_forbidden_response()
     if forbidden:
         return forbidden
+    unplayable = _session_playability_response(session_obj)
+    if unplayable:
+        return unplayable
     payload = parse_json_body(request) or {}
     changes = payload.get('changes') if isinstance(payload.get('changes'), list) else []
     changes = _combat_api_changes_with_ids(session_id, changes, idempotency_key=_request_idempotency_key(payload))

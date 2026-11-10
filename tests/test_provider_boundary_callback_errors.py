@@ -7,12 +7,22 @@ import aidm_server.game_state.extraction.post_dm_outcome_extractor as post_extra
 import aidm_server.game_state.extraction.pre_dm_action_extractor as pre_extractor_module
 from aidm_server.provider_priority import provider_priority_gate
 import aidm_server.turn_control as turn_control_module
-from aidm_server.models import Session
+from aidm_server.models import Player, Session
 from tests.helpers import seed_world_campaign_player_session
 
 
 class BoundaryReleaseError(RuntimeError):
     pass
+
+
+def _seed_second_player(app, campaign_id: int) -> int:
+    # The conductor helper runs only when two players share the table and the
+    # main provider is not the deterministic fallback.
+    with app.app_context():
+        player = Player(campaign_id=campaign_id, name='Bob', character_name='Borin', class_='Fighter', level=3)
+        db.session.add(player)
+        db.session.commit()
+        return player.player_id
 
 
 def _failing_boundary_callback(message: str):
@@ -84,6 +94,7 @@ def test_post_dm_boundary_failure_propagates_without_calling_provider(app, monke
 
 def test_turn_conductor_boundary_failure_propagates_without_calling_provider(app, monkeypatch):
     ids = seed_world_campaign_player_session(app)
+    second_player_id = _seed_second_player(app, ids['campaign_id'])
     provider_requests: list[bool] = []
     baseline, fail_boundary = _failing_boundary_callback('conductor boundary failed')
 
@@ -94,6 +105,7 @@ def test_turn_conductor_boundary_failure_propagates_without_calling_provider(app
     monkeypatch.setattr(turn_control_module, 'get_helper_provider', unexpected_provider)
 
     with app.app_context():
+        app.config['AIDM_LLM_PROVIDER'] = 'gemini'
         app.config['AIDM_TURN_CONDUCTOR_HELPER_IN_TESTS'] = True
         session_obj = db.session.get(Session, ids['session_id'])
         with pytest.raises(BoundaryReleaseError, match='conductor boundary failed'):
@@ -102,7 +114,7 @@ def test_turn_conductor_boundary_failure_propagates_without_calling_provider(app
                 player_id=ids['player_id'],
                 message='I wait for an opening.',
                 action_intent={'kind': 'message'},
-                active_player_ids=[ids['player_id']],
+                active_player_ids=[ids['player_id'], second_player_id],
                 before_helper_call=fail_boundary,
                 reload_session_after_helper=lambda: session_obj,
             )
@@ -113,6 +125,7 @@ def test_turn_conductor_boundary_failure_propagates_without_calling_provider(app
 
 def test_provider_failures_retain_deterministic_fallbacks(app, monkeypatch):
     ids = seed_world_campaign_player_session(app)
+    second_player_id = _seed_second_player(app, ids['campaign_id'])
     provider_calls: list[str] = []
 
     class FailedProvider:
@@ -129,6 +142,7 @@ def test_provider_failures_retain_deterministic_fallbacks(app, monkeypatch):
     baseline = provider_priority_gate.snapshot()
 
     with app.app_context():
+        app.config['AIDM_LLM_PROVIDER'] = 'gemini'
         app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
         app.config['AIDM_TURN_CONDUCTOR_HELPER_IN_TESTS'] = True
 
@@ -156,7 +170,7 @@ def test_provider_failures_retain_deterministic_fallbacks(app, monkeypatch):
             player_id=ids['player_id'],
             message='I wait for an opening.',
             action_intent={'kind': 'message'},
-            active_player_ids=[ids['player_id']],
+            active_player_ids=[ids['player_id'], second_player_id],
             before_helper_call=lambda: None,
             reload_session_after_helper=lambda: session_obj,
         )

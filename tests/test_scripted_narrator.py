@@ -532,6 +532,5 @@ def test_no_template_reads_as_a_roll_request(template_key):
     for template in TEMPLATES[template_key]:
         text = template.format_map(_SampleValues())
         assert response_mentions_roll_request(text) is False, text
-        assert TurnRollPolicy.response_requests_stated_check(text) is False, text
         assert TurnRollPolicy.response_requests_group_roll(text) is False, text
     assert response_mentions_roll_request(scripted_narrator.OPENING_CLOSING_LINE) is False

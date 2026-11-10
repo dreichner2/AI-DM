@@ -1726,8 +1726,8 @@ class TurnEngine:
 
         playability_error = session_playability_error(session_obj, campaign_obj=campaign)
         if playability_error:
-            error_code, message = playability_error
-            self.emit('error', socket_error(error_code, message))
+            error_code = playability_error.error_code
+            self.emit('error', socket_error(error_code, playability_error.message, playability_error.details))
             telemetry_event(
                 f'socket.turn.{error_code}',
                 payload={
@@ -2300,6 +2300,7 @@ class TurnEngine:
             'action_intent': command.action_intent,
             'client_message_id': command.client_message_id,
             'turn_number': session_turn_number,
+            'message_kind': command.message_kind,
         }
         self.emit(
             'new_message',

@@ -188,7 +188,10 @@ def pregenerated_character_payload(preset: PregeneratedCharacterPreset) -> dict[
         class_name=preset.class_name,
         level=preset.level,
     )
+    portrait = profile_icon_src_for_character(preset.race, preset.sex)
     return {
+        # `id` and `portrait` are the hero-picker names for `character_id` and `profile_image`.
+        'id': preset.character_id,
         'character_id': preset.character_id,
         'character_name': preset.character_name,
         'name': preset.player_name,
@@ -198,7 +201,8 @@ def pregenerated_character_payload(preset: PregeneratedCharacterPreset) -> dict[
         'char_class': preset.class_name,
         'level': preset.level,
         'tagline': preset.tagline,
-        'profile_image': profile_icon_src_for_character(preset.race, preset.sex),
+        'profile_image': portrait,
+        'portrait': portrait,
         'stats': stats,
         'inventory': inventory_payload(inventory),
         'weapon_proficiencies': default_weapon_proficiencies_for_class(preset.class_name),

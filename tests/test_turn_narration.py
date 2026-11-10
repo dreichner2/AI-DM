@@ -17,6 +17,7 @@ from aidm_server.turn_narration import (
     TurnNarrationDependencies,
     TurnNarrationService,
 )
+from aidm_server.turn_rules import response_mentions_roll_request
 
 
 def _request(**overrides):
@@ -317,6 +318,8 @@ def test_narration_does_not_inject_roll_prompt_when_gate_is_already_satisfied(
     request_overrides,
 ):
     service, evidence = _service(lambda *args, **kwargs: iter([response_text]))
+    # The production roll-request detector, so the stated-check form is covered.
+    service.dependencies = replace(service.dependencies, response_requests_roll=response_mentions_roll_request)
 
     result = service.narrate(
         _request(

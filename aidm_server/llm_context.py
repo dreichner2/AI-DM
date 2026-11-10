@@ -30,12 +30,11 @@ from aidm_server.segment_triggers import parse_trigger_spec
 from aidm_server.services.content_settings import session_content_settings
 from aidm_server.telemetry import telemetry_event
 from aidm_server.time_utils import utc_now
-from aidm_server.turn_roll_policy import TurnRollPolicy
 from aidm_server.turn_rules import response_mentions_roll_request
 
 
 CONTEXT_VERSION = 'v2'
-MAX_CONTEXT_CHARS = 24000
+MAX_CONTEXT_CHARS = 30000
 MAX_LIVE_ACTIVE_QUESTS = 5
 MAX_LIVE_OBJECTIVES_PER_QUEST = 5
 MAX_LIVE_RECENT_LOCATIONS = 8
@@ -58,6 +57,8 @@ MAX_PACK_CLUES = 4
 MAX_PACK_AUTHOR_TEXT = 240
 MAX_TRIMMED_FACTS = 10
 MAX_TRIMMED_RECENT_LOCATIONS = 4
+MAX_TRIMMED_RECENT_TURNS = 5
+MAX_TRIMMED_NEXT_CHECKPOINTS = 2
 MAX_RACE_SUMMARY_CHARS = 240
 MAX_RECENT_ACTION_CHARS = 200
 PACK_NPC_DM_ONLY_FIELDS = ('personality', 'motivation', 'knows', 'secret')
@@ -1639,10 +1640,7 @@ def _stable_turn_for_recent_context(turn: DmTurn) -> bool:
     if (
         bool(turn.requires_roll)
         and turn.roll_value is None
-        and (
-            response_mentions_roll_request(turn.dm_output)
-            or TurnRollPolicy.response_requests_stated_check(turn.dm_output or '')
-        )
+        and response_mentions_roll_request(turn.dm_output)
     ):
         return False
     return bool(str(turn.dm_output or '').strip())
@@ -2100,12 +2098,32 @@ def _drop_pack_enemies(payload: dict) -> bool:
     return True
 
 
+def _drop_older_recent_turns(payload: dict) -> bool:
+    # recent_turns runs oldest to newest, so the latest turns are at the end.
+    turns = payload.get('recent_turns') if isinstance(payload.get('recent_turns'), list) else []
+    if len(turns) <= MAX_TRIMMED_RECENT_TURNS:
+        return False
+    payload['recent_turns'] = turns[-MAX_TRIMMED_RECENT_TURNS:]
+    return True
+
+
+def _drop_extra_next_checkpoints(payload: dict) -> bool:
+    director = payload.get('campaign_pack_director') if isinstance(payload.get('campaign_pack_director'), dict) else {}
+    checkpoints = director.get('nextCheckpoints') if isinstance(director.get('nextCheckpoints'), list) else []
+    if len(checkpoints) <= MAX_TRIMMED_NEXT_CHECKPOINTS:
+        return False
+    director['nextCheckpoints'] = checkpoints[:MAX_TRIMMED_NEXT_CHECKPOINTS]
+    return True
+
+
 CONTEXT_TRIM_STEPS = (
     ('dormant_threads', _drop_dormant_threads),
     ('emergent_memory.facts', _drop_extra_facts),
     ('live_world_state.recentKnownNpcs', _drop_recent_known_npcs),
     ('live_world_state.recentLocations', _drop_extra_recent_locations),
     ('campaign_pack_director.relevantRecords.enemies', _drop_pack_enemies),
+    ('recent_turns', _drop_older_recent_turns),
+    ('campaign_pack_director.nextCheckpoints', _drop_extra_next_checkpoints),
 )
 
 

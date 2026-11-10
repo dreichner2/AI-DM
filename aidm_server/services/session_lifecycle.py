@@ -50,8 +50,8 @@ class SessionDeletionResult:
 class SessionPlayabilityError(tuple):
     """Public reason a session cannot accept live play.
 
-    Unpacks as ``(error_code, message)`` for socket handlers; REST callers also
-    use ``status_code`` and ``details``.
+    Unpacks as ``(error_code, message)``; REST and socket callers pass
+    ``details`` on with it, and REST callers also use ``status_code``.
     """
 
     def __new__(cls, error_code: str, message: str, *, details: dict | None = None):

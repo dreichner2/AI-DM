@@ -102,6 +102,7 @@ def new_message_payload(
     client_message_id: str | None,
     include_private_provenance: bool,
     turn_number: int | None = None,
+    message_kind: str | None = None,
 ) -> dict[str, Any]:
     payload = {
         'message': message,
@@ -119,6 +120,8 @@ def new_message_payload(
     }
     if turn_number is not None:
         payload['turn_number'] = turn_number
+    if message_kind:
+        payload['message_kind'] = message_kind
     return payload
 
 
@@ -221,26 +224,15 @@ def dm_response_start_payload(
     return payload
 
 
-def dm_chunk_payload(
-    *,
-    chunk: str,
-    session_id: int,
-    turn_id: int,
-    requires_roll: bool,
-    rules_hint: dict[str, Any],
-    context_version: str,
-    turn_number: int | None = None,
-) -> dict[str, Any]:
-    payload = dm_response_start_payload(
-        session_id=session_id,
-        turn_id=turn_id,
-        requires_roll=requires_roll,
-        rules_hint=rules_hint,
-        context_version=context_version,
-        turn_number=turn_number,
-    )
-    payload['chunk'] = chunk
-    return payload
+def dm_chunk_payload(*, session_id: int, turn_id: int, chunk: str, index: int) -> dict[str, Any]:
+    # Chunks are bare: rules_hint and requires_roll travel once, in
+    # dm_response_start and dm_response_end.
+    return {
+        'session_id': session_id,
+        'turn_id': turn_id,
+        'chunk': chunk,
+        'index': index,
+    }
 
 
 def dm_response_end_payload(

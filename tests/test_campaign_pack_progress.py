@@ -379,6 +379,78 @@ def test_pack_progress_lock_ids_include_shared_sibling_sessions(app):
     assert lock_ids == sorted([first_ids['session_id'], second_ids['session_id']])
 
 
+def _seed_shared_pair_with_ended_sibling(app, group_key: str) -> tuple[dict, dict]:
+    checkpoints = [
+        {'id': 'cp_old_road', 'title': 'Reach the old road', 'nextCheckpointIds': ['cp_watchtower']},
+        {'id': 'cp_watchtower', 'title': 'Reach the watchtower', 'terminal': True},
+    ]
+    seeded = [
+        _seed_pack_session(
+            app,
+            _pack_snapshot(
+                location_id='bleakmoor_gate',
+                flags={'campaignPackActiveCheckpointId': 'cp_old_road'},
+                checkpoints=checkpoints,
+                pack_extra={'multiSessionGroupKey': group_key},
+            ),
+        )
+        for _ in range(2)
+    ]
+    with app.app_context():
+        for ids in seeded:
+            session_obj = db.session.get(Session, ids['session_id'])
+            pack = safe_json_loads(session_obj.state_snapshot, {})['campaignPack']
+            sync_campaign_pack_progress(
+                session=session_obj,
+                pack=pack,
+                checkpoints=pack['checkpoints'],
+                active_checkpoint_id='cp_old_road',
+                completed_ids=[],
+                skipped_ids=[],
+                failed_ids=[],
+                progress_revision=0,
+            )
+        db.session.get(Session, seeded[1]['session_id']).status = 'ended'
+        db.session.commit()
+    return seeded[0], seeded[1]
+
+
+def test_pack_progress_lock_ids_exclude_ended_sibling_sessions(app):
+    first_ids, _ended_ids = _seed_shared_pair_with_ended_sibling(app, 'ended-lock-group')
+
+    with app.app_context():
+        lock_ids = campaign_pack_coordination_module.campaign_pack_progress_lock_session_ids(first_ids['session_id'])
+
+    assert lock_ids == [first_ids['session_id']]
+
+
+def test_pack_progress_does_not_propagate_into_ended_sibling_session(app):
+    first_ids, ended_ids = _seed_shared_pair_with_ended_sibling(app, 'ended-propagation-group')
+    with app.app_context():
+        ended_snapshot_before = db.session.get(Session, ended_ids['session_id']).state_snapshot
+
+        result = control_campaign_pack_progress(
+            session_id=first_ids['session_id'],
+            action='advance',
+            actor='test-operator',
+        )
+        db.session.commit()
+        ended_session = db.session.get(Session, ended_ids['session_id'])
+        ended_progress = CampaignPackSession.query.filter_by(session_id=ended_ids['session_id']).one()
+        shared_audit_count = SessionStateMutationAudit.query.filter_by(
+            session_id=ended_ids['session_id'],
+            source='system.campaign_pack.shared_progress',
+        ).count()
+
+    assert result.changed is True
+    assert result.active_checkpoint_id == 'cp_watchtower'
+    assert ended_session.status == 'ended'
+    assert ended_session.state_snapshot == ended_snapshot_before
+    assert ended_progress.active_checkpoint_id == 'cp_old_road'
+    assert ended_progress.progress_revision == 0
+    assert shared_audit_count == 0
+
+
 def test_pack_progress_shared_propagation_does_not_overwrite_newer_sibling_revision(app):
     checkpoints = [
         {'id': 'cp_old_road', 'title': 'Reach the old road', 'nextCheckpointIds': ['cp_watchtower']},

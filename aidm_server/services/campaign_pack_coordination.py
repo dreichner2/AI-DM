@@ -74,7 +74,7 @@ def _campaign_pack_progress_lock_session_ids(session_id: int) -> list[int]:
             CampaignPackSession.pack_id == pack_id,
             CampaignPackSession.multi_session_group_key == group_key,
             CampaignPackSession.session_id != session_id,
-            or_(Session.status.is_(None), Session.status.notin_(['archived', 'deleted'])),
+            or_(Session.status.is_(None), Session.status.notin_(['archived', 'deleted', 'ended'])),
         )
         .order_by(CampaignPackSession.session_id.asc())
         .all()

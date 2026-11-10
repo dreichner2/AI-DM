@@ -1,10 +1,22 @@
 from __future__ import annotations
 
 import importlib
+import os
 
 import pytest
 
 from aidm_server.database import ensure_schema
+
+
+@pytest.fixture(autouse=True)
+def restore_process_environment():
+    # The LLM config endpoint and env-file loading write os.environ directly.
+    # Without this, a test that switches to the fallback provider puts every
+    # later test in Safe Mode, where helpers take their deterministic path.
+    saved = os.environ.copy()
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
 
 
 @pytest.fixture(autouse=True)

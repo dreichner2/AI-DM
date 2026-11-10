@@ -739,6 +739,12 @@ def _public_hp(value: Any) -> dict:
     return _public_scalar_fields(hp, ('current', 'max', 'temp', 'currentHp', 'maxHp', 'tempHp'))
 
 
+def _public_death_saves(value: Any) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    return {key: _positive_int(value.get(key)) or 0 for key in ('successes', 'failures')}
+
+
 def _combat_participant_for_viewer(record: dict, private_player_ids: frozenset[int]) -> dict:
     player_id = _record_player_id(record)
     is_player = _is_player_combat_participant(record)
@@ -766,6 +772,9 @@ def _combat_participant_for_viewer(record: dict, private_player_ids: frozenset[i
         payload['hp'] = public_hp
     if isinstance(record.get('conditions'), list):
         payload['conditions'] = _public_string_list(record.get('conditions'))
+    death_saves = _public_death_saves(record.get('deathSaves'))
+    if death_saves is not None:
+        payload['deathSaves'] = death_saves
     return payload
 
 

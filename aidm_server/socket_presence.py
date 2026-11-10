@@ -208,8 +208,8 @@ def register_socket_presence_events(socketio, dependencies: SocketPresenceDepend
 
             playability_error = session_playability_error(session_obj)
             if playability_error:
-                error_code, message = playability_error
-                emit('error', socket_error(error_code, message))
+                error_code = playability_error.error_code
+                emit('error', socket_error(error_code, playability_error.message, playability_error.details))
                 telemetry_event(
                     f'socket.join.{error_code}',
                     payload={

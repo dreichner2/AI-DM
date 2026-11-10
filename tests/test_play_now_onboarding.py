@@ -36,6 +36,17 @@ def test_pregenerated_character_library_exposes_four_playable_presets(client):
     }
     assert all(character['profile_image'].startswith('/profile-icons/') for character in payload['characters'])
     assert all(character['inventory'] for character in payload['characters'])
+    arden = payload['characters'][0]
+    assert {key: arden[key] for key in ('id', 'character_name', 'race', 'char_class', 'tagline', 'portrait')} == {
+        'id': 'arden-vale',
+        'character_name': 'Arden Vale',
+        'race': 'Human',
+        'char_class': 'Fighter',
+        'tagline': 'A steady sword arm who protects the road when words fail.',
+        'portrait': '/profile-icons/human_male.png',
+    }
+    assert all(character['id'] == character['character_id'] for character in payload['characters'])
+    assert all(character['portrait'] == character['profile_image'] for character in payload['characters'])
 
 
 def test_play_now_uses_existing_workspace_auth_when_auth_required(client, app, monkeypatch):

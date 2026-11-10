@@ -809,7 +809,9 @@ def test_opening_turn_is_marked_cheap_and_never_rolled(app, socketio, app_runtim
     ids = seed_world_campaign_player_session(app)
     second_id = _seed_second_player(app, ids['campaign_id'])
     client = _joined_client(socketio, app, ids['session_id'], ids['player_id'])
-    _joined_client(socketio, app, ids['session_id'], second_id)
+    peer = _joined_client(socketio, app, ids['session_id'], second_id)
+    client.get_received()
+    peer.get_received()
 
     client.emit(
         'send_message',
@@ -822,6 +824,8 @@ def test_opening_turn_is_marked_cheap_and_never_rolled(app, socketio, app_runtim
     )
     received = client.get_received()
 
+    assert [payload.get('message_kind') for payload in _payloads(received, 'new_message')] == ['opening']
+    assert [payload.get('message_kind') for payload in _payloads(peer.get_received(), 'new_message')] == ['opening']
     assert 'conductor' not in helper_calls
     assert 'pre' not in helper_calls
     assert _payloads(received, 'roll_required') == []
@@ -857,6 +861,7 @@ def test_conductor_helper_runs_only_with_two_connected_players_and_a_real_provid
     calls: list[str] = []
     ids = seed_world_campaign_player_session(app)
     second_id = _seed_second_player(app, ids['campaign_id'])
+    app.config['AIDM_LLM_PROVIDER'] = 'gemini'
     app.config['AIDM_TURN_CONDUCTOR_HELPER_IN_TESTS'] = True
 
     def conduct(active_player_ids):

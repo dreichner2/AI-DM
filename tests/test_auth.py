@@ -3125,10 +3125,18 @@ def test_socket_room_roll_events_redact_peer_provenance_and_keep_sender_receipt(
     assert 'task_dc' not in peer_message['rules_hint']['roll_spec']
     assert 'ability' not in peer_message['rules_hint']['authoritative_roll']
 
-    for socket_event in peer_events:
-        if socket_event['name'] not in {'dm_response_start', 'dm_chunk', 'dm_response_end'}:
-            continue
+    stream_events = [
+        socket_event
+        for socket_event in peer_events
+        if socket_event['name'] in {'dm_response_start', 'dm_chunk', 'dm_response_end'}
+    ]
+    assert 'dm_response_start' in [socket_event['name'] for socket_event in stream_events]
+    for socket_event in stream_events:
         payload = socket_event['args'][0]
+        if socket_event['name'] == 'dm_chunk':
+            # Chunks are bare; the rules hint travels in dm_response_start.
+            assert set(payload) == {'session_id', 'turn_id', 'chunk', 'index'}
+            continue
         rules_hint = payload['rules_hint']
         assert 'dc_hint' not in rules_hint
         if isinstance(rules_hint.get('roll_spec'), dict):

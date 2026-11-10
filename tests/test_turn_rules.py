@@ -1,3 +1,5 @@
+import pytest
+
 from aidm_server.database import db
 from aidm_server.models import DmTurn, safe_json_dumps
 from aidm_server.rules import RuleHint
@@ -99,3 +101,16 @@ def test_turn_rules_build_roll_prompt_and_detect_roll_requests():
     assert not response_mentions_roll_request('Right-Flank Raider rolls a 17 and hits Legoless.')
     assert not response_mentions_roll_request("On a hit, you'll roll `1d8 + 2` piercing damage.")
     assert not response_mentions_roll_request('The ward glows silently.')
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        'The ledger smells of ash. Make a Wisdom (Perception) check, DC 13.',
+        'Make an Intelligence (Investigation/Arcana) check, DC 15.',
+        'Make a Strength/Athletics check.',
+        'Make a Dexterity saving throw, DC 14.',
+    ],
+)
+def test_make_a_check_requests_accept_the_standard_phrasing(text):
+    assert response_mentions_roll_request(text)

@@ -2939,7 +2939,9 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
             normalized['dangerLevel'] = danger_level
         if normalized.get('locationId') or normalized.get('name'):
             normalized['locationId'] = _stable_id(normalized.get('locationId'), normalized.get('name'))
-        normalized['activeNpcIds'] = _string_list(normalized.get('activeNpcIds'))
+        # The applier replaces the present cast, so only a change that names it may write it.
+        if 'activeNpcIds' in normalized:
+            normalized['activeNpcIds'] = _string_list(normalized.get('activeNpcIds'))
         normalized['activeQuestIds'] = _string_list(normalized.get('activeQuestIds'))
         for key in ('playerPositions', 'playerZones', 'characterPositions', 'characterZones'):
             if key in normalized and not isinstance(normalized.get(key), dict):

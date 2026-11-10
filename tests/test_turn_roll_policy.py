@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from aidm_server.turn_roll_policy import TurnRollPolicy
+from aidm_server.turn_rules import response_mentions_roll_request
 
 
 def _turn(**overrides):
@@ -210,18 +211,17 @@ def test_build_roll_gate_honours_dc_stated_in_roll_request_sentence(text, expect
 
 
 def test_build_roll_gate_detects_parenthesised_check_request_on_unclassified_turn():
+    text = 'The ledger smells of ash. Make a Wisdom (Perception) check, DC 13.'
     gate = TurnRollPolicy.build_roll_gate(
         turn=_turn(),
-        dm_response_text='The ledger smells of ash. Make a Wisdom (Perception) check, DC 13.',
-        response_requests_roll=False,
+        dm_response_text=text,
+        response_requests_roll=response_mentions_roll_request(text),
         group_player_ids=[3],
     )
 
     assert gate is not None
     assert gate['rule_type'] == 'perception'
     assert gate['dc_hint'] == 'DC 13'
-    assert TurnRollPolicy.response_requests_stated_check('Make a Wisdom (Perception) check, DC 13.') is True
-    assert TurnRollPolicy.response_requests_stated_check('No check is needed to make a quick check.') is False
 
 
 def test_build_roll_gate_returns_none_for_resolved_or_unrequested_turns():

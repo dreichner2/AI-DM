@@ -233,7 +233,7 @@ def propagate_shared_campaign_pack_progress(
             CampaignPackSession.pack_id == pack_id,
             CampaignPackSession.multi_session_group_key == group_key,
             CampaignPackSession.session_id != session.session_id,
-            or_(Session.status.is_(None), Session.status.notin_(['archived', 'deleted'])),
+            or_(Session.status.is_(None), Session.status.notin_(['archived', 'deleted', 'ended'])),
         )
         .order_by(CampaignPackSession.campaign_pack_session_id.asc())
         .all()
@@ -253,7 +253,7 @@ def propagate_shared_campaign_pack_progress(
             populate_existing=True,
             with_for_update=True,
         )
-        if not sibling_session or sibling_session.status in {'archived', 'deleted'}:
+        if not sibling_session or sibling_session.status in {'archived', 'deleted', 'ended'}:
             continue
         snapshot = safe_json_loads(sibling_session.state_snapshot, {})
         if not isinstance(snapshot, dict):

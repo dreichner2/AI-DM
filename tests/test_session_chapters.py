@@ -9,12 +9,14 @@ from sqlalchemy import update
 import aidm_server.blueprints.sessions as sessions_blueprint
 import aidm_server.services.session_chapters as session_chapters
 from aidm_server.combat.state import normalize_combat_state
+from aidm_server.creatures.core_bestiary import core_creature
 from aidm_server.database import db
 from aidm_server.models import (
     Campaign,
     CampaignPackCheckpointProgress,
     CampaignPackProgressEvent,
     CampaignPackSession,
+    CombatEncounter,
     DmTurn,
     Session,
     SessionLogEntry,
@@ -458,11 +460,55 @@ def test_ended_chapter_rejects_play_but_keeps_reads(client, app, socketio):
     error = _event_payload(received, 'error')
     assert error['error_code'] == 'session_ended'
     assert error['error'] == 'This chapter has ended. Continue in the current chapter.'
+    assert error['details'] == {'current_session_id': chapter_two_id}
     assert _event_payload(received, 'player_joined') is None
     assert str(ids['session_id']) not in socketio.server.manager.rooms.get('/', {})
 
     socket_client.emit('join_session', {'session_id': chapter_two_id, 'player_id': ids['player_id']})
     assert _event_payload(socket_client.get_received(), 'error') is None
+
+
+def test_message_to_a_chapter_that_ended_after_join_names_the_current_chapter(client, app, socketio):
+    ids = _seed_chapter_one(app)
+    socket_client = socketio.test_client(app, flask_test_client=app.test_client())
+    socket_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    assert _event_payload(socket_client.get_received(), 'error') is None
+    chapter_two_id = client.post('/api/sessions/start', json={'campaign_id': ids['campaign_id']}).get_json()['session_id']
+
+    socket_client.emit(
+        'send_message',
+        {
+            'session_id': ids['session_id'],
+            'campaign_id': ids['campaign_id'],
+            'player_id': ids['player_id'],
+            'message': 'I open the vault door.',
+        },
+    )
+
+    error = _event_payload(socket_client.get_received(), 'error')
+    assert error['error_code'] == 'session_ended'
+    assert error['details'] == {'current_session_id': chapter_two_id}
+
+
+def test_combat_start_against_an_ended_chapter_returns_session_ended(client, app):
+    ids = _seed_chapter_one(app)
+    chapter_two_id = client.post('/api/sessions/start', json={'campaign_id': ids['campaign_id']}).get_json()['session_id']
+    ended_snapshot = _snapshot(app, ids['session_id'])
+
+    response = client.post(
+        f"/api/sessions/{ids['session_id']}/combat/start",
+        json={'creature': core_creature('wolf'), 'enemyCount': 1},
+    )
+
+    assert response.status_code == 409
+    assert response.get_json() == {
+        'error': 'This chapter has ended. Continue in the current chapter.',
+        'error_code': 'session_ended',
+        'details': {'current_session_id': chapter_two_id},
+    }
+    assert _snapshot(app, ids['session_id']) == ended_snapshot
+    with app.app_context():
+        assert CombatEncounter.query.filter_by(session_id=ids['session_id']).count() == 0
 
 
 def test_unsettled_chapter_blocks_continuation_unless_an_operator_forces_it(client, app):
@@ -702,6 +748,23 @@ def test_archive_and_restore_keep_an_ended_chapter_ended(client, app):
 
     assert reopened.get_json()['session']['status'] == 'active'
     assert reopened.get_json()['session']['is_current'] is True
+
+
+def test_campaign_archive_and_restore_keep_an_ended_chapter_ended(client, app):
+    ids = _seed_chapter_one(app)
+    chapter_two_id = client.post('/api/sessions/start', json={'campaign_id': ids['campaign_id']}).get_json()['session_id']
+
+    assert client.post(f"/api/campaigns/{ids['campaign_id']}/archive").status_code == 200
+    assert _session_status(app, ids['session_id']) == 'archived'
+    assert _session_status(app, chapter_two_id) == 'archived'
+    assert client.post(f"/api/campaigns/{ids['campaign_id']}/restore").status_code == 200
+
+    assert _session_status(app, ids['session_id']) == 'ended'
+    assert _session_status(app, chapter_two_id) == 'active'
+    assert client.patch(
+        f"/api/sessions/{ids['session_id']}/content-settings",
+        json={'content_rating': 'mature'},
+    ).get_json()['details'] == {'current_session_id': chapter_two_id}
 
 
 def test_play_now_replay_opens_the_current_chapter(client, app):

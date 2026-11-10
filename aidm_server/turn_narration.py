@@ -15,12 +15,12 @@ from aidm_server.provider_priority import foreground_provider_reservation
 from aidm_server.provider_registry import narration_waits_for_background
 from aidm_server.rules import RuleHint
 from aidm_server.socket_contracts import (
+    dm_chunk_payload,
     dm_response_end_payload,
     dm_response_start_payload,
     socket_error_payload as socket_error,
 )
 from aidm_server.text_sanitization import ReasoningBlockFilter
-from aidm_server.turn_roll_policy import TurnRollPolicy
 
 
 DM_GENERATION_FAILED_MESSAGE = 'The DM response could not be generated. Please retry.'
@@ -344,16 +344,9 @@ class TurnNarrationService:
         )
 
     def _emit_chunk(self, request: NarrationRequest, chunk: str, index: int) -> None:
-        # Chunks are bare: rules_hint and requires_roll travel once, in
-        # dm_response_start and dm_response_end.
         self.dependencies.emit(
             'dm_chunk',
-            {
-                'session_id': request.session_id,
-                'turn_id': request.turn_id,
-                'chunk': chunk,
-                'index': index,
-            },
+            dm_chunk_payload(session_id=request.session_id, turn_id=request.turn_id, chunk=chunk, index=index),
             room=str(request.session_id),
         )
         self.dependencies.sleep(0)
@@ -408,6 +401,5 @@ class TurnNarrationService:
             request.requires_roll
             and request.roll_value is None
             and not self.dependencies.response_requests_roll(response_text)
-            and not TurnRollPolicy.response_requests_stated_check(response_text)
             and not self.dependencies.response_explains_no_roll_needed(response_text)
         )

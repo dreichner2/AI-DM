@@ -123,8 +123,10 @@ def test_all_foreground_provider_waits_release_database_connection_and_persist_s
 
     try:
         ids = seed_world_campaign_player_session(app)
-        # The conductor helper only runs when at least two players are connected.
+        # The conductor helper only runs when at least two players are connected
+        # and the main provider is not the deterministic fallback.
         companion_id = _seed_companion(app, ids['campaign_id'])
+        app.config['AIDM_LLM_PROVIDER'] = 'gemini'
         app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
         app.config['AIDM_TURN_CONDUCTOR_HELPER_IN_TESTS'] = True
         client = socketio.test_client(app, flask_test_client=app.test_client())
@@ -406,6 +408,7 @@ def test_turn_conductor_discards_ai_decision_when_session_changes_during_provide
     turn_engine_module = app_runtime['modules']['turn_engine']
     ids = seed_world_campaign_player_session(app)
     companion_id = _seed_companion(app, ids['campaign_id'])
+    app.config['AIDM_LLM_PROVIDER'] = 'gemini'
     app.config['AIDM_TURN_CONDUCTOR_HELPER_IN_TESTS'] = True
     changed_snapshot = safe_json_dumps(
         {

@@ -12,6 +12,7 @@ from aidm_server.combat.pipeline import death_saves_due
 from aidm_server.combat.state import normalize_participant, participant_can_take_turn
 from aidm_server.database import db
 from aidm_server.game_state.application.applier import apply_state_changes, persist_state_to_database
+from aidm_server.game_state.logging.state_log_builder import build_state_log
 from aidm_server.game_state.leveling import sync_stats_for_level
 from aidm_server.game_state.models import state_snapshot_for_session
 from aidm_server.game_state.orchestration.combat_resolution import build_dm_combat_context, derive_trusted_damage_changes
@@ -21,6 +22,7 @@ from aidm_server.game_state.validation.validator import (
     validated_changes_for_application,
 )
 from aidm_server.models import Campaign, Player, Session, safe_json_dumps, safe_json_loads
+from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
 from aidm_server.spell_effects import resolve_targeted_spell, spell_target_legality
 from aidm_server.spellbook import AUTHORITATIVE_SPELL_EFFECTS
 from tests.helpers import seed_world_campaign_player_session
@@ -232,6 +234,24 @@ def test_ending_turn_rolls_and_records_the_death_save_of_a_dying_pc_it_passes(mo
     participant = _participant(applied, 'player_2')
     assert vitality.vitality_snapshot(participant) == vitality.vitality_snapshot(expected)
     assert vitality.vitality_snapshot(applied['playerCharacters'][1]) == vitality.vitality_snapshot(expected)
+
+
+def test_death_save_reads_as_its_reason_in_the_turn_state_log():
+    dying = _pc('player_2', hp=0, conditions=['unconscious', 'dying'], saves={'successes': 0, 'failures': 0})
+    state = _state(_pc('player_1'), dying)
+    context = build_dm_combat_context(
+        state=state, combat_context={'enemyRequiredActions': []}, pending_rolls=[], resolved_player_roll=False, turn_id=41,
+    )
+    changes = derive_trusted_damage_changes(
+        state=state, dm_context_packet={'combatState': context}, actor_id='player_1', turn_id=41, already_applied_changes=[],
+    ).death_saves
+    validation = validate_state_changes(state=state, changes=changes)
+
+    state_log = build_state_log(turn_id=41, post_validation=validation)
+
+    assert changes[0]['reason'].startswith('Death saving throw: Player 2 rolled ')
+    assert [line['message'] for line in state_log['lines']] == [changes[0]['reason']]
+    assert state_log['lines'][0]['visibleToPlayer'] is True
 
 
 def test_stable_characters_make_no_death_saves():
@@ -466,6 +486,26 @@ def test_enemies_and_npc_allies_are_simply_defeated_at_zero_hp():
         participant = _participant(state, pid)
         assert participant['isAlive'] is False
         assert 'dying' not in participant['conditions']
+
+
+# --- A13: the table sees a downed character's death saves --------------------------
+
+
+@pytest.mark.parametrize('viewer_player_ids', [{1}, None])
+def test_non_admin_viewers_see_another_player_characters_death_saves(viewer_player_ids):
+    healthy = _pc('player_1')
+    dying = _pc('player_2', hp=0, conditions=['unconscious', 'dying'], saves={'successes': 1, 'failures': 2})
+    state = _state(healthy, dying)
+    for participant in state['combat']['participants'][:2]:
+        participant['playerId'] = int(participant['id'].split('_')[1])
+
+    projected = filter_session_snapshot_for_player(state, private_player_ids=viewer_player_ids)
+
+    downed = next(item for item in projected['combat']['participants'] if item['id'] == 'player_2')
+    assert downed['deathSaves'] == {'successes': 1, 'failures': 2}
+    assert set(downed['conditions']) == {'unconscious', 'dying'}
+    standing = next(item for item in projected['combat']['participants'] if item['id'] == 'player_1')
+    assert 'deathSaves' not in standing
 
 
 def test_victory_also_leaves_a_dying_character_stable():

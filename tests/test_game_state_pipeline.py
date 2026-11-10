@@ -2163,6 +2163,43 @@ def test_scene_update_changes_mood_danger_and_type_without_removing_location():
     assert scene['updatedAtTurn'] == 21
 
 
+def test_mood_only_scene_update_keeps_the_present_npcs():
+    state = _state()
+    state['currentScene'] = {
+        'locationId': 'blackwake_tavern',
+        'name': 'Blackwake Tavern',
+        'mood': 'calm',
+        'activeNpcIds': ['npc_innkeeper', 'npc_smuggler'],
+    }
+
+    validation = validate_state_changes(
+        state=state,
+        changes=[
+            {
+                'id': 'scene_mood_only',
+                'type': 'scene.update',
+                'source': 'post_dm',
+                'mood': 'tense',
+                'description': 'Conversation drops to a murmur.',
+            }
+        ],
+    )
+    result = apply_state_changes(state, validated_changes_for_application(validation))
+    scene = result['nextState']['currentScene']
+
+    assert validation['rejected'] == []
+    assert 'activeNpcIds' not in validation['accepted'][0]['change']
+    assert scene['mood'] == 'tense'
+    assert scene['activeNpcIds'] == ['npc_innkeeper', 'npc_smuggler']
+
+    cleared = validate_state_changes(
+        state=result['nextState'],
+        changes=[{'id': 'scene_cast_left', 'type': 'scene.update', 'source': 'post_dm', 'activeNpcIds': []}],
+    )
+    after_exit = apply_state_changes(result['nextState'], validated_changes_for_application(cleared))
+    assert after_exit['nextState']['currentScene']['activeNpcIds'] == []
+
+
 def test_scene_update_tracks_character_positions_and_zones():
     state = _state()
     state['currentScene'] = {'locationId': 'colosseum', 'name': 'Colosseum'}

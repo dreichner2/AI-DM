@@ -126,6 +126,10 @@ def _change_message(change: dict[str, Any], *, status: str, reason: str | None =
         if current_hp >= 0 and max_hp > 0:
             return f"{name} HP is now {current_hp}/{max_hp}."
         return f"Updated {name}."
+    if change_type == 'combat.death_save':
+        death_save_reason = str(change.get('reason') or '').strip()
+        if death_save_reason:
+            return death_save_reason
     if change_type == 'combat.end':
         return 'Combat ended.'
     if change_type == 'combat.round.advance':

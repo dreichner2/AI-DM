@@ -1079,7 +1079,6 @@ def requests_roll(text: str) -> bool:
     """True when the server would read ``text`` as asking the player to roll."""
     return (
         response_mentions_roll_request(text)
-        or TurnRollPolicy.response_requests_stated_check(text)
         or TurnRollPolicy.response_requests_group_roll(text)
     )
 

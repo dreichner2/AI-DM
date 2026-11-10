@@ -23,12 +23,10 @@ _GROUP_ROLL_MARKER_RE = re.compile(
 )
 # "Make a Wisdom (Perception) check, DC 13." is the roll-request form the DM
 # prompt asks for, so ability/skill labels may carry parentheses and slashes.
-_MAKE_CHECK_PATTERN = r'\bmake\s+(?:an?\s+)?[a-z][a-z \'()/-]{0,60}\s+(?:check|saving\s+throw|save)\b'
-_MAKE_CHECK_RE = re.compile(_MAKE_CHECK_PATTERN, re.IGNORECASE)
 _GROUP_ROLL_REQUEST_RE = re.compile(
     r'\b(?:please\s+)?roll\b|'
     r'\b(?:must|should|need(?:s)? to|have to|has to)\s+(?:all\s+)?(?:roll|make)\b|'
-    rf'{_MAKE_CHECK_PATTERN}|'
+    r'\bmake\s+(?:an?\s+)?[a-z][a-z \'()/-]{0,60}\s+(?:check|saving\s+throw|save)\b|'
     r'\bsaving\s+throw\b|'
     r'\binitiative\b',
     re.IGNORECASE,
@@ -115,13 +113,6 @@ class TurnRollPolicy:
         return False
 
     @classmethod
-    def response_requests_stated_check(cls, text: str) -> bool:
-        return any(
-            _MAKE_CHECK_RE.search(sentence) and not _NO_ROLL_NEEDED_RE.search(sentence)
-            for sentence in cls.response_sentences(text)
-        )
-
-    @classmethod
     def _roll_request_sentences(cls, text: str) -> list[str]:
         return [
             sentence
@@ -196,7 +187,6 @@ class TurnRollPolicy:
         ``dc_hint`` and is also written into ``turn.rules_hint``, where the
         pending-roll resolution reads the task DC.
         """
-        response_requests_roll = response_requests_roll or cls.response_requests_stated_check(dm_response_text)
         if not ((turn.requires_roll and turn.outcome_status == 'deferred') or response_requests_roll):
             return None
 

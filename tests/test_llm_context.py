@@ -1143,7 +1143,11 @@ def test_build_dm_context_trims_sections_in_order_until_within_budget(app, monke
             'recentKnownNpcs': [{'name': 'N' * 300}],
             'recentLocations': [{'id': f'loc_{index}', 'description': 'L' * 100} for index in range(6)],
         },
-        'campaign_pack_director': {'relevantRecords': {'enemies': [{'id': 'enemy', 'description': 'E' * 300}]}},
+        'campaign_pack_director': {
+            'nextCheckpoints': [{'id': f'cp_{index}', 'summary': 'C' * 80} for index in range(4)],
+            'relevantRecords': {'enemies': [{'id': 'enemy', 'description': 'E' * 300}]},
+        },
+        'recent_turns': [{'turn_id': turn_id, 'dm_output': 'T' * 80} for turn_id in range(1, 9)],
     }
     full_length = len(json.dumps(payload, separators=(',', ':')))
     monkeypatch.setattr(llm_context_module, 'MAX_CONTEXT_CHARS', full_length - 1100)
@@ -1173,10 +1177,29 @@ def test_build_dm_context_trims_sections_in_order_until_within_budget(app, monke
     fully_trimmed = json.loads(llm_context_module._encode_context_within_budget(payload))
     assert len(fully_trimmed['live_world_state']['recentLocations']) == 4
     assert fully_trimmed['campaign_pack_director']['relevantRecords']['enemies'] == []
+    assert [turn['turn_id'] for turn in fully_trimmed['recent_turns']] == [4, 5, 6, 7, 8]
+    assert [checkpoint['id'] for checkpoint in fully_trimmed['campaign_pack_director']['nextCheckpoints']] == [
+        'cp_0',
+        'cp_1',
+    ]
     assert recorded[0][1]['sections'] == [
         'live_world_state.recentLocations',
         'campaign_pack_director.relevantRecords.enemies',
+        'recent_turns',
+        'campaign_pack_director.nextCheckpoints',
     ]
+
+
+def test_context_budget_allows_thirty_thousand_characters():
+    import aidm_server.llm_context as llm_context_module
+
+    assert llm_context_module.MAX_CONTEXT_CHARS == 30000
+    payload = {'recent_turns': [{'turn_id': turn_id, 'dm_output': 'T' * 2800} for turn_id in range(1, 10)]}
+
+    encoded = llm_context_module._encode_context_within_budget(payload)
+
+    assert 25000 < len(encoded) <= 30000
+    assert len(json.loads(encoded)['recent_turns']) == 9
 
 
 def test_large_imported_campaign_pack_keeps_dm_context_and_player_snapshot_bounded(client, app):
@@ -1309,7 +1332,7 @@ def test_large_imported_campaign_pack_keeps_dm_context_and_player_snapshot_bound
     assert len(director['relevantRecords']['enemies']) <= 3
     assert len(director['relevantRecords']['segments']) <= 3
     assert len(director['relevantRecords']['clues']) <= 4
-    assert len(json.dumps(context, separators=(',', ':'), ensure_ascii=False)) <= 24000
+    assert len(json.dumps(context, separators=(',', ':'), ensure_ascii=False)) <= 30000
     assert len(director['progress']['checkpointStatuses']) <= 13
     assert 'loc_249' not in json.dumps(director['relevantRecords'])
 
