@@ -345,6 +345,31 @@ def test_thunderwave_replays_shared_damage_and_each_movement(monkeypatch) -> Non
     assert applied['nextState']['playerCharacters'][0]['spellResources']['slots']['1']['current'] == 1
 
 
+def test_spare_the_dying_updates_the_out_of_combat_party_without_spending_a_slot() -> None:
+    state = _caster_state()
+    caster = state['playerCharacters'][0]
+    caster['class'] = 'Cleric'
+    caster['stats'] = {'wisdom': 16}
+    caster['spellbook'] = normalize_spellbook({'knownSpells': [_spell('Spare the Dying', 0)]}, class_name='Cleric')
+    caster['spellResources'] = normalize_spell_resources(None, class_name='Cleric', level=1)
+    ally = deepcopy(caster)
+    ally.update({'id': 'player_2', 'playerId': 2, 'name': 'Downed Ally'})
+    ally['health'] = {'currentHp': 0, 'maxHp': 10, 'tempHp': 0,
+                      'conditions': ['dying', 'unconscious'], 'deathSaves': {'successes': 1, 'failures': 2}}
+    state['playerCharacters'].append(ally)
+    state['activePlayerIds'].append(2)
+    declared, validation, applied = _run_intent(state, {
+        'kind': 'spell', 'text': 'I stabilize my ally.',
+        'spell': {'name': 'Spare the Dying', 'effect': 'Stabilize.', 'target_ids': ['player_2']},
+    }, turn_id=27)
+    assert declared['validatedActions'][0]['status'] == 'valid'
+    assert validation['rejected'] == []
+    updated = applied['nextState']
+    assert set(updated['playerCharacters'][1]['health']['conditions']) == {'stable', 'unconscious'}
+    assert updated['playerCharacters'][1]['health']['deathSaves'] == {'successes': 0, 'failures': 0}
+    assert updated['playerCharacters'][0]['spellResources']['slots']['1']['current'] == 2
+
+
 def test_upcast_healing_replays_exact_rolls_and_consumes_the_chosen_slot(monkeypatch) -> None:
     state = _combat_state()
     actor = state['playerCharacters'][0]

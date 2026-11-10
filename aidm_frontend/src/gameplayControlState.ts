@@ -265,6 +265,8 @@ function targetForSpell(
   let reason = ''
   if (requiresPresent && !participantPresent(target)) {
     reason = 'Not physically present.'
+  } else if ((spellTarget.requiresDying ?? spellTarget.requires_dying) === true && (!summary.conditions.includes('dying') || dead)) {
+    reason = 'Must be dying.'
   } else if (!allowDefeated && !participantAlive(target) && !reachesDowned) {
     reason = restoresDowned && dead ? 'Healing cannot restore the dead.' : 'Already defeated.'
   } else if (relation === 'self' && summary.id !== casterId) {

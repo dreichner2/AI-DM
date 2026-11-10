@@ -74,7 +74,9 @@ from aidm_server.damage_dice import parse_damage_dice_expression, roll_signed_di
 Roller = Callable[[int], int]
 
 SUPPORTED_DELIVERY_TYPES = frozenset({'attack', 'save', 'automatic'})
-SUPPORTED_EFFECT_KINDS = frozenset({'damage', 'healing', 'temporary_hp', 'condition', 'modifier', 'move'})
+SUPPORTED_EFFECT_KINDS = frozenset({
+    'damage', 'healing', 'temporary_hp', 'condition', 'modifier', 'move', 'remove_condition', 'stabilize',
+})
 SUPPORTED_RELATIONS = frozenset({'enemy', 'ally', 'self', 'any'})
 SUPPORTED_SAVE_OUTCOMES = frozenset({'none', 'half'})
 SUPPORTED_DURATION_TICKS = frozenset({'target_turn_start', 'target_turn_end', 'source_turn_end', 'caster_turn_end', 'caster_turn_start'})
@@ -269,6 +271,7 @@ def _target_spec(spell: Mapping[str, Any]) -> dict[str, Any]:
         ),
         'areaMaxTargets': _bounded_int(area.get('maxTargets'), default=1, minimum=1, maximum=20) if area else 0,
         'allowDefeated': raw.get('allowDefeated', raw.get('allow_defeated', False)) is True,
+        'requiresDying': raw.get('requiresDying', raw.get('requires_dying', False)) is True,
         'requiresPresent': raw.get('requiresPresent', raw.get('requires_present', True)) is not False,
         'requiresLineOfSight': raw.get(
             'requiresLineOfSight', raw.get('requires_line_of_sight', True)
@@ -367,6 +370,8 @@ def _effect_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
         'consumeOn': _key(raw.get('consumeOn')),
         'bands': _int(raw.get('bands'), default=0),
         'teleport': _key(raw.get('teleport')),
+        'conditions': [_key(value) for value in raw.get('conditions') or [] if _key(value)]
+        if isinstance(raw.get('conditions'), (list, tuple)) else [],
         'addCastingModifier': raw.get('addCastingModifier') is True,
         'onSuccessfulSave': _key(
             raw.get('onSuccessfulSave', raw.get('on_successful_save')) or ''
@@ -443,6 +448,8 @@ def _normalized_spell(spell: Mapping[str, Any]) -> tuple[dict[str, Any] | None, 
             or (effect['teleport'] == 'away' and effect['bands'] == 0)
         ):
             return None, 'Movement must push or pull one band or teleport away.'
+        if effect['kind'] == 'remove_condition' and not effect['conditions']:
+            return None, 'Removing a condition requires a non-empty condition list.'
         if effect['onSuccessfulSave'] and effect['onSuccessfulSave'] not in {'none', 'half', 'full'}:
             return None, 'Effect onSuccessfulSave must be none, half, or full.'
         effects.append(effect)
@@ -579,6 +586,9 @@ def spell_target_legality(
         elif target_spec['requiresPresent'] and not _is_present(target):
             code = 'spell_target_absent'
             reason = 'The selected target is not physically present.'
+        elif target_spec['requiresDying'] and not vitality.is_dying(target):
+            code = 'spell_target_not_dying'
+            reason = 'This spell requires a dying target.'
         elif (
             not target_spec['allowDefeated']
             and not _is_alive(target)
@@ -1255,6 +1265,21 @@ def _apply_effect(
             participant, effect=effect, cast_id=cast_id, caster_id=caster_id,
             spell=spell, effect_index=effect_index,
         )
+    if effect['kind'] == 'remove_condition':
+        condition = next((value for value in effect['conditions'] if value in condition_keys(participant)), None)
+        if condition is None:
+            return {'kind': 'remove_condition', 'applied': False, 'reason': 'no_matching_condition'}
+        result = _apply_condition(
+            participant, effect={'condition': condition, 'operation': 'remove'},
+            cast_id=cast_id, caster_id=caster_id, spell=spell, effect_index=effect_index,
+        )
+        result['kind'] = 'remove_condition'
+        return result
+    if effect['kind'] == 'stabilize':
+        before = sorted(condition_keys(participant))
+        applied = vitality.stabilize(participant)
+        return {'kind': 'stabilize', 'applied': applied, 'conditionsBefore': before,
+                'conditionsAfter': sorted(condition_keys(participant))}
     if effect['kind'] == 'move':
         mover_id = caster_id if effect.get('teleport') == 'away' else _participant_id(participant)
         mover = _participant_by_id(combat, mover_id)

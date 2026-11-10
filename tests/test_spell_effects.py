@@ -255,6 +255,84 @@ def test_dissonant_whispers_deals_half_damage_without_moving_on_a_successful_sav
     assert result['combat']['participants'][1]['position']['rangeBand'] == 'near'
 
 
+def test_spare_the_dying_stabilizes_only_a_dying_ally():
+    caster = _participant('player_mage', team='player', level=1)
+    ally = _participant('player_ally', team='player', hp=0, maximum=10, isAlive=True, range_band='melee',
+                        conditions=['dying', 'unconscious'], deathSaves={'successes': 1, 'failures': 2})
+    spell = _catalog_spell('Spare the Dying', 0, 'wisdom')
+    result = resolve_targeted_spell(
+        _combat(caster, ally), caster_id='player_mage', spell=spell,
+        target_ids=['player_ally'], cast_id='spare', roller=SequenceRoller(),
+    )
+    stabilized = result['combat']['participants'][1]
+    assert result['resolution']['targets'][0]['effects'][0]['applied'] is True
+    assert set(stabilized['conditions']) == {'stable', 'unconscious'}
+    assert stabilized['deathSaves'] == {'successes': 0, 'failures': 0}
+    assert stabilized['hp']['current'] == 0
+    for conditions in (['stable', 'unconscious'], ['dead'], []):
+        candidate = deepcopy(ally)
+        candidate['conditions'] = conditions
+        invalid = spell_target_legality(_combat(caster, candidate), caster_id='player_mage', spell=spell,
+                                        target_ids=['player_ally'])
+        assert invalid['code'] == 'spell_target_not_dying'
+
+
+def test_lesser_restoration_removes_the_first_matching_condition_outside_combat():
+    caster = _participant('player_mage', team='player', level=3)
+    ally = _participant('player_ally', team='player', conditions=['poisoned', 'blinded'], activeEffects=[{
+        'id': 'blindness', 'sourceId': 'spell_blindness', 'casterId': 'enemy',
+        'modifiers': {}, 'condition': 'blinded',
+    }])
+    result = resolve_targeted_spell(
+        {'status': 'none', 'participants': [caster, ally]}, caster_id='player_mage',
+        spell=_catalog_spell('Lesser Restoration', 2, 'wisdom'), target_ids=['player_ally'],
+        cast_id='restore', roller=SequenceRoller(),
+    )
+    restored = result['combat']['participants'][1]
+    assert restored['conditions'] == ['poisoned']
+    assert restored['activeEffects'] == []
+    assert result['resolution']['targets'][0]['effects'][0]['condition'] == 'blinded'
+
+
+def test_prayer_of_healing_heals_multiple_allies_only_outside_combat():
+    caster = _participant('player_mage', team='player', level=3, hp=3, maximum=20)
+    ally = _participant('player_ally', team='player', hp=4, maximum=20)
+    spell = _catalog_spell('Prayer of Healing', 2)
+    result = resolve_targeted_spell(
+        {'status': 'none', 'participants': [caster, ally]}, caster_id='player_mage', spell=spell,
+        target_ids=['player_mage', 'player_ally'], cast_id='prayer', roller=SequenceRoller(2, 3, 4, 5),
+    )
+    assert [participant['hp']['current'] for participant in result['combat']['participants']] == [11, 16]
+    invalid = spell_target_legality(_combat(caster, ally), caster_id='player_mage', spell=spell,
+                                    target_ids=['player_ally'])
+    assert invalid['code'] == 'spell_combat_forbidden'
+
+
+def test_divine_favor_adds_radiant_damage_to_weapon_attacks_only():
+    caster = _participant('player_mage', team='player', level=2)
+    enemy = _participant('enemy', team='enemy')
+    result = resolve_targeted_spell(
+        _combat(caster, enemy), caster_id='player_mage', spell=_catalog_spell('Divine Favor', 1, 'charisma'),
+        target_ids=['player_mage'], cast_id='favor', caster_resources={}, roller=SequenceRoller(),
+    )
+    caster = result['combat']['participants'][0]
+    assert modifiers.extra_damage(caster, enemy, kind='weapon_attack') == [
+        {'dice': '1d4', 'type': 'radiant', 'source': 'Divine Favor'},
+    ]
+    assert modifiers.extra_damage(caster, enemy, kind='spell_attack') == []
+
+
+def test_mass_healing_word_upcasts_for_each_target():
+    caster = _participant('player_mage', team='player', level=7, hp=3, maximum=20)
+    ally = _participant('player_ally', team='player', hp=4, maximum=20)
+    result = resolve_targeted_spell(
+        {'status': 'none', 'participants': [caster, ally]}, caster_id='player_mage',
+        spell=_catalog_spell('Mass Healing Word', 3), target_ids=['player_mage', 'player_ally'],
+        cast_id='mass_heal', cast_level=4, roller=SequenceRoller(1, 2, 3, 4),
+    )
+    assert [participant['hp']['current'] for participant in result['combat']['participants']] == [9, 14]
+
+
 @pytest.mark.parametrize(('level', 'dice'), [(1, 1), (5, 2), (11, 3), (17, 4)])
 def test_cantrip_damage_scales_with_caster_level(level, dice):
     caster = _participant('player_mage', team='player', level=level)

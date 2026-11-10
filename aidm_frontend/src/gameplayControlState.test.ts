@@ -335,6 +335,26 @@ describe('gameplayControlsFromSnapshot', () => {
     ).toMatchObject({ available: false, reason: 'Healing cannot restore the dead.' })
   })
 
+  it('offers Spare the Dying only for a dying ally', () => {
+    const state = snapshot()
+    const actor = state.playerCharacters[0] as Record<string, unknown>
+    actor.spellbook = {
+      knownSpells: [{
+        id: 'spell_spare_the_dying', name: 'Spare the Dying', level: 0, authoritativeEffect: true,
+        target: { relation: 'ally', rangeBands: ['melee'], maxTargets: 1, requiresDying: true },
+        effects: [{ kind: 'stabilize' }],
+      }],
+    }
+    const ally = state.combat.participants[1] as Record<string, unknown>
+    Object.assign(ally, { kind: 'player_character', hp: { current: 0, max: 10 },
+      conditions: ['dying', 'unconscious'], isAlive: true, position: { rangeBand: 'melee' } })
+    let spare = gameplayControlsFromSnapshot(state, 30).spells[0]
+    expect(spare.targets.find((target) => target.id === 'player_31')).toMatchObject({ available: true })
+    Object.assign(ally, { conditions: ['stable', 'unconscious'] })
+    spare = gameplayControlsFromSnapshot(state, 30).spells[0]
+    expect(spare.targets.find((target) => target.id === 'player_31')).toMatchObject({ available: false, reason: 'Must be dying.' })
+  })
+
   it('treats a petrified caster as unable to act', () => {
     const state = snapshot()
     Object.assign(state.combat.participants[0], { conditions: ['petrified'] })

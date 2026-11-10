@@ -128,6 +128,36 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
         'target': {'relation': 'self', 'rangeBands': ['melee'], 'maxTargets': 1, 'allowSelf': True},
         'effects': [{'kind': 'move', 'teleport': 'away'}],
     },
+    'spare the dying': {
+        'level': 0, 'outOfCombat': True, 'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': ['melee'], 'maxTargets': 1,
+                   'allowSelf': True, 'requiresDying': True},
+        'effects': [{'kind': 'stabilize'}],
+    },
+    'lesser restoration': {
+        'level': 2, 'outOfCombat': True, 'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': ['melee'], 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'remove_condition', 'conditions': ['blinded', 'deafened', 'paralyzed', 'poisoned']}],
+    },
+    'prayer of healing': {
+        'level': 2, 'outOfCombat': True, 'outOfCombatOnly': True, 'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': ['melee', 'near'], 'maxTargets': 6, 'allowSelf': True},
+        'effects': [{'kind': 'healing', 'dice': '2d8', 'addCastingModifier': True}],
+        'scaling': {'upcast': {'dice': '1d8'}},
+    },
+    'mass healing word': {
+        'level': 3, 'castingTime': 'bonus_action', 'outOfCombat': True, 'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 6, 'allowSelf': True},
+        'effects': [{'kind': 'healing', 'dice': '1d4', 'addCastingModifier': True}],
+        'scaling': {'upcast': {'dice': '1d4'}},
+    },
+    'divine favor': {
+        'level': 1, 'castingTime': 'bonus_action', 'delivery': {'type': 'automatic'},
+        'target': {'relation': 'self', 'rangeBands': ['melee'], 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'modifier', 'modifiers': {'bonusWeaponDamage': {'dice': '1d4', 'type': 'radiant'}},
+                     'duration': {'rounds': 10, 'tickOn': 'target_turn_end'}}],
+        'concentration': True,
+    },
     'inflict wounds': {
         'level': 1, 'delivery': {'type': 'attack'},
         'target': {'relation': 'enemy', 'rangeBands': ['melee'], 'maxTargets': 1},
@@ -328,6 +358,10 @@ def spell_effect_summary(definition: dict[str, Any]) -> str:
                 parts.append('push one range band')
             elif effect.get('bands') == -1:
                 parts.append('pull one range band')
+        elif kind == 'stabilize':
+            parts.append('stabilizes a dying ally')
+        elif kind == 'remove_condition':
+            parts.append('removes one listed condition')
         elif kind == 'condition':
             parts.append(_normalize_text(effect.get('condition')).replace('_', ' '))
         elif kind == 'modifier':
@@ -344,6 +378,9 @@ def spell_effect_summary(definition: dict[str, Any]) -> str:
                 parts.append(f"{modifiers.get('attackBonusDice', '')} to attacks and saves")
             if modifiers.get('acBonus'):
                 parts.append(f"+{modifiers['acBonus']} armor class")
+            if isinstance(modifiers.get('bonusWeaponDamage'), dict):
+                bonus = modifiers['bonusWeaponDamage']
+                parts.append(f"{bonus.get('dice', bonus.get('flat', ''))} {bonus.get('type', '')} weapon damage".strip())
     target = definition.get('target') if isinstance(definition.get('target'), dict) else {}
     area = target.get('area') if isinstance(target.get('area'), dict) else {}
     if area.get('maxTargets'):
@@ -850,6 +887,7 @@ CLASS_STARTING_SPELLS: dict[str, list[SpellSpec]] = {
     ],
     'cleric': [
         ('Sacred Flame', 0, 'Radiant fire against a visible foe.'),
+        ('Spare the Dying', 0, 'Stabilize a dying ally.'),
         ('Thaumaturgy', 0, 'Small divine signs and omens.'),
         ('Guidance', 0, 'A small divine boost to an ability check.'),
         ('Cure Wounds', 1, 'Touch-based healing.'),
@@ -892,6 +930,7 @@ CLASS_STARTING_SPELLS: dict[str, list[SpellSpec]] = {
         ('Bless', 1, 'Bolster allies in danger.'),
         ('Cure Wounds', 1, 'Touch-based healing.'),
         ('Shield of Faith', 1, 'Protect an ally with divine force.'),
+        ('Divine Favor', 1, 'Imbue weapon attacks with radiant power.'),
         ('Divine Smite', 1, 'Channel divine power through a weapon hit.'),
     ],
     'ranger': [
@@ -948,8 +987,8 @@ CLASS_LEVEL_UNLOCKS: dict[str, dict[int, list[SpellSpec]]] = {
         17: [('Foresight', 9, 'Grant uncanny luck and awareness.')],
     },
     'cleric': {
-        3: [('Lesser Restoration', 2, 'End a lesser affliction.'), ('Spiritual Weapon', 2, 'Manifest a divine weapon.')],
-        5: [('Revivify', 3, 'Restore a recently dead ally.'), ('Spirit Guardians', 3, 'Call protective spirits around you.')],
+        3: [('Lesser Restoration', 2, 'End a lesser affliction.'), ('Prayer of Healing', 2, 'Heal allies during a safe pause.'), ('Spiritual Weapon', 2, 'Manifest a divine weapon.')],
+        5: [('Revivify', 3, 'Restore a recently dead ally.'), ('Spirit Guardians', 3, 'Call protective spirits around you.'), ('Mass Healing Word', 3, 'Heal several allies with a word.')],
         7: [('Death Ward', 4, 'Protect an ally from dropping to death.')],
         9: [('Greater Restoration', 5, 'End a major affliction.'), ('Flame Strike', 5, 'Call down divine fire.')],
         11: [('Heal', 6, 'Massive restorative magic.')],
@@ -959,7 +998,7 @@ CLASS_LEVEL_UNLOCKS: dict[str, dict[int, list[SpellSpec]]] = {
     },
     'druid': {
         2: [('Wild Shape', 1, 'Take a beast form when the story supports it.')],
-        3: [('Moonbeam', 2, 'Call down a radiant column.'), ('Pass without Trace', 2, 'Hide the group in nature magic.')],
+        3: [('Moonbeam', 2, 'Call down a radiant column.'), ('Lesser Restoration', 2, 'End a lesser affliction.'), ('Pass without Trace', 2, 'Hide the group in nature magic.')],
         5: [('Call Lightning', 3, 'Command repeated lightning strikes.'), ('Plant Growth', 3, 'Shape or overgrow terrain.')],
         7: [('Polymorph', 4, 'Transform a creature into another form.')],
         9: [('Greater Restoration', 5, 'End a major affliction.'), ('Tree Stride', 5, 'Step through trees.')],
@@ -969,8 +1008,8 @@ CLASS_LEVEL_UNLOCKS: dict[str, dict[int, list[SpellSpec]]] = {
         17: [('Shapechange', 9, 'Assume powerful magical forms.')],
     },
     'bard': {
-        3: [('Invisibility', 2, 'Hide a creature from sight.'), ('Suggestion', 2, 'Magically influence a course of action.')],
-        5: [('Hypnotic Pattern', 3, 'Mesmerize creatures with light.'), ('Dispel Magic', 3, 'End a magical effect.')],
+        3: [('Invisibility', 2, 'Hide a creature from sight.'), ('Lesser Restoration', 2, 'End a lesser affliction.'), ('Suggestion', 2, 'Magically influence a course of action.')],
+        5: [('Hypnotic Pattern', 3, 'Mesmerize creatures with light.'), ('Dispel Magic', 3, 'End a magical effect.'), ('Mass Healing Word', 3, 'Heal several allies with a word.')],
         7: [('Greater Invisibility', 4, 'Turn a creature invisible through battle.')],
         9: [('Hold Monster', 5, 'Paralyze a creature.'), ('Synaptic Static', 5, 'A psychic blast that muddles minds.')],
         11: [('Mass Suggestion', 6, 'Influence many creatures at once.')],
@@ -979,20 +1018,20 @@ CLASS_LEVEL_UNLOCKS: dict[str, dict[int, list[SpellSpec]]] = {
         17: [('Power Word Heal', 9, 'Restore an ally with a word.')],
     },
     'paladin': {
-        3: [('Lesser Restoration', 2, 'End a lesser affliction.'), ('Magic Weapon', 2, 'Empower a weapon.')],
-        5: [('Aura of Vitality', 3, 'Sustain healing through divine focus.')],
+        3: [('Magic Weapon', 2, 'Empower a weapon.')],
+        5: [('Lesser Restoration', 2, 'End a lesser affliction.'), ('Aura of Vitality', 3, 'Sustain healing through divine focus.')],
         9: [('Death Ward', 4, 'Protect an ally from dropping to death.')],
         13: [('Banishing Smite', 5, 'Strike with banishing force.')],
     },
     'ranger': {
         3: [('Pass without Trace', 2, 'Hide the group in wilderness magic.'), ('Spike Growth', 2, 'Turn ground into painful terrain.')],
-        5: [('Conjure Barrage', 3, 'Create a sweeping ranged attack.'), ('Water Breathing', 3, 'Let allies breathe underwater.')],
+        5: [('Lesser Restoration', 2, 'End a lesser affliction.'), ('Conjure Barrage', 3, 'Create a sweeping ranged attack.'), ('Water Breathing', 3, 'Let allies breathe underwater.')],
         9: [('Freedom of Movement', 4, 'Ignore many restraints and movement hindrances.')],
         13: [('Swift Quiver', 5, 'Attack rapidly with enchanted ammunition.')],
     },
     'artificer': {
         3: [('Heat Metal', 2, 'Overheat worked metal.'), ('Web', 2, 'Fill an area with sticky strands.')],
-        5: [('Dispel Magic', 3, 'End a magical effect.'), ('Haste', 3, 'Supercharge a willing creature.')],
+        5: [('Lesser Restoration', 2, 'End a lesser affliction.'), ('Dispel Magic', 3, 'End a magical effect.'), ('Haste', 3, 'Supercharge a willing creature.')],
         7: [('Fabricate', 4, 'Convert raw materials into crafted objects.')],
         9: [('Animate Objects', 5, 'Bring objects to life briefly.')],
     },
