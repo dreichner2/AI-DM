@@ -279,7 +279,9 @@ mechanics the server currently applies, rather than full tabletop coverage.
 
 - Fire Bolt, Magic Missile, Sacred Flame, Cure Wounds, Healing Word, Entangle,
   Ray of Frost, Burning Hands, Shatter, Fireball, Lightning Bolt, Eldritch Blast
-  and Scorching Ray have
+  Scorching Ray, Shocking Grasp, Chill Touch, Poison Spray, Vicious Mockery,
+  Produce Flame, Inflict Wounds, Guiding Bolt, Bless, Bane, Shield of Faith,
+  and False Life have
   server-owned effect definitions. A typed cast with exact
   target IDs validates turn ownership, presence, relation, range, cover, target
   count, spell knowledge/preparation, and casting resources before rolling.
@@ -309,9 +311,9 @@ mechanics the server currently applies, rather than full tabletop coverage.
   the stable cast-resolution ledger persist together through the normal state
   application path. A repeated cast ID returns the existing resolution rather
   than rolling or applying effects again.
-- Existing clients that omit exact target IDs retain the resource-only cast
-  path. They do not receive authoritative damage, healing, save, or condition
-  resolution merely because narration describes an effect.
+- A rules-backed spell without an exact target pauses for a legal target choice
+  before narration or spending a slot. Named free-form casts use the same path.
+  Spells marked narrated still rely on the Dungeon Master for their effects.
 
 ### Typed class capabilities
 

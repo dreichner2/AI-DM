@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 from aidm_server.action_intent import validate_action_intent
 from aidm_server.character_resources import normalize_spell_resources
 from aidm_server.database import db
@@ -283,6 +285,42 @@ def test_missing_target_without_a_legal_encounter_is_rejected_without_spending()
     assert 'active encounter' in declared['validatedActions'][0]['reason']
     assert validation['accepted'] == []
     assert applied['nextState']['playerCharacters'][0]['spellResources']['slots']['1']['current'] == 2
+
+
+def test_upcast_bless_replays_and_persists_four_ally_effects_once() -> None:
+    state = _combat_state()
+    actor = state['playerCharacters'][0]
+    actor['class'] = 'Cleric'
+    actor['level'] = 3
+    actor['stats']['wisdom'] = 16
+    actor['spellbook'] = normalize_spellbook({'knownSpells': [_spell('Bless', 1)]}, class_name='Cleric')
+    actor['spellResources'] = normalize_spell_resources(None, class_name='Cleric', level=3)
+    participant = state['combat']['participants'][0]
+    participant['stats']['wisdom'] = 16
+    for player_id in (2, 3, 4):
+        ally = deepcopy(actor)
+        ally.update({'id': f'player_{player_id}', 'playerId': player_id, 'name': f'Ally {player_id}'})
+        state['playerCharacters'].append(ally)
+        state['activePlayerIds'].append(player_id)
+        ally_combatant = deepcopy(participant)
+        ally_combatant.update({'id': ally['id'], 'name': ally['name']})
+        state['combat']['participants'].append(ally_combatant)
+    targets = ['player_1', 'player_2', 'player_3', 'player_4']
+    declared, validation, applied = _run_intent(state, {
+        'kind': 'spell', 'text': 'I cast Bless on my companions.',
+        'spell': {'name': 'Bless', 'effect': 'Bolster the party.', 'target_ids': targets, 'cast_level': 2},
+    }, turn_id=25)
+    assert declared['validatedActions'][0]['status'] == 'valid'
+    assert validation['rejected'] == []
+    updated = applied['nextState']
+    assert updated['playerCharacters'][0]['spellResources']['slots']['2']['current'] == 1
+    assert updated['playerCharacters'][0]['spellResources']['concentration']['spellName'] == 'Bless'
+    for target in targets:
+        actor_effects = next(item for item in updated['combat']['participants'] if item['id'] == target)['activeEffects']
+        assert actor_effects[0]['modifiers'] == {'attackBonusDice': '1d4', 'saveBonusDice': '1d4'}
+    retried = apply_state_changes(updated, validated_changes_for_application(validation))
+    assert retried['appliedChanges'] == []
+    assert retried['nextState']['playerCharacters'][0]['spellResources']['slots']['2']['current'] == 1
 
 
 def test_upcast_healing_replays_exact_rolls_and_consumes_the_chosen_slot(monkeypatch) -> None:

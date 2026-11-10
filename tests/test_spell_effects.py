@@ -5,6 +5,8 @@ import json
 
 import pytest
 
+from aidm_server.combat import modifiers, vitality
+from aidm_server.combat.pipeline import apply_turn_boundaries
 from aidm_server.spell_effects import (
     advance_spell_effect_durations,
     resolve_concentration_check,
@@ -23,6 +25,169 @@ class SequenceRoller:
         self.sides.append(sides)
         assert self.values, f'Unexpected d{sides} roll.'
         return self.values.pop(0)
+
+
+def _catalog_spell(name: str, level: int, ability: str = 'intelligence') -> dict:
+    spell = spell_payload(name, level=level)
+    spell['delivery']['castingAbility'] = ability
+    return spell
+
+
+def test_shocking_grasp_prevents_reactions_until_the_targets_next_turn_starts():
+    caster = _participant('player_mage', team='player', level=1)
+    enemy = _participant('enemy', team='enemy', hp=30, range_band='melee')
+    result = resolve_targeted_spell(
+        _combat(caster, enemy), caster_id='player_mage', spell=_catalog_spell('Shocking Grasp', 0),
+        target_ids=['enemy'], cast_id='grasp', roller=SequenceRoller(15, 4),
+    )
+    assert result['ok'] is True
+    combat = result['combat']
+    assert modifiers.cannot_react(combat['participants'][1])
+    apply_turn_boundaries(combat, [{'actorId': 'player_mage', 'phase': 'start'}], turn_id=2)
+    assert modifiers.cannot_react(combat['participants'][1])
+    apply_turn_boundaries(combat, [{'actorId': 'enemy', 'phase': 'start'}], turn_id=3)
+    assert not modifiers.cannot_react(combat['participants'][1])
+
+
+def test_chill_touch_blocks_healing_until_the_casters_next_turn():
+    caster = _participant('player_mage', team='player', level=1)
+    target = _participant('enemy', team='enemy', hp=20, maximum=30, armor_class=5, kind='player_character')
+    result = resolve_targeted_spell(
+        _combat(caster, target), caster_id='player_mage', spell=_catalog_spell('Chill Touch', 0),
+        target_ids=['enemy'], cast_id='chill', roller=SequenceRoller(15, 3),
+    )
+    combat = result['combat']
+    target = combat['participants'][1]
+    assert target['hp']['current'] == 17
+    assert vitality.heal(target, 5) == 0
+    apply_turn_boundaries(combat, [{'actorId': 'enemy', 'phase': 'start'}], turn_id=3)
+    assert vitality.heal(target, 5) == 0
+    apply_turn_boundaries(combat, [{'actorId': 'player_mage', 'phase': 'start'}], turn_id=4)
+    assert vitality.heal(target, 5) == 5
+
+
+def test_vicious_mockery_penalty_is_consumed_by_the_next_attack_and_a_save_negates_it():
+    caster = _participant('player_mage', team='player', level=1)
+    target = _participant('enemy', team='enemy', hp=20)
+    spell = _catalog_spell('Vicious Mockery', 0, 'charisma')
+    failed = resolve_targeted_spell(
+        _combat(caster, target), caster_id='player_mage', spell=spell, target_ids=['enemy'],
+        cast_id='mock', roller=SequenceRoller(2, 3),
+    )
+    combat = failed['combat']
+    attack = modifiers.attack_context(combat['participants'][1], combat['participants'][0],
+                                      kind='weapon_attack', ranged=False, combat=combat)
+    assert attack['mode'] == 'disadvantage'
+    modifiers.consume_modifiers(combat, attack['consume'])
+    assert modifiers.attack_context(combat['participants'][1], combat['participants'][0],
+                                    kind='weapon_attack', ranged=False, combat=combat)['mode'] == 'normal'
+    saved = resolve_targeted_spell(
+        _combat(caster, target), caster_id='player_mage', spell=spell, target_ids=['enemy'],
+        cast_id='resist', roller=SequenceRoller(19),
+    )
+    assert saved['combat']['participants'][1]['hp']['current'] == 20
+    assert not saved['combat']['participants'][1].get('activeEffects')
+
+
+def test_guiding_bolt_grants_advantage_once_and_expires_at_casters_next_turn_end():
+    caster = _participant('player_mage', team='player', level=1)
+    target = _participant('enemy', team='enemy', hp=50, armor_class=5)
+    result = resolve_targeted_spell(
+        _combat(caster, target), caster_id='player_mage', spell=_catalog_spell('Guiding Bolt', 1, 'wisdom'),
+        target_ids=['enemy'], cast_id='bolt', roller=SequenceRoller(15, 1, 2, 3, 4),
+    )
+    combat = result['combat']
+    apply_turn_boundaries(combat, [{'actorId': 'player_mage', 'phase': 'end'}], turn_id=2)
+    attack = modifiers.attack_context(combat['participants'][0], combat['participants'][1],
+                                      kind='weapon_attack', ranged=False, combat=combat)
+    assert attack['mode'] == 'advantage'
+    second = deepcopy(combat)
+    modifiers.consume_modifiers(combat, attack['consume'])
+    assert not combat['participants'][1].get('activeEffects')
+    apply_turn_boundaries(second, [{'actorId': 'player_mage', 'phase': 'end'}], turn_id=3)
+    assert not second['participants'][1].get('activeEffects')
+
+
+def test_bless_upcasts_to_four_allies_and_adds_attack_and_save_dice():
+    caster = _participant('player_mage', team='player', level=3)
+    allies = [_participant(f'player_{index}', team='player') for index in range(3)]
+    targets = ['player_mage', *[ally['id'] for ally in allies]]
+    result = resolve_targeted_spell(
+        _combat(caster, *allies), caster_id='player_mage', spell=_catalog_spell('Bless', 1, 'wisdom'),
+        target_ids=targets, cast_id='bless', cast_level=2, caster_resources={}, roller=SequenceRoller(),
+    )
+    assert result['ok'] is True
+    assert result['casterResources']['concentration']['spellName'] == 'Bless'
+    for ally in result['combat']['participants']:
+        assert modifiers.attack_context(ally, None, kind='weapon_attack', ranged=False)['attackBonusDice'] == ['+1d4']
+        assert modifiers.save_context(ally, 'wisdom')['bonusDice'] == ['+1d4']
+
+
+def test_bane_applies_negative_dice_only_to_creatures_that_fail_the_save():
+    caster = _participant('player_mage', team='player', level=1)
+    enemies = [_participant(f'enemy_{index}', team='enemy') for index in range(2)]
+    result = resolve_targeted_spell(
+        _combat(caster, *enemies), caster_id='player_mage', spell=_catalog_spell('Bane', 1, 'charisma'),
+        target_ids=['enemy_0', 'enemy_1'], cast_id='bane', roller=SequenceRoller(2, 19),
+    )
+    first, second = result['combat']['participants'][1:]
+    assert modifiers.save_context(first, 'wisdom')['bonusDice'] == ['-1d4']
+    assert modifiers.attack_context(first, None, kind='weapon_attack', ranged=False)['attackBonusDice'] == ['-1d4']
+    assert modifiers.save_context(second, 'wisdom')['bonusDice'] == []
+
+
+def test_false_life_upcast_grants_temporary_hit_points_outside_combat():
+    caster = _participant('player_mage', team='player', level=3, temporary=2)
+    result = resolve_targeted_spell(
+        {'status': 'none', 'participants': [caster]}, caster_id='player_mage',
+        spell=_catalog_spell('False Life', 1), target_ids=['player_mage'],
+        cast_id='false_life', cast_level=2, roller=SequenceRoller(3),
+    )
+    assert result['ok'] is True
+    assert result['combat']['participants'][0]['hp']['temp'] == 12
+
+
+def test_shield_of_faith_adds_armor_and_starts_concentration():
+    caster = _participant('player_mage', team='player', level=1)
+    ally = _participant('player_ally', team='player')
+    result = resolve_targeted_spell(
+        _combat(caster, ally), caster_id='player_mage', spell=_catalog_spell('Shield of Faith', 1, 'wisdom'),
+        target_ids=['player_ally'], cast_id='shield_faith', caster_resources={}, roller=SequenceRoller(),
+    )
+    attack = modifiers.attack_context(caster, result['combat']['participants'][1],
+                                      kind='weapon_attack', ranged=False, combat=result['combat'])
+    assert attack['targetAcBonus'] == 2
+    assert result['casterResources']['concentration']['spellName'] == 'Shield of Faith'
+
+
+def test_poison_spray_and_produce_flame_scale_their_dice():
+    caster = _participant('player_mage', team='player', level=5)
+    target = _participant('enemy', team='enemy', hp=50, armor_class=5)
+    poison = resolve_targeted_spell(
+        _combat(caster, target), caster_id='player_mage', spell=_catalog_spell('Poison Spray', 0),
+        target_ids=['enemy'], cast_id='poison', roller=SequenceRoller(1, 3, 4),
+    )
+    assert poison['resolution']['targets'][0]['effects'][0]['roll']['rolls'] == [3, 4]
+    flame = resolve_targeted_spell(
+        _combat(caster, target), caster_id='player_mage', spell=_catalog_spell('Produce Flame', 0),
+        target_ids=['enemy'], cast_id='flame', roller=SequenceRoller(15, 2, 5),
+    )
+    assert flame['resolution']['targets'][0]['effects'][0]['roll']['rolls'] == [2, 5]
+
+
+def test_inflict_wounds_requires_touch_and_gains_one_die_per_higher_slot():
+    caster = _participant('player_mage', team='player', level=3)
+    distant = _participant('enemy', team='enemy', hp=50, range_band='near')
+    spell = _catalog_spell('Inflict Wounds', 1, 'wisdom')
+    invalid = spell_target_legality(_combat(caster, distant), caster_id='player_mage', spell=spell,
+                                    target_ids=['enemy'], cast_level=2)
+    assert invalid['code'] == 'spell_target_out_of_range'
+    distant['position']['rangeBand'] = 'melee'
+    result = resolve_targeted_spell(
+        _combat(caster, distant), caster_id='player_mage', spell=spell,
+        target_ids=['enemy'], cast_id='inflict', cast_level=2, roller=SequenceRoller(15, 1, 2, 3, 4),
+    )
+    assert result['resolution']['targets'][0]['effects'][0]['roll']['rolls'] == [1, 2, 3, 4]
 
 
 @pytest.mark.parametrize(('level', 'dice'), [(1, 1), (5, 2), (11, 3), (17, 4)])

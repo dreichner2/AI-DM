@@ -20,6 +20,11 @@ def test_spell_metadata_distinguishes_rules_backed_and_narrated_spells():
     assert 'area: up to 6 enemies' in fireball['effectSummary']
     assert fireball['castingTime'] == 'action'
     assert '3 darts of 1d4+1 force' in spell_payload('Magic Missile', level=1)['effectSummary']
+    assert 'prevents reactions' in spell_payload('Shocking Grasp', level=0)['effectSummary']
+    assert 'prevents healing' in spell_payload('Chill Touch', level=0)['effectSummary']
+    ward = spell_payload('Shield of Faith', level=1)
+    assert ward['castingTime'] == 'bonus_action'
+    assert '+2 armor class' in ward['effectSummary']
     narrated = normalize_spell({'name': 'An Invented Spell', 'level': 1, 'authoritativeEffect': True})
     assert narrated['rulesBacked'] is narrated['authoritativeEffect'] is False
     assert narrated['narrated'] is True

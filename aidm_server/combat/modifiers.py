@@ -9,7 +9,7 @@ or combat they are given (callers pass their own working copy).
 Active effects (``participant['activeEffects']``) share one shape::
 
     {"id", "sourceId", "sourceName", "casterId", "modifiers": {...},
-     "duration": {"rounds": n, "tickOn": "target_turn_end" | "caster_turn_end"
+     "duration": {"rounds": n, "tickOn": "target_turn_start" | "target_turn_end" | "caster_turn_end"
                   | "caster_turn_start"} | None,
      "concentration": bool, "consumeOn": "attack" | "attacked" | "save" | "check" | None}
 
@@ -62,7 +62,7 @@ ABILITY_ALIASES = {
 }
 MODIFIER_ENGINE_SOURCE = 'modifier_engine'
 ROLL_MODES = ('advantage', 'disadvantage')
-EFFECT_TICKS = frozenset({'target_turn_end', 'caster_turn_end', 'caster_turn_start'})
+EFFECT_TICKS = frozenset({'target_turn_start', 'target_turn_end', 'caster_turn_end', 'caster_turn_start'})
 LEGACY_EFFECT_TICKS = {'source_turn_end': 'caster_turn_end'}
 CONSUME_EVENTS = frozenset({'attack', 'attacked', 'save', 'check'})
 
@@ -784,7 +784,7 @@ def consume_modifiers(combat: dict[str, Any], consumed: Iterable[Mapping[str, An
 
 
 def tick_effects(combat: dict[str, Any], *, actor_id: Any, tick_on: str, steps: int = 1) -> list[dict[str, Any]]:
-    """Advance durations for one boundary; ``target_turn_end`` ticks effects on the actor,
+    """Advance durations for one boundary; target ticks affect effects on the actor,
     the caster ticks tick effects the actor cast.  Returns the expired effects."""
 
     actor = _text(actor_id)
@@ -801,7 +801,7 @@ def tick_effects(combat: dict[str, Any], *, actor_id: Any, tick_on: str, steps: 
             duration = effect.get('duration')
             if not duration or duration['tickOn'] != tick:
                 continue
-            owner = bearer if tick == 'target_turn_end' else effect['casterId']
+            owner = bearer if tick in {'target_turn_start', 'target_turn_end'} else effect['casterId']
             if owner != actor:
                 continue
             duration['rounds'] -= decrement
@@ -817,7 +817,10 @@ def tick_effects(combat: dict[str, Any], *, actor_id: Any, tick_on: str, steps: 
 
 def tick_turn_boundary(combat: dict[str, Any], *, actor_id: Any, phase: str) -> list[dict[str, Any]]:
     if phase == 'start':
-        return tick_effects(combat, actor_id=actor_id, tick_on='caster_turn_start')
+        return [
+            *tick_effects(combat, actor_id=actor_id, tick_on='target_turn_start'),
+            *tick_effects(combat, actor_id=actor_id, tick_on='caster_turn_start'),
+        ]
     return [
         *tick_effects(combat, actor_id=actor_id, tick_on='target_turn_end'),
         *tick_effects(combat, actor_id=actor_id, tick_on='caster_turn_end'),

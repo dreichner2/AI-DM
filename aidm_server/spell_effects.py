@@ -73,10 +73,16 @@ from aidm_server.damage_dice import parse_damage_dice_expression, roll_signed_di
 Roller = Callable[[int], int]
 
 SUPPORTED_DELIVERY_TYPES = frozenset({'attack', 'save', 'automatic'})
-SUPPORTED_EFFECT_KINDS = frozenset({'damage', 'healing', 'temporary_hp', 'condition'})
+SUPPORTED_EFFECT_KINDS = frozenset({'damage', 'healing', 'temporary_hp', 'condition', 'modifier'})
 SUPPORTED_RELATIONS = frozenset({'enemy', 'ally', 'self', 'any'})
 SUPPORTED_SAVE_OUTCOMES = frozenset({'none', 'half'})
-SUPPORTED_DURATION_TICKS = frozenset({'target_turn_end', 'source_turn_end'})
+SUPPORTED_DURATION_TICKS = frozenset({'target_turn_start', 'target_turn_end', 'source_turn_end', 'caster_turn_end', 'caster_turn_start'})
+SUPPORTED_MODIFIER_KEYS = frozenset({
+    'attackBonusDice', 'saveBonusDice', 'checkBonusDice', 'acBonus', 'acMinimum',
+    'attackMode', 'attackedMode', 'saveMode', 'checkMode', 'bonusDamageVs',
+    'bonusWeaponDamage', 'resistances', 'speedZero', 'cannotAct', 'cannotReact',
+    'noHealing', 'tempHpPerTurn',
+})
 SUPPORTED_RANGE_BANDS = frozenset({'melee', 'near', 'far', 'distant'})
 ABILITY_KEYS = frozenset(
     {'strength', 'dexterity', 'constitution', 'intelligence', 'wisdom', 'charisma'}
@@ -334,7 +340,7 @@ def _effect_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
         if remaining > 0:
             duration = {
                 'remaining': min(1000, remaining),
-                'tick': _key(duration_raw.get('tick') or 'target_turn_end'),
+                'tick': _key(duration_raw.get('tickOn') or duration_raw.get('tick') or 'target_turn_end'),
             }
     elif _int(raw.get('durationRounds', raw.get('duration_rounds')), default=0) > 0:
         duration = {
@@ -355,6 +361,8 @@ def _effect_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
         'condition': condition,
         'operation': operation,
         'duration': duration,
+        'modifiers': deepcopy(dict(raw.get('modifiers'))) if isinstance(raw.get('modifiers'), Mapping) else {},
+        'consumeOn': _key(raw.get('consumeOn')),
         'addCastingModifier': raw.get('addCastingModifier') is True,
         'onSuccessfulSave': _key(
             raw.get('onSuccessfulSave', raw.get('on_successful_save')) or ''
@@ -417,9 +425,15 @@ def _normalized_spell(spell: Mapping[str, Any]) -> tuple[dict[str, Any] | None, 
                 return None, f'Spell effect {index + 1} requires a condition.'
             if effect['operation'] not in {'add', 'remove'}:
                 return None, 'Condition operation must be add or remove.'
+        if effect['kind'] in {'condition', 'modifier'}:
             duration = effect['duration']
             if duration and duration['tick'] not in SUPPORTED_DURATION_TICKS:
-                return None, 'Condition duration tick must be target_turn_end or source_turn_end.'
+                return None, 'Effect duration has an unsupported turn boundary.'
+        if effect['kind'] == 'modifier':
+            if not effect['modifiers'] or set(effect['modifiers']) - SUPPORTED_MODIFIER_KEYS:
+                return None, 'Modifier effects require supported modifier keys.'
+            if effect['consumeOn'] not in {'', 'attack', 'attacked', 'save', 'check'}:
+                return None, 'Modifier consumeOn has an unsupported event.'
         if effect['onSuccessfulSave'] and effect['onSuccessfulSave'] not in {'none', 'half', 'full'}:
             return None, 'Effect onSuccessfulSave must be none, half, or full.'
         effects.append(effect)
@@ -698,6 +712,9 @@ def _apply_spell_scaling(spell: dict[str, Any], caster: Mapping[str, Any], cast_
                     effect['expression'] = expression
     upcast = scaling.get('upcast') if isinstance(scaling.get('upcast'), Mapping) else {}
     steps = max(0, cast_level - int(spell['level']))
+    spell['target']['maxTargets'] = min(
+        20, spell['target']['maxTargets'] + steps * max(0, _int(upcast.get('targets'), default=0)),
+    )
     darts = spell['delivery'].get('darts')
     if isinstance(darts, dict):
         darts['count'] = min(20, darts['count'] + steps * max(0, _int(upcast.get('darts'), default=0)))
@@ -1138,7 +1155,7 @@ def _apply_condition(
             'duration': (
                 {
                     'rounds': duration['remaining'],
-                    'tickOn': 'caster_turn_end' if duration['tick'] == 'source_turn_end' else 'target_turn_end',
+                    'tickOn': 'caster_turn_end' if duration['tick'] == 'source_turn_end' else duration['tick'],
                 }
                 if duration
                 else None
@@ -1162,6 +1179,29 @@ def _apply_condition(
         'conditionsBefore': before,
         'conditionsAfter': sorted(conditions),
     }
+
+
+def _apply_modifier(
+    participant: dict[str, Any], *, effect: Mapping[str, Any], cast_id: str,
+    caster_id: str, spell: Mapping[str, Any], effect_index: int,
+) -> dict[str, Any]:
+    duration = effect.get('duration')
+    active_effect = {
+        'id': _effect_id(cast_id, _participant_id(participant), effect_index),
+        'sourceId': spell['id'], 'sourceName': spell['name'], 'casterId': caster_id,
+        'castId': cast_id, 'modifiers': deepcopy(effect['modifiers']),
+        'duration': ({
+            'rounds': duration['remaining'],
+            'tickOn': 'caster_turn_end' if duration['tick'] == 'source_turn_end' else duration['tick'],
+        } if duration else None),
+        'concentration': spell.get('concentration') is True,
+        'consumeOn': effect.get('consumeOn') or None,
+    }
+    participant['activeEffects'] = [
+        *[existing for existing in active_effects(participant) if existing['id'] != active_effect['id']],
+        active_effect,
+    ]
+    return {'kind': 'modifier', 'applied': True, 'activeEffect': deepcopy(active_effect)}
 
 
 def _apply_effect(
@@ -1198,6 +1238,11 @@ def _apply_effect(
             caster_id=caster_id,
             spell=spell,
             effect_index=effect_index,
+        )
+    if effect['kind'] == 'modifier':
+        return _apply_modifier(
+            participant, effect=effect, cast_id=cast_id, caster_id=caster_id,
+            spell=spell, effect_index=effect_index,
         )
     rolled = deepcopy(dict(shared_roll)) if shared_roll is not None else _roll_expression(
         str(effect['expression']), roller,
@@ -1516,11 +1561,11 @@ def advance_spell_effect_durations(
     """
 
     normalized_timing = _key(timing)
-    if normalized_timing not in SUPPORTED_DURATION_TICKS | {'caster_turn_end', 'caster_turn_start'}:
+    if normalized_timing not in SUPPORTED_DURATION_TICKS:
         return {
             'ok': False,
             'code': 'spell_duration_timing_invalid',
-            'reason': 'Duration timing must be target_turn_end, caster_turn_end or caster_turn_start.',
+            'reason': 'Duration timing must be a supported target or caster turn boundary.',
             'combat': deepcopy(dict(combat)),
             'expiredEffects': [],
         }

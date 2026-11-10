@@ -60,6 +60,91 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
         'effects': [{'kind': 'damage', 'dice': '1d10', 'damageType': 'fire'}],
         'scaling': {'cantrip': True},
     },
+    'shocking grasp': {
+        'level': 0, 'delivery': {'type': 'attack'},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee'], 'maxTargets': 1},
+        'effects': [
+            {'kind': 'damage', 'dice': '1d8', 'damageType': 'lightning'},
+            {'kind': 'modifier', 'modifiers': {'cannotReact': True},
+             'duration': {'rounds': 1, 'tickOn': 'target_turn_start'}},
+        ],
+        'scaling': {'cantrip': True},
+    },
+    'chill touch': {
+        'level': 0, 'delivery': {'type': 'attack'},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far', 'distant'], 'maxTargets': 1},
+        'effects': [
+            {'kind': 'damage', 'dice': '1d8', 'damageType': 'necrotic'},
+            {'kind': 'modifier', 'modifiers': {'noHealing': True},
+             'duration': {'rounds': 1, 'tickOn': 'caster_turn_start'}},
+        ],
+        'scaling': {'cantrip': True},
+    },
+    'poison spray': {
+        'level': 0, 'delivery': {'type': 'save', 'ability': 'constitution', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near'], 'maxTargets': 1},
+        'effects': [{'kind': 'damage', 'dice': '1d12', 'damageType': 'poison'}],
+        'scaling': {'cantrip': True},
+    },
+    'vicious mockery': {
+        'level': 0, 'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 1},
+        'effects': [
+            {'kind': 'damage', 'dice': '1d4', 'damageType': 'psychic'},
+            {'kind': 'modifier', 'modifiers': {'attackMode': 'disadvantage'}, 'consumeOn': 'attack',
+             'duration': {'rounds': 1, 'tickOn': 'target_turn_end'}},
+        ],
+        'scaling': {'cantrip': True},
+    },
+    'produce flame': {
+        'level': 0, 'delivery': {'type': 'attack'},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near'], 'maxTargets': 1},
+        'effects': [{'kind': 'damage', 'dice': '1d8', 'damageType': 'fire'}],
+        'scaling': {'cantrip': True},
+    },
+    'inflict wounds': {
+        'level': 1, 'delivery': {'type': 'attack'},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee'], 'maxTargets': 1},
+        'effects': [{'kind': 'damage', 'dice': '3d10', 'damageType': 'necrotic'}],
+        'scaling': {'upcast': {'dice': '1d10'}},
+    },
+    'guiding bolt': {
+        'level': 1, 'delivery': {'type': 'attack'},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far', 'distant'], 'maxTargets': 1},
+        'effects': [
+            {'kind': 'damage', 'dice': '4d6', 'damageType': 'radiant'},
+            {'kind': 'modifier', 'modifiers': {'attackedMode': 'advantage'}, 'consumeOn': 'attacked',
+             'duration': {'rounds': 2, 'tickOn': 'caster_turn_end'}},
+        ],
+        'scaling': {'upcast': {'dice': '1d6'}},
+    },
+    'bless': {
+        'level': 1, 'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': ['melee', 'near'], 'maxTargets': 3, 'allowSelf': True},
+        'effects': [{'kind': 'modifier', 'modifiers': {'attackBonusDice': '1d4', 'saveBonusDice': '1d4'},
+                     'duration': {'rounds': 10, 'tickOn': 'target_turn_end'}}],
+        'concentration': True, 'scaling': {'upcast': {'targets': 1}},
+    },
+    'bane': {
+        'level': 1, 'delivery': {'type': 'save', 'ability': 'charisma', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near'], 'maxTargets': 3},
+        'effects': [{'kind': 'modifier', 'modifiers': {'attackBonusDice': '-1d4', 'saveBonusDice': '-1d4'},
+                     'duration': {'rounds': 10, 'tickOn': 'target_turn_end'}}],
+        'concentration': True, 'scaling': {'upcast': {'targets': 1}},
+    },
+    'shield of faith': {
+        'level': 1, 'castingTime': 'bonus_action', 'delivery': {'type': 'automatic'},
+        'target': {'relation': 'ally', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'modifier', 'modifiers': {'acBonus': 2},
+                     'duration': {'rounds': 100, 'tickOn': 'target_turn_end'}}],
+        'concentration': True,
+    },
+    'false life': {
+        'level': 1, 'outOfCombat': True, 'delivery': {'type': 'automatic'},
+        'target': {'relation': 'self', 'rangeBands': ['melee'], 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'temporary_hp', 'dice': '1d4+4'}],
+        'scaling': {'upcast': {'flat': 5}},
+    },
     'magic missile': {
         'level': 1,
         'delivery': {'type': 'automatic', 'darts': {'count': 3, 'dice': '1d4+1'}},
@@ -208,8 +293,24 @@ def spell_effect_summary(definition: dict[str, Any]) -> str:
                          f"{attacks} {'attack' if attacks == 1 else 'attacks'} of {damage}" if attacks else damage)
         elif kind == 'healing':
             parts.append(f"{dice}{' + casting modifier' if effect.get('addCastingModifier') else ''} healing")
+        elif kind == 'temporary_hp':
+            parts.append(f'{dice} temporary HP')
         elif kind == 'condition':
             parts.append(_normalize_text(effect.get('condition')).replace('_', ' '))
+        elif kind == 'modifier':
+            modifiers = effect.get('modifiers') if isinstance(effect.get('modifiers'), dict) else {}
+            if modifiers.get('cannotReact'):
+                parts.append('prevents reactions')
+            if modifiers.get('noHealing'):
+                parts.append('prevents healing')
+            if modifiers.get('attackMode'):
+                parts.append(f"{modifiers['attackMode']} on next attack")
+            if modifiers.get('attackedMode'):
+                parts.append(f"{modifiers['attackedMode']} on next attack against target")
+            if modifiers.get('attackBonusDice') or modifiers.get('saveBonusDice'):
+                parts.append(f"{modifiers.get('attackBonusDice', '')} to attacks and saves")
+            if modifiers.get('acBonus'):
+                parts.append(f"+{modifiers['acBonus']} armor class")
     target = definition.get('target') if isinstance(definition.get('target'), dict) else {}
     area = target.get('area') if isinstance(target.get('area'), dict) else {}
     if area.get('maxTargets'):
@@ -674,6 +775,9 @@ def original_race_spells(
 CLASS_STARTING_SPELLS: dict[str, list[SpellSpec]] = {
     'wizard': [
         ('Fire Bolt', 0, 'A precise ranged spark of arcane fire.'),
+        ('Ray of Frost', 0, 'A chilling ranged spell that slows a target.'),
+        ('Shocking Grasp', 0, 'A touch of lightning prevents reactions.'),
+        ('Chill Touch', 0, 'Necrotic magic prevents healing briefly.'),
         ('Mage Hand', 0, 'Move or manipulate a small object at a distance.'),
         ('Prestidigitation', 0, 'Create small harmless sensory magical effects.'),
         ('Magic Missile', 1, 'Reliable darts of arcane force.'),
@@ -682,19 +786,26 @@ CLASS_STARTING_SPELLS: dict[str, list[SpellSpec]] = {
         ('Detect Magic', 1, 'Sense nearby magic.'),
         ('Sleep', 1, 'Lull weak creatures into magical sleep.'),
         ('Burning Hands', 1, 'A short cone of flame.'),
+        ('False Life', 1, 'Gain temporary hit points.'),
     ],
     'sorcerer': [
         ('Fire Bolt', 0, 'A ranged blast of innate fire.'),
         ('Ray of Frost', 0, 'A chilling ranged spell that slows a target.'),
+        ('Shocking Grasp', 0, 'A touch of lightning prevents reactions.'),
+        ('Chill Touch', 0, 'Necrotic magic prevents healing briefly.'),
+        ('Poison Spray', 0, 'A short-range poisonous spray.'),
         ('Mage Hand', 0, 'Shape minor force at a distance.'),
         ('Minor Illusion', 0, 'Create a small image or sound.'),
         ('Magic Missile', 1, 'Reliable darts of force.'),
         ('Shield', 1, 'A reflexive defensive ward.'),
         ('Chaos Bolt', 1, 'Unstable elemental damage.'),
         ('Burning Hands', 1, 'A burst of close flame.'),
+        ('False Life', 1, 'Gain temporary hit points.'),
     ],
     'warlock': [
         ('Eldritch Blast', 0, 'A beam of pact-born force.'),
+        ('Chill Touch', 0, 'Necrotic magic prevents healing briefly.'),
+        ('Poison Spray', 0, 'A short-range poisonous spray.'),
         ('Mage Hand', 0, 'Move a small object at range.'),
         ('Minor Illusion', 0, 'Create a small image or sound.'),
         ('Hex', 1, 'Curse a foe and make strikes bite harder.'),
@@ -710,11 +821,15 @@ CLASS_STARTING_SPELLS: dict[str, list[SpellSpec]] = {
         ('Healing Word', 1, 'Quick ranged healing.'),
         ('Bless', 1, 'Bolster allies in danger.'),
         ('Shield of Faith', 1, 'Protect an ally with divine force.'),
+        ('Bane', 1, 'Sap the attacks and saves of enemies.'),
+        ('Guiding Bolt', 1, 'Radiant magic reveals a target for the next attack.'),
+        ('Inflict Wounds', 1, 'Inflict necrotic harm with a touch.'),
         ('Detect Magic', 1, 'Sense magical auras.'),
     ],
     'druid': [
         ('Druidcraft', 0, 'Small nature signs and harmless natural magic.'),
         ('Produce Flame', 0, 'Hold and throw a small flame.'),
+        ('Poison Spray', 0, 'A short-range poisonous spray.'),
         ('Guidance', 0, 'A small primal boost to an ability check.'),
         ('Cure Wounds', 1, 'Primal healing by touch.'),
         ('Entangle', 1, 'Grasping plants restrain an area.'),
@@ -732,6 +847,7 @@ CLASS_STARTING_SPELLS: dict[str, list[SpellSpec]] = {
         ('Faerie Fire', 1, 'Reveal targets in magical light.'),
         ('Charm Person', 1, 'Briefly influence a humanoid.'),
         ('Thunderwave', 1, 'A concussive burst of sound.'),
+        ('Bane', 1, 'Sap the attacks and saves of enemies.'),
     ],
     'paladin': [
         ('Divine Sense', 0, 'Sense holy, fiendish, or undead presence nearby.'),
@@ -751,9 +867,12 @@ CLASS_STARTING_SPELLS: dict[str, list[SpellSpec]] = {
     'artificer': [
         ('Mending', 0, 'Repair a small break or tear.'),
         ('Mage Hand', 0, 'Manipulate a small object at range.'),
+        ('Fire Bolt', 0, 'A precise ranged spark of arcane fire.'),
+        ('Ray of Frost', 0, 'A chilling ranged spell that slows a target.'),
         ('Cure Wounds', 1, 'Magical field repair for living allies.'),
         ('Faerie Fire', 1, 'Reveal targets with glittering light.'),
         ('Grease', 1, 'Make a slick hazardous surface.'),
+        ('False Life', 1, 'Gain temporary hit points.'),
         ('Arcane Tinkering', 0, 'Imbue a tiny object with a minor magical effect.'),
     ],
 }
