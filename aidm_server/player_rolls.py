@@ -12,7 +12,7 @@ from aidm_server.character_state import character_roll_spec
 from aidm_server.combat import modifiers as modifier_engine
 from aidm_server.damage_dice import roll_signed_dice
 from aidm_server.database import db
-from aidm_server.models import DmTurn, Player, Session, safe_json_loads
+from aidm_server.models import DmTurn, Player, Session, safe_json_dumps, safe_json_loads
 from aidm_server.player_roll_claims import find_legacy_roll_claim
 
 
@@ -112,7 +112,8 @@ def _authoritative_roll_setting(
 
 def _roll_participant(player: Player, pending_turn: DmTurn | None) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """The roller's combat participant (conditions and active effects) when an
-    active encounter holds one, else a record of the persisted conditions."""
+    active encounter holds one, else a record of the persisted conditions and
+    active effects."""
 
     actor_id = f'player_{player.player_id}'
     stats = safe_json_loads(player.stats, {})
@@ -122,6 +123,7 @@ def _roll_participant(player: Player, pending_turn: DmTurn | None) -> tuple[dict
         'team': 'player',
         'kind': 'player_character',
         'conditions': stats.get('conditions') if isinstance(stats.get('conditions'), list) else [],
+        'activeEffects': stats.get('active_effects') if isinstance(stats.get('active_effects'), list) else [],
     }
     session_id = getattr(pending_turn, 'session_id', None)
     session_obj = db.session.get(Session, session_id) if session_id is not None else None
@@ -134,15 +136,28 @@ def _roll_participant(player: Player, pending_turn: DmTurn | None) -> tuple[dict
     return fallback, None
 
 
+def _persist_spent_effects(player: Player, consume: list[dict[str, Any]]) -> None:
+    """Outside combat the roller's effects live on the Player row: drop the ones this roll spent."""
+
+    spent = {str(entry.get('effectId') or '') for entry in consume if entry.get('effectId')}
+    stats = safe_json_loads(player.stats, {})
+    effects = stats.get('active_effects') if isinstance(stats, dict) else None
+    if not spent or not isinstance(effects, list):
+        return
+    remaining = [effect for effect in effects if not (isinstance(effect, dict) and str(effect.get('id') or '') in spent)]
+    if len(remaining) != len(effects):
+        stats['active_effects'] = remaining
+        player.stats = safe_json_dumps(stats, {})
+
+
 def _roll_modifiers(
+    participant: dict[str, Any],
+    combat: dict[str, Any] | None,
     *,
-    player: Player,
-    pending_turn: DmTurn | None,
     rule_type: str,
     ability_key: str | None,
     attack: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    participant, combat = _roll_participant(player, pending_turn)
     if rule_type.endswith('_saving_throw'):
         return modifier_engine.save_context(participant, rule_type.removesuffix('_saving_throw'), combat=combat)
     if rule_type == 'attack':
@@ -210,14 +225,16 @@ def resolve_authoritative_player_roll(
     )
     normalized_rule_type = str(rule_type or 'check').strip().lower() or 'check'
     hud_attack = (action_intent or {}).get('kind') == 'combat'
-    # HUD attacks get their mode and bonus dice from the attack resolver, which
-    # knows the target; every other d20 roll asks the modifier engine here.
+    # HUD attacks get their mode, bonus dice and Bardic Inspiration from the
+    # attack resolver, which knows the target; every other d20 roll asks the
+    # modifier engine here.
+    participant, combat = (None, None) if hud_attack or die != 'd20' else _roll_participant(player, pending_turn)
     modifiers = (
         None
-        if hud_attack or die != 'd20'
+        if participant is None
         else _roll_modifiers(
-            player=player,
-            pending_turn=pending_turn,
+            participant,
+            combat,
             rule_type=normalized_rule_type,
             ability_key=ability_key,
             attack=effective_attack_context,
@@ -238,15 +255,31 @@ def resolve_authoritative_player_roll(
     modifier = int(spec.get('modifier') or 0)
     total = kept + modifier + sum(int(item['total']) for item in bonus_dice)
     dc = spec.get('task_dc')
+    auto_fail = bool((modifiers or {}).get('autoFail'))
+    consume = [dict(entry) for entry in (modifiers or {}).get('consume') or []]
+    inspiration = None
+    if (
+        participant is not None
+        and normalized_rule_type not in NO_OUTCOME_ROLL_TYPES
+        and dc is not None
+        and not auto_fail
+        and total < int(dc)
+    ):
+        inspiration = modifier_engine.roll_inspiration(participant, lambda die_sides: _secure_die(die_sides, roller))
+        if inspiration:
+            total += inspiration['roll']
+            consume.append(inspiration.pop('consume'))
     outcome = None
     if normalized_rule_type not in NO_OUTCOME_ROLL_TYPES and dc is not None:
-        outcome = 'success' if total >= int(dc) and not (modifiers or {}).get('autoFail') else 'failure'
+        outcome = 'success' if total >= int(dc) and not auto_fail else 'failure'
+    if consume and combat is None:
+        _persist_spent_effects(player, consume)
     reason_source = stored_spec.get('reason') if pending_turn is not None else requested_roll.get('reason')
     reason = _clean_text(reason_source, max_length=240)
     if not reason:
         reason = str(rule_type or 'check').replace('_', ' ')
 
-    return {
+    result = {
         'rule_type': normalized_rule_type,
         'die': die,
         'mode': mode,
@@ -256,7 +289,7 @@ def resolve_authoritative_player_roll(
         'bonus_dice': bonus_dice,
         'modifier': modifier,
         'total': total,
-        'auto_fail': bool((modifiers or {}).get('autoFail')),
+        'auto_fail': auto_fail,
         'dc': dc,
         'dcSource': spec.get('dc_source') or 'default',
         'outcome': outcome,
@@ -273,6 +306,12 @@ def resolve_authoritative_player_roll(
         'attack': deepcopy(spec.get('attack')) if isinstance(spec.get('attack'), dict) else None,
         'authoritative': True,
     }
+    if inspiration:
+        result['inspiration'] = inspiration
+    if consume and combat is not None:
+        # In combat the effects live on the participant; the turn pipeline spends them.
+        result['consume'] = consume
+    return result
 
 
 def canonical_roll_sentence(roll: dict[str, Any]) -> str:
@@ -289,6 +328,9 @@ def canonical_roll_sentence(roll: dict[str, Any]) -> str:
         detail = f'{kept} ({mode}; rolls {", ".join(str(value) for value in faces)})'
     for bonus in roll.get('bonus_dice') or []:
         detail += f" {bonus.get('dice')} ({int(bonus.get('total') or 0)})"
+    inspiration = roll.get('inspiration') if isinstance(roll.get('inspiration'), dict) else None
+    if inspiration:
+        detail += f" + Bardic Inspiration {inspiration.get('die')} ({int(inspiration.get('roll') or 0)})"
     return f"I roll a {roll.get('die') or 'd20'}{modifier_text}{reason_text}: {detail} = {total}"
 
 
@@ -374,6 +416,8 @@ def canonicalize_roll_action_intent(
             'authoritative',
         )
     }
+    if isinstance(roll.get('inspiration'), dict):
+        canonical_roll['inspiration'] = deepcopy(roll['inspiration'])
     if pending_turn_id:
         canonical_roll['target_pending_turn_id'] = pending_turn_id
     intent['roll'] = canonical_roll

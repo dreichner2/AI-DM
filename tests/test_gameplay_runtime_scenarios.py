@@ -1180,7 +1180,7 @@ def test_real_socket_combat_lifecycle_tactic_change_nonlethal_end_and_reload(
         assert state['combat']['flags']['turnEconomy']['actionRemaining'] == 0
         assert [entry['participantId'] for entry in state['combat']['initiative']] == [actor_id, enemy_id]
         enemy = next(item for item in state['combat']['participants'] if item['id'] == enemy_id)
-        assert enemy['hp']['current'] == 13
+        assert enemy['hp']['current'] == 11  # Longsword 3 + Strength 4 + Dueling 2 (the fighter's default style).
 
     repeated_attack = _send(
         client,
@@ -1307,7 +1307,7 @@ def test_real_socket_combat_lifecycle_tactic_change_nonlethal_end_and_reload(
     with app.app_context():
         state = _snapshot(ids)
         enemy = next(item for item in state['combat']['participants'] if item['id'] == enemy_id)
-        assert enemy['hp']['current'] == 6
+        assert enemy['hp']['current'] == 2
         assert state['combat']['status'] == 'active'
         assert state['combat']['flags']['turnEconomy']['actionRemaining'] == 0
 
@@ -1344,7 +1344,7 @@ def test_real_socket_combat_lifecycle_tactic_change_nonlethal_end_and_reload(
         assert state['combat']['flags']['activeActorId'] == actor_id
         assert state['combat']['round'] == 2
         enemy = next(item for item in state['combat']['participants'] if item['id'] == enemy_id)
-        assert enemy['hp']['current'] == 6
+        assert enemy['hp']['current'] == 2
         assert 'fled' in enemy['conditions']
         assert state['playerCharacters'][0]['classFeatureState']['second_wind']['current'] == 1
         assert state['playerCharacters'][0]['health']['currentHp'] == 20

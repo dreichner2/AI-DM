@@ -25,6 +25,7 @@ from aidm_server.spellbook import (
     CLASS_LEVEL_UNLOCKS,
     CLASS_STARTING_SPELLS,
     NARRATED_SPELLS,
+    catalog_unlock_level,
     class_spells_for_level,
     spell_payload,
 )
@@ -810,6 +811,18 @@ def test_class_lists_unlock_spell_levels_at_the_specified_character_levels():
     assert 'Invisibility' not in names('Artificer', 4) and 'Invisibility' in names('Artificer', 5)
     assert 'Grease' in names('Artificer', 1)
     assert 'Dimension Door' in names('Wizard', 7)
+    # A class never learns a spell level before it has a slot of that level.
+    assert 'Fear' not in names('Warlock', 4) and 'Fear' in names('Warlock', 5)
+    assert 'Revivify' not in names('Paladin', 8) and 'Revivify' in names('Paladin', 9)
+    assert 'Haste' not in names('Artificer', 8) and 'Haste' in names('Artificer', 9)
+    assert 'Pass without Trace' not in names('Ranger', 4) and 'Pass without Trace' in names('Ranger', 5)
+    assert 'Death Ward' not in names('Paladin', 12) and 'Death Ward' in names('Paladin', 13)
+    assert 'Freedom of Movement' not in names('Ranger', 12) and 'Swift Quiver' in names('Ranger', 17)
+    assert 'Fabricate' not in names('Artificer', 12) and 'Animate Objects' in names('Artificer', 17)
+    for class_name, slot_levels in {'Wizard': (1, 3, 5, 7, 9), 'Warlock': (1, 3, 5, 7, 9), 'Paladin': (2, 5, 9, 13, 17),
+                                    'Ranger': (2, 5, 9, 13, 17), 'Artificer': (1, 5, 9, 13, 17)}.items():
+        for spell_level, unlock in enumerate(slot_levels, start=1):
+            assert catalog_unlock_level(class_name.lower(), spell_level) == unlock
 
 
 @pytest.mark.parametrize('name', sorted(NARRATED_SPELLS))

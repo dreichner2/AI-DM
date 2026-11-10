@@ -28,6 +28,7 @@ from aidm_server.combat.legal_actions import (
     combat_snapshot_from_session,
     resolve_combat_legal_action,
 )
+from aidm_server.combat.pipeline import hostile_action_targets_creature
 from aidm_server.database import commit_with_retry, db, release_clean_scoped_session, run_with_commit_retry
 from aidm_server.emergent_memory import apply_immediate_state_changes
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY
@@ -1026,11 +1027,13 @@ class TurnEngine:
         }
 
     @staticmethod
-    def _no_opponent_roll_veto(pre_pipeline_result: dict, rules_hint_payload: dict) -> dict | None:
+    def _no_opponent_roll_veto(pre_pipeline_result: dict, rules_hint_payload: dict, player_message: str) -> dict | None:
         """Clear a classifier attack roll when nobody is there to fight.
 
         Applies when no combat is active in the state the narrator sees, which
-        already includes a combat the pre-DM pipeline started this turn.
+        already includes a combat the pre-DM pipeline started this turn.  Only
+        a hostile action aimed at a creature is answered as having no one to
+        fight (``no_target``); striking an object is an ordinary action.
         """
         if not rules_hint_payload.get('requires_roll') or rules_hint_payload.get('roll_type') != 'attack':
             return None
@@ -1048,10 +1051,16 @@ class TurnEngine:
         combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
         if str(combat.get('status') or '').strip().lower() in {'starting', 'active'}:
             return None
+        no_target = hostile_action_targets_creature(player_message)
         return {
             'source': 'no_opponent',
             'reason': 'No opponent is present.',
-            'instruction': 'No opponent is present: do not request a roll; say there is no one here to fight.',
+            'instruction': (
+                'No opponent is present: do not request a roll; say there is no one here to fight.'
+                if no_target
+                else 'No opponent is present: do not request a roll; narrate this as an ordinary action.'
+            ),
+            'no_target': no_target,
             'original_rule_type': rules_hint_payload.get('roll_type'),
             'original_reason': rules_hint_payload.get('reason'),
         }
@@ -1590,6 +1599,7 @@ class TurnEngine:
             no_opponent_veto = self._no_opponent_roll_veto(
                 pre_pipeline_result,
                 rules_hint_payload,
+                command.user_input,
             )
             if no_opponent_veto:
                 self._clear_turn_roll_requirement_from_pre_dm_veto(
@@ -1599,7 +1609,8 @@ class TurnEngine:
                     pre_pipeline_result=pre_pipeline_result,
                     reason=no_opponent_veto['reason'],
                 )
-                rules_hint_payload['no_target'] = True
+                if no_opponent_veto['no_target']:
+                    rules_hint_payload['no_target'] = True
                 rules_hint_payload['instruction'] = no_opponent_veto['instruction']
             rules_hint_payload = augment_rules_hint_with_state_packet(
                 rules_hint_payload,

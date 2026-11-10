@@ -204,7 +204,10 @@ def rage_effect(actor_id: str) -> dict[str, Any]:
     # ``endsWhen`` and ``cannotCast`` record rules the turn and spell engines enforce.
     return _effect(
         f'rage:{actor_id}', 'rage', 'Rage', actor_id,
-        modifiers={'bonusWeaponDamage': {'flat': 2}, 'resistances': list(RAGE_RESISTANCES)},
+        modifiers={
+            'bonusWeaponDamage': {'flat': 2, 'meleeOnly': True, 'ability': 'strength'},
+            'resistances': list(RAGE_RESISTANCES),
+        },
         duration={'rounds': EFFECT_ROUNDS['rage'], 'tickOn': 'target_turn_end'},
         endsWhen=['unconscious', 'no_attack_or_damage_since_last_turn'],
         cannotCast=True,
@@ -212,13 +215,13 @@ def rage_effect(actor_id: str) -> dict[str, Any]:
 
 
 def turned_effect(target_id: str, cleric_id: str) -> dict[str, Any]:
-    # Being attacked ends the turning (``consumeOn``) until damage can end it (``endsWhen``).
+    # A turned creature takes its turns only to move away (the intent planner
+    # sees the ``turned`` condition) and stops being turned when it takes damage.
     return _effect(
         f'turned:{target_id}', 'turn_undead', 'Turn Undead', cleric_id,
         condition='turned',
-        modifiers={'cannotAct': True, 'cannotReact': True},
+        modifiers={'cannotReact': True},
         duration={'rounds': EFFECT_ROUNDS['turned'], 'tickOn': 'target_turn_end'},
-        consumeOn='attacked',
         endsWhen=['damage_taken'],
     )
 

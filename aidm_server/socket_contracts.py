@@ -179,6 +179,8 @@ def roll_resolved_payload(
         'result_visibility': projected_roll.get('result_visibility'),
         'authoritative': True,
     }
+    if isinstance(projected_roll.get('inspiration'), dict):
+        payload['inspiration'] = projected_roll['inspiration']
     if include_private_provenance:
         payload.update(
             {

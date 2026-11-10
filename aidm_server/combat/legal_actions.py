@@ -179,6 +179,7 @@ def _attack_target_option(
     classification: str,
     allowed_bands: Iterable[str],
     reach: bool,
+    ability: str | None,
 ) -> dict[str, Any]:
     ranged = classification == 'ranged'
     reason = targeting_block_reason(actor, participant, combat) or reach_block_reason(
@@ -188,7 +189,7 @@ def _attack_target_option(
         allowed_bands=allowed_bands,
         reach=reach,
     )
-    roll = attack_context(actor, participant, kind='weapon_attack', ranged=ranged, combat=combat)
+    roll = attack_context(actor, participant, kind='weapon_attack', ranged=ranged, combat=combat, ability=ability)
     return {**_target(participant, reason), 'rollMode': roll['mode'], 'rollReasons': roll['reasons']}
 
 
@@ -365,6 +366,7 @@ def _weapon_attack_action(
             classification=classification,
             allowed_bands=allowed_bands,
             reach=reach,
+            ability=attack_roll_context.get('ability_key'),
         )
         for target in enemies
     ]

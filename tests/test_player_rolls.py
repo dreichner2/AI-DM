@@ -121,13 +121,13 @@ def test_pending_roll_spec_controls_mode_and_client_claim_is_canonicalized():
     assert roll['result_visibility'] == 'visible'
     assert roll['rolls'] == [16, 5]
     assert roll['kept'] == 5
-    assert roll['modifier'] == 2
-    assert roll['total'] == 7
+    assert roll['modifier'] == 3  # Dexterity +2 and Jack of All Trades +1 for the level 3 bard.
+    assert roll['total'] == 8
     assert roll['reason'] == 'vault the gate'
     assert ': 20' not in text
     assert text.startswith('I vault the gate')
     assert intent['roll']['rolls'] == [16, 5]
-    assert intent['roll']['total'] == 7
+    assert intent['roll']['total'] == 8
     assert intent['roll']['target_pending_turn_id'] == 42
     assert intent['ability']['key'] == 'dexterity'
 
@@ -180,7 +180,8 @@ def test_natural_language_claim_is_replaced_even_without_roll_word():
     text = canonicalize_roll_text('Initiative is 19', roll)
 
     assert '19' not in text
-    assert text == 'I roll a d20+2 for initiative: 4 = 6'
+    # Initiative is a Dexterity check, so the level 3 bard adds Jack of All Trades.
+    assert text == 'I roll a d20+3 for initiative: 4 = 7'
 
 
 def test_legacy_claim_parser_captures_die_modifier_total_and_full_claim_span():
@@ -446,8 +447,9 @@ def test_named_skill_does_not_borrow_a_different_skill_proficiency():
     )
 
     assert roll['ability']['key'] == 'charisma'
-    assert roll['proficiency'] == {'bonus': 0, 'skills': [], 'multiplier': 0}
-    assert roll['modifier'] == 2
+    # Deception does not lend its proficiency; the bard adds only Jack of All Trades.
+    assert roll['proficiency'] == {'bonus': 1, 'skills': ['jack_of_all_trades'], 'multiplier': 0}
+    assert roll['modifier'] == 3
 
 
 def test_class_saving_throw_proficiency_uses_requested_ability():

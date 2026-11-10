@@ -41,7 +41,7 @@ from aidm_server.combat.morale import MORALE_EVENTS, apply_morale_event
 from aidm_server.combat.reactions import REACTION_SOURCE
 from aidm_server.combat.vitality import DEATH_SAVE_SOURCE
 from aidm_server.combat.state import RANGE_BANDS, normalize_battlefield, normalize_combat_state, normalize_participant, player_combat_participant
-from aidm_server.spell_effects import active_repeat_attack, resolve_targeted_spell, spell_target_legality
+from aidm_server.spell_effects import active_repeat_attack, cannot_cast_reason, resolve_targeted_spell, spell_target_legality
 from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start, story_flag_allows
 from aidm_server.game_state.validation.inventory_validator import resolve_inventory_item_reference
 from aidm_server.game_state.quest_engine import quest_completion_blocker, quest_failure_blocker
@@ -1335,6 +1335,14 @@ def _validate_spell_action(
     )
     if not legality.get('legal'):
         return _invalid(action, _text(legality.get('reason')) or 'That spell cannot be cast now.')
+    combat_state = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    caster_blocker = (
+        cannot_cast_reason(_combat_participant(state, _text(actor.get('id'))))
+        if _text(combat_state.get('status')).lower() in {'starting', 'active'}
+        else ''
+    )
+    if caster_blocker:
+        return _invalid(action, caster_blocker)
     spell = legality.get('spell') if isinstance(legality.get('spell'), dict) else {}
     resource = legality.get('resource') if isinstance(legality.get('resource'), dict) else {}
     repeat_attack = legality.get('repeatAttack') is True
@@ -1442,6 +1450,8 @@ def _validate_spell_action(
             {
                 'resolutionAuthority': 'spell_effect_engine',
                 'resolution': deepcopy(effect_result.get('resolution')),
+                # Quickened Spell turns an action cast into a bonus-action one.
+                'castingTime': effect_result['resolution'].get('castingTime') or change['castingTime'],
                 'visible': True,
             }
         )

@@ -321,6 +321,8 @@ def normalize_declared_action(raw_action: Any, *, fallback_actor_id: str, fallba
         'spell_name',
         'castLevel',
         'cast_level',
+        'damageType',
+        'damage_type',
         'resourcePool',
         'resource_pool',
         'restType',

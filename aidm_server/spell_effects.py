@@ -66,16 +66,20 @@ from aidm_server.combat.modifiers import (
     consume_modifiers,
     damage_defense,
     end_concentration_effects,
+    end_effects_on_damage,
+    extra_damage,
     heals_nothing,
     is_hidden,
     range_band as participant_range_band,
     remove_active_effects,
+    roll_inspiration,
     save_context,
     tick_effects,
 )
 from aidm_server.combat.reactions import REACTION_SOURCE, auto_reactions_enabled, register_reaction_provider
 from aidm_server.combat.state import combat_turn_context
 from aidm_server.combat.positioning import RANGE_BANDS, band_index, move_participant
+from aidm_server.combat.turn_start import register_turn_start_hook
 from aidm_server.creatures.schemas import DAMAGE_TYPES
 from aidm_server.damage_dice import deterministic_roller, parse_damage_dice_expression, roll_signed_dice
 from aidm_server.game_state.models import stable_change_id
@@ -124,6 +128,7 @@ __all__ = [
     'active_repeat_attack',
     'advance_spell_effect_durations',
     'after_damage_spell_effects',
+    'cannot_cast_reason',
     'end_encounter_spell_effects',
     'end_long_rest_spell_effects',
     'normalized_spell_definition',
@@ -205,6 +210,36 @@ def _is_alive(participant: Mapping[str, Any]) -> bool:
 
 def _can_cast(participant: Mapping[str, Any]) -> bool:
     return _hp(participant)['current'] > 0 and can_act(participant)
+
+
+def cannot_cast_reason(participant: Mapping[str, Any] | None) -> str:
+    """Why an active effect on the caster forbids casting ('' when none does)."""
+
+    effect = next((effect for effect in active_effects(participant) if effect.get('cannotCast') is True), None)
+    if effect is None:
+        return ''
+    return 'You cannot cast while raging.' if effect['sourceId'] == 'rage' else f"{effect['sourceName'] or 'An effect'} prevents spellcasting."
+
+
+def _metamagic_marker(caster: Mapping[str, Any], metamagic: str) -> dict[str, Any] | None:
+    """The caster's readied Metamagic (a Sorcerer's Quickened or Twinned Spell), if any."""
+
+    return next((effect for effect in active_effects(caster) if effect.get('metamagic') == metamagic), None)
+
+
+def _twinnable(spell: Mapping[str, Any], caster: Mapping[str, Any], cast_level: int) -> bool:
+    """Twinned Spell readied for this spell level, and the spell can target only one creature."""
+
+    marker = _metamagic_marker(caster, 'twinned')
+    delivery = spell['delivery']
+    return (
+        marker is not None
+        and _int(marker.get('spellLevel'), default=-1) == cast_level
+        and spell['target']['maxTargets'] == 1
+        and not spell['target']['areaMaxTargets']
+        and not delivery.get('darts')
+        and delivery.get('attacks') is None
+    )
 
 
 def _restores_downed_player(spell: Mapping[str, Any], target: Mapping[str, Any]) -> bool:
@@ -613,12 +648,19 @@ def spell_target_legality(
             'The casting participant is unable to cast.',
             targets=[],
         )
+    caster_blocker = cannot_cast_reason(caster)
+    if caster_blocker:
+        return _legality_failure('spell_caster_cannot_cast', caster_blocker, targets=[])
     spell_level = normalized_spell['level']
     selected_level = spell_level if cast_level is None else _int(cast_level, default=-1)
     if selected_level < spell_level or selected_level > 9 or (spell_level == 0 and selected_level != 0):
         return _legality_failure('invalid_cast_level', 'The selected cast level is not valid for this spell.', targets=[])
     if not _apply_spell_scaling(normalized_spell, caster, selected_level):
         return _legality_failure('spell_scaling_invalid', 'This spell has an invalid scaling definition.', targets=[])
+    if _twinnable(normalized_spell, caster, selected_level):
+        # Twinned Spell: a second legal target, resolved with its own rolls.
+        normalized_spell['target']['maxTargets'] = 2
+        normalized_spell['twinnable'] = True
     delivery = normalized_spell['delivery']
     if delivery['type'] == 'attack' and delivery['attackBonus'] is None:
         delivery['attackBonus'] = _spell_attack_bonus(caster, delivery['castingAbility'])
@@ -1075,6 +1117,11 @@ def _resolve_delivery(
         target_ac = _armor_class(target, context)
         total = natural_roll + attack_bonus + context['attackFlatBonus'] + sum(item['total'] for item in bonus_dice)
         hit = natural_roll != 1 and (natural_roll == 20 or total >= target_ac)
+        inspiration = roll_inspiration(caster, roller) if not hit and natural_roll != 1 else None
+        if inspiration:
+            total += inspiration['roll']
+            context['consume'].append(inspiration.pop('consume'))
+            hit = total >= target_ac
         return {
             'type': 'attack',
             'delivered': hit,
@@ -1089,6 +1136,7 @@ def _resolve_delivery(
             'targetArmorClass': target_ac,
             'coverBonus': context['coverBonus'],
             'consume': context['consume'],
+            **({'inspiration': inspiration} if inspiration else {}),
         }
     ability = str(delivery['ability'])
     context = save_context(target, ability, combat=combat)
@@ -1116,6 +1164,10 @@ def _resolve_delivery(
     natural_roll, rolls = _d20(context['mode'], roller)
     bonus_dice = _bonus_dice(context['bonusDice'], roller)
     total = natural_roll + modifier + context['flatBonus'] + sum(item['total'] for item in bonus_dice)
+    inspiration = None if total >= int(delivery['dc']) else roll_inspiration(target, roller)
+    if inspiration:
+        total += inspiration['roll']
+        context['consume'].append(inspiration.pop('consume'))
     success = total >= int(delivery['dc'])
     return {
         'type': 'save',
@@ -1133,6 +1185,7 @@ def _resolve_delivery(
         'saveSucceeded': success,
         'onSuccess': delivery['onSuccess'],
         'consume': context['consume'],
+        **({'inspiration': inspiration} if inspiration else {}),
     }
 
 
@@ -1641,18 +1694,21 @@ def active_repeat_attack(combat: Mapping[str, Any], caster_id: str, spell_id: st
     )
 
 
-def _spell_attack_bonus_damage(caster: Mapping[str, Any], target_id: str) -> list[dict[str, Any]]:
-    """Damage the caster adds to any attack against a marked target (Hex), not weapon-only marks."""
+def _spell_attack_bonus_damage(
+    caster: Mapping[str, Any], target: Mapping[str, Any], *, spell_id: str, delivery: Mapping[str, Any], combat: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Damage the caster adds to a spell attack that hit: marks on the target (Hex, never
+    weapon-only marks) and class features (Agonizing Blast on each Eldritch Blast beam)."""
 
-    bonuses = []
-    for effect in active_effects(caster):
-        spec = effect['modifiers'].get('bonusDamageVs')
-        if not isinstance(spec, Mapping) or _text(spec.get('targetId')) != target_id or spec.get('weaponOnly') is True:
-            continue
-        parsed = parse_damage_dice_expression(spec.get('dice'))
-        if parsed:
-            bonuses.append({'dice': str(parsed['dice']), 'type': _key(spec.get('type')), 'source': effect['sourceName']})
-    return bonuses
+    attack = {'mode': delivery.get('mode'), 'critical': delivery.get('critical') is True, 'combat': combat}
+    return [
+        {
+            'expression': str(bonus['dice']) if bonus.get('dice') else str(_int(bonus.get('flat'))),
+            'type': _key(bonus.get('type')),
+            'source': _text(bonus.get('source')),
+        }
+        for bonus in extra_damage(caster, target, kind='spell_attack', attack=attack, spell_id=spell_id)
+    ]
 
 
 def _recurring_save(
@@ -1668,10 +1724,16 @@ def _recurring_save(
     natural_roll, rolls = _d20(context['mode'], roller)
     bonus_dice = _bonus_dice(context['bonusDice'], roller)
     total = natural_roll + modifier + context['flatBonus'] + sum(item['total'] for item in bonus_dice)
-    consume_modifiers(combat, context['consume'])
+    consume = list(context['consume'])
+    inspiration = None if total >= record['dc'] else roll_inspiration(target, roller)
+    if inspiration:
+        total += inspiration['roll']
+        consume.append(inspiration.pop('consume'))
+    consume_modifiers(combat, consume)
     return {
         **record, 'mode': context['mode'], 'rolls': rolls, 'naturalRoll': natural_roll,
         'bonusDice': bonus_dice, 'total': total, 'succeeded': total >= record['dc'],
+        **({'inspiration': inspiration} if inspiration else {}),
     }
 
 
@@ -1680,7 +1742,11 @@ def _end_cast_on(participant: dict[str, Any], cast_id: str) -> list[str]:
 
 
 def _after_damage(combat: dict[str, Any], target: dict[str, Any], *, source_id: str, roller: Roller) -> list[dict[str, Any]]:
-    """Spell effects that end, or allow another save, when their bearer takes damage."""
+    """Effects that end, or allow another save, when their bearer takes damage.
+
+    Besides the spell lifecycle flags this applies every effect's damage
+    ``endsWhen`` (Turn Undead's turning, Rage when its bearer drops).
+    """
 
     events: list[dict[str, Any]] = []
     source = _participant_by_id(combat, source_id)
@@ -1691,10 +1757,13 @@ def _after_damage(combat: dict[str, Any], target: dict[str, Any], *, source_id: 
             return False
         return _text(effect.get('casterId')) == source_id or (caster is not None and _friendly(caster, source))
 
-    ended = _remove_spell_effects(
-        target,
-        lambda effect: effect.get('endsOnDamage') is True or (effect.get('endsOnHarm') is True and harmed_by_casters_side(effect)),
-    )
+    ended = [
+        *_remove_spell_effects(
+            target,
+            lambda effect: effect.get('endsOnDamage') is True or (effect.get('endsOnHarm') is True and harmed_by_casters_side(effect)),
+        ),
+        *end_effects_on_damage(target),
+    ]
     if ended:
         events.append({'kind': 'effects_ended', 'reason': 'took_damage', 'effectIds': [effect['id'] for effect in ended],
                        'sources': sorted({effect['sourceName'] for effect in ended})})
@@ -1734,7 +1803,10 @@ def resolve_targeted_spell(
     the returned combat idempotent; callers should still keep the repository's
     broader state-change ledger as the durable cross-system guard.
     ``damage_type`` picks among a damage effect's ``damageTypeChoices``;
-    ``repeat_attack`` makes the active spiritual weapon attack again.
+    ``repeat_attack`` makes the active spiritual weapon attack again.  The
+    caster's readied Metamagic shapes and is spent by the cast (``metamagic``
+    in the resolution): Quickened makes an action spell a bonus action, Twinned
+    lets a single-target spell take a second target.
     """
 
     if not callable(roller):
@@ -1847,6 +1919,16 @@ def resolve_targeted_spell(
         effect['id']
         for effect in _remove_spell_effects(caster, lambda effect: effect.get('endsOnCast') is True)
     ]
+    # Readied Metamagic is spent by the spell it shapes: Twinned by a second
+    # target, Quickened by the next spell that would cost an action.
+    metamagic = []
+    if normalized_spell.get('twinnable') and len(normalized_target_ids) == 2:
+        metamagic.append('twinned')
+    if normalized_spell['castingTime'] == 'action' and _metamagic_marker(caster, 'quickened') is not None:
+        metamagic.append('quickened')
+        normalized_spell['castingTime'] = 'bonus_action'
+    if metamagic:
+        remove_active_effects(caster, lambda effect: effect.get('metamagic') in metamagic)
     recurring_dc = normalized_spell['delivery']['dc']
     if recurring_dc is None and any(effect['kind'] == 'recurring' for effect in normalized_spell['effects']):
         recurring_dc = _spell_save_dc(caster, normalized_spell['delivery']['castingAbility'])
@@ -1966,12 +2048,17 @@ def resolve_targeted_spell(
             check_concentration(effect_result, target_id, damage)
             effect_results.append(effect_result)
         if delivery_result.get('type') == 'attack' and delivery_result.get('delivered'):
-            for bonus in _spell_attack_bonus_damage(caster, target_id):
+            target = _participant_by_id(next_combat, target_id)
+            assert target is not None
+            bonuses = _spell_attack_bonus_damage(
+                caster, target, spell_id=normalized_spell['id'], delivery=delivery_result, combat=next_combat,
+            )
+            for bonus in bonuses:
                 target = _participant_by_id(next_combat, target_id)
                 assert target is not None
                 bonus_result = _apply_damage(
                     target,
-                    rolled=_roll_expression(bonus['dice'], logged_roller, critical=delivery_result.get('critical') is True),
+                    rolled=_roll_expression(bonus['expression'], logged_roller, critical=delivery_result.get('critical') is True),
                     damage_type=bonus['type'] or spell_damage_type or 'force',
                     save_divisor=1,
                     critical=delivery_result.get('critical') is True,
@@ -2011,6 +2098,7 @@ def resolve_targeted_spell(
         **({'damageType': spell_damage_type} if any(effect['damageTypeChoices'] for effect in normalized_spell['effects']) else {}),
         **({'repeatAttack': True} if repeat_attack else {}),
         **({'endedOnCast': ended_on_cast} if ended_on_cast else {}),
+        **({'metamagic': metamagic} if metamagic else {}),
         'targets': target_resolutions,
         'concentration': {
             'started': normalized_spell['concentration'],
@@ -2346,6 +2434,9 @@ def after_damage_spell_effects(
         combat, target, source_id=_text(source_id),
         roller=roller or deterministic_roller(f'spell_after_damage:{event_id}:{target_id}'),
     )
+
+
+register_turn_start_hook(resolve_turn_start_spell_effects)
 
 
 def shield_reaction_provider(event: Mapping[str, Any], combat: Mapping[str, Any], state: Mapping[str, Any]) -> list[dict[str, Any]]:

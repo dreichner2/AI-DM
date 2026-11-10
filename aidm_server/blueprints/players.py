@@ -11,7 +11,11 @@ from aidm_server.character_backgrounds import (
     character_sheet_with_background,
     normalize_character_background,
 )
-from aidm_server.character_state import serialize_stats_payload, sync_character_derived_stats
+from aidm_server.character_state import (
+    apply_creation_class_choices,
+    serialize_stats_payload,
+    sync_character_derived_stats,
+)
 from aidm_server.database import db
 from aidm_server.errors import error_response
 from aidm_server.game_state.application.applier import apply_state_changes
@@ -383,6 +387,9 @@ def add_player(campaign_id):
                 background_provided=background_provided,
             ),
         )
+        choices_error = apply_creation_class_choices(new_player, payload)
+        if choices_error:
+            return error_response('validation_error', choices_error, 400)
         db.session.add(new_player)
         db.session.commit()
         return jsonify({'player_id': new_player.player_id, 'message': 'Player successfully created'}), 201

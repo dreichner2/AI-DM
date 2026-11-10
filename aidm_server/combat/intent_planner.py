@@ -13,6 +13,7 @@ from aidm_server.combat.enemy_brain import plan_freeform_enemy_tactic, plan_sent
 from aidm_server.combat.morale import actionable_participants, living_participants, recalculate_morale
 from aidm_server.canon_text import int_or_default
 from aidm_server.combat.attacks import ability_reach_profile
+from aidm_server.combat.modifiers import condition_keys
 from aidm_server.combat.positioning import enemy_approach, targeting_block_reason
 from aidm_server.combat.state import (
     combat_ability_is_available,
@@ -1246,6 +1247,25 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
     flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
     if flags.get('activeActorId'):
         settings = {**settings, 'activeActorId': str(flags.get('activeActorId'))}
+    if 'turned' in condition_keys(enemy):
+        # Turned (Turn Undead): it can only move away until the turning ends.
+        turned = [
+            _candidate(
+                _intent(
+                    enemy,
+                    'retreat',
+                    reason=f"{enemy.get('name')} is turned and must move away.",
+                    confidence=1.0,
+                    movement_goal='away from the party',
+                    telegraph=f"{enemy.get('name')} recoils and flees from the holy power.",
+                ),
+                100,
+            )
+        ]
+        _attach_candidate_contracts(turned, enemy=enemy, combat=combat)
+        selected = deepcopy(turned[0]['intent'])
+        selected.update({'selectionScore': 100, 'selectionMethod': 'turned'})
+        return selected, [_candidate_debug_view(item) for item in turned]
     behavior = enemy.get('behavior') if isinstance(enemy.get('behavior'), dict) else {}
     intelligence = str(behavior.get('intelligenceProfile') or 'average')
     players = _living_participants(combat, 'player')

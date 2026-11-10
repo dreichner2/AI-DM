@@ -358,7 +358,11 @@ def player_character_from_model(player: Player) -> dict[str, Any]:
             'defaultWeaponId': stats.get('default_weapon_id') or stats.get('defaultWeaponId'),
             'weaponProficiencies': list(state.get('weapon_proficiencies') or []),
         },
+        # Automatic reactions (Shield, opportunity attacks, Uncanny Dodge) run unless the sheet turned them off.
+        'autoReactions': _as_record(player.character_sheet).get('autoReactions') is not False,
     }
+    if state.get('fighting_style'):
+        actor['fightingStyle'] = state['fighting_style']
     if isinstance(stats.get('active_effects'), list) and stats['active_effects']:
         # Effects that outlast an encounter (Mage Armor, Aid, out-of-combat
         # buffs) shape armour class and keep the conditions they maintain.

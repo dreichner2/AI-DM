@@ -10,7 +10,19 @@ from aidm_server.combat.actions import resolve_combat_action
 from aidm_server.combat.difficulty import normalize_combat_difficulty_ai
 from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
 from aidm_server.combat.intent_planner import attach_intents_to_combat, plan_enemy_intents
-from aidm_server.combat.modifiers import active_effects, apply_damage_multiplier, attacks_per_action, can_act, condition_keys, damage_defense, temp_hp_per_turn, tick_turn_boundary
+from aidm_server.combat.modifiers import (
+    active_effects,
+    apply_damage_multiplier,
+    attacks_per_action,
+    can_act,
+    condition_keys,
+    damage_defense,
+    end_effects_at_turn_start,
+    note_attack_or_damage,
+    temp_hp_per_turn,
+    tick_turn_boundary,
+)
+from aidm_server.combat.turn_start import run_turn_start_hooks
 from aidm_server.combat.vitality import apply_death_save, death_save_roll, is_dying, is_player_character, take_damage
 from aidm_server.combat.state import (
     MAX_MOVEMENT_PER_TURN,
@@ -39,6 +51,7 @@ from aidm_server.game_state.campaign_pack_encounters import TRIGGER_STARTED_BY, 
 from aidm_server.game_state.models import display_actor_id, stable_change_id, stable_slug
 from aidm_server.models import Campaign, CombatEncounter, DmTurn, Session, safe_json_dumps, safe_json_loads
 from aidm_server.provider_priority import foreground_provider_reservation
+from aidm_server.spell_effects import after_damage_spell_effects
 from aidm_server.time_utils import utc_now
 
 
@@ -73,6 +86,50 @@ DIRECT_HOSTILE_ACTION_PATTERN = re.compile(
     + r'|\b(?:roll initiative|initiative)\b',
     re.IGNORECASE,
 )
+# Things a hostile verb can be aimed at that are not creatures ("I kick the door").
+OBJECT_TARGET_WORDS = frozenset({
+    'door', 'doors', 'gate', 'gates', 'wall', 'walls', 'window', 'windows', 'shutter', 'shutters', 'hatch', 'trapdoor',
+    'portcullis', 'lock', 'padlock', 'chest', 'crate', 'crates', 'box', 'boxes', 'barrel', 'barrels', 'cask', 'keg',
+    'sack', 'table', 'chair', 'bench', 'shelf', 'rock', 'rocks', 'boulder', 'stone', 'stones', 'tree', 'branch', 'log',
+    'rope', 'chain', 'chains', 'bars', 'grate', 'statue', 'pillar', 'column', 'dummy', 'post', 'lever', 'barricade',
+    'fence', 'plank', 'planks', 'board', 'boards', 'floor', 'ground', 'ceiling', 'bell', 'gong', 'glass', 'jar', 'vase',
+    'pot', 'bottle', 'mirror', 'crystal', 'idol', 'altar', 'coffin', 'sarcophagus', 'cage', 'wagon', 'cart', 'ice',
+    'bush', 'hedge', 'sign', 'signpost', 'lantern', 'lamp', 'urn', 'beam', 'rubble', 'mechanism',
+})
+# "swing my axe at the rope": what follows one of these is what the blow is aimed at.
+_AIM_WORDS = frozenset({'at', 'into', 'against', 'through', 'on', 'onto'})
+# Words that end the description of what the blow strikes ("the door open", "the bandit by the cart").
+_TARGET_PHRASE_END = frozenset({
+    'with', 'using', 'by', 'and', 'then', 'while', 'before', 'after', 'until', 'so', 'to', 'as', 'near', 'beside',
+    'behind', 'who', 'that', 'which', 'open', 'down', 'up', 'in', 'off', 'apart', 'again', 'hard',
+})
+
+
+def hostile_action_targets_creature(message: str) -> bool:
+    """A direct hostile action aimed at a creature, not at an object ("I kick the door").
+
+    The struck thing is the last word of the phrase after the hostile verb (or
+    after ``at``/``into``... when the verb is followed by the weapon used).
+    """
+
+    match = DIRECT_HOSTILE_ACTION_PATTERN.search(message or '')
+    if match is None:
+        return False
+    following = re.split(r'[.!?,;]', (message or '')[match.end():], maxsplit=1)[0]
+    words = re.findall(r"[a-z']+", following.lower())
+    aim = next((index for index, word in enumerate(words[:4]) if word in _AIM_WORDS), None)
+    phrase: list[str] = []
+    for word in words[aim + 1 if aim is not None else 0:]:
+        if word in _TARGET_PHRASE_END:
+            if phrase:
+                break
+            continue
+        if word.endswith('ing') or len(phrase) == 4:
+            break
+        phrase.append(word)
+    return not (phrase and phrase[-1] in OBJECT_TARGET_WORDS)
+
+
 DM_COMBAT_START_PATTERN = re.compile(
     r'\b(?:roll initiative|initiative order|combat begins|battle begins|fight begins|'
     r'ambush(?:es|ed)?|attacks? you|lunges? at you|charges? you|arrows?\s+fly|'
@@ -570,8 +627,11 @@ def _consume_turn_combat_action(
     """Spend the submitted action's cost and record what it grants this turn.
 
     The first weapon attack spends the action and sets ``attacksRemaining`` to
-    the actor's attacks per action minus one; later attacks spend those.  Dash
-    adds a movement and Disengage marks the turn disengaged.
+    the actor's attacks per action minus one; later attacks spend those.  An
+    off-hand attack or a bonus-action strike (Martial Arts, Flurry of Blows)
+    pays only its own cost: the bonus action, or nothing for a strike Flurry of
+    Blows already paid for.  Dash adds a movement and Disengage marks the turn
+    disengaged.
     """
 
     combat_action = _turn_combat_action(turn)
@@ -582,7 +642,11 @@ def _consume_turn_combat_action(
     ledger_id = _turn_action_ledger_id(turn, combat_action)
     replay = _turn_action_already_spent(combat, turn=turn, actor_id=actor_id)
     current = ensure_combat_turn_economy(combat, actor_id=actor_id)
-    weapon_attack = action_type == 'attack' and combat_action.get('offhand') is not True
+    weapon_attack = (
+        action_type == 'attack'
+        and combat_action.get('offhand') is not True
+        and combat_action.get('bonus_attack') is not True
+    )
     action_cost = int_or_default(economy.get('action'), default=0)
     if weapon_attack:
         action_cost = 0 if int(current.get('attacksRemaining') or 0) > 0 else 1
@@ -737,7 +801,13 @@ def turn_boundaries(combat: dict[str, Any], turn_context: dict[str, Any]) -> lis
     if not current.get('id') or not handoff.get('id'):
         return []
     round_number = max(1, int_or_default(combat.get('round'), default=1))
-    boundaries = [{'actorId': current['id'], 'phase': 'end', 'round': round_number}]
+    ending = {'actorId': current['id'], 'phase': 'end', 'round': round_number}
+    flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+    economy = flags.get('turnEconomy') if isinstance(flags.get('turnEconomy'), dict) else {}
+    if str(economy.get('actorId') or '') == str(current['id']) and economy.get('attackWeaponIds'):
+        # Rage lasts while its owner attacks; the persisted economy knows whether this turn did.
+        ending['attacked'] = True
+    boundaries = [ending]
     initiative = {
         str(entry.get('participantId') or entry.get('id') or ''): int_or_default(entry.get('order'), default=9999)
         for entry in combat.get('initiative') or [] if isinstance(entry, dict)
@@ -803,8 +873,12 @@ def participant_at_turn_start(participant: dict[str, Any]) -> dict[str, Any]:
     return view
 
 
-def apply_start_turn_damage(participant: dict[str, Any], *, turn_id: Any, round_number: int) -> list[dict[str, Any]]:
-    """Resolve each ongoing damage effect with a reproducible, recorded roll."""
+def apply_start_turn_damage(combat: dict[str, Any], participant: dict[str, Any], *, turn_id: Any, round_number: int) -> list[dict[str, Any]]:
+    """Resolve each ongoing damage effect with a reproducible, recorded roll.
+
+    Damage that lands runs the effects that react to damage (a sleeper wakes),
+    recorded on the result as ``afterDamage``.
+    """
     actor_id = str(participant.get('id') or '')
     results = []
     for effect in active_effects(participant):
@@ -833,10 +907,18 @@ def apply_start_turn_damage(participant: dict[str, Any], *, turn_id: Any, round_
                 participant['isAlive'] = False
                 participant['isConscious'] = False
             applied = {'amount': absorbed + dealt, 'tempHpDamage': absorbed, 'hpDamage': dealt}
-        results.append({
+        result = {
             'effectId': effect['id'], 'dice': dice['dice'], 'rolls': rolls, 'damageType': damage_type,
             'rolled': rolled, 'defense': defense, 'damage': amount, **applied,
-        })
+        }
+        if applied['amount'] > 0:
+            after_damage = after_damage_spell_effects(
+                combat, target_id=actor_id, source_id=effect['casterId'],
+                event_id=f"turn_damage:{turn_id}:{round_number}:{actor_id}:{effect['id']}",
+            )
+            if after_damage:
+                result['afterDamage'] = after_damage
+        results.append(result)
     return results
 
 
@@ -849,9 +931,17 @@ def _start_turn(combat: dict[str, Any], participant: dict[str, Any], *, turn_id:
     if granted > int_or_default(hp.get('temp'), default=0):
         hp['temp'] = granted
         result['tempHpGranted'] = granted
-    ongoing_damage = apply_start_turn_damage(participant, turn_id=turn_id, round_number=round_number)
+    ongoing_damage = apply_start_turn_damage(combat, participant, turn_id=turn_id, round_number=round_number)
     if ongoing_damage:
         result['ongoingDamage'] = ongoing_damage
+    turn_start_effects = run_turn_start_hooks(combat, actor_id=actor_id, turn_id=turn_id, round_number=round_number)
+    if turn_start_effects:
+        result['turnStartEffects'] = turn_start_effects
+    # A hook may replace the combat's records, so the actor is read again.
+    participant = _participant_index(combat).get(actor_id) or participant
+    lapsed = end_effects_at_turn_start(participant)
+    if lapsed:
+        result['effectsEnded'] = [effect['id'] for effect in lapsed]
     keys = condition_keys(participant)
     removed = {'dodging'} & keys
     if 'prone' in keys and can_act(participant):
@@ -881,8 +971,11 @@ def apply_turn_boundaries(combat: dict[str, Any], boundaries: list[dict[str, Any
     """Run turn-start and turn-end processing for each boundary, mutating ``combat``.
 
     Turn end ticks effects held by (``target_turn_end``) or cast by
-    (``caster_turn_end``) the actor.  Turn start ticks ``caster_turn_start``
-    effects, restores the actor's reaction, grants ``tempHpPerTurn``, ends
+    (``caster_turn_end``) the actor and, when the boundary records that the
+    actor ``attacked``, keeps its attack-sustained effects going.  Turn start
+    ticks ``caster_turn_start`` effects, restores the actor's reaction, grants
+    ``tempHpPerTurn``, deals ongoing damage, runs the turn-start hooks (spell
+    repeat saves and auras), ends effects whose ``endsWhen`` lapsed, ends
     ``dodging``, stands a prone actor that can act (spending its movement) and
     rolls recharge for abilities marked ``needsRecharge`` (5-6 on the
     deterministic d6 recharges).
@@ -902,6 +995,8 @@ def apply_turn_boundaries(combat: dict[str, Any], boundaries: list[dict[str, Any
         participant = _participant_index(combat).get(actor_id)
         if phase == 'start' and participant is not None:
             event.update(_start_turn(combat, participant, turn_id=turn_id, round_number=round_number))
+        elif participant is not None and boundary.get('attacked') is True:
+            note_attack_or_damage(participant)
         events.append(event)
     return events
 

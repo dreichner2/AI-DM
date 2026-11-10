@@ -336,13 +336,14 @@ mechanics the server currently applies, rather than full tabletop coverage.
   dead target and consumes 300 gp, rejecting the cast when the caster cannot pay.
 - Damage dealt by a spell triggers the target's concentration check, ends Sleep
   and Hypnotic Pattern, ends a charm when the charmer's side deals it, and gives
-  Tasha's Hideous Laughter a save with advantage. `after_damage_spell_effects`
-  does the same for other damage, but the combat damage paths do not call it yet.
+  Tasha's Hideous Laughter a save with advantage. Weapon, item, hazard and
+  ongoing damage run the same reactions through `after_damage_spell_effects`.
 - Recurring effects (Entangle, Hold Person, Web, Blindness/Deafness, Fear and
   Tasha's repeat saves; Moonbeam's and Spirit Guardians' save-or-take-damage)
-  are resolved by `resolve_turn_start_spell_effects` with deterministic rolls.
-  The combat turn-start processing does not call it yet, so in play these
-  effects currently last their full duration or until concentration ends.
+  are resolved by `resolve_turn_start_spell_effects` with deterministic rolls,
+  registered with the turn-start hooks (`aidm_server/combat/turn_start.py`). They
+  run as each affected creature starts its turn, in the enemy turn block and in
+  the persisted turn advance, and are recorded with the turn's combat results.
 - Shield is cast automatically by a reaction provider when an enemy's hit
   total is below the player character's AC + 5 and the character has Shield
   ready, a slot, its reaction and `autoReactions` not off: the hit misses, a
@@ -387,10 +388,16 @@ and registers the combat actions and Uncanny Dodge.
   short rest; lowest missing slots first unless chosen). Each use is resolved
   before narration with its cost, target and dice, replay-validated, and
   applied as one `class_feature.use` change. Effects are active effects on the
-  combatant: Rage (10 rounds; +2 weapon damage, resistance to bludgeoning,
-  piercing and slashing, advantage on Strength checks and saves), Reckless
-  Attack, the turned condition, Stunning Strike's stun, Flurry of Blows and the
-  Metamagic markers.
+  combatant: Rage (10 rounds; +2 damage on Strength melee attacks, resistance to
+  bludgeoning, piercing and slashing, advantage on Strength checks and saves, no
+  spellcasting; ends at the barbarian's turn start when they neither attacked
+  nor took damage since their last turn, or when they drop), Reckless Attack
+  (Strength melee attacks), the turned condition (the creature only moves away;
+  ends when it takes damage), Stunning Strike's stun, Flurry of Blows (exactly
+  two bonus strikes) and the Metamagic markers (Quickened: the next action spell
+  costs a bonus action; Twinned: the next single-target spell of that level
+  takes a second target). A Bardic Inspiration die is added to the bearer's
+  next attack roll, check or save that would fail and shown with the roll.
 - **Combat actions** (the legal-action bundle): every capability as
   `class.use.<id>` with its cost, pool, legal targets and plain reason; Cunning
   Action as bonus-action Dash, Disengage or Hide; the Martial Arts unarmed
@@ -405,8 +412,9 @@ and registers the combat actions and Uncanny Dodge.
   styles (stored `character_sheet.fightingStyle`, else defaulted from
   equipment). Sneak Attack, Colossus Slayer, Dueling, Great Weapon Fighting,
   Archery, Defense, Improved Critical and Agonizing Blast are registered
-  modifier-engine providers that act once the attack resolver passes them the
-  weapon and attack context described in `class_features.py`.
+  modifier-engine providers; the attack resolver passes them the weapon and
+  attack context described in `class_features.py` and records once-per-turn
+  damage in the turn economy.
 - Druid Wild Shape stays narrated; there is no new druid capability.
 - The Mechanical actions panel shows each capability variant with its pool,
   remaining uses, legal recipients and the reason it is unavailable, in and out
@@ -499,9 +507,8 @@ and registers the combat actions and Uncanny Dodge.
   resistances, and most active ancestry abilities are not yet compiled into
   combat actors.
 - Class features stop at level 5 and at the core subclass hooks named above
-  (Champion, Hunter). Bardic Inspiration dice, Rage ending early, Rage's spell
-  lock, turned undead fleeing, and Quickened or Twinned spells are recorded on
-  their effects but wait for the attack, roll and spell engines to read them.
+  (Champion, Hunter). Quickened and Twinned Spell shape only rules-backed
+  spells.
 - Thirteen curated spells have server-owned target/effect definitions, with some
   tabletop details still simplified. Other known/prepared spells consume the correct resource
   but remain resource-only or narration-assisted for their effects. The

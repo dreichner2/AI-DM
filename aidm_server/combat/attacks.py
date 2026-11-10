@@ -12,7 +12,7 @@ from __future__ import annotations
 from copy import deepcopy
 import random
 import re
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from aidm_server.canon_text import int_or_default, normalized_name
 from aidm_server.combat.legal_actions import weapon_damage_profile
@@ -25,6 +25,7 @@ from aidm_server.combat.modifiers import (
     damage_multiplier,
     extra_damage,
     heals_nothing,
+    roll_inspiration,
     save_context,
 )
 from aidm_server.combat.positioning import ability_reach, in_melee_reach
@@ -65,7 +66,10 @@ def roll_die(sides: int, roller: Roller | None) -> int:
     return max(1, min(sides, int_or_default(raw_value, default=1)))
 
 
-def roll_damage_expression(dice_expression: Any, roller: Roller | None) -> dict[str, Any]:
+def roll_damage_expression(dice_expression: Any, roller: Roller | None, *, reroll_below: int = 0) -> dict[str, Any]:
+    """Roll a damage expression; each die at or below ``reroll_below`` is rerolled once
+    (Great Weapon Fighting) and the replaced faces are kept in ``rerolled``."""
+
     expression = str(dice_expression or '').strip().replace(' ', '')
     parsed = parse_damage_dice_expression(expression)
     if not parsed:
@@ -73,8 +77,18 @@ def roll_damage_expression(dice_expression: Any, roller: Roller | None) -> dict[
     count = int(parsed['count'])
     sides = int(parsed['sides'])
     bonus = int(parsed['bonus'])
-    rolls = [roll_die(sides, roller) for _ in range(count)] if sides > 0 and count > 0 else []
-    return {'dice': parsed['dice'], 'rolls': rolls, 'bonus': bonus, 'total': max(0, sum(rolls) + bonus)}
+    rolls: list[int] = []
+    rerolled: list[int] = []
+    for _ in range(count if sides > 0 else 0):
+        face = roll_die(sides, roller)
+        if face <= reroll_below:
+            rerolled.append(face)
+            face = roll_die(sides, roller)
+        rolls.append(face)
+    result = {'dice': parsed['dice'], 'rolls': rolls, 'bonus': bonus, 'total': max(0, sum(rolls) + bonus)}
+    if rerolled:
+        result['rerolled'] = rerolled
+    return result
 
 
 def critical_damage_expression(value: Any) -> str:
@@ -118,16 +132,17 @@ def damage_component(
     target: Mapping[str, Any],
     critical: bool,
     roller: Roller | None,
+    reroll_below: int = 0,
 ) -> dict[str, Any]:
     if dice:
         expression = critical_damage_expression(dice) if critical else str(dice)
-        rolled = roll_damage_expression(expression, roller)
+        rolled = roll_damage_expression(expression, roller, reroll_below=reroll_below)
     else:
         expression = str(int_or_default(flat, default=0))
         rolled = {'dice': expression, 'rolls': [], 'bonus': int_or_default(flat, default=0), 'total': max(0, int_or_default(flat, default=0))}
     before = max(0, int(rolled.get('total') or 0) + bonus)
     multiplier = damage_multiplier(target, damage_type)
-    return {
+    component = {
         'source': source,
         'dice': rolled.get('dice') or expression,
         'rolls': rolled.get('rolls') or [],
@@ -136,6 +151,9 @@ def damage_component(
         'multiplier': multiplier,
         'total': apply_damage_multiplier(before, multiplier),
     }
+    if rolled.get('rerolled'):
+        component['rerolled'] = rolled['rerolled']
+    return component
 
 
 def bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
@@ -257,7 +275,11 @@ def resolve_save(
     combat: Mapping[str, Any],
     roller: Roller | None,
 ) -> dict[str, Any]:
-    """Roll one saving throw for a target through the modifier engine."""
+    """Roll one saving throw for a target through the modifier engine.
+
+    A failed save the target's Bardic Inspiration die can still change adds
+    the die (``inspiration``) and spends it through ``consume``.
+    """
 
     context = save_context(target, save['ability'], combat=combat)
     modifier = saving_throw_modifier(target, save['ability'])
@@ -279,7 +301,11 @@ def resolve_save(
     natural, rolls = d20_with_mode(roll_die(20, roller), context['mode'], roller)
     bonus_dice = rolled_bonus_dice(context['bonusDice'], roller)
     total = natural + modifier + int(context['flatBonus']) + sum(int(item['total']) for item in bonus_dice)
-    return {
+    inspiration = None if total >= save['dc'] else roll_inspiration(target, lambda sides: roll_die(sides, roller))
+    if inspiration:
+        total += inspiration['roll']
+        context['consume'].append(inspiration.pop('consume'))
+    result = {
         'saveAbility': save['ability'],
         'saveDC': save['dc'],
         'saveRoll': natural,
@@ -293,6 +319,9 @@ def resolve_save(
         'saveReasons': context['reasons'],
         'consume': context['consume'],
     }
+    if inspiration:
+        result['inspiration'] = inspiration
+    return result
 
 
 def _multiplier_product(reactions: list[dict[str, Any]]) -> float | None:
@@ -320,23 +349,43 @@ def resolve_attack(
     damage_roller: Roller | None,
     event_id: str,
     turn_id: Any,
+    weapon: Mapping[str, Any] | None = None,
+    ability: Any = None,
+    rider: Mapping[str, Any] | None = None,
+    once_per_turn_used: Iterable[Any] = (),
 ) -> dict[str, Any]:
     """One attack roll with its damage and reactions.
 
     ``damage`` is ``{"dice", "type", "bonus", "source"}``; weapon attacks also
-    roll the attacker's extra damage.  Reactions raised by the hit are applied
-    to ``combat`` (the caller's working copy) and returned in ``reactions``.
+    roll the attacker's extra damage.  ``weapon`` (descriptor with its rules
+    properties), ``ability`` (the ability the attack uses), ``rider`` (an
+    attack rider declared with it) and ``once_per_turn_used`` (once-per-turn
+    damage this attacker already dealt this turn) reach the modifier and
+    extra-damage providers; ``oncePerTurn`` in the result lists the keys this
+    hit used.  A miss that the attacker's Bardic Inspiration die turns into a
+    hit records ``inspiration`` and spends it through ``consume``.  Reactions
+    raised by the hit are applied to ``combat`` (the caller's working copy) and
+    returned in ``reactions``.
     """
 
-    modifiers = attack_context(attacker, target, kind=kind, ranged=ranged, combat=combat)
+    modifiers = attack_context(attacker, target, kind=kind, ranged=ranged, combat=combat, weapon=weapon, ability=ability)
     natural_roll, attack_rolls = d20_with_mode(first_d20, modifiers['mode'], attack_roller)
     bonus_dice = rolled_bonus_dice(modifiers['attackBonusDice'], attack_roller)
     attack_total = natural_roll + attack_bonus + sum(int(item['total']) for item in bonus_dice) + int(modifiers['attackFlatBonus'])
     target_ac = armor_class_with_context(target_armor_class(target), modifiers)
-    hit = natural_roll != 1 and (natural_roll == 20 or attack_total >= target_ac)
-    critical = hit and (natural_roll == 20 or modifiers['autoCrit'])
+    critical_threshold = 20 - max(0, int(modifiers['criticalRangeBonus']))
+    hit = natural_roll != 1 and (natural_roll >= critical_threshold or attack_total >= target_ac)
+    inspiration = None
+    if not hit and natural_roll != 1:
+        inspiration = roll_inspiration(attacker, lambda sides: roll_die(sides, attack_roller))
+        if inspiration:
+            attack_total += inspiration['roll']
+            modifiers['consume'].append(inspiration.pop('consume'))
+            hit = attack_total >= target_ac
+    critical = hit and (natural_roll >= critical_threshold or modifiers['autoCrit'])
     damage_type = _text(damage.get('type')).lower()
     components: list[dict[str, Any]] = []
+    once_per_turn: list[str] = []
     if hit:
         components.append(
             damage_component(
@@ -347,21 +396,33 @@ def resolve_attack(
                 target=target,
                 critical=critical,
                 roller=damage_roller,
+                reroll_below=int(modifiers['damageRerollBelow']) if kind == 'weapon_attack' else 0,
             )
         )
         if kind == 'weapon_attack':
-            for extra in extra_damage(attacker, target, kind=kind, weapon={'damageType': damage_type}):
-                components.append(
-                    damage_component(
-                        dice=extra.get('dice'),
-                        flat=extra.get('flat'),
-                        damage_type=str(extra.get('type') or damage_type),
-                        source=str(extra.get('source') or 'effect'),
-                        target=target,
-                        critical=critical,
-                        roller=damage_roller,
-                    )
+            attack = {
+                'mode': modifiers['mode'],
+                'ranged': ranged,
+                'ability': ability_key(ability) if _text(ability) else None,
+                'critical': critical,
+                'combat': combat,
+                'rider': dict(rider) if isinstance(rider, Mapping) else None,
+                'oncePerTurnUsed': [_text(key) for key in once_per_turn_used if _text(key)],
+            }
+            for extra in extra_damage(attacker, target, kind=kind, weapon={**(weapon or {}), 'damageType': damage_type}, attack=attack):
+                component = damage_component(
+                    dice=extra.get('dice'),
+                    flat=extra.get('flat'),
+                    damage_type=str(extra.get('type') or damage_type),
+                    source=str(extra.get('source') or 'effect'),
+                    target=target,
+                    critical=critical,
+                    roller=damage_roller,
                 )
+                if _text(extra.get('oncePerTurn')):
+                    component['oncePerTurn'] = _text(extra['oncePerTurn'])
+                    once_per_turn.append(component['oncePerTurn'])
+                components.append(component)
     damage_total = sum(int(component['total']) for component in components)
     reactions: list[dict[str, Any]] = []
     hit_cancelled_by = None
@@ -428,6 +489,10 @@ def resolve_attack(
     }
     if hit_cancelled_by:
         result['hitCancelledBy'] = hit_cancelled_by
+    if inspiration:
+        result['inspiration'] = inspiration
+    if once_per_turn and hit:
+        result['oncePerTurn'] = once_per_turn
     return result
 
 
@@ -620,8 +685,25 @@ def pc_main_hand_melee_weapon(actor: Mapping[str, Any]) -> dict[str, Any] | None
     return dict(chosen) if chosen else None
 
 
+def attack_weapon_descriptor(actor: Mapping[str, Any], weapon: Mapping[str, Any], *, ranged: bool) -> dict[str, Any]:
+    """The weapon as class features read it: its names and tags (finesse, light, two-handed),
+    melee or ranged, and whether the character has another weapon equipped (Dueling)."""
+
+    weapon_id = _text(weapon.get('id'))
+    inventory = actor.get('inventory') if isinstance(actor.get('inventory'), Mapping) else {}
+    other_weapon = any(
+        isinstance(item, Mapping)
+        and normalized_name(item.get('type')) == 'weapon'
+        and item.get('equipped')
+        and _text(item.get('id')) != weapon_id
+        for item in inventory.get('items') or []
+    )
+    descriptor = {key: deepcopy(weapon[key]) for key in ('id', 'name', 'subtype', 'aliases', 'tags', 'slot') if weapon.get(key)}
+    return {**descriptor, 'classification': 'ranged' if ranged else 'melee', 'otherWeaponEquipped': other_weapon}
+
+
 def pc_weapon_attack_profile(actor: Mapping[str, Any], participant: Mapping[str, Any], weapon: Mapping[str, Any]) -> dict[str, Any]:
-    """Attack bonus and damage of a player character's weapon read from the state actor."""
+    """Attack bonus, damage, ability and weapon descriptor of a player character's melee weapon."""
 
     stats = actor.get('stats') if isinstance(actor.get('stats'), Mapping) else participant.get('stats') or {}
     strength = ability_modifier(stats.get('strength'))
@@ -637,6 +719,8 @@ def pc_weapon_attack_profile(actor: Mapping[str, Any], participant: Mapping[str,
     return {
         'attackBonus': modifier + (proficiency_bonus(participant) if proficient else 0) - wound_penalty,
         'damage': {'dice': profile['dice'], 'type': profile['type'], 'bonus': modifier, 'source': _text(weapon.get('name')) or 'weapon'},
+        'ability': 'dexterity' if finesse and dexterity > strength else 'strength',
+        'weapon': attack_weapon_descriptor(actor, weapon, ranged=False),
     }
 
 
@@ -747,6 +831,8 @@ def resolve_opportunity_attack(
             damage_roller=roller,
             event_id=event_id,
             turn_id=turn_id,
+            weapon=profile['weapon'],
+            ability=profile['ability'],
         )
         result['weaponId'] = _text(weapon.get('id')) or None
         result['weaponName'] = _text(weapon.get('name')) or None

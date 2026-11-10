@@ -8,6 +8,7 @@ from typing import Any
 from aidm_server.canon_text import int_or_default, normalized_name
 from aidm_server.character_backgrounds import background_from_character_sheet
 from aidm_server.class_features import (
+    FIGHTING_STYLES,
     class_feature_descriptors,
     default_expertise,
     fighting_style_for,
@@ -182,6 +183,26 @@ KNOWN_TOOLS = {
     'land_vehicles',
     'thieves_tools',
 }
+# How many class skills a new character of each core class chooses, and from which list
+# (5e SRD). Narrated classes have no list.
+CLASS_SKILL_CHOICES: dict[str, tuple[int, frozenset[str]]] = {
+    'barbarian': (2, frozenset({'animal_handling', 'athletics', 'intimidation', 'nature', 'perception', 'survival'})),
+    'bard': (3, frozenset(KNOWN_SKILLS - KNOWN_TOOLS)),
+    'cleric': (2, frozenset({'history', 'insight', 'medicine', 'persuasion', 'religion'})),
+    'druid': (2, frozenset({'animal_handling', 'arcana', 'insight', 'medicine', 'nature', 'perception', 'religion', 'survival'})),
+    'fighter': (2, frozenset({'acrobatics', 'animal_handling', 'athletics', 'history', 'insight', 'intimidation', 'perception', 'survival'})),
+    'monk': (2, frozenset({'acrobatics', 'athletics', 'history', 'insight', 'religion', 'stealth'})),
+    'paladin': (2, frozenset({'athletics', 'insight', 'intimidation', 'medicine', 'persuasion', 'religion'})),
+    'ranger': (3, frozenset({'animal_handling', 'athletics', 'insight', 'investigation', 'nature', 'perception', 'stealth', 'survival'})),
+    'rogue': (4, frozenset({
+        'acrobatics', 'athletics', 'deception', 'insight', 'intimidation', 'investigation', 'perception',
+        'performance', 'persuasion', 'sleight_of_hand', 'stealth',
+    })),
+    'sorcerer': (2, frozenset({'arcana', 'deception', 'insight', 'intimidation', 'persuasion', 'religion'})),
+    'warlock': (2, frozenset({'arcana', 'deception', 'history', 'intimidation', 'investigation', 'nature', 'religion'})),
+    'wizard': (2, frozenset({'arcana', 'history', 'insight', 'investigation', 'medicine', 'religion'})),
+}
+EXPERTISE_CHOICE_COUNT = 2
 
 GOLD_SPEND_PATTERNS = [
     re.compile(r'\b(?:spend|pay|paid|buy|bought|purchase|purchased|hand over|give)\s+(?:[^.!?\n]{0,80}?\s+)?(\d{1,5})\s+(?:gp|gold)\b', re.IGNORECASE),
@@ -623,6 +644,90 @@ def serialize_stats_payload(
     if error:
         return None, error
     return safe_json_dumps(normalized, {}), None
+
+
+def _skill_label(skill: str) -> str:
+    return ' '.join(word if word == 'of' else word.capitalize() for word in skill.split('_'))
+
+
+def _skill_choice_list(raw: Any, field: str) -> tuple[list[str], str | None]:
+    if not isinstance(raw, list) or not all(isinstance(value, str) for value in raw):
+        return [], f'{field} must be a list of skill names.'
+    return [_skill_key(value) for value in raw], None
+
+
+def apply_creation_class_choices(player: Player, payload: dict[str, Any]) -> str | None:
+    """Validate a new character's class skills, Rogue expertise and fighting style, and record them.
+
+    ``skill_choices`` join ``stats.skill_proficiencies``, ``expertise`` becomes
+    ``stats.skill_expertise`` and ``fighting_style`` is stored as
+    ``character_sheet.fightingStyle`` (a Paladin or Ranger's applies from level 2).
+    Omitted fields keep today's defaults. Returns a plain error message, or None.
+    """
+
+    archetype = primary_class(player.class_) or ''
+    class_label = archetype.capitalize()
+    stats = _as_record(player.stats)
+    sheet = _as_record(player.character_sheet)
+    background = background_from_character_sheet(sheet) or {}
+    background_skills = set(background.get('skillProficiencies') or [])
+    stats_changed = sheet_changed = False
+
+    if payload.get('skill_choices') is not None:
+        choices, error = _skill_choice_list(payload['skill_choices'], 'skill_choices')
+        if error:
+            return error
+        if archetype not in CLASS_SKILL_CHOICES:
+            return 'Class skill choices apply only to the twelve core classes.'
+        count, allowed = CLASS_SKILL_CHOICES[archetype]
+        if len(set(choices)) != len(choices):
+            return 'Each class skill can be chosen only once.'
+        if len(choices) != count:
+            return f'A {class_label} chooses exactly {count} class skills.'
+        for skill in choices:
+            if skill not in allowed:
+                return f'{_skill_label(skill)} is not a {class_label} class skill.'
+            if skill in background_skills:
+                return f'{_skill_label(skill)} already comes from your background; choose another class skill.'
+        existing: set[str] = set()
+        _collect_skill_values(stats.get('skill_proficiencies'), existing)
+        stats['skill_proficiencies'] = sorted(existing | set(choices))
+        stats_changed = True
+
+    if payload.get('expertise') is not None:
+        expertise, error = _skill_choice_list(payload['expertise'], 'expertise')
+        if error:
+            return error
+        if archetype != 'rogue':
+            return 'Only a Rogue chooses expertise.'
+        if len(set(expertise)) != EXPERTISE_CHOICE_COUNT or len(expertise) != EXPERTISE_CHOICE_COUNT:
+            return 'A Rogue chooses exactly two different expertise skills.'
+        proficient = {
+            *_extract_skill_proficiencies(stats, sheet),
+            *_race_skill_proficiencies(player),
+            *background_skills,
+        }
+        for skill in expertise:
+            if skill not in proficient:
+                return f'Expertise needs a skill you are proficient in, and {_skill_label(skill)} is not one of yours.'
+        stats['skill_expertise'] = expertise
+        stats_changed = True
+
+    if payload.get('fighting_style') is not None:
+        styles = FIGHTING_STYLES.get(archetype)
+        if not styles:
+            return 'Only a Fighter, Paladin or Ranger chooses a fighting style.'
+        style = _skill_key(payload['fighting_style']) if isinstance(payload['fighting_style'], str) else ''
+        if style not in styles:
+            return f"A {class_label}'s fighting_style must be one of: {', '.join(styles)}."
+        sheet['fightingStyle'] = style
+        sheet_changed = True
+
+    if stats_changed:
+        player.stats = safe_json_dumps(stats, {})
+    if sheet_changed:
+        player.character_sheet = safe_json_dumps(sheet, {})
+    return None
 
 
 def sync_character_derived_stats(
@@ -1104,9 +1209,10 @@ def character_roll_spec(
         matching_proficiencies = []
     base_proficiency_bonus = int_or_default(state.get('proficiency_bonus'), default=0)
     proficiency_bonus = base_proficiency_bonus * proficiency_multiplier
+    # Jack of All Trades: ability checks only, never attacks or saving throws (death saves included).
     if (
         proficiency_multiplier == 0
-        and normalized_roll_type not in {'attack', 'spell'}
+        and normalized_roll_type not in {'attack', 'spell', 'death_save'}
         and not normalized_roll_type.endswith('_saving_throw')
         and (jack := jack_of_all_trades_bonus(player.class_ if player else None, player.level if player else 1))
     ):

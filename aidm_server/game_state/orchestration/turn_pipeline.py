@@ -7,6 +7,7 @@ from typing import Any, Callable
 from aidm_server.canon_inventory import append_drop_all_inventory_changes_from_text, inventory_change_from_intent_outcome
 from aidm_server.canon_text import int_or_default
 from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
+from aidm_server.combat.modifiers import MODIFIER_ENGINE_SOURCE
 from aidm_server.combat.pipeline import (
     combat_turn_advance_change,
     finalize_combat_prepare,
@@ -242,8 +243,13 @@ def _safe_pre_dm_immediate_change(change: dict[str, Any]) -> bool:
 
 
 def _spell_casting_time(state: dict[str, Any], change: dict[str, Any]) -> str:
-    """The cast's ``castingTime`` from the caster's spell definition (``action`` by default)."""
+    """The cast's ``castingTime``: the rules engine's resolution when it resolved the cast
+    (Quickened Spell makes an action a bonus action), else the caster's spell definition
+    (``action`` by default)."""
 
+    resolution = change.get('resolution') if isinstance(change.get('resolution'), dict) else {}
+    if resolution.get('castingTime') in {'action', 'bonus_action'}:
+        return resolution['castingTime']
     actor = find_actor(state, change.get('actorId') or change.get('actor_id')) or {}
     spellbook = actor.get('spellbook') if isinstance(actor.get('spellbook'), dict) else {}
     wanted_id = str(change.get('spellId') or '').strip()
@@ -604,6 +610,30 @@ def _combat_enemy_deferred_reason(turn: DmTurn) -> str | None:
         return 'player_turn_in_progress'
     economy = combat_action.get('economy') if isinstance(combat_action.get('economy'), dict) else {}
     return None if economy.get('endsTurn') is True else 'player_turn_in_progress'
+
+
+def _player_roll_consume_change(turn: DmTurn, state: dict[str, Any]) -> dict[str, Any] | None:
+    """The trusted change spending the combat effects a server-rolled player roll used
+    (Guidance on a check, a Bardic Inspiration die)."""
+
+    roll = _metadata(turn).get('authoritative_roll')
+    entries = [
+        {key: str(entry[key]) for key in ('participantId', 'effectId') if entry.get(key)}
+        for entry in (roll.get('consume') if isinstance(roll, dict) and isinstance(roll.get('consume'), list) else [])
+        if isinstance(entry, dict) and entry.get('participantId') and entry.get('effectId')
+    ]
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    if not entries or str(combat.get('status') or '').strip().lower() not in {'starting', 'active'}:
+        return None
+    return {
+        'id': stable_change_id(turn.turn_id, 'player_roll_effects_consumed'),
+        'turnId': turn.turn_id,
+        'type': 'combat.effect.consume',
+        'consume': entries,
+        'source': MODIFIER_ENGINE_SOURCE,
+        'reason': 'Effects spent by the server-rolled player roll.',
+        'visible': False,
+    }
 
 
 def _resolved_player_attack_for_turn(
@@ -1470,6 +1500,9 @@ def pre_dm_pipeline(
         for change in (combat_prepare.get('changes') or [])
         if isinstance(change, dict)
     ]
+    roll_consume_change = _player_roll_consume_change(turn, state_after_immediate)
+    if roll_consume_change:
+        combat_changes.append(roll_consume_change)
     combat_validation = validate_state_changes(state=state_after_immediate, changes=combat_changes)
     applied_combat_changes = validated_changes_for_application(combat_validation)
     combat_apply = apply_state_changes(state_after_immediate, applied_combat_changes)

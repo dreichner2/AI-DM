@@ -17,12 +17,13 @@ act only once the attack resolver supplies these context keys:
 
 * extra-damage context: ``weapon`` (the HUD weapon descriptor ``id``, ``name``,
   ``classification`` plus ``otherWeaponEquipped``), ``attack`` (``mode``,
-  ``ranged``, ``critical``, ``combat``, the declared ``rider`` and
+  ``ranged``, ``ability``, ``critical``, ``combat``, the declared ``rider`` and
   ``oncePerTurnUsed``: the ``oncePerTurn`` keys of components this attacker
   already dealt this turn) and, for spell attacks, ``spellId``;
-* attack-roll context: ``weapon``; and the result keys ``criticalRangeBonus``
-  (the natural roll needed for a critical drops by this much) and
-  ``damageRerollBelow`` (weapon damage dice at or below it are rerolled once);
+* attack-roll context: ``weapon`` and ``ability`` (the ability the attack
+  uses); and the result keys ``criticalRangeBonus`` (the natural roll needed
+  for a critical drops by this much) and ``damageRerollBelow`` (weapon damage
+  dice at or below it are rerolled once);
 * ``participant['fightingStyle']`` for the fighting styles.
 """
 
@@ -913,7 +914,9 @@ def rage_provider(participant: Mapping[str, Any], role: str, context: Mapping[st
 
 
 def reckless_attack_provider(participant: Mapping[str, Any], role: str, context: Mapping[str, Any]) -> dict[str, Any] | None:
-    if role != 'attacker' or context.get('kind') != 'weapon_attack' or context.get('ranged'):
+    """Advantage on melee weapon attacks using Strength this turn."""
+
+    if role != 'attacker' or context.get('kind') != 'weapon_attack' or context.get('ranged') or context.get('ability') != 'strength':
         return None
     if not has_effect(participant, f"reckless_attack:{_text(participant.get('id'))}"):
         return None

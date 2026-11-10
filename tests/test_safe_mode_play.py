@@ -174,12 +174,13 @@ def test_safe_mode_attack_with_no_opponent_asks_for_no_roll(app, socketio, safe_
     swing_turn = _latest_turn(app, ids['session_id'])
 
     assert _payloads(swing, 'roll_required') == []
-    assert swing_text.startswith(('There is no one here to fight.', 'Your blade finds only air; no enemy stands before you.'))
+    # Striking an object is an ordinary action, not a fight with no one in it.
+    assert not swing_text.startswith(('There is no one here to fight.', 'Your blade finds only air; no enemy stands before you.'))
     assert 'Mara Reedwake' in swing_text
     assert requests_roll(swing_text) is False
     assert swing_turn['outcome_status'] != 'deferred'
     assert swing_turn['roll_gate'] is None
     assert swing_turn['rules_hint']['requires_roll'] is False
-    assert swing_turn['rules_hint']['no_target'] is True
+    assert 'no_target' not in swing_turn['rules_hint']
     assert swing_turn['rules_hint']['reason'] == 'No opponent is present.'
     assert swing_turn['rules_hint']['roll_requirement_cleared']['original_rule_type'] == 'attack'

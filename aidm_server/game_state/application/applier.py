@@ -70,6 +70,7 @@ from aidm_server.spellbook import (
 from aidm_server.spell_effects import (
     active_repeat_attack,
     advance_spell_effect_durations,
+    after_damage_spell_effects,
     end_encounter_spell_effects,
     end_long_rest_spell_effects,
     resolve_concentration_check,
@@ -781,6 +782,9 @@ def _apply_item_effect_to_target(
                     'duration': {'rounds': int(burning['turns']), 'tickOn': 'target_turn_end'},
                 }
             )
+        _resolve_damage_reactions(
+            state, participant_id=target_id, damage=absorbed + dealt, source_id=actor.get('id'), event_id=change.get('id'),
+        )
         return absorbed + dealt
     if kind == 'scroll':
         state['combat'] = deepcopy(change.get('resolvedCombat'))
@@ -2100,6 +2104,41 @@ def _resolve_damage_concentration(
     }
 
 
+def _drop_spent_actor_effects(state: dict[str, Any], removed: list[dict[str, Any]]) -> None:
+    """An effect a character brought into the fight (Guidance, Bardic Inspiration) is spent for good."""
+
+    for entry in removed:
+        actor = find_actor(state, entry.get('targetId')) if entry.get('id') else None
+        if actor is not None and isinstance(actor.get('activeEffects'), list):
+            actor['activeEffects'] = [
+                effect for effect in actor['activeEffects']
+                if not (isinstance(effect, dict) and _text(effect.get('id')) == _text(entry.get('id')))
+            ]
+
+
+def _resolve_damage_reactions(
+    state: dict[str, Any],
+    *,
+    participant_id: Any,
+    damage: Any,
+    source_id: Any,
+    event_id: Any,
+) -> list[dict[str, Any]]:
+    """Effects that end or re-save when weapon, item or hazard damage lands on a combatant
+    (Sleep, Hypnotic Pattern, Charm Person, Tasha's Hideous Laughter, Turn Undead, Rage)."""
+
+    if max(0, int_or_default(damage, default=0)) <= 0 or not _combat_active(state):
+        return []
+    combat = state['combat']
+    events = after_damage_spell_effects(
+        combat, target_id=_text(participant_id), source_id=_text(source_id), event_id=_text(event_id),
+    )
+    participant = _combat_participant(combat, participant_id)
+    if participant:
+        _sync_player_actor_from_combat_participant(state, participant)
+    return events
+
+
 def _sync_actor_level_to_combat_participant(state: dict[str, Any], actor: dict[str, Any]) -> None:
     combat = state.get('combat') if isinstance(state.get('combat'), dict) else None
     if not combat:
@@ -2589,6 +2628,15 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             )
             if concentration_check:
                 applied_change['concentrationCheck'] = concentration_check
+            after_damage = _resolve_damage_reactions(
+                next_state,
+                participant_id=actor.get('id'),
+                damage=result['amount'],
+                source_id=change.get('sourceId') or change.get('sourceEnemyId'),
+                event_id=change.get('id'),
+            )
+            if after_damage:
+                applied_change['afterDamage'] = after_damage
         elif change_type == 'xp.add' and actor:
             applied_change['actualAmount'] = _apply_xp(actor, change, 1)
             _sync_actor_level_to_combat_participant(next_state, actor)
@@ -2695,6 +2743,15 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             )
             if concentration_check:
                 applied_change['concentrationCheck'] = concentration_check
+            after_damage = _resolve_damage_reactions(
+                next_state,
+                participant_id=participant.get('id'),
+                damage=max(0, hp_before - hp_after),
+                source_id=change.get('sourceId') or change.get('sourceEnemyId'),
+                event_id=change.get('id'),
+            )
+            if after_damage:
+                applied_change['afterDamage'] = after_damage
         elif change_type == 'combat.move':
             participant = _apply_combat_move(next_state, change)
             if not participant:
@@ -2770,6 +2827,7 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             for participant in combat.get('participants') or []:
                 if isinstance(participant, dict):
                     _sync_player_actor_from_combat_participant(next_state, participant)
+            _drop_spent_actor_effects(next_state, removed)
             applied_change['consumed'] = removed
         elif change_type in {'combat.reaction.use', 'combat.effect.add', 'combat.stabilize'}:
             participant = _apply_combat_participant_effect(next_state, change, change_type)

@@ -274,7 +274,13 @@ def test_rage_spends_a_use_and_bonus_action_and_grants_its_benefits():
     assert state['combat']['flags']['turnEconomy']['bonusActionRemaining'] == 0
     assert damage_defense(barbarian, 'slashing') == (0.5, 'resistant')
     assert damage_defense(barbarian, 'fire') == (1.0, 'normal')
-    assert {'flat': 2, 'type': 'slashing', 'source': 'Rage'} in extra_damage(barbarian, _enemy(), kind='weapon_attack', weapon={'damageType': 'slashing'})
+    strength_melee = {'ranged': False, 'ability': 'strength'}
+    assert {'flat': 2, 'type': 'slashing', 'source': 'Rage'} in extra_damage(
+        barbarian, _enemy(), kind='weapon_attack', weapon={'damageType': 'slashing'}, attack=strength_melee,
+    )
+    # The +2 is for melee attacks using Strength only.
+    for attack in ({'ranged': True, 'ability': 'strength'}, {'ranged': False, 'ability': 'dexterity'}):
+        assert extra_damage(barbarian, _enemy(), kind='weapon_attack', weapon={'damageType': 'slashing'}, attack=attack) == []
     assert check_context(barbarian, ability='strength')['mode'] == 'advantage'
     assert check_context(barbarian, ability='dexterity')['mode'] == 'normal'
     assert save_context(barbarian, 'strength')['mode'] == 'advantage'
@@ -309,11 +315,12 @@ def test_reckless_attack_only_before_the_first_attack_and_exposes_the_barbarian(
     state = _use(_barbarian_state(2), 'reckless_attack')
     barbarian = _combatant(state, ACTOR)
     assert state['combat']['flags']['turnEconomy']['bonusActionRemaining'] == 1
-    assert modifiers.attack_context(barbarian, _enemy(), kind='weapon_attack', ranged=False)['mode'] == 'advantage'
-    assert modifiers.attack_context(barbarian, _enemy(band='far'), kind='weapon_attack', ranged=True)['mode'] == 'normal'
+    assert modifiers.attack_context(barbarian, _enemy(), kind='weapon_attack', ranged=False, ability='strength')['mode'] == 'advantage'
+    assert modifiers.attack_context(barbarian, _enemy(), kind='weapon_attack', ranged=False, ability='dexterity')['mode'] == 'normal'
+    assert modifiers.attack_context(barbarian, _enemy(band='far'), kind='weapon_attack', ranged=True, ability='strength')['mode'] == 'normal'
     assert modifiers.attack_context(_enemy(), barbarian, kind='enemy_attack', ranged=False)['mode'] == 'advantage'
     tick_effects(state['combat'], actor_id=ACTOR, tick_on='target_turn_end')
-    assert modifiers.attack_context(barbarian, _enemy(), kind='weapon_attack', ranged=False)['mode'] == 'normal'
+    assert modifiers.attack_context(barbarian, _enemy(), kind='weapon_attack', ranged=False, ability='strength')['mode'] == 'normal'
     assert modifiers.attack_context(_enemy(), barbarian, kind='enemy_attack', ranged=False)['mode'] == 'advantage'
     tick_effects(state['combat'], actor_id=ACTOR, tick_on='target_turn_start')
     assert modifiers.attack_context(_enemy(), barbarian, kind='enemy_attack', ranged=False)['mode'] == 'normal'
@@ -366,17 +373,20 @@ def test_turn_undead_turns_only_undead_that_fail_their_save(monkeypatch):
     turned = _combatant(state, 'enemy_zombie')
     assert 'turned' in turned['conditions']
     effect = next(effect for effect in turned['activeEffects'] if effect['id'] == 'turned:enemy_zombie')
-    assert effect['modifiers'] == {'cannotAct': True, 'cannotReact': True}
+    assert effect['modifiers'] == {'cannotReact': True}
     assert effect['duration'] == {'rounds': 10, 'tickOn': 'target_turn_end'}
-    assert (effect['consumeOn'], effect['endsWhen']) == ('attacked', ['damage_taken'])
-    assert modifiers.can_act(turned) is False
+    assert (effect['consumeOn'], effect['endsWhen']) == (None, ['damage_taken'])
+    # A turned creature still takes its turns, to move away.
+    assert modifiers.can_act(turned) is True
     assert _combatant(state, 'enemy_goblin')['conditions'] == []
     assert _combatant(state, 'enemy_far_zombie')['conditions'] == []
     assert state['playerCharacters'][0]['classFeatureState']['channel_divinity']['current'] == 0
     assert state['combat']['flags']['turnEconomy']['actionRemaining'] == 0
-    # Being attacked ends the turning.
+    # Being attacked does not end the turning; taking damage does.
     context = modifiers.attack_context(_pc(_actor('Fighter')), turned, kind='weapon_attack', ranged=False)
     modifiers.consume_modifiers(state['combat'], context['consume'])
+    assert 'turned' in turned['conditions']
+    modifiers.end_effects_on_damage(turned)
     assert 'turned' not in turned['conditions']
 
 

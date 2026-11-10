@@ -14,22 +14,32 @@ Active effects (``participant['activeEffects']``) share one shape::
      "concentration": bool, "consumeOn": "attack" | "attacked" | "save" | "check" | None}
 
 An effect may also maintain a condition (``condition``) and carry ``castId`` and
-``preserveConditionOnExpiry``.  Records written before this shape
+``preserveConditionOnExpiry``.  ``endsWhen`` lists events that end it early:
+``damage_taken``, ``unconscious`` (its bearer falls unconscious) and
+``no_attack_or_damage_since_last_turn`` (checked as its bearer starts a turn;
+:func:`note_attack_or_damage` keeps it going).  A Bardic Inspiration effect
+carries ``inspirationDie``.  Records written before this shape
 (``sourceActorId``/``sourceSpellId``/``duration.remaining``/``tick``) are read
 through :func:`normalize_active_effect`.
 
 Supported ``modifiers`` keys: attackBonusDice, saveBonusDice, checkBonusDice
 (dice strings, sign allowed), acBonus, acMinimum, attackMode, attackedMode,
 saveMode ({"abilities": [...], "mode"}), checkMode, bonusDamageVs ({"targetId",
-"dice", "type"}), bonusWeaponDamage ({"dice" | "flat", "type"}), resistances
-(damage types or ["all"]), speedZero, cannotAct, cannotReact, noHealing,
-tempHpPerTurn.
+"dice", "type", "weaponOnly"}), bonusWeaponDamage ({"dice" | "flat", "type",
+"meleeOnly", "ability"}: the last two limit it to melee attacks using that
+ability), resistances (damage types or ["all"]), speedZero, cannotAct,
+cannotReact, noHealing, tempHpPerTurn.
 
 Modifier providers registered with :func:`register_modifier_provider` are
 called as ``fn(participant, role, context)`` where role is ``attacker``,
 ``target``, ``saver`` or ``checker`` and context holds ``event``, ``kind``,
-``ranged``, ``combat``, ``ability``, ``skill`` and ``other`` (the opposing
-participant).  They return a partial result dict whose keys are merged into the
+``ranged``, ``combat``, ``ability``, ``skill``, ``weapon`` (attacks) and
+``other`` (the opposing participant).  Extra-damage providers registered with
+:func:`register_extra_damage_provider` are called as ``fn(attacker, target,
+context)`` with ``kind``, ``weapon``, ``attack`` and, for spells, ``spellId``
+(see :mod:`aidm_server.class_features`) and return damage components (``dice``
+or ``flat``, ``type``, ``source``, optional ``oncePerTurn``).  Modifier
+providers return a partial result dict whose keys are merged into the
 result being built: ``mode`` adds one advantage/disadvantage source, lists
 extend, integers add and booleans combine with ``or``.
 
@@ -65,6 +75,7 @@ ROLL_MODES = ('advantage', 'disadvantage')
 EFFECT_TICKS = frozenset({'target_turn_start', 'target_turn_end', 'caster_turn_end', 'caster_turn_start'})
 LEGACY_EFFECT_TICKS = {'source_turn_end': 'caster_turn_end'}
 CONSUME_EVENTS = frozenset({'attack', 'attacked', 'save', 'check'})
+ENDS_WITHOUT_ATTACK_OR_DAMAGE = 'no_attack_or_damage_since_last_turn'
 
 # Participants with these conditions have left the fight: no turns, no targeting.
 REMOVED_CONDITIONS = frozenset(
@@ -418,12 +429,18 @@ def attack_context(
     ranged: bool,
     combat: Mapping[str, Any] | None = None,
     ignore_cover: bool = False,
+    weapon: Mapping[str, Any] | None = None,
+    ability: Any = None,
 ) -> dict[str, Any]:
     """Roll mode, bonus dice and target AC adjustments for one attack roll.
 
-    ``kind`` is ``weapon_attack``, ``spell_attack`` or ``enemy_attack``.  Besides
-    the documented keys the result carries ``coverBonus``, ``targetAcMinimum``
-    and ``consume`` (effects and ``hidden`` spent by this attack).
+    ``kind`` is ``weapon_attack``, ``spell_attack`` or ``enemy_attack``;
+    ``weapon`` (the weapon descriptor) and ``ability`` (the ability the attack
+    uses) reach the providers' context.  Besides the documented keys the result
+    carries ``coverBonus``, ``targetAcMinimum``, ``consume`` (effects and
+    ``hidden`` spent by this attack), ``criticalRangeBonus`` (a critical needs a
+    natural roll this much lower than 20) and ``damageRerollBelow`` (weapon
+    damage dice at or below it are rerolled once).
     """
 
     result = _new_result(
@@ -433,6 +450,8 @@ def attack_context(
         targetAcBonus=0,
         coverBonus=0,
         targetAcMinimum=0,
+        criticalRangeBonus=0,
+        damageRerollBelow=0,
     )
     attacker_keys = condition_keys(attacker)
     for condition in OWN_ATTACK_DISADVANTAGE_CONDITIONS:
@@ -491,6 +510,8 @@ def attack_context(
         'ranged': ranged,
         'combat': combat,
         'other': target,
+        'weapon': weapon,
+        'ability': ability_key(ability) if _text(ability) else None,
     }
     _merge_provider_results(result, attacker, 'attacker', context)
     _merge_provider_results(result, target, 'target', {**context, 'other': attacker})
@@ -620,15 +641,26 @@ def extra_damage(
     *,
     kind: str,
     weapon: Mapping[str, Any] | None = None,
+    attack: Mapping[str, Any] | None = None,
+    spell_id: Any = None,
 ) -> list[dict[str, Any]]:
-    """Additional damage components granted to this attacker for this hit."""
+    """Additional damage components granted to this attacker for this hit.
+
+    ``attack`` describes the attack (``mode``, ``ranged``, ``ability``,
+    ``critical``, ``combat``, ``rider``, ``oncePerTurnUsed``); ``spell_id``
+    names the spell of a spell attack.  A component without a ``type`` takes
+    the weapon's (the caller supplies a spell's).
+    """
 
     weapon_type = condition_key((weapon or {}).get('damageType') or (weapon or {}).get('type'))
+    attack_info = dict(attack) if isinstance(attack, Mapping) else {}
     target_id = _participant_id(target)
     components: list[dict[str, Any]] = []
     for effect in _effects_with(attacker, 'bonusDamageVs'):
         spec = effect['modifiers']['bonusDamageVs']
-        if isinstance(spec, Mapping) and target_id and _text(spec.get('targetId')) == target_id and _dice_list(spec.get('dice')):
+        if not isinstance(spec, Mapping) or (spec.get('weaponOnly') is True and kind != 'weapon_attack'):
+            continue
+        if target_id and _text(spec.get('targetId')) == target_id and _dice_list(spec.get('dice')):
             components.append(
                 {'dice': _dice_list(spec.get('dice'))[0].lstrip('+'), 'type': condition_key(spec.get('type')) or weapon_type, 'source': _effect_label(effect)}
             )
@@ -636,6 +668,10 @@ def extra_damage(
         for effect in _effects_with(attacker, 'bonusWeaponDamage'):
             spec = effect['modifiers']['bonusWeaponDamage']
             if not isinstance(spec, Mapping):
+                continue
+            if spec.get('meleeOnly') is True and attack_info.get('ranged') is not False:
+                continue
+            if _text(spec.get('ability')) and ability_key(attack_info.get('ability')) != ability_key(spec.get('ability')):
                 continue
             component: dict[str, Any] = {'type': condition_key(spec.get('type')) or weapon_type, 'source': _effect_label(effect)}
             if spec.get('flat') is not None:
@@ -645,7 +681,9 @@ def extra_damage(
             else:
                 continue
             components.append(component)
-    context = {'kind': kind, 'weapon': weapon}
+    context: dict[str, Any] = {'kind': kind, 'weapon': weapon, 'attack': attack_info}
+    if _text(spell_id):
+        context['spellId'] = _text(spell_id)
     for provider in list(_EXTRA_DAMAGE_PROVIDERS):
         for component in provider(attacker, target or {}, context) or []:
             if isinstance(component, Mapping) and (component.get('dice') or component.get('flat') is not None):
@@ -735,6 +773,83 @@ def remove_active_effects(
     for condition in dropped:
         participant.pop(f'{condition}By', None)
     return removed
+
+
+def _ends_when(effect: Mapping[str, Any]) -> set[str]:
+    raw = effect.get('endsWhen')
+    values = raw if isinstance(raw, (list, tuple)) else [raw]
+    return {condition_key(value) for value in values if _text(value)}
+
+
+def _unconscious(participant: Mapping[str, Any]) -> bool:
+    return _hp_current(participant) <= 0 or 'unconscious' in condition_keys(participant)
+
+
+def note_attack_or_damage(participant: dict[str, Any]) -> None:
+    """The bearer attacked or took damage: effects that end without either keep going this turn."""
+
+    effects = active_effects(participant)
+    sustained = [effect for effect in effects if ENDS_WITHOUT_ATTACK_OR_DAMAGE in _ends_when(effect)]
+    if not sustained:
+        return
+    for effect in sustained:
+        effect['attackedOrDamaged'] = True
+    participant['activeEffects'] = effects
+
+
+def _remove_ending(participant: dict[str, Any], ends: Callable[[dict[str, Any]], bool]) -> list[dict[str, Any]]:
+    # Untouched records keep their stored shape when nothing ends.
+    if not any(ends(effect) for effect in active_effects(participant)):
+        return []
+    return remove_active_effects(participant, ends)
+
+
+def end_effects_on_damage(participant: dict[str, Any]) -> list[dict[str, Any]]:
+    """Damage landed on the bearer: end what damage or unconsciousness ends; returns the removed effects."""
+
+    note_attack_or_damage(participant)
+    unconscious = _unconscious(participant)
+    return _remove_ending(
+        participant,
+        lambda effect: 'damage_taken' in _ends_when(effect) or (unconscious and 'unconscious' in _ends_when(effect)),
+    )
+
+
+def end_effects_at_turn_start(participant: dict[str, Any]) -> list[dict[str, Any]]:
+    """The bearer starts a turn: end effects it let lapse (no attack or damage since its last turn,
+    or it is unconscious) and start the next watch; returns the removed effects."""
+
+    unconscious = _unconscious(participant)
+    removed = _remove_ending(
+        participant,
+        lambda effect: (unconscious and 'unconscious' in _ends_when(effect))
+        or (ENDS_WITHOUT_ATTACK_OR_DAMAGE in _ends_when(effect) and effect.get('attackedOrDamaged') is not True),
+    )
+    effects = active_effects(participant)
+    if any('attackedOrDamaged' in effect for effect in effects):
+        for effect in effects:
+            effect.pop('attackedOrDamaged', None)
+        participant['activeEffects'] = effects
+    return removed
+
+
+def roll_inspiration(participant: Mapping[str, Any] | None, roller: Callable[[int], int]) -> dict[str, Any] | None:
+    """Roll the participant's unused Bardic Inspiration die for a d20 roll that would fail:
+    ``{"die", "roll", "consume"}``, or None without one.
+
+    ``consume`` is the entry that spends the effect once the roll is recorded.
+    """
+
+    effect = next((effect for effect in active_effects(participant) if _text(effect.get('inspirationDie'))), None)
+    sides = int_or_default(_text(effect['inspirationDie']).lower().removeprefix('d'), default=0) if effect else 0
+    if sides < 2:
+        return None
+    roll = max(1, min(sides, int_or_default(roller(sides), default=1)))
+    return {
+        'die': f'd{sides}',
+        'roll': roll,
+        'consume': {'participantId': _participant_id(participant), 'effectId': effect['id']},
+    }
 
 
 def _participants(combat: Mapping[str, Any]) -> list[dict[str, Any]]:

@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from flask import current_app, has_app_context
 
+from aidm_server.class_capabilities import CUNNING_ACTION_PREFIX, USE_ACTION_PREFIX as CLASS_USE_ACTION_PREFIX
 from aidm_server.contracts import ProviderRequest
 from aidm_server.game_state.extraction.prompts import PRE_DM_SYSTEM_MESSAGE, build_pre_dm_prompt
 from aidm_server.game_state.extraction.schemas import extract_json_object, normalize_pre_extraction
@@ -12,7 +13,7 @@ from aidm_server.game_state.models import normalize_item_name
 from aidm_server.item_effects import ITEM_USE_ACTION_PREFIX
 from aidm_server.llm_providers import get_helper_provider
 from aidm_server.provider_priority import foreground_provider_reservation
-from aidm_server.spellbook import AUTHORITATIVE_SPELL_EFFECTS
+from aidm_server.spellbook import authoritative_spell_effect, normalize_spellbook, spell_is_prepared
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 
 
@@ -331,6 +332,7 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
                     'castLevel': spell.get('cast_level'),
                     'resourcePool': spell.get('resource_pool') or 'auto',
                     'targetIds': list(spell.get('target_ids') or []),
+                    **({'damageType': spell['damage_type']} if spell.get('damage_type') else {}),
                     **({'concentration': spell.get('concentration')} if spell.get('concentration') is not None else {}),
                 }
             ],
@@ -450,14 +452,34 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
             ],
             'notes': ['action_intent_pre_dm'],
         }
-    if str(combat_action.get('action_id') or '') in {
+    combat_action_id = str(combat_action.get('action_id') or '')
+    if combat_action_id.startswith(CLASS_USE_ACTION_PREFIX):
+        # A class capability clicked in the combat HUD is the same typed use as
+        # one chosen from the character panel.
+        return {
+            'declaredActions': [
+                {
+                    'id': 'act_001',
+                    'type': 'class_feature.use',
+                    'actorId': actor_id,
+                    'confidence': 1.0,
+                    'sourceText': player_message,
+                    'requiresDMResolution': False,
+                    'capabilityId': combat_action.get('capability_id'),
+                    'targetId': combat_action.get('target_id'),
+                    **({'amount': combat_action['amount']} if combat_action.get('amount') is not None else {}),
+                }
+            ],
+            'notes': ['action_intent_pre_dm'],
+        }
+    if combat_action_id in {
         'combat.advance',
         'combat.dash',
         'combat.dodge',
         'combat.help',
         'combat.hide',
         'combat.stabilize',
-    }:
+    } or combat_action_id.startswith(CUNNING_ACTION_PREFIX):
         # The combat engine resolves these tactical actions and hands the DM its
         # result; their canonical message declares nothing else.
         return {'declaredActions': [], 'notes': ['combat_action_engine_resolved']}
@@ -597,6 +619,27 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
     }
 
 
+def _castable_rules_backed_spells(current_state: dict[str, Any], actor_id: str) -> list[str]:
+    """Names of the rules-backed spells the acting character knows and, if its class prepares, has prepared."""
+
+    actor = next(
+        (
+            candidate
+            for candidate in current_state.get('playerCharacters') or []
+            if isinstance(candidate, dict) and str(candidate.get('id') or '') == str(actor_id)
+        ),
+        {},
+    )
+    spellbook = normalize_spellbook(actor.get('spellbook'), class_name=actor.get('class'))
+    return [
+        spell['name']
+        for spell in spellbook['knownSpells']
+        if spell.get('name')
+        and authoritative_spell_effect(spell['name'])
+        and spell_is_prepared(spellbook, spell['name'])
+    ]
+
+
 def extract_pre_dm_actions(
     *,
     current_state: dict[str, Any],
@@ -617,13 +660,15 @@ def extract_pre_dm_actions(
     # Resolve explicit casts of server-owned spells even when the optional
     # extraction helper is unavailable.  A name in free text is not an exact
     # participant ID; the validator will ask the player to choose a target.
+    # Only spells this character can cast are recognised; any other name is
+    # ordinary narration.
     if not action_intent or action_intent.get('kind') == 'message':
-        names = sorted(AUTHORITATIVE_SPELL_EFFECTS, key=len, reverse=True)
+        names = sorted(_castable_rules_backed_spells(current_state, actor_id), key=len, reverse=True)
         names_pattern = '|'.join(re.escape(name) for name in names)
         match = re.search(
             rf'\bcast\s+(?:(?:the\s+)?spell\s+|the\s+)?(?P<spell>{names_pattern})(?!\w)',
             player_message or '', re.IGNORECASE,
-        )
+        ) if names else None
         prefix = (player_message or '')[max(0, match.start() - 35):match.start()] if match else ''
         negated = re.search(r"\b(?:don't|do not|won't|will not|can't|cannot|never)\s+(?:\w+\s+){0,2}$", prefix, re.IGNORECASE)
         if match and not negated:

@@ -366,3 +366,155 @@ def test_martial_arts_uses_dexterity_for_unarmed_strikes_and_monk_weapons(app):
     assert (unarmed['ability_key'], unarmed['proficient'], unarmed['weapon']['id']) == ('dexterity', True, 'unarmed')
     assert (staff_attack['ability_key'], staff_attack['weapon']['classification']) == ('dexterity', 'finesse')
     assert fighter_staff['ability_key'] == 'strength'
+
+
+def _create(client, ids, **fields):
+    return client.post(
+        f"/api/players/campaigns/{ids['campaign_id']}/players",
+        json={'character_name': 'New Hero', 'race': 'Human', 'stats': _point_buy_stats(), **fields},
+    )
+
+
+def test_creation_records_class_skill_choices_beside_background_skills(client, app):
+    ids = seed_world_campaign_player_session(app)
+    response = _create(
+        client,
+        ids,
+        char_class='Fighter',
+        background='soldier',
+        skill_choices=['Acrobatics', 'perception'],
+    )
+    assert response.status_code == 201
+    player_id = response.get_json()['player_id']
+    detail = client.get(f'/api/players/{player_id}').get_json()
+    omitted = _create(client, ids, character_name='Plain Hero', char_class='Fighter', background='soldier')
+
+    assert set(detail['skill_proficiencies']) == {'acrobatics', 'athletics', 'intimidation', 'perception'}
+    with app.app_context():
+        player = db.session.get(Player, player_id)
+        assert safe_json_loads(player.stats, {})['skill_proficiencies'] == ['acrobatics', 'perception']
+        assert character_roll_spec(player, roll_type='perception')['proficiency']['multiplier'] == 1
+        plain = db.session.get(Player, omitted.get_json()['player_id'])
+        assert character_state_for_player(plain)['skill_proficiencies'] == ['athletics', 'intimidation']
+
+
+def test_creation_rejects_class_skill_choices_off_the_list_from_the_background_or_miscounted(client, app):
+    ids = seed_world_campaign_player_session(app)
+    cases = [
+        ({'char_class': 'Fighter', 'background': 'soldier', 'skill_choices': ['arcana', 'perception']},
+         'Arcana is not a Fighter class skill.'),
+        ({'char_class': 'Fighter', 'background': 'soldier', 'skill_choices': ['athletics', 'perception']},
+         'Athletics already comes from your background; choose another class skill.'),
+        ({'char_class': 'Fighter', 'background': 'soldier', 'skill_choices': ['perception']},
+         'A Fighter chooses exactly 2 class skills.'),
+        ({'char_class': 'Fighter', 'background': 'soldier', 'skill_choices': ['perception', 'Perception']},
+         'Each class skill can be chosen only once.'),
+        ({'char_class': 'Rogue', 'background': 'sage', 'skill_choices': ['stealth', 'insight', 'perception']},
+         'A Rogue chooses exactly 4 class skills.'),
+        ({'char_class': 'Bard', 'background': 'sage', 'skill_choices': ['stealth', 'insight']},
+         'A Bard chooses exactly 3 class skills.'),
+        ({'char_class': 'Ranger', 'background': 'sage', 'skill_choices': ['stealth', 'nature']},
+         'A Ranger chooses exactly 3 class skills.'),
+        ({'char_class': 'Wizard', 'background': 'sage', 'skill_choices': 'arcana'},
+         'skill_choices must be a list of skill names.'),
+    ]
+    for fields, message in cases:
+        response = _create(client, ids, character_name='Rejected Hero', **fields)
+        assert response.status_code == 400, fields
+        assert response.get_json()['error_code'] == 'validation_error'
+        assert response.get_json()['error'] == message
+
+    accepted = {
+        'Rogue': ['stealth', 'insight', 'perception', 'acrobatics'],
+        'Bard': ['stealth', 'insight', 'medicine'],
+        'Ranger': ['stealth', 'nature', 'survival'],
+        'Cleric': ['medicine', 'persuasion'],
+    }
+    for class_name, skills in accepted.items():
+        response = _create(client, ids, char_class=class_name, background='sage', skill_choices=skills)
+        assert response.status_code == 201, class_name
+    with app.app_context():
+        assert Player.query.filter_by(character_name='Rejected Hero').count() == 0
+
+
+def test_rogue_expertise_is_two_proficient_skills_and_only_for_rogues(client, app):
+    ids = seed_world_campaign_player_session(app)
+    rogue = _create(
+        client,
+        ids,
+        char_class='Rogue',
+        race='Elf',
+        race_selection={'raceId': 'elf'},
+        background='criminal',
+        skill_choices=['acrobatics', 'insight', 'investigation', 'sleight_of_hand'],
+        expertise=['Sleight of Hand', 'perception'],
+    )
+    assert rogue.status_code == 201
+    with app.app_context():
+        player = db.session.get(Player, rogue.get_json()['player_id'])
+        state = character_state_for_player(player)
+        perception = character_roll_spec(player, roll_type='perception')
+        stealth = character_roll_spec(player, roll_type='stealth')
+
+    # Perception comes from the elf's Keen Senses, Stealth from the Criminal background.
+    assert state['skill_expertise'] == ['perception', 'sleight_of_hand']
+    assert (perception['proficiency']['multiplier'], stealth['proficiency']['multiplier']) == (2, 1)
+
+    rogue_fields = {'char_class': 'Rogue', 'background': 'criminal',
+                    'skill_choices': ['acrobatics', 'insight', 'investigation', 'sleight_of_hand']}
+    cases = [
+        ({**rogue_fields, 'expertise': ['stealth', 'arcana']},
+         'Expertise needs a skill you are proficient in, and Arcana is not one of yours.'),
+        ({**rogue_fields, 'expertise': ['stealth']}, 'A Rogue chooses exactly two different expertise skills.'),
+        ({**rogue_fields, 'expertise': ['stealth', 'stealth']}, 'A Rogue chooses exactly two different expertise skills.'),
+        ({'char_class': 'Bard', 'background': 'criminal', 'expertise': ['stealth', 'deception']},
+         'Only a Rogue chooses expertise.'),
+    ]
+    for fields, message in cases:
+        response = _create(client, ids, **fields)
+        assert response.status_code == 400, fields
+        assert response.get_json()['error'] == message
+
+
+def test_fighting_style_choice_is_validated_per_class_and_waits_for_level_two_on_paladins(client, app):
+    ids = seed_world_campaign_player_session(app)
+    fighter = _create(client, ids, char_class='Fighter', fighting_style='archery')
+    paladin = _create(client, ids, char_class='Paladin - Devotion', fighting_style='great_weapon')
+    assert (fighter.status_code, paladin.status_code) == (201, 201)
+    with app.app_context():
+        fighter_state = character_state_for_player(db.session.get(Player, fighter.get_json()['player_id']))
+        paladin_player = db.session.get(Player, paladin.get_json()['player_id'])
+        paladin_level_one = character_state_for_player(paladin_player)
+        stored = safe_json_loads(paladin_player.character_sheet, {})['fightingStyle']
+        paladin_player.level = 2
+        db.session.commit()
+        paladin_level_two = character_state_for_player(paladin_player)
+
+    assert fighter_state['fighting_style'] == 'archery'
+    assert stored == 'great_weapon'
+    assert 'fighting_style' not in paladin_level_one
+    assert paladin_level_two['fighting_style'] == 'great_weapon'
+
+    cases = [
+        ({'char_class': 'Ranger', 'fighting_style': 'great_weapon'},
+         "A Ranger's fighting_style must be one of: archery, defense, dueling."),
+        ({'char_class': 'Fighter', 'fighting_style': 'two_weapon'},
+         "A Fighter's fighting_style must be one of: defense, dueling, great_weapon, archery."),
+        ({'char_class': 'Wizard', 'fighting_style': 'defense'},
+         'Only a Fighter, Paladin or Ranger chooses a fighting style.'),
+    ]
+    for fields, message in cases:
+        response = _create(client, ids, **fields)
+        assert response.status_code == 400, fields
+        assert response.get_json()['error'] == message
+
+
+def test_narrated_classes_are_created_as_today_but_take_no_class_choices(client, app):
+    ids = seed_world_campaign_player_session(app)
+    for class_name in ('Artificer', 'Dream Knight - Mirror Oath'):
+        response = _create(client, ids, char_class=class_name, background='sage')
+        assert response.status_code == 201, class_name
+
+    rejected = _create(client, ids, char_class='Dream Knight', background='sage', skill_choices=['arcana', 'history'])
+    assert rejected.status_code == 400
+    assert rejected.get_json()['error'] == 'Class skill choices apply only to the twelve core classes.'

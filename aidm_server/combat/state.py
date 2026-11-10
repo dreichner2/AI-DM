@@ -251,9 +251,11 @@ def player_combat_participant(player_actor: dict[str, Any]) -> dict[str, Any]:
         'isAlive': 'dead' not in conditions,
         'isConscious': int_or_default(health.get('currentHp'), default=1) > 0 and 'dead' not in conditions,
     }
-    # Class-feature providers (Extra Attack, Rage) read the class from the participant.
+    # Class-feature providers (Extra Attack, Rage, fighting styles) read these from the participant.
     if _text(player_actor.get('class')):
         participant['class'] = _text(player_actor.get('class'))
+    if _text(player_actor.get('fightingStyle')):
+        participant['fightingStyle'] = _text(player_actor.get('fightingStyle'))
     if player_actor.get('autoReactions') is False:
         participant['autoReactions'] = False
     return participant

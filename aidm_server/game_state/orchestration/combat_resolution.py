@@ -7,10 +7,12 @@ import re
 from typing import Any, Callable
 
 from aidm_server.canon_text import int_or_default
+from aidm_server.class_capabilities import attack_rider_change
 from aidm_server.combat.attacks import (
     TEXT_DAMAGE_PATTERN,
     ability_damage,
     ability_reach_profile,
+    attack_weapon_descriptor,
     bounded_int,
     resolve_attack,
     resolve_enemy_ability,
@@ -20,6 +22,7 @@ from aidm_server.combat.modifiers import MODIFIER_ENGINE_SOURCE, can_act, condit
 from aidm_server.combat.pipeline import apply_start_turn_damage, death_saves_due, participant_at_turn_start, turn_boundaries
 from aidm_server.combat.positioning import band_outward, enemy_approach, move_participant, participant_by_id
 from aidm_server.combat.reactions import collect_reactions, reaction_changes
+from aidm_server.combat.turn_start import run_turn_start_hooks
 from aidm_server.combat.vitality import DEATH_SAVE_SOURCE, death_save_change_id
 from aidm_server.combat.state import (
     combat_ability_is_available,
@@ -225,6 +228,17 @@ def resolve_authoritative_player_attack(
     if offhand:
         damage_bonus = min(0, damage_bonus)
     weapon_name = str(combat_action.get('weapon_name') or 'weapon').strip() or 'weapon'
+    ranged = combat_action.get('ranged') is True
+    player_actor = _player_actors_by_id(state).get(actor_id) or {}
+    inventory = player_actor.get('inventory') if isinstance(player_actor.get('inventory'), dict) else {}
+    weapon_item = next(
+        (item for item in inventory.get('items') or [] if isinstance(item, dict) and weapon_id and str(item.get('id') or '') == weapon_id),
+        {'id': weapon_id, 'name': weapon_name},
+    )
+    ability = authoritative_roll.get('ability') if isinstance(authoritative_roll.get('ability'), dict) else {}
+    economy = flags.get('turnEconomy') if isinstance(flags.get('turnEconomy'), dict) else {}
+    once_per_turn_used = economy.get('oncePerTurnUsed') if str(economy.get('actorId') or '') == actor_id else []
+    rider = combat_action.get('rider') if isinstance(combat_action.get('rider'), dict) else None
     working_combat = deepcopy(combat)
     working = working_combat['participants'] if isinstance(working_combat.get('participants'), list) else []
     # The player's server-rolled d20 is the first die; advantage or disadvantage
@@ -235,7 +249,7 @@ def resolve_authoritative_player_attack(
         combat=working_combat,
         state={**state, 'combat': working_combat},
         kind='weapon_attack',
-        ranged=combat_action.get('ranged') is True,
+        ranged=ranged,
         first_d20=player_die,
         attack_bonus=attack_bonus,
         attack_roller=deterministic_roller(f'player_attack_roll:{turn_id}:{actor_id}:{target_id}:{weapon_id}'),
@@ -243,6 +257,10 @@ def resolve_authoritative_player_attack(
         damage_roller=damage_roller or deterministic_roller(f'player_attack:{turn_id}:{actor_id}:{target_id}:{weapon_id}'),
         event_id=f'player_attack:{turn_id}:{actor_id}:{target_id}:{weapon_id}',
         turn_id=turn_id,
+        weapon=attack_weapon_descriptor(player_actor, weapon_item, ranged=ranged),
+        ability=ability.get('key'),
+        rider=rider,
+        once_per_turn_used=once_per_turn_used or [],
     )
     result = {
         'sourceType': 'player_attack',
@@ -261,6 +279,8 @@ def resolve_authoritative_player_attack(
     }
     if offhand:
         result['offhand'] = True
+    if rider is not None:
+        result['rider'] = deepcopy(rider)
     return result
 
 
@@ -377,29 +397,36 @@ def _resolve_enemy_required_actions(
         target_id = str(action.get('targetId') or action.get('targetActorId') or '').strip()
         ability_id = str(action.get('abilityId') or action.get('ability_id') or '').strip()
         enemy = participant_by_id(combat, enemy_id)
-        target = participant_by_id(combat, target_id)
-        ability = _ability_by_id(enemy, ability_id)
-        ongoing_damage = []
+        turn_start: dict[str, Any] = {}
         if isinstance(enemy, dict) and enemy_id in starts and enemy_id not in started:
             started.add(enemy_id)
             tick_turn_boundary(combat, actor_id=enemy_id, phase='start')
             hp = enemy.setdefault('hp', {})
             hp['temp'] = max(int_or_default(hp.get('temp'), default=0), temp_hp_per_turn(enemy))
-            ongoing_damage = apply_start_turn_damage(enemy, turn_id=turn_id, round_number=starts[enemy_id])
+            ongoing_damage = apply_start_turn_damage(combat, enemy, turn_id=turn_id, round_number=starts[enemy_id])
+            if ongoing_damage:
+                turn_start['ongoingDamage'] = ongoing_damage
+            hooked = run_turn_start_hooks(combat, actor_id=enemy_id, turn_id=turn_id, round_number=starts[enemy_id])
+            if hooked:
+                turn_start['turnStartEffects'] = hooked
+        # A turn-start hook may replace the working combat's records.
+        enemy = participant_by_id(combat, enemy_id)
+        target = participant_by_id(combat, target_id)
+        ability = _ability_by_id(enemy, ability_id)
         if (
             not isinstance(enemy, dict)
             or str(enemy.get('team') or '').strip().lower() != 'enemy'
             or not participant_can_take_turn(enemy)
         ):
-            if ongoing_damage:
+            if turn_start:
                 resolved.append({
                     'enemyId': enemy_id,
                     'enemyName': _participant_name(enemy, enemy_id or 'Enemy'),
                     'resolvedWithoutRoll': True,
-                    'ongoingDamage': ongoing_damage,
+                    **turn_start,
                     'turnLost': True,
                     'authoritative': True,
-                    'instruction': 'Narrate the ongoing damage and lost turn exactly as resolved by the engine.',
+                    'instruction': 'Narrate the turn-start effects and lost turn exactly as resolved by the engine.',
                 })
             continue
         ability_name = str((ability or {}).get('name') or action.get('abilityName') or ability_id or '').strip()
@@ -414,9 +441,8 @@ def _resolve_enemy_required_actions(
             'sourceIntent': action,
             'authoritative': True,
             'instruction': 'Narrate this enemy result as already resolved by the engine; do not ask the player to roll it.',
+            **turn_start,
         }
-        if ongoing_damage:
-            entry['ongoingDamage'] = ongoing_damage
         event_id = f'enemy_turn:{turn_id}:{index}:{enemy_id}'
 
         if intent_type in {'attack', 'use_ability'}:
@@ -644,6 +670,9 @@ def _trusted_enemy_resolved_damage_changes(
             'surrender': 'surrendered',
             'negotiate': 'negotiated',
         }.get(intent_type)
+        if outcome_condition == 'fled' and 'turned' in condition_keys(enemy):
+            # A turned creature only moves away; it rejoins the fight when the turning ends.
+            continue
         if outcome_condition:
             change = {
                 'id': stable_change_id(
@@ -1056,6 +1085,13 @@ def derive_trusted_damage_changes(
                 actor_id=actor_id,
                 already_applied_changes=already_applied_changes,
             ),
+            *_trusted_player_attack_followups(
+                state=state,
+                dm_context_packet=dm_context_packet,
+                actor_id=actor_id,
+                turn_id=turn_id,
+                already_applied_changes=already_applied_changes,
+            ),
         ],
         death_saves=_trusted_death_save_changes(
             state=state,
@@ -1110,6 +1146,62 @@ def _trusted_player_reaction_changes(
             change_id = str(change.get('id') or '').strip()
             if change_id and change_id not in seen:
                 seen.add(change_id)
+                changes.append(change)
+    return changes
+
+
+def _trusted_player_attack_followups(
+    *,
+    state: dict[str, Any],
+    dm_context_packet: dict[str, Any],
+    actor_id: str,
+    turn_id: int | None,
+    already_applied_changes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """What a resolved player hit spends: its declared rider (Divine Smite's slot, Stunning
+    Strike's ki and save) and the once-per-turn damage it used (Sneak Attack, Colossus Slayer)."""
+
+    seen = {str(change.get('id') or '').strip() for change in already_applied_changes if isinstance(change, dict)}
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+    economy = flags.get('turnEconomy') if isinstance(flags.get('turnEconomy'), dict) else {}
+    changes: list[dict[str, Any]] = []
+    for event in _trusted_damage_events(dm_context_packet):
+        if (
+            _TRUSTED_DAMAGE_SOURCE_TYPES.get(str(event.get('sourceType') or '').strip().lower()) != 'trusted_player_attack'
+            or str(event.get('sourceActorId') or '').strip() != str(actor_id or '').strip()
+            or event.get('hit') is not True
+        ):
+            continue
+        target_id = str(event.get('targetId') or '').strip()
+        followups: list[dict[str, Any]] = []
+        if isinstance(event.get('rider'), dict):
+            rider_change = attack_rider_change(
+                state,
+                actor_id=actor_id,
+                rider=event['rider'],
+                target_id=target_id,
+                hit=True,
+                turn_id=turn_id,
+                roller=deterministic_roller(f'attack_rider:{turn_id}:{actor_id}:{target_id}'),
+            )
+            if rider_change:
+                followups.append(rider_change)
+        used = [str(key) for key in event.get('oncePerTurn') or [] if str(key or '').strip()]
+        if used and str(economy.get('actorId') or '') == str(actor_id):
+            once_per_turn = list(dict.fromkeys([*(economy.get('oncePerTurnUsed') or []), *used]))
+            followups.append({
+                'id': stable_change_id('trusted_once_per_turn', turn_id, actor_id, *once_per_turn),
+                'turnId': turn_id,
+                'type': 'combat.update',
+                'flags': {'turnEconomy': {**deepcopy(economy), 'oncePerTurnUsed': once_per_turn}},
+                'source': MODIFIER_ENGINE_SOURCE,
+                'reason': f"Once-per-turn damage used this turn: {', '.join(once_per_turn)}.",
+                'visible': False,
+            })
+        for change in followups:
+            if change['id'] not in seen:
+                seen.add(change['id'])
                 changes.append(change)
     return changes
 

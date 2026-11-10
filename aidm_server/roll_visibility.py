@@ -24,6 +24,7 @@ PUBLIC_ROLL_KEYS = (
     'reason',
     'result_visibility',
     'pending_turn_id',
+    'inspiration',
 )
 
 PUBLIC_ROLL_SPEC_KEYS = (

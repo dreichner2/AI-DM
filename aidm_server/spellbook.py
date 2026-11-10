@@ -1270,82 +1270,86 @@ SPELLCASTING_ARCHETYPES = ('wizard', 'sorcerer', 'warlock', 'cleric', 'druid', '
 HALF_CASTER_ARCHETYPES = frozenset({'paladin', 'ranger', 'artificer'})
 
 
-# Spells of level 4 and above stay narrated unlocks at the levels their slots arrive.
-CLASS_HIGH_LEVEL_UNLOCKS: dict[str, dict[int, list[SpellSpec]]] = {
-    'wizard': {
-        7: [('Dimension Door', 4, 'Teleport yourself and one companion farther away.')],
-        9: [('Wall of Force', 5, 'Create a nearly unbreakable barrier of force.')],
-        11: [('Disintegrate', 6, 'A dangerous beam of destructive force.')],
-        13: [('Teleport', 7, 'Travel instantly across great distances.')],
-        15: [('Sunburst', 8, 'A brilliant burst of radiant power.')],
-        17: [('Wish', 9, 'Reality-bending high magic.')],
-    },
-    'sorcerer': {
-        7: [('Greater Invisibility', 4, 'Turn a creature invisible through battle.')],
-        9: [('Telekinesis', 5, 'Move creatures or objects with sustained force.')],
-        11: [('Chain Lightning', 6, 'Lightning arcs between multiple targets.')],
-        13: [('Teleport', 7, 'Travel instantly across great distances.')],
-        15: [('Power Word Stun', 8, 'Stun a weakened creature with a word.')],
-        17: [('Meteor Swarm', 9, 'Call down devastating meteors.')],
-    },
-    'warlock': {
-        7: [('Banishment', 4, 'Send a target out of the scene briefly.')],
-        9: [('Hold Monster', 5, 'Paralyze a creature with pact magic.')],
-        11: [('Circle of Death', 6, 'A wide burst of necrotic power.')],
-        13: [('Finger of Death', 7, 'A lethal necromantic attack.')],
-        15: [('Maddening Darkness', 8, 'Summon supernatural darkness and psychic pain.')],
-        17: [('Foresight', 9, 'Grant uncanny luck and awareness.')],
-    },
-    'cleric': {
-        7: [('Death Ward', 4, 'Protect an ally from dropping to death.')],
-        9: [('Greater Restoration', 5, 'End a major affliction.'), ('Flame Strike', 5, 'Call down divine fire.')],
-        11: [('Heal', 6, 'Massive restorative magic.')],
-        13: [('Resurrection', 7, 'Return a dead creature to life.')],
-        15: [('Holy Aura', 8, 'Radiant protection for nearby allies.')],
-        17: [('Mass Heal', 9, 'Restore many allies at once.')],
-    },
-    'druid': {
-        7: [('Polymorph', 4, 'Transform a creature into another form.')],
-        9: [('Greater Restoration', 5, 'End a major affliction.'), ('Tree Stride', 5, 'Step through trees.')],
-        11: [('Transport via Plants', 6, 'Travel through living plants.')],
-        13: [('Regenerate', 7, 'Restore severe injuries over time.')],
-        15: [('Animal Shapes', 8, 'Transform willing allies into beasts.')],
-        17: [('Shapechange', 9, 'Assume powerful magical forms.')],
-    },
-    'bard': {
-        7: [('Greater Invisibility', 4, 'Turn a creature invisible through battle.')],
-        9: [('Hold Monster', 5, 'Paralyze a creature.'), ('Synaptic Static', 5, 'A psychic blast that muddles minds.')],
-        11: [('Mass Suggestion', 6, 'Influence many creatures at once.')],
-        13: [('Teleport', 7, 'Travel instantly across great distances.')],
-        15: [('Power Word Stun', 8, 'Stun a weakened creature with a word.')],
-        17: [('Power Word Heal', 9, 'Restore an ally with a word.')],
-    },
-    'paladin': {
-        9: [('Death Ward', 4, 'Protect an ally from dropping to death.')],
-        13: [('Banishing Smite', 5, 'Strike with banishing force.')],
-    },
-    'ranger': {
-        9: [('Freedom of Movement', 4, 'Ignore many restraints and movement hindrances.')],
-        13: [('Swift Quiver', 5, 'Attack rapidly with enchanted ammunition.')],
-    },
-    'artificer': {
-        7: [('Fabricate', 4, 'Convert raw materials into crafted objects.')],
-        9: [('Animate Objects', 5, 'Bring objects to life briefly.')],
-    },
+# Spells of level 4 and above stay narrated; each unlocks with its class's first slot of its level.
+CLASS_HIGH_LEVEL_SPELLS: dict[str, list[SpellSpec]] = {
+    'wizard': [
+        ('Dimension Door', 4, 'Teleport yourself and one companion farther away.'),
+        ('Wall of Force', 5, 'Create a nearly unbreakable barrier of force.'),
+        ('Disintegrate', 6, 'A dangerous beam of destructive force.'),
+        ('Teleport', 7, 'Travel instantly across great distances.'),
+        ('Sunburst', 8, 'A brilliant burst of radiant power.'),
+        ('Wish', 9, 'Reality-bending high magic.'),
+    ],
+    'sorcerer': [
+        ('Greater Invisibility', 4, 'Turn a creature invisible through battle.'),
+        ('Telekinesis', 5, 'Move creatures or objects with sustained force.'),
+        ('Chain Lightning', 6, 'Lightning arcs between multiple targets.'),
+        ('Teleport', 7, 'Travel instantly across great distances.'),
+        ('Power Word Stun', 8, 'Stun a weakened creature with a word.'),
+        ('Meteor Swarm', 9, 'Call down devastating meteors.'),
+    ],
+    'warlock': [
+        ('Banishment', 4, 'Send a target out of the scene briefly.'),
+        ('Hold Monster', 5, 'Paralyze a creature with pact magic.'),
+        ('Circle of Death', 6, 'A wide burst of necrotic power.'),
+        ('Finger of Death', 7, 'A lethal necromantic attack.'),
+        ('Maddening Darkness', 8, 'Summon supernatural darkness and psychic pain.'),
+        ('Foresight', 9, 'Grant uncanny luck and awareness.'),
+    ],
+    'cleric': [
+        ('Death Ward', 4, 'Protect an ally from dropping to death.'),
+        ('Greater Restoration', 5, 'End a major affliction.'),
+        ('Flame Strike', 5, 'Call down divine fire.'),
+        ('Heal', 6, 'Massive restorative magic.'),
+        ('Resurrection', 7, 'Return a dead creature to life.'),
+        ('Holy Aura', 8, 'Radiant protection for nearby allies.'),
+        ('Mass Heal', 9, 'Restore many allies at once.'),
+    ],
+    'druid': [
+        ('Polymorph', 4, 'Transform a creature into another form.'),
+        ('Greater Restoration', 5, 'End a major affliction.'),
+        ('Tree Stride', 5, 'Step through trees.'),
+        ('Transport via Plants', 6, 'Travel through living plants.'),
+        ('Regenerate', 7, 'Restore severe injuries over time.'),
+        ('Animal Shapes', 8, 'Transform willing allies into beasts.'),
+        ('Shapechange', 9, 'Assume powerful magical forms.'),
+    ],
+    'bard': [
+        ('Greater Invisibility', 4, 'Turn a creature invisible through battle.'),
+        ('Hold Monster', 5, 'Paralyze a creature.'),
+        ('Synaptic Static', 5, 'A psychic blast that muddles minds.'),
+        ('Mass Suggestion', 6, 'Influence many creatures at once.'),
+        ('Teleport', 7, 'Travel instantly across great distances.'),
+        ('Power Word Stun', 8, 'Stun a weakened creature with a word.'),
+        ('Power Word Heal', 9, 'Restore an ally with a word.'),
+    ],
+    'paladin': [
+        ('Death Ward', 4, 'Protect an ally from dropping to death.'),
+        ('Banishing Smite', 5, 'Strike with banishing force.'),
+    ],
+    'ranger': [
+        ('Freedom of Movement', 4, 'Ignore many restraints and movement hindrances.'),
+        ('Swift Quiver', 5, 'Attack rapidly with enchanted ammunition.'),
+    ],
+    'artificer': [
+        ('Fabricate', 4, 'Convert raw materials into crafted objects.'),
+        ('Animate Objects', 5, 'Bring objects to life briefly.'),
+    ],
 }
 
 
 def catalog_unlock_level(archetype: str, spell_level: int) -> int:
-    """The character level at which a class list gains catalog spells of one spell level."""
+    """The character level at which the class first has a spell slot of this level.
 
-    half_caster = archetype in HALF_CASTER_ARCHETYPES
+    Full casters and warlocks (pact slots, then Mystic Arcanum) gain a slot level every two character
+    levels (1/3/5/...); half casters every four (5/9/...), paladins and rangers casting from level 2.
+    """
+
     if spell_level <= 0:
         return 1
-    if spell_level == 1:
-        return 2 if archetype in {'paladin', 'ranger'} else 1
-    if spell_level == 2:
-        return 5 if half_caster else 3
-    return 5
+    if archetype in HALF_CASTER_ARCHETYPES:
+        return 2 if spell_level == 1 and archetype != 'artificer' else 4 * spell_level - 3
+    return 2 * spell_level - 1
 
 
 def _catalog_class_lists() -> tuple[dict[str, list[SpellSpec]], dict[str, dict[int, list[SpellSpec]]]]:
@@ -1363,9 +1367,9 @@ def _catalog_class_lists() -> tuple[dict[str, list[SpellSpec]], dict[str, dict[i
                 starting[archetype].append(spec)
             else:
                 unlocks[archetype].setdefault(unlock, []).append(spec)
-    for archetype, high_levels in CLASS_HIGH_LEVEL_UNLOCKS.items():
-        for unlock, specs in high_levels.items():
-            unlocks[archetype].setdefault(unlock, []).extend(specs)
+    for archetype, specs in CLASS_HIGH_LEVEL_SPELLS.items():
+        for spec in specs:
+            unlocks[archetype].setdefault(catalog_unlock_level(archetype, spec[1]), []).append(spec)
     return starting, {archetype: dict(sorted(levels.items())) for archetype, levels in unlocks.items()}
 
 

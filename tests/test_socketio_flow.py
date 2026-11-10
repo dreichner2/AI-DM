@@ -6257,9 +6257,11 @@ def test_attack_roll_is_cleared_before_narration_when_no_opponent_is_present(app
     live_hint = narrated_hints[0]
     assert live_hint['requires_roll'] is False
     assert live_hint['roll_type'] is None
-    assert live_hint['no_target'] is True
+    # The blow is aimed at an object, so it is an ordinary action rather than "no one here to fight".
+    assert 'no_target' not in live_hint
     assert live_hint['reason'] == 'No opponent is present.'
     assert 'do not request a roll' in live_hint['instruction']
+    assert 'ordinary action' in live_hint['instruction']
     assert live_hint['state_pipeline']['pendingRolls'] == []
 
     with app.app_context():
@@ -6269,7 +6271,7 @@ def test_attack_roll_is_cleared_before_narration_when_no_opponent_is_present(app
         assert turn.requires_roll is False
         assert turn.outcome_status == 'resolved'
         assert 'roll_gate' not in metadata
-        assert rules_hint['no_target'] is True
+        assert 'no_target' not in rules_hint
         assert rules_hint['roll_requirement_cleared']['source'] == 'no_opponent'
         assert rules_hint['roll_requirement_cleared']['original_rule_type'] == 'attack'
 
