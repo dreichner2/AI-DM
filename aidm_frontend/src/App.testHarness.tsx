@@ -2,7 +2,7 @@
 /* eslint-disable react-refresh/only-export-components -- Vitest harness exports shared fixtures and helpers. */
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, configure, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { expect, vi } from 'vitest'
@@ -27,6 +27,13 @@ import type {
   TtsRuntimeConfig,
   World,
 } from './types'
+
+// App-level tests mount the whole application, and the classic console arrives
+// as lazy chunks. On a busy machine that can take longer than the library's
+// one-second default, so these tests wait on outcomes with room to spare
+// instead of depending on how fast the machine is.
+configure({ asyncUtilTimeout: 5000 })
+vi.setConfig({ testTimeout: 20000 })
 
 // One shared socket stands in for every io() connection. Like socket.io, it
 // keeps a listener registry (including catch-all onAny listeners) and
@@ -1797,6 +1804,8 @@ function installFetchMock() {
 }
 
 async function renderLoadedApp() {
+  // Resolve the console's lazy chunks first so the first paint does not race them.
+  await Promise.all([import('./CampaignRail'), import('./SessionBoard'), import('./InspectorPanel')])
   const rendered = render(<App />)
   await screen.findByRole('heading', { name: /Session Alpha/i })
   await waitFor(() => expect(screen.getAllByText('Ember').length).toBeGreaterThan(0))
