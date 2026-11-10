@@ -281,7 +281,7 @@ mechanics the server currently applies, rather than full tabletop coverage.
   Ray of Frost, Burning Hands, Shatter, Fireball, Lightning Bolt, Eldritch Blast
   Scorching Ray, Shocking Grasp, Chill Touch, Poison Spray, Vicious Mockery,
   Produce Flame, Inflict Wounds, Guiding Bolt, Bless, Bane, Shield of Faith,
-  and False Life have
+  False Life, Thorn Whip, Thunderwave, Dissonant Whispers, and Misty Step have
   server-owned effect definitions. A typed cast with exact
   target IDs validates turn ownership, presence, relation, range, cover, target
   count, spell knowledge/preparation, and casting resources before rolling.
@@ -301,6 +301,9 @@ mechanics the server currently applies, rather than full tabletop coverage.
 - The four area damage spells above take one primary target, include other legal
   enemies in the same range band and zone up to their target limit, share one
   damage roll, and resolve each enemy's save separately. Allies are excluded.
+- Thunderwave uses the same area selection and pushes enemies that fail their
+  saves. Thorn Whip pulls, Dissonant Whispers pushes on a failed save, and
+  Misty Step moves the caster to far range without provoking a reaction.
 - Magic Missile rolls each dart separately and distributes darts round-robin
   across the selected targets, with one extra dart per higher slot. Scorching
   Ray rolls each attack separately and adds a ray per higher slot; Eldritch

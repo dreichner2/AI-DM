@@ -190,6 +190,71 @@ def test_inflict_wounds_requires_touch_and_gains_one_die_per_higher_slot():
     assert result['resolution']['targets'][0]['effects'][0]['roll']['rolls'] == [1, 2, 3, 4]
 
 
+def test_thorn_whip_is_a_melee_spell_attack_and_pulls_one_band():
+    caster = _participant('player_mage', team='player', level=1,
+                          position={'rangeBand': 'melee', 'engagedWith': ['enemy_other']})
+    target = _participant('enemy', team='enemy', hp=20, armor_class=5)
+    other = _participant('enemy_other', team='enemy', position={'rangeBand': 'melee', 'engagedWith': ['player_mage']})
+    result = resolve_targeted_spell(
+        _combat(caster, target, other), caster_id='player_mage', spell=_catalog_spell('Thorn Whip', 0, 'wisdom'),
+        target_ids=['enemy'], cast_id='whip', roller=SequenceRoller(15, 3),
+    )
+    assert result['resolution']['targets'][0]['delivery']['mode'] == 'normal'
+    movement = result['resolution']['targets'][0]['effects'][1]
+    assert (movement['fromRangeBand'], movement['toRangeBand']) == ('near', 'melee')
+    assert result['combat']['participants'][1]['position']['rangeBand'] == 'melee'
+
+
+def test_thunderwave_shares_damage_and_pushes_only_failed_saves_without_reactions():
+    caster = _participant('player_mage', team='player', level=1,
+                          position={'rangeBand': 'melee', 'zoneId': 'hall', 'engagedWith': ['enemy_a', 'enemy_b']})
+    enemies = [
+        _participant(f'enemy_{name}', team='enemy', hp=20,
+                     position={'rangeBand': 'melee', 'zoneId': 'hall', 'engagedWith': ['player_mage']})
+        for name in ('a', 'b')
+    ]
+    result = resolve_targeted_spell(
+        _combat(caster, *enemies), caster_id='player_mage', spell=_catalog_spell('Thunderwave', 1),
+        target_ids=['enemy_a'], cast_id='thunder', roller=SequenceRoller(1, 4, 5, 20),
+    )
+    first, second = result['resolution']['targets']
+    assert first['effects'][0]['roll']['rolls'] == second['effects'][0]['roll']['rolls'] == [4, 5]
+    assert first['effects'][0]['amountApplied'] == 9
+    assert second['effects'][0]['amountApplied'] == 4
+    assert first['effects'][1]['toRangeBand'] == 'near'
+    assert second['effects'][1]['applied'] is False
+    assert result['combat']['participants'][0]['position']['engagedWith'] == ['enemy_b']
+    assert not result['combat']['participants'][1]['position'].get('engagedWith')
+
+
+def test_misty_step_moves_the_caster_and_clears_both_sides_of_melee_engagement():
+    caster = _participant('player_mage', team='player', level=3,
+                          position={'rangeBand': 'melee', 'engagedWith': ['enemy']})
+    enemy = _participant('enemy', team='enemy', position={'rangeBand': 'melee', 'engagedWith': ['player_mage']})
+    result = resolve_targeted_spell(
+        _combat(caster, enemy), caster_id='player_mage', spell=_catalog_spell('Misty Step', 2),
+        target_ids=['player_mage'], cast_id='step', roller=SequenceRoller(),
+    )
+    moved, left_behind = result['combat']['participants']
+    assert moved['position']['rangeBand'] == 'far'
+    assert not moved['position'].get('engagedWith')
+    assert not left_behind['position'].get('engagedWith')
+    assert result['resolution']['targets'][0]['effects'][0]['teleport'] == 'away'
+
+
+def test_dissonant_whispers_deals_half_damage_without_moving_on_a_successful_save():
+    caster = _participant('player_mage', team='player', level=1)
+    target = _participant('enemy', team='enemy', hp=30)
+    result = resolve_targeted_spell(
+        _combat(caster, target), caster_id='player_mage', spell=_catalog_spell('Dissonant Whispers', 1, 'charisma'),
+        target_ids=['enemy'], cast_id='whispers', roller=SequenceRoller(20, 2, 4, 6),
+    )
+    damage, movement = result['resolution']['targets'][0]['effects']
+    assert damage['amountApplied'] == 6
+    assert movement['applied'] is False
+    assert result['combat']['participants'][1]['position']['rangeBand'] == 'near'
+
+
 @pytest.mark.parametrize(('level', 'dice'), [(1, 1), (5, 2), (11, 3), (17, 4)])
 def test_cantrip_damage_scales_with_caster_level(level, dice):
     caster = _participant('player_mage', team='player', level=level)

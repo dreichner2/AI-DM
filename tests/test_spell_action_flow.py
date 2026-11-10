@@ -323,6 +323,28 @@ def test_upcast_bless_replays_and_persists_four_ally_effects_once() -> None:
     assert retried['nextState']['playerCharacters'][0]['spellResources']['slots']['2']['current'] == 1
 
 
+def test_thunderwave_replays_shared_damage_and_each_movement(monkeypatch) -> None:
+    state = _combat_state()
+    actor = state['playerCharacters'][0]
+    actor['spellbook'] = normalize_spellbook({'knownSpells': [_spell('Thunderwave', 1)]}, class_name='Wizard')
+    first = state['combat']['participants'][1]
+    second = deepcopy(first)
+    second.update({'id': 'enemy_goblin_2', 'name': 'Second Goblin'})
+    state['combat']['participants'].append(second)
+    rolls = iter([0, 3, 4, 19])
+    monkeypatch.setattr('aidm_server.game_state.validation.validator.secrets.randbelow', lambda _n: next(rolls))
+    declared, validation, applied = _run_intent(state, {
+        'kind': 'spell', 'text': 'I cast Thunderwave.',
+        'spell': {'name': 'Thunderwave', 'effect': 'A burst of thunder.', 'target_ids': ['enemy_goblin_1']},
+    }, turn_id=26)
+    assert declared['validatedActions'][0]['status'] == 'valid'
+    assert validation['rejected'] == []
+    enemies = [item for item in applied['nextState']['combat']['participants'] if item['team'] == 'enemy']
+    assert [item['hp']['current'] for item in enemies] == [11, 16]
+    assert [item['position']['rangeBand'] for item in enemies] == ['far', 'near']
+    assert applied['nextState']['playerCharacters'][0]['spellResources']['slots']['1']['current'] == 1
+
+
 def test_upcast_healing_replays_exact_rolls_and_consumes_the_chosen_slot(monkeypatch) -> None:
     state = _combat_state()
     actor = state['playerCharacters'][0]

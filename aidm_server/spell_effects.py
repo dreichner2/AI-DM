@@ -66,6 +66,7 @@ from aidm_server.combat.modifiers import (
     tick_effects,
 )
 from aidm_server.combat.state import combat_turn_context
+from aidm_server.combat.positioning import RANGE_BANDS, band_index, move_participant
 from aidm_server.creatures.schemas import DAMAGE_TYPES
 from aidm_server.damage_dice import parse_damage_dice_expression, roll_signed_dice
 
@@ -73,7 +74,7 @@ from aidm_server.damage_dice import parse_damage_dice_expression, roll_signed_di
 Roller = Callable[[int], int]
 
 SUPPORTED_DELIVERY_TYPES = frozenset({'attack', 'save', 'automatic'})
-SUPPORTED_EFFECT_KINDS = frozenset({'damage', 'healing', 'temporary_hp', 'condition', 'modifier'})
+SUPPORTED_EFFECT_KINDS = frozenset({'damage', 'healing', 'temporary_hp', 'condition', 'modifier', 'move'})
 SUPPORTED_RELATIONS = frozenset({'enemy', 'ally', 'self', 'any'})
 SUPPORTED_SAVE_OUTCOMES = frozenset({'none', 'half'})
 SUPPORTED_DURATION_TICKS = frozenset({'target_turn_start', 'target_turn_end', 'source_turn_end', 'caster_turn_end', 'caster_turn_start'})
@@ -310,6 +311,7 @@ def _delivery_spec(spell: Mapping[str, Any]) -> dict[str, Any]:
             or spell.get('casting_ability')
         ),
         'onSuccess': _key(raw.get('onSuccess', raw.get('on_success')) or 'none'),
+        'ranged': raw.get('ranged') if isinstance(raw.get('ranged'), bool) else None,
         'darts': (
             {'count': _bounded_int(darts.get('count'), default=1, minimum=1, maximum=20), 'dice': darts.get('dice')}
             if darts else None
@@ -363,6 +365,8 @@ def _effect_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
         'duration': duration,
         'modifiers': deepcopy(dict(raw.get('modifiers'))) if isinstance(raw.get('modifiers'), Mapping) else {},
         'consumeOn': _key(raw.get('consumeOn')),
+        'bands': _int(raw.get('bands'), default=0),
+        'teleport': _key(raw.get('teleport')),
         'addCastingModifier': raw.get('addCastingModifier') is True,
         'onSuccessfulSave': _key(
             raw.get('onSuccessfulSave', raw.get('on_successful_save')) or ''
@@ -434,6 +438,11 @@ def _normalized_spell(spell: Mapping[str, Any]) -> tuple[dict[str, Any] | None, 
                 return None, 'Modifier effects require supported modifier keys.'
             if effect['consumeOn'] not in {'', 'attack', 'attacked', 'save', 'check'}:
                 return None, 'Modifier consumeOn has an unsupported event.'
+        if effect['kind'] == 'move' and not (
+            (effect['bands'] in {-1, 1} and not effect['teleport'])
+            or (effect['teleport'] == 'away' and effect['bands'] == 0)
+        ):
+            return None, 'Movement must push or pull one band or teleport away.'
         if effect['onSuccessfulSave'] and effect['onSuccessfulSave'] not in {'none', 'half', 'full'}:
             return None, 'Effect onSuccessfulSave must be none, half, or full.'
         effects.append(effect)
@@ -919,7 +928,8 @@ def _resolve_delivery(
             caster,
             target,
             kind='spell_attack',
-            ranged=list(target_spec.get('rangeBands') or []) != ['melee'],
+            ranged=(delivery['ranged'] if delivery.get('ranged') is not None
+                    else list(target_spec.get('rangeBands') or []) != ['melee']),
             combat=combat,
             ignore_cover=target_spec.get('ignoreCover') is True,
         )
@@ -1207,6 +1217,7 @@ def _apply_modifier(
 def _apply_effect(
     participant: dict[str, Any],
     *,
+    combat: dict[str, Any],
     effect: Mapping[str, Any],
     delivery: Mapping[str, Any],
     delivery_result: Mapping[str, Any],
@@ -1244,6 +1255,17 @@ def _apply_effect(
             participant, effect=effect, cast_id=cast_id, caster_id=caster_id,
             spell=spell, effect_index=effect_index,
         )
+    if effect['kind'] == 'move':
+        mover_id = caster_id if effect.get('teleport') == 'away' else _participant_id(participant)
+        mover = _participant_by_id(combat, mover_id)
+        assert mover is not None
+        before = _key(_position(mover).get('rangeBand') or 'near')
+        destination = ('far' if effect.get('teleport') == 'away' else
+                       RANGE_BANDS[max(0, min(len(RANGE_BANDS) - 1, band_index(before) + effect['bands']))])
+        move_participant(combat, mover_id, destination)
+        return {'kind': 'move', 'applied': before != destination, 'targetId': mover_id,
+                'fromRangeBand': before, 'toRangeBand': destination,
+                'teleport': effect.get('teleport') or None}
     rolled = deepcopy(dict(shared_roll)) if shared_roll is not None else _roll_expression(
         str(effect['expression']), roller,
         critical=delivery_result.get('critical') is True and effect['kind'] == 'damage',
@@ -1442,6 +1464,7 @@ def resolve_targeted_spell(
             shared_roll = shared_damage_rolls.get(index) if normalized_spell['target']['areaMaxTargets'] and effect['kind'] == 'damage' else None
             effect_result = _apply_effect(
                 target,
+                combat=next_combat,
                 effect=effect,
                 delivery=normalized_spell['delivery'],
                 delivery_result=delivery_result,

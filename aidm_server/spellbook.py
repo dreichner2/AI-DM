@@ -102,6 +102,32 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
         'effects': [{'kind': 'damage', 'dice': '1d8', 'damageType': 'fire'}],
         'scaling': {'cantrip': True},
     },
+    'thorn whip': {
+        'level': 0, 'delivery': {'type': 'attack', 'ranged': False},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near'], 'maxTargets': 1},
+        'effects': [{'kind': 'damage', 'dice': '1d6', 'damageType': 'piercing'},
+                    {'kind': 'move', 'bands': -1}],
+        'scaling': {'cantrip': True},
+    },
+    'thunderwave': {
+        'level': 1, 'delivery': {'type': 'save', 'ability': 'constitution', 'onSuccess': 'half'},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near'], 'area': {'maxTargets': 3}},
+        'effects': [{'kind': 'damage', 'dice': '2d8', 'damageType': 'thunder'},
+                    {'kind': 'move', 'bands': 1}],
+        'scaling': {'upcast': {'dice': '1d8'}},
+    },
+    'dissonant whispers': {
+        'level': 1, 'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'half'},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 1},
+        'effects': [{'kind': 'damage', 'dice': '3d6', 'damageType': 'psychic'},
+                    {'kind': 'move', 'bands': 1}],
+        'scaling': {'upcast': {'dice': '1d6'}},
+    },
+    'misty step': {
+        'level': 2, 'castingTime': 'bonus_action', 'delivery': {'type': 'automatic'},
+        'target': {'relation': 'self', 'rangeBands': ['melee'], 'maxTargets': 1, 'allowSelf': True},
+        'effects': [{'kind': 'move', 'teleport': 'away'}],
+    },
     'inflict wounds': {
         'level': 1, 'delivery': {'type': 'attack'},
         'target': {'relation': 'enemy', 'rangeBands': ['melee'], 'maxTargets': 1},
@@ -295,6 +321,13 @@ def spell_effect_summary(definition: dict[str, Any]) -> str:
             parts.append(f"{dice}{' + casting modifier' if effect.get('addCastingModifier') else ''} healing")
         elif kind == 'temporary_hp':
             parts.append(f'{dice} temporary HP')
+        elif kind == 'move':
+            if effect.get('teleport') == 'away':
+                parts.append('teleport to far range')
+            elif effect.get('bands') == 1:
+                parts.append('push one range band')
+            elif effect.get('bands') == -1:
+                parts.append('pull one range band')
         elif kind == 'condition':
             parts.append(_normalize_text(effect.get('condition')).replace('_', ' '))
         elif kind == 'modifier':
@@ -786,6 +819,7 @@ CLASS_STARTING_SPELLS: dict[str, list[SpellSpec]] = {
         ('Detect Magic', 1, 'Sense nearby magic.'),
         ('Sleep', 1, 'Lull weak creatures into magical sleep.'),
         ('Burning Hands', 1, 'A short cone of flame.'),
+        ('Thunderwave', 1, 'A concussive burst of sound.'),
         ('False Life', 1, 'Gain temporary hit points.'),
     ],
     'sorcerer': [
@@ -800,6 +834,7 @@ CLASS_STARTING_SPELLS: dict[str, list[SpellSpec]] = {
         ('Shield', 1, 'A reflexive defensive ward.'),
         ('Chaos Bolt', 1, 'Unstable elemental damage.'),
         ('Burning Hands', 1, 'A burst of close flame.'),
+        ('Thunderwave', 1, 'A concussive burst of sound.'),
         ('False Life', 1, 'Gain temporary hit points.'),
     ],
     'warlock': [
@@ -829,10 +864,12 @@ CLASS_STARTING_SPELLS: dict[str, list[SpellSpec]] = {
     'druid': [
         ('Druidcraft', 0, 'Small nature signs and harmless natural magic.'),
         ('Produce Flame', 0, 'Hold and throw a small flame.'),
+        ('Thorn Whip', 0, 'A thorny lash pulls an enemy closer.'),
         ('Poison Spray', 0, 'A short-range poisonous spray.'),
         ('Guidance', 0, 'A small primal boost to an ability check.'),
         ('Cure Wounds', 1, 'Primal healing by touch.'),
         ('Entangle', 1, 'Grasping plants restrain an area.'),
+        ('Thunderwave', 1, 'A concussive burst of sound.'),
         ('Faerie Fire', 1, 'Outline creatures in revealing light.'),
         ('Speak with Animals', 1, 'Communicate with beasts.'),
         ('Goodberry', 1, 'Create nourishing healing berries.'),
