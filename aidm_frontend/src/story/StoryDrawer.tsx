@@ -1,14 +1,16 @@
-import { useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { X } from 'lucide-react'
+import { worldMapFromSnapshot } from '../gameSelectors'
 import { subscribeToMediaQueryChange } from '../mediaQuery'
 import { useModalFocusTrap } from '../useModalFocusTrap'
 import { travelSubmission } from './actionIntents'
 import { CharacterSection } from './drawer/CharacterSection'
 import { JournalSection } from './drawer/JournalSection'
 import { MagicSection } from './drawer/MagicSection'
-import { MapSection } from './drawer/MapSection'
 import { PackSection } from './drawer/PackSection'
 import type { StoryDrawerProps, StoryDrawerTab } from './types'
+
+const MapSection = lazy(() => import('./drawer/MapSection').then(({ MapSection: Component }) => ({ default: Component })))
 
 /** Below this width the drawer overlays the story instead of sitting beside it. */
 const MODAL_DRAWER_QUERY = '(max-width: 1179px)'
@@ -44,6 +46,7 @@ function modalQueryMatches() {
  * screens; a focus-trapping overlay on narrower ones.
  */
 export function StoryDrawer({ board, inspector, open, tab, onTabChange, onClose }: StoryDrawerProps) {
+  const worldMap = useMemo(() => worldMapFromSnapshot(board.sessionState?.state_snapshot), [board.sessionState?.state_snapshot])
   const modal = useSyncExternalStore(subscribeToModalQuery, modalQueryMatches, () => false)
   const [rendered, setRendered] = useState(open)
   const sheetRef = useRef<HTMLElement | null>(null)
@@ -175,7 +178,9 @@ export function StoryDrawer({ board, inspector, open, tab, onTabChange, onClose 
           {tab === 'magic' ? <MagicSection board={board} inspector={inspector} /> : null}
           {tab === 'journal' ? <JournalSection board={board} inspector={inspector} /> : null}
           {tab === 'map' ? (
-            <MapSection inspector={inspector} travelBlockedReason={travelBlockedReason} onTravel={travel} />
+            <Suspense fallback={<p className="story-sheet-meta">Loading map…</p>}>
+              <MapSection inspector={inspector} worldMap={worldMap} travelBlockedReason={travelBlockedReason} onTravel={travel} />
+            </Suspense>
           ) : null}
         </div>
       </section>

@@ -7,6 +7,7 @@ import type {
   CombatParticipantSummary,
   CombatStatePanel,
   WorldStatePanel,
+  WorldMap,
 } from '../../gameSelectors'
 import type { GameplayControlState, GameplayTarget } from '../../gameplayControlState'
 import type { InspectorPanelProps } from '../../InspectorPanel'
@@ -47,6 +48,31 @@ const CHAPTER_RECAP =
 
 export const FIXTURE_CAMPAIGN_TITLE = 'The Lantern Road'
 export const FIXTURE_SESSION_TITLE = 'The Drowned Lantern'
+
+/** A mixed-state road map for the map and Story development previews. */
+export function mapFixture(terrain = 'moor'): WorldMap {
+  return {
+    title: 'The Western Roadlands', terrain, seed: 1107,
+    nodes: [
+      { id: 'inn', name: 'The Drowned Lantern', icon: 'inn', x: 19, y: 76, state: 'current' },
+      { id: 'road', name: 'The Old North Road', icon: 'road', x: 37, y: 57, state: 'visited' },
+      { id: 'ford', name: 'Reedwater Ford', icon: 'bridge', x: 53, y: 78, state: 'known' },
+      { id: 'village', name: 'Hollin Cross', icon: 'town', x: 58, y: 42, state: 'known' },
+      { id: 'tower', name: 'The Watcher’s Tower', icon: 'tower', x: 28, y: 26, state: 'visited' },
+      { id: 'cairns', name: '?', icon: 'unknown', x: 78, y: 27, state: 'rumoured' },
+      { id: 'ruin', name: '?', icon: 'unknown', x: 82, y: 72, state: 'rumoured' },
+    ],
+    routes: [
+      { from: 'inn', to: 'road', style: 'road', travelable: true },
+      { from: 'inn', to: 'ford', style: 'trail', travelable: true },
+      { from: 'road', to: 'village', style: 'road', travelable: false },
+      { from: 'road', to: 'tower', style: 'trail', travelable: false },
+      { from: 'tower', to: 'village', style: 'hidden', travelable: false },
+      { from: 'village', to: 'cairns', style: 'trail', travelable: false },
+      { from: 'ford', to: 'ruin', style: 'road', travelable: false },
+    ],
+  }
+}
 
 const campaignDescription =
   'Four strangers walk the old pilgrim road north through the Fenmarch, where the lanterns along the causeway have started going out one by one — and the travellers who lit them have stopped coming home.'
@@ -964,7 +990,7 @@ export function makeBoardFixture(state: StoryPreviewState | string = 'exploratio
       rolling_summary: sessionRecap,
       active_segments: [],
       memory_snippets: [],
-      state_snapshot: {},
+      state_snapshot: { worldMap: mapFixture() },
       updated_at: '2026-11-09T19:15:00.000Z',
     },
     campaign,

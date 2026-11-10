@@ -1,16 +1,21 @@
-import { useId } from 'react'
-import { Footprints } from 'lucide-react'
+import { useId, useState } from 'react'
+import { Expand, Footprints } from 'lucide-react'
+import type { WorldMap } from '../../gameSelectors'
 import type { InspectorPanelProps } from '../../InspectorPanel'
+import { StoryMap } from '../map/StoryMap'
+import { StoryMapOverlay } from '../map/StoryMapOverlay'
 
 type MapSectionProps = {
   inspector: InspectorPanelProps
+  worldMap: WorldMap | null
   /** Why travel is unavailable right now ('' when it is available). */
   travelBlockedReason: string
   onTravel: (exit: { id: string; name: string }) => void
 }
 
-export function MapSection({ inspector, travelBlockedReason, onTravel }: MapSectionProps) {
+export function MapSection({ inspector, worldMap, travelBlockedReason, onTravel }: MapSectionProps) {
   const reasonId = useId()
+  const [expanded, setExpanded] = useState(false)
   const { availableExits, knownLocations } = inspector.worldStatePanel
   const meta = [
     inspector.mapMeta.explored ? `Explored ${inspector.mapMeta.explored}` : '',
@@ -27,7 +32,15 @@ export function MapSection({ inspector, travelBlockedReason, onTravel }: MapSect
       {inspector.mapDescription ? <p className="story-map-description">{inspector.mapDescription}</p> : null}
       {meta.length ? <p className="story-sheet-meta">{meta.join(' · ')}</p> : null}
 
-      <div className="story-map-canvas" hidden={!inspector.maps.length} />
+      {worldMap?.nodes.length ? (
+        <div className="story-map-inline">
+          <StoryMap map={worldMap} travelBlockedReason={travelBlockedReason} onTravel={onTravel} />
+          <button type="button" className="story-icon-button story-map-expand" aria-label="Expand map" onClick={() => setExpanded(true)}>
+            <Expand aria-hidden="true" />
+          </button>
+          {expanded ? <StoryMapOverlay map={worldMap} travelBlockedReason={travelBlockedReason} onTravel={onTravel} onClose={() => setExpanded(false)} /> : null}
+        </div>
+      ) : <p className="story-sheet-meta">No map of this place yet.</p>}
 
       {exits.length ? (
         <section aria-labelledby="story-map-onward">

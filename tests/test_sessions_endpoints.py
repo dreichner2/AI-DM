@@ -359,7 +359,9 @@ def test_session_state_and_log_endpoints(client, app):
     assert 'rolling_summary' in state_payload
     assert state_payload['current_location'] == 'Old Ruins'
     assert state_payload['current_quest'] == 'Find the relic'
-    assert state_payload['state_snapshot'] == scene_snapshot
+    assert state_payload['state_snapshot']['currentScene'] == scene_snapshot['currentScene']
+    assert state_payload['state_snapshot']['locations'] == scene_snapshot['locations']
+    assert state_payload['state_snapshot']['worldMap']['nodes'][0]['id'] == 'blackwake_tavern'
 
     with app.app_context():
         assert SessionState.query.filter_by(session_id=ids['session_id']).first() is None

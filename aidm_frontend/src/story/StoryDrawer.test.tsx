@@ -2,7 +2,7 @@
 import '@testing-library/jest-dom/vitest'
 import { useState } from 'react'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { InspectorPanelProps } from '../InspectorPanel'
 import type { SessionBoardProps } from '../SessionBoard'
 import { testBoard, testCombat, testInspector, testWorld } from './dockTestFixtures'
@@ -53,8 +53,14 @@ function renderDrawer({
   return { board, inspector, onTabChange, onClose }
 }
 
+beforeEach(() => {
+  // JSDOM has no canvas implementation; rendering and map behavior are covered in StoryMap.test.tsx.
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
+})
+
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 
@@ -193,10 +199,10 @@ describe('StoryDrawer', () => {
     expect(screen.getByRole('button', { name: 'Updating Longbow' })).toBeDisabled()
   })
 
-  it('travels from the map with the classic travel intent, but not during combat', () => {
+  it('travels from the map with the classic travel intent, but not during combat', async () => {
     mockViewportWidth(1440)
     const { board } = renderDrawer({ tab: 'map' })
-    fireEvent.click(screen.getByRole('button', { name: 'Go to North causeway' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Go to North causeway' }))
     expect(board.actionComposerProps.submitAction).toHaveBeenCalledWith('The party travels to North causeway.', {
       kind: 'travel',
       source: 'scene_panel',

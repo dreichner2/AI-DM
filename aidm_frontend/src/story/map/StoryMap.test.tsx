@@ -1,0 +1,118 @@
+// @vitest-environment jsdom
+import '@testing-library/jest-dom/vitest'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { testBoard, testInspector } from '../dockTestFixtures'
+import { MapSection } from '../drawer/MapSection'
+import { mapFixture } from '../preview/fixtures'
+import { StoryDrawer } from '../StoryDrawer'
+import { StoryMap } from './StoryMap'
+
+beforeEach(() => {
+  const context = {
+    createImageData: (width: number, height: number) => ({ data: new Uint8ClampedArray(width * height * 4) }),
+    putImageData: vi.fn(), drawImage: vi.fn(), setTransform: vi.fn(), save: vi.fn(), restore: vi.fn(),
+    translate: vi.fn(), rotate: vi.fn(), scale: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(),
+    lineTo: vi.fn(), quadraticCurveTo: vi.fn(), closePath: vi.fn(), stroke: vi.fn(),
+  }
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context as never)
+  vi.stubGlobal('ResizeObserver', undefined)
+  vi.stubGlobal('matchMedia', (query: string) => ({ matches: false, media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }))
+  vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(1)
+  vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined)
+})
+
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+describe('StoryMap', () => {
+  it('exposes known nodes and hides the identity of rumoured places', () => {
+    const map = mapFixture()
+    map.nodes.find((node) => node.state === 'rumoured')!.name = 'A secret ruin'
+    render(<StoryMap map={map} travelBlockedReason="" onTravel={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'The Drowned Lantern, current' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'The Old North Road, visited' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reedwater Ford, known' })).toBeInTheDocument()
+    expect(screen.queryByText('A secret ruin')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /secret ruin/i })).not.toBeInTheDocument()
+  })
+
+  it('only travels along available routes, and blocks travel during combat', () => {
+    const map = mapFixture()
+    const onTravel = vi.fn()
+    const { rerender } = render(<StoryMap map={map} travelBlockedReason="" onTravel={onTravel} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hollin Cross, known' }))
+    fireEvent.click(screen.getByRole('button', { name: 'The Drowned Lantern, current' }))
+    expect(onTravel).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'The Old North Road, visited' }))
+    expect(onTravel).toHaveBeenCalledWith({ id: 'road', name: 'The Old North Road' })
+    onTravel.mockClear()
+    rerender(<StoryMap map={map} travelBlockedReason="Not while combat is underway." onTravel={onTravel} />)
+    const destination = screen.getByRole('button', { name: 'Reedwater Ford, known' })
+    fireEvent.focus(destination)
+    expect(screen.getByText('Not while combat is underway.')).toBeInTheDocument()
+    expect(destination).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.keyDown(destination, { key: 'Enter' })
+    expect(onTravel).not.toHaveBeenCalled()
+  })
+
+  it('moves keyboard focus to the nearest known node in the requested direction', () => {
+    render(<StoryMap map={mapFixture()} travelBlockedReason="" onTravel={vi.fn()} />)
+    const current = screen.getByRole('button', { name: 'The Drowned Lantern, current' })
+    current.focus()
+    fireEvent.keyDown(current, { key: 'ArrowRight' })
+    expect(screen.getByRole('button', { name: 'The Old North Road, visited' })).toHaveFocus()
+  })
+
+  it('keeps edge labels inside the map and moves the compass away from a place', () => {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 360 } as DOMRect)
+    const map = mapFixture()
+    map.nodes = [
+      { id: 'east', name: 'The Lantern Post Inn', icon: 'inn', x: 92, y: 92, state: 'current' },
+      { id: 'west', name: 'The Old North Road', icon: 'road', x: 8, y: 92, state: 'known' },
+    ]
+    map.routes = []
+    const { container } = render(<StoryMap map={map} travelBlockedReason="" onTravel={vi.fn()} />)
+    const east = screen.getByRole('button', { name: 'The Lantern Post Inn, current' })
+    const west = screen.getByRole('button', { name: 'The Old North Road, known' })
+    expect(Number(east.querySelector('.story-map-place-label')?.getAttribute('y'))).toBeLessThan(0)
+    expect(east.querySelector('.story-map-place-label')).toHaveAttribute('text-anchor', 'end')
+    expect(west.querySelector('.story-map-place-label')).toHaveAttribute('text-anchor', 'start')
+    const compass = container.querySelector('.story-map-compass')?.parentElement?.getAttribute('transform') ?? ''
+    expect(Number(compass.match(/translate\([^ ]+ ([^)]+)\)/)?.[1])).toBeLessThan(695 - 28 * 1000 / 360)
+  })
+
+  it('opens the overlay, closes it by Escape, close button or backdrop, and restores focus', async () => {
+    render(<div className="story-shell"><MapSection inspector={testInspector()} worldMap={mapFixture()} travelBlockedReason="" onTravel={vi.fn()} /></div>)
+    const expand = screen.getByRole('button', { name: 'Expand map' })
+    expand.focus()
+    fireEvent.click(expand)
+    let dialog = screen.getByRole('dialog', { name: 'Map' })
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Close map' })).toHaveFocus())
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'Map' })).not.toBeInTheDocument()
+    expect(expand).toHaveFocus()
+    fireEvent.click(expand)
+    dialog = screen.getByRole('dialog', { name: 'Map' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close map' }))
+    expect(screen.queryByRole('dialog', { name: 'Map' })).not.toBeInTheDocument()
+    fireEvent.click(expand)
+    dialog = screen.getByRole('dialog', { name: 'Map' })
+    fireEvent.mouseDown(dialog.parentElement!)
+    expect(screen.queryByRole('dialog', { name: 'Map' })).not.toBeInTheDocument()
+  })
+
+  it('shows a quiet empty state while retaining ways onward', () => {
+    render(<MapSection inspector={testInspector()} worldMap={null} travelBlockedReason="" onTravel={vi.fn()} />)
+    expect(screen.getByText('No map of this place yet.')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Ways onward' })).toBeInTheDocument()
+  })
+
+  it('uses the drawer typed travel action when a map destination is activated', async () => {
+    const board = testBoard()
+    render(<div className="story-shell"><StoryDrawer board={board} inspector={testInspector()} open tab="map" onTabChange={vi.fn()} onClose={vi.fn()} /></div>)
+    fireEvent.click(await screen.findByRole('button', { name: 'The Old North Road, visited' }))
+    expect(board.actionComposerProps.submitAction).toHaveBeenCalledWith('The party travels to The Old North Road.', expect.objectContaining({
+      kind: 'travel', source: 'scene_panel', location: { id: 'road', name: 'The Old North Road' },
+    }))
+  })
+})

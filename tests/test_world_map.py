@@ -150,6 +150,15 @@ def test_campaign_without_a_pack_maps_its_known_locations_with_a_layout():
     assert 'worldMap' not in filter_session_snapshot_for_player({'currentScene': {}, 'locations': []})
 
 
+def test_a_reverse_only_link_is_drawn_but_cannot_be_travelled_from_here():
+    snapshot = _pack_snapshot()
+    road = next(place for place in snapshot['locations'] if place['id'] == 'road')
+    road['connectedLocationIds'] = [place for place in road['connectedLocationIds'] if place != 'bridge']
+    routes = filter_session_snapshot_for_player(snapshot)['worldMap']['routes']
+    bridge = next(route for route in routes if {route['from'], route['to']} == {'road', 'bridge'})
+    assert bridge['travelable'] is False
+
+
 def test_import_stores_computed_positions_and_map_settings(client, app):
     pack = {
         'packId': 'map_pack',
@@ -180,3 +189,9 @@ def test_import_stores_computed_positions_and_map_settings(client, app):
         ('ford', 'known'),
     ]
     assert world_map['routes'] == [{'from': 'camp', 'to': 'ford', 'style': 'trail', 'travelable': True}]
+    # Local no-auth play is an operator view. Its map is still the player-safe
+    # projection rather than an absent or privileged view of the world.
+    response = client.get(f"/api/sessions/{response.get_json()['session_id']}/state")
+    assert response.status_code == 200
+    assert response.get_json()['state_snapshot']['worldMap'] == world_map
+    assert 'worldMap' not in snapshot  # the derived projection is not persisted

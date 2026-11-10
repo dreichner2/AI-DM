@@ -384,6 +384,11 @@ def project_world_map(
             second in _string_list(known_by_id[first].get('connectedLocationIds'))
             or first in _string_list(known_by_id[second].get('connectedLocationIds'))
         )
+        # A one-way link is drawable from either end, but the travel action
+        # validates the current location's outgoing links specifically.
+        if travelable and current_id in (first, second):
+            destination = second if current_id == first else first
+            travelable = destination in _string_list(known_by_id[current_id].get('connectedLocationIds'))
         routes.append({'from': first, 'to': second, 'style': style, 'travelable': travelable})
     terrain = _text(map_settings.get('terrain')).lower()
     return {

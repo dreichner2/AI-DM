@@ -550,7 +550,15 @@ def session_state_payload(
     raw_snapshot = safe_json_loads(session_obj.state_snapshot, None)
     player_ids = private_player_ids
     if include_hidden_state:
-        payload_snapshot = raw_snapshot
+        # Operators receive the full snapshot, but the Story map must still use
+        # the same player-safe projection as every other viewer. It is derived
+        # on read and must not be written back into the persisted snapshot.
+        payload_snapshot = dict(raw_snapshot) if isinstance(raw_snapshot, dict) else raw_snapshot
+        if isinstance(payload_snapshot, dict):
+            payload_snapshot.pop('worldMap', None)
+            player_view = filter_session_snapshot_for_player(raw_snapshot)
+            if isinstance(player_view, dict) and isinstance(player_view.get('worldMap'), dict):
+                payload_snapshot['worldMap'] = player_view['worldMap']
     else:
         if player_ids is None:
             player_ids = account_player_ids_by_campaign(
