@@ -93,7 +93,13 @@ def cmd_lint(args) -> int:
         _dump(result)
     else:
         _print_issues(result)
-    return 0 if result.get('ok') else 1
+    if not result.get('ok'):
+        return 1
+    has_warnings = any(
+        isinstance(issue, dict) and issue.get('severity') == 'warning'
+        for issue in result.get('issues') or []
+    )
+    return 1 if args.strict and has_warnings else 0
 
 
 def cmd_preview(args) -> int:
@@ -142,6 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
     lint_parser = subparsers.add_parser('lint', help='Validate and lint a campaign pack JSON file.')
     lint_parser.add_argument('path', type=Path)
     lint_parser.add_argument('--json', action='store_true', help='Print the full lint payload as JSON.')
+    lint_parser.add_argument('--strict', action='store_true', help='Also exit non-zero when there are warnings.')
     lint_parser.set_defaults(func=cmd_lint)
 
     preview_parser = subparsers.add_parser('preview', help='Print the import dry-run preview JSON.')

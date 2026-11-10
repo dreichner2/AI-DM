@@ -9,7 +9,12 @@ from flask import Blueprint, jsonify, request
 from aidm_server.capabilities import capability_forbidden_response, current_actor_has_capability
 from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
 from aidm_server.combat.intent_planner import attach_intents_to_combat, plan_enemy_intents
-from aidm_server.combat.state import default_battlefield, instantiate_creature, player_combat_participant
+from aidm_server.combat.state import (
+    default_battlefield,
+    instantiate_creature,
+    normalize_combat_state,
+    player_combat_participant,
+)
 from aidm_server.creatures.balance import analyze_creature_balance, auto_scale_creature
 from aidm_server.creatures.campaign_pack import generate_campaign_pack_bestiary
 from aidm_server.creatures.core_bestiary import core_bestiary
@@ -50,9 +55,9 @@ from aidm_server.services.session_state_mutation import (
     SessionStateMutationPlan,
     expected_state_revision_from_payload,
     mutate_session_state,
+    serialized_campaign_turn,
     state_conflict_response,
 )
-from aidm_server.turn_coordinator import session_turn_coordinator
 from aidm_server.validation import coerce_bool, coerce_int, parse_json_body
 from aidm_server.workspace_access import (
     current_workspace_id,
@@ -766,7 +771,9 @@ def start_session_combat(session_id: int):
             },
         )
 
-    with session_turn_coordinator.serialized(session_id):
+    # Combat start writes the campaign's shared Player rows, so it holds the
+    # campaign-wide turn lock set like every turn; the nested mutation reuses it.
+    with serialized_campaign_turn(session_id):
         try:
             session_obj, campaign, players, state = _combat_start_context(session_id)
         except LookupError:
@@ -900,8 +907,13 @@ def start_session_combat(session_id: int):
                 else encounter_resolution.get('encounterGoal')
             ),
             'initiative': [],
-            'flags': encounter_flags,
+            'flags': {
+                **encounter_flags,
+                # Same seeded, modifier-aware initiative as pack and player-started encounters.
+                'initiativeSeed': f'combat:{session_id}:{captured_revision}:api_combat_start',
+            },
         }
+        combat = normalize_combat_state(combat, reloaded_state.get('currentScene'))
         with foreground_provider_reservation() as activate_provider:
             release_clean_scoped_session(boundary='combat intent provider')
             activate_provider()

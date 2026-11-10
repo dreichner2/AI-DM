@@ -42,7 +42,9 @@ from aidm_server.game_state.orchestration.combat_resolution import (
 from aidm_server.game_state.models import (
     compact_state_for_extraction,
     display_actor_id,
+    find_actor,
     normalize_item_name,
+    player_character_from_model,
     recent_timeline_for_session,
     stable_change_id,
     state_snapshot_for_session,
@@ -235,6 +237,24 @@ def _safe_pre_dm_immediate_change(change: dict[str, Any]) -> bool:
     return change_type in SAFE_PRE_DM_IMMEDIATE_CHANGE_TYPES and not bool(change.get('visible', True))
 
 
+def _spell_casting_time(state: dict[str, Any], change: dict[str, Any]) -> str:
+    """The cast's ``castingTime`` from the caster's spell definition (``action`` by default)."""
+
+    actor = find_actor(state, change.get('actorId') or change.get('actor_id')) or {}
+    spellbook = actor.get('spellbook') if isinstance(actor.get('spellbook'), dict) else {}
+    wanted_id = str(change.get('spellId') or '').strip()
+    wanted_name = normalize_item_name(change.get('spellName'))
+    for spell in spellbook.get('knownSpells') or []:
+        if not isinstance(spell, dict):
+            continue
+        if (wanted_id and str(spell.get('id') or '') == wanted_id) or (
+            not wanted_id and wanted_name and normalize_item_name(spell.get('name')) == wanted_name
+        ):
+            casting_time = str(spell.get('castingTime') or '').strip().lower()
+            return 'bonus_action' if casting_time == 'bonus_action' else 'action'
+    return 'action'
+
+
 def _gate_pre_dm_combat_spells(
     *,
     state: dict[str, Any],
@@ -242,7 +262,8 @@ def _gate_pre_dm_combat_spells(
     actor_id: str,
     turn_id: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Reserve one persisted combat action for each accepted spell cast."""
+    """Reserve the persisted combat action (or bonus action, per the spell's
+    ``castingTime``) for each accepted spell cast."""
 
     working_state = deepcopy(state)
     allowed: list[dict[str, Any]] = []
@@ -277,11 +298,13 @@ def _gate_pre_dm_combat_spells(
                 }
             )
             continue
+        bonus_action = _spell_casting_time(working_state, change) == 'bonus_action'
         consumed, reason, economy = consume_combat_turn_economy(
             combat,
             actor_id=change_actor_id,
             action_id=change.get('id'),
-            action_cost=1,
+            action_cost=0 if bonus_action else 1,
+            bonus_action_cost=1 if bonus_action else 0,
         )
         if not consumed:
             rejected.append({'change': change, 'reason': reason or "This turn's action is already spent."})
@@ -302,7 +325,10 @@ def _gate_pre_dm_combat_spells(
                     'round': combat.get('round') or 1,
                     'turnIndex': combat.get('turnIndex'),
                     'flags': {'turnEconomy': deepcopy(economy)},
-                    'reason': f"Casting {change.get('spellName') or 'a spell'} consumed the combat action.",
+                    'reason': (
+                        f"Casting {change.get('spellName') or 'a spell'} consumed the combat "
+                        f"{'bonus action' if bonus_action else 'action'}."
+                    ),
                     'visible': False,
                 },
             ]
@@ -1105,6 +1131,7 @@ def _dm_context_packet(
     player_resolved_action: dict[str, Any] | None = None,
     enemy_deferred_reason: str | None = None,
     enemy_roller: Callable[[int], int] | None = None,
+    turn_id: int | None = None,
 ) -> dict[str, Any]:
     compact = compact_state_for_extraction(state)
     raw_pending_rolls = pre_validation.get('pendingRolls')
@@ -1115,6 +1142,7 @@ def _dm_context_packet(
         pending_rolls=pending_rolls,
         resolved_player_roll=resolved_player_roll or bool(enemy_deferred_reason),
         enemy_roller=enemy_roller,
+        turn_id=turn_id,
     )
     if isinstance(dm_combat, dict) and enemy_deferred_reason:
         dm_combat['enemyActionDeferredReason'] = enemy_deferred_reason
@@ -1186,6 +1214,11 @@ def _dm_context_packet(
                 'Use enemy morale, survival instincts, and objectives when describing choices.',
                 'Do not directly mutate game state; narrate concrete outcomes clearly for extraction and validation.',
             ]
+        )
+    if isinstance(dm_combat, dict) and dm_combat.get('deathSaves'):
+        instructions.append(
+            'combatState.deathSaves are engine-rolled death saving throws of downed characters; '
+            'narrate each exact roll, result and outcome (still dying, stable, dead, or back on their feet at 1 HP).'
         )
     if isinstance(player_resolved_action, dict):
         instructions.extend(
@@ -1513,6 +1546,7 @@ def pre_dm_pipeline(
         resolved_player_roll=_turn_awaits_player_roll(turn) or _resolved_player_roll_should_defer_enemy(turn),
         player_resolved_action=player_resolved_action,
         enemy_deferred_reason=enemy_deferred_reason,
+        turn_id=turn.turn_id,
     )
     if trusted_player_changes:
         dm_context['trustedStateChanges'] = deepcopy(trusted_player_changes)
@@ -1560,6 +1594,86 @@ def pre_dm_pipeline(
         'stateLog': state_log,
         'clarificationRequests': pre_validation.get('clarificationRequests') or [],
     }
+
+
+def _reload_post_dm_orm(token: dict[str, Any]) -> tuple[DmTurn, Session, Campaign, Player]:
+    """Reload after a post-DM provider wait, tolerating character edits.
+
+    Characters are rebuilt from fresh Player rows before post-DM changes are
+    validated, so only turn, session or campaign changes invalidate the result.
+    """
+
+    turn = db.session.get(DmTurn, token['turn_id'])
+    session_obj = db.session.get(Session, token['session_id'])
+    campaign = db.session.get(Campaign, token['campaign_id'])
+    player = db.session.get(Player, token['player_id'])
+    if not all((turn, session_obj, campaign, player)):
+        raise RuntimeError('Turn state changed while the helper provider was running.')
+    current = _pipeline_orm_token(
+        turn=turn,
+        session_obj=session_obj,
+        campaign=campaign,
+        player=player,
+        players=[],
+    )
+    if any(current[key] != token[key] for key in current if key != 'players'):
+        raise RuntimeError('Turn state changed while the helper provider was running.')
+    return turn, session_obj, campaign, player
+
+
+def _lock_campaign_players(campaign: Campaign, fallback_player: Player) -> list[Player]:
+    """Re-read the campaign's Player rows, row-locked where the dialect supports it."""
+
+    players = (
+        Player.query.filter_by(workspace_id=campaign.workspace_id, campaign_id=campaign.campaign_id)
+        .order_by(Player.player_id.asc())
+        .populate_existing()
+        .with_for_update()
+        .all()
+    )
+    if not any(player_obj.player_id == fallback_player.player_id for player_obj in players):
+        locked_fallback = db.session.get(
+            Player,
+            fallback_player.player_id,
+            populate_existing=True,
+            with_for_update=True,
+        )
+        players.append(locked_fallback or fallback_player)
+    return players
+
+
+def _ledger_ids(state: dict[str, Any]) -> set[str]:
+    ledger = state.get('stateChangeLedger')
+    return {
+        str(entry.get('id'))
+        for entry in (ledger if isinstance(ledger, list) else [])
+        if isinstance(entry, dict)
+    }
+
+
+def _with_fresh_player_characters(
+    state: dict[str, Any],
+    players: list[Player],
+    session_obj: Session,
+) -> dict[str, Any]:
+    """Return the state with every character rebuilt from its Player row.
+
+    Combat participants keep their stored state; the applier keeps syncing
+    actors from participants as before. If the session's ledger already holds
+    changes the captured state lacks (the step is being retried, or the session
+    was changed after the capture), the rest of the state is taken from the
+    session as well, so those changes are neither applied twice nor undone.
+    """
+
+    current_snapshot = safe_json_loads(session_obj.state_snapshot, {})
+    session_advanced = isinstance(current_snapshot, dict) and bool(
+        _ledger_ids(current_snapshot) - _ledger_ids(state)
+    )
+    fresh_state = deepcopy(current_snapshot if session_advanced else state)
+    if session_advanced and 'activePlayerIds' in state:
+        fresh_state['activePlayerIds'] = deepcopy(state['activePlayerIds'])
+    fresh_state['playerCharacters'] = [player_character_from_model(player_obj) for player_obj in players]
+    return fresh_state
 
 
 def post_dm_pipeline(
@@ -1630,6 +1744,9 @@ def post_dm_pipeline(
             },
         }
         post_validation = {'accepted': [], 'rejected': [], 'modified': []}
+        players = _lock_campaign_players(campaign, player)
+        players_by_id = {player_obj.player_id: player_obj for player_obj in players}
+        state_before_dm = _with_fresh_player_characters(state_before_dm, players, session_obj)
         final_state = deepcopy(state_before_dm)
         applied_post: list[dict[str, Any]] = []
         session_obj.state_snapshot = safe_json_dumps(final_state, {})
@@ -1654,8 +1771,7 @@ def post_dm_pipeline(
             before_provider_call=_before_provider_call if before_helper_call else None,
         )
         if helper_session_released:
-            turn, session_obj, campaign, player, players = _reload_pipeline_orm(orm_token)
-            players_by_id = {player_obj.player_id: player_obj for player_obj in players}
+            turn, session_obj, campaign, player = _reload_post_dm_orm(orm_token)
         combat_session_released = False
 
         def _before_combat_provider_call() -> None:
@@ -1680,8 +1796,13 @@ def post_dm_pipeline(
             ),
         )
         if combat_session_released:
-            turn, session_obj, campaign, player, players = _reload_pipeline_orm(orm_token)
-            players_by_id = {player_obj.player_id: player_obj for player_obj in players}
+            turn, session_obj, campaign, player = _reload_post_dm_orm(orm_token)
+        # Character edits committed while narration or the helpers ran (another
+        # session, a sheet edit) must survive: apply post-DM changes onto the
+        # current rows, never onto the pre-narration actor copies.
+        players = _lock_campaign_players(campaign, player)
+        players_by_id = {player_obj.player_id: player_obj for player_obj in players}
+        state_before_dm = _with_fresh_player_characters(state_before_dm, players, session_obj)
         post_combat_changes = [
             change
             for change in (post_combat_prepare.get('changes') or [])

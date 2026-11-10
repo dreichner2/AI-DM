@@ -10,6 +10,7 @@ import time
 
 from flask import current_app, has_app_context
 
+from aidm_server import scripted_narrator
 from aidm_server.contracts import ProviderRequest, ProviderResponse
 from aidm_server.llm_context import CONTEXT_VERSION, build_dm_context
 from aidm_server.llm_providers import (
@@ -27,7 +28,15 @@ from aidm_server.llm_providers import (
     ProviderNotConfiguredError,
     get_provider,
 )
-from aidm_server.prompt_templates import DM_SYSTEM_MESSAGE, build_dm_generate_request, build_dm_stream_request
+from aidm_server.prompt_templates import (
+    DM_SYSTEM_MESSAGE,
+    OPENING_BRIEF_HINT_KEY,
+    OPENING_PLAYER_INPUT,
+    build_dm_generate_request,
+    build_dm_stream_request,
+    is_opening_rules_hint,
+    prompt_rules_hint,
+)
 from aidm_server.provider_registry import provider_capabilities
 from aidm_server.services.content_settings import content_settings_from_snapshot
 from aidm_server.telemetry import telemetry_event, telemetry_metric
@@ -139,10 +148,13 @@ def _emergency_fallback_chunk(
     provider: BaseLLMProvider | None,
     error: Exception | str,
     reason: str = 'provider_exception',
+    context: str | None = None,
+    rules_hint: dict | None = None,
+    speaking_player: dict | None = None,
 ) -> EmergencyFallbackChunk:
     provider_name, model_name = _provider_identity(provider)
     return EmergencyFallbackChunk(
-        _fallback_dm_response(user_input),
+        _fallback_dm_response(user_input, context=context, rules_hint=rules_hint, speaking_player=speaking_player),
         error=error,
         failed_provider=provider_name,
         failed_model=model_name,
@@ -184,18 +196,36 @@ def _system_message_for_dm():
     return DM_SYSTEM_MESSAGE
 
 
-def _content_settings_for_context(context: str | None) -> dict:
+def _context_payload(context: str | None) -> dict | None:
     try:
         payload = json.loads(str(context or '{}'))
     except (TypeError, ValueError):
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
-    settings = payload.get('content_settings')
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _content_settings_for_context(context: str | None) -> dict:
+    settings = (_context_payload(context) or {}).get('content_settings')
     return content_settings_from_snapshot(settings if isinstance(settings, dict) else {})
 
 
-def _fallback_dm_response(user_input: str) -> str:
+def _fallback_dm_response(
+    user_input: str,
+    *,
+    context: str | None = None,
+    rules_hint: dict | None = None,
+    speaking_player: dict | None = None,
+) -> str:
+    context_payload = _context_payload(context) if context is not None else None
+    if context_payload is not None and isinstance(rules_hint, dict) and rules_hint:
+        opening = is_opening_rules_hint(rules_hint)
+        return scripted_narrator.narrate(
+            context_payload,
+            prompt_rules_hint(rules_hint),
+            OPENING_PLAYER_INPUT if opening else str(user_input),
+            (speaking_player or {}).get('character_name'),
+            rules_hint.get(OPENING_BRIEF_HINT_KEY) if opening else None,
+        )
     return (
         'The torchlight flickers as your action reshapes the moment. '
         'I can continue with continuity-safe narration while the primary model reconnects. '
@@ -319,7 +349,13 @@ def query_dm_function(user_input, context, speaking_player_id=None, rules_hint: 
             payload=_provider_failure_payload(provider, exc),
             severity='warning',
         )
-        return _emergency_fallback_chunk(user_input, provider=provider, error=exc)
+        return _emergency_fallback_chunk(
+            user_input,
+            provider=provider,
+            error=exc,
+            context=str(context),
+            rules_hint=rules_hint,
+        )
 
 
 def query_dm_function_stream(user_input, context, speaking_player=None, rules_hint: dict | None = None):
@@ -385,6 +421,9 @@ def query_dm_function_stream(user_input, context, speaking_player=None, rules_hi
                 provider=provider,
                 error=empty_error,
                 reason='empty_response',
+                context=str(context),
+                rules_hint=rules_hint,
+                speaking_player=speaking_player,
             )
     except Exception as exc:
         _log_provider_failure('DM provider failure in stream', provider, exc)
@@ -399,7 +438,14 @@ def query_dm_function_stream(user_input, context, speaking_player=None, rules_hi
             # would create a hybrid narration and persist content from two
             # different generation attempts.
             raise
-        yield _emergency_fallback_chunk(str(user_input), provider=provider, error=exc)
+        yield _emergency_fallback_chunk(
+            str(user_input),
+            provider=provider,
+            error=exc,
+            context=str(context),
+            rules_hint=rules_hint,
+            speaking_player=speaking_player,
+        )
 
 
 def query_gpt(prompt, system_message=None):

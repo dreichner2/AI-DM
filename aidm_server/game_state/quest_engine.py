@@ -289,12 +289,15 @@ def rule_satisfied(
 ) -> bool:
     if not isinstance(rule, dict) or not rule:
         return False
+    # Combinators ignore entries that are not predicates.  A combinator left
+    # with no predicate at all is never satisfied: an empty ``allOf`` must not
+    # complete an objective on whatever change happens next.
     all_rules = rule.get('all') if isinstance(rule.get('all'), list) else rule.get('allOf')
     if isinstance(all_rules, list):
-        return bool(all_rules) and all(
+        candidates = [candidate for candidate in all_rules if isinstance(candidate, dict)]
+        return bool(candidates) and all(
             rule_satisfied(candidate, state, change, quest=quest)
-            for candidate in all_rules
-            if isinstance(candidate, dict)
+            for candidate in candidates
         )
     any_rules = rule.get('any') if isinstance(rule.get('any'), list) else rule.get('anyOf')
     if isinstance(any_rules, list):

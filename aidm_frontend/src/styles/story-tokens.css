@@ -1,0 +1,278 @@
+/*
+ * Story mode design language.
+ *
+ * Story mode is the default player view: a quiet, cinematic reading surface.
+ * Rules of the language (every Story stylesheet follows them):
+ *   - No boxed panels. Nothing in the story column has a border-box, card
+ *     background or drop shadow. Structure comes from type, spacing, hairlines
+ *     and light.
+ *   - Colour means something: ember = you can act, gold = dice and rewards,
+ *     arcane = magic, green/red = outcome. Everything else is ink on dark.
+ *   - Information appears when it is relevant and leaves when it is not.
+ *   - Story mode is always dark, whatever the console theme is.
+ * All selectors are scoped under .story-shell so the classic console is untouched.
+ */
+
+.story-shell {
+  /* ink */
+  --story-bg: #070b0c;
+  --story-bg-raised: #0c1314;
+  --story-ink: #ece5d3;
+  --story-ink-soft: #bdb9aa;
+  --story-muted: #86908c;
+  --story-faint: #56615e;
+  --story-hairline: rgba(236, 229, 211, 0.1);
+  --story-hairline-strong: rgba(236, 229, 211, 0.2);
+
+  /* meaning */
+  --story-ember: #ff6b2c;
+  --story-ember-soft: #ffb067;
+  --story-gold: #e8c47c;
+  --story-arcane: #a4bcff;
+  --story-success: #93d8a4;
+  --story-fail: #e88f7e;
+  --story-danger: #ff5a4f;
+
+  /* surfaces that float above the story (drawer, popovers, menus) */
+  --story-glass: rgba(9, 14, 15, 0.78);
+  --story-glass-blur: 22px;
+  --story-glass-edge: rgba(236, 229, 211, 0.08);
+
+  /* scene mood: set by data-mood on the shell */
+  --mood-glow: #1d3a3d;
+  --mood-edge: #050809;
+  --mood-ember: rgba(255, 107, 44, 0.16);
+
+  /* type */
+  --story-prose: 'Crimson Pro', 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
+  --story-ui: 'Inter', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+  --story-prose-size: clamp(1.14rem, 0.94rem + 0.5vw, 1.34rem);
+  --story-prose-leading: 1.68;
+  --story-measure: 66ch;
+  --story-label-size: 0.72rem;
+  --story-label-tracking: 0.16em;
+
+  /* rhythm */
+  --story-gap-1: 4px;
+  --story-gap-2: 8px;
+  --story-gap-3: 12px;
+  --story-gap-4: 16px;
+  --story-gap-5: 24px;
+  --story-gap-6: 40px;
+  --story-gap-7: 64px;
+  --story-gutter: clamp(16px, 4vw, 40px);
+  --story-topbar-height: 56px;
+
+  /* motion */
+  --story-fast: 140ms;
+  --story-base: 220ms;
+  --story-slow: 480ms;
+  --story-ease: cubic-bezier(0.2, 0, 0, 1);
+
+  color: var(--story-ink);
+  background: var(--story-bg);
+  color-scheme: dark;
+  font-family: var(--story-ui);
+}
+
+/* Scene moods. Chosen by StoryView from scene type, mood, danger and combat. */
+.story-shell[data-mood='calm']    { --mood-glow: #1d3a3d; --mood-ember: rgba(255, 107, 44, 0.14); }
+.story-shell[data-mood='hearth']  { --mood-glow: #3a2a12; --mood-ember: rgba(255, 150, 60, 0.24); }
+.story-shell[data-mood='wild']    { --mood-glow: #183322; --mood-ember: rgba(190, 220, 140, 0.1); }
+.story-shell[data-mood='tense']   { --mood-glow: #3b2414; --mood-ember: rgba(255, 107, 44, 0.22); }
+.story-shell[data-mood='dread']   { --mood-glow: #1c1630; --mood-ember: rgba(150, 130, 255, 0.12); }
+.story-shell[data-mood='combat']  { --mood-glow: #40131a; --mood-ember: rgba(255, 70, 60, 0.26); }
+.story-shell[data-mood='rest']    { --mood-glow: #131f3a; --mood-ember: rgba(255, 190, 120, 0.14); }
+
+/* ---- primitives ---- */
+
+/* Small-caps label: the only "heading" style used for UI chrome. */
+.story-shell .story-label {
+  font-family: var(--story-ui);
+  font-size: var(--story-label-size);
+  font-weight: 560;
+  letter-spacing: var(--story-label-tracking);
+  text-transform: uppercase;
+  color: var(--story-muted);
+}
+
+/* Hairline rule, optionally with a centred ornament via ::after content. */
+.story-shell .story-rule {
+  height: 1px;
+  border: 0;
+  margin: var(--story-gap-5) 0;
+  background: linear-gradient(90deg, transparent, var(--story-hairline-strong) 18%, var(--story-hairline-strong) 82%, transparent);
+}
+
+/* Text button: the default control. No box; an underline grows on hover/focus. */
+.story-shell .story-link {
+  appearance: none;
+  border: 0;
+  padding: 2px 0;
+  background: none;
+  font: inherit;
+  color: var(--story-ink-soft);
+  cursor: pointer;
+  background-image: linear-gradient(currentColor, currentColor);
+  background-repeat: no-repeat;
+  background-size: 0% 1px;
+  background-position: 0 100%;
+  transition: color var(--story-fast) var(--story-ease), background-size var(--story-base) var(--story-ease);
+}
+.story-shell .story-link:hover,
+.story-shell .story-link:focus-visible {
+  color: var(--story-ink);
+  background-size: 100% 1px;
+}
+.story-shell .story-link[aria-pressed='true'],
+.story-shell .story-link[aria-selected='true'] {
+  color: var(--story-ember-soft);
+  background-size: 100% 1px;
+}
+
+/* Chip: a suggestion or a change. Text with a leading glyph, never a filled pill. */
+.story-shell .story-chip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 2px;
+  border: 0;
+  border-bottom: 1px solid var(--story-hairline);
+  background: none;
+  font-family: var(--story-ui);
+  font-size: 0.86rem;
+  color: var(--story-ink-soft);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--story-fast) var(--story-ease), border-color var(--story-fast) var(--story-ease);
+}
+.story-shell button.story-chip:hover,
+.story-shell button.story-chip:focus-visible {
+  color: var(--story-ink);
+  border-bottom-color: var(--story-ember);
+}
+.story-shell .story-chip svg { flex: none; width: 14px; height: 14px; color: var(--story-ember-soft); }
+.story-shell .story-chip[data-tone='gold'] svg,
+.story-shell .story-chip[data-tone='gold'] { color: var(--story-gold); }
+.story-shell .story-chip[data-tone='success'] { color: var(--story-success); }
+.story-shell .story-chip[data-tone='fail'] { color: var(--story-fail); }
+.story-shell .story-chip[data-tone='arcane'] { color: var(--story-arcane); }
+.story-shell span.story-chip { cursor: default; border-bottom-color: transparent; min-height: 0; padding: 0; }
+
+/* Round icon button: top bar, composer. A glow, not a box. */
+.story-shell .story-icon-button {
+  appearance: none;
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--story-ink-soft);
+  cursor: pointer;
+  transition: color var(--story-fast) var(--story-ease), background-color var(--story-fast) var(--story-ease), box-shadow var(--story-base) var(--story-ease);
+}
+.story-shell .story-icon-button:hover,
+.story-shell .story-icon-button:focus-visible {
+  color: var(--story-ink);
+  background: rgba(236, 229, 211, 0.06);
+}
+.story-shell .story-icon-button[aria-pressed='true'] { color: var(--story-ember-soft); }
+.story-shell .story-icon-button:disabled { color: var(--story-faint); cursor: default; background: transparent; }
+
+/* Primary action: the one thing to do next (Send, Roll, Begin). */
+.story-shell .story-primary {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 26px;
+  border: 0;
+  border-radius: 999px;
+  font-family: var(--story-ui);
+  font-size: 0.98rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: #1a0d05;
+  background: linear-gradient(180deg, #ffb067, #ff6b2c);
+  box-shadow: 0 0 0 1px rgba(255, 176, 103, 0.35), 0 10px 40px -8px rgba(255, 107, 44, 0.55);
+  cursor: pointer;
+  transition: transform var(--story-fast) var(--story-ease), box-shadow var(--story-base) var(--story-ease), filter var(--story-fast) var(--story-ease);
+}
+.story-shell .story-primary:hover,
+.story-shell .story-primary:focus-visible {
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 1px rgba(255, 196, 133, 0.6), 0 14px 54px -8px rgba(255, 107, 44, 0.75);
+}
+.story-shell .story-primary:active { transform: translateY(0); filter: brightness(0.94); }
+.story-shell .story-primary:disabled {
+  color: var(--story-faint);
+  background: rgba(236, 229, 211, 0.06);
+  box-shadow: none;
+  cursor: default;
+  transform: none;
+}
+
+/* Focus: one visible ring everywhere in Story mode. */
+.story-shell :focus-visible {
+  outline: 2px solid var(--story-ember-soft);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+.story-shell .story-icon-button:focus-visible,
+.story-shell .story-primary:focus-visible { border-radius: 999px; }
+
+/* Health ring colours shared by the party HUD, combat ribbon and drawer. */
+.story-shell [data-health='healthy'], .story-shell [data-health='uninjured'] { --ring: var(--story-success); }
+.story-shell [data-health='hurt'], .story-shell [data-health='wounded'] { --ring: var(--story-gold); }
+.story-shell [data-health='critical'], .story-shell [data-health='badly-wounded'] { --ring: var(--story-fail); }
+.story-shell [data-health='down'], .story-shell [data-health='dead'] { --ring: var(--story-faint); }
+
+/* Waiting dots: three embers. */
+.story-shell .story-dots { display: inline-flex; gap: 5px; vertical-align: middle; }
+.story-shell .story-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--story-ember-soft);
+  animation: story-dot 1.2s var(--story-ease) infinite;
+}
+.story-shell .story-dots i:nth-child(2) { animation-delay: 0.15s; }
+.story-shell .story-dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes story-dot {
+  0%, 70%, 100% { opacity: 0.25; transform: translateY(0); }
+  35% { opacity: 1; transform: translateY(-3px); }
+}
+
+/* Entrance used for new story beats and chips. */
+@keyframes story-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .story-shell *,
+  .story-shell *::before,
+  .story-shell *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+.story-shell .story-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

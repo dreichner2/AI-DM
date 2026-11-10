@@ -34,6 +34,8 @@ type UsePlayNowOnboardingOptions = {
   selectedPlayerId: number | null
   selectedSessionId: number | null
   workspaceLoading: boolean
+  sessionLoading: boolean
+  loadedSessionId: number | null
   campaignUpserted: (campaign: Campaign) => void
   sessionUpserted: (session: SessionSummary) => void
   playerUpserted: (player: PlayerDetail) => void
@@ -90,6 +92,8 @@ export function usePlayNowOnboarding({
   selectedPlayerId,
   selectedSessionId,
   workspaceLoading,
+  sessionLoading,
+  loadedSessionId,
   campaignUpserted,
   sessionUpserted,
   playerUpserted,
@@ -200,7 +204,6 @@ export function usePlayNowOnboarding({
       } catch {
         // The default local workspace still works if localStorage is unavailable.
       }
-      playNowAutoStartRef.current = payload.session.turn_count === 0
       campaignUpserted(payload.campaign)
       sessionUpserted(payload.session)
       playerUpserted(payload.player)
@@ -223,6 +226,9 @@ export function usePlayNowOnboarding({
         await refreshCampaignWorkspace(payload.campaign_id)
         await loadSessionData(payload.session_id)
         await loadPlayerDetail(payload.player_id)
+        // Armed only once the table is hydrated, so the opening is sent once
+        // against the loaded session rather than racing the refresh chain.
+        playNowAutoStartRef.current = payload.session.turn_count === 0
       } catch (refreshError) {
         const message = refreshError instanceof Error ? refreshError.message : String(refreshError)
         pushError('workspace', `Play Now opened, but refresh failed: ${message}`)
@@ -276,7 +282,11 @@ export function usePlayNowOnboarding({
       !selectedPlayerDetailId ||
       socketStatus !== 'joined' ||
       sendPending ||
-      dmResponseBlocking
+      dmResponseBlocking ||
+      playNowPending ||
+      workspaceLoading ||
+      sessionLoading ||
+      loadedSessionId !== activeSessionId
     ) {
       return
     }
@@ -286,11 +296,15 @@ export function usePlayNowOnboarding({
     activeSessionId,
     currentResponsePresent,
     dmResponseBlocking,
+    loadedSessionId,
+    playNowPending,
     selectedPlayerDetailId,
     sendPending,
+    sessionLoading,
     socketStatus,
     startAdventure,
     turnRowCount,
+    workspaceLoading,
   ])
 
   const hostedFirstRun = authRequired === true && !hostedAccessReady

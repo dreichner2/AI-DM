@@ -7,7 +7,7 @@ same-commit evidence with `make release-checklist-status`, and treat ignored
 report.
 
 ## Preflight
-- [ ] `make closed-beta-rc` passes, or each equivalent gate below is recorded separately. The full gate verifies exact Python 3.14.6, Node 24.18.0, and npm 12.0.0 toolchains. For shareable local evidence, run `.venv/bin/python scripts/closed_beta_rc_check.py --evidence-report tmp/release/rc-evidence.md`.
+- [ ] `make closed-beta-rc` passes, or each equivalent gate below is recorded separately. The full gate verifies a compatible toolchain: Python 3.14 (3.14.6 or newer), Node.js 24 (24.18 or newer), and npm 12. For shareable local evidence, run `.venv/bin/python scripts/closed_beta_rc_check.py --evidence-report tmp/release/rc-evidence.md`.
 - [ ] RC evidence is generated from a clean signed-off commit/worktree before final issue closure.
 - [ ] `.venv/bin/python scripts/deploy_bootstrap.py --check-only` passes.
 - [ ] `make request-json-parsing` confirms backend routes use shared JSON request parsing helpers instead of direct `request.get_json(silent=True)`.
@@ -49,7 +49,7 @@ report.
 - [ ] `cd aidm_frontend && npm test` passes typecheck, lint, and unit tests.
 - [ ] `cd aidm_frontend && npm run lint` passes.
 - [ ] `cd aidm_frontend && npm run typecheck` passes.
-- [ ] With Node 24.18.0 and npm 12.0.0, `cd aidm_frontend && npm run build` passes and produces `aidm_frontend/dist/index.html` for deployments using `AIDM_SERVE_FRONTEND=true`.
+- [ ] With Node.js 24 (24.18 or newer) and npm 12, `cd aidm_frontend && npm run build` passes and produces `aidm_frontend/dist/index.html` for deployments using `AIDM_SERVE_FRONTEND=true`.
 - [ ] `cd aidm_frontend && npm run bundle:budget` passes after build.
 - [ ] RC browser smoke runs the built single-origin frontend and verifies required security headers and CSP on the UI response.
 - [ ] RC visual smoke captures desktop, short-height, and mobile screenshots without console errors, horizontal overflow, or clipped core panels.

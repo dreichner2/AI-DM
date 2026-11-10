@@ -32,7 +32,25 @@ Successful import creates:
 - campaign-scope `BestiaryEntry` rows for imported enemies
 - an `installed_campaign_packs` library record with pack version, schema version, source filename, hash, importer, manifest, and validation time
 - durable `campaign_packs`, `campaign_pack_records`, `campaign_pack_sessions`, `campaign_pack_checkpoint_progress`, and `campaign_pack_progress_events` rows
-- `Session.state_snapshot.campaignPack`, a compact runtime mirror containing the hidden pack catalog, director rules, progress, version metadata, shared-group key, and GM-only notes
+- `Session.state_snapshot.campaignPack`, a compact runtime mirror containing the hidden pack catalog, director rules, progress, version metadata, shared-group key, GM-only notes, and the GM-only `startingBrief` (`startingState.partyStatus` and `partyNotes`)
+
+The catalog (`campaignPack.catalog`) holds every authored record under
+`locations`, `npcs`, `quests`, `enemies`, `encounters`, `segments`, `clues`,
+`factions`, `maps`, `handouts`, and `lore`. Records are copied whole: nested
+predicates, reward lists, and interactable requirements are imported exactly as
+authored, or the import is rejected (see Current Limits); nothing is silently
+truncated. Older snapshots that stored lore under `catalog.lores` are migrated
+to `catalog.lore`.
+
+The opening scene (`currentScene`) is built from `startingState.currentScene`:
+name (or `title`), `description`, `summary`, `visibleDetails`,
+`hiddenSceneNotes`, scene type, danger, mood, positions, `items`,
+`interactables`, and `hazards`. When the starting scene lists no `items`,
+`interactables`, or `hazards`, the starting location's own collections are
+used, in the same form as when a location is restored on arrival (a
+`sceneState` collection wins over the top-level one). `startingState.flags`
+seeds the authoritative flags; `campaignFlags` is accepted as an alias, and
+keys in `flags` win on conflict.
 
 ## Bundled Example Library
 
@@ -149,6 +167,175 @@ Supported director rule keys:
 
 `pack_only` means the DM should not invent replacement main quests. Local improvised content can still exist when allowed, but it must be tagged as emergent and should carry a rejoin target.
 
+These six keys (or their snake_case forms) are the only ones read. The four
+generation keys drive drift control in the validator and reach the DM prompt;
+`offTrackPolicy` and `checkpointStyle` reach the prompt only. Any other key
+(for example `tone` or `pathingGuidance`) is ignored and reported by the
+linter.
+
+## Field Reference
+
+Each field is marked by what the engine does with it:
+
+- **mechanical**: runtime code acts on it deterministically.
+- **prompt**: it reaches the DM (model) prompt.
+- **player**: it is shown in the player-filtered snapshot or progress payload.
+- **stored**: it is kept in the operator catalog only; it never reaches players
+  or the prompt.
+
+Fields not listed are preserved in the manifest and catalog but have no runtime
+consumer.
+
+| Record | Field | Use |
+| --- | --- | --- |
+| pack | `packId`, `schemaVersion`, `world`, `multiSessionGroupKey` | mechanical |
+| pack | `title`, `description`, `version` | mechanical, player |
+| pack | `directorRules` (six keys above) | mechanical, prompt |
+| pack | `gmNotes`, `hiddenSceneNotes` | prompt |
+| startingState | `locationId`, `questId`, `checkpointId`, `known*Ids`, `active*Ids`, `partyNpcs`, `combat` | mechanical |
+| startingState | `flags` (alias `campaignFlags`) | mechanical |
+| startingState | `partyStatus`, `partyNotes` | stored (`campaignPack.startingBrief`) |
+| currentScene | `name`/`title`, `sceneType`, `dangerLevel`, `mood`, `combatState`, `musicTag`, positions, `items`, `interactables`, `hazards` | mechanical, player |
+| currentScene | `description` | mechanical, prompt, player |
+| currentScene | `summary`, `visibleDetails` | player |
+| currentScene | `hiddenSceneNotes` | stored (on the opening scene) |
+| location | `id`, `name`, `status`, `connectedLocationIds`, `npcIds`, `questIds`, scene fields, `items`, `interactables`, `hazards`, `sceneState`, `visibleAtStart` | mechanical |
+| location | `description`, `type` | prompt, player |
+| location | `region`, `playerSummary`, `playerDescription`, `tags` | player |
+| location | `gmNotes` | stored |
+| npc | `id`, `name`, `locationId`, `status`, `disposition`, visibility flags | mechanical |
+| npc | `role`, `race`, `questIds` | prompt, player |
+| npc | `playerSummary`, `description`/`playerDescription`, `aliases`, `tags` | player |
+| npc | `personality`, `motivation`, `knows`, `secret`, `useInPlay`, `ifSkipped`, `gmNotes`, `trueName` | stored |
+| quest | `id`, `title`, `status`, `objectives`, `completionPolicy`, `failOnObjectiveFailure`, `rewards`, `xpReward`, `rewardActorId`, `onComplete`, `onFail`, `visibleAtStart` | mechanical |
+| quest | `summary`, `stage` | prompt, player |
+| quest | `playerSummary`, `description` | player |
+| objective | `id`, `status`, `optional`, `prerequisiteObjectiveIds`, `completeWhen`, `failWhen` | mechanical |
+| objective | `description` | prompt, player |
+| encounter | `id`, `enemyIds`, `enemyGroups`, `completion`, `rewards`, `partyAllocation`, `outcomes`, `outcomeRewards`, `outcomeConsequences`, `questEvents`, `on*` hooks, `questIds` | mechanical |
+| encounter | `title`, `summary`/`description`, `locationIds`, `checkpointIds` | prompt |
+| encounter | `setup`, `stakes`, `gmNotes`, `difficulty`, `tags` | stored |
+| enemy | creature fields (`stats`, `abilities`, `behavior`, ...), `xpReward` | mechanical |
+| enemy | `descriptionShort`, `challengeTier`, `creatureType`, `tags` | prompt |
+| checkpoint | `id`, graph fields, `completeWhen`, `failWhen`, `branchWhen`, `prerequisite*`, `optional`, `terminal`, `canCompleteOutOfOrder`, `rejoinTargetCheckpointId`, `directorRules` | mechanical |
+| checkpoint | `title`, `summary`, `chapter`, `act`, `priority`, `gate`, related ids, `clueIds` | prompt |
+| checkpoint | `playerTitle`, `playerSummary` | player |
+| checkpoint | `gmNotes` | stored |
+| segment | `id`, `title`, `trigger`, `locationId` (location trigger), `tags` | mechanical |
+| segment | `description` (or `summary`) | prompt |
+| segment | `summary`, `playerSummary`, `tone`, `gmNotes`, `questIds` | stored (`catalog.segments`) |
+| clue, faction, map, handout, lore | `id` and the record (materialized by `clue.discover`, `faction.discover`, `map.reveal`, `handout.reveal`, `lore.unlock`) | mechanical |
+| clue, faction, map, handout, lore | `title`/`name`, `summary`, `description`, `status`, related ids, `tags` | player |
+
+## Segments
+
+Each segment becomes a `CampaignSegment` row and a `catalog.segments` entry
+with `id`, `title`, `summary`, `description`, `playerSummary`, `tone`,
+`gmNotes`, `locationId`, `questIds`, and `tags`.
+
+Triggers:
+
+- a plain string such as `"veyra, captain"`: keywords; any keyword in the
+  player's message triggers the segment before the turn;
+- `{"type": "keyword", "keywords": ["veyra", "captain"], "match": "any"}`:
+  the same, as an object (`match` may be `all`);
+- `{"type": "state", "location_contains": "...", "quest_contains": "..."}`:
+  substring checks on the live location and active quests after each turn;
+- `{"type": "location", "locationId": "loc_gate"}`: after each turn, triggers
+  when the party's current location id equals `locationId`;
+- `{"type": "manual"}` or no trigger: only an operator triggers it.
+
+A segment with a `locationId` and no `trigger` gets the location trigger for
+that location. Triggered segments complete checkpoints that list them.
+
+## Quest Predicate Language
+
+Objective `completeWhen` and `failWhen` are predicates evaluated by the quest
+engine after every applied change. Narration cannot complete objectives or set
+flags; objectives progress only through predicates or operator tools.
+
+Event keys match the single applied change: `eventType` (or `event`,
+`changeType`) is the change type, and `actorId`, `targetActorId`, `targetId`,
+`objectId`, `itemId`, `itemName`, `npcId`, `locationId`, `encounterId`,
+`participantId`, `endReason`, `flagKey`, `checkpointId`, `objectiveId`, and
+`questId` must equal the change's field (strings compare case-insensitively).
+`quantityAtLeast` (or `amountAtLeast`) compares the change's amount.
+
+State keys are checked against the state after the change: `atLocationId`;
+`locationId` and `flagKey` with `flagValue`/`equals` (default `true`) when no
+event type is given; `possessesItemId` or `possessesItemName` with optional
+`actorId` and `quantityAtLeast`; `objectiveIds` with `objectivePolicy`
+(`all` or `any`). Event and state keys in one predicate must all hold.
+
+`all`/`allOf` and `any`/`anyOf` hold lists of predicates. Entries that are not
+objects are ignored, a combinator with no predicate is never satisfied, and
+other keys next to a combinator are ignored. Any other key is ignored by the
+engine; the linter reports it as an error.
+
+Event types that reach the engine include every applied state change
+(`inventory.*`, `currency.*`, `scene.move_location`, `location.*`, `npc.*`,
+`clue.*`, `flag.set`, `combat.*`, ...), encounter events (`combat.outcome` and
+authored `questEvents`), and interactable events
+(`interactable.opened|closed|locked|unlocked|searched|broken|used|inspected`,
+`hazard.triggered|disarmed|...`).
+
+Encounter reward items get a new instance id, so use `possessesItemName` (not
+`possessesItemId`) for items granted by encounters. Quest reward items keep
+their authored id.
+
+## Authoring Examples
+
+These shapes stay well inside the nesting limit.
+
+Objectives:
+
+```json
+{
+  "id": "quest_open_road",
+  "title": "Open the Road",
+  "status": "active",
+  "rewards": {"xp": 100, "items": [{"id": "road_seal", "name": "Road Seal", "quantity": 1}]},
+  "onComplete": [{"type": "flag.set", "flagKey": "road_open", "flagValue": true}],
+  "objectives": [
+    {"id": "obj_search_box", "description": "Search the waystation lockbox.",
+     "completeWhen": {"eventType": "interactable.searched", "targetId": "ws_lockbox"}},
+    {"id": "obj_win_bridge", "description": "Clear the bridge.",
+     "completeWhen": {"anyOf": [{"eventType": "bridge_won"}, {"eventType": "bridge_terms_agreed"}]},
+     "failWhen": {"eventType": "combat.outcome", "encounterId": "enc_bridge_guard", "endReason": "players_fled"}},
+    {"id": "obj_reach_gate", "description": "Carry the seal to the gate.",
+     "prerequisiteObjectiveIds": ["obj_search_box", "obj_win_bridge"],
+     "completeWhen": {"atLocationId": "loc_gate", "possessesItemName": "Bridge Seal"}}
+  ]
+}
+```
+
+An interactable (on `location.interactables` or `location.sceneState.interactables`):
+
+```json
+{"id": "ws_lockbox", "name": "Iron Lockbox", "kind": "container",
+ "playerDescription": "A locked iron box.", "locked": true, "breakable": true,
+ "requirements": {"unlock": {"anyItemIds": ["rusted_key"]}, "*": {"flags": {"brokk_helping": true}}},
+ "contents": [{"id": "ledger_page", "name": "Ledger Page", "type": "gear"}],
+ "reveals": ["ws_hidden_niche"], "eventVisibility": "players"}
+```
+
+A checkpoint with a flag-gated branch:
+
+```json
+[
+  {"id": "cp_02_road", "title": "The Road That Moves",
+   "completeWhen": {"encounterIds": ["enc_bridge_guard"], "clueIds": ["clue_lantern_bell"]},
+   "nextCheckpointIds": ["cp_03_ally_route", "cp_03_waystation"]},
+  {"id": "cp_03_ally_route", "title": "Radan's Shortcut", "playerTitle": "A Ranger's Path",
+   "branchWhen": {"flagKey": "radan_allied", "equals": true},
+   "completeWhen": {"flags": {"shortcut_found": true}},
+   "nextCheckpointIds": ["cp_05_valley"]},
+  {"id": "cp_03_waystation", "title": "The Waystation",
+   "completeWhen": {"objectiveIds": ["obj_search_box"], "questIds": ["quest_open_road"]},
+   "nextCheckpointIds": ["cp_05_valley"]}
+]
+```
+
 ## Stable Import Errors
 
 The importer returns these stable `error_code` values:
@@ -159,6 +346,7 @@ The importer returns these stable `error_code` values:
 | `invalid_campaign_pack_schema` | The body failed the documented JSON schema contract, with a path such as `quests[2].objectives[1].status`. |
 | `invalid_pack_reference` | A pack record references a location, NPC, quest, segment, enemy, encounter, or checkpoint ID that is not defined in the pack. |
 | `invalid_checkpoint_graph` | Checkpoint `nextCheckpointIds` form a cycle. |
+| `pack_content_out_of_bounds` | A value nests too deeply or has a string, object, or list larger than the limits below; the message names its JSON path, such as `quests[0].objectives[1].completeWhen.allOf[0]`. |
 | `unsupported_schema_version` | `schemaVersion` is not accepted by this AIDM build. |
 | `world_not_found` | The pack references an existing world that does not exist in the current workspace. |
 | `campaign_pack_import_failed` | Import failed after validation due to an unexpected persistence error. |
@@ -176,7 +364,27 @@ PACK=docs/examples/the_road_of_unremembered_kings_campaign.json
 .venv/bin/python scripts/aidm_pack.py test-checkpoints "$PACK"
 ```
 
-The linter uses the same import dry-run validator as the API, then adds authoring checks for unreachable checkpoints, missing completion cues, hidden records visible at start, large prompt-budget records, dependency declarations, and `pack_only` checkpoints without rejoin targets.
+The linter uses the same import dry-run validator as the API, then adds authoring checks for unreachable checkpoints, missing completion cues, hidden records visible at start, large prompt-budget records, dependency declarations, and `pack_only` checkpoints without rejoin targets. It also reports everything the engine would reject or ignore:
+
+| Severity | Code | Reported when |
+| --- | --- | --- |
+| error | `pack_content_out_of_bounds` | a value exceeds a nesting, string, key, or list limit (one issue per JSON path) |
+| error | `invalid_id` | a record or objective `id` is not `[a-z0-9_]+` (the importer rewrites IDs but not references) |
+| error | `unknown_reference` | `connectedLocationIds`, `npcIds`, `questIds`, `encounterIds`, `enemyIds` (and `enemyGroups[].enemyId`), `locationIds`, `checkpointIds`, segment `locationId`, checkpoint id lists (also inside `completeWhen`/`failWhen`), `startingState` ids, objective prerequisites, or a predicate `encounterId`, `objectiveId(s)`, `questId`, `locationId`, `atLocationId`, `npcId`, `checkpointId` names no record |
+| error | `invalid_interactable_catalog` | `interactables.validate_interactable_catalog` rejects a location's or the opening scene's objects |
+| error | `unknown_predicate_key` | an objective `completeWhen`/`failWhen` uses a key outside the predicate language, or a key next to a combinator |
+| error | `invalid_predicate_entry` | a predicate is not an object or is empty, or a combinator is not a list or holds no predicate |
+| error | `invalid_segment_trigger` | a segment trigger has an unknown type, or a keyword trigger has no keywords, or a location trigger has no `locationId` |
+| warning | `objective_without_mechanics` | an objective has no `completeWhen`, `failWhen`, or prerequisites (only an operator can complete it) |
+| warning | `location_without_connections` | a location has no `connectedLocationIds` (structured travel cannot reach or leave it) |
+| warning | `branch_flag_never_set` | a `branchWhen.flagKey` is set by nothing in the pack (starting flags, rewards, or `flag.set` consequences) |
+| warning | `possesses_encounter_reward_item_id` | a predicate `possessesItemId` names an encounter-reward item (use `possessesItemName`) |
+| warning | `unread_director_rule` | a director-rule key the engine does not read |
+| warning | `prose_in_complete_when` | checkpoint `completeWhen.anyOf` holds prose instead of encounter outcome labels |
+| warning | `unread_checkpoint_condition_key` | checkpoint `completeWhen`/`failWhen` has a key progress does not read (for example `summary`) |
+| warning | `starting_campaign_flags_alias` | `startingState.campaignFlags` is used (prefer `flags`) |
+
+`lint` exits non-zero on errors only; `lint --strict` also fails on warnings.
 
 The `report` command prints an author-facing validation summary for starting references, populated authored collections, visible-at-start records, hidden player records, checkpoint reachability, optional/terminal checkpoints, encounter checkpoint linkage, and loose encounters. Add `--json` when release evidence or external authoring tools need the structured report.
 
@@ -191,7 +399,8 @@ result; it does not import or persist the draft. Both pack-tool endpoints
 require `dm_authoring`.
 
 All bundled example packs, including the internal Bleakmoor fixture, lint
-without warnings.
+without errors. They still carry warnings (non-mechanical objectives, missing
+location connections, prose completion text, unread director rules).
 
 ## Installed Pack Library
 
@@ -261,8 +470,9 @@ Checkpoint graph fields:
 - `gate`: declares soft, hard, optional, or no gate behavior.
 - `canCompleteOutOfOrder`: allows a checkpoint to complete without becoming the active spine.
 - `playerTitle` and `playerSummary`: player-safe labels used by filtered progress payloads.
-- `completeWhen`: state, quest, objective, segment, location, clue, or encounter conditions that complete a checkpoint.
-- `failWhen`: quest, objective, or encounter conditions that fail a checkpoint.
+- `completeWhen`: conditions that complete a checkpoint; any one suffices. Read keys: `locationIds` (party is there), `segmentIds` (segment triggered), `objectiveIds` (completed, scoped to `questIds` when given), `questIds` (completed), `encounterIds` (ended with an allowed outcome; `anyOf` lists the allowed encounter outcome labels), `clueIds` (all discovered), and `flags` (`{key: value}`, all must match `snapshot.flags` with the `branchWhen` comparison rules). Prose in `anyOf` and other keys such as `summary` are ignored.
+- `failWhen`: `questIds`, `objectiveIds`, or `encounterIds` conditions that fail a checkpoint.
+- `gmNotes`: kept with the checkpoint for operators; never projected to players.
 - `directorRules`: checkpoint-specific policy overrides merged over the pack-level director rules while active.
 
 When `completeWhen` is present, only those explicit predicates complete the checkpoint. Without `completeWhen`, `locationIds` complete a checkpoint only when the checkpoint does not also declare objective, segment, or encounter completion cues.
@@ -373,7 +583,7 @@ Pack-authored records are materialized from `campaignPack.catalog`; non-pack add
 
 ## Hidden Information
 
-Operator/DM views can see the full catalog, `gmNotes`, `hiddenSceneNotes`, future checkpoints, and progress-event audit data. Player-facing session state and progress payloads filter hidden catalog records, future checkpoint details, alternate routes, director rules, hidden notes, and the raw `stateChangeLedger`.
+Operator/DM views can see the full catalog, `gmNotes`, `hiddenSceneNotes`, future checkpoints, and progress-event audit data. Player-facing session state and progress payloads filter hidden catalog records, future checkpoint details, alternate routes, director rules, hidden notes, the starting brief, and the raw `stateChangeLedger`. The player projection is an allowlist: it shows the opening scene's `summary` and `visibleDetails` but never `hiddenSceneNotes`, and never shows NPC `personality`, `motivation`, `knows`, `secret`, `useInPlay`, `ifSkipped`, `trueName`, encounter `setup` or `stakes`, or any `gmNotes`.
 
 Use `playerTitle`, `playerSummary`, `visibleToPlayers`, `knownToPlayers`, and `hiddenToPlayers` to control what filtered progress payloads may reveal.
 
@@ -405,7 +615,13 @@ The DM prompt receives those details with the active checkpoint, next checkpoint
 
 - Locations, NPCs, quests, segments, checkpoints, encounters, clues, factions, maps, handouts, and lore: 250 records each.
 - Enemies: 150 records.
-- Record IDs: 120 characters.
+- Record IDs: 120 characters; use lowercase `[a-z0-9_]` IDs everywhere.
 - Titles: 120 characters.
 - Names: 160 characters.
-- Long text fields: 4000 characters.
+- Any string in a record or pack-level value: 4000 characters.
+- Nesting: a container may sit at most 12 levels below its record (the record
+  is level 0, so `quests[0].objectives[0].completeWhen` is level 3).
+- Objects: 80 keys (keys up to 120 characters). Lists inside records: 150 items.
+
+Content beyond a limit fails the import with `pack_content_out_of_bounds` and
+its JSON path; the linter reports every such path as an error.

@@ -51,7 +51,7 @@ secret/env managers. Choose the matching exposure mode in
 
 ## Startup
 
-1. Provision exact Python 3.14.6. For the repository-managed virtual
+1. Provision Python 3.14 (3.14.6 or newer). For the repository-managed virtual
    environment, create it and install the constrained, hash-locked runtime:
 
    ```bash
@@ -61,7 +61,7 @@ secret/env managers. Choose the matching exposure mode in
    ```
 
    `make install` installs the larger development/test environment instead.
-2. When `AIDM_SERVE_FRONTEND=true`, provision Node 24.18.0 and npm 12.0.0,
+2. When `AIDM_SERVE_FRONTEND=true`, provision Node.js 24 (24.18 or newer) and npm 12,
    then build the tracked frontend:
 
    ```bash

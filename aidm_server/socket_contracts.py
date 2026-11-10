@@ -17,6 +17,8 @@ from aidm_server.validation import coerce_int
 
 
 SEND_MESSAGE_REQUIRED_FIELDS = ['session_id', 'campaign_id', 'message', 'player_id']
+MESSAGE_KIND_OPENING = 'opening'
+SEND_MESSAGE_KINDS = frozenset({MESSAGE_KIND_OPENING})
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,7 @@ class SendMessagePayload:
     manual_segment_ids: set[int]
     action_intent: dict[str, Any] | None = None
     client_message_id: str | None = None
+    message_kind: str | None = None
 
 
 def socket_error_payload(error_code: str, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -375,6 +378,10 @@ def validate_send_message_payload(data: Any) -> tuple[SendMessagePayload | None,
     if not session_id or not campaign_id or not player_id or not user_input:
         return None, _validation_error('Invalid message payload types.')
 
+    message_kind = data.get('message_kind')
+    if message_kind is not None and message_kind not in SEND_MESSAGE_KINDS:
+        return None, _validation_error('Invalid message payload types.')
+
     if (not action_intent or action_intent.get('kind') != 'admin') and has_reserved_admin_prefix(user_input):
         return None, SocketContractError(
             error_code='admin_prefix_reserved',
@@ -401,6 +408,7 @@ def validate_send_message_payload(data: Any) -> tuple[SendMessagePayload | None,
             manual_segment_ids=manual_segment_ids,
             action_intent=action_intent,
             client_message_id=client_message_id or None,
+            message_kind=message_kind,
         ),
         None,
     )

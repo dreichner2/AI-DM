@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aidm.local/schemas/campaign-pack.schema.json",
   "title": "AIDM Campaign Pack",
-  "description": "Structured adventure module import format for AIDM campaigns.",
+  "description": "Structured adventure module import format for AIDM campaigns. Every record, startingState, directorRules, gmNotes, hiddenSceneNotes and marketplace value is bounded on import: containers may nest at most 12 levels below the record (the record itself is level 0), strings may be at most 4000 characters, objects at most 80 keys (keys at most 120 characters) and lists at most 150 items. Content beyond a bound is rejected with error_code pack_content_out_of_bounds and its JSON path; nothing is truncated.",
   "type": "object",
   "additionalProperties": true,
   "required": ["packId", "title"],
@@ -53,6 +53,10 @@
         "questId": {
           "$ref": "#/$defs/id"
         },
+        "checkpointId": {
+          "description": "Initial active checkpoint; defaults to the first checkpoint.",
+          "$ref": "#/$defs/id"
+        },
         "currentScene": {
           "$ref": "#/$defs/currentScene"
         },
@@ -72,6 +76,31 @@
           "$ref": "#/$defs/idList"
         },
         "flags": {
+          "description": "Copied verbatim into the session's authoritative flags.",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "campaignFlags": {
+          "description": "Accepted alias of flags; keys in flags win on conflict. Prefer flags.",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "partyStatus": {
+          "description": "GM-only starting brief, stored at campaignPack.startingBrief.partyStatus. Never shown to players."
+        },
+        "partyNotes": {
+          "description": "GM-only starting brief, stored at campaignPack.startingBrief.partyNotes. Never shown to players.",
+          "$ref": "#/$defs/gmNotes"
+        },
+        "partyNpcs": {
+          "type": "array",
+          "maxItems": 150,
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "combat": {
           "type": "object",
           "additionalProperties": true
         }
@@ -207,6 +236,39 @@
       },
       "uniqueItems": true
     },
+    "objectList": {
+      "type": "array",
+      "maxItems": 150,
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "questPredicate": {
+      "description": "Quest objective predicate evaluated by the quest engine after every applied change. Event keys (eventType|event|changeType, actorId, targetActorId, targetId, objectId, itemId, itemName, npcId, locationId, encounterId, participantId, endReason, flagKey, checkpointId, objectiveId, questId, quantityAtLeast|amountAtLeast) match the applied change exactly (strings case-insensitively). State keys (atLocationId; locationId and flagKey + flagValue|equals when no event type is given; possessesItemId|possessesItemName with optional actorId and quantityAtLeast; objectiveIds + objectivePolicy all|any) are checked against the state after the change. Event and state keys in one predicate must all hold. all|allOf and any|anyOf hold lists of predicates; entries that are not objects are ignored and a combinator with no predicate is never satisfied; other keys next to a combinator are ignored. Any other key is ignored by the engine and reported by the linter.",
+      "properties": {
+        "all": {
+          "items": {
+            "$ref": "#/$defs/questPredicate"
+          }
+        },
+        "allOf": {
+          "items": {
+            "$ref": "#/$defs/questPredicate"
+          }
+        },
+        "any": {
+          "items": {
+            "$ref": "#/$defs/questPredicate"
+          }
+        },
+        "anyOf": {
+          "items": {
+            "$ref": "#/$defs/questPredicate"
+          }
+        }
+      }
+    },
     "flagPredicate": {
       "description": "A fail-closed predicate evaluated against the persisted authoritative state flags. It does not inspect narration or model output.",
       "type": "object",
@@ -313,7 +375,35 @@
               "maxLength": 4000
             },
             "connectedLocationIds": {
+              "description": "The only adjacency structured travel uses. A location without it cannot be reached or left by structured travel.",
               "$ref": "#/$defs/idList"
+            },
+            "npcIds": {
+              "description": "Merged into the scene's active NPCs on arrival.",
+              "$ref": "#/$defs/idList"
+            },
+            "questIds": {
+              "description": "Merged into the scene's active quests on arrival.",
+              "$ref": "#/$defs/idList"
+            },
+            "items": {
+              "$ref": "#/$defs/objectList"
+            },
+            "interactables": {
+              "description": "Doors, locks, containers and objects restored into the scene on arrival (and at the start when this is the starting location and the starting scene lists none).",
+              "$ref": "#/$defs/objectList"
+            },
+            "hazards": {
+              "$ref": "#/$defs/objectList"
+            },
+            "sceneState": {
+              "description": "Optional scene-local overrides; a collection here wins over the top-level one.",
+              "type": "object",
+              "additionalProperties": true
+            },
+            "gmNotes": {
+              "description": "Stored in the operator catalog only; never sent to players or the DM prompt.",
+              "$ref": "#/$defs/gmNotes"
             },
             "visibleAtStart": {
               "type": "boolean"
@@ -353,6 +443,36 @@
             },
             "questIds": {
               "$ref": "#/$defs/idList"
+            },
+            "description": {
+              "description": "Shown to players when no playerDescription is set.",
+              "type": "string",
+              "maxLength": 4000
+            },
+            "personality": {
+              "description": "Stored in the operator catalog only; never shown to players."
+            },
+            "motivation": {
+              "description": "Stored in the operator catalog only; never shown to players."
+            },
+            "knows": {
+              "description": "Stored in the operator catalog only; never shown to players."
+            },
+            "secret": {
+              "description": "Stored in the operator catalog only; never shown to players. A boolean true (or a yes/true string) instead hides the whole NPC from players."
+            },
+            "useInPlay": {
+              "description": "Stored in the operator catalog only; never shown to players."
+            },
+            "ifSkipped": {
+              "description": "Stored in the operator catalog only; never shown to players."
+            },
+            "gmNotes": {
+              "description": "Stored in the operator catalog only; never shown to players.",
+              "$ref": "#/$defs/gmNotes"
+            },
+            "trueName": {
+              "description": "Stored in the operator catalog only; never shown to players."
             },
             "visibleAtStart": {
               "type": "boolean"
@@ -422,6 +542,20 @@
           "type": "string",
           "maxLength": 80,
           "default": "open"
+        },
+        "optional": {
+          "type": "boolean"
+        },
+        "prerequisiteObjectiveIds": {
+          "description": "Objectives of the same quest that must be completed first; until then this objective is blocked.",
+          "$ref": "#/$defs/idList"
+        },
+        "completeWhen": {
+          "description": "An objective with no completeWhen, failWhen or prerequisites can only be completed by an operator; narration cannot complete it.",
+          "$ref": "#/$defs/questPredicate"
+        },
+        "failWhen": {
+          "$ref": "#/$defs/questPredicate"
         }
       }
     },
@@ -540,6 +674,28 @@
           "type": "object",
           "additionalProperties": true
         },
+        "setup": {
+          "description": "Stored in the operator catalog only; never shown to players."
+        },
+        "stakes": {
+          "description": "Stored in the operator catalog only; never shown to players."
+        },
+        "gmNotes": {
+          "description": "Stored in the operator catalog only; never shown to players.",
+          "$ref": "#/$defs/gmNotes"
+        },
+        "difficulty": {
+          "description": "Stored in the operator catalog."
+        },
+        "tags": {
+          "description": "Stored in the operator catalog.",
+          "type": "array",
+          "maxItems": 150,
+          "items": {
+            "type": "string",
+            "maxLength": 120
+          }
+        },
         "reward": {
           "description": "Compatibility alias for common successful-outcome encounter rewards.",
           "$ref": "#/$defs/encounterRewardSpec"
@@ -616,11 +772,35 @@
           "type": "string",
           "maxLength": 120
         },
+        "summary": {
+          "description": "Used as the segment description when description is absent.",
+          "type": "string",
+          "maxLength": 4000
+        },
         "description": {
           "type": "string",
           "maxLength": 4000
         },
+        "playerSummary": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "tone": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "gmNotes": {
+          "$ref": "#/$defs/gmNotes"
+        },
+        "locationId": {
+          "description": "Without a trigger, the segment triggers automatically when the party's current location is this location.",
+          "$ref": "#/$defs/id"
+        },
+        "questIds": {
+          "$ref": "#/$defs/idList"
+        },
         "trigger": {
+          "description": "A plain string is a comma-separated keyword list matched against the player's message. Without a trigger the segment is manual, unless it has a locationId.",
           "oneOf": [
             {
               "type": "string",
@@ -631,16 +811,27 @@
               "additionalProperties": true,
               "properties": {
                 "type": {
-                  "enum": ["manual", "keyword", "state"]
+                  "enum": ["manual", "keyword", "keywords", "state", "location"]
                 },
-                "keyword": {
-                  "type": "string"
+                "keywords": {
+                  "description": "keyword triggers: a list (or comma-separated string) matched against the player's message.",
+                  "type": ["array", "string"]
+                },
+                "match": {
+                  "description": "keyword triggers: any (default) or all keywords must appear.",
+                  "enum": ["any", "all"]
                 },
                 "location_contains": {
+                  "description": "state triggers: substring of the current location name or id.",
                   "type": "string"
                 },
                 "quest_contains": {
+                  "description": "state triggers: substring of an active quest's id, title, stage, summary or objectives.",
                   "type": "string"
+                },
+                "locationId": {
+                  "description": "location triggers: fires when the current location id equals this id.",
+                  "$ref": "#/$defs/id"
                 }
               }
             }
@@ -765,12 +956,66 @@
           "$ref": "#/$defs/id"
         },
         "completeWhen": {
+          "description": "When present, only these conditions complete the checkpoint; any one of them suffices. Other keys (for example summary) are ignored.",
           "type": "object",
-          "additionalProperties": true
+          "additionalProperties": true,
+          "properties": {
+            "locationIds": {
+              "description": "The party is at one of these locations.",
+              "$ref": "#/$defs/idList"
+            },
+            "segmentIds": {
+              "description": "One of these segments has triggered.",
+              "$ref": "#/$defs/idList"
+            },
+            "objectiveIds": {
+              "description": "One of these objectives is completed (scoped to questIds when given).",
+              "$ref": "#/$defs/idList"
+            },
+            "questIds": {
+              "description": "One of these quests is completed.",
+              "$ref": "#/$defs/idList"
+            },
+            "encounterIds": {
+              "description": "One of these pack encounters ended with an allowed outcome.",
+              "$ref": "#/$defs/idList"
+            },
+            "clueIds": {
+              "description": "All of these clues have been discovered.",
+              "$ref": "#/$defs/idList"
+            },
+            "flags": {
+              "description": "All of these flags match the authoritative flags, with branchWhen comparison rules.",
+              "type": "object",
+              "additionalProperties": {
+                "type": ["string", "number", "boolean"]
+              }
+            },
+            "anyOf": {
+              "description": "Encounter outcome labels (defeat, flee, surrender, bargain, negotiate, objective, resolve, success, ...). Prose sentences are ignored.",
+              "type": "array"
+            }
+          }
         },
         "failWhen": {
+          "description": "Reads only questIds, objectiveIds and encounterIds; other keys are ignored.",
           "type": "object",
-          "additionalProperties": true
+          "additionalProperties": true,
+          "properties": {
+            "questIds": {
+              "$ref": "#/$defs/idList"
+            },
+            "objectiveIds": {
+              "$ref": "#/$defs/idList"
+            },
+            "encounterIds": {
+              "$ref": "#/$defs/idList"
+            }
+          }
+        },
+        "gmNotes": {
+          "description": "Stored with the checkpoint for operators; never shown to players.",
+          "$ref": "#/$defs/gmNotes"
         },
         "directorRules": {
           "$ref": "#/$defs/directorRules"
@@ -778,6 +1023,7 @@
       }
     },
     "directorRules": {
+      "description": "Only the six listed keys (or their snake_case forms) are read; any other key is ignored and reported by the linter.",
       "type": "object",
       "additionalProperties": true,
       "properties": {
@@ -875,12 +1121,39 @@
           "$ref": "#/$defs/id"
         },
         "name": {
+          "description": "Scene name; title is accepted as an alias.",
           "type": "string",
           "maxLength": 160
         },
         "description": {
           "type": "string",
           "maxLength": 4000
+        },
+        "summary": {
+          "description": "Player-facing opening summary.",
+          "type": "string",
+          "maxLength": 4000
+        },
+        "visibleDetails": {
+          "description": "Player-facing details of the opening scene.",
+          "type": "array",
+          "maxItems": 150,
+          "items": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        },
+        "hiddenSceneNotes": {
+          "description": "GM-only notes kept on the opening scene; never shown to players.",
+          "$ref": "#/$defs/gmNotes"
+        },
+        "interactables": {
+          "description": "Opening-scene objects. When absent or empty, the starting location's own interactables are used.",
+          "$ref": "#/$defs/objectList"
+        },
+        "hazards": {
+          "description": "Opening-scene hazards. When absent or empty, the starting location's own hazards are used.",
+          "$ref": "#/$defs/objectList"
         },
         "sceneType": {
           "type": "string",

@@ -15,6 +15,8 @@ import type {
   TtsRuntimeConfig,
   World,
 } from './types'
+import { useLatest } from './useLatest'
+import type { SessionPage } from './useWorkspaceStore'
 
 export type CampaignSessionMeta = {
   count: number
@@ -60,6 +62,9 @@ type UseWorkspaceQueriesOptions = {
   setWorkspaceLoading: (value: ValueUpdater<boolean>) => void
   setLoadingCampaignId: (value: ValueUpdater<number | null>) => void
   setSessionLoading: (value: ValueUpdater<boolean>) => void
+  sessionPageLoaded: (page: SessionPage) => void
+  onSessionLogLoaded: (entries: SessionLogEntry[]) => void
+  pendingSubmissionCampaignId: () => number | null
   rootCampaignsLoaded: (campaigns: Campaign[]) => void
   campaignWorkspaceLoaded: (workspace: CampaignWorkspace) => void
   setOptimisticEntries: Dispatch<SetStateAction<TimelineEntry[]>>
@@ -126,6 +131,9 @@ export function useWorkspaceQueries({
   setWorkspaceLoading,
   setLoadingCampaignId,
   setSessionLoading,
+  sessionPageLoaded,
+  onSessionLogLoaded,
+  pendingSubmissionCampaignId,
   rootCampaignsLoaded,
   campaignWorkspaceLoaded,
   setOptimisticEntries,
@@ -134,6 +142,10 @@ export function useWorkspaceQueries({
   pushError,
   onUnauthorized,
 }: UseWorkspaceQueriesOptions) {
+  // Read at call time so a workspace cache update or an auth-dialog change
+  // never gives loadSessionData a new identity (that would re-run every
+  // effect keyed on it and reload the session).
+  const latest = useLatest({ sessions, onSessionLogLoaded, onUnauthorized, pendingSubmissionCampaignId })
   const rootRequestRef = useRef(0)
   const operatorRequestRef = useRef(0)
   const operatorDataEnabledRef = useRef(operatorDataEnabled)
@@ -277,10 +289,15 @@ export function useWorkspaceQueries({
           requestBaseUrl,
           requestAccessSnapshot,
         )) return
-        setLogEntries(logData.entries)
-        setSessionLogCursor(logData.next_cursor ?? null)
-        setSessionLogHasMore(Boolean(logData.has_more))
-        setSessionState(stateData)
+        sessionPageLoaded({
+          sessionId,
+          entries: logData.entries,
+          nextCursor: logData.next_cursor ?? null,
+          hasMore: Boolean(logData.has_more),
+          sessionState: stateData,
+        })
+        latest.current.onSessionLogLoaded(logData.entries)
+        const { sessions } = latest.current
         setCampaignSessionMeta((current) => {
           const existing = current[stateData.campaign_id]
           return {
@@ -305,7 +322,7 @@ export function useWorkspaceQueries({
           requestAccessSnapshot,
         )) return
         if (isUnauthorizedError(error)) {
-          onUnauthorized()
+          latest.current.onUnauthorized()
         } else if (isNotFoundError(error)) {
           setSelectedSessionId((current) => (current === sessionId ? null : current))
           setLogEntries([])
@@ -331,8 +348,8 @@ export function useWorkspaceQueries({
       auth,
       baseUrl,
       isCurrentRequest,
-      onUnauthorized,
-      sessions,
+      latest,
+      sessionPageLoaded,
       setCampaignSessionMeta,
       setLogEntries,
       setSessionLoading,
@@ -634,9 +651,14 @@ export function useWorkspaceQueries({
           }
           return null
         })
-        setOptimisticEntries([])
-        setStreamingTurn(null)
-        setSendPending(false)
+        // Never wipe an in-flight send for this campaign: the socket owns its
+        // lifecycle and a refresh says nothing about its delivery.
+        const pendingCampaignId = latest.current.pendingSubmissionCampaignId()
+        if (pendingCampaignId === null || pendingCampaignId !== campaignId) {
+          setOptimisticEntries([])
+          setStreamingTurn(null)
+          setSendPending(false)
+        }
       } catch (error) {
         if (isCurrentRequest(
           workspaceRequestRef,
@@ -670,6 +692,7 @@ export function useWorkspaceQueries({
       baseUrl,
       campaignWorkspaceLoaded,
       isCurrentRequest,
+      latest,
       onUnauthorized,
       pushError,
       setCampaignSessionMeta,

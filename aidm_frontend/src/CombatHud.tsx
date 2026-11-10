@@ -6,17 +6,13 @@ import type {
   CombatParticipantSummary,
   CombatStatePanel,
 } from './gameSelectors'
+import { combatActionSubmission } from './story/actionIntents'
 
-type CombatHudProps = {
+export type CombatHudProps = {
   combat: CombatStatePanel
   playerId: number | null
   disabled: boolean
   submitAction: (overrideMessage?: string, overrideIntent?: ActionIntent) => boolean
-}
-
-function combatClientMessageId() {
-  const randomId = globalThis.crypto?.randomUUID?.()
-  return `combat-hud-${randomId ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`}`
 }
 
 function economyLabel(action: CombatLegalAction) {
@@ -26,10 +22,6 @@ function economyLabel(action: CombatLegalAction) {
   if (action.economy.movement === 'optional') parts.push('movement optional')
   if (action.economy.endsTurn) parts.push('ends turn')
   return parts.join(' · ') || 'ends turn'
-}
-
-function attackMessage(actorName: string, action: CombatLegalAction, target: CombatLegalTarget) {
-  return `${actorName} attacks ${target.name} with ${action.weaponName || 'their weapon'}.`
 }
 
 function playerFacingActionDescription(description: string) {
@@ -92,19 +84,8 @@ export function CombatHud({ combat, playerId, disabled, submitAction }: CombatHu
   if (!combat.active || !bundle) return null
 
   const submit = (action: CombatLegalAction, target: CombatLegalTarget | null) => {
-    if (action.requiresTarget && !target) return
-    const message = target ? attackMessage(bundle.actorName, action, target) : action.message
-    const intent: ActionIntent = {
-      kind: 'combat',
-      source: 'combat_hud',
-      text: message,
-      client_message_id: combatClientMessageId(),
-      combat: {
-        action_id: action.id,
-        ...(target ? { target_id: target.id } : {}),
-      },
-    }
-    submitAction(message, intent)
+    const submission = combatActionSubmission(bundle.actorName, action, target)
+    if (submission) submitAction(submission.message, submission.intent)
   }
 
   const turnLabel = bundle.isCurrentActor

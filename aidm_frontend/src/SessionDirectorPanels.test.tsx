@@ -128,6 +128,7 @@ describe('DirectorCommentaryPanel', () => {
     expect(within(panel).getByText('Hidden Locations')).toBeInTheDocument()
     expect(within(panel).getByText('The gate remembers Ember.')).toBeInTheDocument()
     expect(within(panel).getByText('Streaming')).toBeInTheDocument()
+    expect(within(panel).getByText('Streaming... / 1.2s / ~72 tokens (estimate)')).toBeInTheDocument()
 
     fireEvent.click(within(panel).getByRole('button', { name: 'Close Director Commentary' }))
     expect(onClose).toHaveBeenCalledTimes(1)
@@ -196,5 +197,21 @@ describe('OperatorDrawer', () => {
 
     expect(screen.getByRole('button', { name: 'Mature' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Noir' })).toBeDisabled()
+  })
+
+  it('labels token counts as estimates and shows unknown measurements as a dash', () => {
+    render(
+      <OperatorDrawer
+        canEditContentSettings
+        contentSettings={DEFAULT_CONTENT_SETTINGS}
+        contentSettingsPending={false}
+        dmExecutionStats={{ tokens: 72, time: '—', model: 'test-model', temperature: '—' }}
+        onContentRatingChange={vi.fn()}
+        onContentToneTagsChange={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('~72 tokens (estimate)')).toBeInTheDocument()
+    expect(screen.getAllByText('—')).toHaveLength(2)
   })
 })

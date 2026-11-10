@@ -30,16 +30,25 @@ from aidm_server.response_dtos import (
     party_player_payload,
     session_log_entry_payload,
     session_payload,
+    session_start_payload,
     session_state_payload,
     turn_event_payload,
 )
 from aidm_server.provider_priority import foreground_provider_reservation
+from aidm_server.services.session_chapters import (
+    CHAPTER_CONTINUE,
+    CHAPTER_CONTINUITY_MODES,
+    ChapterStartError,
+    find_idempotent_session,
+    start_campaign_chapter,
+)
 from aidm_server.services.session_lifecycle import (
     SessionLifecycleTargetNotFoundError,
     archive_session_record,
     commit_session_lifecycle_operation,
     delete_session_record,
     restore_session_record,
+    session_playability_error,
 )
 from aidm_server.services.session_recovery import (
     OPERATOR_NOTE_MAX_LENGTH,
@@ -66,7 +75,7 @@ from aidm_server.socket_contracts import session_recovery_resolved_payload
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 from aidm_server.time_utils import utc_now
 from aidm_server.turn_coordinator import session_turn_coordinator
-from aidm_server.turn_events import SESSION_ENDED_EVENT, SESSION_RECAP_EVENT, SESSION_STARTED_EVENT, record_turn_event
+from aidm_server.turn_events import SESSION_ENDED_EVENT, SESSION_RECAP_EVENT, record_turn_event
 from aidm_server.validation import coerce_int, missing_fields, optional_text, parse_json_body, positive_int, required_text
 from aidm_server.workspace_access import (
     current_account_id,
@@ -134,16 +143,25 @@ def _client_session_id(payload: dict | None) -> tuple[str | None, str | None]:
     return client_session_id, None
 
 
-def _find_idempotent_session(campaign_id: int, client_session_id: str) -> Session | None:
-    direct_match = Session.query.filter_by(campaign_id=campaign_id, client_session_id=client_session_id).first()
-    if direct_match:
-        return direct_match
+def _chapter_continuity(payload: dict) -> tuple[str | None, str | None]:
+    continuity = payload.get('continuity')
+    if continuity is None:
+        return CHAPTER_CONTINUE, None
+    if continuity not in CHAPTER_CONTINUITY_MODES:
+        return None, 'continuity must be continue or fresh.'
+    return continuity, None
 
-    for session_obj in Session.query.filter_by(campaign_id=campaign_id, client_session_id=None).all():
-        snapshot = _state_snapshot_dict(session_obj.state_snapshot)
-        if snapshot.get('client_session_id') == client_session_id:
-            return session_obj
-    return None
+
+def _playability_response(session_obj: Session):
+    playability_error = session_playability_error(session_obj)
+    if playability_error is None:
+        return None
+    return error_response(
+        playability_error.error_code,
+        playability_error.message,
+        playability_error.status_code,
+        playability_error.details or None,
+    )
 
 
 def _stale_update_error(payload: dict, current_updated_at) -> tuple[dict, int] | None:
@@ -426,78 +444,52 @@ def start_new_session():
         telemetry_event('sessions.start.validation_error', payload={'field': 'campaign_id'}, severity='warning')
         return error_response('validation_error', campaign_id_error, 400)
 
+    continuity, continuity_error = _chapter_continuity(payload)
+    if continuity_error:
+        telemetry_event('sessions.start.validation_error', payload={'field': 'continuity'}, severity='warning')
+        return error_response('validation_error', continuity_error, 400)
+
+    force = payload.get('force', False)
+    if not isinstance(force, bool):
+        telemetry_event('sessions.start.validation_error', payload={'field': 'force'}, severity='warning')
+        return error_response('validation_error', 'force must be true or false.', 400)
+    if force and not current_actor_has_capability('admin_workspace'):
+        return error_response(
+            'forbidden',
+            'Only workspace admins can force a new chapter.',
+            403,
+            {'required_capability': 'admin_workspace'},
+        )
+
+    name = None
+    if payload.get('name') is not None:
+        name, name_error = optional_text(payload.get('name'), max_length=80, field='name', default=None)
+        if name_error:
+            return error_response('validation_error', name_error, 400)
+        name = name or None
+
     campaign = workspace_campaign(campaign_id)
     if not campaign:
         telemetry_event('sessions.start.campaign_not_found', payload={'campaign_id': campaign_id}, severity='warning')
         return error_response('campaign_not_found', 'Campaign not found.', 404)
 
     try:
-        # Campaign lifecycle mutations row-lock the same record. Refresh under
-        # that lock so a stale preflight cannot create or replay an active
-        # session after the campaign has been archived.
-        campaign = db.session.get(
-            Campaign,
+        result = start_campaign_chapter(
             campaign.campaign_id,
-            populate_existing=True,
-            with_for_update=True,
-        )
-        if campaign is None:
-            db.session.rollback()
-            return error_response('campaign_not_found', 'Campaign not found.', 404)
-        if str(campaign.status or 'active').strip().lower() != 'active':
-            db.session.rollback()
-            telemetry_event(
-                'sessions.start.campaign_archived',
-                payload={'campaign_id': campaign_id},
-                severity='warning',
-            )
-            return error_response(
-                'campaign_archived',
-                'This campaign is archived. Restore it before starting a session.',
-                409,
-            )
-
-        if client_session_id:
-            existing_session = _find_idempotent_session(campaign.campaign_id, client_session_id)
-            if existing_session:
-                db.session.rollback()
-                telemetry_metric('sessions.start.idempotent_replay_total', 1)
-                return jsonify({'session_id': existing_session.session_id, 'idempotent_replay': True}), 200
-
-        name = None
-        if payload.get('name') is not None:
-            name, name_error = optional_text(payload.get('name'), max_length=80, field='name', default=None)
-            if name_error:
-                return error_response('validation_error', name_error, 400)
-            if not name:
-                name = None
-
-        snapshot = {'client_session_id': client_session_id} if client_session_id else None
-        new_session = Session(
-            campaign_id=campaign.campaign_id,
+            workspace_id=current_workspace_id(),
+            continuity=continuity,
+            force=force,
             name=name,
             client_session_id=client_session_id,
-            state_snapshot=(safe_json_dumps(snapshot, {}) if snapshot else None),
         )
-        db.session.add(new_session)
-        db.session.flush()
-
-        get_or_create_session_state(new_session.session_id, campaign)
-        record_turn_event(
-            session_id=new_session.session_id,
-            campaign_id=campaign.campaign_id,
-            event_type=SESSION_STARTED_EVENT,
-            payload={
-                'message': '**Welcome to the table. Choose your opening move when you are ready.**',
-                'metadata': {
-                    'kind': 'session_welcome',
-                    'client_session_id': client_session_id,
-                },
-            },
+    except ChapterStartError as exc:
+        db.session.rollback()
+        telemetry_event(
+            f'sessions.start.{exc.error_code}',
+            payload={'campaign_id': campaign_id, **exc.details},
+            severity='warning',
         )
-        db.session.commit()
-        telemetry_metric('sessions.start.success_total', 1)
-        return jsonify({'session_id': new_session.session_id, 'idempotent_replay': False}), 201
+        return error_response(exc.error_code, exc.public_message, exc.status_code, exc.details or None)
     except IntegrityError:
         db.session.rollback()
         campaign = db.session.get(Campaign, campaign_id, populate_existing=True)
@@ -510,10 +502,10 @@ def start_new_session():
                 409,
             )
         if client_session_id:
-            existing_session = _find_idempotent_session(campaign.campaign_id, client_session_id)
+            existing_session = find_idempotent_session(campaign_id, client_session_id)
             if existing_session:
                 telemetry_metric('sessions.start.idempotent_race_replay_total', 1)
-                return jsonify({'session_id': existing_session.session_id, 'idempotent_replay': True}), 200
+                return jsonify(session_start_payload(existing_session, idempotent_replay=True)), 200
         logger.error('Failed to start session because idempotency constraint was violated.')
         telemetry_event('sessions.start.idempotency_conflict_failed', payload={'campaign_id': campaign_id}, severity='error')
         return error_response('session_start_failed', 'Failed to start session.', 400)
@@ -522,6 +514,13 @@ def start_new_session():
         logger.error('Failed to start session: %s', str(exc))
         telemetry_event('sessions.start.failed', payload={'error': str(exc)}, severity='error')
         return error_response('session_start_failed', 'Failed to start session.', 400)
+
+    session_obj = db.session.get(Session, result.session_id)
+    if result.idempotent_replay:
+        telemetry_metric('sessions.start.idempotent_replay_total', 1)
+        return jsonify(session_start_payload(session_obj, idempotent_replay=True)), 200
+    telemetry_metric('sessions.start.success_total', 1)
+    return jsonify(session_start_payload(session_obj, idempotent_replay=False)), 201
 
 
 @sessions_bp.route('/<int:session_id>/end', methods=['POST'])
@@ -1134,6 +1133,9 @@ def update_session_content_settings(session_id):
             'Only workspace admins can change session content settings.',
             403,
         )
+    unplayable = _playability_response(session_obj)
+    if unplayable:
+        return unplayable
     payload = parse_json_body(request)
     if payload is None:
         return error_response('validation_error', 'Expected JSON request body.', 400)
@@ -1205,6 +1207,9 @@ def update_session_campaign_pack_progress(session_id):
             'Only workspace admins can control campaign pack progress.',
             403,
         )
+    unplayable = _playability_response(session_obj)
+    if unplayable:
+        return unplayable
     payload = parse_json_body(request)
     if payload is None:
         return error_response('validation_error', 'Expected JSON request body.', 400)

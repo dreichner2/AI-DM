@@ -35,6 +35,7 @@ COMBAT_COMPLETE_REASONS = {
     'objective_completed': {'objective', 'completed', 'resolve', 'resolved', 'success'},
 }
 COMBAT_FAILED_REASONS = {'objective_failed', 'players_fled'}
+UNDISCOVERED_CLUE_STATUSES = {'hidden', 'undiscovered'}
 ProgressOperationResult = TypeVar('ProgressOperationResult')
 
 
@@ -965,6 +966,14 @@ def _checkpoint_completion_reason(
     if encounter_ids and _encounters_completed(pack=pack, snapshot=snapshot, encounter_ids=encounter_ids, completion=completion):
         return 'checkpoint_encounter_completed'
 
+    clue_ids = _ids_from(completion, 'clueId', 'clueIds', 'clue_id', 'clue_ids')
+    if clue_ids and _clues_discovered(snapshot, clue_ids):
+        return 'checkpoint_clues_discovered'
+
+    required_flags = completion.get('flags')
+    if isinstance(required_flags, dict) and required_flags and _flags_match(snapshot, required_flags):
+        return 'checkpoint_flags_matched'
+
     return None
 
 
@@ -1430,6 +1439,23 @@ def _objectives_failed(snapshot: dict, *, objective_ids: list[str], quest_ids: l
     return False
 
 
+def _clues_discovered(snapshot: dict, clue_ids: list[str]) -> bool:
+    discovered = {
+        _id_key(_first(clue, 'id', 'clueId', 'clue_id'))
+        for clue in (snapshot.get('clues') or [])
+        if isinstance(clue, dict) and _status_key(clue.get('status')) not in UNDISCOVERED_CLUE_STATUSES
+    }
+    return all(_id_key(clue_id) in discovered for clue_id in clue_ids)
+
+
+def _flags_match(snapshot: dict, required_flags: dict) -> bool:
+    flags = snapshot.get('flags') if isinstance(snapshot.get('flags'), dict) else {}
+    return all(
+        _flag_value_matches(flags, _text(flag_key), expected)
+        for flag_key, expected in required_flags.items()
+    )
+
+
 def _combat_flags(snapshot: dict) -> dict:
     combat = snapshot.get('combat') if isinstance(snapshot.get('combat'), dict) else {}
     flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
@@ -1555,11 +1581,13 @@ def _checkpoint_branch_matches(checkpoint: dict, snapshot: dict | None) -> bool:
         return False
 
     flags = snapshot.get('flags') if isinstance(snapshot, dict) and isinstance(snapshot.get('flags'), dict) else {}
-    if flag_key not in flags:
-        return False
+    return _flag_value_matches(flags, flag_key, predicate.get('equals'))
 
+
+def _flag_value_matches(flags: dict, flag_key: str, expected: Any) -> bool:
+    if not flag_key or flag_key not in flags:
+        return False
     actual = flags.get(flag_key)
-    expected = predicate.get('equals')
     if isinstance(actual, (dict, list)) or isinstance(expected, (dict, list)):
         return False
     if isinstance(actual, bool) or isinstance(expected, bool):

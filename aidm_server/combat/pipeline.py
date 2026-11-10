@@ -9,6 +9,8 @@ from aidm_server.canon_text import int_or_default
 from aidm_server.combat.difficulty import normalize_combat_difficulty_ai
 from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
 from aidm_server.combat.intent_planner import attach_intents_to_combat, plan_enemy_intents
+from aidm_server.combat.modifiers import can_act, condition_keys, temp_hp_per_turn, tick_turn_boundary
+from aidm_server.combat.vitality import apply_death_save, death_save_roll, is_dying, is_player_character
 from aidm_server.combat.state import (
     combat_summary_for_dm,
     combat_turn_context,
@@ -22,6 +24,7 @@ from aidm_server.combat.state import (
     player_combat_participant,
 )
 from aidm_server.creatures.repository import record_combat_debug_event
+from aidm_server.damage_dice import deterministic_roller
 from aidm_server.creatures.resolver import (
     CreatureResolutionPlan,
     default_request_from_session,
@@ -673,6 +676,170 @@ def _combat_turn_update_change(
     }
 
 
+def _participant_index(combat: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(participant.get('id')): participant
+        for participant in combat.get('participants') or []
+        if isinstance(participant, dict) and participant.get('id')
+    }
+
+
+def turn_boundaries(combat: dict[str, Any], turn_context: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every turn end and start crossed when the active actor hands initiative on,
+    including each enemy of a grouped enemy turn block, in initiative order."""
+
+    current = turn_context.get('currentActor') if isinstance(turn_context.get('currentActor'), dict) else {}
+    handoff = turn_context.get('handoffActor') if isinstance(turn_context.get('handoffActor'), dict) else {}
+    if not current.get('id') or not handoff.get('id'):
+        return []
+    order_ids = [str(actor_id) for actor_id in turn_context.get('turnOrderIds') or []]
+    current_index = int_or_default(turn_context.get('turnIndex'), default=0)
+    round_number = max(1, int_or_default(combat.get('round'), default=1))
+    boundaries = [{'actorId': current['id'], 'phase': 'end', 'round': round_number}]
+    for enemy in turn_context.get('enemyTurnBlock') or []:
+        enemy_id = str((enemy or {}).get('id') or '')
+        if not enemy_id or enemy_id == str(current['id']) or enemy_id not in order_ids:
+            continue
+        enemy_round = round_number if order_ids.index(enemy_id) > current_index else round_number + 1
+        boundaries.extend(
+            [
+                {'actorId': enemy_id, 'phase': 'start', 'round': enemy_round},
+                {'actorId': enemy_id, 'phase': 'end', 'round': enemy_round},
+            ]
+        )
+    boundaries.append(
+        {
+            'actorId': handoff['id'],
+            'phase': 'start',
+            'round': max(1, int_or_default(turn_context.get('nextRound'), default=round_number)),
+        }
+    )
+    return boundaries
+
+
+def participant_at_turn_start(participant: dict[str, Any]) -> dict[str, Any]:
+    """A copy of an actor as it begins its turn: standing up if it can, no longer dodging.
+
+    Enemy blocks resolve before the advance that records their turn boundaries,
+    so their own attack rolls read this view.
+    """
+
+    view = deepcopy(participant)
+    keys = condition_keys(view)
+    ended = {'dodging'} | ({'prone'} if can_act(view) else set())
+    view['conditions'] = [value for value in view.get('conditions') or [] if str(value).strip().lower() not in (keys & ended)]
+    return view
+
+
+def _start_turn(combat: dict[str, Any], participant: dict[str, Any], *, turn_id: Any, round_number: int) -> dict[str, Any]:
+    actor_id = str(participant.get('id'))
+    result: dict[str, Any] = {}
+    granted = temp_hp_per_turn(participant)
+    hp = participant.setdefault('hp', {})
+    if granted > int_or_default(hp.get('temp'), default=0):
+        hp['temp'] = granted
+        result['tempHpGranted'] = granted
+    keys = condition_keys(participant)
+    removed = {'dodging'} & keys
+    if 'prone' in keys and can_act(participant):
+        removed.add('prone')
+        economy = (combat.get('flags') or {}).get('turnEconomy')
+        if isinstance(economy, dict) and str(economy.get('actorId') or '') == actor_id:
+            economy['movementRemaining'] = 0
+        result['stoodUp'] = True
+    if removed:
+        participant['conditions'] = [value for value in participant.get('conditions') or [] if str(value).strip().lower() not in removed]
+        result['conditionsEnded'] = sorted(removed)
+    recharged = []
+    for ability in participant.get('abilities') or []:
+        if not isinstance(ability, dict) or ability.get('needsRecharge') is not True:
+            continue
+        ability_id = str(ability.get('id') or '')
+        roll = deterministic_roller(f'recharge:{turn_id}:{actor_id}:{ability_id}:{round_number}')(6)
+        if roll >= 5:
+            ability['needsRecharge'] = False
+        recharged.append({'abilityId': ability_id, 'roll': roll, 'recharged': roll >= 5})
+    if recharged:
+        result['rechargeRolls'] = recharged
+    return result
+
+
+def apply_turn_boundaries(combat: dict[str, Any], boundaries: list[dict[str, Any]], *, turn_id: Any) -> list[dict[str, Any]]:
+    """Run turn-start and turn-end processing for each boundary, mutating ``combat``.
+
+    Turn end ticks effects held by (``target_turn_end``) or cast by
+    (``caster_turn_end``) the actor.  Turn start ticks ``caster_turn_start``
+    effects, grants ``tempHpPerTurn``, ends ``dodging``, stands a prone actor
+    that can act (spending its movement) and rolls recharge for abilities
+    marked ``needsRecharge`` (5-6 on the deterministic d6 recharges).
+    """
+
+    events: list[dict[str, Any]] = []
+    for boundary in boundaries:
+        if not isinstance(boundary, dict):
+            continue
+        actor_id = str(boundary.get('actorId') or '').strip()
+        phase = 'start' if boundary.get('phase') == 'start' else 'end'
+        round_number = max(1, int_or_default(boundary.get('round'), default=1))
+        event: dict[str, Any] = {'actorId': actor_id, 'phase': phase, 'round': round_number}
+        expired = tick_turn_boundary(combat, actor_id=actor_id, phase=phase)
+        if expired:
+            event['expiredEffects'] = [effect.get('id') for effect in expired]
+        participant = _participant_index(combat).get(actor_id)
+        if phase == 'start' and participant is not None:
+            event.update(_start_turn(combat, participant, turn_id=turn_id, round_number=round_number))
+        events.append(event)
+    return events
+
+
+def death_saves_due(combat: Any, *, turn_id: Any) -> list[dict[str, Any]]:
+    """Death saves owed by dying player characters whose initiative slots the
+    ending turn passes on its way to the next actor (rolled, not yet applied)."""
+
+    normalized = normalize_combat_state(combat)
+    if str(normalized.get('status') or '') not in {'starting', 'active'}:
+        return []
+    context = combat_turn_context(normalized)
+    current = context.get('currentActor') if isinstance(context.get('currentActor'), dict) else {}
+    handoff = context.get('handoffActor') if isinstance(context.get('handoffActor'), dict) else {}
+    initiative = sorted(
+        (entry for entry in normalized.get('initiative') or [] if isinstance(entry, dict)),
+        key=lambda entry: int_or_default(entry.get('order'), default=0),
+    )
+    slot_ids = [str(entry.get('participantId')) for entry in initiative]
+    if str(current.get('id')) not in slot_ids or str(handoff.get('id')) not in slot_ids:
+        return []
+    participants = _participant_index(normalized)
+    start = slot_ids.index(str(current['id']))
+    stop = slot_ids.index(str(handoff['id']))
+    round_number = max(1, int_or_default(normalized.get('round'), default=1))
+    results: list[dict[str, Any]] = []
+    for step in range(1, len(slot_ids)):
+        index = (start + step) % len(slot_ids)
+        if index == stop:
+            break
+        participant = participants.get(slot_ids[index])
+        if not isinstance(participant, dict) or not is_player_character(participant) or not is_dying(participant):
+            continue
+        slot_round = round_number if index > start else round_number + 1
+        roll = death_save_roll(turn_id, participant['id'], slot_round)
+        outcome = apply_death_save(deepcopy(participant), roll)
+        results.append(
+            {
+                'participantId': participant['id'],
+                'participantName': participant.get('name') or participant['id'],
+                'round': slot_round,
+                'roll': roll,
+                'result': outcome['result'],
+                'successes': outcome['successes'],
+                'failures': outcome['failures'],
+                'outcome': outcome['outcome'],
+                'authoritative': True,
+            }
+        )
+    return results
+
+
 def combat_turn_advance_change(*, state: dict[str, Any], turn: DmTurn, actor_id: str | None = None) -> dict[str, Any] | None:
     combat = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
     if not _combat_is_active(combat):
@@ -728,6 +895,7 @@ def combat_turn_advance_change(*, state: dict[str, Any], turn: DmTurn, actor_id:
         'type': 'combat.update',
         'round': next_round,
         'turnIndex': int(next_index) % max(1, len(order)),
+        'turnBoundaries': turn_boundaries(combat, current_context),
         'flags': {
             **_combat_turn_flags(next_context, submitted_actor_id=None),
             'turnEconomy': next_economy,

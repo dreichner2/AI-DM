@@ -564,6 +564,7 @@ def test_combat_hud_action_is_revalidated_canonicalized_and_server_rolled(
             'weapon_name': 'Longsword',
             'damage_dice': '1d8',
             'damage_type': 'slashing',
+            'ranged': False,
             'range_band': 'near',
             'message': 'Seraphina attacks Goblin Sentry with Longsword.',
         }
@@ -1436,7 +1437,7 @@ def test_conduct_turn_submission_skips_helper_for_locked_structured_turn(app, mo
         )
 
     assert allowed is False
-    assert 'structured turn' in str(reason)
+    assert reason == 'Seraphina has the turn. Your action was not sent; your draft is kept.'
     assert turn_control['activePlayerId'] == ids['player_id']
     assert changed is False
     assert decision['decision'] == 'queue'

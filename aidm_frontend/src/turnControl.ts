@@ -150,5 +150,5 @@ export function turnControlBlockMessage(turnControl: TurnControl) {
   if (turnControl.mode === 'spotlight') {
     return `${activeName} has the spotlight. Your action will ask to join the focused scene.`
   }
-  return `${activeName} has the turn. Your action is queued until your turn opens.`
+  return `${activeName} has the turn. Your action was not sent; your draft is kept.`
 }

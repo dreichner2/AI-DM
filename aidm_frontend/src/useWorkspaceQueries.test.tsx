@@ -11,6 +11,7 @@ import type {
 } from './types'
 import { ApiClientError } from './api'
 import { useWorkspaceQueries } from './useWorkspaceQueries'
+import { useWorkspaceStore } from './useWorkspaceStore'
 
 const apiFetchMock = vi.hoisted(() => vi.fn())
 const storedRuntimeAccessSnapshotMock = vi.hoisted(() => vi.fn((auth: string) => auth))
@@ -98,12 +99,16 @@ function logEntry(id: number): SessionLogEntry {
   }
 }
 
-function logResponse(sessionId: number, entries: SessionLogEntry[]): SessionLogResponse {
+function logResponse(
+  sessionId: number,
+  entries: SessionLogEntry[],
+  page: { hasMore: boolean; nextCursor: number | null } = { hasMore: false, nextCursor: null },
+): SessionLogResponse {
   return {
     session_id: sessionId,
     entries,
-    has_more: false,
-    next_cursor: null,
+    has_more: page.hasMore,
+    next_cursor: page.nextCursor,
   }
 }
 
@@ -120,7 +125,9 @@ type ScopeProps = {
 function createCallbacks() {
   return {
     campaignWorkspaceLoaded: vi.fn(),
+    onSessionLogLoaded: vi.fn(),
     onUnauthorized: vi.fn(),
+    pendingSubmissionCampaignId: vi.fn((): number | null => null),
     pushError: vi.fn(),
     rootCampaignsLoaded: vi.fn(),
     setCampaignSessionMeta: vi.fn(),
@@ -132,6 +139,7 @@ function createCallbacks() {
     setSelectedCampaignId: vi.fn(),
     setSelectedPlayerId: vi.fn(),
     setSelectedSessionId: vi.fn(),
+    sessionPageLoaded: vi.fn(),
     setSendPending: vi.fn(),
     setSessionLogCursor: vi.fn(),
     setSessionLogHasMore: vi.fn(),
@@ -156,6 +164,31 @@ function useQueryHarness(scope: ScopeProps, callbacks: ReturnType<typeof createC
     ...callbacks,
   } as unknown as Parameters<typeof useWorkspaceQueries>[0])
   return { loadingCampaignId, queries, sessionLoading, workspaceLoading }
+}
+
+// Drives the real workspace store so session keying and history merging are
+// exercised end to end.
+function useStoreQueryHarness(callbacks: ReturnType<typeof createCallbacks>) {
+  const store = useWorkspaceStore({ selectedCampaignId: 1, selectedSessionId: 1, selectedPlayerId: null })
+  const queries = useWorkspaceQueries({
+    ...defaultScope,
+    ...callbacks,
+    sessions: [],
+    selectedCampaignId: store.selectedCampaignId,
+    selectedSessionId: store.selectedSessionId,
+    sessionLogCursor: store.sessionLogCursor,
+    sessionLogHasMore: store.sessionLogHasMore,
+    sessionPageLoaded: store.sessionPageLoaded,
+    setLogEntries: store.setLogEntries,
+    setLoadingCampaignId: store.setLoadingCampaignId,
+    setSelectedSessionId: store.setSelectedSessionId,
+    setSessionLoading: store.setSessionLoading,
+    setSessionLogCursor: store.setSessionLogCursor,
+    setSessionLogHasMore: store.setSessionLogHasMore,
+    setSessionState: store.setSessionState,
+    setWorkspaceLoading: store.setWorkspaceLoading,
+  } as unknown as Parameters<typeof useWorkspaceQueries>[0])
+  return { queries, store }
 }
 
 const defaultScope: ScopeProps = {
@@ -467,17 +500,21 @@ describe('useWorkspaceQueries request ownership', () => {
       await result.current.queries.loadSessionData(2)
     })
 
-    expect(callbacks.setLogEntries).toHaveBeenCalledTimes(1)
-    expect(callbacks.setLogEntries).toHaveBeenCalledWith([logEntry(2)])
-    expect(callbacks.setSessionState).toHaveBeenCalledTimes(1)
-    expect(callbacks.setSessionState).toHaveBeenCalledWith(sessionState(2))
+    expect(callbacks.sessionPageLoaded).toHaveBeenCalledTimes(1)
+    expect(callbacks.sessionPageLoaded).toHaveBeenCalledWith({
+      sessionId: 2,
+      entries: [logEntry(2)],
+      nextCursor: null,
+      hasMore: false,
+      sessionState: sessionState(2),
+    })
+    expect(callbacks.onSessionLogLoaded).toHaveBeenCalledWith([logEntry(2)])
     expect(result.current.sessionLoading).toBe(false)
 
     firstLog.resolve(logResponse(1, [logEntry(1)]))
     await act(async () => firstRequest)
 
-    expect(callbacks.setLogEntries).toHaveBeenCalledTimes(1)
-    expect(callbacks.setSessionState).toHaveBeenCalledTimes(1)
+    expect(callbacks.sessionPageLoaded).toHaveBeenCalledTimes(1)
     expect(result.current.sessionLoading).toBe(false)
   })
 
@@ -509,8 +546,120 @@ describe('useWorkspaceQueries request ownership', () => {
     pendingLog.resolve(logResponse(1, [logEntry(1)]))
     await act(async () => request)
 
+    expect(callbacks.sessionPageLoaded).not.toHaveBeenCalled()
     expect(callbacks.setLogEntries).not.toHaveBeenCalled()
     expect(callbacks.setSessionState).not.toHaveBeenCalled()
+  })
+
+  it('keeps loadSessionData stable when the workspace cache or auth prompt changes', () => {
+    const callbacks = createCallbacks()
+    const loadingSetters = {
+      setWorkspaceLoading: vi.fn(),
+      setLoadingCampaignId: vi.fn(),
+      setSessionLoading: vi.fn(),
+    }
+    const { result, rerender } = renderHook(
+      ({ sessions, onUnauthorized }: { sessions: unknown[]; onUnauthorized: () => void }) =>
+        useWorkspaceQueries({
+          ...defaultScope,
+          ...callbacks,
+          ...loadingSetters,
+          sessions,
+          onUnauthorized,
+        } as unknown as Parameters<typeof useWorkspaceQueries>[0]),
+      { initialProps: { sessions: [] as unknown[], onUnauthorized: vi.fn() } },
+    )
+    const initialLoadSessionData = result.current.loadSessionData
+
+    rerender({ sessions: [{ session_id: 1 }], onUnauthorized: vi.fn() })
+    rerender({ sessions: [{ session_id: 1 }, { session_id: 2 }], onUnauthorized: vi.fn() })
+
+    expect(result.current.loadSessionData).toBe(initialLoadSessionData)
+  })
+
+  it('merges a newest-page refresh into already loaded older history', async () => {
+    const newestPages = [
+      logResponse(1, [logEntry(3), logEntry(4)], { hasMore: true, nextCursor: 3 }),
+      logResponse(1, [logEntry(4), logEntry(5)], { hasMore: true, nextCursor: 4 }),
+    ]
+    apiFetchMock.mockImplementation((_baseUrl: string, path: string) => {
+      if (path === '/api/sessions/1/log?limit=200') return Promise.resolve(newestPages.shift())
+      if (path === '/api/sessions/1/state') return Promise.resolve(sessionState(1))
+      if (path === '/api/sessions/1/log?limit=200&before_id=3') {
+        return Promise.resolve(logResponse(1, [logEntry(1), logEntry(2)]))
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const { result } = renderHook(() => useStoreQueryHarness(createCallbacks()))
+
+    await act(async () => result.current.queries.loadSessionData(1))
+    expect(result.current.store.sessionHydrated).toBe(true)
+    await act(async () => result.current.queries.loadOlderSessionLog())
+    expect(result.current.store.logEntries.map((entry) => entry.id)).toEqual([1, 2, 3, 4])
+
+    await act(async () => result.current.queries.loadSessionData(1))
+
+    expect(result.current.store.logEntries.map((entry) => entry.id)).toEqual([1, 2, 3, 4, 5])
+    expect(result.current.store.sessionLogCursor).toBeNull()
+    expect(result.current.store.sessionLogHasMore).toBe(false)
+  })
+
+  it('clears the previous session story the moment another session is selected', async () => {
+    const secondSessionLog = deferred<SessionLogResponse>()
+    apiFetchMock.mockImplementation((_baseUrl: string, path: string) => {
+      if (path === '/api/sessions/1/log?limit=200') {
+        return Promise.resolve(logResponse(1, [logEntry(1)], { hasMore: true, nextCursor: 1 }))
+      }
+      if (path === '/api/sessions/1/state') return Promise.resolve(sessionState(1))
+      if (path === '/api/sessions/2/log?limit=200') return secondSessionLog.promise
+      if (path === '/api/sessions/2/state') return Promise.resolve(sessionState(2))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const { result } = renderHook(() => useStoreQueryHarness(createCallbacks()))
+    await act(async () => result.current.queries.loadSessionData(1))
+    expect(result.current.store.logEntries).toHaveLength(1)
+
+    act(() => result.current.store.setSelectedSessionId(2))
+
+    expect(result.current.store.logEntries).toEqual([])
+    expect(result.current.store.sessionState).toBeNull()
+    expect(result.current.store.sessionLogCursor).toBeNull()
+    expect(result.current.store.sessionLogHasMore).toBe(false)
+    expect(result.current.store.sessionHydrated).toBe(false)
+
+    let secondLoad!: Promise<void>
+    act(() => {
+      secondLoad = result.current.queries.loadSessionData(2)
+    })
+    secondSessionLog.resolve(logResponse(2, [logEntry(7)]))
+    await act(async () => secondLoad)
+
+    expect(result.current.store.logEntries.map((entry) => entry.id)).toEqual([7])
+    expect(result.current.store.sessionHydrated).toBe(true)
+  })
+
+  it('keeps an in-flight send when its own campaign workspace refreshes', async () => {
+    apiFetchMock.mockImplementation((_baseUrl: string, path: string) => {
+      if (path === '/api/campaigns/1/workspace') return Promise.resolve(workspace(1))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const callbacks = createCallbacks()
+    callbacks.pendingSubmissionCampaignId.mockReturnValue(1)
+    const { result } = renderHook(() => useQueryHarness(defaultScope, callbacks))
+
+    await act(async () => result.current.queries.refreshCampaignWorkspace(1))
+
+    expect(callbacks.campaignWorkspaceLoaded).toHaveBeenCalledWith(workspace(1))
+    expect(callbacks.setOptimisticEntries).not.toHaveBeenCalled()
+    expect(callbacks.setStreamingTurn).not.toHaveBeenCalled()
+    expect(callbacks.setSendPending).not.toHaveBeenCalled()
+
+    callbacks.pendingSubmissionCampaignId.mockReturnValue(2)
+    await act(async () => result.current.queries.refreshCampaignWorkspace(1))
+
+    expect(callbacks.setOptimisticEntries).toHaveBeenCalledWith([])
+    expect(callbacks.setStreamingTurn).toHaveBeenCalledWith(null)
+    expect(callbacks.setSendPending).toHaveBeenCalledWith(false)
   })
 
   it('single-flights older-log loads and discards a response for a deselected session', async () => {

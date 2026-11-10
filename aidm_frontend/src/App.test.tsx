@@ -26,6 +26,29 @@ import {
   toggleAdminToolsViaComposerLabel,
 } from './App.testHarness'
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
+// Holds every request for one API path until the returned gate is released.
+function gateFetchPath(pathname: string) {
+  const gate = deferred<void>()
+  const harnessFetch = globalThis.fetch
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(String(input), 'http://localhost:3000').pathname === pathname) await gate.promise
+    return harnessFetch(input, init)
+  }))
+  return gate
+}
+
+function sendMessageEmits() {
+  return socketMock.socket.emit.mock.calls.filter(([event]) => event === 'send_message')
+}
+
 function rollResolvedPayload(overrides: Partial<RollResolvedPayload> = {}): RollResolvedPayload {
   return {
     session_id: 20,
@@ -738,7 +761,7 @@ describe('App user workflow regressions', () => {
     )
   })
 
-  it('keeps admin mode hidden until the composer label gesture unlocks it', async () => {
+  it('keeps admin mode hidden until director controls unlock it', async () => {
     await renderLoadedApp()
 
     expect(screen.queryByRole('button', { name: 'Admin mode' })).not.toBeInTheDocument()
@@ -1114,6 +1137,168 @@ describe('App user workflow regressions', () => {
         }),
       ),
     )
+  })
+
+  it('opens Play Now once after hydration even when the socket joins before the refresh chain ends', async () => {
+    localStorage.removeItem('aidm:selectedCampaignId')
+    localStorage.removeItem('aidm:selectedSessionId')
+    localStorage.removeItem('aidm:selectedPlayerId')
+    appTestState.sessionsByCampaign[10] = [{ ...appTestState.sessionsByCampaign[10][0]!, turn_count: 0 }]
+    appTestState.sessionLogs[20] = []
+    const workspaceGate = gateFetchPath('/api/campaigns/10/workspace')
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Play Now — Ready-Made Adventure' }))
+    await waitFor(() => expect(socketMock.io).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      socketHandler<void>('connect')()
+      socketHandler<Array<{ id: number; character_name: string; name: string }>>('active_players')([
+        { id: 30, character_name: 'Ember', name: 'Danny' },
+      ])
+    })
+    expect(sendMessageEmits()).toHaveLength(0)
+
+    await act(async () => workspaceGate.resolve())
+    await waitFor(() => expect(sendMessageEmits()).toHaveLength(1))
+    await waitFor(() => expect(screen.getByRole('heading', { name: /Session Alpha/i })).toBeInTheDocument())
+
+    expect(sendMessageEmits()[0]?.[1]).toMatchObject({
+      session_id: 20,
+      player_id: 30,
+      message_kind: 'opening',
+      message: expect.stringContaining('Please narrate the opening scene for this campaign.'),
+    })
+    expect(socketMock.io).toHaveBeenCalledTimes(1)
+    expect(socketMock.socket.disconnect).not.toHaveBeenCalled()
+    expect(screen.queryByText('Delivery uncertain')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Realtime disconnected/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Please narrate the opening scene/)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(/Your Action/i)).toHaveValue('')
+  })
+
+  it('re-sends a pending action once after the socket rejoins the same session', async () => {
+    const rendered = await renderLoadedApp()
+    await act(async () => {
+      socketHandler<void>('connect')()
+      socketHandler<unknown[]>('active_players')([])
+    })
+    fireEvent.change(screen.getByLabelText(/Your Action/i), { target: { value: 'Cross the bridge.' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(sendMessageEmits()).toHaveLength(1))
+    const originalPayload = sendMessageEmits()[0]?.[1]
+
+    await act(async () => {
+      socketHandler<void>('disconnect')()
+    })
+
+    expect(rendered.container.querySelector('.composer-reconnecting')).toHaveTextContent('Reconnecting…')
+    expect(screen.queryByText('Delivery uncertain')).not.toBeInTheDocument()
+    expect(screen.getByLabelText(/Your Action/i)).toHaveValue('')
+    expect(screen.getByText('Cross the bridge.')).toBeInTheDocument()
+
+    await act(async () => {
+      socketHandler<void>('connect')()
+      socketHandler<unknown[]>('active_players')([])
+    })
+
+    expect(sendMessageEmits()).toEqual([
+      ['send_message', originalPayload],
+      ['send_message', originalPayload],
+    ])
+    expect(rendered.container.querySelector('.composer-reconnecting')).toBeNull()
+    expect(screen.queryByText('Delivery uncertain')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Realtime disconnected/)).not.toBeInTheDocument()
+  })
+
+  it('never shows the previous session story while another session loads', async () => {
+    const current = appTestState.sessionsByCampaign[10][0]!
+    appTestState.sessionsByCampaign = {
+      10: [current, { ...current, session_id: 21, display_name: 'Session Beta' }],
+    }
+    appTestState.sessionLogs[21] = [
+      {
+        id: 40,
+        entry_type: 'dm',
+        message: 'DM: Fog rolls over the second camp.',
+        metadata: { turn_id: 9 },
+        timestamp: '2026-06-06T11:00:00.000Z',
+      },
+    ]
+    await renderLoadedApp()
+    expect(screen.getAllByText(/The chamber beyond is much larger/).length).toBeGreaterThan(0)
+    const betaLogGate = gateFetchPath('/api/sessions/21/log')
+
+    fireEvent.click(screen.getByRole('button', { name: /Session Beta/i }))
+
+    expect(await screen.findByRole('heading', { name: /Session Beta/i })).toBeInTheDocument()
+    expect(screen.queryByText(/The chamber beyond is much larger/)).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText(/Your Action/i), { target: { value: 'Light a lantern.' } })
+    const send = screen.getByRole('button', { name: 'Send' })
+    expect(send).toBeDisabled()
+    expect(send).toHaveAccessibleDescription('Loading this session…')
+
+    await act(async () => betaLogGate.resolve())
+    expect((await screen.findAllByText(/Fog rolls over the second camp/)).length).toBeGreaterThan(0)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
+  })
+
+  it('states playability truthfully in the rail and drops invented status chips', async () => {
+    const rendered = await renderLoadedApp()
+    const railFooter = within(rendered.container.querySelector('.rail-footer') as HTMLElement)
+
+    expect(railFooter.getByText('Connecting…')).toBeInTheDocument()
+    expect(screen.queryByText('All Systems Operational')).not.toBeInTheDocument()
+    expect(screen.queryByText('Auto-Save')).not.toBeInTheDocument()
+    expect(screen.getByText(/Last saved:/)).toBeInTheDocument()
+    expect(screen.queryByText(/Last sync/)).not.toBeInTheDocument()
+    const modelChip = within(rendered.container.querySelector('.ops-bar') as HTMLElement)
+      .getByText('Model')
+      .closest('.ops-segment')
+    expect(modelChip?.querySelector('.status-dot')).toBeNull()
+
+    await act(async () => {
+      socketHandler<void>('connect')()
+      socketHandler<unknown[]>('active_players')([])
+    })
+    expect(railFooter.getByText('Ready to play')).toBeInTheDocument()
+
+    const operatorDetails = within(rendered.container.querySelector('.operator-drawer') as HTMLElement)
+    expect(operatorDetails.getByText('Temp').nextElementSibling).toHaveTextContent('—')
+    expect(operatorDetails.getByText('Time').nextElementSibling).toHaveTextContent('1.8s')
+    expect(operatorDetails.getByText(/tokens \(estimate\)/)).toBeInTheDocument()
+
+    await act(async () => {
+      socketHandler<void>('disconnect')()
+    })
+    expect(railFooter.getByText('Offline')).toBeInTheDocument()
+  })
+
+  it('polls backend health on window focus and reports an unreachable backend as offline', async () => {
+    const rendered = await renderLoadedApp()
+    const healthChecks = () =>
+      appTestState.fetchCalls.filter((call) => call.method === 'GET' && call.path === '/api/health').length
+    const initialHealthChecks = healthChecks()
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+    })
+    await waitFor(() => expect(healthChecks()).toBe(initialHealthChecks + 1))
+
+    const harnessFetch = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (new URL(String(input), 'http://localhost:3000').pathname === '/api/health') {
+        throw new TypeError('Failed to fetch')
+      }
+      return harnessFetch(input, init)
+    }))
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+    })
+
+    const railFooter = within(rendered.container.querySelector('.rail-footer') as HTMLElement)
+    expect(await railFooter.findByText('Offline')).toBeInTheDocument()
+    expect(within(rendered.container.querySelector('.backend-segment') as HTMLElement).getByText('Offline'))
+      .toBeInTheDocument()
   })
 
   it('shows active players from the session socket roster and clears them on disconnect', async () => {

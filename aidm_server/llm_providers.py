@@ -17,10 +17,12 @@ from typing import Any, Generator
 from flask import current_app, has_app_context
 import requests
 
+from aidm_server import scripted_narrator
 from aidm_server.contracts import ProviderRequest, ProviderResponse
 from aidm_server.codex_runtime import codex_executable_configured, resolve_codex_executable
 from aidm_server.http_client import post as http_post
 from aidm_server.http_client import timeout_from_config
+from aidm_server.prompt_templates import parse_dm_user_prompt
 from aidm_server.provider_registry import (
     SUPPORTED_LLM_PROVIDERS,
     normalize_provider_model_id,
@@ -37,6 +39,11 @@ DEFAULT_NVIDIA_MODEL = provider_default_model('nvidia')
 DEFAULT_DEEPSEEK_MODEL = provider_default_model('deepseek')
 DEFAULT_CODEX_MODEL = provider_default_model('codex_cli')
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SAFE_MODE_PROVIDER = 'fallback'
+UNPARSED_PROMPT_NARRATION = 'The moment holds. What do you do?'
+DEFAULT_DEEPSEEK_MAX_TOKENS = 2048
+MIN_DEEPSEEK_THINKING_MAX_TOKENS = 8192
+HELPER_FALLBACK_MODEL = 'state-helper-fallback-v1'
 
 
 def _int_env(name: str, default: int) -> int:
@@ -353,14 +360,16 @@ class DeterministicFallbackProvider(BaseLLMProvider):
         self.model_name = model_name
 
     def _make_text(self, request: ProviderRequest) -> str:
-        prompt = request.prompt.strip()
-        opening = (
-            'The scene advances with deliberate tension as the world reacts to the party\'s intent. '
-            'Describe your next move and I will keep continuity while we reconnect full AI narration.'
+        parsed = parse_dm_user_prompt(request.prompt)
+        if parsed is None:
+            return UNPARSED_PROMPT_NARRATION
+        return scripted_narrator.narrate(
+            parsed['context'],
+            parsed['rules_hint'],
+            parsed['player_input'],
+            parsed['speaker'],
+            parsed['opening_brief'],
         )
-        if 'roll a d20' in prompt.lower() or 'requires_roll' in prompt.lower():
-            return f"{opening}\n\nThis moment likely calls for a roll. Roll a d20 and tell me the result."
-        return opening
 
     def generate(self, request: ProviderRequest) -> ProviderResponse:
         return ProviderResponse(
@@ -2144,12 +2153,24 @@ def _helper_timeout_prefix(task: str | None, provider_suffix: str) -> str:
     return f'AIDM_HELPER_{provider_suffix}'
 
 
+def main_provider_name() -> str:
+    return str(_cfg('AIDM_LLM_PROVIDER', 'gemini')).strip().lower()
+
+
+def safe_mode_active() -> bool:
+    """Safe Mode: the configured main provider is the deterministic narrator."""
+    return main_provider_name() == SAFE_MODE_PROVIDER
+
+
 def helper_provider_name(task: str | None = None) -> str:
+    # In Safe Mode every helper and task profile takes its deterministic path.
+    if safe_mode_active():
+        return SAFE_MODE_PROVIDER
     return str(_helper_cfg(task, 'LLM_PROVIDER', 'deepseek')).strip().lower()
 
 
 def get_provider() -> BaseLLMProvider:
-    provider_name = str(_cfg('AIDM_LLM_PROVIDER', 'gemini')).strip().lower()
+    provider_name = main_provider_name()
     if provider_name not in SUPPORTED_LLM_PROVIDERS:
         raise ProviderNotConfiguredError(
             'Unsupported AIDM_LLM_PROVIDER '
@@ -2168,7 +2189,11 @@ def get_provider() -> BaseLLMProvider:
         chosen_model = model_name or DEFAULT_DEEPSEEK_MODEL
         if chosen_model == DEFAULT_GEMINI_MODEL:
             chosen_model = DEFAULT_DEEPSEEK_MODEL
-        thinking_enabled = str(_cfg('AIDM_DEEPSEEK_THINKING', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'}
+        thinking_enabled = str(_cfg('AIDM_DEEPSEEK_THINKING', 'false')).strip().lower() in {'1', 'true', 'yes', 'on'}
+        max_tokens = _int_env('AIDM_DEEPSEEK_MAX_TOKENS', DEFAULT_DEEPSEEK_MAX_TOKENS)
+        if thinking_enabled:
+            # Hidden reasoning shares the completion budget with the narration.
+            max_tokens = max(max_tokens, MIN_DEEPSEEK_THINKING_MAX_TOKENS)
         default_read_timeout = _int_env('AIDM_DEEPSEEK_TIMEOUT_SECONDS', 180)
         connect_timeout, read_timeout = timeout_from_config(
             'AIDM_DEEPSEEK',
@@ -2183,7 +2208,7 @@ def get_provider() -> BaseLLMProvider:
             ),
             base_url=str(_cfg('AIDM_DEEPSEEK_BASE_URL', 'https://api.deepseek.com')),
             fallback_models=fallback_models,
-            max_tokens=_int_env('AIDM_DEEPSEEK_MAX_TOKENS', 16384),
+            max_tokens=max_tokens,
             temperature=_float_env('AIDM_DEEPSEEK_TEMPERATURE', 1.0),
             top_p=_float_env('AIDM_DEEPSEEK_TOP_P', 0.95),
             thinking_enabled=thinking_enabled,
@@ -2242,7 +2267,7 @@ def get_provider() -> BaseLLMProvider:
 
 
 def get_helper_provider(task: str | None = None) -> BaseLLMProvider:
-    provider_name = str(_helper_cfg(task, 'LLM_PROVIDER', 'deepseek')).strip().lower()
+    provider_name = helper_provider_name(task)
     model_name = str(_helper_cfg(task, 'LLM_MODEL', 'deepseek-v4-flash')).strip()
     fallback_models = _helper_cfg_list(task, 'LLM_FALLBACK_MODELS')
     max_tokens = _helper_int(task, 'LLM_MAX_TOKENS', 2048)
@@ -2323,4 +2348,4 @@ def get_helper_provider(task: str | None = None) -> BaseLLMProvider:
             ignore_rules=_helper_bool(task, 'CODEX_IGNORE_RULES', True),
         )
 
-    return DeterministicFallbackProvider(model_name='state-helper-fallback-v1')
+    return DeterministicFallbackProvider(model_name=HELPER_FALLBACK_MODEL)

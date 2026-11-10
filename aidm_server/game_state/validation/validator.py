@@ -29,7 +29,10 @@ from aidm_server.game_state.models import (
     stable_change_id,
     state_applied_change_ids,
 )
+from aidm_server.combat import vitality
+from aidm_server.combat.modifiers import MODIFIER_ENGINE_SOURCE
 from aidm_server.combat.morale import MORALE_EVENTS, apply_morale_event
+from aidm_server.combat.vitality import DEATH_SAVE_SOURCE
 from aidm_server.combat.state import RANGE_BANDS, normalize_battlefield, normalize_combat_state, normalize_participant
 from aidm_server.spell_effects import resolve_targeted_spell
 from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start
@@ -1049,8 +1052,13 @@ def _spell_resolution_rolls(resolution: Any) -> list[int]:
         if not isinstance(target, dict):
             continue
         delivery = target.get('delivery') if isinstance(target.get('delivery'), dict) else {}
-        if delivery.get('naturalRoll') is not None:
+        if isinstance(delivery.get('rolls'), list):
+            rolls.extend(max(1, int_or_default(value, default=1)) for value in delivery['rolls'])
+        elif delivery.get('naturalRoll') is not None:
             rolls.append(max(1, int_or_default(delivery.get('naturalRoll'), default=1)))
+        for bonus in delivery.get('bonusDice') or []:
+            if isinstance(bonus, dict):
+                rolls.extend(max(1, int_or_default(value, default=1)) for value in (bonus.get('rolls') or []))
         for effect in target.get('effects') or []:
             if not isinstance(effect, dict):
                 continue
@@ -1474,7 +1482,11 @@ def _validate_rest_action(action: dict[str, Any], state: dict[str, Any], *, curr
         return _invalid(action, 'Rest is unavailable while combat is active.')
     health = actor.get('health') if isinstance(actor.get('health'), dict) else {}
     conditions = {_text(value).lower() for value in health.get('conditions') or []}
-    if int_or_default(health.get('currentHp'), default=1) <= 0 or 'dead' in conditions:
+    # A stable character at 0 HP may rest; the dying and the dead may not.
+    if (
+        conditions.intersection({'dead', 'dying'})
+        or (int_or_default(health.get('currentHp'), default=1) <= 0 and 'stable' not in conditions)
+    ):
         return _invalid(action, 'A dead or dying character cannot complete a rest.')
     rest_type = _text(_action_value(action, 'restType', 'rest_type')).lower()
     if rest_type not in {'short_rest', 'long_rest'}:
@@ -1936,6 +1948,8 @@ def _validate_health_change(state: dict[str, Any], change: dict[str, Any]) -> tu
         return 'rejected', 'Health change amount must be positive.', None
     if change.get('type') == 'health.heal':
         health = actor.get('health') if isinstance(actor.get('health'), dict) else {}
+        if 'dead' in {_text(value).lower() for value in health.get('conditions') or []}:
+            return 'rejected', 'Healing cannot restore the dead.', None
         current_hp = max(0, int_or_default(health.get('currentHp'), default=0))
         max_hp = max(0, int_or_default(health.get('maxHp'), default=0))
         if max_hp and current_hp + amount > max_hp:
@@ -3448,6 +3462,16 @@ def _normalize_combat_change(change: dict[str, Any], state: dict[str, Any]) -> t
         normalized['status'] = status
         return 'accepted', 'Combat end is valid.', normalized
 
+    if change_type == 'combat.effect.consume':
+        if _text(normalized.get('source')) != MODIFIER_ENGINE_SOURCE:
+            return 'rejected', 'Effect consumption must come from the modifier engine.', None
+        participant_ids = _combat_participant_ids(state)
+        entries = [entry for entry in normalized.get('consume') or [] if isinstance(entry, dict)]
+        if not entries or any(_text(entry.get('participantId')) not in participant_ids for entry in entries):
+            return 'rejected', 'Effect consumption references an unknown participant.', None
+        normalized['consume'] = entries
+        return 'accepted', 'Effect consumption is valid.', normalized
+
     participant_id = _text(normalized.get('participantId') or normalized.get('participant_id') or normalized.get('enemyId') or normalized.get('enemy_id'))
     if not participant_id:
         return 'rejected', 'Combat participant change requires participantId.', None
@@ -3455,6 +3479,22 @@ def _normalize_combat_change(change: dict[str, Any], state: dict[str, Any]) -> t
     if not resolved_participant_id:
         return 'rejected', f"Combat participant '{participant_id}' was not found.", None
     normalized['participantId'] = resolved_participant_id
+
+    if change_type == 'combat.death_save':
+        if _text(normalized.get('source')) != DEATH_SAVE_SOURCE:
+            return 'rejected', 'Death saving throws are rolled only by the rules engine.', None
+        participant = _combat_participant(state, resolved_participant_id)
+        if not vitality.is_player_character(participant) or not vitality.is_dying(participant):
+            return 'rejected', 'Death save target is not a dying player character.', None
+        round_number = int_or_default(normalized.get('round'), default=0)
+        turn_value = normalized.get('turnId')
+        if (
+            _text(normalized.get('id')) != vitality.death_save_change_id(turn_value, resolved_participant_id, round_number)
+            or int_or_default(normalized.get('roll'), default=0)
+            != vitality.death_save_roll(turn_value, resolved_participant_id, round_number)
+        ):
+            return 'rejected', 'Death save does not match the engine roll.', None
+        return 'accepted', 'Death save matches the engine roll.', normalized
 
     if change_type == 'combat.participant.update':
         if normalized.get('hp') is not None and not isinstance(normalized.get('hp'), dict):

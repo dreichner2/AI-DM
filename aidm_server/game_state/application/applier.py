@@ -13,6 +13,9 @@ from aidm_server.character_resources import (
     ensure_character_sheet_spell_resources,
     restore_spell_resources,
 )
+from aidm_server.combat import vitality
+from aidm_server.combat.modifiers import consume_modifiers
+from aidm_server.combat.pipeline import apply_turn_boundaries
 from aidm_server.combat.rewards import SOURCE as COMBAT_REWARD_SOURCE, derive_combat_outcome_rewards
 from aidm_server.combat.state import ensure_combat_state, normalize_battlefield, normalize_combat_state, normalize_participant, normalize_position
 from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start
@@ -272,6 +275,54 @@ def _apply_health_max_set(actor: dict[str, Any], change: dict[str, Any]) -> dict
     }
 
 
+def _combat_active(state: dict[str, Any]) -> bool:
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    status = _text(combat.get('status')).lower() or ('active' if combat.get('participants') else 'none')
+    return status in {'starting', 'active'}
+
+
+def _player_vitality_record(state: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
+    """In active combat the participant is authoritative for a player character's
+    health and conditions; otherwise the actor is."""
+
+    if _combat_active(state):
+        participant = _combat_participant(state['combat'], actor.get('id'))
+        if isinstance(participant, dict):
+            return participant
+    actor.setdefault('health', {})
+    return actor
+
+
+def _sync_player_vitality(state: dict[str, Any], actor: dict[str, Any], record: dict[str, Any]) -> None:
+    if record is actor:
+        _sync_actor_health_to_combat_participant(state, actor)
+    else:
+        _sync_player_actor_from_combat_participant(state, record)
+
+
+def _apply_player_damage(state: dict[str, Any], actor: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
+    record = _player_vitality_record(state, actor)
+    result = vitality.take_damage(
+        record,
+        max(0, int_or_default(change.get('amount'), default=0)),
+        critical=change.get('critical') is True,
+        in_combat=_combat_active(state),
+    )
+    _sync_player_vitality(state, actor, record)
+    return result
+
+
+def _apply_player_heal(state: dict[str, Any], actor: dict[str, Any], amount: Any) -> int:
+    record = _player_vitality_record(state, actor)
+    applied = vitality.heal(record, max(0, int_or_default(amount, default=0)))
+    _sync_player_vitality(state, actor, record)
+    return applied
+
+
+def _is_player_actor(state: dict[str, Any], actor: dict[str, Any] | None) -> bool:
+    return isinstance(actor, dict) and any(candidate is actor for candidate in state.get('playerCharacters') or [])
+
+
 def _apply_health_damage(actor: dict[str, Any], change: dict[str, Any]) -> dict[str, int]:
     amount = max(0, int_or_default(change.get('amount'), default=0))
     health = actor.setdefault('health', {})
@@ -439,14 +490,11 @@ def _apply_class_feature_use(
     actual_amount = 0
     if effect_type == 'heal':
         assert target is not None
-        actual_amount = _apply_health_heal(
-            target,
-            {
-                'amount': resolution.get('amount'),
-                'clearConditions': [],
-            },
-        )
-        _sync_actor_health_to_combat_participant(state, target)
+        if _is_player_actor(state, target):
+            actual_amount = _apply_player_heal(state, target, resolution.get('amount'))
+        else:
+            actual_amount = _apply_health_heal(target, {'amount': resolution.get('amount')})
+            _sync_actor_health_to_combat_participant(state, target)
     elif effect_type == 'restore_action':
         if not economy:
             return None
@@ -498,12 +546,13 @@ def _apply_rest(actor: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]
                 raw_state.pop('usedAtTurn', None)
                 refreshed_ability_ids.append(_text(ability_id))
 
-    hp_restored = 0
+    actor.setdefault('health', {})
+    hp_restored = vitality.recover_on_rest(actor, rest_type)
     if rest_type == 'long_rest':
-        health = actor.setdefault('health', {})
+        health = actor['health']
         current_hp = max(0, int_or_default(health.get('currentHp'), default=0))
         max_hp = max(current_hp, int_or_default(health.get('maxHp'), default=current_hp))
-        hp_restored = max(0, max_hp - current_hp)
+        hp_restored += max(0, max_hp - current_hp)
         health['currentHp'] = max_hp
         health['tempHp'] = 0
 
@@ -1654,8 +1703,18 @@ def _sync_actor_health_to_combat_participant(state: dict[str, Any], actor: dict[
     hp['max'] = maximum
     hp['temp'] = max(0, int_or_default(health.get('tempHp'), default=hp.get('temp') or 0))
     if participant.get('team') == 'player':
-        participant['isAlive'] = participant.get('isAlive', True)
-        participant['isConscious'] = current > 0
+        snapshot = vitality.vitality_snapshot(actor)
+        participant['conditions'] = [
+            *[
+                condition
+                for condition in _string_list(participant.get('conditions'))
+                if condition not in vitality.VITALITY_CONDITIONS
+            ],
+            *snapshot['conditions'],
+        ]
+        participant['deathSaves'] = snapshot['deathSaves']
+        participant['isAlive'] = 'dead' not in snapshot['conditions']
+        participant['isConscious'] = current > 0 and participant['isAlive']
 
 
 def _sync_player_actor_from_combat_participant(state: dict[str, Any], participant: dict[str, Any]) -> None:
@@ -1675,6 +1734,8 @@ def _sync_player_actor_from_combat_participant(state: dict[str, Any], participan
         health['tempHp'] = max(0, int_or_default(hp.get('temp', hp.get('tempHp')), default=health.get('tempHp') or 0))
     if 'conditions' in participant:
         actor.setdefault('health', {})['conditions'] = _string_list(participant.get('conditions'))
+    if isinstance(participant.get('deathSaves'), dict):
+        actor.setdefault('health', {})['deathSaves'] = vitality.normalize_death_saves(participant['deathSaves'])
 
 
 def _resolve_damage_concentration(
@@ -1800,7 +1861,13 @@ def _apply_combat_update(state: dict[str, Any], change: dict[str, Any]) -> dict[
             or combat.get('round') != previous_round
         )
     )
-    if turn_advanced:
+    boundaries = change.get('turnBoundaries')
+    if isinstance(boundaries, list) and boundaries:
+        apply_turn_boundaries(combat, boundaries, turn_id=change.get('turnId'))
+        for participant in combat.get('participants') or []:
+            if isinstance(participant, dict):
+                _sync_player_actor_from_combat_participant(state, participant)
+    elif turn_advanced:
         target_tick = advance_spell_effect_durations(
             combat,
             timing='target_turn_end',
@@ -1831,24 +1898,29 @@ def _apply_combat_participant_update(state: dict[str, Any], change: dict[str, An
     replacement = normalize_participant(change.get('participant')) if isinstance(change.get('participant'), dict) else None
     if replacement:
         participant.update(replacement)
+    is_player = vitality.is_player_character(participant)
+    if 'conditions' in change:
+        participant['conditions'] = _string_list(change.get('conditions'))
     hp = change.get('hp') if isinstance(change.get('hp'), dict) else {}
     if hp:
         current = max(0, int_or_default(hp.get('current', hp.get('currentHp', participant.get('hp', {}).get('current'))), default=0))
         maximum = max(current, int_or_default(hp.get('max', hp.get('maxHp', participant.get('hp', {}).get('max'))), default=current))
-        participant['hp'] = {
-            'current': current,
-            'max': maximum,
-            'temp': max(0, int_or_default(hp.get('temp', participant.get('hp', {}).get('temp')), default=0)),
-        }
-        participant['isAlive'] = current > 0
-        participant['isConscious'] = current > 0 and bool(change.get('isConscious', participant.get('isConscious', True)))
-    if 'conditions' in change:
-        participant['conditions'] = _string_list(change.get('conditions'))
+        temp = max(0, int_or_default(hp.get('temp', participant.get('hp', {}).get('temp')), default=0))
+        if is_player:
+            participant['hp'] = {**participant.get('hp', {}), 'max': maximum, 'temp': temp}
+            vitality.set_hit_points(participant, current, in_combat=_combat_active(state))
+        else:
+            participant['hp'] = {'current': current, 'max': maximum, 'temp': temp}
+            participant['isAlive'] = current > 0
+            participant['isConscious'] = current > 0 and bool(change.get('isConscious', participant.get('isConscious', True)))
     if isinstance(change.get('position'), dict):
         participant['position'] = change['position']
     for key in ('isAlive', 'isConscious'):
-        if key in change:
+        # A player character's life is its ``dead`` condition, never a bare flag.
+        if key in change and not (is_player and key == 'isAlive'):
             participant[key] = bool(change[key])
+    if is_player:
+        participant['isAlive'] = not vitality.is_dead(participant)
     _sync_player_actor_from_combat_participant(state, participant)
     return participant
 
@@ -1902,6 +1974,18 @@ def _apply_combat_condition(state: dict[str, Any], change: dict[str, Any], *, ad
         participant['isConscious'] = False
     if condition == 'surrendered' and add:
         participant['currentIntent'] = None
+    source_id = _text(change.get('sourceEnemyId') or change.get('sourceId'))
+    if condition in {'charmed', 'frightened'}:
+        if add and source_id:
+            participant[f'{condition}By'] = _merge_unique(participant.get(f'{condition}By'), [source_id])
+        elif not add:
+            participant.pop(f'{condition}By', None)
+    if condition == 'hidden' and not add and isinstance(participant.get('position'), dict):
+        participant['position']['isHidden'] = False
+    if vitality.is_player_character(participant):
+        participant['isAlive'] = not vitality.is_dead(participant)
+        if not participant['isAlive']:
+            participant['isConscious'] = False
     _sync_player_actor_from_combat_participant(state, participant)
     return participant
 
@@ -1920,6 +2004,8 @@ def _apply_combat_ability_mark_used(state: dict[str, Any], change: dict[str, Any
         ability['lastUsedRound'] = (combat.get('round') or 1)
         if ability.get('cooldown') in {'once_per_combat', 'short_rest', 'long_rest'}:
             ability['used'] = True
+        if ability.get('cooldown') == 'recharge_5_6':
+            ability['needsRecharge'] = True
         return participant
     return None
 
@@ -2139,15 +2225,24 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
                 continue
             applied_change['actualAmount'] = abs(_apply_currency(actor, change, -1))
         elif change_type == 'health.heal' and actor:
-            applied_change['actualAmount'] = _apply_health_heal(actor, change)
-            _sync_actor_health_to_combat_participant(next_state, actor)
+            if _is_player_actor(next_state, actor):
+                applied_change['actualAmount'] = _apply_player_heal(next_state, actor, change.get('amount'))
+            else:
+                applied_change['actualAmount'] = _apply_health_heal(actor, change)
+                _sync_actor_health_to_combat_participant(next_state, actor)
         elif change_type == 'health.max.set' and actor:
             applied_change.update(_apply_health_max_set(actor, change))
             applied_change['actualAmount'] = applied_change.get('maxHpDelta', 0)
             _sync_actor_health_to_combat_participant(next_state, actor)
         elif change_type == 'health.damage' and actor:
-            result = _apply_health_damage(actor, change)
-            _sync_actor_health_to_combat_participant(next_state, actor)
+            if _is_player_actor(next_state, actor):
+                damage = _apply_player_damage(next_state, actor, change)
+                result = {key: damage[key] for key in ('amount', 'tempHpDamage', 'hpDamage')}
+                if damage.get('vitality'):
+                    applied_change['vitality'] = damage['vitality']
+            else:
+                result = _apply_health_damage(actor, change)
+                _sync_actor_health_to_combat_participant(next_state, actor)
             applied_change.update(result)
             applied_change['actualAmount'] = result['amount']
             concentration_check = _resolve_damage_concentration(
@@ -2301,6 +2396,25 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             applied_change['participantName'] = participant.get('name')
             applied_change['morale'] = participant.get('morale')
             applied_change['event'] = change.get('event')
+        elif change_type == 'combat.death_save':
+            combat = ensure_combat_state(next_state)
+            participant = _combat_participant(combat, change.get('participantId'))
+            if not participant or not vitality.is_dying(participant):
+                skipped.append({'change': change, 'reason': 'Death save target is no longer dying.'})
+                continue
+            outcome = vitality.apply_death_save(participant, int_or_default(change.get('roll'), default=1))
+            _sync_player_actor_from_combat_participant(next_state, participant)
+            applied_change['participantName'] = participant.get('name')
+            applied_change.update(
+                {key: outcome[key] for key in ('result', 'successes', 'failures', 'outcome')}
+            )
+        elif change_type == 'combat.effect.consume':
+            combat = ensure_combat_state(next_state)
+            removed = consume_modifiers(combat, change.get('consume') or [])
+            for participant in combat.get('participants') or []:
+                if isinstance(participant, dict):
+                    _sync_player_actor_from_combat_participant(next_state, participant)
+            applied_change['consumed'] = removed
         elif change_type == 'combat.end':
             combat = ensure_combat_state(next_state)
             combat['status'] = change.get('status') or 'ended'
@@ -2327,6 +2441,10 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
                 )
                 state_flags['campaignPackCompletedEncounterIds'] = completed_encounter_ids
                 flags['campaignPackCompletedEncounterIds'] = completed_encounter_ids
+            # Nobody makes death saves outside combat: the dying are left stable,
+            # unless a lethal encounter's party defeat leaves them dying.
+            lethal_defeat = flags.get('lethalDefeat') is True and end_reason == 'objective_failed'
+            stabilized: list[str] = []
             for participant in combat.get('participants') or []:
                 if not isinstance(participant, dict):
                     continue
@@ -2334,8 +2452,13 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
                     participant['currentIntent'] = None
                     if 'morale' in participant:
                         participant['morale'] = min(int_or_default(participant.get('morale'), default=0), 10)
+                elif not lethal_defeat and vitality.is_player_character(participant) and vitality.stabilize(participant):
+                    stabilized.append(_text(participant.get('id')))
+                    _sync_player_actor_from_combat_participant(next_state, participant)
             _sync_scene_combat_state(next_state, combat)
             applied_change['combatStatus'] = combat.get('status')
+            if stabilized:
+                applied_change['stabilizedParticipantIds'] = stabilized
         elif change_type == 'combat.reward.finalize' and str(change.get('source') or '') == COMBAT_REWARD_SOURCE:
             required_ids = {
                 str(value).strip()
@@ -2662,6 +2785,18 @@ def persist_state_to_database(
                 stats['max_hp'] = max_hp
                 stats['hp_max'] = max_hp
             stats['temp_hp'] = temp_hp
+            # Only the going-down conditions round-trip through the Player row.
+            snapshot = vitality.vitality_snapshot(actor)
+            stored_conditions = _string_list(stats.get('conditions'))
+            other_conditions = [
+                condition
+                for condition in stored_conditions
+                if condition.lower() not in vitality.VITALITY_CONDITIONS
+            ]
+            if snapshot['conditions'] or len(other_conditions) != len(stored_conditions):
+                stats['conditions'] = [*other_conditions, *snapshot['conditions']]
+            if snapshot['conditions'] or 'death_saves' in stats:
+                stats['death_saves'] = snapshot['deathSaves']
         xp = actor.get('xp') if isinstance(actor.get('xp'), dict) else {}
         if xp:
             current_xp = max(0, int_or_default(xp.get('current'), default=0))

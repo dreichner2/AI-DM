@@ -132,6 +132,13 @@ def test_narration_streams_visible_chunks_and_preserves_event_lifecycle():
         'dm_response_end',
     ]
     assert ''.join(payload['chunk'] for payload in _events(evidence, 'dm_chunk')) == result.text
+    assert [payload for payload in _events(evidence, 'dm_chunk')] == [
+        {'session_id': 7, 'turn_id': 11, 'chunk': 'The door ', 'index': 0},
+        {'session_id': 7, 'turn_id': 11, 'chunk': 'opens.', 'index': 1},
+    ]
+    start_payload = _events(evidence, 'dm_response_start')[0]
+    assert start_payload['requires_roll'] is False
+    assert start_payload['rules_hint']['turn_number'] == 4
     assert _events(evidence, 'dm_response_end')[0]['text'] == result.text
     assert all(kwargs == {'room': '7'} for name, _payload, kwargs in evidence.emitted if name != 'error')
     assert evidence.statuses == [
@@ -180,6 +187,7 @@ def test_narration_reads_provider_identity_after_context_construction():
 
 
 def test_narration_releases_session_before_waiting_for_active_background_provider():
+    """Codex shares a process-wide lock with canon jobs, so its narration waits."""
     session_released = threading.Event()
     provider_started = threading.Event()
     completed = threading.Event()
@@ -189,7 +197,8 @@ def test_narration_releases_session_before_waiting_for_active_background_provide
         provider_started.set()
         yield 'Ready.'
 
-    service, _evidence = _service(stream)
+    service, evidence = _service(stream)
+    evidence.config['AIDM_LLM_PROVIDER'] = 'codex_cli'
     service.dependencies = replace(
         service.dependencies,
         release_session=session_released.set,
@@ -216,6 +225,45 @@ def test_narration_releases_session_before_waiting_for_active_background_provide
     assert failures == []
     assert provider_started.is_set() is True
     assert completed.is_set() is True
+
+
+@pytest.mark.parametrize('provider_name', ['deepseek', 'gemini', 'nvidia', 'kimi', 'fallback'])
+def test_narration_on_http_providers_does_not_wait_for_background_canon(provider_name):
+    provider_started = threading.Event()
+
+    def stream(*_args, **_kwargs):
+        provider_started.set()
+        yield 'Ready.'
+
+    service, evidence = _service(stream)
+    evidence.config['AIDM_LLM_PROVIDER'] = provider_name
+
+    with background_provider_slot():
+        result = service.narrate(_request())
+
+    assert provider_started.is_set() is True
+    assert result.text == 'Ready.'
+
+
+def test_opening_turn_passes_the_opening_brief_to_the_prompt_builder():
+    received_hints: list[dict] = []
+
+    def stream(*_args, rules_hint, **_kwargs):
+        received_hints.append(rules_hint)
+        yield 'The caravan creaks to a stop.'
+
+    service, evidence = _service(stream)
+    brief_builder = Mock(return_value={'scene': {'name': 'The Lantern Post'}})
+    service.dependencies = replace(service.dependencies, build_opening_brief=brief_builder)
+    opening_hint = {'requires_roll': False, 'turn_number': 1, 'message_kind': 'opening'}
+
+    service.narrate(_request(rules_hint_payload=opening_hint))
+    service.narrate(_request())
+
+    brief_builder.assert_called_once_with(7)
+    assert received_hints[0] == {**opening_hint, 'opening_brief': {'scene': {'name': 'The Lantern Post'}}}
+    assert 'opening_brief' not in received_hints[1]
+    assert 'opening_brief' not in _events(evidence, 'dm_response_start')[0]['rules_hint']
 
 
 def test_narration_returns_public_failure_when_context_build_fails():
@@ -261,6 +309,7 @@ def test_narration_injects_required_roll_prompt_with_pending_turn_id():
         ('The die settles.', {'roll_value': 17}),
         ('Please roll Dexterity.', {}),
         ('No roll needed for this action.', {}),
+        ('You crouch low. Make a Dexterity (Stealth) check, DC 13.', {}),
     ],
 )
 def test_narration_does_not_inject_roll_prompt_when_gate_is_already_satisfied(

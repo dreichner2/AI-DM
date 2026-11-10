@@ -1,16 +1,17 @@
 PYTHON := .venv/bin/python
 PYTHON_BOOTSTRAP ?= python3.14
 FRONTEND_DIR := aidm_frontend
+# Interpreter for scripts/check_toolchain.py: the virtualenv once it exists, the bootstrap Python before.
+TOOLCHAIN_PYTHON = $(if $(wildcard $(PYTHON)),$(PYTHON),$(PYTHON_BOOTSTRAP))
 
 .PHONY: install lock verify-python verify-frontend-toolchain backend frontend unified test lint typecheck build bundle-budget smoke scenario-regression socket-concurrency-smoke hosted-cookie-auth-smoke hosted-cookie-release-proof security-forbidden-smoke session-export-import-smoke hosted-rc-evidence hosted-rc-plan export-support-bundle beta-slo-baseline local-beta-slo-baseline backup-restore-drill postgres-backup-restore-drill migration-chain-drill browser-smoke visual-smoke visual-smoke-review frontend-npm-ci-evidence packaging-cleanup-evidence github-actions-rc-plan github-actions-evidence clean clean-deps source-archive rc-issue-evidence rc-issue-closure-evidence release-evidence-packet release-artifact-consistency release-checklist-status rc-recommendation-matrix external-proof-inputs external-proof-execution-plan operator-signoff-values-template external-proof-values-merge external-proof-values-check operator-signoff-from-inputs operator-signoff-draft operator-signoff-action-plan operator-signoff-status rc-finalize-signoff rc-handoff-artifacts post-rc-issue-evidence db-upgrade health secrets api-types request-json-parsing state-writers socketio-worker-model-decision dev-check closed-beta-rc closed-beta-rc-fast deployment-readiness observability-check reproject-session reproject-all
 
 verify-python:
 	@test -x "$(PYTHON)" || { echo "Missing $(PYTHON); run make install." >&2; exit 1; }
-	@$(PYTHON) -c 'import sys; expected=(3, 14, 6); actual=sys.version_info[:3]; actual == expected or sys.exit(f"Python 3.14.6 is required; found {actual[0]}.{actual[1]}.{actual[2]} via $(PYTHON).")'
+	@$(PYTHON) scripts/check_toolchain.py python
 
 verify-frontend-toolchain:
-	@node -e 'process.exit(process.versions.node === "24.18.0" ? 0 : 1)' || { echo "Node.js 24.18.0 is required." >&2; exit 1; }
-	@test "$$(npm --version)" = "12.0.0" || { echo "npm 12.0.0 is required." >&2; exit 1; }
+	@$(TOOLCHAIN_PYTHON) scripts/check_toolchain.py node npm
 
 test dev-check closed-beta-rc closed-beta-rc-fast db-upgrade deployment-readiness: verify-python
 frontend lint typecheck build bundle-budget browser-smoke visual-smoke: verify-frontend-toolchain
@@ -18,15 +19,11 @@ backend: verify-python
 unified: verify-python verify-frontend-toolchain
 
 install:
-	@command -v node >/dev/null 2>&1 || { echo "Node.js 24.18.0 was not found." >&2; exit 1; }
-	@node -e 'process.exit(process.versions.node === "24.18.0" ? 0 : 1)' || { echo "Node.js 24.18.0 is required." >&2; exit 1; }
-	@command -v npm >/dev/null 2>&1 || { echo "npm 12.0.0 was not found." >&2; exit 1; }
-	@test "$$(npm --version)" = "12.0.0" || { echo "npm 12.0.0 is required." >&2; exit 1; }
 	@command -v $(PYTHON_BOOTSTRAP) >/dev/null 2>&1 || { \
-		echo "$(PYTHON_BOOTSTRAP) was not found. Install Python 3.14.6 or set PYTHON_BOOTSTRAP to that executable." >&2; \
+		echo "$(PYTHON_BOOTSTRAP) was not found. Install Python 3.14 (3.14.6 or newer) or set PYTHON_BOOTSTRAP to that executable." >&2; \
 		exit 1; \
 	}
-	@$(PYTHON_BOOTSTRAP) -c 'import sys; expected=(3, 14, 6); actual=sys.version_info[:3]; actual == expected or sys.exit(f"Python 3.14.6 is required; found {actual[0]}.{actual[1]}.{actual[2]} via $(PYTHON_BOOTSTRAP).")'
+	@$(PYTHON_BOOTSTRAP) scripts/check_toolchain.py python node npm
 	$(PYTHON_BOOTSTRAP) -m venv .venv
 	$(PYTHON) -m pip install --constraint requirements.constraints.txt --upgrade pip
 	$(PYTHON) -m pip install --require-hashes -r requirements-dev.lock.txt

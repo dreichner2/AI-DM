@@ -218,6 +218,46 @@ def test_segment_trigger_non_object_json_falls_back_to_keywords():
     assert spec['trigger_type'] == 'keywords'
 
 
+def test_segment_keyword_dict_trigger_accepts_singular_type_and_comma_keywords():
+    matched, reason, spec = evaluate_segment_trigger(
+        trigger_condition='{"type":"keyword","keywords":"Altar, Gate","match":"all"}',
+        player_message='I inspect the gate beside the altar.',
+        session_state={},
+        campaign_state={},
+    )
+    assert matched is True
+    assert reason == 'keywords:altar,gate'
+    assert spec['trigger_type'] == 'keywords'
+    assert spec['raw']['keywords'] == ['altar', 'gate']
+
+
+def test_segment_location_trigger_matches_exact_current_location_id():
+    trigger_condition = '{"type":"location","locationId":"old_road"}'
+
+    def fires(location_id):
+        return evaluate_segment_trigger(
+            trigger_condition=trigger_condition,
+            player_message='I walk on.',
+            session_state={'current_location': 'Old Road Crossing', 'current_location_id': location_id},
+            campaign_state={'location': 'Old Road'},
+        )[0]
+
+    assert fires('old_road') is True
+    assert fires('old_road_crossing') is False
+    assert fires(None) is False
+
+
+def test_segment_trigger_of_unknown_type_never_fires():
+    matched, reason, _spec = evaluate_segment_trigger(
+        trigger_condition='{"type":"timer","minutes":5}',
+        player_message='I wait.',
+        session_state={'current_location_id': 'old_road'},
+        campaign_state={},
+    )
+    assert matched is False
+    assert reason == 'unsupported_trigger_type:timer'
+
+
 def test_create_segment_coerces_string_false_to_false(client, app):
     ids = seed_world_campaign_player_session(app)
 

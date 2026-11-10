@@ -5,7 +5,7 @@ import type { Socket } from 'socket.io-client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { StreamingTurn, TimelineEntry } from './types'
 import type { RollRequiredPayload, RollResolvedPayload } from './gameActions'
-import { SEND_PENDING_RECOVERY_MS, useComposerActions } from './useComposerActions'
+import { RECONNECT_RESEND_WINDOW_MS, SEND_PENDING_RECOVERY_MS, useComposerActions } from './useComposerActions'
 
 function useComposerHarness(
   socket: Socket,
@@ -27,6 +27,7 @@ function useComposerHarness(
     selectedPlayer: { player_id: 4, character_name: 'Ari' },
     selectedPlayerId: 4,
     selectedSessionId: 5,
+    sessionHydrated: true,
     sendPending,
     dmResponseBlocking: Boolean(streamingTurn),
     streamingTurn,
@@ -37,6 +38,7 @@ function useComposerHarness(
     stopTtsAudio: vi.fn(),
     turnControl: { mode: 'free', activePlayerId: null, activePlayerName: null },
     pushError,
+    dismissError: vi.fn(),
     ...overrides,
   } as unknown as Parameters<typeof useComposerActions>[0])
   return {
@@ -52,6 +54,20 @@ function socketWithConnection(connected: boolean | undefined) {
     connected,
     emit: vi.fn(),
   } as unknown as Socket
+}
+
+function sendMessageCalls(socket: Socket) {
+  return vi.mocked(socket.emit).mock.calls.filter(([event]) => event === 'send_message')
+}
+
+type HarnessResult = { current: ReturnType<typeof useComposerHarness> }
+
+// A drop with no rejoin inside the resend window leaves delivery uncertain.
+async function interruptWithoutRejoin(result: HarnessResult) {
+  act(() => result.current.actions.handleConnectionInterrupted())
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RECONNECT_RESEND_WINDOW_MS)
+  })
 }
 
 describe('useComposerActions realtime delivery recovery', () => {
@@ -188,15 +204,16 @@ describe('useComposerActions realtime delivery recovery', () => {
     expect(pushError).not.toHaveBeenCalledWith('validation', expect.stringContaining('timed out'))
   })
 
-  it('reuses the exact client id and payload after a disconnect before confirmation', () => {
+  it('reuses the exact client id and payload after a disconnect with no rejoin before confirmation', async () => {
     const socket = socketWithConnection(true)
     const { result } = renderHook(() => useComposerHarness(socket, vi.fn()))
 
     act(() => result.current.actions.submitAction('Cross the bridge'))
     const originalPayload = vi.mocked(socket.emit).mock.calls[0]?.[1]
-    act(() => result.current.actions.handleConnectionInterrupted())
+    await interruptWithoutRejoin(result)
 
     expect(result.current.sendPending).toBe(false)
+    expect(result.current.actions.submissionReconnecting).toBe(false)
     expect(result.current.actions.queuedActionRetryable).toBe(true)
     act(() => result.current.actions.submitAction())
 
@@ -204,14 +221,221 @@ describe('useComposerActions realtime delivery recovery', () => {
     expect(result.current.optimisticEntries).toHaveLength(1)
   })
 
-  it('blocks a modified or new submission while delivery is uncertain and keeps safe retry available', () => {
+  it('waits silently through a same-session reconnect and re-emits the identical payload once', () => {
+    const socket = socketWithConnection(true)
+    const pushError = vi.fn()
+    const { result } = renderHook(() => useComposerHarness(socket, pushError))
+
+    act(() => result.current.actions.submitAction('Cross the bridge'))
+    const originalPayload = vi.mocked(socket.emit).mock.calls[0]?.[1] as { client_message_id: string }
+    act(() => {
+      result.current.actions.handleConnectionInterrupted()
+      result.current.complete()
+    })
+
+    expect(result.current.actions.submissionReconnecting).toBe(true)
+    expect(result.current.actions.queuedActionRetryable).toBe(false)
+    expect(result.current.actions.queuedActionText).toBe('')
+    expect(result.current.actions.actionText).toBe('')
+    expect(result.current.optimisticEntries[0]?.metadata.persistence_status).toBe('pending')
+    expect(pushError).not.toHaveBeenCalled()
+
+    act(() => result.current.actions.handleSessionJoined({ sessionId: 6, playerId: 4 }))
+    expect(sendMessageCalls(socket)).toHaveLength(1)
+
+    act(() => result.current.actions.handleSessionJoined({ sessionId: 5, playerId: 4 }))
+    act(() => result.current.actions.handleSessionJoined({ sessionId: 5, playerId: 4 }))
+
+    expect(sendMessageCalls(socket)).toEqual([
+      ['send_message', originalPayload],
+      ['send_message', originalPayload],
+    ])
+    expect(result.current.sendPending).toBe(true)
+    expect(result.current.actions.submissionReconnecting).toBe(false)
+    expect(result.current.optimisticEntries).toHaveLength(1)
+    expect(result.current.optimisticEntries[0]?.metadata.persistence_status).toBe('pending')
+
+    act(() => result.current.actions.handleTurnDuplicate({
+      session_id: 5,
+      turn_id: 44,
+      client_message_id: originalPayload.client_message_id,
+    }))
+    expect(result.current.sendPending).toBe(false)
+    expect(result.current.actions.queuedActionRetryable).toBe(false)
+  })
+
+  it('releases the composer when the saved log confirms a re-emitted send before its duplicate answer', () => {
+    const socket = socketWithConnection(true)
+    const { result } = renderHook(() => useComposerHarness(socket, vi.fn()))
+
+    act(() => result.current.actions.submitAction('Cross the bridge'))
+    const { client_message_id: clientMessageId } = vi.mocked(socket.emit).mock.calls[0]?.[1] as {
+      client_message_id: string
+    }
+    act(() => {
+      result.current.actions.handleConnectionInterrupted()
+      result.current.complete()
+    })
+    act(() => result.current.actions.handleSessionJoined({ sessionId: 5, playerId: 4 }))
+    act(() => result.current.actions.handleSavedMessages([clientMessageId]))
+    expect(result.current.sendPending).toBe(true)
+
+    act(() => result.current.actions.handleTurnDuplicate({
+      session_id: 5,
+      turn_id: 44,
+      client_message_id: clientMessageId,
+    }))
+
+    expect(result.current.sendPending).toBe(false)
+  })
+
+  it('falls back to uncertain delivery when the automatic re-emit is itself interrupted', () => {
+    const socket = socketWithConnection(true)
+    const pushError = vi.fn()
+    const { result } = renderHook(() => useComposerHarness(socket, pushError))
+
+    act(() => result.current.actions.submitAction('Cross the bridge'))
+    act(() => result.current.actions.handleConnectionInterrupted())
+    act(() => result.current.actions.handleSessionJoined({ sessionId: 5, playerId: 4 }))
+    act(() => result.current.actions.handleConnectionInterrupted())
+
+    expect(sendMessageCalls(socket)).toHaveLength(2)
+    expect(result.current.actions.submissionReconnecting).toBe(false)
+    expect(result.current.actions.queuedActionRetryable).toBe(true)
+    expect(result.current.actions.queuedActionText).toBe('Cross the bridge')
+    expect(pushError).toHaveBeenCalledWith('validation', expect.stringContaining('Realtime disconnected'))
+  })
+
+  it('marks a pending send uncertain at once when the socket closes for another player', () => {
+    const socket = socketWithConnection(true)
+    const { result, rerender } = renderHook(
+      ({ playerId }) => useComposerHarness(socket, vi.fn(), { selectedPlayerId: playerId }),
+      { initialProps: { playerId: 4 } },
+    )
+
+    act(() => result.current.actions.submitAction('Cross the bridge'))
+    rerender({ playerId: 7 })
+    act(() => result.current.actions.handleConnectionInterrupted())
+
+    expect(result.current.actions.submissionReconnecting).toBe(false)
+    expect(result.current.actions.queuedActionRetryable).toBe(true)
+  })
+
+  it('clears an uncertain delivery and its error once the saved log contains its client id', async () => {
+    const socket = socketWithConnection(true)
+    const pushError = vi.fn()
+    const dismissError = vi.fn()
+    const { result } = renderHook(() => useComposerHarness(socket, pushError, { dismissError }))
+
+    act(() => result.current.actions.submitAction('Cross the bridge'))
+    const { client_message_id: clientMessageId } = vi.mocked(socket.emit).mock.calls[0]?.[1] as {
+      client_message_id: string
+    }
+    await interruptWithoutRejoin(result)
+    expect(result.current.actions.queuedActionRetryable).toBe(true)
+    const uncertainError = pushError.mock.calls.find(([category]) => category === 'validation')?.[1]
+
+    act(() => result.current.actions.handleSavedMessages(['another-id']))
+    expect(result.current.actions.queuedActionRetryable).toBe(true)
+
+    act(() => result.current.actions.handleSavedMessages([clientMessageId]))
+
+    expect(result.current.actions.queuedActionRetryable).toBe(false)
+    expect(result.current.actions.queuedActionText).toBe('')
+    expect(result.current.actions.actionText).toBe('')
+    expect(dismissError).toHaveBeenCalledWith('validation', uncertainError)
+  })
+
+  it('treats a pending send echoed as saved as confirmed even if the socket then drops', () => {
+    const socket = socketWithConnection(true)
+    const { result } = renderHook(() => useComposerHarness(socket, vi.fn()))
+
+    act(() => result.current.actions.submitAction('Cross the bridge'))
+    const { client_message_id: clientMessageId } = vi.mocked(socket.emit).mock.calls[0]?.[1] as {
+      client_message_id: string
+    }
+    act(() => result.current.actions.handleSavedMessages([clientMessageId]))
+    act(() => result.current.actions.handleConnectionInterrupted())
+
+    expect(result.current.actions.submissionReconnecting).toBe(false)
+    expect(result.current.actions.queuedActionRetryable).toBe(false)
+  })
+
+  it('sends the opening as an internal request that never becomes a player draft', async () => {
+    const socket = socketWithConnection(true)
+    const pushError = vi.fn()
+    const { result } = renderHook(() => useComposerHarness(socket, pushError))
+    act(() => vi.runOnlyPendingTimers())
+    act(() => result.current.actions.updateActionText('My own half-written plan'))
+
+    act(() => result.current.actions.startOpening('Please narrate the opening scene for this campaign.'))
+
+    const openingPayload = vi.mocked(socket.emit).mock.calls.find(([event]) => event === 'send_message')?.[1]
+    expect(openingPayload).toMatchObject({ message_kind: 'opening' })
+    expect(result.current.optimisticEntries[0]?.metadata.message_kind).toBe('opening')
+    expect(result.current.actions.actionText).toBe('My own half-written plan')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEND_PENDING_RECOVERY_MS)
+    })
+
+    expect(result.current.actions.openingDelayed).toBe(true)
+    expect(result.current.actions.queuedActionRetryable).toBe(false)
+    expect(result.current.actions.queuedActionText).toBe('')
+    expect(result.current.actions.actionText).toBe('My own half-written plan')
+    expect(pushError).not.toHaveBeenCalledWith('validation', expect.anything())
+
+    act(() => result.current.actions.startOpening('Please narrate the opening scene for this campaign.'))
+
+    expect(sendMessageCalls(socket)).toEqual([
+      ['send_message', openingPayload],
+      ['send_message', openingPayload],
+    ])
+    expect(result.current.actions.openingDelayed).toBe(false)
+  })
+
+  it('keeps the typed draft and shows the server reason when an out-of-turn action is rejected', () => {
+    const socket = socketWithConnection(true)
+    const pushError = vi.fn()
+    const { result } = renderHook(() => useComposerHarness(socket, pushError))
+    act(() => vi.runOnlyPendingTimers())
+
+    act(() => result.current.actions.updateActionText('  I leap onto the cart  '))
+    act(() => result.current.actions.submitAction())
+    expect(result.current.actions.actionText).toBe('')
+
+    act(() => result.current.actions.handleTurnRejected({
+      message: 'Mira is still choosing. Their turn is skipped in 20 seconds.',
+      details: { active_player_absent: true, skip_in_seconds: 20 },
+    }))
+
+    expect(result.current.optimisticEntries).toEqual([])
+    expect(result.current.sendPending).toBe(false)
+    expect(result.current.actions.actionText).toBe('  I leap onto the cart  ')
+    expect(result.current.actions.turnRejectionMessage).toBe(
+      'Mira is still choosing. Their turn is skipped in 20 seconds.',
+    )
+    expect(pushError).not.toHaveBeenCalled()
+  })
+
+  it('refuses to send until the selected session is hydrated', () => {
+    const socket = socketWithConnection(true)
+    const { result } = renderHook(() => useComposerHarness(socket, vi.fn(), { sessionHydrated: false }))
+
+    act(() => result.current.actions.submitAction('Open the door'))
+
+    expect(socket.emit).not.toHaveBeenCalled()
+    expect(result.current.sendPending).toBe(false)
+  })
+
+  it('blocks a modified or new submission while delivery is uncertain and keeps safe retry available', async () => {
     const socket = socketWithConnection(true)
     const pushError = vi.fn()
     const { result } = renderHook(() => useComposerHarness(socket, pushError))
 
     act(() => result.current.actions.submitAction('Cross the bridge'))
     const originalPayload = vi.mocked(socket.emit).mock.calls[0]?.[1]
-    act(() => result.current.actions.handleConnectionInterrupted())
+    await interruptWithoutRejoin(result)
     act(() => result.current.actions.updateActionText('Inspect the river instead'))
     act(() => result.current.actions.submitAction())
 
@@ -229,12 +453,12 @@ describe('useComposerActions realtime delivery recovery', () => {
       .toEqual(['send_message', originalPayload])
   })
 
-  it('preserves an edited draft when the player explicitly discards an uncertain delivery', () => {
+  it('preserves an edited draft when the player explicitly discards an uncertain delivery', async () => {
     const socket = socketWithConnection(true)
     const { result } = renderHook(() => useComposerHarness(socket, vi.fn()))
 
     act(() => result.current.actions.submitAction('Open the hatch'))
-    act(() => result.current.actions.handleConnectionInterrupted())
+    await interruptWithoutRejoin(result)
     act(() => result.current.actions.updateActionText('Listen at the hatch'))
     act(() => result.current.actions.clearQueuedAction())
 

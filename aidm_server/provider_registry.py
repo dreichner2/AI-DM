@@ -49,6 +49,9 @@ PROVIDER_CATALOG: dict[str, dict] = {
             'host_tool_access': False,
             'tool_event_policy': 'fail_closed',
             'thinking_control': True,
+            # Saved-login Codex calls share one process-wide lock with canon
+            # jobs, so narration yields to a running background job first.
+            'narration_waits_for_background': True,
             'default_timeout_seconds': 240,
             'default_temperature': 0.0,
             'default_reasoning_effort': 'medium',
@@ -172,6 +175,11 @@ def provider_default_model(provider_id: str) -> str:
 def provider_capabilities(provider_id: str) -> dict:
     option = PROVIDER_CATALOG.get(provider_id) or {}
     return deepcopy(option.get('capabilities', {}))
+
+
+def narration_waits_for_background(provider_id: str) -> bool:
+    provider = str(provider_id or '').strip().lower()
+    return provider_capabilities(provider).get('narration_waits_for_background') is True
 
 
 def provider_catalog_payload() -> list[dict]:

@@ -996,7 +996,7 @@ def test_real_socket_combat_lifecycle_tactic_change_nonlethal_end_and_reload(
     )
     monkeypatch.setattr(
         combat_resolution_module,
-        '_deterministic_damage_roller',
+        'deterministic_roller',
         lambda _seed: (lambda _sides: 3),
     )
     monkeypatch.setattr(

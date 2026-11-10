@@ -1,0 +1,201 @@
+import { useState } from 'react'
+import type { InspectorPanelProps } from '../../InspectorPanel'
+import type { SessionBoardProps } from '../../SessionBoard'
+import { profileIconSrcForCharacter } from '../../profileIcons'
+import type { ActivePlayer } from '../../types'
+
+const ABILITY_NAMES: Record<string, string> = {
+  STR: 'Strength',
+  DEX: 'Dexterity',
+  CON: 'Constitution',
+  INT: 'Intelligence',
+  WIS: 'Wisdom',
+  CHA: 'Charisma',
+}
+
+function mechanicLabel(value: string) {
+  return value
+    .replace(/^tool:/, '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+/** Health tone for the HP numeral: the live roster first, then the sheet's own numbers. */
+function hpTone(hp: string, player: ActivePlayer | undefined) {
+  if (player?.health) return player.health.tone
+  const [current, max] = hp.split('/').map((part) => Number.parseFloat(part))
+  if (!Number.isFinite(current) || !Number.isFinite(max) || max <= 0) return undefined
+  if (current <= 0) return 'down'
+  const ratio = current / max
+  return ratio <= 0.25 ? 'critical' : ratio <= 0.6 ? 'hurt' : 'healthy'
+}
+
+function playerAvatar(player: ActivePlayer) {
+  return (
+    player.profile_image ||
+    profileIconSrcForCharacter({ race: player.race, sex: player.sex }) ||
+    '/profile-icons/human_male.png'
+  )
+}
+
+type CharacterSectionProps = {
+  board: SessionBoardProps
+  inspector: InspectorPanelProps
+}
+
+export function CharacterSection({ board, inspector }: CharacterSectionProps) {
+  const [manageOpen, setManageOpen] = useState(false)
+  const { displayCharacter, statBlock, xpProgress } = inspector
+  const viewer = inspector.activePlayers.find((player) => player.id === inspector.selectedPlayerId)
+  const conditions =
+    board.combatState.allies.find((ally) => ally.name === displayCharacter.name)?.conditions ?? []
+  const skills = (statBlock.skillProficiencies ?? []).map((skill) =>
+    `${mechanicLabel(skill)}${(statBlock.skillExpertise ?? []).includes(skill) ? ' (expertise)' : ''}`,
+  )
+  const facts: Array<[string, string]> = [
+    ['Proficiency bonus', statBlock.proficiency !== '—' ? statBlock.proficiency : ''],
+    ['Skills', skills.join(', ')],
+    ['Tools', (statBlock.toolProficiencies ?? []).map(mechanicLabel).join(', ')],
+    ['Languages', (statBlock.languages ?? []).join(', ')],
+    ['Background', statBlock.background ?? ''],
+  ]
+  const vitals: Array<[string, string]> = [
+    ['HP', statBlock.hp.replace(/\s*\/\s*/, '/')],
+    ['AC', statBlock.ac],
+    ['Initiative', statBlock.init],
+    ['Speed', statBlock.speed],
+  ]
+
+  return (
+    <div className="story-sheet story-sheet-character">
+      <div className="story-character-head">
+        <div className="story-sheet-portrait">
+          <img src={inspector.characterAvatarSrc} alt="" />
+        </div>
+        <div className="story-character-title">
+          <h2 className="story-character-name">{displayCharacter.name}</h2>
+          <p className="story-character-line">
+            Level {displayCharacter.level} {displayCharacter.ancestryClass}
+          </p>
+          <div
+            className="story-xp"
+            role="progressbar"
+            aria-label="Experience"
+            aria-valuemin={0}
+            aria-valuemax={xpProgress.max}
+            aria-valuenow={xpProgress.current}
+            aria-valuetext={xpProgress.label}
+          >
+            <span style={{ width: `${xpProgress.percent}%` }} />
+          </div>
+          <p className="story-xp-label">{xpProgress.label}</p>
+        </div>
+      </div>
+
+      <dl className="story-vitals">
+        {vitals.map(([label, value]) => (
+          <div key={label}>
+            <dt className="story-label">{label}</dt>
+            <dd data-health={label === 'HP' ? hpTone(statBlock.hp, viewer) : undefined}>{value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      <dl className="story-abilities">
+        {statBlock.abilities.map(([label, score, modifier]) => (
+          <div key={label} title={ABILITY_NAMES[label]}>
+            <dt className="story-label">{label}</dt>
+            <dd className="story-ability-modifier">{modifier}</dd>
+            <dd className="story-ability-score">{score}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {conditions.length ? (
+        <div className="story-sheet-conditions" aria-label="Conditions">
+          {conditions.map((condition) => (
+            <span key={condition} className="story-chip" data-tone="fail">{condition}</span>
+          ))}
+        </div>
+      ) : null}
+
+      <hr className="story-rule" />
+
+      <dl className="story-facts">
+        {facts.filter(([, value]) => value).map(([label, value]) => (
+          <div key={label}>
+            <dt className="story-label">{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      <div className="story-sheet-actions" aria-label="Character actions">
+        <button
+          type="button"
+          className="story-link"
+          disabled={!inspector.selectedPlayerId}
+          onClick={inspector.editSelectedPlayer}
+        >
+          Edit character
+        </button>
+        <button
+          type="button"
+          className="story-link"
+          disabled={!inspector.selectedCampaignId || !inspector.playersCount}
+          onClick={inspector.loadPlayer}
+        >
+          Switch character
+        </button>
+        <button
+          type="button"
+          className="story-link"
+          disabled={!inspector.selectedCampaignId || inspector.createPlayerPending}
+          onClick={() => void inspector.createDefaultPlayer()}
+        >
+          {inspector.createPlayerPending ? 'Creating…' : 'New character'}
+        </button>
+        <button
+          type="button"
+          className="story-link"
+          aria-expanded={manageOpen}
+          onClick={() => setManageOpen((current) => !current)}
+        >
+          Manage
+        </button>
+        {manageOpen ? (
+          <button
+            type="button"
+            className="story-link story-link-danger"
+            disabled={!inspector.selectedPlayerId}
+            onClick={inspector.deleteSelectedPlayer}
+          >
+            Delete character
+          </button>
+        ) : null}
+      </div>
+
+      {inspector.activePlayers.length ? (
+        <>
+          <hr className="story-rule" />
+          <h3 className="story-label">At the table</h3>
+          <ul className="story-table-list">
+            {inspector.activePlayers.map((player) => {
+              const isViewer = player.id === inspector.selectedPlayerId
+              return (
+                <li key={player.id} data-health={player.health?.tone}>
+                  <img src={playerAvatar(player)} alt="" />
+                  <span className="story-table-name">{player.character_name || player.name}</span>
+                  {player.health ? <span className="story-table-health">{player.health.label}</span> : null}
+                  <span className="story-table-badge">
+                    {isViewer ? 'You' : player.is_typing ? 'typing…' : ''}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        </>
+      ) : null}
+    </div>
+  )
+}

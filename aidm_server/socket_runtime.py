@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from threading import RLock
+import time
 from typing import Any, Callable
 
 from flask import current_app, request
@@ -32,12 +33,42 @@ EmitFn = Callable[..., Any]
 LeaveRoomFn = Callable[[str], Any]
 
 
+def epoch_seconds() -> float:
+    return time.time()
+
+
 class SocketRuntime:
     def __init__(self, state: SocketState):
         self.state = state
         self._limiter: FixedWindowRateLimiter | None = None
         self._limiter_config: tuple[int, int, str, int] | None = None
         self._limiter_lock = RLock()
+        # session_id -> player_id -> epoch seconds when their last socket left.
+        self._departures: dict[int, dict[int, float]] = {}
+        self._departures_lock = RLock()
+
+    def record_departure(self, session_id: int, player_id: int) -> None:
+        with self._departures_lock:
+            self._departures.setdefault(session_id, {})[player_id] = epoch_seconds()
+
+    def clear_departure(self, session_id: int, player_id: int) -> None:
+        with self._departures_lock:
+            session_departures = self._departures.get(session_id)
+            if session_departures is None:
+                return
+            session_departures.pop(player_id, None)
+            if not session_departures:
+                self._departures.pop(session_id, None)
+
+    def player_absent_since(self, session_id: int, player_id: int) -> float:
+        """Return when a player who is not connected was last seen leaving.
+
+        A player with no recorded departure (for example after a server restart)
+        is treated as having left when their absence is first observed.
+        """
+
+        with self._departures_lock:
+            return self._departures.setdefault(session_id, {}).setdefault(player_id, epoch_seconds())
 
     def set_context(self, event_name: str, data: dict | None = None, turn_id: int | None = None) -> str:
         sid = getattr(request, 'sid', 'unknown')
@@ -224,6 +255,7 @@ class SocketRuntime:
             was_typing = self.player_is_typing(session_id, player_id)
             removed_player = self.release_active_player(session_id, player_id, sid)
             if removed_player:
+                self.record_departure(session_id, player_id)
                 emit_fn('player_left', {'id': player_id}, room=str(session_id))
                 emit_fn('active_players', self.active_player_payloads(session_id), room=str(session_id))
             elif was_typing != self.player_is_typing(session_id, player_id):
@@ -243,8 +275,23 @@ class SocketRuntime:
             was_typing = self.player_is_typing(session_id, player_id)
             removed_player = self.release_active_player(session_id, player_id, sid)
             if removed_player:
+                self.record_departure(session_id, player_id)
                 emit_fn('player_left', {'id': player_id}, room=str(session_id))
                 emit_fn('active_players', self.active_player_payloads(session_id), room=str(session_id))
             elif was_typing != self.player_is_typing(session_id, player_id):
                 emit_fn('active_players', self.active_player_payloads(session_id), room=str(session_id))
         return connection_info
+
+
+_bound_presence: SocketRuntime | None = None
+
+
+def bind_presence(runtime: SocketRuntime) -> None:
+    """Make the registered Socket.IO runtime the presence source for turn policy."""
+
+    global _bound_presence
+    _bound_presence = runtime
+
+
+def bound_presence() -> SocketRuntime | None:
+    return _bound_presence

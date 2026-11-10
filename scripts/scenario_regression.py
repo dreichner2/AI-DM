@@ -283,14 +283,17 @@ def _assert_canon_context(app, ids: dict[str, int], events: list[dict[str, Any]]
     return _assert_text_contains(turn.dm_output or '', 'Mara', 'silver key')
 
 
-def _assert_opening(app, ids: dict[str, int], events: list[dict[str, Any]], capture: dict[str, Any]) -> list[str]:
+def _assert_opening_plumbing(app, ids: dict[str, int], events: list[dict[str, Any]], capture: dict[str, Any]) -> list[str]:
+    """The response is canned, so this checks delivery and persistence, not narration quality."""
     turn = _latest_turn(ids['session_id'])
     assert turn is not None
     assert turn.status == 'completed'
     assert turn.llm_provider == 'fallback'
     assert turn.llm_model == 'scenario-regression-v1'
-    assert turn.dm_output and len(turn.dm_output) >= 120
-    return _assert_text_contains(turn.dm_output, 'observatory', 'choice')
+    end_payload = _event_payload(events, 'dm_response_end') or {}
+    streamed_text = ''.join(str(payload.get('chunk') or '') for payload in _event_payloads(events, 'dm_chunk'))
+    assert turn.dm_output and turn.dm_output == end_payload.get('text') == streamed_text
+    return ['streamed opening text was persisted unchanged', 'turn records the scenario provider and model']
 
 
 def _assert_impossible(app, ids: dict[str, int], events: list[dict[str, Any]], capture: dict[str, Any]) -> list[str]:
@@ -310,15 +313,17 @@ def _assert_combat_roll(app, ids: dict[str, int], events: list[dict[str, Any]], 
 def _default_scenarios() -> list[Scenario]:
     return [
         Scenario(
-            name='opening_scene_quality',
+            name='opening_scene_plumbing',
             message='I step into the ruined observatory and ask what I see.',
             response=(
                 'The ruined observatory opens into a circular hall where star-silver dust hangs in the air. '
                 'Broken brass lenses point toward a cracked dome, and the first real choice is whether Ember '
                 'studies the chart table, follows the cold wind downstairs, or calls out to whoever lit the blue lantern.'
             ),
-            expectations=('opening scene names the place', 'opening scene offers a table choice'),
-            assertions=_assert_opening,
+            expectations=(
+                'canned opening streams and persists unchanged (plumbing only; narration quality is not evaluated)',
+            ),
+            assertions=_assert_opening_plumbing,
         ),
         Scenario(
             name='impossible_action_boundary',

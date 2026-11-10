@@ -15,7 +15,6 @@ import {
   ChevronDown,
   ExternalLink,
   Flame,
-  Lock,
   Maximize2,
   Menu,
   Minimize2,
@@ -42,6 +41,7 @@ import {
   CAMPAIGN_RAIL_ID,
   CampaignRail,
   type CampaignCard,
+  type PlayabilityStatus,
   type SessionCard,
 } from './CampaignRail'
 import type { CampaignPackControlAction } from './CampaignPackPanel'
@@ -87,6 +87,7 @@ import {
   normalizeStats,
   normalizeXp,
   numberValue,
+  OPENING_REQUEST_PREFIX,
   pendingRollNoticeFromTimeline,
   pendingRollOptionsFromTimeline,
   stringValue,
@@ -126,6 +127,7 @@ import type {
   Player,
   PlayerDetail,
   PlayerEquipmentUpdateResponse,
+  SessionLogEntry,
   SessionRecapResponse,
   SessionState,
   SessionSummary,
@@ -141,6 +143,7 @@ import {
   type CampaignActionDialogState,
 } from './useCampaignActions'
 import { useComposerActions } from './useComposerActions'
+import { useLatest } from './useLatest'
 import { usePlayerProfileActions } from './usePlayerProfileActions'
 import { usePlayNowOnboarding } from './usePlayNowOnboarding'
 import { useSessionActions, type SessionActionDialogState } from './useSessionActions'
@@ -170,6 +173,8 @@ import {
 const DEFAULT_BASE_URL = import.meta.env.VITE_AIDM_API_BASE_URL ?? ''
 const COMPACT_LAYOUT_MEDIA_QUERY = '(max-width: 1100px)'
 const BOARD_VIEW_MODE_STORAGE_KEY = 'aidm:boardViewMode'
+const HEALTH_POLL_INTERVAL_MS = 30_000
+const NO_LOG_ENTRIES: SessionLogEntry[] = []
 
 const loadDiceRollDialog = () => import('./DiceRollDialog')
 const DiceRollDialog = lazy(loadDiceRollDialog)
@@ -509,7 +514,7 @@ function buildStartAdventurePrompt({
   ].filter(Boolean)
 
   return [
-    'Please narrate the opening scene for this campaign.',
+    `${OPENING_REQUEST_PREFIX}.`,
     ...context,
     'Start the adventure by telling the players where they are, what they know, what is happening right now, and what immediate choice or prompt is in front of them.',
   ].join(' ')
@@ -613,6 +618,7 @@ function characterPortraitSrc(player: Player) {
 
 function AIDMApp() {
   const [health, setHealth] = useState<Health | null>(null)
+  const [healthUnreachable, setHealthUnreachable] = useState(false)
   const [actorCapabilities, setActorCapabilities] = useState<ActorCapabilitiesResponse | null>(null)
   const [llmConfig, setLlmConfig] = useState<LlmRuntimeConfig | null>(null)
   const [ttsConfig, setTtsConfig] = useState<TtsRuntimeConfig | null>(null)
@@ -743,6 +749,7 @@ function AIDMApp() {
     reconnectSocket,
     resetRuntimeState,
   })
+  const latestOpenAuthTokenPrompt = useLatest(openAuthTokenPrompt)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const accountMenuRef = useRef<HTMLDivElement | null>(null)
   const betaNotesToggleRef = useRef<HTMLButtonElement | null>(null)
@@ -905,10 +912,13 @@ function AIDMApp() {
     setSelectedPlayerId,
     playerDetail,
     setPlayerDetail,
-    sessionState,
+    sessionState: storedSessionState,
     setSessionState,
-    logEntries,
+    logEntries: storedLogEntries,
     setLogEntries,
+    sessionLogSessionId,
+    sessionHydrated,
+    sessionPageLoaded,
     sessionLogCursor,
     setSessionLogCursor,
     sessionLogHasMore,
@@ -930,6 +940,20 @@ function AIDMApp() {
     selectedSessionId: readInitialSelection(storedSelectionScope, 'selectedSessionId', 'session'),
     selectedPlayerId: readInitialSelection(storedSelectionScope, 'selectedPlayerId'),
   })
+  const activeSession =
+    sessions.find(
+      (session) =>
+        session.session_id === selectedSessionId &&
+        session.campaign_id === selectedCampaignId,
+    ) ?? null
+  const activeSessionId = activeSession?.session_id ?? null
+  // Loaded session data is only ever used for the session it belongs to.
+  const sessionState = activeSessionId !== null && storedSessionState?.session_id === activeSessionId
+    ? storedSessionState
+    : null
+  const logEntries = activeSessionId !== null && sessionLogSessionId === activeSessionId
+    ? storedLogEntries
+    : NO_LOG_ENTRIES
   const viewerMaps = useMemo(
     () => (canUseOperatorTools ? maps : maps.filter((map) => map.visibility === 'player')),
     [canUseOperatorTools, maps],
@@ -954,6 +978,11 @@ function AIDMApp() {
         ...current.slice(0, 7),
       ]
     })
+  }, [])
+  const dismissError = useCallback((category: UiErrorCategory, message: string) => {
+    setErrors((current) =>
+      current.filter((item) => item.category !== category || item.message !== message),
+    )
   }, [])
   const clearAuthTokenErrors = useCallback(() => {
     setErrors((current) =>
@@ -1125,13 +1154,6 @@ function AIDMApp() {
     [activePlayers, turnControlSnapshot],
   )
 
-  const activeSession =
-    sessions.find(
-      (session) =>
-        session.session_id === selectedSessionId &&
-        session.campaign_id === selectedCampaignId,
-    ) ?? null
-  const activeSessionId = activeSession?.session_id ?? null
   const selectedPlayerDetailId = selectedPlayer?.player_id ?? null
   const pendingRollNotice = useMemo(
     () => pendingRollNoticeFromTimeline(timeline, players, selectedPlayerDetailId),
@@ -1312,8 +1334,13 @@ function AIDMApp() {
     handleConnectionInterrupted,
     handleRollRequired,
     handleRollResolved,
+    handleSavedMessages,
+    handleSessionJoined,
     handleTurnDuplicate,
+    handleTurnRejected,
     interactionTargets,
+    openingDelayed,
+    pendingSubmissionCampaignId,
     rollMode,
     rollReason,
     rollTargetPendingTurnId,
@@ -1351,8 +1378,11 @@ function AIDMApp() {
     updateItemDraftName,
     updateItemCostGold,
     startDiceRoll,
+    startOpening,
     submitAction,
+    submissionReconnecting,
     toggleAdminTools,
+    turnRejectionMessage,
     clearQueuedAction,
     selectedPlayerHasTurn,
     turnControlStatusLabel,
@@ -1368,6 +1398,7 @@ function AIDMApp() {
     selectedPlayer,
     selectedPlayerId: selectedPlayerDetailId,
     selectedSessionId: activeSessionId,
+    sessionHydrated,
     sendPending,
     dmResponseBlocking,
     streamingTurn,
@@ -1378,9 +1409,13 @@ function AIDMApp() {
     stopTtsAudio,
     turnControl,
     pushError,
+    dismissError,
   })
+  // A send waiting for the socket to rejoin is still in flight for every
+  // control that must not start another turn.
+  const turnInFlight = sendPending || submissionReconnecting
   const startAdventure = useCallback(() => {
-    submitAction(
+    startOpening(
       buildStartAdventurePrompt({
         campaign,
         sessionName: activeSessionName,
@@ -1388,7 +1423,7 @@ function AIDMApp() {
         sessionState,
       }),
     )
-  }, [activeSessionName, campaign, players, sessionState, submitAction])
+  }, [activeSessionName, campaign, players, sessionState, startOpening])
 
   const updateTurnControl = useCallback(
     (mode: TurnControlMode, activePlayerId?: number | null, source: TurnControlSource = 'manual') => {
@@ -1424,13 +1459,15 @@ function AIDMApp() {
       ? 'Joined'
       : socketStatus === 'connecting' || socketStatus === 'joining'
         ? 'Connecting'
-        : socketStatus === 'error'
-          ? 'Error'
-          : socketStatus === 'offline'
-            ? 'Offline'
-            : health?.status === 'ok'
-              ? 'Standby'
-              : 'Offline'
+        : socketStatus === 'rejoining' || socketStatus === 'reconnecting'
+          ? 'Reconnecting'
+          : socketStatus === 'error'
+            ? 'Error'
+            : socketStatus === 'offline'
+              ? 'Offline'
+              : health?.status === 'ok'
+                ? 'Standby'
+                : 'Offline'
   const realtimeTone: 'good' | 'neutral' | 'warn' =
     realtimeLabel === 'Joined'
       ? 'good'
@@ -1480,6 +1517,10 @@ function AIDMApp() {
     setWorkspaceLoading,
     setLoadingCampaignId,
     setSessionLoading,
+    sessionPageLoaded,
+    onSessionLogLoaded: (entries) =>
+      handleSavedMessages(entries.map((entry) => stringValue(entry.metadata?.client_message_id))),
+    pendingSubmissionCampaignId,
     rootCampaignsLoaded,
     campaignWorkspaceLoaded,
     setOptimisticEntries,
@@ -2526,6 +2567,8 @@ function AIDMApp() {
     selectedPlayerId,
     selectedSessionId,
     workspaceLoading,
+    sessionLoading,
+    loadedSessionId: storedSessionState?.session_id ?? null,
     campaignUpserted,
     sessionUpserted,
     playerUpserted,
@@ -2558,7 +2601,7 @@ function AIDMApp() {
     setTurnStatuses,
     currentResponsePresent: Boolean(currentResponseEntry),
     dmResponseBlocking,
-    sendPending,
+    sendPending: turnInFlight,
     socketStatus,
     startAdventure,
     turnRowCount,
@@ -2787,6 +2830,8 @@ function AIDMApp() {
     }
   }, [refreshCampaignWorkspace, selectedCampaignId])
 
+  // Runs only when the active session changes: every other input is stable
+  // or read through a latest-value ref.
   useEffect(() => {
     if (!activeSessionId) {
       clearSessionData()
@@ -2796,13 +2841,11 @@ function AIDMApp() {
       setClarificationRequest(null)
       return
     }
-    setSessionLogCursor(null)
-    setSessionLogHasMore(false)
     setTurnStatuses({})
     setClarificationRequest(null)
     loadSessionData(activeSessionId).then(clearAuthTokenErrors).catch((error: unknown) => {
       if (isUnauthorizedError(error)) {
-        openAuthTokenPrompt()
+        latestOpenAuthTokenPrompt.current()
         clearAuthTokenErrors()
         return
       }
@@ -2811,13 +2854,38 @@ function AIDMApp() {
   }, [
     clearAuthTokenErrors,
     clearSessionData,
+    latestOpenAuthTokenPrompt,
     loadSessionData,
-    openAuthTokenPrompt,
     pushError,
     activeSessionId,
-    setSessionLogCursor,
-    setSessionLogHasMore,
   ])
+
+  // Any fresh health response (poll or workspace refresh) proves the backend
+  // is reachable again.
+  useEffect(() => {
+    if (health) setHealthUnreachable(false)
+  }, [health])
+
+  useEffect(() => {
+    let cancelled = false
+    const pollHealth = () => {
+      if (document.visibilityState !== 'visible') return
+      apiFetch<Health>(baseUrl, '/api/health', auth)
+        .then((nextHealth) => {
+          if (!cancelled) setHealth(nextHealth)
+        })
+        .catch(() => {
+          if (!cancelled) setHealthUnreachable(true)
+        })
+    }
+    const timer = window.setInterval(pollHealth, HEALTH_POLL_INTERVAL_MS)
+    window.addEventListener('focus', pollHealth)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      window.removeEventListener('focus', pollHealth)
+    }
+  }, [auth, baseUrl])
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -2994,6 +3062,9 @@ function AIDMApp() {
     lastSpokenTurnIdRef,
     lastSpokenTextRef,
     onConnectionInterrupted: handleConnectionInterrupted,
+    onSessionJoined: handleSessionJoined,
+    onPlayerMessageSaved: (clientMessageId) => handleSavedMessages([clientMessageId]),
+    onTurnRejected: handleTurnRejected,
     onRollRequired: handleRollRequired,
     onRollResolved: handleRollResolved,
     onTurnDuplicate: handleTurnDuplicate,
@@ -3241,7 +3312,7 @@ function AIDMApp() {
         avatar: avatarDataUri(`${item.campaign_id}-${item.title}`),
       }
     })
-  const lastSync = sessionState?.updated_at ?? activeSession?.created_at ?? null
+  const lastSaved = sessionState?.updated_at ?? activeSession?.created_at ?? null
   const runtime = llmConfig?.current ?? health?.llm ?? null
   const latestRuntime = runtime?.latest_turn ?? null
   const configuredProvider = stringValue(runtime?.provider, 'Unknown')
@@ -3262,10 +3333,11 @@ function AIDMApp() {
   )
   const runtimeScopeTitle =
     'Provider changes apply to this backend process; restart the other workers to synchronize them.'
+  const backendReachable = !healthUnreachable && health?.status === 'ok'
   const backendStatusLabel =
-    health === null ? 'Checking' : health.status === 'ok' ? 'Connected' : 'Offline'
+    health === null && !healthUnreachable ? 'Checking' : backendReachable ? 'Connected' : 'Offline'
   const backendStatusTone =
-    health === null ? 'neutral' : health.status === 'ok' ? 'good' : 'warn'
+    health === null && !healthUnreachable ? 'neutral' : backendReachable ? 'good' : 'warn'
   const backendDisplayUrl = baseUrl || 'Same origin'
   const tableDisplayName = health?.auth_required === false
     ? 'Local Table'
@@ -3338,18 +3410,30 @@ function AIDMApp() {
     ? `~${formatCompactNumber(estimatedContextTokens).toLowerCase()} tok`
     : 'No log'
   const responseTokenEstimate = Math.max(1, Math.round(latestDmText.length / 4))
-  const executionTimeSeconds =
-    latestRuntime?.latency_ms !== null && latestRuntime?.latency_ms !== undefined
-      ? latestRuntime.latency_ms / 1000
-      : metrics?.turn_latency_ms_avg
-        ? metrics.turn_latency_ms_avg / 1000
-        : 8.7
+  const measuredLatencyMs = latestRuntime?.latency_ms ?? metrics?.turn_latency_ms_avg ?? null
+  // The runtime config does not declare a temperature; show one only if the
+  // backend ever reports it.
+  const runtimeFields: Record<string, unknown> = runtime ?? {}
+  const configuredTemperature =
+    typeof runtimeFields.temperature === 'number' ? runtimeFields.temperature : null
   const dmExecutionStats = {
-    tokens: responseTokenEstimate || 256,
-    time: `${executionTimeSeconds.toFixed(1)}s`,
+    tokens: responseTokenEstimate,
+    time: measuredLatencyMs !== null ? `${(measuredLatencyMs / 1000).toFixed(1)}s` : '—',
     model: configuredModel || 'Unknown',
-    temperature: '0.7',
+    temperature: configuredTemperature !== null ? String(configuredTemperature) : '—',
   }
+  const playability: PlayabilityStatus =
+    health === null && !healthUnreachable
+      ? { label: 'Connecting…', tone: 'neutral' }
+      : !backendReachable || socketStatus === 'offline' || socketStatus === 'error'
+        ? { label: 'Offline', tone: 'warn' }
+        : socketStatus === 'reconnecting' || socketStatus === 'rejoining'
+          ? { label: 'Reconnecting…', tone: 'neutral' }
+          : socketStatus === 'connecting' || socketStatus === 'joining'
+            ? { label: 'Connecting…', tone: 'neutral' }
+            : safeModeActive
+              ? { label: 'Safe Mode — scripted narrator', tone: 'warn' }
+              : { label: 'Ready to play', tone: 'good' }
   const toggleCampaignRail = useCallback(() => {
     if (compactViewport) {
       if (mobileRailOpen) {
@@ -3530,7 +3614,6 @@ function AIDMApp() {
               ))}
             </select>
           </div>
-          <StatusDot label={runtimeLabel} tone={runtimeTone} />
         </div>
         <div className="ops-segment context-meter">
           <div>
@@ -3553,11 +3636,6 @@ function AIDMApp() {
               />
             ) : 'No session'}
           </span>
-        </div>
-        <div className="ops-segment mini-stat">
-          <Lock size={18} />
-          <strong>Auto-Save</strong>
-          <StatusDot label="On" />
         </div>
         <div className="ops-segment mini-stat">
           <Radio size={18} />
@@ -3783,7 +3861,7 @@ function AIDMApp() {
         canManageSession={Boolean(activeSession)}
         canOpenCampaignArchive={health?.status === 'ok'}
         canOpenSessionArchive={Boolean(selectedCampaignId)}
-        selectionLocked={sendPending || dmResponseBlocking || queuedActionRetryable || Boolean(diceRoll)}
+        selectionLocked={turnInFlight || dmResponseBlocking || queuedActionRetryable || Boolean(diceRoll)}
         onRenameCampaign={openRenameCampaignDialog}
         onArchiveCampaign={openCampaignArchiveManager}
         onDeleteCampaign={openDeleteCampaignDialog}
@@ -3797,7 +3875,7 @@ function AIDMApp() {
         onSelectCampaign={(campaignId) => {
           if (
             campaignId !== selectedCampaignId &&
-            (sendPending || dmResponseBlocking || queuedActionRetryable || Boolean(diceRoll))
+            (turnInFlight || dmResponseBlocking || queuedActionRetryable || Boolean(diceRoll))
           ) {
             pushError('validation', 'Wait for the current turn to finish or dismiss its retry before changing campaigns.')
             return
@@ -3811,7 +3889,7 @@ function AIDMApp() {
         onSelectSession={(sessionId) => {
           if (
             sessionId !== selectedSessionId &&
-            (sendPending || dmResponseBlocking || queuedActionRetryable || Boolean(diceRoll))
+            (turnInFlight || dmResponseBlocking || queuedActionRetryable || Boolean(diceRoll))
           ) {
             pushError('validation', 'Wait for the current turn to finish or dismiss its retry before changing sessions.')
             return
@@ -3824,7 +3902,8 @@ function AIDMApp() {
           setMainTab('turns')
           closeMobilePanelsAndRestoreFocus()
         }}
-        lastSyncLabel={formatShortAge(lastSync)}
+        playability={playability}
+        lastSavedLabel={formatShortAge(lastSaved)}
         onRefreshWorkspace={() => void refreshCurrentWorkspace()}
         errors={errors}
       />
@@ -3892,7 +3971,7 @@ function AIDMApp() {
         selectedPlayer={selectedPlayer}
         currentResponseEntry={currentResponseEntry}
         latestDmText={latestDmText}
-        sendPending={sendPending}
+        sendPending={turnInFlight}
         streamingTurnActive={dmResponseBlocking}
         pendingRollNotice={pendingRollNotice}
         onPreparePendingRoll={preparePendingRoll}
@@ -3936,12 +4015,17 @@ function AIDMApp() {
           activePlayers,
           composerMode,
           selectedDie,
-          sendPending,
+          sendPending: turnInFlight,
           turnControl,
           turnControlStatusLabel,
           selectedPlayerHasTurn,
           queuedActionText,
           queuedActionRetryable,
+          // Without a session there is nothing to load; sending explains that.
+          sessionHydrated: sessionHydrated || activeSessionId === null,
+          submissionReconnecting,
+          openingDelayed,
+          turnRejectionMessage,
           retryRecoverableSubmission,
           clearQueuedAction,
           updateTurnControl,

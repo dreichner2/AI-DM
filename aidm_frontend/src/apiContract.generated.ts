@@ -162,11 +162,13 @@ export type Campaign = {
   latest_activity_at: string | null
 }
 
+export type SessionChapterStatus = 'active' | 'ended' | 'archived'
+
 export type SessionSummary = {
   session_id: number
   campaign_id: number
   created_at: string | null
-  status: string
+  status: SessionChapterStatus
   deleted_at: string | null
   updated_at: string | null
   latest_activity_at: string | null
@@ -174,7 +176,22 @@ export type SessionSummary = {
   turn_count: number
   latest_summary: string
   is_archived: boolean
+  is_current?: boolean
+  chapter_number?: number
+  ended_at?: string | null
+  chapter_recap?: string
   state_snapshot: JsonRecord | null
+}
+
+export type SessionStartResponse = {
+  session_id: number
+  idempotent_replay: boolean
+  status: SessionChapterStatus
+  is_current: boolean
+  chapter_number: number
+  ended_at: string | null
+  chapter_recap: string
+  continued_from_session_id: number | null
 }
 
 export type SessionImportResponse = {
@@ -283,6 +300,11 @@ export type SessionEventsResponse = {
 export type SessionState = {
   session_id: number
   campaign_id: number
+  status?: SessionChapterStatus
+  is_current?: boolean
+  chapter_number?: number
+  ended_at?: string | null
+  chapter_recap?: string
   current_location: string | null
   current_quest: string | null
   rolling_summary: string

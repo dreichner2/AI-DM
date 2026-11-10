@@ -45,6 +45,36 @@ def test_shared_resource_dtos_match_workspace_and_direct_endpoints(client, app):
     assert workspace_player == direct_player
 
 
+def test_session_chapter_fields_match_across_list_workspace_and_state(client, app):
+    ids = seed_world_campaign_player_session(app)
+    chapter_two_id = client.post('/api/sessions/start', json={'campaign_id': ids['campaign_id']}).get_json()['session_id']
+    chapter_keys = ('status', 'is_current', 'chapter_number', 'ended_at', 'chapter_recap')
+
+    listed = {
+        item['session_id']: item
+        for item in client.get(f"/api/sessions/campaigns/{ids['campaign_id']}/sessions").get_json()
+    }
+    workspace = {
+        item['session_id']: item
+        for item in client.get(f"/api/campaigns/{ids['campaign_id']}/workspace").get_json()['sessions']
+    }
+
+    for session_id in (ids['session_id'], chapter_two_id):
+        state = client.get(f'/api/sessions/{session_id}/state').get_json()
+        assert {key: listed[session_id][key] for key in chapter_keys} == {key: state[key] for key in chapter_keys}
+        assert {key: workspace[session_id][key] for key in chapter_keys} == {key: state[key] for key in chapter_keys}
+    assert listed[chapter_two_id]['status'] == 'active'
+    assert listed[chapter_two_id]['is_current'] is True
+    assert listed[chapter_two_id]['chapter_number'] == 2
+    assert listed[chapter_two_id]['ended_at'] is None
+    assert listed[ids['session_id']]['status'] == 'ended'
+    assert listed[ids['session_id']]['is_current'] is False
+    assert listed[ids['session_id']]['chapter_number'] == 1
+    assert listed[ids['session_id']]['ended_at']
+    assert listed[ids['session_id']]['chapter_recap'] == ''
+    assert 'state_snapshot' in listed[ids['session_id']]
+
+
 def test_shared_world_dto_matches_list_and_detail_endpoints(client):
     create_response = client.post('/api/worlds', json={'name': 'DTO World', 'description': 'Shared shape.'})
     assert create_response.status_code == 201

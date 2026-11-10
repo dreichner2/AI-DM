@@ -156,10 +156,37 @@ def test_build_dm_context_includes_hierarchical_session_memory(app):
     memory = payload['session_memory']
     assert memory['hierarchy_version'] == 'v1'
     assert memory['campaign_arc']['current_quest'] == 'Find the moonlit seal'
-    assert memory['session_recap'] == 'Last session, the party found the moonlit seal.'
+    assert memory['session_recap'] == 'The campaign arc points toward the Old Ruins.'
+    assert memory['campaign_arc']['summary'] == 'Last session, the party found the moonlit seal.'
     assert memory['recent_beats'][0]['dm_output'] == 'The seal hums under silver dust.'
     assert memory['open_threads'][0]['title'] == 'Moonlit Seal'
     assert 'Latest beat' in memory['player_recap']
+    encoded = json.dumps(payload)
+    assert encoded.count('The campaign arc points toward the Old Ruins.') == 1
+    assert 'rolling_summary' not in payload['session_state']
+    assert 'rolling_summary' not in payload['emergent_memory']['projection']
+
+
+def test_build_dm_context_keeps_campaign_arc_summary_only_when_it_differs(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        db.session.add(
+            SessionState(
+                session_id=ids['session_id'],
+                rolling_summary='The party reached the Old Ruins.',
+                current_location='Old Ruins',
+                current_quest='Find the relic',
+            )
+        )
+        db.session.commit()
+
+        payload = json.loads(build_dm_context(ids['world_id'], ids['campaign_id'], ids['session_id']))
+
+    memory = payload['session_memory']
+    assert memory['session_recap'] == 'The party reached the Old Ruins.'
+    assert 'summary' not in memory['campaign_arc']
+    assert json.dumps(payload).count('The party reached the Old Ruins.') == 1
 
 
 def test_build_dm_context_skips_unfinished_recent_turns(app):
@@ -305,6 +332,31 @@ def test_build_dm_context_skips_resolved_roll_request_turns(app):
     assert 'I roll a d20-1' not in encoded_recent_turns
 
 
+def test_build_dm_context_skips_unresolved_parenthesised_check_requests(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        request_turn = DmTurn(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            player_id=ids['player_id'],
+            player_input='I search the ledger.',
+            dm_output='The ink smells of ash. Make a Wisdom (Perception) check, DC 13.',
+            status='completed',
+            requires_roll=True,
+            rule_type='perception',
+            roll_value=None,
+            outcome_status='deferred',
+        )
+        db.session.add(request_turn)
+        db.session.commit()
+
+        payload = json.loads(build_dm_context(ids['world_id'], ids['campaign_id'], ids['session_id']))
+
+    assert payload['recent_turns'] == []
+    assert payload['pending_checks'][0]['rule_type'] == 'perception'
+
+
 def test_build_dm_context_keeps_final_no_roll_rulings(app):
     ids = seed_world_campaign_player_session(app)
 
@@ -437,7 +489,8 @@ def test_build_dm_context_truncates_large_session_payloads(app):
 
         payload = json.loads(build_dm_context(world.world_id, campaign.campaign_id, session.session_id))
 
-    assert len(payload['session_state']['rolling_summary']) <= 4000
+    assert 'rolling_summary' not in payload['session_state']
+    assert len(payload['session_memory']['session_recap']) <= 1200
     assert len(payload['session_state']['memory_snippets']) == 8
     assert len(payload['session_state']['memory_snippets'][0]['player_input']) <= 180
     assert len(payload['session_state']['memory_snippets'][0]['dm_output']) <= 260
@@ -673,9 +726,12 @@ def test_build_dm_context_includes_campaign_pack_director_packet(app):
                     'currentScene': {
                         'locationId': 'bleakmoor_gate',
                         'name': 'Bleakmoor Gate',
+                        'summary': 'The gate is shut and the lanterns are out.',
+                        'visibleDetails': [f'Detail {index} ' + 'd' * 200 for index in range(8)],
                         'activeNpcIds': ['npc_captain_veyra'],
                         'activeQuestIds': ['q_missing_caravan'],
                     },
+                    'clues': [{'id': 'clue_muddy_boots', 'status': 'discovered'}],
                     'locations': [
                         {
                             'id': 'bleakmoor_gate',
@@ -727,7 +783,8 @@ def test_build_dm_context_includes_campaign_pack_director_packet(app):
                                 'summary': 'Learn where the caravan went.',
                                 'locationIds': ['bleakmoor_gate'],
                                 'questIds': ['q_missing_caravan'],
-                                'npcIds': ['npc_captain_veyra'],
+                                'npcIds': ['npc_captain_veyra', 'npc_ferryman'],
+                                'clueIds': ['clue_wax_seal'],
                                 'nextCheckpointIds': ['cp_wreck'],
                                 'directorRules': {'checkpointStyle': 'soft_clue_forward'},
                             },
@@ -751,7 +808,15 @@ def test_build_dm_context_includes_campaign_pack_director_packet(app):
                                 'checkpointIds': ['cp_wreck'],
                                 'locationIds': ['old_road'],
                                 'enemyIds': ['lantern_wraith'],
-                            }
+                            },
+                            {
+                                'id': 'enc_gate_toll',
+                                'title': 'The Toll Collectors',
+                                'checkpointIds': ['cp_gate'],
+                                'enemyGroups': [{'enemyId': 'toll_thug', 'count': 2}],
+                                'setup': 'Two thugs lean on the toll chain.',
+                                'stakes': 'If they win, the gate closes for the night.',
+                            },
                         ],
                         'catalog': {
                             'locations': [
@@ -781,9 +846,30 @@ def test_build_dm_context_includes_campaign_pack_director_packet(app):
                                     'disposition': 'suspicious',
                                     'locationId': 'bleakmoor_gate',
                                     'questIds': ['q_missing_caravan'],
+                                    'description': 'A rain-soaked captain with a broken lantern.',
+                                    'personality': 'Blunt and tired.',
+                                    'motivation': 'Keep the gate shut after dark.',
+                                    'knows': ['The caravan left at dusk.', 'K' * 300],
+                                    'secret': 'She took a bribe to open the gate.',
                                     'source': 'campaign_pack',
                                     'packId': 'bleakmoor_intro',
-                                }
+                                },
+                                {
+                                    'id': 'npc_ferryman',
+                                    'name': 'The Ferryman',
+                                    'role': 'Marsh guide',
+                                    'locationId': 'old_road',
+                                    'source': 'campaign_pack',
+                                    'packId': 'bleakmoor_intro',
+                                },
+                                {
+                                    'id': 'npc_unrelated',
+                                    'name': 'Unrelated Baker',
+                                    'locationId': 'bleakmoor_gate',
+                                    'questIds': ['q_missing_caravan'],
+                                    'source': 'campaign_pack',
+                                    'packId': 'bleakmoor_intro',
+                                },
                             ],
                             'quests': [
                                 {
@@ -803,6 +889,39 @@ def test_build_dm_context_includes_campaign_pack_director_packet(app):
                                     'checkpointIds': ['cp_wreck'],
                                     'locationIds': ['old_road'],
                                     'enemyIds': ['lantern_wraith'],
+                                },
+                                {
+                                    'id': 'enc_gate_toll',
+                                    'title': 'The Toll Collectors',
+                                    'checkpointIds': ['cp_gate'],
+                                    'enemyGroups': [{'enemyId': 'toll_thug', 'count': 2}],
+                                    'setup': 'Two thugs lean on the toll chain.',
+                                    'stakes': 'If they win, the gate closes for the night.',
+                                },
+                            ],
+                            'clues': [
+                                {
+                                    'id': 'clue_muddy_boots',
+                                    'name': 'Muddy Boots',
+                                    'description': 'Fresh marsh mud on the guardroom floor.',
+                                    'foundAtLocationIds': ['bleakmoor_gate'],
+                                },
+                                {
+                                    'id': 'clue_wax_seal',
+                                    'title': 'Wax Seal',
+                                    'summary': 'A broken caravan seal stamped with a lantern.',
+                                },
+                                {
+                                    'id': 'clue_far_away',
+                                    'name': 'Distant Clue',
+                                    'foundAtLocationIds': ['old_road'],
+                                },
+                            ],
+                            'segments': [
+                                {
+                                    'id': 'seg_question_veyra',
+                                    'title': 'Question Captain Veyra',
+                                    'gmNotes': 'Let Veyra lie once before she cracks.',
                                 }
                             ],
                         },
@@ -818,6 +937,7 @@ def test_build_dm_context_includes_campaign_pack_director_packet(app):
             CampaignSegment(
                 campaign_id=campaign.campaign_id,
                 title='Question Captain Veyra',
+                external_id='seg_question_veyra',
                 description='Veyra points toward the old road.',
                 trigger_condition=safe_json_dumps(
                     {
@@ -859,10 +979,39 @@ def test_build_dm_context_includes_campaign_pack_director_packet(app):
                 balance_json=safe_json_dumps({}, {}),
             )
         )
+        db.session.add(
+            BestiaryEntry(
+                workspace_id='owner',
+                campaign_id=campaign.campaign_id,
+                scope='campaign',
+                creature_id='toll_thug',
+                version=1,
+                name='Toll Thug',
+                source='campaign_pack',
+                persistence='campaign',
+                location_ids_json=safe_json_dumps(['bleakmoor_gate'], []),
+                faction_ids_json=safe_json_dumps([], []),
+                tags_json=safe_json_dumps(['campaign_pack'], []),
+                creature_json=safe_json_dumps(
+                    {
+                        'id': 'toll_thug',
+                        'name': 'Toll Thug',
+                        'creatureType': 'humanoid',
+                        'descriptionShort': 'A bored bruiser with a cudgel. ' + 'x' * 200,
+                    },
+                    {},
+                ),
+                balance_json=safe_json_dumps({}, {}),
+            )
+        )
         db.session.commit()
 
         payload = json.loads(build_dm_context(world.world_id, campaign.campaign_id, session.session_id))
 
+    scene = payload['live_world_state']['currentScene']
+    assert scene['summary'] == 'The gate is shut and the lanterns are out.'
+    assert len(scene['visibleDetails']) == 6
+    assert all(len(detail) <= 160 for detail in scene['visibleDetails'])
     director = payload['campaign_pack_director']
     assert director['enabled'] is True
     assert director['pack']['packId'] == 'bleakmoor_intro'
@@ -885,12 +1034,149 @@ def test_build_dm_context_includes_campaign_pack_director_packet(app):
     assert director['relevantRecords']['quests'][0]['status'] == 'in_progress'
     assert [location['id'] for location in director['relevantRecords']['locations']] == ['bleakmoor_gate', 'old_road']
     assert [location['knownToPlayers'] for location in director['relevantRecords']['locations']] == [True, False]
-    assert director['relevantRecords']['npcs'][0]['id'] == 'npc_captain_veyra'
-    assert director['relevantRecords']['npcs'][0]['knownToPlayers'] is True
-    assert director['relevantRecords']['encounters'][0]['id'] == 'enc_lantern_wraith'
-    assert director['relevantRecords']['enemies'][0]['id'] == 'lantern_wraith'
-    assert director['relevantRecords']['segments'][0]['triggerType'] == 'state'
-    assert director['relevantRecords']['segments'][0]['isTriggered'] is False
+    records = director['relevantRecords']
+    assert [npc['id'] for npc in records['npcs']] == ['npc_captain_veyra', 'npc_ferryman']
+    veyra = records['npcs'][0]
+    assert veyra['knownToPlayers'] is True
+    assert veyra['description'] == 'A rain-soaked captain with a broken lantern.'
+    assert veyra['personality'] == 'Blunt and tired.'
+    assert veyra['motivation'] == 'Keep the gate shut after dark.'
+    assert veyra['knows'] == ['The caravan left at dusk.']
+    assert veyra['secret'] == 'She took a bribe to open the gate.'
+    assert veyra['dmOnly'] == ['personality', 'motivation', 'knows', 'secret']
+    assert records['npcs'][1]['knownToPlayers'] is False
+    assert [encounter['id'] for encounter in records['encounters']] == ['enc_gate_toll']
+    assert records['encounters'][0]['setup'] == 'Two thugs lean on the toll chain.'
+    assert records['encounters'][0]['stakes'] == 'If they win, the gate closes for the night.'
+    assert records['encounters'][0]['enemyIds'] == ['toll_thug']
+    assert records['enemies'] == [
+        {
+            'id': 'toll_thug',
+            'name': 'Toll Thug',
+            'descriptionShort': records['enemies'][0]['descriptionShort'],
+        }
+    ]
+    assert len(records['enemies'][0]['descriptionShort']) <= 160
+    assert records['segments'][0]['triggerType'] == 'state'
+    assert records['segments'][0]['isTriggered'] is False
+    assert records['segments'][0]['gmNotes'] == 'Let Veyra lie once before she cracks.'
+    assert records['clues'] == [
+        {
+            'id': 'clue_muddy_boots',
+            'title': 'Muddy Boots',
+            'summary': 'Fresh marsh mud on the guardroom floor.',
+            'discovered': True,
+        },
+        {
+            'id': 'clue_wax_seal',
+            'title': 'Wax Seal',
+            'summary': 'A broken caravan seal stamped with a lantern.',
+            'discovered': False,
+        },
+    ]
+
+
+def test_build_dm_context_shows_full_enemy_records_only_during_combat(app):
+    with app.app_context():
+        world = World(name='Combat Pack World', description='world')
+        db.session.add(world)
+        db.session.flush()
+        campaign = Campaign(title='Combat Pack Campaign', world_id=world.world_id)
+        db.session.add(campaign)
+        db.session.flush()
+        session = Session(
+            campaign_id=campaign.campaign_id,
+            state_snapshot=safe_json_dumps(
+                {
+                    'currentScene': {'locationId': 'gate', 'name': 'Gate'},
+                    'combat': {'status': 'active', 'participants': []},
+                    'campaignPack': {
+                        'packId': 'combat_pack',
+                        'catalog': {
+                            'encounters': [{'id': 'enc_gate', 'locationIds': ['gate'], 'enemyIds': ['thug']}],
+                        },
+                    },
+                },
+                {},
+            ),
+        )
+        db.session.add(session)
+        db.session.add(
+            BestiaryEntry(
+                workspace_id='owner',
+                campaign_id=campaign.campaign_id,
+                scope='campaign',
+                creature_id='thug',
+                version=1,
+                name='Thug',
+                source='campaign_pack',
+                persistence='campaign',
+                location_ids_json=safe_json_dumps(['gate'], []),
+                faction_ids_json=safe_json_dumps([], []),
+                tags_json=safe_json_dumps([], []),
+                creature_json=safe_json_dumps({'id': 'thug', 'name': 'Thug', 'challengeTier': 'easy'}, {}),
+                balance_json=safe_json_dumps({}, {}),
+            )
+        )
+        db.session.commit()
+
+        payload = json.loads(build_dm_context(world.world_id, campaign.campaign_id, session.session_id))
+
+    enemy = payload['campaign_pack_director']['relevantRecords']['enemies'][0]
+    assert enemy['id'] == 'thug'
+    assert enemy['challengeTier'] == 'easy'
+
+
+def test_build_dm_context_trims_sections_in_order_until_within_budget(app, monkeypatch):
+    import aidm_server.llm_context as llm_context_module
+
+    recorded: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        llm_context_module,
+        'telemetry_event',
+        lambda name, payload=None, severity='info': recorded.append((name, payload)),
+    )
+    payload = {
+        'dormant_threads': [{'title': 'D' * 400}],
+        'emergent_memory': {'facts': [{'value_text': 'F' * 100} for _ in range(14)]},
+        'live_world_state': {
+            'recentKnownNpcs': [{'name': 'N' * 300}],
+            'recentLocations': [{'id': f'loc_{index}', 'description': 'L' * 100} for index in range(6)],
+        },
+        'campaign_pack_director': {'relevantRecords': {'enemies': [{'id': 'enemy', 'description': 'E' * 300}]}},
+    }
+    full_length = len(json.dumps(payload, separators=(',', ':')))
+    monkeypatch.setattr(llm_context_module, 'MAX_CONTEXT_CHARS', full_length - 1100)
+
+    encoded = llm_context_module._encode_context_within_budget(payload)
+
+    trimmed = json.loads(encoded)
+    assert len(encoded) <= full_length - 1100
+    assert trimmed['dormant_threads'] == []
+    assert len(trimmed['emergent_memory']['facts']) == 10
+    assert trimmed['live_world_state']['recentKnownNpcs'] == []
+    assert len(trimmed['live_world_state']['recentLocations']) == 6
+    assert trimmed['campaign_pack_director']['relevantRecords']['enemies'][0]['id'] == 'enemy'
+    assert recorded == [
+        (
+            'llm.context.trimmed',
+            {
+                'sections': ['dormant_threads', 'emergent_memory.facts', 'live_world_state.recentKnownNpcs'],
+                'original_chars': full_length,
+                'final_chars': len(encoded),
+            },
+        )
+    ]
+
+    monkeypatch.setattr(llm_context_module, 'MAX_CONTEXT_CHARS', 10)
+    recorded.clear()
+    fully_trimmed = json.loads(llm_context_module._encode_context_within_budget(payload))
+    assert len(fully_trimmed['live_world_state']['recentLocations']) == 4
+    assert fully_trimmed['campaign_pack_director']['relevantRecords']['enemies'] == []
+    assert recorded[0][1]['sections'] == [
+        'live_world_state.recentLocations',
+        'campaign_pack_director.relevantRecords.enemies',
+    ]
 
 
 def test_large_imported_campaign_pack_keeps_dm_context_and_player_snapshot_bounded(client, app):
@@ -1016,12 +1302,14 @@ def test_large_imported_campaign_pack_keeps_dm_context_and_player_snapshot_bound
     assert director['enabled'] is True
     assert director['pack']['packId'] == 'large_pack'
     assert len(director['nextCheckpoints']) <= 4
-    assert len(director['relevantRecords']['locations']) <= 6
-    assert len(director['relevantRecords']['quests']) <= 4
-    assert len(director['relevantRecords']['npcs']) <= 6
-    assert len(director['relevantRecords']['encounters']) <= 4
-    assert len(director['relevantRecords']['enemies']) <= 6
-    assert len(director['relevantRecords']['segments']) <= 6
+    assert len(director['relevantRecords']['locations']) <= 4
+    assert len(director['relevantRecords']['quests']) <= 2
+    assert len(director['relevantRecords']['npcs']) <= 5
+    assert len(director['relevantRecords']['encounters']) <= 2
+    assert len(director['relevantRecords']['enemies']) <= 3
+    assert len(director['relevantRecords']['segments']) <= 3
+    assert len(director['relevantRecords']['clues']) <= 4
+    assert len(json.dumps(context, separators=(',', ':'), ensure_ascii=False)) <= 24000
     assert len(director['progress']['checkpointStatuses']) <= 13
     assert 'loc_249' not in json.dumps(director['relevantRecords'])
 
@@ -1390,7 +1678,6 @@ def test_build_dm_context_shape_snapshot(app):
             'location': 'Old Ruins',
         },
         'session_state': {
-            'rolling_summary': '',
             'current_location': 'Old Ruins',
             'current_quest': 'Find the relic',
             'active_segments': [],
@@ -1402,7 +1689,6 @@ def test_build_dm_context_shape_snapshot(app):
                 'title': 'Test Campaign',
                 'current_location': 'Old Ruins',
                 'current_quest': 'Find the relic',
-                'summary': '',
             },
             'session_recap': '',
             'recent_beats': [],
@@ -1434,26 +1720,11 @@ def test_build_dm_context_shape_snapshot(app):
                     'player_id': '<player-id>',
                     'character_name': 'Seraphina',
                     'race': 'Elf',
-                    'race_summary': {
-                        'name': 'Elf',
-                        'source': 'curated',
-                        'summary': 'Long-lived, perceptive people shaped by magic, memory, beauty, and old grief.',
-                        'traits': ['Darkvision', 'Keen Senses', 'Fey Ancestry', 'Trance'],
-                        'aiNarrationHints': [
-                            'Describe precise movement, old references, watchful stillness, and beauty that feels slightly unreal.'
-                        ],
-                        'originStory': (
-                            'An Elf may remember a border before it was a kingdom, a tree before it was sacred, '
-                            'or a lover whose grandchildren are now old. That long memory can be a gift, but it '
-                            'can also make the present feel fragile and brief. An Elf adventurer often leaves home '
-                            'when beauty becomes stillness, when grief becomes too familiar, or when the younger '
-                            'world does something surprising enough to deserve attention.'
-                        ),
-                        'physical': {'averageHeight': '5 to 6.5 feet', 'averageWeight': '90 to 170 lb'},
-                        'languages': ['Common', 'Elvish'],
-                        'commonProficiencies': ['Perception', 'Arcana', 'Stealth'],
-                        'balanceTier': 'standard',
-                    },
+                    'race_summary': (
+                        'Elf: Long-lived, perceptive people shaped by magic, memory, beauty, and old grief. '
+                        'Traits: Darkvision, Keen Senses, Fey Ancestry, Trance. '
+                        'Describe precise movement, old references, watchful stillness, and beauty that feels slightly unreal.'
+                    ),
                     'class': 'Ranger',
                 'level': 3,
                 'state': {
@@ -1493,8 +1764,6 @@ def test_build_dm_context_shape_snapshot(app):
             }
         ],
         'triggered_segments': [],
-        'authored_segments': [],
-        'story_threads': [],
         'dormant_threads': [],
         'emergent_memory': {
             'entities': [],
@@ -1506,22 +1775,140 @@ def test_build_dm_context_shape_snapshot(app):
                     'provider': 'local_hash_v1',
                     'dimensions': 96,
                     'query_active': True,
-                    'query_terms': ['find', 'old', 'relic', 'ruins', 'search'],
-                    'semantic_terms': ['find', 'old', 'relic', 'ruins', 'search'],
-                },
-                'candidate_limits': {
-                    'entities': 96,
-                    'facts': 160,
-                    'threads': 64,
                 },
             },
             'projection': {
                 'current_location': None,
                 'current_quest': None,
-                'rolling_summary': '',
             },
         },
         'recent_turns': [],
         'recent_log': [],
         'pending_checks': [],
+    }
+
+
+def test_build_dm_context_caps_player_race_summary_and_recent_actions(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        db.session.add(
+            PlayerAction(player_id=ids['player_id'], session_id=ids['session_id'], action_text='A' * 500)
+        )
+        db.session.commit()
+        payload = json.loads(build_dm_context(ids['world_id'], ids['campaign_id'], ids['session_id']))
+
+    player = payload['active_players'][0]
+    assert isinstance(player['race_summary'], str)
+    assert len(player['race_summary']) <= 240
+    assert player['recent_actions'] and all(len(action) <= 200 for action in player['recent_actions'])
+
+
+def test_live_world_state_uses_catalog_location_details_and_npc_descriptions(app):
+    with app.app_context():
+        world = World(name='Catalog World', description='world')
+        db.session.add(world)
+        db.session.flush()
+        campaign = Campaign(title='Catalog Campaign', world_id=world.world_id)
+        db.session.add(campaign)
+        db.session.flush()
+        session = Session(
+            campaign_id=campaign.campaign_id,
+            state_snapshot=safe_json_dumps(
+                {
+                    'currentScene': {'locationId': 'loc_mill', 'name': 'Old Mill', 'activeNpcIds': ['npc_miller']},
+                    'knownNpcs': [{'id': 'npc_miller', 'name': 'Hobb the Miller', 'role': 'miller'}],
+                    'campaignPack': {
+                        'packId': 'mill_pack',
+                        'catalog': {
+                            'locations': [
+                                {
+                                    'id': 'loc_mill',
+                                    'summary': 'S' * 400,
+                                    'visibleDetails': ['The wheel turns backwards.', {'text': 'Flour drifts like snow.'}],
+                                }
+                            ],
+                            'npcs': [{'id': 'npc_miller', 'description': 'D' * 300}],
+                        },
+                    },
+                },
+                {},
+            ),
+        )
+        db.session.add(session)
+        db.session.commit()
+
+        payload = json.loads(build_dm_context(world.world_id, campaign.campaign_id, session.session_id))
+
+    scene = payload['live_world_state']['currentScene']
+    assert len(scene['summary']) <= 320
+    assert scene['visibleDetails'] == ['The wheel turns backwards.', 'Flour drifts like snow.']
+    npc = payload['live_world_state']['activeNpcs'][0]
+    assert npc['name'] == 'Hobb the Miller'
+    assert npc['description'].startswith('DDD')
+    assert len(npc['description']) <= 240
+
+
+def test_build_opening_brief_collects_authored_opening_material(app):
+    with app.app_context():
+        world = World(name='Opening World', description='world')
+        db.session.add(world)
+        db.session.flush()
+        campaign = Campaign(title='Opening Campaign', world_id=world.world_id)
+        db.session.add(campaign)
+        db.session.flush()
+        session = Session(
+            campaign_id=campaign.campaign_id,
+            state_snapshot=safe_json_dumps(
+                {
+                    'currentScene': {
+                        'locationId': 'loc_inn',
+                        'name': 'The Caravan Without Names',
+                        'summary': 'An empty caravan rolls in.',
+                        'description': 'Rain taps on the shutters.',
+                        'visibleDetails': ['A bell rings.', 'Mud cakes the wheels.'],
+                        'hiddenSceneNotes': 'The bell is the ward.',
+                        'activeNpcIds': ['npc_mara', 'npc_ghost'],
+                    },
+                    'knownNpcs': [{'id': 'npc_mara', 'name': 'Mara Reedwake', 'role': 'innkeeper'}],
+                    'campaignPack': {
+                        'packId': 'road_pack',
+                        'startingBrief': {
+                            'partyStatus': {'knownThreat': 'An empty caravan.'},
+                            'partyNotes': ['Begin with a grounded mystery.'],
+                        },
+                        'checkpoints': [
+                            {'id': 'cp_one', 'summary': 'Investigate the caravan.', 'gmNotes': 'Move the fragment if skipped.'}
+                        ],
+                        'catalog': {
+                            'npcs': [
+                                {'id': 'npc_mara', 'description': 'A practical innkeeper.', 'secret': 'Never in the brief.'}
+                            ]
+                        },
+                    },
+                },
+                {},
+            ),
+        )
+        db.session.add(session)
+        db.session.commit()
+
+        from aidm_server.llm_context import build_opening_brief
+
+        brief = build_opening_brief(session.session_id)
+
+    assert brief == {
+        'scene': {
+            'name': 'The Caravan Without Names',
+            'summary': 'An empty caravan rolls in.',
+            'description': 'Rain taps on the shutters.',
+            'visibleDetails': ['A bell rings.', 'Mud cakes the wheels.'],
+        },
+        'presentNpcs': [{'name': 'Mara Reedwake', 'role': 'innkeeper', 'description': 'A practical innkeeper.'}],
+        'startingBrief': {
+            'partyStatus': {'knownThreat': 'An empty caravan.'},
+            'partyNotes': ['Begin with a grounded mystery.'],
+        },
+        'activeCheckpoint': {'summary': 'Investigate the caravan.', 'gmNotes': 'Move the fragment if skipped.'},
+        'dmOnly': ['activeCheckpoint.gmNotes'],
     }

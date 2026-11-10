@@ -205,6 +205,7 @@ def prepare_socket_message(
             manual_segment_ids=message_payload.manual_segment_ids,
             action_intent=message_payload.action_intent,
             client_message_id=message_payload.client_message_id,
+            message_kind=message_payload.message_kind,
         )
     )
 

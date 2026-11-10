@@ -72,6 +72,13 @@ def migrate_campaign_pack_snapshot(snapshot: Any) -> tuple[Any, list[str]]:
         if key not in catalog and isinstance(pack.get(key), list):
             catalog[key] = pack.get(key)
             applied.append(f'campaign_pack.catalog_{key}')
+    if 'lores' in catalog:
+        # Older imports stored lore under a pluralised key that lore.unlock
+        # never read.
+        legacy_lore = catalog.pop('lores')
+        if 'lore' not in catalog:
+            catalog['lore'] = legacy_lore
+        applied.append('campaign_pack.catalog_lore')
 
     existing_migrations = _string_list(pack.get('migrationsApplied'))
     merged_migrations = _unique_ids([*existing_migrations, *applied])

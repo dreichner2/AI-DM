@@ -9,11 +9,15 @@ from typing import Any, Callable
 
 from aidm_server.action_intent import VALID_ABILITIES, VALID_DICE, VALID_RESULT_VISIBILITY, VALID_ROLL_MODES
 from aidm_server.character_state import character_roll_spec
-from aidm_server.models import DmTurn, Player, safe_json_loads
+from aidm_server.combat import modifiers as modifier_engine
+from aidm_server.damage_dice import roll_signed_dice
+from aidm_server.database import db
+from aidm_server.models import DmTurn, Player, Session, safe_json_loads
 from aidm_server.player_roll_claims import find_legacy_roll_claim
 
 
 Roller = Callable[[int], int]
+NO_OUTCOME_ROLL_TYPES = {'initiative', 'death_save', 'death_saving_throw'}
 
 
 def _record(value: Any) -> dict[str, Any]:
@@ -106,6 +110,55 @@ def _authoritative_roll_setting(
     return _roll_setting(pending_spec, requested_roll, key, allowed, default)
 
 
+def _roll_participant(player: Player, pending_turn: DmTurn | None) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """The roller's combat participant (conditions and active effects) when an
+    active encounter holds one, else a record of the persisted conditions."""
+
+    actor_id = f'player_{player.player_id}'
+    stats = safe_json_loads(player.stats, {})
+    stats = stats if isinstance(stats, dict) else {}
+    fallback = {
+        'id': actor_id,
+        'team': 'player',
+        'kind': 'player_character',
+        'conditions': stats.get('conditions') if isinstance(stats.get('conditions'), list) else [],
+    }
+    session_id = getattr(pending_turn, 'session_id', None)
+    session_obj = db.session.get(Session, session_id) if session_id is not None else None
+    snapshot = safe_json_loads(session_obj.state_snapshot, {}) if session_obj is not None else {}
+    combat = snapshot.get('combat') if isinstance(snapshot, dict) and isinstance(snapshot.get('combat'), dict) else {}
+    if str(combat.get('status') or '') in {'starting', 'active'}:
+        for participant in combat.get('participants') or []:
+            if isinstance(participant, dict) and str(participant.get('id') or '') == actor_id:
+                return participant, combat
+    return fallback, None
+
+
+def _roll_modifiers(
+    *,
+    player: Player,
+    pending_turn: DmTurn | None,
+    rule_type: str,
+    ability_key: str | None,
+    attack: dict[str, Any] | None,
+) -> dict[str, Any]:
+    participant, combat = _roll_participant(player, pending_turn)
+    if rule_type.endswith('_saving_throw'):
+        return modifier_engine.save_context(participant, rule_type.removesuffix('_saving_throw'), combat=combat)
+    if rule_type == 'attack':
+        weapon = (attack or {}).get('weapon') if isinstance((attack or {}).get('weapon'), dict) else {}
+        context = modifier_engine.attack_context(
+            participant,
+            None,
+            kind='weapon_attack',
+            ranged=weapon.get('classification') == 'ranged',
+            combat=combat,
+        )
+        return {**context, 'bonusDice': context['attackBonusDice'], 'autoFail': False}
+    context = modifier_engine.check_context(participant, ability=ability_key, skill=rule_type, combat=combat)
+    return {**context, 'autoFail': False}
+
+
 def _secure_die(sides: int, roller: Roller | None) -> int:
     value = roller(sides) if roller else secrets.randbelow(sides) + 1
     try:
@@ -155,25 +208,58 @@ def resolve_authoritative_player_roll(
         dc_hint=dc_hint,
         attack_context=effective_attack_context,
     )
+    normalized_rule_type = str(rule_type or 'check').strip().lower() or 'check'
+    hud_attack = (action_intent or {}).get('kind') == 'combat'
+    # HUD attacks get their mode and bonus dice from the attack resolver, which
+    # knows the target; every other d20 roll asks the modifier engine here.
+    modifiers = (
+        None
+        if hud_attack or die != 'd20'
+        else _roll_modifiers(
+            player=player,
+            pending_turn=pending_turn,
+            rule_type=normalized_rule_type,
+            ability_key=ability_key,
+            attack=effective_attack_context,
+        )
+    )
+    if modifiers and mode not in {'advantage', 'disadvantage'}:
+        mode = modifiers['mode']
     sides = int(die[1:])
     rolls = [_secure_die(sides, roller)]
     if mode in {'advantage', 'disadvantage'}:
         rolls.append(_secure_die(sides, roller))
     kept = max(rolls) if mode == 'advantage' else min(rolls) if mode == 'disadvantage' else rolls[0]
+    bonus_dice = [
+        rolled
+        for expression in (modifiers or {}).get('bonusDice') or []
+        if (rolled := roll_signed_dice(expression, lambda die_sides: _secure_die(die_sides, roller))) is not None
+    ]
     modifier = int(spec.get('modifier') or 0)
+    total = kept + modifier + sum(int(item['total']) for item in bonus_dice)
+    dc = spec.get('task_dc')
+    outcome = None
+    if normalized_rule_type not in NO_OUTCOME_ROLL_TYPES and dc is not None:
+        outcome = 'success' if total >= int(dc) and not (modifiers or {}).get('autoFail') else 'failure'
     reason_source = stored_spec.get('reason') if pending_turn is not None else requested_roll.get('reason')
     reason = _clean_text(reason_source, max_length=240)
     if not reason:
         reason = str(rule_type or 'check').replace('_', ' ')
 
     return {
-        'rule_type': str(rule_type or 'check').strip().lower() or 'check',
+        'rule_type': normalized_rule_type,
         'die': die,
         'mode': mode,
+        'mode_reasons': list((modifiers or {}).get('reasons') or []),
         'rolls': rolls,
         'kept': kept,
+        'bonus_dice': bonus_dice,
         'modifier': modifier,
-        'total': kept + modifier,
+        'total': total,
+        'auto_fail': bool((modifiers or {}).get('autoFail')),
+        'dc': dc,
+        'dcSource': spec.get('dc_source') or 'default',
+        'outcome': outcome,
         'reason': reason,
         'result_visibility': visibility,
         'ability': deepcopy(spec.get('ability')) if isinstance(spec.get('ability'), dict) else None,
@@ -201,6 +287,8 @@ def canonical_roll_sentence(roll: dict[str, Any]) -> str:
     detail = str(kept)
     if mode in {'advantage', 'disadvantage'}:
         detail = f'{kept} ({mode}; rolls {", ".join(str(value) for value in faces)})'
+    for bonus in roll.get('bonus_dice') or []:
+        detail += f" {bonus.get('dice')} ({int(bonus.get('total') or 0)})"
     return f"I roll a {roll.get('die') or 'd20'}{modifier_text}{reason_text}: {detail} = {total}"
 
 
@@ -271,10 +359,15 @@ def canonicalize_roll_action_intent(
         for key in (
             'die',
             'mode',
+            'mode_reasons',
             'rolls',
             'kept',
+            'bonus_dice',
             'modifier',
             'total',
+            'dc',
+            'dcSource',
+            'outcome',
             'reason',
             'result_visibility',
             'modifier_breakdown',

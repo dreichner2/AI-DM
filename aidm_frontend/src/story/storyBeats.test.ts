@@ -1,0 +1,229 @@
+import { describe, expect, it } from 'vitest'
+import type { JsonRecord, TimelineEntry } from '../types'
+import { buildStoryBeats, isEmptyStory, rollFromEntry, storyChanges, type StoryBeat } from './storyBeats'
+
+function entry(
+  id: string,
+  role: TimelineEntry['role'],
+  speaker: string,
+  text: string,
+  metadata: JsonRecord = {},
+  streaming?: boolean,
+): TimelineEntry {
+  return { id, role, speaker, text, timestamp: null, metadata, ...(streaming ? { streaming } : {}) }
+}
+
+const welcome = entry('log-1', 'system', 'System', 'Welcome to the table. Choose your opening move when you are ready.', {
+  kind: 'session_welcome',
+})
+
+function kinds(beats: StoryBeat[]) {
+  return beats.map((beat) => beat.kind)
+}
+
+describe('buildStoryBeats', () => {
+  it('reads every beat type from a timeline', () => {
+    const beats = buildStoryBeats(
+      [
+        welcome,
+        entry('log-2', 'dm', 'DM', 'Rain hammers the inn roof.', { turn_id: 1 }),
+        entry('log-3', 'player', 'Ysolde', 'I ask Marta about the wagons.', { turn_id: 2 }),
+        entry('log-4', 'player', 'Ysolde', 'I roll a d20+3 for insight: 11 = 14', { turn_id: 3 }),
+        entry('log-5', 'dm', 'DM', '"They came at noon," Marta says.', { turn_id: 3 }),
+        entry('log-6', 'system', 'System', 'State updated:\n- Added 12 gp.', {
+          turn_id: 3,
+          state_log: { lines: [{ status: 'applied', message: 'Added 12 gp.', changeType: 'currency.add' }] },
+        }),
+        entry('log-7', 'system', 'System', 'Brannoc joined the table.'),
+      ],
+      { selectedPlayerName: 'Ysolde' },
+    )
+    expect(kinds(beats)).toEqual(['chapter', 'narration', 'action', 'roll', 'narration', 'changes', 'notice'])
+    expect(beats[2]).toMatchObject({ kind: 'action', speaker: 'Ysolde', own: true, delivery: 'sent' })
+    expect(beats[6]).toMatchObject({ kind: 'notice', text: 'Brannoc joined the table.' })
+  })
+
+  it('drops internal bookkeeping lines entirely', () => {
+    const beats = buildStoryBeats([
+      entry('log-1', 'dm', 'DM', 'The bell tolls.', { turn_id: 1 }),
+      entry('log-2', 'system', 'System', 'State updated'),
+      entry('log-3', 'system', 'System', 'Canon applied for turn 1.'),
+      entry('log-4', 'system', 'System', 'Segment Triggered: The Mill Bell'),
+      entry('log-5', 'system', 'System', 'Saved to the chronicle.'),
+      entry('log-6', 'system', 'System', 'Session ended.'),
+    ])
+    expect(kinds(beats)).toEqual(['narration', 'notice'])
+  })
+
+  it('reads a server roll from metadata and merges the authoritative system line into the player line', () => {
+    const authoritative = {
+      rule_type: 'ability_check',
+      die: 'd20',
+      mode: 'normal',
+      rolls: [14],
+      kept: 14,
+      modifier: 5,
+      total: 19,
+      reason: 'investigation',
+      task_dc: 15,
+    }
+    const beats = buildStoryBeats([
+      entry('log-1', 'system', 'System', 'Check Resolved: turn 3 resolved with roll 19.', {
+        turn_id: 4,
+        roll_value: 19,
+        authoritative_roll: authoritative,
+      }),
+      entry('log-2', 'player', 'Wren', 'I search the bench.\nI roll a d20+5 for investigation: 14 = 19', {
+        turn_id: 4,
+        action_intent: { kind: 'roll', roll: { ...authoritative, task_dc: undefined } },
+      }),
+    ])
+    expect(kinds(beats)).toEqual(['action', 'roll'])
+    expect(beats[0]).toMatchObject({ kind: 'action', text: 'I search the bench.' })
+    expect(beats[1]).toMatchObject({
+      kind: 'roll',
+      roll: {
+        name: 'Wren',
+        checkLabel: 'Investigation',
+        die: 'd20',
+        kept: 14,
+        modifier: 5,
+        total: 19,
+        dc: 15,
+        outcome: 'success',
+        natural: null,
+      },
+    })
+  })
+
+  it('parses a roll from the text when no roll metadata exists', () => {
+    const roll = rollFromEntry(
+      entry('log-1', 'player', 'Ysolde', 'I roll a d20-1 for dexterity saving throw: 1 = 0', { dc_hint: 'DC 12' }),
+    )
+    expect(roll).toMatchObject({
+      name: 'Ysolde',
+      checkLabel: 'Dexterity saving throw',
+      kept: 1,
+      modifier: -1,
+      total: 0,
+      dc: 12,
+      outcome: 'failure',
+      natural: 'one',
+    })
+    const advantage = rollFromEntry(
+      entry('log-2', 'player', 'Ysolde', 'I roll a d20+6 for longbow attack: 20 (advantage; rolls 20, 4) = 26'),
+    )
+    expect(advantage).toMatchObject({ faces: [20, 4], kept: 20, mode: 'advantage', natural: 'twenty', outcome: null })
+    const resolved = rollFromEntry(entry('log-3', 'system', 'System', 'Roll Resolved: authoritative result 17.'))
+    expect(resolved).toMatchObject({ name: '', total: 17, kept: null })
+    expect(rollFromEntry(entry('log-4', 'player', 'Wren', 'I roll the barrel down the hill.'))).toBeNull()
+  })
+
+  it('keeps a system roll without a matching player line as its own beat', () => {
+    const beats = buildStoryBeats([
+      entry('log-1', 'system', 'System', 'Check Resolved: turn 2 resolved with roll 12.', { turn_id: 3 }),
+    ])
+    expect(beats).toHaveLength(1)
+    expect(beats[0]).toMatchObject({ kind: 'roll', roll: { total: 12, name: '' } })
+  })
+
+  it('opens with a chapter beat, numbered when the welcome names a chapter', () => {
+    const plain = buildStoryBeats([welcome, entry('log-2', 'dm', 'DM', 'Rain.', { turn_id: 1 })])
+    expect(plain[0]).toMatchObject({ kind: 'chapter', chapterLabel: null })
+    expect(plain[1]).toMatchObject({ kind: 'narration', opening: true })
+
+    const numbered = buildStoryBeats([entry('log-1', 'system', 'System', '**Chapter 3: The Drowned Mill**')])
+    expect(numbered[0]).toMatchObject({ kind: 'chapter', chapterLabel: 'Chapter 3' })
+    expect(isEmptyStory(numbered)).toBe(true)
+
+    const later = buildStoryBeats([entry('log-1', 'dm', 'DM', 'Rain.'), welcome])
+    expect(kinds(later)).toEqual(['narration', 'notice'])
+  })
+
+  it('gives the drop cap only to the session’s first narration and only when history is complete', () => {
+    const entries = [entry('log-1', 'dm', 'DM', 'One.', { turn_id: 1 }), entry('log-2', 'dm', 'DM', 'Two.', { turn_id: 2 })]
+    const complete = buildStoryBeats(entries)
+    expect(complete.map((beat) => beat.kind === 'narration' && beat.opening)).toEqual([true, false])
+    const partial = buildStoryBeats(entries, { historyComplete: false })
+    expect(partial.some((beat) => beat.kind === 'narration' && beat.opening)).toBe(false)
+  })
+
+  it('marks optimistic and failed actions and keeps their key when the log entry replaces them', () => {
+    const pending = buildStoryBeats([
+      entry('local-1', 'player', 'Ysolde', 'I bar the door.', { client_message_id: 'c-1', persistence_status: 'pending' }),
+      entry('local-2', 'player', 'Ysolde', 'I bar the window.', { client_message_id: 'c-2', persistence_status: 'failed' }),
+    ])
+    expect(pending.map((beat) => beat.kind === 'action' && beat.delivery)).toEqual(['pending', 'failed'])
+    const logged = buildStoryBeats([
+      entry('log-9', 'player', 'Ysolde', 'I bar the door.', { client_message_id: 'c-1', turn_id: 7 }),
+    ])
+    expect(logged[0].key).toBe(pending[0].key)
+  })
+
+  it('keeps one narration when a streamed turn has already been logged, with a stable key', () => {
+    const streaming = entry('stream-5', 'dm', 'DM', 'The bell', { turn_id: 5 }, true)
+    const during = buildStoryBeats([streaming])
+    expect(during[0]).toMatchObject({ kind: 'narration', streaming: true, text: 'The bell' })
+    const logged = entry('log-12', 'dm', 'DM', 'The bell tolls.', { turn_id: 5 })
+    const after = buildStoryBeats([logged, streaming])
+    expect(after).toHaveLength(1)
+    expect(after[0]).toMatchObject({ streaming: false, text: 'The bell tolls.' })
+    expect(after[0].key).toBe(during[0].key)
+    expect(buildStoryBeats([entry('stream-6', 'dm', 'DM', '...', { turn_id: 6 }, true)])[0]).toMatchObject({ text: '' })
+  })
+
+  it('flags narration whose persistence failed', () => {
+    const beats = buildStoryBeats([entry('log-1', 'dm', 'DM', 'Rain.', { turn_id: 1, persistence_status: 'failed' })])
+    expect(beats[0]).toMatchObject({ kind: 'narration', notSaved: true })
+  })
+
+  it('spaces beats by speaker and turn', () => {
+    const beats = buildStoryBeats([
+      entry('log-1', 'dm', 'DM', 'Rain.', { turn_id: 1 }),
+      entry('log-2', 'system', 'System', 'State updated:', {
+        state_log: { lines: [{ message: 'Took 3 damage.', changeType: 'health.damage' }] },
+      }),
+      entry('log-3', 'player', 'Wren', 'I duck.', { turn_id: 2 }),
+      entry('log-4', 'player', 'Wren', 'I roll a d20+2 for stealth: 9 = 11', { turn_id: 2 }),
+      entry('log-5', 'player', 'Ysolde', 'I follow her.', { turn_id: 3 }),
+      entry('log-6', 'dm', 'DM', 'You both slip away.', { turn_id: 3 }),
+    ])
+    expect(beats.map((beat) => beat.gap)).toEqual(['none', 'tight', 'turn', 'tight', 'speaker', 'speaker'])
+  })
+})
+
+describe('storyChanges', () => {
+  it('chooses glyph and tone by content and trims leading labels', () => {
+    const changes = storyChanges(
+      entry('log-1', 'system', 'System', 'State updated:', {
+        state_log: {
+          lines: [
+            { status: 'applied', message: 'Took 4 damage.', changeType: 'health.damage' },
+            { status: 'applied', message: 'Restored 3 HP.', changeType: 'health.heal' },
+            { status: 'applied', message: 'Added 25 XP.', changeType: 'xp.add' },
+            { status: 'applied', message: 'Added 12 gp.', changeType: 'currency.add' },
+            { status: 'applied', message: 'Added Waxed ledger x1.', changeType: 'inventory.add' },
+            { status: 'applied', message: 'Learned spell: Shield.', changeType: 'spell.learn' },
+            { status: 'applied', message: 'Added quest: The Grey Caravan.', changeType: 'quest.add' },
+            { status: 'applied', message: 'Hidden line.', visibleToPlayer: false },
+            { status: 'applied', message: 'Poisoned until the end of your next turn.' },
+          ],
+        },
+      }),
+    )
+    expect(changes).toEqual([
+      { text: 'Took 4 damage', tone: 'fail', glyph: 'heart' },
+      { text: 'Restored 3 HP', tone: 'success', glyph: 'heart' },
+      { text: 'Added 25 XP', tone: 'gold', glyph: 'star' },
+      { text: 'Added 12 gp', tone: 'gold', glyph: 'coin' },
+      { text: 'Added Waxed ledger x1', tone: 'gold', glyph: 'pack' },
+      { text: 'Shield', tone: 'arcane', glyph: 'spark' },
+      { text: 'The Grey Caravan', tone: 'default', glyph: 'scroll' },
+      { text: 'Poisoned until the end of your next turn', tone: 'arcane', glyph: 'spark' },
+    ])
+  })
+
+  it('returns nothing for entries without a state log', () => {
+    expect(storyChanges(entry('log-1', 'system', 'System', 'State updated'))).toEqual([])
+  })
+})

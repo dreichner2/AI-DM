@@ -28,11 +28,14 @@ from aidm_server.models import (
 from aidm_server.race_system import build_race_context_summary
 from aidm_server.segment_triggers import parse_trigger_spec
 from aidm_server.services.content_settings import session_content_settings
+from aidm_server.telemetry import telemetry_event
 from aidm_server.time_utils import utc_now
+from aidm_server.turn_roll_policy import TurnRollPolicy
 from aidm_server.turn_rules import response_mentions_roll_request
 
 
 CONTEXT_VERSION = 'v2'
+MAX_CONTEXT_CHARS = 24000
 MAX_LIVE_ACTIVE_QUESTS = 5
 MAX_LIVE_OBJECTIVES_PER_QUEST = 5
 MAX_LIVE_RECENT_LOCATIONS = 8
@@ -42,13 +45,24 @@ MAX_LIVE_FLAGS = 20
 MAX_LIVE_COMBAT_PARTICIPANTS = 12
 MAX_LIVE_SCENE_ITEMS = 12
 MAX_LIVE_SCENE_INTERACTABLES = 12
+MAX_LIVE_VISIBLE_DETAILS = 6
 MAX_PACK_CHECKPOINTS = 4
-MAX_PACK_LOCATIONS = 6
-MAX_PACK_QUESTS = 4
-MAX_PACK_NPCS = 6
-MAX_PACK_ENCOUNTERS = 4
-MAX_PACK_ENEMIES = 6
-MAX_PACK_SEGMENTS = 6
+MAX_PACK_LOCATIONS = 4
+MAX_PACK_QUESTS = 2
+MAX_PACK_PROGRESS_QUESTS = 4
+MAX_PACK_NPCS = 5
+MAX_PACK_ENCOUNTERS = 2
+MAX_PACK_ENEMIES = 3
+MAX_PACK_SEGMENTS = 3
+MAX_PACK_CLUES = 4
+MAX_PACK_AUTHOR_TEXT = 240
+MAX_TRIMMED_FACTS = 10
+MAX_TRIMMED_RECENT_LOCATIONS = 4
+MAX_RACE_SUMMARY_CHARS = 240
+MAX_RECENT_ACTION_CHARS = 200
+PACK_NPC_DM_ONLY_FIELDS = ('personality', 'motivation', 'knows', 'secret')
+ACTIVE_COMBAT_STATUSES = frozenset({'starting', 'active'})
+UNDISCOVERED_CLUE_STATUSES = frozenset({'hidden', 'undiscovered', 'unknown', 'destroyed', 'lost', 'unavailable'})
 MAX_SESSION_MEMORY_BEATS = 5
 MAX_SESSION_MEMORY_THREADS = 5
 RECENT_TURN_BACKFILL_MULTIPLIER = 3
@@ -332,6 +346,38 @@ def _compact_combat(snapshot: dict) -> dict:
     }
 
 
+def _pack_catalog(snapshot: dict) -> dict:
+    pack = snapshot.get('campaignPack') if isinstance(snapshot.get('campaignPack'), dict) else {}
+    catalog = pack.get('catalog')
+    return catalog if isinstance(catalog, dict) else {}
+
+
+def _catalog_record(catalog: dict, key: str, record_id: Any) -> dict:
+    wanted = _id_key(record_id)
+    if not wanted:
+        return {}
+    records = catalog.get(key) if isinstance(catalog.get(key), list) else []
+    return next(
+        (record for record in records if isinstance(record, dict) and _id_key(record.get('id')) == wanted),
+        {},
+    )
+
+
+def _visible_details(value, *, item_length: int = 160) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    details: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            item = item.get('text') or item.get('description') or item.get('summary')
+        text = _text_or_none(item, item_length)
+        if text and text not in details:
+            details.append(text)
+        if len(details) >= MAX_LIVE_VISIBLE_DETAILS:
+            break
+    return details
+
+
 def _unique_records(records: list[dict]) -> list[dict]:
     seen: set[str] = set()
     unique: list[dict] = []
@@ -413,6 +459,28 @@ def _compact_live_world_state(snapshot: dict) -> dict:
     ]
     recent_known_npcs.sort(key=lambda npc: -_numeric_turn_value(npc, 'lastSeenTurn', 'updatedAtTurn', 'firstMetTurn'))
 
+    catalog = _pack_catalog(snapshot)
+    catalog_location = _catalog_record(catalog, 'locations', scene.get('locationId'))
+    scene_detail_fields: dict[str, Any] = {}
+    scene_summary = _text_or_none(scene.get('summary') or catalog_location.get('summary'), 320)
+    if scene_summary:
+        scene_detail_fields['summary'] = scene_summary
+    visible_details = _visible_details(scene.get('visibleDetails')) or _visible_details(
+        catalog_location.get('visibleDetails')
+    )
+    if visible_details:
+        scene_detail_fields['visibleDetails'] = visible_details
+
+    def active_npc_payload(npc: dict) -> dict:
+        payload = _compact_npc(npc)
+        description = _text_or_none(
+            npc.get('description') or _catalog_record(catalog, 'npcs', npc.get('id')).get('description'),
+            240,
+        )
+        if description:
+            payload['description'] = description
+        return payload
+
     return {
         'currentScene': {
             'locationId': _text_or_none(scene.get('locationId'), 120),
@@ -422,6 +490,7 @@ def _compact_live_world_state(snapshot: dict) -> dict:
             'mood': _text_or_none(scene.get('mood'), 120),
             'combatState': _text_or_none(scene.get('combatState'), 80),
             'description': _text_or_none(scene.get('description'), 520),
+            **scene_detail_fields,
             'activeNpcIds': active_npc_ids,
             'activeQuestIds': active_quest_ids,
             'items': [
@@ -442,7 +511,7 @@ def _compact_live_world_state(snapshot: dict) -> dict:
         },
         'activeQuests': compact_quests,
         'recentLocations': [_compact_location(location) for location in locations[:MAX_LIVE_RECENT_LOCATIONS]],
-        'activeNpcs': [_compact_npc(npc) for npc in active_npcs[:MAX_LIVE_ACTIVE_NPCS]],
+        'activeNpcs': [active_npc_payload(npc) for npc in active_npcs[:MAX_LIVE_ACTIVE_NPCS]],
         'recentKnownNpcs': [_compact_npc(npc) for npc in recent_known_npcs[:MAX_LIVE_RECENT_KNOWN_NPCS]],
         'combat': _compact_combat(snapshot),
         'flags': _compact_flags(snapshot.get('flags')),
@@ -605,8 +674,23 @@ def _compact_pack_location(location: dict) -> dict:
     }
 
 
+def _bounded_text_list(value, max_total: int) -> list[str]:
+    """Keep list items in order while their combined length stays within ``max_total``."""
+    items = _string_values(value, limit=20)
+    kept: list[str] = []
+    used = 0
+    for item in items:
+        if used + len(item) > max_total:
+            if not kept:
+                kept.append(_truncate_text(item, max_total))
+            break
+        kept.append(item)
+        used += len(item)
+    return kept
+
+
 def _compact_pack_npc(npc: dict) -> dict:
-    return {
+    payload: dict[str, Any] = {
         'id': _text_or_none(npc.get('id'), 120),
         'name': _text_or_none(npc.get('name'), 180),
         'role': _text_or_none(npc.get('role'), 160),
@@ -615,17 +699,86 @@ def _compact_pack_npc(npc: dict) -> dict:
         'locationId': _text_or_none(npc.get('locationId') or npc.get('location_id'), 120),
         'questIds': _string_values(npc.get('questIds') or npc.get('quest_ids'), limit=8),
     }
+    for key in ('description', 'personality', 'motivation', 'secret'):
+        text = _text_or_none(npc.get(key), MAX_PACK_AUTHOR_TEXT)
+        if text:
+            payload[key] = text
+    knows = _bounded_text_list(npc.get('knows'), MAX_PACK_AUTHOR_TEXT)
+    if knows:
+        payload['knows'] = knows
+    payload['dmOnly'] = list(PACK_NPC_DM_ONLY_FIELDS)
+    return payload
 
 
 def _compact_pack_encounter(encounter: dict) -> dict:
-    return {
+    payload = {
         'id': _text_or_none(encounter.get('id'), 120),
         'title': _text_or_none(encounter.get('title') or encounter.get('name'), 180),
         'summary': _text_or_none(encounter.get('summary') or encounter.get('description'), 420),
         'locationIds': _string_values(encounter.get('locationIds') or encounter.get('location_ids'), limit=8),
         'questIds': _string_values(encounter.get('questIds') or encounter.get('quest_ids'), limit=8),
         'checkpointIds': _string_values(encounter.get('checkpointIds') or encounter.get('checkpoint_ids'), limit=8),
-        'enemyIds': _string_values(encounter.get('enemyIds') or encounter.get('enemy_ids'), limit=8),
+        'enemyIds': _encounter_enemy_ids(encounter),
+    }
+    for key in ('setup', 'stakes'):
+        text = _text_or_none(encounter.get(key), MAX_PACK_AUTHOR_TEXT)
+        if text:
+            payload[key] = text
+    return payload
+
+
+def _encounter_enemy_ids(encounter: dict) -> list[str]:
+    group_ids = [
+        group.get('enemyId') or group.get('enemy_id')
+        for group in (encounter.get('enemyGroups') or encounter.get('enemy_groups') or [])
+        if isinstance(group, dict)
+    ]
+    return _unique_pack_ids(
+        [
+            *_string_values(encounter.get('enemyIds') or encounter.get('enemy_ids'), limit=8),
+            *_string_values(group_ids, limit=8),
+        ]
+    )[:8]
+
+
+def _compact_pack_clue(clue: dict, *, discovered_ids: set[str]) -> dict:
+    clue_id = _text_or_none(_record_id(clue), 120)
+    return {
+        'id': clue_id,
+        'title': _text_or_none(clue.get('title') or clue.get('name'), 180),
+        'summary': _text_or_none(clue.get('summary') or clue.get('description'), 200),
+        'discovered': clue.get('discovered') is True or _id_key(clue_id) in discovered_ids,
+    }
+
+
+def _clue_location_ids(clue: dict) -> list[str]:
+    return _string_values(
+        [
+            *_string_values(clue.get('foundAtLocationIds') or clue.get('found_at_location_ids'), limit=12),
+            *_string_values(clue.get('locationIds') or clue.get('location_ids'), limit=12),
+            *_string_values([clue.get('locationId') or clue.get('location_id')], limit=1),
+        ],
+        limit=20,
+    )
+
+
+def _discovered_clue_ids(snapshot: dict) -> set[str]:
+    return {
+        _id_key(_record_id(clue))
+        for clue in (snapshot.get('clues') or [])
+        if isinstance(clue, dict)
+        and _record_id(clue)
+        and _status_key(clue.get('status')) not in UNDISCOVERED_CLUE_STATUSES
+    }
+
+
+def _compact_pack_enemy_brief(entry: BestiaryEntry) -> dict:
+    creature = safe_json_loads(entry.creature_json, {})
+    creature = creature if isinstance(creature, dict) else {}
+    return {
+        'id': _text_or_none(entry.creature_id or creature.get('id'), 120),
+        'name': _text_or_none(entry.name or creature.get('name'), 180),
+        'descriptionShort': _text_or_none(creature.get('descriptionShort') or creature.get('descriptionLong'), 160),
     }
 
 
@@ -647,9 +800,9 @@ def _compact_pack_enemy(entry: BestiaryEntry) -> dict:
     }
 
 
-def _compact_pack_segment(segment: CampaignSegment, *, pack_id: str | None) -> dict:
+def _compact_pack_segment(segment: CampaignSegment, *, pack_id: str | None, catalog: dict) -> dict:
     trigger_spec = parse_trigger_spec(segment.trigger_condition)
-    return {
+    payload = {
         'segment_id': segment.segment_id,
         'externalId': _text_or_none(segment.external_id, 120),
         'title': _text_or_none(segment.title, 180),
@@ -660,6 +813,10 @@ def _compact_pack_segment(segment: CampaignSegment, *, pack_id: str | None) -> d
         'source': _text_or_none(segment.source, 40),
         'packId': _text_or_none(segment.source_pack_id, 120) or pack_id,
     }
+    gm_notes = _text_or_none(_catalog_record(catalog, 'segments', segment.external_id).get('gmNotes'), MAX_PACK_AUTHOR_TEXT)
+    if gm_notes:
+        payload['gmNotes'] = gm_notes
+    return payload
 
 
 def _checkpoint_by_id(checkpoints: list[dict], checkpoint_id: str | None) -> dict | None:
@@ -1257,23 +1414,33 @@ def _campaign_pack_director_for_session(campaign_id: int, session_id) -> dict:
     )
     active_director_rules = _active_director_rules(pack, active_checkpoint)
 
-    active_checkpoint_ids = _string_values([_record_id(active_checkpoint)] if active_checkpoint else [], limit=1)
-    next_checkpoint_ids = [_record_id(checkpoint) for checkpoint in next_checkpoints]
+    active_checkpoint_id = _record_id(active_checkpoint)
     checkpoint_quest_ids = _string_values(
         _record_value(active_checkpoint, 'questIds', 'quest_ids', 'quests') if active_checkpoint else [],
-        limit=12,
-    )
-    checkpoint_location_ids = _string_values(
-        _record_value(active_checkpoint, 'locationIds', 'location_ids', 'locations') if active_checkpoint else [],
         limit=12,
     )
     checkpoint_npc_ids = _string_values(
         _record_value(active_checkpoint, 'npcIds', 'npc_ids', 'npcs') if active_checkpoint else [],
         limit=12,
     )
+    checkpoint_encounter_ids = _string_values(
+        _record_value(active_checkpoint, 'encounterIds', 'encounter_ids', 'encounters') if active_checkpoint else [],
+        limit=12,
+    )
+    checkpoint_segment_ids = _string_values(
+        _record_value(active_checkpoint, 'segmentIds', 'segment_ids', 'segments') if active_checkpoint else [],
+        limit=12,
+    )
+    checkpoint_clue_ids = _string_values(
+        _record_value(active_checkpoint, 'clueIds', 'clue_ids', 'requiredClueIds', 'required_clue_ids')
+        if active_checkpoint
+        else [],
+        limit=20,
+    )
     relevant_quest_ids = set(active_quest_ids + checkpoint_quest_ids)
-    nearby_location_ids = set(_location_ids_near_current(current_location_id, locations) + checkpoint_location_ids)
-    active_npc_ids = set(_string_values(scene.get('activeNpcIds'), limit=20) + checkpoint_npc_ids)
+    nearby_location_ids = _location_ids_near_current(current_location_id, locations)
+    relevant_npc_ids = _unique_pack_ids(_string_values(scene.get('activeNpcIds'), limit=20) + checkpoint_npc_ids)
+    catalog = _pack_catalog(snapshot)
 
     relevant_quests = [
         quest
@@ -1287,63 +1454,92 @@ def _campaign_pack_director_for_session(campaign_id: int, session_id) -> dict:
     if not relevant_quests:
         relevant_quests = quests[:MAX_PACK_QUESTS]
 
+    location_by_key = {_id_key(location.get('id')): location for location in locations if location.get('id')}
     relevant_locations = [
-        location
-        for location in locations
-        if str(location.get('id') or '').strip() in nearby_location_ids
+        location_by_key[_id_key(location_id)]
+        for location_id in nearby_location_ids
+        if _id_key(location_id) in location_by_key
     ]
-    if not relevant_locations and current_location_id:
-        relevant_locations = [location for location in locations if str(location.get('id') or '').strip() == current_location_id]
-    if not relevant_locations:
-        relevant_locations = locations[:MAX_PACK_LOCATIONS]
 
-    relevant_npcs = []
-    for npc in npcs:
-        npc_id = str(npc.get('id') or '').strip()
-        location_id = str(npc.get('locationId') or npc.get('location_id') or '').strip()
-        npc_quest_ids = set(_string_values(npc.get('questIds') or npc.get('quest_ids'), limit=12))
-        if npc_id in active_npc_ids or location_id in nearby_location_ids or npc_quest_ids.intersection(relevant_quest_ids):
-            relevant_npcs.append(npc)
-    if not relevant_npcs:
-        relevant_npcs = npcs[:MAX_PACK_NPCS]
+    npc_by_key = {_id_key(npc.get('id')): npc for npc in npcs if npc.get('id')}
+    relevant_npcs = [npc_by_key[_id_key(npc_id)] for npc_id in relevant_npc_ids if _id_key(npc_id) in npc_by_key]
 
     encounters = [
         encounter
         for encounter in _catalog_records(pack, 'encounters', pack.get('encounters') if isinstance(pack.get('encounters'), list) else [])
         if isinstance(encounter, dict)
     ]
+    checkpoint_encounter_keys = {_id_key(value) for value in checkpoint_encounter_ids}
     relevant_encounters = []
     for encounter in encounters:
-        encounter_checkpoint_ids = set(_string_values(encounter.get('checkpointIds') or encounter.get('checkpoint_ids'), limit=12))
-        encounter_location_ids = set(_string_values(encounter.get('locationIds') or encounter.get('location_ids'), limit=12))
-        encounter_quest_ids = set(_string_values(encounter.get('questIds') or encounter.get('quest_ids'), limit=12))
+        encounter_checkpoint_keys = {
+            _id_key(value)
+            for value in _string_values(encounter.get('checkpointIds') or encounter.get('checkpoint_ids'), limit=12)
+        }
+        encounter_location_keys = {
+            _id_key(value)
+            for value in _string_values(encounter.get('locationIds') or encounter.get('location_ids'), limit=12)
+        }
         if (
-            encounter_checkpoint_ids.intersection(set(active_checkpoint_ids + next_checkpoint_ids))
-            or encounter_location_ids.intersection(nearby_location_ids)
-            or encounter_quest_ids.intersection(relevant_quest_ids)
+            (active_checkpoint_id and _id_key(active_checkpoint_id) in encounter_checkpoint_keys)
+            or _id_key(encounter.get('id')) in checkpoint_encounter_keys
+            or (current_location_id and _id_key(current_location_id) in encounter_location_keys)
         ):
             relevant_encounters.append(encounter)
-    if not relevant_encounters:
-        relevant_encounters = encounters[:MAX_PACK_ENCOUNTERS]
+    relevant_encounters = relevant_encounters[:MAX_PACK_ENCOUNTERS]
 
-    pack_segments = [
-        segment
-        for segment in CampaignSegment.query.filter_by(campaign_id=campaign_id).order_by(
-            CampaignSegment.is_triggered.asc(),
-            CampaignSegment.segment_id.asc(),
-        )
-        if segment.source == 'campaign_pack'
-        or (pack_id and segment.source_pack_id == pack_id)
-        or 'campaign_pack' in _string_values(segment.tags, limit=20)
-        or (pack_id and f'pack:{pack_id}' in _string_values(segment.tags, limit=20))
-    ]
-
-    enemy_rows = (
-        BestiaryEntry.query.filter_by(campaign_id=campaign_id, source='campaign_pack')
-        .order_by(BestiaryEntry.updated_at.desc(), BestiaryEntry.bestiary_entry_id.asc())
-        .limit(MAX_PACK_ENEMIES)
-        .all()
+    checkpoint_segment_keys = {_id_key(value) for value in checkpoint_segment_ids}
+    pack_segments = sorted(
+        (
+            segment
+            for segment in CampaignSegment.query.filter_by(campaign_id=campaign_id).order_by(
+                CampaignSegment.is_triggered.asc(),
+                CampaignSegment.segment_id.asc(),
+            )
+            if segment.source == 'campaign_pack'
+            or (pack_id and segment.source_pack_id == pack_id)
+            or 'campaign_pack' in _string_values(segment.tags, limit=20)
+            or (pack_id and f'pack:{pack_id}' in _string_values(segment.tags, limit=20))
+        ),
+        key=lambda segment: 0 if _id_key(segment.external_id) in checkpoint_segment_keys else 1,
     )
+
+    encounter_enemy_ids = _unique_pack_ids(
+        [enemy_id for encounter in relevant_encounters for enemy_id in _encounter_enemy_ids(encounter)]
+    )
+    enemy_rows_by_key = {
+        _id_key(entry.creature_id): entry
+        for entry in (
+            BestiaryEntry.query.filter(
+                BestiaryEntry.campaign_id == campaign_id,
+                BestiaryEntry.source == 'campaign_pack',
+                BestiaryEntry.creature_id.in_(encounter_enemy_ids),
+            ).all()
+            if encounter_enemy_ids
+            else []
+        )
+    }
+    enemy_rows = [
+        enemy_rows_by_key[_id_key(enemy_id)]
+        for enemy_id in encounter_enemy_ids
+        if _id_key(enemy_id) in enemy_rows_by_key
+    ][:MAX_PACK_ENEMIES]
+    combat = snapshot.get('combat') if isinstance(snapshot.get('combat'), dict) else {}
+    combat_active = _status_key(combat.get('status')) in ACTIVE_COMBAT_STATUSES
+    compact_enemy = _compact_pack_enemy if combat_active else _compact_pack_enemy_brief
+
+    checkpoint_clue_keys = {_id_key(value) for value in checkpoint_clue_ids}
+    discovered_clue_ids = _discovered_clue_ids(snapshot)
+    relevant_clues = [
+        clue
+        for clue in (catalog.get('clues') if isinstance(catalog.get('clues'), list) else [])
+        if isinstance(clue, dict)
+        and _record_id(clue)
+        and (
+            _id_key(_record_id(clue)) in checkpoint_clue_keys
+            or (current_location_id and _id_key(current_location_id) in {_id_key(value) for value in _clue_location_ids(clue)})
+        )
+    ][:MAX_PACK_CLUES]
 
     rejoin_target = (
         _text_or_none(_record_value(active_checkpoint, 'rejoinTargetCheckpointId', 'rejoin_target_checkpoint_id'), 120)
@@ -1403,19 +1599,20 @@ def _campaign_pack_director_for_session(campaign_id: int, session_id) -> dict:
                 _with_known_to_players(_compact_pack_npc(npc), str(npc.get('id') or '').strip(), known_npc_ids)
                 for npc in relevant_npcs[:MAX_PACK_NPCS]
             ],
-            'encounters': [_compact_pack_encounter(encounter) for encounter in relevant_encounters[:MAX_PACK_ENCOUNTERS]],
-            'enemies': [_compact_pack_enemy(entry) for entry in enemy_rows],
+            'encounters': [_compact_pack_encounter(encounter) for encounter in relevant_encounters],
+            'enemies': [compact_enemy(entry) for entry in enemy_rows],
             'segments': [
-                _compact_pack_segment(segment, pack_id=pack_id)
+                _compact_pack_segment(segment, pack_id=pack_id, catalog=catalog)
                 for segment in pack_segments[:MAX_PACK_SEGMENTS]
             ],
+            'clues': [_compact_pack_clue(clue, discovered_ids=discovered_clue_ids) for clue in relevant_clues],
         },
         'progress': {
             'completedCheckpointIds': completed_checkpoint_ids[:MAX_PACK_CHECKPOINTS],
             'skippedCheckpointIds': skipped_checkpoint_ids[:MAX_PACK_CHECKPOINTS],
             'failedCheckpointIds': failed_checkpoint_ids[:MAX_PACK_CHECKPOINTS],
             'checkpointStatuses': compact_checkpoint_statuses,
-            'activeQuestIds': active_quest_ids[:MAX_PACK_QUESTS],
+            'activeQuestIds': active_quest_ids[:MAX_PACK_PROGRESS_QUESTS],
             'currentLocationId': _text_or_none(current_location_id, 120),
             'offTrack': off_track['offTrack'],
             'offTrackScore': off_track['score'],
@@ -1439,7 +1636,14 @@ def _stable_turn_for_recent_context(turn: DmTurn) -> bool:
     """
     if str(turn.status or '').strip().lower() == 'processing':
         return False
-    if bool(turn.requires_roll) and turn.roll_value is None and response_mentions_roll_request(turn.dm_output):
+    if (
+        bool(turn.requires_roll)
+        and turn.roll_value is None
+        and (
+            response_mentions_roll_request(turn.dm_output)
+            or TurnRollPolicy.response_requests_stated_check(turn.dm_output or '')
+        )
+    ):
         return False
     return bool(str(turn.dm_output or '').strip())
 
@@ -1543,7 +1747,6 @@ def _player_recap_text(
     campaign_summary: dict,
     current_location: str | None,
     current_quest: str | None,
-    recap_text: str,
     recent_beats: list[dict],
 ) -> str:
     parts = [
@@ -1552,8 +1755,6 @@ def _player_recap_text(
     quest = current_quest or campaign_summary.get('current_quest')
     if quest and quest != 'None':
         parts.append(f'Current quest: {quest}.')
-    if recap_text:
-        parts.append(_truncate_text(recap_text, 520))
     if recent_beats:
         latest = recent_beats[-1]
         latest_text = latest.get('dm_output') or latest.get('player_input')
@@ -1566,12 +1767,14 @@ def _build_session_memory(
     *,
     campaign_summary: dict,
     session_state_payload: dict,
+    rolling_summary: str,
     recent_turns: list[dict],
     recent_log: list[str],
     emergent_memory: dict,
     dormant_story_threads: list[dict],
     session_obj: Session | None,
 ) -> dict:
+    """Build the memory hierarchy; the rolling summary appears only as ``session_recap``."""
     memory_snippets = [
         snippet for snippet in session_state_payload.get('memory_snippets', []) if isinstance(snippet, dict)
     ]
@@ -1591,8 +1794,8 @@ def _build_session_memory(
         ]
 
     recap_text = _session_snapshot_text(session_obj, 'recap', 'summary', max_length=1200)
-    rolling_summary = _truncate_text(session_state_payload.get('rolling_summary'), 1400)
-    session_recap = recap_text or rolling_summary
+    session_recap = _truncate_text(rolling_summary, 1200) or recap_text
+    campaign_arc_summary = _truncate_text(recap_text, 900) if recap_text and recap_text != session_recap else ''
     current_location = session_state_payload.get('current_location') or campaign_summary.get('location')
     current_quest = session_state_payload.get('current_quest') or campaign_summary.get('current_quest')
     open_threads = [
@@ -1605,15 +1808,17 @@ def _build_session_memory(
         for thread in dormant_story_threads[:MAX_SESSION_MEMORY_THREADS]
         if isinstance(thread, dict)
     ]
+    campaign_arc = {
+        'title': _text_or_none(campaign_summary.get('title'), 180),
+        'current_location': _text_or_none(current_location, 180),
+        'current_quest': _text_or_none(current_quest, 180),
+    }
+    if campaign_arc_summary:
+        campaign_arc['summary'] = campaign_arc_summary
     return {
         'hierarchy_version': 'v1',
-        'campaign_arc': {
-            'title': _text_or_none(campaign_summary.get('title'), 180),
-            'current_location': _text_or_none(current_location, 180),
-            'current_quest': _text_or_none(current_quest, 180),
-            'summary': _truncate_text(rolling_summary or session_recap, 900),
-        },
-        'session_recap': _truncate_text(session_recap, 1200),
+        'campaign_arc': campaign_arc,
+        'session_recap': session_recap,
         'recent_beats': recent_beats,
         'open_threads': open_threads,
         'dormant_hooks': dormant_hooks,
@@ -1621,7 +1826,6 @@ def _build_session_memory(
             campaign_summary=campaign_summary,
             current_location=current_location,
             current_quest=current_quest,
-            recap_text=session_recap,
             recent_beats=recent_beats,
         ),
     }
@@ -1674,12 +1878,15 @@ def build_dm_context(
                 'player_id': player.player_id,
                 'character_name': player.character_name,
                 'race': player.race,
-                'race_summary': build_race_context_summary(player.race_selection, player.race),
+                'race_summary': _race_summary_text(build_race_context_summary(player.race_selection, player.race)),
                 'class': player.class_,
                 'level': player.level,
                 'state': character_state_for_player(player),
                 'inventory': inventory_payload(player.inventory),
-                'recent_actions': recent_actions_map.get(player.player_id, []),
+                'recent_actions': [
+                    _truncate_text(action, MAX_RECENT_ACTION_CHARS)
+                    for action in recent_actions_map.get(player.player_id, [])
+                ],
             }
         )
 
@@ -1756,8 +1963,8 @@ def build_dm_context(
         for seg in segments
     ]
 
+    rolling_summary = ''
     session_state_payload = {
-        'rolling_summary': '',
         'current_location': campaign_summary['location'],
         'current_quest': campaign_summary['current_quest'],
         'active_segments': [],
@@ -1767,10 +1974,10 @@ def build_dm_context(
     if session_id:
         state = SessionState.query.filter_by(session_id=session_id).first()
         if state:
+            rolling_summary = str(state.rolling_summary or '')
             memory_snippets = safe_json_loads(state.memory_snippets, [])
             memory_snippets = memory_snippets if isinstance(memory_snippets, list) else []
             session_state_payload = {
-                'rolling_summary': _truncate_text(state.rolling_summary, 4000),
                 'current_location': state.current_location or campaign_summary['location'],
                 'current_quest': state.current_quest or campaign_summary['current_quest'],
                 'active_segments': safe_json_loads(state.active_segments, []),
@@ -1806,6 +2013,7 @@ def build_dm_context(
     session_memory = _build_session_memory(
         campaign_summary=campaign_summary,
         session_state_payload=session_state_payload,
+        rolling_summary=rolling_summary,
         recent_turns=recent_turns,
         recent_log=recent_log,
         emergent_memory=emergent_memory,
@@ -1837,12 +2045,180 @@ def build_dm_context(
         ],
         'active_players': active_players,
         'triggered_segments': triggered_segments,
-        'authored_segments': triggered_segments,
-        'story_threads': emergent_memory.get('threads', []),
         'dormant_threads': dormant_story_threads,
-        'emergent_memory': emergent_memory,
+        'emergent_memory': _prompt_emergent_memory(emergent_memory),
         'recent_turns': recent_turns,
         'recent_log': recent_log,
         'pending_checks': pending_checks,
     }
-    return json.dumps(context_payload, separators=(',', ':'), ensure_ascii=False)
+    return _encode_context_within_budget(context_payload)
+
+
+def _encode_context(payload: dict) -> str:
+    return json.dumps(payload, separators=(',', ':'), ensure_ascii=False)
+
+
+def _drop_dormant_threads(payload: dict) -> bool:
+    if not payload.get('dormant_threads'):
+        return False
+    payload['dormant_threads'] = []
+    return True
+
+
+def _drop_extra_facts(payload: dict) -> bool:
+    emergent = payload.get('emergent_memory') if isinstance(payload.get('emergent_memory'), dict) else {}
+    facts = emergent.get('facts') if isinstance(emergent.get('facts'), list) else []
+    if len(facts) <= MAX_TRIMMED_FACTS:
+        return False
+    emergent['facts'] = facts[:MAX_TRIMMED_FACTS]
+    return True
+
+
+def _drop_recent_known_npcs(payload: dict) -> bool:
+    live_state = payload.get('live_world_state') if isinstance(payload.get('live_world_state'), dict) else {}
+    if not live_state.get('recentKnownNpcs'):
+        return False
+    live_state['recentKnownNpcs'] = []
+    return True
+
+
+def _drop_extra_recent_locations(payload: dict) -> bool:
+    live_state = payload.get('live_world_state') if isinstance(payload.get('live_world_state'), dict) else {}
+    locations = live_state.get('recentLocations') if isinstance(live_state.get('recentLocations'), list) else []
+    if len(locations) <= MAX_TRIMMED_RECENT_LOCATIONS:
+        return False
+    live_state['recentLocations'] = locations[:MAX_TRIMMED_RECENT_LOCATIONS]
+    return True
+
+
+def _drop_pack_enemies(payload: dict) -> bool:
+    director = payload.get('campaign_pack_director') if isinstance(payload.get('campaign_pack_director'), dict) else {}
+    records = director.get('relevantRecords') if isinstance(director.get('relevantRecords'), dict) else {}
+    if not records.get('enemies'):
+        return False
+    records['enemies'] = []
+    return True
+
+
+CONTEXT_TRIM_STEPS = (
+    ('dormant_threads', _drop_dormant_threads),
+    ('emergent_memory.facts', _drop_extra_facts),
+    ('live_world_state.recentKnownNpcs', _drop_recent_known_npcs),
+    ('live_world_state.recentLocations', _drop_extra_recent_locations),
+    ('campaign_pack_director.relevantRecords.enemies', _drop_pack_enemies),
+)
+
+
+def _encode_context_within_budget(payload: dict) -> str:
+    """Encode CONTEXT, dropping low-value sections in a fixed order until it fits."""
+    encoded = _encode_context(payload)
+    original_chars = len(encoded)
+    dropped: list[str] = []
+    for section, drop in CONTEXT_TRIM_STEPS:
+        if len(encoded) <= MAX_CONTEXT_CHARS:
+            break
+        if drop(payload):
+            dropped.append(section)
+            encoded = _encode_context(payload)
+    if dropped:
+        telemetry_event(
+            'llm.context.trimmed',
+            payload={'sections': dropped, 'original_chars': original_chars, 'final_chars': len(encoded)},
+        )
+    return encoded
+
+
+def _prompt_emergent_memory(emergent_memory: dict) -> dict:
+    """Drop retrieval debug fields and the duplicated rolling summary."""
+    payload = dict(emergent_memory)
+    retrieval = payload.get('retrieval')
+    if isinstance(retrieval, dict):
+        retrieval = {key: value for key, value in retrieval.items() if key != 'candidate_limits'}
+        embedding = retrieval.get('embedding')
+        if isinstance(embedding, dict):
+            retrieval['embedding'] = {
+                key: value for key, value in embedding.items() if key not in {'query_terms', 'semantic_terms'}
+            }
+        payload['retrieval'] = retrieval
+    projection = payload.get('projection')
+    if isinstance(projection, dict):
+        payload['projection'] = {key: value for key, value in projection.items() if key != 'rolling_summary'}
+    return payload
+
+
+def _race_summary_text(summary: dict | None) -> str | None:
+    if not isinstance(summary, dict):
+        return None
+    name = str(summary.get('name') or '').strip()
+    description = str(summary.get('summary') or '').strip()
+    parts = [f'{name}: {description}' if name and description else name or description]
+    traits = _string_values(summary.get('traits'), limit=6)
+    if traits:
+        parts.append(f"Traits: {', '.join(traits)}.")
+    hints = _string_values(summary.get('aiNarrationHints'), limit=1)
+    if hints:
+        parts.append(hints[0])
+    return _text_or_none(' '.join(part for part in parts if part), MAX_RACE_SUMMARY_CHARS)
+
+
+def build_opening_brief(session_id) -> dict:
+    """Authored opening material for the first narration of a session."""
+    session = db.session.get(Session, session_id) if session_id else None
+    snapshot = safe_json_loads(session.state_snapshot, {}) if session else {}
+    if not isinstance(snapshot, dict):
+        return {}
+    scene = snapshot.get('currentScene') if isinstance(snapshot.get('currentScene'), dict) else {}
+    pack = snapshot.get('campaignPack') if isinstance(snapshot.get('campaignPack'), dict) else {}
+    catalog = _pack_catalog(snapshot)
+    known_npcs = _unique_records(
+        [
+            npc
+            for npc in [*(snapshot.get('partyNpcs') or []), *(snapshot.get('knownNpcs') or [])]
+            if isinstance(npc, dict)
+        ]
+    )
+    npc_by_key = {_id_key(npc.get('id')): npc for npc in known_npcs if npc.get('id')}
+    present_npcs = []
+    for npc_id in _string_values(scene.get('activeNpcIds'), limit=MAX_LIVE_ACTIVE_NPCS):
+        record = {**_catalog_record(catalog, 'npcs', npc_id), **npc_by_key.get(_id_key(npc_id), {})}
+        name = _text_or_none(record.get('name'), 180)
+        if not name:
+            continue
+        present_npcs.append(
+            {
+                'name': name,
+                'role': _text_or_none(record.get('role'), 160),
+                'description': _text_or_none(record.get('description'), 320),
+            }
+        )
+
+    catalog_location = _catalog_record(catalog, 'locations', scene.get('locationId'))
+    brief: dict[str, Any] = {
+        'scene': {
+            'name': _text_or_none(scene.get('name') or catalog_location.get('name'), 180),
+            'summary': _text_or_none(scene.get('summary') or catalog_location.get('summary'), 600),
+            'description': _text_or_none(scene.get('description') or catalog_location.get('description'), 900),
+            'visibleDetails': _visible_details(scene.get('visibleDetails'), item_length=240)
+            or _visible_details(catalog_location.get('visibleDetails'), item_length=240),
+        },
+        'presentNpcs': present_npcs,
+    }
+    starting_brief = pack.get('startingBrief') if isinstance(pack.get('startingBrief'), dict) else {}
+    compact_starting_brief = {
+        key: _compact_pack_note_value(starting_brief.get(key))
+        for key in ('partyStatus', 'partyNotes')
+        if starting_brief.get(key) not in (None, '', [], {})
+    }
+    if compact_starting_brief:
+        brief['startingBrief'] = compact_starting_brief
+
+    checkpoints = [checkpoint for checkpoint in (pack.get('checkpoints') or []) if isinstance(checkpoint, dict)]
+    flags = snapshot.get('flags') if isinstance(snapshot.get('flags'), dict) else {}
+    active_checkpoint = _select_active_checkpoint(pack, flags, checkpoints)[0] if checkpoints else None
+    if active_checkpoint:
+        brief['activeCheckpoint'] = {
+            'summary': _text_or_none(_record_value(active_checkpoint, 'summary', 'description'), 420),
+            'gmNotes': _text_or_none(_record_value(active_checkpoint, 'gmNotes', 'gm_notes'), 420),
+        }
+        brief['dmOnly'] = ['activeCheckpoint.gmNotes']
+    return brief

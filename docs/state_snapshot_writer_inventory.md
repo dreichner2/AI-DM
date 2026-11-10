@@ -36,6 +36,23 @@ table below. Test fixtures are intentionally excluded.
 - `runtime_control`: direct control-plane state such as active-turn control.
 - `regression_fixture`: isolated support script fixture setup.
 
+## Chapter snapshot keys
+
+A session is a chapter of its campaign's adventure. Chapter writers add these
+top-level keys:
+
+- `chapter`: `{number, previousSessionId, startedAt, recap}` on every chapter
+  after the first, plus `fresh: true` when the chapter deliberately started a
+  fresh world. `recap` is the bounded "Previously" text shown when it began.
+- `ended_at`: ISO time the chapter was closed by the next chapter (or by
+  `POST /api/sessions/<id>/end`).
+
+A continued chapter copies only `schemaVersion`, `campaignId`, `currentScene`
+(with combat state, positions and zones reset), `locations`,
+`locationSceneStates`, `knownNpcs`, `partyNpcs`, `quests`, `flags`, `clues`,
+`factions`, `maps`, `handouts`, `lore`, `campaignPack`, `contentSettings`,
+`playNow` and the four gameplay ledgers, and starts with an empty `combat`.
+
 ## Inventory
 
 | Path | Scope | Expected writes | Category | Coordinator boundary | Audit/evidence | Action |
@@ -49,7 +66,8 @@ table below. Test fixtures are intentionally excluded.
 | `aidm_server/services/campaign_pack.py` | `import_campaign_pack` | 2 | `initialization_import` | Creates/imports a session starting snapshot before active play, first as a constructor seed and then with the DB-assigned session id. | Campaign-pack import creates `SessionState` and installed-pack records in the same transaction. | Keep direct as initialization; both writes must stay import-only. |
 | `aidm_server/services/session_import.py` | `import_session_export` | 2 | `initialization_import` | Creates a new imported session snapshot before active play, first as an empty constructor seed and then with imported provenance. | Import path validates payload and recreates projections/log entries for the new session. | Keep direct as initialization; both writes must stay import-only. |
 | `aidm_server/services/play_now.py` | `_sync_play_now_snapshot` | 1 | `onboarding_initialization` | For a newly imported session, completes the uncommitted starting snapshot before the onboarding transaction is published. For an idempotent replay, `ensure_play_now_adventure` reloads under `session_turn_coordinator.serialized(session_id)` and commits before releasing it. | Uses `state_snapshot_for_session` to preserve existing runtime fields while synchronizing the selected starter hero and Play Now provenance; regression coverage verifies that only the replay path acquires the session coordinator. | Keep limited to Play Now initialization/repair; route unrelated live metadata changes through `mutate_session_snapshot_metadata`. |
-| `aidm_server/blueprints/sessions.py` | `start_new_session` | 1 | `initialization_import` | Creates a new session snapshot only for idempotency metadata before active play. | Start-session path stores `client_session_id` in `Session.client_session_id` and mirrors it into the initial snapshot for legacy/idempotency compatibility. | Keep direct as initialization; do not expand this path into gameplay mutation. |
+| `aidm_server/services/session_chapters.py` | `_create_chapter_session` | 1 | `initialization_import` | Constructor seed of a new chapter before active play. `start_campaign_chapter` holds non-blocking coordinator leases on every chapter it closes and on the chapter it continues from, and commits before releasing them. | A first chapter stores only `client_session_id`; a continued chapter stores the allow-listed world state copied by `chapter_snapshot_from`; a fresh chapter stores the pack opening snapshot or no world. Every new chapter records a welcome turn event. | Keep direct as initialization; do not expand this path into gameplay mutation. |
+| `aidm_server/services/session_chapters.py` | `_close_open_chapters` | 1 | `lifecycle_metadata` | Runs inside `start_campaign_chapter` while the closed chapter's coordinator lease is held. | Sets `status='ended'`, stamps `ended_at`, and records a `chapter_closed` session-ended turn event. | Keep direct as lifecycle metadata; never change gameplay state here. |
 | `aidm_server/services/campaign_pack_storage.py` | `propagate_shared_campaign_pack_progress` | 1 | `campaign_pack_serialized` | The caller must already hold the complete source-and-sibling lock set. Sibling rows and snapshots are refreshed and updated inside that single transaction; the propagation loop does not acquire nested per-session leases. | Syncs durable `CampaignPackSession` progress for sibling sessions, skips stale incoming revisions, and records `session_state_mutation_audits` with source `system.campaign_pack.shared_progress`. | Covered by shared-progress propagation, complete-lock-set, fencing, concurrent-update, and stale-revision regressions. |
 | `aidm_server/blueprints/sessions.py` | `end_game_session` | 1 | `lifecycle_metadata` | Endpoint-level session lifecycle operation. | Writes recap/ended timestamp and records a `session_ended` turn event. | Keep direct as lifecycle metadata. |
 | `aidm_server/services/session_lifecycle.py` | `archive_session_record` | 1 | `lifecycle_metadata` | Endpoint/service lifecycle operation. | Records `operator_action` for archive. | Keep direct as lifecycle metadata. |

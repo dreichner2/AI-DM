@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from copy import copy
 from dataclasses import dataclass
 from typing import Callable
 
@@ -54,19 +55,32 @@ from aidm_server.player_rolls import (
 from aidm_server.player_roll_claims import find_legacy_roll_claim
 from aidm_server.roll_visibility import public_segment_triggered_payload
 from aidm_server.rules import RuleHint, classify_player_action, player_message_reports_roll_result
-from aidm_server.services.campaign_pack_coordination import serialized_campaign_pack_progress
 from aidm_server.services.campaign_pack_progress import update_campaign_pack_progress
 from aidm_server.services.scene_state import scene_state_for_session
 from aidm_server.services.session_lifecycle import session_playability_error
 from aidm_server.services.session_recovery import (
+    LIFECYCLE_ACCEPTED,
+    LIFECYCLE_EFFECTS_APPLIED,
+    LIFECYCLE_FINISHED,
+    LIFECYCLE_NARRATION_SAVED,
+    LIFECYCLE_RULES_APPLIED,
+    MAX_TURN_RESUME_ATTEMPTS,
     activate_turn_recovery_gate,
     active_turn_recovery_gate,
+    finish_turn_lifecycle,
     mark_turn_recovery_required,
     recovery_gate_from_failed_turn,
     recovery_required_details,
+    set_turn_lifecycle,
+    turn_is_unfinished,
+    turn_lifecycle,
+    turn_lifecycle_phase,
+    unfinished_session_turns,
     unresolved_turn_recovery_turn,
 )
+from aidm_server.services.session_state_mutation import serialized_campaign_turn
 from aidm_server.socket_contracts import (
+    MESSAGE_KIND_OPENING,
     new_message_payload,
     roll_resolved_payload,
     roll_required_payload,
@@ -76,6 +90,7 @@ from aidm_server.socket_contracts import (
     turn_duplicate_payload,
     turn_status_payload,
 )
+from aidm_server.socket_runtime import bound_presence
 from aidm_server.telemetry import telemetry_event, telemetry_metric, telemetry_timing
 from aidm_server.text_sanitization import strip_reasoning_blocks
 from aidm_server.time_utils import utc_now
@@ -91,6 +106,7 @@ from aidm_server.turn_events import (
     DM_RESPONSE_EVENT,
     PLAYER_MESSAGE_EVENT,
     ROLL_RESOLVED_EVENT,
+    STATE_UPDATE_EVENT,
     record_turn_event,
 )
 from aidm_server.turn_narration import (
@@ -239,6 +255,11 @@ class TurnCommand:
     action_intent: dict | None = None
     client_message_id: str | None = None
     state_pipeline_override: dict | None = None
+    message_kind: str | None = None
+
+    @property
+    def is_opening(self) -> bool:
+        return self.message_kind == MESSAGE_KIND_OPENING
 
 
 @dataclass(frozen=True)
@@ -249,6 +270,38 @@ class TurnPersistenceToken:
     player_id: int | None
     client_message_id: str | None
     expected_status: str
+
+
+@dataclass
+class PostTurnOutcome:
+    """Narration outcome and progress of the steps that follow the DM response save."""
+
+    turn_id: int
+    session_id: int
+    command: TurnCommand
+    player_label: str
+    rules_hint_payload: dict
+    dm_response_text: str
+    stream_error: str | None
+    narration_provider: str | None
+    narration_model: str | None
+    emergency_fallback: dict | None
+    triggered_segments: list[dict]
+    start_time: float
+    # Status the DM response save expects to replace; None when resuming a turn
+    # whose narration is already saved.
+    expected_status: str | None = None
+    state_application_failed: bool = False
+
+
+def _turn_metadata(turn: DmTurn) -> dict:
+    metadata = safe_json_loads(turn.metadata_json, {})
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _turn_triggered_segments(turn: DmTurn) -> list[dict]:
+    segments = _turn_metadata(turn).get('triggered_segments')
+    return [segment for segment in segments if isinstance(segment, dict)] if isinstance(segments, list) else []
 
 
 class TurnEngine:
@@ -393,20 +446,20 @@ class TurnEngine:
                 return candidate
         return None
 
-    def _emit_duplicate_turn(self, command: TurnCommand, duplicate_turn: DmTurn, *, detected_by: str) -> None:
+    def _emit_duplicate_turn(self, command: TurnCommand, duplicate_turn_id: int, *, detected_by: str) -> None:
         if not command.client_message_id:
             return
         self.emit(
             'turn_duplicate',
             turn_duplicate_payload(
                 command.session_id,
-                duplicate_turn.turn_id,
+                duplicate_turn_id,
                 command.client_message_id,
             ),
         )
         self.emit(
             'session_log_update',
-            session_log_update_payload(command.session_id, duplicate_turn.turn_id),
+            session_log_update_payload(command.session_id, duplicate_turn_id),
             room=str(command.session_id),
         )
         telemetry_event(
@@ -443,6 +496,7 @@ class TurnEngine:
                 for player_id in self.active_player_ids(command.session_id)
                 if player_id
             ]
+        presence = bound_presence()
         allowed, block_reason, turn_control, changed, decision = (
             conduct_turn_submission(
                 session_obj,
@@ -455,15 +509,61 @@ class TurnEngine:
                 reload_session_after_helper=lambda: db.session.get(
                     Session, command.session_id
                 ),
+                absent_since=(
+                    (lambda player_id: presence.player_absent_since(command.session_id, player_id))
+                    if presence is not None and self.active_player_ids
+                    else None
+                ),
+                allow_helper=not command.is_opening,
             )
         )
+        if changed:
+            skipped_player_name = decision.get('skipped_player_name')
+            if skipped_player_name:
+                record_turn_event(
+                    session_id=command.session_id,
+                    campaign_id=command.campaign_id,
+                    player_id=decision.get('skipped_player_id'),
+                    event_type=STATE_UPDATE_EVENT,
+                    payload={
+                        'message': f'{skipped_player_name} is away; their turn was skipped.',
+                        'metadata': {
+                            'turn_control_skip': {
+                                'skipped_player_id': decision.get('skipped_player_id'),
+                                'reason': 'player_absent',
+                            },
+                        },
+                    },
+                )
+            commit_with_retry(label='turn conductor decision')
+            self.emit(
+                'turn_control_updated',
+                turn_control_update_payload(command.session_id, turn_control),
+                room=str(command.session_id),
+            )
+            if skipped_player_name:
+                self.emit(
+                    'session_log_update',
+                    session_log_update_payload(command.session_id),
+                    room=str(command.session_id),
+                )
+            telemetry_event(
+                'socket.turn_conductor.decision_applied',
+                payload={
+                    'sid': command.sid,
+                    'session_id': command.session_id,
+                    'player_id': command.player_id,
+                    'decision': decision,
+                    'turn_control': turn_control,
+                },
+            )
         if not allowed:
             self.emit(
                 'error',
                 socket_error(
                     'turn_out_of_order',
                     block_reason or 'It is not your turn to act.',
-                    {'turn_control': turn_control},
+                    {'turn_control': turn_control, **(decision.get('rejection_details') or {})},
                 ),
             )
             telemetry_event(
@@ -477,23 +577,6 @@ class TurnEngine:
                 severity='warning',
             )
             return False
-        if changed:
-            commit_with_retry(label='turn conductor decision')
-            self.emit(
-                'turn_control_updated',
-                turn_control_update_payload(command.session_id, turn_control),
-                room=str(command.session_id),
-            )
-            telemetry_event(
-                'socket.turn_conductor.decision_applied',
-                payload={
-                    'sid': command.sid,
-                    'session_id': command.session_id,
-                    'player_id': command.player_id,
-                    'decision': decision,
-                    'turn_control': turn_control,
-                },
-            )
         return True
 
     def _active_player_ids_for_session(self, session_id: int) -> set[int]:
@@ -1068,13 +1151,154 @@ class TurnEngine:
             'clarificationRequests': pre_validation.get('clarificationRequests') or [],
         }
 
-    @staticmethod
-    def _is_resumable_processing_turn(turn: DmTurn) -> bool:
-        return bool(
-            turn.status == 'processing'
-            and turn.dm_output is None
-            and turn.completed_at is None
+    def recover_abandoned_turns(self, session_id: int) -> bool:
+        """Resume a session's unfinished turns unless a turn holds its locks.
+
+        Returns whether a recovery ran. Never waits for the turn lock: a held
+        lock means the turn is still in flight, not abandoned.
+        """
+
+        with serialized_campaign_turn(session_id, blocking=False) as lock_boundary:
+            if lock_boundary is None:
+                return False
+            session_obj = db.session.get(Session, session_id, populate_existing=True)
+            if (
+                session_obj is None
+                or session_playability_error(session_obj) is not None
+                or active_turn_recovery_gate(session_obj) is not None
+            ):
+                return False
+            return self._resume_abandoned_turns(session_id)
+
+    def _resume_abandoned_turns(self, session_id: int) -> bool:
+        """Finish turns a stopped process left unfinished, oldest first.
+
+        The caller holds the session's turn locks, so no other worker can still
+        be processing them. Returns whether any turn was found.
+        """
+
+        turn_ids = [turn.turn_id for turn in unfinished_session_turns(session_id)]
+        if not turn_ids:
+            return False
+        room_engine = self._session_room_engine(session_id)
+        for turn_id in turn_ids:
+            room_engine._resume_abandoned_turn(turn_id)
+        return True
+
+    def _session_room_engine(self, session_id: int) -> 'TurnEngine':
+        """Return a copy whose requester-addressed events go to the session room."""
+
+        engine = copy(self)
+        session_room = str(session_id)
+
+        def emit_to_session_room(event, *args, room=None, **kwargs):
+            self.socketio.emit(event, *args, room=room or session_room, **kwargs)
+
+        engine.emit = emit_to_session_room
+        return engine
+
+    def _resume_abandoned_turn(self, turn_id: int) -> None:
+        turn = db.session.get(DmTurn, turn_id, populate_existing=True)
+        if turn is None or not turn_is_unfinished(turn):
+            return
+        session_obj = db.session.get(Session, turn.session_id)
+        campaign = db.session.get(Campaign, turn.campaign_id)
+        player = db.session.get(Player, turn.player_id) if turn.player_id else None
+        if not all((session_obj, campaign, player)):
+            self._settle_resume_attempt(turn_id)
+            return
+        command = TurnCommand(
+            sid=str(turn.session_id),
+            session_id=turn.session_id,
+            campaign_id=turn.campaign_id,
+            world_id=campaign.world_id,
+            player_id=turn.player_id,
+            user_input=str(turn.player_input or ''),
+            manual_segment_ids=set(),
+            client_message_id=turn.client_message_id,
         )
+        self._resume_turn(
+            command=command,
+            turn=turn,
+            session_obj=session_obj,
+            campaign=campaign,
+            player=player,
+            private_receipt=False,
+        )
+
+    def _resume_turn(
+        self,
+        *,
+        command: TurnCommand,
+        turn: DmTurn,
+        session_obj: Session,
+        campaign: Campaign,
+        player: Player,
+        private_receipt: bool,
+    ) -> None:
+        """Resume an unfinished turn and account for a resume that did not finish it."""
+
+        turn_id = int(turn.turn_id)
+        try:
+            self._resume_processing_turn(
+                command=command,
+                turn=turn,
+                session_obj=session_obj,
+                campaign=campaign,
+                player=player,
+                private_receipt=private_receipt,
+            )
+        except Exception as exc:
+            db.session.rollback()
+            logger.warning('Turn resume failed (error_type=%s).', type(exc).__name__)
+            telemetry_event(
+                'socket.turn_resume.failed',
+                payload={
+                    'session_id': command.session_id,
+                    'turn_id': turn_id,
+                    'error_type': type(exc).__name__,
+                },
+                severity='error',
+            )
+            self.emit(
+                'error',
+                socket_error(
+                    'turn_persist_failed',
+                    'The interrupted turn could not be finished yet. It will be retried.',
+                    {'session_id': command.session_id, 'turn_id': turn_id},
+                ),
+            )
+        self._settle_resume_attempt(turn_id)
+
+    def _settle_resume_attempt(self, turn_id: int) -> None:
+        """Count a resume that left the turn unfinished; gate it after the last attempt."""
+
+        turn = db.session.get(DmTurn, turn_id, populate_existing=True)
+        if turn is None or not turn_is_unfinished(turn):
+            return
+        attempts = int(turn_lifecycle(turn).get('resumeAttempts') or 0) + 1
+        session_id = int(turn.session_id)
+        set_turn_lifecycle(turn, resumeAttempts=attempts)
+        commit_with_retry(label='turn resume attempt')
+        telemetry_event(
+            'socket.turn_resume.unfinished',
+            payload={'session_id': session_id, 'turn_id': turn_id, 'resume_attempts': attempts},
+            severity='warning',
+        )
+        if attempts >= MAX_TURN_RESUME_ATTEMPTS:
+            try:
+                activate_turn_recovery_gate(session_id=session_id, turn_id=turn_id)
+            except Exception as exc:
+                db.session.rollback()
+                telemetry_event(
+                    'socket.turn_resume.recovery_gate_failed',
+                    payload={
+                        'session_id': session_id,
+                        'turn_id': turn_id,
+                        'error_type': type(exc).__name__,
+                    },
+                    severity='error',
+                )
 
     def _resume_processing_turn(
         self,
@@ -1084,6 +1308,7 @@ class TurnEngine:
         session_obj: Session,
         campaign: Campaign,
         player: Player,
+        private_receipt: bool = True,
     ) -> None:
         metadata = safe_json_loads(turn.metadata_json, {})
         metadata = metadata if isinstance(metadata, dict) else {}
@@ -1094,6 +1319,7 @@ class TurnEngine:
         command.user_input = str(turn.player_input or '')
         command.action_intent = persisted_intent if isinstance(persisted_intent, dict) else None
         command.client_message_id = turn.client_message_id or command.client_message_id
+        command.message_kind = metadata.get('message_kind') or None
         persisted_override = metadata.get('state_pipeline_override')
         command.state_pipeline_override = (
             persisted_override if isinstance(persisted_override, dict) else None
@@ -1128,7 +1354,11 @@ class TurnEngine:
         persisted_roll = metadata.get('authoritative_roll')
         if not isinstance(persisted_roll, dict):
             persisted_roll = rules_hint_payload.get('authoritative_roll')
-        if isinstance(persisted_roll, dict) and persisted_roll.get('authoritative') is True:
+        if (
+            private_receipt
+            and isinstance(persisted_roll, dict)
+            and persisted_roll.get('authoritative') is True
+        ):
             self.emit(
                 'roll_resolved',
                 roll_resolved_payload(
@@ -1143,6 +1373,7 @@ class TurnEngine:
                 room=command.sid,
             )
 
+        phase = turn_lifecycle_phase(turn)
         telemetry_event(
             'socket.send_message.duplicate_resumed',
             payload={
@@ -1152,14 +1383,23 @@ class TurnEngine:
                 'turn_id': turn.turn_id,
                 'client_message_id': command.client_message_id,
                 'pre_dm_already_persisted': self._persisted_pre_pipeline_result(turn) is not None,
+                'lifecycle_phase': phase,
             },
         )
         self._emit_turn_status(
             command.session_id,
             turn.turn_id,
             'resuming',
-            {'stage': 'idempotent_retry'},
+            {'stage': 'idempotent_retry', 'lifecycle_phase': phase},
         )
+        if phase in (LIFECYCLE_NARRATION_SAVED, LIFECYCLE_EFFECTS_APPLIED):
+            self._resume_saved_narration(
+                command=command,
+                turn=turn,
+                player_label=player_label,
+                rules_hint_payload=rules_hint_payload,
+            )
+            return
         self._continue_persisted_turn(
             turn=turn,
             command=command,
@@ -1202,13 +1442,15 @@ class TurnEngine:
                         for player_id in self.active_player_ids(command.session_id)
                         if player_id
                     ]
+                # An opening request declares no player action, so the pre-DM
+                # extraction (and its helper) gets nothing to extract.
                 pre_pipeline_result = pre_dm_pipeline(
                     turn=turn,
                     session_obj=session_obj,
                     campaign=campaign,
                     player=player,
-                    player_message=command.user_input,
-                    action_intent=command.action_intent,
+                    player_message='' if command.is_opening else command.user_input,
+                    action_intent=None if command.is_opening else command.action_intent,
                     selected_item_ids=(
                         command.state_pipeline_override.get('selectedItemIds')
                         if isinstance(command.state_pipeline_override, dict)
@@ -1226,6 +1468,7 @@ class TurnEngine:
                     command,
                     turn_id,
                 )
+                set_turn_lifecycle(turn, LIFECYCLE_RULES_APPLIED)
                 commit_with_retry(label='pre-DM state pipeline')
                 self._record_phase_timing(
                     'state_pre_dm',
@@ -1327,6 +1570,8 @@ class TurnEngine:
 
         commit_with_retry(label='pre-narration boundary')
         turn, session_obj, campaign, player = self._reload_core_models(command, turn_id)
+        # Includes segments a previous, interrupted attempt already triggered.
+        triggered_segments = _turn_triggered_segments(turn)
         narration_request = NarrationRequest(
             session_id=turn.session_id,
             campaign_id=campaign.campaign_id,
@@ -1383,9 +1628,52 @@ class TurnEngine:
             room=str(command.session_id),
         )
 
+    def _resume_saved_narration(
+        self,
+        *,
+        command: TurnCommand,
+        turn: DmTurn,
+        player_label: str,
+        rules_hint_payload: dict,
+    ) -> None:
+        """Finish a turn whose narration is saved without calling the narrator again."""
+
+        turn_id = int(turn.turn_id)
+        metadata = _turn_metadata(turn)
+        outcome = PostTurnOutcome(
+            turn_id=turn_id,
+            session_id=int(turn.session_id),
+            command=command,
+            player_label=player_label,
+            rules_hint_payload=rules_hint_payload,
+            dm_response_text=str(turn.dm_output or ''),
+            stream_error=metadata.get('error'),
+            narration_provider=turn.llm_provider,
+            narration_model=turn.llm_model,
+            emergency_fallback=metadata.get('llm_fallback') if isinstance(metadata.get('llm_fallback'), dict) else None,
+            triggered_segments=_turn_triggered_segments(turn),
+            start_time=time.perf_counter(),
+        )
+        try:
+            turn, _session_obj, campaign, _player = self._reload_core_models(command, turn_id)
+            post_turn_segments = self._complete_saved_turn(outcome, turn=turn, campaign=campaign)
+        except Exception as exc:
+            post_turn_segments = self._handle_post_turn_failure(outcome, exc)
+        for segment_payload in post_turn_segments:
+            self.socketio.emit(
+                'segment_triggered',
+                public_segment_triggered_payload(segment_payload),
+                room=str(command.session_id),
+            )
+        self.socketio.emit(
+            'session_log_update',
+            session_log_update_payload(command.session_id, turn_id),
+            room=str(command.session_id),
+        )
+
     def process(self, command: TurnCommand):
         try:
-            with serialized_campaign_pack_progress(command.session_id) as lock_boundary:
+            with serialized_campaign_turn(command.session_id) as lock_boundary:
                 wait_ms = lock_boundary.waits.get(command.session_id, 0.0)
                 if wait_ms >= 1.0:
                     telemetry_timing(
@@ -1484,37 +1772,7 @@ class TurnEngine:
                         severity='error',
                     )
         if recovery_gate is not None:
-            recovery_details = {
-                'session_id': command.session_id,
-                **recovery_required_details(recovery_gate),
-            }
-            recovery_message = (
-                'This session is paused while the Dungeon Master reviews a partially applied turn. '
-                'Some authoritative pre-narration mechanics remain applied and must not be repeated.'
-                if recovery_gate['mechanicsStatus'] == 'partial'
-                else (
-                    'This session is paused while the Dungeon Master reviews a turn whose '
-                    'narration was saved without authoritative mechanics.'
-                )
-            )
-            self.emit(
-                'error',
-                socket_error(
-                    'session_recovery_required',
-                    recovery_message,
-                    recovery_details,
-                ),
-            )
-            telemetry_event(
-                'socket.send_message.session_recovery_required',
-                payload={
-                    'sid': command.sid,
-                    'session_id': command.session_id,
-                    'campaign_id': command.campaign_id,
-                    'turn_id': recovery_details['turn_id'],
-                },
-                severity='warning',
-            )
+            self._emit_recovery_required(command, recovery_gate)
             return
 
         player = db.session.get(Player, command.player_id)
@@ -1539,16 +1797,43 @@ class TurnEngine:
         if command.client_message_id:
             duplicate_turn = self._find_duplicate_turn(command)
             if duplicate_turn:
-                if self._is_resumable_processing_turn(duplicate_turn):
-                    self._resume_processing_turn(
+                duplicate_turn_id = int(duplicate_turn.turn_id)
+                if turn_is_unfinished(duplicate_turn):
+                    narration_was_saved = turn_lifecycle_phase(duplicate_turn) in (
+                        LIFECYCLE_NARRATION_SAVED,
+                        LIFECYCLE_EFFECTS_APPLIED,
+                    )
+                    self._resume_turn(
                         command=command,
                         turn=duplicate_turn,
                         session_obj=session_obj,
                         campaign=campaign,
                         player=player,
+                        private_receipt=True,
                     )
+                    if narration_was_saved:
+                        self._emit_duplicate_turn(command, duplicate_turn_id, detected_by='resumed')
                     return
-                self._emit_duplicate_turn(command, duplicate_turn, detected_by='preflight')
+                self._emit_duplicate_turn(command, duplicate_turn_id, detected_by='preflight')
+                return
+
+        # Holding the turn lock means any unfinished turn of this session was
+        # abandoned by a stopped process: finish it before the new message.
+        if self._resume_abandoned_turns(command.session_id):
+            try:
+                session_obj, campaign, player = self._reload_submission_models(command)
+            except RuntimeError:
+                self.emit(
+                    'error',
+                    socket_error(
+                        'turn_persist_failed',
+                        'The session changed while preparing the turn. Please retry.',
+                    ),
+                )
+                return
+            recovery_gate = active_turn_recovery_gate(session_obj)
+            if recovery_gate is not None:
+                self._emit_recovery_required(command, recovery_gate)
                 return
 
         if not self._prepare_combat_action(command, player, session_obj):
@@ -1866,6 +2151,14 @@ class TurnEngine:
                 pending_turn_id=(pending_turn_before.turn_id if pending_turn_before else None),
             )
 
+        if command.is_opening:
+            # Opening narration never asks for a roll.
+            rule_hint.requires_roll = False
+            rule_hint.roll_type = None
+            rule_hint.dc_hint = None
+            rule_hint.outcome_deferred = False
+            roll_spec_payload = None
+
         pending_turn_to_resolve, resolved_turn_id = self.apply_pending_resolution_hint(
             command.session_id,
             command.player_id,
@@ -1900,6 +2193,8 @@ class TurnEngine:
                 'resolved_turn_id': resolved_clarification_turn_id,
                 'selected_item_ids': self._clarification_selected_item_ids(command),
             }
+        if command.message_kind:
+            rules_hint_payload['message_kind'] = command.message_kind
 
         turn = DmTurn(
             session_id=command.session_id,
@@ -1936,6 +2231,7 @@ class TurnEngine:
                         if resolved_clarification_turn_id
                         else None
                     ),
+                    **({'message_kind': command.message_kind} if command.message_kind else {}),
                 },
                 {},
             ),
@@ -2053,6 +2349,39 @@ class TurnEngine:
             start_time=start_time,
         )
 
+    def _emit_recovery_required(self, command: TurnCommand, recovery_gate: dict) -> None:
+        recovery_details = {
+            'session_id': command.session_id,
+            **recovery_required_details(recovery_gate),
+        }
+        recovery_message = (
+            'This session is paused while the Dungeon Master reviews a partially applied turn. '
+            'Some authoritative pre-narration mechanics remain applied and must not be repeated.'
+            if recovery_gate['mechanicsStatus'] == 'partial'
+            else (
+                'This session is paused while the Dungeon Master reviews a turn whose '
+                'narration was saved without authoritative mechanics.'
+            )
+        )
+        self.emit(
+            'error',
+            socket_error(
+                'session_recovery_required',
+                recovery_message,
+                recovery_details,
+            ),
+        )
+        telemetry_event(
+            'socket.send_message.session_recovery_required',
+            payload={
+                'sid': command.sid,
+                'session_id': command.session_id,
+                'campaign_id': command.campaign_id,
+                'turn_id': recovery_details['turn_id'],
+            },
+            severity='warning',
+        )
+
     def _emit_turn_status(
         self,
         session_id: int,
@@ -2121,6 +2450,7 @@ class TurnEngine:
                 },
             },
         )
+        finish_turn_lifecycle(turn)
         commit_with_retry(label='typed action rules rejection')
 
         details = {
@@ -2186,6 +2516,7 @@ class TurnEngine:
             turn_obj.metadata_json = safe_json_dumps(metadata, {})
             turn_obj.status = 'awaiting_clarification'
             turn_obj.outcome_status = 'resolved'
+            finish_turn_lifecycle(turn_obj)
             commit_with_retry(label='clarification request')
         self.socketio.emit('clarification_required', request_payload, room=request_sid)
         self._emit_turn_status(
@@ -2374,6 +2705,13 @@ class TurnEngine:
                     pending_metadata['resolved_at'] = utc_now().isoformat()
                     pending_turn_to_resolve.metadata_json = safe_json_dumps(pending_metadata, {})
 
+                # A roll recorded while others still owe theirs ends here; the
+                # last roller's turn carries the narration.
+                if turn.status == 'waiting_for_group_roll':
+                    finish_turn_lifecycle(turn)
+                else:
+                    set_turn_lifecycle(turn, LIFECYCLE_ACCEPTED)
+
                 if authoritative_roll:
                     pending_turn_id = (
                         pending_turn_to_resolve.turn_id
@@ -2405,6 +2743,9 @@ class TurnEngine:
                         },
                     )
 
+                message_kind_fields = (
+                    {'message_kind': command.message_kind} if command.message_kind else {}
+                )
                 record_turn_event(
                     session_id=command.session_id,
                     campaign_id=command.campaign_id,
@@ -2414,6 +2755,7 @@ class TurnEngine:
                     payload={
                         'message': command.user_input,
                         'speaker': player_label,
+                        **message_kind_fields,
                         'metadata': {
                             'turn_id': turn.turn_id,
                             'turn_number': session_turn_number,
@@ -2422,6 +2764,7 @@ class TurnEngine:
                             'resolved_turn_id': resolved_turn_id,
                             'action_intent': command.action_intent,
                             'client_message_id': command.client_message_id,
+                            **message_kind_fields,
                         },
                     },
                 )
@@ -2441,7 +2784,7 @@ class TurnEngine:
                     command.client_message_id,
                     command.session_id,
                 )
-                self._emit_duplicate_turn(command, duplicate_turn, detected_by='unique_constraint')
+                self._emit_duplicate_turn(command, duplicate_turn.turn_id, detected_by='unique_constraint')
                 return {'ok': False, 'duplicate': True, 'turn_id': duplicate_turn.turn_id}
             logger.error('Failed to persist incoming player turn due to an integrity error: %s', str(exc))
             self.emit('error', socket_error('turn_persist_failed', 'Failed to persist player action.'))
@@ -2472,11 +2815,18 @@ class TurnEngine:
         session_id: int,
         segments_to_activate: list[tuple[CampaignSegment, dict]],
     ) -> list[dict]:
-        return self.segment_service.activate_segments(
+        triggered_segments = self.segment_service.activate_segments(
             turn=turn,
             session_id=session_id,
             segments_to_activate=segments_to_activate,
         )
+        if triggered_segments:
+            # Committed with the activation so a resumed turn still feeds these
+            # segments to pack progress and canon after a stop.
+            metadata = _turn_metadata(turn)
+            metadata['triggered_segments'] = [*_turn_triggered_segments(turn), *triggered_segments]
+            turn.metadata_json = safe_json_dumps(metadata, {})
+        return triggered_segments
 
     def _evaluate_segments(
         self,
@@ -2543,6 +2893,8 @@ class TurnEngine:
             return
         if not self.active_player_ids:
             return
+        if turn_lifecycle(turn_obj).get('structuredAdvanceDone'):
+            return
 
         try:
             session_obj = db.session.get(Session, turn_obj.session_id)
@@ -2556,6 +2908,7 @@ class TurnEngine:
             )
             if not turn_control:
                 return
+            set_turn_lifecycle(turn_obj, structuredAdvanceDone=True)
             commit_with_retry(label='structured turn advance')
             self.socketio.emit(
                 'turn_control_updated',
@@ -2586,146 +2939,25 @@ class TurnEngine:
         triggered_segments: list[dict],
         start_time: float,
     ) -> list[dict]:
-        post_turn_segments: list[dict] = []
-        state_application_failed = False
-        failed_state_recovery_gate: dict | None = None
-        dm_response_text = strip_reasoning_blocks(dm_response_text).strip()
+        outcome = PostTurnOutcome(
+            turn_id=persistence_token.turn_id,
+            session_id=persistence_token.session_id,
+            command=command,
+            player_label=player_label,
+            rules_hint_payload=rules_hint_payload,
+            dm_response_text=strip_reasoning_blocks(dm_response_text).strip(),
+            stream_error=stream_error,
+            narration_provider=narration_provider,
+            narration_model=narration_model,
+            emergency_fallback=emergency_fallback,
+            triggered_segments=triggered_segments,
+            start_time=start_time,
+            expected_status=persistence_token.expected_status,
+        )
         try:
             turn, campaign = self._reload_persistence_context(persistence_token)
             db_save_started = time.perf_counter()
-            dm_succeeded = (
-                bool(dm_response_text)
-                and stream_error is None
-                and emergency_fallback is None
-            )
-            turn_obj = turn
-            if turn_obj:
-                turn_obj.completed_at = utc_now()
-                turn_obj.latency_ms = int((time.perf_counter() - start_time) * 1000)
-                turn_obj.llm_provider = narration_provider
-                turn_obj.llm_model = narration_model
-                set_logging_context(turn_id=turn.turn_id)
-
-                if dm_response_text:
-                    turn_obj.dm_output = dm_response_text
-                    turn_obj.status = 'failed' if stream_error else ('degraded' if emergency_fallback else 'completed')
-                else:
-                    turn_obj.status = 'failed' if stream_error else 'completed'
-                metadata_payload = safe_json_loads(turn_obj.metadata_json, {})
-                metadata_payload = metadata_payload if isinstance(metadata_payload, dict) else {}
-                if stream_error:
-                    metadata_payload['error'] = stream_error
-                if emergency_fallback:
-                    metadata_payload['llm_fallback'] = emergency_fallback
-                turn_obj.metadata_json = safe_json_dumps(metadata_payload, {})
-
-                dm_explains_no_roll = (
-                    stream_error is None
-                    and emergency_fallback is None
-                    and turn_obj.roll_value is None
-                    and self._dm_response_explains_no_roll_needed(dm_response_text)
-                    and not self._dm_response_requests_roll(dm_response_text)
-                )
-                roll_gate_payload = (
-                    None
-                    if dm_explains_no_roll or emergency_fallback
-                    else self._roll_gate_for_turn(turn_obj, campaign, dm_response_text)
-                )
-                if dm_explains_no_roll and turn_obj.requires_roll:
-                    turn_obj.requires_roll = False
-                    turn_obj.rule_type = None
-                    turn_obj.outcome_status = 'resolved'
-                    turn.requires_roll = False
-                    turn.rule_type = None
-                    turn.outcome_status = 'resolved'
-                    metadata_payload = safe_json_loads(turn_obj.metadata_json, {})
-                    metadata_payload = metadata_payload if isinstance(metadata_payload, dict) else {}
-                    metadata_payload.pop('roll_gate', None)
-                    metadata_payload['roll_requirement_cleared'] = {
-                        'reason': 'dm_explained_no_roll_needed',
-                        'original_rule_type': rules_hint_payload.get('roll_type'),
-                        'original_reason': rules_hint_payload.get('reason'),
-                    }
-                    turn_obj.metadata_json = safe_json_dumps(metadata_payload, {})
-                    rules_hint_payload['requires_roll'] = False
-                    rules_hint_payload['roll_type'] = None
-                    rules_hint_payload['dc_hint'] = None
-                    rules_hint_payload['outcome_deferred'] = False
-                    rules_hint_payload['reason'] = 'DM explained no roll was needed'
-                    rules_hint_payload.pop('roll_gate', None)
-                    rules_hint_payload.pop('remaining_player_ids', None)
-                    rules_hint = safe_json_loads(turn_obj.rules_hint, {})
-                    rules_hint = rules_hint if isinstance(rules_hint, dict) else {}
-                    rules_hint.update(
-                        {
-                            'requires_roll': False,
-                            'roll_type': None,
-                            'dc_hint': None,
-                            'outcome_deferred': False,
-                            'reason': 'DM explained no roll was needed',
-                        }
-                    )
-                    rules_hint.pop('roll_gate', None)
-                    rules_hint.pop('remaining_player_ids', None)
-                    turn_obj.rules_hint = safe_json_dumps(rules_hint, {})
-                elif roll_gate_payload:
-                    rule_type = roll_gate_payload.get('rule_type') or turn_obj.rule_type or 'check'
-                    turn_obj.requires_roll = True
-                    turn_obj.rule_type = rule_type
-                    turn_obj.outcome_status = 'deferred'
-                    turn.requires_roll = True
-                    turn.rule_type = rule_type
-                    turn.outcome_status = 'deferred'
-                    metadata_payload = safe_json_loads(turn_obj.metadata_json, {})
-                    metadata_payload = metadata_payload if isinstance(metadata_payload, dict) else {}
-                    metadata_payload['roll_gate'] = roll_gate_payload
-                    turn_obj.metadata_json = safe_json_dumps(metadata_payload, {})
-                    rules_hint_payload['requires_roll'] = True
-                    rules_hint_payload['roll_type'] = rule_type
-                    rules_hint_payload['outcome_deferred'] = True
-                    rules_hint_payload['roll_gate'] = roll_gate_payload
-                    rules_hint_payload['remaining_player_ids'] = roll_gate_payload.get('remaining_player_ids', [])
-                    rules_hint = safe_json_loads(turn_obj.rules_hint, {})
-                    rules_hint = rules_hint if isinstance(rules_hint, dict) else {}
-                    rules_hint.update(
-                        {
-                            'requires_roll': True,
-                            'roll_type': rule_type,
-                            'outcome_deferred': True,
-                            'roll_gate': roll_gate_payload,
-                            'remaining_player_ids': roll_gate_payload.get('remaining_player_ids', []),
-                        }
-                    )
-                    turn_obj.rules_hint = safe_json_dumps(rules_hint, {})
-
-            if dm_response_text:
-                record_turn_event(
-                    session_id=turn.session_id,
-                    campaign_id=campaign.campaign_id,
-                    turn_id=turn.turn_id,
-                    player_id=turn.player_id,
-                    event_type=DM_RESPONSE_EVENT,
-                    payload={
-                        'message': dm_response_text,
-                        'metadata': {
-                            'turn_id': turn.turn_id,
-                            'turn_number': rules_hint_payload.get('turn_number'),
-                            'requires_roll': turn.requires_roll,
-                            'rule_type': turn.rule_type,
-                            'dc_hint': rules_hint_payload.get('dc_hint'),
-                            'confidence': turn.confidence,
-                            'outcome_status': 'deferred' if turn.outcome_status == 'deferred' else 'resolved',
-                            'roll_gate': rules_hint_payload.get('roll_gate'),
-                            'remaining_player_ids': rules_hint_payload.get('remaining_player_ids'),
-                            'action_intent': command.action_intent,
-                            'client_message_id': command.client_message_id,
-                            'llm_provider': narration_provider,
-                            'llm_model': narration_model,
-                            'llm_fallback': emergency_fallback,
-                        },
-                    },
-                )
-
+            self._apply_dm_response(turn=turn, campaign=campaign, outcome=outcome)
             commit_with_retry(label='DM response save')
             self._record_phase_timing(
                 'db_save',
@@ -2734,436 +2966,550 @@ class TurnEngine:
                 session_id=turn.session_id,
             )
             self._emit_turn_status(turn.session_id, turn.turn_id, 'saved', {'stage': 'dm_response'})
+            return self._complete_saved_turn(outcome, turn=turn, campaign=campaign)
+        except Exception as exc:
+            return self._handle_post_turn_failure(outcome, exc)
 
-            immediate_state_summary: dict = {}
-            state_log: dict = {}
-            post_pipeline_result: dict = {}
-            campaign_pack_progress_changed = False
-            state_failure_details: dict | None = None
-            if turn_obj and dm_succeeded:
+    def _apply_dm_response(self, *, turn: DmTurn, campaign: Campaign, outcome: PostTurnOutcome) -> None:
+        """Write the narration outcome onto the turn; the caller commits it."""
+
+        command = outcome.command
+        rules_hint_payload = outcome.rules_hint_payload
+        dm_response_text = outcome.dm_response_text
+        stream_error = outcome.stream_error
+        emergency_fallback = outcome.emergency_fallback
+        turn.completed_at = utc_now()
+        turn.latency_ms = int((time.perf_counter() - outcome.start_time) * 1000)
+        turn.llm_provider = outcome.narration_provider
+        turn.llm_model = outcome.narration_model
+        set_logging_context(turn_id=turn.turn_id)
+
+        if dm_response_text:
+            turn.dm_output = dm_response_text
+            turn.status = 'failed' if stream_error else ('degraded' if emergency_fallback else 'completed')
+        else:
+            turn.status = 'failed' if stream_error else 'completed'
+        metadata_payload = _turn_metadata(turn)
+        if stream_error:
+            metadata_payload['error'] = stream_error
+        if emergency_fallback:
+            metadata_payload['llm_fallback'] = emergency_fallback
+        turn.metadata_json = safe_json_dumps(metadata_payload, {})
+
+        dm_explains_no_roll = (
+            stream_error is None
+            and emergency_fallback is None
+            and turn.roll_value is None
+            and self._dm_response_explains_no_roll_needed(dm_response_text)
+            and not self._dm_response_requests_roll(dm_response_text)
+        )
+        roll_gate_payload = (
+            None
+            if dm_explains_no_roll or emergency_fallback or command.is_opening
+            else self._roll_gate_for_turn(turn, campaign, dm_response_text)
+        )
+        if dm_explains_no_roll and turn.requires_roll:
+            turn.requires_roll = False
+            turn.rule_type = None
+            turn.outcome_status = 'resolved'
+            metadata_payload = _turn_metadata(turn)
+            metadata_payload.pop('roll_gate', None)
+            metadata_payload['roll_requirement_cleared'] = {
+                'reason': 'dm_explained_no_roll_needed',
+                'original_rule_type': rules_hint_payload.get('roll_type'),
+                'original_reason': rules_hint_payload.get('reason'),
+            }
+            turn.metadata_json = safe_json_dumps(metadata_payload, {})
+            rules_hint_payload['requires_roll'] = False
+            rules_hint_payload['roll_type'] = None
+            rules_hint_payload['dc_hint'] = None
+            rules_hint_payload['outcome_deferred'] = False
+            rules_hint_payload['reason'] = 'DM explained no roll was needed'
+            rules_hint_payload.pop('roll_gate', None)
+            rules_hint_payload.pop('remaining_player_ids', None)
+            rules_hint = safe_json_loads(turn.rules_hint, {})
+            rules_hint = rules_hint if isinstance(rules_hint, dict) else {}
+            rules_hint.update(
+                {
+                    'requires_roll': False,
+                    'roll_type': None,
+                    'dc_hint': None,
+                    'outcome_deferred': False,
+                    'reason': 'DM explained no roll was needed',
+                }
+            )
+            rules_hint.pop('roll_gate', None)
+            rules_hint.pop('remaining_player_ids', None)
+            turn.rules_hint = safe_json_dumps(rules_hint, {})
+        elif roll_gate_payload:
+            rule_type = roll_gate_payload.get('rule_type') or turn.rule_type or 'check'
+            turn.requires_roll = True
+            turn.rule_type = rule_type
+            turn.outcome_status = 'deferred'
+            metadata_payload = _turn_metadata(turn)
+            metadata_payload['roll_gate'] = roll_gate_payload
+            turn.metadata_json = safe_json_dumps(metadata_payload, {})
+            rules_hint_payload['requires_roll'] = True
+            rules_hint_payload['roll_type'] = rule_type
+            rules_hint_payload['outcome_deferred'] = True
+            rules_hint_payload['roll_gate'] = roll_gate_payload
+            rules_hint_payload['remaining_player_ids'] = roll_gate_payload.get('remaining_player_ids', [])
+            rules_hint = safe_json_loads(turn.rules_hint, {})
+            rules_hint = rules_hint if isinstance(rules_hint, dict) else {}
+            rules_hint.update(
+                {
+                    'requires_roll': True,
+                    'roll_type': rule_type,
+                    'outcome_deferred': True,
+                    'roll_gate': roll_gate_payload,
+                    'remaining_player_ids': roll_gate_payload.get('remaining_player_ids', []),
+                }
+            )
+            turn.rules_hint = safe_json_dumps(rules_hint, {})
+
+        if dm_response_text:
+            record_turn_event(
+                session_id=turn.session_id,
+                campaign_id=campaign.campaign_id,
+                turn_id=turn.turn_id,
+                player_id=turn.player_id,
+                event_type=DM_RESPONSE_EVENT,
+                payload={
+                    'message': dm_response_text,
+                    'metadata': {
+                        'turn_id': turn.turn_id,
+                        'turn_number': rules_hint_payload.get('turn_number'),
+                        'requires_roll': turn.requires_roll,
+                        'rule_type': turn.rule_type,
+                        'dc_hint': rules_hint_payload.get('dc_hint'),
+                        'confidence': turn.confidence,
+                        'outcome_status': 'deferred' if turn.outcome_status == 'deferred' else 'resolved',
+                        'roll_gate': rules_hint_payload.get('roll_gate'),
+                        'remaining_player_ids': rules_hint_payload.get('remaining_player_ids'),
+                        'action_intent': command.action_intent,
+                        'client_message_id': command.client_message_id,
+                        'llm_provider': outcome.narration_provider,
+                        'llm_model': outcome.narration_model,
+                        'llm_fallback': emergency_fallback,
+                    },
+                },
+            )
+        if turn.status == 'failed':
+            finish_turn_lifecycle(turn)
+        else:
+            set_turn_lifecycle(turn, LIFECYCLE_NARRATION_SAVED)
+
+    def _complete_saved_turn(self, outcome: PostTurnOutcome, *, turn: DmTurn, campaign: Campaign) -> list[dict]:
+        """Run every step after the saved narration that has not durably run yet."""
+
+        command = outcome.command
+        post_turn_segments: list[dict] = []
+        dm_succeeded = turn.status == 'completed' and bool(turn.dm_output)
+        immediate_state_summary: dict = {}
+        state_log: dict = {}
+        post_pipeline_result: dict = {}
+        campaign_pack_progress_changed = False
+        state_failure_details: dict | None = None
+        if dm_succeeded and turn_lifecycle_phase(turn) == LIFECYCLE_NARRATION_SAVED:
+            dm_response_text = str(turn.dm_output or '')
+            try:
+                player_obj = db.session.get(Player, turn.player_id) if turn.player_id else None
+                if not player_obj:
+                    raise RuntimeError('Turn player not found for state pipeline.')
+                session_for_pipeline = db.session.get(Session, turn.session_id)
+                if session_for_pipeline is None:
+                    raise RuntimeError('Turn session not found for state pipeline.')
+                active_player_ids = []
+                if self.active_player_ids:
+                    active_player_ids = [player_id for player_id in self.active_player_ids(turn.session_id) if player_id]
+                post_pipeline_result = post_dm_pipeline(
+                    turn=turn,
+                    session_obj=session_for_pipeline,
+                    campaign=campaign,
+                    player=player_obj,
+                    dm_response_text=dm_response_text,
+                    active_player_ids=active_player_ids,
+                    before_helper_call=self._release_clean_provider_session,
+                )
+                turn, _session_obj, campaign, _player_obj = self._reload_core_models(command, outcome.turn_id)
+                immediate_state_summary = post_pipeline_result.get('legacyImmediateSummary') or {}
+                state_log = post_pipeline_result.get('stateLog') or {}
+                progress_result = update_campaign_pack_progress(
+                    session_id=turn.session_id,
+                    campaign_id=campaign.campaign_id,
+                    triggered_segments=outcome.triggered_segments,
+                    commit=False,
+                )
+                campaign_pack_progress_changed = bool(progress_result.changed)
+                # Effects, snapshot, pack progress and the marker commit together,
+                # so a resumed turn never applies the effects twice.
+                set_turn_lifecycle(turn, LIFECYCLE_EFFECTS_APPLIED)
+                commit_with_retry(label='post-DM state pipeline')
+                self._emit_scene_state(turn.session_id, acting_player_id=turn.player_id)
+            except Exception as exc:
+                db.session.rollback()
+                error_type = type(exc).__name__
+                logger.warning(
+                    'State pipeline post-DM application failed (error_type=%s).',
+                    error_type,
+                )
+                telemetry_event(
+                    'socket.state_pipeline.post_dm_failed',
+                    payload={
+                        'session_id': outcome.session_id,
+                        'turn_id': outcome.turn_id,
+                        'error_type': error_type,
+                    },
+                    severity='warning',
+                )
                 try:
-                    player_obj = db.session.get(Player, turn.player_id) if turn.player_id else None
-                    if not player_obj:
-                        raise RuntimeError('Turn player not found for state pipeline.')
-                    session_for_pipeline = db.session.get(Session, turn.session_id)
-                    if session_for_pipeline is None:
-                        raise RuntimeError('Turn session not found for state pipeline.')
-                    active_player_ids = []
-                    if self.active_player_ids:
-                        active_player_ids = [player_id for player_id in self.active_player_ids(turn.session_id) if player_id]
-                    post_pipeline_result = post_dm_pipeline(
-                        turn=turn_obj,
-                        session_obj=session_for_pipeline,
-                        campaign=campaign,
-                        player=player_obj,
-                        dm_response_text=dm_response_text,
-                        active_player_ids=active_player_ids,
-                        before_helper_call=self._release_clean_provider_session,
-                    )
-                    turn_obj, _session_obj, campaign, _player_obj = (
-                        self._reload_core_models(
-                            command,
-                            persistence_token.turn_id,
-                        )
-                    )
-                    turn = turn_obj
-                    immediate_state_summary = (
-                        post_pipeline_result.get('legacyImmediateSummary') or {}
-                    )
-                    state_log = post_pipeline_result.get('stateLog') or {}
-                    progress_result = update_campaign_pack_progress(
-                        session_id=turn.session_id,
-                        campaign_id=campaign.campaign_id,
-                        triggered_segments=triggered_segments,
-                        commit=False,
-                    )
-                    campaign_pack_progress_changed = bool(progress_result.changed)
-                    commit_with_retry(label='post-DM state pipeline')
+                    turn, _session_obj, campaign, _player_obj = self._reload_core_models(command, outcome.turn_id)
+                    immediate_state_summary = apply_immediate_state_changes(turn, campaign, dm_response_text)
+                    metadata_payload = _turn_metadata(turn)
+                    metadata_payload['post_dm_state'] = {
+                        'status': 'legacy_fallback_applied',
+                        'primary_pipeline_failed': True,
+                        'recovery_required': False,
+                    }
+                    turn.metadata_json = safe_json_dumps(metadata_payload, {})
+                    set_turn_lifecycle(turn, LIFECYCLE_EFFECTS_APPLIED)
+                    commit_with_retry(label='legacy immediate state fallback')
                     self._emit_scene_state(turn.session_id, acting_player_id=turn.player_id)
-                except Exception as exc:
+                except Exception as fallback_exc:
                     db.session.rollback()
-                    error_type = type(exc).__name__
+                    outcome.state_application_failed = True
+                    fallback_error_type = type(fallback_exc).__name__
                     logger.warning(
-                        'State pipeline post-DM application failed (error_type=%s).',
-                        error_type,
+                        'Immediate character state application failed (error_type=%s).',
+                        fallback_error_type,
                     )
                     telemetry_event(
-                        'socket.state_pipeline.post_dm_failed',
+                        'socket.immediate_state_apply_failed',
                         payload={
-                            'session_id': persistence_token.session_id,
-                            'turn_id': persistence_token.turn_id,
-                            'error_type': error_type,
+                            'session_id': outcome.session_id,
+                            'turn_id': outcome.turn_id,
+                            'error_type': fallback_error_type,
                         },
                         severity='warning',
                     )
-                    try:
-                        turn_obj, _session_obj, campaign, _player_obj = (
-                            self._reload_core_models(
-                                command,
-                                persistence_token.turn_id,
-                            )
-                        )
-                        turn = turn_obj
-                        if turn_obj:
-                            immediate_state_summary = apply_immediate_state_changes(turn_obj, campaign, dm_response_text)
-                            metadata_payload = safe_json_loads(turn_obj.metadata_json, {})
-                            metadata_payload = metadata_payload if isinstance(metadata_payload, dict) else {}
-                            metadata_payload['post_dm_state'] = {
-                                'status': 'legacy_fallback_applied',
-                                'primary_pipeline_failed': True,
-                                'recovery_required': False,
-                            }
-                            turn_obj.metadata_json = safe_json_dumps(metadata_payload, {})
-                            commit_with_retry(label='legacy immediate state fallback')
-                            self._emit_scene_state(turn.session_id, acting_player_id=turn.player_id)
-                    except Exception as fallback_exc:
-                        db.session.rollback()
-                        state_application_failed = True
-                        fallback_error_type = type(fallback_exc).__name__
-                        logger.warning(
-                            'Immediate character state application failed (error_type=%s).',
-                            fallback_error_type,
-                        )
-                        telemetry_event(
-                            'socket.immediate_state_apply_failed',
-                            payload={
-                                'session_id': turn.session_id,
-                                'turn_id': turn.turn_id,
-                                'error_type': fallback_error_type,
-                            },
-                            severity='warning',
-                        )
-                        turn_obj, _session_obj, campaign, _player_obj = (
-                            self._reload_core_models(
-                                command,
-                                persistence_token.turn_id,
-                            )
-                        )
-                        turn = turn_obj
-                        recovery_mutation = activate_turn_recovery_gate(
-                            session_id=turn.session_id,
-                            turn_id=turn.turn_id,
-                        )
-                        turn_obj, _session_obj, campaign, _player_obj = (
-                            self._reload_core_models(
-                                command,
-                                persistence_token.turn_id,
-                            )
-                        )
-                        turn = turn_obj
-                        recovery_gate = active_turn_recovery_gate(recovery_mutation.state)
-                        if recovery_gate is None:
-                            raise RuntimeError('Turn recovery gate was not persisted.')
-                        recovery_details = recovery_required_details(recovery_gate)
-                        state_failure_details = {
-                            'stage': 'state_application',
-                            **{
-                                key: value
-                                for key, value in recovery_details.items()
-                                if key != 'turn_id'
-                            },
-                        }
-                        failure_message = (
-                            'The narration was saved after some authoritative pre-narration mechanics '
-                            'were applied, but post-narration game-state changes failed. Those earlier '
-                            'changes remain applied; ask the Dungeon Master to review the turn without '
-                            'repeating them.'
-                            if recovery_gate['mechanicsStatus'] == 'partial'
-                            else (
-                                'The narration was saved, but authoritative game-state changes could not '
-                                'be applied. Ask the Dungeon Master to review this turn before continuing.'
-                            )
-                        )
-                        self.socketio.emit(
-                            'error',
-                            socket_error(
-                                'turn_state_apply_failed',
-                                failure_message,
-                                {
-                                    'session_id': turn.session_id,
-                                    **recovery_details,
-                                },
-                            ),
-                            room=str(turn.session_id),
-                        )
-
-                inventory_changes = immediate_state_summary.get('inventory_changes_applied') or []
-                character_state_changes = immediate_state_summary.get('character_state_changes_applied') or []
-                state_log_lines = state_log.get('lines') if isinstance(state_log, dict) else []
-                metadata_payload = safe_json_loads(turn_obj.metadata_json, {}) if turn_obj else {}
-                metadata_payload = metadata_payload if isinstance(metadata_payload, dict) else {}
-                pipeline_metadata = metadata_payload.get(STATE_PIPELINE_METADATA_KEY)
-                pipeline_metadata = pipeline_metadata if isinstance(pipeline_metadata, dict) else {}
-                applied_changes_for_status = [
-                    *(pipeline_metadata.get('immediateAppliedChanges') or []),
-                    *(post_pipeline_result.get('postAppliedChanges') or []),
-                ]
-                if (
-                    inventory_changes
-                    or character_state_changes
-                    or state_log_lines
-                    or _snapshot_refresh_needed_from_applied_changes(applied_changes_for_status)
-                ):
-                    affected_player_ids = _affected_player_ids_from_state_summary(
-                        inventory_changes,
-                        character_state_changes,
-                        fallback_player_id=turn.player_id,
+                    recovery_mutation = activate_turn_recovery_gate(
+                        session_id=outcome.session_id,
+                        turn_id=outcome.turn_id,
                     )
-                    already_applied_inventory = [
-                        {**change, 'already_applied': True}
-                        for change in inventory_changes
-                        if isinstance(change, dict)
-                    ]
-                    already_applied_character_state = [
-                        {**change, 'already_applied': True}
-                        for change in character_state_changes
-                        if isinstance(change, dict)
-                    ]
-                    self._emit_turn_status(
-                        turn.session_id,
-                        turn.turn_id,
-                        'state_applied',
-                        _state_application_event_details(
-                            stage='dm_response',
-                            player_id=turn.player_id,
-                            affected_player_ids=affected_player_ids,
-                            inventory_changes_applied=inventory_changes,
-                            character_state_changes_applied=character_state_changes,
-                            state_log=state_log,
-                            applied_changes=applied_changes_for_status,
-                            campaign_pack_progress_changed=campaign_pack_progress_changed,
-                        ),
-                    )
-                    self._emit_turn_status(
-                        turn.session_id,
-                        turn.turn_id,
-                        'canon_applied',
-                        _state_application_event_details(
-                            stage='state_applied',
-                            player_id=turn.player_id,
-                            affected_player_ids=affected_player_ids,
-                            inventory_changes_applied=already_applied_inventory,
-                            character_state_changes_applied=already_applied_character_state,
-                            state_log=state_log,
-                            applied_changes=applied_changes_for_status,
-                            state_applied=True,
-                            campaign_pack_progress_changed=campaign_pack_progress_changed,
-                        ),
-                    )
-
-            turn_completed_safely = dm_succeeded and not state_application_failed
-
-            if turn_obj and turn_completed_safely:
-                self._advance_structured_turn_if_ready(turn_obj=turn_obj, action_intent=command.action_intent)
-
-            if turn_obj and turn_completed_safely:
-                self._mark_clarification_resume_completed(command=command, resumed_turn=turn_obj)
-
-            if turn_obj and turn_completed_safely:
-                canon_job = enqueue_canon_job(
-                    turn=turn_obj,
-                    campaign=campaign,
-                    speaking_player_name=player_label,
-                    triggered_segments=triggered_segments,
-                )
-                commit_with_retry(label='canon job enqueue')
-                self._emit_turn_status(
-                    turn.session_id,
-                    turn.turn_id,
-                    'canon_pending',
-                    {'job_id': canon_job.job_id},
-                )
-                app = current_app._get_current_object()  # type: ignore[attr-defined]
-                if current_app.config.get('TESTING') or current_app.config.get('AIDM_ENV') == 'test':
-                    process_canon_job(
-                        canon_job.job_id,
-                        emit_turn_status=self._emit_turn_status,
-                        emit_segment_triggered=lambda session_id, payload: self.socketio.emit(
-                            'segment_triggered',
-                            payload,
-                            room=str(session_id),
-                        ),
-                        record_phase_timing=self._record_phase_timing,
-                    )
-                else:
-                    wake_canon_job_worker(app)
-
-            commit_with_retry(label='post-turn final save')
-            if state_application_failed:
-                self._emit_turn_status(
-                    turn.session_id,
-                    turn.turn_id,
-                    'failed',
-                    state_failure_details or {'stage': 'state_application'},
-                )
-            else:
-                self._emit_turn_status(turn.session_id, turn.turn_id, 'saved', {'stage': 'post_turn'})
-
-            if turn_completed_safely:
-                telemetry_metric('socket.send_message.success_total', 1)
-                telemetry_timing(
-                    'socket.turn_latency_ms',
-                    float((time.perf_counter() - start_time) * 1000),
-                    tags={'campaign_id': campaign.campaign_id, 'session_id': turn.session_id},
-                )
-            elif state_application_failed:
-                telemetry_metric('socket.send_message.state_apply_failed_total', 1)
-            elif emergency_fallback:
-                telemetry_metric(
-                    'socket.send_message.degraded_total',
-                    1,
-                    tags={'provider': narration_provider or 'unknown', 'model': narration_model or 'unknown'},
-                )
-            elif stream_error:
-                telemetry_event(
-                    'socket.turn_failed',
-                    payload={'session_id': turn.session_id, 'turn_id': turn.turn_id, 'error': stream_error},
-                    severity='error',
-                )
-            return post_turn_segments
-        except Exception as exc:
-            db.session.rollback()
-            if state_application_failed:
-                logger.error(
-                    'Failed to persist the failed-turn recovery gate (error_type=%s).',
-                    type(exc).__name__,
-                )
-            else:
-                logger.exception('Failed to persist DM response state')
-            failed_state_recovery_gate = None
-            failed_turn = db.session.get(DmTurn, persistence_token.turn_id)
-            if failed_turn:
-                if state_application_failed:
-                    failed_state_recovery_gate = mark_turn_recovery_required(failed_turn)
-                    failed_turn.completed_at = utc_now()
-                    failed_turn.latency_ms = int(
-                        (time.perf_counter() - start_time) * 1000
-                    )
-                    failed_turn.llm_provider = narration_provider
-                    failed_turn.llm_model = narration_model
-                    if dm_response_text:
-                        failed_turn.dm_output = dm_response_text
-                    # Re-run after assigning the preserved narration so the
-                    # metadata accurately states that narration was saved.
-                    failed_state_recovery_gate = mark_turn_recovery_required(
-                        failed_turn
-                    )
-                else:
-                    metadata_payload = safe_json_loads(failed_turn.metadata_json, {})
-                    metadata_payload = (
-                        metadata_payload if isinstance(metadata_payload, dict) else {}
-                    )
-                    metadata_payload['post_turn_error'] = POST_TURN_PERSIST_FAILED_MESSAGE
-                    metadata_payload['canon_status'] = 'failed'
-                    if stream_error:
-                        metadata_payload['error'] = stream_error
-                    if emergency_fallback:
-                        metadata_payload['llm_fallback'] = emergency_fallback
-                    failed_turn.metadata_json = safe_json_dumps(metadata_payload, {})
-                    if failed_turn.status == persistence_token.expected_status:
-                        failed_turn.completed_at = utc_now()
-                        failed_turn.latency_ms = int(
-                            (time.perf_counter() - start_time) * 1000
-                        )
-                        failed_turn.llm_provider = narration_provider
-                        failed_turn.llm_model = narration_model
-                        if dm_response_text:
-                            failed_turn.dm_output = dm_response_text
-                            failed_turn.status = (
-                                'failed'
-                                if stream_error
-                                else ('degraded' if emergency_fallback else 'completed')
-                            )
-                        else:
-                            failed_turn.status = 'failed'
-                    elif failed_turn.dm_output:
-                        failed_turn.status = (
-                            'degraded'
-                            if metadata_payload.get('llm_fallback')
-                            else 'completed'
-                        )
-                commit_with_retry(label='post-turn failure metadata')
-            if state_application_failed:
-                recovery_gate = failed_state_recovery_gate or {
-                    'turnId': persistence_token.turn_id,
-                    'mechanicsStatus': 'none',
-                    'mechanicsApplied': False,
-                    'preDmMechanicsApplied': False,
-                    'preDmAppliedChangeCount': 0,
-                    'postDmMechanicsApplied': False,
-                }
-                recovery_details = recovery_required_details(recovery_gate)
-                failure_message = (
-                    'The narration was saved after some authoritative pre-narration mechanics '
-                    'were applied, but post-narration game-state changes failed. Those earlier '
-                    'changes remain applied; ask the Dungeon Master to review the turn without '
-                    'repeating them.'
-                    if recovery_gate['mechanicsStatus'] == 'partial'
-                    else (
-                        'The narration was saved, but authoritative game-state changes could not '
-                        'be applied. Ask the Dungeon Master to review this turn before continuing.'
-                    )
-                )
-                self._emit_turn_status(
-                    persistence_token.session_id,
-                    persistence_token.turn_id,
-                    'failed',
-                    {
+                    turn, _session_obj, campaign, _player_obj = self._reload_core_models(command, outcome.turn_id)
+                    recovery_gate = active_turn_recovery_gate(recovery_mutation.state)
+                    if recovery_gate is None:
+                        raise RuntimeError('Turn recovery gate was not persisted.')
+                    recovery_details = recovery_required_details(recovery_gate)
+                    state_failure_details = {
                         'stage': 'state_application',
                         **{
                             key: value
                             for key, value in recovery_details.items()
                             if key != 'turn_id'
                         },
-                    },
+                    }
+                    self.socketio.emit(
+                        'error',
+                        socket_error(
+                            'turn_state_apply_failed',
+                            self._state_apply_failure_message(recovery_gate),
+                            {
+                                'session_id': outcome.session_id,
+                                **recovery_details,
+                            },
+                        ),
+                        room=str(outcome.session_id),
+                    )
+
+            inventory_changes = immediate_state_summary.get('inventory_changes_applied') or []
+            character_state_changes = immediate_state_summary.get('character_state_changes_applied') or []
+            state_log_lines = state_log.get('lines') if isinstance(state_log, dict) else []
+            pipeline_metadata = _turn_metadata(turn).get(STATE_PIPELINE_METADATA_KEY)
+            pipeline_metadata = pipeline_metadata if isinstance(pipeline_metadata, dict) else {}
+            applied_changes_for_status = [
+                *(pipeline_metadata.get('immediateAppliedChanges') or []),
+                *(post_pipeline_result.get('postAppliedChanges') or []),
+            ]
+            if (
+                inventory_changes
+                or character_state_changes
+                or state_log_lines
+                or _snapshot_refresh_needed_from_applied_changes(applied_changes_for_status)
+            ):
+                affected_player_ids = _affected_player_ids_from_state_summary(
+                    inventory_changes,
+                    character_state_changes,
+                    fallback_player_id=turn.player_id,
                 )
-                self.socketio.emit(
-                    'error',
-                    socket_error(
-                        'turn_state_apply_failed',
-                        failure_message,
-                        {
-                            'session_id': persistence_token.session_id,
-                            **recovery_details,
-                        },
+                already_applied_inventory = [
+                    {**change, 'already_applied': True}
+                    for change in inventory_changes
+                    if isinstance(change, dict)
+                ]
+                already_applied_character_state = [
+                    {**change, 'already_applied': True}
+                    for change in character_state_changes
+                    if isinstance(change, dict)
+                ]
+                self._emit_turn_status(
+                    outcome.session_id,
+                    outcome.turn_id,
+                    'state_applied',
+                    _state_application_event_details(
+                        stage='dm_response',
+                        player_id=turn.player_id,
+                        affected_player_ids=affected_player_ids,
+                        inventory_changes_applied=inventory_changes,
+                        character_state_changes_applied=character_state_changes,
+                        state_log=state_log,
+                        applied_changes=applied_changes_for_status,
+                        campaign_pack_progress_changed=campaign_pack_progress_changed,
                     ),
-                    room=str(persistence_token.session_id),
                 )
-                telemetry_event(
-                    'socket.turn_recovery.activation_failed',
-                    payload={
-                        'session_id': persistence_token.session_id,
-                        'turn_id': persistence_token.turn_id,
-                        'error_type': type(exc).__name__,
-                    },
-                    severity='error',
+                self._emit_turn_status(
+                    outcome.session_id,
+                    outcome.turn_id,
+                    'canon_applied',
+                    _state_application_event_details(
+                        stage='state_applied',
+                        player_id=turn.player_id,
+                        affected_player_ids=affected_player_ids,
+                        inventory_changes_applied=already_applied_inventory,
+                        character_state_changes_applied=already_applied_character_state,
+                        state_log=state_log,
+                        applied_changes=applied_changes_for_status,
+                        state_applied=True,
+                        campaign_pack_progress_changed=campaign_pack_progress_changed,
+                    ),
                 )
-                return []
+
+        turn_completed_safely = dm_succeeded and not outcome.state_application_failed
+        if turn_completed_safely:
+            self._advance_structured_turn_if_ready(turn_obj=turn, action_intent=command.action_intent)
+            self._mark_clarification_resume_completed(command=command, resumed_turn=turn)
+            canon_job = enqueue_canon_job(
+                turn=turn,
+                campaign=campaign,
+                speaking_player_name=outcome.player_label,
+                triggered_segments=outcome.triggered_segments,
+            )
+            # The canon worker writes canon metadata on this row outside the
+            # turn lock, so the turn finishes before the job can start.
+            finish_turn_lifecycle(turn)
+            commit_with_retry(label='canon job enqueue')
+            canon_job_id = canon_job.job_id
             self._emit_turn_status(
-                persistence_token.session_id,
-                persistence_token.turn_id,
+                outcome.session_id,
+                outcome.turn_id,
+                'canon_pending',
+                {'job_id': canon_job_id},
+            )
+            app = current_app._get_current_object()  # type: ignore[attr-defined]
+            if current_app.config.get('TESTING') or current_app.config.get('AIDM_ENV') == 'test':
+                process_canon_job(
+                    canon_job_id,
+                    emit_turn_status=self._emit_turn_status,
+                    emit_segment_triggered=lambda session_id, payload: self.socketio.emit(
+                        'segment_triggered',
+                        payload,
+                        room=str(session_id),
+                    ),
+                    record_phase_timing=self._record_phase_timing,
+                )
+            else:
+                wake_canon_job_worker(app)
+
+        final_turn = db.session.get(DmTurn, outcome.turn_id)
+        if final_turn is not None and turn_lifecycle_phase(final_turn) != LIFECYCLE_FINISHED:
+            finish_turn_lifecycle(final_turn)
+        commit_with_retry(label='post-turn final save')
+        if outcome.state_application_failed:
+            self._emit_turn_status(
+                outcome.session_id,
+                outcome.turn_id,
                 'failed',
-                {'stage': 'post_turn', 'error': POST_TURN_PERSIST_FAILED_MESSAGE},
+                state_failure_details or {'stage': 'state_application'},
+            )
+        else:
+            self._emit_turn_status(outcome.session_id, outcome.turn_id, 'saved', {'stage': 'post_turn'})
+
+        if turn_completed_safely:
+            telemetry_metric('socket.send_message.success_total', 1)
+            telemetry_timing(
+                'socket.turn_latency_ms',
+                float((time.perf_counter() - outcome.start_time) * 1000),
+                tags={'campaign_id': command.campaign_id, 'session_id': outcome.session_id},
+            )
+        elif outcome.state_application_failed:
+            telemetry_metric('socket.send_message.state_apply_failed_total', 1)
+        elif outcome.emergency_fallback:
+            telemetry_metric(
+                'socket.send_message.degraded_total',
+                1,
+                tags={
+                    'provider': outcome.narration_provider or 'unknown',
+                    'model': outcome.narration_model or 'unknown',
+                },
+            )
+        elif outcome.stream_error:
+            telemetry_event(
+                'socket.turn_failed',
+                payload={
+                    'session_id': outcome.session_id,
+                    'turn_id': outcome.turn_id,
+                    'error': outcome.stream_error,
+                },
+                severity='error',
+            )
+        return post_turn_segments
+
+    @staticmethod
+    def _state_apply_failure_message(recovery_gate: dict) -> str:
+        if recovery_gate['mechanicsStatus'] == 'partial':
+            return (
+                'The narration was saved after some authoritative pre-narration mechanics '
+                'were applied, but post-narration game-state changes failed. Those earlier '
+                'changes remain applied; ask the Dungeon Master to review the turn without '
+                'repeating them.'
+            )
+        return (
+            'The narration was saved, but authoritative game-state changes could not '
+            'be applied. Ask the Dungeon Master to review this turn before continuing.'
+        )
+
+    def _handle_post_turn_failure(self, outcome: PostTurnOutcome, exc: Exception) -> list[dict]:
+        db.session.rollback()
+        if outcome.state_application_failed:
+            logger.error(
+                'Failed to persist the failed-turn recovery gate (error_type=%s).',
+                type(exc).__name__,
+            )
+        else:
+            logger.exception('Failed to persist DM response state')
+        failed_state_recovery_gate = None
+        failed_turn = db.session.get(DmTurn, outcome.turn_id)
+        if failed_turn:
+            if outcome.state_application_failed:
+                failed_state_recovery_gate = mark_turn_recovery_required(failed_turn)
+                failed_turn.completed_at = utc_now()
+                failed_turn.latency_ms = int(
+                    (time.perf_counter() - outcome.start_time) * 1000
+                )
+                failed_turn.llm_provider = outcome.narration_provider
+                failed_turn.llm_model = outcome.narration_model
+                if outcome.dm_response_text:
+                    failed_turn.dm_output = outcome.dm_response_text
+                # Re-run after assigning the preserved narration so the
+                # metadata accurately states that narration was saved.
+                failed_state_recovery_gate = mark_turn_recovery_required(
+                    failed_turn
+                )
+            else:
+                metadata_payload = _turn_metadata(failed_turn)
+                metadata_payload['post_turn_error'] = POST_TURN_PERSIST_FAILED_MESSAGE
+                metadata_payload['canon_status'] = 'failed'
+                if outcome.stream_error:
+                    metadata_payload['error'] = outcome.stream_error
+                if outcome.emergency_fallback:
+                    metadata_payload['llm_fallback'] = outcome.emergency_fallback
+                failed_turn.metadata_json = safe_json_dumps(metadata_payload, {})
+                if failed_turn.status == outcome.expected_status:
+                    if outcome.dm_response_text:
+                        # The DM response save never committed. Save the
+                        # narration as unfinished so the retry the player is
+                        # asked to make resumes at the post-DM step.
+                        self._apply_dm_response(
+                            turn=failed_turn,
+                            campaign=db.session.get(Campaign, failed_turn.campaign_id),
+                            outcome=outcome,
+                        )
+                    else:
+                        failed_turn.completed_at = utc_now()
+                        failed_turn.latency_ms = int(
+                            (time.perf_counter() - outcome.start_time) * 1000
+                        )
+                        failed_turn.llm_provider = outcome.narration_provider
+                        failed_turn.llm_model = outcome.narration_model
+                        failed_turn.status = 'failed'
+                        finish_turn_lifecycle(failed_turn)
+                elif failed_turn.dm_output:
+                    failed_turn.status = (
+                        'degraded'
+                        if metadata_payload.get('llm_fallback')
+                        else 'completed'
+                    )
+            commit_with_retry(label='post-turn failure metadata')
+        if outcome.state_application_failed:
+            recovery_gate = failed_state_recovery_gate or {
+                'turnId': outcome.turn_id,
+                'mechanicsStatus': 'none',
+                'mechanicsApplied': False,
+                'preDmMechanicsApplied': False,
+                'preDmAppliedChangeCount': 0,
+                'postDmMechanicsApplied': False,
+            }
+            recovery_details = recovery_required_details(recovery_gate)
+            self._emit_turn_status(
+                outcome.session_id,
+                outcome.turn_id,
+                'failed',
+                {
+                    'stage': 'state_application',
+                    **{
+                        key: value
+                        for key, value in recovery_details.items()
+                        if key != 'turn_id'
+                    },
+                },
             )
             self.socketio.emit(
                 'error',
                 socket_error(
-                    'turn_persist_failed',
-                    'The DM response was generated but could not be saved. Please retry; continuity may be affected.',
+                    'turn_state_apply_failed',
+                    self._state_apply_failure_message(recovery_gate),
                     {
-                        'session_id': persistence_token.session_id,
-                        'turn_id': persistence_token.turn_id,
+                        'session_id': outcome.session_id,
+                        **recovery_details,
                     },
                 ),
-                room=str(persistence_token.session_id),
+                room=str(outcome.session_id),
             )
             telemetry_event(
-                'socket.dm_persist_failed',
+                'socket.turn_recovery.activation_failed',
                 payload={
-                    'session_id': persistence_token.session_id,
-                    'turn_id': persistence_token.turn_id,
+                    'session_id': outcome.session_id,
+                    'turn_id': outcome.turn_id,
                     'error_type': type(exc).__name__,
                 },
                 severity='error',
             )
             return []
+        self._emit_turn_status(
+            outcome.session_id,
+            outcome.turn_id,
+            'failed',
+            {'stage': 'post_turn', 'error': POST_TURN_PERSIST_FAILED_MESSAGE},
+        )
+        self.socketio.emit(
+            'error',
+            socket_error(
+                'turn_persist_failed',
+                'The DM response was generated but could not be saved. Please retry; continuity may be affected.',
+                {
+                    'session_id': outcome.session_id,
+                    'turn_id': outcome.turn_id,
+                },
+            ),
+            room=str(outcome.session_id),
+        )
+        telemetry_event(
+            'socket.dm_persist_failed',
+            payload={
+                'session_id': outcome.session_id,
+                'turn_id': outcome.turn_id,
+                'error_type': type(exc).__name__,
+            },
+            severity='error',
+        )
+        return []

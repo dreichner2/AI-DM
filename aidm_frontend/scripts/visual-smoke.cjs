@@ -578,8 +578,19 @@ async function assertCompactCombatLayout(page, viewport) {
   }
 }
 
+async function launchChromium() {
+  if (CHROMIUM_CHANNEL) return chromium.launch({ channel: CHROMIUM_CHANNEL })
+  try {
+    return await chromium.launch()
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("Executable doesn't exist")) throw error
+    log('bundled Chromium is not installed; retrying with the installed Google Chrome (channel "chrome")')
+    return chromium.launch({ channel: 'chrome' })
+  }
+}
+
 async function runVisualFlow(frontendUrl, backendUrl, ids, artifactDir) {
-  const browser = await chromium.launch(CHROMIUM_CHANNEL ? { channel: CHROMIUM_CHANNEL } : {})
+  const browser = await launchChromium()
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
   const consoleErrors = []
 
@@ -753,9 +764,13 @@ async function main() {
   log(`passed: ${screenshots.length} screenshots written under ${path.relative(REPO_ROOT, artifactDir)}`)
 }
 
-main()
-  .catch(async (error) => {
-    await shutdown()
-    console.error(`[visual-smoke][error] ${error instanceof Error ? error.message : String(error)}`)
-    process.exit(1)
-  })
+if (require.main === module) {
+  main()
+    .catch(async (error) => {
+      await shutdown()
+      console.error(`[visual-smoke][error] ${error instanceof Error ? error.message : String(error)}`)
+      process.exit(1)
+    })
+}
+
+module.exports = { launchChromium }

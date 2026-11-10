@@ -10,9 +10,24 @@ from aidm_server.database import db
 import aidm_server.game_state.extraction.post_dm_outcome_extractor as post_extractor_module
 import aidm_server.game_state.extraction.pre_dm_action_extractor as pre_extractor_module
 import aidm_server.turn_control as turn_control_module
-from aidm_server.models import DmTurn, Session, safe_json_dumps, safe_json_loads
+from aidm_server.models import DmTurn, Player, Session, safe_json_dumps, safe_json_loads
 from aidm_server.rules import RuleHint
 from tests.helpers import seed_world_campaign_player_session
+
+
+def _seed_companion(app, campaign_id: int) -> int:
+    with app.app_context():
+        companion = Player(
+            campaign_id=campaign_id,
+            name='Bob',
+            character_name='Borin',
+            race='Dwarf',
+            class_='Fighter',
+            level=3,
+        )
+        db.session.add(companion)
+        db.session.commit()
+        return companion.player_id
 
 
 def _pool_checkout_probe(engine):
@@ -108,10 +123,14 @@ def test_all_foreground_provider_waits_release_database_connection_and_persist_s
 
     try:
         ids = seed_world_campaign_player_session(app)
+        # The conductor helper only runs when at least two players are connected.
+        companion_id = _seed_companion(app, ids['campaign_id'])
         app.config['AIDM_STATE_PIPELINE_HELPER_IN_TESTS'] = True
         app.config['AIDM_TURN_CONDUCTOR_HELPER_IN_TESTS'] = True
         client = socketio.test_client(app, flask_test_client=app.test_client())
+        companion_client = socketio.test_client(app, flask_test_client=app.test_client())
         client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+        companion_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': companion_id})
         client.get_received()
         client.emit(
             'send_message',
@@ -386,6 +405,7 @@ def test_turn_conductor_discards_ai_decision_when_session_changes_during_provide
 ):
     turn_engine_module = app_runtime['modules']['turn_engine']
     ids = seed_world_campaign_player_session(app)
+    companion_id = _seed_companion(app, ids['campaign_id'])
     app.config['AIDM_TURN_CONDUCTOR_HELPER_IN_TESTS'] = True
     changed_snapshot = safe_json_dumps(
         {
@@ -422,7 +442,7 @@ def test_turn_conductor_discards_ai_decision_when_session_changes_during_provide
             player_id=ids['player_id'],
             message='I wait for my opening.',
             action_intent={'kind': 'message'},
-            active_player_ids=[ids['player_id']],
+            active_player_ids=[ids['player_id'], companion_id],
             before_helper_call=turn_engine_module.TurnEngine._release_clean_provider_session,
             reload_session_after_helper=lambda: db.session.get(Session, ids['session_id']),
         )

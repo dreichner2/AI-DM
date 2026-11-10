@@ -11,13 +11,16 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+try:
+    from scripts.check_toolchain import REQUIREMENTS, check
+except ModuleNotFoundError:  # pragma: no cover - exercised when run as a script path
+    from check_toolchain import REQUIREMENTS, check  # type: ignore[no-redef]
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_FRONTEND_DIR = REPO_ROOT / 'aidm_frontend'
 DEFAULT_OUTPUT = REPO_ROOT / 'tmp' / 'release' / 'frontend-npm-ci-evidence.md'
 DEFAULT_JSON_OUTPUT = REPO_ROOT / 'tmp' / 'release' / 'frontend-npm-ci-evidence.json'
-EXPECTED_NODE_VERSION = '24.18.0'
-EXPECTED_NPM_VERSION = '12.0.0'
 
 
 def _resolve_repo_path(path: pathlib.Path) -> pathlib.Path:
@@ -68,8 +71,8 @@ def build_evidence(
         'stderr_tail': '',
         'node_version': None,
         'npm_version': None,
-        'expected_node_version': EXPECTED_NODE_VERSION,
-        'expected_npm_version': EXPECTED_NPM_VERSION,
+        'node_requirement': REQUIREMENTS['node'],
+        'npm_requirement': REQUIREMENTS['npm'],
     }
     if not resolved_frontend.exists():
         base['error'] = 'frontend directory does not exist'
@@ -106,16 +109,13 @@ def build_evidence(
             base.update({'status': 'failed', 'error': f'could not verify Node.js/npm: {exc}'})
             return base
         base.update({'node_version': node_version, 'npm_version': npm_version})
-        if node_version != EXPECTED_NODE_VERSION or npm_version != EXPECTED_NPM_VERSION:
-            base.update(
-                {
-                    'status': 'failed',
-                    'error': (
-                        f'expected Node.js {EXPECTED_NODE_VERSION} and npm {EXPECTED_NPM_VERSION}; '
-                        f'found Node.js {node_version} and npm {npm_version}'
-                    ),
-                }
-            )
+        failures = [
+            message
+            for compatible, message in (check('node', node_version), check('npm', npm_version))
+            if not compatible
+        ]
+        if failures:
+            base.update({'status': 'failed', 'error': ' '.join(failures)})
             return base
 
     started = time.monotonic()
@@ -154,8 +154,8 @@ def render_markdown(evidence: dict[str, Any]) -> str:
         f"- Duration seconds: {evidence.get('duration_seconds') if evidence.get('duration_seconds') is not None else 'not run'}",
         f"- package.json present: {evidence.get('package_json_present')}",
         f"- package-lock.json present: {evidence.get('package_lock_present')}",
-        f"- Node.js: {evidence.get('node_version') or 'not checked'} (expected {evidence.get('expected_node_version')})",
-        f"- npm: {evidence.get('npm_version') or 'not checked'} (expected {evidence.get('expected_npm_version')})",
+        f"- Node.js: {evidence.get('node_version') or 'not checked'}; required {evidence.get('node_requirement')}",
+        f"- npm: {evidence.get('npm_version') or 'not checked'}; required {evidence.get('npm_requirement')}",
         '',
         '## stdout tail',
         '',

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from functools import wraps
 from typing import Any, Callable
 
-from flask import request
+from flask import current_app, request
 from flask_socketio import emit, join_room, leave_room
 
 from aidm_server.database import db
@@ -15,9 +15,10 @@ from aidm_server.llm import CONTEXT_VERSION
 from aidm_server.logging_context import clear_logging_context, set_logging_context
 from aidm_server.profile_icons import profile_icon_src_for_character
 from aidm_server.services.session_lifecycle import session_playability_error
+from aidm_server.services.session_recovery import unfinished_session_turns
 from aidm_server.services.scene_state import scene_state_for_session
 from aidm_server.socket_contracts import scene_state_payload, socket_error_payload as socket_error
-from aidm_server.socket_runtime import SocketRuntime
+from aidm_server.socket_runtime import SocketRuntime, bind_presence
 from aidm_server.socket_state import SocketState
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 from aidm_server.turn_control import turn_control_from_session, turn_control_update_payload
@@ -60,8 +61,39 @@ def player_presence_payload(player) -> dict:
     }
 
 
+def start_unfinished_turn_recovery(socketio, session_id: int, logger: logging.Logger) -> None:
+    """Resume a session's abandoned turns in the background.
+
+    The recovery takes the turn locks without waiting and does nothing when a
+    turn holds them, so it never delays a live turn.
+    """
+
+    app = current_app._get_current_object()  # type: ignore[attr-defined]
+
+    def recover() -> None:
+        with app.app_context():
+            try:
+                # The registration module owns the production TurnEngine wiring
+                # (narration stream and presence) and imports this module.
+                from aidm_server.blueprints import socketio_events
+
+                socketio_events._new_turn_engine(socketio).recover_abandoned_turns(session_id)
+            except Exception as exc:
+                db.session.rollback()
+                logger.warning('Background turn recovery failed (error_type=%s).', type(exc).__name__)
+                telemetry_event(
+                    'socket.turn_recovery.background_failed',
+                    payload={'session_id': session_id, 'error_type': type(exc).__name__},
+                    severity='error',
+                )
+
+    socketio.start_background_task(recover)
+
+
 def register_socket_presence_events(socketio, dependencies: SocketPresenceDependencies) -> None:
     """Register connection, join, leave, and disconnect lifecycle handlers."""
+
+    bind_presence(dependencies.runtime)
 
     def serialize_connection_lifecycle(handler):
         @wraps(handler)
@@ -239,6 +271,7 @@ def register_socket_presence_events(socketio, dependencies: SocketPresenceDepend
 
             if player_id and player_data:
                 joined_fresh = dependencies.track_active_player(session_id, player_data, request.sid)
+                dependencies.runtime.clear_departure(session_id, player_id)
                 if joined_fresh:
                     emit('player_joined', player_data, room=str(session_id))
             emit('active_players', dependencies.active_player_payloads(session_id), room=str(session_id))
@@ -257,6 +290,8 @@ def register_socket_presence_events(socketio, dependencies: SocketPresenceDepend
                 },
                 room=str(session_id),
             )
+            if unfinished_session_turns(session_id, limit=1):
+                start_unfinished_turn_recovery(socketio, session_id, dependencies.logger)
             telemetry_metric('socket.join.success_total', 1)
         finally:
             clear_logging_context()
@@ -326,6 +361,7 @@ def register_socket_presence_events(socketio, dependencies: SocketPresenceDepend
             was_typing = dependencies.player_is_typing(session_id, player_id)
             removed_player = dependencies.release_active_player(session_id, player_id, request.sid)
             if removed_player:
+                dependencies.runtime.record_departure(session_id, player_id)
                 emit('player_left', {'id': player_id}, room=str(session_id))
                 emit('active_players', dependencies.active_player_payloads(session_id), room=str(session_id))
             elif was_typing != dependencies.player_is_typing(session_id, player_id):

@@ -989,3 +989,67 @@ describe('game selector helpers', () => {
     ])
   })
 })
+
+describe('opening request visibility', () => {
+  const openingText =
+    'Please narrate the opening scene for this campaign. Campaign: Smoke Campaign. Session: Alpha.'
+
+  it('hides the opening request flagged by message kind or by its legacy text', () => {
+    const logEntries: SessionLogEntry[] = [
+      {
+        id: 1,
+        entry_type: 'player',
+        message: 'Ember: Inspect the door.',
+        metadata: { turn_id: 1, message_kind: 'opening' },
+        timestamp: null,
+      },
+      {
+        id: 2,
+        entry_type: 'player',
+        message: `Ember: ${openingText}`,
+        metadata: { turn_id: 2 },
+        timestamp: null,
+      },
+      {
+        id: 3,
+        entry_type: 'player',
+        message: openingText,
+        metadata: { turn_id: 3 },
+        timestamp: null,
+      },
+      {
+        id: 4,
+        entry_type: 'dm',
+        message: 'DM: Rain hammers the watchtower roof.',
+        metadata: { turn_id: 3 },
+        timestamp: null,
+      },
+      {
+        id: 5,
+        entry_type: 'player',
+        message: 'Ember: I climb the ladder.',
+        metadata: { turn_id: 4 },
+        timestamp: null,
+      },
+    ]
+    const pendingOpening: TimelineEntry = {
+      id: 'local-1',
+      role: 'player',
+      speaker: 'Ember',
+      text: openingText,
+      timestamp: null,
+      metadata: { client_message_id: 'opening-1', message_kind: 'opening', persistence_status: 'pending' },
+    }
+
+    const timeline = buildTimeline({
+      logEntries,
+      optimisticEntries: [pendingOpening],
+      streamingTurn: null,
+      turnStatuses: {},
+    })
+
+    expect(timeline.map((entry) => entry.id)).toEqual(['log-4', 'log-5'])
+    expect(timeline.some((entry) => entry.text.includes('Please narrate'))).toBe(false)
+  })
+})
+

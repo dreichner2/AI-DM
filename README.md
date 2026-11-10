@@ -51,15 +51,15 @@ scene.
 
 You will need:
 
-- Python 3.14.6
-- Node.js 24.18.0
-- npm 12.0.0
+- Python 3.14 (3.14.6 or newer)
+- Node.js 24 (24.18 or newer)
+- npm 12
 - a Unix-like shell
 
-The required versions are pinned in
-[.python-version](.python-version),
-[.nvmrc](.nvmrc), and
-[aidm_frontend/package.json](aidm_frontend/package.json).
+CI uses the exact versions in [.python-version](.python-version) and
+[.nvmrc](.nvmrc). `make install`, `make unified` and the launch scripts accept
+any version above; `python3.14 scripts/check_toolchain.py python node npm` shows
+whether yours qualify.
 
 ```bash
 git clone https://github.com/dreichner2/AI-DM.git

@@ -55,6 +55,10 @@ function formatDirectorStatus(status: string | undefined) {
   return status.replace(/[_-]+/g, ' ').replace(/\b\w/g, (match) => match.toUpperCase())
 }
 
+function tokenEstimateLabel(tokens: DmExecutionStats['tokens']) {
+  return `~${tokens} tokens (estimate)`
+}
+
 function contentRatingLabel(contentSettings: ContentSettings) {
   return CONTENT_RATING_OPTIONS.find((option) => option.value === contentSettings.contentRating)?.label ?? 'Not set'
 }
@@ -154,7 +158,7 @@ export function OperatorDrawer({
           </div>
           <div>
             <dt>Tokens</dt>
-            <dd>{dmExecutionStats.tokens}</dd>
+            <dd>{tokenEstimateLabel(dmExecutionStats.tokens)}</dd>
           </div>
           <div>
             <dt>Time</dt>
@@ -256,7 +260,7 @@ export function DirectorCommentaryPanel({
           <dd>
             <strong>{latestResponseLabel}</strong>
             <span>
-              {streamLabel} / {dmExecutionStats.time} / {dmExecutionStats.tokens} tokens
+              {streamLabel} / {dmExecutionStats.time} / {tokenEstimateLabel(dmExecutionStats.tokens)}
             </span>
           </dd>
         </div>

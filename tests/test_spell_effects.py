@@ -365,8 +365,8 @@ def test_failed_save_applies_full_damage_and_a_timed_condition() -> None:
     assert updated['hp']['current'] == 13
     assert updated['conditions'] == ['restrained']
     assert updated['activeEffects'][0]['duration'] == {
-        'remaining': 2,
-        'tick': 'target_turn_end',
+        'rounds': 2,
+        'tickOn': 'target_turn_end',
     }
 
 
@@ -635,7 +635,7 @@ def test_starting_new_concentration_replaces_old_effects_but_preserves_other_sou
         'other_fear',
         updated['activeEffects'][1]['id'],
     }
-    assert updated['activeEffects'][1]['sourceSpellId'] == 'spell_mind_chain'
+    assert updated['activeEffects'][1]['sourceId'] == 'spell_mind_chain'
     assert concentration == {
         'active': True,
         'spellId': 'spell_mind_chain',
@@ -829,7 +829,7 @@ def test_duration_advancement_expires_at_correct_boundary_and_preserves_overlap(
     assert after_target['conditions'] == ['restrained', 'slowed']
     assert next(
         effect for effect in after_target['activeEffects'] if effect['id'] == 'restraint_long'
-    )['duration']['remaining'] == 1
+    )['duration']['rounds'] == 1
 
     source_tick = advance_spell_effect_durations(
         target_tick['combat'],

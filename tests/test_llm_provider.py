@@ -28,7 +28,13 @@ from aidm_server.llm import (
     query_dm_function_stream,
     query_gpt_stream,
 )
-from aidm_server.llm_providers import CodexCliProvider, DeterministicFallbackProvider, get_helper_provider
+from aidm_server.llm_providers import (
+    CodexCliProvider,
+    DeterministicFallbackProvider,
+    get_helper_provider,
+    helper_provider_name,
+)
+from aidm_server.prompt_templates import build_dm_stream_request
 from aidm_server.provider_registry import provider_capabilities, provider_default_model, provider_runtime_model
 
 
@@ -166,6 +172,7 @@ def test_codex_executable_resolves_render_node_runtime(monkeypatch, tmp_path):
 
 def _clear_helper_env(monkeypatch):
     for key in (
+        'AIDM_LLM_PROVIDER',
         'AIDM_HELPER_LLM_PROVIDER',
         'AIDM_HELPER_LLM_MODEL',
         'AIDM_HELPER_LLM_FALLBACK_MODELS',
@@ -550,6 +557,146 @@ def test_get_provider_uses_nvidia_key_for_deepseek_model_via_nvidia(monkeypatch)
     assert isinstance(provider, NvidiaChatProvider)
     assert provider.model_name == 'deepseek-v4-pro'
     assert provider.api_key == 'nvapi-test'
+
+
+def _clear_deepseek_narration_env(monkeypatch):
+    monkeypatch.setenv('AIDM_LLM_PROVIDER', 'deepseek')
+    monkeypatch.setenv('AIDM_LLM_MODEL', 'deepseek-v4-pro')
+    monkeypatch.setenv('AIDM_DEEPSEEK_API_KEY', 'deepseek-test')
+    monkeypatch.delenv('AIDM_DEEPSEEK_THINKING', raising=False)
+    monkeypatch.delenv('AIDM_DEEPSEEK_MAX_TOKENS', raising=False)
+
+
+def test_get_provider_deepseek_narration_defaults_to_fast_non_thinking(monkeypatch):
+    _clear_deepseek_narration_env(monkeypatch)
+
+    provider = get_provider()
+
+    assert isinstance(provider, DeepSeekChatProvider)
+    assert provider.thinking_enabled is False
+    assert provider.max_tokens == 2048
+
+
+@pytest.mark.parametrize(
+    ('thinking', 'max_tokens', 'expected_thinking', 'expected_max_tokens'),
+    [
+        ('true', None, True, 8192),
+        ('true', '4096', True, 8192),
+        ('true', '16384', True, 16384),
+        ('false', '4096', False, 4096),
+        (None, '1024', False, 1024),
+    ],
+)
+def test_get_provider_deepseek_narration_honours_env_overrides(
+    monkeypatch,
+    thinking,
+    max_tokens,
+    expected_thinking,
+    expected_max_tokens,
+):
+    _clear_deepseek_narration_env(monkeypatch)
+    if thinking is not None:
+        monkeypatch.setenv('AIDM_DEEPSEEK_THINKING', thinking)
+    if max_tokens is not None:
+        monkeypatch.setenv('AIDM_DEEPSEEK_MAX_TOKENS', max_tokens)
+
+    provider = get_provider()
+
+    assert provider.thinking_enabled is expected_thinking
+    assert provider.max_tokens == expected_max_tokens
+
+
+@pytest.mark.parametrize(
+    'task',
+    [
+        None,
+        'custom_race',
+        'creature_generation',
+        'sentient_enemy_brain',
+        'enemy_tactics_planner',
+        'enemy_tactics_compiler',
+        'boss_tactics',
+        'boss_tactics_planner',
+    ],
+)
+def test_safe_mode_routes_every_helper_task_to_the_deterministic_path(monkeypatch, task):
+    _clear_helper_env(monkeypatch)
+    monkeypatch.setenv('AIDM_LLM_PROVIDER', 'fallback')
+    monkeypatch.setenv('AIDM_DEEPSEEK_API_KEY', 'deepseek-test')
+    monkeypatch.setenv('AIDM_HELPER_LLM_PROVIDER', 'deepseek')
+    monkeypatch.setenv('AIDM_HELPER_PROFILE_DEFAULT', 'codex_high')
+
+    def fail_network(*_args, **_kwargs):
+        raise AssertionError('Safe Mode helpers must not make network calls')
+
+    monkeypatch.setattr('aidm_server.llm_providers.http_post', fail_network)
+    monkeypatch.setattr('aidm_server.llm_providers.subprocess.Popen', fail_network)
+
+    provider = get_helper_provider(task)
+    response = provider.generate(ProviderRequest(prompt='Return JSON only.', system_message='helper'))
+
+    assert helper_provider_name(task) == 'fallback'
+    assert isinstance(provider, DeterministicFallbackProvider)
+    assert provider.model_name == 'state-helper-fallback-v1'
+    assert response.text == 'The moment holds. What do you do?'
+
+
+def test_fallback_provider_narrates_parsed_prompt_and_holds_on_unparsed_prompt():
+    provider = DeterministicFallbackProvider(model_name='deterministic-v1')
+    context = json.dumps(
+        {
+            'live_world_state': {
+                'currentScene': {
+                    'name': 'Ash Chapel',
+                    'description': 'Cold ash drifts across the chapel floor. A bell rope hangs still.',
+                    'visibleDetails': ['A cracked censer lies on its side.'],
+                }
+            }
+        }
+    )
+    request = build_dm_stream_request(
+        'I walk to the altar',
+        context,
+        speaking_player={'character_name': 'Ember', 'player_id': 7},
+        rules_hint={'requires_roll': False, 'turn_number': 2},
+    )
+
+    text = provider.generate(request).text
+
+    assert '"I walk to the altar."' in text
+    assert 'A cracked censer lies on its side.' in text
+    assert provider.generate(ProviderRequest(prompt='hello')).text == 'The moment holds. What do you do?'
+
+
+def test_emergency_fallback_uses_scripted_narrator_when_context_and_hint_are_available(monkeypatch):
+    class FailingProvider:
+        provider_name = 'gemini'
+        model_name = 'models/gemini-test'
+
+        def stream(self, _request):
+            raise RuntimeError('provider down')
+            yield  # pragma: no cover
+
+    monkeypatch.setattr('aidm_server.llm.get_provider', lambda: FailingProvider())
+    context = json.dumps({'live_world_state': {'currentScene': {'description': 'Rain hammers the gatehouse roof.'}}})
+
+    narrated = list(
+        query_dm_function_stream(
+            'I knock on the gate',
+            context,
+            speaking_player={'character_name': 'Ember', 'player_id': '7'},
+            rules_hint={'requires_roll': False, 'turn_number': 5},
+        )
+    )
+    without_hint = list(query_dm_function_stream('I knock on the gate', context))
+
+    assert len(narrated) == 1
+    assert isinstance(narrated[0], EmergencyFallbackChunk)
+    assert '"I knock on the gate."' in narrated[0]
+    assert 'Rain hammers the gatehouse roof.' in narrated[0]
+    assert 'model' not in narrated[0].lower()
+    assert 'reconnect' not in narrated[0].lower()
+    assert 'primary model reconnects' in without_hint[0]
 
 
 def test_get_provider_rejects_unknown_provider(monkeypatch):
@@ -2016,7 +2163,7 @@ def test_buffered_stream_delay_override_paces_chunks(monkeypatch, tmp_path):
 
 def test_buffered_stream_chunk_size_override_produces_multiple_render_windows(monkeypatch):
     provider = DeterministicFallbackProvider(model_name='deterministic-v1')
-    expected_text = provider.generate(ProviderRequest(prompt='hello')).text
+    expected_text = provider.generate(build_dm_stream_request('open the gate', '{"campaign":"test"}')).text
     monkeypatch.setenv('AIDM_BUFFERED_STREAM_CHUNK_CHARS', '48')
     monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
 
@@ -2029,7 +2176,7 @@ def test_buffered_stream_chunk_size_override_produces_multiple_render_windows(mo
 
 def test_buffered_stream_chunk_size_override_is_safely_bounded(monkeypatch):
     provider = DeterministicFallbackProvider(model_name='deterministic-v1')
-    expected_text = provider.generate(ProviderRequest(prompt='hello')).text
+    expected_text = provider.generate(build_dm_stream_request('open the gate', '{"campaign":"test"}')).text
     monkeypatch.setenv('AIDM_BUFFERED_STREAM_CHUNK_CHARS', '1')
     monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
 
@@ -2210,7 +2357,7 @@ def test_intentionally_configured_deterministic_provider_is_not_emergency_fallba
     assert len(chunks) >= 2
     assert all(0 < len(chunk) <= DISPLAY_STREAM_CHUNK_CHARS for chunk in chunks)
     assert not any(isinstance(chunk, EmergencyFallbackChunk) for chunk in chunks)
-    assert 'scene advances' in ''.join(chunks).lower()
+    assert '"open the gate."' in ''.join(chunks)
 
 
 def test_get_provider_uses_phase_timeout_env(monkeypatch):

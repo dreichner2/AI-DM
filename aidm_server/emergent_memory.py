@@ -36,6 +36,7 @@ from aidm_server.canon_text import (
 )
 from aidm_server.character_state import apply_character_state_changes as _apply_character_state_changes
 from aidm_server.database import db, release_clean_scoped_session
+from aidm_server.llm_providers import safe_mode_active
 from aidm_server.models import (
     Campaign,
     DmTurn,
@@ -431,12 +432,16 @@ def extract_canon_patch(
     triggered_segments: list[dict] | None = None,
 ) -> tuple[dict, str]:
     triggered_segments = triggered_segments or []
-    provider_patch, extractor_model = _extract_with_provider(
-        turn=turn,
-        campaign=campaign,
-        dm_output=dm_output,
-        speaking_player_name=speaking_player_name,
-        triggered_segments=triggered_segments,
+    provider_patch, extractor_model = (
+        (None, None)
+        if safe_mode_active()
+        else _extract_with_provider(
+            turn=turn,
+            campaign=campaign,
+            dm_output=dm_output,
+            speaking_player_name=speaking_player_name,
+            triggered_segments=triggered_segments,
+        )
     )
     if provider_patch is not None:
         provider_inventory_patch = _empty_patch()

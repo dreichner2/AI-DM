@@ -118,7 +118,9 @@ def sync_stats_for_level(stats: dict[str, Any], level: Any) -> bool:
 
     current_hp = max(0, int_or_default(stats.get('current_hp', stats.get('hp_current', stats.get('hp'))), default=current_max_hp))
     hp_gain = baseline_max_hp - current_max_hp
-    next_current_hp = min(baseline_max_hp, current_hp + hp_gain)
+    # A character at 0 HP stays down: levelling raises the maximum only.
+    downed = current_max_hp > 0 and current_hp <= 0
+    next_current_hp = 0 if downed else min(baseline_max_hp, current_hp + hp_gain)
 
     stats['max_hp'] = baseline_max_hp
     stats['hp_max'] = baseline_max_hp

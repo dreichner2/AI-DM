@@ -8,6 +8,12 @@ from aidm_server.contracts import SegmentTriggerSpec
 from aidm_server.models import safe_json_loads
 
 
+KEYWORD_TRIGGER_TYPES = frozenset({"keyword", "keywords"})
+LOCATION_TRIGGER_TYPE = "location"
+# Every trigger type an authored trigger object may declare.
+SUPPORTED_TRIGGER_TYPES = frozenset({"manual", "state", LOCATION_TRIGGER_TYPE, *KEYWORD_TRIGGER_TYPES})
+
+
 def _search_values(value) -> list[str]:
     if isinstance(value, list):
         return [str(item).lower() for item in value if str(item).strip()]
@@ -23,6 +29,14 @@ def _contains_value(needle: str, values: list[str]) -> bool:
     return any(needle in value for value in values)
 
 
+def _keyword_list(value) -> list[str]:
+    if isinstance(value, str):
+        value = value.split(",")
+    if not isinstance(value, list):
+        return []
+    return [str(keyword).strip().lower() for keyword in value if str(keyword).strip()]
+
+
 def parse_trigger_spec(trigger_condition: str | None) -> SegmentTriggerSpec:
     raw_text = (trigger_condition or "").strip()
     if not raw_text:
@@ -31,10 +45,24 @@ def parse_trigger_spec(trigger_condition: str | None) -> SegmentTriggerSpec:
     raw = safe_json_loads(raw_text, None)
     if isinstance(raw, dict):
         trigger_type = str(raw.get("type", "manual")).strip().lower()
+        if trigger_type in KEYWORD_TRIGGER_TYPES:
+            return SegmentTriggerSpec(
+                trigger_type="keywords",
+                raw={**raw, "keywords": _keyword_list(raw.get("keywords")), "match": raw.get("match", "any")},
+            )
+        if trigger_type == LOCATION_TRIGGER_TYPE:
+            # A location trigger is a live-state check, so it is evaluated with
+            # the other state triggers after each turn.
+            return SegmentTriggerSpec(trigger_type="state", raw=raw)
         return SegmentTriggerSpec(trigger_type=trigger_type or "manual", raw=raw)
 
-    keywords = [k.strip().lower() for k in raw_text.split(",") if k.strip()]
-    return SegmentTriggerSpec(trigger_type="keywords", raw={"keywords": keywords, "match": "any"})
+    return SegmentTriggerSpec(trigger_type="keywords", raw={"keywords": _keyword_list(raw_text), "match": "any"})
+
+
+def _location_trigger_matches(spec: SegmentTriggerSpec, session_state: dict) -> tuple[bool, str]:
+    location_id = str(spec.raw.get("locationId") or "").strip().lower()
+    current_location_id = str(session_state.get("current_location_id") or "").strip().lower()
+    return bool(location_id) and location_id == current_location_id, f"location:{location_id or '*'}"
 
 
 def evaluate_segment_trigger(
@@ -63,6 +91,10 @@ def evaluate_segment_trigger(
             matched = any(k in text for k in keywords)
 
         reason = f"keywords:{','.join(keywords)}"
+        return matched, reason, asdict(spec)
+
+    if spec.trigger_type == "state" and str(spec.raw.get("type", "")).strip().lower() == LOCATION_TRIGGER_TYPE:
+        matched, reason = _location_trigger_matches(spec, session_state)
         return matched, reason, asdict(spec)
 
     if spec.trigger_type == "state":

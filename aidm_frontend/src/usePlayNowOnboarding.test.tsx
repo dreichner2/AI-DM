@@ -189,6 +189,8 @@ function createOptions(overrides: Record<string, unknown> = {}) {
     selectedPlayerId: null,
     selectedSessionId: null,
     workspaceLoading: false,
+    sessionLoading: false,
+    loadedSessionId: null,
     campaignUpserted: vi.fn(),
     sessionUpserted: vi.fn(),
     playerUpserted: vi.fn(),
@@ -370,8 +372,57 @@ describe('usePlayNowOnboarding', () => {
         selectedPlayerId: 30,
         selectedPlayerDetailId: 30,
         socketStatus: 'joined',
+        loadedSessionId: 20,
       },
     })
+    expect(options.startAdventure).toHaveBeenCalledOnce()
+  })
+
+  it('waits for the whole refresh chain and a hydrated session before auto-starting', async () => {
+    apiFetchMock.mockResolvedValue(playNowResponse())
+    const playerDetail = deferred<void>()
+    const options = createOptions({
+      loadPlayerDetail: vi.fn(() => playerDetail.promise),
+    })
+    const joined = {
+      ...options,
+      activeSessionId: 20,
+      selectedCampaignId: 10,
+      selectedSessionId: 20,
+      selectedPlayerId: 30,
+      selectedPlayerDetailId: 30,
+      socketStatus: 'joined',
+      loadedSessionId: 20,
+    }
+    const { result, rerender } = renderHook(
+      ({ values }) => usePlayNowOnboarding(values),
+      { initialProps: { values: options } },
+    )
+
+    let request!: Promise<void>
+    act(() => {
+      request = result.current.playNowFromTitleScreen()
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    rerender({ values: joined })
+    expect(result.current.playNowPending).toBe(true)
+    expect(options.startAdventure).not.toHaveBeenCalled()
+
+    playerDetail.resolve()
+    rerender({ values: { ...joined, sessionLoading: true } })
+    await act(async () => request)
+    expect(result.current.playNowPending).toBe(false)
+    expect(options.startAdventure).not.toHaveBeenCalled()
+
+    rerender({ values: { ...joined, workspaceLoading: true } })
+    rerender({ values: { ...joined, loadedSessionId: 19 } })
+    expect(options.startAdventure).not.toHaveBeenCalled()
+
+    rerender({ values: joined })
+    rerender({ values: { ...joined, sendPending: true } })
+    rerender({ values: joined })
     expect(options.startAdventure).toHaveBeenCalledOnce()
   })
 })

@@ -47,9 +47,27 @@ import re
 from typing import Any, Callable, Iterable, Mapping
 
 from aidm_server.character_resources import normalize_concentration
+from aidm_server.combat import vitality
+from aidm_server.combat.modifiers import (
+    INCAPACITATING_CONDITIONS,
+    active_effects,
+    apply_damage_multiplier,
+    armor_class_with_context,
+    attack_block_reason,
+    attack_context,
+    can_act,
+    condition_keys,
+    consume_modifiers,
+    damage_defense,
+    end_concentration_effects,
+    heals_nothing,
+    is_hidden,
+    save_context,
+    tick_effects,
+)
 from aidm_server.combat.state import combat_turn_context
 from aidm_server.creatures.schemas import DAMAGE_TYPES
-from aidm_server.damage_dice import parse_damage_dice_expression
+from aidm_server.damage_dice import parse_damage_dice_expression, roll_signed_dice
 
 
 Roller = Callable[[int], int]
@@ -71,25 +89,6 @@ ABILITY_ALIASES = {
     'wis': 'wisdom',
     'cha': 'charisma',
 }
-CASTER_EXCLUDING_CONDITIONS = frozenset(
-    {
-        'dead',
-        'fled',
-        'escaped',
-        'retreated',
-        'withdrawn',
-        'surrendered',
-        'yielded',
-        'unconscious',
-        'incapacitated',
-        'paralyzed',
-        'stunned',
-        'absent',
-    }
-)
-CONCENTRATION_BREAKING_CONDITIONS = frozenset(
-    {'dead', 'unconscious', 'incapacitated', 'paralyzed', 'stunned', 'petrified'}
-)
 SPELL_RESOLUTION_LEDGER_LIMIT = 200
 
 
@@ -128,13 +127,6 @@ def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int
 def _ability_key(value: Any) -> str:
     key = _key(value)
     return ABILITY_ALIASES.get(key, key)
-
-
-def _conditions(participant: Mapping[str, Any]) -> set[str]:
-    values = participant.get('conditions')
-    if not isinstance(values, (list, tuple, set)):
-        values = [values]
-    return {_key(value) for value in values if _text(value)}
 
 
 def _participant_id(participant: Mapping[str, Any]) -> str:
@@ -180,13 +172,21 @@ def _is_alive(participant: Mapping[str, Any]) -> bool:
 
 
 def _can_cast(participant: Mapping[str, Any]) -> bool:
-    hp = _hp(participant)
-    return (
-        _is_present(participant)
-        and participant.get('isAlive', hp['current'] > 0) is not False
-        and participant.get('isConscious', hp['current'] > 0) is not False
-        and hp['current'] > 0
-        and not _conditions(participant).intersection(CASTER_EXCLUDING_CONDITIONS)
+    return _hp(participant)['current'] > 0 and can_act(participant)
+
+
+def _restores_downed_player(spell: Mapping[str, Any], target: Mapping[str, Any]) -> bool:
+    """Healing or ally spells may reach a player character at 0 HP who is not dead."""
+
+    helpful = spell['target']['relation'] == 'ally' or any(
+        effect['kind'] == 'healing' for effect in spell['effects']
+    )
+    return helpful and vitality.is_player_character(target) and not vitality.is_dead(target)
+
+
+def _harmful(spell: Mapping[str, Any]) -> bool:
+    return spell['target']['relation'] == 'enemy' or any(
+        effect['kind'] == 'damage' for effect in spell['effects']
     )
 
 
@@ -529,9 +529,16 @@ def spell_target_legality(
         elif target_spec['requiresPresent'] and not _is_present(target):
             code = 'spell_target_absent'
             reason = 'The selected target is not physically present.'
-        elif not target_spec['allowDefeated'] and not _is_alive(target):
+        elif (
+            not target_spec['allowDefeated']
+            and not _is_alive(target)
+            and not _restores_downed_player(normalized_spell, target)
+        ):
             code = 'spell_target_defeated'
             reason = 'The selected target is already defeated.'
+        elif _harmful(normalized_spell) and attack_block_reason(caster, target):
+            code = 'spell_target_charmer'
+            reason = attack_block_reason(caster, target)
         elif target_spec['relation'] == 'self' and target_id != _text(caster_id):
             code = 'spell_target_relation_invalid'
             reason = 'This spell can target only its caster.'
@@ -554,7 +561,7 @@ def spell_target_legality(
             target_zone = _text(position.get('zoneId') or position.get('zone_id'))
             cover = _cover_entry(combat, target)
             cover_type = _key((cover or {}).get('coverType') or (cover or {}).get('cover_type'))
-            hidden = position.get('isHidden', position.get('is_hidden')) is True
+            hidden = is_hidden(target)
             if range_band not in target_spec['rangeBands']:
                 code = 'spell_target_out_of_range'
                 reason = f'The selected target is at {range_band or "unknown"} range.'
@@ -623,12 +630,7 @@ def _roll_expression(expression: str, roller: Roller, *, critical: bool = False)
     }
 
 
-def _armor_class(
-    combat: Mapping[str, Any],
-    target: Mapping[str, Any],
-    *,
-    ignore_cover: bool = False,
-) -> tuple[int, int]:
+def _armor_class(target: Mapping[str, Any], context: Mapping[str, Any]) -> int:
     stats = target.get('stats') if isinstance(target.get('stats'), Mapping) else {}
     base = _bounded_int(
         target.get('armorClass', stats.get('armorClass', stats.get('armor_class'))),
@@ -636,10 +638,23 @@ def _armor_class(
         minimum=1,
         maximum=40,
     )
-    cover = None if ignore_cover else _cover_entry(combat, target)
-    cover_type = _key((cover or {}).get('coverType') or (cover or {}).get('cover_type'))
-    cover_bonus = {'half': 2, 'three_quarters': 5}.get(cover_type, 0)
-    return min(45, base + cover_bonus), cover_bonus
+    return armor_class_with_context(base, context)
+
+
+def _d20(mode: str, roller: Roller) -> tuple[int, list[int]]:
+    rolls = [_roll_die(20, roller)]
+    if mode in {'advantage', 'disadvantage'}:
+        rolls.append(_roll_die(20, roller))
+    kept = max(rolls) if mode == 'advantage' else min(rolls) if mode == 'disadvantage' else rolls[0]
+    return kept, rolls
+
+
+def _bonus_dice(dice: Iterable[str], roller: Roller) -> list[dict[str, Any]]:
+    return [
+        rolled
+        for expression in dice
+        if (rolled := roll_signed_dice(expression, lambda sides: _roll_die(sides, roller))) is not None
+    ]
 
 
 def _proficiency_bonus(participant: Mapping[str, Any]) -> int:
@@ -724,15 +739,6 @@ def _save_modifier(participant: Mapping[str, Any], ability: str) -> int:
     return modifier
 
 
-def _defense_types(participant: Mapping[str, Any], field: str) -> set[str]:
-    values = participant.get(field)
-    if values is None and isinstance(participant.get('stats'), Mapping):
-        values = participant['stats'].get(field)
-    if isinstance(values, str):
-        values = [values]
-    return {_key(value) for value in values or [] if _text(value)}
-
-
 def _condition_immunities(participant: Mapping[str, Any]) -> set[str]:
     for key in ('conditionImmunities', 'condition_immunities'):
         values = participant.get(key)
@@ -743,11 +749,6 @@ def _condition_immunities(participant: Mapping[str, Any]) -> set[str]:
     return set()
 
 
-def _active_effects(participant: Mapping[str, Any]) -> list[dict[str, Any]]:
-    values = participant.get('activeEffects', participant.get('active_effects'))
-    return [deepcopy(value) for value in values if isinstance(value, dict)] if isinstance(values, list) else []
-
-
 def _effect_id(cast_id: str, target_id: str, effect_index: int) -> str:
     digest = hashlib.sha256(f'{cast_id}:{target_id}:{effect_index}'.encode()).hexdigest()[:20]
     return f'sfx_{digest}'
@@ -755,61 +756,6 @@ def _effect_id(cast_id: str, target_id: str, effect_index: int) -> str:
 
 def _set_conditions(participant: dict[str, Any], conditions: Iterable[str]) -> None:
     participant['conditions'] = list(dict.fromkeys(_key(value) for value in conditions if _key(value)))
-
-
-def _condition_maintained(participant: Mapping[str, Any], condition: str) -> bool:
-    return any(
-        _key(effect.get('kind')) == 'condition'
-        and _key(effect.get('operation') or 'add') == 'add'
-        and _key(effect.get('condition')) == condition
-        for effect in _active_effects(participant)
-    )
-
-
-def _removed_effects_preserve_condition(
-    effects: Iterable[Mapping[str, Any]], condition: str
-) -> bool:
-    return any(
-        _key(effect.get('condition')) == condition
-        and effect.get('preserveConditionOnExpiry') is True
-        for effect in effects
-    )
-
-
-def _remove_active_effects(
-    combat: dict[str, Any],
-    *,
-    source_actor_id: str,
-    source_spell_id: str,
-) -> list[dict[str, Any]]:
-    removed: list[dict[str, Any]] = []
-    for participant in _participants(combat):
-        retained = []
-        removed_from_participant = []
-        for effect in _active_effects(participant):
-            if (
-                _text(effect.get('sourceActorId')) == source_actor_id
-                and _text(effect.get('sourceSpellId')) == source_spell_id
-                and effect.get('concentration') is True
-            ):
-                removed.append(deepcopy(effect))
-                removed_from_participant.append(effect)
-            else:
-                retained.append(effect)
-        participant['activeEffects'] = retained
-        conditions = _conditions(participant)
-        for effect in removed_from_participant:
-            condition = _key(effect.get('condition'))
-            if (
-                condition
-                and not _condition_maintained(participant, condition)
-                and not _removed_effects_preserve_condition(
-                    removed_from_participant, condition
-                )
-            ):
-                conditions.discard(condition)
-        _set_conditions(participant, sorted(conditions))
-    return removed
 
 
 def _start_concentration(
@@ -826,10 +772,10 @@ def _start_concentration(
     removed: list[dict[str, Any]] = []
     if previous:
         previous_caster = _text(previous.get('casterActorId')) or caster_id
-        removed = _remove_active_effects(
+        removed = end_concentration_effects(
             combat,
-            source_actor_id=previous_caster,
-            source_spell_id=_text(previous.get('spellId')),
+            caster_id=previous_caster,
+            source_id=_text(previous.get('spellId')),
         )
     concentration: dict[str, Any] = {
         'active': True,
@@ -861,43 +807,78 @@ def _resolve_delivery(
 ) -> dict[str, Any]:
     delivery_type = delivery['type']
     if delivery_type == 'automatic':
-        return {'type': 'automatic', 'delivered': True, 'critical': False}
-    natural_roll = _roll_die(20, roller)
+        return {'type': 'automatic', 'delivered': True, 'critical': False, 'consume': []}
     if delivery_type == 'attack':
-        attack_bonus = _bounded_int(delivery.get('attackBonus'), default=0, minimum=-20, maximum=30)
-        target_ac, cover_bonus = _armor_class(
-            combat,
+        context = attack_context(
+            caster,
             target,
+            kind='spell_attack',
+            ranged=list(target_spec.get('rangeBands') or []) != ['melee'],
+            combat=combat,
             ignore_cover=target_spec.get('ignoreCover') is True,
         )
-        total = natural_roll + attack_bonus
-        critical = natural_roll == 20
-        hit = natural_roll != 1 and (critical or total >= target_ac)
+        natural_roll, rolls = _d20(context['mode'], roller)
+        bonus_dice = _bonus_dice(context['attackBonusDice'], roller)
+        attack_bonus = _bounded_int(delivery.get('attackBonus'), default=0, minimum=-20, maximum=30)
+        target_ac = _armor_class(target, context)
+        total = natural_roll + attack_bonus + context['attackFlatBonus'] + sum(item['total'] for item in bonus_dice)
+        hit = natural_roll != 1 and (natural_roll == 20 or total >= target_ac)
         return {
             'type': 'attack',
             'delivered': hit,
-            'critical': critical,
+            'critical': hit and (natural_roll == 20 or context['autoCrit']),
+            'mode': context['mode'],
+            'modeReasons': context['reasons'],
+            'rolls': rolls,
             'naturalRoll': natural_roll,
             'modifier': attack_bonus,
+            'bonusDice': bonus_dice,
             'total': total,
             'targetArmorClass': target_ac,
-            'coverBonus': cover_bonus,
+            'coverBonus': context['coverBonus'],
+            'consume': context['consume'],
         }
     ability = str(delivery['ability'])
+    context = save_context(target, ability, combat=combat)
     modifier = _save_modifier(target, ability)
-    total = natural_roll + modifier
+    if context['autoFail']:
+        return {
+            'type': 'save',
+            'delivered': True,
+            'critical': False,
+            'ability': ability,
+            'autoFailed': True,
+            'modeReasons': context['reasons'],
+            'rolls': [],
+            'naturalRoll': None,
+            'modifier': modifier,
+            'bonusDice': [],
+            'total': None,
+            'dc': int(delivery['dc']),
+            'saveSucceeded': False,
+            'onSuccess': delivery['onSuccess'],
+            'consume': context['consume'],
+        }
+    natural_roll, rolls = _d20(context['mode'], roller)
+    bonus_dice = _bonus_dice(context['bonusDice'], roller)
+    total = natural_roll + modifier + context['flatBonus'] + sum(item['total'] for item in bonus_dice)
     success = total >= int(delivery['dc'])
     return {
         'type': 'save',
         'delivered': not success,
         'critical': False,
         'ability': ability,
+        'mode': context['mode'],
+        'modeReasons': context['reasons'],
+        'rolls': rolls,
         'naturalRoll': natural_roll,
         'modifier': modifier,
+        'bonusDice': bonus_dice,
         'total': total,
         'dc': int(delivery['dc']),
         'saveSucceeded': success,
         'onSuccess': delivery['onSuccess'],
+        'consume': context['consume'],
     }
 
 
@@ -910,42 +891,35 @@ def _save_effect_mode(effect: Mapping[str, Any], delivery: Mapping[str, Any]) ->
     return 'none'
 
 
-def _damage_multiplier(target: Mapping[str, Any], damage_type: str) -> tuple[int, int, str]:
-    if damage_type in _defense_types(target, 'immunities'):
-        return 0, 1, 'immune'
-    resistant = damage_type in _defense_types(target, 'resistances')
-    vulnerable = damage_type in _defense_types(target, 'vulnerabilities')
-    if resistant and vulnerable:
-        return 1, 1, 'resistance_and_vulnerability_cancel'
-    if resistant:
-        return 1, 2, 'resistant'
-    if vulnerable:
-        return 2, 1, 'vulnerable'
-    return 1, 1, 'normal'
-
-
 def _apply_damage(
     participant: dict[str, Any],
     *,
     rolled: dict[str, Any],
     damage_type: str,
     save_divisor: int,
+    critical: bool,
+    in_combat: bool,
 ) -> dict[str, Any]:
     hp_before = _hp(participant)
     after_save = int(rolled['total']) // max(1, save_divisor)
-    numerator, denominator, defense = _damage_multiplier(participant, damage_type)
-    final_damage = (after_save * numerator) // denominator
-    absorbed = min(hp_before['temp'], final_damage)
-    hp_damage = min(hp_before['current'], final_damage - absorbed)
-    hp_after = {
-        'current': hp_before['current'] - hp_damage,
-        'max': hp_before['max'],
-        'temp': hp_before['temp'] - absorbed,
-    }
-    participant['hp'] = hp_after
-    if hp_after['current'] <= 0:
-        participant['isAlive'] = False
-        participant['isConscious'] = False
+    multiplier, defense = damage_defense(participant, damage_type)
+    final_damage = apply_damage_multiplier(after_save, multiplier)
+    if vitality.is_player_character(participant):
+        taken = vitality.take_damage(participant, final_damage, critical=critical, in_combat=in_combat)
+        absorbed, hp_damage = taken['tempHpDamage'], taken['hpDamage']
+        hp_after = _hp(participant)
+    else:
+        absorbed = min(hp_before['temp'], final_damage)
+        hp_damage = min(hp_before['current'], final_damage - absorbed)
+        hp_after = {
+            'current': hp_before['current'] - hp_damage,
+            'max': hp_before['max'],
+            'temp': hp_before['temp'] - absorbed,
+        }
+        participant['hp'] = hp_after
+        if hp_after['current'] <= 0:
+            participant['isAlive'] = False
+            participant['isConscious'] = False
     return {
         'kind': 'damage',
         'damageType': damage_type,
@@ -965,20 +939,24 @@ def _apply_damage(
 
 def _apply_healing(participant: dict[str, Any], *, rolled: dict[str, Any]) -> dict[str, Any]:
     hp_before = _hp(participant)
-    was_defeated = (
-        hp_before['current'] <= 0
-        or participant.get('isAlive', hp_before['current'] > 0) is False
-    )
-    missing = max(0, hp_before['max'] - hp_before['current'])
-    applied = min(missing, int(rolled['total']))
-    hp_after = {**hp_before, 'current': hp_before['current'] + applied}
-    participant['hp'] = hp_after
-    # Ordinary healing must not wake an actor who is unconscious for another
-    # reason. Reanimation occurs only after target legality explicitly allowed
-    # a defeated target and the spell actually restored positive HP.
-    if was_defeated and applied > 0:
-        participant['isAlive'] = True
-        participant['isConscious'] = True
+    if vitality.is_player_character(participant):
+        applied = vitality.heal(participant, int(rolled['total']))
+        hp_after = _hp(participant)
+    else:
+        was_defeated = (
+            hp_before['current'] <= 0
+            or participant.get('isAlive', hp_before['current'] > 0) is False
+        )
+        missing = max(0, hp_before['max'] - hp_before['current'])
+        applied = 0 if heals_nothing(participant) else min(missing, int(rolled['total']))
+        hp_after = {**hp_before, 'current': hp_before['current'] + applied}
+        participant['hp'] = hp_after
+        # Ordinary healing must not wake an actor who is unconscious for another
+        # reason. Reanimation occurs only after target legality explicitly allowed
+        # a defeated target and the spell actually restored positive HP.
+        if was_defeated and applied > 0:
+            participant['isAlive'] = True
+            participant['isConscious'] = True
     return {
         'kind': 'healing',
         'roll': rolled,
@@ -1015,17 +993,16 @@ def _apply_condition(
 ) -> dict[str, Any]:
     condition = _key(effect['condition'])
     operation = _key(effect['operation'])
-    before = sorted(_conditions(participant))
+    before = sorted(condition_keys(participant))
     conditions = set(before)
-    active_effects = _active_effects(participant)
+    effects = active_effects(participant)
     if operation == 'remove':
         conditions.discard(condition)
-        active_effects = [
+        participant['activeEffects'] = [
             active_effect
-            for active_effect in active_effects
-            if _key(active_effect.get('condition')) != condition
+            for active_effect in effects
+            if active_effect.get('condition') != condition
         ]
-        participant['activeEffects'] = active_effects
         _set_conditions(participant, sorted(conditions))
         return {
             'kind': 'condition',
@@ -1051,11 +1028,7 @@ def _apply_condition(
     active_effect = None
     if effect.get('duration') or spell.get('concentration') is True:
         existing_condition_effects = [
-            existing
-            for existing in active_effects
-            if _key(existing.get('kind')) == 'condition'
-            and _key(existing.get('operation') or 'add') == 'add'
-            and _key(existing.get('condition')) == condition
+            existing for existing in effects if existing.get('condition') == condition
         ]
         preserve_on_expiry = condition in before and (
             not existing_condition_effects
@@ -1064,29 +1037,31 @@ def _apply_condition(
                 for existing in existing_condition_effects
             )
         )
+        duration = effect.get('duration')
         active_effect = {
             'id': _effect_id(cast_id, _participant_id(participant), effect_index),
-            'kind': 'condition',
-            'operation': 'add',
-            'condition': condition,
-            'sourceActorId': caster_id,
-            'sourceSpellId': spell['id'],
-            'sourceSpellName': spell['name'],
+            'sourceId': spell['id'],
+            'sourceName': spell['name'],
+            'casterId': caster_id,
             'castId': cast_id,
+            'condition': condition,
+            'modifiers': {},
+            'duration': (
+                {
+                    'rounds': duration['remaining'],
+                    'tickOn': 'caster_turn_end' if duration['tick'] == 'source_turn_end' else 'target_turn_end',
+                }
+                if duration
+                else None
+            ),
             'concentration': spell.get('concentration') is True,
+            'consumeOn': None,
             'preserveConditionOnExpiry': preserve_on_expiry,
         }
-        if effect.get('duration'):
-            active_effect['duration'] = deepcopy(effect['duration'])
-        elif spell.get('concentration') is True:
-            active_effect['duration'] = {'kind': 'concentration'}
-        active_effects = [
-            existing
-            for existing in active_effects
-            if _text(existing.get('id')) != active_effect['id']
+        participant['activeEffects'] = [
+            *[existing for existing in effects if existing['id'] != active_effect['id']],
+            active_effect,
         ]
-        active_effects.append(active_effect)
-        participant['activeEffects'] = active_effects
     _set_conditions(participant, sorted(conditions))
     return {
         'kind': 'condition',
@@ -1111,6 +1086,7 @@ def _apply_effect(
     caster_id: str,
     spell: Mapping[str, Any],
     effect_index: int,
+    in_combat: bool,
 ) -> dict[str, Any]:
     save_succeeded = delivery_result.get('saveSucceeded') is True
     save_mode = _save_effect_mode(effect, delivery) if save_succeeded else 'full'
@@ -1143,6 +1119,8 @@ def _apply_effect(
             rolled=rolled,
             damage_type=str(effect['damageType']),
             save_divisor=2 if save_succeeded and save_mode == 'half' else 1,
+            critical=delivery_result.get('critical') is True,
+            in_combat=in_combat,
         )
     if effect['kind'] == 'healing':
         return _apply_healing(participant, rolled=rolled)
@@ -1248,6 +1226,7 @@ def resolve_targeted_spell(
             current_turn=current_turn,
         )
 
+    in_combat = _key(next_combat.get('status')) in {'starting', 'active'}
     target_resolutions: list[dict[str, Any]] = []
     for target_id in normalized_target_ids:
         target = _participant_by_id(next_combat, target_id)
@@ -1260,6 +1239,11 @@ def resolve_targeted_spell(
             normalized_spell['target'],
             roller,
         )
+        consumed = consume_modifiers(next_combat, delivery_result.pop('consume', []))
+        if consumed:
+            delivery_result['consumedEffects'] = [
+                _text(item.get('id') or item.get('condition')) for item in consumed
+            ]
         effect_results = [
             _apply_effect(
                 target,
@@ -1271,6 +1255,7 @@ def resolve_targeted_spell(
                 caster_id=_text(caster_id),
                 spell=normalized_spell,
                 effect_index=index,
+                in_combat=in_combat,
             )
             for index, effect in enumerate(normalized_spell['effects'])
         ]
@@ -1335,17 +1320,18 @@ def advance_spell_effect_durations(
 ) -> dict[str, Any]:
     """Advance duration counters at one explicit turn boundary.
 
-    ``target_turn_end`` decrements effects on ``actor_id``.  ``source_turn_end``
-    decrements effects cast by ``actor_id``.  Expiration removes a condition
-    only when no other active effect still maintains it.
+    ``target_turn_end`` decrements effects on ``actor_id``; ``source_turn_end``
+    (``caster_turn_end``) and ``caster_turn_start`` decrement effects cast by
+    ``actor_id``.  Expiration removes a condition only when no other active
+    effect still maintains it.
     """
 
     normalized_timing = _key(timing)
-    if normalized_timing not in SUPPORTED_DURATION_TICKS:
+    if normalized_timing not in SUPPORTED_DURATION_TICKS | {'caster_turn_end', 'caster_turn_start'}:
         return {
             'ok': False,
             'code': 'spell_duration_timing_invalid',
-            'reason': 'Duration timing must be target_turn_end or source_turn_end.',
+            'reason': 'Duration timing must be target_turn_end, caster_turn_end or caster_turn_start.',
             'combat': deepcopy(dict(combat)),
             'expiredEffects': [],
         }
@@ -1358,48 +1344,13 @@ def advance_spell_effect_durations(
             'combat': deepcopy(dict(combat)),
             'expiredEffects': [],
         }
-    decrement = max(1, min(1000, _int(steps, default=1)))
     next_combat = deepcopy(dict(combat))
-    expired: list[dict[str, Any]] = []
-    for participant in _participants(next_combat):
-        retained = []
-        expired_here: list[dict[str, Any]] = []
-        for effect in _active_effects(participant):
-            duration = effect.get('duration') if isinstance(effect.get('duration'), Mapping) else {}
-            effect_timing = _key(duration.get('tick'))
-            applies = effect_timing == normalized_timing and (
-                (
-                    normalized_timing == 'target_turn_end'
-                    and _participant_id(participant) == normalized_actor_id
-                )
-                or (
-                    normalized_timing == 'source_turn_end'
-                    and _text(effect.get('sourceActorId')) == normalized_actor_id
-                )
-            )
-            if not applies:
-                retained.append(effect)
-                continue
-            next_remaining = max(0, _int(duration.get('remaining'), default=0) - decrement)
-            if next_remaining <= 0:
-                expired_effect = deepcopy(effect)
-                expired_effect['targetId'] = _participant_id(participant)
-                expired.append(expired_effect)
-                expired_here.append(effect)
-                continue
-            effect['duration'] = {**duration, 'remaining': next_remaining}
-            retained.append(effect)
-        participant['activeEffects'] = retained
-        conditions = _conditions(participant)
-        for effect in expired_here:
-            condition = _key(effect.get('condition'))
-            if (
-                condition
-                and not _condition_maintained(participant, condition)
-                and not _removed_effects_preserve_condition(expired_here, condition)
-            ):
-                conditions.discard(condition)
-        _set_conditions(participant, sorted(conditions))
+    expired = tick_effects(
+        next_combat,
+        actor_id=normalized_actor_id,
+        tick_on=normalized_timing,
+        steps=_int(steps, default=1),
+    )
     return {
         'ok': True,
         'code': None,
@@ -1471,26 +1422,31 @@ def resolve_concentration_check(
         caster.get('isAlive', hp['current'] > 0) is False
         or caster.get('isConscious', hp['current'] > 0) is False
         or hp['current'] <= 0
-        or bool(_conditions(caster).intersection(CONCENTRATION_BREAKING_CONDITIONS))
+        or bool(condition_keys(caster).intersection(INCAPACITATING_CONDITIONS | {'dead'}))
     )
     dc = max(10, max(0, _int(damage)) // 2)
     natural_roll = None
+    rolls: list[int] = []
+    bonus_dice: list[dict[str, Any]] = []
     modifier = _save_modifier(caster, 'constitution')
     total = None
     maintained = False
     failure_reason = 'caster_incapacitated'
     if not incapacitated:
-        natural_roll = _roll_die(20, roller)
-        total = natural_roll + modifier
+        context = save_context(caster, 'constitution', combat=next_combat)
+        natural_roll, rolls = _d20(context['mode'], roller)
+        bonus_dice = _bonus_dice(context['bonusDice'], roller)
+        total = natural_roll + modifier + context['flatBonus'] + sum(item['total'] for item in bonus_dice)
         maintained = total >= dc
         failure_reason = '' if maintained else 'saving_throw_failed'
+        consume_modifiers(next_combat, context['consume'])
 
     removed: list[dict[str, Any]] = []
     if not maintained:
-        removed = _remove_active_effects(
+        removed = end_concentration_effects(
             next_combat,
-            source_actor_id=_text(caster_id),
-            source_spell_id=_text(concentration.get('spellId')),
+            caster_id=_text(caster_id),
+            source_id=_text(concentration.get('spellId')),
         )
         next_resources['concentration'] = None
         next_resources['revision'] = max(0, _int(next_resources.get('revision'))) + 1
@@ -1506,7 +1462,9 @@ def resolve_concentration_check(
             'damage': max(0, _int(damage)),
             'dc': dc,
             'naturalRoll': natural_roll,
+            'rolls': rolls,
             'modifier': modifier,
+            'bonusDice': bonus_dice,
             'total': total,
             'succeeded': maintained,
             'automaticFailure': incapacitated,

@@ -1,0 +1,506 @@
+/*
+ * Story mode feed: the reading column. Prose is set like a book page; every
+ * other beat is quieter than the prose around it.
+ */
+
+.story-shell .story-feed-region {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.story-shell .story-feed {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* StoryFeed keeps the reader's line in place itself, the same way in every browser. */
+  overflow-anchor: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--story-hairline-strong) transparent;
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 48px, #000 calc(100% - 72px), transparent 100%);
+  mask-image: linear-gradient(180deg, transparent 0, #000 48px, #000 calc(100% - 72px), transparent 100%);
+}
+.story-shell .story-feed[data-text-size='large'] { --story-feed-scale: 1.1; }
+.story-shell .story-feed[data-text-size='extra'] { --story-feed-scale: 1.22; }
+
+.story-shell .story-feed-column {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  width: auto;
+  max-width: var(--story-measure);
+  margin: 0 auto;
+  padding: 52px max(var(--story-gutter), env(safe-area-inset-right, 0px)) 120px
+    max(var(--story-gutter), env(safe-area-inset-left, 0px));
+  font-family: var(--story-prose);
+  font-size: calc(var(--story-prose-size) * var(--story-feed-scale, 1));
+  font-kerning: normal;
+  font-variant-ligatures: common-ligatures;
+  line-height: var(--story-prose-leading);
+  color: var(--story-ink);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- rhythm ---- */
+
+.story-shell .story-beat {
+  animation: story-rise 240ms var(--story-ease) backwards;
+}
+.story-shell .story-beat[data-gap='tight'] { margin-top: var(--story-gap-3); }
+.story-shell .story-beat[data-gap='speaker'] { margin-top: var(--story-gap-5); }
+.story-shell .story-beat[data-gap='turn'] { margin-top: var(--story-gap-6); }
+
+/* ---- chapter ---- */
+
+.story-shell .story-chapter-heading {
+  display: grid;
+  justify-items: center;
+  margin-bottom: var(--story-gap-5);
+  text-align: center;
+}
+.story-shell .story-chapter-ornament {
+  color: var(--story-ember-soft);
+  opacity: 0.8;
+}
+.story-shell .story-chapter-label {
+  margin: 12px 0 0;
+  letter-spacing: 0.28em;
+  color: var(--story-ink-soft);
+}
+.story-shell .story-chapter-rule {
+  width: min(240px, 60%);
+  margin: 16px auto 0;
+}
+.story-shell .story-previously {
+  display: grid;
+  justify-items: center;
+  margin-top: var(--story-gap-5);
+}
+.story-shell .story-previously-text {
+  display: -webkit-box;
+  max-width: 34em;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  font-size: 0.94em;
+  font-style: italic;
+  line-height: 1.62;
+  color: var(--story-ink-soft);
+  text-wrap: pretty;
+}
+.story-shell .story-previously-text[data-expanded] {
+  display: block;
+  -webkit-line-clamp: unset;
+}
+.story-shell .story-previously-lead {
+  margin-right: 0.35em;
+  font-family: var(--story-ui);
+  font-size: 0.66rem;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: var(--story-label-tracking);
+  text-transform: uppercase;
+  color: var(--story-ember-soft);
+}
+.story-shell .story-previously-more {
+  margin-top: 6px;
+  font-family: var(--story-ui);
+  font-size: 0.8rem;
+}
+
+/* ---- narration ---- */
+
+.story-shell .story-narration {
+  position: relative;
+}
+.story-shell .story-narration .narrative-prose p {
+  margin: 0;
+  text-wrap: pretty;
+}
+.story-shell .story-narration .narrative-prose p + p {
+  margin-top: 0.9em;
+}
+.story-shell .story-narration .narrative-dialogue {
+  color: var(--story-ink-bright);
+}
+.story-shell .story-narration .narrative-prose em {
+  font-style: italic;
+}
+
+/* The first narration of a session opens with a three-line drop cap. */
+.story-shell .story-narration[data-opening] .narrative-prose > p:first-child::first-letter {
+  -webkit-initial-letter: 3;
+  initial-letter: 3;
+  margin-right: 0.14em;
+  font-weight: 500;
+  color: var(--story-ember-soft);
+  text-shadow: 0 0 28px color-mix(in srgb, var(--story-ember) 45%, transparent);
+}
+@supports not ((initial-letter: 3) or (-webkit-initial-letter: 3)) {
+  .story-shell .story-narration[data-opening] .narrative-prose > p:first-child::first-letter {
+    float: left;
+    margin: 0.08em 0.12em 0 0;
+    font-size: 4.2em;
+    line-height: 0.82;
+  }
+}
+
+/* Streaming caret: zero-width so it never wraps a line it would then take away. */
+.story-shell .story-caret {
+  display: inline-block;
+  width: 0;
+  overflow: visible;
+  margin-left: 0.06em;
+  font-family: var(--story-ui);
+  font-size: 0.86em;
+  line-height: 1;
+  color: var(--story-ember-soft);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--story-ember) 80%, transparent);
+  animation: story-caret 1s ease-in-out infinite;
+}
+@keyframes story-caret {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.12; }
+}
+
+.story-shell .story-not-saved {
+  margin: 8px 0 0;
+  color: var(--story-fail);
+}
+
+/* Rate / report: two quiet glyphs in the right gutter of the latest narration. */
+.story-shell .story-turn-tools {
+  position: absolute;
+  bottom: 0.15em;
+  left: calc(100% + 18px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity var(--story-base) var(--story-ease);
+}
+.story-shell .story-narration:hover .story-turn-tools,
+.story-shell .story-turn-tools:focus-within,
+.story-shell .story-turn-tools[data-open] {
+  opacity: 1;
+}
+@media (hover: none) {
+  .story-shell .story-turn-tools { opacity: 1; }
+}
+.story-shell .story-turn-tool {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--story-muted);
+  cursor: pointer;
+  transition: color var(--story-fast) var(--story-ease), background-color var(--story-fast) var(--story-ease);
+}
+.story-shell .story-turn-tool:hover,
+.story-shell .story-turn-tool:focus-visible,
+.story-shell .story-turn-tool[aria-expanded='true'] {
+  color: var(--story-ink);
+  background: var(--story-veil);
+}
+.story-shell .story-turn-tool:focus-visible { border-radius: 50%; }
+.story-shell .story-turn-tool:disabled { cursor: default; background: none; }
+.story-shell .story-turn-tool[data-reported] { color: var(--story-fail); }
+
+.story-shell .story-rate-popover {
+  /* Chrome drops backdrop-filter inside the feed's mask-image, so the glass is denser here. */
+  background: color-mix(in srgb, var(--story-bg-raised) 96%, transparent);
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: 252px;
+  padding: 14px 16px 12px;
+  line-height: 1.3;
+  transform-origin: bottom right;
+}
+.story-shell .story-rate-popover form {
+  display: grid;
+  gap: 10px;
+}
+.story-shell .story-rate-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.story-shell .story-rate-scores {
+  display: inline-flex;
+  gap: 2px;
+}
+.story-shell .story-rate-score {
+  appearance: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  font: 500 0.8rem var(--story-ui);
+  font-variant-numeric: tabular-nums;
+  color: var(--story-muted);
+  cursor: pointer;
+}
+.story-shell .story-rate-score:hover { color: var(--story-ink); }
+.story-shell .story-rate-score[aria-pressed='true'] {
+  color: var(--story-bg);
+  background: var(--story-ember-soft);
+}
+.story-shell .story-rate-score:focus-visible { border-radius: 50%; }
+.story-shell .story-rate-submit {
+  justify-self: end;
+  font-size: 0.86rem;
+  color: var(--story-ember-soft);
+}
+.story-shell .story-rate-sent {
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--story-success);
+}
+
+/* ---- a player's action ---- */
+
+.story-shell .story-action {
+  margin-left: 1.5em;
+  padding: 2px 0 2px 1em;
+  border-left: 1px solid var(--story-ember);
+}
+.story-shell .story-action-speaker {
+  margin: 0 0 3px;
+  color: var(--story-ember-soft);
+}
+.story-shell .story-action-text {
+  margin: 0;
+  font-size: 0.96em;
+  font-style: italic;
+  line-height: 1.6;
+  color: var(--story-ink-soft);
+  white-space: pre-line;
+  text-wrap: pretty;
+}
+.story-shell .story-action[data-delivery='pending'] > :not(.story-action-status) { opacity: 0.55; }
+.story-shell .story-action-status {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 4px 0 0;
+  font-family: var(--story-ui);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+.story-shell .story-action-status[data-failed] .story-label { color: var(--story-fail); }
+
+/* ---- a roll ---- */
+
+.story-shell .story-roll-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px 12px;
+  margin: 0;
+  font-family: var(--story-ui);
+  line-height: 1.2;
+  text-align: center;
+}
+.story-shell .story-roll-who,
+.story-shell .story-roll-result {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+.story-shell .story-roll-who { align-items: center; gap: 10px; }
+.story-shell .story-roll-glyph {
+  flex: none;
+  color: var(--story-gold);
+}
+.story-shell .story-roll-total {
+  font-size: 1.5rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums lining-nums;
+  letter-spacing: -0.01em;
+  color: var(--story-gold);
+}
+.story-shell .story-roll-total[data-natural='twenty'] {
+  text-shadow: 0 0 18px color-mix(in srgb, var(--story-gold) 70%, transparent);
+}
+.story-shell .story-roll-total[data-natural='one'] {
+  text-shadow: 0 0 18px color-mix(in srgb, var(--story-danger) 75%, transparent);
+}
+.story-shell .story-roll-breakdown {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums lining-nums;
+  color: var(--story-muted);
+  word-spacing: 0.08em;
+}
+.story-shell .story-roll-outcome {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.story-shell .story-roll-outcome[data-outcome='success'] { color: var(--story-success); }
+.story-shell .story-roll-outcome[data-outcome='failure'] { color: var(--story-fail); }
+.story-shell .story-roll-dc {
+  font-weight: 450;
+  color: var(--story-muted);
+}
+
+/* ---- what changed ---- */
+
+.story-shell .story-change-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  line-height: 1.4;
+}
+.story-shell .story-change-list li {
+  animation: story-rise 240ms var(--story-ease) backwards;
+  animation-delay: calc(var(--story-chip-index, 0) * 30ms);
+}
+.story-shell .story-change-list .story-chip { white-space: normal; }
+.story-shell .story-change-mark {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  margin: 0 4px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
+}
+
+/* ---- notices ---- */
+
+.story-shell .story-notice-text {
+  margin: 0;
+  font-family: var(--story-ui);
+  font-size: 0.84rem;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  color: var(--story-muted);
+  text-align: center;
+}
+
+/* ---- history, jump, empty, loading ---- */
+
+.story-shell .story-earlier {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: var(--story-gap-6);
+  font-family: var(--story-ui);
+  font-size: 0.84rem;
+}
+.story-shell .story-earlier .story-link { color: var(--story-muted); }
+.story-shell .story-earlier .story-link:hover,
+.story-shell .story-earlier .story-link:focus-visible { color: var(--story-ink-soft); }
+
+.story-shell .story-jump {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  z-index: 2;
+  translate: -50% 0;
+  font-family: var(--story-ui);
+  font-size: 0.82rem;
+  color: var(--story-ember-soft);
+  text-shadow: 0 0 12px var(--story-bg), 0 0 4px var(--story-bg);
+  white-space: nowrap;
+  animation: story-rise var(--story-base) var(--story-ease) backwards;
+}
+
+.story-shell .story-empty {
+  display: grid;
+  justify-items: center;
+  gap: 18px;
+  margin: auto 0;
+  padding: 24px 0 8vh;
+  text-align: center;
+  animation: story-rise 480ms var(--story-ease) backwards;
+}
+.story-shell .story-empty-title {
+  margin: 0;
+  font-size: clamp(2.2rem, 1.2rem + 3.4vw, 3.8rem);
+  font-weight: 500;
+  line-height: 1.06;
+  letter-spacing: -0.01em;
+  color: var(--story-ink);
+  text-wrap: balance;
+}
+.story-shell .story-empty-description {
+  display: -webkit-box;
+  max-width: 32em;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  font-size: 1.02em;
+  line-height: 1.6;
+  color: var(--story-ink-soft);
+  text-wrap: pretty;
+}
+.story-shell .story-empty .story-primary { margin-top: 18px; }
+.story-shell .story-empty-beginning {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  margin: 18px 0 0;
+  font-family: var(--story-ui);
+  font-size: 0.94rem;
+  color: var(--story-ember-soft);
+}
+
+.story-shell .story-loading {
+  display: grid;
+  gap: 0.9em;
+  margin: auto 0;
+  padding-bottom: 8vh;
+}
+.story-shell .story-loading span {
+  height: 0.7em;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--story-hairline) 0%, var(--story-hairline-strong) 40%, var(--story-hairline) 80%);
+  background-size: 220% 100%;
+  animation: story-shimmer 1.8s ease-in-out infinite;
+}
+.story-shell .story-loading span:nth-child(2) { width: 92%; animation-delay: 0.12s; }
+.story-shell .story-loading span:nth-child(3) { width: 64%; animation-delay: 0.24s; }
+@keyframes story-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -120% 0; }
+}
+
+/* ---- compact ---- */
+
+@media (max-width: 860px) {
+  .story-shell .story-turn-tools {
+    position: relative;
+    bottom: auto;
+    left: auto;
+    flex-direction: row;
+    justify-content: flex-end;
+    margin-top: 6px;
+  }
+}
+
+@media (max-width: 700px) {
+  .story-shell .story-feed-column { padding-top: 36px; padding-bottom: 96px; }
+  .story-shell .story-action { margin-left: 0.6em; padding-left: 0.85em; }
+}

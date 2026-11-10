@@ -6,12 +6,12 @@ VENV_PYTHON="${REPO_ROOT}/.venv/bin/python"
 
 if [[ ! -x "${VENV_PYTHON}" ]]; then
   echo "[run_local_backend] Missing virtualenv python at ${VENV_PYTHON}"
-  echo "[run_local_backend] Run: make install (requires Python 3.14.6, Node.js 24.18.0, and npm 12.0.0)."
+  echo "[run_local_backend] Run: make install (README.md lists the required Python, Node.js, and npm versions)."
   exit 1
 fi
 
-if ! "${VENV_PYTHON}" -c 'import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 14, 6) else 1)'; then
-  echo "[run_local_backend] Python 3.14.6 is required; run make install to recreate .venv."
+if ! "${VENV_PYTHON}" "${REPO_ROOT}/scripts/check_toolchain.py" python; then
+  echo "[run_local_backend] Run make install to recreate .venv."
   exit 1
 fi
 

@@ -34,9 +34,15 @@ import {
   turnControlStatusLabel,
 } from './turnControl'
 import type { ActivePlayer, Campaign, Player, SessionState, StreamingTurn, TimelineEntry, TurnControl } from './types'
+import { useLatest } from './useLatest'
+import type { SessionSocketBinding, TurnRejection } from './useSessionSocket'
 
 export const SEND_PENDING_RECOVERY_MS = 120_000
+// A send interrupted by a reconnect is re-emitted automatically when the
+// same session is joined again within this window.
+export const RECONNECT_RESEND_WINDOW_MS = 20_000
 const COMPOSER_DRAFT_PREFIX = 'aidm:composerDraft'
+const CONNECTION_INTERRUPTED_REASON = 'Realtime disconnected before confirmation.'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -131,13 +137,21 @@ type OutgoingTurnPayload = {
   client_message_id: string
   action_intent: ActionIntent
   admin_passcode?: string
+  message_kind?: 'opening'
 }
+
+type SubmissionKind = 'action' | 'opening'
 
 type StoredSubmission = {
   clientMessageId: string
   message: string
+  // Composer text as typed, restored when the server rejects the turn.
+  draftText: string
+  kind: SubmissionKind
   sessionId: number
+  playerId: number
   payload: OutgoingTurnPayload
+  autoRetried: boolean
 }
 
 type UseComposerActionsOptions = {
@@ -151,6 +165,7 @@ type UseComposerActionsOptions = {
   selectedPlayer: Player | null
   selectedPlayerId: number | null
   selectedSessionId: number | null
+  sessionHydrated: boolean
   sendPending: boolean
   dmResponseBlocking: boolean
   streamingTurn: StreamingTurn | null
@@ -161,6 +176,7 @@ type UseComposerActionsOptions = {
   stopTtsAudio: () => void
   turnControl: TurnControl
   pushError: (category: 'validation', message: string) => void
+  dismissError: (category: 'validation', message: string) => void
 }
 
 export function useComposerActions({
@@ -174,6 +190,7 @@ export function useComposerActions({
   selectedPlayer,
   selectedPlayerId,
   selectedSessionId,
+  sessionHydrated,
   sendPending,
   dmResponseBlocking,
   streamingTurn,
@@ -184,6 +201,7 @@ export function useComposerActions({
   stopTtsAudio,
   turnControl,
   pushError,
+  dismissError,
 }: UseComposerActionsOptions) {
   const [actionText, setActionText] = useState('')
   const [composerMode, setComposerMode] = useState<ComposerMode>('action')
@@ -205,12 +223,21 @@ export function useComposerActions({
   const [queuedActionText, setQueuedActionText] = useState('')
   const [diceRoll, setDiceRoll] = useState<DiceRollState | null>(null)
   const [recoverableSubmission, setRecoverableSubmission] = useState<StoredSubmission | null>(null)
+  const [reconnectingSubmission, setReconnectingSubmission] = useState<StoredSubmission | null>(null)
+  const [turnRejectionMessage, setTurnRejectionMessage] = useState('')
   const [sharedRollNotice, setSharedRollNotice] = useState<SharedRollNotice | null>(null)
   const diceRollKeyRef = useRef(0)
   const typingStatusRef = useRef(false)
   const typingBindingRef = useRef<{ socket: Socket; sessionId: number; playerId: number } | null>(null)
   const typingIdleTimerRef = useRef<number | null>(null)
   const pendingSubmissionRef = useRef<StoredSubmission | null>(null)
+  const reconnectingSubmissionRef = useRef<StoredSubmission | null>(null)
+  const reconnectTimerRef = useRef<number | null>(null)
+  // Client id of the latest re-emitted payload: the server's turn_duplicate
+  // answer releases the lock even if the saved log confirmed it first.
+  const resentClientMessageIdRef = useRef<string | null>(null)
+  const recoverableErrorRef = useRef<{ clientMessageId: string; message: string } | null>(null)
+  const selectionRef = useLatest({ sessionId: selectedSessionId, playerId: selectedPlayerId })
   const abilityOptionsRef = useRef(abilityOptions)
   const actionTextRef = useRef(actionText)
 
@@ -246,6 +273,7 @@ export function useComposerActions({
       setActionText(storedDraft)
       setQueuedActionText('')
       setRecoverableSubmission(null)
+      setTurnRejectionMessage('')
       setDiceRoll(null)
       setSharedRollNotice(null)
       setRollTargetPendingTurnId('')
@@ -274,30 +302,45 @@ export function useComposerActions({
     }
   }, [composerDraftKey])
 
-  const markSubmissionRecoverable = useCallback((reason: string) => {
-    const pendingSubmission = pendingSubmissionRef.current
-    if (!pendingSubmission) return
-    pendingSubmissionRef.current = null
-    setRecoverableSubmission(pendingSubmission)
+  const markSubmissionRecoverable = useCallback((submission: StoredSubmission, reason: string) => {
+    setRecoverableSubmission(submission)
     setSendPending(false)
     setStreamingTurn(null)
     setOptimisticEntries((current) =>
       current.map((entry) =>
-        entry.metadata.client_message_id === pendingSubmission.clientMessageId &&
+        entry.metadata.client_message_id === submission.clientMessageId &&
         entry.metadata.persistence_status === 'pending'
           ? { ...entry, metadata: { ...entry.metadata, persistence_status: 'failed' } }
           : entry,
       ),
     )
-    setActionText((current) => current || pendingSubmission.message)
-    setQueuedActionText((current) => current || pendingSubmission.message)
     setDiceRoll((current) =>
-      current?.clientMessageId === pendingSubmission.clientMessageId
+      current?.clientMessageId === submission.clientMessageId
         ? { ...current, status: 'failed', error: reason }
         : current,
     )
-    pushError('validation', `${reason} Retry will reuse the original request, so it cannot roll twice.`)
+    // The opening request is internal: it never becomes a player draft or a
+    // "Delivery uncertain" strip, only the delayed-opening notice.
+    if (submission.kind === 'opening') return
+    setActionText((current) => current || submission.message)
+    setQueuedActionText((current) => current || submission.message)
+    const errorMessage = `${reason} Retry will reuse the original request, so it cannot roll twice.`
+    recoverableErrorRef.current = { clientMessageId: submission.clientMessageId, message: errorMessage }
+    pushError('validation', errorMessage)
   }, [pushError, setOptimisticEntries, setSendPending, setStreamingTurn])
+
+  const clearReconnectWait = useCallback(() => {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
+    reconnectingSubmissionRef.current = null
+    setReconnectingSubmission(null)
+  }, [])
+
+  useEffect(() => () => {
+    if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current)
+  }, [])
 
   useEffect(() => {
     const pendingSubmission = pendingSubmissionRef.current
@@ -314,7 +357,8 @@ export function useComposerActions({
     }
     const timer = window.setTimeout(() => {
       if (pendingSubmissionRef.current?.clientMessageId === pendingSubmission.clientMessageId) {
-        markSubmissionRecoverable('Realtime confirmation timed out.')
+        pendingSubmissionRef.current = null
+        markSubmissionRecoverable(pendingSubmission, 'Realtime confirmation timed out.')
       }
     }, SEND_PENDING_RECOVERY_MS)
     return () => window.clearTimeout(timer)
@@ -325,6 +369,34 @@ export function useComposerActions({
     sendPending,
     streamingTurn?.text,
   ])
+
+  // Called with the client message ids of a freshly loaded log page or a
+  // new_message echo: a submission found there was saved, whatever the socket
+  // reported, so it is neither pending nor uncertain any more.
+  const handleSavedMessages = useCallback((clientMessageIds: string[]) => {
+    const saved = new Set(clientMessageIds.filter(Boolean))
+    if (!saved.size) return
+    const pendingSubmission = pendingSubmissionRef.current
+    if (pendingSubmission && saved.has(pendingSubmission.clientMessageId)) {
+      pendingSubmissionRef.current = null
+    }
+    const waitingSubmission = reconnectingSubmissionRef.current
+    if (waitingSubmission && saved.has(waitingSubmission.clientMessageId)) {
+      clearReconnectWait()
+    }
+    const savedSubmission = recoverableSubmission
+    if (!savedSubmission || !saved.has(savedSubmission.clientMessageId)) return
+    setRecoverableSubmission((current) =>
+      current?.clientMessageId === savedSubmission.clientMessageId ? null : current,
+    )
+    setQueuedActionText((current) => (current === savedSubmission.message ? '' : current))
+    setActionText((current) => (current === savedSubmission.message ? '' : current))
+    const recordedError = recoverableErrorRef.current
+    if (recordedError?.clientMessageId === savedSubmission.clientMessageId) {
+      recoverableErrorRef.current = null
+      dismissError('validation', recordedError.message)
+    }
+  }, [clearReconnectWait, dismissError, recoverableSubmission])
 
   useEffect(() => {
     if (!sharedRollNotice) return
@@ -495,8 +567,10 @@ export function useComposerActions({
           (entry) => entry.metadata.client_message_id !== rejectedSubmission.clientMessageId,
         ),
       )
-      setActionText((current) => current || rejectedSubmission.message)
-      setQueuedActionText(rejectedSubmission.message)
+      if (rejectedSubmission.kind !== 'opening') {
+        setActionText((current) => current || rejectedSubmission.message)
+        setQueuedActionText(rejectedSubmission.message)
+      }
     }
     setSendPending(false)
     setStreamingTurn(null)
@@ -527,7 +601,8 @@ export function useComposerActions({
       return false
     }
     socket.emit('send_message', retry.payload)
-    pendingSubmissionRef.current = retry
+    pendingSubmissionRef.current = { ...retry, autoRetried: false }
+    resentClientMessageIdRef.current = retry.clientMessageId
     setRecoverableSubmission(null)
     setSendPending(true)
     setOptimisticEntries((current) =>
@@ -549,18 +624,26 @@ export function useComposerActions({
     return true
   }
 
-  const submitAction = (overrideMessage?: string, overrideIntent?: ActionIntent) => {
-    if (sendPending || dmResponseBlocking) {
+  const sendTurn = (kind: SubmissionKind, overrideMessage?: string, overrideIntent?: ActionIntent) => {
+    if (sendPending || dmResponseBlocking || reconnectingSubmission) {
       pushError('validation', 'Wait for the current DM response to save before sending again.')
       return false
     }
-    if (!overrideMessage && !overrideIntent && recoverableSubmission && actionText.trim() === recoverableSubmission.message) {
+    if (
+      kind === 'action' &&
+      !overrideMessage &&
+      !overrideIntent &&
+      recoverableSubmission?.kind === 'action' &&
+      actionText.trim() === recoverableSubmission.message
+    ) {
       return retryRecoverableSubmission()
     }
     if (recoverableSubmission) {
       pushError(
         'validation',
-        'Delivery of your previous action is uncertain. Retry it safely or discard it after checking the timeline before sending something new.',
+        recoverableSubmission.kind === 'opening'
+          ? 'Try the opening again before sending an action.'
+          : 'Delivery of your previous action is uncertain. Retry it safely or discard it after checking the timeline before sending something new.',
       )
       return false
     }
@@ -568,6 +651,8 @@ export function useComposerActions({
       pushError('validation', 'Choose a campaign, session, and player before sending.')
       return false
     }
+    // The composer explains this state itself ("Loading this session…").
+    if (!sessionHydrated) return false
     const socket = socketRef.current
     if (!socket || socket.connected !== true) {
       pushError('validation', 'Realtime is reconnecting. Try again in a moment.')
@@ -576,15 +661,16 @@ export function useComposerActions({
     const message = (overrideMessage ?? actionText).trim()
     if (!message) return false
     const trimmedAdminPasscode = adminPasscode.trim()
-    if (!overrideIntent && composerMode === 'admin' && !trimmedAdminPasscode) {
+    const intentMode: ComposerMode = kind === 'opening' ? 'action' : composerMode
+    if (!overrideIntent && intentMode === 'admin' && !trimmedAdminPasscode) {
       pushError('validation', 'Admin passcode is required for Admin mode.')
       return false
     }
-    if (!overrideIntent && composerMode === 'interact' && !selectedInteractionTarget) {
+    if (!overrideIntent && intentMode === 'interact' && !selectedInteractionTarget) {
       pushError('validation', 'Choose another player before sending an interaction.')
       return false
     }
-    if (!overrideIntent && composerMode === 'item') {
+    if (!overrideIntent && intentMode === 'item') {
       if (selectedInventoryActionRequiresItem && !selectedItem) {
         pushError('validation', 'Choose an item already in your inventory for that action.')
         return false
@@ -598,10 +684,10 @@ export function useComposerActions({
     const actionIntent =
       overrideIntent ??
       buildActionIntent({
-        mode: composerMode,
+        mode: intentMode,
         message,
         clientMessageId,
-        ability: composerMode === 'spell' ? selectedSpellAbility : selectedAbility,
+        ability: intentMode === 'spell' ? selectedSpellAbility : selectedAbility,
         item: selectedItem,
         inventoryAction: selectedInventoryAction,
         itemName: itemIntentName,
@@ -619,7 +705,7 @@ export function useComposerActions({
       actionIntent.kind === 'roll' &&
       (pendingRollOptions.length > 0 || Boolean(actionIntent.roll?.target_pending_turn_id))
     if (!canSubmitWithTurnControl(turnControl, selectedPlayerId, actionIntent.kind, hasPendingRoll)) {
-      setQueuedActionText(message)
+      if (kind === 'action') setQueuedActionText(message)
       pushError('validation', turnControlBlockMessage(turnControl))
       return false
     }
@@ -633,11 +719,23 @@ export function useComposerActions({
       client_message_id: clientMessageId,
       action_intent: actionIntent,
       ...(actionIntent.kind === 'admin' ? { admin_passcode: trimmedAdminPasscode } : {}),
+      ...(kind === 'opening' ? { message_kind: 'opening' as const } : {}),
     }
     socket.emit('send_message', payload)
+    resentClientMessageIdRef.current = null
     if (actionIntent.kind === 'admin') setAdminPasscode('')
-    pendingSubmissionRef.current = { clientMessageId, message, sessionId: selectedSessionId, payload }
+    pendingSubmissionRef.current = {
+      clientMessageId,
+      message,
+      draftText: overrideMessage === undefined ? actionText : message,
+      kind,
+      sessionId: selectedSessionId,
+      playerId: selectedPlayerId,
+      payload,
+      autoRetried: false,
+    }
     setRecoverableSubmission(null)
+    setTurnRejectionMessage('')
     stopTtsAudio()
     setSendPending(true)
     setOptimisticEntries((current) => [
@@ -651,15 +749,27 @@ export function useComposerActions({
         metadata: {
           client_message_id: clientMessageId,
           action_intent: actionIntent,
+          ...(kind === 'opening' ? { message_kind: 'opening' } : {}),
           persistence_status: 'pending',
         },
       },
     ])
+    if (kind === 'opening') return true
     setActionText('')
     setQueuedActionText((current) => (current === message ? '' : current))
     emitTypingStatus(false)
     return true
   }
+
+  const submitAction = (overrideMessage?: string, overrideIntent?: ActionIntent) =>
+    sendTurn('action', overrideMessage, overrideIntent)
+
+  // The opening narration request is internal: a delayed opening is retried
+  // with its original payload instead of being sent again.
+  const startOpening = (message: string) =>
+    recoverableSubmission?.kind === 'opening'
+      ? retryRecoverableSubmission()
+      : sendTurn('opening', message)
 
   const applyComposerMode = (mode: ComposerMode, die = selectedDie) => {
     if (mode === 'admin' && !adminToolsUnlocked) return
@@ -984,11 +1094,13 @@ export function useComposerActions({
   }) => {
     if (payload.session_id !== selectedSessionId) return
     const matchesPending = pendingSubmissionRef.current?.clientMessageId === payload.client_message_id
+    const answersResend = resentClientMessageIdRef.current === payload.client_message_id
     pendingSubmissionRef.current = matchesPending ? null : pendingSubmissionRef.current
+    if (answersResend) resentClientMessageIdRef.current = null
     setRecoverableSubmission((current) =>
       current?.clientMessageId === payload.client_message_id ? null : current,
     )
-    if (matchesPending) setSendPending(false)
+    if (matchesPending || answersResend) setSendPending(false)
     setOptimisticEntries((current) =>
       current.map((entry) =>
         entry.metadata.client_message_id === payload.client_message_id
@@ -1009,8 +1121,82 @@ export function useComposerActions({
   }, [selectedSessionId, setOptimisticEntries, setSendPending])
 
   const handleConnectionInterrupted = useCallback(() => {
-    markSubmissionRecoverable('Realtime disconnected before confirmation.')
-  }, [markSubmissionRecoverable])
+    const selection = selectionRef.current
+    const bindingUnchanged = (submission: StoredSubmission) =>
+      submission.sessionId === selection.sessionId && submission.playerId === selection.playerId
+    const waitingSubmission = reconnectingSubmissionRef.current
+    if (waitingSubmission) {
+      if (bindingUnchanged(waitingSubmission)) return
+      clearReconnectWait()
+      markSubmissionRecoverable(waitingSubmission, CONNECTION_INTERRUPTED_REASON)
+      return
+    }
+    const pendingSubmission = pendingSubmissionRef.current
+    if (!pendingSubmission) return
+    pendingSubmissionRef.current = null
+    if (pendingSubmission.autoRetried || !bindingUnchanged(pendingSubmission)) {
+      markSubmissionRecoverable(pendingSubmission, CONNECTION_INTERRUPTED_REASON)
+      return
+    }
+    reconnectingSubmissionRef.current = pendingSubmission
+    setReconnectingSubmission(pendingSubmission)
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null
+      if (reconnectingSubmissionRef.current !== pendingSubmission) return
+      reconnectingSubmissionRef.current = null
+      setReconnectingSubmission(null)
+      markSubmissionRecoverable(pendingSubmission, CONNECTION_INTERRUPTED_REASON)
+    }, RECONNECT_RESEND_WINDOW_MS)
+  }, [clearReconnectWait, markSubmissionRecoverable, selectionRef])
+
+  const handleSessionJoined = useCallback((binding: SessionSocketBinding) => {
+    const waitingSubmission = reconnectingSubmissionRef.current
+    if (
+      !waitingSubmission ||
+      waitingSubmission.sessionId !== binding.sessionId ||
+      waitingSubmission.playerId !== binding.playerId
+    ) {
+      return
+    }
+    clearReconnectWait()
+    const socket = socketRef.current
+    if (!socket || socket.connected !== true) {
+      markSubmissionRecoverable(waitingSubmission, CONNECTION_INTERRUPTED_REASON)
+      return
+    }
+    // Same client_message_id: the server answers turn_duplicate or resumes.
+    socket.emit('send_message', waitingSubmission.payload)
+    pendingSubmissionRef.current = { ...waitingSubmission, autoRetried: true }
+    resentClientMessageIdRef.current = waitingSubmission.clientMessageId
+    setSendPending(true)
+  }, [clearReconnectWait, markSubmissionRecoverable, setSendPending, socketRef])
+
+  const handleTurnRejected = useCallback((rejection: TurnRejection) => {
+    const rejectedSubmission = pendingSubmissionRef.current
+    pendingSubmissionRef.current = null
+    if (rejectedSubmission) {
+      setOptimisticEntries((current) =>
+        current.filter(
+          (entry) => entry.metadata.client_message_id !== rejectedSubmission.clientMessageId,
+        ),
+      )
+      setDiceRoll((current) =>
+        current?.clientMessageId === rejectedSubmission.clientMessageId
+          ? { ...current, status: 'failed', error: rejection.message }
+          : current,
+      )
+      if (rejectedSubmission.kind !== 'opening') {
+        setActionText((current) => current || rejectedSubmission.draftText)
+      }
+    }
+    setSendPending(false)
+    setTurnRejectionMessage(rejection.message)
+  }, [setOptimisticEntries, setSendPending])
+
+  const pendingSubmissionCampaignId = useCallback(
+    () => (pendingSubmissionRef.current ?? reconnectingSubmissionRef.current)?.payload.campaign_id ?? null,
+    [],
+  )
 
   return {
     actionText,
@@ -1024,8 +1210,13 @@ export function useComposerActions({
     handleConnectionInterrupted,
     handleRollRequired,
     handleRollResolved,
+    handleSavedMessages,
+    handleSessionJoined,
     handleTurnDuplicate,
+    handleTurnRejected,
     interactionTargets,
+    openingDelayed: recoverableSubmission?.kind === 'opening',
+    pendingSubmissionCampaignId,
     rollMode,
     rollReason,
     rollTargetPendingTurnId,
@@ -1058,10 +1249,13 @@ export function useComposerActions({
     updateItemDraftName,
     updateItemCostGold,
     startDiceRoll,
+    startOpening,
     submitAction,
+    submissionReconnecting: Boolean(reconnectingSubmission),
     toggleAdminTools,
+    turnRejectionMessage,
     queuedActionText,
-    queuedActionRetryable: Boolean(recoverableSubmission),
+    queuedActionRetryable: recoverableSubmission?.kind === 'action',
     retryRecoverableSubmission,
     retryDiceRoll,
     sharedRollNotice,

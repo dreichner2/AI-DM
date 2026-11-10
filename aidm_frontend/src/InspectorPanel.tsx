@@ -59,7 +59,7 @@ function inspectorTabPanelId(tab: InspectorTab) {
   return `inspector-tabpanel-${tab}`
 }
 
-type DisplayCharacter = {
+export type DisplayCharacter = {
   name: string
   ancestryClass: string
   level: number | string
@@ -84,7 +84,7 @@ export type SegmentManagementForm = {
   isTriggered: boolean
 }
 
-type InspectorPanelProps = {
+export type InspectorPanelProps = {
   inert?: boolean
   modal?: boolean
   onRequestClose?: () => void

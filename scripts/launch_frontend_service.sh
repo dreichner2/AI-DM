@@ -19,8 +19,10 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 command -v npm >/dev/null 2>&1
-node -e 'process.exit(process.versions.node === "24.18.0" ? 0 : 1)'
-[[ "$(npm --version)" == "12.0.0" ]]
+# Same rule as scripts/check_toolchain.py, inlined so it needs no Python.
+node -e 'const version = process.versions.node; const [major, minor] = version.split(".").map(Number); if (major !== 24 || minor < 18) { console.error(`Node.js 24 (24.18.0 or newer) is required; found ${version}.`); process.exit(1); }'
+npm_version="$(npm --version)"
+[[ "${npm_version}" == 12.* ]] || { echo "npm 12 is required; found ${npm_version}." >&2; exit 1; }
 
 if [[ ! -d "${FRONTEND_DIR}/node_modules" ]]; then
   echo "[frontend-service] Installing frontend dependencies"

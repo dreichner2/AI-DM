@@ -189,13 +189,14 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
             field('latest_activity_at', 'string | null'),
         ),
     ),
+    TypeContract('SessionChapterStatus', alias="'active' | 'ended' | 'archived'"),
     TypeContract(
         'SessionSummary',
         fields=(
             field('session_id', 'number'),
             field('campaign_id', 'number'),
             field('created_at', 'string | null'),
-            field('status', 'string'),
+            field('status', 'SessionChapterStatus'),
             field('deleted_at', 'string | null'),
             field('updated_at', 'string | null'),
             field('latest_activity_at', 'string | null'),
@@ -203,7 +204,25 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
             field('turn_count', 'number'),
             field('latest_summary', 'string'),
             field('is_archived', 'boolean'),
+            # Chapter fields are always sent; optional until client fixtures carry them.
+            field('is_current', 'boolean', optional=True),
+            field('chapter_number', 'number', optional=True),
+            field('ended_at', 'string | null', optional=True),
+            field('chapter_recap', 'string', optional=True),
             field('state_snapshot', 'JsonRecord | null'),
+        ),
+    ),
+    TypeContract(
+        'SessionStartResponse',
+        fields=(
+            field('session_id', 'number'),
+            field('idempotent_replay', 'boolean'),
+            field('status', 'SessionChapterStatus'),
+            field('is_current', 'boolean'),
+            field('chapter_number', 'number'),
+            field('ended_at', 'string | null'),
+            field('chapter_recap', 'string'),
+            field('continued_from_session_id', 'number | null'),
         ),
     ),
     TypeContract(
@@ -349,6 +368,12 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
         fields=(
             field('session_id', 'number'),
             field('campaign_id', 'number'),
+            # Chapter fields are always sent; optional until client fixtures carry them.
+            field('status', 'SessionChapterStatus', optional=True),
+            field('is_current', 'boolean', optional=True),
+            field('chapter_number', 'number', optional=True),
+            field('ended_at', 'string | null', optional=True),
+            field('chapter_recap', 'string', optional=True),
             field('current_location', 'string | null'),
             field('current_quest', 'string | null'),
             field('rolling_summary', 'string'),

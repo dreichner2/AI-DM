@@ -25,8 +25,8 @@ else
   exit 127
 fi
 
-if ! "${RESOLVED_PYTHON_BIN}" -c 'import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 14, 6) else 1)'; then
-  echo "scripts/run_production_server.sh requires Python 3.14.6." >&2
+if ! "${RESOLVED_PYTHON_BIN}" "${ROOT_DIR}/scripts/check_toolchain.py" python >&2; then
+  echo "scripts/run_production_server.sh cannot run with ${RESOLVED_PYTHON_BIN}." >&2
   exit 2
 fi
 

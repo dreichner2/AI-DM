@@ -350,7 +350,9 @@ describe('App runtime and workspace access', () => {
     expect(screen.getByRole('button', { name: 'Import' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Share' })).toBeInTheDocument()
 
-    toggleAdminToolsViaComposerLabel()
+    expect(screen.queryByRole('button', { name: 'Director controls' })).not.toBeInTheDocument()
+    const actionLabel = screen.getByText(/Your Action/)
+    for (let index = 0; index < 5; index += 1) fireEvent.click(actionLabel)
     expect(screen.queryByRole('button', { name: 'Admin mode' })).not.toBeInTheDocument()
 
     expect(screen.queryByRole('button', { name: 'Create Campaign' })).not.toBeInTheDocument()

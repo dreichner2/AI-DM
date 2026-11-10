@@ -110,3 +110,23 @@ def test_leave_session_rejects_mismatched_binding_then_clears_valid_presence(
     assert ids['session_id'] not in socketio_module.active_players or (
         ids['player_id'] not in socketio_module.active_players[ids['session_id']]
     )
+
+
+def test_leaving_records_departure_and_rejoining_clears_it(app, socketio, app_runtime, monkeypatch):
+    import aidm_server.socket_runtime as socket_runtime_module
+
+    clock = {'now': 500.0}
+    monkeypatch.setattr(socket_runtime_module, 'epoch_seconds', lambda: clock['now'])
+    runtime = app_runtime['modules']['socketio_events'].socket_runtime
+    ids = seed_world_campaign_player_session(app)
+    binding = {'session_id': ids['session_id'], 'player_id': ids['player_id']}
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', binding)
+    client.emit('leave_session', binding)
+    clock['now'] = 900.0
+
+    assert runtime.player_absent_since(ids['session_id'], ids['player_id']) == 500.0
+
+    client.emit('join_session', binding)
+    clock['now'] = 950.0
+    assert runtime.player_absent_since(ids['session_id'], ids['player_id']) == 950.0

@@ -147,8 +147,13 @@ class AppConfig:
     turn_coordinator_store: str
     turn_coordinator_lock_ttl_seconds: int
     turn_coordinator_poll_interval_ms: int
+    absent_turn_grace_seconds: int
+    turn_conductor_helper_enabled: bool
+    state_pipeline_helper_enabled: bool
 
 
+DEFAULT_ABSENT_TURN_GRACE_SECONDS = 60
+MIN_ABSENT_TURN_GRACE_SECONDS = 10
 DEFAULT_LOCAL_DATA_DIR = pathlib.Path.home() / '.aidm'
 
 
@@ -370,5 +375,20 @@ def load_config() -> AppConfig:
         turn_coordinator_poll_interval_ms=max(
             10,
             _to_int(os.getenv('AIDM_TURN_COORDINATOR_POLL_INTERVAL_MS'), default=50),
+        ),
+        absent_turn_grace_seconds=max(
+            MIN_ABSENT_TURN_GRACE_SECONDS,
+            _to_int(
+                os.getenv('AIDM_ABSENT_TURN_GRACE_SECONDS'),
+                default=DEFAULT_ABSENT_TURN_GRACE_SECONDS,
+            ),
+        ),
+        turn_conductor_helper_enabled=_to_bool(
+            os.getenv('AIDM_TURN_CONDUCTOR_HELPER_ENABLED'),
+            default=True,
+        ),
+        state_pipeline_helper_enabled=_to_bool(
+            os.getenv('AIDM_STATE_PIPELINE_HELPER_ENABLED'),
+            default=True,
         ),
     )

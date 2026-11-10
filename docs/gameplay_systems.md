@@ -68,11 +68,15 @@ their own journal hooks; they cannot reactivate or complete mechanical quests.
   casting resource are stored in the existing character-sheet JSON and restored
   into the session actor on reload.
 - Casts consume once. Exhausted spells fail before narration. During combat a
-  legal cast also consumes the actor's persisted action.
+  legal cast also consumes the actor's persisted action, or its bonus action
+  when the spell definition sets `castingTime: 'bonus_action'` (no catalog spell
+  does yet); a cast is rejected once that budget is spent.
 - Short rest restores pact slots and short-rest abilities. Long rest restores
   standard and pact slots, Arcanum, long-rest abilities, HP, and temporary-HP
   state according to the implemented policy. Rest does not erase persistent
-  conditions.
+  conditions, except that it wakes a `stable` character: a short rest brings it
+  to 1 HP, a long rest to full HP, and both remove `stable` and `unconscious`.
+  Dying and dead characters cannot rest.
 
 ### Structured combat lifecycle
 
@@ -83,12 +87,50 @@ their own journal hooks; they cannot reactivate or complete mechanical quests.
   non-surrendered actor can spend the relevant budget.
 - Server-issued action/target IDs are re-resolved under the turn lock. Equipment,
   range bands, cover, target state, and remaining resources constrain legality.
-- Player weapon attacks use server-owned attack and damage rolls. Criticals,
-  temporary HP, HP, defeat, and engine-owned end conditions apply before the DM
-  narrates the result.
+- Player weapon attacks use server-owned attack and damage rolls. The modifier
+  engine sets the roll mode (advantage or disadvantage adds a second d20 from
+  the engine's deterministic roller; both dice and the mode are recorded),
+  attack bonus dice, cover (half +2, three-quarters +5) and effect AC changes,
+  automatic criticals, extra damage from effects, and resistance,
+  vulnerability, and immunity on every damage component. Criticals, temporary
+  HP, HP, defeat, and engine-owned end conditions apply before the DM narrates
+  the result.
+- One modifier engine (`combat/modifiers.py`) is the only place condition rules
+  live, and every weapon, spell and enemy attack, saving throw, and pending-roll
+  check reads it. Blinded, charmed (no attacks or harmful spells against the
+  charmer), frightened (while its source is present), grappled, incapacitated,
+  invisible, paralyzed, petrified, poisoned, prone, restrained, stunned,
+  unconscious, slowed, dodging, hidden, and exhausted have their tabletop roll,
+  movement, and turn effects; advantage and disadvantage from any number of
+  sources cancel. The coarse bands decide "melee band": a melee attack is in it,
+  and a ranged attack is when either side stands in the `melee` band. Standard
+  `activeEffects` records carry attack/save/check bonus dice, AC bonus and
+  floor, roll modes, bonus damage, resistances, speed zero, cannot act, no
+  healing, and temporary HP per turn, with round durations, concentration, and
+  `consumeOn` effects that are spent the first time they apply. Providers can
+  register further modifier and extra-damage sources.
+- Player characters at 0 HP fall `unconscious` and `dying` (out of combat:
+  `stable`) instead of leaving the game; only the `dead` condition makes one not
+  alive. Damage left over at 0 HP that reaches the maximum HP kills at once;
+  other damage at 0 HP adds a death-save failure (two on a critical). When an
+  ending turn passes a dying character's initiative slot, the engine rolls its
+  d20 death save (10+ success, natural 1 two failures, natural 20 back at 1 HP;
+  three successes `stable`, three failures `dead`) and records it as a visible
+  `combat.death_save` change in the narration context and turn log. Healing a
+  downed character who is not dead (spells, Lay on Hands, narrated healing)
+  wakes it; the dead cannot be healed. Vitality conditions and death-save
+  tallies persist on the Player row. Enemies and NPC allies are simply defeated
+  at 0 HP.
+- When every present player character is down, combat ends with
+  `objective_failed` and the dying are left stable, unless the encounter flags
+  set `lethalDefeat: true`. Any other combat end also stabilizes the dying.
 - Movement does not end a turn automatically. Attack and spell actions require
   an explicit End Turn, which advances through the legal enemy block and then
-  resets economy for the next round.
+  resets economy for the next round. The advance processes every turn end and
+  start it crosses, each enemy of a grouped block included: effect durations
+  tick, temporary HP per turn is granted, `dodging` ends, a prone creature that
+  can act stands (spending its movement), and `recharge_5_6` abilities used
+  earlier roll a deterministic d6 (5-6 recharges; unavailable until then).
 - Enemy execution shares the turn engine's present/actionable/targetable
   predicates, revalidates limited-use resources, and supports bounded
   single-target attacks, saving throws, damage, and conditions. Unsupported
@@ -109,7 +151,14 @@ their own journal hooks; they cannot reactivate or complete mechanical quests.
   partially applied `combat.end` derives only missing outputs, so XP, currency,
   items, flags, consequences, and quest progress do not duplicate.
 - Initiative, round, active actor, economy, participant HP, and combat end state
-  survive database expiry, disconnect, and reconnect.
+  survive database expiry, disconnect, and reconnect. Encounters started from
+  the operator API use the same seeded, modifier-aware initiative as pack and
+  player-started encounters; only stored legacy combats keep roster order.
+- Resolved player rolls report `dc` (the stated DC, else the roll type's base
+  DC), `dcSource` (`stated` or `default`) and `outcome`, except initiative and
+  death saves; landed roll payloads expose them to players. Pending checks,
+  saves, and attacks take their mode from the modifier engine unless the roll
+  gate forces one, and roll and show effect bonus dice.
 
 ### Mechanical quests and campaign branches
 
@@ -158,7 +207,10 @@ full tabletop rules coverage.
   count, spell knowledge/preparation, and casting resources before rolling.
 - The resolver owns attack rolls, target saving throws, automatic delivery,
   damage, healing, temporary HP, condition add/remove, bounded durations, and
-  concentration replacement. Damage to a concentrating caster triggers a
+  concentration replacement, with modes, bonus dice, automatic save failures,
+  cover, and defenses from the modifier engine. Healing and ally spells may
+  target a player character at 0 HP who is not dead; damage spells may not
+  target the defeated. Damage to a concentrating caster triggers a
   server-owned concentration check; turn advancement expires supported timed
   effects.
 - Slot/action consumption, combat effects, concentration state, player HP, and
@@ -176,7 +228,9 @@ full tabletop rules coverage.
 - Typed capability use resolves an exact actor and target, revalidates the
   current combat actor and action/bonus-action budget, applies server-owned
   healing or action restoration, consumes the persisted class-feature pool,
-  and refreshes only on its declared short or long rest.
+  and refreshes only on its declared short or long rest. Lay on Hands can
+  restore an ally at 0 HP who is not dead; Second Wind is impossible while
+  unconscious.
 - Capability resolution is generated before narration and replay-validated
   from its trusted rolls and result. Post-DM extraction cannot manufacture a
   capability use or change its target, cost, or healing amount.
@@ -241,15 +295,15 @@ full tabletop rules coverage.
   definitions and their exact legal targets.
 - Combat has coarse range bands, cover, action budgets, enemy tactics, morale
   data, surrender/flee states, and several end labels. It does not yet implement
-  a full grid/pathfinder, opportunity attacks, general reactions, death saves,
-  or every condition's rules effect. Enemy once-per-combat and rest-scoped
-  abilities are now consumed authoritatively, but `recharge_5_6` does not yet
-  have a persisted recharge-roll lifecycle. Enemy targeting also does not yet
-  apply the full player-HUD spatial model for ability-specific range, hidden
-  targets, cover AC, and disadvantage; unsupported enemy ability deliveries
-  fail closed instead of inventing damage. Timed spell effects advance on the
-  implemented actor-turn boundary, but a grouped block of consecutive enemy
-  turns does not yet tick every skipped/source/target boundary independently.
+  a full grid/pathfinder, opportunity attacks, or general reactions, and no
+  player action yet grants Dodge, Hide, or Help (the conditions work when
+  applied). Range is one band per participant, so "melee band" effects (prone,
+  automatic criticals) use the band simplification above. Enemy targeting does
+  not yet apply the player-HUD spatial model for ability-specific range or
+  hidden targets, and enemies never target downed characters; unsupported enemy
+  ability deliveries fail closed instead of inventing damage. With
+  `lethalDefeat`, the dying stay dying after combat ends, and nothing outside
+  combat rolls their death saves.
 - Equipment affects armor class and weapon actions, but armor proficiency is not
   yet a first-class class rule. Consumable removal is not yet atomically bound to
   a general catalog of validated item effects.

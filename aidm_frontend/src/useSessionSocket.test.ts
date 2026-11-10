@@ -1,13 +1,64 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest'
+import { act, cleanup, renderHook } from '@testing-library/react'
+import type { Socket } from 'socket.io-client'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { trustBackendOrigin, writeOriginScopedStorage } from './api'
+import type { StreamingTurn } from './types'
 import {
   buildSessionSocketConnection,
   isTerminalSessionSocketError,
   normalizeRollRequiredPayload,
   normalizeRollResolvedPayload,
   normalizeTurnDuplicatePayload,
+  useSessionSocket,
 } from './useSessionSocket'
+
+// Each io() call returns a new fake socket that, like socket.io, fires every
+// still-registered 'disconnect' listener synchronously from disconnect().
+const socketFactory = vi.hoisted(() => {
+  const sockets: Array<{
+    connected: boolean
+    active: boolean
+    listeners: Map<string, Set<(...args: unknown[]) => void>>
+    emit: ReturnType<typeof vi.fn>
+    on: (event: string, listener: (...args: unknown[]) => void) => unknown
+    removeAllListeners: () => unknown
+    disconnect: () => unknown
+    fire: (event: string, ...args: unknown[]) => void
+  }> = []
+  const io = vi.fn(() => {
+    const listeners = new Map<string, Set<(...args: unknown[]) => void>>()
+    const socket = {
+      connected: true,
+      active: true,
+      listeners,
+      emit: vi.fn(),
+      on(event: string, listener: (...args: unknown[]) => void) {
+        const registered = listeners.get(event) ?? new Set()
+        registered.add(listener)
+        listeners.set(event, registered)
+        return socket
+      },
+      removeAllListeners() {
+        listeners.clear()
+        return socket
+      },
+      disconnect() {
+        if (socket.connected) socket.fire('disconnect', 'io client disconnect')
+        socket.connected = false
+        return socket
+      },
+      fire(event: string, ...args: unknown[]) {
+        listeners.get(event)?.forEach((listener) => listener(...args))
+      },
+    }
+    sockets.push(socket)
+    return socket
+  })
+  return { io, sockets }
+})
+
+vi.mock('socket.io-client', () => ({ io: socketFactory.io }))
 
 describe('session socket backend origin credential boundary', () => {
   beforeEach(() => {
@@ -167,5 +218,198 @@ describe('authoritative socket payload validation', () => {
     })
 
     expect(normalizeRollRequiredPayload({ pending_turn_id: 80 })).toBeNull()
+  })
+})
+
+type SocketHookOptions = Parameters<typeof useSessionSocket>[0]
+
+function hookOptions(overrides: Partial<SocketHookOptions> = {}): SocketHookOptions {
+  return {
+    auth: '',
+    baseUrl: '',
+    selectedSessionId: 20,
+    selectedPlayerId: 30,
+    selectedCampaignId: 10,
+    socketReconnectKey: 0,
+    socketRef: { current: null as Socket | null },
+    loadSessionData: vi.fn(() => Promise.resolve()),
+    refreshPlayerDetail: vi.fn(() => Promise.resolve()),
+    pushError: vi.fn(),
+    rememberStreamedTtsTurn: vi.fn(),
+    resetTtsFailureForNextResponse: vi.fn(),
+    stopTtsAudio: vi.fn(),
+    setActivePlayers: vi.fn(),
+    setSessionState: vi.fn(),
+    setSocketStatus: vi.fn(),
+    setSendPending: vi.fn(),
+    setOptimisticEntries: vi.fn(),
+    setStreamingTurn: vi.fn(),
+    setTurnStatuses: vi.fn(),
+    setClarificationRequest: vi.fn(),
+    setSceneMusicSyncState: vi.fn(),
+    setSceneState: vi.fn(),
+    spokenTextLengthRef: { current: 0 },
+    speakableStreamingTextRef: { current: '' },
+    queueTtsNarrationRef: { current: null },
+    ttsEnabledRef: { current: false },
+    ttsQueueSuppressedRef: { current: false },
+    ttsFailureReportedRef: { current: false },
+    ttsPartialFlushTimerRef: { current: null },
+    lastSpokenDmEntryRef: { current: null },
+    lastSpokenTurnIdRef: { current: null },
+    lastSpokenTextRef: { current: null },
+    onConnectionInterrupted: vi.fn(),
+    onSessionJoined: vi.fn(),
+    onPlayerMessageSaved: vi.fn(),
+    onTurnRejected: vi.fn(),
+    onRollRequired: vi.fn(),
+    onRollResolved: vi.fn(),
+    onTurnDuplicate: vi.fn(),
+    ...overrides,
+  }
+}
+
+function latestSocket() {
+  const socket = socketFactory.sockets.at(-1)
+  if (!socket) throw new Error('No socket was created')
+  return socket
+}
+
+describe('useSessionSocket connection lifetime', () => {
+  beforeEach(() => {
+    socketFactory.io.mockClear()
+    socketFactory.sockets.length = 0
+  })
+
+  afterEach(() => cleanup())
+
+  it('keeps one connection while callback identities change', () => {
+    const { rerender } = renderHook((options: SocketHookOptions) => useSessionSocket(options), {
+      initialProps: hookOptions(),
+    })
+    const onSessionJoined = vi.fn()
+
+    rerender(hookOptions({ loadSessionData: vi.fn(() => Promise.resolve()), pushError: vi.fn() }))
+    rerender(hookOptions({ onConnectionInterrupted: vi.fn(), onSessionJoined }))
+
+    expect(socketFactory.io).toHaveBeenCalledTimes(1)
+    act(() => {
+      latestSocket().fire('connect')
+      latestSocket().fire('active_players', [])
+    })
+    expect(onSessionJoined).toHaveBeenCalledWith({ sessionId: 20, playerId: 30 })
+  })
+
+  it('rebuilds the connection only when its identity changes', () => {
+    const { rerender } = renderHook((options: SocketHookOptions) => useSessionSocket(options), {
+      initialProps: hookOptions(),
+    })
+
+    rerender(hookOptions({ selectedSessionId: 21 }))
+    rerender(hookOptions({ selectedSessionId: 21, socketReconnectKey: 1 }))
+
+    expect(socketFactory.io).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not run the disconnect handler for its own teardown', () => {
+    const options = hookOptions()
+    const { rerender, unmount } = renderHook((value: SocketHookOptions) => useSessionSocket(value), {
+      initialProps: options,
+    })
+    const firstSocket = latestSocket()
+    act(() => firstSocket.fire('connect'))
+    vi.mocked(options.setSocketStatus).mockClear()
+    vi.mocked(options.setSendPending).mockClear()
+
+    rerender({ ...options, selectedSessionId: 21 })
+    unmount()
+
+    expect(firstSocket.listeners.size).toBe(0)
+    expect(options.setSocketStatus).not.toHaveBeenCalledWith('offline')
+    expect(options.setSocketStatus).not.toHaveBeenCalledWith('reconnecting')
+    expect(options.setSendPending).not.toHaveBeenCalled()
+    expect(firstSocket.emit).toHaveBeenCalledWith('leave_session', { session_id: 20, player_id: 30 })
+    // The composer still hears that its socket was replaced.
+    expect(options.onConnectionInterrupted).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports a real drop and announces the next join once per connection', () => {
+    const options = hookOptions()
+    renderHook(() => useSessionSocket(options))
+    const socket = latestSocket()
+
+    act(() => {
+      socket.fire('connect')
+      socket.fire('active_players', [])
+      socket.fire('active_players', [])
+    })
+    expect(options.onSessionJoined).toHaveBeenCalledTimes(1)
+
+    act(() => socket.fire('disconnect', 'transport close'))
+    expect(options.onConnectionInterrupted).toHaveBeenCalledTimes(1)
+    expect(options.setSocketStatus).toHaveBeenLastCalledWith('reconnecting')
+
+    act(() => {
+      socket.fire('connect')
+      socket.fire('active_players', [])
+    })
+    expect(options.setSocketStatus).toHaveBeenCalledWith('rejoining')
+    expect(options.onSessionJoined).toHaveBeenCalledTimes(2)
+  })
+
+  it('routes an out-of-turn rejection to the composer instead of the error rail', () => {
+    const options = hookOptions()
+    renderHook(() => useSessionSocket(options))
+
+    act(() => latestSocket().fire('error', {
+      error: 'Mira is still choosing. Their turn is skipped in 20 seconds.',
+      error_code: 'turn_out_of_order',
+      details: { active_player_absent: true, skip_in_seconds: 20 },
+    }))
+
+    expect(options.onTurnRejected).toHaveBeenCalledWith({
+      message: 'Mira is still choosing. Their turn is skipped in 20 seconds.',
+      details: { active_player_absent: true, skip_in_seconds: 20 },
+    })
+    expect(options.pushError).not.toHaveBeenCalled()
+  })
+
+  it('keeps start-of-response roll hints when chunks carry only text', () => {
+    let streamingTurn: StreamingTurn | null = null
+    const setStreamingTurn = vi.fn((update: unknown) => {
+      streamingTurn = typeof update === 'function'
+        ? (update as (current: StreamingTurn | null) => StreamingTurn | null)(streamingTurn)
+        : update as StreamingTurn | null
+    })
+    renderHook(() => useSessionSocket(hookOptions({ setStreamingTurn })))
+
+    act(() => {
+      latestSocket().fire('dm_response_start', {
+        turn_id: 7,
+        requires_roll: true,
+        rules_hint: { roll_type: 'stealth' },
+      })
+      latestSocket().fire('dm_chunk', { turn_id: 7, chunk: 'The guard turns.' })
+    })
+
+    expect(streamingTurn).toMatchObject({
+      text: 'The guard turns.',
+      requiresRoll: true,
+      rulesHint: { roll_type: 'stealth' },
+    })
+  })
+
+  it('tells the composer when a new_message echoes a client message id', () => {
+    const options = hookOptions()
+    renderHook(() => useSessionSocket(options))
+
+    act(() => latestSocket().fire('new_message', {
+      message: 'I open the gate.',
+      speaker: 'Ember',
+      turn_id: 4,
+      client_message_id: 'client-4',
+    }))
+
+    expect(options.onPlayerMessageSaved).toHaveBeenCalledWith('client-4')
   })
 })

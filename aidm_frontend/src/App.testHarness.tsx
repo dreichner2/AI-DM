@@ -26,15 +26,48 @@ import type {
   World,
 } from './types'
 
+// One shared socket stands in for every io() connection. Like socket.io, it
+// keeps a listener registry and disconnect() synchronously fires every
+// 'disconnect' listener that is still registered.
 const socketMock = vi.hoisted(() => {
+  type Listener = (...args: unknown[]) => void
+  const listeners = new Map<string, Set<Listener>>()
   const socket = {
     connected: true,
     emit: vi.fn(),
     on: vi.fn(),
+    off: vi.fn(),
+    removeAllListeners: vi.fn(),
     disconnect: vi.fn(),
   }
-  socket.on.mockImplementation(() => socket)
-  return { io: vi.fn<(url?: string) => typeof socket>(() => socket), socket }
+  const installBehaviour = () => {
+    listeners.clear()
+    socket.on.mockImplementation((event: string, listener: Listener) => {
+      const registered = listeners.get(event) ?? new Set<Listener>()
+      registered.add(listener)
+      listeners.set(event, registered)
+      return socket
+    })
+    socket.off.mockImplementation((event?: string, listener?: Listener) => {
+      if (event === undefined) listeners.clear()
+      else if (listener === undefined) listeners.delete(event)
+      else listeners.get(event)?.delete(listener)
+      return socket
+    })
+    socket.removeAllListeners.mockImplementation((event?: string) => {
+      if (event === undefined) listeners.clear()
+      else listeners.delete(event)
+      return socket
+    })
+    socket.disconnect.mockImplementation(() => {
+      if (socket.connected) {
+        listeners.get('disconnect')?.forEach((listener) => listener('io client disconnect'))
+      }
+      return socket
+    })
+  }
+  installBehaviour()
+  return { io: vi.fn<(url?: string) => typeof socket>(() => socket), installBehaviour, socket }
 })
 
 vi.mock('socket.io-client', () => ({
@@ -476,6 +509,29 @@ function installFetchMock() {
             : ['player_read', 'player_action'],
           descriptions: {},
         })
+      }
+      if (method === 'POST' && path === '/api/onboarding/play-now') {
+        const campaign = campaigns[0]
+        const session = campaign ? sessionsByCampaign[campaign.campaign_id]?.[0] : undefined
+        const player = session ? playerDetails[playersByCampaign[session.campaign_id]?.[0]?.player_id] : undefined
+        if (!campaign || !session || !player) {
+          return jsonResponse({ error: 'Missing Play Now fixture.' }, { status: 500 })
+        }
+        return jsonResponse(
+          {
+            mode: 'play_now',
+            workspace_id: 'owner',
+            campaign_id: campaign.campaign_id,
+            session_id: session.session_id,
+            player_id: player.player_id,
+            world_id: campaign.world_id,
+            idempotent_replay: false,
+            campaign,
+            session,
+            player,
+          },
+          { status: 201 },
+        )
       }
       if (method === 'POST' && path === '/api/accounts/play-now') {
         const campaign = campaigns[0]
@@ -1623,10 +1679,7 @@ async function renderLoadedApp() {
 }
 
 function toggleAdminToolsViaComposerLabel() {
-  const actionLabel = screen.getByText(/Your Action/)
-  for (let index = 0; index < 5; index += 1) {
-    fireEvent.click(actionLabel)
-  }
+  fireEvent.click(screen.getByRole('button', { name: 'Director controls' }))
 }
 
 function socketHandler<TPayload>(eventName: string) {
@@ -1726,8 +1779,11 @@ export function setupAppTest() {
   socketMock.io.mockClear()
   socketMock.socket.emit.mockClear()
   socketMock.socket.on.mockClear()
+  socketMock.socket.off.mockClear()
+  socketMock.socket.removeAllListeners.mockClear()
   socketMock.socket.disconnect.mockClear()
-  socketMock.socket.on.mockImplementation(() => socketMock.socket)
+  socketMock.socket.connected = true
+  socketMock.installBehaviour()
   installStorageMocks()
   resetApiData()
   window.history.replaceState(null, '', '/')

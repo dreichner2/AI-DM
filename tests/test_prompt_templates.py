@@ -14,6 +14,7 @@ from aidm_server.prompt_templates import (
     build_dm_generate_request,
     build_dm_system_message,
     build_dm_stream_request,
+    parse_dm_user_prompt,
 )
 
 
@@ -40,6 +41,80 @@ def test_dm_stream_request_snapshot():
         'RULES_HINT:\n{"requires_roll": false}\n'
         'PLAYER INPUT:\nopen the iron gate\n'
     )
+
+
+def test_live_system_prompt_has_response_shape_after_narrative_style():
+    message = build_dm_system_message()
+
+    assert message.index('NARRATIVE STYLE') < message.index('RESPONSE SHAPE') < message.index('CONTENT BOUNDARIES')
+    assert 'Write like a novelist with a stopwatch.' in message
+    assert 'Ordinary turns: 60 to 140 words in one to three short paragraphs.' in message
+    assert 'Never exceed 260 words.' in message
+    assert '"Make a Wisdom (Perception) check, DC 13."' in message
+    assert 'RULES_HINT.authoritative_roll has an outcome' in message
+    assert 'When RULES_HINT.message_kind is "opening", open the adventure from the OPENING BRIEF' in message
+    assert 'When asking what the player does next' not in message
+    assert 'story_threads' not in message
+    assert 'authored_segments' not in message
+    assert '5. emergent_memory as canon that arose through play.' in message
+    assert '6. triggered_segments as optional inspiration, not rails.' in message
+
+
+def test_opening_stream_request_adds_brief_and_replaces_player_input():
+    brief = {'scene': {'name': 'The Lantern Post', 'visibleDetails': ['A bell rings.']}}
+    request = build_dm_stream_request(
+        user_input='Please narrate the opening scene for this campaign.',
+        context='{"campaign":"Smoke"}',
+        speaking_player={'character_name': 'Ember', 'player_id': 7},
+        rules_hint={'requires_roll': False, 'message_kind': 'opening', 'opening_brief': brief},
+    )
+
+    assert request.prompt == (
+        '\nCurrent speaker: Ember (character ID: 7; this is the character, not the account profile).\n'
+        'CONTEXT:\n{"campaign":"Smoke"}\n\n'
+        'OPENING BRIEF:\n{"scene":{"name":"The Lantern Post","visibleDetails":["A bell rings."]}}\n\n'
+        '\nRULES_HINT:\n{"requires_roll": false, "message_kind": "opening"}\n'
+        'PLAYER INPUT:\n(The adventure begins.)\n'
+    )
+    assert parse_dm_user_prompt(request.prompt) == {
+        'speaker': 'Ember',
+        'context': {'campaign': 'Smoke'},
+        'opening_brief': brief,
+        'rules_hint': {'requires_roll': False, 'message_kind': 'opening'},
+        'player_input': '(The adventure begins.)',
+    }
+
+
+def test_stream_request_omits_state_summary_from_rendered_rules_hint():
+    rules_hint = {
+        'requires_roll': False,
+        'state_pipeline': {'currentStateSummary': {'hp': 10}, 'playerMessage': 'I wait.'},
+    }
+
+    request = build_dm_stream_request(user_input='I wait.', context='{}', rules_hint=rules_hint)
+    parsed = parse_dm_user_prompt(request.prompt)
+
+    assert parsed['rules_hint'] == {'requires_roll': False, 'state_pipeline': {'playerMessage': 'I wait.'}}
+    assert rules_hint['state_pipeline']['currentStateSummary'] == {'hp': 10}
+    assert parsed['speaker'] is None
+    assert parsed['opening_brief'] is None
+
+
+def test_parse_dm_user_prompt_round_trips_multiline_input_and_rejects_other_layouts():
+    request = build_dm_stream_request(
+        user_input='I say:\n"Open up."',
+        context='{"a":1}',
+        speaking_player={'character_name': 'Sir Ember (the Bold)', 'player_id': 3},
+    )
+
+    parsed = parse_dm_user_prompt(request.prompt)
+
+    assert parsed['speaker'] == 'Sir Ember (the Bold)'
+    assert parsed['rules_hint'] == {}
+    assert parsed['player_input'] == 'I say:\n"Open up."'
+    assert parse_dm_user_prompt('hello') is None
+    assert parse_dm_user_prompt('\nCONTEXT:\nnot json\n\nPLAYER INPUT:\nx\n') is None
+    assert parse_dm_user_prompt(build_dm_generate_request('x', '{}').prompt) is None
 
 
 def test_active_dm_system_prompt_version():

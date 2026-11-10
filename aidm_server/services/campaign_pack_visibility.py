@@ -670,6 +670,18 @@ def _scene_for_viewer(
         'public_description',
         'description',
     )
+    _set_public_text(
+        payload,
+        'summary',
+        scene,
+        'playerSummary',
+        'player_summary',
+        'publicSummary',
+        'public_summary',
+        'summary',
+    )
+    if isinstance(scene.get('visibleDetails'), list):
+        payload['visibleDetails'] = _public_string_list(scene.get('visibleDetails'))
     payload['activeNpcIds'] = _visible_reference_ids(scene.get('activeNpcIds'), visible_npc_ids)
     payload['activeQuestIds'] = _visible_reference_ids(scene.get('activeQuestIds'), visible_quest_ids)
     payload['items'] = [

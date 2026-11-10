@@ -143,13 +143,7 @@ def build_command_plan(
         RcCommand('API type drift check', (python_executable, 'scripts/generate_api_types.py', '--check')),
         RcCommand(
             'Frontend toolchain preflight',
-            (
-                'node',
-                '-e',
-                'const {execFileSync}=require("node:child_process");'
-                'const npm=execFileSync("npm",["--version"],{encoding:"utf8"}).trim();'
-                'if(process.versions.node!=="24.18.0"||npm!=="12.0.0")process.exit(1);',
-            ),
+            (python_executable, '../scripts/check_toolchain.py', 'node', 'npm'),
             cwd=FRONTEND_DIR,
         ),
         RcCommand('Frontend tests', ('npm', 'test'), cwd=FRONTEND_DIR),

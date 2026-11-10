@@ -148,6 +148,7 @@ def test_ranged_action_allows_far_target_and_resolution_ignores_client_descripti
         'weapon_name': 'Longbow',
         'damage_dice': '1d8',
         'damage_type': 'piercing',
+        'ranged': True,
         'range_band': 'far',
         'message': 'Seraphina attacks Distant Archer with Longbow.',
     }

@@ -154,3 +154,13 @@ def test_frontend_api_contract_matches_backend_endpoint_payloads(client, app):
         'CampaignSegment',
         next(item for item in workspace['segments'] if item['segment_id'] == segment_id),
     )
+
+    started = client.post('/api/sessions/start', json={'campaign_id': ids['campaign_id']}).get_json()
+    _assert_contract_payload('SessionStartResponse', started)
+    ended_session = next(
+        item
+        for item in client.get(f"/api/sessions/campaigns/{ids['campaign_id']}/sessions").get_json()
+        if item['session_id'] == ids['session_id']
+    )
+    _assert_contract_payload('SessionSummary', ended_session)
+    assert ended_session['status'] == 'ended'

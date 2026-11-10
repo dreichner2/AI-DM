@@ -132,6 +132,11 @@ def _health(actor: dict[str, Any]) -> tuple[int, int]:
     return current, maximum
 
 
+def _is_dead(target: dict[str, Any]) -> bool:
+    health = target.get('health') if isinstance(target.get('health'), dict) else target
+    return 'dead' in {_text(value).lower() for value in health.get('conditions') or []}
+
+
 def resolve_capability_use(
     *,
     actor: dict[str, Any],
@@ -199,8 +204,10 @@ def resolve_capability_use(
         result.update({'effectType': 'heal', 'amount': sum(rolls) + level_bonus, 'rolls': rolls})
     elif effect_type == 'healing_pool':
         current_hp, maximum_hp = _health(resolved_target)
-        if maximum_hp <= 0 or current_hp <= 0:
-            return {'ok': False, 'reason': 'Lay on Hands cannot restore a dead target.'}
+        if _is_dead(resolved_target):
+            return {'ok': False, 'reason': 'Lay on Hands cannot restore the dead.'}
+        if maximum_hp <= 0:
+            return {'ok': False, 'reason': 'Lay on Hands requires a target with known hit points.'}
         missing_hp = max(0, maximum_hp - current_hp)
         requested = max(1, int_or_default(requested_amount, default=1))
         amount = min(requested, remaining, missing_hp)

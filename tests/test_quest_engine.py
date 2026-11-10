@@ -539,3 +539,25 @@ def test_event_and_state_predicates_must_both_match() -> None:
         [{'id': 'signal-ruins', 'type': 'flag.set', 'flagKey': 'signal_lit', 'flagValue': True}],
     )['nextState']
     assert right_place['quests'][0]['objectives'][0]['status'] == 'completed'
+
+
+def test_combinator_without_valid_predicates_is_never_satisfied() -> None:
+    state = _state()
+    state['quests'][0]['objectives'] = [
+        {'id': 'all_null', 'status': 'open', 'completeWhen': {'allOf': [None]}},
+        {'id': 'all_empty', 'status': 'open', 'completeWhen': {'all': []}},
+        {'id': 'any_null', 'status': 'open', 'completeWhen': {'anyOf': [None, 'prose']}},
+        {
+            'id': 'all_mixed',
+            'status': 'open',
+            'completeWhen': {'allOf': [None, {'eventType': 'flag.set', 'flagKey': 'weather_clear'}]},
+        },
+    ]
+
+    result = apply_state_changes(
+        state,
+        [{'id': 'unrelated-tick', 'type': 'flag.set', 'flagKey': 'weather_clear', 'flagValue': True}],
+    )
+
+    statuses = {objective['id']: objective['status'] for objective in result['nextState']['quests'][0]['objectives']}
+    assert statuses == {'all_null': 'open', 'all_empty': 'open', 'any_null': 'open', 'all_mixed': 'completed'}

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+from collections.abc import Iterator
+from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -35,11 +37,59 @@ MAX_NAME_LENGTH = 160
 MAX_TITLE_LENGTH = 120
 MAX_SESSION_NAME_LENGTH = 80
 MAX_TEXT_LENGTH = 4_000
-MAX_NESTED_TEXT_LENGTH = 2_000
 MAX_DICT_KEYS = 80
 MAX_LIST_ITEMS = 150
-MAX_NESTED_DEPTH = 5
+MAX_NESTED_DEPTH = 12
+PACK_BOUNDS_ERROR_CODE = 'pack_content_out_of_bounds'
 CAMPAIGN_PACK_SCHEMA_PATH = Path(__file__).resolve().parents[2] / 'docs' / 'campaign_pack.schema.json'
+
+# Authored collections whose records are copied into the runtime catalog, as
+# (canonical field, accepted aliases).
+PACK_RECORD_COLLECTIONS = (
+    ('locations', ('locations',)),
+    ('npcs', ('npcs', 'knownNpcs', 'known_npcs')),
+    ('quests', ('quests',)),
+    ('checkpoints', ('checkpoints',)),
+    ('segments', ('segments',)),
+    ('enemies', ('enemies', 'bestiary')),
+    ('encounters', ('encounters',)),
+    ('clues', ('clues',)),
+    ('factions', ('factions',)),
+    ('maps', ('maps',)),
+    ('handouts', ('handouts',)),
+    ('lore', ('lore',)),
+)
+# Pack-level JSON values copied into the snapshot as a whole.
+PACK_BOUNDED_FIELDS = (
+    ('startingState', ('startingState', 'starting_state', 'start')),
+    ('directorRules', ('directorRules', 'director_rules')),
+    ('gmNotes', ('gmNotes', 'gm_notes', 'hiddenNotes', 'hidden_notes')),
+    ('hiddenSceneNotes', ('hiddenSceneNotes', 'hidden_scene_notes')),
+    ('marketplace', ('marketplace', 'library')),
+)
+PACK_BOUNDED_RECORD_LISTS = (
+    ('dependencies', ('dependencies',)),
+    ('mods', ('mods',)),
+)
+CATALOG_KEYS_BY_RECORD_TYPE = {
+    'clue': 'clues',
+    'faction': 'factions',
+    'map': 'maps',
+    'handout': 'handouts',
+    'lore': 'lore',
+}
+SEGMENT_CATALOG_FIELDS = (
+    'id',
+    'title',
+    'summary',
+    'description',
+    'playerSummary',
+    'tone',
+    'gmNotes',
+    'locationId',
+    'questIds',
+    'tags',
+)
 
 
 class CampaignPackImportError(ValueError):
@@ -78,7 +128,10 @@ def import_campaign_pack(
     pack_hash = _pack_hash(pack)
     source_filename = _optional_text(_first(payload, 'sourceFilename', 'source_filename') or _first(pack, 'sourceFilename', 'source_filename'), max_length=255)
 
-    starting_state = _record(_first(pack, 'startingState', 'starting_state', 'start'))
+    starting_state = _bounded_json_value(
+        _record(_first(pack, 'startingState', 'starting_state', 'start')),
+        path='startingState',
+    )
     locations = _pack_records(
         _first(pack, 'locations'),
         field='locations',
@@ -118,16 +171,19 @@ def import_campaign_pack(
         required_name=False,
     )
     future_records_by_type = _future_records_by_type(pack, pack_id=pack_id)
-    director_rules = _bounded_json_value(_record(_first(pack, 'directorRules', 'director_rules')), depth=0)
+    director_rules = _bounded_json_value(_record(_first(pack, 'directorRules', 'director_rules')), path='directorRules')
     multi_session_group_key = _optional_text(
         _first(pack, 'multiSessionGroupKey', 'multi_session_group_key'),
         max_length=MAX_ID_LENGTH,
     )
-    gm_notes = _optional_bounded_json(_first(pack, 'gmNotes', 'gm_notes', 'hiddenNotes', 'hidden_notes'))
-    hidden_scene_notes = _optional_bounded_json(_first(pack, 'hiddenSceneNotes', 'hidden_scene_notes'))
-    dependencies = _record_list(_first(pack, 'dependencies'))
-    mods = _record_list(_first(pack, 'mods'))
-    marketplace = _optional_bounded_json(_first(pack, 'marketplace', 'library'))
+    gm_notes = _optional_bounded_json(_first(pack, 'gmNotes', 'gm_notes', 'hiddenNotes', 'hidden_notes'), path='gmNotes')
+    hidden_scene_notes = _optional_bounded_json(
+        _first(pack, 'hiddenSceneNotes', 'hidden_scene_notes'),
+        path='hiddenSceneNotes',
+    )
+    dependencies = _record_list(_first(pack, 'dependencies'), path='dependencies')
+    mods = _record_list(_first(pack, 'mods'), path='mods')
+    marketplace = _optional_bounded_json(_first(pack, 'marketplace', 'library'), path='marketplace')
     _validate_pack_references(
         starting_state=starting_state,
         locations=locations,
@@ -254,6 +310,7 @@ def import_campaign_pack(
                 mods=mods,
                 marketplace=marketplace,
                 extra_catalog_records=future_records_by_type,
+                segments=segments,
                 session_id=None,
                 campaign_id=campaign.campaign_id,
                 imported_at=now.isoformat(),
@@ -290,6 +347,7 @@ def import_campaign_pack(
         mods=mods,
         marketplace=marketplace,
         extra_catalog_records=future_records_by_type,
+        segments=segments,
         session_id=session_obj.session_id,
         campaign_id=campaign.campaign_id,
         imported_at=now.isoformat(),
@@ -358,9 +416,9 @@ def import_campaign_pack(
             CampaignSegment(
                 campaign_id=campaign.campaign_id,
                 title=segment['title'],
-                description=segment.get('description'),
+                description=segment.get('description') or segment.get('summary'),
                 trigger_condition=segment.get('trigger_condition'),
-                tags=segment.get('tags'),
+                tags=_segment_tags(segment.get('tags'), pack_id=pack_id, external_id=segment['id']),
                 external_id=segment.get('id'),
                 source='campaign_pack',
                 source_pack_id=pack_id,
@@ -759,7 +817,7 @@ def _pack_records(
     for index, raw_item in enumerate(value):
         if not isinstance(raw_item, dict):
             raise CampaignPackImportError(f'{field}[{index}] must be a JSON object.')
-        item = _bounded_json_value(raw_item, depth=0)
+        item = _bounded_json_value(raw_item, path=f'{field}[{index}]')
         name = _optional_text(_first(item, 'name', 'title'), max_length=MAX_NAME_LENGTH) or ''
         if required_name and not name:
             raise CampaignPackImportError(f'{field}[{index}].name is required.')
@@ -791,25 +849,39 @@ def _segment_records(value: Any, *, pack_id: str) -> list[dict[str, Any]]:
     for index, raw_item in enumerate(value):
         if not isinstance(raw_item, dict):
             raise CampaignPackImportError(f'segments[{index}] must be a JSON object.')
-        item = _bounded_json_value(raw_item, depth=0)
+        item = _bounded_json_value(raw_item, path=f'segments[{index}]')
         title = _required_text(_first(item, 'title', 'name'), field=f'segments[{index}].title', max_length=MAX_TITLE_LENGTH)
         external_id = _clean_id(_first(item, 'id', 'segmentId', 'segment_id')) or stable_slug(title)
         if external_id in seen_ids:
             raise CampaignPackImportError(f'segments contains duplicate id "{external_id}".')
         seen_ids.add(external_id)
+        location_id = _optional_text(_first(item, 'locationId', 'location_id'), max_length=MAX_ID_LENGTH)
         trigger = _first(item, 'trigger', 'triggerCondition', 'trigger_condition')
-        trigger_condition = _trigger_condition(trigger, pack_id=pack_id, external_id=external_id)
-        tags = _segment_tags(_first(item, 'tags'), pack_id=pack_id, external_id=external_id)
         records.append(
             {
                 'id': external_id,
                 'title': title,
-                'description': _optional_text(_first(item, 'description', 'summary'), max_length=MAX_TEXT_LENGTH),
-                'trigger_condition': trigger_condition,
-                'tags': tags,
+                'summary': _optional_text(_first(item, 'summary'), max_length=MAX_TEXT_LENGTH),
+                'description': _optional_text(_first(item, 'description'), max_length=MAX_TEXT_LENGTH),
+                'playerSummary': _optional_text(_first(item, 'playerSummary', 'player_summary'), max_length=MAX_TEXT_LENGTH),
+                'tone': _optional_text(_first(item, 'tone'), max_length=MAX_TEXT_LENGTH),
+                'gmNotes': _first(item, 'gmNotes', 'gm_notes'),
+                'locationId': location_id,
+                'questIds': _string_list(_first(item, 'questIds', 'quest_ids')),
+                'tags': _string_list(_first(item, 'tags')),
+                'trigger_condition': _trigger_condition(
+                    trigger,
+                    pack_id=pack_id,
+                    external_id=external_id,
+                    location_id=location_id,
+                ),
             }
         )
     return records
+
+
+def _segment_catalog_record(segment: dict[str, Any]) -> dict[str, Any]:
+    return {key: segment.get(key) for key in SEGMENT_CATALOG_FIELDS}
 
 
 def _enemy_records(value: Any, *, pack_id: str) -> list[dict[str, Any]]:
@@ -825,7 +897,7 @@ def _enemy_records(value: Any, *, pack_id: str) -> list[dict[str, Any]]:
     for index, raw_item in enumerate(value):
         if not isinstance(raw_item, dict):
             raise CampaignPackImportError(f'enemies[{index}] must be a JSON object.')
-        item = _bounded_json_value(raw_item, depth=0)
+        item = _bounded_json_value(raw_item, path=f'enemies[{index}]')
         name = _required_text(_first(item, 'name', 'title'), field=f'enemies[{index}].name', max_length=MAX_NAME_LENGTH)
         creature_id = _clean_id(_first(item, 'id', 'creatureId', 'creature_id')) or stable_slug(name)
         if creature_id in seen_ids:
@@ -1238,8 +1310,10 @@ def _initial_snapshot(
     session_id: int | None,
     campaign_id: int,
     imported_at: str,
+    segments: list[dict] | None = None,
 ) -> dict[str, Any]:
     current_scene = _record(_first(starting_state, 'currentScene', 'current_scene'))
+    scene_path = 'startingState.currentScene'
     scene_location_id = starting_location_id or _clean_id(_first(current_scene, 'locationId', 'location_id'))
     visibility = _starting_visibility(
         starting_state=starting_state,
@@ -1263,7 +1337,11 @@ def _initial_snapshot(
         or _optional_text(_first(starting_location or {}, 'description', 'summary'), max_length=MAX_TEXT_LENGTH)
         or ''
     )
-    flags = _record(_first(starting_state, 'flags'))
+    # campaignFlags is an accepted alias; explicit flags win on conflict.
+    flags = {
+        **_record(_first(starting_state, 'campaignFlags', 'campaign_flags')),
+        **_record(_first(starting_state, 'flags')),
+    }
     flags['campaignPackImported'] = True
     flags['campaignPackId'] = pack_id
     active_checkpoint_id = _initial_checkpoint_id(checkpoints, starting_state=starting_state)
@@ -1278,34 +1356,48 @@ def _initial_snapshot(
         'quests': quests,
         'enemies': enemies,
         'encounters': encounters,
+        'segments': [_segment_catalog_record(segment) for segment in segments or []],
     }
     for record_type, records in extra_catalog_records.items():
-        catalog[f'{record_type}s'] = records
+        catalog[CATALOG_KEYS_BY_RECORD_TYPE[record_type]] = records
+    scene = {
+        'locationId': scene_location_id,
+        'name': scene_name,
+        'sceneType': _optional_text(_first(current_scene, 'sceneType', 'scene_type'), max_length=80) or 'exploration',
+        'dangerLevel': max(0, min(10, coerce_int(_first(current_scene, 'dangerLevel', 'danger_level'), 0) or 0)),
+        'mood': _optional_text(_first(current_scene, 'mood'), max_length=120) or None,
+        'combatState': _optional_text(_first(current_scene, 'combatState', 'combat_state'), max_length=80) or 'none',
+        'description': scene_description,
+        'activeNpcIds': active_npc_ids,
+        'activeQuestIds': active_quest_ids,
+        'playerPositions': _record(_first(current_scene, 'playerPositions', 'player_positions')),
+        'playerZones': _record(_first(current_scene, 'playerZones', 'player_zones')),
+        'characterPositions': _record(_first(current_scene, 'characterPositions', 'character_positions')),
+        'characterZones': _record(_first(current_scene, 'characterZones', 'character_zones')),
+        'items': _starting_scene_collection(current_scene, starting_location, 'items', path=scene_path),
+        'interactables': _starting_scene_collection(current_scene, starting_location, 'interactables', path=scene_path),
+        'hazards': _starting_scene_collection(current_scene, starting_location, 'hazards', path=scene_path),
+        'musicTag': _optional_text(_first(current_scene, 'musicTag', 'music_tag'), max_length=120) or None,
+        'updatedAtTurn': None,
+    }
+    scene_summary = _optional_text(_first(current_scene, 'summary'), max_length=MAX_TEXT_LENGTH)
+    if scene_summary:
+        scene['summary'] = scene_summary
+    for key, aliases in (
+        ('visibleDetails', ('visibleDetails', 'visible_details')),
+        ('hiddenSceneNotes', ('hiddenSceneNotes', 'hidden_scene_notes')),
+    ):
+        value = _optional_bounded_json(_first(current_scene, *aliases), path=f'{scene_path}.{key}')
+        if value is not None:
+            scene[key] = value
     return {
         'schemaVersion': 1,
         'sessionId': session_id,
         'campaignId': campaign_id,
-        'currentScene': {
-            'locationId': scene_location_id,
-            'name': scene_name,
-            'sceneType': _optional_text(_first(current_scene, 'sceneType', 'scene_type'), max_length=80) or 'exploration',
-            'dangerLevel': max(0, min(10, coerce_int(_first(current_scene, 'dangerLevel', 'danger_level'), 0) or 0)),
-            'mood': _optional_text(_first(current_scene, 'mood'), max_length=120) or None,
-            'combatState': _optional_text(_first(current_scene, 'combatState', 'combat_state'), max_length=80) or 'none',
-            'description': scene_description,
-            'activeNpcIds': active_npc_ids,
-            'activeQuestIds': active_quest_ids,
-            'playerPositions': _record(_first(current_scene, 'playerPositions', 'player_positions')),
-            'playerZones': _record(_first(current_scene, 'playerZones', 'player_zones')),
-            'characterPositions': _record(_first(current_scene, 'characterPositions', 'character_positions')),
-            'characterZones': _record(_first(current_scene, 'characterZones', 'character_zones')),
-            'items': _record_list(_first(current_scene, 'items')),
-            'musicTag': _optional_text(_first(current_scene, 'musicTag', 'music_tag'), max_length=120) or None,
-            'updatedAtTurn': None,
-        },
+        'currentScene': scene,
         'playerCharacters': [],
         'activePlayerIds': [],
-        'partyNpcs': _record_list(_first(starting_state, 'partyNpcs', 'party_npcs')),
+        'partyNpcs': _record_list(_first(starting_state, 'partyNpcs', 'party_npcs'), path='startingState.partyNpcs'),
         'knownNpcs': visible_npcs,
         'quests': visible_quests,
         'locations': visible_locations,
@@ -1338,6 +1430,16 @@ def _initial_snapshot(
             'multiSessionGroupKey': multi_session_group_key,
             'gmNotes': gm_notes,
             'hiddenSceneNotes': hidden_scene_notes,
+            'startingBrief': {
+                'partyStatus': _optional_bounded_json(
+                    _first(starting_state, 'partyStatus', 'party_status'),
+                    path='startingState.partyStatus',
+                ),
+                'partyNotes': _optional_bounded_json(
+                    _first(starting_state, 'partyNotes', 'party_notes'),
+                    path='startingState.partyNotes',
+                ),
+            },
             'dependencies': dependencies,
             'mods': mods,
             'marketplace': marketplace,
@@ -1396,18 +1498,25 @@ def _counts_payload(
     }
 
 
-def _trigger_condition(trigger: Any, *, pack_id: str, external_id: str) -> str:
-    if isinstance(trigger, str):
-        text = trigger.strip()
-        return text[:MAX_TEXT_LENGTH] if text else _manual_trigger(pack_id, external_id)
+def _trigger_condition(trigger: Any, *, pack_id: str, external_id: str, location_id: str | None = None) -> str:
+    """Serialize an already-bounded authored segment trigger."""
+
+    if isinstance(trigger, str) and trigger.strip():
+        return trigger.strip()
     if isinstance(trigger, dict):
-        trigger_payload = _bounded_json_value(trigger, depth=0)
-        trigger_payload.setdefault('type', 'manual')
-        trigger_payload.setdefault('source', 'campaign_pack')
-        trigger_payload.setdefault('packId', pack_id)
-        trigger_payload.setdefault('packSegmentId', external_id)
-        return safe_json_dumps(trigger_payload, {})
-    return _manual_trigger(pack_id, external_id)
+        trigger_payload = dict(trigger)
+    elif trigger in (None, '') and location_id:
+        trigger_payload = {'type': 'location', 'locationId': location_id}
+    else:
+        return _manual_trigger(pack_id, external_id)
+    trigger_payload.setdefault('type', 'manual')
+    if str(trigger_payload['type']).strip().lower() == 'location' and trigger_payload.get('locationId'):
+        # Scene location ids are slugged on import, so the trigger is too.
+        trigger_payload['locationId'] = _clean_id(trigger_payload['locationId'])
+    trigger_payload.setdefault('source', 'campaign_pack')
+    trigger_payload.setdefault('packId', pack_id)
+    trigger_payload.setdefault('packSegmentId', external_id)
+    return safe_json_dumps(trigger_payload, {})
 
 
 def _manual_trigger(pack_id: str, external_id: str) -> str:
@@ -1485,16 +1594,40 @@ def _record(value: Any) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def _record_list(value: Any) -> list[dict]:
+def _record_list(value: Any, *, path: str) -> list[dict]:
     if not isinstance(value, list):
         return []
-    return [_bounded_json_value(item, depth=0) for item in value[:MAX_LIST_ITEMS] if isinstance(item, dict)]
+    if len(value) > MAX_LIST_ITEMS:
+        raise _bounds_error(path, f'has more than {MAX_LIST_ITEMS} items')
+    return [
+        _bounded_json_value(item, path=f'{path}[{index}]')
+        for index, item in enumerate(value)
+        if isinstance(item, dict)
+    ]
 
 
-def _optional_bounded_json(value: Any) -> Any:
+def _optional_bounded_json(value: Any, *, path: str) -> Any:
     if value in (None, ''):
         return None
-    return _bounded_json_value(value, depth=0)
+    return _bounded_json_value(value, path=path)
+
+
+def _location_scene_collection(location: dict | None, key: str) -> list[dict]:
+    """Return a location's authored scene objects the way arrival restores them:
+    a ``sceneState`` collection wins over the top-level one."""
+
+    if not isinstance(location, dict):
+        return []
+    scene_state = location.get('sceneState') if isinstance(location.get('sceneState'), dict) else location.get('scene_state')
+    value = scene_state.get(key) if isinstance(scene_state, dict) and key in scene_state else location.get(key)
+    if not isinstance(value, list):
+        return []
+    return [deepcopy(item) for item in value if isinstance(item, dict)]
+
+
+def _starting_scene_collection(current_scene: dict, starting_location: dict | None, key: str, *, path: str) -> list[dict]:
+    authored = _record_list(_first(current_scene, key), path=f'{path}.{key}')
+    return authored or _location_scene_collection(starting_location, key)
 
 
 def _string_list(value: Any) -> list[str]:
@@ -1557,27 +1690,87 @@ def _clean_id(value: Any) -> str | None:
     return stable_slug(text)[:MAX_ID_LENGTH]
 
 
-def _bounded_json_value(value: Any, *, depth: int) -> Any:
-    if depth >= MAX_NESTED_DEPTH:
-        if isinstance(value, (dict, list)):
-            return None
-        return _scalar_value(value)
+def campaign_pack_bound_violations(pack: dict[str, Any]) -> list[tuple[str, str]]:
+    """Every (JSON path, message) the importer would reject for exceeding a size bound."""
+
+    violations: list[tuple[str, str]] = []
+    for field, aliases in PACK_RECORD_COLLECTIONS:
+        records = _first(pack, *aliases)
+        if not isinstance(records, list):
+            continue
+        for index, record in enumerate(records):
+            if isinstance(record, dict):
+                violations.extend(_bound_violations(record, path=f'{field}[{index}]', depth=0))
+    for field, aliases in PACK_BOUNDED_FIELDS:
+        value = _first(pack, *aliases)
+        if value not in (None, ''):
+            violations.extend(_bound_violations(value, path=field, depth=0))
+    for field, aliases in PACK_BOUNDED_RECORD_LISTS:
+        records = _first(pack, *aliases)
+        if not isinstance(records, list):
+            continue
+        if len(records) > MAX_LIST_ITEMS:
+            violations.append((field, f'has more than {MAX_LIST_ITEMS} items'))
+        for index, record in enumerate(records):
+            if isinstance(record, dict):
+                violations.extend(_bound_violations(record, path=f'{field}[{index}]', depth=0))
+    return violations
+
+
+def _bound_violations(value: Any, *, path: str, depth: int) -> Iterator[tuple[str, str]]:
+    if isinstance(value, (dict, list)) and depth >= MAX_NESTED_DEPTH:
+        yield path, f'is nested more than {MAX_NESTED_DEPTH} levels deep'
+        return
+    if isinstance(value, dict):
+        if len(value) > MAX_DICT_KEYS:
+            yield path, f'has more than {MAX_DICT_KEYS} keys'
+        for key, item in value.items():
+            key_text = str(key).strip()
+            if len(key_text) > MAX_ID_LENGTH:
+                yield path, f'has a key longer than {MAX_ID_LENGTH} characters'
+                continue
+            yield from _bound_violations(item, path=f'{path}.{key_text}', depth=depth + 1)
+        return
+    if isinstance(value, list):
+        if len(value) > MAX_LIST_ITEMS:
+            yield path, f'has more than {MAX_LIST_ITEMS} items'
+        for index, item in enumerate(value):
+            yield from _bound_violations(item, path=f'{path}[{index}]', depth=depth + 1)
+        return
+    scalar = _scalar_value(value)
+    if isinstance(scalar, str) and len(scalar) > MAX_TEXT_LENGTH:
+        yield path, f'is longer than {MAX_TEXT_LENGTH} characters'
+
+
+def _bounds_error(path: str, message: str) -> CampaignPackImportError:
+    return CampaignPackImportError(f'{path} {message}.', error_code=PACK_BOUNDS_ERROR_CODE)
+
+
+def _bounded_json_value(value: Any, *, path: str) -> Any:
+    """Copy an authored JSON value, rejecting (never truncating) anything out of bounds."""
+
+    violation = next(_bound_violations(value, path=path, depth=0), None)
+    if violation:
+        raise _bounds_error(*violation)
+    return _normalized_json_value(value)
+
+
+def _normalized_json_value(value: Any) -> Any:
     if isinstance(value, dict):
         result: dict[str, Any] = {}
-        for key, item in list(value.items())[:MAX_DICT_KEYS]:
-            key_text = _optional_text(key, max_length=MAX_ID_LENGTH)
-            if not key_text:
-                continue
-            result[key_text] = _bounded_json_value(item, depth=depth + 1)
+        for key, item in value.items():
+            key_text = str(key).strip()
+            if key_text:
+                result[key_text] = _normalized_json_value(item)
         return result
     if isinstance(value, list):
-        return [_bounded_json_value(item, depth=depth + 1) for item in value[:MAX_LIST_ITEMS]]
+        return [_normalized_json_value(item) for item in value]
     return _scalar_value(value)
 
 
 def _scalar_value(value: Any) -> Any:
     if isinstance(value, str):
-        return value.strip()[:MAX_NESTED_TEXT_LENGTH]
+        return value.strip()
     if isinstance(value, (int, float, bool)) or value is None:
         return value
-    return str(value).strip()[:MAX_NESTED_TEXT_LENGTH]
+    return str(value).strip()

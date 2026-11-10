@@ -144,7 +144,7 @@ function saveBoardViewMode(mode: BoardViewMode) {
   }
 }
 
-type SessionBoardProps = {
+export type SessionBoardProps = {
   activeSessionTitle: string
   campaignTitle: string
   sessionId: number | null

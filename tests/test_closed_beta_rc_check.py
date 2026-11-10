@@ -130,6 +130,10 @@ def test_closed_beta_rc_frontend_commands_run_from_frontend_dir(tmp_path):
     assert pathlib.Path(npm_ci_evidence.cwd) == repo_root
     assert npm_ci_evidence.args == ('python-test', 'scripts/render_frontend_npm_ci_evidence.py')
 
+    preflight = next(command for command in plan if command.label == 'Frontend toolchain preflight')
+    assert preflight.args == ('python-test', '../scripts/check_toolchain.py', 'node', 'npm')
+    assert (pathlib.Path(preflight.cwd) / preflight.args[1]).resolve() == repo_root / 'scripts' / 'check_toolchain.py'
+
 
 def test_closed_beta_rc_browser_smoke_uses_single_origin_build(tmp_path):
     plan = build_command_plan(

@@ -20,6 +20,11 @@ export type SessionCard = {
   meta: string
 }
 
+export type PlayabilityStatus = {
+  label: string
+  tone: 'good' | 'neutral' | 'warn'
+}
+
 export type RailError = {
   id: string
   category: string
@@ -64,7 +69,8 @@ type CampaignRailProps = {
   onStartSession: () => void
   onSelectCampaign: (campaignId: number) => void
   onSelectSession: (sessionId: number) => void
-  lastSyncLabel: string
+  playability: PlayabilityStatus
+  lastSavedLabel: string
   onRefreshWorkspace: () => void
   errors: RailError[]
 }
@@ -112,11 +118,11 @@ export function CampaignRail({
   onStartSession,
   onSelectCampaign,
   onSelectSession,
-  lastSyncLabel,
+  playability,
+  lastSavedLabel,
   onRefreshWorkspace,
   errors,
 }: CampaignRailProps) {
-  const backendReady = backendStatus === 'ok'
   const backendChecking = backendStatus === null
 
   return (
@@ -344,12 +350,9 @@ export function CampaignRail({
       </nav>
 
       <footer className="rail-footer">
-        <StatusDot
-          label={backendReady ? 'All Systems Operational' : backendChecking ? 'Checking Backend' : 'Backend Offline'}
-          tone={backendReady ? 'good' : backendChecking ? 'neutral' : 'warn'}
-        />
+        <StatusDot label={playability.label} tone={playability.tone} />
         <span>
-          Last sync: {lastSyncLabel}
+          Last saved: {lastSavedLabel}
           <button
             type="button"
             className="rail-sync-button"

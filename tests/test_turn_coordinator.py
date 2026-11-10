@@ -507,3 +507,62 @@ def test_configured_turn_coordinator_serializes_many_in_deduped_order(app):
 
         assert coordinator.discard_session(first) is True
         assert coordinator.discard_session(second) is True
+
+
+def test_memory_turn_coordinator_try_serialized_never_waits_for_a_held_lock():
+    coordinator = SessionTurnCoordinator()
+    holding, release = threading.Event(), threading.Event()
+
+    def hold():
+        with coordinator.serialized(7):
+            holding.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert holding.wait(5)
+    try:
+        with coordinator.try_serialized(7) as acquired:
+            assert acquired is False
+    finally:
+        release.set()
+        holder.join(5)
+
+    with coordinator.try_serialized(7) as acquired:
+        assert acquired is True
+    assert coordinator.discard_session(7) is True
+
+
+def test_configured_try_serialized_many_takes_all_locks_or_none(app):
+    first = seed_world_campaign_player_session(app)['session_id']
+    second = seed_world_campaign_player_session(app)['session_id']
+    coordinator = ConfiguredSessionTurnCoordinator()
+    holding, release = threading.Event(), threading.Event()
+
+    def hold_second():
+        with app.app_context():
+            with coordinator.serialized(second):
+                holding.set()
+                release.wait(5)
+
+    with app.app_context():
+        app.config['AIDM_TURN_COORDINATOR_STORE'] = 'database'
+        app.config['AIDM_TURN_COORDINATOR_LOCK_TTL_SECONDS'] = 30
+        holder = threading.Thread(target=hold_second)
+        holder.start()
+        assert holding.wait(5)
+        try:
+            with coordinator.try_serialized_many([second, first]) as waits:
+                assert waits is None
+                assert coordinator.held_session_ids() == frozenset()
+                assert coordinator.lock_count() == 1
+        finally:
+            release.set()
+            holder.join(5)
+
+        with coordinator.try_serialized_many([second, first]) as waits:
+            assert waits == {first: 0.0, second: 0.0}
+            assert coordinator.held_session_ids() == frozenset({first, second})
+            with coordinator.try_serialized(first) as nested:
+                assert nested is True
+        assert coordinator.lock_count() == 0

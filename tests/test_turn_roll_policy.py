@@ -177,6 +177,53 @@ def test_build_roll_gate_discards_stale_mechanics_when_dm_refines_roll_type():
     }
 
 
+@pytest.mark.parametrize(
+    ('text', 'expected_dc_hint'),
+    [
+        ('The shutters rattle. Make a Wisdom (Perception) check, DC 13.', 'DC 13'),
+        ('Make a Dexterity (Stealth) check, dc 9.', 'DC 9'),
+        ('Make a Strength (Athletics) check, DC 3.', 'DC 5'),
+        ('Make a Charisma (Persuasion) check, DC 45.', 'DC 30'),
+        ('The DC 12 lock clicks. Make a Dexterity (Stealth) check.', None),
+    ],
+)
+def test_build_roll_gate_honours_dc_stated_in_roll_request_sentence(text, expected_dc_hint):
+    turn = _turn(
+        requires_roll=True,
+        outcome_status='deferred',
+        rule_type='stealth',
+        rules_hint=json.dumps({'dc_hint': '14 (roll mod +2)', 'turn_number': 3}),
+    )
+
+    gate = TurnRollPolicy.build_roll_gate(
+        turn=turn,
+        dm_response_text=text,
+        response_requests_roll=False,
+        group_player_ids=[3],
+    )
+
+    assert gate is not None
+    assert gate.get('dc_hint') == expected_dc_hint
+    persisted_hint = json.loads(turn.rules_hint)
+    assert persisted_hint['dc_hint'] == (expected_dc_hint or '14 (roll mod +2)')
+    assert persisted_hint['turn_number'] == 3
+
+
+def test_build_roll_gate_detects_parenthesised_check_request_on_unclassified_turn():
+    gate = TurnRollPolicy.build_roll_gate(
+        turn=_turn(),
+        dm_response_text='The ledger smells of ash. Make a Wisdom (Perception) check, DC 13.',
+        response_requests_roll=False,
+        group_player_ids=[3],
+    )
+
+    assert gate is not None
+    assert gate['rule_type'] == 'perception'
+    assert gate['dc_hint'] == 'DC 13'
+    assert TurnRollPolicy.response_requests_stated_check('Make a Wisdom (Perception) check, DC 13.') is True
+    assert TurnRollPolicy.response_requests_stated_check('No check is needed to make a quick check.') is False
+
+
 def test_build_roll_gate_returns_none_for_resolved_or_unrequested_turns():
     assert TurnRollPolicy.build_roll_gate(
         turn=_turn(),

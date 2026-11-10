@@ -332,3 +332,28 @@ def test_combat_start_revision_drift_discards_pending_bestiary_plan(client, app,
     assert generated_entries == 0
     assert encounters == 0
     assert debug_events == 0
+
+
+def test_operator_combat_start_holds_the_campaign_wide_turn_lock_set(client, app, monkeypatch):
+    from aidm_server.turn_coordinator import session_turn_coordinator
+
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        sibling = Session(campaign_id=ids['campaign_id'], status='active')
+        db.session.add(sibling)
+        db.session.commit()
+        sibling_id = sibling.session_id
+    held_during_planning: list[frozenset[int]] = []
+
+    def plan_intents(_combat):
+        held_during_planning.append(session_turn_coordinator.held_session_ids())
+        return {'intents': [], 'summaryForDm': 'Lock-set probe.'}
+
+    monkeypatch.setattr(creatures_blueprint, 'plan_enemy_intents', plan_intents)
+    response = client.post(
+        f"/api/sessions/{ids['session_id']}/combat/start",
+        json={'creature': {'name': 'Bandit', 'creatureType': 'humanoid'}, 'enemyCount': 1},
+    )
+
+    assert response.status_code == 200
+    assert held_during_planning == [frozenset({ids['session_id'], sibling_id})]

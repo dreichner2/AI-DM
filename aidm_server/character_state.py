@@ -834,18 +834,29 @@ def character_state_for_player(player: Player | None) -> dict[str, Any]:
     return state
 
 
-def _task_dc_from_hint(dc_hint: Any, *, fallback: int | None) -> int | None:
-    """Read an exact task DC without treating a range as a resolved DC."""
+STATED_DC_MARKER = 'stated DC'
+
+
+def _task_dc_and_source(dc_hint: Any, *, fallback: int | None) -> tuple[int | None, str]:
+    """Read an exact task DC without treating a range as a resolved DC.
+
+    Returns the DC and ``'stated'`` when the hint states it, else the fallback
+    base DC and ``'default'``.  A hint already rewritten by
+    :func:`apply_character_dc_adjustment` ("14 (roll mod ...)") carries the base
+    DC unless it is marked with :data:`STATED_DC_MARKER`.
+    """
 
     text = str(dc_hint or '').strip()
     match = re.search(r'\bDC\s*(\d{1,2})\b', text, re.IGNORECASE)
+    stated = True
     if not match:
         match = re.match(r'^(\d{1,2})(?!\s*-)', text)
+        stated = '(roll mod' not in text or STATED_DC_MARKER in text
     if match:
         parsed = int(match.group(1))
         if 5 <= parsed <= 30:
-            return parsed
-    return fallback
+            return parsed, 'stated' if stated else 'default'
+    return fallback, 'default'
 
 
 def _weapon_labels(item: dict[str, Any]) -> set[str]:
@@ -1067,7 +1078,7 @@ def character_roll_spec(
     fallback_dc = ROLL_TYPE_BASE_DC.get(normalized_roll_type)
     if fallback_dc is None and normalized_roll_type != 'initiative':
         fallback_dc = ROLL_TYPE_BASE_DC['check']
-    task_dc = _task_dc_from_hint(dc_hint, fallback=fallback_dc)
+    task_dc, dc_source = _task_dc_and_source(dc_hint, fallback=fallback_dc)
     ability_label = ABILITY_LABELS.get(ability_key or '', 'ability')
     score = scores.get(ability_key) if ability_key else None
     result = {
@@ -1075,6 +1086,7 @@ def character_roll_spec(
         'mode': 'normal',
         'rule_type': normalized_roll_type,
         'task_dc': task_dc,
+        'dc_source': dc_source,
         'ability': (
             {
                 'key': ability_key,
@@ -1141,6 +1153,9 @@ def apply_character_dc_adjustment(
         )
     if int_or_default(breakdown.get('wound_penalty'), default=0):
         details.append(f"wounded -{int_or_default(breakdown.get('wound_penalty'), default=0)}")
+
+    if spec.get('dc_source') == 'stated':
+        details.append(STATED_DC_MARKER)
 
     task_dc = spec.get('task_dc')
     dc_label = str(task_dc) if task_dc is not None else str(getattr(rule_hint, 'dc_hint', None) or 'initiative order')

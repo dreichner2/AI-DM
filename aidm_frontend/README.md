@@ -2,6 +2,15 @@
 
 Canonical local frontend for the AI-DM Flask backend.
 
+## Requirements
+
+- Node.js 24 (24.18 or newer)
+- npm 12
+- Python 3.14 (3.14.6 or newer) for the backend
+
+CI uses the exact versions in [../.nvmrc](../.nvmrc) and
+[../.python-version](../.python-version).
+
 ## Run
 
 From the repo root, start the backend:

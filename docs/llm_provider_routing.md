@@ -17,12 +17,43 @@ a supported configuration alias; use `codex_cli`.
 | `gemini` | `models/gemini-3-flash-preview` | `GOOGLE_GENAI_API_KEY` | `AIDM_LLM_FALLBACK_MODELS` and shared generation settings |
 | `nvidia` | `moonshotai/kimi-k2.5` | `AIDM_NVIDIA_API_KEY` or `NVIDIA_API_KEY` | `AIDM_NVIDIA_INVOKE_URL`, timeout, token, sampling, and thinking settings |
 | `kimi` | `moonshotai/kimi-k2.5` | Same NVIDIA-compatible credential path | Same NVIDIA-compatible settings |
-| `fallback` | `deterministic-v1` | No external credential | Intended for deterministic local/test behavior, not model-equivalent narration |
+| `fallback` | `deterministic-v1` | No external credential | Safe Mode: the scripted narrator (`aidm_server/scripted_narrator.py`), not model-equivalent narration |
 
 `AIDM_LLM_MODEL` selects a non-default model. Model identifiers in the catalog
 describe current application configuration, not a guarantee that an external
 account can access the model indefinitely. Verify provider availability before a
 release or benchmark.
+
+### DeepSeek narration defaults
+
+DeepSeek narration runs without hidden reasoning by default so the first words
+arrive quickly:
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `AIDM_DEEPSEEK_THINKING` | `false` | `true` enables DeepSeek thinking mode. |
+| `AIDM_DEEPSEEK_MAX_TOKENS` | `2048` | With thinking enabled the effective limit is at least `8192`, because hidden reasoning shares the completion budget. |
+
+Both settings are read from the environment, so existing overrides keep
+working.
+
+### Narration and background canon jobs
+
+Canon extraction runs on the main provider in a background job. Narration on an
+HTTP provider (`deepseek`, `gemini`, `nvidia`, `kimi`) never waits for a running
+canon job; new canon jobs still wait until narration has finished. Narration on
+`codex_cli` waits for a running canon job first, because saved-login Codex calls
+are serialized process-wide.
+
+### Safe Mode (`fallback`)
+
+With `AIDM_LLM_PROVIDER=fallback` nothing calls a network or CLI model. The
+scripted narrator narrates engine results (combat, spells, class capabilities,
+travel, scene objects, items, rests, quests, rewards and resolved rolls) and
+authored scene content deterministically, and asks for a roll only when the
+turn's rules hint requires one that has not been made yet. Every helper and task
+profile resolves to the deterministic/heuristic path, and canon extraction
+applies the heuristic patch without a provider call.
 
 ## Codex CLI Isolation
 

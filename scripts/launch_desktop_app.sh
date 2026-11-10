@@ -364,15 +364,15 @@ requirements_stale() {
 }
 
 ensure_backend_dependencies() {
-  if [[ -x "${VENV_PYTHON}" ]] && ! "${VENV_PYTHON}" -c 'import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 14, 6) else 1)'; then
-    log "Recreating backend virtualenv for Python 3.14.6."
+  if [[ -x "${VENV_PYTHON}" ]] && ! "${VENV_PYTHON}" "${REPO_ROOT}/scripts/check_toolchain.py" python; then
+    log "Recreating backend virtualenv with ${PYTHON_BOOTSTRAP}."
     rm -rf "${VENV_DIR}"
   fi
 
   if [[ ! -x "${VENV_PYTHON}" ]]; then
     log "Creating backend virtualenv."
     command -v "${PYTHON_BOOTSTRAP}" >/dev/null 2>&1
-    "${PYTHON_BOOTSTRAP}" -c 'import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 14, 6) else 1)'
+    "${PYTHON_BOOTSTRAP}" "${REPO_ROOT}/scripts/check_toolchain.py" python
     "${PYTHON_BOOTSTRAP}" -m venv "${VENV_DIR}"
     "${VENV_PYTHON}" -m pip install --constraint "${REPO_ROOT}/requirements.constraints.txt" --upgrade pip
   fi
@@ -421,8 +421,11 @@ ensure_npm() {
   fi
 
   command -v npm >/dev/null 2>&1
-  node -e 'process.exit(process.versions.node === "24.18.0" ? 0 : 1)' || fail "Node.js 24.18.0 is required."
-  [[ "$(npm --version)" == "12.0.0" ]] || fail "npm 12.0.0 is required."
+  # Same rule as scripts/check_toolchain.py, inlined so it needs no Python.
+  node -e 'const version = process.versions.node; const [major, minor] = version.split(".").map(Number); if (major !== 24 || minor < 18) { console.error(`Node.js 24 (24.18.0 or newer) is required; found ${version}.`); process.exit(1); }' || fail "Node.js 24 (24.18.0 or newer) is required."
+  local npm_version
+  npm_version="$(npm --version)"
+  [[ "${npm_version}" == 12.* ]] || fail "npm 12 is required; found ${npm_version}."
 }
 
 frontend_dependencies_stale() {

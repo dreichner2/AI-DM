@@ -8,37 +8,42 @@ from __future__ import annotations
 
 from copy import deepcopy
 import re
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from aidm_server.canon_inventory import inventory_payload
 from aidm_server.character_state import server_attack_roll_context
+from aidm_server.combat.modifiers import (
+    attack_block_reason,
+    attack_context,
+    can_act,
+    cannot_act_reasons,
+    is_hidden,
+    speed_zero_reasons,
+)
 from aidm_server.combat.state import (
     combat_turn_context,
     combat_turn_economy,
     default_turn_economy,
     normalize_combat_state,
+    participant_is_targetable,
 )
 from aidm_server.models import Player, safe_json_loads
 
+
+# ``fn(snapshot, actor, combat)`` returns extra actions in the bundle action shape.
+ActionProvider = Callable[[dict[str, Any], dict[str, Any], dict[str, Any]], list[dict[str, Any]]]
+# ``fn(snapshot, player, action, target_id)`` returns ``(canonical, error_code, error_message)``.
+ActionResolver = Callable[
+    [dict[str, Any], Player, dict[str, Any], str],
+    tuple[dict[str, Any] | None, str | None, str | None],
+]
 
 LEGAL_ACTIONS_SCHEMA_VERSION = 1
 ACTIVE_COMBAT_STATUSES = {'starting', 'active'}
 MELEE_RANGE_BANDS = {'melee', 'near'}
 RANGED_RANGE_BANDS = {'melee', 'near', 'far', 'distant'}
-TURN_EXCLUDING_CONDITIONS = {
-    'dead',
-    'fled',
-    'escaped',
-    'retreated',
-    'withdrawn',
-    'surrendered',
-    'yielded',
-    'unconscious',
-    'incapacitated',
-    'paralyzed',
-    'stunned',
-    'absent',
-}
+_ACTION_PROVIDERS: list[ActionProvider] = []
+_ACTION_RESOLVERS: dict[str, ActionResolver] = {}
 WEAPON_DAMAGE_PROFILES: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (('greatsword',), '2d6', 'slashing'),
     (('greataxe',), '1d12', 'slashing'),
@@ -57,6 +62,31 @@ WEAPON_DAMAGE_PROFILES: tuple[tuple[tuple[str, ...], str, str], ...] = (
 
 def _text(value: Any) -> str:
     return str(value or '').strip()
+
+
+def register_action_provider(fn: ActionProvider) -> ActionProvider:
+    if fn not in _ACTION_PROVIDERS:
+        _ACTION_PROVIDERS.append(fn)
+    return fn
+
+
+def unregister_action_provider(fn: ActionProvider) -> None:
+    if fn in _ACTION_PROVIDERS:
+        _ACTION_PROVIDERS.remove(fn)
+
+
+def register_action_resolver(prefix: str, fn: ActionResolver) -> ActionResolver:
+    _ACTION_RESOLVERS[_text(prefix)] = fn
+    return fn
+
+
+def unregister_action_resolver(prefix: str) -> None:
+    _ACTION_RESOLVERS.pop(_text(prefix), None)
+
+
+def _resolver_for(action_id: str) -> ActionResolver | None:
+    matches = [prefix for prefix in _ACTION_RESOLVERS if prefix and action_id.startswith(prefix)]
+    return _ACTION_RESOLVERS[max(matches, key=len)] if matches else None
 
 
 def _stable_key(value: Any, *, fallback: str) -> str:
@@ -108,23 +138,6 @@ def _actor_for_player(combat: dict[str, Any], player: Player) -> dict[str, Any] 
     return legacy_matches[0] if len(legacy_matches) == 1 else None
 
 
-def _participant_available(participant: dict[str, Any]) -> bool:
-    hp = participant.get('hp') if isinstance(participant.get('hp'), dict) else {}
-    current_hp = _positive_int(hp.get('current', hp.get('currentHp')))
-    conditions = {
-        _text(condition).lower().replace(' ', '_').replace('-', '_')
-        for condition in participant.get('conditions') or []
-        if _text(condition)
-    }
-    return (
-        participant.get('isAlive') is not False
-        and participant.get('isConscious') is not False
-        and participant.get('isPresent', participant.get('present', True)) is not False
-        and (current_hp is None or current_hp > 0)
-        and not conditions.intersection(TURN_EXCLUDING_CONDITIONS)
-    )
-
-
 def _position(participant: dict[str, Any]) -> dict[str, Any]:
     value = participant.get('position')
     return value if isinstance(value, dict) else {}
@@ -146,6 +159,7 @@ def _target_option(
     participant: dict[str, Any],
     *,
     actor: dict[str, Any],
+    combat: dict[str, Any],
     allowed_bands: set[str],
     full_cover_ids: frozenset[str],
 ) -> dict[str, Any]:
@@ -155,9 +169,9 @@ def _target_option(
     target_zone = _text(position.get('zoneId', position.get('zone_id')))
     actor_zone = _text(actor_position.get('zoneId', actor_position.get('zone_id')))
     reason = ''
-    if not _participant_available(participant):
+    if not participant_is_targetable(participant):
         reason = 'Target is already down.'
-    elif position.get('isHidden', position.get('is_hidden')) is True:
+    elif is_hidden(participant):
         reason = 'Target is hidden.'
     elif _text(position.get('coverId', position.get('cover_id'))) in full_cover_ids:
         reason = 'Target has full cover.'
@@ -165,12 +179,23 @@ def _target_option(
         reason = f'Target is at {range_band} range.'
     elif allowed_bands == MELEE_RANGE_BANDS and actor_zone and target_zone and actor_zone != target_zone:
         reason = 'Target is in another battlefield zone.'
+    else:
+        reason = attack_block_reason(actor, participant)
+    roll = attack_context(
+        actor,
+        participant,
+        kind='weapon_attack',
+        ranged=allowed_bands != MELEE_RANGE_BANDS,
+        combat=combat,
+    )
     return {
         'id': _text(participant.get('id')),
         'name': _text(participant.get('name')) or 'Unknown target',
         'rangeBand': range_band,
         'available': not reason,
         'reason': reason,
+        'rollMode': roll['mode'],
+        'rollReasons': roll['reasons'],
     }
 
 
@@ -179,8 +204,9 @@ def _availability(
     actor: dict[str, Any],
     current_actor: dict[str, Any] | None,
 ) -> tuple[bool, str]:
-    if not _participant_available(actor):
-        return False, 'This character is unable to act.'
+    if not can_act(actor):
+        reasons = cannot_act_reasons(actor)
+        return False, ' '.join(reasons) if reasons else 'This character is unable to act.'
     if current_actor is None:
         return False, 'Combat turn order is not established.'
     if current_actor and _text(current_actor.get('id')) != _text(actor.get('id')):
@@ -324,6 +350,7 @@ def _weapon_actions(
             _target_option(
                 target,
                 actor=actor,
+                combat=combat,
                 allowed_bands=allowed_bands,
                 full_cover_ids=full_cover_ids,
             )
@@ -450,6 +477,7 @@ def legal_combat_actions_for_player(snapshot: Any, player: Player) -> dict[str, 
             _economy(movement='unused', ends_turn=True),
         ),
     ]
+    movement_blocked = ' '.join(speed_zero_reasons(actor))
     for action, cost in generic_actions:
         action_available, action_reason = _resource_availability(
             available=available,
@@ -457,9 +485,25 @@ def legal_combat_actions_for_player(snapshot: Any, player: Player) -> dict[str, 
             economy=turn_economy,
             cost=cost,
         )
+        if action_available and int(cost.get('movementCost') or 0) and movement_blocked:
+            action_available, action_reason = False, movement_blocked
         action['available'] = action_available
         action['reason'] = action_reason
         actions.append(action)
+    for provider in list(_ACTION_PROVIDERS):
+        for provided in provider(snapshot, actor, combat) or []:
+            if not isinstance(provided, dict) or not _text(provided.get('id')):
+                continue
+            action = deepcopy(provided)
+            economy = action.get('economy') if isinstance(action.get('economy'), dict) else _economy()
+            action_available, action_reason = _resource_availability(
+                available=available and action.get('available', True) is not False,
+                reason=reason or _text(action.get('reason')),
+                economy=turn_economy,
+                cost=economy,
+            )
+            action.update({'economy': economy, 'available': action_available, 'reason': action_reason, 'authoritative': True})
+            actions.append(action)
     return {
         'schemaVersion': LEGAL_ACTIONS_SCHEMA_VERSION,
         'playerId': int(player.player_id),
@@ -534,6 +578,9 @@ def resolve_combat_legal_action(
         return None, 'combat_action_unavailable', _text(action.get('reason')) or 'That combat action is not available now.'
 
     normalized_target_id = _text(target_id)
+    resolver = _resolver_for(normalized_action_id)
+    if resolver is not None:
+        return resolver(snapshot, player, action, normalized_target_id)
     selected_target = None
     if action.get('requiresTarget'):
         selected_target = next(
@@ -565,6 +612,7 @@ def resolve_combat_legal_action(
                 'weapon_name': weapon_name,
                 'damage_dice': _text((weapon.get('damage') or {}).get('dice')),
                 'damage_type': _text((weapon.get('damage') or {}).get('type')),
+                'ranged': _text(weapon.get('classification')) == 'ranged',
                 'range_band': _text(selected_target.get('rangeBand')),
             }
         )

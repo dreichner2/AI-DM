@@ -56,6 +56,14 @@ export type ActionComposerProps = {
   selectedPlayerHasTurn: boolean
   queuedActionText: string
   queuedActionRetryable?: boolean
+  // False until the selected session's state and first log page are loaded.
+  sessionHydrated?: boolean
+  // A pending send is waiting for the socket to rejoin before it is re-sent.
+  submissionReconnecting?: boolean
+  // The internal opening request could not be confirmed.
+  openingDelayed?: boolean
+  // The server's reason for refusing an out-of-turn action, shown as given.
+  turnRejectionMessage?: string
   retryRecoverableSubmission: () => boolean
   clearQueuedAction: () => void
   updateTurnControl: (mode: TurnControlMode, activePlayerId?: number | null, source?: TurnControlSource) => void
@@ -123,6 +131,10 @@ export function ActionComposer({
   selectedPlayerHasTurn,
   queuedActionText,
   queuedActionRetryable,
+  sessionHydrated = true,
+  submissionReconnecting = false,
+  openingDelayed = false,
+  turnRejectionMessage = '',
   retryRecoverableSubmission,
   clearQueuedAction,
   updateTurnControl,
@@ -281,6 +293,24 @@ export function ActionComposer({
               </div>
             ) : null}
           </div>
+          {submissionReconnecting ? (
+            <div className="queued-action-strip composer-reconnecting" role="status" aria-live="polite">
+              <span>Reconnecting…</span>
+            </div>
+          ) : null}
+          {openingDelayed ? (
+            <div className="queued-action-strip opening-delayed" role="status" aria-live="polite">
+              <span>The opening is taking longer than expected</span>
+              <button type="button" onClick={() => retryRecoverableSubmission()} disabled={sendPending}>
+                Try again
+              </button>
+            </div>
+          ) : null}
+          {turnRejectionMessage ? (
+            <div className="queued-action-strip turn-rejection" role="status" aria-live="polite">
+              <strong>{turnRejectionMessage}</strong>
+            </div>
+          ) : null}
           {queuedActionText ? (
             queuedActionRetryable ? (
               <div className="queued-action-strip delivery-uncertain" role="alert" aria-live="polite">
@@ -401,11 +431,17 @@ export function ActionComposer({
                 type="button"
                 className="send-button"
                 onClick={() => queuedActionRetryable ? retryRecoverableSubmission() : submitAction()}
-                disabled={sendPending || (!queuedActionRetryable && !actionText.trim())}
+                disabled={!sessionHydrated || sendPending || (!queuedActionRetryable && !actionText.trim())}
+                aria-describedby={sessionHydrated ? undefined : 'composer-session-loading'}
               >
                 <ThinIcon name="send" size={18} />
                 {queuedActionRetryable ? 'Retry safely' : 'Send'}
               </button>
+              {sessionHydrated ? null : (
+                <span id="composer-session-loading" className="assistive-status">
+                  Loading this session…
+                </span>
+              )}
             </div>
           </div>
         </>
@@ -770,6 +806,16 @@ export function ActionComposer({
             >
               <ThinIcon name="dot" size={16} /> OOC
             </button>
+            {canUseOperatorTools ? (
+              <button
+                type="button"
+                className={adminToolsUnlocked ? 'selected' : ''}
+                aria-pressed={adminToolsUnlocked}
+                onClick={toggleAdminTools}
+              >
+                <ThinIcon name="settings" size={16} /> Director controls
+              </button>
+            ) : null}
             {adminControlsVisible ? (
               <button
                 type="button"

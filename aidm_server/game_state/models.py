@@ -313,12 +313,19 @@ def _health_from_player(player: Player, stats: dict[str, Any]) -> dict[str, Any]
     hp = state.get('hp') if isinstance(state.get('hp'), dict) else {}
     max_hp = max(0, int_or_default(hp.get('max'), default=0))
     current_hp = max(0, int_or_default(hp.get('current'), default=max_hp))
-    return {
+    health = {
         'currentHp': min(current_hp, max_hp) if max_hp else current_hp,
         'maxHp': max_hp,
         'tempHp': max(0, int_or_default(stats.get('temp_hp', stats.get('tempHp')), default=0)),
         'conditions': stats.get('conditions') if isinstance(stats.get('conditions'), list) else [],
     }
+    death_saves = stats.get('death_saves')
+    if isinstance(death_saves, dict):
+        health['deathSaves'] = {
+            key: max(0, min(3, int_or_default(death_saves.get(key), default=0)))
+            for key in ('successes', 'failures')
+        }
+    return health
 
 
 def player_character_from_model(player: Player) -> dict[str, Any]:
@@ -369,6 +376,32 @@ def player_character_from_model(player: Player) -> dict[str, Any]:
     return actor
 
 
+SCENE_COLLECTION_KEYS = ('items', 'interactables', 'hazards')
+AUTHORED_LOCATION_COLLECTION_KEYS = ('interactables', 'hazards')
+
+
+def _scene_collection(snapshot: dict[str, Any], scene: dict[str, Any], location_id: Any, key: str) -> list[dict[str, Any]]:
+    """Keep a stored scene collection; only an absent one gets its default, which
+    for interactables and hazards is the current location's authored list."""
+
+    if key in scene:
+        source = scene.get(key)
+    elif key in AUTHORED_LOCATION_COLLECTION_KEYS:
+        location = next(
+            (
+                record
+                for record in snapshot.get('locations') or []
+                if isinstance(record, dict) and str(record.get('id') or '') == str(location_id or '')
+            ),
+            {},
+        )
+        scene_state = location.get('sceneState', location.get('scene_state'))
+        source = (scene_state if isinstance(scene_state, dict) and key in scene_state else location).get(key)
+    else:
+        source = []
+    return [deepcopy(item) for item in source if isinstance(item, dict)] if isinstance(source, list) else []
+
+
 def state_snapshot_for_session(
     *,
     session_obj: Session,
@@ -387,13 +420,16 @@ def state_snapshot_for_session(
             active_ids.append(parsed)
 
     scene = snapshot.get('currentScene') if isinstance(snapshot.get('currentScene'), dict) else {}
+    location_id = scene.get('locationId') or stable_slug(campaign.location or 'unknown_location')
     snapshot.update(
         {
             'schemaVersion': int_or_default(snapshot.get('schemaVersion'), default=1),
             'sessionId': session_obj.session_id,
             'campaignId': campaign.campaign_id,
             'currentScene': {
-                'locationId': scene.get('locationId') or stable_slug(campaign.location or 'unknown_location'),
+                # Authored scene fields this rebuild does not normalise are kept as stored.
+                **deepcopy(scene),
+                'locationId': location_id,
                 'name': scene.get('name') or campaign.location,
                 'sceneType': scene.get('sceneType') or 'exploration',
                 'dangerLevel': int_or_default(scene.get('dangerLevel'), default=0),
@@ -406,17 +442,10 @@ def state_snapshot_for_session(
                 'playerZones': scene.get('playerZones') if isinstance(scene.get('playerZones'), dict) else {},
                 'characterPositions': scene.get('characterPositions') if isinstance(scene.get('characterPositions'), dict) else {},
                 'characterZones': scene.get('characterZones') if isinstance(scene.get('characterZones'), dict) else {},
-                'items': [dict(item) for item in (scene.get('items') or []) if isinstance(item, dict)],
-                'interactables': [
-                    deepcopy(item)
-                    for item in (scene.get('interactables') or [])
-                    if isinstance(item, dict)
-                ],
-                'hazards': [
-                    deepcopy(item)
-                    for item in (scene.get('hazards') or [])
-                    if isinstance(item, dict)
-                ],
+                **{
+                    key: _scene_collection(snapshot, scene, location_id, key)
+                    for key in SCENE_COLLECTION_KEYS
+                },
                 'musicTag': scene.get('musicTag') or None,
                 'updatedAtTurn': scene.get('updatedAtTurn'),
             },

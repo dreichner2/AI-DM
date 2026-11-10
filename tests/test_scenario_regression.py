@@ -44,7 +44,7 @@ def test_scenario_regression_defaults_to_isolated_stubbed_runtime(tmp_path):
     assert report['scenario_count'] == 7
     scenarios = {scenario['scenario']: scenario for scenario in report['scenarios']}
     assert {
-        'opening_scene_quality',
+        'opening_scene_plumbing',
         'impossible_action_boundary',
         'combat_requires_roll',
         'inventory_item_use',
@@ -53,6 +53,7 @@ def test_scenario_regression_defaults_to_isolated_stubbed_runtime(tmp_path):
         'canon_memory_recall',
     } == set(scenarios)
     assert scenarios['combat_requires_roll']['requires_roll'] is True
+    assert 'streamed opening text was persisted unchanged' in scenarios['opening_scene_plumbing']['assertions']
     assert 'checkpoint segment triggered' in scenarios['campaign_checkpoint_trigger']['assertions']
     assert all(scenario['provider'] == 'fallback' for scenario in report['scenarios'])
     assert all(scenario['model'] == 'scenario-regression-v1' for scenario in report['scenarios'])

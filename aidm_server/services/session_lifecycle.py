@@ -24,21 +24,49 @@ from aidm_server.models import (
     safe_json_dumps,
     safe_json_loads,
 )
-from aidm_server.response_dtos import session_payload
+from aidm_server.response_dtos import (
+    ACTIVE_STATUS,
+    ARCHIVED_STATUS,
+    DELETED_STATUS,
+    ENDED_STATUS,
+    current_chapter_session_id,
+    open_sessions_filter,
+    session_payload,
+)
 from aidm_server.operator_audit import record_operator_action
 from aidm_server.time_utils import utc_now
 from aidm_server.turn_coordinator import SessionTurnTargetMissingError, session_turn_coordinator
 
-ACTIVE_STATUS = 'active'
-ARCHIVED_STATUS = 'archived'
-DELETED_STATUS = 'deleted'
 LifecycleResult = TypeVar('LifecycleResult')
+SESSION_ENDED_MESSAGE = 'This chapter has ended. Continue in the current chapter.'
 
 
 @dataclass(frozen=True)
 class SessionDeletionResult:
     hard_deleted: bool
     payload: dict
+
+
+class SessionPlayabilityError(tuple):
+    """Public reason a session cannot accept live play.
+
+    Unpacks as ``(error_code, message)`` for socket handlers; REST callers also
+    use ``status_code`` and ``details``.
+    """
+
+    def __new__(cls, error_code: str, message: str, *, details: dict | None = None):
+        error = super().__new__(cls, (error_code, message))
+        error.status_code = 409
+        error.details = dict(details or {})
+        return error
+
+    @property
+    def error_code(self) -> str:
+        return self[0]
+
+    @property
+    def message(self) -> str:
+        return self[1]
 
 
 class SessionLifecycleTargetNotFoundError(LookupError):
@@ -97,21 +125,27 @@ def session_playability_error(
     session_obj: Session,
     *,
     campaign_obj=None,
-) -> tuple[str, str] | None:
+) -> SessionPlayabilityError | None:
     """Return a safe public error when a session cannot accept live play."""
 
     session_status = str(getattr(session_obj, 'status', None) or ACTIVE_STATUS).strip().lower()
     if session_status == ARCHIVED_STATUS:
-        return 'session_archived', 'This session is archived. Restore it before playing.'
+        return SessionPlayabilityError('session_archived', 'This session is archived. Restore it before playing.')
     if session_status == DELETED_STATUS:
-        return 'session_deleted', 'This session has been deleted and is unavailable.'
+        return SessionPlayabilityError('session_deleted', 'This session has been deleted and is unavailable.')
+    if session_status == ENDED_STATUS:
+        return SessionPlayabilityError(
+            'session_ended',
+            SESSION_ENDED_MESSAGE,
+            details={'current_session_id': current_chapter_session_id(session_obj.campaign_id)},
+        )
 
     campaign = campaign_obj if campaign_obj is not None else getattr(session_obj, 'campaign', None)
     campaign_status = str(getattr(campaign, 'status', None) or ACTIVE_STATUS).strip().lower()
     if campaign_status == ARCHIVED_STATUS:
-        return 'campaign_archived', 'This campaign is archived. Restore it before playing.'
+        return SessionPlayabilityError('campaign_archived', 'This campaign is archived. Restore it before playing.')
     if campaign_status == DELETED_STATUS:
-        return 'campaign_deleted', 'This campaign has been deleted and is unavailable.'
+        return SessionPlayabilityError('campaign_deleted', 'This campaign has been deleted and is unavailable.')
     return None
 
 
@@ -148,11 +182,21 @@ def archive_session_record(session_obj: Session, *, include_hidden_state: bool =
 
 def restore_session_record(session_obj: Session, *, include_hidden_state: bool = True) -> dict:
     now = utc_now()
-    session_obj.status = ACTIVE_STATUS
+    snapshot = metadata_cleaned_snapshot(session_obj.state_snapshot)
+    # An ended chapter comes back read-only while a later chapter is current.
+    other_open_session = (
+        Session.query.filter(
+            Session.campaign_id == session_obj.campaign_id,
+            Session.session_id != session_obj.session_id,
+            open_sessions_filter(),
+        ).first()
+        is not None
+    )
+    session_obj.status = ENDED_STATUS if snapshot.get('ended_at') and other_open_session else ACTIVE_STATUS
     session_obj.deleted_at = None
     session_obj.updated_at = now
     session_obj.archived_by_campaign_id = None
-    session_obj.state_snapshot = safe_json_dumps(metadata_cleaned_snapshot(session_obj.state_snapshot), {})
+    session_obj.state_snapshot = safe_json_dumps(snapshot, {})
     record_operator_action(
         action='session.restore',
         resource_type='session',

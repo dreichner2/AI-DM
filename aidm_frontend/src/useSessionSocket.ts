@@ -24,6 +24,7 @@ import type { SceneMusicSyncState } from './SceneMusicPlayer'
 import { normalizeSceneState, type SceneDisplayState, type SceneStatePayload } from './sceneState'
 import { normalizeTurnControl } from './turnControl'
 import { turnRecoveryGateFromSocketDetails } from './turnRecovery'
+import { useLatest } from './useLatest'
 import type {
   ActivePlayer,
   ClarificationRequest,
@@ -70,6 +71,7 @@ type NewMessagePayload = {
   context_version?: string
   action_intent?: JsonRecord
   client_message_id?: string | null
+  message_kind?: string | null
 }
 
 type MusicStatePayload = {
@@ -107,6 +109,16 @@ export type TurnDuplicatePayload = {
   client_message_id: string
 }
 
+export type SessionSocketBinding = {
+  sessionId: number
+  playerId: number
+}
+
+export type TurnRejection = {
+  message: string
+  details: JsonRecord
+}
+
 type UseSessionSocketOptions = {
   auth: string
   baseUrl: string
@@ -142,6 +154,9 @@ type UseSessionSocketOptions = {
   lastSpokenTurnIdRef: MutableRefObject<number | null>
   lastSpokenTextRef: MutableRefObject<string | null>
   onConnectionInterrupted: () => void
+  onSessionJoined: (binding: SessionSocketBinding) => void
+  onPlayerMessageSaved: (clientMessageId: string) => void
+  onTurnRejected: (rejection: TurnRejection) => void
   onRollRequired: (payload: RollRequiredPayload) => void
   onRollResolved: (payload: RollResolvedPayload) => void
   onTurnDuplicate: (payload: TurnDuplicatePayload) => void
@@ -382,6 +397,7 @@ function timelineEntryFromNewMessage(payload: NewMessagePayload): TimelineEntry 
     return null
   }
   const clientMessageId = stringValue(payload.client_message_id)
+  const messageKind = stringValue(payload.message_kind)
   return {
     id: clientMessageId ? `socket-player-${clientMessageId}` : `socket-player-${turnId}`,
     role: 'player',
@@ -396,6 +412,7 @@ function timelineEntryFromNewMessage(payload: NewMessagePayload): TimelineEntry 
       context_version: stringValue(payload.context_version) || null,
       action_intent: payload.action_intent ?? null,
       client_message_id: clientMessageId || null,
+      ...(messageKind ? { message_kind: messageKind } : {}),
       persistence_status: 'received',
     },
   }
@@ -438,50 +455,26 @@ export function buildSessionSocketConnection(baseUrl: string, auth: string) {
   return { socketBaseUrl, socketOptions }
 }
 
-export function useSessionSocket({
-  auth,
-  baseUrl,
-  selectedSessionId,
-  selectedPlayerId,
-  selectedCampaignId,
-  socketReconnectKey,
-  socketRef,
-  loadSessionData,
-  refreshPlayerDetail,
-  pushError,
-  rememberStreamedTtsTurn,
-  resetTtsFailureForNextResponse,
-  stopTtsAudio,
-  setActivePlayers,
-  setSessionState,
-  setSocketStatus,
-  setSendPending,
-  setOptimisticEntries,
-  setStreamingTurn,
-  setTurnStatuses,
-  setClarificationRequest,
-  setSceneMusicSyncState,
-  setSceneState,
-  spokenTextLengthRef,
-  speakableStreamingTextRef,
-  queueTtsNarrationRef,
-  ttsEnabledRef,
-  ttsQueueSuppressedRef,
-  ttsFailureReportedRef,
-  ttsPartialFlushTimerRef,
-  lastSpokenDmEntryRef,
-  lastSpokenTurnIdRef,
-  lastSpokenTextRef,
-  onConnectionInterrupted,
-  onRollRequired,
-  onRollResolved,
-  onTurnDuplicate,
-}: UseSessionSocketOptions) {
+export function useSessionSocket(options: UseSessionSocketOptions) {
+  const {
+    auth,
+    baseUrl,
+    selectedSessionId,
+    selectedPlayerId,
+    selectedCampaignId,
+    socketReconnectKey,
+    socketRef,
+  } = options
+  // Handlers read callbacks, setters and shared refs through this ref so the
+  // connection lives exactly as long as its identity (auth, backend, session,
+  // player, campaign, manual reconnect key).
+  const latest = useLatest(options)
   const lastWorldSnapshotRefreshRef = useRef<{ sessionId: number; turnId: number } | null>(null)
   const lastJoinedSessionRef = useRef<number | null>(null)
 
   useEffect(() => {
     if (!selectedSessionId || !selectedPlayerId || !selectedCampaignId) {
+      const { setActivePlayers, setSceneMusicSyncState, setSceneState, setSocketStatus } = latest.current
       socketRef.current?.disconnect()
       socketRef.current = null
       lastWorldSnapshotRefreshRef.current = null
@@ -492,21 +485,23 @@ export function useSessionSocket({
       return
     }
 
+    const binding: SessionSocketBinding = { sessionId: selectedSessionId, playerId: selectedPlayerId }
     lastWorldSnapshotRefreshRef.current = null
-    setSceneMusicSyncState(null)
-    setSceneState(null)
+    latest.current.setSceneMusicSyncState(null)
+    latest.current.setSceneState(null)
     const { socketBaseUrl, socketOptions } = buildSessionSocketConnection(baseUrl, auth)
     const socket = socketBaseUrl ? io(socketBaseUrl, socketOptions) : io(socketOptions)
     socketRef.current = socket
-    setSocketStatus('connecting')
+    latest.current.setSocketStatus('connecting')
     let hasConnected = false
+    let joinedSinceConnect = false
     let refreshInFlight = false
     const refreshAuthoritativeSession = (failureLabel: string) => {
       if (refreshInFlight) return
       refreshInFlight = true
-      void loadSessionData(selectedSessionId)
+      void latest.current.loadSessionData(selectedSessionId)
         .catch((error: unknown) => {
-          pushError(
+          latest.current.pushError(
             'workspace',
             `${failureLabel}: ${error instanceof Error ? error.message : String(error)}`,
           )
@@ -517,11 +512,13 @@ export function useSessionSocket({
     }
 
     socket.on('connect', () => {
+      const { pushError, refreshPlayerDetail, setSendPending, setSocketStatus } = latest.current
       const shouldRefreshAfterJoin = hasConnected || lastJoinedSessionRef.current === selectedSessionId
       hasConnected = true
+      joinedSinceConnect = false
       lastJoinedSessionRef.current = selectedSessionId
       setSendPending(false)
-      setSocketStatus('joining')
+      setSocketStatus(shouldRefreshAfterJoin ? 'rejoining' : 'joining')
       socket.emit('join_session', {
         session_id: selectedSessionId,
         player_id: selectedPlayerId,
@@ -540,6 +537,7 @@ export function useSessionSocket({
     })
 
     socket.on('connect_error', (error) => {
+      const { onConnectionInterrupted, pushError, setSendPending, setSocketStatus } = latest.current
       onConnectionInterrupted()
       setSendPending(false)
       setSocketStatus('error')
@@ -547,8 +545,13 @@ export function useSessionSocket({
     })
 
     socket.on('active_players', (payload: unknown) => {
+      const { onSessionJoined, setActivePlayers, setSocketStatus } = latest.current
       setActivePlayers(normalizeActivePlayers(payload))
       setSocketStatus('joined')
+      if (!joinedSinceConnect) {
+        joinedSinceConnect = true
+        onSessionJoined(binding)
+      }
     })
 
     socket.on('turn_control_updated', (payload: unknown) => {
@@ -557,7 +560,7 @@ export function useSessionSocket({
       const sessionId = Number(value.session_id ?? value.sessionId)
       if (Number.isInteger(sessionId) && sessionId > 0 && sessionId !== selectedSessionId) return
       const turnControl = normalizeTurnControl(value)
-      setSessionState((current) => {
+      latest.current.setSessionState((current) => {
         if (!current) return current
         const currentSnapshot = current.state_snapshot && typeof current.state_snapshot === 'object'
           ? current.state_snapshot
@@ -576,19 +579,20 @@ export function useSessionSocket({
       if (!payload || typeof payload !== 'object') return
       const musicState = normalizeMusicState(payload)
       if (!musicState || musicState.sessionId !== selectedSessionId) return
-      setSceneMusicSyncState(musicState)
+      latest.current.setSceneMusicSyncState(musicState)
     })
 
     socket.on('scene_state', (payload: SceneStatePayload) => {
       if (!payload || typeof payload !== 'object') return
       const nextSceneState = normalizeSceneState(payload)
       if (!nextSceneState || nextSceneState.sessionId !== selectedSessionId) return
-      setSceneState(nextSceneState)
+      latest.current.setSceneState(nextSceneState)
     })
 
     socket.on('new_message', (payload: NewMessagePayload) => {
       const entry = timelineEntryFromNewMessage(payload)
       if (!entry) return
+      const { onPlayerMessageSaved, setOptimisticEntries } = latest.current
       setOptimisticEntries((current) => {
         const nextTurnId = entry.metadata.turn_id
         const nextClientMessageId = stringValue(entry.metadata.client_message_id)
@@ -604,11 +608,14 @@ export function useSessionSocket({
         if (existingIndex < 0) return [...current, entry]
         return current.map((item, index) => (index === existingIndex ? entry : item))
       })
+      const clientMessageId = stringValue(entry.metadata.client_message_id)
+      if (clientMessageId) onPlayerMessageSaved(clientMessageId)
     })
 
     socket.on('roll_required', (payload: unknown) => {
       const required = normalizeRollRequiredPayload(payload)
       if (!required || required.sessionId !== selectedSessionId) return
+      const { onRollRequired, setSendPending, setStreamingTurn } = latest.current
       setSendPending(false)
       setStreamingTurn(null)
       onRollRequired(required)
@@ -617,13 +624,13 @@ export function useSessionSocket({
     socket.on('roll_resolved', (payload: unknown) => {
       const resolved = normalizeRollResolvedPayload(payload)
       if (!resolved || resolved.session_id !== selectedSessionId) return
-      onRollResolved(resolved)
+      latest.current.onRollResolved(resolved)
     })
 
     socket.on('turn_duplicate', (payload: unknown) => {
       const duplicate = normalizeTurnDuplicatePayload(payload)
       if (!duplicate || duplicate.session_id !== selectedSessionId) return
-      onTurnDuplicate(duplicate)
+      latest.current.onTurnDuplicate(duplicate)
     })
 
     socket.on(
@@ -634,6 +641,14 @@ export function useSessionSocket({
         requires_roll?: boolean
         rules_hint?: RulesHint
       }) => {
+        const {
+          resetTtsFailureForNextResponse,
+          setClarificationRequest,
+          setSendPending,
+          setStreamingTurn,
+          spokenTextLengthRef,
+          stopTtsAudio,
+        } = latest.current
         resetTtsFailureForNextResponse()
         stopTtsAudio({ suppressQueue: false })
         setClarificationRequest(null)
@@ -658,7 +673,7 @@ export function useSessionSocket({
         requires_roll?: boolean
         rules_hint?: RulesHint
       }) => {
-        setStreamingTurn((current) => {
+        latest.current.setStreamingTurn((current) => {
           if (!current || current.turnId !== payload.turn_id) {
             return {
               turnId: payload.turn_id,
@@ -668,11 +683,13 @@ export function useSessionSocket({
               rulesHint: payload.rules_hint ?? {},
             }
           }
+          // Chunks may carry only the turn id and text; keep the roll hints
+          // announced by dm_response_start unless the chunk restates them.
           return {
             ...current,
             turnNumber: current.turnNumber ?? (typeof payload.turn_number === 'number' ? payload.turn_number : null),
             text: `${current.text}${payload.chunk ?? ''}`,
-            requiresRoll: Boolean(payload.requires_roll),
+            requiresRoll: payload.requires_roll ?? current.requiresRoll,
             rulesHint: payload.rules_hint ?? current.rulesHint,
           }
         })
@@ -680,6 +697,23 @@ export function useSessionSocket({
     )
 
     socket.on('dm_response_end', (payload: DmResponseEndPayload = {}) => {
+      const {
+        lastSpokenDmEntryRef,
+        lastSpokenTextRef,
+        lastSpokenTurnIdRef,
+        pushError,
+        queueTtsNarrationRef,
+        rememberStreamedTtsTurn,
+        setOptimisticEntries,
+        setSendPending,
+        setStreamingTurn,
+        speakableStreamingTextRef,
+        spokenTextLengthRef,
+        ttsEnabledRef,
+        ttsFailureReportedRef,
+        ttsPartialFlushTimerRef,
+        ttsQueueSuppressedRef,
+      } = latest.current
       const ok = payload.ok !== false
       setSendPending(false)
       setStreamingTurn((current) => {
@@ -753,21 +787,22 @@ export function useSessionSocket({
     })
 
     socket.on('session_log_update', (payload: { session_id?: number }) => {
-      if (payload.session_id === selectedSessionId) {
-        loadSessionData(selectedSessionId)
-          .then(() => {
-            setStreamingTurn(null)
-          })
-          .catch((error: unknown) => {
-            pushError('workspace', `Log refresh failed: ${error instanceof Error ? error.message : String(error)}`)
-          })
-      }
+      if (payload.session_id !== selectedSessionId) return
+      const { loadSessionData, pushError, setStreamingTurn } = latest.current
+      loadSessionData(selectedSessionId)
+        .then(() => {
+          setStreamingTurn(null)
+        })
+        .catch((error: unknown) => {
+          pushError('workspace', `Log refresh failed: ${error instanceof Error ? error.message : String(error)}`)
+        })
     })
 
     socket.on('turn_status', (payload: TurnStatusPayload) => {
       if (payload.session_id !== selectedSessionId || typeof payload.turn_id !== 'number') return
       const status = stringValue(payload.status)
       if (!status) return
+      const { loadSessionData, pushError, refreshPlayerDetail, setSendPending, setTurnStatuses } = latest.current
       if (turnStatusAllowsNextSend(status, payload.details)) {
         setSendPending(false)
       }
@@ -807,6 +842,7 @@ export function useSessionSocket({
 
     socket.on('clarification_required', (payload: ClarificationRequest) => {
       if (payload.sessionId !== selectedSessionId || payload.playerId !== selectedPlayerId) return
+      const { setClarificationRequest, setSendPending, setStreamingTurn } = latest.current
       setSendPending(false)
       setStreamingTurn(null)
       setClarificationRequest(payload)
@@ -814,12 +850,26 @@ export function useSessionSocket({
 
     socket.on('session_recovery_resolved', (payload: SessionRecoveryResolvedPayload) => {
       if (Number(payload.session_id) !== selectedSessionId || payload.recovery_required !== false) return
+      const { setSendPending, setStreamingTurn } = latest.current
       setSendPending(false)
       setStreamingTurn(null)
       refreshAuthoritativeSession('Recovery resolution refresh failed')
     })
 
     socket.on('error', (payload: SocketErrorPayload) => {
+      const {
+        onRollRequired,
+        onTurnRejected,
+        pushError,
+        setActivePlayers,
+        setClarificationRequest,
+        setSceneMusicSyncState,
+        setSceneState,
+        setSendPending,
+        setSessionState,
+        setSocketStatus,
+        setStreamingTurn,
+      } = latest.current
       setSendPending(false)
       setClarificationRequest(null)
       if (payload.error_code === 'roll_required') {
@@ -828,6 +878,10 @@ export function useSessionSocket({
           setStreamingTurn(null)
           onRollRequired(required)
         }
+        return
+      }
+      if (payload.error_code === 'turn_out_of_order') {
+        onTurnRejected({ message: socketMessage(payload), details: recordValue(payload.details) ?? {} })
         return
       }
       if (
@@ -862,65 +916,53 @@ export function useSessionSocket({
     })
 
     socket.on('disconnect', () => {
+      const {
+        onConnectionInterrupted,
+        setActivePlayers,
+        setSceneMusicSyncState,
+        setSceneState,
+        setSendPending,
+        setSocketStatus,
+        setStreamingTurn,
+      } = latest.current
+      joinedSinceConnect = false
       onConnectionInterrupted()
       setSendPending(false)
       setStreamingTurn(null)
       setActivePlayers([])
       setSceneMusicSyncState(null)
       setSceneState(null)
-      setSocketStatus('offline')
+      // `active` stays true while socket.io will retry on its own.
+      setSocketStatus(socket.active ? 'reconnecting' : 'offline')
     })
 
-    return () => {
-      socket.emit('leave_session', {
-        session_id: selectedSessionId,
-        player_id: selectedPlayerId,
-      })
-      socket.disconnect()
+    const releaseSocket = () => {
+      const { onConnectionInterrupted, setActivePlayers, setSceneMusicSyncState, setSceneState } = latest.current
       if (socketRef.current === socket) {
         socketRef.current = null
       }
       setActivePlayers([])
       setSceneMusicSyncState(null)
       setSceneState(null)
+      // A pending send still needs to know its socket was replaced: the
+      // composer waits for the next join when the session and player are
+      // unchanged and marks the send uncertain otherwise.
+      onConnectionInterrupted()
     }
-  }, [
-    auth,
-    baseUrl,
-    loadSessionData,
-    refreshPlayerDetail,
-    lastSpokenDmEntryRef,
-    lastSpokenTextRef,
-    lastSpokenTurnIdRef,
-    onConnectionInterrupted,
-    onRollRequired,
-    onRollResolved,
-    onTurnDuplicate,
-    pushError,
-    queueTtsNarrationRef,
-    rememberStreamedTtsTurn,
-    resetTtsFailureForNextResponse,
-    selectedCampaignId,
-    selectedPlayerId,
-    selectedSessionId,
-    setActivePlayers,
-    setOptimisticEntries,
-    setClarificationRequest,
-    setSceneMusicSyncState,
-    setSceneState,
-    setSendPending,
-    setSessionState,
-    setSocketStatus,
-    setStreamingTurn,
-    setTurnStatuses,
-    speakableStreamingTextRef,
-    spokenTextLengthRef,
-    socketRef,
-    socketReconnectKey,
-    stopTtsAudio,
-    ttsEnabledRef,
-    ttsFailureReportedRef,
-    ttsPartialFlushTimerRef,
-    ttsQueueSuppressedRef,
-  ])
+
+    return () => {
+      // Detach every handler first: socket.io fires 'disconnect' synchronously
+      // from disconnect(), and our own teardown is not a dropped connection.
+      socket.removeAllListeners()
+      socket.emit('leave_session', {
+        session_id: selectedSessionId,
+        player_id: selectedPlayerId,
+      })
+      socket.disconnect()
+      releaseSocket()
+    }
+    // Everything else is read through `latest`, so only the connection
+    // identity below may tear the socket down and rebuild it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth, baseUrl, selectedSessionId, selectedPlayerId, selectedCampaignId, socketReconnectKey])
 }

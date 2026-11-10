@@ -24,8 +24,8 @@ def test_state_snapshot_writer_inventory_includes_constructor_seeds():
     writers = scan_state_snapshot_writers()
 
     assert any(
-        writer.path == 'aidm_server/blueprints/sessions.py'
-        and writer.scope == 'start_new_session'
+        writer.path == 'aidm_server/services/session_chapters.py'
+        and writer.scope == '_create_chapter_session'
         and writer.source.startswith('state_snapshot=')
         for writer in writers
     )

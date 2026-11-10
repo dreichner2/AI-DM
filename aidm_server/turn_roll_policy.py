@@ -3,8 +3,11 @@ from __future__ import annotations
 import re
 from typing import Protocol
 
-from aidm_server.models import safe_json_loads
+from aidm_server.models import safe_json_dumps, safe_json_loads
 
+
+MIN_STATED_DC = 5
+MAX_STATED_DC = 30
 
 _NO_ROLL_NEEDED_RE = re.compile(
     r"\bno\s+(?:a\s+)?(?:roll|check)s?\s+(?:(?:is|are|was|were)\s+)?(?:needed|required|necessary)\b|"
@@ -18,14 +21,19 @@ _GROUP_ROLL_MARKER_RE = re.compile(
     r'\b(?:both of you|you both|all of you|everyone|each of you|every player|all players|the party)\b',
     re.IGNORECASE,
 )
+# "Make a Wisdom (Perception) check, DC 13." is the roll-request form the DM
+# prompt asks for, so ability/skill labels may carry parentheses and slashes.
+_MAKE_CHECK_PATTERN = r'\bmake\s+(?:an?\s+)?[a-z][a-z \'()/-]{0,60}\s+(?:check|saving\s+throw|save)\b'
+_MAKE_CHECK_RE = re.compile(_MAKE_CHECK_PATTERN, re.IGNORECASE)
 _GROUP_ROLL_REQUEST_RE = re.compile(
     r'\b(?:please\s+)?roll\b|'
     r'\b(?:must|should|need(?:s)? to|have to|has to)\s+(?:all\s+)?(?:roll|make)\b|'
-    r'\bmake\s+(?:an?\s+)?[a-z][a-z \'-]{0,60}\s+(?:check|saving\s+throw|save)\b|'
+    rf'{_MAKE_CHECK_PATTERN}|'
     r'\bsaving\s+throw\b|'
     r'\binitiative\b',
     re.IGNORECASE,
 )
+_STATED_DC_RE = re.compile(r'\bDC\s*(\d{1,2})\b', re.IGNORECASE)
 _ROLL_REQUEST_CLAUSE_RE = re.compile(
     r'\b(?:please\s+)?roll\b|'
     r'\b(?:must|should|need(?:s)? to|have to|has to)\s+(?:all\s+)?(?:roll|make)\b|'
@@ -83,7 +91,7 @@ class RollGateTurn(Protocol):
 
 
 class TurnRollPolicy:
-    """Pure DM-response parsing and roll-gate construction policy."""
+    """DM-response parsing and roll-gate construction policy."""
 
     @staticmethod
     def response_sentences(text: str) -> list[str]:
@@ -107,11 +115,35 @@ class TurnRollPolicy:
         return False
 
     @classmethod
+    def response_requests_stated_check(cls, text: str) -> bool:
+        return any(
+            _MAKE_CHECK_RE.search(sentence) and not _NO_ROLL_NEEDED_RE.search(sentence)
+            for sentence in cls.response_sentences(text)
+        )
+
+    @classmethod
+    def _roll_request_sentences(cls, text: str) -> list[str]:
+        return [
+            sentence
+            for sentence in cls.response_sentences(text)
+            if _GROUP_ROLL_REQUEST_RE.search(sentence) and not _NO_ROLL_NEEDED_RE.search(sentence)
+        ]
+
+    @classmethod
+    def stated_dc_from_response(cls, text: str) -> int | None:
+        """Return the DC named in the final roll-request sentence, clamped to 5..30."""
+        request_sentences = cls._roll_request_sentences(text)
+        if not request_sentences:
+            return None
+        match = _STATED_DC_RE.search(request_sentences[-1])
+        if not match:
+            return None
+        return max(MIN_STATED_DC, min(MAX_STATED_DC, int(match.group(1))))
+
+    @classmethod
     def roll_type_from_response(cls, text: str, fallback: str | None = None) -> str:
         requested_clauses: list[str] = []
-        for sentence in cls.response_sentences(text):
-            if _NO_ROLL_NEEDED_RE.search(sentence) or not _GROUP_ROLL_REQUEST_RE.search(sentence):
-                continue
+        for sentence in cls._roll_request_sentences(text):
             request_start = _ROLL_REQUEST_CLAUSE_RE.search(sentence)
             requested_clauses.append(sentence[request_start.start():] if request_start else sentence)
         # A response may mention a prior check while narrating its consequence
@@ -158,6 +190,13 @@ class TurnRollPolicy:
         response_requests_roll: bool,
         group_player_ids: list[int],
     ) -> dict | None:
+        """Build the gate for a roll the DM requested or the turn already requires.
+
+        A DC stated in the final roll-request sentence becomes the gate's
+        ``dc_hint`` and is also written into ``turn.rules_hint``, where the
+        pending-roll resolution reads the task DC.
+        """
+        response_requests_roll = response_requests_roll or cls.response_requests_stated_check(dm_response_text)
         if not ((turn.requires_roll and turn.outcome_status == 'deferred') or response_requests_roll):
             return None
 
@@ -218,7 +257,7 @@ class TurnRollPolicy:
                 'target_player_id': pvp_target_player_id,
             }
             gate['roll_spec'] = roll_spec
-            return gate
+            return cls._apply_stated_dc(gate, turn=turn, rules_hint=rules_hint, dm_response_text=dm_response_text)
 
         if turn.roll_value is not None:
             return None
@@ -238,4 +277,21 @@ class TurnRollPolicy:
             'remaining_player_ids': required_player_ids,
         }
         gate['roll_spec'] = roll_spec
+        return cls._apply_stated_dc(gate, turn=turn, rules_hint=rules_hint, dm_response_text=dm_response_text)
+
+    @classmethod
+    def _apply_stated_dc(
+        cls,
+        gate: dict,
+        *,
+        turn: RollGateTurn,
+        rules_hint: dict,
+        dm_response_text: str,
+    ) -> dict:
+        stated_dc = cls.stated_dc_from_response(dm_response_text)
+        if stated_dc is None:
+            return gate
+        dc_hint = f'DC {stated_dc}'
+        gate['dc_hint'] = dc_hint
+        turn.rules_hint = safe_json_dumps({**rules_hint, 'dc_hint': dc_hint}, {})
         return gate

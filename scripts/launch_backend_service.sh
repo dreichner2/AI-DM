@@ -28,15 +28,15 @@ requirements_stale() {
   return 1
 }
 
-if [[ -x "${VENV_PYTHON}" ]] && ! "${VENV_PYTHON}" -c 'import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 14, 6) else 1)'; then
-  echo "[backend-service] Recreating backend virtualenv for Python 3.14.6"
+if [[ -x "${VENV_PYTHON}" ]] && ! "${VENV_PYTHON}" "${REPO_ROOT}/scripts/check_toolchain.py" python; then
+  echo "[backend-service] Recreating backend virtualenv with ${PYTHON_BOOTSTRAP}"
   rm -rf "${VENV_DIR}"
 fi
 
 if [[ ! -x "${VENV_PYTHON}" ]]; then
   echo "[backend-service] Creating backend virtualenv"
   command -v "${PYTHON_BOOTSTRAP}" >/dev/null 2>&1
-  "${PYTHON_BOOTSTRAP}" -c 'import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 14, 6) else 1)'
+  "${PYTHON_BOOTSTRAP}" "${REPO_ROOT}/scripts/check_toolchain.py" python
   "${PYTHON_BOOTSTRAP}" -m venv "${VENV_DIR}"
   "${VENV_PYTHON}" -m pip install --constraint "${REPO_ROOT}/requirements.constraints.txt" --upgrade pip
 fi

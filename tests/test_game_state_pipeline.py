@@ -6350,6 +6350,8 @@ def test_post_dm_pipeline_skips_extraction_for_pending_roll_turn(app):
         state['playerCharacters'][0]['id'] = actor_id
         state['playerCharacters'][0]['playerId'] = player.player_id
         session_obj.state_snapshot = safe_json_dumps(state, {})
+        # Post-DM rebuilds characters from the Player rows, so the row carries the item.
+        player.inventory = safe_json_dumps(state['playerCharacters'][0]['inventory']['items'], [])
 
         turn = DmTurn(
             session_id=session_obj.session_id,
@@ -6585,6 +6587,9 @@ def test_post_dm_pipeline_applies_trusted_enemy_damage_to_non_acting_player(app,
             inventory=safe_json_dumps([], {}),
         )
         db.session.add(bob)
+        # Post-DM rebuilds characters from the Player rows; keep Alice's row in
+        # step with the combat snapshot below.
+        player.stats = safe_json_dumps({'current_hp': 10, 'hp_current': 10, 'max_hp': 20, 'hp_max': 20, 'temp_hp': 0}, {})
         db.session.flush()
 
         alice_actor_id = f'player_{player.player_id}'
@@ -7271,7 +7276,10 @@ def test_post_dm_pipeline_retry_does_not_duplicate_item_hp_currency_or_xp(app):
         assert stats['copper'] == 12
         assert stats['current_hp'] == 13
         assert stats['xp'] == 8
-        assert len(first['postAppliedChanges']) == len(second['postAppliedChanges'])
+        # Post-DM changes apply onto the current Player rows; the retry finds
+        # its change ids in the session ledger and applies nothing again.
+        assert len(first['postAppliedChanges']) == 3
+        assert second['postAppliedChanges'] == []
 
 
 def test_post_dm_pipeline_retry_does_not_duplicate_world_state_records(app, monkeypatch):
@@ -7356,7 +7364,10 @@ def test_post_dm_pipeline_retry_does_not_duplicate_world_state_records(app, monk
         assert len([npc for npc in snapshot['knownNpcs'] if npc.get('id') == 'captain_velra']) == 1
         assert snapshot['locations'][0]['npcIds'] == ['captain_velra']
         assert snapshot['quests'][0]['relatedNpcIds'] == ['captain_velra']
-        assert len(first['postAppliedChanges']) == len(second['postAppliedChanges'])
+        # The retry rebases on the session state the first run committed and
+        # finds every change id in its ledger, so it applies nothing again.
+        assert first['postAppliedChanges']
+        assert second['postAppliedChanges'] == []
 
 
 def test_validate_state_changes_does_not_treat_new_turn_fallback_id_as_duplicate():

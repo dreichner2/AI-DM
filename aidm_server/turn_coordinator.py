@@ -91,6 +91,14 @@ class SessionTurnCoordinator:
             entry.active += 1
             return entry
 
+    def _release_entry(self, session_id: int, entry: _SessionLockEntry) -> None:
+        with self._guard:
+            current = self._locks.get(session_id)
+            if current is entry:
+                entry.active = max(0, entry.active - 1)
+                entry.last_used = self._clock()
+                self._cleanup_idle_locked(entry.last_used)
+
     @contextmanager
     def serialized(self, session_id: int):
         entry = self._entry_for_session(session_id)
@@ -102,12 +110,20 @@ class SessionTurnCoordinator:
             yield wait_ms
         finally:
             lock.release()
-            with self._guard:
-                current = self._locks.get(session_id)
-                if current is entry:
-                    entry.active = max(0, entry.active - 1)
-                    entry.last_used = self._clock()
-                    self._cleanup_idle_locked(entry.last_used)
+            self._release_entry(session_id, entry)
+
+    @contextmanager
+    def try_serialized(self, session_id: int):
+        """Yield True while holding the session lock, or False if it is busy."""
+
+        entry = self._entry_for_session(session_id)
+        acquired = entry.lock.acquire(blocking=False)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                entry.lock.release()
+            self._release_entry(session_id, entry)
 
     def discard_session(self, session_id: int) -> bool:
         with self._guard:
@@ -309,6 +325,23 @@ class DatabaseSessionTurnCoordinator:
                 break
             time.sleep(self.poll_interval_seconds)
         wait_ms = (time.perf_counter() - wait_started) * 1000.0
+        with self._held_lease(session_id, owner_token, fencing_token):
+            yield wait_ms
+
+    @contextmanager
+    def try_serialized(self, session_id: int):
+        """Yield True while holding the lease, or False if another owner holds it."""
+
+        owner_token = uuid4().hex
+        fencing_token = self._try_acquire(session_id, owner_token)
+        if fencing_token is None:
+            yield False
+            return
+        with self._held_lease(session_id, owner_token, fencing_token):
+            yield True
+
+    @contextmanager
+    def _held_lease(self, session_id: int, owner_token: str, fencing_token: int):
         lease = DatabaseTurnLease(
             coordinator=self,
             session_id=session_id,
@@ -323,7 +356,7 @@ class DatabaseSessionTurnCoordinator:
         held_leases = _HELD_DATABASE_LEASES.get()
         lease_context_token = _HELD_DATABASE_LEASES.set((*held_leases, lease))
         try:
-            yield wait_ms
+            yield
         finally:
             _HELD_DATABASE_LEASES.reset(lease_context_token)
             try:
@@ -400,6 +433,39 @@ class ConfiguredSessionTurnCoordinator:
             for session_id in normalized_ids:
                 waits[session_id] = stack.enter_context(self.serialized(session_id))
             yield waits
+
+    @contextmanager
+    def try_serialized(self, session_id: int):
+        held_session_ids = _HELD_SESSION_IDS.get()
+        if session_id in held_session_ids:
+            yield True
+            return
+        with self._active_coordinator().try_serialized(session_id) as acquired:
+            if not acquired:
+                yield False
+                return
+            token = _HELD_SESSION_IDS.set((*held_session_ids, session_id))
+            try:
+                yield True
+            finally:
+                _HELD_SESSION_IDS.reset(token)
+
+    @contextmanager
+    def try_serialized_many(self, session_ids):
+        """Acquire every lock without waiting, in ascending order.
+
+        Yields the zero-wait map when all locks are held, or None (with nothing
+        held) as soon as one of them belongs to another owner.
+        """
+
+        normalized_ids = sorted({int(session_id) for session_id in session_ids if session_id is not None})
+        with ExitStack() as stack:
+            for session_id in normalized_ids:
+                if not stack.enter_context(self.try_serialized(session_id)):
+                    stack.close()
+                    yield None
+                    return
+            yield {session_id: 0.0 for session_id in normalized_ids}
 
     def discard_session(self, session_id: int) -> bool:
         return self._active_coordinator().discard_session(session_id)

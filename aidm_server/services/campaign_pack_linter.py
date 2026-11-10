@@ -1,15 +1,192 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any
 
-from aidm_server.services.campaign_pack import CampaignPackImportError, import_campaign_pack
+from aidm_server.game_state.models import stable_slug
+from aidm_server.game_state.quest_engine import objective_is_mechanical
+from aidm_server.interactables import validate_interactable_catalog
+from aidm_server.segment_triggers import KEYWORD_TRIGGER_TYPES, LOCATION_TRIGGER_TYPE, SUPPORTED_TRIGGER_TYPES
+from aidm_server.services.campaign_pack import (
+    PACK_BOUNDS_ERROR_CODE,
+    CampaignPackImportError,
+    campaign_pack_bound_violations,
+    import_campaign_pack,
+)
+from aidm_server.services.campaign_pack_progress import COMBAT_COMPLETE_REASONS
 
 
 logger = logging.getLogger(__name__)
+
+ID_PATTERN = re.compile(r'[a-z0-9_]+')
+QUEST_PREDICATE_COMBINATORS = ('all', 'allOf', 'any', 'anyOf')
+# Keys quest_engine.rule_satisfied reads from a leaf predicate.
+QUEST_PREDICATE_KEYS = frozenset(
+    {
+        'eventType',
+        'event',
+        'changeType',
+        'actorId',
+        'targetActorId',
+        'targetId',
+        'objectId',
+        'itemId',
+        'itemName',
+        'npcId',
+        'locationId',
+        'encounterId',
+        'participantId',
+        'endReason',
+        'flagKey',
+        'checkpointId',
+        'objectiveId',
+        'questId',
+        'quantityAtLeast',
+        'amountAtLeast',
+        'atLocationId',
+        'flagValue',
+        'equals',
+        'possessesItemId',
+        'possessesItemName',
+        'objectiveIds',
+        'objectivePolicy',
+    }
+)
+QUEST_PREDICATE_REFERENCES = {
+    'encounterId': 'encounters',
+    'objectiveId': 'objectives',
+    'questId': 'quests',
+    'locationId': 'locations',
+    'atLocationId': 'locations',
+    'npcId': 'npcs',
+    'checkpointId': 'checkpoints',
+}
+# Keys campaign_pack_progress reads from checkpoint completeWhen / failWhen.
+CHECKPOINT_COMPLETE_WHEN_KEYS = frozenset(
+    {
+        'locationId',
+        'locationIds',
+        'location_id',
+        'location_ids',
+        'segmentId',
+        'segmentIds',
+        'segment_id',
+        'segment_ids',
+        'triggeredSegmentIds',
+        'triggered_segment_ids',
+        'objectiveId',
+        'objectiveIds',
+        'objective_id',
+        'objective_ids',
+        'questObjectiveIds',
+        'quest_objective_ids',
+        'questId',
+        'questIds',
+        'quest_id',
+        'quest_ids',
+        'encounterId',
+        'encounterIds',
+        'encounter_id',
+        'encounter_ids',
+        'clueId',
+        'clueIds',
+        'clue_id',
+        'clue_ids',
+        'flags',
+        'anyOf',
+        'any_of',
+        'outcomes',
+        'allowedOutcomes',
+        'allowed_outcomes',
+    }
+)
+CHECKPOINT_FAIL_WHEN_KEYS = frozenset(
+    {
+        'questId',
+        'questIds',
+        'quest_id',
+        'quest_ids',
+        'objectiveId',
+        'objectiveIds',
+        'objective_id',
+        'objective_ids',
+        'questObjectiveIds',
+        'quest_objective_ids',
+        'encounterId',
+        'encounterIds',
+        'encounter_id',
+        'encounter_ids',
+    }
+)
+ENCOUNTER_OUTCOME_LABELS = frozenset(label for labels in COMBAT_COMPLETE_REASONS.values() for label in labels)
+READ_DIRECTOR_RULE_KEYS = frozenset(
+    {
+        'mainQuestGeneration',
+        'main_quest_generation',
+        'sideQuestGeneration',
+        'side_quest_generation',
+        'newNpcs',
+        'new_npcs',
+        'newLocations',
+        'new_locations',
+        'offTrackPolicy',
+        'off_track_policy',
+        'checkpointStyle',
+        'checkpoint_style',
+    }
+)
+# Record-level reference fields and the collection each one names.
+RECORD_REFERENCE_FIELDS = {
+    'connectedLocationIds': 'locations',
+    'npcIds': 'npcs',
+    'questIds': 'quests',
+    'encounterIds': 'encounters',
+    'enemyIds': 'enemies',
+    'locationIds': 'locations',
+    'checkpointIds': 'checkpoints',
+}
+CHECKPOINT_REFERENCE_FIELDS = {
+    'nextCheckpointIds': 'checkpoints',
+    'alternateCheckpointIds': 'checkpoints',
+    'failureCheckpointIds': 'checkpoints',
+    'prerequisiteCheckpointIds': 'checkpoints',
+    'rejoinTargetCheckpointId': 'checkpoints',
+    'segmentIds': 'segments',
+    'objectiveIds': 'objectives',
+    'failedObjectiveIds': 'objectives',
+    'clueIds': 'clues',
+}
+CHECKPOINT_CONDITION_REFERENCE_FIELDS = {
+    'locationId': 'locations',
+    'locationIds': 'locations',
+    'segmentId': 'segments',
+    'segmentIds': 'segments',
+    'triggeredSegmentIds': 'segments',
+    'objectiveId': 'objectives',
+    'objectiveIds': 'objectives',
+    'questObjectiveIds': 'objectives',
+    'questId': 'quests',
+    'questIds': 'quests',
+    'encounterId': 'encounters',
+    'encounterIds': 'encounters',
+    'clueId': 'clues',
+    'clueIds': 'clues',
+}
+STARTING_STATE_REFERENCE_FIELDS = {
+    'locationId': 'locations',
+    'questId': 'quests',
+    'checkpointId': 'checkpoints',
+    'knownLocationIds': 'locations',
+    'knownNpcIds': 'npcs',
+    'activeNpcIds': 'npcs',
+    'knownQuestIds': 'quests',
+    'activeQuestIds': 'quests',
+}
 
 AUTHORING_COLLECTIONS = (
     'locations',
@@ -57,14 +234,16 @@ def lint_campaign_pack_manifest(pack: dict[str, Any], *, workspace_id: str = 'li
     try:
         preview = import_campaign_pack(pack, workspace_id=workspace_id, dry_run=True).payload
     except CampaignPackImportError as exc:
-        issues.append(
-            CampaignPackLintIssue(
-                severity='error',
-                code=exc.error_code,
-                path='campaign pack',
-                message=exc.public_message,
+        # Bound violations are all reported, with their paths, by the static pass.
+        if exc.error_code != PACK_BOUNDS_ERROR_CODE:
+            issues.append(
+                CampaignPackLintIssue(
+                    severity='error',
+                    code=exc.error_code,
+                    path='campaign pack',
+                    message=exc.public_message,
+                )
             )
-        )
     except Exception as exc:  # pragma: no cover - defensive CLI boundary
         logger.exception('Unexpected campaign pack lint failure: %s', str(exc))
         issues.append(
@@ -162,7 +341,435 @@ def _static_lint_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
                 message='Checkpoint graph has no reachable starting checkpoint.',
             )
         )
+    issues.extend(_engine_contract_issues(pack))
     return issues
+
+
+def _engine_contract_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    """Authoring the engine would reject, ignore, or never act on."""
+
+    ids = _pack_id_sets(pack)
+    issues: list[CampaignPackLintIssue] = [
+        _error(PACK_BOUNDS_ERROR_CODE, path, f'{path} {message}.')
+        for path, message in campaign_pack_bound_violations(pack)
+    ]
+    issues.extend(_record_id_issues(pack))
+    issues.extend(_reference_issues(pack, ids))
+    issues.extend(_interactable_catalog_issues(pack))
+    issues.extend(_segment_trigger_issues(pack))
+    issues.extend(_quest_issues(pack, ids))
+    issues.extend(_checkpoint_condition_issues(pack))
+    issues.extend(_location_connection_issues(pack))
+    issues.extend(_branch_flag_issues(pack))
+    issues.extend(_director_rule_issues(pack))
+    starting_state = _dict(_first(pack, 'startingState', 'starting_state'))
+    if 'campaignFlags' in starting_state or 'campaign_flags' in starting_state:
+        issues.append(
+            _warning(
+                'starting_campaign_flags_alias',
+                'startingState.campaignFlags',
+                'campaignFlags is an alias of startingState.flags; prefer flags.',
+            )
+        )
+    return issues
+
+
+def _error(code: str, path: str, message: str) -> CampaignPackLintIssue:
+    return CampaignPackLintIssue(severity='error', code=code, path=path, message=message)
+
+
+def _warning(code: str, path: str, message: str) -> CampaignPackLintIssue:
+    return CampaignPackLintIssue(severity='warning', code=code, path=path, message=message)
+
+
+def _pack_id_sets(pack: dict[str, Any]) -> dict[str, set[str]]:
+    ids = {
+        collection: {_text(record.get('id')) for record in _records(pack.get(collection)) if _text(record.get('id'))}
+        for collection in AUTHORING_COLLECTIONS
+    }
+    ids['objectives'] = {
+        _text(objective.get('id'))
+        for quest in _records(pack.get('quests'))
+        for objective in _records(quest.get('objectives'))
+        if _text(objective.get('id'))
+    }
+    return ids
+
+
+def _record_id_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    issues = []
+    for collection in AUTHORING_COLLECTIONS:
+        for index, record in enumerate(_records(pack.get(collection))):
+            paths = [(f'{collection}[{index}].id', record.get('id'))]
+            if collection == 'quests':
+                paths.extend(
+                    (f'{collection}[{index}].objectives[{objective_index}].id', objective.get('id'))
+                    for objective_index, objective in enumerate(_records(record.get('objectives')))
+                )
+            for path, value in paths:
+                if value is not None and not ID_PATTERN.fullmatch(_text(value)):
+                    issues.append(
+                        _error(
+                            'invalid_id',
+                            path,
+                            f'ID "{_text(value)}" must use only lowercase letters, digits and underscores; '
+                            'the importer rewrites IDs but not the references to them.',
+                        )
+                    )
+    return issues
+
+
+def _missing_reference_issues(
+    value: Any,
+    *,
+    path: str,
+    target: str,
+    ids: dict[str, set[str]],
+) -> list[CampaignPackLintIssue]:
+    known = ids.get(target, set())
+    return [
+        _error('unknown_reference', path, f'{path} names "{reference}", which is not one of the pack\'s {target}.')
+        for reference in _string_list(value)
+        if reference not in known
+    ]
+
+
+def _field_reference_issues(
+    record: dict[str, Any],
+    fields: dict[str, str],
+    *,
+    path: str,
+    ids: dict[str, set[str]],
+) -> list[CampaignPackLintIssue]:
+    issues = []
+    for field, target in fields.items():
+        for key in (field, _snake_alias(field)):
+            if key in record:
+                issues.extend(_missing_reference_issues(record[key], path=f'{path}.{key}', target=target, ids=ids))
+    return issues
+
+
+def _reference_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[CampaignPackLintIssue]:
+    issues: list[CampaignPackLintIssue] = []
+    for collection in AUTHORING_COLLECTIONS:
+        for index, record in enumerate(_records(pack.get(collection))):
+            issues.extend(_field_reference_issues(record, RECORD_REFERENCE_FIELDS, path=f'{collection}[{index}]', ids=ids))
+    for collection in ('npcs', 'segments'):
+        for index, record in enumerate(_records(pack.get(collection))):
+            issues.extend(_field_reference_issues(record, {'locationId': 'locations'}, path=f'{collection}[{index}]', ids=ids))
+    for index, segment in enumerate(_records(pack.get('segments'))):
+        trigger = _dict(segment.get('trigger'))
+        if _text(trigger.get('type')).lower() == LOCATION_TRIGGER_TYPE:
+            issues.extend(
+                _field_reference_issues(trigger, {'locationId': 'locations'}, path=f'segments[{index}].trigger', ids=ids)
+            )
+    for index, encounter in enumerate(_records(pack.get('encounters'))):
+        for group_index, group in enumerate(_records(_first(encounter, 'enemyGroups', 'enemy_groups'))):
+            issues.extend(
+                _field_reference_issues(
+                    group,
+                    {'enemyId': 'enemies'},
+                    path=f'encounters[{index}].enemyGroups[{group_index}]',
+                    ids=ids,
+                )
+            )
+    for index, checkpoint in enumerate(_records(pack.get('checkpoints'))):
+        path = f'checkpoints[{index}]'
+        issues.extend(_field_reference_issues(checkpoint, CHECKPOINT_REFERENCE_FIELDS, path=path, ids=ids))
+        for condition_key in ('completeWhen', 'failWhen'):
+            condition = _first(checkpoint, condition_key, _snake_alias(condition_key))
+            if isinstance(condition, dict):
+                issues.extend(
+                    _field_reference_issues(
+                        condition,
+                        CHECKPOINT_CONDITION_REFERENCE_FIELDS,
+                        path=f'{path}.{condition_key}',
+                        ids=ids,
+                    )
+                )
+    starting_state = _dict(_first(pack, 'startingState', 'starting_state'))
+    issues.extend(_field_reference_issues(starting_state, STARTING_STATE_REFERENCE_FIELDS, path='startingState', ids=ids))
+    issues.extend(
+        _field_reference_issues(
+            _dict(_first(starting_state, 'currentScene', 'current_scene')),
+            STARTING_STATE_REFERENCE_FIELDS,
+            path='startingState.currentScene',
+            ids=ids,
+        )
+    )
+    return issues
+
+
+def _interactable_catalog_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    catalog: dict[str, Any] = {'locations': pack.get('locations') if isinstance(pack.get('locations'), list) else []}
+    starting_state = _dict(_first(pack, 'startingState', 'starting_state'))
+    current_scene = _dict(_first(starting_state, 'currentScene', 'current_scene'))
+    scene_collections = {key: current_scene[key] for key in ('interactables', 'hazards') if key in current_scene}
+    if scene_collections:
+        catalog['currentScene'] = {
+            'locationId': _text(_first(starting_state, 'locationId', 'location_id') or current_scene.get('locationId')),
+            **scene_collections,
+        }
+    return [
+        _error('invalid_interactable_catalog', _text(error.get('path')), f"{error.get('code')}: {error.get('message')}")
+        for error in validate_interactable_catalog(catalog)
+    ]
+
+
+def _segment_trigger_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    issues = []
+    for index, segment in enumerate(_records(pack.get('segments'))):
+        key = next((key for key in ('trigger', 'triggerCondition', 'trigger_condition') if key in segment), None)
+        if key is None or segment[key] is None or isinstance(segment[key], str):
+            continue
+        path = f'segments[{index}].{key}'
+        trigger = segment[key]
+        if not isinstance(trigger, dict):
+            issues.append(_error('invalid_segment_trigger', path, 'A segment trigger must be a keyword string or a trigger object.'))
+            continue
+        trigger_type = _text(trigger.get('type') or 'manual').lower()
+        if trigger_type not in SUPPORTED_TRIGGER_TYPES:
+            issues.append(
+                _error(
+                    'invalid_segment_trigger',
+                    f'{path}.type',
+                    f'Trigger type "{trigger_type}" is not one of: {", ".join(sorted(SUPPORTED_TRIGGER_TYPES))}.',
+                )
+            )
+        elif trigger_type in KEYWORD_TRIGGER_TYPES and not _string_list(trigger.get('keywords')):
+            issues.append(_error('invalid_segment_trigger', f'{path}.keywords', 'A keyword trigger needs a keywords list.'))
+        elif trigger_type == LOCATION_TRIGGER_TYPE and not _text(trigger.get('locationId')):
+            issues.append(_error('invalid_segment_trigger', f'{path}.locationId', 'A location trigger needs a locationId.'))
+    return issues
+
+
+def _quest_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[CampaignPackLintIssue]:
+    issues: list[CampaignPackLintIssue] = []
+    reward_item_ids = _encounter_reward_item_ids(pack)
+    for quest_index, quest in enumerate(_records(pack.get('quests'))):
+        objectives = _records(quest.get('objectives'))
+        quest_objective_ids = {_text(objective.get('id')) for objective in objectives if _text(objective.get('id'))}
+        for objective_index, objective in enumerate(objectives):
+            path = f'quests[{quest_index}].objectives[{objective_index}]'
+            if not objective_is_mechanical(objective):
+                issues.append(
+                    _warning(
+                        'objective_without_mechanics',
+                        path,
+                        'Objective has no completeWhen, failWhen or prerequisites; only an operator can complete this objective.',
+                    )
+                )
+            # Prerequisites are looked up inside the same quest.
+            for key in ('prerequisiteObjectiveIds', 'prerequisites'):
+                issues.extend(
+                    _missing_reference_issues(
+                        objective.get(key),
+                        path=f'{path}.{key}',
+                        target='objectives',
+                        ids={'objectives': quest_objective_ids},
+                    )
+                )
+            rules = _dict(objective.get('rules'))
+            for key in ('completeWhen', 'failWhen'):
+                if key in objective:
+                    predicate, predicate_path = objective[key], f'{path}.{key}'
+                elif key in rules:
+                    predicate, predicate_path = rules[key], f'{path}.rules.{key}'
+                else:
+                    continue
+                issues.extend(_predicate_issues(predicate, path=predicate_path, ids=ids, reward_item_ids=reward_item_ids))
+    return issues
+
+
+def _predicate_issues(
+    predicate: Any,
+    *,
+    path: str,
+    ids: dict[str, set[str]],
+    reward_item_ids: set[str],
+) -> list[CampaignPackLintIssue]:
+    if not isinstance(predicate, dict):
+        return [_error('invalid_predicate_entry', path, 'A predicate must be a JSON object; the engine ignores anything else.')]
+    if not predicate:
+        return [_error('invalid_predicate_entry', path, 'An empty predicate is never satisfied.')]
+    issues: list[CampaignPackLintIssue] = []
+    for key in QUEST_PREDICATE_COMBINATORS:
+        if key in predicate and not isinstance(predicate[key], list):
+            issues.append(_error('invalid_predicate_entry', f'{path}.{key}', f'{key} must be a list of predicates.'))
+    combinator = next((key for key in QUEST_PREDICATE_COMBINATORS if isinstance(predicate.get(key), list)), None)
+    if combinator:
+        for key in predicate:
+            if key != combinator:
+                issues.append(
+                    _error('unknown_predicate_key', f'{path}.{key}', f'"{key}" is ignored next to {combinator}.')
+                )
+        entries = predicate[combinator]
+        if not any(isinstance(entry, dict) for entry in entries):
+            issues.append(
+                _error('invalid_predicate_entry', f'{path}.{combinator}', f'{combinator} has no predicates and is never satisfied.')
+            )
+        for index, entry in enumerate(entries):
+            issues.extend(
+                _predicate_issues(entry, path=f'{path}.{combinator}[{index}]', ids=ids, reward_item_ids=reward_item_ids)
+            )
+        return issues
+    for key, value in predicate.items():
+        key_path = f'{path}.{key}'
+        if key not in QUEST_PREDICATE_KEYS:
+            issues.append(_error('unknown_predicate_key', key_path, f'"{key}" is not part of the quest predicate language.'))
+        elif key in QUEST_PREDICATE_REFERENCES:
+            issues.extend(_missing_reference_issues(value, path=key_path, target=QUEST_PREDICATE_REFERENCES[key], ids=ids))
+        elif key == 'objectiveIds':
+            issues.extend(_missing_reference_issues(value, path=key_path, target='objectives', ids=ids))
+        elif key == 'possessesItemId' and _text(value) in reward_item_ids:
+            issues.append(
+                _warning(
+                    'possesses_encounter_reward_item_id',
+                    key_path,
+                    f'Encounter rewards give "{_text(value)}" a new instance id, so this never matches; use possessesItemName.',
+                )
+            )
+    return issues
+
+
+def _checkpoint_condition_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    issues = []
+    for index, checkpoint in enumerate(_records(pack.get('checkpoints'))):
+        for condition_key, known_keys in (
+            ('completeWhen', CHECKPOINT_COMPLETE_WHEN_KEYS),
+            ('failWhen', CHECKPOINT_FAIL_WHEN_KEYS),
+        ):
+            condition = _first(checkpoint, condition_key, _snake_alias(condition_key))
+            if not isinstance(condition, dict):
+                continue
+            path = f'checkpoints[{index}].{condition_key}'
+            for key in condition:
+                if key not in known_keys:
+                    issues.append(
+                        _warning(
+                            'unread_checkpoint_condition_key',
+                            f'{path}.{key}',
+                            f'Checkpoint progress does not read {condition_key}.{key}.',
+                        )
+                    )
+            if condition_key != 'completeWhen':
+                continue
+            for any_of_key in ('anyOf', 'any_of'):
+                entries = condition.get(any_of_key)
+                prose = [
+                    entry
+                    for entry in (entries if isinstance(entries, list) else [entries])
+                    if isinstance(entry, str) and _status_key(entry) not in ENCOUNTER_OUTCOME_LABELS
+                ]
+                if prose:
+                    issues.append(
+                        _warning(
+                            'prose_in_complete_when',
+                            f'{path}.{any_of_key}',
+                            f'{len(prose)} prose entr{"y" if len(prose) == 1 else "ies"} in completeWhen.{any_of_key} '
+                            'never complete the checkpoint; only encounter outcome labels are read.',
+                        )
+                    )
+    return issues
+
+
+def _location_connection_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    return [
+        _warning(
+            'location_without_connections',
+            f'locations[{index}]',
+            f'Location "{_record_id(location)}" has no connectedLocationIds; structured travel cannot reach or leave it.',
+        )
+        for index, location in enumerate(_records(pack.get('locations')))
+        if not _string_list(_first(location, 'connectedLocationIds', 'connected_location_ids'))
+    ]
+
+
+def _branch_flag_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    set_flags = _flag_keys_set_by_pack(pack)
+    issues = []
+    for index, checkpoint in enumerate(_records(pack.get('checkpoints'))):
+        branch = _dict(_first(checkpoint, 'branchWhen', 'branch_when'))
+        flag_key = _text(_first(branch, 'flagKey', 'flag_key'))
+        if flag_key and flag_key not in set_flags:
+            issues.append(
+                _warning(
+                    'branch_flag_never_set',
+                    f'checkpoints[{index}].branchWhen.flagKey',
+                    f'Nothing in the pack sets flag "{flag_key}", so this branch can only open through an operator.',
+                )
+            )
+    return issues
+
+
+def _director_rule_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    sources = [('directorRules', _first(pack, 'directorRules', 'director_rules'))]
+    sources.extend(
+        (f'checkpoints[{index}].directorRules', _first(checkpoint, 'directorRules', 'director_rules'))
+        for index, checkpoint in enumerate(_records(pack.get('checkpoints')))
+    )
+    return [
+        _warning('unread_director_rule', f'{path}.{key}', f'The engine does not read director rule "{key}".')
+        for path, rules in sources
+        for key in _dict(rules)
+        if key not in READ_DIRECTOR_RULE_KEYS
+    ]
+
+
+def _walk_dicts(value: Any) -> Iterator[dict[str, Any]]:
+    if isinstance(value, dict):
+        yield value
+        for item in value.values():
+            yield from _walk_dicts(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _walk_dicts(item)
+
+
+def _reward_containers(record: dict[str, Any]) -> list[dict[str, Any]]:
+    containers = [_dict(record.get('rewards')), _dict(record.get('reward'))]
+    for key in ('outcomeRewards', 'outcome_rewards', 'outcomes'):
+        for outcome in _dict(record.get(key)).values():
+            outcome_spec = _dict(outcome)
+            containers.extend([outcome_spec, _dict(outcome_spec.get('rewards')), _dict(outcome_spec.get('reward'))])
+    return [container for container in containers if container]
+
+
+def _flag_keys_set_by_pack(pack: dict[str, Any]) -> set[str]:
+    starting_state = _dict(_first(pack, 'startingState', 'starting_state'))
+    # Starting flags are copied verbatim; every other flag write is slugged.
+    keys = {
+        _text(key)
+        for source in ('flags', 'campaignFlags', 'campaign_flags')
+        for key in _dict(starting_state.get(source))
+    }
+    for record in [*_records(pack.get('quests')), *_records(pack.get('encounters'))]:
+        for node in _walk_dicts(record):
+            if _text(node.get('type')) in {'flag.set', 'flag'} and _text(node.get('flagKey') or node.get('key')):
+                keys.add(stable_slug(node.get('flagKey') or node.get('key')))
+        for container in _reward_containers(record):
+            flags = container.get('flags')
+            if isinstance(flags, dict) and not _text(flags.get('flagKey') or flags.get('key')):
+                keys.update(stable_slug(key) for key in flags)
+                continue
+            for flag in _records(flags if isinstance(flags, list) else [flags]):
+                if _text(flag.get('flagKey') or flag.get('key')):
+                    keys.add(stable_slug(flag.get('flagKey') or flag.get('key')))
+    return keys
+
+
+def _encounter_reward_item_ids(pack: dict[str, Any]) -> set[str]:
+    item_ids: set[str] = set()
+    for encounter in _records(pack.get('encounters')):
+        for container in _reward_containers(encounter):
+            items = container.get('items')
+            for item in _records(items if isinstance(items, list) else [items]):
+                if _text(item.get('id')):
+                    item_ids.add(_text(item.get('id')))
+        for node in _walk_dicts([encounter.get('rewards'), encounter.get('reward')]):
+            if _text(node.get('type')) == 'item' and _text(_dict(node.get('item')).get('id')):
+                item_ids.add(_text(_dict(node.get('item')).get('id')))
+    return item_ids
 
 
 def _lint_summary(pack: dict[str, Any]) -> dict[str, Any]:
@@ -457,6 +1064,10 @@ def _records(value: Any) -> list[dict[str, Any]]:
     return [record for record in value if isinstance(record, dict)] if isinstance(value, list) else []
 
 
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def _record_id(record: dict[str, Any]) -> str:
     return _text(record.get('id') or record.get('checkpointId') or record.get('checkpoint_id'))
 
@@ -527,3 +1138,7 @@ def _truthy(value: Any) -> bool:
 
 def _text(value: Any) -> str:
     return str(value or '').strip()
+
+
+def _status_key(value: Any) -> str:
+    return _text(value).lower().replace(' ', '_')

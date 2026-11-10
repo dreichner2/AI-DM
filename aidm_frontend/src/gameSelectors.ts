@@ -1354,6 +1354,25 @@ function stripSpeakerPrefix(message: string, speaker: string) {
   return message.startsWith(prefix) ? message.slice(prefix.length).trim() : message
 }
 
+// The internal opening-narration request. It is sent as a player turn with
+// message_kind 'opening'; sessions saved before that field existed are
+// recognised by this text.
+export const OPENING_REQUEST_PREFIX = 'Please narrate the opening scene for this campaign'
+
+function startsWithOpeningRequest(text: string) {
+  return text.trimStart().startsWith(OPENING_REQUEST_PREFIX)
+}
+
+export function isOpeningRequestEntry(entry: TimelineEntry, rawMessage = entry.text) {
+  if (entry.role !== 'player') return false
+  if (stringValue(entry.metadata.message_kind) === 'opening') return true
+  return (
+    startsWithOpeningRequest(entry.text) ||
+    startsWithOpeningRequest(rawMessage) ||
+    startsWithOpeningRequest(rawMessage.slice(rawMessage.indexOf(':') + 1))
+  )
+}
+
 export function timelineFromLog(entry: SessionLogEntry): TimelineEntry {
   let role: TimelineRole =
     entry.entry_type === 'player' ? 'player' : entry.entry_type === 'system' ? 'system' : 'dm'
@@ -1421,6 +1440,7 @@ export function buildTimeline({
   )
   const unresolvedOptimisticEntries = optimisticEntries
     .filter((entry) => {
+      if (isOpeningRequestEntry(entry)) return false
       const clientMessageId = stringValue(entry.metadata.client_message_id)
       if (clientMessageId && loggedClientMessageIds.has(clientMessageId)) return false
       const turnId = metadataTurnId(entry.metadata)
@@ -1428,7 +1448,10 @@ export function buildTimeline({
       return true
     })
     .map(withStatus)
-  const entries = logTimeline.concat(unresolvedOptimisticEntries)
+  const visibleLogTimeline = logTimeline.filter(
+    (entry, index) => !isOpeningRequestEntry(entry, logEntries[index].message),
+  )
+  const entries = visibleLogTimeline.concat(unresolvedOptimisticEntries)
   if (streamingTurn) {
     const streamingEntry: TimelineEntry = {
       id: `stream-${streamingTurn.turnId}`,
@@ -1446,7 +1469,7 @@ export function buildTimeline({
       streaming: true,
     }
     if (turnStatusAllowsNextSend(turnStatuses[streamingTurn.turnId])) {
-      return logTimeline.concat([streamingEntry], unresolvedOptimisticEntries)
+      return visibleLogTimeline.concat([streamingEntry], unresolvedOptimisticEntries)
     }
     entries.push(streamingEntry)
   }

@@ -8,16 +8,19 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
 from aidm_server.llm import CONTEXT_VERSION, EmergencyFallbackChunk
+from aidm_server.llm_context import build_opening_brief
 from aidm_server.models import safe_json_loads
+from aidm_server.prompt_templates import OPENING_BRIEF_HINT_KEY, is_opening_rules_hint
 from aidm_server.provider_priority import foreground_provider_reservation
+from aidm_server.provider_registry import narration_waits_for_background
 from aidm_server.rules import RuleHint
 from aidm_server.socket_contracts import (
-    dm_chunk_payload,
     dm_response_end_payload,
     dm_response_start_payload,
     socket_error_payload as socket_error,
 )
 from aidm_server.text_sanitization import ReasoningBlockFilter
+from aidm_server.turn_roll_policy import TurnRollPolicy
 
 
 DM_GENERATION_FAILED_MESSAGE = 'The DM response could not be generated. Please retry.'
@@ -69,6 +72,7 @@ class TurnNarrationDependencies:
     telemetry_metric: Callable[..., Any]
     config_get: Callable[[str], Any]
     logger: logging.Logger
+    build_opening_brief: Callable[[int], dict[str, Any]] = build_opening_brief
 
 
 class TurnNarrationService:
@@ -79,8 +83,8 @@ class TurnNarrationService:
 
     def narrate(self, request: NarrationRequest) -> NarrationResult:
         # Register foreground demand before context construction so background
-        # canon work cannot claim the provider between context materialization
-        # and the first narration token. Foreground callers may still overlap.
+        # canon work cannot start between context materialization and the first
+        # narration token. Foreground callers may still overlap.
         with foreground_provider_reservation() as activate_provider:
             return self._narrate_with_priority(request, activate_provider=activate_provider)
 
@@ -94,6 +98,7 @@ class TurnNarrationService:
 
         context_started = time.perf_counter()
         context_error: Exception | None = None
+        stream_rules_hint = request.rules_hint_payload
         try:
             active_player_ids: list[int] = []
             if dependencies.active_player_ids:
@@ -110,6 +115,12 @@ class TurnNarrationService:
                 active_player_ids=active_player_ids,
                 current_player_id=request.player_id,
             )
+            if is_opening_rules_hint(request.rules_hint_payload):
+                # The prompt builder renders this as the OPENING BRIEF block.
+                stream_rules_hint = {
+                    **request.rules_hint_payload,
+                    OPENING_BRIEF_HINT_KEY: dependencies.build_opening_brief(request.session_id),
+                }
         except Exception as exc:
             context_error = exc
         finally:
@@ -192,9 +203,18 @@ class TurnNarrationService:
         reasoning_filter = ReasoningBlockFilter()
         provider_started = time.perf_counter()
         first_token_recorded = False
-        # If canon already owns the background slot, this is the only blocking
-        # point. Context DB work has finished and the scoped session is gone.
-        activate_provider()
+        chunk_count = 0
+
+        def emit_chunk(chunk: str) -> None:
+            nonlocal chunk_count
+            self._emit_chunk(request, chunk, chunk_count)
+            chunk_count += 1
+
+        # Only providers that share a lock with background canon work wait for
+        # a running canon job; HTTP providers start at once. Context DB work has
+        # finished and the scoped session is gone either way.
+        if narration_waits_for_background(configured_provider):
+            activate_provider()
         try:
             for raw_chunk in dependencies.stream(
                 request.model_user_input,
@@ -203,7 +223,7 @@ class TurnNarrationService:
                     'character_name': request.player_label,
                     'player_id': str(request.player_id),
                 },
-                rules_hint=request.rules_hint_payload,
+                rules_hint=stream_rules_hint,
             ):
                 if not raw_chunk:
                     continue
@@ -233,12 +253,12 @@ class TurnNarrationService:
                 chunk = reasoning_filter.filter(raw_chunk)
                 if not chunk:
                     continue
-                self._emit_chunk(request, chunk)
+                emit_chunk(chunk)
                 dm_response_text += chunk
 
             final_chunk = reasoning_filter.finish()
             if final_chunk:
-                self._emit_chunk(request, final_chunk)
+                emit_chunk(final_chunk)
                 dm_response_text += final_chunk
         except Exception as exc:
             stream_error = DM_GENERATION_FAILED_MESSAGE
@@ -278,7 +298,7 @@ class TurnNarrationService:
                 pending_turn_id=request.resolved_turn_id,
             )
             injected_chunk = f'\n\n{injected_prompt}' if dm_response_text.strip() else injected_prompt
-            self._emit_chunk(request, injected_chunk)
+            emit_chunk(injected_chunk)
             dm_response_text += injected_chunk
             dependencies.telemetry_metric('socket.roll_prompt_injected_total', 1)
 
@@ -323,18 +343,17 @@ class TurnNarrationService:
             emergency_fallback=emergency_fallback,
         )
 
-    def _emit_chunk(self, request: NarrationRequest, chunk: str) -> None:
+    def _emit_chunk(self, request: NarrationRequest, chunk: str, index: int) -> None:
+        # Chunks are bare: rules_hint and requires_roll travel once, in
+        # dm_response_start and dm_response_end.
         self.dependencies.emit(
             'dm_chunk',
-            dm_chunk_payload(
-                chunk=chunk,
-                session_id=request.session_id,
-                turn_id=request.turn_id,
-                requires_roll=request.requires_roll,
-                rules_hint=request.rules_hint_payload,
-                context_version=CONTEXT_VERSION,
-                turn_number=request.rules_hint_payload.get('turn_number'),
-            ),
+            {
+                'session_id': request.session_id,
+                'turn_id': request.turn_id,
+                'chunk': chunk,
+                'index': index,
+            },
             room=str(request.session_id),
         )
         self.dependencies.sleep(0)
@@ -389,5 +408,6 @@ class TurnNarrationService:
             request.requires_roll
             and request.roll_value is None
             and not self.dependencies.response_requests_roll(response_text)
+            and not TurnRollPolicy.response_requests_stated_check(response_text)
             and not self.dependencies.response_explains_no_roll_needed(response_text)
         )

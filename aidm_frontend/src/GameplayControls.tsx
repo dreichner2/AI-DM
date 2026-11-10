@@ -1,11 +1,18 @@
 import { useState } from 'react'
-import { createClientMessageId, type ActionIntent } from './gameActions'
+import type { ActionIntent } from './gameActions'
 import type {
   GameplayCapabilityControl,
   GameplayControlState,
   GameplaySpellControl,
   GameplayTarget,
 } from './gameplayControlState'
+import {
+  capabilitySubmission,
+  capabilityTarget,
+  objectActionSubmission,
+  selectedHealingAmount,
+  spellCastSubmission,
+} from './story/actionIntents'
 import './styles/gameplay-controls.css'
 
 type GameplayControlsProps = {
@@ -24,32 +31,6 @@ function spellTargetCountLabel(spell: GameplaySpellControl) {
     return `${spell.minTargets} exact ${spell.minTargets === 1 ? 'target' : 'targets'}`
   }
   return `${spell.minTargets}–${spell.maxTargets} exact targets`
-}
-
-function capabilityTarget(
-  capability: GameplayCapabilityControl,
-  selectedTargets: Record<string, string>,
-) {
-  const selected = capability.targets.find((target) =>
-    target.id === selectedTargets[capability.id] && target.available,
-  )
-  return selected ?? capability.targets.find((target) => target.available) ?? null
-}
-
-function selectedHealingAmount(
-  capability: GameplayCapabilityControl,
-  target: GameplayTarget | null,
-  rawAmount: string,
-) {
-  const parsed = Number.parseInt(rawAmount, 10)
-  const missing = target && target.currentHp !== null && target.maxHp !== null
-    ? Math.max(0, target.maxHp - target.currentHp)
-    : capability.current
-  const maximum = Math.max(1, Math.min(capability.current, missing))
-  return {
-    amount: Math.max(1, Math.min(maximum, Number.isFinite(parsed) ? parsed : 1)),
-    maximum,
-  }
 }
 
 export function GameplayControls({ state, disabled, onSubmit }: GameplayControlsProps) {
@@ -88,47 +69,19 @@ export function GameplayControls({ state, disabled, onSubmit }: GameplayControls
 
   const castSelectedSpell = () => {
     if (!selectedSpell || !spellTargetCountValid) return
-    const names = selectedSpell.targets
-      .filter((target) => spellTargets.includes(target.id))
-      .map((target) => target.name)
-    const targetText = names.length ? ` at ${names.join(', ')}` : ''
-    const message = `${state.actorName} casts ${selectedSpell.name}${targetText}.`
-    const intent: ActionIntent = {
-      kind: 'spell',
-      source: 'scene_panel',
-      text: message,
-      client_message_id: createClientMessageId(),
-      spell: {
-        name: selectedSpell.name,
-        effect: 'Resolve the server-owned spell effect against the selected exact target IDs.',
-        resource_pool: 'auto',
-        concentration: selectedSpell.concentration,
-        target_ids: spellTargets,
-      },
-    }
+    const { message, intent } = spellCastSubmission(state.actorName, selectedSpell, spellTargets)
     if (onSubmit(message, intent)) setSelectedSpellTargets([])
   }
 
   const submitCapability = (capability: GameplayCapabilityControl) => {
-    const target = capabilityTarget(capability, selectedCapabilityTargets)
+    const target = capabilityTarget(capability, selectedCapabilityTargets[capability.id])
     if (!target) return
-    const healing = capability.effectType === 'healing_pool'
-      ? selectedHealingAmount(capability, target, capabilityAmounts[capability.id] ?? '1')
-      : null
-    const targetText = capability.targetPolicy === 'self' ? '' : ` on ${target.name}`
-    const amountText = healing ? ` for up to ${healing.amount} hit points` : ''
-    const message = `${state.actorName} uses ${capability.name}${targetText}${amountText}.`
-    const intent: ActionIntent = {
-      kind: 'capability',
-      source: 'scene_panel',
-      text: message,
-      client_message_id: createClientMessageId(),
-      capability: {
-        id: capability.id,
-        target_id: target.id,
-        ...(healing ? { amount: healing.amount } : {}),
-      },
-    }
+    const { message, intent } = capabilitySubmission(
+      state.actorName,
+      capability,
+      target,
+      capabilityAmounts[capability.id] ?? '1',
+    )
     onSubmit(message, intent)
   }
 
@@ -214,7 +167,7 @@ export function GameplayControls({ state, disabled, onSubmit }: GameplayControls
           <strong className="gameplay-control-legend">Class capabilities</strong>
           <div className="gameplay-capability-list">
             {state.capabilities.map((capability) => {
-              const target = capabilityTarget(capability, selectedCapabilityTargets)
+              const target = capabilityTarget(capability, selectedCapabilityTargets[capability.id])
               const healing = capability.effectType === 'healing_pool'
                 ? selectedHealingAmount(
                     capability,
@@ -314,18 +267,8 @@ export function GameplayControls({ state, disabled, onSubmit }: GameplayControls
                       disabled={busy || !object.available || !action.available}
                       title={object.reason || action.reason || undefined}
                       onClick={() => {
-                        const message = `${state.actorName} attempts to ${action.id} ${object.name}.`
-                        onSubmit(message, {
-                          kind: 'object',
-                          source: 'scene_panel',
-                          text: message,
-                          client_message_id: createClientMessageId(),
-                          object: {
-                            id: object.id,
-                            action: action.id,
-                            ...(object.revision === null ? {} : { revision: object.revision }),
-                          },
-                        })
+                        const { message, intent } = objectActionSubmission(state.actorName, object, action)
+                        onSubmit(message, intent)
                       }}
                     >
                       {action.label}

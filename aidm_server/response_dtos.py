@@ -6,7 +6,7 @@ from each other or from the React client types.
 
 from __future__ import annotations
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select
 
 from aidm_server.armor_class import armor_class_details
 from aidm_server.canon_inventory import inventory_payload
@@ -40,6 +40,8 @@ from aidm_server.weapon_proficiency import normalize_weapon_proficiencies
 
 ACTIVE_STATUS = 'active'
 ARCHIVED_STATUS = 'archived'
+ENDED_STATUS = 'ended'
+DELETED_STATUS = 'deleted'
 
 PARTY_PLAYER_PUBLIC_KEYS = (
     'player_id',
@@ -81,6 +83,35 @@ def active_sessions_query(campaign_id: int):
 
 def _active_sessions_filter():
     return or_(Session.status.is_(None), Session.status != ARCHIVED_STATUS)
+
+
+def open_sessions_filter():
+    """Sessions that are still playable chapters: not ended, archived or deleted."""
+
+    return or_(Session.status.is_(None), Session.status == ACTIVE_STATUS)
+
+
+def session_is_open(status) -> bool:
+    return str(status or ACTIVE_STATUS).strip().lower() == ACTIVE_STATUS
+
+
+def session_status_label(status) -> str:
+    normalized = str(status or ACTIVE_STATUS).strip().lower()
+    if normalized == ENDED_STATUS:
+        return ENDED_STATUS
+    if normalized in (ARCHIVED_STATUS, DELETED_STATUS):
+        return ARCHIVED_STATUS
+    return ACTIVE_STATUS
+
+
+def current_chapter_session_id(campaign_id: int) -> int | None:
+    """Return the campaign's current chapter: its newest open session."""
+
+    return (
+        db.session.query(func.max(Session.session_id))
+        .filter(Session.campaign_id == campaign_id, open_sessions_filter())
+        .scalar()
+    )
 
 
 def world_payload(world: World) -> dict:
@@ -243,6 +274,39 @@ def session_display_name(
     return name or f"Session {campaign_ordinal or session_campaign_ordinal(session_obj)}"
 
 
+def session_chapter_positions(session_ids: list[int]) -> dict[int, dict]:
+    """Return each session's 1-based creation order and its campaign's current chapter."""
+
+    ids = {int(session_id) for session_id in session_ids if session_id is not None}
+    if not ids:
+        return {}
+    campaign_ids = select(Session.campaign_id).where(Session.session_id.in_(ids))
+    rows = (
+        db.session.query(Session.session_id, Session.campaign_id, Session.status)
+        .filter(Session.campaign_id.in_(campaign_ids))
+        .order_by(Session.campaign_id.asc(), Session.session_id.asc())
+        .all()
+    )
+    ordinals: dict[int, int] = {}
+    campaign_by_session: dict[int, int] = {}
+    session_counts: dict[int, int] = {}
+    current_by_campaign: dict[int, int] = {}
+    for session_id, campaign_id, status in rows:
+        session_counts[campaign_id] = session_counts.get(campaign_id, 0) + 1
+        ordinals[session_id] = session_counts[campaign_id]
+        campaign_by_session[session_id] = campaign_id
+        if session_is_open(status):
+            current_by_campaign[campaign_id] = session_id
+    return {
+        session_id: {
+            'campaign_ordinal': ordinals[session_id],
+            'current_session_id': current_by_campaign.get(campaign_by_session[session_id]),
+        }
+        for session_id in ids
+        if session_id in ordinals
+    }
+
+
 def session_summaries(session_ids: list[int]) -> dict[int, dict]:
     ids = list(dict.fromkeys(int(session_id) for session_id in session_ids if session_id is not None))
     summaries = {
@@ -252,11 +316,16 @@ def session_summaries(session_ids: list[int]) -> dict[int, dict]:
             'latest_turn_created_at': None,
             'latest_turn_completed_at': None,
             'turn_count': 0,
+            'campaign_ordinal': None,
+            'current_session_id': None,
         }
         for session_id in ids
     }
     if not ids:
         return summaries
+
+    for session_id, positions in session_chapter_positions(ids).items():
+        summaries[session_id].update(positions)
 
     states = SessionState.query.filter(SessionState.session_id.in_(ids)).all()
     for session_state in states:
@@ -337,21 +406,8 @@ def session_payload(
         )
     summary = summary or session_summaries([session_obj.session_id]).get(session_obj.session_id, {})
     session_state = summary.get('session_state')
-    latest_log_at = summary.get('latest_log_at')
-    latest_turn_created_at = summary.get('latest_turn_created_at')
-    latest_turn_completed_at = summary.get('latest_turn_completed_at')
     turn_count = summary.get('turn_count') or 0
-    snapshot_updated_at = snapshot.get('updated_at')
-
-    latest_activity = latest_isoformat(
-        session_obj.created_at,
-        session_obj.updated_at,
-        snapshot_updated_at if isinstance(snapshot_updated_at, str) else None,
-        session_state.updated_at if session_state else None,
-        latest_log_at,
-        latest_turn_created_at,
-        latest_turn_completed_at,
-    )
+    latest_activity = session_latest_activity_at(session_obj, snapshot, summary)
     latest_summary = ''
     if session_state and session_state.rolling_summary:
         latest_summary = session_state.rolling_summary
@@ -364,7 +420,6 @@ def session_payload(
         'session_id': session_obj.session_id,
         'campaign_id': session_obj.campaign_id,
         'created_at': isoformat(session_obj.created_at),
-        'status': session_obj.status or ACTIVE_STATUS,
         'deleted_at': isoformat(session_obj.deleted_at),
         'updated_at': latest_activity,
         'latest_activity_at': latest_activity,
@@ -372,7 +427,57 @@ def session_payload(
         'turn_count': int(turn_count),
         'latest_summary': latest_summary,
         'is_archived': session_obj.status == ARCHIVED_STATUS or bool(snapshot.get('is_archived') or snapshot.get('archived')),
+        **session_chapter_fields(session_obj, snapshot, summary),
         'state_snapshot': payload_snapshot,
+    }
+
+
+def session_latest_activity_at(session_obj: Session, snapshot: dict, summary: dict) -> str | None:
+    session_state = summary.get('session_state')
+    snapshot_updated_at = snapshot.get('updated_at')
+    return latest_isoformat(
+        session_obj.created_at,
+        session_obj.updated_at,
+        snapshot_updated_at if isinstance(snapshot_updated_at, str) else None,
+        session_state.updated_at if session_state else None,
+        summary.get('latest_log_at'),
+        summary.get('latest_turn_created_at'),
+        summary.get('latest_turn_completed_at'),
+    )
+
+
+def session_chapter_fields(session_obj: Session, snapshot: dict, positions: dict) -> dict:
+    """Chapter view of a session; ``positions`` comes from ``session_chapter_positions``."""
+
+    chapter = snapshot.get('chapter') if isinstance(snapshot.get('chapter'), dict) else {}
+    chapter_number = chapter.get('number')
+    if isinstance(chapter_number, bool) or not isinstance(chapter_number, int) or chapter_number < 1:
+        chapter_number = positions.get('campaign_ordinal') or session_campaign_ordinal(session_obj)
+    ended_at = snapshot.get('ended_at')
+    chapter_recap = chapter.get('recap')
+    return {
+        'status': session_status_label(session_obj.status),
+        'is_current': (
+            session_obj.session_id is not None
+            and session_obj.session_id == positions.get('current_session_id')
+        ),
+        'chapter_number': chapter_number,
+        'ended_at': ended_at if isinstance(ended_at, str) and ended_at else None,
+        'chapter_recap': chapter_recap if isinstance(chapter_recap, str) else '',
+    }
+
+
+def session_start_payload(session_obj: Session, *, idempotent_replay: bool) -> dict:
+    snapshot = session_snapshot(session_obj)
+    chapter = snapshot.get('chapter') if isinstance(snapshot.get('chapter'), dict) else {}
+    previous_session_id = chapter.get('previousSessionId')
+    continued = isinstance(previous_session_id, int) and not chapter.get('fresh')
+    positions = session_chapter_positions([session_obj.session_id]).get(session_obj.session_id, {})
+    return {
+        'session_id': session_obj.session_id,
+        'idempotent_replay': idempotent_replay,
+        **session_chapter_fields(session_obj, snapshot, positions),
+        'continued_from_session_id': previous_session_id if continued else None,
     }
 
 
@@ -434,10 +539,16 @@ def session_state_payload(
             payload_snapshot,
             player_query.order_by(Player.player_id.asc()).all(),
         )
+    chapter_fields = session_chapter_fields(
+        session_obj,
+        raw_snapshot if isinstance(raw_snapshot, dict) else {},
+        session_chapter_positions([session_obj.session_id]).get(session_obj.session_id, {}),
+    )
     if session_state is None:
         return {
             'session_id': session_obj.session_id,
             'campaign_id': session_obj.campaign_id,
+            **chapter_fields,
             'current_location': session_obj.campaign.location,
             'current_quest': session_obj.campaign.current_quest,
             'rolling_summary': '',
@@ -459,6 +570,7 @@ def session_state_payload(
     return {
         'session_id': session_obj.session_id,
         'campaign_id': session_obj.campaign_id,
+        **chapter_fields,
         'current_location': session_state.current_location,
         'current_quest': session_state.current_quest,
         'rolling_summary': session_state.rolling_summary,

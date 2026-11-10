@@ -17,6 +17,7 @@ from aidm_server.services.pregen_characters import (
     pregenerated_character_payload,
     pregenerated_character_preset,
 )
+from aidm_server.services.session_chapters import ChapterStartError, current_chapter_session, start_campaign_chapter
 from aidm_server.time_utils import utc_now
 from aidm_server.turn_coordinator import session_turn_coordinator
 
@@ -66,9 +67,12 @@ def ensure_play_now_adventure(
         requested_pack_id=requested_pack_id,
     )
     created_session = session_obj is None
+    created_chapter = False
     imported_pack_id = None
     source_filename = None
-    if session_obj is None:
+    if session_obj is not None:
+        session_obj, created_chapter = _current_play_now_chapter(session_obj, workspace_id=target_workspace_id)
+    else:
         session_obj, imported_pack_id, source_filename = _import_play_now_campaign_pack(
             workspace_id=target_workspace_id,
             requested_pack_id=requested_pack_id,
@@ -97,7 +101,7 @@ def ensure_play_now_adventure(
             source_filename=str(resolved_source_filename or ''),
         )
 
-        created = created_session or created_player
+        created = created_session or created_chapter or created_player
         return PlayNowOnboardingResult(
             payload=_play_now_payload(
                 workspace_id=target_workspace_id,
@@ -178,6 +182,27 @@ def _find_existing_play_now_session(*, workspace_id: str, requested_pack_id: str
         if metadata.get('source') == 'play_now' and metadata.get('examplePackId') == requested_pack_id:
             return session_obj
     return None
+
+
+def _current_play_now_chapter(session_obj: Session, *, workspace_id: str) -> tuple[Session, bool]:
+    """Resolve a Play Now session to its campaign's current chapter.
+
+    When every chapter of the campaign has ended, continue the adventure in a
+    new chapter. Returns the chapter and whether it was just started.
+    """
+
+    current = current_chapter_session(session_obj.campaign_id)
+    if current is not None:
+        return current, False
+    try:
+        result = start_campaign_chapter(session_obj.campaign_id, workspace_id=workspace_id)
+    except ChapterStartError as exc:
+        raise PlayNowOnboardingError(
+            exc.public_message,
+            error_code=exc.error_code,
+            status_code=exc.status_code,
+        ) from exc
+    return db.session.get(Session, result.session_id), True
 
 
 def _import_play_now_campaign_pack(
@@ -282,8 +307,18 @@ def _sync_play_now_snapshot(
         imported_pack_id=imported_pack_id,
         source_filename=source_filename,
     )
+    client_session_id = _play_now_client_session_id(imported_pack_id)
+    # The Play Now idempotency key stays with the session that first took it;
+    # later chapters of the adventure keep their own key.
+    key_holder = Session.query.filter(
+        Session.campaign_id == campaign.campaign_id,
+        Session.client_session_id == client_session_id,
+        Session.session_id != session_obj.session_id,
+    ).first()
+    if key_holder is None:
+        snapshot['client_session_id'] = client_session_id
+        session_obj.client_session_id = client_session_id
     session_obj.state_snapshot = safe_json_dumps(snapshot, {})
-    session_obj.client_session_id = _play_now_client_session_id(imported_pack_id)
     session_obj.updated_at = utc_now()
 
     session_state = SessionState.query.filter_by(session_id=session_obj.session_id).first()
@@ -313,7 +348,6 @@ def _apply_play_now_metadata(
         'sourceFilename': source_filename or None,
         'updatedAt': now,
     }
-    snapshot['client_session_id'] = _play_now_client_session_id(imported_pack_id)
     flags = snapshot.get('flags') if isinstance(snapshot.get('flags'), dict) else {}
     flags['playNow'] = True
     flags['playNowExamplePackId'] = requested_pack_id

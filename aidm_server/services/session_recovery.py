@@ -6,6 +6,8 @@ import hmac
 import secrets
 from typing import Any
 
+from sqlalchemy import or_
+
 from aidm_server.database import db
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY
 from aidm_server.models import DmTurn, Session, safe_json_dumps, safe_json_loads
@@ -26,6 +28,24 @@ OPERATOR_NOTE_MAX_LENGTH = 1000
 MECHANICS_STATUS_NONE = 'none'
 MECHANICS_STATUS_PARTIAL = 'partial'
 MECHANICS_STATUSES = frozenset({MECHANICS_STATUS_NONE, MECHANICS_STATUS_PARTIAL})
+
+# Durable turn lifecycle. Each phase is written in the same transaction as the
+# write that reaches it, so a stopped process can resume from the last phase.
+TURN_LIFECYCLE_KEY = 'lifecycle'
+LIFECYCLE_ACCEPTED = 'accepted'
+LIFECYCLE_RULES_APPLIED = 'rules_applied'
+LIFECYCLE_NARRATION_SAVED = 'narration_saved'
+LIFECYCLE_EFFECTS_APPLIED = 'effects_applied'
+LIFECYCLE_FINISHED = 'finished'
+UNFINISHED_LIFECYCLE_PHASES = (
+    LIFECYCLE_ACCEPTED,
+    LIFECYCLE_RULES_APPLIED,
+    LIFECYCLE_NARRATION_SAVED,
+    LIFECYCLE_EFFECTS_APPLIED,
+)
+RESUMABLE_TURN_STATUSES = ('processing', 'completed', 'degraded')
+MAX_TURN_RESUME_ATTEMPTS = 3
+ABANDONED_TURN_RESUME_LIMIT = 3
 
 
 class SessionRecoveryConflictError(RuntimeError):
@@ -222,6 +242,89 @@ def _post_dm_state(turn: DmTurn) -> tuple[dict[str, Any], dict[str, Any]]:
     return metadata, post_dm_state
 
 
+def turn_lifecycle(turn: DmTurn) -> dict[str, Any]:
+    metadata = safe_json_loads(turn.metadata_json, {})
+    lifecycle = metadata.get(TURN_LIFECYCLE_KEY) if isinstance(metadata, dict) else None
+    return dict(lifecycle) if isinstance(lifecycle, dict) else {}
+
+
+def turn_lifecycle_phase(turn: DmTurn) -> str:
+    """Return the durable phase; rows written before the marker existed are finished."""
+
+    phase = turn_lifecycle(turn).get('phase')
+    return phase if phase in UNFINISHED_LIFECYCLE_PHASES else LIFECYCLE_FINISHED
+
+
+def turn_is_unfinished(turn: DmTurn) -> bool:
+    return (
+        turn.status in RESUMABLE_TURN_STATUSES
+        and turn_lifecycle_phase(turn) != LIFECYCLE_FINISHED
+    )
+
+
+def set_turn_lifecycle(turn: DmTurn, phase: str | None = None, **fields: Any) -> None:
+    """Record a lifecycle phase (and optional resume bookkeeping) on the turn row."""
+
+    metadata = safe_json_loads(turn.metadata_json, {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    lifecycle = metadata.get(TURN_LIFECYCLE_KEY)
+    lifecycle = dict(lifecycle) if isinstance(lifecycle, dict) else {}
+    if phase is not None:
+        lifecycle['phase'] = phase
+    lifecycle.update(fields)
+    lifecycle['updatedAt'] = utc_now().isoformat()
+    metadata[TURN_LIFECYCLE_KEY] = lifecycle
+    turn.metadata_json = safe_json_dumps(metadata, {})
+
+
+def finish_turn_lifecycle(turn: DmTurn) -> None:
+    """Mark the turn finished and drop its per-turn state snapshots when safe."""
+
+    set_turn_lifecycle(turn, LIFECYCLE_FINISHED)
+    if turn.status not in ('completed', 'degraded'):
+        return
+    metadata, post_dm_state = _post_dm_state(turn)
+    if post_dm_state.get('recovery_required'):
+        return
+    pipeline = metadata.get(STATE_PIPELINE_METADATA_KEY)
+    if not isinstance(pipeline, dict):
+        return
+    pipeline.pop('stateBeforePreDm', None)
+    pipeline.pop('stateBeforeDm', None)
+    pipeline['snapshotsPruned'] = True
+    turn.metadata_json = safe_json_dumps(metadata, {})
+
+
+def unfinished_session_turns(
+    session_id: int,
+    *,
+    exclude_turn_id: int | None = None,
+    limit: int = ABANDONED_TURN_RESUME_LIMIT,
+) -> list[DmTurn]:
+    """Return the newest unfinished turns of a session, oldest first."""
+
+    query = DmTurn.query.filter(
+        DmTurn.session_id == session_id,
+        DmTurn.status.in_(RESUMABLE_TURN_STATUSES),
+        # Metadata is serialized with json.dumps defaults, so the phase token is
+        # an exact substring; the row check below confirms each candidate.
+        or_(
+            *(
+                DmTurn.metadata_json.contains(f'"phase": "{phase}"')
+                for phase in UNFINISHED_LIFECYCLE_PHASES
+            )
+        ),
+    )
+    if exclude_turn_id is not None:
+        query = query.filter(DmTurn.turn_id != exclude_turn_id)
+    newest = [
+        turn
+        for turn in query.order_by(DmTurn.turn_id.desc()).all()
+        if turn_is_unfinished(turn)
+    ][:limit]
+    return list(reversed(newest))
+
+
 def _operator_note_fingerprint(operator_note: str, *, salt: str) -> str:
     """Return a one-way replay key without persisting privileged note text."""
 
@@ -252,6 +355,7 @@ def mark_turn_recovery_required(turn: DmTurn) -> dict[str, Any]:
     metadata['canon_status'] = 'blocked_state_failure'
     turn.metadata_json = safe_json_dumps(metadata, {})
     turn.status = 'failed'
+    set_turn_lifecycle(turn, LIFECYCLE_FINISHED)
     created_at = turn.completed_at or turn.created_at
     return {
         'status': 'required',

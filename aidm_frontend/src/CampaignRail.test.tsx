@@ -44,7 +44,8 @@ function railProps(
     onStartSession: vi.fn(),
     onSelectCampaign: vi.fn(),
     onSelectSession: vi.fn(),
-    lastSyncLabel: 'just now',
+    playability: { label: 'Ready to play', tone: 'good' },
+    lastSavedLabel: 'just now',
     onRefreshWorkspace: vi.fn(),
     errors: [],
     ...overrides,
@@ -96,5 +97,17 @@ describe('CampaignRail', () => {
 
     expect(screen.getByText('No campaigns match your search.')).toBeInTheDocument()
     expect(screen.queryByText('No campaigns yet.')).not.toBeInTheDocument()
+  })
+
+  it('shows the playability line and last saved time instead of a blanket system status', () => {
+    const { rerender } = render(<CampaignRail {...railProps({ lastSavedLabel: '3m ago' })} />)
+
+    expect(screen.getByText('Ready to play')).toBeInTheDocument()
+    expect(screen.getByText(/Last saved: 3m ago/)).toBeInTheDocument()
+    expect(screen.queryByText('All Systems Operational')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Last sync/)).not.toBeInTheDocument()
+
+    rerender(<CampaignRail {...railProps({ playability: { label: 'Reconnecting…', tone: 'neutral' } })} />)
+    expect(screen.getByText('Reconnecting…')).toBeInTheDocument()
   })
 })

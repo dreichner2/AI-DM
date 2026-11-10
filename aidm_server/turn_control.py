@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from datetime import timezone
 import json
+import math
 import re
+import time
 from typing import Any, Callable
 
 from flask import current_app, has_app_context
 
+from aidm_server.config import DEFAULT_ABSENT_TURN_GRACE_SECONDS, MIN_ABSENT_TURN_GRACE_SECONDS
 from aidm_server.contracts import ProviderRequest
 from aidm_server.database import db
 from aidm_server.game_state.extraction.schemas import extract_json_object
@@ -27,6 +30,7 @@ TURN_CONDUCTOR_DECISIONS = {
     'switch_to_spotlight',
     'switch_to_structured',
 }
+ACTION_NOT_SENT_MESSAGE = 'Your action was not sent; your draft is kept.'
 DEFAULT_TURN_CONTROL = {
     'mode': 'free',
     'source': 'auto',
@@ -70,6 +74,22 @@ TURN_CONDUCTOR_SYSTEM_MESSAGE = (
 
 def _utc_iso() -> str:
     return utc_now().replace(tzinfo=timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def _epoch_seconds() -> float:
+    return time.time()
+
+
+def _absent_turn_grace_seconds() -> int:
+    configured = (
+        current_app.config.get('AIDM_ABSENT_TURN_GRACE_SECONDS', DEFAULT_ABSENT_TURN_GRACE_SECONDS)
+        if has_app_context()
+        else DEFAULT_ABSENT_TURN_GRACE_SECONDS
+    )
+    try:
+        return max(MIN_ABSENT_TURN_GRACE_SECONDS, int(configured))
+    except (TypeError, ValueError):
+        return DEFAULT_ABSENT_TURN_GRACE_SECONDS
 
 
 def _positive_int(value: Any) -> int | None:
@@ -271,6 +291,10 @@ def _turn_conductor_helper_enabled() -> bool:
     if has_app_context():
         return bool(current_app.config.get('AIDM_TURN_CONDUCTOR_HELPER_ENABLED', True))
     return False
+
+
+def _main_provider_is_fallback() -> bool:
+    return has_app_context() and str(current_app.config.get('AIDM_LLM_PROVIDER') or '').strip().lower() == 'fallback'
 
 
 def _build_turn_conductor_prompt(
@@ -504,9 +528,39 @@ def turn_submission_result(
     if turn_control['mode'] == 'spotlight' and player_id in participant_player_ids:
         return True, None, turn_control
 
-    active_name = turn_control.get('activePlayerName') or f'Player {active_player_id}'
-    mode_label = 'spotlight' if turn_control['mode'] == 'spotlight' else 'structured turn'
-    return False, f'{active_name} has the {mode_label}. Your action is queued until your turn opens.', turn_control
+    mode_label = 'spotlight' if turn_control['mode'] == 'spotlight' else 'turn'
+    return (
+        False,
+        f'{_turn_holder_name(turn_control)} has the {mode_label}. {ACTION_NOT_SENT_MESSAGE}',
+        turn_control,
+    )
+
+
+def _turn_holder_name(turn_control: dict) -> str:
+    return turn_control.get('activePlayerName') or f"Player {turn_control.get('activePlayerId')}"
+
+
+def _absent_holder_rejection(
+    turn_control: dict,
+    *,
+    skip_in_seconds: int,
+) -> tuple[bool, str, dict, bool, dict]:
+    return (
+        False,
+        (
+            f'{_turn_holder_name(turn_control)} has the turn but is away. Their turn is skipped in '
+            f'{skip_in_seconds}s if they do not return. {ACTION_NOT_SENT_MESSAGE}'
+        ),
+        turn_control,
+        False,
+        {
+            'decision': 'queue',
+            'rejection_details': {
+                'active_player_absent': True,
+                'skip_in_seconds': skip_in_seconds,
+            },
+        },
+    )
 
 
 def _action_kind(action_intent: dict | None) -> str | None:
@@ -580,8 +634,90 @@ def conduct_turn_submission(
     active_player_ids: list[int] | None = None,
     before_helper_call: Callable[[], None] | None = None,
     reload_session_after_helper: Callable[[], Session | None] | None = None,
+    absent_since: Callable[[int], float] | None = None,
+    allow_helper: bool = True,
 ) -> tuple[bool, str | None, dict, bool, dict]:
+    """Decide whether a submission may proceed under the session's table flow.
+
+    ``absent_since`` reports when a disconnected player left; without it every
+    structured-turn holder is treated as present. A holder away for the grace
+    period loses the turn before the submission is evaluated, and the returned
+    decision then carries ``skipped_player_id``/``skipped_player_name``.
+    """
+
     turn_control = turn_control_from_session(session_obj)
+    kind = _action_kind(action_intent)
+    if kind == 'admin':
+        return True, None, turn_control, False, {'decision': 'allow_admin'}
+    if kind == 'roll' and has_pending_roll:
+        return True, None, turn_control, False, {'decision': 'allow_pending_roll'}
+
+    skipped_holder: dict | None = None
+    holder_id = turn_control.get('activePlayerId')
+    if turn_control['mode'] == 'structured' and holder_id and holder_id != player_id:
+        connected_ids = _positive_int_list(active_player_ids or [])
+        if absent_since is None or holder_id in connected_ids:
+            return _queue_result(
+                session_obj,
+                player_id=player_id,
+                action_intent=action_intent,
+                has_pending_roll=has_pending_roll,
+            )
+        remaining_seconds = absent_since(holder_id) + _absent_turn_grace_seconds() - _epoch_seconds()
+        if remaining_seconds > 0:
+            return _absent_holder_rejection(turn_control, skip_in_seconds=math.ceil(remaining_seconds))
+        skipped_holder = {
+            'skipped_player_id': holder_id,
+            'skipped_player_name': _turn_holder_name(turn_control),
+        }
+        advanced = advance_structured_turn(
+            session_obj,
+            current_player_id=holder_id,
+            active_player_ids=[*connected_ids, player_id],
+        )
+        turn_control = advanced or turn_control
+        new_holder_id = turn_control.get('activePlayerId')
+        if turn_control['mode'] == 'structured' and new_holder_id and new_holder_id != player_id:
+            allowed, reason, turn_control = turn_submission_result(
+                session_obj,
+                player_id=player_id,
+                action_intent=action_intent,
+                has_pending_roll=has_pending_roll,
+            )
+            return allowed, reason, turn_control, True, {'decision': 'queue', **skipped_holder}
+
+    result = _conduct_open_submission(
+        session_obj,
+        turn_control=turn_control,
+        player_id=player_id,
+        message=message,
+        action_intent=action_intent,
+        has_pending_roll=has_pending_roll,
+        active_player_ids=active_player_ids,
+        before_helper_call=before_helper_call,
+        reload_session_after_helper=reload_session_after_helper,
+        # The skip left unflushed table-flow writes, so no provider wait may follow.
+        allow_helper=allow_helper and skipped_holder is None,
+    )
+    if skipped_holder is None:
+        return result
+    allowed, reason, turn_control, _changed, decision = result
+    return allowed, reason, turn_control, True, {**decision, **skipped_holder}
+
+
+def _conduct_open_submission(
+    session_obj: Session,
+    *,
+    turn_control: dict,
+    player_id: int,
+    message: str,
+    action_intent: dict | None,
+    has_pending_roll: bool,
+    active_player_ids: list[int] | None,
+    before_helper_call: Callable[[], None] | None,
+    reload_session_after_helper: Callable[[], Session | None] | None,
+    allow_helper: bool,
+) -> tuple[bool, str | None, dict, bool, dict]:
     expected_session_state = (
         session_obj.session_id,
         session_obj.campaign_id,
@@ -589,21 +725,6 @@ def conduct_turn_submission(
         session_obj.state_snapshot,
         session_obj.deleted_at,
     )
-    kind = _action_kind(action_intent)
-    if kind == 'admin':
-        return True, None, turn_control, False, {'decision': 'allow_admin'}
-    if kind == 'roll' and has_pending_roll:
-        return True, None, turn_control, False, {'decision': 'allow_pending_roll'}
-    if turn_control['mode'] == 'structured':
-        active_player_id = turn_control.get('activePlayerId')
-        if active_player_id and active_player_id != player_id:
-            return _queue_result(
-                session_obj,
-                player_id=player_id,
-                action_intent=action_intent,
-                has_pending_roll=has_pending_roll,
-            )
-
     active_ids = _positive_int_list(active_player_ids or [])
     if player_id and player_id not in active_ids:
         active_ids.append(player_id)
@@ -618,13 +739,19 @@ def conduct_turn_submission(
             before_helper_call()
             helper_session_released = True
 
-    ai_decision = _ai_turn_conductor_decision(
-        turn_control=turn_control,
-        player_id=player_id,
-        message=message,
-        action_intent=action_intent,
-        active_player_ids=active_ids,
-        before_provider_call=_before_provider_call if before_helper_call else None,
+    # The conductor helper only matters when at least two players share the
+    # table and a real narration provider is configured.
+    ai_decision = (
+        _ai_turn_conductor_decision(
+            turn_control=turn_control,
+            player_id=player_id,
+            message=message,
+            action_intent=action_intent,
+            active_player_ids=active_ids,
+            before_provider_call=_before_provider_call if before_helper_call else None,
+        )
+        if allow_helper and len(active_ids) >= 2 and not _main_provider_is_fallback()
+        else None
     )
     if helper_session_released:
         reloaded_session = reload_session_after_helper() if reload_session_after_helper else None

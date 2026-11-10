@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
-from typing import Any
+from typing import Any, Callable
 
 
 MAX_DAMAGE_DICE_COUNT = 32
@@ -63,3 +64,41 @@ def normalize_damage_dice_expression(value: Any) -> str | None:
     if not parsed:
         return None
     return str(parsed['dice'])
+
+
+def deterministic_roller(seed: str) -> Callable[[int], int]:
+    """Return the engine's reproducible roller: roll n of a die hashes (seed, n, sides)."""
+
+    counter = 0
+
+    def roll(sides: int) -> int:
+        nonlocal counter
+        counter += 1
+        digest = hashlib.sha256(f'{seed}:{counter}:{sides}'.encode('utf-8')).digest()
+        return int.from_bytes(digest[:4], 'big') % max(1, int(sides)) + 1
+
+    return roll
+
+
+def parse_signed_dice(value: Any) -> dict[str, Any] | None:
+    """Parse a bonus-dice string such as ``+1d4`` or ``-1d4`` (sign defaults to plus)."""
+
+    text = str(value or '').strip().lower().replace(' ', '')
+    sign = -1 if text.startswith('-') else 1
+    parsed = parse_damage_dice_expression(text.lstrip('+-'))
+    if not parsed:
+        return None
+    return {**parsed, 'sign': sign, 'dice': f"{'-' if sign < 0 else '+'}{parsed['dice']}"}
+
+
+def roll_signed_dice(value: Any, roller: Callable[[int], int]) -> dict[str, Any] | None:
+    parsed = parse_signed_dice(value)
+    if not parsed:
+        return None
+    sides = int(parsed['sides'])
+    rolls = [max(1, min(sides, int(roller(sides)))) for _ in range(int(parsed['count']))] if sides else []
+    return {
+        'dice': parsed['dice'],
+        'rolls': rolls,
+        'total': int(parsed['sign']) * (sum(rolls) + int(parsed['bonus'])),
+    }

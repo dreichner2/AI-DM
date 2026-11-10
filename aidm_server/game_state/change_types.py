@@ -68,6 +68,8 @@ COMBAT_STATE_CHANGE_TYPES = {
     'combat.morale.update',
     'combat.morale.event',
     'combat.battlefield.update',
+    'combat.death_save',
+    'combat.effect.consume',
     'combat.end',
 }
 

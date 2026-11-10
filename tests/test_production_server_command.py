@@ -2,12 +2,40 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 
 
 def _production_env(**overrides: str) -> dict[str, str]:
     return {**os.environ, 'AIDM_ENV': 'production', 'PYTHON_BIN': sys.executable, **overrides}
+
+
+def test_production_server_command_rejects_incompatible_python(tmp_path: Path):
+    python_bin = tmp_path / 'python-test'
+    python_bin.write_text(
+        '#!/usr/bin/env bash\n'
+        'if [[ "${1:-}" == */scripts/check_toolchain.py ]]; then\n'
+        f'  exec {shlex.quote(sys.executable)} "$1" python 3.13.9\n'
+        'fi\n'
+        'exit 99\n',
+        encoding='utf-8',
+    )
+    python_bin.chmod(0o755)
+
+    result = subprocess.run(
+        ['bash', 'scripts/run_production_server.sh', '--print'],
+        cwd=os.getcwd(),
+        env=_production_env(PYTHON_BIN=str(python_bin), GUNICORN_BIN='gunicorn-test'),
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ''
+    assert 'Python 3.14 (3.14.6 or newer) is required; found 3.13.9.' in result.stderr
+    assert f'cannot run with {python_bin}' in result.stderr
 
 
 def test_production_server_command_prints_single_worker_threaded_command():
@@ -131,7 +159,7 @@ def test_production_server_command_runs_preflight_before_gunicorn(tmp_path: Path
     gunicorn_bin = tmp_path / 'gunicorn-test'
     python_bin.write_text(
         '#!/usr/bin/env bash\n'
-        'if [[ "${1:-}" == "-c" ]]; then exit 0; fi\n'
+        'if [[ "${1:-}" == */scripts/check_toolchain.py ]]; then exit 0; fi\n'
         'printf \'python %s\\n\' "$*" >> "$AIDM_TEST_COMMAND_LOG"\n',
         encoding='utf-8',
     )
@@ -180,7 +208,7 @@ def test_production_server_command_propagates_render_codex_runtime(tmp_path: Pat
     gunicorn_bin = tmp_path / 'gunicorn-test'
     python_bin.write_text(
         '#!/usr/bin/env bash\n'
-        'if [[ "${1:-}" == "-c" && "${2:-}" == *"sys.version_info"* ]]; then exit 0; fi\n'
+        'if [[ "${1:-}" == */scripts/check_toolchain.py ]]; then exit 0; fi\n'
         'if [[ "${1:-}" == "-c" && "${2:-}" == *"resolve_codex_executable"* ]]; then\n'
         '  printf \'%s\\n\' "$AIDM_TEST_CODEX_EXECUTABLE"\n'
         '  exit 0\n'

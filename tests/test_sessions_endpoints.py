@@ -548,14 +548,16 @@ def test_start_session_adds_welcome_log(client, app):
     assert log_response.status_code == 200
     entries = log_response.get_json()['entries']
 
+    # The seeded session is chapter 1, so this start continues the adventure.
     assert entries[0]['entry_type'] == 'system'
-    assert 'Welcome to the table' in entries[0]['message']
+    assert entries[0]['message'] == '**Chapter 2 begins.**'
 
     with app.app_context():
         event = TurnEvent.query.filter_by(session_id=session_id).one()
         assert event.event_type == SESSION_STARTED_EVENT
         payload = json.loads(event.payload_json)
         assert payload['metadata']['kind'] == 'session_welcome'
+        assert payload['metadata']['chapter_number'] == 2
 
 
 def test_start_session_requires_json_and_valid_campaign_id(client):

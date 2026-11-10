@@ -1,22 +1,29 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
 import json
 from typing import Any
 
+from sqlalchemy import or_
+
 from aidm_server.canon_text import int_or_default
 from aidm_server.combat.pipeline import sync_combat_encounter_record
-from aidm_server.database import db
+from aidm_server.database import db, release_clean_scoped_session, scoped_session_has_pending_writes
 from aidm_server.errors import error_response
 from aidm_server.game_state.application.applier import apply_state_changes, persist_state_to_database
 from aidm_server.game_state.models import state_snapshot_for_session
 from aidm_server.game_state.validation.validator import validate_state_changes, validated_changes_for_application
 from aidm_server.models import Campaign, Player, Session, SessionStateMutationAudit, safe_json_dumps, safe_json_loads
-from aidm_server.services.campaign_pack_coordination import serialized_campaign_pack_progress
+from aidm_server.services import campaign_pack_coordination
+from aidm_server.services.campaign_pack_coordination import (
+    CampaignPackProgressLockBoundary,
+    serialized_campaign_pack_progress,
+)
 from aidm_server.time_utils import utc_now
-from aidm_server.turn_coordinator import session_turn_coordinator
+from aidm_server.turn_coordinator import SessionTurnTargetMissingError, session_turn_coordinator
 from aidm_server.workspace_access import current_account_id, current_account_is_workspace_admin
 
 
@@ -276,6 +283,123 @@ def _stamp_mutation_audit(
     state['stateMutationAudit'] = audit[-STATE_MUTATION_AUDIT_LIMIT:]
 
 
+def campaign_turn_lock_session_ids(session_id: int, *, include_shared_progress: bool = True) -> list[int]:
+    """Return the session, its pack siblings and every live session of its campaign.
+
+    Sessions of one campaign share Player rows, so a turn or mutation that may
+    write a character must exclude every other live session of the campaign.
+    """
+
+    primary_session_id = int(session_id)
+    lock_session_ids = set(
+        campaign_pack_coordination.campaign_pack_progress_lock_session_ids(primary_session_id)
+        if include_shared_progress
+        else [primary_session_id]
+    )
+    lock_session_ids.add(primary_session_id)
+    with db.session.no_autoflush:
+        campaign_id = (
+            db.session.query(Session.campaign_id)
+            .filter(Session.session_id == primary_session_id)
+            .scalar()
+        )
+        if campaign_id is not None:
+            lock_session_ids.update(
+                int(row[0])
+                for row in db.session.query(Session.session_id)
+                .filter(
+                    Session.campaign_id == campaign_id,
+                    or_(Session.status.is_(None), Session.status == 'active'),
+                )
+                .all()
+            )
+    return sorted(lock_session_ids)
+
+
+@contextmanager
+def serialized_campaign_turn(
+    session_id: int,
+    *,
+    include_shared_progress: bool = True,
+    blocking: bool = True,
+):
+    """Hold the campaign-wide turn lock set for one session.
+
+    Locks are acquired in ascending session-id order at the outermost boundary
+    only; a caller that already holds this session reuses its held set, because
+    taking a lower id after a higher one could deadlock. Membership is checked
+    again while the locks are held and the acquisition retried if it changed.
+    With ``blocking=False`` the boundary yields None instead of waiting.
+    """
+
+    primary_session_id = int(session_id)
+    if session_turn_coordinator.holds_all([primary_session_id]):
+        with serialized_campaign_pack_progress(
+            primary_session_id,
+            include_shared_progress=include_shared_progress,
+        ) as nested_boundary:
+            yield nested_boundary
+        return
+
+    release_discovery_session = include_shared_progress and not scoped_session_has_pending_writes()
+    if release_discovery_session:
+        release_clean_scoped_session(boundary='campaign turn lock discovery')
+    lock_session_ids = campaign_turn_lock_session_ids(
+        primary_session_id,
+        include_shared_progress=include_shared_progress,
+    )
+    if release_discovery_session:
+        release_clean_scoped_session(boundary='campaign turn lock wait')
+    acquire = (
+        session_turn_coordinator.serialized_many
+        if blocking
+        else session_turn_coordinator.try_serialized_many
+    )
+
+    while True:
+        yielded = False
+        try:
+            with acquire(lock_session_ids) as waits:
+                current_lock_session_ids = (
+                    campaign_turn_lock_session_ids(
+                        primary_session_id,
+                        include_shared_progress=include_shared_progress,
+                    )
+                    if waits is not None
+                    else lock_session_ids
+                )
+                if waits is None or (current_lock_session_ids != lock_session_ids and not blocking):
+                    yielded = True
+                    yield None
+                    return
+                if current_lock_session_ids != lock_session_ids:
+                    if release_discovery_session:
+                        release_clean_scoped_session(boundary='campaign turn lock membership retry')
+                    lock_session_ids = current_lock_session_ids
+                    continue
+                with serialized_campaign_pack_progress(
+                    primary_session_id,
+                    include_shared_progress=include_shared_progress,
+                ):
+                    yielded = True
+                    yield CampaignPackProgressLockBoundary(
+                        session_ids=tuple(lock_session_ids),
+                        waits=waits,
+                    )
+                return
+        except SessionTurnTargetMissingError as exc:
+            if yielded or exc.session_id == primary_session_id:
+                raise
+            if release_discovery_session:
+                release_clean_scoped_session(boundary='campaign turn missing lock retry')
+            lock_session_ids = campaign_turn_lock_session_ids(
+                primary_session_id,
+                include_shared_progress=include_shared_progress,
+            )
+            if release_discovery_session:
+                release_clean_scoped_session(boundary='campaign turn missing lock wait')
+
+
 def _normalize_plan(plan: SessionStateMutationPlan | Sequence[Any]) -> SessionStateMutationPlan:
     if isinstance(plan, SessionStateMutationPlan):
         return plan
@@ -389,7 +513,7 @@ def mutate_session_state(
     after_persist: AfterPersistHook | None = None,
     reject_on_validation_error: bool = False,
 ) -> SessionStateMutationResult:
-    with serialized_campaign_pack_progress(
+    with serialized_campaign_turn(
         session_id,
         include_shared_progress=refresh_progress is not None,
     ) as lock_boundary:

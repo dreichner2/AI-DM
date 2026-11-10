@@ -6,6 +6,8 @@ from typing import Any
 
 from aidm_server.armor_class import armor_class_details
 from aidm_server.canon_text import int_or_default
+from aidm_server.combat.modifiers import TARGET_EXCLUDING_CONDITIONS, can_act, condition_keys
+from aidm_server.combat.vitality import normalize_death_saves
 from aidm_server.creatures.schemas import DAMAGE_TYPES, normalize_creature_definition
 from aidm_server.damage_dice import normalize_damage_dice_expression
 from aidm_server.game_state.models import stable_slug
@@ -29,31 +31,6 @@ ENVIRONMENT_TYPES = {
     'ship',
     'boss_lair',
     'custom',
-}
-TURN_EXCLUDING_CONDITIONS = {
-    'dead',
-    'fled',
-    'escaped',
-    'retreated',
-    'withdrawn',
-    'surrendered',
-    'yielded',
-    'unconscious',
-    'incapacitated',
-    'paralyzed',
-    'stunned',
-    'absent',
-}
-TARGET_EXCLUDING_CONDITIONS = {
-    'dead',
-    'fled',
-    'escaped',
-    'retreated',
-    'withdrawn',
-    'surrendered',
-    'yielded',
-    'unconscious',
-    'absent',
 }
 LIMITED_USE_COOLDOWNS = {'once_per_combat', 'short_rest', 'long_rest'}
 TURN_ECONOMY_VERSION = 1
@@ -240,6 +217,7 @@ def player_combat_participant(player_actor: dict[str, Any]) -> dict[str, Any]:
     ac_details = armor_class_details(stats, inventory_items)
     stats['armorClass'] = ac_details['armorClass']
     stats['armor_class'] = ac_details['armorClass']
+    conditions = _string_list(health.get('conditions'))
     return {
         'id': _text(player_actor.get('id')) or f"player_{player_actor.get('playerId') or 'unknown'}",
         'name': _text(player_actor.get('name') or player_actor.get('characterName'), 'Player'),
@@ -258,12 +236,13 @@ def player_combat_participant(player_actor: dict[str, Any]) -> dict[str, Any]:
             or player_actor.get('saving_throw_proficiencies')
         ),
         'armorClassBreakdown': ac_details,
-        'conditions': _string_list(health.get('conditions')),
+        'conditions': conditions,
+        'deathSaves': normalize_death_saves(health.get('deathSaves')),
         'position': normalize_position({'rangeBand': 'near'}),
         'abilities': [],
         'morale': 100,
-        'isAlive': int_or_default(health.get('currentHp'), default=1) > 0,
-        'isConscious': int_or_default(health.get('currentHp'), default=1) > 0,
+        'isAlive': 'dead' not in conditions,
+        'isConscious': int_or_default(health.get('currentHp'), default=1) > 0 and 'dead' not in conditions,
     }
 
 
@@ -327,7 +306,8 @@ def normalize_participant(value: Any) -> dict[str, Any] | None:
         return None
     current_hp = max(0, int_or_default(hp.get('current', hp.get('currentHp')), default=0))
     max_hp = max(current_hp, int_or_default(hp.get('max', hp.get('maxHp')), default=current_hp))
-    return {
+    conditions = _string_list(value.get('conditions'))
+    participant = {
         **value,
         'id': participant_id,
         'name': _text(value.get('name'), participant_id),
@@ -335,13 +315,18 @@ def normalize_participant(value: Any) -> dict[str, Any] | None:
         'kind': _enum(value.get('kind'), PARTICIPANT_KINDS, 'creature'),
         'creatureType': _text(value.get('creatureType', value.get('creature_type'))),
         'hp': {'current': current_hp, 'max': max_hp, 'temp': max(0, int_or_default(hp.get('temp'), default=0))},
-        'conditions': _string_list(value.get('conditions')),
+        'conditions': conditions,
         'position': normalize_position(value.get('position')),
         'abilities': [item for item in (value.get('abilities') or []) if isinstance(item, dict)],
         'morale': max(0, min(100, int_or_default(value.get('morale'), default=50))),
         'isAlive': bool(value.get('isAlive', current_hp > 0)) and current_hp > 0,
         'isConscious': bool(value.get('isConscious', current_hp > 0)) and current_hp > 0,
     }
+    if participant['team'] == 'player' or participant['kind'] == 'player_character':
+        # A player character at 0 HP is down, not gone: only ``dead`` ends its life.
+        participant['isAlive'] = 'dead' not in condition_keys(participant)
+        participant['deathSaves'] = normalize_death_saves(value.get('deathSaves'))
+    return participant
 
 
 def _initiative_modifier(participant: dict[str, Any]) -> int:
@@ -648,18 +633,10 @@ def ensure_combat_state(state: dict[str, Any]) -> dict[str, Any]:
     return combat
 
 
-def participant_condition_keys(participant: dict[str, Any]) -> set[str]:
-    return {
-        _text(condition).lower().replace(' ', '_').replace('-', '_')
-        for condition in participant.get('conditions') or []
-        if _text(condition)
-    }
-
-
 def participant_is_present(participant: dict[str, Any]) -> bool:
     return (
         participant.get('isPresent', participant.get('present', True)) is not False
-        and 'absent' not in participant_condition_keys(participant)
+        and 'absent' not in condition_keys(participant)
     )
 
 
@@ -671,7 +648,7 @@ def participant_is_targetable(participant: dict[str, Any]) -> bool:
         and participant.get('isConscious') is not False
         and participant_is_present(participant)
         and current_hp > 0
-        and not participant_condition_keys(participant).intersection(TARGET_EXCLUDING_CONDITIONS)
+        and not condition_keys(participant).intersection(TARGET_EXCLUDING_CONDITIONS)
     )
 
 
@@ -679,7 +656,7 @@ def participant_can_take_turn(participant: dict[str, Any]) -> bool:
     return (
         participant_is_targetable(participant)
         and participant.get('team') in {'player', 'ally', 'enemy'}
-        and not participant_condition_keys(participant).intersection(TURN_EXCLUDING_CONDITIONS)
+        and can_act(participant)
     )
 
 
@@ -687,6 +664,8 @@ def combat_ability_is_available(ability: dict[str, Any], *, round_number: Any = 
     if not isinstance(ability, dict) or ability.get('available') is False:
         return False
     if ability.get('usesRemaining') is not None and int_or_default(ability.get('usesRemaining'), default=0) <= 0:
+        return False
+    if ability.get('needsRecharge') is True:
         return False
     cooldown = _text(ability.get('cooldown')).lower().replace(' ', '_').replace('-', '_')
     if cooldown in LIMITED_USE_COOLDOWNS and ability.get('used') is True:
@@ -923,7 +902,13 @@ def combat_summary_for_dm(combat: dict[str, Any]) -> dict[str, Any]:
             if intent.get('visibleTelegraph'):
                 telegraphs.append(str(intent.get('visibleTelegraph')))
         elif participant.get('team') == 'player':
-            participants_summary.append(f"{participant.get('name')}: {hp.get('current')}/{hp.get('max')} HP")
+            keys = condition_keys(participant)
+            status = next((condition for condition in ('dead', 'dying', 'stable') if condition in keys), '')
+            if status == 'dying':
+                saves = normalize_death_saves(participant.get('deathSaves'))
+                status = f"dying, death saves {saves['successes']} success / {saves['failures']} failure"
+            suffix = f' ({status})' if status else ''
+            participants_summary.append(f"{participant.get('name')}: {hp.get('current')}/{hp.get('max')} HP{suffix}")
     battlefield = normalized.get('battlefield') or {}
     intent_summaries = []
     required_actions = []
