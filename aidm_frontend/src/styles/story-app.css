@@ -1,0 +1,113 @@
+/*
+ * Story mode as the app's play screen: the shell around StoryView, the two
+ * lines App adds above the composer (clarification, notices), the dock beside
+ * an open drawer, and the chapter controls both views share.
+ * Story surfaces follow story-tokens.css: no boxes, tokens only, always dark.
+ */
+
+/* ---- app shell in Story view ---- */
+
+.prototype-shell.story-view-active {
+  /* The story stage is sized to the dynamic viewport; the shell follows it. */
+  height: 100dvh;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+.prototype-shell.story-view-active > .story-shell,
+.prototype-shell.story-view-active > .title-screen {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+/* ---- lines above the composer ---- */
+
+/* Above the dock's fade, which reaches up over them. */
+.story-shell .story-clarification,
+.story-shell .story-notices {
+  position: relative;
+  z-index: 1;
+}
+
+.story-shell .story-clarification {
+  display: grid;
+  gap: var(--story-gap-2);
+  padding-top: var(--story-gap-3);
+  animation: story-rise var(--story-base) var(--story-ease) both;
+}
+.story-shell .story-clarification-prompt {
+  margin: 0;
+  font-family: var(--story-prose);
+  font-size: 1.12rem;
+  font-style: italic;
+  line-height: 1.45;
+  color: var(--story-ink);
+}
+.story-shell .story-clarification-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--story-gap-1) var(--story-gap-4);
+}
+
+.story-shell .story-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--story-gap-1) var(--story-gap-3);
+  margin: 0;
+  padding-top: var(--story-gap-2);
+  font-size: 0.86rem;
+  line-height: 1.45;
+  color: var(--story-ink-soft);
+  animation: story-rise var(--story-base) var(--story-ease) both;
+}
+.story-shell .story-notice[data-tone='fail'] { color: var(--story-fail); }
+.story-shell .story-notice .story-link { font-size: 0.84rem; color: var(--story-ink); }
+
+/* ---- the dock beside an open drawer ---- */
+
+@media (min-width: 1180px) {
+  /* Same box as the story column (.story-feed-column), at the reader's text size. */
+  .story-shell[data-drawer-open] .story-composer-slot {
+    max-width: var(--story-measure);
+    font-size: calc(var(--story-prose-size) * var(--story-feed-scale, 1));
+  }
+  .story-shell[data-drawer-open]:has(.story-feed[data-text-size='large']) .story-composer-slot {
+    --story-feed-scale: 1.1;
+  }
+  .story-shell[data-drawer-open]:has(.story-feed[data-text-size='extra']) .story-composer-slot {
+    --story-feed-scale: 1.22;
+  }
+  /* The drawer shows the party while it is open, and the wider dock reaches the HUD's corner. */
+  .story-shell[data-drawer-open] .story-party { display: none; }
+}
+
+/* ---- chapter controls (shared dialogs and the console) ---- */
+
+.chapter-start-dialog .chapter-start-copy {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+.chapter-start-dialog .chapter-start-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.chapter-start-dialog .chapter-start-option input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--orange);
+}
+
+.ended-chapter-block .start-adventure-button {
+  justify-self: start;
+  margin-top: 6px;
+}
+
+.view-settings-menu .view-settings-story {
+  grid-template-columns: minmax(0, 1fr);
+}

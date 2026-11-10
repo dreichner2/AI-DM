@@ -237,7 +237,16 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
 
   const renderStatus = () => {
     if (board.turnRecoveryGate) {
-      return <p className="story-dock-status" role="status">The Dungeon Master is reviewing the last turn.</p>
+      return (
+        <p className="story-dock-status" role="status">
+          <span>The Dungeon Master is reviewing the last turn.</span>
+          {chrome.canUseOperatorTools && chrome.onOpenConsole ? (
+            <button type="button" className="story-link" onClick={chrome.onOpenConsole}>
+              Open table tools
+            </button>
+          ) : null}
+        </p>
+      )
     }
     if (deliveryUncertain) {
       return (

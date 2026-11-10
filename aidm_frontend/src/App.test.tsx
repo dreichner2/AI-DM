@@ -394,6 +394,8 @@ describe('App user workflow regressions', () => {
     expect(sendPayload.message).toContain('The table currently has 2 players named: Ember, Mira.')
     expect(sendPayload.message).toContain('Current location: Ash Hall.')
     expect(sendPayload.message).toContain('what immediate choice or prompt is in front of them')
+    expect(screen.getByRole('button', { name: 'Starting the adventure…' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Start Adventure' })).not.toBeInTheDocument()
   })
 
   it('allows the next send while the previous saved turn is only canon pending', async () => {
@@ -1148,7 +1150,8 @@ describe('App user workflow regressions', () => {
     const workspaceGate = gateFetchPath('/api/campaigns/10/workspace')
     render(<App />)
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Play Now — Ready-Made Adventure' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Play a ready-made adventure' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Play now/i }))
     await waitFor(() => expect(socketMock.io).toHaveBeenCalledTimes(1))
     await act(async () => {
       socketHandler<void>('connect')()
@@ -3042,16 +3045,51 @@ describe('App user workflow regressions', () => {
     expect(expandButtons[1]).toHaveAttribute('aria-expanded', 'true')
   })
 
-  it('updates the campaign session count after starting a new session', async () => {
+  it('labels rail sessions from the server chapter fields', async () => {
+    const selected = appTestState.sessionsByCampaign[10][0]!
+    appTestState.sessionsByCampaign[10] = [
+      { ...selected, session_id: 22, display_name: 'Session 3', chapter_number: 3, is_current: true },
+      { ...selected, session_id: 21, display_name: 'Session Beta', chapter_number: 2, status: 'ended', is_current: false },
+      {
+        ...selected,
+        session_id: 23,
+        display_name: 'Archive — Old save',
+        chapter_number: 4,
+        status: 'ended',
+        is_current: false,
+        state_snapshot: { imported: true },
+      },
+      { ...selected, session_id: 24, chapter_number: 5, status: 'archived', is_archived: true, is_current: false },
+      { ...selected, chapter_number: 1, is_current: false },
+    ]
     await renderLoadedApp()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Start session' }))
+    const list = document.querySelector('.session-list') as HTMLElement
+    expect(within(list).getByRole('button', { name: /^Chapter 3\s*Current · Session 3$/ })).toBeInTheDocument()
+    expect(within(list).getByRole('button', { name: /^Chapter 2\s*Ended · Session Beta$/ })).toBeInTheDocument()
+    expect(within(list).getByRole('button', { name: /^Chapter 4\s*Archive · Archive — Old save$/ })).toBeInTheDocument()
+    expect(within(list).getByRole('button', { name: /^Chapter 5\s*Archived · Session Alpha$/ })).toBeInTheDocument()
+    const open = within(list).getByRole('button', { name: /^Chapter 1\s*Session Alpha$/ })
+    expect(open).toHaveClass('active')
+  })
+
+  it('updates the campaign session count after starting the next chapter', async () => {
+    await renderLoadedApp()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start next chapter' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Start the next chapter' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Start chapter' }))
 
     expect(await screen.findByRole('heading', { name: /Session Beta/i })).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Start the next chapter' })).not.toBeInTheDocument()
     await waitFor(() => expect(screen.getAllByText(/2 Sessions/i).length).toBeGreaterThan(0))
     expect(appTestState.fetchCalls).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ method: 'POST', path: '/api/sessions/start' }),
+        expect.objectContaining({
+          method: 'POST',
+          path: '/api/sessions/start',
+          body: expect.objectContaining({ campaign_id: 10, continuity: 'continue' }),
+        }),
       ]),
     )
   })
@@ -3314,12 +3352,12 @@ describe('App user workflow regressions', () => {
     localStorage.removeItem('aidm:selectedPlayerId')
     render(<App />)
 
-    await screen.findByRole('button', { name: 'Play Now — Ready-Made Adventure' })
+    await screen.findByRole('button', { name: 'New adventure' })
     const workspaceSurfaces = document.querySelector('.workspace-surfaces')
     expect(workspaceSurfaces).toHaveAttribute('inert')
     expect(workspaceSurfaces).toHaveAttribute('aria-hidden', 'true')
 
-    fireEvent.click(screen.getByRole('button', { name: 'New Campaign' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New adventure' }))
 
     await screen.findByRole('dialog', { name: 'Create New Campaign' })
     expect(workspaceSurfaces).not.toHaveAttribute('inert')

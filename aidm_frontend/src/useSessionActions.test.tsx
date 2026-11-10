@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
+import type { FormEvent } from 'react'
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ApiClientError } from './api'
 import { useSessionActions } from './useSessionActions'
 
 const apiFetchMock = vi.hoisted(() => vi.fn())
@@ -121,5 +123,76 @@ describe('useSessionActions', () => {
     await act(async () => firstRequest)
     expect(options.setSelectedSessionId).toHaveBeenCalledTimes(1)
     expect(options.refreshCampaignWorkspace).toHaveBeenCalledTimes(1)
+  })
+
+  describe('the next-chapter dialog', () => {
+    const submitEvent = () => ({ preventDefault: vi.fn() }) as unknown as FormEvent<HTMLFormElement>
+    const startBody = (call: number) => JSON.parse(apiFetchMock.mock.calls[call][3].body)
+    const unsettledError = () =>
+      new ApiClientError('Finish the fight or roll first.', 409, {
+        error: 'Finish the fight or roll first.',
+        error_code: 'chapter_unsettled',
+        details: { session_id: 11, reason: 'active_combat' },
+      })
+
+    it('continues the story by default and closes once the chapter starts', async () => {
+      apiFetchMock.mockResolvedValueOnce({ session_id: 12 })
+      const options = createOptions()
+      const { result } = renderHook(() => useSessionActions(options))
+
+      act(() => result.current.openStartChapterDialog())
+      expect(result.current.startChapterDialog).toMatchObject({ fresh: false, force: false, unsettled: false })
+      await act(async () => result.current.submitStartChapterDialog(submitEvent()))
+
+      expect(startBody(0)).toMatchObject({ campaign_id: 7, continuity: 'continue' })
+      expect(startBody(0)).not.toHaveProperty('force')
+      expect(result.current.startChapterDialog).toBeNull()
+      expect(options.setSelectedSessionId).toHaveBeenCalledWith(12)
+    })
+
+    it('starts over from the beginning when that choice is made', async () => {
+      apiFetchMock.mockResolvedValueOnce({ session_id: 12 })
+      const { result } = renderHook(() => useSessionActions(createOptions()))
+
+      act(() => result.current.openStartChapterDialog())
+      act(() => result.current.updateStartChapterDialog({ fresh: true }))
+      await act(async () => result.current.submitStartChapterDialog(submitEvent()))
+
+      expect(startBody(0)).toMatchObject({ continuity: 'fresh' })
+    })
+
+    it('shows an unsettled refusal in the dialog and forces only after it is acknowledged', async () => {
+      apiFetchMock.mockRejectedValueOnce(unsettledError()).mockResolvedValueOnce({ session_id: 12 })
+      const options = createOptions()
+      const { result } = renderHook(() => useSessionActions(options))
+
+      act(() => result.current.openStartChapterDialog())
+      act(() => result.current.updateStartChapterDialog({ force: true }))
+      await act(async () => result.current.submitStartChapterDialog(submitEvent()))
+
+      expect(startBody(0)).not.toHaveProperty('force')
+      expect(result.current.startChapterDialog).toMatchObject({
+        unsettled: true,
+        pending: false,
+        error: 'Finish the fight or roll first.',
+      })
+      expect(options.pushError).not.toHaveBeenCalled()
+
+      await act(async () => result.current.submitStartChapterDialog(submitEvent()))
+      expect(startBody(1)).toMatchObject({ continuity: 'continue', force: true })
+      expect(result.current.startChapterDialog).toBeNull()
+    })
+
+    it('keeps other failures in the dialog and reports them', async () => {
+      apiFetchMock.mockRejectedValueOnce(new Error('Network down'))
+      const options = createOptions()
+      const { result } = renderHook(() => useSessionActions(options))
+
+      act(() => result.current.openStartChapterDialog())
+      await act(async () => result.current.submitStartChapterDialog(submitEvent()))
+
+      expect(result.current.startChapterDialog).toMatchObject({ error: 'Network down', unsettled: false, pending: false })
+      expect(options.pushError).toHaveBeenCalledWith('persistence', 'Could not start the next chapter: Network down')
+    })
   })
 })

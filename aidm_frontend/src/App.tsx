@@ -12,6 +12,7 @@ import {
 } from 'react'
 import type { Socket } from 'socket.io-client'
 import {
+  BookOpen,
   ChevronDown,
   ExternalLink,
   Flame,
@@ -30,6 +31,7 @@ import {
 import {
   CampaignActionDialog,
   SessionActionDialog,
+  StartChapterDialog,
 } from './CampaignSessionActionDialogs'
 import type {
   CampaignArchiveDialogState,
@@ -37,19 +39,9 @@ import type {
 } from './ArchiveDialogs'
 import { StatusDot, ThinIcon } from './AppChrome'
 import { BetaRuntimeNotesPanel } from './BetaRuntimeNotesPanel'
-import {
-  CAMPAIGN_RAIL_ID,
-  CampaignRail,
-  type CampaignCard,
-  type PlayabilityStatus,
-  type SessionCard,
-} from './CampaignRail'
+import type { CampaignCard, PlayabilityStatus, SessionCard } from './CampaignRail'
 import type { CampaignPackControlAction } from './CampaignPackPanel'
-import {
-  INSPECTOR_PANEL_ID,
-  InspectorPanel,
-  type InspectorTab,
-} from './InspectorPanel'
+import type { InspectorPanelProps, InspectorTab } from './InspectorPanel'
 import { PlayerDeleteDialog } from './PlayerDeleteDialog'
 import {
   CharacterJoinDialog,
@@ -61,11 +53,11 @@ import { actorCapabilitiesAllowOperatorTools } from './capabilities'
 import {
   contentSettingsFromSnapshot,
 } from './contentSettings'
-import {
-  SessionBoard,
-  type BoardViewMode,
-  type MainTab,
-  type TurnQualityScores,
+import type {
+  BoardViewMode,
+  MainTab,
+  SessionBoardProps,
+  TurnQualityScores,
 } from './SessionBoard'
 import {
   abilityOptionsFromStatBlock,
@@ -102,6 +94,12 @@ import { profileIconSrcForCharacter } from './profileIcons'
 import { BackendTrustDialog, RuntimeSettingsDialog } from './RuntimeSettingsDialog'
 import type { SceneDisplayState } from './sceneState'
 import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
+import { StoryClarification } from './story/StoryClarification'
+import { StoryComposer } from './story/StoryComposer'
+import { StoryDrawer } from './story/StoryDrawer'
+import { StoryNotices, type StoryNotice } from './story/StoryNotices'
+import { StoryView } from './story/StoryView'
+import type { StoryChromeProps, StoryConnection, StoryDrawerTab } from './story/types'
 import { TitleScreen } from './TitleScreen'
 import { turnControlFromSnapshot, turnControlWithActiveName } from './turnControl'
 import {
@@ -173,8 +171,30 @@ import {
 const DEFAULT_BASE_URL = import.meta.env.VITE_AIDM_API_BASE_URL ?? ''
 const COMPACT_LAYOUT_MEDIA_QUERY = '(max-width: 1100px)'
 const BOARD_VIEW_MODE_STORAGE_KEY = 'aidm:boardViewMode'
+const PLAY_VIEW_STORAGE_KEY = 'aidm:playView'
+const STORY_DRAWER_STORAGE_KEY = 'aidm:storyDrawer'
+/** The Story drawer only shares the stage (and may reopen by itself) at this width. */
+const STORY_DRAWER_DOCKED_MEDIA_QUERY = '(min-width: 1180px)'
+const STORY_DRAWER_TABS: readonly StoryDrawerTab[] = ['character', 'pack', 'magic', 'journal', 'map']
 const HEALTH_POLL_INTERVAL_MS = 30_000
+const CHAPTER_NOTICE_MS = 8_000
+const CHAPTER_ENDED_NOTICE = 'That chapter has ended — you are now in the current chapter.'
 const NO_LOG_ENTRIES: SessionLogEntry[] = []
+// The console panels are lazy chunks; the shell refers to their drawers by id
+// without loading them, so these match CampaignRail and InspectorPanel.
+const CAMPAIGN_RAIL_ID = 'campaign-rail-drawer'
+const INSPECTOR_PANEL_ID = 'character-inspector-drawer'
+
+// The classic three-column console ("Table tools") loads only when opened.
+const CampaignRail = lazy(() =>
+  import('./CampaignRail').then((module) => ({ default: module.CampaignRail })),
+)
+const SessionBoard = lazy(() =>
+  import('./SessionBoard').then((module) => ({ default: module.SessionBoard })),
+)
+const InspectorPanel = lazy(() =>
+  import('./InspectorPanel').then((module) => ({ default: module.InspectorPanel })),
+)
 
 const loadDiceRollDialog = () => import('./DiceRollDialog')
 const DiceRollDialog = lazy(loadDiceRollDialog)
@@ -359,6 +379,75 @@ function readBoardViewMode(): BoardViewMode {
   } catch {
     return 'ops'
   }
+}
+
+/** Story mode is the game; the classic console is "Table tools". */
+type PlayView = 'story' | 'console'
+
+function readPlayView(): PlayView {
+  try {
+    return localStorage.getItem(PLAY_VIEW_STORAGE_KEY) === 'console' ? 'console' : 'story'
+  } catch {
+    return 'story'
+  }
+}
+
+type StoryDrawerState = { open: boolean; tab: StoryDrawerTab }
+
+function isStoryDrawerTab(value: unknown): value is StoryDrawerTab {
+  return STORY_DRAWER_TABS.some((tab) => tab === value)
+}
+
+function readStoryDrawerState(): StoryDrawerState {
+  let stored: unknown
+  try {
+    stored = JSON.parse(localStorage.getItem(STORY_DRAWER_STORAGE_KEY) ?? 'null')
+  } catch {
+    stored = null
+  }
+  const record = isRecord(stored) ? stored : {}
+  // Below the docked width the drawer covers the story, so it never reopens by itself there.
+  const docked =
+    typeof window.matchMedia === 'function' && window.matchMedia(STORY_DRAWER_DOCKED_MEDIA_QUERY).matches
+  return {
+    open: docked && record.open === true,
+    tab: isStoryDrawerTab(record.tab) ? record.tab : 'character',
+  }
+}
+
+function storyConnection(
+  backendStatus: 'checking' | 'reachable' | 'unreachable',
+  socketStatus: string,
+): StoryConnection {
+  if (socketStatus === 'connecting' || socketStatus === 'joining') return 'connecting'
+  if (socketStatus === 'rejoining' || socketStatus === 'reconnecting') return 'reconnecting'
+  if (socketStatus !== 'joined' && socketStatus !== 'idle') return 'offline'
+  if (backendStatus === 'checking') return 'connecting'
+  return backendStatus === 'reachable' ? 'ready' : 'offline'
+}
+
+/** `details.current_session_id` of a `session_ended` error, or null when it is absent. */
+function endedChapterTarget(errorCode: unknown, details: unknown): { currentSessionId: number | null } | null {
+  if (errorCode !== 'session_ended') return null
+  const currentSessionId = isRecord(details) ? numberValue(details.current_session_id) : null
+  return {
+    currentSessionId:
+      currentSessionId !== null && Number.isInteger(currentSessionId) && currentSessionId > 0 ? currentSessionId : null,
+  }
+}
+
+/** An imported save: kept for reading, never playable. */
+function sessionIsImportedArchive(session: SessionSummary) {
+  // Summaries are gaining an `imported` flag; until then the snapshot carries it.
+  const fields: Record<string, unknown> = session
+  return fields.imported === true || snapshotRecord(session).imported === true
+}
+
+function sessionCardState(session: SessionSummary) {
+  if (session.is_archived || session.status === 'archived') return 'Archived'
+  if (sessionIsImportedArchive(session)) return 'Archive'
+  if (session.status === 'ended') return 'Ended'
+  return session.is_current ? 'Current' : ''
 }
 
 function isUnauthorizedError(error: unknown) {
@@ -676,6 +765,9 @@ function AIDMApp() {
   const [campaignChooserDismissedKey, setCampaignChooserDismissedKey] = useState('')
   const [characterJoinDialogOpen, setCharacterJoinDialogOpen] = useState(false)
   const [boardViewMode, setBoardViewMode] = useState<BoardViewMode>(readBoardViewMode)
+  const [playView, setPlayView] = useState<PlayView>(readPlayView)
+  const [storyDrawer, setStoryDrawer] = useState<StoryDrawerState>(readStoryDrawerState)
+  const [chapterNotice, setChapterNotice] = useState<{ key: string; text: string } | null>(null)
   const [sessionRecap, setSessionRecap] = useState('')
   const [directorCommentary, setDirectorCommentary] = useState<CampaignPackCommentaryResponse | null>(null)
   const [socketReconnectKey, setSocketReconnectKey] = useState(0)
@@ -709,6 +801,18 @@ function AIDMApp() {
     setMobileRailOpen(false)
     setMobileInspectorOpen(false)
     window.requestAnimationFrame(() => returnFocusTarget?.focus())
+  }, [])
+  const openConsoleView = useCallback(() => {
+    setPlayView('console')
+  }, [])
+  const openStoryView = useCallback(() => {
+    closeMobilePanels()
+    setAccountMenuOpen(false)
+    setSessionMenuOpen(false)
+    setPlayView('story')
+  }, [closeMobilePanels])
+  const changeStoryDrawer = useCallback((open: boolean, tab?: StoryDrawerTab) => {
+    setStoryDrawer((current) => ({ open, tab: tab ?? current.tab }))
   }, [])
   const {
     adoptAccountSession,
@@ -756,6 +860,7 @@ function AIDMApp() {
   const sessionMenuRef = useRef<HTMLDivElement | null>(null)
   const sessionImportInputRef = useRef<HTMLInputElement | null>(null)
   const modalDialogRef = useRef<HTMLElement | null>(null)
+  const consoleLoadingRef = useRef<HTMLElement | null>(null)
   const dialogReturnFocusRef = useRef<HTMLElement | null>(null)
   const promptedCharacterCampaignIdsRef = useRef<Set<number>>(new Set())
   const selectedPlayerByCampaignRef = useRef<Record<number, number>>({})
@@ -1164,7 +1269,10 @@ function AIDMApp() {
   const showSceneMusicPlayer =
     Boolean(activeSessionId && selectedPlayerDetailId && sceneMusicWorkspaceReady) &&
     !(runtimeSettingsOpen && runtimeSettingsMode === 'auth')
-  const socketCampaignId = activeSessionId && selectedPlayerDetailId ? selectedCampaignId : null
+  // An ended chapter is read-only: it is read over REST and never joined live.
+  const endedChapterOpen = activeSession?.status === 'ended'
+  const socketSessionId = endedChapterOpen ? null : activeSessionId
+  const socketCampaignId = socketSessionId && selectedPlayerDetailId ? selectedCampaignId : null
   const activeSessionName = activeSession
     ? sessionDisplayName(activeSession, campaign?.world_id ?? selectedCampaignId)
     : 'No session selected'
@@ -1530,6 +1638,40 @@ function AIDMApp() {
     onUnauthorized: handleWorkspaceUnauthorized,
   })
 
+  // A chapter the table has moved past: open the campaign's current chapter
+  // instead. Without an id the workspace refresh selects the `is_current` one.
+  const followCurrentChapter = useCallback(
+    (currentSessionId: number | null) => {
+      setOptimisticEntries([])
+      setStreamingTurn(null)
+      setSelectedSessionId(currentSessionId)
+      setChapterNotice({ key: `chapter-${Date.now()}`, text: CHAPTER_ENDED_NOTICE })
+      if (selectedCampaignId) void refreshCampaignWorkspace(selectedCampaignId)
+    },
+    [refreshCampaignWorkspace, selectedCampaignId, setSelectedSessionId],
+  )
+
+  const followEndedChapterError = useCallback(
+    (error: unknown) => {
+      if (!(error instanceof ApiClientError) || !isRecord(error.payload)) return false
+      const target = endedChapterTarget(error.payload.error_code, error.payload.details)
+      if (!target) return false
+      followCurrentChapter(target.currentSessionId)
+      return true
+    },
+    [followCurrentChapter],
+  )
+
+  const continueToCurrentChapter = useCallback(() => {
+    const current = sessions.find(
+      (session) => session.is_current && session.campaign_id === selectedCampaignId,
+    )
+    setOptimisticEntries([])
+    setStreamingTurn(null)
+    setSelectedSessionId(current?.session_id ?? null)
+    if (!current && selectedCampaignId) void refreshCampaignWorkspace(selectedCampaignId)
+  }, [refreshCampaignWorkspace, selectedCampaignId, sessions, setSelectedSessionId])
+
   const {
     activateSegment,
     createDefaultMap,
@@ -1628,6 +1770,7 @@ function AIDMApp() {
   const {
     closeShareSessionDialog,
     closeSessionActionDialog,
+    closeStartChapterDialog,
     copyShareSessionUrl,
     downloadCampaignChronicle,
     downloadSessionChronicle,
@@ -1635,13 +1778,16 @@ function AIDMApp() {
     importSessionJson,
     openDeleteSessionDialog,
     openRenameSessionDialog,
+    openStartChapterDialog,
     sessionActionDialog,
     sessionImportPending,
     setSessionActionDialog,
     shareSession,
     shareSessionUrl,
-    startSession,
+    startChapterDialog,
     submitSessionActionDialog,
+    submitStartChapterDialog,
+    updateStartChapterDialog,
   } = useSessionActions({
     auth,
     baseUrl,
@@ -1786,6 +1932,7 @@ function AIDMApp() {
           await refreshCampaignWorkspace(selectedCampaignId)
         }
       } catch (error) {
+        if (followEndedChapterError(error)) return
         const message = error instanceof Error ? error.message : String(error)
         pushError('persistence', `Campaign pack checkpoint update failed: ${message}`)
       } finally {
@@ -1796,6 +1943,7 @@ function AIDMApp() {
       activeSessionId,
       auth,
       baseUrl,
+      followEndedChapterError,
       loadSessionData,
       pushError,
       refreshCampaignWorkspace,
@@ -2279,6 +2427,11 @@ function AIDMApp() {
     setCampaignChooserOpen(false)
   }, [campaignChooserKey])
 
+  const openCampaignChooserDialog = useCallback(() => {
+    rememberDialogTrigger()
+    setCampaignChooserOpen(true)
+  }, [rememberDialogTrigger])
+
   const chooseCampaign = useCallback(
     (campaignId: number) => {
       setSelectedCampaignId(campaignId)
@@ -2365,6 +2518,14 @@ function AIDMApp() {
   }, [theme])
 
   useEffect(() => {
+    localStorage.setItem(PLAY_VIEW_STORAGE_KEY, playView)
+  }, [playView])
+
+  useEffect(() => {
+    localStorage.setItem(STORY_DRAWER_STORAGE_KEY, JSON.stringify(storyDrawer))
+  }, [storyDrawer])
+
+  useEffect(() => {
     const currentMap = viewerMaps[0]
     setMapManagementForm({
       title: currentMap?.title ?? (campaign ? `${campaign.title} Map` : ''),
@@ -2403,6 +2564,10 @@ function AIDMApp() {
       if (!activeSessionDialog.pending) {
         setSessionActionDialog(null)
       }
+      return
+    }
+    if (startChapterDialog) {
+      closeStartChapterDialog()
       return
     }
     if (savedWorkspaceDeleteDialog) {
@@ -2480,6 +2645,7 @@ function AIDMApp() {
     closeSessionArchiveDialog,
     closeCampaignPackImportDialog,
     closeCampaignChooserDialog,
+    closeStartChapterDialog,
     campaignArchiveDialog,
     campaignPackImportOpen,
     campaignChooserOpen,
@@ -2495,6 +2661,7 @@ function AIDMApp() {
     setSessionActionDialog,
     sessionArchiveDialog,
     shareSessionUrl,
+    startChapterDialog,
     worldDeleteDialog,
     worldManagerOpen,
   ])
@@ -2505,36 +2672,41 @@ function AIDMApp() {
       ? 'campaign-action'
       : sessionActionDialog
         ? 'session-action'
-        : worldDeleteDialog
-          ? 'world-delete'
-          : worldManagerOpen
-            ? 'world-manager'
-            : campaignArchiveDialog
-              ? 'campaign-archive'
-              : sessionArchiveDialog
-                ? 'session-archive'
-                : campaignPackImportOpen
-                  ? 'campaign-pack-import'
-                  : campaignChooserOpen
-                    ? 'campaign-chooser'
-                    : characterJoinDialogOpen
-                      ? 'character-join'
-                      : playerDeleteDialog
-                        ? 'player-delete'
-                        : playerEditDialog
-                          ? `player-edit-${playerEditDialog.mode}`
-                          : savedWorkspaceDeleteDialog
-                            ? 'saved-workspace-delete'
-                            : runtimeSettingsOpen
-                              ? 'runtime-settings'
-                              : shareSessionUrl
-                                ? 'share-session'
-                                : profileSettingsOpen
-                                  ? 'profile-settings'
-                                  : createCampaignOpen
-                                    ? 'create-campaign'
-                                    : null
+        : startChapterDialog
+          ? 'start-chapter'
+          : worldDeleteDialog
+            ? 'world-delete'
+            : worldManagerOpen
+              ? 'world-manager'
+              : campaignArchiveDialog
+                ? 'campaign-archive'
+                : sessionArchiveDialog
+                  ? 'session-archive'
+                  : campaignPackImportOpen
+                    ? 'campaign-pack-import'
+                    : campaignChooserOpen
+                      ? 'campaign-chooser'
+                      : characterJoinDialogOpen
+                        ? 'character-join'
+                        : playerDeleteDialog
+                          ? 'player-delete'
+                          : playerEditDialog
+                            ? `player-edit-${playerEditDialog.mode}`
+                            : savedWorkspaceDeleteDialog
+                              ? 'saved-workspace-delete'
+                              : runtimeSettingsOpen
+                                ? 'runtime-settings'
+                                : shareSessionUrl
+                                  ? 'share-session'
+                                  : profileSettingsOpen
+                                    ? 'profile-settings'
+                                    : createCampaignOpen
+                                      ? 'create-campaign'
+                                      : null
   const modalOpen = Boolean(activeModalKey)
+  const runtime = llmConfig?.current ?? health?.llm ?? null
+  const configuredProvider = stringValue(runtime?.provider, 'Unknown')
+  const safeModeActive = configuredProvider.trim().toLowerCase() === 'fallback'
   useModalFocusTrap({
     activeKey: activeModalKey,
     dialogRef: modalDialogRef,
@@ -2542,15 +2714,9 @@ function AIDMApp() {
     returnFocusRef: dialogReturnFocusRef,
   })
   const {
-    createAccountFromTitleScreen,
-    createCampaignFromTitleScreen,
-    continueFromTitleScreen,
-    logInFromTitleScreen,
-    playNowFromTitleScreen,
-    playNowPending,
+    returnToTitle,
     showTitleScreen,
-    titleScreenAccountReady,
-    titleScreenCanContinue,
+    titleScreenProps,
   } = usePlayNowOnboarding({
     activeSessionId,
     auth,
@@ -2559,6 +2725,9 @@ function AIDMApp() {
     backendReady: health?.status === 'ok',
     baseUrl,
     campaignCount: campaigns.length,
+    campaigns,
+    safeMode: safeModeActive || runtime?.configured === false,
+    openCampaignChooser: openCampaignChooserDialog,
     closeMobilePanels,
     modalOpen,
     runtimeSettingsOpen,
@@ -3030,7 +3199,7 @@ function AIDMApp() {
   useSessionSocket({
     auth,
     baseUrl,
-    selectedSessionId: activeSessionId,
+    selectedSessionId: socketSessionId,
     selectedPlayerId: selectedPlayerDetailId,
     selectedCampaignId: socketCampaignId,
     socketReconnectKey,
@@ -3069,6 +3238,38 @@ function AIDMApp() {
     onRollResolved: handleRollResolved,
     onTurnDuplicate: handleTurnDuplicate,
   })
+
+  // useSessionSocket reports a `session_ended` error only as text. Listen on the
+  // same socket (re-attached whenever it replaces the socket) for the error's
+  // details so play follows the campaign to its current chapter.
+  const latestFollowCurrentChapter = useLatest(followCurrentChapter)
+  useEffect(() => {
+    const socket = socketRef.current
+    if (!socket) return undefined
+    const onServerEvent = (event: string, payload: unknown) => {
+      if (event !== 'error' || !isRecord(payload)) return
+      const target = endedChapterTarget(payload.error_code, payload.details)
+      if (target) latestFollowCurrentChapter.current(target.currentSessionId)
+    }
+    socket.onAny(onServerEvent)
+    return () => {
+      socket.offAny(onServerEvent)
+    }
+  }, [
+    auth,
+    baseUrl,
+    latestFollowCurrentChapter,
+    selectedPlayerDetailId,
+    socketCampaignId,
+    socketReconnectKey,
+    socketSessionId,
+  ])
+
+  useEffect(() => {
+    if (!chapterNotice) return undefined
+    const timer = window.setTimeout(() => setChapterNotice(null), CHAPTER_NOTICE_MS)
+    return () => window.clearTimeout(timer)
+  }, [chapterNotice])
 
   const updateSceneMusicControl = useCallback(
     (payload: SceneMusicControlPayload) => {
@@ -3273,19 +3474,16 @@ function AIDMApp() {
   const mapPanelTitle =
     viewerMaps[0]?.title || selectedSegment?.title || (sessionState?.current_location ? 'Current Location' : mapTitle)
   const mapMeta = buildMapMeta(viewerMaps[0], selectedSegment)
-  const sessionCards: SessionCard[] = sessions.map((session, index) => ({
-    id: session.session_id,
-    title: sessionDisplayName(session, campaign?.world_id ?? selectedCampaignId),
-    meta: `${
-      session.is_archived
-        ? 'Archived'
-        : session.session_id === selectedSessionId
-          ? 'Active'
-          : index === 0
-            ? 'Latest'
-            : 'Past'
-    }  •  Started ${formatShortAge(session.created_at)}`,
-  }))
+  const sessionCards: SessionCard[] = sessions.map((session) => {
+    const name = sessionDisplayName(session, campaign?.world_id ?? selectedCampaignId)
+    const label = session.chapter_number ? `Chapter ${session.chapter_number}` : name
+    return {
+      id: session.session_id,
+      label,
+      state: sessionCardState(session),
+      name: name === label ? '' : name,
+    }
+  })
   const filteredCampaigns = campaigns.filter((item) =>
     item.title.toLowerCase().includes(campaignFilter.trim().toLowerCase()),
   )
@@ -3313,11 +3511,8 @@ function AIDMApp() {
       }
     })
   const lastSaved = sessionState?.updated_at ?? activeSession?.created_at ?? null
-  const runtime = llmConfig?.current ?? health?.llm ?? null
   const latestRuntime = runtime?.latest_turn ?? null
-  const configuredProvider = stringValue(runtime?.provider, 'Unknown')
   const configuredModel = stringValue(runtime?.model, 'Unknown')
-  const safeModeActive = configuredProvider.trim().toLowerCase() === 'fallback'
   const runtimeProviders = llmConfig?.providers ?? []
   const selectedProviderOption = runtimeProviders.find(
     (provider) => provider.id === configuredProvider,
@@ -3492,666 +3687,766 @@ function AIDMApp() {
   const compactDrawerOpen = compactViewport
     && !showTitleScreen
     && (mobileRailOpen || mobileInspectorOpen)
-  const shellClassName = [
-    `prototype-shell theme-${theme}`,
-    railCollapsed ? 'rail-collapsed' : '',
-    fullscreenActive ? 'fullscreen-active' : '',
-    safeModeActive ? 'safe-mode-active' : '',
-    betaRuntimeNotices.length ? 'runtime-notices-active' : '',
-    showTitleScreen ? 'title-screen-active' : '',
-    boardViewMode === 'theater' && !showTitleScreen ? 'theater-shell' : '',
-    boardViewMode === 'theater' && !showTitleScreen ? 'theater-mode-active' : '',
-    mobileRailOpen ? 'mobile-rail-open' : '',
-    mobileInspectorOpen ? 'mobile-inspector-open' : '',
-  ].filter(Boolean).join(' ')
+  const storyView = playView === 'story'
+  // Story view is always dark and has none of the console's grid rows.
+  const shellClassName = (storyView
+    ? [
+        'prototype-shell theme-dark story-view-active',
+        fullscreenActive ? 'fullscreen-active' : '',
+        showTitleScreen ? 'title-screen-active' : '',
+      ]
+    : [
+        `prototype-shell theme-${theme}`,
+        railCollapsed ? 'rail-collapsed' : '',
+        fullscreenActive ? 'fullscreen-active' : '',
+        safeModeActive ? 'safe-mode-active' : '',
+        betaRuntimeNotices.length ? 'runtime-notices-active' : '',
+        showTitleScreen ? 'title-screen-active' : '',
+        boardViewMode === 'theater' && !showTitleScreen ? 'theater-shell' : '',
+        boardViewMode === 'theater' && !showTitleScreen ? 'theater-mode-active' : '',
+        mobileRailOpen ? 'mobile-rail-open' : '',
+        mobileInspectorOpen ? 'mobile-inspector-open' : '',
+      ]
+  ).filter(Boolean).join(' ')
+  const endedChapter = endedChapterOpen ? { onContinue: continueToCurrentChapter } : null
+  const recoverOperationalError = async () => {
+    setSocketReconnectKey((current) => current + 1)
+    await refreshCurrentWorkspace()
+    if (latestPlayError) {
+      setErrors((current) => current.filter((error) => error.id !== latestPlayError.id))
+    }
+  }
+  const sessionBoardProps: SessionBoardProps = {
+    activeSessionTitle,
+    campaignTitle,
+    sessionId: activeSessionId,
+    playerId: selectedPlayerDetailId,
+    showSceneMusicPlayer,
+    duckMusicForNarration: ttsSpeaking,
+    sceneMusicSyncState,
+    sceneState,
+    onSceneMusicControl: updateSceneMusicControl,
+    contentSettings,
+    contentSettingsPending,
+    canUseOperatorTools,
+    canEditContentSettings: canUseOperatorTools,
+    onContentRatingChange: updateContentRating,
+    onContentToneTagsChange: updateContentToneTags,
+    onBoardViewModeChange: setBoardViewMode,
+    directorCommentary,
+    sessionRecap,
+    onSpeakSessionRecap: speakSessionRecap,
+    workspaceLoading,
+    sessionLoading,
+    mainTab,
+    setMainTab,
+    showMobilePresenceStrip: compactViewport,
+    activePlayers: activePlayersWithHealth,
+    downloadCampaignChronicle,
+    downloadSessionChronicle,
+    downloadSessionJson,
+    sessionImportPending,
+    sessionImportInputRef,
+    importSessionJson,
+    shareSession,
+    sessionMenuRef,
+    sessionMenuOpen,
+    setSessionMenuOpen,
+    refreshCurrentWorkspace,
+    activeSession,
+    openRenameSessionDialog,
+    openDeleteSessionDialog,
+    notesCount: memorySnippets.length,
+    turnFeedRef,
+    updateJumpToLatestVisibility,
+    sessionLogHasMore,
+    olderLogLoading,
+    loadOlderSessionLog,
+    turnRows,
+    dismissTimelineEntry,
+    reportedBadTurnIds,
+    reportingBadTurnIds,
+    reportBadTurn,
+    ratedTurnQualityIds,
+    ratingTurnQualityIds,
+    submitTurnQuality,
+    expandedTurnIds,
+    setExpandedTurnIds,
+    selectedPlayer,
+    currentResponseEntry,
+    latestDmText,
+    sendPending: turnInFlight,
+    streamingTurnActive: dmResponseBlocking,
+    pendingRollNotice,
+    onPreparePendingRoll: preparePendingRoll,
+    turnRecoveryGate,
+    turnRecoveryPending,
+    turnRecoveryError,
+    turnRecoverySuccess,
+    onResolveTurnRecovery: resolveTurnRecovery,
+    combatState: worldStatePanel.combat,
+    worldState: worldStatePanel,
+    gameplayControls,
+    operationalError: latestPlayError?.message,
+    onRecoverOperationalError: recoverOperationalError,
+    dmExecutionStats,
+    welcomeText,
+    showJumpToLatest,
+    scrollTurnFeedToLatest,
+    questTitle,
+    sessionState,
+    campaign,
+    recentMemory,
+    clarificationRequest,
+    resolveClarification,
+    onStartAdventure: startAdventure,
+    actionComposerProps: {
+      actionInputRef,
+      actionText,
+      adminPasscode,
+      adminToolsUnlocked,
+      canUseOperatorTools,
+      setActionText,
+      setAdminPasscode,
+      selectedCharacterName: selectedPlayer?.character_name ?? null,
+      selectedPlayerId,
+      activePlayers,
+      composerMode,
+      selectedDie,
+      sendPending: turnInFlight,
+      turnControl,
+      turnControlStatusLabel,
+      selectedPlayerHasTurn,
+      queuedActionText,
+      queuedActionRetryable,
+      // Without a session there is nothing to load; sending explains that.
+      sessionHydrated: sessionHydrated || activeSessionId === null,
+      submissionReconnecting,
+      openingDelayed,
+      turnRejectionMessage,
+      retryRecoverableSubmission,
+      clearQueuedAction,
+      updateTurnControl,
+      ttsEnabled,
+      ttsStatusClassName: effectiveTtsStatus,
+      ttsStatusLabel,
+      ttsLatencyLabel,
+      canStopTts,
+      stopTtsAudio,
+      submitAction,
+      toggleAdminTools,
+      startDiceRoll,
+      preloadDiceRollDialog,
+      applyComposerMode,
+      updateSelectedDie,
+      rollMode,
+      setRollMode,
+      rollReason,
+      setRollReason,
+      pendingRollOptions,
+      rollTargetPendingTurnId,
+      setRollTargetPendingTurnId,
+      spellName,
+      selectedAbility,
+      selectedAbilityKey,
+      abilityOptions,
+      updateRollAbilityKey,
+      updateSpellName,
+      interactionTargets,
+      selectedInteractionTarget,
+      selectedInteractionTargetId,
+      selectedInteractionType,
+      setSelectedInteractionTargetId,
+      setSelectedInteractionType,
+      selectedInventoryAction,
+      selectedItem,
+      itemDraftName,
+      itemQuantity,
+      itemCostGold,
+      itemOptions,
+      setSelectedItemId,
+      setItemQuantity,
+      updateActionText,
+      updateSelectedInventoryAction,
+      updateItemDraftName,
+      updateItemCostGold,
+    },
+    endedChapter,
+    onOpenStoryView: openStoryView,
+  }
+  const inspectorPanelProps: InspectorPanelProps = {
+    inert: compactViewport && (!mobileInspectorOpen || modalOpen),
+    modal: compactViewport && mobileInspectorOpen && !showTitleScreen && !modalOpen,
+    onRequestClose: closeMobilePanelsAndRestoreFocus,
+    inspectorTab,
+    setInspectorTab,
+    setMainTab,
+    baseUrl,
+    auth,
+    canUseOperatorTools,
+    displayCharacter,
+    characterAvatarSrc,
+    xpProgress,
+    playersCount: players.length,
+    activePlayers: activePlayersWithHealth,
+    selectedPlayerId,
+    loadPlayer: openCharacterJoinDialog,
+    createDefaultPlayer: promptCreatePlayer,
+    editSelectedPlayer: openPlayerEditDialog,
+    deleteSelectedPlayer: openPlayerDeleteDialog,
+    selectedCampaignId,
+    selectedSessionId: activeSessionId,
+    createPlayerPending,
+    statBlock,
+    spellbook,
+    spellResources,
+    characterTraits,
+    inventoryRows,
+    inventoryWeightLabel,
+    inventoryGoldLabel,
+    equipmentPendingItemKey,
+    toggleInventoryEquipment,
+    memorySnippetCount: memorySnippets.length,
+    visibleRecentMemory,
+    worldStatePanel,
+    mapPanelTitle,
+    mapDescription,
+    mapMeta,
+    questTitle,
+    selectedSegment,
+    maps: viewerMaps,
+    createDefaultMap,
+    campaign,
+    createMapPending,
+    mapManagementForm,
+    setMapManagementForm,
+    mapSavePending,
+    saveMapManagement,
+    segments,
+    segmentSavePending,
+    activateSegment,
+    segmentDeletePendingId,
+    deleteSegment,
+    segmentManagementForm,
+    setSegmentManagementForm,
+    createSegment,
+    campaignPackSnapshot: turnControlSnapshot,
+    campaignPackControlPending,
+    controlCampaignPackProgress,
+  }
+  const backendCheck =
+    health === null && !healthUnreachable ? 'checking' : backendReachable ? 'reachable' : 'unreachable'
+  const storyChrome: StoryChromeProps = {
+    connection: storyConnection(backendCheck, socketStatus),
+    safeMode: safeModeActive,
+    canUseOperatorTools,
+    ttsAvailable: ttsConfig?.configured === true,
+    ttsEnabled,
+    onToggleTts: toggleTts,
+    isFullscreen: fullscreenActive,
+    onToggleFullscreen: () => void toggleFullscreen(),
+    onOpenConsole: openConsoleView,
+    onSwitchAdventure: openCampaignChooserDialog,
+    onExitToTitle: returnToTitle,
+    onOpenSettings: openProfileSettingsDialog,
+    onOpenAccount: openRuntimeSettingsDialog,
+    onStartNextChapter: canUseOperatorTools ? openStartChapterDialog : undefined,
+    endedChapter,
+  }
+  const sharedRollPlayerName = sharedRollNotice
+    ? activePlayers.find((player) => player.id === sharedRollNotice.playerId)?.character_name
+      ?? `Player ${sharedRollNotice.playerId}`
+    : ''
+  const storyNotices: StoryNotice[] = [
+    ...(sharedRollNotice
+      ? [{
+          key: `roll-${sharedRollNotice.turnId}-${sharedRollNotice.playerId}`,
+          text: `${sharedRollPlayerName}: ${diceRollMessage(sharedRollNotice.roll)}`,
+        }]
+      : []),
+    ...(chapterNotice ? [chapterNotice] : []),
+    ...(latestPlayError
+      ? [{
+          key: `error-${latestPlayError.id}`,
+          text: latestPlayError.message,
+          tone: 'fail' as const,
+          action: { label: 'Refresh and reconnect', onSelect: () => void recoverOperationalError() },
+        }]
+      : []),
+  ]
   return (
     <div
       ref={rootRef}
       className={shellClassName}
     >
-      <header
-        className="ops-bar"
-        inert={compactDrawerOpen ? true : undefined}
-      >
-        <div className="ops-brand">
-          <Flame size={25} fill="currentColor" />
-          <strong>AI-DM</strong>
-        </div>
-        <button
-          ref={campaignRailToggleRef}
-          type="button"
-          className="top-icon"
-          aria-label={campaignRailToggleLabel}
-          aria-controls={CAMPAIGN_RAIL_ID}
-          aria-expanded={compactViewport ? mobileRailOpen : !railCollapsed}
-          onClick={toggleCampaignRail}
-        >
-          <Menu size={21} />
-        </button>
-        <div className="ops-segment backend-segment">
-          <div>
-            <strong>Table</strong>
-            <StatusDot label={backendStatusLabel} tone={backendStatusTone} />
-          </div>
-          <span>{tableDisplayName}</span>
-          <ExternalLink size={15} />
-          <button
-            type="button"
-            aria-label="Change table access"
-            title="Change table access"
-            onClick={openWorkspaceAuthDialog}
+      {storyView ? null : (
+        <>
+          <header
+            className="ops-bar"
+            inert={compactDrawerOpen ? true : undefined}
           >
-            <Settings size={16} />
-          </button>
-        </div>
-        <div className="ops-segment compact">
-          <div>
-            <strong>Provider</strong>
-            <select
-              className="runtime-select"
-              value={configuredProvider}
-              disabled={runtimePending || !runtimeProviders.length}
-              title={
-                latestRuntime
-                  ? `Latest completed turn: ${providerLabel(latestRuntime.provider)} / ${latestRuntime.model}`
-                  : 'Current runtime provider'
-              }
-              onChange={(event) => {
-                const nextProvider = event.target.value
-                const nextOption = runtimeProviders.find((provider) => provider.id === nextProvider)
-                const currentModelStillAvailable = nextOption?.models.some(
-                  (model) => model.id === configuredModel,
-                )
-                const nextModel = currentModelStillAvailable
-                  ? configuredModel
-                  : nextOption?.default_model || nextOption?.models[0]?.id || configuredModel
-                void switchRuntime(nextProvider, nextModel)
-              }}
-            >
-              {runtimeProviders.length ? (
-                runtimeProviders.map((provider) => (
-                  <option
-                    key={provider.id}
-                    value={provider.id}
-                    disabled={!provider.configured}
-                  >
-                    {provider.label}
-                    {provider.configured ? '' : ' (no key)'}
-                  </option>
-                ))
-              ) : (
-                <option value={configuredProvider}>{providerLabel(configuredProvider)}</option>
-              )}
-            </select>
-            <span className="runtime-tools" aria-hidden="true">
-              <ThinIcon name="cloud" size={13} />
-              <ThinIcon name="refresh" size={13} />
-            </span>
-          </div>
-          <StatusDot label={runtimeLabel} tone={runtimeTone} />
-          {showProcessLocalDiagnostic ? (
-            <span className="runtime-scope-diagnostic" title={runtimeScopeTitle}>
-              Process-local · restart workers
-            </span>
-          ) : null}
-        </div>
-        <div className="ops-segment compact">
-          <div>
-            <strong>Model</strong>
-            <select
-              className="runtime-select"
-              value={configuredModel}
-              disabled={runtimePending || !runtimeModels.length || !runtime?.configured}
-              title="Current runtime model"
-              onChange={(event) => {
-                void switchRuntime(configuredProvider, event.target.value)
-              }}
-            >
-              {runtimeModels.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.id}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-        <div className="ops-segment context-meter">
-          <div>
-            <strong>Context</strong>
-            <span title="Approximate text loaded in the current session log">
-              {contextLabel}
-            </span>
-          </div>
-          <div className="meter">
-            <span style={{ width: `${contextMeterPercent}%` }} />
-          </div>
-        </div>
-        <div className="ops-segment mini-stat">
-          <strong>Session</strong>
-          <span>
-            {activeSession ? (
-              <SessionDuration
-                key={activeSession.session_id}
-                startedAt={activeSession.created_at}
-              />
-            ) : 'No session'}
-          </span>
-        </div>
-        <div className="ops-segment mini-stat">
-          <Radio size={18} />
-          <strong>Realtime</strong>
-          <StatusDot label={realtimeLabel} tone={realtimeTone} />
-        </div>
-        <div className="ops-actions">
-          <button
-            type="button"
-            className={`top-icon ${ttsEnabled ? 'selected' : ''} ${ttsSpeaking ? 'speaking' : ''}`}
-            aria-label={ttsControlLabel}
-            aria-pressed={ttsEnabled}
-            data-tts-configuration={ttsConfigurationDataStatus}
-            title={`${ttsConfigurationStatus}: ${ttsControlTitle}`}
-            onClick={toggleTts}
-          >
-            {ttsEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
-          </button>
-          {compactViewport ? (
-            <>
-              <button
-                ref={mobileInspectorToggleRef}
-                type="button"
-                className="top-icon mobile-inspector-toggle"
-                aria-label={mobileInspectorToggleLabel}
-                aria-controls={INSPECTOR_PANEL_ID}
-                aria-expanded={mobileInspectorOpen}
-                title={mobileInspectorToggleLabel}
-                onClick={toggleMobileInspector}
-              >
-                <PanelRightOpen size={18} />
-              </button>
-              <button
-                type="button"
-                className="top-icon mobile-table-settings-toggle"
-                aria-label="Open table settings"
-                title="Open table settings"
-                onClick={() => {
-                  closeMobilePanels()
-                  openWorkspaceAuthDialog()
-                }}
-              >
-                <Settings size={18} />
-              </button>
-            </>
-          ) : null}
-          <button
-            type="button"
-            className="top-icon mobile-optional"
-            aria-label={fullscreenActive ? 'Exit fullscreen' : 'Enter fullscreen'}
-            aria-pressed={fullscreenActive}
-            onClick={() => void toggleFullscreen()}
-          >
-            {fullscreenActive ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
-          </button>
-          <button
-            type="button"
-            className="top-icon mobile-optional"
-            aria-label="Toggle theme"
-            aria-pressed={theme === 'light'}
-            onClick={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
-          >
-            <Sun size={18} />
-          </button>
-          <div className="account-menu-wrap" ref={accountMenuRef}>
+            <div className="ops-brand">
+              <Flame size={25} fill="currentColor" />
+              <strong>AI-DM</strong>
+            </div>
             <button
+              ref={campaignRailToggleRef}
               type="button"
               className="top-icon"
-              aria-label="Account"
-              aria-expanded={accountMenuOpen}
-              aria-controls="account-menu"
-              onClick={() => {
-                setBetaNotesOpen(false)
-                setAccountMenuOpen((current) => !current)
-              }}
+              aria-label={campaignRailToggleLabel}
+              aria-controls={CAMPAIGN_RAIL_ID}
+              aria-expanded={compactViewport ? mobileRailOpen : !railCollapsed}
+              onClick={toggleCampaignRail}
             >
-              <UserCircle size={19} />
+              <Menu size={21} />
             </button>
-            <button
-              type="button"
-              className="top-icon small mobile-optional"
-              aria-label="More account options"
-              aria-expanded={accountMenuOpen}
-              aria-controls="account-menu"
-              onClick={() => {
-                setBetaNotesOpen(false)
-                setAccountMenuOpen((current) => !current)
-              }}
-            >
-              <ChevronDown size={16} />
-            </button>
-            {accountMenuOpen ? (
-              <div
-                id="account-menu"
-                className="account-menu"
-                role="group"
-                aria-label="Account options"
+            <div className="ops-segment backend-segment">
+              <div>
+                <strong>Table</strong>
+                <StatusDot label={backendStatusLabel} tone={backendStatusTone} />
+              </div>
+              <span>{tableDisplayName}</span>
+              <ExternalLink size={15} />
+              <button
+                type="button"
+                aria-label="Change table access"
+                title="Change table access"
+                onClick={openWorkspaceAuthDialog}
               >
-                <strong role="presentation">{runtimeAccount?.displayName ?? 'No account connected'}</strong>
-                <span role="presentation">
-                  {runtimeAccount?.workspaceRole
-                    ? `${runtimeAccount.workspaceRole} / ${runtimeAccount.workspaceId ?? 'workspace'}`
-                    : selectedPlayer?.character_name ?? 'Choose account'}
-                </span>
-                <button type="button" onClick={() => void refreshCurrentWorkspace()}>
-                  Refresh workspace
-                </button>
-                <button type="button" onClick={openProfileSettingsDialog}>
-                  Profile settings
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSocketReconnectKey((current) => current + 1)
-                    setAccountMenuOpen(false)
+                <Settings size={16} />
+              </button>
+            </div>
+            <div className="ops-segment compact">
+              <div>
+                <strong>Provider</strong>
+                <select
+                  className="runtime-select"
+                  value={configuredProvider}
+                  disabled={runtimePending || !runtimeProviders.length}
+                  title={
+                    latestRuntime
+                      ? `Latest completed turn: ${providerLabel(latestRuntime.provider)} / ${latestRuntime.model}`
+                      : 'Current runtime provider'
+                  }
+                  onChange={(event) => {
+                    const nextProvider = event.target.value
+                    const nextOption = runtimeProviders.find((provider) => provider.id === nextProvider)
+                    const currentModelStillAvailable = nextOption?.models.some(
+                      (model) => model.id === configuredModel,
+                    )
+                    const nextModel = currentModelStillAvailable
+                      ? configuredModel
+                      : nextOption?.default_model || nextOption?.models[0]?.id || configuredModel
+                    void switchRuntime(nextProvider, nextModel)
                   }}
                 >
-                  Reconnect socket
-                </button>
-                <button type="button" onClick={openRuntimeSettingsDialog}>
-                  Runtime settings
+                  {runtimeProviders.length ? (
+                    runtimeProviders.map((provider) => (
+                      <option
+                        key={provider.id}
+                        value={provider.id}
+                        disabled={!provider.configured}
+                      >
+                        {provider.label}
+                        {provider.configured ? '' : ' (no key)'}
+                      </option>
+                    ))
+                  ) : (
+                    <option value={configuredProvider}>{providerLabel(configuredProvider)}</option>
+                  )}
+                </select>
+                <span className="runtime-tools" aria-hidden="true">
+                  <ThinIcon name="cloud" size={13} />
+                  <ThinIcon name="refresh" size={13} />
+                </span>
+              </div>
+              <StatusDot label={runtimeLabel} tone={runtimeTone} />
+              {showProcessLocalDiagnostic ? (
+                <span className="runtime-scope-diagnostic" title={runtimeScopeTitle}>
+                  Process-local · restart workers
+                </span>
+              ) : null}
+            </div>
+            <div className="ops-segment compact">
+              <div>
+                <strong>Model</strong>
+                <select
+                  className="runtime-select"
+                  value={configuredModel}
+                  disabled={runtimePending || !runtimeModels.length || !runtime?.configured}
+                  title="Current runtime model"
+                  onChange={(event) => {
+                    void switchRuntime(configuredProvider, event.target.value)
+                  }}
+                >
+                  {runtimeModels.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="ops-segment context-meter">
+              <div>
+                <strong>Context</strong>
+                <span title="Approximate text loaded in the current session log">
+                  {contextLabel}
+                </span>
+              </div>
+              <div className="meter">
+                <span style={{ width: `${contextMeterPercent}%` }} />
+              </div>
+            </div>
+            <div className="ops-segment mini-stat">
+              <strong>Session</strong>
+              <span>
+                {activeSession ? (
+                  <SessionDuration
+                    key={activeSession.session_id}
+                    startedAt={activeSession.created_at}
+                  />
+                ) : 'No session'}
+              </span>
+            </div>
+            <div className="ops-segment mini-stat">
+              <Radio size={18} />
+              <strong>Realtime</strong>
+              <StatusDot label={realtimeLabel} tone={realtimeTone} />
+            </div>
+            <div className="ops-actions">
+              <button
+                type="button"
+                className={`top-icon ${ttsEnabled ? 'selected' : ''} ${ttsSpeaking ? 'speaking' : ''}`}
+                aria-label={ttsControlLabel}
+                aria-pressed={ttsEnabled}
+                data-tts-configuration={ttsConfigurationDataStatus}
+                title={`${ttsConfigurationStatus}: ${ttsControlTitle}`}
+                onClick={toggleTts}
+              >
+                {ttsEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
+              </button>
+              {compactViewport ? (
+                <>
+                  <button
+                    ref={mobileInspectorToggleRef}
+                    type="button"
+                    className="top-icon mobile-inspector-toggle"
+                    aria-label={mobileInspectorToggleLabel}
+                    aria-controls={INSPECTOR_PANEL_ID}
+                    aria-expanded={mobileInspectorOpen}
+                    title={mobileInspectorToggleLabel}
+                    onClick={toggleMobileInspector}
+                  >
+                    <PanelRightOpen size={18} />
+                  </button>
+                  <button
+                    type="button"
+                    className="top-icon mobile-table-settings-toggle"
+                    aria-label="Open table settings"
+                    title="Open table settings"
+                    onClick={() => {
+                      closeMobilePanels()
+                      openWorkspaceAuthDialog()
+                    }}
+                  >
+                    <Settings size={18} />
+                  </button>
+                </>
+              ) : null}
+              <button
+                type="button"
+                className="top-icon mobile-optional"
+                aria-label={fullscreenActive ? 'Exit fullscreen' : 'Enter fullscreen'}
+                aria-pressed={fullscreenActive}
+                onClick={() => void toggleFullscreen()}
+              >
+                {fullscreenActive ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+              </button>
+              <button
+                type="button"
+                className="top-icon mobile-optional"
+                aria-label="Toggle theme"
+                aria-pressed={theme === 'light'}
+                onClick={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+              >
+                <Sun size={18} />
+              </button>
+              <div className="account-menu-wrap" ref={accountMenuRef}>
+                <button
+                  type="button"
+                  className="top-icon"
+                  aria-label="Account"
+                  aria-expanded={accountMenuOpen}
+                  aria-controls="account-menu"
+                  onClick={() => {
+                    setBetaNotesOpen(false)
+                    setAccountMenuOpen((current) => !current)
+                  }}
+                >
+                  <UserCircle size={19} />
                 </button>
                 <button
-                  ref={betaNotesToggleRef}
                   type="button"
-                  aria-expanded={betaNotesOpen}
-                  aria-controls="beta-runtime-information"
-                  onClick={() => setBetaNotesOpen((current) => !current)}
+                  className="top-icon small mobile-optional"
+                  aria-label="More account options"
+                  aria-expanded={accountMenuOpen}
+                  aria-controls="account-menu"
+                  onClick={() => {
+                    setBetaNotesOpen(false)
+                    setAccountMenuOpen((current) => !current)
+                  }}
                 >
-                  Beta information
+                  <ChevronDown size={16} />
                 </button>
-                {authToken ? (
-                  <button type="button" onClick={clearAuthToken}>
-                    Sign out
-                  </button>
+                {accountMenuOpen ? (
+                  <div
+                    id="account-menu"
+                    className="account-menu"
+                    role="group"
+                    aria-label="Account options"
+                  >
+                    <strong role="presentation">{runtimeAccount?.displayName ?? 'No account connected'}</strong>
+                    <span role="presentation">
+                      {runtimeAccount?.workspaceRole
+                        ? `${runtimeAccount.workspaceRole} / ${runtimeAccount.workspaceId ?? 'workspace'}`
+                        : selectedPlayer?.character_name ?? 'Choose account'}
+                    </span>
+                    <button type="button" onClick={() => void refreshCurrentWorkspace()}>
+                      Refresh workspace
+                    </button>
+                    <button type="button" onClick={openProfileSettingsDialog}>
+                      Profile settings
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSocketReconnectKey((current) => current + 1)
+                        setAccountMenuOpen(false)
+                      }}
+                    >
+                      Reconnect socket
+                    </button>
+                    <button type="button" onClick={openRuntimeSettingsDialog}>
+                      Runtime settings
+                    </button>
+                    <button
+                      ref={betaNotesToggleRef}
+                      type="button"
+                      aria-expanded={betaNotesOpen}
+                      aria-controls="beta-runtime-information"
+                      onClick={() => setBetaNotesOpen((current) => !current)}
+                    >
+                      Beta information
+                    </button>
+                    {authToken ? (
+                      <button type="button" onClick={clearAuthToken}>
+                        Sign out
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {accountMenuOpen && betaNotesOpen ? (
+                  <BetaRuntimeNotesPanel onClose={closeBetaNotes} />
                 ) : null}
               </div>
-            ) : null}
-            {accountMenuOpen && betaNotesOpen ? (
-              <BetaRuntimeNotesPanel onClose={closeBetaNotes} />
-            ) : null}
-          </div>
-        </div>
-      </header>
-
-      {betaRuntimeNotices.length ? (
-        <div
-          className="beta-runtime-notices"
-          aria-label="Beta runtime notices"
-          inert={compactDrawerOpen ? true : undefined}
-        >
-          {betaRuntimeNotices.map((notice) => (
-            <div
-              key={notice.id}
-              className={`beta-runtime-notice ${notice.tone}`}
-            >
-              <div className="runtime-notice-copy" role="status" aria-live="polite">
-                <strong>{notice.title}</strong>
-                <span title={notice.message}>{notice.message}</span>
-              </div>
-              <details className="runtime-notice-details">
-                <summary aria-label={`Read full ${notice.title} notice`}>Details</summary>
-                <div className="runtime-notice-full" role="note">
-                  <strong>{`Full ${notice.title} notice`}</strong>
-                  <p>{`Recovery guidance: ${notice.message}`}</p>
-                </div>
-              </details>
+              <button
+                type="button"
+                className="top-icon"
+                aria-label="Return to Story view"
+                title="Story view"
+                onClick={openStoryView}
+              >
+                <BookOpen size={18} />
+              </button>
             </div>
-          ))}
-        </div>
-      ) : null}
+          </header>
 
-      {showTitleScreen ? (
-        <TitleScreen
-          accountReady={titleScreenAccountReady}
-          pending={playNowPending}
-          canContinue={titleScreenCanContinue}
-          campaignCount={campaigns.length}
-          selectedCampaignTitle={campaign?.title ?? null}
-          runtimeConfigured={!safeModeActive && Boolean(runtime?.configured)}
-          onPlayNow={() => void playNowFromTitleScreen()}
-          onLogIn={logInFromTitleScreen}
-          onCreateAccount={createAccountFromTitleScreen}
-          onCreateCampaign={createCampaignFromTitleScreen}
-          onContinue={continueFromTitleScreen}
-        />
-      ) : null}
+          {betaRuntimeNotices.length ? (
+            <div
+              className="beta-runtime-notices"
+              aria-label="Beta runtime notices"
+              inert={compactDrawerOpen ? true : undefined}
+            >
+              {betaRuntimeNotices.map((notice) => (
+                <div
+                  key={notice.id}
+                  className={`beta-runtime-notice ${notice.tone}`}
+                >
+                  <div className="runtime-notice-copy" role="status" aria-live="polite">
+                    <strong>{notice.title}</strong>
+                    <span title={notice.message}>{notice.message}</span>
+                  </div>
+                  <details className="runtime-notice-details">
+                    <summary aria-label={`Read full ${notice.title} notice`}>Details</summary>
+                    <div className="runtime-notice-full" role="note">
+                      <strong>{`Full ${notice.title} notice`}</strong>
+                      <p>{`Recovery guidance: ${notice.message}`}</p>
+                    </div>
+                  </details>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </>
+      )}
 
-      <div
-        className="workspace-surfaces"
-        aria-hidden={showTitleScreen ? true : undefined}
-        inert={showTitleScreen ? true : undefined}
-      >
-        <button
-          type="button"
-          className="mobile-panel-scrim"
-          aria-hidden="true"
-          tabIndex={-1}
-          onClick={closeMobilePanelsAndRestoreFocus}
-        />
+      {showTitleScreen ? <TitleScreen {...titleScreenProps} /> : null}
 
-      <CampaignRail
-        inert={compactViewport && (!mobileRailOpen || modalOpen)}
-        modal={compactViewport && mobileRailOpen && !showTitleScreen && !modalOpen}
-        onRequestClose={closeMobilePanelsAndRestoreFocus}
-        backendStatus={health?.status ?? null}
-        campaignTitle={campaign?.title ? truncateText(campaign.title, 12) : null}
-        campaignCards={campaignCards}
-        sessionCards={sessionCards}
-        campaignFilter={campaignFilter}
-        setCampaignFilter={setCampaignFilter}
-        selectedCampaignId={selectedCampaignId}
-        selectedSessionId={selectedSessionId}
-        loadingCampaignId={loadingCampaignId}
-        sessionLoading={sessionLoading}
-        workspaceLoading={workspaceLoading}
-        mainTab={mainTab}
-        setMainTab={setMainTabFromRail}
-        inspectorTab={inspectorTab}
-        setInspectorTab={setInspectorTabFromRail}
-        canUseOperatorTools={canUseOperatorTools}
-        canManageCampaign={Boolean(campaign)}
-        canManageSession={Boolean(activeSession)}
-        canOpenCampaignArchive={health?.status === 'ok'}
-        canOpenSessionArchive={Boolean(selectedCampaignId)}
-        selectionLocked={turnInFlight || dmResponseBlocking || queuedActionRetryable || Boolean(diceRoll)}
-        onRenameCampaign={openRenameCampaignDialog}
-        onArchiveCampaign={openCampaignArchiveManager}
-        onDeleteCampaign={openDeleteCampaignDialog}
-        onCreateCampaign={openCreateCampaignDialog}
-        onImportCampaignPack={openCampaignPackImportDialog}
-        onManageWorlds={openWorldManagerDialog}
-        onRenameSession={openRenameSessionDialog}
-        onArchiveSession={openSessionArchiveManager}
-        onDeleteSession={openDeleteSessionDialog}
-        onStartSession={startSession}
-        onSelectCampaign={(campaignId) => {
-          if (
-            campaignId !== selectedCampaignId &&
-            (turnInFlight || dmResponseBlocking || queuedActionRetryable || Boolean(diceRoll))
-          ) {
-            pushError('validation', 'Wait for the current turn to finish or dismiss its retry before changing campaigns.')
-            return
-          }
-          if (campaignId !== selectedCampaignId) {
-            setSelectedCampaignId(campaignId)
-          }
-          setMainTab('turns')
-          closeMobilePanelsAndRestoreFocus()
-        }}
-        onSelectSession={(sessionId) => {
-          if (
-            sessionId !== selectedSessionId &&
-            (turnInFlight || dmResponseBlocking || queuedActionRetryable || Boolean(diceRoll))
-          ) {
-            pushError('validation', 'Wait for the current turn to finish or dismiss its retry before changing sessions.')
-            return
-          }
-          if (sessionId !== selectedSessionId) {
-            setSelectedSessionId(sessionId)
-            setOptimisticEntries([])
-            setStreamingTurn(null)
-          }
-          setMainTab('turns')
-          closeMobilePanelsAndRestoreFocus()
-        }}
-        playability={playability}
-        lastSavedLabel={formatShortAge(lastSaved)}
-        onRefreshWorkspace={() => void refreshCurrentWorkspace()}
-        errors={errors}
-      />
-
-      <div
-        className="workspace-main-board-isolation"
-        inert={compactDrawerOpen ? true : undefined}
-      >
-        <SessionBoard
-        activeSessionTitle={activeSessionTitle}
-        campaignTitle={campaignTitle}
-        sessionId={activeSessionId}
-        playerId={selectedPlayerDetailId}
-        showSceneMusicPlayer={showSceneMusicPlayer}
-        duckMusicForNarration={ttsSpeaking}
-        sceneMusicSyncState={sceneMusicSyncState}
-        sceneState={sceneState}
-        onSceneMusicControl={updateSceneMusicControl}
-        contentSettings={contentSettings}
-        contentSettingsPending={contentSettingsPending}
-        canUseOperatorTools={canUseOperatorTools}
-        canEditContentSettings={canUseOperatorTools}
-        onContentRatingChange={updateContentRating}
-        onContentToneTagsChange={updateContentToneTags}
-        onBoardViewModeChange={setBoardViewMode}
-        directorCommentary={directorCommentary}
-        sessionRecap={sessionRecap}
-        onSpeakSessionRecap={speakSessionRecap}
-        workspaceLoading={workspaceLoading}
-        sessionLoading={sessionLoading}
-        mainTab={mainTab}
-        setMainTab={setMainTab}
-        showMobilePresenceStrip={compactViewport}
-        activePlayers={activePlayersWithHealth}
-        downloadCampaignChronicle={downloadCampaignChronicle}
-        downloadSessionChronicle={downloadSessionChronicle}
-        downloadSessionJson={downloadSessionJson}
-        sessionImportPending={sessionImportPending}
-        sessionImportInputRef={sessionImportInputRef}
-        importSessionJson={importSessionJson}
-        shareSession={shareSession}
-        sessionMenuRef={sessionMenuRef}
-        sessionMenuOpen={sessionMenuOpen}
-        setSessionMenuOpen={setSessionMenuOpen}
-        refreshCurrentWorkspace={refreshCurrentWorkspace}
-        activeSession={activeSession}
-        openRenameSessionDialog={openRenameSessionDialog}
-        openDeleteSessionDialog={openDeleteSessionDialog}
-        notesCount={memorySnippets.length}
-        turnFeedRef={turnFeedRef}
-        updateJumpToLatestVisibility={updateJumpToLatestVisibility}
-        sessionLogHasMore={sessionLogHasMore}
-        olderLogLoading={olderLogLoading}
-        loadOlderSessionLog={loadOlderSessionLog}
-        turnRows={turnRows}
-        dismissTimelineEntry={dismissTimelineEntry}
-        reportedBadTurnIds={reportedBadTurnIds}
-        reportingBadTurnIds={reportingBadTurnIds}
-        reportBadTurn={reportBadTurn}
-        ratedTurnQualityIds={ratedTurnQualityIds}
-        ratingTurnQualityIds={ratingTurnQualityIds}
-        submitTurnQuality={submitTurnQuality}
-        expandedTurnIds={expandedTurnIds}
-        setExpandedTurnIds={setExpandedTurnIds}
-        selectedPlayer={selectedPlayer}
-        currentResponseEntry={currentResponseEntry}
-        latestDmText={latestDmText}
-        sendPending={turnInFlight}
-        streamingTurnActive={dmResponseBlocking}
-        pendingRollNotice={pendingRollNotice}
-        onPreparePendingRoll={preparePendingRoll}
-        turnRecoveryGate={turnRecoveryGate}
-        turnRecoveryPending={turnRecoveryPending}
-        turnRecoveryError={turnRecoveryError}
-        turnRecoverySuccess={turnRecoverySuccess}
-        onResolveTurnRecovery={resolveTurnRecovery}
-        combatState={worldStatePanel.combat}
-        worldState={worldStatePanel}
-        gameplayControls={gameplayControls}
-        operationalError={latestPlayError?.message}
-        onRecoverOperationalError={async () => {
-          setSocketReconnectKey((current) => current + 1)
-          await refreshCurrentWorkspace()
-          if (latestPlayError) {
-            setErrors((current) => current.filter((error) => error.id !== latestPlayError.id))
-          }
-        }}
-        dmExecutionStats={dmExecutionStats}
-        welcomeText={welcomeText}
-        showJumpToLatest={showJumpToLatest}
-        scrollTurnFeedToLatest={scrollTurnFeedToLatest}
-        questTitle={questTitle}
-        sessionState={sessionState}
-        campaign={campaign}
-        recentMemory={recentMemory}
-        clarificationRequest={clarificationRequest}
-        resolveClarification={resolveClarification}
-        onStartAdventure={startAdventure}
-        actionComposerProps={{
-          actionInputRef,
-          actionText,
-          adminPasscode,
-          adminToolsUnlocked,
-          canUseOperatorTools,
-          setActionText,
-          setAdminPasscode,
-          selectedCharacterName: selectedPlayer?.character_name ?? null,
-          selectedPlayerId,
-          activePlayers,
-          composerMode,
-          selectedDie,
-          sendPending: turnInFlight,
-          turnControl,
-          turnControlStatusLabel,
-          selectedPlayerHasTurn,
-          queuedActionText,
-          queuedActionRetryable,
-          // Without a session there is nothing to load; sending explains that.
-          sessionHydrated: sessionHydrated || activeSessionId === null,
-          submissionReconnecting,
-          openingDelayed,
-          turnRejectionMessage,
-          retryRecoverableSubmission,
-          clearQueuedAction,
-          updateTurnControl,
-          ttsEnabled,
-          ttsStatusClassName: effectiveTtsStatus,
-          ttsStatusLabel,
-          ttsLatencyLabel,
-          canStopTts,
-          stopTtsAudio,
-          submitAction,
-          toggleAdminTools,
-          startDiceRoll,
-          preloadDiceRollDialog,
-          applyComposerMode,
-          updateSelectedDie,
-          rollMode,
-          setRollMode,
-          rollReason,
-          setRollReason,
-          pendingRollOptions,
-          rollTargetPendingTurnId,
-          setRollTargetPendingTurnId,
-          spellName,
-          selectedAbility,
-          selectedAbilityKey,
-          abilityOptions,
-          updateRollAbilityKey,
-          updateSpellName,
-          interactionTargets,
-          selectedInteractionTarget,
-          selectedInteractionTargetId,
-          selectedInteractionType,
-          setSelectedInteractionTargetId,
-          setSelectedInteractionType,
-          selectedInventoryAction,
-          selectedItem,
-          itemDraftName,
-          itemQuantity,
-          itemCostGold,
-          itemOptions,
-          setSelectedItemId,
-          setItemQuantity,
-          updateActionText,
-          updateSelectedInventoryAction,
-          updateItemDraftName,
-          updateItemCostGold,
-        }}
-        />
-      </div>
-
-      <InspectorPanel
-        inert={compactViewport && (!mobileInspectorOpen || modalOpen)}
-        modal={compactViewport && mobileInspectorOpen && !showTitleScreen && !modalOpen}
-        onRequestClose={closeMobilePanelsAndRestoreFocus}
-        inspectorTab={inspectorTab}
-        setInspectorTab={setInspectorTab}
-        setMainTab={setMainTab}
-        baseUrl={baseUrl}
-        auth={auth}
-        canUseOperatorTools={canUseOperatorTools}
-        displayCharacter={displayCharacter}
-        characterAvatarSrc={characterAvatarSrc}
-        xpProgress={xpProgress}
-        playersCount={players.length}
-        activePlayers={activePlayersWithHealth}
-        selectedPlayerId={selectedPlayerId}
-        loadPlayer={openCharacterJoinDialog}
-        createDefaultPlayer={promptCreatePlayer}
-        editSelectedPlayer={openPlayerEditDialog}
-        deleteSelectedPlayer={openPlayerDeleteDialog}
-        selectedCampaignId={selectedCampaignId}
-        selectedSessionId={activeSessionId}
-        createPlayerPending={createPlayerPending}
-        statBlock={statBlock}
-        spellbook={spellbook}
-        spellResources={spellResources}
-        characterTraits={characterTraits}
-        inventoryRows={inventoryRows}
-        inventoryWeightLabel={inventoryWeightLabel}
-        inventoryGoldLabel={inventoryGoldLabel}
-        equipmentPendingItemKey={equipmentPendingItemKey}
-        toggleInventoryEquipment={toggleInventoryEquipment}
-        memorySnippetCount={memorySnippets.length}
-        visibleRecentMemory={visibleRecentMemory}
-        worldStatePanel={worldStatePanel}
-        mapPanelTitle={mapPanelTitle}
-        mapDescription={mapDescription}
-        mapMeta={mapMeta}
-        questTitle={questTitle}
-        selectedSegment={selectedSegment}
-        maps={viewerMaps}
-        createDefaultMap={createDefaultMap}
-        campaign={campaign}
-        createMapPending={createMapPending}
-        mapManagementForm={mapManagementForm}
-        setMapManagementForm={setMapManagementForm}
-        mapSavePending={mapSavePending}
-        saveMapManagement={saveMapManagement}
-        segments={segments}
-        segmentSavePending={segmentSavePending}
-        activateSegment={activateSegment}
-        segmentDeletePendingId={segmentDeletePendingId}
-        deleteSegment={deleteSegment}
-        segmentManagementForm={segmentManagementForm}
-        setSegmentManagementForm={setSegmentManagementForm}
-        createSegment={createSegment}
-        campaignPackSnapshot={turnControlSnapshot}
-        campaignPackControlPending={campaignPackControlPending}
-        controlCampaignPackProgress={controlCampaignPackProgress}
-      />
-
-      {sharedRollNotice ? (
-        <aside
-          className="shared-roll-notice"
-          role="status"
-          aria-live="polite"
-          aria-hidden={compactDrawerOpen ? true : undefined}
+      {storyView ? (
+        showTitleScreen ? null : (
+          <StoryView
+            board={sessionBoardProps}
+            inspector={inspectorPanelProps}
+            chrome={storyChrome}
+            composer={
+              <>
+                <StoryClarification board={sessionBoardProps} />
+                <StoryNotices notices={storyNotices} />
+                <StoryComposer
+                  board={{ ...sessionBoardProps, operationalError: undefined, onRecoverOperationalError: undefined }}
+                  chrome={storyChrome}
+                  onOpenDrawer={(tab) => changeStoryDrawer(true, tab)}
+                />
+              </>
+            }
+            drawer={
+              <StoryDrawer
+                board={sessionBoardProps}
+                inspector={inspectorPanelProps}
+                open={storyDrawer.open}
+                tab={storyDrawer.tab}
+                onTabChange={(tab) => changeStoryDrawer(true, tab)}
+                onClose={() => changeStoryDrawer(false)}
+              />
+            }
+            drawerOpen={storyDrawer.open}
+            drawerTab={storyDrawer.tab}
+            onDrawerOpenChange={changeStoryDrawer}
+          />
+        )
+      ) : (
+        <div
+          className="workspace-surfaces"
+          aria-hidden={showTitleScreen ? true : undefined}
+          inert={showTitleScreen ? true : undefined}
         >
-          <span>
-            {activePlayers.find((player) => player.id === sharedRollNotice.playerId)?.character_name
-              ?? `Player ${sharedRollNotice.playerId}`}
-          </span>
-          <strong>{diceRollMessage(sharedRollNotice.roll)}</strong>
-        </aside>
-      ) : null}
-      </div>
+          <button
+            type="button"
+            className="mobile-panel-scrim"
+            aria-hidden="true"
+            tabIndex={-1}
+            onClick={closeMobilePanelsAndRestoreFocus}
+          />
+
+          {/* The title screen covers the console; its panels load once the table is shown. */}
+          {showTitleScreen ? null : (
+            <Suspense fallback={<ModalLoading dialogRef={consoleLoadingRef} label="Opening table tools…" />}>
+              <CampaignRail
+                inert={compactViewport && (!mobileRailOpen || modalOpen)}
+                modal={compactViewport && mobileRailOpen && !showTitleScreen && !modalOpen}
+                onRequestClose={closeMobilePanelsAndRestoreFocus}
+                backendStatus={health?.status ?? null}
+                campaignTitle={campaign?.title ? truncateText(campaign.title, 12) : null}
+                campaignCards={campaignCards}
+                sessionCards={sessionCards}
+                campaignFilter={campaignFilter}
+                setCampaignFilter={setCampaignFilter}
+                selectedCampaignId={selectedCampaignId}
+                selectedSessionId={selectedSessionId}
+                loadingCampaignId={loadingCampaignId}
+                sessionLoading={sessionLoading}
+                workspaceLoading={workspaceLoading}
+                mainTab={mainTab}
+                setMainTab={setMainTabFromRail}
+                inspectorTab={inspectorTab}
+                setInspectorTab={setInspectorTabFromRail}
+                canUseOperatorTools={canUseOperatorTools}
+                canManageCampaign={Boolean(campaign)}
+                canManageSession={Boolean(activeSession)}
+                canOpenCampaignArchive={health?.status === 'ok'}
+                canOpenSessionArchive={Boolean(selectedCampaignId)}
+                selectionLocked={turnInFlight || dmResponseBlocking || queuedActionRetryable || Boolean(diceRoll)}
+                onRenameCampaign={openRenameCampaignDialog}
+                onArchiveCampaign={openCampaignArchiveManager}
+                onDeleteCampaign={openDeleteCampaignDialog}
+                onCreateCampaign={openCreateCampaignDialog}
+                onImportCampaignPack={openCampaignPackImportDialog}
+                onManageWorlds={openWorldManagerDialog}
+                onRenameSession={openRenameSessionDialog}
+                onArchiveSession={openSessionArchiveManager}
+                onDeleteSession={openDeleteSessionDialog}
+                onStartSession={openStartChapterDialog}
+                onSelectCampaign={(campaignId) => {
+                  if (
+                    campaignId !== selectedCampaignId &&
+                    (turnInFlight || dmResponseBlocking || queuedActionRetryable || Boolean(diceRoll))
+                  ) {
+                    pushError('validation', 'Wait for the current turn to finish or dismiss its retry before changing campaigns.')
+                    return
+                  }
+                  if (campaignId !== selectedCampaignId) {
+                    setSelectedCampaignId(campaignId)
+                  }
+                  setMainTab('turns')
+                  closeMobilePanelsAndRestoreFocus()
+                }}
+                onSelectSession={(sessionId) => {
+                  if (
+                    sessionId !== selectedSessionId &&
+                    (turnInFlight || dmResponseBlocking || queuedActionRetryable || Boolean(diceRoll))
+                  ) {
+                    pushError('validation', 'Wait for the current turn to finish or dismiss its retry before changing sessions.')
+                    return
+                  }
+                  if (sessionId !== selectedSessionId) {
+                    setSelectedSessionId(sessionId)
+                    setOptimisticEntries([])
+                    setStreamingTurn(null)
+                  }
+                  setMainTab('turns')
+                  closeMobilePanelsAndRestoreFocus()
+                }}
+                playability={playability}
+                lastSavedLabel={formatShortAge(lastSaved)}
+                onRefreshWorkspace={() => void refreshCurrentWorkspace()}
+                errors={errors}
+              />
+
+              <div
+                className="workspace-main-board-isolation"
+                inert={compactDrawerOpen ? true : undefined}
+              >
+                <SessionBoard {...sessionBoardProps} />
+              </div>
+
+              <InspectorPanel {...inspectorPanelProps} />
+            </Suspense>
+          )}
+
+          {chapterNotice ? (
+            <aside
+              className="shared-roll-notice"
+              role="status"
+              aria-live="polite"
+              aria-hidden={compactDrawerOpen ? true : undefined}
+            >
+              <span>Chapter</span>
+              <strong>{chapterNotice.text}</strong>
+            </aside>
+          ) : sharedRollNotice ? (
+            <aside
+              className="shared-roll-notice"
+              role="status"
+              aria-live="polite"
+              aria-hidden={compactDrawerOpen ? true : undefined}
+            >
+              <span>{sharedRollPlayerName}</span>
+              <strong>{diceRollMessage(sharedRollNotice.roll)}</strong>
+            </aside>
+          ) : null}
+        </div>
+      )}
 
       {diceRoll ? (
         <div
@@ -4429,6 +4724,18 @@ function AIDMApp() {
             )
           }
           onSubmit={(event) => void submitSessionActionDialog(event)}
+        />
+      ) : null}
+
+      {startChapterDialog ? (
+        <StartChapterDialog
+          canForce={canUseOperatorTools}
+          dialog={startChapterDialog}
+          dialogRef={modalDialogRef}
+          onClose={closeStartChapterDialog}
+          onForceChange={(force) => updateStartChapterDialog({ force })}
+          onFreshChange={(fresh) => updateStartChapterDialog({ fresh })}
+          onSubmit={(event) => void submitStartChapterDialog(event)}
         />
       ) : null}
 

@@ -110,4 +110,44 @@ describe('CampaignRail', () => {
     rerender(<CampaignRail {...railProps({ playability: { label: 'Reconnecting…', tone: 'neutral' } })} />)
     expect(screen.getByText('Reconnecting…')).toBeInTheDocument()
   })
+
+  it('labels sessions as chapters with their state and marks the selection only visually', () => {
+    render(
+      <CampaignRail
+        {...railProps({
+          selectedSessionId: 22,
+          sessionCards: [
+            { id: 22, label: 'Chapter 3', state: 'Current', name: '' },
+            { id: 21, label: 'Chapter 2', state: 'Ended', name: 'The Drowned Lantern' },
+            { id: 20, label: 'Chapter 1', state: 'Archived', name: '' },
+            { id: 19, label: 'Chapter 4', state: 'Archive', name: 'Archive — Old save' },
+          ],
+        })}
+      />,
+    )
+
+    const current = screen.getByRole('button', { name: /^Chapter 3\s*Current$/ })
+    expect(current).toHaveClass('active')
+    expect(current).toHaveAttribute('aria-current', 'true')
+    expect(screen.getByRole('button', { name: /^Chapter 2\s*Ended · The Drowned Lantern$/ })).not.toHaveClass('active')
+    expect(screen.getByRole('button', { name: /^Chapter 1\s*Archived$/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Chapter 4\s*Archive · Archive — Old save$/ })).toBeInTheDocument()
+    expect(screen.queryByText(/Active/)).not.toBeInTheDocument()
+  })
+
+  it('starts the next chapter from the operator controls and the empty list', () => {
+    const onStartSession = vi.fn()
+    const { rerender } = render(
+      <CampaignRail {...railProps({ canUseOperatorTools: true, selectedCampaignId: 10, onStartSession })} />,
+    )
+
+    const startButtons = screen.getAllByRole('button', { name: 'Start next chapter' })
+    expect(startButtons).toHaveLength(2)
+    startButtons.forEach((button) => fireEvent.click(button))
+    expect(onStartSession).toHaveBeenCalledTimes(2)
+
+    rerender(<CampaignRail {...railProps({ selectedCampaignId: 10, onStartSession })} />)
+    expect(screen.queryByRole('button', { name: 'Start next chapter' })).not.toBeInTheDocument()
+  })
 })
+

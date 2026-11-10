@@ -500,8 +500,10 @@ function RollBeatView({ beat }: { beat: RollBeat }) {
         ) : null}
         {roll.outcome ? (
           <span className="story-roll-outcome" data-outcome={roll.outcome}>
-            {roll.outcome}
-            {roll.dc !== null ? <span className="story-roll-dc"> vs DC {roll.dc}</span> : null}
+            {roll.attack ? (roll.outcome === 'success' ? 'hit' : 'miss') : roll.outcome}
+            {roll.dc !== null ? (
+              <span className="story-roll-dc">{roll.attack ? ` vs AC ${roll.dc}` : ` vs DC ${roll.dc}`}</span>
+            ) : null}
           </span>
         ) : null}
       </span>

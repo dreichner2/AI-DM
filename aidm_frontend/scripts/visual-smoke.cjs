@@ -35,6 +35,11 @@ const LIGHT_THEME_VIEWPORTS = [
   { name: 'mobile-light', width: 390, height: 844, fullPage: false },
 ]
 
+const STORY_VIEWPORTS = [
+  { name: 'desktop', width: 1440, height: 900 },
+  { name: 'mobile', width: 390, height: 844 },
+]
+
 function log(message) {
   process.stdout.write(`[visual-smoke] ${message}\n`)
 }
@@ -578,6 +583,73 @@ async function assertCompactCombatLayout(page, viewport) {
   }
 }
 
+// The title screen offers Play Now directly to new players; returning players open it first.
+async function clickPlayNow(page) {
+  const playNow = page.getByRole('button', { name: /^Play now/i })
+  if (!(await playNow.isVisible())) {
+    await page.getByRole('button', { name: 'Play a ready-made adventure' }).click()
+  }
+  await playNow.click()
+}
+
+async function waitForStoryNarrations(page, count) {
+  await page.waitForFunction(
+    (minimum) => [...document.querySelectorAll('.story-feed .story-narration:not([data-streaming])')]
+      .filter((beat) => (beat.textContent || '').trim()).length >= minimum,
+    count,
+    { timeout: 60_000 },
+  )
+}
+
+async function captureStoryState(page, state, artifactDir) {
+  const screenshots = []
+  for (const viewport of STORY_VIEWPORTS) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await expect(page.locator('.story-shell')).toBeVisible()
+    await expect(page.getByText('Delivery uncertain')).toHaveCount(0)
+    await expect(page.getByText('We could not confirm that reached the table.')).toHaveCount(0)
+    const overflowX = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    )
+    if (overflowX > 6) {
+      throw new Error(`story ${state} at ${viewport.width}x${viewport.height} has horizontal overflow of ${overflowX}px`)
+    }
+    const filePath = path.join(artifactDir, `story-${state}-${viewport.name}.png`)
+    await page.screenshot({ path: filePath })
+    screenshots.push(filePath)
+  }
+  await page.setViewportSize({ width: STORY_VIEWPORTS[0].width, height: STORY_VIEWPORTS[0].height })
+  return screenshots
+}
+
+// Story mode, the default play screen, from a fresh browser: Play Now, the opening, one action, the drawer.
+async function runStoryFlow(browser, frontendUrl, consoleErrors, artifactDir) {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
+  page.on('pageerror', (error) => {
+    consoleErrors.push(`Story: ${error.message}`)
+  })
+  await page.goto(frontendUrl, { waitUntil: 'domcontentloaded' })
+  await expect(page.getByRole('heading', { name: 'AI-DM' })).toBeVisible({ timeout: 20_000 })
+  await clickPlayNow(page)
+  await expect(page.locator('.story-shell')).toBeVisible({ timeout: 30_000 })
+  await waitForStoryNarrations(page, 1)
+  const screenshots = await captureStoryState(page, 'opening', artifactDir)
+
+  const actionInput = page.getByLabel('Your Action')
+  await expect(actionInput).toBeEnabled({ timeout: 15_000 })
+  await actionInput.fill('I ask the innkeeper who brought the empty caravan in.')
+  await actionInput.press('Enter')
+  await waitForStoryNarrations(page, 2)
+  screenshots.push(...await captureStoryState(page, 'action', artifactDir))
+
+  await page.getByRole('button', { name: 'Open character panel' }).click()
+  await expect(page.getByRole('tab', { name: 'Character' })).toBeVisible()
+  screenshots.push(...await captureStoryState(page, 'drawer', artifactDir))
+  await page.close()
+  log('captured Story opening, action and drawer at 1440x900 and 390x844')
+  return screenshots
+}
+
 async function launchChromium() {
   if (CHROMIUM_CHANNEL) return chromium.launch({ channel: CHROMIUM_CHANNEL })
   try {
@@ -611,6 +683,8 @@ async function runVisualFlow(frontendUrl, backendUrl, ids, artifactDir) {
   const routeUrl = `${frontendUrl}/?campaign=${ids.campaign.campaign_id}&session=${ids.session.session_id}&player=${ids.player.player_id}`
   await page.addInitScript((playerId) => {
     localStorage.setItem('aidm:open:selectedPlayerId', String(playerId))
+    // The layout checks below measure the classic console ("Table tools").
+    localStorage.setItem('aidm:playView', 'console')
   }, ids.player.player_id)
   await page.goto(routeUrl, { waitUntil: 'domcontentloaded' })
   await page.locator('.prototype-shell').waitFor({ state: 'visible', timeout: 20_000 })
@@ -686,6 +760,8 @@ async function runVisualFlow(frontendUrl, backendUrl, ids, artifactDir) {
   await assertCompactCombatLayout(page, { name: 'mobile-narrow-combat', width: 360, height: 800 })
   await page.screenshot({ path: path.join(artifactDir, 'combat-mobile-narrow.png') })
   log('captured real combat layouts at 1024x768 and 360x800')
+
+  screenshots.push(...await runStoryFlow(browser, frontendUrl, consoleErrors, artifactDir))
 
   await browser.close()
   if (consoleErrors.length) {

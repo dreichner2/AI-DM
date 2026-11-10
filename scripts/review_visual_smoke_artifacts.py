@@ -49,6 +49,13 @@ EXPECTED_SCREENSHOTS: tuple[ScreenshotExpectation, ...] = (
     ScreenshotExpectation('tablet-portrait.png', width=768, min_height=1024, max_height=1024),
     ScreenshotExpectation('mobile-full.png', width=390, min_height=844, max_height=844),
     ScreenshotExpectation('mobile-narrow.png', width=360, min_height=800, max_height=800),
+    # Story mode, the default play screen: the opening, after one action, and with the drawer open.
+    ScreenshotExpectation('story-opening-desktop.png', width=1440, min_height=900, max_height=900),
+    ScreenshotExpectation('story-opening-mobile.png', width=390, min_height=844, max_height=844),
+    ScreenshotExpectation('story-action-desktop.png', width=1440, min_height=900, max_height=900),
+    ScreenshotExpectation('story-action-mobile.png', width=390, min_height=844, max_height=844),
+    ScreenshotExpectation('story-drawer-desktop.png', width=1440, min_height=900, max_height=900),
+    ScreenshotExpectation('story-drawer-mobile.png', width=390, min_height=844, max_height=844),
 )
 
 COLOR_CHANNELS = {

@@ -27,21 +27,40 @@ import type {
 } from './types'
 
 // One shared socket stands in for every io() connection. Like socket.io, it
-// keeps a listener registry and disconnect() synchronously fires every
-// 'disconnect' listener that is still registered.
+// keeps a listener registry (including catch-all onAny listeners) and
+// disconnect() synchronously fires every 'disconnect' listener that is still
+// registered.
 const socketMock = vi.hoisted(() => {
   type Listener = (...args: unknown[]) => void
   const listeners = new Map<string, Set<Listener>>()
+  const anyListeners = new Set<Listener>()
   const socket = {
     connected: true,
     emit: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),
+    onAny: vi.fn(),
+    offAny: vi.fn(),
     removeAllListeners: vi.fn(),
     disconnect: vi.fn(),
   }
+  // Delivers an event from the server to every listener, as socket.io does.
+  const serverEmit = (event: string, ...args: unknown[]) => {
+    anyListeners.forEach((listener) => listener(event, ...args))
+    listeners.get(event)?.forEach((listener) => listener(...args))
+  }
   const installBehaviour = () => {
     listeners.clear()
+    anyListeners.clear()
+    socket.onAny.mockImplementation((listener: Listener) => {
+      anyListeners.add(listener)
+      return socket
+    })
+    socket.offAny.mockImplementation((listener?: Listener) => {
+      if (listener === undefined) anyListeners.clear()
+      else anyListeners.delete(listener)
+      return socket
+    })
     socket.on.mockImplementation((event: string, listener: Listener) => {
       const registered = listeners.get(event) ?? new Set<Listener>()
       registered.add(listener)
@@ -67,7 +86,7 @@ const socketMock = vi.hoisted(() => {
     })
   }
   installBehaviour()
-  return { io: vi.fn<(url?: string) => typeof socket>(() => socket), installBehaviour, socket }
+  return { io: vi.fn<(url?: string) => typeof socket>(() => socket), installBehaviour, serverEmit, socket }
 })
 
 vi.mock('socket.io-client', () => ({
@@ -508,6 +527,22 @@ function installFetchMock() {
             ? ['player_read', 'player_action', 'dm_authoring', 'dm_runtime_control', 'debug_read', 'admin_workspace']
             : ['player_read', 'player_action'],
           descriptions: {},
+        })
+      }
+      if (method === 'GET' && path === '/api/onboarding/pregenerated-characters') {
+        return jsonResponse({
+          characters: [
+            {
+              id: 'arden-vale',
+              character_name: 'Arden Vale',
+              race: 'Human',
+              char_class: 'Fighter',
+              tagline: 'A steady sword arm who protects the road when words fail.',
+              portrait: '/profile-icons/human_male.png',
+            },
+          ],
+          count: 1,
+          default_character_id: 'arden-vale',
         })
       }
       if (method === 'POST' && path === '/api/onboarding/play-now') {
@@ -1678,6 +1713,15 @@ async function renderLoadedApp() {
   return rendered
 }
 
+/** Renders the default Story view and waits for the session's story to load. */
+async function renderStoryApp() {
+  localStorage.removeItem('aidm:playView')
+  const rendered = render(<App />)
+  const feed = await screen.findByRole('log', { name: 'Session timeline' })
+  await waitFor(() => expect(feed).toHaveTextContent('Full narrator ending remains visible.'))
+  return rendered
+}
+
 function toggleAdminToolsViaComposerLabel() {
   fireEvent.click(screen.getByRole('button', { name: 'Director controls' }))
 }
@@ -1780,6 +1824,8 @@ export function setupAppTest() {
   socketMock.socket.emit.mockClear()
   socketMock.socket.on.mockClear()
   socketMock.socket.off.mockClear()
+  socketMock.socket.onAny.mockClear()
+  socketMock.socket.offAny.mockClear()
   socketMock.socket.removeAllListeners.mockClear()
   socketMock.socket.disconnect.mockClear()
   socketMock.socket.connected = true
@@ -1793,6 +1839,8 @@ export function setupAppTest() {
   })
   localStorage.clear()
   sessionStorage.clear()
+  // The suites written for the classic console open it directly; Story tests use renderStoryApp().
+  localStorage.setItem('aidm:playView', 'console')
   for (const cookie of document.cookie.split(';')) {
     const name = cookie.split('=', 1)[0]?.trim()
     if (name) document.cookie = `${name}=; Max-Age=0; Path=/; SameSite=Lax`
@@ -1838,6 +1886,7 @@ export {
   lightThemeContrastBackgrounds,
   lightThemeContrastForegrounds,
   renderLoadedApp,
+  renderStoryApp,
   socketHandler,
   socketMock,
   toggleAdminToolsViaComposerLabel,

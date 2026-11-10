@@ -643,7 +643,7 @@ export function useWorkspaceQueries({
           if (sessionData.some((item) => item.session_id === current)) {
             return current
           }
-          return sessionData[0]?.session_id ?? null
+          return (sessionData.find((item) => item.is_current) ?? sessionData[0])?.session_id ?? null
         })
         setSelectedPlayerId((current) => {
           if (playerData.some((item) => item.player_id === current)) {

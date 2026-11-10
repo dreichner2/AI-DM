@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { apiFetch } from './api'
+import { isRecord } from './gameSelectors'
 import type { MainTab } from './SessionBoard'
+import type { TitleHero } from './story/TitleHeroes'
+import type { TitleResume, TitleScreenProps } from './TitleScreen'
 import type {
   AccountSession,
   Campaign,
+  CampaignWorkspace,
   ClarificationRequest,
   PlayNowResponse,
   PlayerDetail,
@@ -15,8 +19,31 @@ import type {
 } from './types'
 
 const PLAY_NOW_SEEN_STORAGE_KEY = 'aidm:hasPlayed'
+const TITLE_HERO_STORAGE_KEY = 'aidm:titleHero'
+const PREGENERATED_CHARACTERS_PATH = '/api/onboarding/pregenerated-characters'
+const NO_CAMPAIGNS: Campaign[] = []
 
 type ValueUpdater<T> = T | ((current: T) => T)
+
+type PregeneratedCharactersResponse = {
+  characters?: unknown
+  default_character_id?: unknown
+}
+
+type HeroLibrary =
+  | { status: 'idle' }
+  | { status: 'ready'; heroes: TitleHero[]; defaultHeroId: string }
+  // `requestKey` names the credentials that failed; new credentials try again.
+  | { status: 'failed'; requestKey: string }
+
+type ResumeChapter = {
+  campaignId: number
+  sessionId: number | null
+  chapterNumber: number | null
+  scene: string | null
+  lastPlayedAt: string | null
+  recap: string | null
+}
 
 type UsePlayNowOnboardingOptions = {
   activeSessionId: number | null
@@ -26,6 +53,11 @@ type UsePlayNowOnboardingOptions = {
   backendReady: boolean
   baseUrl: string
   campaignCount: number
+  /** The already-loaded campaign list; the most recently played one is offered to resume. */
+  campaigns?: Campaign[]
+  /** No AI provider is active, so the scripted narrator runs. */
+  safeMode?: boolean
+  openCampaignChooser?: () => void
   closeMobilePanels: () => void
   modalOpen: boolean
   runtimeSettingsOpen: boolean
@@ -76,6 +108,71 @@ function readPlayNowSeenFlag() {
   }
 }
 
+function readStoredHeroId() {
+  try {
+    return localStorage.getItem(TITLE_HERO_STORAGE_KEY)
+  } catch {
+    return null
+  }
+}
+
+function text(value: unknown) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function titleHeroesFromPayload(payload: PregeneratedCharactersResponse): TitleHero[] {
+  const characters = Array.isArray(payload.characters) ? payload.characters.filter(isRecord) : []
+  return characters
+    .map((character) => ({
+      id: text(character.id),
+      name: text(character.character_name),
+      race: text(character.race),
+      charClass: text(character.char_class),
+      tagline: text(character.tagline),
+      portrait: text(character.portrait),
+    }))
+    .filter((hero) => hero.id && hero.name)
+}
+
+function campaignActivityAt(campaign: Campaign) {
+  return campaign.latest_activity_at ?? campaign.updated_at ?? campaign.created_at
+}
+
+function latestCampaign(campaigns: Campaign[]) {
+  let latest: Campaign | null = null
+  let latestTime = -Infinity
+  for (const campaign of campaigns) {
+    if (campaign.is_archived) continue
+    const time = Date.parse(campaignActivityAt(campaign) ?? '')
+    const comparable = Number.isFinite(time) ? time : -Infinity
+    if (!latest || comparable > latestTime) {
+      latest = campaign
+      latestTime = comparable
+    }
+  }
+  return latest
+}
+
+function currentChapterSession(sessions: SessionSummary[]) {
+  return sessions.find((session) => session.is_current) ?? sessions[0] ?? null
+}
+
+function resumeChapterFromWorkspace(campaignId: number, workspace: CampaignWorkspace): ResumeChapter {
+  const session = currentChapterSession(workspace.sessions ?? [])
+  const snapshot = isRecord(session?.state_snapshot) ? session.state_snapshot : {}
+  const scene = isRecord(snapshot.currentScene) ? text(snapshot.currentScene.name) : ''
+  // A chapter with no turns yet has nothing to recap; its summary is only the import note.
+  const summary = session && session.turn_count > 0 ? text(session.latest_summary) : ''
+  return {
+    campaignId,
+    sessionId: session?.session_id ?? null,
+    chapterNumber: session?.chapter_number ?? null,
+    scene: scene || text(workspace.campaign?.location) || null,
+    lastPlayedAt: session?.latest_activity_at ?? null,
+    recap: text(session?.chapter_recap) || summary || null,
+  }
+}
+
 export function usePlayNowOnboarding({
   activeSessionId,
   auth,
@@ -84,6 +181,9 @@ export function usePlayNowOnboarding({
   backendReady,
   baseUrl,
   campaignCount,
+  campaigns = NO_CAMPAIGNS,
+  safeMode = false,
+  openCampaignChooser,
   closeMobilePanels,
   modalOpen,
   runtimeSettingsOpen,
@@ -126,9 +226,26 @@ export function usePlayNowOnboarding({
   turnRowCount,
 }: UsePlayNowOnboardingOptions) {
   const [titleScreenDismissed, setTitleScreenDismissed] = useState(readPlayNowSeenFlag)
+  const [titleRequested, setTitleRequested] = useState(false)
   const [playNowPending, setPlayNowPending] = useState(false)
+  const [heroLibrary, setHeroLibrary] = useState<HeroLibrary>({ status: 'idle' })
+  const [storedHeroId, setStoredHeroId] = useState(readStoredHeroId)
+  const [resumeChapter, setResumeChapter] = useState<ResumeChapter | null>(null)
   const playNowPendingRef = useRef(false)
   const playNowAutoStartRef = useRef(false)
+  const heroRequestKeyRef = useRef<string | null>(null)
+  const resumeRequestRef = useRef<number | null>(null)
+
+  const titleScreenAccountReady = authRequired !== true || hostedAccessReady
+  const selectedHeroId =
+    heroLibrary.status === 'ready'
+      ? heroLibrary.heroes.some((hero) => hero.id === storedHeroId)
+        ? storedHeroId
+        : heroLibrary.defaultHeroId
+      : null
+  const resumeCampaign = useMemo(() => latestCampaign(campaigns), [campaigns])
+  const resumeCampaignId = resumeCampaign?.campaign_id ?? null
+  const resumeChapterForCampaign = resumeChapter?.campaignId === resumeCampaignId ? resumeChapter : null
 
   const rememberTitleScreenChoice = useCallback(() => {
     try {
@@ -137,6 +254,21 @@ export function usePlayNowOnboarding({
       // The current browser session can continue even when storage is unavailable.
     }
     setTitleScreenDismissed(true)
+    setTitleRequested(false)
+  }, [])
+
+  const returnToTitle = useCallback(() => {
+    closeMobilePanels()
+    setTitleRequested(true)
+  }, [closeMobilePanels])
+
+  const selectTitleHero = useCallback((heroId: string) => {
+    setStoredHeroId(heroId)
+    try {
+      localStorage.setItem(TITLE_HERO_STORAGE_KEY, heroId)
+    } catch {
+      // The choice still holds for this visit when storage is unavailable.
+    }
   }, [])
 
   const logInFromTitleScreen = useCallback(() => {
@@ -154,9 +286,35 @@ export function usePlayNowOnboarding({
       logInFromTitleScreen()
       return
     }
+    if (resumeCampaignId !== null) {
+      setSelectedCampaignId(resumeCampaignId)
+      if (resumeChapterForCampaign?.sessionId) setSelectedSessionId(resumeChapterForCampaign.sessionId)
+      setMainTab('turns')
+    }
     rememberTitleScreenChoice()
     closeMobilePanels()
-  }, [authRequired, closeMobilePanels, hostedAccessReady, logInFromTitleScreen, rememberTitleScreenChoice])
+  }, [
+    authRequired,
+    closeMobilePanels,
+    hostedAccessReady,
+    logInFromTitleScreen,
+    rememberTitleScreenChoice,
+    resumeCampaignId,
+    resumeChapterForCampaign,
+    setMainTab,
+    setSelectedCampaignId,
+    setSelectedSessionId,
+  ])
+
+  const openAdventuresFromTitleScreen = useCallback(() => {
+    if (authRequired === true && !hostedAccessReady) {
+      logInFromTitleScreen()
+      return
+    }
+    setTitleRequested(false)
+    closeMobilePanels()
+    openCampaignChooser?.()
+  }, [authRequired, closeMobilePanels, hostedAccessReady, logInFromTitleScreen, openCampaignChooser])
 
   const createCampaignFromTitleScreen = useCallback(() => {
     if (authRequired === true && !hostedAccessReady) {
@@ -175,6 +333,9 @@ export function usePlayNowOnboarding({
     rememberTitleScreenChoice,
   ])
 
+  // Without the hero list the server's default hero plays, exactly as before heroes were choosable.
+  const playNowCharacterId = heroLibrary.status === 'ready' ? selectedHeroId : null
+
   const playNowFromTitleScreen = useCallback(async () => {
     if (playNowPendingRef.current) return
     const hostedGuestPlayNow = authRequired === true && !hostedAccessReady
@@ -187,7 +348,7 @@ export function usePlayNowOnboarding({
         auth,
         {
           method: 'POST',
-          body: JSON.stringify({}),
+          body: JSON.stringify(playNowCharacterId ? { character_id: playNowCharacterId } : {}),
         },
       )
       if (hostedGuestPlayNow && !payload.account_session) {
@@ -253,6 +414,7 @@ export function usePlayNowOnboarding({
     loadSessionData,
     hostedAccessReady,
     playerUpserted,
+    playNowCharacterId,
     pushError,
     refreshCampaignWorkspace,
     refreshRoot,
@@ -315,6 +477,7 @@ export function usePlayNowOnboarding({
     !workspaceLoading &&
     !modalOpen &&
     (
+      titleRequested ||
       hostedFirstRun ||
       (
         !selectedCampaignId &&
@@ -324,6 +487,74 @@ export function usePlayNowOnboarding({
       )
     )
 
+  const heroRequestKey = `${baseUrl}|${auth}|${titleScreenAccountReady}`
+  useEffect(() => {
+    if (!showTitleScreen || heroLibrary.status === 'ready') return
+    if (heroLibrary.status === 'failed' && heroLibrary.requestKey === heroRequestKey) return
+    if (heroRequestKeyRef.current === heroRequestKey) return
+    heroRequestKeyRef.current = heroRequestKey
+    apiFetch<PregeneratedCharactersResponse>(baseUrl, PREGENERATED_CHARACTERS_PATH, auth)
+      .then((payload) => {
+        const heroes = titleHeroesFromPayload(payload)
+        if (!heroes.length) throw new Error('No ready-made heroes are available.')
+        const defaultId = text(payload.default_character_id)
+        setHeroLibrary({
+          status: 'ready',
+          heroes,
+          defaultHeroId: heroes.some((hero) => hero.id === defaultId) ? defaultId : heroes[0].id,
+        })
+      })
+      .catch(() =>
+        setHeroLibrary((current) =>
+          current.status === 'ready' ? current : { status: 'failed', requestKey: heroRequestKey },
+        ),
+      )
+      .finally(() => {
+        if (heroRequestKeyRef.current === heroRequestKey) heroRequestKeyRef.current = null
+      })
+  }, [auth, baseUrl, heroLibrary, heroRequestKey, showTitleScreen])
+
+  // Read the resumable campaign's current chapter each time the title screen opens.
+  useEffect(() => {
+    if (!showTitleScreen || resumeCampaignId === null) {
+      resumeRequestRef.current = null
+      return
+    }
+    if (resumeRequestRef.current === resumeCampaignId) return
+    resumeRequestRef.current = resumeCampaignId
+    apiFetch<CampaignWorkspace>(baseUrl, `/api/campaigns/${resumeCampaignId}/workspace`, auth)
+      .then((workspace) => setResumeChapter(resumeChapterFromWorkspace(resumeCampaignId, workspace)))
+      // The block still offers the campaign from the list when its chapter cannot be read.
+      .catch(() => undefined)
+  }, [auth, baseUrl, resumeCampaignId, showTitleScreen])
+
+  const resume: TitleResume | null = resumeCampaign
+    ? {
+        title: resumeCampaign.title,
+        chapterNumber: resumeChapterForCampaign?.chapterNumber ?? null,
+        scene: resumeChapterForCampaign?.scene ?? (text(resumeCampaign.location) || null),
+        lastPlayedAt: resumeChapterForCampaign?.lastPlayedAt ?? campaignActivityAt(resumeCampaign),
+        recap: resumeChapterForCampaign?.recap ?? null,
+      }
+    : null
+
+  const titleScreenProps: TitleScreenProps = {
+    pending: playNowPending,
+    accountReady: titleScreenAccountReady,
+    heroes: heroLibrary.status === 'ready' ? heroLibrary.heroes : [],
+    heroesStatus: heroLibrary.status === 'idle' ? 'loading' : heroLibrary.status,
+    selectedHeroId,
+    onSelectHero: selectTitleHero,
+    resume,
+    safeMode,
+    onPlayNow: () => void playNowFromTitleScreen(),
+    onContinue: continueFromTitleScreen,
+    onCreateCampaign: createCampaignFromTitleScreen,
+    onOpenAdventures: openAdventuresFromTitleScreen,
+    onLogIn: logInFromTitleScreen,
+    onCreateAccount: createAccountFromTitleScreen,
+  }
+
   return {
     createAccountFromTitleScreen,
     createCampaignFromTitleScreen,
@@ -331,8 +562,10 @@ export function usePlayNowOnboarding({
     logInFromTitleScreen,
     playNowFromTitleScreen,
     playNowPending,
+    returnToTitle,
     showTitleScreen,
-    titleScreenAccountReady: authRequired !== true || hostedAccessReady,
+    titleScreenAccountReady,
     titleScreenCanContinue: campaignCount > 0,
+    titleScreenProps,
   }
 }

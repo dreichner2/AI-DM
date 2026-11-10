@@ -232,6 +232,10 @@ export type SessionBoardProps = {
   resolveClarification: (selectedItemId: string) => void
   onStartAdventure: () => void
   actionComposerProps: ActionComposerProps
+  /** Set when the open session is an ended chapter: it is read-only and offers the current chapter. */
+  endedChapter?: { onContinue: () => void } | null
+  /** Switches the app back to Story view. */
+  onOpenStoryView?: () => void
 }
 
 function formatDateTime(value: string | null) {
@@ -787,6 +791,8 @@ export function SessionBoard({
   resolveClarification,
   onStartAdventure,
   actionComposerProps,
+  endedChapter,
+  onOpenStoryView,
 }: SessionBoardProps) {
   const loading = workspaceLoading || sessionLoading
   const [chatTextSettings, setChatTextSettings] = useState(loadChatTextSettings)
@@ -1137,6 +1143,13 @@ export function SessionBoard({
               <strong>View</strong>
               <span>Reading and presentation</span>
             </div>
+            {onOpenStoryView ? (
+              <div className="view-mode-toggle view-settings-story">
+                <button type="button" onClick={onOpenStoryView}>
+                  Story view
+                </button>
+              </div>
+            ) : null}
             <div className="view-mode-toggle" role="group" aria-label="Board view mode">
               <button
                 type="button"
@@ -1341,7 +1354,7 @@ export function SessionBoard({
                     disabled={startAdventureDisabled}
                   >
                     <Sparkles size={15} />
-                    Start Adventure
+                    {sendPending ? 'Starting the adventure…' : 'Start Adventure'}
                   </button>
                 ) : null}
               </div>
@@ -1416,7 +1429,17 @@ export function SessionBoard({
         submitAction={actionComposerProps.submitAction}
       />
 
-      {turnRecoveryGate ? (
+      {endedChapter ? (
+        <section className="action-composer recovery-action-block ended-chapter-block" aria-label="Chapter closed">
+          <BookOpen size={20} aria-hidden="true" />
+          <div>
+            <strong>This chapter has closed.</strong>
+            <button type="button" className="start-adventure-button" onClick={endedChapter.onContinue}>
+              Continue the adventure
+            </button>
+          </div>
+        </section>
+      ) : turnRecoveryGate ? (
         <section className="action-composer recovery-action-block" role="status" aria-live="polite">
           <ShieldAlert size={20} aria-hidden="true" />
           <div>

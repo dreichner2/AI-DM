@@ -2,7 +2,7 @@ import { type FormEventHandler, type RefObject } from 'react'
 import { X } from 'lucide-react'
 import { ModalShell } from './ModalShell'
 import type { CampaignActionDialogState } from './useCampaignActions'
-import type { SessionActionDialogState } from './useSessionActions'
+import type { SessionActionDialogState, StartChapterDialogState } from './useSessionActions'
 
 type CampaignActionDialogProps = {
   dialog: NonNullable<CampaignActionDialogState>
@@ -205,6 +205,102 @@ export function SessionActionDialog({
               : rename
                 ? 'Rename Session'
                 : 'Delete Session'}
+          </button>
+        </footer>
+      </form>
+    </ModalShell>
+  )
+}
+
+type StartChapterDialogProps = {
+  dialog: NonNullable<StartChapterDialogState>
+  dialogRef: RefObject<HTMLElement | null>
+  /** Operators may drop an unfinished fight or roll when the server refuses to close the chapter. */
+  canForce: boolean
+  onClose: () => void
+  onFreshChange: (fresh: boolean) => void
+  onForceChange: (force: boolean) => void
+  onSubmit: FormEventHandler<HTMLFormElement>
+}
+
+export function StartChapterDialog({
+  dialog,
+  dialogRef,
+  canForce,
+  onClose,
+  onFreshChange,
+  onForceChange,
+  onSubmit,
+}: StartChapterDialogProps) {
+  return (
+    <ModalShell
+      className="campaign-dialog chapter-start-dialog"
+      closeDisabled={dialog.pending}
+      describedBy="chapter-start-description"
+      dialogRef={dialogRef}
+      labelledBy="chapter-start-title"
+      onClose={onClose}
+    >
+      <header>
+        <div>
+          <span>Chapter</span>
+          <h2 id="chapter-start-title">Start the next chapter</h2>
+        </div>
+        <button
+          type="button"
+          aria-label="Close start chapter"
+          onClick={onClose}
+          disabled={dialog.pending}
+        >
+          <X size={18} />
+        </button>
+      </header>
+      <form onSubmit={onSubmit}>
+        <p id="chapter-start-description" className="chapter-start-copy">
+          The story continues: the world, your quests and your progress carry over. The current
+          chapter is closed and kept for reading.
+        </p>
+        <label className="chapter-start-option">
+          <input
+            type="checkbox"
+            checked={dialog.fresh}
+            disabled={dialog.pending}
+            onChange={(event) => onFreshChange(event.target.checked)}
+          />
+          <span>Start over from the beginning instead</span>
+        </label>
+        {dialog.fresh ? (
+          <div className="dialog-warning" role="note">
+            <span>The world resets to the adventure&apos;s opening. Your characters keep their progress.</span>
+          </div>
+        ) : null}
+        {dialog.error ? <div className="dialog-error" role="alert">{dialog.error}</div> : null}
+        {dialog.unsettled && canForce ? (
+          <label className="chapter-start-option">
+            <input
+              type="checkbox"
+              checked={dialog.force}
+              disabled={dialog.pending}
+              onChange={(event) => onForceChange(event.target.checked)}
+            />
+            <span>Start anyway and drop the unfinished fight or roll</span>
+          </label>
+        ) : null}
+        <footer>
+          <button
+            type="button"
+            className="secondary"
+            onClick={onClose}
+            disabled={dialog.pending}
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            data-autofocus
+            disabled={dialog.pending}
+          >
+            {dialog.pending ? 'Starting...' : 'Start chapter'}
           </button>
         </footer>
       </form>

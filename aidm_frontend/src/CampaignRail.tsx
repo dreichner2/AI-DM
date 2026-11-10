@@ -16,8 +16,12 @@ export type CampaignCard = {
 
 export type SessionCard = {
   id: number
-  title: string
-  meta: string
+  /** `Chapter {n}`. */
+  label: string
+  /** `Current`, `Ended`, `Archived` or `Archive` (an imported, read-only chapter). */
+  state: string
+  /** The chapter's own name, when it says more than its label. */
+  name: string
 }
 
 export type PlayabilityStatus = {
@@ -275,7 +279,7 @@ export function CampaignRail({
               >
                 <Trash2 size={14} />
               </button>
-              <button type="button" onClick={onStartSession} aria-label="Start session" title="Start session">
+              <button type="button" onClick={onStartSession} aria-label="Start next chapter" title="Start next chapter">
                 <Plus size={16} />
               </button>
             </div>
@@ -296,8 +300,8 @@ export function CampaignRail({
                 title={selectionLocked && session.id !== selectedSessionId ? 'Wait for the active turn to finish.' : undefined}
                 onClick={() => onSelectSession(session.id)}
               >
-                <strong>{session.title}</strong>
-                <small>{session.meta}</small>
+                <strong>{session.label}</strong>
+                <small>{[session.state, session.name].filter(Boolean).join(' · ')}</small>
               </button>
             ))
           ) : workspaceLoading ? (
@@ -311,7 +315,7 @@ export function CampaignRail({
               <span>No sessions yet.</span>
               {canUseOperatorTools ? (
                 <button type="button" onClick={onStartSession} disabled={!selectedCampaignId}>
-                  Start session
+                  Start next chapter
                 </button>
               ) : null}
             </div>

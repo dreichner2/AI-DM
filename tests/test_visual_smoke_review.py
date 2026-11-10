@@ -4,6 +4,7 @@ import struct
 import zlib
 
 from scripts.review_visual_smoke_artifacts import (
+    EXPECTED_SCREENSHOTS,
     ScreenshotExpectation,
     inspect_png,
     render_markdown,
@@ -97,3 +98,33 @@ def test_review_visual_smoke_artifacts_fails_blank_or_missing_screenshots(tmp_pa
     assert review['status'] == 'failed'
     assert any('desktop-shell.png' in failure and 'unique color count' in failure for failure in review['failures'])
     assert any('laptop-shell.png' in failure and 'missing expected screenshot' in failure for failure in review['failures'])
+
+
+def test_default_expectations_cover_story_mode_at_desktop_and_phone_sizes():
+    expected = {(item.file_name, item.width, item.min_height, item.max_height) for item in EXPECTED_SCREENSHOTS}
+
+    for state in ('opening', 'action', 'drawer'):
+        assert (f'story-{state}-desktop.png', 1440, 900, 900) in expected
+        assert (f'story-{state}-mobile.png', 390, 844, 844) in expected
+    assert ('desktop-shell.png', 1440, 900, 900) in expected
+
+
+def test_review_visual_smoke_artifacts_reports_missing_story_screenshots(tmp_path):
+    expectations = (
+        ScreenshotExpectation('desktop-shell.png', width=8, min_height=6, max_height=6),
+        ScreenshotExpectation('story-opening-desktop.png', width=8, min_height=6, max_height=6),
+    )
+    _write_rgb_png(tmp_path / 'desktop-shell.png', width=8, height=6, varied=True)
+
+    review = review_visual_smoke_artifacts(
+        tmp_path,
+        expectations=expectations,
+        minimum_file_bytes=1,
+        minimum_unique_colors=2,
+        minimum_different_pixel_ratio=0.1,
+        reviewed_at='2026-11-10T00:05:00+00:00',
+    )
+
+    assert review['status'] == 'failed'
+    assert review['failures'] == ['story-opening-desktop.png: missing expected screenshot']
+

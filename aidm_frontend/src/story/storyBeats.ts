@@ -41,7 +41,10 @@ export type StoryRoll = {
   kept: number | null
   modifier: number | null
   total: number | null
+  /** The target number: a DC, or the target's AC for an attack. */
   dc: number | null
+  /** An attack or spell attack: the outcome reads hit/miss against AC. */
+  attack: boolean
   mode: StoryRollMode
   outcome: 'success' | 'failure' | null
   natural: 'twenty' | 'one' | null
@@ -93,6 +96,7 @@ const DC_RE = /(?:dc\s*)?(\d{1,2})/i
 const CONDITION_RE =
   /\b(?:spell|slot|condition|concentrat|cantrip|blinded|charmed|deafened|exhaust|frightened|grappled|incapacitated|invisible|paralyzed|petrified|poisoned|prone|restrained|stunned|unconscious)/
 const LEADING_LABEL_RE =/^([A-Za-z][\w .'-]{0,31}?):\s+(?=\S)/
+const ATTACK_RULE_TYPES = new Set(['attack', 'spell_attack'])
 
 function metadataRecord(metadata: JsonRecord, key: string): JsonRecord | null {
   const value = metadata[key]
@@ -162,8 +166,13 @@ function finishRoll(roll: Omit<StoryRoll, 'outcome' | 'natural'>, outcome: 'succ
   return { ...roll, outcome: derivedOutcome, natural }
 }
 
+function isAttackRule(ruleType: string) {
+  return ATTACK_RULE_TYPES.has(ruleType.trim().toLowerCase())
+}
+
 function rollFromRecord(record: JsonRecord, entry: TimelineEntry, name: string): StoryRoll {
   const metadata = entry.metadata
+  const ruleType = stringValue(record.rule_type ?? metadata.rule_type ?? metadata.roll_type)
   const faces = numberList(record.rolls)
   const kept = numberValue(record.kept) ?? (faces.length === 1 ? faces[0] : null)
   const modifier = numberValue(record.modifier)
@@ -175,17 +184,14 @@ function rollFromRecord(record: JsonRecord, entry: TimelineEntry, name: string):
   return finishRoll(
     {
       name,
-      checkLabel: checkLabelFrom(
-        stringValue(record.reason),
-        stringValue(record.rule_type ?? metadata.rule_type ?? metadata.roll_type),
-        stringValue(ability?.label),
-      ),
+      checkLabel: checkLabelFrom(stringValue(record.reason), ruleType, stringValue(ability?.label)),
       die: stringValue(record.die, 'd20').toLowerCase(),
       faces,
       kept,
       modifier,
       total,
       dc: dcValue(record.task_dc, record.dc, metadata.task_dc, metadata.dc, metadata.dc_hint),
+      attack: isAttackRule(ruleType),
       mode: rollMode(record.mode),
     },
     explicitOutcome(record, metadata),
@@ -194,6 +200,7 @@ function rollFromRecord(record: JsonRecord, entry: TimelineEntry, name: string):
 
 function rollFromText(text: string, entry: TimelineEntry, name: string): StoryRoll | null {
   const metadata = entry.metadata
+  const attack = isAttackRule(stringValue(metadata.rule_type ?? metadata.roll_type))
   const canonical = CANONICAL_ROLL_RE.exec(text)
   if (canonical) {
     const [, die, sign, modifierText, reason, keptText, detail, totalText] = canonical
@@ -210,6 +217,7 @@ function rollFromText(text: string, entry: TimelineEntry, name: string): StoryRo
         modifier,
         total: Number(totalText),
         dc: dcValue(metadata.task_dc, metadata.dc, metadata.dc_hint),
+        attack,
         mode: rollMode(detail?.split(';')[0]),
       },
       explicitOutcome(metadata),
@@ -227,6 +235,7 @@ function rollFromText(text: string, entry: TimelineEntry, name: string): StoryRo
         modifier: null,
         total: Number(resolved[1]),
         dc: dcValue(metadata.task_dc, metadata.dc, metadata.dc_hint),
+        attack,
         mode: 'normal',
       },
       explicitOutcome(metadata),
@@ -432,6 +441,7 @@ export function buildStoryBeats(
             {
               ...roll,
               dc: roll.dc ?? merged.dc,
+              attack: roll.attack || merged.attack,
               faces: roll.faces.length ? roll.faces : merged.faces,
               kept: roll.kept ?? merged.kept,
               modifier: roll.modifier ?? merged.modifier,

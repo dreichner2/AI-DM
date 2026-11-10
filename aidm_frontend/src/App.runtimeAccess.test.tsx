@@ -103,8 +103,8 @@ describe('App runtime and workspace access', () => {
 
     render(<App />)
 
-    await screen.findByRole('button', { name: 'Play Now — Ready-Made Adventure' })
-    fireEvent.click(screen.getByRole('button', { name: 'Log In' }))
+    await screen.findByRole('button', { name: /^Play now/i })
+    fireEvent.click(screen.getByRole('button', { name: 'Log in' }))
     let dialog = await screen.findByRole('dialog', { name: 'Log In' })
     expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
@@ -161,7 +161,7 @@ describe('App runtime and workspace access', () => {
 
     render(<App />)
 
-    const playNow = await screen.findByRole('button', { name: 'Play Now — Ready-Made Adventure' })
+    const playNow = await screen.findByRole('button', { name: /^Play now/i })
     fireEvent.click(playNow)
 
     expect(await screen.findByRole('heading', { name: /Session Alpha/i })).toBeInTheDocument()
@@ -250,7 +250,7 @@ describe('App runtime and workspace access', () => {
     expect(screen.getByRole('button', { name: 'Add campaign' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Rename selected session' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Open session archive' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Start session' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Start next chapter' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Director Commentary' })).toBeInTheDocument()
     expect(screen.getByText('Operator')).toBeInTheDocument()
 
@@ -339,7 +339,7 @@ describe('App runtime and workspace access', () => {
       'Rename selected session',
       'Open session archive',
       'Delete selected session',
-      'Start session',
+      'Start next chapter',
       'Director Commentary',
     ]) {
       expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
@@ -688,8 +688,8 @@ describe('App runtime and workspace access', () => {
 
     render(<App />)
 
-    await screen.findByRole('button', { name: 'Play Now — Ready-Made Adventure' })
-    fireEvent.click(screen.getByRole('button', { name: 'Log In' }))
+    await screen.findByRole('button', { name: /^Play now/i })
+    fireEvent.click(screen.getByRole('button', { name: 'Log in' }))
     let dialog = await screen.findByRole('dialog', { name: 'Log In' })
     fireEvent.change(within(dialog).getByLabelText('Username'), { target: { value: 'Aidan' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))

@@ -3,9 +3,11 @@ import {
   addCookieCsrfHeader,
   addNgrokBrowserWarningBypassHeader,
   addWorkspaceTokenHeader,
+  ApiClientError,
   apiFetch,
   normalizeBaseUrl,
 } from './api'
+import { isRecord } from './gameSelectors'
 import { createClientMessageId } from './gameActions'
 import type { MainTab } from './SessionBoard'
 import type {
@@ -35,6 +37,26 @@ export type SessionActionDialogState = {
   error: string
   pending: boolean
 } | null
+
+export type StartChapterOptions = {
+  /** Start over from the adventure's opening instead of carrying the world forward. */
+  fresh?: boolean
+  /** Drop an unfinished fight or roll in the current chapter (operators only). */
+  force?: boolean
+}
+
+export type StartChapterDialogState = {
+  fresh: boolean
+  force: boolean
+  /** The server refused because the current chapter has an unfinished fight or roll. */
+  unsettled: boolean
+  error: string
+  pending: boolean
+} | null
+
+function chapterStartErrorCode(error: unknown) {
+  return error instanceof ApiClientError && isRecord(error.payload) ? error.payload.error_code : null
+}
 
 type UseSessionActionsOptions = {
   auth: string
@@ -162,6 +184,8 @@ export function useSessionActions({
   const [shareSessionUrl, setShareSessionUrl] = useState('')
   const [sessionActionDialog, setSessionActionDialog] =
     useState<SessionActionDialogState>(null)
+  const [startChapterDialog, setStartChapterDialog] =
+    useState<StartChapterDialogState>(null)
   const selectedCampaignIdRef = useRef(selectedCampaignId)
   const startSessionPromisesRef = useRef<Map<number, Promise<void>>>(new Map())
 
@@ -169,7 +193,7 @@ export function useSessionActions({
     selectedCampaignIdRef.current = selectedCampaignId
   }, [selectedCampaignId])
 
-  const startSession = () => {
+  const startSession = ({ fresh = false, force = false }: StartChapterOptions = {}) => {
     if (!selectedCampaignId) return Promise.resolve()
 
     const campaignId = selectedCampaignId
@@ -184,20 +208,54 @@ export function useSessionActions({
           auth,
           {
             method: 'POST',
-            body: JSON.stringify({ campaign_id: campaignId, client_session_id: clientSessionId }),
+            body: JSON.stringify({
+              campaign_id: campaignId,
+              client_session_id: clientSessionId,
+              continuity: fresh ? 'fresh' : 'continue',
+              ...(force ? { force: true } : {}),
+            }),
           },
         )
+        setStartChapterDialog(null)
         if (selectedCampaignIdRef.current !== campaignId) return
         setSelectedSessionId(result.session_id)
         await refreshCampaignWorkspace(campaignId)
       } catch (error) {
-        pushError('persistence', `Could not start session: ${error instanceof Error ? error.message : String(error)}`)
+        const message = error instanceof Error ? error.message : String(error)
+        const unsettled = chapterStartErrorCode(error) === 'chapter_unsettled'
+        setStartChapterDialog((current) =>
+          current ? { ...current, pending: false, error: message, unsettled: current.unsettled || unsettled } : current,
+        )
+        if (!unsettled) pushError('persistence', `Could not start the next chapter: ${message}`)
       } finally {
         startSessionPromisesRef.current.delete(campaignId)
       }
     })()
     startSessionPromisesRef.current.set(campaignId, operation)
     return operation
+  }
+
+  const openStartChapterDialog = () => {
+    if (!selectedCampaignId) return
+    rememberDialogTrigger()
+    setStartChapterDialog({ fresh: false, force: false, unsettled: false, error: '', pending: false })
+  }
+
+  const closeStartChapterDialog = () => {
+    if (startChapterDialog?.pending) return
+    setStartChapterDialog(null)
+  }
+
+  const updateStartChapterDialog = (changes: Partial<Pick<NonNullable<StartChapterDialogState>, 'fresh' | 'force'>>) => {
+    setStartChapterDialog((current) => (current ? { ...current, ...changes } : current))
+  }
+
+  const submitStartChapterDialog = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!startChapterDialog || startChapterDialog.pending) return Promise.resolve()
+    const { fresh, force, unsettled } = startChapterDialog
+    setStartChapterDialog((current) => (current ? { ...current, pending: true, error: '' } : current))
+    return startSession({ fresh, force: unsettled && force })
   }
 
   const downloadSessionJson = async () => {
@@ -486,6 +544,7 @@ export function useSessionActions({
   return {
     closeShareSessionDialog,
     closeSessionActionDialog,
+    closeStartChapterDialog,
     copyShareSessionUrl,
     downloadCampaignChronicle,
     downloadSessionChronicle,
@@ -493,12 +552,16 @@ export function useSessionActions({
     importSessionJson,
     openDeleteSessionDialog,
     openRenameSessionDialog,
+    openStartChapterDialog,
     sessionActionDialog,
     sessionImportPending,
     setSessionActionDialog,
     shareSession,
     shareSessionUrl,
+    startChapterDialog,
     startSession,
     submitSessionActionDialog,
+    submitStartChapterDialog,
+    updateStartChapterDialog,
   }
 }

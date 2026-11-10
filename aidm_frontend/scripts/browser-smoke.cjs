@@ -247,6 +247,61 @@ async function waitForRouteIds(page) {
   throw new Error(`Timed out waiting for selected route IDs: ${lastUrl} player=${lastPlayerId || 'none'}`)
 }
 
+// The title screen offers Play Now directly to new players; returning players open it first.
+async function clickPlayNow(page) {
+  const playNow = page.getByRole('button', { name: /^Play now/i })
+  if (!(await playNow.isVisible())) {
+    await page.getByRole('button', { name: 'Play a ready-made adventure' }).click()
+  }
+  await playNow.click()
+}
+
+async function waitForStoryNarrations(page, count) {
+  await page.waitForFunction(
+    (minimum) => [...document.querySelectorAll('.story-feed .story-narration:not([data-streaming])')]
+      .filter((beat) => (beat.textContent || '').trim()).length >= minimum,
+    count,
+    { timeout: 60_000 },
+  )
+}
+
+async function expectNoDeliveryUncertainty(page) {
+  await expect(page.getByText('Delivery uncertain')).toHaveCount(0)
+  await expect(page.getByText('We could not confirm that reached the table.')).toHaveCount(0)
+}
+
+// Story mode is the default play screen: Play Now, the opening, then one action.
+async function runStoryFlow(browser, frontendUrl, backendUrl, consoleErrors) {
+  const storyPage = await browser.newPage({ viewport: { width: 1440, height: 900 } })
+  storyPage.on('pageerror', (error) => {
+    consoleErrors.push(`Story: ${error.message}`)
+  })
+  await storyPage.goto(frontendUrl, { waitUntil: 'domcontentloaded' })
+  await storyPage.locator('.prototype-shell').waitFor({ state: 'visible', timeout: 20_000 })
+  await expect(storyPage.getByRole('heading', { name: 'AI-DM' })).toBeVisible()
+  await clickPlayNow(storyPage)
+  await expect(storyPage.locator('.story-shell')).toBeVisible({ timeout: 30_000 })
+  await expect(storyPage.locator('.ops-bar')).toHaveCount(0)
+  await waitForStoryNarrations(storyPage, 1)
+  await expectNoDeliveryUncertainty(storyPage)
+  const storyIds = await waitForRouteIds(storyPage)
+
+  const actionInput = storyPage.getByLabel('Your Action')
+  await expect(actionInput).toBeEnabled({ timeout: 15_000 })
+  await actionInput.fill('I look for whoever scratched the names out of the ledger.')
+  await actionInput.press('Enter')
+  await waitForStoryNarrations(storyPage, 2)
+  await waitForSessionLog(backendUrl, storyIds.sessionId, (entries) =>
+    entries.find(
+      (entry) =>
+        entry.entry_type === 'dm' &&
+        entry.metadata?.action_intent?.text === 'I look for whoever scratched the names out of the ledger.',
+    ),
+  )
+  await expectNoDeliveryUncertainty(storyPage)
+  await storyPage.close()
+}
+
 async function launchChromium() {
   if (CHROMIUM_CHANNEL) return chromium.launch({ channel: CHROMIUM_CHANNEL })
   try {
@@ -282,6 +337,8 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
   })
 
   try {
+    // The flows below exercise the classic console ("Table tools").
+    await page.addInitScript(() => localStorage.setItem('aidm:playView', 'console'))
     await page.goto(frontendUrl, { waitUntil: 'domcontentloaded' })
     await page.locator('.prototype-shell').waitFor({ state: 'visible', timeout: 20_000 })
 
@@ -290,18 +347,9 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
 
     await expect(page.getByRole('heading', { name: 'AI-DM' })).toBeVisible()
 
-    const playNowPage = await browser.newPage({ viewport: { width: 1440, height: 900 } })
-    playNowPage.on('pageerror', (error) => {
-      consoleErrors.push(`Play Now: ${error.message}`)
-    })
-    await playNowPage.goto(frontendUrl, { waitUntil: 'domcontentloaded' })
-    await playNowPage.locator('.prototype-shell').waitFor({ state: 'visible', timeout: 20_000 })
-    await playNowPage.getByRole('button', { name: 'Play Now — Ready-Made Adventure', exact: true }).click()
-    await expect(playNowPage.getByLabel(/Your Action/i)).toBeVisible({ timeout: 30_000 })
-    await waitForRouteIds(playNowPage)
-    await playNowPage.close()
+    await runStoryFlow(browser, frontendUrl, backendUrl, consoleErrors)
 
-    await page.getByRole('button', { name: 'New Campaign' }).click()
+    await page.getByRole('button', { name: /^(Create your own adventure|New adventure)$/ }).click()
     const createCampaignDialog = page.getByRole('dialog', { name: 'Create New Campaign' })
     await expect(createCampaignDialog).toBeVisible()
     await createCampaignDialog.getByLabel('Campaign Name').fill('Browser Smoke Campaign')
@@ -345,9 +393,13 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
     await expect(page.locator('.right-inspector').getByText('New Adventurer')).toBeVisible({ timeout: 15_000 })
   }
 
-  await page.locator('.empty-action-card').getByRole('button', { name: 'Start session' }).click()
-  await expect(page.getByRole('heading', { name: /Session \d+/i })).toBeVisible({ timeout: 15_000 })
-  await expect(page.locator('.session-list .session-card.active')).toContainText('Session')
+  await page.locator('.empty-action-card').getByRole('button', { name: 'Start next chapter' }).click()
+  const startChapterDialog = page.getByRole('dialog', { name: 'Start the next chapter' })
+  await expect(startChapterDialog).toBeVisible()
+  await startChapterDialog.getByRole('button', { name: 'Start chapter' }).click()
+  await expect(startChapterDialog).toBeHidden({ timeout: 15_000 })
+  await expect(page.getByRole('heading', { name: /(Session|Chapter) \d+/i })).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('.session-list .session-card.active')).toContainText('Chapter')
   await expect(page.getByLabel(/Your Action/i)).toBeVisible()
   await expect(page.locator('.composer-tools').getByRole('button', { name: /Roll/i })).toBeVisible()
   const selectedIds = await waitForRouteIds(page)
@@ -664,7 +716,7 @@ async function main() {
 
   await stopAllManaged()
   cleanupTempDir()
-  log('passed: create campaign -> create player -> start session -> manage map/segments -> verify control-local TTS unavailable state -> observe incremental DM streaming -> receive final DM response -> delete session -> import session -> delete imported session')
+  log('passed: Story Play Now -> opening narration -> one action -> create campaign -> create player -> start chapter -> manage map/segments -> verify control-local TTS unavailable state -> observe incremental DM streaming -> receive final DM response -> delete session -> import session -> delete imported session')
 }
 
 if (require.main === module) {
