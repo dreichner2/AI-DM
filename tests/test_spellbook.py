@@ -19,6 +19,7 @@ def test_spell_metadata_distinguishes_rules_backed_and_narrated_spells():
     assert '8d6 fire' in fireball['effectSummary']
     assert 'area: up to 6 enemies' in fireball['effectSummary']
     assert fireball['castingTime'] == 'action'
+    assert '3 darts of 1d4+1 force' in spell_payload('Magic Missile', level=1)['effectSummary']
     narrated = normalize_spell({'name': 'An Invented Spell', 'level': 1, 'authoritativeEffect': True})
     assert narrated['rulesBacked'] is narrated['authoritativeEffect'] is False
     assert narrated['narrated'] is True

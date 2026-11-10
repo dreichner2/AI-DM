@@ -22,6 +22,7 @@ export type GameplaySpellControl = {
   delivery: string
   castingTime: string
   castLevels: number[]
+  upcastTargetsPerLevel?: number
   effectLabel: string
   relation: string
   rangeBands: string[]
@@ -424,12 +425,19 @@ function spellControls(
         ? rawRangeBands.map((value) => normalized(value)).filter(Boolean)
         : ['melee', 'near', 'far', 'distant']
       const minTargets = Math.max(1, integer(targetSpec.minTargets ?? targetSpec.min_targets, 1))
-      const maxTargets = Math.max(minTargets, integer(targetSpec.maxTargets ?? targetSpec.max_targets, 1))
+      const deliverySpec = isRecord(spell.delivery) ? spell.delivery : {}
+      const scalingSpec = isRecord(spell.scaling) ? spell.scaling : {}
+      const level = Math.max(1, integer(caster?.level ?? actor.level, 1))
+      const tier = level >= 17 ? 4 : level >= 11 ? 3 : level >= 5 ? 2 : 1
+      const baseTargets = integer(targetSpec.maxTargets ?? targetSpec.max_targets, 1)
+      const maxTargets = Math.max(minTargets, scalingSpec.cantrip === true && integer(deliverySpec.attacks) > 0 ? baseTargets * tier : baseTargets)
       const prepared = spellPrepared(spell, spellbook)
       const spellLevel = Math.max(0, integer(spell.level))
       const resource = spellResource(spellLevel, resources)
       const castingTime = normalized(spell.castingTime ?? spell.casting_time) || 'action'
       const economyRemaining = castingTime === 'bonus_action' ? bonusActionRemaining : actionRemaining
+      const scaling = isRecord(spell.scaling) ? spell.scaling : {}
+      const upcast = isRecord(scaling.upcast) ? scaling.upcast : {}
       const restoresDowned = spellRestoresDowned(spell)
       const targets = caster
         ? participants
@@ -476,6 +484,7 @@ function spellControls(
         delivery: delivery.replace(/_/g, ' ') || 'automatic',
         castingTime,
         castLevels: availableCastLevels(spellLevel, resources),
+        upcastTargetsPerLevel: Math.max(0, integer(upcast.darts ?? upcast.attacks ?? upcast.targets)),
         effectLabel: stringValue(spell.effectSummary) || effectLabel(spell),
         relation: normalized(targetSpec.relation) || 'enemy',
         rangeBands,

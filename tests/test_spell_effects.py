@@ -11,6 +11,7 @@ from aidm_server.spell_effects import (
     resolve_targeted_spell,
     spell_target_legality,
 )
+from aidm_server.spellbook import spell_payload
 
 
 class SequenceRoller:
@@ -125,6 +126,63 @@ def test_area_spell_expands_in_stable_order_shares_damage_and_saves_individually
     replay = resolve_targeted_spell(result['combat'], caster_id='player_mage', spell=spell,
                                    target_ids=['enemy_z'], cast_id='area', roller=SequenceRoller())
     assert replay['duplicate'] is True
+
+
+def test_magic_missile_assigns_separate_darts_round_robin_and_adds_upcast_darts():
+    caster = _participant('player_mage', team='player')
+    enemies = [_participant(f'enemy_{index}', team='enemy', hp=20) for index in range(5)]
+    combat = _combat(caster, *enemies)
+    spell = spell_payload('Magic Missile', level=1)
+    roller = SequenceRoller(2, 3, 4)
+    result = resolve_targeted_spell(combat, caster_id='player_mage', spell=spell,
+                                    target_ids=['enemy_0', 'enemy_1'], cast_id='darts', roller=roller)
+    assert result['ok'] is True
+    assert [target['targetId'] for target in result['resolution']['targets']] == ['enemy_0', 'enemy_1', 'enemy_0']
+    assert [target['effects'][0]['amountApplied'] for target in result['resolution']['targets']] == [3, 4, 5]
+    assert [target['dart'] for target in result['resolution']['targets']] == [1, 2, 3]
+    assert roller.sides == [4, 4, 4]
+    by_id = {participant['id']: participant for participant in result['combat']['participants']}
+    assert (by_id['enemy_0']['hp']['current'], by_id['enemy_1']['hp']['current']) == (12, 16)
+
+    target_ids = [enemy['id'] for enemy in enemies]
+    invalid = resolve_targeted_spell(combat, caster_id='player_mage', spell=spell, target_ids=target_ids,
+                                    cast_id='too_many', cast_level=1, roller=SequenceRoller())
+    assert invalid['code'] == 'spell_target_count_invalid'
+    upcast = resolve_targeted_spell(combat, caster_id='player_mage', spell=spell, target_ids=target_ids,
+                                   cast_id='five_darts', cast_level=3, roller=SequenceRoller(1, 1, 1, 1, 1))
+    assert upcast['resolution']['castLevel'] == 3
+    assert [target['targetId'] for target in upcast['resolution']['targets']] == target_ids
+
+
+def test_eldritch_blast_scales_beam_count_not_damage_dice():
+    caster = _participant('player_mage', team='player', level=5)
+    enemies = [_participant(f'enemy_{index}', team='enemy', hp=30, armor_class=10) for index in range(2)]
+    spell = spell_payload('Eldritch Blast', level=0)
+    spell['delivery']['castingAbility'] = 'charisma'
+    roller = SequenceRoller(10, 4, 11, 6)
+    result = resolve_targeted_spell(_combat(caster, *enemies), caster_id='player_mage', spell=spell,
+                                    target_ids=['enemy_0', 'enemy_1'], cast_id='beams', roller=roller)
+    assert result['ok'] is True
+    assert [target['targetId'] for target in result['resolution']['targets']] == ['enemy_0', 'enemy_1']
+    assert [target['effects'][0]['roll']['rolls'] for target in result['resolution']['targets']] == [[4], [6]]
+    assert roller.sides == [20, 10, 20, 10]
+
+
+def test_scorching_ray_upcasts_attacks_and_rolls_each_hit_and_critical_separately():
+    caster = _participant('player_mage', team='player', level=5)
+    enemies = [_participant(f'enemy_{index}', team='enemy', hp=30, armor_class=12) for index in range(2)]
+    spell = spell_payload('Scorching Ray', level=2)
+    spell['delivery']['castingAbility'] = 'intelligence'
+    roller = SequenceRoller(20, 1, 1, 1, 1, 10, 2, 3, 1, 12, 4, 5)
+    result = resolve_targeted_spell(_combat(caster, *enemies), caster_id='player_mage', spell=spell,
+                                    target_ids=['enemy_0', 'enemy_1'], cast_id='rays', cast_level=3, roller=roller)
+    targets = result['resolution']['targets']
+    assert [target['targetId'] for target in targets] == ['enemy_0', 'enemy_1', 'enemy_0', 'enemy_1']
+    assert [target['delivery']['delivered'] for target in targets] == [True, True, False, True]
+    assert targets[0]['delivery']['critical'] is True
+    assert targets[0]['effects'][0]['roll']['rolls'] == [1, 1, 1, 1]
+    assert targets[2]['effects'][0]['applied'] is False
+    assert targets[3]['effects'][0]['amountApplied'] == 9
 
 
 def _participant(

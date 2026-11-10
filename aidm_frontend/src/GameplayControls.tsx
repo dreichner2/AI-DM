@@ -26,11 +26,11 @@ function targetLabel(target: GameplayTarget) {
   return `${target.name} · ${target.currentHp}/${target.maxHp} HP`
 }
 
-function spellTargetCountLabel(spell: GameplaySpellControl) {
-  if (spell.minTargets === spell.maxTargets) {
+function spellTargetCountLabel(spell: GameplaySpellControl, maximum = spell.maxTargets) {
+  if (spell.minTargets === maximum) {
     return `${spell.minTargets} exact ${spell.minTargets === 1 ? 'target' : 'targets'}`
   }
-  return `${spell.minTargets}–${spell.maxTargets} exact targets`
+  return `${spell.minTargets}–${maximum} exact targets`
 }
 
 export function GameplayControls({ state, disabled, onSubmit }: GameplayControlsProps) {
@@ -43,16 +43,19 @@ export function GameplayControls({ state, disabled, onSubmit }: GameplayControls
   const castLevels = selectedSpell?.castLevels ?? []
   const chosenLevel = selectedSpell && castLevels.includes(selectedCastLevels[selectedSpell.id])
     ? selectedCastLevels[selectedSpell.id] : castLevels[0]
+  const maximumTargets = selectedSpell
+    ? Math.min(20, selectedSpell.maxTargets + Math.max(0, (chosenLevel ?? selectedSpell.level) - selectedSpell.level) * (selectedSpell.upcastTargetsPerLevel ?? 0))
+    : 0
   const eligibleSpellTargetIds = new Set(
     selectedSpell?.targets.filter((target) => target.available).map((target) => target.id) ?? [],
   )
   const spellTargets = selectedSpellTargets
     .filter((targetId) => eligibleSpellTargetIds.has(targetId))
-    .slice(0, selectedSpell?.maxTargets ?? 0)
+    .slice(0, maximumTargets)
   const spellTargetCountValid = Boolean(
     selectedSpell &&
     spellTargets.length >= selectedSpell.minTargets &&
-    spellTargets.length <= selectedSpell.maxTargets,
+    spellTargets.length <= maximumTargets,
   )
   const busy = disabled || !state.actorId
   const hasControls = Boolean(
@@ -66,8 +69,8 @@ export function GameplayControls({ state, disabled, onSubmit }: GameplayControls
     setSelectedSpellTargets((current) => {
       const valid = current.filter((id) => eligibleSpellTargetIds.has(id) && id !== targetId)
       if (!checked) return valid
-      if (selectedSpell.maxTargets === 1) return [targetId]
-      return [...valid, targetId].slice(0, selectedSpell.maxTargets)
+      if (maximumTargets === 1) return [targetId]
+      return [...valid, targetId].slice(0, maximumTargets)
     })
   }
 
@@ -138,7 +141,7 @@ export function GameplayControls({ state, disabled, onSubmit }: GameplayControls
           <div className="gameplay-control-summary">
             <strong>{selectedSpell.castingTime.replace(/_/g, ' ')} · {selectedSpell.delivery} · {selectedSpell.effectLabel}</strong>
             <span>{castLevels.length > 1 ? `Level ${chosenLevel} slot` : selectedSpell.resourceLabel}</span>
-            <span>{spellTargetCountLabel(selectedSpell)} · {selectedSpell.rangeBands.join(', ')}</span>
+            <span>{spellTargetCountLabel(selectedSpell, maximumTargets)} · {selectedSpell.rangeBands.join(', ')}</span>
             {selectedSpell.description ? <p>{selectedSpell.description}</p> : null}
           </div>
           <div className="gameplay-target-list" aria-label={`${selectedSpell.name} targets`}>
@@ -167,7 +170,7 @@ export function GameplayControls({ state, disabled, onSubmit }: GameplayControls
             type="button"
             className="gameplay-primary-action"
             disabled={busy || !selectedSpell.available || !spellTargetCountValid}
-            title={selectedSpell.reason || (!spellTargetCountValid ? spellTargetCountLabel(selectedSpell) : undefined)}
+            title={selectedSpell.reason || (!spellTargetCountValid ? spellTargetCountLabel(selectedSpell, maximumTargets) : undefined)}
             onClick={castSelectedSpell}
           >
             Cast {selectedSpell.name}

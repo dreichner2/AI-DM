@@ -350,6 +350,57 @@ def test_area_spell_expansion_and_shared_damage_replay_in_a_turn(monkeypatch) ->
     assert [participant['hp']['current'] for participant in retried['nextState']['combat']['participants'][1:]] == [12, 12]
 
 
+def test_upcast_magic_missile_replays_each_dart_and_spends_selected_slot(monkeypatch) -> None:
+    state = _combat_state()
+    actor = state['playerCharacters'][0]
+    actor['level'] = 3
+    actor['spellResources'] = normalize_spell_resources(None, class_name='Wizard', level=3)
+    state['combat']['participants'][0]['level'] = 3
+    enemy = state['combat']['participants'][1]
+    for number in range(2, 5):
+        state['combat']['participants'].append({**enemy, 'id': f'enemy_goblin_{number}',
+                                                'hp': {'current': 20, 'max': 20, 'temp': 0}})
+    monkeypatch.setattr('aidm_server.game_state.validation.validator.secrets.randbelow', lambda _sides: 0)
+    targets = [f'enemy_goblin_{number}' for number in range(1, 5)]
+    declared, validation, applied = _run_intent(state, {
+        'kind': 'spell', 'text': 'I cast Magic Missile at the goblins.', 'spell': {
+            'name': 'Magic Missile', 'effect': 'Four force darts.', 'target_ids': targets, 'cast_level': 2,
+        },
+    }, turn_id=29)
+    assert declared['validatedActions'][0]['status'] == 'valid'
+    assert validation['rejected'] == []
+    resolution = applied['appliedChanges'][0]['spellResolution']
+    assert [target['targetId'] for target in resolution['targets']] == targets
+    assert [target['effects'][0]['amountApplied'] for target in resolution['targets']] == [2, 2, 2, 2]
+    assert applied['nextState']['playerCharacters'][0]['spellResources']['slots']['2']['current'] == 1
+
+
+def test_upcast_scorching_ray_replays_all_attack_and_damage_rolls(monkeypatch) -> None:
+    state = _combat_state()
+    actor = state['playerCharacters'][0]
+    actor['level'] = 5
+    actor['spellbook'] = normalize_spellbook({'knownSpells': [_spell('Scorching Ray', 2)]}, class_name='Wizard')
+    actor['spellResources'] = normalize_spell_resources(None, class_name='Wizard', level=5)
+    state['combat']['participants'][0]['level'] = 5
+    enemy = state['combat']['participants'][1]
+    state['combat']['participants'].append({**enemy, 'id': 'enemy_goblin_2',
+                                            'hp': {'current': 20, 'max': 20, 'temp': 0}})
+    monkeypatch.setattr('aidm_server.game_state.validation.validator.secrets.randbelow', lambda sides: 9 if sides == 20 else 1)
+    targets = ['enemy_goblin_1', 'enemy_goblin_2']
+    declared, validation, applied = _run_intent(state, {
+        'kind': 'spell', 'text': 'I cast Scorching Ray at the goblins.', 'spell': {
+            'name': 'Scorching Ray', 'effect': 'Four rays of fire.', 'target_ids': targets, 'cast_level': 3,
+        },
+    }, turn_id=30)
+    assert declared['validatedActions'][0]['status'] == 'valid'
+    assert validation['rejected'] == []
+    resolution = applied['appliedChanges'][0]['spellResolution']
+    assert [target['targetId'] for target in resolution['targets']] == targets * 2
+    assert [target['effects'][0]['amountApplied'] for target in resolution['targets']] == [4, 4, 4, 4]
+    assert [participant['hp']['current'] for participant in applied['nextState']['combat']['participants'][1:]] == [12, 12]
+    assert applied['nextState']['playerCharacters'][0]['spellResources']['slots']['3']['current'] == 1
+
+
 def test_targeted_spell_stale_target_fails_without_spending_slot() -> None:
     state = _combat_state()
     declared, validation, applied = _run_intent(

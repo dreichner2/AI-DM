@@ -278,7 +278,8 @@ mechanics the server currently applies, rather than full tabletop coverage.
 ### Targeted spell effects
 
 - Fire Bolt, Magic Missile, Sacred Flame, Cure Wounds, Healing Word, Entangle,
-  Ray of Frost, Burning Hands, Shatter, Fireball and Lightning Bolt have
+  Ray of Frost, Burning Hands, Shatter, Fireball, Lightning Bolt, Eldritch Blast
+  and Scorching Ray have
   server-owned effect definitions. A typed cast with exact
   target IDs validates turn ownership, presence, relation, range, cover, target
   count, spell knowledge/preparation, and casting resources before rolling.
@@ -298,6 +299,10 @@ mechanics the server currently applies, rather than full tabletop coverage.
 - The four area damage spells above take one primary target, include other legal
   enemies in the same range band and zone up to their target limit, share one
   damage roll, and resolve each enemy's save separately. Allies are excluded.
+- Magic Missile rolls each dart separately and distributes darts round-robin
+  across the selected targets, with one extra dart per higher slot. Scorching
+  Ray rolls each attack separately and adds a ray per higher slot; Eldritch
+  Blast gains beams at caster-level tiers.
 - Newly generated class spellbooks start with three AIDM-original sample spells;
   those samples are marked as narrated. Existing known spells are preserved.
 - Slot/action consumption, combat effects, concentration state, player HP, and
@@ -419,7 +424,7 @@ mechanics the server currently applies, rather than full tabletop coverage.
 - The authoritative class-capability catalog contains only Second Wind, Action
   Surge, and Lay on Hands. Apart from the passive rules listed above, other
   class features remain descriptive or resource-only.
-- Eleven curated spells have server-owned target/effect definitions, with some
+- Thirteen curated spells have server-owned target/effect definitions, with some
   tabletop details still simplified. Other known/prepared spells consume the correct resource
   but remain resource-only or narration-assisted for their effects. The
   Mechanical actions panel lists the authoritative definitions and their exact

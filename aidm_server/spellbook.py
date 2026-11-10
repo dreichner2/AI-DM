@@ -62,14 +62,29 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
     },
     'magic missile': {
         'level': 1,
-        'delivery': {'type': 'automatic'},
+        'delivery': {'type': 'automatic', 'darts': {'count': 3, 'dice': '1d4+1'}},
         'target': {
             'relation': 'enemy',
             'rangeBands': ['near', 'far', 'distant'],
-            'maxTargets': 1,
+            'maxTargets': 3,
             'ignoreCover': True,
         },
-        'effects': [{'kind': 'damage', 'dice': '3d4+3', 'damageType': 'force'}],
+        'effects': [{'kind': 'damage', 'dice': '1d4+1', 'damageType': 'force'}],
+        'scaling': {'upcast': {'darts': 1}},
+    },
+    'eldritch blast': {
+        'level': 0,
+        'delivery': {'type': 'attack', 'attacks': 1},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far', 'distant'], 'maxTargets': 1},
+        'effects': [{'kind': 'damage', 'dice': '1d10', 'damageType': 'force'}],
+        'scaling': {'cantrip': True},
+    },
+    'scorching ray': {
+        'level': 2,
+        'delivery': {'type': 'attack', 'attacks': 3},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far', 'distant'], 'maxTargets': 3},
+        'effects': [{'kind': 'damage', 'dice': '2d6', 'damageType': 'fire'}],
+        'scaling': {'upcast': {'attacks': 1}},
     },
     'burning hands': {
         'level': 1,
@@ -180,13 +195,17 @@ def spell_effect_summary(definition: dict[str, Any]) -> str:
     else:
         label = 'Spell attack' if delivery_type == 'attack' else 'Automatic'
     parts = [label]
+    darts = delivery.get('darts') if isinstance(delivery.get('darts'), dict) else {}
     for effect in definition.get('effects') or []:
         if not isinstance(effect, dict):
             continue
         kind = _normalize_text(effect.get('kind')).lower()
         dice = _normalize_text(effect.get('dice') or effect.get('amount'))
         if kind == 'damage':
-            parts.append(' '.join(value for value in (dice, _normalize_text(effect.get('damageType'))) if value))
+            damage = ' '.join(value for value in (dice, _normalize_text(effect.get('damageType'))) if value)
+            attacks = delivery.get('attacks')
+            parts.append(f"{darts['count']} darts of {damage}" if darts.get('count') else
+                         f"{attacks} {'attack' if attacks == 1 else 'attacks'} of {damage}" if attacks else damage)
         elif kind == 'healing':
             parts.append(f"{dice}{' + casting modifier' if effect.get('addCastingModifier') else ''} healing")
         elif kind == 'condition':

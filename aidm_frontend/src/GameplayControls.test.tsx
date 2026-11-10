@@ -131,6 +131,24 @@ describe('GameplayControls', () => {
     }))
   })
 
+  it('permits the additional target granted by an upcast dart spell', () => {
+    const state = controlState()
+    const spell = state.spells[0]
+    spell.maxTargets = 3
+    spell.castLevels = [1, 2]
+    spell.upcastTargetsPerLevel = 1
+    const example = spell.targets.find((target) => target.available)!
+    spell.targets = [1, 2, 3, 4].map((number) => ({ ...example, id: `enemy_${number}`, name: `Goblin ${number}` }))
+    const onSubmit = vi.fn(() => true)
+    render(<GameplayControls state={state} disabled={false} onSubmit={onSubmit} />)
+    fireEvent.change(screen.getByRole('combobox', { name: 'Cast level' }), { target: { value: '2' } })
+    for (let number = 1; number <= 4; number += 1) fireEvent.click(screen.getByRole('checkbox', { name: `Target Goblin ${number}` }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cast Magic Missile' }))
+    expect(onSubmit).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      spell: expect.objectContaining({ cast_level: 2, target_ids: ['enemy_1', 'enemy_2', 'enemy_3', 'enemy_4'] }),
+    }))
+  })
+
   it('submits exact-target spell, capability, and revision-bound object intents', () => {
     const onSubmit = vi.fn(() => true)
     render(<GameplayControls state={controlState()} disabled={false} onSubmit={onSubmit} />)

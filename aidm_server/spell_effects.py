@@ -291,6 +291,7 @@ def _delivery_spec(spell: Mapping[str, Any]) -> dict[str, Any]:
     raw = raw if isinstance(raw, Mapping) else {}
     attack_bonus = raw.get('attackBonus', raw.get('attack_bonus'))
     save_dc = raw.get('dc', raw.get('saveDc', raw.get('save_dc')))
+    darts = raw.get('darts') if isinstance(raw.get('darts'), Mapping) else None
     return {
         'type': _key(raw.get('type') or 'automatic'),
         'attackBonus': _int(attack_bonus) if attack_bonus is not None else None,
@@ -303,6 +304,11 @@ def _delivery_spec(spell: Mapping[str, Any]) -> dict[str, Any]:
             or spell.get('casting_ability')
         ),
         'onSuccess': _key(raw.get('onSuccess', raw.get('on_success')) or 'none'),
+        'darts': (
+            {'count': _bounded_int(darts.get('count'), default=1, minimum=1, maximum=20), 'dice': darts.get('dice')}
+            if darts else None
+        ),
+        'attacks': _bounded_int(raw.get('attacks'), default=1, minimum=1, maximum=20) if raw.get('attacks') is not None else None,
     }
 
 
@@ -365,6 +371,10 @@ def _normalized_spell(spell: Mapping[str, Any]) -> tuple[dict[str, Any] | None, 
     delivery = _delivery_spec(spell)
     if delivery['type'] not in SUPPORTED_DELIVERY_TYPES:
         return None, f"Unsupported spell delivery type: {delivery['type'] or 'missing'}."
+    if delivery['darts'] and (delivery['type'] != 'automatic' or not parse_damage_dice_expression(delivery['darts']['dice'])):
+        return None, 'Dart delivery requires automatic hits and bounded dice.'
+    if delivery['attacks'] is not None and delivery['type'] != 'attack':
+        return None, 'Multiple attacks require attack delivery.'
     if delivery['type'] == 'attack':
         if delivery['attackBonus'] is not None and not -20 <= delivery['attackBonus'] <= 30:
             return None, 'Spell attack bonus must be between -20 and 30.'
@@ -447,6 +457,7 @@ def spell_target_legality(
     caster_id: str,
     spell: Mapping[str, Any],
     target_ids: Iterable[str],
+    cast_level: int | None = None,
 ) -> dict[str, Any]:
     """Validate an entire exact-ID target set atomically without rolling."""
 
@@ -467,6 +478,12 @@ def spell_target_legality(
             'The casting participant is unable to cast.',
             targets=[],
         )
+    spell_level = normalized_spell['level']
+    selected_level = spell_level if cast_level is None else _int(cast_level, default=-1)
+    if selected_level < spell_level or selected_level > 9 or (spell_level == 0 and selected_level != 0):
+        return _legality_failure('invalid_cast_level', 'The selected cast level is not valid for this spell.', targets=[])
+    if not _apply_spell_scaling(normalized_spell, caster, selected_level):
+        return _legality_failure('spell_scaling_invalid', 'This spell has an invalid scaling definition.', targets=[])
     delivery = normalized_spell['delivery']
     if delivery['type'] == 'attack' and delivery['attackBonus'] is None:
         delivery['attackBonus'] = _spell_attack_bonus(caster, delivery['castingAbility'])
@@ -669,14 +686,25 @@ def _apply_spell_scaling(spell: dict[str, Any], caster: Mapping[str, Any], cast_
     if scaling.get('cantrip') is True and spell['level'] == 0:
         level = _bounded_int(caster.get('level'), default=1, minimum=1, maximum=20)
         tier = 4 if level >= 17 else 3 if level >= 11 else 2 if level >= 5 else 1
-        for effect in spell['effects']:
-            if effect['kind'] == 'damage':
-                expression = _scaled_expression(str(effect['expression']), multiplier=tier)
-                if expression is None:
-                    return False
-                effect['expression'] = expression
+        if spell['delivery'].get('attacks') is not None:
+            spell['delivery']['attacks'] = min(20, spell['delivery']['attacks'] * tier)
+            spell['target']['maxTargets'] = spell['delivery']['attacks']
+        else:
+            for effect in spell['effects']:
+                if effect['kind'] == 'damage':
+                    expression = _scaled_expression(str(effect['expression']), multiplier=tier)
+                    if expression is None:
+                        return False
+                    effect['expression'] = expression
     upcast = scaling.get('upcast') if isinstance(scaling.get('upcast'), Mapping) else {}
     steps = max(0, cast_level - int(spell['level']))
+    darts = spell['delivery'].get('darts')
+    if isinstance(darts, dict):
+        darts['count'] = min(20, darts['count'] + steps * max(0, _int(upcast.get('darts'), default=0)))
+        spell['target']['maxTargets'] = darts['count']
+    if spell['delivery'].get('attacks') is not None:
+        spell['delivery']['attacks'] = min(20, spell['delivery']['attacks'] + steps * max(0, _int(upcast.get('attacks'), default=0)))
+        spell['target']['maxTargets'] = spell['delivery']['attacks']
     if steps and (upcast.get('dice') is not None or upcast.get('flat') is not None):
         first = next((effect for effect in spell['effects'] if effect['kind'] in {'damage', 'healing', 'temporary_hp'}), None)
         if first is None:
@@ -1195,7 +1223,7 @@ def _apply_effect(
 
 
 def _area_targets(
-    combat: Mapping[str, Any], caster_id: str, spell: Mapping[str, Any], primary_id: str, maximum: int,
+    combat: Mapping[str, Any], caster_id: str, spell: Mapping[str, Any], primary_id: str, maximum: int, cast_level: int,
 ) -> list[str]:
     """Expand an area around the primary target using only legal enemies."""
 
@@ -1216,7 +1244,7 @@ def _area_targets(
         zone = _text(position.get('zoneId') or position.get('zone_id'))
         if band != primary_band or zone != primary_zone:
             continue
-        if spell_target_legality(combat, caster_id=caster_id, spell=spell, target_ids=[candidate_id])['legal']:
+        if spell_target_legality(combat, caster_id=caster_id, spell=spell, target_ids=[candidate_id], cast_level=cast_level)['legal']:
             candidates.append(candidate_id)
     return [primary_id, *sorted(candidates)[:max(0, maximum - 1)]]
 
@@ -1301,6 +1329,7 @@ def resolve_targeted_spell(
         caster_id=caster_id,
         spell=spell,
         target_ids=normalized_target_ids,
+        cast_level=selected_level,
     )
     if not legality['legal']:
         return {
@@ -1318,18 +1347,11 @@ def resolve_targeted_spell(
     requested_target_ids = list(normalized_target_ids)
     if normalized_spell['target']['areaMaxTargets']:
         normalized_target_ids = _area_targets(
-            combat, _text(caster_id), spell, normalized_target_ids[0], normalized_spell['target']['areaMaxTargets'],
+            combat, _text(caster_id), spell, normalized_target_ids[0], normalized_spell['target']['areaMaxTargets'], selected_level,
         )
     next_combat = deepcopy(dict(combat))
     caster = _participant_by_id(next_combat, caster_id)
     assert caster is not None  # Proven by legality before any roll or mutation.
-    if not _apply_spell_scaling(normalized_spell, caster, selected_level):
-        return {
-            'ok': False, 'duplicate': False, 'code': 'spell_scaling_invalid',
-            'reason': 'This spell has an invalid scaling definition.',
-            'combat': deepcopy(dict(combat)), 'casterResources': deepcopy(dict(caster_resources or {})),
-            'resolution': None,
-        }
     casting_modifier = _ability_modifier(caster, str(normalized_spell['delivery'].get('castingAbility') or '')) or 0
 
     next_resources = deepcopy(dict(caster_resources or {}))
@@ -1349,7 +1371,12 @@ def resolve_targeted_spell(
     updated_target_resources: dict[str, dict[str, Any]] = {}
     shared_damage_rolls: dict[int, dict[str, Any]] = {}
     target_resolutions: list[dict[str, Any]] = []
-    for target_id in normalized_target_ids:
+    darts = normalized_spell['delivery'].get('darts')
+    dart_count = darts['count'] if isinstance(darts, dict) else 0
+    attack_count = normalized_spell['delivery'].get('attacks') or 0
+    repetitions = dart_count or attack_count
+    scheduled_targets = [normalized_target_ids[index % len(normalized_target_ids)] for index in range(repetitions)] if repetitions else normalized_target_ids
+    for delivery_index, target_id in enumerate(scheduled_targets):
         target = _participant_by_id(next_combat, target_id)
         assert target is not None  # Proven by legality before any roll or mutation.
         delivery_result = _resolve_delivery(
@@ -1419,6 +1446,8 @@ def resolve_targeted_spell(
             {
                 'targetId': target_id,
                 'targetName': _text(target.get('name')) or target_id,
+                **({'dart': delivery_index + 1, 'dartsTotal': dart_count} if dart_count else {}),
+                **({'attackIndex': delivery_index + 1, 'attacksTotal': attack_count} if attack_count else {}),
                 'delivery': delivery_result,
                 'effects': effect_results,
             }

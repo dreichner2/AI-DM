@@ -171,11 +171,12 @@ describe('gameplayControlsFromSnapshot', () => {
     const actor = state.playerCharacters[0] as Record<string, unknown>
     const spellbook = actor.spellbook as { knownSpells: Array<Record<string, unknown>> }
     spellbook.knownSpells[1].castingTime = 'bonus_action'
+    spellbook.knownSpells[1].scaling = { upcast: { darts: 1 } }
     const resources = actor.spellResources as { slots: Record<string, { current: number; max: number }> }
     resources.slots['2'] = { current: 2, max: 2 }
     state.combat.flags.turnEconomy.actionRemaining = 0
     let missile = gameplayControlsFromSnapshot(state, 30).spells.find((spell) => spell.name === 'Magic Missile')
-    expect(missile).toMatchObject({ available: true, castingTime: 'bonus_action', castLevels: [1, 2] })
+    expect(missile).toMatchObject({ available: true, castingTime: 'bonus_action', castLevels: [1, 2], upcastTargetsPerLevel: 1 })
     state.combat.flags.turnEconomy.bonusActionRemaining = 0
     missile = gameplayControlsFromSnapshot(state, 30).spells.find((spell) => spell.name === 'Magic Missile')
     expect(missile).toMatchObject({ available: false, reason: 'The bonus action for this turn is already spent.' })
@@ -204,6 +205,18 @@ describe('gameplayControlsFromSnapshot', () => {
     const healing = gameplayControlsFromSnapshot(state, 30).spells.find((spell) => spell.name === 'Cure Wounds')
     expect(healing?.available).toBe(true)
     expect(healing?.targets.find((target) => target.id === 'player_31')?.available).toBe(true)
+  })
+
+  it('offers two Eldritch Blast targets at level five', () => {
+    const state = snapshot()
+    const actor = state.playerCharacters[0] as Record<string, unknown>
+    actor.level = 5
+    const spellbook = actor.spellbook as { knownSpells: Array<Record<string, unknown>> }
+    spellbook.knownSpells[0] = {
+      ...spellbook.knownSpells[0], id: 'spell_eldritch_blast', name: 'Eldritch Blast',
+      delivery: { type: 'attack', attacks: 1 }, scaling: { cantrip: true },
+    }
+    expect(gameplayControlsFromSnapshot(state, 30).spells.find((spell) => spell.name === 'Eldritch Blast')?.maxTargets).toBe(2)
   })
 
   it('projects authoritative spells with exact visible target and resource legality', () => {
