@@ -16,7 +16,7 @@ from aidm_server.combat.attacks import (
     resolve_enemy_ability,
     resolve_enemy_healing,
 )
-from aidm_server.combat.modifiers import MODIFIER_ENGINE_SOURCE, can_act, condition_keys, engaged_with, range_band, speed_is_zero, temp_hp_per_turn
+from aidm_server.combat.modifiers import MODIFIER_ENGINE_SOURCE, can_act, condition_keys, engaged_with, range_band, speed_is_zero, temp_hp_per_turn, tick_turn_boundary
 from aidm_server.combat.pipeline import apply_start_turn_damage, death_saves_due, participant_at_turn_start, turn_boundaries
 from aidm_server.combat.positioning import band_outward, enemy_approach, move_participant, participant_by_id
 from aidm_server.combat.reactions import collect_reactions, reaction_changes
@@ -382,6 +382,7 @@ def _resolve_enemy_required_actions(
         ongoing_damage = []
         if isinstance(enemy, dict) and enemy_id in starts and enemy_id not in started:
             started.add(enemy_id)
+            tick_turn_boundary(combat, actor_id=enemy_id, phase='start')
             hp = enemy.setdefault('hp', {})
             hp['temp'] = max(int_or_default(hp.get('temp'), default=0), temp_hp_per_turn(enemy))
             ongoing_damage = apply_start_turn_damage(enemy, turn_id=turn_id, round_number=starts[enemy_id])

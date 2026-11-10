@@ -568,6 +568,27 @@ def test_enemy_critical_hit_doubles_damage_dice_but_not_the_bonus():
     assert action['damageTotal'] == 9
 
 
+def test_enemy_resolution_uses_effects_after_its_turn_start_boundary():
+    state = _enemy_state()
+    combat = state['combat']
+    combat.update({
+        'round': 1, 'turnIndex': 0, 'flags': {'activeActorId': 'player_1'},
+        'initiative': [
+            {'participantId': 'player_1', 'order': 0},
+            {'participantId': 'enemy_wolf', 'order': 1},
+        ],
+    })
+    effect = _effect('until_start', attackMode='disadvantage')
+    effect['duration'] = {'rounds': 1, 'tickOn': 'target_turn_start'}
+    for participant in combat['participants']:
+        participant.update({'hp': {'current': 10, 'max': 10, 'temp': 0},
+                            'isAlive': True, 'isConscious': True, 'isPresent': True})
+    combat['participants'][1]['activeEffects'] = [effect]
+    action = _enemy_action(state, 'bite', [10, 3])
+    assert action['attackMode'] == 'normal'
+    assert state['combat']['participants'][1]['activeEffects'] == [effect]
+
+
 def test_pc_saving_throw_proficiency_applies_against_enemy_saves():
     without = _enemy_action(_enemy_state(), 'howl', [11, 2])
     proficient = _enemy_action(_enemy_state({'savingThrowProficiencies': ['dexterity']}), 'howl', [11, 2])
@@ -636,6 +657,33 @@ def test_turn_advance_ticks_every_enemy_inside_a_grouped_block():
     assert enemies['enemy_a']['activeEffects'] == [] and enemies['enemy_a']['conditions'] == []
     assert enemies['enemy_b']['activeEffects'] == [] and enemies['enemy_b']['conditions'] == []
     assert applied['combat']['flags']['activeActorId'] == 'player_2'
+
+
+def test_turn_advance_ticks_a_skipped_incapacitated_enemys_initiative_slot():
+    held = _effect('commanded', cannotAct=True)
+    held['duration'] = {'rounds': 1, 'tickOn': 'target_turn_end'}
+    state = {
+        'playerCharacters': [{'id': 'player_1', 'name': 'Kael'}, {'id': 'player_2', 'name': 'Mira'}],
+        'combat': {
+            'status': 'active', 'round': 1, 'turnIndex': 0,
+            'participants': [_p('player_1', team='player'), _p('enemy_a', effects=[held]),
+                             _p('enemy_b'), _p('player_2', team='player')],
+            'initiative': [
+                {'participantId': pid, 'roll': 20 - index, 'modifier': 0, 'total': 20 - index, 'order': index}
+                for index, pid in enumerate(['player_1', 'enemy_a', 'enemy_b', 'player_2'])
+            ],
+            'flags': {'activeActorId': 'player_1'},
+        },
+    }
+    change = combat_turn_advance_change(state=state, turn=_turn(31))
+    assert [(item['actorId'], item['phase']) for item in change['turnBoundaries']] == [
+        ('player_1', 'end'), ('enemy_a', 'start'), ('enemy_a', 'end'),
+        ('enemy_b', 'start'), ('enemy_b', 'end'), ('player_2', 'start'),
+    ]
+    applied = apply_state_changes(state, [change])['nextState']
+    enemy = next(item for item in applied['combat']['participants'] if item['id'] == 'enemy_a')
+    assert modifiers.can_act(enemy)
+    assert enemy['activeEffects'] == []
 
 
 def test_recharge_ability_is_spent_then_recharges_on_five_or_six(monkeypatch):

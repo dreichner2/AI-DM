@@ -335,6 +335,9 @@ def _effect_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
         parsed = parse_damage_dice_expression(amount_value)
         expression = str(parsed['dice']) if parsed else None
 
+    wounded_dice = raw.get('woundedDice')
+    wounded_parsed = parse_damage_dice_expression(wounded_dice) if wounded_dice is not None else None
+
     duration_raw = raw.get('duration')
     duration: dict[str, Any] | None = None
     if isinstance(duration_raw, Mapping):
@@ -362,6 +365,8 @@ def _effect_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
     return {
         'kind': kind,
         'expression': expression,
+        'woundedExpression': str(wounded_parsed['dice']) if wounded_parsed else None,
+        'hasWoundedDice': wounded_dice is not None,
         'damageType': damage_type,
         'condition': condition,
         'operation': operation,
@@ -427,6 +432,8 @@ def _normalized_spell(spell: Mapping[str, Any]) -> tuple[dict[str, Any] | None, 
             return None, f"Unsupported spell effect kind: {effect['kind'] or 'missing'}."
         if effect['kind'] in {'damage', 'healing', 'temporary_hp'} and not effect['expression']:
             return None, f"Spell effect {index + 1} requires a bounded dice or amount expression."
+        if effect['hasWoundedDice'] and (effect['kind'] != 'damage' or not effect['woundedExpression']):
+            return None, 'Wounded-target damage requires bounded alternate damage dice.'
         if effect['kind'] == 'damage' and effect['damageType'] not in DAMAGE_TYPES:
             return None, f"Unsupported damage type: {effect['damageType'] or 'missing'}."
         if effect['kind'] == 'condition':
@@ -729,6 +736,11 @@ def _apply_spell_scaling(spell: dict[str, Any], caster: Mapping[str, Any], cast_
                     if expression is None:
                         return False
                     effect['expression'] = expression
+                    if effect.get('woundedExpression'):
+                        wounded = _scaled_expression(str(effect['woundedExpression']), multiplier=tier)
+                        if wounded is None:
+                            return False
+                        effect['woundedExpression'] = wounded
     upcast = scaling.get('upcast') if isinstance(scaling.get('upcast'), Mapping) else {}
     steps = max(0, cast_level - int(spell['level']))
     spell['target']['maxTargets'] = min(
@@ -1291,8 +1303,10 @@ def _apply_effect(
         return {'kind': 'move', 'applied': before != destination, 'targetId': mover_id,
                 'fromRangeBand': before, 'toRangeBand': destination,
                 'teleport': effect.get('teleport') or None}
+    hp = _hp(participant)
+    expression = (effect.get('woundedExpression') if hp['current'] < hp['max'] else None) or effect['expression']
     rolled = deepcopy(dict(shared_roll)) if shared_roll is not None else _roll_expression(
-        str(effect['expression']), roller,
+        str(expression), roller,
         critical=delivery_result.get('critical') is True and effect['kind'] == 'damage',
     )
     if effect.get('addCastingModifier') is True and shared_roll is None:

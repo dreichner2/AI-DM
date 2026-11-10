@@ -282,7 +282,7 @@ mechanics the server currently applies, rather than full tabletop coverage.
   Scorching Ray, Shocking Grasp, Chill Touch, Poison Spray, Vicious Mockery,
   Produce Flame, Inflict Wounds, Guiding Bolt, Bless, Bane, Shield of Faith,
   False Life, Thorn Whip, Thunderwave, Dissonant Whispers, Misty Step, Spare the
-  Dying, Lesser Restoration, Prayer of Healing, Mass Healing Word, and Divine
+  Dying, Lesser Restoration, Prayer of Healing, Mass Healing Word, Toll the Dead, Command, and Divine
   Favor have
   server-owned effect definitions. A typed cast with exact
   target IDs validates turn ownership, presence, relation, range, cover, target

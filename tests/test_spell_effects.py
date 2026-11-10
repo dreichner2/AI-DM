@@ -333,6 +333,35 @@ def test_mass_healing_word_upcasts_for_each_target():
     assert [participant['hp']['current'] for participant in result['combat']['participants']] == [9, 14]
 
 
+@pytest.mark.parametrize(('current_hp', 'expected_sides'), [(30, 8), (29, 12)])
+def test_toll_the_dead_uses_larger_scaled_dice_against_a_wounded_target(current_hp, expected_sides):
+    caster = _participant('player_mage', team='player', level=5)
+    target = _participant('enemy', team='enemy', hp=current_hp, maximum=30)
+    roller = SequenceRoller(1, 2, 3)
+    result = resolve_targeted_spell(
+        _combat(caster, target), caster_id='player_mage', spell=_catalog_spell('Toll the Dead', 0, 'wisdom'),
+        target_ids=['enemy'], cast_id='toll', roller=roller,
+    )
+    assert result['resolution']['targets'][0]['effects'][0]['roll']['rolls'] == [2, 3]
+    assert roller.sides == [20, expected_sides, expected_sides]
+
+
+def test_command_prevents_the_targets_next_turn_and_then_expires():
+    caster = _participant('player_mage', team='player', level=1)
+    enemy = _participant('enemy', team='enemy')
+    spell = _catalog_spell('Command', 1, 'wisdom')
+    result = resolve_targeted_spell(
+        _combat(caster, enemy), caster_id='player_mage', spell=spell,
+        target_ids=['enemy'], cast_id='command', roller=SequenceRoller(1),
+    )
+    combat = result['combat']
+    assert not modifiers.can_act(combat['participants'][1])
+    apply_turn_boundaries(combat, [{'actorId': 'enemy', 'phase': 'start'}], turn_id=2)
+    assert not modifiers.can_act(combat['participants'][1])
+    apply_turn_boundaries(combat, [{'actorId': 'enemy', 'phase': 'end'}], turn_id=2)
+    assert modifiers.can_act(combat['participants'][1])
+
+
 @pytest.mark.parametrize(('level', 'dice'), [(1, 1), (5, 2), (11, 3), (17, 4)])
 def test_cantrip_damage_scales_with_caster_level(level, dice):
     caster = _participant('player_mage', team='player', level=level)

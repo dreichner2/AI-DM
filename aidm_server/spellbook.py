@@ -86,6 +86,12 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
         'effects': [{'kind': 'damage', 'dice': '1d12', 'damageType': 'poison'}],
         'scaling': {'cantrip': True},
     },
+    'toll the dead': {
+        'level': 0, 'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 1},
+        'effects': [{'kind': 'damage', 'dice': '1d8', 'woundedDice': '1d12', 'damageType': 'necrotic'}],
+        'scaling': {'cantrip': True},
+    },
     'vicious mockery': {
         'level': 0, 'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'none'},
         'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 1},
@@ -187,6 +193,13 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
         'effects': [{'kind': 'modifier', 'modifiers': {'attackBonusDice': '-1d4', 'saveBonusDice': '-1d4'},
                      'duration': {'rounds': 10, 'tickOn': 'target_turn_end'}}],
         'concentration': True, 'scaling': {'upcast': {'targets': 1}},
+    },
+    'command': {
+        'level': 1, 'delivery': {'type': 'save', 'ability': 'wisdom', 'onSuccess': 'none'},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far'], 'maxTargets': 1},
+        'effects': [{'kind': 'modifier', 'modifiers': {'cannotAct': True},
+                     'duration': {'rounds': 1, 'tickOn': 'target_turn_end'}}],
+        'scaling': {'upcast': {'targets': 1}},
     },
     'shield of faith': {
         'level': 1, 'castingTime': 'bonus_action', 'delivery': {'type': 'automatic'},
@@ -344,6 +357,8 @@ def spell_effect_summary(definition: dict[str, Any]) -> str:
         dice = _normalize_text(effect.get('dice') or effect.get('amount'))
         if kind == 'damage':
             damage = ' '.join(value for value in (dice, _normalize_text(effect.get('damageType'))) if value)
+            if effect.get('woundedDice'):
+                damage += f" ({_normalize_text(effect['woundedDice'])} against a wounded target)"
             attacks = delivery.get('attacks')
             parts.append(f"{darts['count']} darts of {damage}" if darts.get('count') else
                          f"{attacks} {'attack' if attacks == 1 else 'attacks'} of {damage}" if attacks else damage)
@@ -368,6 +383,8 @@ def spell_effect_summary(definition: dict[str, Any]) -> str:
             modifiers = effect.get('modifiers') if isinstance(effect.get('modifiers'), dict) else {}
             if modifiers.get('cannotReact'):
                 parts.append('prevents reactions')
+            if modifiers.get('cannotAct'):
+                parts.append('prevents the target acting on its next turn')
             if modifiers.get('noHealing'):
                 parts.append('prevents healing')
             if modifiers.get('attackMode'):
@@ -887,6 +904,7 @@ CLASS_STARTING_SPELLS: dict[str, list[SpellSpec]] = {
     ],
     'cleric': [
         ('Sacred Flame', 0, 'Radiant fire against a visible foe.'),
+        ('Toll the Dead', 0, 'A deathly bell hurts wounded foes more.'),
         ('Spare the Dying', 0, 'Stabilize a dying ally.'),
         ('Thaumaturgy', 0, 'Small divine signs and omens.'),
         ('Guidance', 0, 'A small divine boost to an ability check.'),
@@ -895,6 +913,7 @@ CLASS_STARTING_SPELLS: dict[str, list[SpellSpec]] = {
         ('Bless', 1, 'Bolster allies in danger.'),
         ('Shield of Faith', 1, 'Protect an ally with divine force.'),
         ('Bane', 1, 'Sap the attacks and saves of enemies.'),
+        ('Command', 1, 'Compel an enemy to lose its next turn.'),
         ('Guiding Bolt', 1, 'Radiant magic reveals a target for the next attack.'),
         ('Inflict Wounds', 1, 'Inflict necrotic harm with a touch.'),
         ('Detect Magic', 1, 'Sense magical auras.'),
@@ -931,6 +950,7 @@ CLASS_STARTING_SPELLS: dict[str, list[SpellSpec]] = {
         ('Cure Wounds', 1, 'Touch-based healing.'),
         ('Shield of Faith', 1, 'Protect an ally with divine force.'),
         ('Divine Favor', 1, 'Imbue weapon attacks with radiant power.'),
+        ('Command', 1, 'Compel an enemy to lose its next turn.'),
         ('Divine Smite', 1, 'Channel divine power through a weapon hit.'),
     ],
     'ranger': [

@@ -708,27 +708,58 @@ def _participant_index(combat: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 def turn_boundaries(combat: dict[str, Any], turn_context: dict[str, Any]) -> list[dict[str, Any]]:
     """Every turn end and start crossed when the active actor hands initiative on,
-    including each enemy of a grouped enemy turn block, in initiative order."""
+    including actors unable to act, in initiative order.
+
+    Incapacitated or otherwise prevented actors are omitted from the actionable
+    turn order, but their initiative slot must still pass so effects that end on
+    their turn do not last forever.
+    """
 
     current = turn_context.get('currentActor') if isinstance(turn_context.get('currentActor'), dict) else {}
     handoff = turn_context.get('handoffActor') if isinstance(turn_context.get('handoffActor'), dict) else {}
     if not current.get('id') or not handoff.get('id'):
         return []
-    order_ids = [str(actor_id) for actor_id in turn_context.get('turnOrderIds') or []]
-    current_index = int_or_default(turn_context.get('turnIndex'), default=0)
     round_number = max(1, int_or_default(combat.get('round'), default=1))
     boundaries = [{'actorId': current['id'], 'phase': 'end', 'round': round_number}]
-    for enemy in turn_context.get('enemyTurnBlock') or []:
-        enemy_id = str((enemy or {}).get('id') or '')
-        if not enemy_id or enemy_id == str(current['id']) or enemy_id not in order_ids:
-            continue
-        enemy_round = round_number if order_ids.index(enemy_id) > current_index else round_number + 1
-        boundaries.extend(
-            [
+    initiative = {
+        str(entry.get('participantId') or entry.get('id') or ''): int_or_default(entry.get('order'), default=9999)
+        for entry in combat.get('initiative') or [] if isinstance(entry, dict)
+    }
+    participants = [
+        participant for participant in combat.get('participants') or []
+        if isinstance(participant, dict) and participant.get('id')
+        and participant.get('isPresent', participant.get('present', True)) is not False
+        and not condition_keys(participant).intersection({'dead', 'fled', 'escaped', 'retreated', 'withdrawn', 'surrendered', 'yielded', 'absent'})
+    ]
+    participants.sort(key=lambda participant: (initiative.get(str(participant['id']), 9999), str(participant['id'])))
+    full_order = [str(participant['id']) for participant in participants]
+    current_id, handoff_id = str(current['id']), str(handoff['id'])
+    if current_id in full_order and handoff_id in full_order:
+        current_index = full_order.index(current_id)
+        for offset in range(1, len(full_order) + 1):
+            actor_index = (current_index + offset) % len(full_order)
+            actor_id = full_order[actor_index]
+            if actor_id == handoff_id:
+                break
+            actor_round = round_number + int(current_index + offset >= len(full_order))
+            boundaries.extend([
+                {'actorId': actor_id, 'phase': 'start', 'round': actor_round},
+                {'actorId': actor_id, 'phase': 'end', 'round': actor_round},
+            ])
+    else:
+        # Preserve the established actionable-order fallback for legacy states
+        # whose participant roster has already been compacted.
+        order_ids = [str(actor_id) for actor_id in turn_context.get('turnOrderIds') or []]
+        current_index = int_or_default(turn_context.get('turnIndex'), default=0)
+        for enemy in turn_context.get('enemyTurnBlock') or []:
+            enemy_id = str((enemy or {}).get('id') or '')
+            if not enemy_id or enemy_id == current_id or enemy_id not in order_ids:
+                continue
+            enemy_round = round_number if order_ids.index(enemy_id) > current_index else round_number + 1
+            boundaries.extend([
                 {'actorId': enemy_id, 'phase': 'start', 'round': enemy_round},
                 {'actorId': enemy_id, 'phase': 'end', 'round': enemy_round},
-            ]
-        )
+            ])
     boundaries.append(
         {
             'actorId': handoff['id'],
