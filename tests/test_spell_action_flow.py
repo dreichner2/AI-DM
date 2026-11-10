@@ -30,6 +30,7 @@ def _caster_state(*, class_name: str = 'Wizard', level: int = 1) -> dict:
         {
             'knownSpells': [
                 _spell('Magic Missile', 1),
+                _spell('Arcane Dart', 1),
                 _spell('Entangle', 1),
                 _spell('Dancing Lights', 0, concentration=True),
             ]
@@ -106,14 +107,14 @@ def _run_intent(state: dict, raw_intent: dict, *, turn_id: int) -> tuple[dict, d
     return declared, immediate, applied
 
 
-def _cast_magic_missile(state: dict, turn_id: int) -> tuple[dict, dict, dict]:
+def _cast_narrated_spell(state: dict, turn_id: int) -> tuple[dict, dict, dict]:
     return _run_intent(
         state,
         {
             'kind': 'spell',
             'source': 'composer',
-            'text': 'I cast Magic Missile.',
-            'spell': {'name': 'Magic Missile', 'effect': 'I send force darts at the target.'},
+            'text': 'I cast Arcane Dart.',
+            'spell': {'name': 'Arcane Dart', 'effect': 'I conjure a dart.'},
         },
         turn_id=turn_id,
     )
@@ -218,6 +219,70 @@ def test_targeted_spell_resolves_exact_effect_before_narration_and_retries_once(
     )
     assert retried['nextState']['combat']['participants'][1]['hp'] == enemy['hp']
     assert retried['nextState']['playerCharacters'][0]['spellResources']['slots']['1']['current'] == 1
+
+
+def test_missing_target_pauses_until_a_legal_selection_then_resolves() -> None:
+    state = _combat_state()
+    intent, error = validate_action_intent({
+        'kind': 'spell', 'text': 'I cast Magic Missile.',
+        'spell': {'name': 'Magic Missile', 'effect': 'Force darts strike.'},
+    })
+    assert error is None
+    action = extract_pre_dm_actions(
+        current_state=state, player_message=intent['text'], recent_timeline=[],
+        actor_id='player_1', action_intent=intent,
+    )['declaredActions'][0]
+    paused = validate_declared_actions(state=state, declared_actions=[action], current_turn=20)
+    assert paused['validatedActions'][0]['status'] == 'needs_clarification'
+    assert paused['immediateChanges'] == []
+    request = paused['clarificationRequests'][0]
+    assert request['prompt'] == 'Who do you target with Magic Missile?'
+    assert [option['itemId'] for option in request['options']] == ['enemy_goblin_1']
+    assert state['playerCharacters'][0]['spellResources']['slots']['1']['current'] == 2
+
+    resumed = validate_declared_actions(
+        state=state, declared_actions=[request['originalAction']], current_turn=21,
+        selected_item_ids={action['id']: 'enemy_goblin_1'},
+    )
+    assert resumed['validatedActions'][0]['status'] == 'valid'
+    assert resumed['immediateChanges'][0]['targetIds'] == ['enemy_goblin_1']
+    stale = validate_declared_actions(
+        state=state, declared_actions=[action], current_turn=22,
+        selected_item_ids={action['id']: 'enemy_missing'},
+    )
+    assert stale['validatedActions'][0]['status'] == 'invalid'
+    assert stale['immediateChanges'] == []
+
+
+def test_freeform_rules_backed_cast_uses_the_same_target_clarification(monkeypatch) -> None:
+    monkeypatch.setattr('aidm_server.game_state.extraction.pre_dm_action_extractor._helper_enabled', lambda: False)
+    state = _combat_state()
+    extraction = extract_pre_dm_actions(
+        current_state=state, player_message='I cast Magic Missile at the goblin.',
+        recent_timeline=[], actor_id='player_1',
+    )
+    assert extraction['notes'] == ['freeform_authoritative_spell']
+    paused = validate_declared_actions(state=state, declared_actions=extraction['declaredActions'], current_turn=23)
+    assert paused['validatedActions'][0]['status'] == 'needs_clarification'
+    assert paused['immediateChanges'] == []
+    assert paused['clarificationRequests'][0]['options'][0]['label'] == 'Goblin'
+
+    negated = extract_pre_dm_actions(
+        current_state=state, player_message="I don't cast Magic Missile.",
+        recent_timeline=[], actor_id='player_1',
+    )
+    assert not any(action['type'] == 'spell.cast' for action in negated['declaredActions'])
+
+
+def test_missing_target_without_a_legal_encounter_is_rejected_without_spending() -> None:
+    declared, validation, applied = _run_intent(_caster_state(), {
+        'kind': 'spell', 'text': 'I cast Magic Missile.',
+        'spell': {'name': 'Magic Missile', 'effect': 'Force darts strike.'},
+    }, turn_id=24)
+    assert declared['validatedActions'][0]['status'] == 'invalid'
+    assert 'active encounter' in declared['validatedActions'][0]['reason']
+    assert validation['accepted'] == []
+    assert applied['nextState']['playerCharacters'][0]['spellResources']['slots']['1']['current'] == 2
 
 
 def test_upcast_healing_replays_exact_rolls_and_consumes_the_chosen_slot(monkeypatch) -> None:
@@ -426,17 +491,17 @@ def test_targeted_spell_stale_target_fails_without_spending_slot() -> None:
 def test_typed_spell_cast_consumes_slots_and_exhaustion_blocks_before_narration() -> None:
     state = _caster_state()
 
-    first_declared, first_validation, first = _cast_magic_missile(state, 1)
+    first_declared, first_validation, first = _cast_narrated_spell(state, 1)
     assert first_declared['validatedActions'][0]['status'] == 'valid'
     assert first_validation['rejected'] == []
     actor = first['nextState']['playerCharacters'][0]
     assert actor['spellResources']['slots']['1'] == {'current': 1, 'max': 2}
 
-    _, second_validation, second = _cast_magic_missile(first['nextState'], 2)
+    _, second_validation, second = _cast_narrated_spell(first['nextState'], 2)
     assert second_validation['rejected'] == []
     assert second['nextState']['playerCharacters'][0]['spellResources']['slots']['1']['current'] == 0
 
-    exhausted_declared, exhausted_validation, exhausted = _cast_magic_missile(second['nextState'], 3)
+    exhausted_declared, exhausted_validation, exhausted = _cast_narrated_spell(second['nextState'], 3)
     assert exhausted_declared['validatedActions'][0]['status'] == 'invalid'
     assert 'No legal level 1 or higher spell resource remains' in exhausted_declared['validatedActions'][0]['reason']
     assert exhausted_validation['accepted'] == []
@@ -445,7 +510,7 @@ def test_typed_spell_cast_consumes_slots_and_exhaustion_blocks_before_narration(
 
 def test_cast_change_is_idempotent_and_cantrip_tracks_concentration_without_a_slot() -> None:
     state = _caster_state()
-    _, validation, cast = _cast_magic_missile(state, 8)
+    _, validation, cast = _cast_narrated_spell(state, 8)
     accepted = validated_changes_for_application(validation)
     retried = apply_state_changes(cast['nextState'], accepted)
 
@@ -471,8 +536,8 @@ def test_cast_change_is_idempotent_and_cantrip_tracks_concentration_without_a_sl
 
 def test_short_and_long_rest_restore_only_their_resources_and_preserve_consequences() -> None:
     state = _caster_state()
-    _, _, first = _cast_magic_missile(state, 1)
-    _, _, exhausted = _cast_magic_missile(first['nextState'], 2)
+    _, _, first = _cast_narrated_spell(state, 1)
+    _, _, exhausted = _cast_narrated_spell(first['nextState'], 2)
 
     _, short_validation, short_rest = _run_intent(
         exhausted['nextState'],
@@ -540,8 +605,8 @@ def test_consumed_spell_resource_and_race_ability_state_survive_database_reload(
             state,
             {
                 'kind': 'spell',
-                'text': 'I cast Magic Missile.',
-                'spell': {'name': 'Magic Missile', 'effect': 'Force darts strike.'},
+                'text': 'I cast Arcane Dart.',
+                'spell': {'name': 'Arcane Dart', 'effect': 'A dart appears.'},
             },
             turn_id=11,
         )

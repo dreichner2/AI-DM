@@ -65,7 +65,7 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
         'delivery': {'type': 'automatic', 'darts': {'count': 3, 'dice': '1d4+1'}},
         'target': {
             'relation': 'enemy',
-            'rangeBands': ['near', 'far', 'distant'],
+            'rangeBands': ['melee', 'near', 'far', 'distant'],
             'maxTargets': 3,
             'ignoreCover': True,
         },

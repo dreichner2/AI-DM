@@ -1029,11 +1029,17 @@ class TurnEngine:
     def _typed_action_rejection(command: TurnCommand, pre_pipeline_result: dict) -> dict | None:
         intent = command.action_intent if isinstance(command.action_intent, dict) else {}
         intent_kind = str(intent.get('kind') or '').strip().lower()
-        if intent_kind not in AUTHORITATIVE_TYPED_ACTION_KINDS:
-            return None
-
         pre_validation = pre_pipeline_result.get('preValidation')
         pre_validation = pre_validation if isinstance(pre_validation, dict) else {}
+        if intent_kind in {'', 'message'} and any(
+            isinstance(result, dict)
+            and isinstance(result.get('originalAction'), dict)
+            and result['originalAction'].get('type') == 'spell.cast'
+            for result in pre_validation.get('validatedActions') or []
+        ):
+            intent_kind = 'spell'
+        if intent_kind not in AUTHORITATIVE_TYPED_ACTION_KINDS:
+            return None
         relevant_results: list[dict] = []
         for result in pre_validation.get('validatedActions') or []:
             if not isinstance(result, dict):

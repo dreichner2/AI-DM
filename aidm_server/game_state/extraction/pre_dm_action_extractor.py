@@ -12,6 +12,7 @@ from aidm_server.game_state.models import normalize_item_name
 from aidm_server.item_effects import ITEM_USE_ACTION_PREFIX
 from aidm_server.llm_providers import get_helper_provider
 from aidm_server.provider_priority import foreground_provider_reservation
+from aidm_server.spellbook import AUTHORITATIVE_SPELL_EFFECTS
 from aidm_server.telemetry import telemetry_event, telemetry_metric
 
 
@@ -612,6 +613,28 @@ def extract_pre_dm_actions(
             normalize_pre_extraction(intent_payload, fallback_actor_id=actor_id),
             _empty_helper_debug(source='action_intent', reason='client_action_intent'),
         )
+
+    # Resolve explicit casts of server-owned spells even when the optional
+    # extraction helper is unavailable.  A name in free text is not an exact
+    # participant ID; the validator will ask the player to choose a target.
+    if not action_intent or action_intent.get('kind') == 'message':
+        names = sorted(AUTHORITATIVE_SPELL_EFFECTS, key=len, reverse=True)
+        names_pattern = '|'.join(re.escape(name) for name in names)
+        match = re.search(
+            rf'\bcast\s+(?:(?:the\s+)?spell\s+|the\s+)?(?P<spell>{names_pattern})(?!\w)',
+            player_message or '', re.IGNORECASE,
+        )
+        prefix = (player_message or '')[max(0, match.start() - 35):match.start()] if match else ''
+        negated = re.search(r"\b(?:don't|do not|won't|will not|can't|cannot|never)\s+(?:\w+\s+){0,2}$", prefix, re.IGNORECASE)
+        if match and not negated:
+            return _attach_debug(normalize_pre_extraction({
+                'declaredActions': [{
+                    'id': 'act_001', 'type': 'spell.cast', 'actorId': actor_id,
+                    'confidence': 1.0, 'sourceText': player_message,
+                    'requiresDMResolution': True, 'spellName': match.group('spell'),
+                }],
+                'notes': ['freeform_authoritative_spell'],
+            }, fallback_actor_id=actor_id), _empty_helper_debug(source='spell_name', reason='freeform_authoritative_spell'))
 
     helper_enabled = _helper_enabled()
     if not ACTIONABLE_PATTERN.search(player_message or '') and not (force_helper and helper_enabled):

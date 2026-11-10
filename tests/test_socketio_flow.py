@@ -2450,6 +2450,56 @@ def test_turn_pipeline_does_not_consume_potion_when_dm_generation_fails(app, soc
         assert pipeline['pendingImmediateChanges'][0]['type'] == 'inventory.remove'
 
 
+def test_freeform_healing_spell_pauses_and_resumes_for_target(app, socketio, app_runtime, monkeypatch):
+    socketio_module = app_runtime['modules']['socketio_events']
+    calls = []
+
+    def fake_stream(user_input, context, speaking_player=None, rules_hint=None):
+        del user_input, context, speaking_player
+        calls.append(rules_hint)
+        yield 'The healing magic takes effect.'
+
+    monkeypatch.setattr(socketio_module, 'query_dm_function_stream', fake_stream)
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        player = db.session.get(Player, ids['player_id'])
+        player.class_ = 'Cleric'
+        player.level = 1
+        player.stats = safe_json_dumps({'wisdom': 16, 'current_hp': 3, 'max_hp': 10}, {})
+        spellbook = normalize_spellbook({'knownSpells': [{'name': 'Cure Wounds', 'level': 1}]}, class_name='Cleric')
+        sheet, _ = ensure_character_sheet_spell_resources({'spellbook': spellbook}, class_name='Cleric', level=1)
+        player.character_sheet = safe_json_dumps(sheet, {})
+        db.session.commit()
+
+    client = socketio.test_client(app, flask_test_client=app.test_client())
+    client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id']})
+    client.get_received()
+    client.emit('send_message', {
+        'session_id': ids['session_id'], 'campaign_id': ids['campaign_id'],
+        'world_id': ids['world_id'], 'player_id': ids['player_id'],
+        'message': 'I cast Cure Wounds.',
+    })
+    request = _event_payload(client.get_received(), 'clarification_required')
+    assert request is not None
+    assert calls == []
+    assert [option['itemId'] for option in request['options']] == [f"player_{ids['player_id']}"]
+    with app.app_context():
+        sheet = safe_json_loads(db.session.get(Player, ids['player_id']).character_sheet, {})
+        assert sheet['spellResources']['slots']['1']['current'] == 2
+
+    client.emit('resolve_clarification', {
+        'session_id': ids['session_id'], 'player_id': ids['player_id'],
+        'turn_id': request['turnId'], 'selected_item_id': request['options'][0]['itemId'],
+    })
+    resumed = client.get_received()
+    assert _event_payload(resumed, 'dm_response_start') is not None
+    assert len(calls) == 1
+    with app.app_context():
+        sheet = safe_json_loads(db.session.get(Player, ids['player_id']).character_sheet, {})
+        assert sheet['spellResources']['slots']['1']['current'] == 1
+        assert db.session.get(DmTurn, request['turnId']).status == 'clarification_resolved'
+
+
 def test_attack_pipeline_pauses_and_resumes_for_item_clarification(app, socketio, app_runtime, monkeypatch):
     socketio_module = app_runtime['modules']['socketio_events']
     calls = []

@@ -36,7 +36,7 @@ from aidm_server.combat.morale import MORALE_EVENTS, apply_morale_event
 from aidm_server.combat.reactions import REACTION_SOURCE
 from aidm_server.combat.vitality import DEATH_SAVE_SOURCE
 from aidm_server.combat.state import RANGE_BANDS, normalize_battlefield, normalize_combat_state, normalize_participant, player_combat_participant
-from aidm_server.spell_effects import resolve_targeted_spell
+from aidm_server.spell_effects import resolve_targeted_spell, spell_target_legality
 from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start, story_flag_allows
 from aidm_server.game_state.validation.inventory_validator import resolve_inventory_item_reference
 from aidm_server.game_state.quest_engine import quest_completion_blocker, quest_failure_blocker
@@ -1149,8 +1149,6 @@ def _authoritative_spell_definition(spell: dict[str, Any], actor: dict[str, Any]
     casting_ability = SPELLCASTING_ABILITY_BY_ARCHETYPE.get(
         class_spell_archetype(_text(actor.get('class'))) or ''
     )
-    if _text(delivery.get('type')).lower() in {'attack', 'save'} and not casting_ability:
-        return None
     if casting_ability:
         delivery = {**delivery, 'castingAbility': casting_ability}
         definition['delivery'] = delivery
@@ -1192,6 +1190,25 @@ def _spell_resolution_rolls(resolution: Any) -> list[int]:
     return rolls
 
 
+def _spell_combat_state(state: dict[str, Any], actor: dict[str, Any], spell: dict[str, Any]) -> dict[str, Any]:
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    if _text(combat.get('status')).lower() not in {'starting', 'active'} and spell.get('outOfCombat') is True:
+        active_ids = {
+            int_or_default(value, default=0) for value in state.get('activePlayerIds') or []
+            if int_or_default(value, default=0) > 0
+        }
+        participants = [
+            player_combat_participant(candidate)
+            for candidate in state.get('playerCharacters') or []
+            if isinstance(candidate, dict) and (
+                _text(candidate.get('id')) == _text(actor.get('id'))
+                or int_or_default(candidate.get('playerId'), default=0) in active_ids
+            )
+        ]
+        combat = {'status': 'none', 'participants': participants, 'flags': {}}
+    return combat
+
+
 def _resolve_spell_effect(
     *,
     state: dict[str, Any],
@@ -1213,21 +1230,7 @@ def _resolve_spell_effect(
         roll_index += 1
         return max(1, min(max(1, sides), int_or_default(value, default=1)))
 
-    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
-    if _text(combat.get('status')).lower() not in {'starting', 'active'} and spell.get('outOfCombat') is True:
-        active_ids = {
-            int_or_default(value, default=0) for value in state.get('activePlayerIds') or []
-            if int_or_default(value, default=0) > 0
-        }
-        participants = [
-            player_combat_participant(candidate)
-            for candidate in state.get('playerCharacters') or []
-            if isinstance(candidate, dict) and (
-                _text(candidate.get('id')) == _text(actor.get('id'))
-                or int_or_default(candidate.get('playerId'), default=0) in active_ids
-            )
-        ]
-        combat = {'status': 'none', 'participants': participants, 'flags': {}}
+    combat = _spell_combat_state(state, actor, spell)
     return resolve_targeted_spell(
         combat,
         caster_id=_text(actor.get('id')),
@@ -1250,7 +1253,9 @@ def _resolve_spell_effect(
     )
 
 
-def _validate_spell_action(action: dict[str, Any], state: dict[str, Any], *, current_turn: int) -> dict[str, Any]:
+def _validate_spell_action(
+    action: dict[str, Any], state: dict[str, Any], *, current_turn: int, selected_target_id: str | None = None,
+) -> dict[str, Any]:
     actor = find_actor(state, _action_value(action, 'actorId', 'actor_id'))
     if not actor:
         return _invalid(action, 'Actor not found.')
@@ -1276,11 +1281,40 @@ def _validate_spell_action(action: dict[str, Any], state: dict[str, Any], *, cur
         if _text(target_id)
     ]
     authoritative_spell = _authoritative_spell_definition(spell, actor)
-    # Legacy clients did not send exact targets. Keep their resource-only cast
-    # path compatible; the current typed UI supplies target IDs and therefore
-    # receives the full authoritative effect resolution.
     if authoritative_spell and not target_ids:
-        authoritative_spell = None
+        if selected_target_id:
+            target_ids = [_text(selected_target_id)]
+        else:
+            combat = _spell_combat_state(state, actor, authoritative_spell)
+            if _text(combat.get('status')).lower() not in {'starting', 'active'} and authoritative_spell.get('outOfCombat') is not True:
+                return _invalid(action, 'This spell action requires an active encounter.')
+            actor_id = _text(actor.get('id'))
+            options = []
+            for participant in combat.get('participants') or []:
+                if not isinstance(participant, dict):
+                    continue
+                target_id = _text(participant.get('id') or participant.get('participantId'))
+                if target_id and spell_target_legality(
+                    combat, caster_id=actor_id, spell=authoritative_spell,
+                    target_ids=[target_id], cast_level=legality.get('castLevel'),
+                ).get('legal'):
+                    options.append({
+                        'itemId': target_id,
+                        'label': _text(participant.get('name')) or target_id,
+                        'description': 'Spell target',
+                    })
+            if not options:
+                empty = spell_target_legality(
+                    combat, caster_id=actor_id, spell=authoritative_spell,
+                    target_ids=[], cast_level=legality.get('castLevel'),
+                )
+                reason = _text(empty.get('reason')) if empty.get('code') != 'spell_target_count_invalid' else ''
+                return _invalid(action, reason or f"There is no legal target for {spell.get('name') or spell_name}.")
+            return _clarification(action, {
+                'reason': 'Choose a target before casting.',
+                'query': f"Who do you target with {spell.get('name') or spell_name}?",
+                'options': options,
+            })
     change = {
         'id': stable_change_id(
             current_turn,
@@ -1930,7 +1964,7 @@ def validate_declared_actions(
         elif action_type == 'scene.interactable.action':
             result = _validate_interactable_action(action, state, current_turn=current_turn)
         elif action_type == 'spell.cast':
-            result = _validate_spell_action(action, state, current_turn=current_turn)
+            result = _validate_spell_action(action, state, current_turn=current_turn, selected_target_id=selected_item_id)
         elif action_type == 'class_feature.use':
             result = _validate_class_feature_action(action, state, current_turn=current_turn)
         elif action_type == 'rest.complete':

@@ -454,7 +454,7 @@ def test_real_socket_spell_exhaustion_rest_retry_and_reload(
         spellbook = normalize_spellbook(
             {
                 'knownSpells': [
-                    {'id': 'spell_magic_missile', 'name': 'Magic Missile', 'level': 1},
+                    {'id': 'spell_arcane_dart', 'name': 'Arcane Dart', 'level': 1},
                 ]
             },
             class_name='Wizard',
@@ -498,12 +498,12 @@ def test_real_socket_spell_exhaustion_rest_retry_and_reload(
         return _send(
             client,
             ids,
-            message='Seraphina casts Magic Missile.',
+            message='Seraphina casts Arcane Dart.',
             client_message_id=message_id,
             intent={
                 'kind': 'spell',
                 'source': 'composer',
-                'spell': {'name': 'Magic Missile', 'effect': 'Force darts strike the chosen target.'},
+                'spell': {'name': 'Arcane Dart', 'effect': 'A dart appears.'},
             },
         )
 
