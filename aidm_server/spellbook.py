@@ -71,6 +71,34 @@ AUTHORITATIVE_SPELL_EFFECTS: dict[str, dict[str, Any]] = {
         },
         'effects': [{'kind': 'damage', 'dice': '3d4+3', 'damageType': 'force'}],
     },
+    'burning hands': {
+        'level': 1,
+        'delivery': {'type': 'save', 'ability': 'dexterity', 'onSuccess': 'half'},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near'], 'area': {'maxTargets': 3}},
+        'effects': [{'kind': 'damage', 'dice': '3d6', 'damageType': 'fire'}],
+        'scaling': {'upcast': {'dice': '1d6'}},
+    },
+    'shatter': {
+        'level': 2,
+        'delivery': {'type': 'save', 'ability': 'constitution', 'onSuccess': 'half'},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far'], 'area': {'maxTargets': 4}},
+        'effects': [{'kind': 'damage', 'dice': '3d8', 'damageType': 'thunder'}],
+        'scaling': {'upcast': {'dice': '1d8'}},
+    },
+    'fireball': {
+        'level': 3,
+        'delivery': {'type': 'save', 'ability': 'dexterity', 'onSuccess': 'half'},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far', 'distant'], 'area': {'maxTargets': 6}},
+        'effects': [{'kind': 'damage', 'dice': '8d6', 'damageType': 'fire'}],
+        'scaling': {'upcast': {'dice': '1d6'}},
+    },
+    'lightning bolt': {
+        'level': 3,
+        'delivery': {'type': 'save', 'ability': 'dexterity', 'onSuccess': 'half'},
+        'target': {'relation': 'enemy', 'rangeBands': ['melee', 'near', 'far', 'distant'], 'area': {'maxTargets': 3}},
+        'effects': [{'kind': 'damage', 'dice': '8d6', 'damageType': 'lightning'}],
+        'scaling': {'upcast': {'dice': '1d6'}},
+    },
     'sacred flame': {
         'level': 0,
         'delivery': {'type': 'save', 'ability': 'dexterity', 'onSuccess': 'none'},
@@ -140,6 +168,52 @@ def authoritative_spell_effect(name: Any) -> dict[str, Any] | None:
     return deepcopy(effect) if isinstance(effect, dict) else None
 
 
+def spell_effect_summary(definition: dict[str, Any]) -> str:
+    """A short player-facing description derived from the authoritative data."""
+
+    delivery = definition.get('delivery') if isinstance(definition.get('delivery'), dict) else {}
+    delivery_type = _normalize_text(delivery.get('type') or 'automatic').lower()
+    if delivery_type == 'save':
+        label = f"{_normalize_text(delivery.get('ability'))[:3].upper()} save"
+        if delivery.get('onSuccess') == 'half':
+            label += ', half on success'
+    else:
+        label = 'Spell attack' if delivery_type == 'attack' else 'Automatic'
+    parts = [label]
+    for effect in definition.get('effects') or []:
+        if not isinstance(effect, dict):
+            continue
+        kind = _normalize_text(effect.get('kind')).lower()
+        dice = _normalize_text(effect.get('dice') or effect.get('amount'))
+        if kind == 'damage':
+            parts.append(' '.join(value for value in (dice, _normalize_text(effect.get('damageType'))) if value))
+        elif kind == 'healing':
+            parts.append(f"{dice}{' + casting modifier' if effect.get('addCastingModifier') else ''} healing")
+        elif kind == 'condition':
+            parts.append(_normalize_text(effect.get('condition')).replace('_', ' '))
+    target = definition.get('target') if isinstance(definition.get('target'), dict) else {}
+    area = target.get('area') if isinstance(target.get('area'), dict) else {}
+    if area.get('maxTargets'):
+        parts.append(f"area: up to {int(area['maxTargets'])} enemies")
+    scaling = definition.get('scaling') if isinstance(definition.get('scaling'), dict) else {}
+    if scaling.get('cantrip') is True:
+        parts.append('scales with level')
+    return ' · '.join(part for part in parts if part)
+
+
+def _apply_spell_metadata(payload: dict[str, Any], authoritative_effect: dict[str, Any] | None) -> None:
+    if authoritative_effect:
+        payload.update(authoritative_effect)
+        payload.update({'rulesBacked': True, 'authoritativeEffect': True, 'narrated': False})
+        payload['effectSummary'] = spell_effect_summary(authoritative_effect)
+    else:
+        payload.update({'rulesBacked': False, 'authoritativeEffect': False, 'narrated': True})
+        payload['effectSummary'] = _normalize_text(payload.get('description')) or 'Narrated by the Dungeon Master.'
+    payload.setdefault('castingTime', 'action')
+    payload.setdefault('concentration', False)
+    payload.setdefault('outOfCombat', False)
+
+
 def spell_payload(
     name: str,
     *,
@@ -182,9 +256,7 @@ def spell_payload(
     if learned_from:
         payload['learnedFrom'] = _normalize_text(learned_from)
     authoritative_effect = authoritative_spell_effect(spell_name)
-    if authoritative_effect:
-        payload.update(authoritative_effect)
-        payload['authoritativeEffect'] = True
+    _apply_spell_metadata(payload, authoritative_effect)
     return payload
 
 
@@ -341,17 +413,7 @@ ORIGINAL_ARCHETYPE_TAGS: dict[str, set[str]] = {
 }
 
 
-ORIGINAL_STARTER_COUNTS = {
-    'wizard': 14,
-    'sorcerer': 12,
-    'warlock': 10,
-    'cleric': 11,
-    'druid': 12,
-    'bard': 12,
-    'paladin': 7,
-    'ranger': 8,
-    'artificer': 12,
-}
+ORIGINAL_STARTER_COUNTS = {archetype: 3 for archetype in ORIGINAL_ARCHETYPE_TAGS}
 
 
 ORIGINAL_UNLOCK_COUNTS = {
@@ -1026,9 +1088,7 @@ def normalize_spell(raw_spell: Any) -> dict[str, Any] | None:
             normalized['source'] = source
             normalized['sources'] = [source]
     authoritative_effect = authoritative_spell_effect(name)
-    if authoritative_effect:
-        normalized.update(authoritative_effect)
-        normalized['authoritativeEffect'] = True
+    _apply_spell_metadata(normalized, authoritative_effect)
     return normalized
 
 

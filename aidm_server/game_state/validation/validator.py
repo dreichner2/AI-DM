@@ -1178,10 +1178,11 @@ def _spell_resolution_rolls(resolution: Any) -> list[int]:
             if not isinstance(effect, dict):
                 continue
             roll = effect.get('roll') if isinstance(effect.get('roll'), dict) else {}
-            rolls.extend(
-                max(1, int_or_default(value, default=1))
-                for value in (roll.get('rolls') or [])
-            )
+            if effect.get('sharedRollReused') is not True:
+                rolls.extend(
+                    max(1, int_or_default(value, default=1))
+                    for value in (roll.get('rolls') or [])
+                )
             concentration = effect.get('concentrationCheck') if isinstance(effect.get('concentrationCheck'), dict) else {}
             check = concentration.get('check') if isinstance(concentration.get('check'), dict) else {}
             rolls.extend(max(1, int_or_default(value, default=1)) for value in check.get('rolls') or [])

@@ -317,6 +317,39 @@ def test_spell_damage_concentration_check_is_replayed_and_applied_once(monkeypat
     assert retried['nextState']['combat']['participants'][1]['hp'] == participants[1]['hp']
 
 
+def test_area_spell_expansion_and_shared_damage_replay_in_a_turn(monkeypatch) -> None:
+    state = _combat_state()
+    actor = state['playerCharacters'][0]
+    actor['level'] = 5
+    actor['spellbook'] = normalize_spellbook({'knownSpells': [_spell('Fireball', 3)]}, class_name='Wizard')
+    actor['spellResources'] = normalize_spell_resources(None, class_name='Wizard', level=5)
+    state['combat']['participants'][0]['level'] = 5
+    state['combat']['participants'][1]['spellResources'] = {'concentration': {
+        'active': True, 'spellId': 'spell_hex', 'spellName': 'Hex',
+        'casterActorId': 'enemy_goblin_1', 'targetIds': ['player_1'],
+    }}
+    extra = {**state['combat']['participants'][1], 'id': 'enemy_goblin_2', 'name': 'Second Goblin',
+             'hp': {'current': 20, 'max': 20, 'temp': 0}, 'spellResources': {}}
+    state['combat']['participants'].append(extra)
+    monkeypatch.setattr('aidm_server.game_state.validation.validator.secrets.randbelow', lambda _sides: 0)
+    declared, validation, applied = _run_intent(state, {
+        'kind': 'spell', 'text': 'I cast Fireball at the goblin.', 'spell': {
+            'name': 'Fireball', 'effect': 'A burst of fire.', 'target_ids': ['enemy_goblin_1'], 'cast_level': 3,
+        },
+    }, turn_id=28)
+    assert declared['validatedActions'][0]['status'] == 'valid'
+    assert validation['rejected'] == []
+    resolution = applied['appliedChanges'][0]['spellResolution']
+    assert resolution['targetIds'] == ['enemy_goblin_1', 'enemy_goblin_2']
+    assert [target['effects'][0]['amountApplied'] for target in resolution['targets']] == [8, 8]
+    assert resolution['targets'][0]['effects'][0]['concentrationCheck']['maintained'] is False
+    assert resolution['targets'][1]['effects'][0]['sharedRollReused'] is True
+    assert [participant['hp']['current'] for participant in applied['nextState']['combat']['participants'][1:]] == [12, 12]
+    assert applied['nextState']['playerCharacters'][0]['spellResources']['slots']['3']['current'] == 1
+    retried = apply_state_changes(applied['nextState'], validated_changes_for_application(validation))
+    assert [participant['hp']['current'] for participant in retried['nextState']['combat']['participants'][1:]] == [12, 12]
+
+
 def test_targeted_spell_stale_target_fails_without_spending_slot() -> None:
     state = _combat_state()
     declared, validation, applied = _run_intent(

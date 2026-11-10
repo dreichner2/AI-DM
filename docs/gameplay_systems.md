@@ -278,7 +278,8 @@ mechanics the server currently applies, rather than full tabletop coverage.
 ### Targeted spell effects
 
 - Fire Bolt, Magic Missile, Sacred Flame, Cure Wounds, Healing Word, Entangle,
-  and Ray of Frost have server-owned effect definitions. A typed cast with exact
+  Ray of Frost, Burning Hands, Shatter, Fireball and Lightning Bolt have
+  server-owned effect definitions. A typed cast with exact
   target IDs validates turn ownership, presence, relation, range, cover, target
   count, spell knowledge/preparation, and casting resources before rolling.
 - The resolver owns attack rolls, target saving throws, automatic delivery,
@@ -294,6 +295,11 @@ mechanics the server currently applies, rather than full tabletop coverage.
   per higher slot level; they can also heal the active party outside combat.
   Healing Word uses a bonus action in combat. The selected slot level reaches
   validation and replay, and at most one levelled spell is allowed per turn.
+- The four area damage spells above take one primary target, include other legal
+  enemies in the same range band and zone up to their target limit, share one
+  damage roll, and resolve each enemy's save separately. Allies are excluded.
+- Newly generated class spellbooks start with three AIDM-original sample spells;
+  those samples are marked as narrated. Existing known spells are preserved.
 - Slot/action consumption, combat effects, concentration state, player HP, and
   the stable cast-resolution ledger persist together through the normal state
   application path. A repeated cast ID returns the existing resolution rather
@@ -413,11 +419,11 @@ mechanics the server currently applies, rather than full tabletop coverage.
 - The authoritative class-capability catalog contains only Second Wind, Action
   Surge, and Lay on Hands. Apart from the passive rules listed above, other
   class features remain descriptive or resource-only.
-- Only seven curated spells have complete server-owned target/effect
-  definitions. Other known/prepared spells still consume the correct resource
+- Eleven curated spells have server-owned target/effect definitions, with some
+  tabletop details still simplified. Other known/prepared spells consume the correct resource
   but remain resource-only or narration-assisted for their effects. The
-  Mechanical actions panel intentionally lists only the seven fully authoritative
-  definitions and their exact legal targets.
+  Mechanical actions panel lists the authoritative definitions and their exact
+  legal targets.
 - Combat has coarse range bands, cover, action budgets, enemy tactics, morale
   data, surrender/flee states, and several end labels. It does not yet implement
   a full grid/pathfinder, opportunity attacks, or general reactions, and no

@@ -231,6 +231,7 @@ def _active_actor_id(combat: Mapping[str, Any]) -> str:
 
 def _target_spec(spell: Mapping[str, Any]) -> dict[str, Any]:
     raw = spell.get('target') if isinstance(spell.get('target'), Mapping) else {}
+    area = raw.get('area') if isinstance(raw.get('area'), Mapping) else None
     relation = _key(raw.get('relation') or raw.get('team') or 'enemy')
     raw_bands = raw.get('rangeBands', raw.get('range_bands'))
     if isinstance(raw_bands, str):
@@ -253,12 +254,13 @@ def _target_spec(spell: Mapping[str, Any]) -> dict[str, Any]:
             minimum=1,
             maximum=20,
         ),
-        'maxTargets': _bounded_int(
+        'maxTargets': 1 if area else _bounded_int(
             raw.get('maxTargets', raw.get('max_targets')),
             default=1,
             minimum=1,
             maximum=20,
         ),
+        'areaMaxTargets': _bounded_int(area.get('maxTargets'), default=1, minimum=1, maximum=20) if area else 0,
         'allowDefeated': raw.get('allowDefeated', raw.get('allow_defeated', False)) is True,
         'requiresPresent': raw.get('requiresPresent', raw.get('requires_present', True)) is not False,
         'requiresLineOfSight': raw.get(
@@ -1147,6 +1149,7 @@ def _apply_effect(
     effect_index: int,
     in_combat: bool,
     casting_modifier: int = 0,
+    shared_roll: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     save_succeeded = delivery_result.get('saveSucceeded') is True
     save_mode = _save_effect_mode(effect, delivery) if save_succeeded else 'full'
@@ -1168,12 +1171,11 @@ def _apply_effect(
             spell=spell,
             effect_index=effect_index,
         )
-    rolled = _roll_expression(
-        str(effect['expression']),
-        roller,
+    rolled = deepcopy(dict(shared_roll)) if shared_roll is not None else _roll_expression(
+        str(effect['expression']), roller,
         critical=delivery_result.get('critical') is True and effect['kind'] == 'damage',
     )
-    if effect.get('addCastingModifier') is True:
+    if effect.get('addCastingModifier') is True and shared_roll is None:
         bonus = max(0, casting_modifier)
         rolled['castingModifier'] = bonus
         rolled['bonus'] += bonus
@@ -1190,6 +1192,33 @@ def _apply_effect(
     if effect['kind'] == 'healing':
         return _apply_healing(participant, rolled=rolled)
     return _apply_temporary_hp(participant, rolled=rolled)
+
+
+def _area_targets(
+    combat: Mapping[str, Any], caster_id: str, spell: Mapping[str, Any], primary_id: str, maximum: int,
+) -> list[str]:
+    """Expand an area around the primary target using only legal enemies."""
+
+    caster = _participant_by_id(combat, caster_id)
+    primary = _participant_by_id(combat, primary_id)
+    if caster is None or primary is None:
+        return [primary_id]
+    primary_position = _position(primary)
+    primary_band = _key(primary_position.get('rangeBand') or primary_position.get('range_band') or 'near')
+    primary_zone = _text(primary_position.get('zoneId') or primary_position.get('zone_id'))
+    candidates = []
+    for candidate in _participants(combat):
+        candidate_id = _participant_id(candidate)
+        if not candidate_id or candidate_id == primary_id or _friendly(caster, candidate) or _key(candidate.get('team')) == 'neutral':
+            continue
+        position = _position(candidate)
+        band = _key(position.get('rangeBand') or position.get('range_band') or 'near')
+        zone = _text(position.get('zoneId') or position.get('zone_id'))
+        if band != primary_band or zone != primary_zone:
+            continue
+        if spell_target_legality(combat, caster_id=caster_id, spell=spell, target_ids=[candidate_id])['legal']:
+            candidates.append(candidate_id)
+    return [primary_id, *sorted(candidates)[:max(0, maximum - 1)]]
 
 
 def resolve_targeted_spell(
@@ -1286,6 +1315,11 @@ def resolve_targeted_spell(
         }
 
     normalized_spell = legality['spell']
+    requested_target_ids = list(normalized_target_ids)
+    if normalized_spell['target']['areaMaxTargets']:
+        normalized_target_ids = _area_targets(
+            combat, _text(caster_id), spell, normalized_target_ids[0], normalized_spell['target']['areaMaxTargets'],
+        )
     next_combat = deepcopy(dict(combat))
     caster = _participant_by_id(next_combat, caster_id)
     assert caster is not None  # Proven by legality before any roll or mutation.
@@ -1313,6 +1347,7 @@ def resolve_targeted_spell(
 
     in_combat = _key(next_combat.get('status')) in {'starting', 'active'}
     updated_target_resources: dict[str, dict[str, Any]] = {}
+    shared_damage_rolls: dict[int, dict[str, Any]] = {}
     target_resolutions: list[dict[str, Any]] = []
     for target_id in normalized_target_ids:
         target = _participant_by_id(next_combat, target_id)
@@ -1332,6 +1367,7 @@ def resolve_targeted_spell(
             ]
         effect_results = []
         for index, effect in enumerate(normalized_spell['effects']):
+            shared_roll = shared_damage_rolls.get(index) if normalized_spell['target']['areaMaxTargets'] and effect['kind'] == 'damage' else None
             effect_result = _apply_effect(
                 target,
                 effect=effect,
@@ -1344,7 +1380,12 @@ def resolve_targeted_spell(
                 effect_index=index,
                 in_combat=in_combat,
                 casting_modifier=casting_modifier,
+                shared_roll=shared_roll,
             )
+            if normalized_spell['target']['areaMaxTargets'] and effect['kind'] == 'damage' and isinstance(effect_result.get('roll'), dict):
+                effect_result['sharedRollReused'] = shared_roll is not None
+                if shared_roll is None:
+                    shared_damage_rolls[index] = deepcopy(effect_result['roll'])
             damage = _int(effect_result.get('amountApplied'), default=0) if effect['kind'] == 'damage' else 0
             resources_for_target = (
                 next_resources if target_id == _text(caster_id)
@@ -1390,6 +1431,7 @@ def resolve_targeted_spell(
         'spellName': normalized_spell['name'],
         'castLevel': selected_level,
         'targetIds': normalized_target_ids,
+        **({'requestedTargetIds': requested_target_ids} if normalized_spell['target']['areaMaxTargets'] else {}),
         'targets': target_resolutions,
         'concentration': {
             'started': normalized_spell['concentration'],
@@ -1411,7 +1453,7 @@ def resolve_targeted_spell(
             'casterId': _text(caster_id),
             'spellId': normalized_spell['id'],
             'castLevel': selected_level,
-            'targetIds': normalized_target_ids,
+            'targetIds': requested_target_ids,
             'resolution': deepcopy(resolution),
         }
     )

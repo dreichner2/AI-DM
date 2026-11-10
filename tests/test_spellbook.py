@@ -3,11 +3,25 @@ from __future__ import annotations
 from aidm_server.spellbook import (
     ensure_character_sheet_spellbook,
     merge_spellbooks,
+    normalize_spell,
     original_spell_catalog,
     original_spell_catalog_size,
     spell_from_change,
+    spell_payload,
     spellbook_for_character,
 )
+
+
+def test_spell_metadata_distinguishes_rules_backed_and_narrated_spells():
+    fireball = spell_payload('Fireball', level=1)
+    assert fireball['level'] == 3
+    assert fireball['rulesBacked'] is fireball['authoritativeEffect'] is True
+    assert '8d6 fire' in fireball['effectSummary']
+    assert 'area: up to 6 enemies' in fireball['effectSummary']
+    assert fireball['castingTime'] == 'action'
+    narrated = normalize_spell({'name': 'An Invented Spell', 'level': 1, 'authoritativeEffect': True})
+    assert narrated['rulesBacked'] is narrated['authoritativeEffect'] is False
+    assert narrated['narrated'] is True
 
 
 def test_original_spell_catalog_is_broad_and_noncanonical():
@@ -25,10 +39,20 @@ def test_magical_classes_receive_original_catalog_spells():
     original_spells = [spell for spell in spells if spell.get('catalog') == 'aidm-original']
     names = {spell['name'] for spell in spells}
 
-    assert len(spells) >= 30
-    assert len(original_spells) >= 20
+    assert len(original_spells) == 13  # Three starters plus the existing level 2, 3 and 5 unlocks.
+    assert all(spell['narrated'] is True and spell['rulesBacked'] is False for spell in original_spells)
     assert 'Magic Missile' in names
     assert any(name not in {'Magic Missile', 'Shield', 'Fireball', 'Counterspell'} for name in names)
+
+
+def test_original_starter_sample_is_three_without_removing_existing_spells():
+    starter = spellbook_for_character(class_name='Wizard', race_name='Human', level=1)
+    original = [spell for spell in starter['knownSpells'] if spell.get('catalog') == 'aidm-original']
+    assert len(original) == 3
+    old_extra = next(spell for spell in original_spell_catalog() if spell['name'] not in {item['name'] for item in original})
+    existing = {'spellbook': {'knownSpells': [*starter['knownSpells'], old_extra]}}
+    sheet, _ = ensure_character_sheet_spellbook(existing, class_name='Wizard', race_name='Human', level=1)
+    assert old_extra['name'] in {spell['name'] for spell in sheet['spellbook']['knownSpells']}
 
 
 def test_custom_invented_spell_names_are_valid_story_magic():

@@ -94,6 +94,39 @@ def test_spell_damage_to_temporary_hp_checks_player_concentration_and_can_succee
     assert result['targetResources']['player_ally']['concentration']['spellId'] == 'spell_bless'
 
 
+def test_area_spell_expands_in_stable_order_shares_damage_and_saves_individually():
+    caster = _participant('player_mage', team='player')
+    primary = _participant('enemy_z', team='enemy', hp=20)
+    first = _participant('enemy_a', team='enemy', hp=20)
+    second = _participant('enemy_b', team='enemy', hp=20)
+    friend = _participant('player_friend', team='player', hp=20)
+    far = _participant('enemy_far', team='enemy', hp=20, range_band='far')
+    elsewhere = _participant('enemy_elsewhere', team='enemy', hp=20, zone_id='other')
+    spell = {
+        'id': 'spell_burst', 'name': 'Burst', 'level': 1,
+        'delivery': {'type': 'save', 'ability': 'dexterity', 'dc': 13, 'onSuccess': 'half'},
+        'target': {'relation': 'enemy', 'rangeBands': ['near', 'far'], 'area': {'maxTargets': 3}},
+        'effects': [{'kind': 'damage', 'dice': '2d6', 'damageType': 'fire'}],
+    }
+    roller = SequenceRoller(5, 3, 4, 18, 1)
+    result = resolve_targeted_spell(_combat(caster, primary, second, first, friend, far, elsewhere),
+                                    caster_id='player_mage', spell=spell, target_ids=['enemy_z'],
+                                    cast_id='area', roller=roller)
+    assert result['ok'] is True
+    assert result['resolution']['requestedTargetIds'] == ['enemy_z']
+    assert result['resolution']['targetIds'] == ['enemy_z', 'enemy_a', 'enemy_b']
+    effects = [target['effects'][0] for target in result['resolution']['targets']]
+    assert [effect['amountApplied'] for effect in effects] == [7, 3, 7]
+    assert [effect['sharedRollReused'] for effect in effects] == [False, True, True]
+    assert roller.sides == [20, 6, 6, 20, 20]
+    by_id = {participant['id']: participant for participant in result['combat']['participants']}
+    assert by_id['player_friend']['hp']['current'] == by_id['enemy_far']['hp']['current'] == 20
+    assert by_id['enemy_elsewhere']['hp']['current'] == 20
+    replay = resolve_targeted_spell(result['combat'], caster_id='player_mage', spell=spell,
+                                   target_ids=['enemy_z'], cast_id='area', roller=SequenceRoller())
+    assert replay['duplicate'] is True
+
+
 def _participant(
     participant_id: str,
     *,
