@@ -53,7 +53,7 @@ PREGENERATED_CHARACTER_PRESETS: tuple[PregeneratedCharacterPreset, ...] = (
                 'charisma': 10,
             },
             'skill_proficiencies': ['athletics', 'perception'],
-            'gold': 10,
+            'gold': 25,
             'default_weapon_id': 'starter_fighter_longsword',
         },
         character_sheet={
@@ -83,7 +83,7 @@ PREGENERATED_CHARACTER_PRESETS: tuple[PregeneratedCharacterPreset, ...] = (
                 'charisma': 10,
             },
             'skill_proficiencies': ['arcana', 'investigation'],
-            'gold': 10,
+            'gold': 25,
             'default_weapon_id': 'starter_wizard_quarterstaff',
         },
         character_sheet={
@@ -113,7 +113,7 @@ PREGENERATED_CHARACTER_PRESETS: tuple[PregeneratedCharacterPreset, ...] = (
                 'charisma': 13,
             },
             'skill_proficiencies': ['stealth', 'sleight_of_hand', 'thieves_tools'],
-            'gold': 12,
+            'gold': 25,
             'default_weapon_id': 'starter_rogue_rapier',
         },
         character_sheet={
@@ -143,7 +143,7 @@ PREGENERATED_CHARACTER_PRESETS: tuple[PregeneratedCharacterPreset, ...] = (
                 'charisma': 10,
             },
             'skill_proficiencies': ['insight', 'medicine'],
-            'gold': 10,
+            'gold': 25,
             'default_weapon_id': 'starter_cleric_mace',
         },
         character_sheet={

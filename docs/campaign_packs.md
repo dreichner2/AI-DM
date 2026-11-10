@@ -376,6 +376,31 @@ A checkpoint with a flag-gated branch:
 ]
 ```
 
+### Worked example
+
+[The Road of Unremembered Kings](examples/the_road_of_unremembered_kings_campaign.json),
+the Play Now adventure, uses every mechanism on this page and passes
+`lint --strict`. Read it alongside this reference:
+
+- `map`, `routes`, and each location's `mapPosition`, `mapIcon`, `restPolicy`,
+  `sceneType`, and `connectedLocationIds`. A place starts undiscovered and is
+  revealed by its neighbour's `onEnter` `location.discover`; the valley starts
+  `"status": "hidden"` and is revealed only by an object or an encounter.
+- Objects on every location: checks (`inn_drivers_bench`, `ws_memorial_wall`,
+  `ridge_culvert_grate`), keys and a check to break (`inn_wagon_strongbox`),
+  a hidden object revealed by a search (`inn_lead_wagon`), flag-gated actions
+  (`cairn_banner_stone`, `valley_last_road_stone`), and contents, clues,
+  flags, and places found by actions.
+- Encounters started by `on_interactable` and `on_enter` triggers with
+  `when`/`unless` gates, `enemyGroups` authored for four heroes, and
+  per-outcome quest events and consequences (`enc_roadwarden_judgment`).
+- A quest whose objectives complete from flags, places, and an encounter quest
+  event, with optional objectives, rewards, and `onComplete`; checkpoints
+  completed by objectives, places, flags, and an encounter; `storyFlags` so
+  talk can achieve what objects can; and two merchants.
+
+`tests/test_flagship_adventure.py` plays it through in Safe Mode by two routes.
+
 ## Stable Import Errors
 
 The importer returns these stable `error_code` values:
@@ -444,8 +469,9 @@ result; it does not import or persist the draft. Both pack-tool endpoints
 require `dm_authoring`.
 
 All bundled example packs, including the internal Bleakmoor fixture, lint
-without errors. They still carry warnings (non-mechanical objectives, missing
-location connections, prose completion text, unread director rules).
+without errors. The Road of Unremembered Kings also passes `lint --strict`; the
+others still carry warnings (non-mechanical objectives, missing location
+connections, prose completion text, unread director rules).
 
 ## Installed Pack Library
 
