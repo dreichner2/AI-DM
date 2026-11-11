@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from aidm_server.models import DmTurn, safe_json_loads
 
+import pytest
+
 from tests.test_flagship_adventure import _hero, table  # noqa: F401 - the Play Now table fixture
 
 THREAT_CHANGE_TYPES = frozenset({'health.damage', 'combat.condition.add'})
@@ -226,3 +228,27 @@ def test_losing_the_last_fight_is_not_an_ending():
             for consequence in payload.get('consequences') or []:
                 assert consequence.get('flagKey') not in fate_flags, (encounter['id'], outcome)
     assert 'defeat' not in final['outcomes']
+
+
+@pytest.mark.parametrize('end_reason', ['objective_failed', 'players_fled'])
+def test_losing_or_fleeing_the_last_fight_leaves_the_story_open(table, end_reason):  # noqa: F811
+    """Through the socket pipeline: the valley checkpoint stays active and no ending is reported."""
+
+    from tests.test_flagship_adventure import _active_checkpoint, _ending
+
+    table.travel('loc_old_north_road', 'The Old North Road')
+    table.end_combat('players_fled')
+    table.travel('loc_ridge_and_culvert_paths', 'Ridge and Culvert Paths')
+    table.act('ridge_culvert_grate', 'unlock', 'Culvert Grate')
+    table.act('ridge_culvert_grate', 'open', 'Culvert Grate')
+    table.travel('loc_valley_last_road_stone', 'Valley of the Last Road-Stone')
+    binding = table.act('valley_last_road_stone', 'inspect', 'The Last Road-Stone')
+    assert binding.encounter == 'enc_final_binding'
+
+    after = table.end_combat(end_reason)
+
+    assert _active_checkpoint(after.snapshot) == 'cp_06_final_valley'
+    assert _ending(after.snapshot) is None
+    assert (after.gp, after.xp) == (0, 0)
+    assert after.snapshot['flags'].get('ward_claimed') is not True
+    assert after.snapshot['flags'].get('quest_road_complete') is not True

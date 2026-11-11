@@ -1394,6 +1394,8 @@ def test_pack_progress_marks_failed_checkpoint_and_uses_failure_route(app):
                     'campaignPackEncounterId': 'enc_lantern_wraith',
                     'campaignPackId': 'bleakmoor_intro',
                     'endReason': 'objective_failed',
+                    # Only a lethal defeat fails a checkpoint: a beaten party otherwise wakes and may fight again.
+                    'lethalDefeat': True,
                 },
             },
             checkpoints=[
@@ -1419,6 +1421,52 @@ def test_pack_progress_marks_failed_checkpoint_and_uses_failure_route(app):
     assert result.failed_checkpoint_ids == ['cp_watchtower']
     assert result.active_checkpoint_id == 'cp_fallback'
     assert snapshot['flags']['campaignPackFailedCheckpointIds'] == ['cp_watchtower']
+
+
+@pytest.mark.parametrize(
+    ('end_reason', 'failure_target', 'stays_open'),
+    [
+        # A beaten party wakes and the encounter re-arms: nothing has failed.
+        ('objective_failed', {'id': 'cp_fallback', 'title': 'Recover the trail'}, True),
+        # Running from a fight may move the story on, but never onto its ending.
+        ('players_fled', {'id': 'cp_fallback', 'title': 'The end', 'terminal': True}, True),
+        ('players_fled', {'id': 'cp_fallback', 'title': 'Recover the trail'}, False),
+    ],
+)
+def test_a_lost_or_fled_fight_never_ends_the_story(app, end_reason, failure_target, stays_open):
+    ids = _seed_pack_session(
+        app,
+        _pack_snapshot(
+            location_id='watchtower_ruins',
+            flags={'campaignPackActiveCheckpointId': 'cp_watchtower'},
+            combat={
+                'status': 'ended',
+                'participants': [],
+                'flags': {
+                    'campaignPackEncounterId': 'enc_lantern_wraith',
+                    'campaignPackId': 'bleakmoor_intro',
+                    'endReason': end_reason,
+                },
+            },
+            checkpoints=[
+                {
+                    'id': 'cp_watchtower',
+                    'title': 'Confront the lantern wraith',
+                    'encounterIds': ['enc_lantern_wraith'],
+                    'failureCheckpointIds': ['cp_fallback'],
+                },
+                failure_target,
+            ],
+        ),
+    )
+
+    with app.app_context():
+        result = update_campaign_pack_progress(session_id=ids['session_id'], campaign_id=ids['campaign_id'])
+
+    if stays_open:
+        assert (result.active_checkpoint_id, result.failed_checkpoint_ids) == ('cp_watchtower', [])
+    else:
+        assert (result.active_checkpoint_id, result.failed_checkpoint_ids) == ('cp_fallback', ['cp_watchtower'])
 
 
 def test_pack_progress_skips_optional_linear_beat_when_required_beat_is_available(app):

@@ -245,16 +245,23 @@ def _update_campaign_pack_progress_locked(
             reason = 'reached_downstream_checkpoint_location'
         else:
             failure_reason = _checkpoint_failure_reason(active_checkpoint, pack=pack, snapshot=snapshot)
-            if failure_reason:
-                _add_unique_id(failed_ids, _checkpoint_id(active_checkpoint))
-                next_checkpoint = _failure_next_checkpoint(
+            failure_target = (
+                _failure_next_checkpoint(
                     active_checkpoint,
                     checkpoints,
                     completed_ids,
                     skipped_ids,
-                    failed_ids,
+                    [*failed_ids, _checkpoint_id(active_checkpoint)],
                     snapshot=snapshot,
                 )
+                if failure_reason
+                else None
+            )
+            # A story never ends because the party lost or ran: a failure whose only way
+            # on is a terminal checkpoint leaves the checkpoint open to be tried again.
+            if failure_reason and not (failure_target and is_terminal_checkpoint(failure_target)):
+                _add_unique_id(failed_ids, _checkpoint_id(active_checkpoint))
+                next_checkpoint = failure_target
                 reason = failure_reason
             else:
                 completion_reason = _checkpoint_completion_reason(
@@ -1532,13 +1539,26 @@ def _encounters_completed(*, pack: dict, snapshot: dict, encounter_ids: list[str
 
 
 def _encounters_failed(*, pack: dict, snapshot: dict, encounter_ids: list[str]) -> bool:
-    del pack
     encounter_keys = {_id_key(encounter_id) for encounter_id in encounter_ids}
     flags = _combat_flags(snapshot)
     active_encounter_id = _text(_first(flags, 'campaignPackEncounterId', 'campaign_pack_encounter_id'))
     if not active_encounter_id or _id_key(active_encounter_id) not in encounter_keys or not _combat_has_ended(snapshot):
         return False
-    return _status_key(_first(flags, 'endReason', 'end_reason')) in COMBAT_FAILED_REASONS
+    end_reason = _status_key(_first(flags, 'endReason', 'end_reason'))
+    if end_reason == 'objective_failed' and not _defeat_is_lethal(pack, flags, active_encounter_id):
+        # A beaten party wakes and the encounter can be fought again, so nothing has failed.
+        return False
+    return end_reason in COMBAT_FAILED_REASONS
+
+
+def _defeat_is_lethal(pack: dict, flags: dict, encounter_id: str) -> bool:
+    if flags.get('lethalDefeat') is True:
+        return True
+    encounters = pack.get('encounters') if isinstance(pack, dict) else None
+    for encounter in encounters if isinstance(encounters, list) else []:
+        if isinstance(encounter, dict) and _id_key(_text(encounter.get('id'))) == _id_key(encounter_id):
+            return encounter.get('lethalDefeat') is True
+    return False
 
 
 def _terminal_checkpoint_ids(completed_ids: list[str], skipped_ids: list[str], failed_ids: list[str]) -> list[str]:
