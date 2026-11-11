@@ -14,6 +14,7 @@ from aidm_server.database import db
 from aidm_server.game_clock import public_clock
 from aidm_server.emergent_memory import build_emergent_context, dormant_threads
 from aidm_server.game_state.campaign_pack_encounters import declared_story_flags
+from aidm_server.game_state.zones import names_here
 from aidm_server.interactables import offered_scene_actions, project_scene_interactables
 from aidm_server.models import (
     BestiaryEntry,
@@ -2232,11 +2233,13 @@ def build_opening_brief(session_id) -> dict:
         ]
     )
     npc_by_key = {_id_key(npc.get('id')): npc for npc in known_npcs if npc.get('id')}
+    # In a place with rooms the heroes start in its start zone, with the people there.
+    in_start_zone = names_here(snapshot, '')
     present_npcs = []
     for npc_id in _string_values(scene.get('activeNpcIds'), limit=MAX_LIVE_ACTIVE_NPCS):
         record = {**_catalog_record(catalog, 'npcs', npc_id), **npc_by_key.get(_id_key(npc_id), {})}
         name = _text_or_none(record.get('name'), 180)
-        if not name:
+        if not name or (in_start_zone is not None and name not in in_start_zone):
             continue
         present_npcs.append(
             {

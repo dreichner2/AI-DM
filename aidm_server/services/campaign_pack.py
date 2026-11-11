@@ -28,6 +28,7 @@ from aidm_server.models import (
 from aidm_server.operator_audit import record_operator_action
 from aidm_server.response_dtos import campaign_payload, session_payload
 from aidm_server.services.campaign_pack_storage import sync_campaign_pack_progress, upsert_campaign_pack_definition
+from aidm_server.services.tie_lines import TIE_LINES_KEY, normalize_tie_lines
 from aidm_server.time_utils import utc_now
 from aidm_server.validation import coerce_int
 from aidm_server.world_map import DEFAULT_TERRAIN, ROUTE_STYLES, TERRAINS, layout, map_position, numeric_seed
@@ -177,6 +178,7 @@ def import_campaign_pack(
         required_name=False,
     )
     future_records_by_type = _future_records_by_type(pack, pack_id=pack_id)
+    tie_lines = normalize_tie_lines(_first(pack, TIE_LINES_KEY))
     world_settings = pack_world_settings(pack, pack_id=pack_id)
     _place_locations(locations, world_settings)
     director_rules = _bounded_json_value(_record(_first(pack, 'directorRules', 'director_rules')), path='directorRules')
@@ -320,6 +322,7 @@ def import_campaign_pack(
                 extra_catalog_records=future_records_by_type,
                 world_settings=world_settings,
                 segments=segments,
+                tie_lines=tie_lines,
                 session_id=None,
                 campaign_id=campaign.campaign_id,
                 imported_at=now.isoformat(),
@@ -358,6 +361,7 @@ def import_campaign_pack(
         extra_catalog_records=future_records_by_type,
         world_settings=world_settings,
         segments=segments,
+        tie_lines=tie_lines,
         session_id=session_obj.session_id,
         campaign_id=campaign.campaign_id,
         imported_at=now.isoformat(),
@@ -1458,6 +1462,7 @@ def _initial_snapshot(
     imported_at: str,
     segments: list[dict] | None = None,
     world_settings: dict[str, Any] | None = None,
+    tie_lines: list[dict] | None = None,
 ) -> dict[str, Any]:
     current_scene = _record(_first(starting_state, 'currentScene', 'current_scene'))
     scene_path = 'startingState.currentScene'
@@ -1605,6 +1610,7 @@ def _initial_snapshot(
             'map': settings['map'],
             'routes': settings['routes'],
             'storyFlags': settings['storyFlags'],
+            TIE_LINES_KEY: tie_lines or [],
         },
         'merchants': _runtime_merchants(extra_catalog_records.get('merchant') or []),
         'stateChangeLedger': [],

@@ -161,7 +161,8 @@ def _fixed_roller(monkeypatch, value: int) -> None:
 
 
 def test_every_universal_action_is_in_the_bundle_with_its_cost_and_plain_reasons():
-    bundle = _bundle(_state(_p(ACTOR, 'player'), _enemy(band='far')))
+    # An enemy far off (an enemy standing off at far can be advanced on: see test_where_everyone_stands).
+    bundle = _bundle(_state(_p(ACTOR, 'player'), _enemy(band='distant')))
 
     ids = [action['id'] for action in bundle['actions']]
     assert ids[0] == 'combat.attack.blade'

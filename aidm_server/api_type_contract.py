@@ -845,6 +845,29 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
         ),
     ),
     TypeContract('PlayerEquipmentUpdateResponse', alias='PlayerDetail & { snapshot_changed: boolean; equipment_update: JsonRecord }'),
+    TypeContract(
+        'CharacterTies',
+        fields=(
+            field('desire', '{ kind: string; words: string }', optional=True),
+            field('attachment', '{ name: string; relation: string }', optional=True),
+            field('burden', 'string', optional=True),
+        ),
+    ),
+    TypeContract('PlayerCreatedResponse', fields=(field('player_id', 'number'), field('message', 'string'))),
+    TypeContract(
+        'JoinableHero',
+        fields=(
+            field('player_id', 'number'),
+            field('character_name', 'string'),
+            field('level', 'number'),
+            field('race', 'string | null'),
+            field('class', 'string | null'),
+            field('portrait', 'string'),
+            field('adventure_title', 'string'),
+            field('last_played_at', 'string | null'),
+        ),
+    ),
+    TypeContract('JoinableHeroesResponse', fields=(field('heroes', 'JoinableHero[]'),)),
     TypeContract('MapVisibility', alias="'player' | 'dm'"),
     TypeContract(
         'MapItem',

@@ -118,7 +118,8 @@ def test_safe_mode_plays_the_play_now_opening_actions_and_rolls_without_network(
     opening_turn = _latest_turn(app, ids['session_id'])
 
     assert 'empty caravan' in opening_text
-    assert 'Within earshot are Mara Reedwake, Tovin Bell, and Osric Hale.' in opening_text
+    # Mara Reedwake keeps the common room, next door: only those in the yard are within earshot.
+    assert 'Within earshot are Tovin Bell and Osric Hale.' in opening_text
     assert 'witness' not in opening_text
     assert opening_text.endswith('What do you do?')
     # "its horses are calm" proposes a mood-only scene update; it must not reach the player as a change line.

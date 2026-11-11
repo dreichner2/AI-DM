@@ -10,6 +10,7 @@ import {
 } from '../../characterStats'
 import { profileIconSrcForCharacter, type SexKey } from '../../profileIcons'
 import type { CharacterRaceSelection } from '../../types'
+import { tiesDraft, tiesPayload, tiesProblem, type HeroTies, type HeroTiesDraft } from '../heroTies'
 import {
   FALLBACK_RULES,
   SKILL_IDS,
@@ -549,6 +550,8 @@ export type HeroDraft = {
   backgroundId: string | null
   skills: SkillId[]
   expertise: SkillId[]
+  /** The hero's own threads (`Your own threads` on the Review step), all optional. */
+  ties: HeroTiesDraft
   /** The rules the hero is made under: the built-in tables until the server's arrive. */
   rules: CreationRules
 }
@@ -565,6 +568,7 @@ export function emptyDraft(rules: CreationRules = FALLBACK_RULES): HeroDraft {
     backgroundId: null,
     skills: [],
     expertise: [],
+    ties: tiesDraft(),
     rules,
   }
 }
@@ -773,7 +777,7 @@ export function stepComplete(draft: HeroDraft, step: CreateStep): boolean {
       draft.expertise.length === expertiseCount(draft)
     )
   }
-  return CREATE_STEPS.slice(0, -1).every((earlier) => stepComplete(draft, earlier))
+  return CREATE_STEPS.slice(0, -1).every((earlier) => stepComplete(draft, earlier)) && !tiesProblem(draft.ties)
 }
 
 /** What still stands between this step and Continue, in one short sentence. */
@@ -789,7 +793,7 @@ export function stepHint(draft: HeroDraft, step: CreateStep): string {
     }
     return `Mark ${skillCountPhrase(expertiseCount(draft))} for expertise to continue.`
   }
-  return 'Finish the earlier steps to begin.'
+  return tiesProblem(draft.ties) || 'Finish the earlier steps to begin.'
 }
 
 export type CreateHeroPayload = {
@@ -804,6 +808,7 @@ export type CreateHeroPayload = {
   skill_choices?: SkillId[]
   expertise?: SkillId[]
   fighting_style?: FightingStyleId
+  ties?: HeroTies
 }
 
 export function createPayload(draft: HeroDraft): CreateHeroPayload {
@@ -826,5 +831,7 @@ export function createPayload(draft: HeroDraft): CreateHeroPayload {
   if (entry) payload.skill_choices = [...draft.skills]
   if (needsExpertise(draft)) payload.expertise = [...draft.expertise]
   if (style) payload.fighting_style = style
+  const ties = tiesPayload(draft.ties)
+  if (Object.keys(ties).length) payload.ties = ties
   return payload
 }

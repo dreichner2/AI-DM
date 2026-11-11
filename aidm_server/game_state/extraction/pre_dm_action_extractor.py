@@ -9,6 +9,7 @@ from aidm_server.class_capabilities import CUNNING_ACTION_PREFIX, USE_ACTION_PRE
 from aidm_server.contracts import ProviderRequest
 from aidm_server.game_state.extraction.prompts import PRE_DM_SYSTEM_MESSAGE, build_pre_dm_prompt
 from aidm_server.game_state.extraction.schemas import extract_json_object, normalize_pre_extraction
+from aidm_server.game_state.orchestration.hero_threads import TAKE_HEART_ACTION_PREFIX, TAKE_HEART_DECLARED
 from aidm_server.game_state.models import normalize_item_name
 from aidm_server.item_effects import ITEM_USE_ACTION_PREFIX
 from aidm_server.llm_providers import get_helper_provider
@@ -454,6 +455,21 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
             'notes': ['action_intent_pre_dm'],
         }
     combat_action_id = str(combat_action.get('action_id') or '')
+    if action_intent.get('kind') == 'inspiration' or combat_action_id.startswith(TAKE_HEART_ACTION_PREFIX):
+        # Take heart: free, in a fight (its fight action) or out of one.
+        return {
+            'declaredActions': [
+                {
+                    'id': 'act_001',
+                    'type': TAKE_HEART_DECLARED,
+                    'actorId': actor_id,
+                    'confidence': 1.0,
+                    'sourceText': player_message,
+                    'requiresDMResolution': False,
+                }
+            ],
+            'notes': ['action_intent_pre_dm'],
+        }
     if combat_action_id.startswith(CLASS_USE_ACTION_PREFIX):
         # A class capability clicked in the combat HUD is the same typed use as
         # one chosen from the character panel.

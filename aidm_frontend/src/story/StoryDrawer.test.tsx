@@ -185,6 +185,23 @@ describe('StoryDrawer', () => {
     expect(within(table).getByText('typing…')).toBeInTheDocument()
   })
 
+  it("shows the hero's own threads on the Character tab", async () => {
+    mockViewportWidth(1440)
+    const characterSheet = {
+      ties: {
+        desire: { kind: 'keep_duty', words: 'to keep a duty' },
+        attachment: { name: 'Edda Vale', relation: 'sister' },
+        burden: "The road-warden's oath you swore and never finished.",
+      },
+    }
+    await renderDrawer({ inspector: testInspector({ characterSheet }) })
+
+    const facts = (term: string) => screen.getByText(term, { selector: 'dt' }).nextElementSibling
+    expect(facts('Wants')).toHaveTextContent('to keep a duty')
+    expect(facts('Would not abandon')).toHaveTextContent('Edda Vale, sister')
+    expect(facts('Carries')).toHaveTextContent("The road-warden's oath you swore and never finished.")
+  })
+
   it('offers a hero, and nothing of a sheet, while this adventure has none', async () => {
     mockViewportWidth(1440)
     const { inspector } = await renderDrawer({ inspector: testInspector({ selectedPlayerId: null, playersCount: 0 }) })

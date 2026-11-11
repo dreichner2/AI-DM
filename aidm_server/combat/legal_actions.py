@@ -51,15 +51,20 @@ from aidm_server.combat.modifiers import (
     speed_zero_reasons,
 )
 from aidm_server.combat.positioning import (
+    BAND_PHRASES,
     CLOSABLE_BANDS,
     REACH_WEAPON_BANDS,
+    REACH_WORDS,
     RANGE_BANDS,
     adjacent_or_same_band,
+    advances_toward,
     band_inward,
     band_outward,
     close_block_reason,
     has_cover,
     reach_block_reason,
+    reach_kind,
+    separated_by_zone,
     targeting_block_reason,
 )
 from aidm_server.combat.reactions import reaction_remaining
@@ -205,6 +210,26 @@ def _target(participant: dict[str, Any], reason: str) -> dict[str, Any]:
     }
 
 
+def _prose_name(participant: dict[str, Any]) -> str:
+    """``The pale lantern`` for "Pale Lantern"; a proper name (``The Cinder Scribe``) keeps its capitals."""
+
+    name = _text(participant.get('name')) or 'The target'
+    if participant.get('proper') is True or _text(participant.get('team')).lower() != 'enemy':
+        return name
+    bare = name[4:] if name.lower().startswith('the ') else name
+    return f'The {bare.lower()}'
+
+
+def _reach_reason(actor: dict[str, Any], target: dict[str, Any], blocked: str) -> str:
+    """Why a hand weapon or hold cannot reach the target from here, in distance words: ``The pale lantern is out
+    of reach this turn. Advance first, or use something with range.``; any other block keeps its own reason."""
+
+    kind = reach_kind(actor, target)
+    if not blocked or kind not in REACH_WORDS or separated_by_zone(actor, target):
+        return blocked
+    return f'{_prose_name(target)} is {REACH_WORDS[kind]}. Advance first, or use something with range.'
+
+
 def _attack_target_option(
     participant: dict[str, Any],
     *,
@@ -226,7 +251,7 @@ def _attack_target_option(
         reach=reach,
     )
     requires_move = bool(out_of_reach) and not ranged and can_move and not close_block_reason(actor, participant, combat)
-    reason = targeting or ('' if requires_move else out_of_reach)
+    reason = targeting or ('' if requires_move else _reach_reason(actor, participant, out_of_reach) if not ranged else out_of_reach)
     roll = attack_context(actor, participant, kind='weapon_attack', ranged=ranged, combat=combat, ability=ability)
     option = {**_target(participant, reason), 'rollMode': roll['mode'], 'rollReasons': roll['reasons']}
     if requires_move:
@@ -611,7 +636,7 @@ def universal_combat_actions(_snapshot: dict[str, Any], actor: dict[str, Any], c
             'combat.advance',
             'advance',
             'Advance',
-            'Close into melee with an enemy at melee or near range; you become engaged with it.',
+            'Close into melee with an enemy at melee or near range and become engaged with it, or move out toward one standing off at far range.',
             f'{name} closes in.',
             move,
         )
@@ -620,16 +645,16 @@ def universal_combat_actions(_snapshot: dict[str, Any], actor: dict[str, Any], c
             'combat.advance',
             'advance',
             'Advance',
-            f'Move one band closer to the fight, to {band_inward(band)} range.',
-            f'{name} advances to {band_inward(band)} range.',
+            f'Move closer to the fight: to {BAND_PHRASES[band_inward(band)]}.',
+            f'{name} closes to {BAND_PHRASES[band_inward(band)]}.',
             move,
         )
     fall_back = action(
         'combat.reposition',
         'reposition',
         'Fall back',
-        'Move one band away from the fight. Leaving melee while engaged provokes opportunity attacks unless you disengaged this turn.',
-        f'{name} falls back to {band_outward(band)} range.',
+        'Move away from the fight. Leaving close quarters while engaged provokes opportunity attacks unless you disengaged this turn.',
+        f'{name} falls back to {BAND_PHRASES[band_outward(band)]}.',
         move,
     )
     dash = action('combat.dash', 'dash', 'Dash', 'Gain one more movement this turn.', f'{name} dashes.', action_only)
@@ -676,7 +701,7 @@ def universal_combat_actions(_snapshot: dict[str, Any], actor: dict[str, Any], c
     _gate(advance, movement_blocked)
     if band in CLOSABLE_BANDS:
         close_targets = [
-            _target(enemy, close_block_reason(actor, enemy, combat))
+            _target(enemy, '' if advances_toward(actor, enemy, combat) else close_block_reason(actor, enemy, combat))
             for enemy in enemies
             if participant_is_targetable(enemy)
         ]
@@ -770,7 +795,7 @@ def _maneuver_targets(
         reason = (
             ('' if yielded else targeting_block_reason(actor, enemy, combat))
             or _maneuver_reason(action_type, enemy, combat, snapshot)
-            or ('' if requires_move else out_of_reach)
+            or ('' if requires_move else _reach_reason(actor, enemy, out_of_reach))
         )
         option = _target(enemy, reason)
         if requires_move:

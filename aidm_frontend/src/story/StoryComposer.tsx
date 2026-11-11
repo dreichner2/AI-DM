@@ -4,6 +4,7 @@ import {
   Backpack,
   Coins,
   Dices,
+  DoorOpen,
   Drama,
   Footprints,
   Hand,
@@ -17,7 +18,14 @@ import {
 } from 'lucide-react'
 import type { ComposerMode } from '../gameActions'
 import type { CombatPendingFinisher } from '../gameSelectors'
-import { objectActionSubmission, pickupSubmission, travelSubmission, type ActionSubmission } from './actionIntents'
+import {
+  objectActionSubmission,
+  pickupSubmission,
+  takeHeartSubmission,
+  travelSubmission,
+  zoneMoveSubmission,
+  type ActionSubmission,
+} from './actionIntents'
 import { StoryActionTray, type TraySection } from './StoryActionTray'
 import { StoryCombatRibbon } from './StoryCombatRibbon'
 import { recentSpellNames } from './recentSpells'
@@ -60,7 +68,9 @@ const SUGGESTION_ICONS: Partial<Record<StorySuggestion['kind'], LucideIcon>> = {
   talk: MessageCircle,
   say: MessageCircle,
   trade: Coins,
+  zone_move: DoorOpen,
   travel: Footprints,
+  take_heart: Sparkles,
 }
 
 const DOWN_STATUS = 'You are down. Your companions can still reach you.'
@@ -324,6 +334,14 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
       submitTyped(travelSubmission(suggestion.exit))
       return
     }
+    if (suggestion.kind === 'zone_move') {
+      submitTyped(zoneMoveSubmission(suggestion.zone))
+      return
+    }
+    if (suggestion.kind === 'take_heart') {
+      submitTyped(takeHeartSubmission(board.gameplayControls.actorName))
+      return
+    }
     if (suggestion.kind === 'say') {
       if (composer.submitAction(suggestion.label)) recordSent()
       return
@@ -468,6 +486,10 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
           <Dots />
         </p>
       )
+    }
+    if (composer.turnRejectionMessage) {
+      // The table refused the action before anything happened: say why, never drop it in silence.
+      return <p className="story-dock-status" data-tone="alert" role="alert">{composer.turnRejectionMessage}</p>
     }
     if (finisherWaitingLine) {
       return <p className="story-dock-status" data-tone="muted" role="status">{finisherWaitingLine}</p>

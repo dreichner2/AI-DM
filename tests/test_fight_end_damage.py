@@ -44,9 +44,10 @@ def road_fight(app, client, socketio, monkeypatch):
             session_obj = db.session.get(Session, ids['session_id'])
             snapshot = safe_json_loads(session_obj.state_snapshot, {})
             combat = snapshot['combat']
-            # The lone hero's one enemy is one hit from falling; a second one already fled or fell.
+            # The lone hero's one enemy is one hit from falling, and a move away (the lantern starts out of reach);
+            # a second one already fled or fell.
             last = next(participant for participant in combat['participants'] if participant['team'] == 'enemy')
-            last.update(hp={'current': 1, 'max': last['hp']['max'], 'temp': 0}, armorClass=5)
+            last.update(hp={'current': 1, 'max': last['hp']['max'], 'temp': 0}, armorClass=5, position={'rangeBand': 'near'})
             other = {**deepcopy(last), 'id': f"{last['id']}_other", 'name': f"{last['name']} 2"}
             if others == 'fled':
                 other['conditions'] = ['fled']

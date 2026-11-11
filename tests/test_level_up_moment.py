@@ -71,6 +71,9 @@ def _road_fight_beats(table: PartyTable) -> list[dict]:
 
     start = table.last_turn_id()
     table.travel('Arden Vale', 'loc_old_north_road', 'The Old North Road')
+    # The lantern starts out of reach; a move away, the heroes cut it down rather than see it flee.
+    lantern = next(participant for participant in table.snapshot()['combat']['participants'] if participant['name'] == 'Pale Lantern')
+    table.operator([{'type': 'combat.move', 'participantId': lantern['id'], 'toRangeBand': 'near'}])
     table.fight()
     assert table.snapshot()['combat']['flags']['endReason'] == 'all_enemies_defeated'
     return table.turns_since(start)[-1]['beats']

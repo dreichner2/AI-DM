@@ -49,9 +49,11 @@ from aidm_server.combat.modifiers import (
     speed_zero_reasons,
 )
 from aidm_server.combat.positioning import (
+    BAND_PHRASES,
     CLOSABLE_BANDS,
     RANGE_BANDS,
     adjacent_or_same_band,
+    advances_toward,
     band_inward,
     band_outward,
     close_block_reason,
@@ -190,16 +192,24 @@ def _resolve_advance(context: dict[str, Any], actor: dict[str, Any], combat: dic
     if blocked:
         return _blocked(blocked)
     band = range_band(actor)
-    if band not in CLOSABLE_BANDS:
+    target = participant_by_id(combat, context.get('targetId'))
+    # Off the press, a move goes one band inward, unless it closes on an enemy standing off there too.
+    if band not in CLOSABLE_BANDS and (target is None or close_block_reason(actor, target, combat)):
         to_band = band_inward(band)
         return {
             'changes': [_move_change(context, band, to_band, [])],
-            'outcome': f"{context['actorName']} advances from {band} to {to_band} range.",
+            'outcome': f"{context['actorName']} closes to {BAND_PHRASES[to_band]}.",
             'movement': {'fromRangeBand': band, 'toRangeBand': to_band, 'engagedWith': []},
         }
-    target = participant_by_id(combat, context.get('targetId'))
     if target is None:
         return _blocked('Choose an enemy to close on.')
+    if advances_toward(actor, target, combat):
+        # An enemy standing off from the press: the hero goes out to it, a move short of reaching it.
+        return {
+            'changes': [_move_change(context, band, range_band(target), [])],
+            'outcome': f"{context['actorName']} moves out toward {_name(target)}.",
+            'movement': {'fromRangeBand': band, 'toRangeBand': range_band(target), 'engagedWith': [], 'towardId': context['targetId']},
+        }
     reason = close_block_reason(actor, target, combat)
     if reason:
         return _blocked(reason)
@@ -239,9 +249,9 @@ def _resolve_fall_back(context: dict[str, Any], actor: dict[str, Any], combat: d
         changes.append(_move_change(context, band, to_band, []))
         if band == 'melee':
             changes.extend(_release_changes(context, combat))
-        outcome = f"{context['actorName']} falls back from {band} to {to_band} range."
+        outcome = f"{context['actorName']} falls back to {BAND_PHRASES[to_band]}."
     else:
-        outcome = f"{context['actorName']} is struck down while trying to fall back and stays at {band} range."
+        outcome = f"{context['actorName']} is struck down while trying to fall back."
     return {
         'changes': changes,
         'outcome': outcome,

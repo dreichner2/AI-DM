@@ -86,12 +86,17 @@ def test_the_lantern_lure_wears_off_and_a_lone_hero_is_never_shut_out_of_the_fig
             break
         attack = table._hud_action('combat.attack.')
         target = next((target for target in (attack or {}).get('targets') or [] if target['available']), None)
+        # The lantern starts out of reach: with nothing to swing at, the hero advances on it.
+        advance = None if target else table._hud_action('combat.advance')
+        toward = next((option for option in (advance or {}).get('targets') or [] if option['available']), None)
         threatened = _threatened(_turns_since(table, window_start), hero_id)
-        shut_out = 0 if target or threatened else shut_out + 1
+        shut_out = 0 if target or toward or threatened else shut_out + 1
         assert shut_out < 3, f"round {snapshot['combat']['round']}: the hero could neither act against an enemy nor was threatened"
         window_start = _last_turn_id(table)
         if target:
             table._hud('Arden Vale attacks.', attack['id'], target['id'])
+        elif toward:
+            table._hud('Arden Vale advances.', advance['id'], toward['id'])
         if table.snapshot()['combat']['status'] == 'active':
             table._hud('Arden Vale ends the turn.', 'combat.end_turn')
     turns = _turns_since(table, start)
@@ -127,7 +132,10 @@ def _scribe_fight(table) -> dict:  # noqa: F811
         ]
     )
     assert table.act('valley_last_road_stone', 'inspect', 'The Last Road-Stone').encounter == 'enc_final_binding'
-    return next(participant for participant in table.snapshot()['combat']['participants'] if participant.get('campaignPackEnemyId') == 'enemy_cinder_scribe')
+    scribe = next(participant for participant in table.snapshot()['combat']['participants'] if participant.get('campaignPackEnemyId') == 'enemy_cinder_scribe')
+    # The Scribe starts the fight out of reach; these tests swing at it, so it stands a move away.
+    table.operator([{'type': 'combat.move', 'participantId': scribe['id'], 'toRangeBand': 'near'}])
+    return next(participant for participant in table.snapshot()['combat']['participants'] if participant['id'] == scribe['id'])
 
 
 def test_a_wound_penalty_is_named_on_the_roll_and_said_once(table, monkeypatch):  # noqa: F811
@@ -242,6 +250,8 @@ def test_losing_or_fleeing_the_last_fight_leaves_the_story_open(table, end_reaso
     table.travel('loc_ridge_and_culvert_paths', 'Ridge and Culvert Paths')
     table.act('ridge_culvert_grate', 'unlock', 'Culvert Grate')
     table.act('ridge_culvert_grate', 'open', 'Culvert Grate')
+    # The grate stands at the culvert mouth; the party sets out from the ridge path.
+    table.move('ridge_path', 'Go to the ridge path')
     table.travel('loc_valley_last_road_stone', 'Valley of the Last Road-Stone')
     binding = table.act('valley_last_road_stone', 'inspect', 'The Last Road-Stone')
     assert binding.encounter == 'enc_final_binding'

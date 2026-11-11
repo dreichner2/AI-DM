@@ -427,6 +427,25 @@ describe('server story beats', () => {
     expect(turn.beats.map(({ tone }) => tone)).toEqual(['fail', 'success', 'default', 'gold'])
   })
 
+  it('shows a thread of the hero\'s own and Inspiration as chips, the thread leading to the journal', () => {
+    const beats = buildStoryBeats([
+      entry('log-1', 'dm', 'DM', 'Under the black stroke a name survives.', {
+        turn_id: 8,
+        storyBeats: [
+          { kind: 'thread', text: 'A thread of your own — Edda Vale', refId: 'tie_ledger_name' },
+          { kind: 'inspiration', text: 'Inspiration — a thread of your own' },
+        ],
+      }),
+    ])
+
+    const turn = beats.find((beat) => beat.kind === 'turnBeats')
+    if (turn?.kind !== 'turnBeats') throw new Error('expected the turn beats')
+    expect(turn.beats.map(({ kind, look, glyph, target, tone, refId }) => ({ kind, look, glyph, target, tone, refId }))).toEqual([
+      { kind: 'thread', look: 'chip', glyph: 'scroll', target: 'journal', tone: 'arcane', refId: 'tie_ledger_name' },
+      { kind: 'inspiration', look: 'chip', glyph: 'spark', target: null, tone: 'gold', refId: '' },
+    ])
+  })
+
   it('shows how a fight ended as a chip, a victory in the success tone', () => {
     const [, turn] = buildStoryBeats([
       entry('log-1', 'dm', 'DM', 'The last cutthroat falls.', {

@@ -124,7 +124,9 @@ def test_a_party_fight_puts_every_roll_on_the_table_before_the_narration(party):
     assert (pounce_save['label'], pounce_save['source'], pounce_save['actor']['name']) == ('Strength save', 'Dust-Marked Pounce', 'Seren Ashgrove')
     _adds_up(pounce_save)
 
-    # Arden's swing: the d20 he pressed, his modifiers, and the damage the lantern took.
+    # Arden's swing: the d20 he pressed, his modifiers, and the damage the lantern took. The lantern starts out of
+    # reach; set it a move away so the longsword can find it.
+    party.operator([{'type': 'combat.move', 'participantId': lantern['enemyId'], 'toRangeBand': 'near'}])
     swing_turn = party.last_turn_id() + 1
     attack = next(action for action in party.actions('Arden Vale') if action['id'].startswith('combat.attack.'))
     lantern_hp = next(record for record in party.snapshot()['combat']['participants'] if record['name'] == 'Pale Lantern')['hp']['current']

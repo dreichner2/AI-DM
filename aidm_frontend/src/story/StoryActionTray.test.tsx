@@ -504,6 +504,18 @@ describe('StoryActionTray', () => {
     })
   })
 
+  it('offers Take heart in the Scene list while the hero holds Inspiration, sent as its own free action', () => {
+    const board = testBoard({ gameplayControls: testControls({ takeHeart: true }) })
+    renderDock(board)
+    const tray = openSection('Scene')
+
+    const heart = within(tray).getByRole('group', { name: 'Inspiration' })
+    fireEvent.click(within(heart).getByRole('button', { name: 'Take heart (Inspiration)' }))
+    const [message, intent] = vi.mocked(board.actionComposerProps.submitAction).mock.calls.at(-1)!
+    expect(message).toMatch(/ takes heart\.$/)
+    expect(intent).toMatchObject({ kind: 'inspiration', source: 'scene_panel', text: message })
+  })
+
   it('lists what can be taken and each object’s offered actions: legal ones as links, others dimmed with the reason, done ones omitted', () => {
     const board = testBoard({
       worldState: testWorld({

@@ -26,11 +26,13 @@ PHASE_1_STATE_CHANGE_TYPES = {
     'shop.sell',
     'xp.add',
     'xp.remove',
+    'hero.inspiration',
 }
 
 WORLD_STATE_CHANGE_TYPES = {
     'scene.update',
     'scene.move_location',
+    'scene.zone_move',
     'scene.item.add',
     'scene.item.remove',
     'location.discover',
@@ -56,6 +58,7 @@ WORLD_STATE_CHANGE_TYPES = {
     'lore.unlock',
     'flag.set',
     'flag.unset',
+    'hero.thread',
 }
 
 COMBAT_STATE_CHANGE_TYPES = {
@@ -92,6 +95,7 @@ PLAYER_SNAPSHOT_CHANGE_TYPES = {
     'health.max.set',
     'race_ability.mark_used',
     'race_ability.refresh',
+    'hero.inspiration',
 }
 
 SNAPSHOT_REFRESH_CHANGE_TYPES = WORLD_STATE_CHANGE_TYPES | COMBAT_STATE_CHANGE_TYPES | PLAYER_SNAPSHOT_CHANGE_TYPES

@@ -76,6 +76,41 @@ function refuseHeroesNotInTheirAdventure() {
   }))
 }
 
+/** The player has Arden Vale in another adventure; bringing him gives adventure 10 its own copy (or the refusal). */
+function bringHeroesFromElsewhere({ refusal }: { refusal?: string } = {}) {
+  const harnessFetch = globalThis.fetch
+  const bring = { calls: [] as unknown[] }
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input), 'http://localhost:3000').pathname
+    if (path === '/api/players/campaigns/10/joinable-heroes') {
+      return jsonResponse({
+        heroes: [
+          {
+            player_id: 41,
+            character_name: 'Arden Vale',
+            level: 3,
+            race: 'Human',
+            class: 'Fighter',
+            portrait: '/profile-icons/human_male.png',
+            adventure_title: 'The Road of Unremembered Kings',
+            last_played_at: fixedNow.toISOString(),
+          },
+        ],
+      })
+    }
+    if (path === '/api/players/campaigns/10/players/bring') {
+      bring.calls.push(JSON.parse(String(init?.body)))
+      if (refusal) return jsonResponse({ error: refusal, error_code: 'hero_name_taken' }, { status: 409 })
+      return harnessFetch('/api/players/campaigns/10/players', {
+        ...init,
+        body: JSON.stringify({ character_name: 'Arden Vale', race: 'Human', char_class: 'Fighter', level: 3 }),
+      })
+    }
+    return harnessFetch(input, init)
+  }))
+  return bring
+}
+
 function reads(pattern: RegExp) {
   return appTestState.fetchCalls.filter((call) => call.method === 'GET' && pattern.test(call.path)).map((call) => `${call.path}${call.search}`)
 }
@@ -181,6 +216,43 @@ describe('Beginning an adventure you chose yourself', () => {
     await joinSocket()
     await waitFor(() => expect(sendMessageEmits()).toHaveLength(1))
     expect(sendMessageEmits()[0]?.[1]).toMatchObject({ session_id: 20, player_id: 30, message_kind: 'opening' })
+  })
+
+  it("brings one of the player's heroes from another adventure from Begin, and begins once it has joined", async () => {
+    unplayedFirstChapter({ hero: false })
+    const bring = bringHeroesFromElsewhere()
+    render(<App />)
+
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Choose your character' })).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Begin the adventure' }))
+    const chooser = await screen.findByRole('dialog', { name: 'Choose your character' })
+    const yours = await within(chooser).findByRole('list', { name: 'Your heroes' })
+    expect(yours).toHaveTextContent('Level 3 · Human Fighter · last in The Road of Unremembered Kings')
+    fireEvent.click(within(yours).getByRole('button', { name: 'Play as Arden' }))
+
+    await waitFor(() => expect(bring.calls).toEqual([{ player_id: 41 }]))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Choose your character' })).not.toBeInTheDocument())
+    await waitFor(() => expect(socketMock.io).toHaveBeenCalled())
+    await joinSocket(100, 'Arden Vale')
+    await waitFor(() => expect(sendMessageEmits()).toHaveLength(1))
+    expect(sendMessageEmits()[0]?.[1]).toMatchObject({ session_id: 20, campaign_id: 10, player_id: 100, message_kind: 'opening' })
+    await joinSocket(100, 'Arden Vale')
+    expect(sendMessageEmits()).toHaveLength(1)
+  })
+
+  it('shows a refused hero as one quiet line in the hero choice, and does not begin', async () => {
+    unplayedFirstChapter({ hero: false })
+    bringHeroesFromElsewhere({ refusal: 'A hero named Arden Vale is already in this adventure.' })
+    render(<App />)
+
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Choose your character' })).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Begin the adventure' }))
+    const chooser = await screen.findByRole('dialog', { name: 'Choose your character' })
+    fireEvent.click(await within(chooser).findByRole('button', { name: 'Play as Arden' }))
+
+    expect(await within(chooser).findByText('A hero named Arden Vale is already in this adventure.')).toHaveAttribute('role', 'status')
+    expect(sendMessageEmits()).toHaveLength(0)
+    expect(document.body).not.toHaveTextContent(OLD_NOTICES)
   })
 
   it('does not begin when the hero choice is left without a hero', async () => {

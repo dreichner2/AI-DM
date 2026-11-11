@@ -46,8 +46,15 @@ NEW_RULES = (
     '15. Do not start a fight, and do not bring any creature, enemy or new danger into the scene, unless "Did" says a '
     'fight began. What belongs to other places stays there.',
 )
+# Rule 16 is where everyone stands (W8-SPACE): the dice rule follows it.
+SPACE_RULE = (
+    '16. Someone or something in another area is not here: the hero cannot touch it, search it or hold a conversation '
+    'with it until they go there. The hero stays in the area "Where" names unless "Did" says they moved: never walk '
+    'them into another area. A fight\'s distances are given under "Positions"; a hero cannot strike with a hand '
+    'weapon beyond 5 ft unless "Did" says they closed in.'
+)
 DICE_RULE = (
-    '16. The dice are shown to the players. Tell what happened in the fiction; do not restate roll totals, ACs, DCs or '
+    '17. The dice are shown to the players. Tell what happened in the fiction; do not restate roll totals, ACs, DCs or '
     'damage numbers.'
 )
 ROLL_STUB = [{'id': 't4-1', 'kind': 'attack'}]
@@ -209,7 +216,7 @@ def test_the_pace_rules_are_given_to_the_ai_narrator_and_the_dice_rule_only_with
         for rule in NEW_RULES:
             assert rule in prompt
     assert DICE_RULE not in plain and DICE_RULE not in empty
-    assert f'{NEW_RULES[-1]}\n{DICE_RULE}\n\nPLAYER INPUT:' in carded
+    assert f'{NEW_RULES[-1]}\n{SPACE_RULE}\n{DICE_RULE}\n\nPLAYER INPUT:' in carded
 
 
 def _sentences(count: int, words: int = 10) -> str:
@@ -472,7 +479,8 @@ def test_mercy_words_make_a_captive(table):
     assert errors(table.type('Thalion', 'Stay my hand. We take him alive.')) == []
     spared = table.last()
     assert spared['narration'] == 'Thalion turns the blow. The ashmarked cutthroat lives, and is theirs.'
-    assert spared['beats'] == ['Captured — Ashmarked Cutthroat']
+    # Sparing with the finishing blow is mercy: Thalion earns Inspiration.
+    assert spared['beats'] == ['Captured — Ashmarked Cutthroat', 'Thalion — Inspiration — mercy']
     assert table.snapshot()['currentScene']['captives'] == [
         {'id': table.enemy()['id'], 'name': 'Ashmarked Cutthroat', 'enemyId': 'enemy_ashmarked_cutthroats'}
     ]

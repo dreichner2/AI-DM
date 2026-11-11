@@ -9,6 +9,8 @@ type StoryPartyHudProps = {
   viewerPlayerId: number | null
   /** Downed party members by player id. */
   vitality: Record<number, HeroVitality>
+  /** The viewer's hero holds Inspiration: a small mark beside their name. */
+  viewerInspired?: boolean
   onDrawerOpenChange: (open: boolean, tab?: StoryDrawerTab) => void
 }
 
@@ -86,7 +88,7 @@ function Portrait({
 }
 
 /** The party at a glance: portraits with health rings, the viewer's own character first. */
-export function StoryPartyHud({ activePlayers, viewerPlayerId, vitality, onDrawerOpenChange }: StoryPartyHudProps) {
+export function StoryPartyHud({ activePlayers, viewerPlayerId, vitality, viewerInspired = false, onDrawerOpenChange }: StoryPartyHudProps) {
   if (!activePlayers.length) return null
   const viewer = activePlayers.find((player) => player.id === viewerPlayerId) ?? null
   const others = activePlayers.filter((player) => player !== viewer)
@@ -106,7 +108,10 @@ export function StoryPartyHud({ activePlayers, viewerPlayerId, vitality, onDrawe
               <Portrait player={player} size={isViewer ? 56 : 46} vitality={downed} onOpen={openCharacter} />
               {isViewer ? (
                 <span className="story-party-viewer">
-                  <span className="story-label story-party-name">{displayName(player)}</span>
+                  <span className="story-label story-party-name">
+                    {displayName(player)}
+                    {viewerInspired ? <span className="story-party-inspiration" role="img" aria-label="Inspiration" title="Inspiration" /> : null}
+                  </span>
                   {downed ? (
                     <StoryVitality vitality={downed} />
                   ) : player.health ? (

@@ -223,6 +223,38 @@ export function travelSubmission(exit: { id: string; name: string }): ActionSubm
   }
 }
 
+/** A step into another room or area of the place, worded as the server offers it ("Go into the common room"). */
+export function zoneMoveSubmission(zone: { id: string; name: string; moveLabel?: string }): ActionSubmission {
+  const message = `${zone.moveLabel || `Go to ${zone.name}`}.`
+  return {
+    message,
+    intent: {
+      kind: 'zone_move',
+      source: 'scene_panel',
+      text: message,
+      client_message_id: createClientMessageId(),
+      zone: { id: zone.id, name: zone.name },
+    },
+  }
+}
+
+/** The label of Take heart: spending Inspiration, free, for advantage on the hero's next d20 roll. */
+export const TAKE_HEART_LABEL = 'Take heart (Inspiration)'
+
+/** Take heart outside a fight (in one it is the hero's free fight action). */
+export function takeHeartSubmission(actorName: string): ActionSubmission {
+  const message = `${actorName} takes heart.`
+  return {
+    message,
+    intent: {
+      kind: 'inspiration',
+      source: 'scene_panel',
+      text: message,
+      client_message_id: createClientMessageId(),
+    },
+  }
+}
+
 /**
  * A short or long rest (the classic Current Situation "Recovery" actions). A
  * short rest may say how many hit dice to spend; without it the server spends

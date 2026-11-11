@@ -117,12 +117,19 @@ class PartyTable:
         return next((name for name, player_id in self.players.items() if flags.get('activeActorId') == f'player_{player_id}'), None)
 
     def take_turn(self, hero: str) -> None:
-        """Swing at the first enemy in reach (closing in first when it must), then end the turn."""
+        """Swing at the first enemy in reach (closing in first when it must), else advance on one standing off,
+        then end the turn."""
 
-        attack = next((action for action in self.actions(hero) if action['id'].startswith('combat.attack.') and action['available']), None)
+        actions = self.actions(hero)
+        attack = next((action for action in actions if action['id'].startswith('combat.attack.') and action['available']), None)
         target = next((target for target in (attack or {}).get('targets') or [] if target['available']), None)
         if target:
             self.hud(hero, f'{hero} attacks.', attack['id'], target['id'])
+        else:
+            advance = next((action for action in actions if action['id'] == 'combat.advance' and action['available']), None)
+            toward = next((target for target in (advance or {}).get('targets') or [] if target['available']), None)
+            if toward:
+                self.hud(hero, f'{hero} advances.', advance['id'], toward['id'])
         if self.acting_hero() == hero and self.snapshot()['combat']['status'] == 'active':
             self.hud(hero, f'{hero} ends their turn.', 'combat.end_turn')
 
@@ -241,19 +248,26 @@ def test_the_road_fight_in_party_play_names_each_hero_and_never_says_you(party):
             own = re.match(r"^(?P<hero>[A-Z][a-z]+ [A-Z][a-z]+)(?:'s \w+ | closes in )", sentence)
             if own and own['hero'] in HEROES:
                 assert own['hero'] == names[turn['player']], sentence
-    # The rolls are shown as cards, so the sentences tell what came of them without their numbers.
-    assert 'Arden Vale closes in on the pale lantern. Their longsword finds the pale lantern and draws blood.' in narrations[1]
+    # The rolls are shown as cards, so the sentences tell what came of them without their numbers. The pale lantern
+    # stands off out of reach, so the heroes take the wardbound beast first.
+    assert 'Arden Vale closes in on the wardbound beast. Their longsword finds the wardbound beast and draws blood.' in narrations[1]
     assert "The wardbound beast's pounce lands on Seren Ashgrove." in narrations[0]
     assert "Arden Vale shakes off the pale lantern's lure." in narrations[0]
     # The enemies opened the fight after Arden's travel, so the round has come back to Arden.
     assert narrations[0].endswith("It is Arden Vale's turn again.")
     # Arden ends the turn and nobody acts before Seren: only who is up next.
     assert narrations[2] == 'Seren Ashgrove is up next.'
-    assert narrations[3].startswith("Seren Ashgrove's mace finds the pale lantern and draws blood — their wounds drag at them.")
-    assert 'Arden Vale gains 10 gold. Seren Ashgrove gains 10 gold.' in narrations[-1]
+    assert narrations[3].startswith("Seren Ashgrove's mace finds the wardbound beast and draws blood — their wounds drag at them.")
+    # Then Arden goes out after the lantern, and the next move closes in on it.
+    assert narrations[5].startswith('Arden Vale moves out toward the pale lantern.')
+    assert 'Arden Vale closes in on the pale lantern.' in narrations[7]
+    assert '+10 gp each' in beats
     assert [beat['text'] for beat in turns[4]['beats']] == ['Seren Ashgrove took 3 damage', 'Seren Ashgrove is dying', 'Seren Ashgrove is unconscious']
     assert 'Seren Ashgrove: death save: 12 — success' in beats
-    assert [beat['text'] for beat in turns[-1]['beats']] == ['Seren Ashgrove comes round', 'Victory', '+10 gp each', '+75 XP each']
+    # The lantern falls in the enemies' phase, after Seren's death save of that round.
+    assert [beat['text'] for beat in turns[-1]['beats']] == [
+        'Seren Ashgrove comes round', 'Seren Ashgrove: death save: 4 — failure', 'Victory', '+10 gp each', '+75 XP each'
+    ]
 
 
 def test_the_same_road_fight_alone_still_speaks_to_the_hero(app, client, socketio, safe_mode):
@@ -267,6 +281,10 @@ def test_the_same_road_fight_alone_still_speaks_to_the_hero(app, client, socketi
     assert "You shake off the pale lantern's lure." in narration
     assert 'Your longsword finds the pale lantern and draws blood.' in narration
     assert 'It is your turn.' in narration
+
+
+def _participant_id(table: PartyTable, name: str) -> str:
+    return next(participant['id'] for participant in table.snapshot()['combat']['participants'] if participant['name'] == name)
 
 
 def _down(table: PartyTable, hero: str) -> None:
@@ -369,6 +387,8 @@ def test_a_hero_still_dying_when_the_fight_is_won_comes_round_with_one_hit_point
     monkeypatch.setattr('aidm_server.combat.pipeline.death_save_roll', lambda *_args: 12)
     monkeypatch.setattr('aidm_server.combat.vitality.death_save_roll', lambda *_args: 12)
     party.travel('Arden Vale', 'loc_old_north_road', 'The Old North Road')
+    # The lantern starts out of reach; a move away, the fight is won before a third death save.
+    party.operator([{'type': 'combat.move', 'participantId': _participant_id(party, 'Pale Lantern'), 'toRangeBand': 'near'}])
     clock = party.snapshot()['clock']
     _down(party, 'Seren Ashgrove')
     states = []
@@ -451,9 +471,11 @@ def test_the_ai_narrator_is_told_to_name_every_hero_only_in_party_play(app, clie
 
     party_rule = '6. Name the acting hero and every other hero by name; never write "you" for a hero. No closing question (the opening may end on one). No markdown.'
     solo_rule = '6. Speak to the acting hero as "you". No closing question (the opening may end on one). No markdown.'
+    # Arden Vale's own threads follow the acting-hero line (W8-HERO).
+    hero = 'Hero: Arden Vale wants to keep a duty and would not abandon Edda Vale (sister).\n'
     if heroes == 2:
         assert party_rule in prompt and solo_rule not in prompt
-        assert table.brief().startswith('Acting hero: Arden Vale. The party: Arden Vale, Seren Ashgrove.\nDid:')
+        assert table.brief().startswith(f'Acting hero: Arden Vale. The party: Arden Vale, Seren Ashgrove.\n{hero}Did:')
     else:
         assert solo_rule in prompt and party_rule not in prompt
-        assert table.brief().startswith('Did:')
+        assert table.brief().startswith(f'{hero}Did:')

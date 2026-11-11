@@ -2460,6 +2460,9 @@ def test_non_admin_session_state_keeps_own_detail_and_redacts_other_players(tmp_
         'isAlive',
         'isConscious',
         'currentIntent',
+        # How far it is from the viewing hero, in reach words.
+        'reach',
+        'reachLabel',
     }
     assert visible_enemy['health'] == 'Unhurt'
     assert visible_enemy['currentIntent'] == {'visibleTelegraph': 'The raider raises an axe.'}
@@ -2518,6 +2521,9 @@ def test_non_admin_session_state_keeps_own_detail_and_redacts_other_players(tmp_
         'conditions',
         'isAlive',
         'isConscious',
+        # How far the other hero is from the viewing hero, in reach words.
+        'reach',
+        'reachLabel',
     }
     assert victim_combat['hp'] == {'current': 12, 'max': 24}
     assert 'stateChangeLedger' not in snapshot

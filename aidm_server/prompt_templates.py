@@ -23,7 +23,7 @@ ENGINE_BRIEF_RULES = """RULES FOR THIS TURN (they override style)
 4. Never ask for a roll for anything under "Here"; the engine rolls those itself.
 5. Found is not taken: revealed items stay where they are until "Did" says taken. Never write that coins, XP or items were gained unless "Did" says so, and then in one natural clause, not a list.
 6. Speak to the acting hero as "you". No closing question (the opening may end on one). No markdown.
-7. People in the scene speak from what they know; they neither reveal nor deny hidden things.
+7. People in the scene speak from what they know; they neither reveal nor deny hidden things. A hero's own threads (under "Hero") are private: nobody speaks of them unless it happened in front of them or the hero said so.
 8. Resolve what the hero attempted this turn from the "Did" results. Never leave it "still to be done", never hand the decision back, and never end by naming an available action.
 9. Do not say whose turn it is or that a turn is over; the engine adds that.
 10. Enemies do only what "Did" says they did this turn. Otherwise they hold, watch or brace: they never attack, spring, close in, move off, flee, take or drop anything.
@@ -31,7 +31,8 @@ ENGINE_BRIEF_RULES = """RULES FOR THIS TURN (they override style)
 12. Open on what the hero does or perceives, not on the weather twice running.
 13. End on what matters now, taken from what this brief already holds: the result just told, someone here waiting on an answer, or something under "Here" still untouched. Invent nothing to end on: no new sound, movement, object, clue or mystery. After a win, a discovery, a kindness or a joke, let that moment land and end there. Never a question to the players, never a list of options, never the name of a button.
 14. When someone present would plainly react to what the hero just did, give them one short spoken line in their own voice: a reaction, never a new fact about what happened here.
-15. Do not start a fight, and do not bring any creature, enemy or new danger into the scene, unless "Did" says a fight began. What belongs to other places stays there."""
+15. Do not start a fight, and do not bring any creature, enemy or new danger into the scene, unless "Did" says a fight began. What belongs to other places stays there.
+16. Someone or something in another area is not here: the hero cannot touch it, search it or hold a conversation with it until they go there. The hero stays in the area "Where" names unless "Did" says they moved: never walk them into another area. A fight's distances are given under "Positions"; a hero cannot strike with a hand weapon beyond 5 ft unless "Did" says they closed in."""
 # With more than one hero the story is shared by every player, so rule 6 names the heroes instead.
 PARTY_ENGINE_BRIEF_RULES = ENGINE_BRIEF_RULES.replace(
     '6. Speak to the acting hero as "you".',
@@ -39,7 +40,7 @@ PARTY_ENGINE_BRIEF_RULES = ENGINE_BRIEF_RULES.replace(
 )
 # Added on turns whose rolls are shown to the players as cards (``state_pipeline.storyRolls``).
 DICE_SHOWN_RULE = (
-    '16. The dice are shown to the players. Tell what happened in the fiction; do not restate roll totals, ACs, DCs '
+    '17. The dice are shown to the players. Tell what happened in the fiction; do not restate roll totals, ACs, DCs '
     'or damage numbers.'
 )
 STORY_ROLLS_KEY = 'storyRolls'
@@ -378,7 +379,9 @@ def render_engine_brief(rules_hint: dict) -> str | None:
     """The ``ENGINE THIS TURN`` block and its rules, from the turn's engine brief; None without one.
 
     With more than one hero, the block opens with who acts and who the party is, and rule 6 is the
-    party form (:data:`PARTY_ENGINE_BRIEF_RULES`). On a turn whose rolls are shown as cards the dice rule
+    party form (:data:`PARTY_ENGINE_BRIEF_RULES`); the acting hero's desire and attachment follow as
+    their ``Hero:`` line. In a place with rooms ``Where:`` says who is where, and in a fight ``Positions:`` how
+    far everyone is from the acting hero. On a turn whose rolls are shown as cards the dice rule
     (:data:`DICE_SHOWN_RULE`) follows.
     """
 
@@ -404,6 +407,8 @@ def render_engine_brief(rules_hint: dict) -> str | None:
     heroes = [str(name) for name in brief.get('heroes') or [] if str(name or '').strip()]
     party = len(heroes) > 1
     header = [f"Acting hero: {brief.get('actingHero') or heroes[0]}. The party: {', '.join(heroes)}."] if party else []
+    if str(brief.get('hero') or '').strip():
+        header.append(f"Hero: {brief['hero']}")
     captives = [
         f"{captive.get('name')}{': ' + str(captive['description']) if captive.get('description') else ''}"
         f"{' Speaks: ' + str(captive['speech']) if captive.get('speech') else ''}"
@@ -424,6 +429,8 @@ def render_engine_brief(rules_hint: dict) -> str | None:
             f"shops {listed(here.get('shops') or [])}",
             *([f"Captives held here (people present, bound or yielded): {' || '.join(captives)}"] if captives else []),
             f"The party is at {brief.get('place') or 'an unnamed place'}.",
+            *([f"Where: {brief['where']}"] if str(brief.get('where') or '').strip() else []),
+            *([f"Positions: {brief['positions']}"] if str(brief.get('positions') or '').strip() else []),
             '',
             PARTY_ENGINE_BRIEF_RULES if party else ENGINE_BRIEF_RULES,
             *([DICE_SHOWN_RULE] if rolls_shown(rules_hint) else []),

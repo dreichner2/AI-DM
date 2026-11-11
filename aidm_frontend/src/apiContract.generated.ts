@@ -744,6 +744,32 @@ export type PlayNowResponse = {
 
 export type PlayerEquipmentUpdateResponse = PlayerDetail & { snapshot_changed: boolean; equipment_update: JsonRecord }
 
+export type CharacterTies = {
+  desire?: { kind: string; words: string }
+  attachment?: { name: string; relation: string }
+  burden?: string
+}
+
+export type PlayerCreatedResponse = {
+  player_id: number
+  message: string
+}
+
+export type JoinableHero = {
+  player_id: number
+  character_name: string
+  level: number
+  race: string | null
+  class: string | null
+  portrait: string
+  adventure_title: string
+  last_played_at: string | null
+}
+
+export type JoinableHeroesResponse = {
+  heroes: JoinableHero[]
+}
+
 export type MapVisibility = 'player' | 'dm'
 
 export type MapItem = {

@@ -175,6 +175,8 @@ const TURN_BEAT_STYLES: Record<string, TurnBeatStyle> = {
   combat_end: { tone: 'default', glyph: 'swords', target: null },
   defeat: { tone: 'fail', glyph: 'swords', target: null },
   ending: { tone: 'success', glyph: 'scroll', target: null },
+  thread: { tone: 'arcane', glyph: 'scroll', target: 'journal' },
+  inspiration: { tone: 'gold', glyph: 'spark', target: null },
 }
 
 /** The raw engine wording a client-built line may carry; such lines are never shown. */

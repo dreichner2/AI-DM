@@ -9,9 +9,14 @@ the turn, campaign progress included, has landed.
 
 Kinds, in this order: check, hp, condition, death_save, combat_end,
 item_gained / item_lost, coins, clue, objective_complete / objective_new,
-place, xp, level, defeat, ending, then hint (once per session, for words the
-scripted narrator could not map to an action). Beats name people and
-creatures by their display names, never by participant ids.
+place, place_within, met, thread, inspiration, xp, level, defeat, ending, then hint (once per
+session, for words the scripted narrator could not map to an action). Beats
+name people and creatures by their display names, never by participant ids.
+
+A tie line told for a hero is ``A thread of your own — Edda Vale`` (a seeking
+line; any other reads ``A thread of your own``), and Inspiration granted is
+``Inspiration — mercy``; in party play each names the hero (``Arden Vale — a
+thread of their own — Edda Vale``, ``Arden Vale — Inspiration — mercy``).
 
 A check beat names the skill or ability once (``Investigation check: 14 —
 success``), or reads ``Check: 14 — success`` when neither is known. A roll the
@@ -55,6 +60,8 @@ from aidm_server.database import db
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY
 from aidm_server.game_state.leveling import proficiency_bonus_for_level
 from aidm_server.game_state.models import parse_actor_player_id
+from aidm_server.game_state.orchestration.hero_threads import INSPIRATION_CHANGE, THREAD_CHANGE
+from aidm_server.game_state.zones import ZONE_MOVE_CHANGE
 from aidm_server.models import DmTurn, Session, SessionLogEntry, TurnEvent, safe_json_dumps, safe_json_loads
 from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
 from aidm_server.spellbook import class_spells_for_level
@@ -347,6 +354,23 @@ def _shared_gains(
     ]
 
 
+def _hero_beats(applied_changes: list[dict[str, Any]], heroes: dict[str, dict[str, Any]], *, party: bool) -> list[dict[str, Any]]:
+    """The tie lines told this turn and the Inspiration granted (see the module docstring)."""
+
+    beats = []
+    for change in applied_changes:
+        name = (heroes.get(_text(change.get('actorId'))) or {}).get('name') or 'Someone'
+        if change.get('type') == THREAD_CHANGE:
+            title = _text(change.get('title'))
+            text = f"{name} — {title[:1].lower()}{title[1:].replace('your own', 'their own')}" if party else title
+            beats.append({'kind': 'thread', 'text': text, 'refId': _text(change.get('lineId'))})
+        elif change.get('type') == INSPIRATION_CHANGE and change.get('operation') == 'grant':
+            reason = _text(change.get('reason'))
+            text = f"{name} — Inspiration — {reason.replace('your own', 'their own')}" if party else f'Inspiration — {reason}'
+            beats.append({'kind': 'inspiration', 'text': text})
+    return beats
+
+
 def _level_hp(old: dict[str, Any], new: dict[str, Any]) -> int:
     """The hit points a level reached this turn added: the rise in maximum (a hero who is down gains only the maximum)."""
 
@@ -503,12 +527,19 @@ def story_beats(
     for place_id, name in (after.get('places') or {}).items():
         if place_id not in (before.get('places') or {}):
             beats.append({'kind': 'place', 'text': f'New place on the map — {name}', 'refId': place_id})
+    # A room or area of the place, the first time a hero steps into it.
+    beats.extend(
+        {'kind': 'place_within', 'text': f"Found — {_text(change.get('zoneName'))}", 'refId': _text(change.get('zoneId'))}
+        for change in applied_changes
+        if change.get('type') == ZONE_MOVE_CHANGE and change.get('firstVisit') is True and _text(change.get('zoneName'))
+    )
     # One beat per person the turn's changes met (``metNpcIds``), by the pack catalog's name.
     pack = state_before.get('campaignPack') if isinstance(state_before.get('campaignPack'), dict) else {}
     catalog = pack.get('catalog') if isinstance(pack.get('catalog'), dict) else {}
     people = {_text(npc.get('id')): _text(npc.get('name')) for npc in _dicts(catalog.get('npcs'))}
     met = dict.fromkeys(_text(npc_id) for change in applied_changes for npc_id in change.get('metNpcIds') or [])
     beats.extend({'kind': 'met', 'text': f'Met — {people[npc_id]}', 'refId': npc_id} for npc_id in met if people.get(npc_id))
+    beats.extend(_hero_beats(applied_changes, heroes_after, party=party))
     xp = {hero_id: max(0, new['xp'] - old['xp']) for hero_id, old, new in heroes_told}
     beats.extend(_shared_gains('xp', xp, heroes_after, lambda amount: f'+{amount} XP', party=party))
     for _hero_id, old, new in heroes_told:

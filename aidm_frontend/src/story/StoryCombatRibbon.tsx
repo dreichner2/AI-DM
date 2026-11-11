@@ -17,7 +17,7 @@ import type {
 } from '../gameplayControlState'
 import type { ActivePlayer } from '../types'
 import { combatActionSubmission, objectActionSubmission, spellCastSubmission } from './actionIntents'
-import { combatActionLabel, combatTargetLabel, enemyDetail, offeredTargets, rangeBand } from './combatLabels'
+import { combatActionLabel, combatTargetLabel, distance, enemyDetail, offeredTargets } from './combatLabels'
 import { useEdgeFades } from './useEdgeFades'
 import { heroVitalityOf, VITALITY_CONDITIONS, type HeroVitality } from './vitalityLabels'
 
@@ -145,7 +145,7 @@ function Combatant({
   const dots = vitality
     ? participant.conditions.filter((condition) => !VITALITY_CONDITIONS.has(condition.toLowerCase()))
     : participant.conditions
-  const detail = vitality ? (vitality.state === 'out' ? 'out' : 'down') : own ? '' : ally ? rangeBand(participant) : enemyDetail(participant)
+  const detail = vitality ? (vitality.state === 'out' ? 'out' : 'down') : own ? '' : ally ? distance(participant) : enemyDetail(participant)
   return (
     <li
       className="story-combatant"
@@ -355,6 +355,8 @@ export function StoryCombatRibbon({
   const hurt = viewerHurt(activePlayers.find((player) => player.id === playerId), viewer)
   const choices: RibbonChoice[] = [
     ...legal.filter((action) => action.type === 'attack').slice(0, MAX_ATTACKS).map(actionChoice),
+    // Inspiration is spent before the roll it helps, so it sits beside the attacks.
+    ...firstOfType('take_heart').map(actionChoice),
     ...latestSpells.map((spell): RibbonChoice => ({
       kind: 'spell',
       key: `spell-${spell.id}`,

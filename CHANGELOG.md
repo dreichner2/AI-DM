@@ -70,6 +70,20 @@ All notable AIDM closed-beta changes should be recorded here.
 - Levelling up is shown as a moment in the story: hit points, features, spell
   slots and spells gained.
 - Optional ambience and weather sound (off until switched on in Settings).
+- Places have rooms. The header shows who is where; a hero talks to, searches and
+  takes only what is in their own room, and an action aimed next door walks them
+  in as part of the same turn. A fight says how far each enemy is ("a move away
+  · 30 ft", "out of reach · 60 ft+"): a sword cannot be swung at something out of
+  reach, and a hero who was in another room when the fight began starts out of
+  reach.
+- A hero has threads of their own: what they want, who or what they would not
+  abandon, and what they carry. The adventure answers them (a name left in the
+  ledger, a line in the ending), and acting on them earns Inspiration, spent as
+  "Take heart" for advantage on the next roll.
+- A hero from one adventure can be brought into another ("Play as …").
+- Two players never block each other: adventures the engine runs hold no
+  spotlight or queue, a hero who joins between turns is seen by everyone at
+  once, and any refused action says why above the action box.
 
 #### Rules
 

@@ -13,10 +13,12 @@ from aidm_server.game_state.campaign_pack_encounters import (
     CATALOG_CONSEQUENCES,
     ENCOUNTER_TRIGGER_TYPES,
     RESOLUTION_END_REASONS,
+    START_BANDS,
 )
 from aidm_server.game_state.models import stable_slug
 from aidm_server.game_state.quest_engine import CONSEQUENCE_CHANGE_TYPES, objective_is_mechanical
 from aidm_server.game_state.validation.validator import SCENE_TYPES
+from aidm_server.game_state.zones import location_zones, zone_steps
 from aidm_server.interactables import INTERACTABLE_ACTIONS, supported_actions, validate_interactable_catalog
 from aidm_server.segment_triggers import KEYWORD_TRIGGER_TYPES, LOCATION_TRIGGER_TYPE, SUPPORTED_TRIGGER_TYPES
 from aidm_server.services.campaign_pack import (
@@ -27,6 +29,7 @@ from aidm_server.services.campaign_pack import (
 )
 from aidm_server.services.campaign_pack_graph import is_terminal_checkpoint
 from aidm_server.services.campaign_pack_progress import COMBAT_COMPLETE_REASONS
+from aidm_server.services.tie_lines import TIE_LINES_KEY, ending_flags, tie_line_problems
 
 
 logger = logging.getLogger(__name__)
@@ -396,7 +399,10 @@ def _engine_contract_issues(pack: dict[str, Any], *, strict: bool) -> list[Campa
     issues.extend(_npc_listed_nowhere_issues(pack))
     issues.extend(_scene_type_issues(pack))
     issues.extend(_location_text_issues(pack))
+    issues.extend(_zone_issues(pack))
     issues.extend(_route_issues(pack, ids))
+    issues.extend(_tie_line_issues(pack, ids))
+    issues.extend(_inspires_issues(pack))
     starting_state = _dict(_first(pack, 'startingState', 'starting_state'))
     if 'campaignFlags' in starting_state or 'campaign_flags' in starting_state:
         issues.append(
@@ -1137,6 +1143,88 @@ def _location_text_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
     ]
 
 
+def _location_zone_issues(location: dict[str, Any], path: str) -> list[CampaignPackLintIssue]:
+    """One location's own zones: unique ids, known neighbours, a start zone, and every zone reachable from it."""
+
+    zones = _records(location.get('zones'))
+    if not zones:
+        return []
+    issues = []
+    ids = [_record_id(zone) for zone in zones]
+    for index, zone in enumerate(zones):
+        if not _record_id(zone) or ids.count(_record_id(zone)) > 1:
+            issues.append(_error('duplicate_zone_id', f'{path}.zones[{index}]', f'Zone "{_record_id(zone)}" needs an id of its own.'))
+        for other in _string_list(zone.get('adjacentTo')):
+            if other not in ids:
+                issues.append(_error('unknown_zone_id', f'{path}.zones[{index}].adjacentTo', f'"{other}" is not a zone of this location.'))
+    start = _text(location.get('startZoneId'))
+    if start not in ids:
+        message = f'"{start}" is not a zone of this location.' if start else 'A location with zones needs a startZoneId.'
+        issues.append(_error('zone_without_start' if not start else 'unknown_zone_id', f'{path}.startZoneId', message))
+    zones_view = location_zones(location)
+    reached = {zone['id'] for zone in zones_view if zone_steps(zones_view, ids[0], zone['id']) is not None}
+    unreachable = [zone_id for zone_id in ids if zone_id and zone_id not in reached]
+    if unreachable:
+        issues.append(
+            _error(
+                'zone_graph_not_connected',
+                f'{path}.zones',
+                f'Not every zone can be reached from the others: {", ".join(unreachable)}.',
+            )
+        )
+    return issues
+
+
+def _zone_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    """Rooms and areas (``zones``): each location's graph, and every object, person and encounter that names a
+    zone naming one of its own location's; an enemy group's ``startBand``."""
+
+    locations = _records(pack.get('locations'))
+    zones_of = {_record_id(location): {_record_id(zone) for zone in _records(location.get('zones'))} for location in locations}
+    issues = [issue for index, location in enumerate(locations) for issue in _location_zone_issues(location, f'locations[{index}]')]
+
+    def misplaced(zone_id: str, own: set[str], path: str, what: str) -> CampaignPackLintIssue | None:
+        if not zone_id or zone_id in own:
+            return None
+        elsewhere = next((location_id for location_id, ids in zones_of.items() if zone_id in ids), '')
+        if elsewhere:
+            return _error('zone_in_other_location', path, f'{what} stands in "{zone_id}", a zone of {elsewhere}, not of its own location.')
+        return _error('unknown_zone_id', path, f'{what} names "{zone_id}", which is not a zone of any location.')
+
+    for index, location in enumerate(locations):
+        own = zones_of[_record_id(location)]
+        for collection in ('interactables', 'hazards'):
+            for record_index, record in enumerate(_records(location.get(collection))):
+                path = f'locations[{index}].{collection}[{record_index}].zoneId'
+                issue = misplaced(_text(record.get('zoneId')), own, path, f'Object "{_record_id(record)}"')
+                if issue:
+                    issues.append(issue)
+    for index, npc in enumerate(_records(pack.get('npcs'))):
+        homes = [_text(npc.get('locationId'))] + [
+            _record_id(location) for location in locations if _record_id(npc) in _string_list(_first(location, 'npcIds', 'npc_ids'))
+        ]
+        own = {zone_id for location_id in homes for zone_id in zones_of.get(location_id, set())}
+        issue = misplaced(_text(npc.get('zoneId')), own, f'npcs[{index}].zoneId', f'"{_text(npc.get("name")) or _record_id(npc)}"')
+        if issue:
+            issues.append(issue)
+    for index, encounter in enumerate(_records(pack.get('encounters'))):
+        own = {zone_id for location_id in _string_list(encounter.get('locationIds')) for zone_id in zones_of.get(location_id, set())}
+        issue = misplaced(_text(encounter.get('zoneId')), own, f'encounters[{index}].zoneId', f'Encounter "{_record_id(encounter)}"')
+        if issue:
+            issues.append(issue)
+        for group_index, group in enumerate(_records(encounter.get('enemyGroups'))):
+            band = _text(group.get('startBand'))
+            if band and band not in START_BANDS:
+                issues.append(
+                    _error(
+                        'unknown_start_band',
+                        f'encounters[{index}].enemyGroups[{group_index}].startBand',
+                        f'"{band}" is not one of: {", ".join(START_BANDS)}.',
+                    )
+                )
+    return issues
+
+
 def _route_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[CampaignPackLintIssue]:
     issues: list[CampaignPackLintIssue] = []
     for index, route in enumerate(_records(pack.get('routes'))):
@@ -1574,6 +1662,46 @@ def _int(value: Any, *, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _tie_line_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[CampaignPackLintIssue]:
+    """Tie lines name the pack's own objects (and an action each supports), locations, encounters and ending
+    flags, and use only the tokens their kind can fill."""
+
+    object_actions = {
+        _text(record.get('id')): supported_actions(record, 'hazards' if '.hazards[' in path else 'interactables')
+        for path, record in _pack_interactables(pack)
+        if _text(record.get('id'))
+    }
+    problems = tie_line_problems(
+        pack.get(TIE_LINES_KEY),
+        object_actions=object_actions,
+        location_ids=ids['locations'],
+        encounter_ids=ids['encounters'],
+        ending_flag_keys={flag for checkpoint in _records(pack.get('checkpoints')) for flag in ending_flags(checkpoint)},
+    )
+    return [_error('invalid_tie_line', f'{TIE_LINES_KEY}{suffix}', message) for suffix, message in problems]
+
+
+def _inspires_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    """An object's ``inspires`` names actions it supports, each with its reason."""
+
+    issues: list[CampaignPackLintIssue] = []
+    for path, record in _pack_interactables(pack):
+        if 'inspires' not in record:
+            continue
+        inspires = record.get('inspires')
+        if not isinstance(inspires, dict) or not all(_text(reason) for reason in inspires.values()):
+            issues.append(_error('invalid_inspires', f'{path}.inspires', 'inspires maps an action to the reason it inspires.'))
+            continue
+        supported = supported_actions(record, 'hazards' if '.hazards[' in path else 'interactables')
+        name = _text(record.get('name')) or _record_id(record) or 'This object'
+        issues.extend(
+            _warning('inspires_unsupported_action', f'{path}.inspires.{action}', f'{name} does not support "{action}", so it never inspires.')
+            for action in inspires
+            if action not in supported
+        )
+    return issues
 
 
 def _string_list(value: Any) -> list[str]:

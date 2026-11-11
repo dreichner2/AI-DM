@@ -47,6 +47,7 @@ from aidm_server.response_dtos import (
 from aidm_server.services import campaign_pack as pack_importer
 from aidm_server.services.campaign_pack_progress import CampaignPackProgressError, campaign_pack_progress_payload
 from aidm_server.services.campaign_pack_storage import sync_campaign_pack_progress
+from aidm_server.services.tie_lines import TIE_LINES_KEY, normalize_tie_lines
 from aidm_server.time_utils import utc_now
 from aidm_server.turn_coordinator import SessionTurnTargetMissingError, TurnLeaseLostError, session_turn_coordinator
 from aidm_server.turn_events import SESSION_ENDED_EVENT, SESSION_STARTED_EVENT, record_turn_event
@@ -278,6 +279,7 @@ def initial_campaign_pack_snapshot(manifest: dict, *, campaign_id: int, imported
         extra_catalog_records=pack_importer._future_records_by_type(manifest, pack_id=pack_id),
         world_settings=world_settings,
         segments=pack_importer._segment_records(first(manifest, 'segments'), pack_id=pack_id),
+        tie_lines=normalize_tie_lines(first(manifest, TIE_LINES_KEY)),
         session_id=None,
         campaign_id=campaign_id,
         imported_at=imported_at,

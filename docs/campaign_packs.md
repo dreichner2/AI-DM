@@ -204,6 +204,7 @@ consumer.
 | pack | `merchants` | mechanical (runtime `snapshot.merchants`) |
 | pack | `storyFlags` | mechanical, prompt (never player) |
 | pack | `map`, `routes` | mechanical, player (`worldMap`) |
+| pack | `tieLines` (see Tie Lines) | mechanical, prompt, player (a fired line's text, to its hero) |
 | startingState | `locationId`, `questId`, `checkpointId`, `known*Ids`, `active*Ids`, `partyNpcs`, `combat` | mechanical |
 | startingState | `flags` (alias `campaignFlags`) | mechanical |
 | startingState | `clock` (`{"day", "phase"}`; see Clock Start) | mechanical, player |
@@ -215,6 +216,7 @@ consumer.
 | location | `id`, `name`, `status`, `connectedLocationIds`, `npcIds`, `questIds`, scene fields, `items`, `interactables`, `hazards`, `sceneState`, `visibleAtStart` | mechanical |
 | location | `description`, `type` | prompt, player |
 | location | `onEnter`, `restPolicy` | mechanical |
+| location | `zones`, `startZoneId` (see Rooms and Areas) | mechanical, player (`currentScene.zones`), prompt (`Where:`) |
 | location | `mapPosition`, `mapIcon` | player (`worldMap`) |
 | location | `ambience`, `weather` (see Sound and Weather) | player |
 | location | `region`, `playerSummary`, `playerDescription`, `tags` | player |
@@ -222,8 +224,11 @@ consumer.
 | scene object | `kind`, state fields, `requirements`, `contents`, `discoversClueIds`, `setsFlags`, `discoversLocationIds`, `reveals`, `mechanicalEffects`, `triggerable`, `repeatable` | mechanical |
 | scene object | `allowedActions`, `usableInCombat`, `resolvesEncounter`, `choiceActions` (see Scene Object Fields) | mechanical, player |
 | scene object | `actionLabels`, `proper` | player |
+| scene object | `inspires` (see Tie Lines) | mechanical |
+| scene object | `zoneId` (see Rooms and Areas) | mechanical, player |
 | scene object | `actionText` | mechanical, prompt (told when the action succeeds; never in the player snapshot) |
 | npc | `id`, `name`, `locationId`, `status`, `disposition`, visibility flags, `hidden`, `hiddenUntil` (see Meeting People) | mechanical |
+| npc | `zoneId` (see Rooms and Areas) | mechanical, player (`currentScene.zones`) |
 | npc | `role`, `race`, `questIds` | prompt, player |
 | npc | `playerSummary`, `description`/`playerDescription`, `aliases`, `tags` | player |
 | npc | `personality`, `motivation`, `knows`, `secret`, `useInPlay`, `ifSkipped`, `gmNotes`, `trueName` | stored |
@@ -235,6 +240,7 @@ consumer.
 | encounter | `id`, `enemyIds`, `enemyGroups`, `completion`, `rewards`, `partyAllocation`, `outcomes`, `outcomeRewards`, `outcomeConsequences`, `questEvents`, `on*` hooks, `questIds`, `trigger`, `once`, `when`, `unless`, `scaling`, `adjustments`, `allowParley`, `lethalDefeat` | mechanical |
 | encounter | `title`, `summary`/`description`, `locationIds`, `checkpointIds` | prompt |
 | encounter | `setup` (read aloud when its fight starts, by either narrator) | mechanical, prompt |
+| encounter | `zoneId` (where its fight happens), `enemyGroups[].startBand` (`melee`, `near` or `far`; default `near`) | mechanical, prompt, player |
 | encounter | `stakes`, `gmNotes`, `difficulty`, `tags` | stored |
 | enemy | creature fields (`stats`, `abilities`, `behavior`, ...), `xpReward` | mechanical |
 | enemy | `challengeTier: "boss"` (never yields or retreats above a quarter of its HP) | mechanical |
@@ -482,6 +488,12 @@ The linter uses the same import dry-run validator as the API, then adds authorin
 | warning | `npc_listed_nowhere` | a person with `knows` lines is neither `visibleAtStart` (nor a starting `knownNpcIds`/`activeNpcIds` entry) nor in any location's `npcIds`, so the party can never talk to them |
 | warning | `unsupported_scene_type` | a location's (or its `sceneState`'s) `sceneType` is not a supported scene type; the place is entered as `exploration` |
 | warning | `location_description_addresses_players` | a location `description` or `playerDescription` contains "the players" (any case); it is printed on arrival |
+| error | `zone_without_start` | a location with `zones` has no `startZoneId` |
+| error | `unknown_zone_id` | a `startZoneId`, a zone's `adjacentTo`, or an object's, person's or encounter's `zoneId` names no zone (of its location, or of any) |
+| error | `zone_in_other_location` | an object, person or encounter names a zone of another location than its own |
+| error | `duplicate_zone_id` | two zones of a location share an id (or one has none) |
+| error | `zone_graph_not_connected` | some zone of a location cannot be reached from the others through `adjacentTo` |
+| error | `unknown_start_band` | an `enemyGroups[].startBand` is not `melee`, `near` or `far` |
 
 `lint` exits non-zero on errors only; `lint --strict` also fails on warnings
 and reports `story_flag_set_by_pack` as an error.
@@ -802,6 +814,78 @@ before arrival met people) meets them with the next change applied there.
           {"id": "npc_smuggler", "name": "Corran Vey", "hidden": true}]}
 ```
 
+## Rooms and Areas
+
+A location may divide into `zones`: rooms of an inn, the road and its ditch, the
+rim of a valley and the circle of stones below it. Without `zones` a place is
+one area and everything in it is in reach, as before.
+
+| Zone field | Meaning |
+| --- | --- |
+| `id`, `name` | required; the name is how the Story view and the narration say it ("The Common Room", told as "the common room") |
+| `adjacentTo` | the zones one move away; adjacency goes both ways whichever zone lists it |
+| `description` | one sentence, told the first time a hero steps in |
+| `exit` | where the ways out of the place are (shown on the Map tab); travel itself is never refused for the room a hero stands in — the party gathers and sets out |
+| `rest` | heroes can rest here; with no zone marked, anywhere the place's `restPolicy` allows |
+| `moveLabel` | the words of the offered move into this zone (`Go into the common room`); otherwise `Go to the stable` |
+
+The location's `startZoneId` is where arrival stands every hero. People
+(`npcs[].zoneId`), scene objects (`zoneId`) and encounters (`zoneId`: where the
+fight happens) name a zone of their own location; without one they stand in the
+start zone (an encounter without one fights in the zone of the object that
+triggered it). A merchant stands with its person, and the captives a fight
+leaves stay in its zone.
+
+Each hero stands in one zone (`currentScene.playerZones`); the party may be
+split. A hero acts only on what stands in their own zone: an action, a
+conversation or typed words aimed at someone or something in a zone next door
+first step them in, in the same turn and narration (unless the step itself
+starts something); anything further off, or next door during a fight, is
+refused before narration (`Mara Reedwake is in the common room. Go there
+first.`). Words said to someone next door are a call: one line comes back.
+Stepping into another zone (`Go into the common room`, a link on the Story
+view's where-line, or typed words) takes a turn but no time, is told by the
+engine itself with any narrator (the zone's `description` the first time, then
+who is there), and gives the beat `Found — The Common Room` on the first visit.
+
+When a fight starts every hero at the place is in it: those standing in its
+zone start where heroes always do, those elsewhere start `far` off and the
+opening says they come running. When it ends every hero stands in its zone.
+Each enemy group starts at its `startBand`: `melee` and `near` are a move away
+from the heroes, `far` is out of reach until a hero advances on it. The player
+view gives every fight participant's `reach` from the viewing hero (`in_reach`,
+`one_move`, `out_of_reach`, `far_off`) and its words (`reachLabel`: `a move
+away · about 30 ft`).
+
+The player view lists the place's known zones as `currentScene.zones` (a zone
+is known once any hero has stood in it or next to it): `{id, name, current,
+adjacent, exit, here, moveLabel}`, `here` naming the heroes, known people and
+companions there. Objects in zones nobody knows yet are left out, and each
+object and merchant carries its `zoneId`.
+
+### Worked example
+
+```json
+{"locations": [{
+  "id": "loc_lantern_post_inn", "name": "The Lantern Post Inn", "restPolicy": "safe",
+  "startZoneId": "inn_yard",
+  "zones": [
+    {"id": "inn_yard", "name": "The Yard", "exit": true, "moveLabel": "Step out to the yard",
+     "adjacentTo": ["inn_common_room", "inn_stable"],
+     "description": "Rain runs off the eaves into the churned mud of the yard."},
+    {"id": "inn_common_room", "name": "The Common Room", "rest": true, "moveLabel": "Go into the common room",
+     "adjacentTo": ["inn_yard"], "description": "A low room warmed by a peat fire."},
+    {"id": "inn_stable", "name": "The Stable", "adjacentTo": ["inn_yard"],
+     "description": "Straw, warm horse-breath and lamplight."}
+  ],
+  "interactables": [{"id": "inn_wagon_strongbox", "name": "Wagon Strongbox", "kind": "container", "zoneId": "inn_yard"}]
+}],
+ "npcs": [{"id": "npc_mara_reedwake", "name": "Mara Reedwake", "locationId": "loc_lantern_post_inn", "zoneId": "inn_common_room"}],
+ "encounters": [{"id": "enc_pale_lantern_detour", "zoneId": "road_crown",
+                 "enemyGroups": [{"enemyId": "enemy_pale_lanterns", "count": 2, "startBand": "far"},
+                                 {"enemyId": "enemy_wardbound_beasts", "count": 1}]}]}
+```
+
 ## Arrival, Objects, and Discoveries
 
 A place is entered with its `sceneType` when that is one of `social`,
@@ -1053,7 +1137,9 @@ needs an `npcId` or a `locationId`, and prices must be positive whole `gp`,
 
 A location may carry `restPolicy` (`safe`, `risky`, or `none`); it is copied to
 `currentScene.restPolicy` at import and on every arrival. Without one, a place of
-danger 3 or more is `risky` (short rests only) and 6 or more `none`.
+danger 3 or more is `risky` (short rests only) and 6 or more `none`. In a place
+with rooms that marks some zones `rest`, heroes rest only there: elsewhere the
+player view reads `none` with a `restReason` and a rest is refused.
 
 ```json
 {"id": "loc_lantern_post_inn", "restPolicy": "safe"}
@@ -1117,6 +1203,48 @@ is foggy at the cairns and on the ridge paths:
 ```json
 {"id": "loc_lantern_post_inn", "mapIcon": "inn", "weather": "rain"}
 ```
+
+## Tie Lines
+
+`tieLines` brings each hero's own threads (their `desire`, `attachment` and
+`burden`, set at creation; see `gameplay_systems.md`) into the adventure:
+
+```json
+[{"id": "tie_ledger_name", "kind": "seeking", "at": {"objectId": "inn_caravan_ledger", "action": "inspect"},
+  "text": "One name on the last page is not quite gone. Under the black stroke you can still read it: {name}."},
+ {"id": "tie_burden_first_rest", "kind": "burden", "at": {"longRest": true},
+  "text": "Sleep does not come at once. You turn it over again in the dark: {burden}"},
+ {"id": "tie_road_remembers", "kind": "seeking", "at": {"ending": "ward_renewed"},
+  "text": "{name} is among those who walk out of the valley at dawn: thinner, blinking, alive."}]
+```
+
+- `kind`: `seeking` fires for a hero whose attachment is a person (any relation
+  but a place, an order or a keepsake); `burden` for a hero who carries
+  something; `desire`, with `"desire": "<kind>"` (`find_someone`,
+  `be_recognised`, `clear_debt`, `keep_duty`, `learn_forbidden`,
+  `prove_wrong`), for a hero who wants that.
+- `at`: `{"objectId", "action"}` (that object action succeeds), `{"locationId"}`
+  (the first arrival there), `{"encounterId"}` (its fight starts; told with its
+  setup), `{"longRest": true}` (a long rest), or `{"ending": "<flag>"}` (a
+  `seeking` line appended to the text of the ending variant that flag chooses,
+  for each hero whose seeking line fired).
+- `text` (at most 600 characters) may hold `{hero}`, and `{name}` and
+  `{relation}` (seeking) or `{burden}` (burden).
+- Each line fires at most once per adventure, for one present hero with the
+  tie (the hero who acted when they have it, else the one with the fewest lines
+  told); with no such hero it stays unfired and nothing is shown. The scripted
+  narrator tells it as its own paragraph; a narrating model is given it as a
+  personal thread to tell in one or two sentences. It makes a `thread` beat,
+  goes into that hero's Journal (`Your threads`) and grants them Inspiration.
+- The linter errors on an object, location, encounter or ending flag the pack
+  does not have, an action the object does not support, a token the kind cannot
+  fill, an unknown desire, a repeated id and an ending line that is not
+  `seeking`.
+
+A scene object may also mark actions that inspire whoever does them:
+`"inspires": {"search": "a secret uncovered"}` grants Inspiration with that
+reason when the action succeeds (the hero holds at most one). The linter warns
+about an action the object does not support.
 
 ## Story Flags
 

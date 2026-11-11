@@ -274,6 +274,14 @@
       "items": {
         "$ref": "#/$defs/route"
       }
+    },
+    "tieLines": {
+      "description": "Lines that bring a hero's own threads into the adventure. Each fires at most once per adventure, for a present hero who has that tie; see docs/campaign_packs.md.",
+      "type": "array",
+      "maxItems": 150,
+      "items": {
+        "$ref": "#/$defs/tieLine"
+      }
     }
   },
   "$defs": {
@@ -362,6 +370,15 @@
             }
           }
         },
+        "inspires": {
+          "description": "Inspiration for the hero who does the action, with its reason, for example {\"search\": \"a secret uncovered\"}. The linter warns about an action the object does not support.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          }
+        },
         "actionText": {
           "description": "DM-side text the narrator draws on when an action resolves, for example what reading a ledger shows. Kept in session state like description and never sent to players. The linter warns about text for an action the object does not support.",
           "type": "object",
@@ -430,6 +447,10 @@
             "$ref": "#/$defs/objectAction"
           },
           "uniqueItems": true
+        },
+        "zoneId": {
+          "description": "The zone of its location it stands in; without it, the location's startZoneId.",
+          "$ref": "#/$defs/id"
         },
         "usableInCombat": {
           "description": "The actions a hero can take on this object during a fight, on their own turn while their action is unspent; taking one spends the action. Every other action is refused in a fight with \"Not while the fight is on.\".",
@@ -745,10 +766,60 @@
               "description": "Shown behind the story; rain also adds the sound of rain over the place's bed.",
               "type": "string",
               "enum": ["rain", "fog", "snow", "clear"]
+            },
+            "zones": {
+              "description": "The rooms or areas the place divides into. Each hero stands in one; arrival puts every hero in startZoneId. A hero acts only on things and people in their own zone, steps next door first for one in an adjacent zone, and is refused for anything further off. Without zones the place is one area.",
+              "type": "array",
+              "maxItems": 12,
+              "items": {
+                "$ref": "#/$defs/zone"
+              }
+            },
+            "startZoneId": {
+              "description": "The zone every hero stands in on arrival; required when the location has zones.",
+              "$ref": "#/$defs/id"
             }
           }
         }
       ]
+    },
+    "zone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "adjacentTo"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "description": "One sentence told the first time a hero steps in.",
+          "type": "string",
+          "maxLength": 600
+        },
+        "adjacentTo": {
+          "description": "The zones one move away; adjacency goes both ways whichever zone lists it.",
+          "$ref": "#/$defs/idList"
+        },
+        "exit": {
+          "description": "true lets the party leave the place (travel) from here; when no zone is marked, every zone is an exit.",
+          "type": "boolean"
+        },
+        "rest": {
+          "description": "true lets heroes rest here; when no zone is marked, every zone allows it.",
+          "type": "boolean"
+        },
+        "moveLabel": {
+          "description": "The words of the offered move into this zone (\"Go into the common room\"); otherwise \"Go to\" and the zone's name.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        }
+      }
     },
     "npc": {
       "allOf": [
@@ -832,6 +903,10 @@
                   "type": ["string", "number", "boolean"]
                 }
               }
+            },
+            "zoneId": {
+              "description": "The zone of their location they stand in; without it, its startZoneId.",
+              "$ref": "#/$defs/id"
             }
           }
         }
@@ -1205,6 +1280,23 @@
         "allowParley": {
           "description": "Its enemies may negotiate, surrender, yield or retreat from the first round; otherwise only at half HP or less, once their side has lost a member, or from round 4 once hurt.",
           "type": "boolean"
+        },
+        "zoneId": {
+          "description": "Where its fight happens: a zone of one of its locations. Heroes standing in another zone start the fight far off, having come running.",
+          "$ref": "#/$defs/id"
+        },
+        "enemyGroups": {
+          "type": "array",
+          "items": {
+            "properties": {
+              "startBand": {
+                "description": "Where the group stands as the fight starts: melee and near are a move away from the heroes, far is out of reach until a hero advances.",
+                "type": "string",
+                "enum": ["melee", "near", "far"],
+                "default": "near"
+              }
+            }
+          }
         },
         "lethalDefeat": {
           "description": "true makes a defeat in this encounter's fight decisive: when every hero is down it fails a checkpoint naming the encounter in failWhen, so the story takes that checkpoint's failure route. It means nothing else: lethal or not, a beaten party wakes at the end of the fight with 1 HP one phase later, the encounter re-arms, and a failure never advances onto a terminal checkpoint. Read only when it is exactly true."
@@ -1823,6 +1915,89 @@
         "style": {
           "type": "string",
           "enum": ["road", "trail", "hidden"]
+        }
+      }
+    },
+    "tieLine": {
+      "description": "A line told for a hero who has the tie. Tokens: {name} and {relation} (seeking), {burden} (burden), {hero} (any kind).",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "kind", "at", "text"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["seeking", "burden", "desire"]
+        },
+        "desire": {
+          "description": "For a desire line: the desire it fires for.",
+          "type": "string",
+          "enum": ["find_someone", "be_recognised", "clear_debt", "keep_duty", "learn_forbidden", "prove_wrong"]
+        },
+        "at": {
+          "description": "When it fires: an object action, the first arrival at a location, an encounter starting (with its setup), a long rest, or an ending variant (by the flag that chooses it; appended to that ending's text).",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["objectId", "action"],
+              "properties": {
+                "objectId": {
+                  "$ref": "#/$defs/id"
+                },
+                "action": {
+                  "$ref": "#/$defs/objectAction"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["locationId"],
+              "properties": {
+                "locationId": {
+                  "$ref": "#/$defs/id"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["encounterId"],
+              "properties": {
+                "encounterId": {
+                  "$ref": "#/$defs/id"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["longRest"],
+              "properties": {
+                "longRest": {
+                  "const": true
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["ending"],
+              "properties": {
+                "ending": {
+                  "$ref": "#/$defs/id"
+                }
+              }
+            }
+          ]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
         }
       }
     }

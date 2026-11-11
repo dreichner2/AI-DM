@@ -63,6 +63,7 @@ from aidm_server.combat.state import combat_turn_context, combat_turn_economy, d
 from aidm_server.damage_dice import deterministic_roller, normalize_damage_dice_expression, roll_signed_dice
 from aidm_server.database import db
 from aidm_server.game_state.models import actor_items, stable_change_id
+from aidm_server.game_state.zones import object_zone_id, zone_reach
 from aidm_server.models import Player
 from aidm_server.price_list import COIN_VALUES_CP, normalize_price
 
@@ -625,7 +626,8 @@ def object_rolls(state: Mapping[str, Any]) -> dict[str, Callable[..., dict[str, 
 
     Modifiers come from the persisted character (``character_roll_spec``) when
     a database session is available, otherwise from the snapshot's ability
-    scores; roll mode and bonus dice come from the modifier engine.
+    scores; roll mode and bonus dice come from the modifier engine, and the
+    effects a roll spends are recorded on it as ``consume``.
     """
 
     combat = state.get("combat") if isinstance(state.get("combat"), Mapping) else None
@@ -649,14 +651,10 @@ def object_rolls(state: Mapping[str, Any]) -> dict[str, Callable[..., dict[str, 
                 "takeTime": True,
             }
         else:
-            rolled = _roll(
-                state,
-                actor,
-                roll_type=skill or "check",
-                ability=ability,
-                context=check_context(_roll_subject(state, actor), ability=ability, skill=skill, combat=combat),
-                seed=seed,
-            )
+            context = check_context(_roll_subject(state, actor), ability=ability, skill=skill, combat=combat)
+            rolled = _roll(state, actor, roll_type=skill or "check", ability=ability, context=context, seed=seed)
+            if context["consume"]:
+                rolled["consume"] = context["consume"]
         passed = rolled["total"] >= dc
         return {
             "id": _text(check_spec.get("id")),
@@ -680,7 +678,8 @@ def object_rolls(state: Mapping[str, Any]) -> dict[str, Callable[..., dict[str, 
             seed=seed,
         )
         passed = not context.get("autoFail") and rolled["total"] >= dc
-        return {**rolled, "dc": dc, "autoFail": context.get("autoFail") is True, "passed": passed}
+        spent = {"consume": context["consume"]} if context["consume"] else {}
+        return {**rolled, "dc": dc, "autoFail": context.get("autoFail") is True, "passed": passed, **spent}
 
     return {"check": check, "save": save}
 
@@ -2434,8 +2433,12 @@ def offered_scene_actions(
             continue
         target, collection = target_entry
         options = _target_options(target, collection, actor=actor, objects=rules["objects"], in_combat=in_combat)
+        # In a place with rooms, an object beyond the next one (or next door in a fight) is out of reach.
+        out_of_reach, _move = zone_reach(
+            state, actor_id=_text(actor["id"]), zone_id=object_zone_id(state, target_id), subject=_name_phrase(target)
+        )
         offered[target_id] = sorted(
-            (_offered_action(target, collection, option, turn_refusal=turn_refusal) for option in options),
+            (_offered_action(target, collection, option, turn_refusal=out_of_reach or turn_refusal) for option in options),
             key=lambda entry: OFFERED_ACTION_ORDER.index(entry["action"]),
         )
     return offered
@@ -3035,6 +3038,8 @@ def combat_object_actions(
         "locations": snapshot.get("locations") if isinstance(snapshot.get("locations"), list) else [],
         "flags": snapshot.get("flags") if isinstance(snapshot.get("flags"), dict) else {},
         "combat": combat,
+        # The pack's rooms: an object in another zone than the fight is out of reach.
+        "campaignPack": snapshot.get("campaignPack") if isinstance(snapshot.get("campaignPack"), dict) else {},
     }
     actor_name = _text(participant.get("name")) or _text(actor.get("name")) or "I"
     # The HUD bundle judges the turn and the action economy itself.

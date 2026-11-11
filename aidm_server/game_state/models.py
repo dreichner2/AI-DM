@@ -10,6 +10,7 @@ from aidm_server.armor_class import ARMOR_METADATA_KEYS, sync_actor_armor_class
 from aidm_server.canon_inventory import clean_inventory_item_name, item_weight_for_name
 from aidm_server.canon_text import int_or_default, positive_int
 from aidm_server.character_state import character_state_for_player
+from aidm_server.character_ties import ties_from_character_sheet
 from aidm_server.game_state.equipment import infer_equipment_slot
 from aidm_server.models import Campaign, Player, Session, safe_json_dumps, safe_json_loads
 from aidm_server.spellbook import known_spell_names
@@ -368,6 +369,11 @@ def player_character_from_model(player: Player) -> dict[str, Any]:
         # Automatic reactions (Shield, opportunity attacks, Uncanny Dodge) run unless the sheet turned them off.
         'autoReactions': _as_record(player.character_sheet).get('autoReactions') is not False,
     }
+    if stats.get('inspiration') is True:
+        actor['inspiration'] = True
+    ties = ties_from_character_sheet(player.character_sheet)
+    if ties:
+        actor['ties'] = ties
     if state.get('fighting_style'):
         actor['fightingStyle'] = state['fighting_style']
     if isinstance(stats.get('active_effects'), list) and stats['active_effects']:

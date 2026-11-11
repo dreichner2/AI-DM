@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import logging
 
-from flask import Blueprint, g, jsonify, request
+from copy import deepcopy
 
-from aidm_server.auth import account_display_name
+from flask import Blueprint, g, jsonify, request
+from sqlalchemy import false, func, or_
+
+from aidm_server.auth import account_display_name, auth_required
 from aidm_server.canon_inventory import inventory_payload
 from aidm_server.character_backgrounds import (
     BackgroundValidationError,
@@ -15,6 +18,11 @@ from aidm_server.character_state import (
     apply_creation_class_choices,
     serialize_stats_payload,
     sync_character_derived_stats,
+)
+from aidm_server.character_ties import (
+    TiesValidationError,
+    character_sheet_with_ties,
+    normalize_character_ties,
 )
 from aidm_server.database import db
 from aidm_server.errors import error_response
@@ -29,9 +37,14 @@ from aidm_server.game_state.models import (
 )
 from aidm_server.game_state.leveling import level_for_xp
 from aidm_server.game_state.validation.validator import validate_state_changes, validated_changes_for_application
-from aidm_server.models import Player, safe_json_dumps, safe_json_loads
+from aidm_server.models import Campaign, DmTurn, Player, safe_json_dumps, safe_json_loads
 from aidm_server.pagination import jsonify_page, limited_page
-from aidm_server.response_dtos import player_detail_payload, player_summary_payload
+from aidm_server.response_dtos import (
+    DELETED_STATUS,
+    latest_isoformat,
+    player_detail_payload,
+    player_summary_payload,
+)
 from aidm_server.race_system import (
     RaceValidationError,
     normalize_character_race_selection,
@@ -130,6 +143,17 @@ def _character_sheet_payload_with_spellbook(
         class_levels=sheet.get('classLevels') or sheet.get('class_levels'),
     )
     return safe_json_dumps(sheet, {}) if sheet else _structured_text(raw_value)
+
+
+def _ties_payload(payload: dict):
+    """The hero's own threads sent with the payload: ``(ties, provided, error)``."""
+
+    if 'ties' not in payload:
+        return None, False, None
+    try:
+        return normalize_character_ties(payload.get('ties')), True, None
+    except TiesValidationError as exc:
+        return None, True, exc.public_message
 
 
 def _background_payload(payload: dict):
@@ -338,6 +362,9 @@ def add_player(campaign_id):
     background, background_provided, background_error = _background_payload(payload)
     if background_error:
         return error_response('validation_error', background_error, 400)
+    ties, ties_provided, ties_error = _ties_payload(payload)
+    if ties_error:
+        return error_response('validation_error', ties_error, 400)
 
     try:
         stats_payload, stats_error = serialize_stats_payload(
@@ -381,7 +408,7 @@ def add_player(campaign_id):
                 default_weapon_proficiencies_for_class(class_name)
             ),
             character_sheet=_character_sheet_payload_with_spellbook(
-                payload.get('character_sheet'),
+                character_sheet_with_ties(payload.get('character_sheet'), ties) if ties_provided else payload.get('character_sheet'),
                 class_name=class_name,
                 race=race,
                 race_selection=race_selection,
@@ -415,6 +442,169 @@ def get_players(campaign_id):
     query = query.order_by(Player.created_at.asc(), Player.player_id.asc())
     players = limited_page(query, limit=limit)
     return jsonify_page(players, payload_for=player_summary_payload, cursor_for=lambda player: player.player_id)
+
+
+JOINABLE_HEROES_LIMIT = 24
+# What a brought hero leaves in their old adventure: what happened to them there, and what they had spent.
+ADVENTURE_STAT_KEYS = (
+    'conditions',
+    'death_saves',
+    'temp_hp',
+    'tempHp',
+    'inspiration',
+    'active_effects',
+    'exhaustion',
+    'hit_dice',
+    'race_ability_state',
+    'raceAbilityState',
+    'class_feature_state',
+    'classFeatureState',
+    'captives',
+    'promises',
+    'memories',
+)
+SPENT_SHEET_KEYS = (
+    'spellResources',
+    'spell_resources',
+    'spellSlots',
+    'spell_slots',
+    'classFeatureState',
+    'class_feature_state',
+    'raceAbilityState',
+    'race_ability_state',
+)
+
+
+def _callers_heroes():
+    """Every hero of this table the caller may bring: with sign-in on, their own; without it, every hero."""
+
+    query = Player.query.filter(Player.workspace_id == current_workspace_id())
+    if not auth_required():
+        return query
+    account_id = current_account_id()
+    return query.filter(Player.account_id == account_id) if account_id is not None else query.filter(false())
+
+
+def _names_in(campaign_id: int) -> set[str]:
+    return {
+        str(name or '').strip().casefold()
+        for (name,) in db.session.query(Player.character_name).filter(Player.campaign_id == campaign_id)
+    }
+
+
+@players_bp.route('/campaigns/<int:campaign_id>/joinable-heroes', methods=['GET'])
+def get_joinable_heroes(campaign_id):
+    """The caller's heroes from the table's other adventures (archived ones too), newest played first."""
+
+    campaign = workspace_campaign(campaign_id)
+    if not campaign:
+        return error_response('campaign_not_found', 'Campaign not found.', 404)
+    last_turn = (
+        db.session.query(DmTurn.player_id, func.max(DmTurn.created_at).label('played_at'))
+        .group_by(DmTurn.player_id)
+        .subquery()
+    )
+    rows = (
+        _callers_heroes()
+        .join(Campaign, Campaign.campaign_id == Player.campaign_id)
+        .outerjoin(last_turn, last_turn.c.player_id == Player.player_id)
+        .filter(Player.campaign_id != campaign_id, or_(Campaign.status.is_(None), Campaign.status != DELETED_STATUS))
+        .with_entities(Player, Campaign.title, last_turn.c.played_at)
+        .all()
+    )
+    present = _names_in(campaign_id)
+    heroes = []
+    for player, adventure_title, played_at in rows:
+        if str(player.character_name or '').strip().casefold() in present:
+            continue
+        summary = player_summary_payload(player)
+        heroes.append(
+            {
+                'player_id': player.player_id,
+                'character_name': player.character_name,
+                'level': int(player.level or 1),
+                'race': player.race,
+                'class': player.class_,
+                'portrait': summary['profile_image'],
+                'adventure_title': adventure_title,
+                'last_played_at': latest_isoformat(played_at, player.updated_at, player.created_at),
+            }
+        )
+    heroes.sort(key=lambda hero: (hero['last_played_at'] or '', hero['player_id']), reverse=True)
+    return jsonify({'heroes': heroes[:JOINABLE_HEROES_LIMIT]})
+
+
+def _restored_stats(raw_stats) -> dict:
+    """The hero's numbers without what belongs to their old adventure, at full hit points."""
+
+    stats = deepcopy(safe_json_loads(raw_stats, {}))
+    stats = stats if isinstance(stats, dict) else {}
+    for key in ADVENTURE_STAT_KEYS:
+        stats.pop(key, None)
+    max_hp = stats.get('max_hp', stats.get('hp_max'))
+    if isinstance(max_hp, int) and not isinstance(max_hp, bool):
+        stats.update(current_hp=max_hp, hp_current=max_hp)
+    return stats
+
+
+@players_bp.route('/campaigns/<int:campaign_id>/players/bring', methods=['POST'])
+def bring_player(campaign_id):
+    """Bring a hero from another adventure as a copy: the original stays where it is, untouched."""
+
+    payload = parse_json_body(request)
+    if payload is None:
+        return error_response('validation_error', 'Expected JSON request body.', 400)
+    source_id = coerce_int(payload.get('player_id'))
+    if source_id is None or source_id <= 0:
+        return error_response('validation_error', 'player_id must be a positive integer.', 400)
+    campaign = workspace_campaign(campaign_id)
+    if not campaign:
+        return error_response('campaign_not_found', 'Campaign not found.', 404)
+    source = _callers_heroes().filter(Player.player_id == source_id).first()
+    if source is None:
+        return error_response('forbidden', 'You can only bring one of your own heroes.', 403)
+    if source.campaign_id == campaign_id:
+        return error_response('validation_error', 'That hero is already in this adventure.', 400)
+    if str(source.character_name or '').strip().casefold() in _names_in(campaign_id):
+        return error_response('hero_name_taken', f'A hero named {source.character_name} is already in this adventure.', 409)
+
+    account = getattr(g, 'aidm_account', None)
+    sheet = deepcopy(safe_json_loads(source.character_sheet, {}))
+    sheet = sheet if isinstance(sheet, dict) else {}
+    for key in SPENT_SHEET_KEYS:
+        sheet.pop(key, None)
+    sheet, _resources_changed = ensure_character_sheet_spell_resources(
+        sheet,
+        class_name=source.class_,
+        level=source.level or 1,
+        class_levels=sheet.get('classLevels') or sheet.get('class_levels'),
+    )
+    try:
+        brought = Player(
+            workspace_id=current_workspace_id(),
+            account_id=current_account_id(),
+            campaign_id=campaign_id,
+            name=(account_display_name(account) if account else None) or source.name,
+            character_name=source.character_name,
+            race=source.race,
+            race_selection=source.race_selection,
+            sex=source.sex,
+            class_=source.class_,
+            level=source.level,
+            stats=safe_json_dumps(_restored_stats(source.stats), {}),
+            inventory=dump_inventory_items(
+                [item for item in load_inventory_items(source.inventory) if str(item.get('type') or '').strip().lower() != 'quest']
+            ),
+            weapon_proficiencies=source.weapon_proficiencies,
+            character_sheet=safe_json_dumps(sheet, {}),
+        )
+        db.session.add(brought)
+        db.session.commit()
+        return jsonify({'player_id': brought.player_id, 'message': 'Player successfully created'}), 201
+    except Exception as exc:
+        db.session.rollback()
+        logger.error('Failed to bring player: %s', str(exc))
+        return error_response('player_create_failed', 'Failed to create player.', 400)
 
 
 @players_bp.route('/<int:player_id>', methods=['GET'])
@@ -487,6 +677,9 @@ def update_player(player_id):
     background, background_provided, background_error = _background_payload(payload)
     if background_error:
         return error_response('validation_error', background_error, 400)
+    ties, ties_provided, ties_error = _ties_payload(payload)
+    if ties_error:
+        return error_response('validation_error', ties_error, 400)
 
     class_update_requested = 'class_' in payload or 'char_class' in payload
     requested_class_name = player.class_
@@ -579,6 +772,8 @@ def update_player(player_id):
             race_changed=race_changed,
         )
         sheet_source = player.character_sheet if player.character_sheet is not None else original_character_sheet
+        if ties_provided:
+            sheet_source = character_sheet_with_ties(sheet_source, ties)
         normalized_sheet = _character_sheet_payload_with_spellbook(
             sheet_source,
             class_name=player.class_,

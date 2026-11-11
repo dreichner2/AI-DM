@@ -6,7 +6,8 @@ them, and sent in the narration packet as ``narration``: the objects acted on
 search turned up, the unlock/open steps taken on the way), whom the hero talked
 to and the next thing that person knows, how the free-text message mapped,
 the enemies' names in prose (with the pronoun each takes), the authored setup
-and adjustments of a fight that starts, the enemy abilities whose conditions the
+and adjustments of a fight that starts (with where its enemies stand and who
+came running from another room), the enemy abilities whose conditions the
 hero shakes off as their turn ends, who acts next in a fight, how a fight ends
 when the engine-resolved enemy turns end it (a party defeat among them), the
 captives the party leaves behind when it travels on, where everyone stands for
@@ -27,8 +28,9 @@ from aidm_server.combat.maneuvers import enemy_record, pronoun_key
 from aidm_server.combat.modifiers import range_band
 from aidm_server.combat.positioning import in_melee_reach
 from aidm_server.combat.state import combat_turn_context, normalize_combat_state, participant_is_targetable
-from aidm_server.game_state.campaign_pack_encounters import catalog_record
+from aidm_server.game_state.campaign_pack_encounters import DEFAULT_START_BAND, catalog_record, start_bands
 from aidm_server.game_state.orchestration.search_take import TAKEN_BY_SEARCH
+from aidm_server.game_state.zones import CAME_RUNNING_FLAG
 from aidm_server.price_list import normalize_price
 
 DEFAULT_LABEL_VERBS = {
@@ -51,6 +53,8 @@ PARTY_TAKE_TIME_LINE = '{name} takes their time over it; the light has changed b
 # The validator's source for the changes of a typed pickup.
 PICKUP_SOURCE = 'pre_dm_world_action'
 CAPTIVES_LEFT = {False: 'You leave {captives} bound for the reeve.', True: 'The party leaves {captives} bound for the reeve.'}
+# Where an enemy group stands as a fight starts, from the party at the press.
+START_BAND_WORDS = {'melee': 'a move away', 'near': 'a move away', 'far': 'well out of reach'}
 
 
 def _text(value: Any) -> str:
@@ -261,8 +265,37 @@ def plain_results(state_after: dict[str, Any], applied_changes: Iterable[dict[st
     return results
 
 
+def _group_phrase(state: dict[str, Any], enemy_id: str, count: int) -> str:
+    """``the pale lanterns`` for two Pale Lanterns, ``the wardbound beast`` for one; a proper name keeps its capitals."""
+
+    record = catalog_record(state, 'enemies', enemy_id)
+    name = _text(record.get('name')) if count > 1 else _text(record.get('singularName')) or _text(record.get('name'))
+    if record.get('proper') is True:
+        return name
+    bare = name[4:] if name.lower().startswith('the ') else name
+    return f'the {bare.lower()}'
+
+
+def start_positions(state: dict[str, Any], encounter: dict[str, Any]) -> str:
+    """Where a pack fight's enemy groups stand as it starts (their ``startBand``), from the party at the press, in
+    one sentence: ``The pale lanterns are well out of reach; the wardbound beast is a move away.``"""
+
+    groups: dict[str, int] = {}
+    for participant in (state.get('combat') or {}).get('participants') or []:
+        if isinstance(participant, dict) and participant.get('team') == 'enemy' and _text(participant.get('campaignPackEnemyId')):
+            groups[_text(participant['campaignPackEnemyId'])] = groups.get(_text(participant['campaignPackEnemyId']), 0) + 1
+    bands = start_bands(encounter)
+    parts = []
+    for enemy_id, count in groups.items():
+        words = START_BAND_WORDS[bands.get(enemy_id, DEFAULT_START_BAND)]
+        parts.append(f"{_group_phrase(state, enemy_id, count)} {'are' if count > 1 else 'is'} {words}")
+    sentence = '; '.join(parts)
+    return f'{sentence[:1].upper()}{sentence[1:]}.' if sentence else ''
+
+
 def fight_start(state: dict[str, Any], applied_changes: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
-    """The read-aloud ``setup`` of a pack encounter whose fight started this turn, and its applied adjustments' lines."""
+    """The read-aloud ``setup`` of a pack encounter whose fight started this turn, its applied adjustments' lines,
+    where its enemies stand (``positions``) and the heroes who came running from another zone (``cameRunning``)."""
 
     start = next(
         (change for change in applied_changes if isinstance(change, dict) and change.get('type') == 'combat.start'),
@@ -281,9 +314,16 @@ def fight_start(state: dict[str, Any], applied_changes: Iterable[dict[str, Any]]
         if isinstance(adjustment, dict) and _text(adjustment.get('text'))
     ]
     setup = _text(encounter.get('setup'))
-    if not setup and not adjustments:
+    positions = start_positions(state, encounter)
+    came_running = [dict(hero) for hero in (start or {}).get(CAME_RUNNING_FLAG) or [] if isinstance(hero, dict)]
+    if not setup and not adjustments and not positions:
         return None
-    return {'setup': setup, 'adjustments': adjustments}
+    return {
+        'setup': setup,
+        'adjustments': adjustments,
+        **({'positions': positions} if positions else {}),
+        **({'cameRunning': came_running} if came_running else {}),
+    }
 
 
 def enemy_names(state: dict[str, Any]) -> list[dict[str, Any]]:

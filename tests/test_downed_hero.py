@@ -127,6 +127,8 @@ def test_an_out_of_character_message_still_goes_through(downed):
 
 def test_a_stable_hero_may_rest_outside_a_fight_and_wakes(downed):
     knock_down, send, snapshot, _last_turn, _companion = downed
+    # At the inn, resting happens in the common room.
+    send('Go into the common room.', {'kind': 'zone_move', 'source': 'scene_panel', 'zone': {'id': 'inn_common_room', 'name': 'The Common Room'}})
     knock_down('unconscious', 'stable')
 
     received = send('I take a short rest.')

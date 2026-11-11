@@ -31,11 +31,15 @@ const budgets = {
   // limits are that plus 4%.
   // Roll cards joined the entry chunk (they show on the first screen); the limit is the
   // measured 193.2 KiB plus working room, still under the 199.9 it started from.
-  initialJsGzip: 197.0 * 1024,
-  asyncJsGzip: 172.3 * 1024,
+  // Rooms and reach (the where-line is lazy), hero threads and bringing a hero along (lazy fields and dialog
+  // rows) measured: initial JS 196.7, async JS 175.7, total assets 426.8 KiB gzip. Initial JS now shares the
+  // entry chunk's own 199.9 limit; async JS and total assets are the measured sizes plus about 4%. The next
+  // growth of the entry chunk is paid for by moving the fight strip out of it, not by this number.
+  initialJsGzip: 199.9 * 1024,
+  asyncJsGzip: 182.7 * 1024,
   cssGzip: 52.9 * 1024,
   initialAssetGzip: 252.8 * 1024,
-  totalAssetGzip: 426.5 * 1024,
+  totalAssetGzip: 443.9 * 1024,
   distRaw: 190 * mebibyte,
   staticRaw: 188 * mebibyte,
   largestStaticRaw: 175 * mebibyte,

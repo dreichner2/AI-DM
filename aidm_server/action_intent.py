@@ -11,7 +11,10 @@ from aidm_server.rules import DC_HINTS, RuleHint
 from aidm_server.interactables import INTERACTABLE_ACTIONS
 
 
-VALID_ACTION_KINDS = {'message', 'roll', 'ability', 'capability', 'spell', 'item', 'object', 'interact', 'travel', 'rest', 'shop', 'combat', 'emote', 'ooc', 'admin'}
+VALID_ACTION_KINDS = {
+    'message', 'roll', 'ability', 'capability', 'spell', 'item', 'object', 'interact', 'travel', 'zone_move', 'rest', 'shop',
+    'combat', 'inspiration', 'emote', 'ooc', 'admin',
+}
 VALID_SHOP_ACTIONS = {'buy', 'sell'}
 MAX_HIT_DICE_REQUEST = 20
 VALID_DICE = {'d4', 'd6', 'd8', 'd10', 'd12', 'd20', 'd100'}
@@ -403,6 +406,14 @@ def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | Non
             'name': _clean_text(location.get('name'), max_length=ACTION_NAME_MAX_LENGTH),
         }
 
+    if kind == 'zone_move':
+        # Into another room or area of the place: the zone's id, and its name as the player saw it.
+        zone = value.get('zone')
+        zone_id = _clean_text(zone.get('id'), max_length=ACTION_ID_MAX_LENGTH) if isinstance(zone, dict) else ''
+        if not zone_id or not ACTION_ID_RE.fullmatch(zone_id):
+            return None, 'zone.id is required for a zone move and may contain only supported ID characters.'
+        normalized['zone'] = {'id': zone_id, 'name': _clean_text(zone.get('name'), max_length=ACTION_NAME_MAX_LENGTH)}
+
     if kind == 'rest':
         rest_type = _clean_text(value.get('rest_type', value.get('restType')), max_length=24).lower().replace('-', '_').replace(' ', '_')
         if rest_type not in {'short', 'short_rest', 'long', 'long_rest'}:
@@ -496,7 +507,7 @@ def apply_action_intent_to_rule_hint(intent: dict[str, Any] | None, hint: RuleHi
         return hint
 
     # A typed object action rolls the object's own check on the server.
-    if kind in {'ooc', 'emote', 'item', 'object', 'travel', 'rest', 'shop', 'admin'}:
+    if kind in {'ooc', 'emote', 'item', 'object', 'travel', 'rest', 'shop', 'inspiration', 'admin'}:
         hint.requires_roll = False
         hint.roll_type = None
         hint.dc_hint = None

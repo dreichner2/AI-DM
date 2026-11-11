@@ -19,6 +19,7 @@ PRE_DM_ACTION_TYPES = {
     'shop.sell',
     'race_ability.use',
     'combat.attack',
+    'inspiration.take_heart',
     'generic.intent',
 }
 

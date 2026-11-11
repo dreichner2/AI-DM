@@ -1,6 +1,7 @@
 import { type RefObject } from 'react'
 import { ModalShell } from './ModalShell'
-import type { Player } from './types'
+import type { JoinableHero, Player, PlayerDetail } from './types'
+import { useJoinableHeroes } from './useJoinableHeroes'
 
 type CharacterJoinDialogProps = {
   campaignTitle: string | null
@@ -11,6 +12,18 @@ type CharacterJoinDialogProps = {
   open: boolean
   players: Player[]
   portraitSrcForPlayer: (player: Player) => string
+  auth: string
+  baseUrl: string
+  /** The adventure a hero is chosen for: the player's heroes from their other adventures (`Your heroes`) may join it as copies. */
+  campaignId: number | null
+  /** A hero brought in from another adventure, to select as a created one is. */
+  onBrought: (detail: PlayerDetail) => void
+}
+
+/** `Level 3 · Human Fighter · last in The Road of Unremembered Kings`. */
+function joinableMeta(hero: JoinableHero) {
+  const kind = [hero.race, hero.class].filter(Boolean).join(' ')
+  return [`Level ${hero.level}`, kind, hero.adventure_title ? `last in ${hero.adventure_title}` : ''].filter(Boolean).join(' · ')
 }
 
 export function CharacterJoinDialog({
@@ -22,7 +35,12 @@ export function CharacterJoinDialog({
   open,
   players,
   portraitSrcForPlayer,
+  auth,
+  baseUrl,
+  campaignId,
+  onBrought,
 }: CharacterJoinDialogProps) {
+  const { joinableHeroes, bringNote, bringingId, bringHero } = useJoinableHeroes({ auth, baseUrl, campaignId, choosing: open, onBrought })
   if (!open) return null
 
   return (
@@ -72,9 +90,44 @@ export function CharacterJoinDialog({
               )
             })}
           </ul>
-        ) : (
+        ) : joinableHeroes.length ? null : (
           <p className="story-dialog-empty">No characters yet. Create the first one for this adventure.</p>
         )}
+        {joinableHeroes.length ? (
+          <section className="story-dialog-section" aria-labelledby="character-join-yours">
+            <h3 id="character-join-yours" className="story-label">Your heroes</h3>
+            <ul className="story-dialog-list" aria-labelledby="character-join-yours">
+              {joinableHeroes.map((hero) => {
+                const firstName = hero.character_name.trim().split(/\s+/)[0] || hero.character_name
+                return (
+                  <li key={hero.player_id} className="story-dialog-row story-dialog-row-portrait">
+                    <img className="story-dialog-portrait" src={hero.portrait} alt="" aria-hidden="true" />
+                    <span className="story-dialog-row-copy">
+                      <span className="story-dialog-row-name">{hero.character_name}</span>
+                      <span className="story-dialog-row-meta">{joinableMeta(hero)}</span>
+                    </span>
+                    <span className="story-dialog-row-actions">
+                      <button
+                        type="button"
+                        className="story-link"
+                        disabled={bringingId !== null}
+                        aria-busy={bringingId === hero.player_id || undefined}
+                        onClick={() => void bringHero(hero)}
+                      >
+                        {bringingId === hero.player_id ? 'Bringing…' : `Play as ${firstName}`}
+                      </button>
+                    </span>
+                  </li>
+                )
+              })}
+            </ul>
+            {bringNote ? (
+              <p className="story-dialog-line" role="status">
+                {bringNote}
+              </p>
+            ) : null}
+          </section>
+        ) : null}
         <footer className="story-dialog-footer">
           <button type="button" className="story-link" onClick={onClose}>
             Cancel

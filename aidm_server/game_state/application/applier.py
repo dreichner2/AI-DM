@@ -61,8 +61,24 @@ from aidm_server.game_state.models import (
     stats_with_currency,
 )
 from aidm_server.game_state.leveling import sync_actor_level_for_xp, sync_stats_for_level
+from aidm_server.game_state.orchestration.hero_threads import HERO_CHANGE_TYPES, apply_hero_change
 from aidm_server.game_state.quest_engine import derive_quest_changes
 from aidm_server.game_state.validation.validator import supported_scene_type
+from aidm_server.game_state.zones import (
+    CAME_RUNNING_FLAG,
+    FIGHT_ZONE_FLAG,
+    VISITED_ZONES_KEY,
+    ZONE_MOVE_CHANGE,
+    apply_zone_move,
+    arrive_in_start_zone,
+    encounter_zone_id,
+    gather_in_zone,
+    hero_zone_id,
+    place_zones,
+    start_zone_id,
+    zone_by_id,
+    zone_phrase,
+)
 from aidm_server.interactables import interactable_followup_changes
 from aidm_server.item_effects import ITEM_EFFECTS, uses_remaining
 from aidm_server.models import Player, Session, safe_json_dumps, safe_json_loads
@@ -1242,7 +1258,7 @@ SCENE_LOCAL_SCALAR_FIELDS = (
     'musicTag',
     'updatedAtTurn',
 )
-SCENE_LOCAL_LIST_FIELDS = ('activeNpcIds', 'activeQuestIds', 'items', 'interactables', 'hazards')
+SCENE_LOCAL_LIST_FIELDS = ('activeNpcIds', 'activeQuestIds', 'items', 'interactables', 'hazards', VISITED_ZONES_KEY)
 SCENE_LOCAL_DICT_FIELDS = ('playerPositions', 'playerZones', 'characterPositions', 'characterZones')
 PUBLIC_AUTHORED_LOCATION_FIELDS = (
     'region',
@@ -1610,6 +1626,7 @@ def _apply_scene_move(state: dict[str, Any], change: dict[str, Any]) -> dict[str
             'playerZones': deepcopy(target_state.get('playerZones')) if isinstance(target_state.get('playerZones'), dict) else {},
             'characterPositions': deepcopy(target_state.get('characterPositions')) if isinstance(target_state.get('characterPositions'), dict) else {},
             'characterZones': deepcopy(target_state.get('characterZones')) if isinstance(target_state.get('characterZones'), dict) else {},
+            VISITED_ZONES_KEY: _string_list(target_state.get(VISITED_ZONES_KEY)),
         }
     )
     for key in ('mood', 'musicTag', 'updatedAtTurn'):
@@ -1651,6 +1668,7 @@ def _apply_scene_move(state: dict[str, Any], change: dict[str, Any]) -> dict[str
     _reconcile_current_scene_npcs(state)
     state['combat'] = normalize_combat_state({}, scene)
     scene['combatState'] = 'none'
+    arrive_in_start_zone(state)
     return location
 
 
@@ -2244,6 +2262,29 @@ def _sync_scene_combat_state(state: dict[str, Any], combat: dict[str, Any]) -> N
         scene['combatState'] = 'none'
 
 
+def _place_fight_in_zone(state: dict[str, Any], combat: dict[str, Any]) -> None:
+    """In a place with rooms, the fight happens in its encounter's zone: a hero standing in another zone starts
+    it ``far`` off, having come running (``cameRunning``)."""
+
+    flags = combat.setdefault('flags', {})
+    zones = place_zones(state)
+    if not zones or _text(flags.get(FIGHT_ZONE_FLAG)):
+        return
+    encounter = catalog_record(state, 'encounters', flags.get('campaignPackEncounterId'))
+    fight_zone = encounter_zone_id(state, encounter) if encounter else start_zone_id(state, zones)
+    came_running = []
+    for participant in combat.get('participants') or []:
+        if not isinstance(participant, dict) or _text(participant.get('team')) != 'player':
+            continue
+        stood = hero_zone_id(state, participant.get('id'), zones)
+        if stood != fight_zone:
+            participant['position'] = {'rangeBand': 'far'}
+            came_running.append({'id': _text(participant.get('id')), 'name': _text(participant.get('name')), 'from': zone_phrase(zone_by_id(zones, stood))})
+    flags[FIGHT_ZONE_FLAG] = fight_zone
+    if came_running:
+        flags[CAME_RUNNING_FLAG] = came_running
+
+
 def _apply_combat_start(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
     change = materialize_campaign_pack_combat_start(state, change)
     combat_payload = change.get('combat') if isinstance(change.get('combat'), dict) else change
@@ -2255,6 +2296,7 @@ def _apply_combat_start(state: dict[str, Any], change: dict[str, Any]) -> dict[s
         },
         state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {},
     )
+    _place_fight_in_zone(state, combat)
     state['combat'] = combat
     _sync_scene_combat_state(state, combat)
     return combat
@@ -2781,6 +2823,18 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             combat = _apply_combat_start(next_state, change)
             applied_change['combatStatus'] = combat.get('status')
             applied_change['participantCount'] = len(combat.get('participants') or [])
+            # Every hero at the place is in the fight: those elsewhere came running into its zone.
+            combat_flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+            if _text(combat_flags.get(FIGHT_ZONE_FLAG)):
+                gather_in_zone(next_state, _text(combat_flags[FIGHT_ZONE_FLAG]))
+                if combat_flags.get(CAME_RUNNING_FLAG):
+                    applied_change[CAME_RUNNING_FLAG] = deepcopy(combat_flags[CAME_RUNNING_FLAG])
+        elif change_type == ZONE_MOVE_CHANGE:
+            moved = apply_zone_move(next_state, change)
+            if moved is None:
+                skipped.append({'change': change, 'reason': 'That part of the place is not here.'})
+                continue
+            applied_change.update(moved)
         elif change_type == 'combat.update':
             combat, boundary_events = _apply_combat_update(next_state, change)
             applied_change['combatStatus'] = combat.get('status')
@@ -2978,6 +3032,11 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
                     enemy_id and catalog_record(next_state, 'enemies', enemy_id).get('captiveKnows')
                 ),
             )
+            # The fight ends with every hero, and its captives, in the zone where it was fought.
+            fight_zone = _text(flags.get(FIGHT_ZONE_FLAG))
+            if fight_zone:
+                gather_in_zone(next_state, fight_zone)
+                captives = [{**captive, 'zoneId': fight_zone} for captive in captives]
             if captives:
                 scene = _ensure_scene(next_state)
                 held_ids = {_text(captive.get('id')) for captive in scene.get('captives') or [] if isinstance(captive, dict)}
@@ -3268,6 +3327,12 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             flags = _ensure_dict(next_state, 'flags')
             flags.pop(_world_id(change.get('flagKey')), None)
             applied_change['flagKey'] = _world_id(change.get('flagKey'))
+        elif change_type in HERO_CHANGE_TYPES:
+            told = apply_hero_change(next_state, change)
+            if told is None:
+                skipped.append({'change': change, 'reason': 'The thread or Inspiration no longer applies.'})
+                continue
+            applied_change.update(told)
         else:
             skipped.append({'change': change, 'reason': 'Unsupported change or actor missing during application.'})
             continue
@@ -3374,6 +3439,8 @@ def persist_state_to_database(
             stats['hit_dice'] = actor_hit_dice(actor)['current']
         if isinstance(actor.get('activeEffects'), list):
             stats['active_effects'] = deepcopy(actor['activeEffects'])
+        if 'inspiration' in actor:
+            stats['inspiration'] = actor['inspiration'] is True
         health = actor.setdefault('health', {})
         current_hp = max(0, int_or_default(stats.get('current_hp', stats.get('hp_current')), default=0))
         max_hp = max(current_hp, int_or_default(stats.get('max_hp', stats.get('hp_max')), default=current_hp))

@@ -121,6 +121,8 @@ export type GameplayInteractableControl = {
    */
   offered?: boolean
   actions: GameplayObjectAction[]
+  /** The room or area of the place it stands in, when the place has them. */
+  zoneId?: string
 }
 
 export type GameplayItemControl = {
@@ -172,6 +174,8 @@ export type GameplayControlState = {
   /** The character's purse, by coin (pp, gp, ep, sp, cp). */
   currency?: Record<string, number>
   tradeGoods?: GameplayTradeGood[]
+  /** The hero holds Inspiration and has not yet taken heart: `Take heart (Inspiration)` is theirs to use. */
+  takeHeart?: boolean
 }
 
 const BLOCKING_CAST_CONDITIONS = new Set([
@@ -932,6 +936,7 @@ function interactableControls(scene: JsonRecord, inCombat: boolean) {
       reason,
       ...(offered ? { offered: true } : {}),
       actions: offered ?? objectActions(entry, kind),
+      ...(stringValue(entry.zoneId) ? { zoneId: stringValue(entry.zoneId) } : {}),
     }
   }).filter((entry) => Boolean(entry.id))
 }
@@ -1052,7 +1057,7 @@ function restControl(actor: JsonRecord, root: JsonRecord, scene: JsonRecord, inC
     (hp.current !== null && hp.current <= 0 && !actorConditions.includes('stable'))
   ) {
     general = 'A dead or dying character cannot complete a rest.'
-  } else if (policy === 'none') general = 'It is too dangerous to rest here.'
+  } else if (policy === 'none') general = stringValue(scene.restReason) || 'It is too dangerous to rest here.'
   const shortReason = general || (
     integer(clock.shortRestsSinceLong) >= MAX_SHORT_RESTS_BETWEEN_LONG
       ? 'You need a long rest before another short rest helps.'
@@ -1101,6 +1106,11 @@ function tradeGoods(actor: JsonRecord): GameplayTradeGood[] {
         price: Object.keys(price).length ? price : null,
       }
     })
+}
+
+/** Holding Inspiration with no heart taken yet (the `inspired` effect is its next roll's advantage). */
+function canTakeHeart(actor: JsonRecord) {
+  return actor.inspiration === true && !records(actor.activeEffects).some((effect) => stringValue(effect.id) === 'inspired')
 }
 
 export function gameplayControlsFromSnapshot(
@@ -1168,5 +1178,6 @@ export function gameplayControlsFromSnapshot(
     rest: actor ? restControl(actor, root, scene, inCombat) : undefined,
     currency: actor ? coinRecord(isRecord(actor.inventory) ? actor.inventory.currency : null) : {},
     tradeGoods: actor ? tradeGoods(actor) : [],
+    ...(actor && canTakeHeart(actor) ? { takeHeart: true } : {}),
   }
 }

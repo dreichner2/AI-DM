@@ -1,9 +1,10 @@
 import { useId, useState } from 'react'
 import { Expand, Footprints } from 'lucide-react'
-import type { WorldMap } from '../../gameSelectors'
+import type { WorldMap, WorldZoneSummary } from '../../gameSelectors'
 import type { InspectorPanelProps } from '../../InspectorPanel'
 import { StoryMap } from '../map/StoryMap'
 import { StoryMapOverlay } from '../map/StoryMapOverlay'
+import { zonePeople, zonesInReadingOrder } from '../zones'
 
 type MapSectionProps = {
   inspector: InspectorPanelProps
@@ -11,6 +12,11 @@ type MapSectionProps = {
   /** Why travel is unavailable right now ('' when it is available). */
   travelBlockedReason: string
   onTravel: (exit: { id: string; name: string }) => void
+  /** The viewer's hero (`player_<id>`), named "you" among who stands where. */
+  viewerId?: string
+  /** A zone next door can be stepped into now. */
+  canMove?: boolean
+  onMove?: (zone: WorldZoneSummary) => void
 }
 
 /** Placeholders the map record uses when it has no value; they are not facts worth a line. */
@@ -20,10 +26,19 @@ function knownMeta(value: string) {
   return UNKNOWN_META.has(value.trim().toLowerCase()) ? '' : value.trim()
 }
 
-export function MapSection({ inspector, worldMap, travelBlockedReason, onTravel }: MapSectionProps) {
+export function MapSection({
+  inspector,
+  worldMap,
+  travelBlockedReason,
+  onTravel,
+  viewerId = '',
+  canMove = false,
+  onMove,
+}: MapSectionProps) {
   const reasonId = useId()
   const [expanded, setExpanded] = useState(false)
   const { availableExits, knownLocations } = inspector.worldStatePanel
+  const zones = zonesInReadingOrder(inspector.worldStatePanel.zones ?? [])
   const explored = knownMeta(inspector.mapMeta.explored)
   const threat = knownMeta(inspector.mapMeta.threat)
   const meta = [
@@ -50,6 +65,30 @@ export function MapSection({ inspector, worldMap, travelBlockedReason, onTravel 
           {expanded ? <StoryMapOverlay map={worldMap} travelBlockedReason={travelBlockedReason} onTravel={onTravel} onClose={() => setExpanded(false)} /> : null}
         </div>
       ) : <p className="story-sheet-meta">No map of this place yet.</p>}
+
+      {zones.length ? (
+        <section aria-labelledby="story-map-here">
+          <h3 id="story-map-here" className="story-label">This place</h3>
+          <ul className="story-journal-list story-map-zones">
+            {zones.map((zone) => (
+              <li key={zone.id} data-current={zone.current ? '' : undefined}>
+                <span className="story-journal-name">{zone.name}</span>
+                <span className="story-journal-detail"> — {zonePeople(zone, viewerId).join(', ') || 'nobody'}</span>
+                {zone.adjacent && zone.moveLabel && onMove ? (
+                  <button
+                    type="button"
+                    className="story-link story-map-zone-move"
+                    disabled={!canMove}
+                    onClick={() => onMove(zone)}
+                  >
+                    {zone.moveLabel}
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {exits.length ? (
         <section aria-labelledby="story-map-onward">

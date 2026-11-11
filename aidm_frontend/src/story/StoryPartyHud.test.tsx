@@ -78,4 +78,17 @@ describe('StoryPartyHud', () => {
     fireEvent.focus(other)
     expect(preload).toHaveBeenCalledTimes(2)
   })
+
+  it('marks the viewer who holds Inspiration beside their name, and only then', () => {
+    const hero: ActivePlayer[] = [{ id: 30, character_name: 'Arden Vale', name: 'Danny', health: { tone: 'uninjured', label: 'Uninjured', currentHp: 12, maxHp: 12 } }]
+    const { rerender } = render(
+      <StoryPartyHud activePlayers={hero} viewerPlayerId={30} vitality={{}} viewerInspired onDrawerOpenChange={vi.fn()} />,
+    )
+    const mark = screen.getByRole('img', { name: 'Inspiration' })
+    expect(mark).toHaveAttribute('title', 'Inspiration')
+    expect(mark.closest('.story-party-name')).toHaveTextContent('Arden Vale')
+
+    rerender(<StoryPartyHud activePlayers={hero} viewerPlayerId={30} vitality={{}} onDrawerOpenChange={vi.fn()} />)
+    expect(screen.queryByRole('img', { name: 'Inspiration' })).not.toBeInTheDocument()
+  })
 })

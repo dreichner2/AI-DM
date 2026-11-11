@@ -62,6 +62,11 @@ PREGENERATED_CHARACTER_PRESETS: tuple[PregeneratedCharacterPreset, ...] = (
             'ideal': 'Protection matters most when nobody powerful is watching.',
             'bond': 'Keeps an old mile-marker charm from the first road they guarded.',
             'flaw': 'Steps into danger before asking for help.',
+            'ties': {
+                'desire': {'kind': 'keep_duty', 'words': 'to keep a duty'},
+                'attachment': {'name': 'Edda Vale', 'relation': 'sister'},
+                'burden': "The road-warden's oath you swore and never finished.",
+            },
         },
     ),
     PregeneratedCharacterPreset(
@@ -92,6 +97,11 @@ PREGENERATED_CHARACTER_PRESETS: tuple[PregeneratedCharacterPreset, ...] = (
             'ideal': 'Forgotten names deserve to be found before power claims them.',
             'bond': 'Carries marginalia from a missing mentor.',
             'flaw': 'Will open the strange book first and regret it later.',
+            'ties': {
+                'desire': {'kind': 'learn_forbidden', 'words': 'to learn what is forbidden'},
+                'attachment': {'name': 'Master Ansel Brey', 'relation': 'mentor'},
+                'burden': 'A page torn from a book you were forbidden to open.',
+            },
         },
     ),
     PregeneratedCharacterPreset(
@@ -122,6 +132,11 @@ PREGENERATED_CHARACTER_PRESETS: tuple[PregeneratedCharacterPreset, ...] = (
             'ideal': 'The small folk survive by sharing warnings quickly.',
             'bond': 'Knows half the roadside inns by their kitchen doors.',
             'flaw': 'Cannot resist proving a suspicious person is lying.',
+            'ties': {
+                'desire': {'kind': 'clear_debt', 'words': 'to clear a debt'},
+                'attachment': {'name': 'Pip Fen', 'relation': 'brother'},
+                'burden': 'A debt to people who do not forget.',
+            },
         },
     ),
     PregeneratedCharacterPreset(
@@ -152,6 +167,11 @@ PREGENERATED_CHARACTER_PRESETS: tuple[PregeneratedCharacterPreset, ...] = (
             'ideal': 'Mercy is an oath, not a mood.',
             'bond': 'Restores neglected roadside shrines one stone at a time.',
             'flaw': 'Trusts old vows longer than old vowbreakers deserve.',
+            'ties': {
+                'desire': {'kind': 'prove_wrong', 'words': 'to prove someone wrong'},
+                'attachment': {'name': 'Hilda Ember', 'relation': 'daughter'},
+                'burden': 'The hammer you put down the day the shrine burned.',
+            },
         },
     ),
 )

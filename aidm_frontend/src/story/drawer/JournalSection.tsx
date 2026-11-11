@@ -127,9 +127,10 @@ export function JournalSection({ board, inspector }: JournalSectionProps) {
         detail: location.status && location.status !== 'unknown' ? location.status : '',
       }))
   const memory = inspector.visibleRecentMemory.map(([text]) => text)
+  const threads = journal?.threads ?? []
   const hasQuest = Boolean(journal?.quest) || activeQuests.length > 0
   const empty =
-    !hasQuest && !finishedQuests.length && !clues.length && !papers.length &&
+    !hasQuest && !finishedQuests.length && !threads.length && !clues.length && !papers.length &&
     !people.length && !places.length && !memory.length
 
   return (
@@ -173,6 +174,20 @@ export function JournalSection({ board, inspector }: JournalSectionProps) {
               ) : null}
             </div>
           ) : null}
+        </section>
+      ) : null}
+
+      {threads.length ? (
+        <section aria-labelledby="story-journal-threads">
+          <h3 id="story-journal-threads" className="story-label">Your threads</h3>
+          <ul className="story-clue-list">
+            {threads.map((thread) => (
+              <li key={thread.id}>
+                <span className="story-journal-name">{thread.title}</span>
+                <span className="story-clue-summary">{thread.text}</span>
+              </li>
+            ))}
+          </ul>
         </section>
       ) : null}
 

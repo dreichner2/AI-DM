@@ -636,8 +636,13 @@ def conduct_turn_submission(
     reload_session_after_helper: Callable[[], Session | None] | None = None,
     absent_since: Callable[[int], float] | None = None,
     allow_helper: bool = True,
+    engine_runs_table: bool = False,
 ) -> tuple[bool, str | None, dict, bool, dict]:
     """Decide whether a submission may proceed under the session's table flow.
+
+    ``engine_runs_table`` is a pack adventure: play is free outside a fight and the fight engine keeps initiative
+    inside one, so no spotlight or queue is ever held. One left by an older build is cleared and nobody is refused
+    for whose turn it is.
 
     ``absent_since`` reports when a disconnected player left; without it every
     structured-turn holder is treated as present. A holder away for the grace
@@ -651,6 +656,19 @@ def conduct_turn_submission(
         return True, None, turn_control, False, {'decision': 'allow_admin'}
     if kind == 'roll' and has_pending_roll:
         return True, None, turn_control, False, {'decision': 'allow_pending_roll'}
+    if engine_runs_table:
+        if turn_control['mode'] == 'free':
+            return True, None, turn_control, False, {'decision': 'engine_runs_table'}
+        freed = set_session_turn_control(
+            session_obj,
+            mode='free',
+            active_player_id=None,
+            participant_player_ids=[],
+            updated_by_player_id=player_id,
+            source='system',
+            reason='The engine runs this adventure: nobody holds the spotlight.',
+        )
+        return True, None, freed, True, {'decision': 'engine_runs_table'}
 
     skipped_holder: dict | None = None
     holder_id = turn_control.get('activePlayerId')

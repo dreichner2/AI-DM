@@ -1,9 +1,9 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { X } from 'lucide-react'
-import { worldMapFromSnapshot } from '../gameSelectors'
+import { worldMapFromSnapshot, type WorldZoneSummary } from '../gameSelectors'
 import { subscribeToMediaQueryChange } from '../mediaQuery'
 import { useModalFocusTrap } from '../useModalFocusTrap'
-import { travelSubmission } from './actionIntents'
+import { travelSubmission, zoneMoveSubmission } from './actionIntents'
 import { heroHasSpells } from './heroSpells'
 import { drawerSectionChunks } from './storyChunks'
 import { travelBlockedReason as travelBlocked } from './travelBlock'
@@ -90,6 +90,10 @@ export function StoryDrawer({ board, inspector, open, tab, onTabChange, onClose 
   const travelBlockedReason = travelBlocked(board)
   const travel = (exit: { id: string; name: string }) => {
     const { message, intent } = travelSubmission(exit)
+    if (board.actionComposerProps.submitAction(message, intent) && modal) onClose()
+  }
+  const moveInto = (zone: WorldZoneSummary) => {
+    const { message, intent } = zoneMoveSubmission(zone)
     if (board.actionComposerProps.submitAction(message, intent) && modal) onClose()
   }
 
@@ -181,7 +185,15 @@ export function StoryDrawer({ board, inspector, open, tab, onTabChange, onClose 
           </Suspense>
           {shownTab === 'map' ? (
             <Suspense fallback={<p className="story-sheet-meta">Loading map…</p>}>
-              <MapSection inspector={inspector} worldMap={worldMap} travelBlockedReason={travelBlockedReason} onTravel={travel} />
+              <MapSection
+                inspector={inspector}
+                worldMap={worldMap}
+                travelBlockedReason={travelBlockedReason}
+                onTravel={travel}
+                viewerId={board.actionComposerProps.selectedPlayerId ? `player_${board.actionComposerProps.selectedPlayerId}` : ''}
+                canMove={!board.worldState.combat.active && !board.sendPending && !board.streamingTurnActive}
+                onMove={moveInto}
+              />
             </Suspense>
           ) : null}
         </div>

@@ -6,7 +6,14 @@ with the enemies it closed on or that closed on it (``position.engagedWith``,
 always kept symmetric).  Closing on a target puts both participants in the melee
 band and engages them; any move out of melee ends every engagement of the mover.
 A target can be closed on from ``near`` or from inside melee when it stands in
-``melee`` or ``near``.
+``melee`` or ``near``, and from the same outer band when both stand off from the
+press (``far`` with ``far``): there the fight comes to it.
+
+How far one participant is from another, as a player reads it (:func:`reach_kind`):
+``in_reach`` (engaged, or both in the press), ``one_move`` (it can be closed on
+this turn), ``out_of_reach`` (it cannot) or ``far_off`` (it stands ``distant``).
+The bands measure distance from the press, not between every pair, so the feet
+that go with them (:data:`REACH_LABELS`) are approximate.
 
 Reach, the same for player weapons and enemy abilities:
 
@@ -34,6 +41,21 @@ RANGE_BANDS = ('melee', 'near', 'far', 'distant')
 CLOSABLE_BANDS = frozenset({'melee', 'near'})
 REACH_WEAPON_BANDS = frozenset({'melee', 'near'})
 MELEE_ABILITY_RANGES = frozenset({'melee', 'touch'})
+REACH_LABELS = {
+    'in_reach': 'in reach',
+    'one_move': 'a move away · about 30 ft',
+    'out_of_reach': 'out of reach this turn · 60 ft or more',
+    'far_off': 'far off',
+}
+# Where a move leaves someone, in a player's words: ``Arden Vale closes to within a move of the fight, about 30 ft.``
+BAND_PHRASES = {
+    'melee': 'close quarters',
+    'near': 'within a move of the fight, about 30 ft',
+    'far': 'about 60 ft from the fight',
+    'distant': 'far off, 120 ft or more',
+}
+# How a refusal says it: ``The pale lantern is out of reach this turn.``
+REACH_WORDS = {'one_move': 'a move away', 'out_of_reach': 'out of reach this turn', 'far_off': 'far off'}
 
 
 def _text(value: Any) -> str:
@@ -96,6 +118,23 @@ def in_melee_reach(attacker: Mapping[str, Any], target: Mapping[str, Any], *, re
     if range_band(attacker) == 'melee' and range_band(target) == 'melee':
         return True
     return reach and range_band(target) in REACH_WEAPON_BANDS
+
+
+def closable(mover: Mapping[str, Any], target: Mapping[str, Any]) -> bool:
+    """One move brings the mover into melee with the target: both near the press, or side by side off it."""
+
+    mover_band, target_band = range_band(mover), range_band(target)
+    return (mover_band in CLOSABLE_BANDS and target_band in CLOSABLE_BANDS) or mover_band == target_band
+
+
+def reach_kind(viewer: Mapping[str, Any], target: Mapping[str, Any]) -> str:
+    """``in_reach``, ``one_move``, ``out_of_reach`` or ``far_off``: how far ``target`` is from ``viewer``."""
+
+    if in_melee_reach(viewer, target):
+        return 'in_reach'
+    if closable(viewer, target):
+        return 'one_move'
+    return 'far_off' if range_band(target) == RANGE_BANDS[-1] else 'out_of_reach'
 
 
 def full_cover_ids(combat: Mapping[str, Any] | None) -> frozenset[str]:
@@ -168,11 +207,29 @@ def close_block_reason(mover: Mapping[str, Any], target: Mapping[str, Any], comb
         return 'Target is in another battlefield zone.'
     if in_melee_reach(mover, target):
         return 'Already within reach.'
+    if closable(mover, target):
+        return ''
     if range_band(mover) not in CLOSABLE_BANDS:
         return 'Too far away to close in one move.'
-    if range_band(target) not in CLOSABLE_BANDS:
-        return f'Target is at {range_band(target)} range.'
-    return ''
+    return f'Target is at {range_band(target)} range.'
+
+
+def advances_toward(mover: Mapping[str, Any], target: Mapping[str, Any], combat: Mapping[str, Any] | None) -> bool:
+    """Advancing on this enemy takes the mover out of the press to it: the mover stands in the press (``melee`` or
+    ``near``, held by no enemy still standing) and the enemy stands off at ``far``, where one more move closes on it."""
+
+    held = any(
+        participant_is_targetable(dict(other))
+        for other_id in engaged_with(mover)
+        if (other := participant_by_id(combat, other_id)) is not None
+    )
+    return (
+        range_band(mover) in CLOSABLE_BANDS
+        and range_band(target) == band_outward('near')
+        and not held
+        and not targeting_block_reason(mover, target, combat)
+        and not separated_by_zone(mover, target)
+    )
 
 
 def _set_engaged(participant: dict[str, Any], ids: list[str]) -> None:
@@ -276,10 +333,13 @@ def enemy_approach(
         return {'reachable': False, 'steps': [], 'attack': False, 'reason': 'Target is in another battlefield zone.'}
     if in_melee_reach(enemy, target):
         return {'reachable': True, 'steps': [], 'attack': True, 'reason': ''}
-    if range_band(target) not in CLOSABLE_BANDS:
+    side_by_side = range_band(target) not in CLOSABLE_BANDS and closable(enemy, target)
+    if range_band(target) not in CLOSABLE_BANDS and not side_by_side:
         return {'reachable': False, 'steps': [], 'attack': False, 'reason': f'Target is at {range_band(target)} range.'}
     if not can_move:
         return {'reachable': True, 'steps': [], 'attack': False, 'reason': 'Cannot move into reach this turn.'}
+    if side_by_side:
+        return {'reachable': True, 'steps': [{'toRangeBand': 'melee', 'engageWith': [_id(target)]}], 'attack': True, 'reason': ''}
     steps: list[dict[str, Any]] = []
     band = range_band(enemy)
     while band not in CLOSABLE_BANDS and len(steps) < 2:

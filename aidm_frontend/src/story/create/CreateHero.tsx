@@ -267,7 +267,7 @@ export function CreateHero({
           ) : step === 'shape' ? (
             <StepShape draft={draft} headingRef={headingRef} onChange={update} />
           ) : (
-            <StepReview draft={draft} headingRef={headingRef} />
+            <StepReview draft={draft} headingRef={headingRef} onChange={update} />
           )}
         </div>
 

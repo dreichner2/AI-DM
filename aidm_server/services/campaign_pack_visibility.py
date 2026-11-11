@@ -3,13 +3,27 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from aidm_server.combat.positioning import REACH_LABELS, reach_kind
 from aidm_server.combat.state import combat_turn_order, normalize_battlefield, normalize_position
 from aidm_server.game_state.campaign_pack_encounters import flag_condition_holds
+from aidm_server.game_state.zones import (
+    captive_zone_id,
+    fight_running,
+    hero_zone_id,
+    known_zone_ids,
+    merchant_zone_id,
+    object_zone_id,
+    place_zones,
+    rest_refusal,
+    zone_steps,
+    zones_for_viewer,
+)
 from aidm_server.commerce import open_merchant_projections
 from aidm_server.game_clock import public_clock, scene_rest_policy
 from aidm_server.interactables import offered_scene_actions, project_scene_interactables, take_label
 from aidm_server.services.campaign_pack_graph import hidden_to_players, is_terminal_checkpoint
 from aidm_server.services.campaign_pack_snapshot import migrate_campaign_pack_snapshot
+from aidm_server.services.tie_lines import THREADS_KEY, ending_lines
 from aidm_server.world_map import project_world_map
 
 
@@ -29,6 +43,7 @@ PUBLIC_PLAYER_CHARACTER_KEYS = (
     'sex',
     'profileImage',
     'profile_image',
+    'inspiration',
 )
 
 PUBLIC_PLAYER_COMBAT_KEYS = (
@@ -349,10 +364,12 @@ def filter_session_snapshot_for_player(
             migrated.get('contentSettings') if isinstance(migrated.get('contentSettings'), dict) else migrated.get('content_settings')
         )
 
+    viewer = acting_hero(migrated, acting_player_id)
+    viewer_id = _text((viewer or {}).get('id'))
     combat = deepcopy(migrated.get('combat')) if isinstance(migrated.get('combat'), dict) else None
     visible_combat_npc_ids: set[str] = set()
     if combat is not None:
-        _filter_combat_for_player(combat, owned_player_ids, scene=raw_scene)
+        _filter_combat_for_player(combat, owned_player_ids, scene=raw_scene, viewer_id=viewer_id)
         filtered['combat'] = combat
         visible_combat_npc_ids = {
             _record_id(record)
@@ -375,18 +392,59 @@ def filter_session_snapshot_for_player(
         filtered['currentScene'].update(
             project_scene_interactables(migrated, {'isGm': False})
         )
-        offers = offered_scene_actions(migrated, acting_hero(migrated, acting_player_id))
+        offers = offered_scene_actions(migrated, viewer)
         for collection in ('interactables', 'hazards'):
             for entry in filtered['currentScene'][collection]:
                 entry['offeredActions'] = offers.get(_text(entry.get('id')), [])
         # Trade and rest: only open merchants, and the rest policy in effect here.
         filtered['currentScene']['merchants'] = open_merchant_projections(migrated)
         filtered['currentScene']['restPolicy'] = scene_rest_policy(raw_scene)
+        _place_scene_for_viewer(migrated, filtered['currentScene'], viewer_id)
 
     filtered['clock'] = public_clock(migrated.get('clock'))
     if pack:
-        filtered['journal'] = _journal(migrated, filtered)
+        filtered['journal'] = _journal(migrated, filtered, owned_player_ids)
     return filtered if enemy_hit_points else hide_enemy_hit_points(filtered)
+
+
+def _place_scene_for_viewer(state: dict, scene: dict, viewer_id: str) -> None:
+    """In a place with rooms (:mod:`aidm_server.game_state.zones`): the zones the viewer knows (``zones``), and
+    each object, merchant and captive marked with its ``zoneId``. Objects in zones no hero knows yet are left out,
+    a merchant or captive beyond the next zone (or next door during a fight) is not offered, and resting outside
+    the rest zones reads ``none`` with its ``restReason``."""
+
+    zones = place_zones(state)
+    if not zones:
+        return
+    known = set(known_zone_ids(state, zones))
+    here = hero_zone_id(state, viewer_id, zones)
+
+    def reachable(zone_id: str) -> bool:
+        steps = zone_steps(zones, here, zone_id)
+        return steps == 0 or (steps == 1 and not fight_running(state))
+
+    scene['zones'] = zones_for_viewer(state, viewer_id)
+    for collection in ('interactables', 'hazards'):
+        scene[collection] = [
+            {**entry, 'zoneId': zone_id}
+            for entry in scene.get(collection) or []
+            if (zone_id := object_zone_id(state, entry.get('id'), zones)) in known
+        ]
+    scene['merchants'] = [
+        {**merchant, 'zoneId': zone_id}
+        for merchant in scene.get('merchants') or []
+        if reachable(zone_id := merchant_zone_id(state, merchant, zones))
+    ]
+    if isinstance(scene.get('captives'), list):
+        captives = []
+        for captive in scene['captives']:
+            zone_id = captive_zone_id(state, captive, zones)
+            captives.append({**captive, 'zoneId': zone_id, **({} if reachable(zone_id) else {'offeredActions': []})})
+        scene['captives'] = captives
+    refusal = rest_refusal(state, actor_id=viewer_id)
+    if refusal:
+        scene['restPolicy'] = 'none'
+        scene['restReason'] = refusal
 
 
 def hide_enemy_hit_points(snapshot: Any) -> Any:
@@ -1105,7 +1163,11 @@ def _filter_combat_for_player(
     private_player_ids: frozenset[int],
     *,
     scene: dict,
+    viewer_id: str = '',
 ) -> None:
+    """The player-safe fight; with ``viewer_id`` each other participant carries how far it is from that hero
+    (``reach``: ``in_reach`` | ``one_move`` | ``out_of_reach`` | ``far_off``, and its ``reachLabel``)."""
+
     original_participants = [
         record
         for record in (combat.get('participants') or [])
@@ -1113,12 +1175,18 @@ def _filter_combat_for_player(
     ]
     turn_order_ids = _combat_turn_order_ids(combat)
     current_actor_id = _current_combat_actor_id(combat, turn_order_ids)
+    viewer = next((record for record in original_participants if _record_id(record) == _id_key(viewer_id)), None) if viewer_id else None
 
-    participants = [
-        _combat_participant_for_viewer(record, private_player_ids)
-        for record in original_participants
-        if _is_player_combat_participant(record) or _record_player_visible(record)
-    ]
+    participants = []
+    for record in original_participants:
+        if not (_is_player_combat_participant(record) or _record_player_visible(record)):
+            continue
+        payload = _combat_participant_for_viewer(record, private_player_ids)
+        if viewer is not None and record is not viewer:
+            kind = reach_kind(viewer, record)
+            payload['reach'] = kind
+            payload['reachLabel'] = REACH_LABELS[kind]
+        participants.append(payload)
     participants_by_id = {
         _record_id(record): record
         for record in participants
@@ -1240,6 +1308,7 @@ def _player_pack_snapshot(pack: dict, flags: dict) -> dict:
             visible_checkpoints,
             [checkpoint for checkpoint in (pack.get('checkpoints') or []) if isinstance(checkpoint, dict)],
             flags,
+            pack=pack,
         ),
     }
     return {key: value for key, value in result.items() if value not in ('', None)}
@@ -1296,9 +1365,7 @@ def player_visible_checkpoint_payloads(value: Any, checkpoint_statuses: dict[str
     return visible
 
 
-def ending_variant(checkpoint: dict, flags: dict) -> dict | None:
-    """The first of a terminal checkpoint's ``endingVariants`` whose ``when`` holds: what the party chose."""
-
+def _chosen_variant(checkpoint: dict, flags: dict) -> dict | None:
     for variant in checkpoint.get('endingVariants') if isinstance(checkpoint.get('endingVariants'), list) else []:
         if (
             isinstance(variant, dict)
@@ -1306,15 +1373,24 @@ def ending_variant(checkpoint: dict, flags: dict) -> dict | None:
             and _text(variant.get('text'))
             and flag_condition_holds(flags, variant.get('when'))
         ):
-            return {'title': _text(variant['title']), 'text': _text(variant['text'])}
+            return variant
     return None
 
 
-def player_ending(visible_checkpoints: list[dict], checkpoints: list[dict], flags: dict) -> dict | None:
+def ending_variant(checkpoint: dict, flags: dict) -> dict | None:
+    """The first of a terminal checkpoint's ``endingVariants`` whose ``when`` holds: what the party chose."""
+
+    variant = _chosen_variant(checkpoint, flags)
+    return {'title': _text(variant['title']), 'text': _text(variant['text'])} if variant else None
+
+
+def player_ending(visible_checkpoints: list[dict], checkpoints: list[dict], flags: dict, *, pack: dict | None = None) -> dict | None:
     """The reached terminal checkpoint as the story's ending, in its player-safe words.
 
     ``title`` and ``text`` are the matching ending variant's (else the
     checkpoint's own title and summary); ``summary`` stays the checkpoint's.
+    The ``pack``'s ending lines for that variant follow its text, one for each
+    hero whose seeking line fired.
     """
 
     reached = next((checkpoint for checkpoint in visible_checkpoints if checkpoint.get('status') == 'reached'), None)
@@ -1326,20 +1402,28 @@ def player_ending(visible_checkpoints: list[dict], checkpoints: list[dict], flag
         'checkpointId': reached['id'],
         'title': variant.get('title') or reached.get('title') or '',
         'summary': reached.get('summary') or '',
-        'text': variant.get('text') or reached.get('summary') or '',
+        'text': _told_ending(variant.get('text') or reached.get('summary') or '', pack, _chosen_variant(record, flags)),
     }
+
+
+def _told_ending(text: str, pack: dict | None, chosen: dict | None) -> str:
+    """An ending's text followed by the ``pack``'s ending lines for the ``chosen`` variant."""
+
+    lines = ending_lines(pack, chosen) if pack and chosen else []
+    return ' '.join(part for part in [text, *lines] if part)
 
 
 TERMINAL_OBJECTIVE_STATUSES = frozenset({'completed', 'failed'})
 JOURNAL_PLACE_STATES = {'current': 'current', 'visited': 'visited', 'known': 'discovered'}
 
 
-def _journal(snapshot: dict, filtered: dict) -> dict:
+def _journal(snapshot: dict, filtered: dict, owned_player_ids: frozenset[int]) -> dict:
     """What the party knows of its story, in player-safe words.
 
     The quest and stage come from the active checkpoint; objectives are every
     completed one, then the open ones of the active checkpoint (later ones are
-    spoilers); clues, people and places are only those the party knows.
+    spoilers); clues, people and places are only those the party knows;
+    threads are the tie lines told for the viewer's own heroes.
     """
 
     pack = snapshot['campaignPack']
@@ -1368,12 +1452,11 @@ def _journal(snapshot: dict, filtered: dict) -> dict:
         '' if hidden_stage else _text(_first(active, 'title', 'name'))
     )
     stage_summary = _public_alias_text(active, 'playerSummary', 'player_summary')
-    # The story's end is told as the party chose it, as the ending itself is.
-    variant = ending_variant(active, snapshot.get('flags') if isinstance(snapshot.get('flags'), dict) else {}) if (
-        active and is_terminal_checkpoint(active)
-    ) else None
+    # The story's end is told as the party chose it, as the ending itself is, with its ending lines.
+    flags = snapshot.get('flags') if isinstance(snapshot.get('flags'), dict) else {}
+    variant = ending_variant(active, flags) if active and is_terminal_checkpoint(active) else None
     if variant:
-        stage_title, stage_summary = variant['title'], variant['text']
+        stage_title, stage_summary = variant['title'], _told_ending(variant['text'], pack, _chosen_variant(active, flags))
     stage_objective_ids = {_id_key(value) for value in _ids_from(active, 'objectiveIds', 'objective_ids')}
     completed: list[dict] = []
     open_now: list[dict] = []
@@ -1437,6 +1520,11 @@ def _journal(snapshot: dict, filtered: dict) -> dict:
             {'id': node['id'], 'name': node['name'], 'state': JOURNAL_PLACE_STATES[node['state']]}
             for node in ((filtered.get('worldMap') or {}).get('nodes') or [])
             if node.get('state') in JOURNAL_PLACE_STATES
+        ],
+        'threads': [
+            {'id': _text(record.get('lineId')), 'title': _text(record.get('title')), 'text': _text(record.get('text'))}
+            for record in pack.get(THREADS_KEY) or []
+            if isinstance(record, dict) and _record_player_id({'id': record.get('heroId')}) in owned_player_ids
         ],
     }
 

@@ -19,7 +19,9 @@ import type { CharacterRaceSelection } from '../../types'
 import type { PlayerEditDialogState } from '../../usePlayerProfileActions'
 import { BackgroundChoices } from '../create/BackgroundChoices'
 import { CatalogOverlay } from '../create/CatalogOverlay'
-import { callingName } from '../create/createHeroModel'
+import { ancestryById, callingName } from '../create/createHeroModel'
+import { HeroTiesFields } from '../create/HeroTiesFields'
+import { heroTiesFromSheet, tiesDraft, tiesPayload, tiesProblem } from '../heroTies'
 import { FALLBACK_RULES, loadCreationRules, type CreationRules } from '../create/creationRules'
 import { PortraitToggle } from '../create/PortraitToggle'
 import '../../styles/story-edit-character.css'
@@ -30,6 +32,11 @@ const CallingCatalog = lazy(() => import('../create/CallingCatalog').then((modul
 
 const MIN_LEVEL = 1
 const MAX_LEVEL = 20
+
+/** The ties as edited, else as the hero's sheet holds them. */
+function tiesDraftOf(dialog: NonNullable<PlayerEditDialogState>) {
+  return dialog.ties?.draft ?? tiesDraft(heroTiesFromSheet(dialog.sheet))
+}
 
 type EditDialog = NonNullable<PlayerEditDialogState>
 type Overlay = { kind: 'ancestries' | 'callings'; opener: HTMLButtonElement }
@@ -46,8 +53,8 @@ type EditCharacterSheetProps = {
 
 /**
  * The Story view's character editor: the classic editor's fields (name,
- * ancestry, calling, background, portrait, level), its state, validation and
- * save, as one quiet sheet. Ancestry and calling open the Story catalogs over
+ * ancestry, calling, background, portrait, level) and the hero's own threads,
+ * its state, validation and save, as one quiet sheet. Ancestry and calling open the Story catalogs over
  * the whole window; the background list opens under its row.
  */
 export function EditCharacterSheet({
@@ -239,6 +246,21 @@ export function EditCharacterSheet({
               </span>
             </div>
           </div>
+
+          <HeroTiesFields
+            draft={tiesDraftOf(dialog)}
+            heroName={dialog.characterName}
+            ancestry={ancestryById(current?.raceId)}
+            backgroundId={background?.id ?? null}
+            disabled={pending}
+            onChange={(change) =>
+              setDialog((latest) => {
+                if (!latest) return latest
+                const draft = { ...tiesDraftOf(latest), ...change }
+                return { ...latest, ties: { draft, payload: tiesPayload(draft), problem: tiesProblem(draft) } }
+              })
+            }
+          />
 
           {dialog.error ? (
             <p className="story-dialog-error" role="alert">

@@ -683,6 +683,36 @@ def session_payloads(session_objs: list[Session]) -> list[dict]:
     return [session_payload(session_obj, summaries.get(session_obj.session_id)) for session_obj in session_objs]
 
 
+def _with_joined_heroes(snapshot: object, campaign_id: int) -> object:
+    """The stored snapshot with the heroes who joined the adventure since its last turn.
+
+    The snapshot's heroes are refreshed when a turn runs, so a hero created or brought along between turns was
+    in nobody's view until someone acted: they saw no room of their own and the others did not see them arrive.
+    They are added on read (never written back), present, standing where arriving heroes stand.
+    """
+
+    # Deferred import: the game-state models import response helpers.
+    from aidm_server.game_state.models import display_actor_id, player_character_from_model
+
+    heroes = snapshot.get('playerCharacters') if isinstance(snapshot, dict) else None
+    if not isinstance(heroes, list) or not heroes:
+        return snapshot
+    known = {str(hero.get('id') or '') for hero in heroes if isinstance(hero, dict)}
+    joined = [
+        player
+        for player in Player.query.filter_by(campaign_id=campaign_id).order_by(Player.player_id.asc()).all()
+        if display_actor_id(player.player_id) not in known
+    ]
+    if not joined:
+        return snapshot
+    present = snapshot.get('activePlayerIds')
+    return {
+        **snapshot,
+        'playerCharacters': [*heroes, *(player_character_from_model(player) for player in joined)],
+        **({'activePlayerIds': [*present, *(player.player_id for player in joined)]} if isinstance(present, list) and present else {}),
+    }
+
+
 def session_state_payload(
     session_obj: Session,
     session_state: SessionState | None,
@@ -694,7 +724,7 @@ def session_state_payload(
 ) -> dict:
     """A session's state; ``acting_player_id`` is the hero scene-object legality is computed for."""
 
-    raw_snapshot = safe_json_loads(session_obj.state_snapshot, None)
+    raw_snapshot = _with_joined_heroes(safe_json_loads(session_obj.state_snapshot, None), session_obj.campaign_id)
     player_ids = private_player_ids
     if include_hidden_state:
         # Operators receive the full snapshot, but the Story map must still use

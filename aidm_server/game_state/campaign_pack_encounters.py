@@ -57,6 +57,9 @@ RESOLUTION_END_REASONS = {
     'objective_completion': 'objective_completed',
 }
 ADJUSTMENT_HP_MULTIPLIER_RANGE = (0.25, 1.5)
+# Where an enemy group may start a fight (``enemyGroups[].startBand``), and where it starts unless the pack says.
+START_BANDS = ('melee', 'near', 'far')
+DEFAULT_START_BAND = 'near'
 LOCATION_ENTERED_FLAG = 'locationEnteredIds'
 TRIGGER_STARTED_BY = 'campaign_pack_trigger'
 WORLD_CHANGE_SOURCE = 'campaign_pack_world'
@@ -374,6 +377,7 @@ def _instantiate_pack_enemies(
     participants: list[dict[str, Any]] = []
     sequence = 1
     remaining = MAX_CAMPAIGN_PACK_ENEMY_PARTICIPANTS
+    bands = start_bands(encounter)
     for group in scaling['groups']:
         enemy = _pack_record(pack, 'enemies', group['enemyId'])
         if not enemy:
@@ -386,6 +390,7 @@ def _instantiate_pack_enemies(
                 enemy,
                 instance_id=f"enemy_{stable_slug(group['enemyId'])}_{sequence}",
                 team='enemy',
+                position={'rangeBand': bands.get(group['enemyId'], DEFAULT_START_BAND)},
                 current_turn=turn_id,
             )
             if singular:
@@ -405,6 +410,17 @@ def _instantiate_pack_enemies(
             sequence += 1
             remaining -= 1
     return participants
+
+
+def start_bands(encounter: dict[str, Any]) -> dict[str, str]:
+    """Where each enemy group of an encounter starts the fight, by enemy id (``enemyGroups[].startBand``)."""
+
+    groups = encounter.get('enemyGroups') if isinstance(encounter.get('enemyGroups'), list) else []
+    return {
+        _text(group.get('enemyId')): _text(group.get('startBand')).lower()
+        for group in groups
+        if isinstance(group, dict) and _text(group.get('enemyId')) and _text(group.get('startBand')).lower() in START_BANDS
+    }
 
 
 def _encounter_enemy_specs(encounter: dict[str, Any]) -> list[tuple[str, int]]:

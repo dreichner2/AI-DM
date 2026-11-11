@@ -182,6 +182,8 @@ def test_a_lost_final_fight_is_fought_again_before_any_ending(table, monkeypatch
     table.travel('loc_ridge_and_culvert_paths', 'Ridge and Culvert Paths')
     table.act('ridge_culvert_grate', 'unlock', 'Culvert Grate')
     table.act('ridge_culvert_grate', 'open', 'Culvert Grate')
+    # The grate stands at the culvert mouth; the party sets out from the ridge path.
+    table.move('ridge_path', 'Go to the ridge path')
     table.travel('loc_valley_last_road_stone', 'Valley of the Last Road-Stone')
     assert table.act(ROAD_STONE, 'inspect', 'The Last Road-Stone').encounter == 'enc_final_binding'
 

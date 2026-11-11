@@ -37,7 +37,6 @@ import type { CampaignPackControlAction } from './CampaignPackPanel'
 import type { InspectorPanelProps, InspectorTab } from './InspectorPanel'
 import { ModalShell } from './ModalShell'
 import { PlayerDeleteDialog } from './PlayerDeleteDialog'
-import { CharacterJoinDialog } from './ProfileCharacterDialogs'
 import { useModalFocusTrap } from './useModalFocusTrap'
 import { ApiClientError, WORKSPACE_ID_HEADER, apiFetch, storedRuntimeAccessSnapshot } from './api'
 import { actorCapabilitiesAllowOperatorTools } from './capabilities'
@@ -123,6 +122,7 @@ import type {
   ClarificationRequest,
   CoherenceFeedbackResponse,
   Health,
+  JoinableHeroesResponse,
   JsonRecord,
   LlmRuntimeConfig,
   Player,
@@ -198,6 +198,10 @@ const InspectorPanel = lazy(() =>
 
 const PlayerEditDialog = lazy(() =>
   import('./PlayerEditDialog').then((module) => ({ default: module.PlayerEditDialog })),
+)
+// The hero choice opens only when a hero is to be chosen.
+const CharacterJoinDialog = lazy(() =>
+  import('./ProfileCharacterDialogs').then((module) => ({ default: module.CharacterJoinDialog })),
 )
 const EditCharacterSheet = lazy(() =>
   import('./story/sheets/EditCharacterSheet').then((module) => ({ default: module.EditCharacterSheet })),
@@ -2437,6 +2441,7 @@ function AIDMApp() {
     auth,
     baseUrl,
     selectedPlayer,
+    selectedPlayerSheet: playerDetail?.player_id === selectedPlayer?.player_id ? playerDetail?.character_sheet : undefined,
     selectedCampaignId,
     rememberDialogTrigger,
     refreshCampaignWorkspace,
@@ -2537,11 +2542,31 @@ function AIDMApp() {
     openCreateHero(selectedCampaignId)
   }, [openCreateHero, selectedCampaignId])
 
-  // The hero choice: the chooser when this adventure has heroes who can join, else the creator.
+  // A hero brought from another adventure joins as a created one does (and an adventure waiting on one begins).
+  const heroBrought = useCallback(
+    (detail: PlayerDetail) => {
+      playerUpserted(detail)
+      setPlayerDetail(detail)
+      setSelectedPlayerId(detail.player_id)
+      setCharacterJoinDialogOpen(false)
+    },
+    [playerUpserted, setPlayerDetail, setSelectedPlayerId],
+  )
+
+  // The hero choice: the chooser when this adventure has heroes, or the player has heroes elsewhere, who can
+  // join; else the creator.
   const openHeroChoice = useCallback(() => {
-    if (players.length) openCharacterJoinDialog()
-    else openCreateHero(selectedCampaignId)
-  }, [openCharacterJoinDialog, openCreateHero, players.length, selectedCampaignId])
+    if (players.length) {
+      openCharacterJoinDialog()
+      return
+    }
+    const campaignId = selectedCampaignId
+    if (campaignId === null) return
+    void apiFetch<JoinableHeroesResponse>(baseUrl, `/api/players/campaigns/${campaignId}/joinable-heroes`, auth).then(
+      (response) => (response.heroes.length ? openCharacterJoinDialog() : openCreateHero(campaignId)),
+      () => openCreateHero(campaignId),
+    )
+  }, [auth, baseUrl, openCharacterJoinDialog, openCreateHero, players.length, selectedCampaignId])
 
   // The hero choice when there is no hero, a chapter when none is open, then the opening (the effect below).
   const prepareBeginning = useCallback(() => {
@@ -4141,6 +4166,7 @@ function AIDMApp() {
     spellbook,
     spellResources,
     characterTraits,
+    characterSheet: playerDetail?.character_sheet,
     inventoryRows,
     inventoryWeightLabel,
     inventoryGoldLabel,
@@ -4829,16 +4855,24 @@ function AIDMApp() {
         </Suspense>
       ) : null}
 
-      <CharacterJoinDialog
-        campaignTitle={campaign?.title ?? null}
-        dialogRef={modalDialogRef}
-        onClose={closeCharacterJoinDialog}
-        onCreateCharacter={createCharacterFromJoinDialog}
-        onJoinPlayer={joinAsExistingPlayer}
-        open={characterJoinDialogOpen}
-        players={players}
-        portraitSrcForPlayer={characterPortraitSrc}
-      />
+      {characterJoinDialogOpen ? (
+        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening your heroes…" />}>
+          <CharacterJoinDialog
+            campaignTitle={campaign?.title ?? null}
+            dialogRef={modalDialogRef}
+            onClose={closeCharacterJoinDialog}
+            onCreateCharacter={createCharacterFromJoinDialog}
+            onJoinPlayer={joinAsExistingPlayer}
+            open
+            players={players}
+            portraitSrcForPlayer={characterPortraitSrc}
+            auth={auth}
+            baseUrl={baseUrl}
+            campaignId={selectedCampaignId}
+            onBrought={heroBrought}
+          />
+        </Suspense>
+      ) : null}
 
       {campaignArchiveDialog ? (
         <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening archived adventures…" />}>

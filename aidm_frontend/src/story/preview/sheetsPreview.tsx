@@ -346,6 +346,8 @@ function EditCharacterPreview({ dialogRef, story }: { dialogRef: RefObject<HTMLE
     charClass: 'Fighter',
     backgroundId: story ? 'soldier' : '',
     level: '3',
+    sheet: { ties: { desire: { kind: 'keep_duty', words: 'to keep a duty' }, attachment: { name: 'Edda Vale', relation: 'sister' } } },
+    ties: null,
     error: '',
     pending: false,
   })
@@ -520,6 +522,10 @@ function PreviewSheetView({ sheet }: { sheet: PreviewSheet }): ReactNode {
           open
           players={PLAYERS}
           portraitSrcForPlayer={(item) => profileIconSrcForCharacter({ race: item.race, sex: item.sex }) ?? ''}
+          auth=""
+          baseUrl=""
+          campaignId={null}
+          onBrought={noop}
         />
       )
     case 'import-save':

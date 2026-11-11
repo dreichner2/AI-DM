@@ -698,6 +698,25 @@
   scrollbar-color: var(--story-hairline-strong) transparent;
   scrollbar-width: thin;
 }
+/* The review's second column: the sheet, then the hero's own threads, scrolling together. Its sections keep
+   their own height (a long spell list must push the threads down, never run under them). */
+.story-shell .story-create-review-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--story-gap-6);
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  padding-right: 12px;
+  scrollbar-color: var(--story-hairline-strong) transparent;
+  scrollbar-width: thin;
+}
+.story-shell .story-create-review-side > * { flex: none; }
+.story-shell .story-create-review-side .story-create-sheet {
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
+}
 .story-shell .story-create-sheet dt { margin-bottom: 6px; }
 .story-shell .story-create-sheet dd {
   margin: 0;
@@ -825,7 +844,7 @@
     gap: var(--story-gap-6);
     padding-bottom: var(--story-gap-6);
   }
-  .story-shell :is(.story-create-calling-detail, .story-create-shape-side, .story-create-sheet) {
+  .story-shell :is(.story-create-calling-detail, .story-create-shape-side, .story-create-sheet, .story-create-review-side) {
     max-height: none;
     overflow: visible;
     mask-image: none;
@@ -862,7 +881,7 @@
     grid-template-columns: minmax(0, 1fr);
     gap: var(--story-gap-6);
   }
-  .story-shell :is(.story-create-calling-detail, .story-create-shape-side, .story-create-sheet) {
+  .story-shell :is(.story-create-calling-detail, .story-create-shape-side, .story-create-sheet, .story-create-review-side) {
     max-height: none;
     overflow: visible;
     padding-right: 0;

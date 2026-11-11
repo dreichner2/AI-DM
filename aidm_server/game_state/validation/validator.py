@@ -43,7 +43,15 @@ from aidm_server.combat.vitality import DEATH_SAVE_SOURCE
 from aidm_server.combat.state import RANGE_BANDS, normalize_battlefield, normalize_combat_state, normalize_participant, player_combat_participant
 from aidm_server.spell_effects import active_repeat_attack, cannot_cast_reason, resolve_targeted_spell, spell_target_legality
 from aidm_server.game_state.campaign_pack_encounters import combat_is_active, materialize_campaign_pack_combat_start, story_flag_allows
+from aidm_server.game_state.orchestration.hero_threads import (
+    HERO_CHANGE_TYPES,
+    TAKE_HEART_DECLARED,
+    hero_change_problem,
+    take_heart_change,
+    take_heart_refusal,
+)
 from aidm_server.game_state.validation.inventory_validator import resolve_inventory_item_reference
+from aidm_server.game_state.zones import ZONE_MOVE_CHANGE, zone_move_refusal, zoned
 from aidm_server.game_state.quest_engine import quest_completion_blocker, quest_failure_blocker
 from aidm_server.commerce import (
     COMMERCE_AUTHORITY,
@@ -1877,6 +1885,17 @@ def _validate_rest_action(
     )
 
 
+def _validate_take_heart(action: dict[str, Any], state: dict[str, Any], *, current_turn: int) -> dict[str, Any]:
+    actor = find_actor(state, _action_value(action, 'actorId', 'actor_id'))
+    if not actor:
+        return _invalid(action, 'Actor not found.')
+    refusal = take_heart_refusal(state, actor.get('id'))
+    if refusal:
+        return _invalid(action, refusal)
+    change = take_heart_change(state, actor.get('id'), turn_id=current_turn)
+    return _valid(action, 'Takes heart: the next d20 roll is made with advantage.', immediate_changes=[change])
+
+
 def _shop_transaction(state: dict[str, Any], actor: dict[str, Any], *, buy: bool, merchant_id: Any, reference: Any, quantity: Any) -> dict[str, Any]:
     if buy:
         return resolve_purchase(state, actor, merchant_id=merchant_id, stock_id=reference, quantity=quantity)
@@ -2153,6 +2172,8 @@ def validate_declared_actions(
                 recent_context=recent_context or [],
                 selected_item_id=selected_item_id,
             )
+        elif action_type == TAKE_HEART_DECLARED:
+            result = _validate_take_heart(action, state, current_turn=current_turn)
         else:
             result = _pending(action, action.get('summary') or 'Player intent needs DM narration.')
         if result.get('status') == 'needs_clarification' and isinstance(result.get('clarificationRequest'), dict):
@@ -3430,7 +3451,20 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
         for key in ('playerPositions', 'playerZones', 'characterPositions', 'characterZones'):
             if key in normalized and not isinstance(normalized.get(key), dict):
                 return 'rejected', f'Scene {key} must be an object.', None
+        # In a place with rooms only the engine's zone moves say where a hero stands.
+        if zoned(state):
+            normalized.pop('playerZones', None)
         return 'accepted', 'Scene update is valid.', normalized
+
+    if change_type == ZONE_MOVE_CHANGE:
+        if _text(normalized.get('source')) != 'zone_move':
+            return 'rejected', 'Only the engine moves a hero between the rooms of a place.', None
+        if not find_actor(state, _action_value(normalized, 'actorId', 'actor_id')):
+            return 'rejected', 'Zone move actor was not found.', None
+        refusal = zone_move_refusal(state, actor_id=_text(normalized.get('actorId')), zone_id=_text(normalized.get('zoneId')))
+        if refusal:
+            return 'rejected', refusal, None
+        return 'accepted', 'Zone move is valid.', normalized
 
     if change_type == 'scene.move_location':
         scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
@@ -4597,6 +4631,9 @@ def validate_state_changes(
                 status, reason, normalized = 'rejected', 'Race ability refresh requires abilityId.'
             else:
                 status, reason, normalized = 'accepted', 'Race ability refresh marker is valid.', None
+        elif change_type in HERO_CHANGE_TYPES:
+            problem = hero_change_problem(state, change)
+            status, reason, normalized = ('rejected', problem, None) if problem else ('accepted', 'The engine moves Inspiration and tells threads.', None)
         elif change_type in COMBAT_STATE_CHANGE_TYPES:
             status, reason, normalized = _normalize_combat_change(change, state)
             if status == 'accepted' and normalized:

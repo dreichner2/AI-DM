@@ -281,3 +281,77 @@ describe('storySuggestions', () => {
     expect(storySuggestions(world({ sceneItems: [key] }), controls([bell], { inCombat: true }))).toEqual([])
   })
 })
+
+describe('storySuggestions in a place with rooms', () => {
+  const yard = { id: 'inn_yard', name: 'The Yard', current: true, adjacent: false, exit: true }
+  const commonRoom = { id: 'inn_common_room', name: 'The Common Room', current: false, adjacent: true, exit: false }
+  const stable = { id: 'inn_stable', name: 'The Stable', current: false, adjacent: true, exit: false }
+  const cellar = { id: 'inn_cellar', name: 'The Cellar', current: false, adjacent: false, exit: false }
+  const zones = [
+    { ...yard, here: [{ id: 'player_30', name: 'Liora', kind: 'hero' }, { id: 'tovin-bell', name: 'Tovin Bell', kind: 'person' }] },
+    { ...commonRoom, moveLabel: 'Go into the common room', here: [{ id: 'mara-reedwake', name: 'Mara Reedwake', kind: 'person' }] },
+    { ...stable, moveLabel: 'Go to the stable', here: [] },
+    { ...cellar, here: [{ id: 'old-hob', name: 'Old Hob', kind: 'person' }] },
+  ]
+  const mare = { ...object('mare', 'The Off-Leader Mare', [offer('inspect', 'Look over the off-leader', { authored: true })]), zoneId: 'inn_stable' }
+  const barrel = { ...object('barrel', 'Barrel', [offer('search', 'Search the barrel', { authored: true })]), zoneId: 'inn_cellar' }
+
+  it('offers what is here first, then what is next door marked with its room, then the rooms next door', () => {
+    const labels = storySuggestions(
+      world({
+        zones,
+        presentNpcs: [npc('Mara Reedwake'), npc('Tovin Bell'), npc('Old Hob')],
+        merchants: [{ id: 'mara_counter', name: "Mara's Counter", npcId: 'mara-reedwake', buyRate: 0.5, stock: [], zoneId: 'inn_common_room' }],
+      }),
+      controls([mare, barrel, { ...bell, zoneId: 'inn_yard' }]),
+    ).map((suggestion) => suggestion.label)
+
+    expect(labels).toEqual([
+      'Ring the wagon bell',
+      'Look over the off-leader · stable',
+      'Talk to Tovin Bell',
+      'Talk to Mara Reedwake · common room',
+      "Trade with Mara's Counter · common room",
+      'Go into the common room',
+      'More…',
+    ])
+  })
+
+  it('offers a room next door as a move, and the ways onward from whichever room the party is in', () => {
+    const fromYard = storySuggestions(world({ zones, availableExits: [place('The Old North Road')] }), controls([]))
+    expect(fromYard.map((suggestion) => suggestion.label)).toEqual(['Go into the common room', 'Go to the stable', 'Go to The Old North Road'])
+    expect(fromYard[0]).toMatchObject({ kind: 'zone_move', zone: { id: 'inn_common_room' } })
+
+    const inside = zones.map((zone) => ({ ...zone, current: zone.id === 'inn_common_room', adjacent: zone.id === 'inn_yard', ...(zone.id === 'inn_yard' ? { moveLabel: 'Step out to the yard' } : {}) }))
+    const fromCommonRoom = storySuggestions(world({ zones: inside, availableExits: [place('The Old North Road')] }), controls([]))
+    expect(fromCommonRoom.map((suggestion) => suggestion.label)).toEqual(['Step out to the yard', 'Go to The Old North Road'])
+  })
+})
+
+describe('Take heart', () => {
+  it('is offered last while the hero holds Inspiration, never in a fight', () => {
+    const chips = (overrides: Partial<GameplayControlState>) =>
+      storySuggestions(world({ availableExits: [place('The Old North Road')] }), controls([bell], overrides))
+        .map((suggestion) => [suggestion.kind, suggestion.label])
+    expect(chips({ takeHeart: true })).toEqual([
+      ['object', 'Ring the wagon bell'],
+      ['travel', 'Go to The Old North Road'],
+      ['take_heart', 'Take heart (Inspiration)'],
+    ])
+    expect(chips({}).map(([kind]) => kind)).toEqual(['object', 'travel'])
+    expect(chips({ takeHeart: true, inCombat: true })).toEqual([])
+  })
+
+  it('waits behind More… when the row is full', () => {
+    const suggestions = storySuggestions(
+      world({
+        sceneItems: [key, coins],
+        presentNpcs: [npc('Mara Reedwake'), npc('Tovin Bell')],
+        availableExits: [place('The Old North Road')],
+      }),
+      controls([ledger, bench, bell], { takeHeart: true }),
+    )
+    expect(suggestions.map((suggestion) => suggestion.kind)).not.toContain('take_heart')
+    expect(suggestions.at(-1)?.kind).toBe('more')
+  })
+})

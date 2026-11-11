@@ -335,6 +335,42 @@
   to { opacity: 0; transform: translateY(-4px); }
 }
 
+/* Who stands where, in a place with rooms: one quiet line under the scene's name. The bar grows a line for it. */
+.story-shell:has(.story-where-line) { --story-topbar-height: 68px; }
+.story-shell .story-where-line {
+  overflow: hidden;
+  margin: 1px 0 0;
+  font-size: 0.7rem;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--story-faint);
+}
+.story-shell .story-where-name {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-family: var(--story-ui);
+  font-weight: 560;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--story-muted);
+}
+.story-shell .story-where-zone[data-current] .story-where-name { color: var(--story-ember-soft); }
+.story-shell .story-where-people { color: var(--story-ink-soft); }
+.story-shell .story-where-zone:not([data-current]) .story-where-people { color: var(--story-muted); }
+.story-shell button.story-where-name { cursor: pointer; }
+.story-shell .story-where-move {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--story-muted) 45%, transparent);
+  text-underline-offset: 3px;
+  transition: color var(--story-fast) var(--story-ease);
+}
+.story-shell .story-where-move:hover,
+.story-shell .story-where-move:focus-visible { color: var(--story-ink); }
+
 /* The viewer's HP beside the titles: only where the dock's party HUD is hidden (below). */
 .story-shell .story-topbar-hp {
   appearance: none;
@@ -592,6 +628,17 @@
   gap: 3px;
 }
 .story-shell .story-party-name { color: var(--story-ink-soft); }
+/* The viewer holds Inspiration: a small ember lozenge after their name. */
+.story-shell .story-party-inspiration {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 0 1px 8px;
+  vertical-align: middle;
+  transform: rotate(45deg);
+  background: var(--story-ember);
+  box-shadow: 0 0 8px rgba(255, 107, 44, 0.75);
+}
 .story-shell .story-party-hp {
   font-size: 0.8rem;
   font-weight: 500;
@@ -620,6 +667,7 @@
 
 @media (max-width: 700px) {
   .story-shell { --story-topbar-height: 48px; }
+  .story-shell:has(.story-where-line) { --story-topbar-height: 58px; }
   .story-shell .story-campaign-title,
   .story-shell .story-topbar-optional,
   .story-shell .story-connection,
@@ -629,4 +677,30 @@
   /* The campaign line is gone here, so the clock takes its place under the scene name. */
   .story-shell .story-scene-line { flex-direction: column; align-items: flex-start; gap: 0; }
   .story-shell .story-clock { font-size: 0.7rem; line-height: 1.25; }
+}
+
+/* At phone width the where-line shows the viewer's own zone; a tap on it opens every room below the bar. */
+@media (max-width: 600px) {
+  .story-shell .story-where-line { font-size: 0.66rem; }
+  .story-shell .story-where-line:not([data-open]) .story-where-zone:not([data-current]) { display: none; }
+  .story-shell .story-where-line[data-open] {
+    position: absolute;
+    top: 100%;
+    left: var(--story-gutter);
+    right: var(--story-gutter);
+    z-index: 10;
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 12px 14px;
+    border: 1px solid var(--story-glass-edge);
+    border-radius: 14px;
+    background: var(--story-glass);
+    -webkit-backdrop-filter: blur(var(--story-glass-blur)) saturate(1.2);
+    backdrop-filter: blur(var(--story-glass-blur)) saturate(1.2);
+    font-size: 0.78rem;
+    white-space: normal;
+    animation: story-pop var(--story-base) var(--story-ease) backwards;
+  }
+  .story-shell .story-where-line[data-open] .story-where-sep { display: none; }
 }

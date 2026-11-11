@@ -148,7 +148,7 @@ export type ShopIntent = {
 } & ({ action: 'buy'; stock_id: string } | { action: 'sell'; item_id: string })
 
 export type ActionIntent = {
-  kind: ComposerMode | 'message' | 'capability' | 'object' | 'travel' | 'rest' | 'shop' | 'combat'
+  kind: ComposerMode | 'message' | 'capability' | 'object' | 'travel' | 'zone_move' | 'rest' | 'shop' | 'combat' | 'inspiration'
   source: 'composer' | 'dice_roller' | 'combat_hud' | 'scene_panel'
   text: string
   client_message_id: string
@@ -207,6 +207,11 @@ export type ActionIntent = {
     player_name: string
   }
   location?: {
+    id: string
+    name: string
+  }
+  /** A step into another room or area of the place. */
+  zone?: {
     id: string
     name: string
   }

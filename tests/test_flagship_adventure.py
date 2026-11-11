@@ -1,4 +1,4 @@
-"""The Play Now adventure, played end to end in Safe Mode with typed actions only.
+"""The Play Now adventure, played end to end in Safe Mode with typed actions only, through its rooms.
 
 Every check and attack uses a seeded roller, and narration never decides a step:
 each assertion names the state change the typed action itself caused.
@@ -21,6 +21,7 @@ from aidm_server.combat.legal_actions import legal_combat_actions_for_player
 from aidm_server.database import db
 from aidm_server.combat.state import instantiate_creature
 from aidm_server.game_state.campaign_pack_encounters import PARTY_SCALING, materialize_campaign_pack_combat_start
+from aidm_server.game_state.zones import hero_zone_id
 from aidm_server.interactables import available_actions_for_target, interactable_actor_context
 from aidm_server.models import DmTurn, Player, Session, SessionLogEntry, safe_json_loads
 from aidm_server.services.campaign_pack_linter import lint_campaign_pack_file
@@ -45,6 +46,14 @@ ENDING_VARIANTS = {variant['when']['flagKey']: variant for variant in FINAL_CHEC
 FATES = ['use', 'break', 'lock', 'trigger']
 
 
+# Arden Vale is looking for his sister; the ledger named her, so every ending says what became of her.
+ARDENS_ENDING_LINES = {
+    line['at']['ending']: line['text'].replace('{name}', 'Edda Vale')
+    for line in PACK['tieLines']
+    if line['kind'] == 'seeking' and 'ending' in line['at']
+}
+
+
 def _ending_for(flag_key: str) -> dict:
     """The ending as the player view reports it once the fate behind ``flag_key`` was chosen."""
 
@@ -53,7 +62,7 @@ def _ending_for(flag_key: str) -> dict:
         'checkpointId': FINAL_CHECKPOINT['id'],
         'title': variant['title'],
         'summary': FINAL_CHECKPOINT['playerSummary'],
-        'text': variant['text'],
+        'text': f"{variant['text']} {ARDENS_ENDING_LINES[flag_key]}",
     }
 FINAL_BINDING = next(encounter for encounter in PACK['encounters'] if encounter['id'] == 'enc_final_binding')
 SCENE_OBJECTS = {record['id']: record for location in PACK['locations'] for record in location.get('interactables', [])}
@@ -164,8 +173,11 @@ class Table:
     def refused(self, target: str, action: str, name: str) -> list[str]:
         """The refusals a typed object action draws (it changes nothing)."""
 
-        self.turn += 1
         message = f'Arden Vale attempts to {action} {name}.'
+        return self._refusals(message, {'kind': 'object', 'source': 'scene_panel', 'object': {'id': target, 'action': action}})
+
+    def _refusals(self, message: str, intent: dict) -> list[str]:
+        self.turn += 1
         self.socket.emit(
             'send_message',
             {
@@ -174,7 +186,7 @@ class Table:
                 'player_id': self.ids['player_id'],
                 'message': message,
                 'client_message_id': f'flagship-{self.turn}',
-                'action_intent': {'kind': 'object', 'source': 'scene_panel', 'object': {'id': target, 'action': action}, 'text': message},
+                'action_intent': {**intent, 'text': message},
             },
         )
         return [event['args'][0]['error'] for event in self.socket.get_received() if event['name'] == 'error' and event['args']]
@@ -187,6 +199,18 @@ class Table:
     def travel(self, location_id: str, name: str) -> Change:
         intent = {'kind': 'travel', 'source': 'scene_panel', 'location': {'id': location_id, 'name': name}}
         return self.send(f'The party travels to {name}.', intent)
+
+    def move(self, zone_id: str, label: str) -> Change:
+        """Step into another room or area of the place, as the where-line's link does."""
+
+        intent = {'kind': 'zone_move', 'source': 'scene_panel', 'zone': {'id': zone_id, 'name': label}}
+        return self.send(f'{label}.', intent)
+
+    def zone(self) -> str:
+        """Where the hero stands in the place."""
+
+        snapshot = self.snapshot()
+        return hero_zone_id(snapshot, _hero(snapshot)['id'])
 
     def take(self, item_id: str, name: str) -> Change:
         intent = {
@@ -217,7 +241,8 @@ class Table:
         return self._changed()
 
     def fight(self) -> Change:
-        """Swing at the first enemy the HUD's attack can reach (closing in first when it must) until the fight ends."""
+        """Swing at the first enemy the HUD's attack can reach (closing in first when it must), else advance on one
+        standing off, until the fight ends."""
 
         before = self.last
         for _round in range(12):
@@ -225,8 +250,12 @@ class Table:
                 break
             attack = self._hud_action('combat.attack.')
             target = next((target for target in (attack or {}).get('targets') or [] if target['available']), None)
+            advance = None if target else self._hud_action('combat.advance')
+            toward = next((option for option in (advance or {}).get('targets') or [] if option['available']), None)
             if target:
                 self._hud('Arden Vale attacks.', attack['id'], target['id'])
+            elif toward:
+                self._hud('Arden Vale advances.', advance['id'], toward['id'])
             if self.snapshot()['combat']['status'] == 'active':
                 self._hud('Arden Vale ends the turn.', 'combat.end_turn')
         return self._changed(since=before)
@@ -402,7 +431,9 @@ def test_the_careful_route_renews_the_ward(table):
     assert _flags(start) == {key: False for key in PACK['startingState']['flags']}
     assert (start['currentScene']['locationId'], start['currentScene']['updatedAtTurn']) == ('loc_lantern_post_inn', 0)
     assert start['currentScene']['restPolicy'] == 'safe'
-    assert _visible_objects(start) == ['inn_caravan_ledger', 'inn_drivers_bench', 'inn_lead_wagon', 'inn_wagon_bell']
+    # The party arrives in the yard; the stable next door, with its mare, is known from there.
+    assert table.zone() == 'inn_yard'
+    assert _visible_objects(start) == ['inn_caravan_ledger', 'inn_drivers_bench', 'inn_lead_wagon', 'inn_wagon_bell', 'inn_marked_mare']
     assert [flag['key'] for flag in start['campaignPack']['storyFlags']] == [flag['key'] for flag in PACK['storyFlags']]
     world_map = filter_session_snapshot_for_player(start)['worldMap']
     assert (world_map['title'], world_map['terrain'], world_map['seed']) == ('The Western Roadlands', 'moor', 1107)
@@ -461,7 +492,20 @@ def test_the_careful_route_renews_the_ward(table):
     assert (coins.gp, coins.items) == (15, Counter())
     assert table.act('inn_wagon_bell', 'use', 'Wagon Bell').clues == {'clue_pale_lantern_bell'}
 
+    # The stable: the off-leader mare carries a white handprint.
+    mare = table.act('inn_marked_mare', 'inspect', 'The Off-Leader Mare')
+    assert table.zone() == 'inn_stable'
+    assert table.narration().startswith('DM: You step into the stable.')
+    assert 'white dust handprint' in table.narration()
+    assert {'kind': 'place_within', 'text': 'Found — The Stable', 'refId': 'inn_stable'} in table.pipeline_beats()
+    assert (mare.flags, mare.clues) == ({}, set())
+
+    # Mara's counter is in the common room, two rooms from the stable: the hero walks back through the yard.
+    shop = {'kind': 'shop', 'source': 'scene_panel', 'shop': {'action': 'buy', 'merchant_id': 'merchant_mara_counter', 'stock_id': 'merchant_mara_counter_0', 'quantity': 1}}
+    assert table._refusals('Arden Vale buys a Potion of Healing.', shop) == ['Mara Reedwake is in the common room. Go there first.']
+    table.move('inn_yard', 'Step out to the yard')
     potion = table.buy('merchant_mara_counter', 'merchant_mara_counter_0', 'a Potion of Healing')
+    assert table.zone() == 'inn_common_room'
     assert (potion.gp, potion.items['Potion of Healing']) == (-50, 1)
     assert potion.snapshot['merchants']['merchant_mara_counter']['stock'][0] == {
         'stockId': 'merchant_mara_counter_0',
@@ -469,6 +513,8 @@ def test_the_careful_route_renews_the_ward(table):
         'quantity': 2,
     }
 
+    # The party sets out from the yard.
+    table.move('inn_yard', 'Step out to the yard')
     road = table.travel('loc_old_north_road', 'The Old North Road')
     assert road.encounter == 'enc_pale_lantern_detour'
     # A lone hero faces one enemy: the first group's.
@@ -514,24 +560,31 @@ def test_the_careful_route_renews_the_ward(table):
     assert (ambush.gp, ambush.xp, ambush.items['Ashmarked Orders']) == (40, 250, 1)
 
     hearth = table.act('ws_cold_hearth', 'search', 'Cold Hearth')
+    assert table.zone() == 'ws_hall'
     assert hearth.flags == {'oath_learned': True}
     assert hearth.clues == {'clue_original_road_oath'}
     assert (_scene_items(hearth), hearth.items) == ([], Counter({'Rusted Waystation Key': 1}))
+    # The lockbox is in the collapsed stable, across the court from the hall.
+    table.move('ws_court', 'Go to the court')
     table.act('ws_lockbox', 'unlock', "Wardens' Lockbox")
+    assert table.zone() == 'ws_stable'
     table.act('ws_lockbox', 'open', "Wardens' Lockbox")
     lockbox = table.act('ws_lockbox', 'search', "Wardens' Lockbox")
     assert lockbox.flags == {'true_name_known': True}
     assert lockbox.clues == {'clue_cinder_scribe_true_name'}
     assert (_scene_items(lockbox), lockbox.gp, lockbox.items['Potion of Healing']) == ([], 20, 1)
 
+    table.move('ws_court', 'Go to the court')
     yard = table.travel('loc_old_masons_yard', "Old Mason's Yard")
     assert yard.snapshot['currentScene']['restPolicy'] == 'safe'
     assert _active_checkpoint(yard.snapshot) == 'cp_05_stonewright_warning'
     rubbings = table.act('yard_rubbing_table', 'inspect', 'Rubbing Table')
+    assert table.zone() == 'yard_workshop'
     assert rubbings.flags == {'ward_choices_known': True}
     assert rubbings.objectives == {'obj_learn_ward_choices': 'completed'}
     assert _active_checkpoint(rubbings.snapshot) == 'cp_06_final_valley'
     hammer = table.buy('merchant_brokk_tool_rack', 'merchant_brokk_tool_rack_0', "a Mason's Hammer")
+    assert table.zone() == 'yard_open'
     assert (hammer.gp, hammer.items["Mason's Hammer"]) == (-8, 1)
     assert 'masons_hammer' in {item['id'] for item in _hero(hammer.snapshot)['inventory']['items']}
 
@@ -560,8 +613,12 @@ def test_the_careful_route_renews_the_ward(table):
         'break': False, 'inspect': True, 'lock': False, 'trigger': False, 'use': False,
     }
 
+    assert table.zone() == 'valley_rim'
     binding = table.act('valley_last_road_stone', 'inspect', 'The Last Road-Stone')
     assert binding.encounter == 'enc_final_binding'
+    # The hero stepped down into the stone circle; the Scribe stands off, out of reach.
+    assert table.zone() == 'valley_stone'
+    assert 'The Cinder Scribe is well out of reach.' in table.narration()
     # What the party knows: the appeased Roadwardens stay away and the Scribe's true name weakens him.
     scaling = binding.snapshot['combat']['flags']['partyScaling']
     assert [adjustment['text'] for adjustment in scaling['adjustments']] == [
@@ -709,6 +766,7 @@ def test_the_shortcut_reaches_the_valley_by_the_culvert(table):
     assert ridge.snapshot['currentScene']['restPolicy'] == 'risky'
 
     table.act('ridge_culvert_grate', 'unlock', 'Culvert Grate')
+    assert table.zone() == 'ridge_culvert'
     assert table.last_check() == ('athletics', 13, 'success')
     grate = table.act('ridge_culvert_grate', 'open', 'Culvert Grate')
     assert grate.flags == {'valley_route_known': True}
@@ -721,6 +779,7 @@ def test_the_shortcut_reaches_the_valley_by_the_culvert(table):
         'travelable': True,
     } in routes
 
+    # The party sets out from the culvert mouth itself: no walk back to the ridge path is asked for.
     valley = table.travel('loc_valley_last_road_stone', 'Valley of the Last Road-Stone')
     assert valley.objectives == {'obj_confront_roadwardens': 'completed', 'obj_reach_final_valley': 'completed'}
     assert valley.places == {'loc_valley_last_road_stone': 'visited', 'loc_old_masons_yard': 'discovered'}
@@ -786,7 +845,10 @@ def test_the_opening_offers_only_authored_actions_and_starts_in_the_evening(tabl
         ],
         'inn_lead_wagon': [('search', 'Search the lead wagon', True, False)],
         'inn_wagon_bell': [('use', 'Ring the wagon bell', True, False)],
+        # In the stable next door: taking it steps the hero in first.
+        'inn_marked_mare': [('inspect', 'Look over the off-leader', True, False)],
     }
+    assert {entry['id']: entry['zoneId'] for entry in view['currentScene']['interactables']}['inn_marked_mare'] == 'inn_stable'
     bench = next(entry for entry in view['currentScene']['interactables'] if entry['id'] == 'inn_drivers_bench')
     assert bench['offeredActions'][0]['check'] == {'skill': 'investigation', 'ability': 'intelligence'}
 

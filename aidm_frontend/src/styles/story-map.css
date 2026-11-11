@@ -139,3 +139,7 @@
   .story-shell .story-map-current-ring,
   .story-shell .story-map-route[data-current] .story-map-route-line { animation: none; }
 }
+
+/* This place: who stands in each of its rooms, the viewer's own in the accent; a room next door can be stepped into. */
+.story-shell .story-map-zones li[data-current] .story-journal-name { color: var(--story-ember-soft); }
+.story-shell .story-map-zone-move { margin-left: var(--story-gap-2); font-size: 0.84rem; }

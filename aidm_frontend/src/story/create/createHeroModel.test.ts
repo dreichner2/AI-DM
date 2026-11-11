@@ -256,6 +256,20 @@ describe('createHeroModel', () => {
     expect(() => createPayload(hero('Rogue'))).toThrow('The hero is not finished yet.')
   })
 
+  it("sends the hero's own threads only when written, and holds the review on threads it would refuse", () => {
+    const draft = withSkills(withBackground(hero('Fighter', 'human', 'Rowan Pell'), 'soldier'), ['perception', 'survival'])
+    expect(createPayload(draft)).not.toHaveProperty('ties')
+
+    const own = { ...draft, ties: { ...draft.ties, desireKind: 'own', ownDesire: '  To see the sea ', burden: 'A letter never sent.' } }
+    expect(createPayload(own).ties).toEqual({ desire: { kind: 'own', words: 'To see the sea' }, burden: 'A letter never sent.' })
+
+    const tooLong = { ...draft, ties: { ...draft.ties, desireKind: 'own', ownDesire: 'x'.repeat(81) } }
+    expect(stepComplete(tooLong, 'review')).toBe(false)
+    expect(stepHint(tooLong, 'review')).toBe('What you want: at most 80 characters.')
+    const shortName = { ...draft, ties: { ...draft.ties, attachmentName: 'E' } }
+    expect(stepHint(shortName, 'review')).toBe('A name of 2 to 40 letters, or none.')
+  })
+
   it('plays by the server rules once they arrive and drops choices they no longer allow', () => {
     const server: CreationRules = {
       classes: FALLBACK_RULES.classes.map((entry) =>

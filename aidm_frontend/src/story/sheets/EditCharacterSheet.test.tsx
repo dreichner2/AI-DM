@@ -39,6 +39,8 @@ function editState(change: Partial<NonNullable<PlayerEditDialogState>> = {}): No
     charClass: 'Fighter',
     backgroundId: 'soldier',
     level: '3',
+    sheet: undefined,
+    ties: null,
     error: '',
     pending: false,
     ...change,
@@ -173,6 +175,22 @@ describe('EditCharacterSheet', () => {
     expect(within(sheet).getByRole('button', { name: 'Raise level' })).toBeDisabled()
     fireEvent.click(within(sheet).getByRole('button', { name: 'Lower level' }))
     expect(latest?.level).toBe('19')
+  })
+
+  it("shows the hero's own threads from their sheet and records an edit with what it would save", () => {
+    const { sheet } = renderSheet(
+      editState({ sheet: { ties: { desire: { kind: 'own', words: 'To see the sea' }, attachment: { name: 'Edda Vale', relation: 'sister' } } } }),
+    )
+    const threads = within(sheet).getByRole('region', { name: 'Your own threads' })
+    expect(within(threads).getByRole('button', { name: 'in your own words' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(threads).getByRole('textbox', { name: 'What you want, in your own words' })).toHaveValue('To see the sea')
+    expect(latest?.ties).toBeNull()
+
+    fireEvent.change(within(threads).getByRole('textbox', { name: 'Who or what you would not abandon' }), { target: { value: 'E' } })
+    expect(latest?.ties?.problem).toBe('A name of 2 to 40 letters, or none.')
+    fireEvent.change(within(threads).getByRole('textbox', { name: 'Who or what you would not abandon' }), { target: { value: '' } })
+    expect(latest?.ties).toMatchObject({ problem: '', payload: { desire: { kind: 'own', words: 'To see the sea' } } })
+    expect(latest?.ties?.payload).not.toHaveProperty('attachment')
   })
 
   it('locks the sheet while it saves', () => {

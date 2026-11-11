@@ -111,6 +111,8 @@ export type InspectorPanelProps = {
   spellbook: SpellbookSummary
   spellResources: SpellResourceSummary
   characterTraits: CharacterTraitSummary[]
+  /** The selected hero's character sheet: the Story Character tab reads their own threads (`ties`) from it. */
+  characterSheet?: unknown
   inventoryRows: InventoryRow[]
   inventoryWeightLabel: string
   inventoryGoldLabel: string

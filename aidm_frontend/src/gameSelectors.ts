@@ -223,6 +223,12 @@ export type CombatParticipantSummary = {
   selectionMethod: string
   /** Raw band (melee, near, far, distant) for range-aware display. */
   rangeBand?: string
+  /**
+   * How far this participant is from the viewing hero (`in_reach`, `one_move`, `out_of_reach`, `far_off`) and
+   * its words ("a move away · about 30 ft"), when the server tells the viewer.
+   */
+  reach?: string
+  reachLabel?: string
   /** Ids of the visible participants this one is locked in melee with. */
   engagedWith?: string[]
   /** Death saving throws of a downed player character; null for everyone else. */
@@ -384,6 +390,29 @@ export type WorldMerchantSummary = {
   npcId: string
   buyRate: number
   stock: WorldMerchantStockEntry[]
+  /** The room or area of the place the merchant stands in, when the place has them. */
+  zoneId?: string
+}
+
+/** Someone standing in a room or area of the place: a hero, a known person or a companion. */
+export type WorldZonePerson = {
+  id: string
+  name: string
+  kind: string
+}
+
+/** A room or area of the current place that the party knows, with who stands there. */
+export type WorldZoneSummary = {
+  id: string
+  name: string
+  /** The viewer stands here. */
+  current: boolean
+  /** One move from the viewer: offered as a move (`moveLabel`). */
+  adjacent: boolean
+  /** The party can set out from here. */
+  exit: boolean
+  here: WorldZonePerson[]
+  moveLabel?: string
 }
 
 export type WorldStatePanel = {
@@ -403,6 +432,8 @@ export type WorldStatePanel = {
   /** Merchants open for trade in the current scene (the server projects only those). */
   merchants?: WorldMerchantSummary[]
   captives?: WorldCaptiveSummary[]
+  /** The rooms and areas of the current place the party knows; absent for a place that is one area. */
+  zones?: WorldZoneSummary[]
   /** Completed and failed quests. */
   finishedQuests?: WorldQuestSummary[]
   clues?: WorldRecordSummary[]
@@ -578,6 +609,9 @@ function combatParticipantSummary(participant: JsonRecord): CombatParticipantSum
     selectionScore: intent.selectionScore === undefined || intent.selectionScore === null ? '' : stringValue(intent.selectionScore),
     selectionMethod: stringValue(intent.selectionMethod).replace(/_/g, ' '),
     rangeBand: stringValue(position.rangeBand),
+    ...(stringValue(participant.reachLabel)
+      ? { reach: stringValue(participant.reach), reachLabel: stringValue(participant.reachLabel) }
+      : {}),
     engagedWith: Array.isArray(position.engagedWith)
       ? position.engagedWith.map((value) => stringValue(value)).filter(Boolean)
       : [],
@@ -1710,6 +1744,19 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
         .filter((action) => Boolean(action.label)),
     }))
     .filter((captive) => Boolean(captive.name))
+  const zones = recordArray(scene.zones)
+    .map((zone): WorldZoneSummary => ({
+      id: stringValue(zone.id),
+      name: stringValue(zone.name),
+      current: zone.current === true,
+      adjacent: zone.adjacent === true,
+      exit: zone.exit === true,
+      here: recordArray(zone.here)
+        .map((person) => ({ id: stringValue(person.id), name: stringValue(person.name), kind: stringValue(person.kind) }))
+        .filter((person) => Boolean(person.name)),
+      ...(stringValue(zone.moveLabel) ? { moveLabel: stringValue(zone.moveLabel) } : {}),
+    }))
+    .filter((zone) => Boolean(zone.id && zone.name))
   const connectedLocationIds = new Set(
     Array.isArray(currentLocation?.connectedLocationIds)
       ? currentLocation.connectedLocationIds.map((value) => stringValue(value)).filter(Boolean)
@@ -1744,6 +1791,7 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
     clock: worldClockFromSnapshot(root),
     merchants: recordArray(scene.merchants).map(merchantSummary).filter((merchant) => Boolean(merchant.id)),
     ...(captives.length ? { captives } : {}),
+    ...(zones.length ? { zones } : {}),
     finishedQuests: quests.filter(finished).map(questSummary),
     clues: discoveredRecords(root.clues),
     handouts: discoveredRecords(root.handouts),
@@ -1850,6 +1898,7 @@ function merchantSummary(record: JsonRecord): WorldMerchantSummary {
     id: stringValue(record.id),
     name: stringValue(record.name, 'Merchant'),
     npcId: stringValue(record.npcId),
+    ...(stringValue(record.zoneId) ? { zoneId: stringValue(record.zoneId) } : {}),
     buyRate: numberValue(record.buyRate) ?? 0.5,
     stock: recordArray(record.stock).map((entry) => {
       const price = merchantPrice(entry.price)

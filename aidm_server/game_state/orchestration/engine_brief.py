@@ -12,16 +12,25 @@ resolved action with its numbers, each enemy turn, yields, captures, breaking
 free and opportunity attacks, or the line that no enemy has acted; each
 enemy's ``Bark:`` line under the result it follows; a look over the fight with
 where everyone stands; the finishing blow: the foe felled and left untold, the
-hero's own words told faithfully, or the moment let pass), ``notDone``
-(the message's deferred actions, then each engine-owned thing the player's
-words name with no result this turn, by its labels), ``here`` (objects with
-their available labels, loose items, ways onward, shops, captives held here
-with their enemy record and ``captiveKnows``), ``place``, ``actingHero``,
-``heroes``, ``gains`` (the acting hero's ``xp``, ``coins`` by code and
+hero's own words told faithfully, or the moment let pass; each tie line told
+for a hero, as a personal thread), ``notDone`` (the message's deferred
+actions, then each engine-owned thing the player's words name with no result
+this turn, by its labels), ``here`` (objects with their available labels,
+loose items, ways onward, shops, captives held here with their enemy record
+and ``captiveKnows``), ``place``, ``actingHero``, ``hero`` (the acting hero's
+desire and attachment in one line, when they have either), ``heroes``,
+``gains`` (the acting hero's ``xp``, ``coins`` by code and
 ``items`` gained so far), ``offered`` (the labels of the actions offered to
 the acting hero this turn, a pending finishing blow's first),
 ``engineOwned`` (every name above, and the things acted on) and ``ending``
 (only when the turn reaches the adventure's ending).
+
+In a place with rooms (:mod:`aidm_server.game_state.zones`) ``did`` also tells
+the hero's step into another zone, a call to someone next door and who came
+running into a fight; ``here`` holds only what stands in the hero's own zone,
+and ``where`` says who is where (``Thalion is in the yard with Osric Hale. Next
+door, in the common room: Mara Reedwake.``). In a fight ``positions`` says how
+far everyone standing is from the acting hero, in reach words.
 """
 
 from __future__ import annotations
@@ -32,19 +41,27 @@ from typing import Any, Iterable
 
 from aidm_server.combat.legal_actions import maneuver_actions, universal_combat_actions
 from aidm_server.combat.maneuvers import enemy_record
-from aidm_server.combat.state import normalize_combat_state
+from aidm_server.combat.positioning import REACH_LABELS, reach_kind
+from aidm_server.combat.state import normalize_combat_state, participant_is_targetable
 from aidm_server.game_state.extraction.free_text_actions import FreeTextAction, mentions, ways_onward
 from aidm_server.game_state.orchestration.finishing_blow import finisher_actions
+from aidm_server.game_state.orchestration.hero_threads import PERSONAL_THREAD, hero_line
 from aidm_server.game_state.orchestration.narration_facts import PICKUP_SOURCE, enemy_prose
 from aidm_server.game_state.orchestration.story_beats import COIN_ORDER, beat_basis, object_check_text, story_beats
 from aidm_server.price_list import normalize_price
+from aidm_server.game_state.zones import hero_zone_id, where_line
 from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
 
-# Beats the brief leaves to its own lines: checks sit with their object, a pickup with "Took".
-OWN_LINE_BEATS = frozenset({'check', 'hint'})
+# Beats the brief leaves to its own lines: checks sit with their object, a pickup with "Took", a tie line with its
+# personal thread; Inspiration is the player's own reward, not something to narrate.
+OWN_LINE_BEATS = frozenset({'check', 'hint', 'thread', 'inspiration'})
 # A fight turn on which no enemy acted says so, so the narrator has nothing to invent for them.
 NO_ENEMY_ACTED = 'No enemy has acted since the last narration.'
 SPOKE = 'The hero spoke: free, nothing is spent and nothing changes. Answer in the scene in at most three sentences.'
+CALLED_OUT = (
+    'The hero called out to {name}, next door in {zone}: {name} may call back at most one sentence, saying nothing new; '
+    'there is no conversation until the hero goes there.'
+)
 LOOKED = 'The hero looked over the fight: free, nothing is spent and nothing changes. Describe what they see in at most two sentences.'
 FINISHER = "Finisher — the player's own words. Tell it faithfully in at most three sentences; add no new facts and no new dangers:"
 SPARED = 'The hero spares the enemy; it is alive and captured.'
@@ -225,6 +242,44 @@ def _finisher_lines(narration: dict[str, Any], state: dict[str, Any]) -> tuple[l
         else []
     )
     return opening, closing
+
+
+def _zone_lines(narration: dict[str, Any]) -> list[str]:
+    """A place with rooms: the hero's step into another zone (its description the first time), a call to someone
+    next door, and the heroes who came running into a fight from another zone."""
+
+    lines = []
+    moved = narration.get('zoneMove') if isinstance(narration.get('zoneMove'), dict) else {}
+    if moved:
+        present = [_text(name) for name in moved.get('present') or [] if _text(name)]
+        lines.append(f"Stepped into {_text(moved.get('phrase'))}{' (' + _join(present) + ' here)' if present else ''}.")
+        if _text(moved.get('description')):
+            lines.append(f'What it is like there: "{_text(moved.get("description"))}"')
+    called = narration.get('callOut') if isinstance(narration.get('callOut'), dict) else {}
+    if called:
+        lines.append(CALLED_OUT.format(name=_text(called.get('name')), zone=_text(called.get('zone'))))
+    started = narration.get('fightStart') if isinstance(narration.get('fightStart'), dict) else {}
+    lines.extend(
+        f"{_text(hero.get('name'))} came running from {_text(hero.get('from'))}."
+        for hero in _dicts(started.get('cameRunning'))
+        if _text(hero.get('name'))
+    )
+    return lines
+
+
+def _fight_positions(state: dict[str, Any], actor_id: str) -> str:
+    """How far everyone standing in the fight is from the acting hero: ``Pale Lantern: out of reach this turn · 60 ft
+    or more; Corin Ashby: in reach``; '' outside a fight."""
+
+    combat = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
+    actor = next((participant for participant in combat['participants'] if _text(participant.get('id')) == actor_id), None)
+    if combat['status'] not in {'starting', 'active'} or actor is None:
+        return ''
+    return '; '.join(
+        f"{_text(participant.get('name'))}: {REACH_LABELS[reach_kind(actor, participant)]}"
+        for participant in combat['participants']
+        if participant is not actor and participant_is_targetable(participant) and _text(participant.get('name'))
+    )
 
 
 def _positions_line(positions: list[dict[str, Any]]) -> str:
@@ -448,6 +503,7 @@ def engine_brief(
         did.append(_text(narration['captivesLeft']))
     if _text(narration.get('arrival')):
         did.append(f"Arrived at {narration['arrival']}.")
+    did.extend(_zone_lines(narration))
     if (narration.get('freeText') or {}).get('kind') == 'speech':
         did.append(SPOKE)
     elif (narration.get('freeText') or {}).get('kind') == 'look' and isinstance(narration.get('positions'), list):
@@ -465,6 +521,7 @@ def engine_brief(
     enemies = [_text(enemy.get('name')) for enemy in _dicts(narration.get('enemies')) if _text(enemy.get('name'))]
     did.extend(_combat_lines(combat_state, changes, enemies, _dicts(narration.get('barks'))))
     did.extend(finisher_closing)
+    did.extend(f'{PERSONAL_THREAD} "{_text(thread.get("text"))}"' for thread in _dicts(narration.get('threads')) if _text(thread.get('text')))
     did.extend(line for beat in beats if (line := _beat_line(beat, taken_coins, acting_hero=acting_hero)))
     did.extend(
         f"Refused: {_text(action.get('reason'))}"
@@ -478,10 +535,20 @@ def engine_brief(
         acting_player_id=player_id,
     )
     scene = projected.get('currentScene') if isinstance(projected, dict) and isinstance(projected.get('currentScene'), dict) else {}
-    objects = [*_dicts(scene.get('interactables')), *_dicts(scene.get('hazards'))]
+    # In a place with rooms only what stands in the hero's own zone is here.
+    zone_here = hero_zone_id(state_after, actor_id)
+    objects = [
+        entry
+        for entry in [*_dicts(scene.get('interactables')), *_dicts(scene.get('hazards'))]
+        if not zone_here or _text(entry.get('zoneId')) == zone_here
+    ]
     items = [item for item in _dicts(scene.get('items')) if _text(item.get('name'))]
     ways = ways_onward(state_after)
-    shops = [shop for shop in _dicts(scene.get('merchants')) if _text(shop.get('name'))]
+    shops = [
+        shop
+        for shop in _dicts(scene.get('merchants'))
+        if _text(shop.get('name')) and (not zone_here or _text(shop.get('zoneId')) == zone_here)
+    ]
     acted = {_text(fact.get('targetId')) for fact in _dicts(narration.get('objects'))}
     acted.update(
         _text((change.get('item') or {}).get('id'))
@@ -513,7 +580,10 @@ def engine_brief(
         ),
         'here': here,
         'place': _place(state_after),
+        **({'where': where} if (where := where_line(state_after, actor_id)) else {}),
+        **({'positions': positions} if (positions := _fight_positions(state_after, actor_id)) else {}),
         'actingHero': acting_hero,
+        **({'hero': hero} if (hero := hero_line(state_after, actor_id)) else {}),
         'heroes': [_text(hero.get('name')) for hero in _dicts(state_after.get('playerCharacters')) if _text(hero.get('name'))],
         'gains': gains,
         'offered': _offered_labels(state_after, actor_id=actor_id, objects=objects, items=items, ways=ways, captives=captives),

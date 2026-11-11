@@ -79,6 +79,29 @@ describe('Editing a character', () => {
     expect(savedPlayer()?.body).toEqual(EDITED_PAYLOAD)
   })
 
+  it("saves the hero's own threads when they were edited, and only then", async () => {
+    appTestState.playerDetails[30] = {
+      ...appTestState.playerDetails[30],
+      character_sheet: { ties: { attachment: { name: 'Edda Vale', relation: 'sister' } } },
+    }
+    await renderStoryApp()
+    fireEvent.click(screen.getByRole('button', { name: 'Open character panel' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit character' }))
+
+    const sheet = await dialogTitled('Edit character', 'h2')
+    const threads = within(sheet).getByRole('region', { name: 'Your own threads' })
+    expect(within(threads).getByRole('textbox', { name: 'Who or what you would not abandon' })).toHaveValue('Edda Vale')
+    expect(within(threads).getByRole('button', { name: 'sister' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(within(threads).getByRole('button', { name: 'to find someone' }))
+    fireEvent.change(within(threads).getByRole('textbox', { name: 'What you carry' }), { target: { value: 'A letter never sent.' } })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(sheet).not.toBeInTheDocument())
+    expect(savedPlayer()?.body).toMatchObject({
+      ties: { desire: { kind: 'find_someone' }, attachment: { name: 'Edda Vale', relation: 'sister' }, burden: 'A letter never sent.' },
+    })
+  })
+
   it('keeps the classic editor in Table tools, saving the same payload for the same edits', async () => {
     await renderLoadedApp()
     fireEvent.click(within(screen.getByLabelText('Character actions')).getByRole('button', { name: 'Edit' }))

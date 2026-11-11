@@ -262,7 +262,15 @@ creature, enemy or new danger unless "Did" says a fight began. On a turn whose
 rolls are shown as roll cards (`state_pipeline.storyRolls`) a last rule says
 the dice are shown and the narration restates no totals, ACs, DCs or damage
 numbers. Each enemy's `Bark:` line (see "Enemy barks") sits under its result,
-to be used word for word when it is speech.
+to be used word for word when it is speech. In a place with rooms (see "Rooms
+and areas") a `Where:` line says who stands where (`Thalion is in the yard with
+Osric Hale and Tovin Bell. Next door, in the common room: Mara Reedwake.`),
+"Here" holds only what is in the acting hero's zone, and "Did" tells a step into
+another zone (with its description the first time) or a call to someone next
+door; in a fight a `Positions:` line gives how far everyone standing is from the
+acting hero in reach words. A rule says that someone or something in another
+area is not here, and that a hand weapon does not strike beyond 5 ft unless
+"Did" says the hero closed in.
 
 Scene objects reach the model's context with their player description, state
 and available labels only; an object's authored description, contents and
@@ -361,6 +369,8 @@ this order:
 | `clue`, `objective_complete`, `objective_new`, `place` | `Clue — {title}`, `Objective complete — {title}`, `New objective — {title}`, `New place on the map — {name}` |
 | `xp`, `level` | `+100 XP`, `Level 2 reached` |
 | `defeat` | `Defeated — you wake later with 1 HP` / `You come to — 1 HP` |
+| `thread` | `A thread of your own — Edda Vale` (a seeking line; any other reads `A thread of your own`); it opens the Journal |
+| `inspiration` | `Inspiration — mercy` |
 | `ending` | `The story ends — {ending title}` |
 
 In party play (more than one hero in the session) one story is shown to every
@@ -409,6 +419,52 @@ tell, the narration is only the line saying who acts next.
   `modifiers: [{"label": "Wounded", "value": -2}]` on its roll event and
   persisted roll, and the scripted narrator names it (`— your wounds cost you
   2`) on the hero's first attack it changes.
+
+### Your hero in the story: own threads and Inspiration
+
+- A hero may carry three threads of their own (`ties` on the character sheet,
+  all optional): what they want (`desire`: one of `to find someone`, `to be
+  recognised`, `to clear a debt`, `to keep a duty`, `to learn what is
+  forbidden`, `to prove someone wrong`, or one line of their own of at most 80
+  characters), who or what they would not abandon (`attachment`: a name of 2–40
+  characters and a relation — sister, brother, mother, father, daughter, son,
+  friend, mentor, old comrade, the one who wronged you, a place, an order, a
+  keepsake; `friend` by default) and what they carry (`burden`: one sentence of
+  at most 120 characters). They are set on the creator's Review step (`Your own
+  threads`) and in the Edit character sheet (`ties` in the create and update
+  payloads; any other sheet field still cannot be written directly), shown on
+  the Character tab, and are part of the player view of one's own hero only.
+  The ready-made heroes carry authored ones (Arden Vale would not abandon his
+  sister Edda Vale and wants to keep a duty).
+- The adventure tells them through its tie lines (see `campaign_packs.md`). A
+  line whose moment comes (an object action that succeeds, a first arrival, an
+  encounter starting, a long rest) fires once per adventure, for a present hero
+  who has that tie: the hero who acted when they have it, else the one with the
+  fewest lines told, the earliest first. No hero with the tie: nothing fires and
+  nothing is shown. A fired line is its own paragraph in the scripted
+  narration, and is given to a narrating model as `Personal thread — tell it in
+  one or two sentences, facts unchanged: "…"`; it makes the `thread` beat, is
+  listed in that player's Journal under `Your threads`, and grants the hero
+  Inspiration. The engine brief's `Hero:` line gives a narrating model the
+  acting hero's desire and attachment; scripted play uses only authored lines.
+  An ending's line follows the ending text for each hero whose seeking line
+  fired.
+- Inspiration: a hero holds at most one (`inspiration` on the hero, kept on the
+  character row; the dock shows a small mark beside their name). It is earned
+  by what a hero does, never by how much they say: a tie line of theirs firing
+  (`a thread of your own`), ending a fight without killing — a surrender or a
+  negotiation on their own turn — or sparing a foe at the finishing blow
+  (`mercy`), and any object action the pack marks `inspires` (its reason). Every
+  grant goes through `hero_threads.grant_inspiration`, which returns the
+  `hero.inspiration` change or nothing when the hero already holds one; only
+  the engine makes `hero.inspiration` and `hero.thread` changes.
+- `Take heart (Inspiration)` spends it: free, in a fight (a fight action that
+  never keeps a turn open, so a hero holding Inspiration still has their turn
+  ended for them) or out of one, told without a model (`You take a breath and
+  remember why you came.`). The hero gains the active effect `inspired`
+  (consumed on `d20`): their next attack roll, ability check or saving throw —
+  their own or one the engine makes for their action — is made with advantage,
+  then it is spent. Leaving the action alone keeps the Inspiration.
 
 ## Dying, Death Saves, Stable and Out of the Fight
 
@@ -627,6 +683,24 @@ spell's duration and repeat saves (see the spell table).
   would bring the target into reach. Taking it spends the move and the action
   and is told as the advance followed by the attack (`You close in on the
   ashmarked cutthroat.`). With the move spent it is not offered.
+- Off the press, two participants in the same outer band (`far` with `far`)
+  can close on each other in one move. A hero in the press (`melee` or `near`)
+  whom no standing enemy holds engaged may advance on an enemy standing off at
+  `far`: the move takes them out to it, and the next move closes in. An enemy group starts a pack fight at its `startBand` (`melee`, `near` or
+  `far`; default `near`), and the fight's opening says where each group stands
+  (`The pale lanterns are well out of reach; the wardbound beast is a move
+  away.`).
+- Distance as players read it: the bands measure distance from the press, not
+  between every pair, so the player view gives each participant's `reach` from
+  the viewing hero with approximate feet (`reachLabel`): `in reach` (engaged, or
+  both in the press), `a move away · about 30 ft` (it can be closed on this
+  turn), `out of reach this turn · 60 ft or more` (it cannot), or `far off`
+  (`distant`). The fight ribbon shows those words in place of the band, and a
+  hand weapon or hold that cannot reach a target says so in them: `The pale
+  lantern is out of reach this turn. Advance first, or use something with
+  range.` (typed words such as `I stab the lantern` are refused with the same
+  reason; a stab or a cut is always a hand weapon's). An enemy coming in is told
+  in distance words (`The wardbound beast crosses about thirty feet to you.`).
 
 ### Reactions
 
@@ -1149,6 +1223,41 @@ Potion of Healing, and clerics and druids also carry a Healer's Kit.
   and is rejected during combat. Location items, NPC presence, quest IDs,
   description, danger, and scene data are cached and restored when the party
   returns.
+
+### Rooms and areas
+
+- A pack place may divide into `zones` (see `docs/campaign_packs.md`, Rooms
+  and Areas; engine `aidm_server/game_state/zones.py`). Each hero stands in one
+  (`currentScene.playerZones`); arrival stands everyone in the place's start
+  zone, and the party may split.
+- A hero acts only on what stands in their own zone. Outside a fight an action,
+  a conversation or typed words aimed at someone or something next door step
+  the hero in first, in the same turn and narration
+  (`game_state/orchestration/zone_turns.py`); a step that starts something
+  stops there. Anything two or more zones off, or next door during a fight, is
+  refused before narration with where it is (`Mara Reedwake is in the common
+  room. Go there first.`), as is a rest outside the rest zones. Travel is
+  never refused for the room a hero stands in: the party gathers and sets out.
+  Words said to someone next door are a
+  call, answered in one line with nothing new.
+- Stepping into a zone (`scene.zone_move`, the `zone_move` intent or typed
+  words such as `I go into the common room`) takes a turn and no clock time.
+  The engine tells it with any narrator and calls no model, before or after
+  narration: `You step into the common room.`, the zone's description the
+  first time, then who is there; the first visit's beat is `Found — The Common
+  Room` (`place_within`).
+- A fight takes in every hero at the place: those in other zones start `far`
+  off and the opening says they come running (`Corin Ashby comes running from
+  the common room.`). No zone moves are made during it, and when it ends every
+  hero, and its captives, stand in its zone.
+- The player view lists the known zones (stood in or next to) as
+  `currentScene.zones`, marks objects and merchants with their `zoneId`, leaves
+  out objects in zones nobody knows yet and merchants out of reach. The Story
+  view shows a where-line under the scene's name (the viewer's zone first, in
+  the accent; a zone next door is a link that steps in; at phone width only the
+  viewer's zone, the rest on a tap), offers what stands next door after what is
+  here, marked with its zone (`Talk to Mara Reedwake · common room`), then the
+  moves next door, and lists the zones under `THIS PLACE` on the Map tab.
 - Typed pickup and drop resolve exact item IDs and fail closed for stale IDs;
   partial-stack moves receive a derived identity with `splitFromItemId`. A
   free-form narrated sentence cannot mint a new inventory item.

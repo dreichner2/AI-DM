@@ -240,8 +240,9 @@ def test_the_owners_fight_replayed_tackle_yield_captive_questions_and_leaving_it
     combat = table.combat()
     assert (combat['status'], combat['flags']['endReason']) == ('ended', 'enemies_surrendered')
     assert combat['flags']['lastOutcomeRewards']['outcome'] == 'surrender'
+    # Held where the fight was: the inn's yard.
     assert table.snapshot()['currentScene']['captives'] == [
-        {'id': enemy['id'], 'name': 'Ashmarked Cutthroat', 'enemyId': 'enemy_ashmarked_cutthroats'}
+        {'id': enemy['id'], 'name': 'Ashmarked Cutthroat', 'enemyId': 'enemy_ashmarked_cutthroats', 'zoneId': 'inn_yard'}
     ]
 
     told = []
@@ -276,6 +277,7 @@ def test_the_captive_is_in_the_player_view_with_its_question(table):
             'name': 'Ashmarked Cutthroat',
             'enemyId': 'enemy_ashmarked_cutthroats',
             'offeredActions': [{'kind': 'talk', 'label': 'Question Ashmarked Cutthroat'}],
+            'zoneId': 'inn_yard',
         }
     ]
 

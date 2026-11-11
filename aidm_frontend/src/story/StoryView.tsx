@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from 'react'
+import { isRecord } from '../gameSelectors'
 import { whenIdle } from '../lazyModule'
 import { useStorySound } from './audio/useStorySound'
 import { heroHasSpells } from './heroSpells'
@@ -25,6 +26,12 @@ function typingInField(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false
   if (target.isContentEditable) return true
   return Boolean(target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]'))
+}
+
+/** The hero holds Inspiration (`inspiration` on their record in the session snapshot). */
+function holdsInspiration(snapshot: unknown, playerId: number | null) {
+  const heroes = isRecord(snapshot) && Array.isArray(snapshot.playerCharacters) ? snapshot.playerCharacters : []
+  return heroes.some((hero) => isRecord(hero) && hero.playerId === playerId && hero.inspiration === true)
 }
 
 function modalDialogOpen() {
@@ -54,6 +61,7 @@ export function StoryView({
   const party = partyWithViewer(board.activePlayers, viewer)
   const snapshot = board.sessionState?.state_snapshot
   const vitality = useMemo(() => partyHeroVitality(snapshot), [snapshot])
+  const viewerInspired = useMemo(() => holdsInspiration(snapshot, viewerPlayerId), [snapshot, viewerPlayerId])
   // Dying, stable, unconscious or out of the fight: the hero is down whatever their hit points say.
   const viewerDown =
     viewerPlayerId !== null && (Boolean(vitality[viewerPlayerId]) || (viewer?.health ? viewer.health.currentHp <= 0 : false))
@@ -139,6 +147,7 @@ export function StoryView({
         activePlayers={party}
         viewerPlayerId={viewerPlayerId}
         vitality={vitality}
+        viewerInspired={viewerInspired}
         onDrawerOpenChange={onDrawerOpenChange}
       />
     </div>

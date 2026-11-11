@@ -4,7 +4,8 @@ import type { JsonRecord } from '../../types'
 /**
  * The server's player-safe journal (`state_snapshot.journal`): the quest and
  * its current stage, the objectives the party has completed or is working on
- * (never later ones), and only the clues, people and places the party knows.
+ * (never later ones), only the clues, people and places the party knows, and
+ * the threads of the viewer's own hero the adventure has told.
  */
 export type StoryJournal = {
   quest: {
@@ -19,6 +20,7 @@ export type StoryJournal = {
   clues: Array<{ id: string; title: string; text: string }>
   people: Array<{ id: string; name: string; role: string; summary: string }>
   places: Array<{ id: string; name: string; state: string }>
+  threads: Array<{ id: string; title: string; text: string }>
 }
 
 function records(value: unknown): JsonRecord[] {
@@ -69,5 +71,8 @@ export function storyJournalFromSnapshot(snapshot: unknown): StoryJournal | null
     places: records(journal.places)
       .map((place) => ({ id: stringValue(place.id), name: stringValue(place.name), state: stringValue(place.state) }))
       .filter((place) => place.name),
+    threads: records(journal.threads)
+      .map((thread) => ({ id: stringValue(thread.id), title: stringValue(thread.title), text: stringValue(thread.text) }))
+      .filter((thread) => thread.text),
   }
 }

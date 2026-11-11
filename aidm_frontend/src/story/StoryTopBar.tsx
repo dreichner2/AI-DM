@@ -29,9 +29,11 @@ import {
   VolumeX,
   type LucideIcon,
 } from 'lucide-react'
-import { UNRECORDED_SCENE_NAME } from '../gameSelectors'
+import { UNRECORDED_SCENE_NAME, type WorldZoneSummary } from '../gameSelectors'
+import { lazyModule } from '../lazyModule'
 import type { SessionBoardProps } from '../SessionBoard'
 import type { ActivePlayer } from '../types'
+import { zoneMoveSubmission } from './actionIntents'
 import { EmberMark } from './glyphs'
 import type { StoryTextSize } from './sheets/storyPreferences'
 import { accountSheetChunk, preloadStoryDrawer, sessionDialogsChunk, settingsSheetChunk } from './storyChunks'
@@ -40,6 +42,8 @@ import type { StoryChromeProps, StoryDrawerTab } from './types'
 const SceneMusicPlayer = lazy(() =>
   import('../SceneMusicPlayer').then((module) => ({ default: module.SceneMusicPlayer })),
 )
+// Who stands where, only in a place with rooms: it follows the first paint.
+const StoryWhereLine = lazyModule(() => import('./StoryWhereLine')).component((module) => module.StoryWhereLine)
 
 const SAFE_MODE_TITLE = 'No AI provider is connected. The built-in narrator is running the adventure.'
 const TEXT_SIZES: ReadonlyArray<[StoryTextSize, string]> = [
@@ -193,6 +197,12 @@ export function StoryTopBar({
     : ''
   const characterOpen = drawerOpen && drawerTab === 'character'
   const clockLabel = begun ? board.worldState.clock?.label ?? '' : ''
+  const zones = begun ? board.worldState.zones ?? [] : []
+  const composer = board.actionComposerProps
+  const moveInto = (zone: WorldZoneSummary) => {
+    const { message, intent } = zoneMoveSubmission(zone)
+    composer.submitAction(message, intent)
+  }
 
   useEffect(() => {
     if (!menuOpen) return
@@ -338,6 +348,16 @@ export function StoryTopBar({
             <SceneName key={board.campaign?.campaign_id ?? 'none'} name={sceneName} />
             {clockLabel ? <span className="story-clock">{clockLabel}</span> : null}
           </span>
+          {zones.length ? (
+            <Suspense fallback={null}>
+              <StoryWhereLine
+                zones={zones}
+                viewerId={composer.selectedPlayerId ? `player_${composer.selectedPlayerId}` : ''}
+                canMove={!board.worldState.combat.active && !board.sendPending && !board.streamingTurnActive}
+                onMove={moveInto}
+              />
+            </Suspense>
+          ) : null}
         </div>
         {hero ? <HeroHp hero={hero} down={heroDown} onOpen={() => onDrawerOpenChange(true, 'character')} /> : null}
       </div>

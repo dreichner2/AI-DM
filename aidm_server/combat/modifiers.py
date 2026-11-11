@@ -11,7 +11,9 @@ Active effects (``participant['activeEffects']``) share one shape::
     {"id", "sourceId", "sourceName", "casterId", "modifiers": {...},
      "duration": {"rounds": n, "tickOn": "target_turn_start" | "target_turn_end" | "caster_turn_end"
                   | "caster_turn_start"} | None,
-     "concentration": bool, "consumeOn": "attack" | "attacked" | "save" | "check" | None}
+     "concentration": bool, "consumeOn": "attack" | "attacked" | "save" | "check" | "d20" | None}
+
+``consumeOn: "d20"`` is spent by the bearer's own next attack, save or check, whichever comes first.
 
 An effect may also maintain a condition (``condition``) and carry ``castId`` and
 ``preserveConditionOnExpiry``.  ``endsWhen`` lists events that end it early:
@@ -79,7 +81,10 @@ MODIFIER_ENGINE_SOURCE = 'modifier_engine'
 ROLL_MODES = ('advantage', 'disadvantage')
 EFFECT_TICKS = frozenset({'target_turn_start', 'target_turn_end', 'caster_turn_end', 'caster_turn_start'})
 LEGACY_EFFECT_TICKS = {'source_turn_end': 'caster_turn_end'}
-CONSUME_EVENTS = frozenset({'attack', 'attacked', 'save', 'check'})
+# The bearer's own d20 rolls: an effect consumed on ``d20`` is spent by the first of them.
+D20_CONSUME_EVENT = 'd20'
+D20_EVENTS = frozenset({'attack', 'save', 'check'})
+CONSUME_EVENTS = frozenset({*D20_EVENTS, 'attacked', D20_CONSUME_EVENT})
 ENDS_WITHOUT_ATTACK_OR_DAMAGE = 'no_attack_or_damage_since_last_turn'
 
 # Participants with these conditions have left the fight: no turns, no targeting.
@@ -328,7 +333,7 @@ def _finish(result: dict[str, Any]) -> dict[str, Any]:
 def _consume(result: dict[str, Any], participant: Mapping[str, Any] | None, event: str) -> None:
     participant_id = _participant_id(participant)
     for effect in active_effects(participant):
-        if effect['consumeOn'] == event:
+        if effect['consumeOn'] == event or (effect['consumeOn'] == D20_CONSUME_EVENT and event in D20_EVENTS):
             result['consume'].append({'participantId': participant_id, 'effectId': effect['id']})
 
 

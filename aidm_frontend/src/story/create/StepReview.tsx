@@ -2,6 +2,7 @@ import type { RefObject } from 'react'
 import { skillName } from './creationRules'
 import {
   FIGHTING_STYLES,
+  heroBackground,
   heroClass,
   heroDescriptor,
   heroFightingStyle,
@@ -11,15 +12,17 @@ import {
   proficientSkills,
   type HeroDraft,
 } from './createHeroModel'
+import { HeroTiesFields } from './HeroTiesFields'
 import { HeroNumbersRow } from './StepShape'
 
 type StepReviewProps = {
   draft: HeroDraft
   headingRef: RefObject<HTMLHeadingElement | null>
+  onChange: (change: (current: HeroDraft) => HeroDraft) => void
 }
 
-/** Step 4: the finished hero, read back before they join the campaign. */
-export function StepReview({ draft, headingRef }: StepReviewProps) {
+/** Step 4: the finished hero, read back before they join the campaign, with their own threads. */
+export function StepReview({ draft, headingRef, onChange }: StepReviewProps) {
   const entry = heroClass(draft)
   const style = heroFightingStyle(draft)
   const expertise = new Set(draft.expertise)
@@ -43,44 +46,53 @@ export function StepReview({ draft, headingRef }: StepReviewProps) {
         <HeroNumbersRow draft={draft} />
       </div>
 
-      <dl className="story-create-sheet story-create-rise">
-        <div>
-          <dt className="story-label">Skills</dt>
-          <dd>{skills.length ? skills.join(', ') : 'None yet'}</dd>
-        </div>
-        <div>
-          <dt className="story-label">Languages</dt>
-          <dd>{heroLanguages(draft).join(', ')}</dd>
-        </div>
-        {style && entry?.fightingStyle ? (
+      <div className="story-create-review-side story-create-rise">
+        <dl className="story-create-sheet">
           <div>
-            <dt className="story-label">Fighting style</dt>
-            <dd>
-              {FIGHTING_STYLES[style].name}
-              {entry.fightingStyle.fromLevel > 1 ? `, from level ${entry.fightingStyle.fromLevel}` : ''}
-            </dd>
+            <dt className="story-label">Skills</dt>
+            <dd>{skills.length ? skills.join(', ') : 'None yet'}</dd>
           </div>
-        ) : null}
-        <div>
-          <dt className="story-label">Starting kit</dt>
-          <dd>{entry ? entry.kit.join(', ') : 'Set for your calling when you begin.'}</dd>
-        </div>
-        {entry?.cantrips.length || entry?.spells.length ? (
-          <div className="story-create-sheet-spells">
-            <dt className="story-label">Spells</dt>
-            {entry.cantrips.length ? (
-              <dd>
-                <span className="story-create-spell-level">Cantrips</span> {entry.cantrips.join(', ')}
-              </dd>
-            ) : null}
-            {entry.spells.length ? (
-              <dd>
-                <span className="story-create-spell-level">1st level</span> {entry.spells.join(', ')}
-              </dd>
-            ) : null}
+          <div>
+            <dt className="story-label">Languages</dt>
+            <dd>{heroLanguages(draft).join(', ')}</dd>
           </div>
-        ) : null}
-      </dl>
+          {style && entry?.fightingStyle ? (
+            <div>
+              <dt className="story-label">Fighting style</dt>
+              <dd>
+                {FIGHTING_STYLES[style].name}
+                {entry.fightingStyle.fromLevel > 1 ? `, from level ${entry.fightingStyle.fromLevel}` : ''}
+              </dd>
+            </div>
+          ) : null}
+          <div>
+            <dt className="story-label">Starting kit</dt>
+            <dd>{entry ? entry.kit.join(', ') : 'Set for your calling when you begin.'}</dd>
+          </div>
+          {entry?.cantrips.length || entry?.spells.length ? (
+            <div className="story-create-sheet-spells">
+              <dt className="story-label">Spells</dt>
+              {entry.cantrips.length ? (
+                <dd>
+                  <span className="story-create-spell-level">Cantrips</span> {entry.cantrips.join(', ')}
+                </dd>
+              ) : null}
+              {entry.spells.length ? (
+                <dd>
+                  <span className="story-create-spell-level">1st level</span> {entry.spells.join(', ')}
+                </dd>
+              ) : null}
+            </div>
+          ) : null}
+        </dl>
+        <HeroTiesFields
+          draft={draft.ties}
+          heroName={draft.name}
+          ancestry={draft.ancestry}
+          backgroundId={heroBackground(draft)?.id ?? null}
+          onChange={(change) => onChange((current) => ({ ...current, ties: { ...current.ties, ...change } }))}
+        />
+      </div>
     </div>
   )
 }

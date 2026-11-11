@@ -1,0 +1,56 @@
+/*
+ * `Your own threads` (HeroTiesFields): the hero's desire, the one they would not
+ * abandon and what they carry, as quiet label lines with text choices, in the
+ * creator's Review step and the character editor. Loaded with them.
+ */
+
+.story-ties {
+  display: grid;
+  gap: var(--story-gap-4);
+  margin: 0;
+}
+.story-ties h3 { margin: 0; }
+.story-ties-line {
+  display: grid;
+  gap: 8px;
+}
+.story-ties-label {
+  margin: 0;
+  font-family: var(--story-prose);
+  font-size: 1.08rem;
+  line-height: 1.3;
+  color: var(--story-ink-soft);
+}
+.story-ties-choices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 18px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+.story-ties-choices .story-link:disabled { color: var(--story-faint); }
+.story-ties-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--story-gap-3);
+}
+.story-ties-row .story-link { flex: none; font-size: 0.9rem; }
+.story-ties-input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  padding: 4px 0 6px;
+  border: 0;
+  border-bottom: 1px solid var(--story-hairline-strong);
+  border-radius: 0;
+  outline: none;
+  background: none;
+  font: inherit;
+  font-size: 0.98rem;
+  color: var(--story-ink);
+  caret-color: var(--story-ember);
+}
+.story-ties-input::placeholder { font-style: italic; color: var(--story-faint); }
+.story-ties-input:focus-visible { border-bottom-color: var(--story-ember-soft); }
+.story-ties-input:disabled { color: var(--story-faint); }

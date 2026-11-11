@@ -133,7 +133,8 @@
             "inspect": [
               "clue_erased_caravan_ledger"
             ]
-          }
+          },
+          "zoneId": "inn_yard"
         },
         {
           "id": "inn_drivers_bench",
@@ -168,7 +169,8 @@
               "quantity": 1,
               "description": "A flat iron key on a greasy leather thong, its bow stamped with a wagon wheel."
             }
-          ]
+          ],
+          "zoneId": "inn_yard"
         },
         {
           "id": "inn_lead_wagon",
@@ -190,7 +192,8 @@
             "search": [
               "clue_ash_marks"
             ]
-          }
+          },
+          "zoneId": "inn_yard"
         },
         {
           "id": "inn_wagon_strongbox",
@@ -252,7 +255,8 @@
             "search": [
               "clue_road_stone_fragment"
             ]
-          }
+          },
+          "zoneId": "inn_yard"
         },
         {
           "id": "inn_wagon_bell",
@@ -274,9 +278,56 @@
           },
           "actionText": {
             "use": "You strike the bell. It gives one low note that hangs over the yard longer than it should. Far out on the dark hills a pale light kindles, then another, as if something on the old road had been waiting to answer."
-          }
+          },
+          "zoneId": "inn_yard"
+        },
+        {
+          "id": "inn_marked_mare",
+          "name": "The Off-Leader Mare",
+          "kind": "object",
+          "allowedActions": [
+            "inspect"
+          ],
+          "actionLabels": {
+            "inspect": "Look over the off-leader"
+          },
+          "description": "The off-side mare of the caravan's lead pair, dappled grey and rain-dark. On her neck a white dust handprint, five fingers spread, as if someone had patted her and told her to stand. She is not afraid; she stands easy, ears forward, as calm as the rest of the team.",
+          "playerDescription": "The off-side mare of the caravan's lead pair stands quiet in her stall, rain still dark on her grey coat.",
+          "zoneId": "inn_stable"
         }
-      ]
+      ],
+      "zones": [
+        {
+          "id": "inn_yard",
+          "name": "The Yard",
+          "moveLabel": "Step out to the yard",
+          "exit": true,
+          "adjacentTo": [
+            "inn_common_room",
+            "inn_stable"
+          ],
+          "description": "Rain runs off the eaves into the churned mud of the yard, where the empty caravan stands under the light of the lantern tower."
+        },
+        {
+          "id": "inn_common_room",
+          "name": "The Common Room",
+          "moveLabel": "Go into the common room",
+          "rest": true,
+          "adjacentTo": [
+            "inn_yard"
+          ],
+          "description": "A low room warmed by a peat fire, its scrubbed tables and hanging lamps half empty tonight, with a counter of jars and barrels at the back."
+        },
+        {
+          "id": "inn_stable",
+          "name": "The Stable",
+          "adjacentTo": [
+            "inn_yard"
+          ],
+          "description": "Straw, warm horse-breath and lamplight: the caravan's team stands quiet in the stalls, far calmer than horses that came off that road should be."
+        }
+      ],
+      "startZoneId": "inn_yard"
     },
     {
       "id": "loc_old_north_road",
@@ -337,7 +388,8 @@
             "inspect": [
               "clue_ash_marks"
             ]
-          }
+          },
+          "zoneId": "road_crown"
         },
         {
           "id": "road_abandoned_cart",
@@ -365,9 +417,30 @@
                 "gp": 8
               }
             }
-          ]
+          ],
+          "zoneId": "road_crown"
         }
-      ]
+      ],
+      "zones": [
+        {
+          "id": "road_crown",
+          "name": "The Road",
+          "exit": true,
+          "adjacentTo": [
+            "road_verge"
+          ],
+          "description": "The old road runs north between leaning milestones, its stones pale with a dust the rain does not wash away."
+        },
+        {
+          "id": "road_verge",
+          "name": "The Ditch and Verge",
+          "adjacentTo": [
+            "road_crown"
+          ],
+          "description": "A rain-choked ditch below the edge of the road, thick with bracken and the litter of travellers who left in a hurry."
+        }
+      ],
+      "startZoneId": "road_crown"
     },
     {
       "id": "loc_waystation_scratched_names",
@@ -444,7 +517,8 @@
             "search": [
               "clue_scratched_memorial_names"
             ]
-          }
+          },
+          "zoneId": "ws_court"
         },
         {
           "id": "ws_cold_hearth",
@@ -477,7 +551,8 @@
             "search": [
               "clue_original_road_oath"
             ]
-          }
+          },
+          "zoneId": "ws_hall"
         },
         {
           "id": "ws_lockbox",
@@ -528,9 +603,39 @@
             "search": [
               "clue_cinder_scribe_true_name"
             ]
-          }
+          },
+          "zoneId": "ws_stable"
         }
-      ]
+      ],
+      "zones": [
+        {
+          "id": "ws_court",
+          "name": "The Court",
+          "exit": true,
+          "adjacentTo": [
+            "ws_hall",
+            "ws_stable"
+          ],
+          "description": "A walled court of cracked flagstones before the waystation, its memorial wall crowded with scratched-out names."
+        },
+        {
+          "id": "ws_hall",
+          "name": "The Roofless Hall",
+          "adjacentTo": [
+            "ws_court"
+          ],
+          "description": "The waystation hall stands open to the sky, rain falling on a cold hearth and on benches no one has sat on in years."
+        },
+        {
+          "id": "ws_stable",
+          "name": "The Collapsed Stable",
+          "adjacentTo": [
+            "ws_court"
+          ],
+          "description": "Half the stable roof lies in the stalls, beams and slate heaped over the mangers where the wardens' horses once stood."
+        }
+      ],
+      "startZoneId": "ws_court"
     },
     {
       "id": "loc_cairns_roadwardens",
@@ -677,9 +782,30 @@
             "inspect": [
               "loc_valley_last_road_stone"
             ]
-          }
+          },
+          "zoneId": "yard_workshop"
         }
-      ]
+      ],
+      "zones": [
+        {
+          "id": "yard_open",
+          "name": "The Yard",
+          "exit": true,
+          "adjacentTo": [
+            "yard_workshop"
+          ],
+          "description": "Blocks of dressed stone lie in rows across the yard, each chalked with a mason's mark and a road-mile number."
+        },
+        {
+          "id": "yard_workshop",
+          "name": "The Workshop",
+          "adjacentTo": [
+            "yard_open"
+          ],
+          "description": "A long shed smelling of stone dust and lamp oil, its benches covered in chisels, rubbings and half-carved milestones."
+        }
+      ],
+      "startZoneId": "yard_open"
     },
     {
       "id": "loc_ridge_and_culvert_paths",
@@ -754,9 +880,30 @@
           },
           "actionText": {
             "unlock": "You set your shoulder to the grate and heave. Rust shrieks, the rotten pins give, and the iron swings wide. Cold air breathes out of the dark, smelling of wet stone and pale bark."
-          }
+          },
+          "zoneId": "ridge_culvert"
         }
-      ]
+      ],
+      "zones": [
+        {
+          "id": "ridge_path",
+          "name": "The Ridge Path",
+          "exit": true,
+          "adjacentTo": [
+            "ridge_culvert"
+          ],
+          "description": "A narrow path along the top of the ridge, open to the wind, with the valley road glimpsed far below through the mist."
+        },
+        {
+          "id": "ridge_culvert",
+          "name": "The Culvert Mouth",
+          "adjacentTo": [
+            "ridge_path"
+          ],
+          "description": "Below the path a stone culvert drains the hillside through an iron grate furred with rust and old ward-chalk."
+        }
+      ],
+      "startZoneId": "ridge_path"
     },
     {
       "id": "loc_valley_last_road_stone",
@@ -896,7 +1043,8 @@
             "break": "You bring the mason's hammer down where the names run thickest. The stone splits with a sound like a held breath let go. The fog tears, the missing stumble out blinking into the cold — and far away, on every road the ward once kept, the lanterns go dark for good.",
             "lock": "You speak the oath, not as a promise but as a door closing. The pale trees lean in, the roads fold away one by one, and the valley settles back into a place no map will hold. Whatever waits in the fog waits there still.",
             "trigger": "You lay your hand flat on the stone and do not ask. Every road in the west turns its face toward you. The names in the stone go quiet, waiting to hear which of them you will keep."
-          }
+          },
+          "zoneId": "valley_stone"
         },
         {
           "id": "valley_false_refuge",
@@ -914,9 +1062,39 @@
             "inspect": [
               "clue_false_refuge"
             ]
-          }
+          },
+          "zoneId": "valley_refuge"
         }
-      ]
+      ],
+      "zones": [
+        {
+          "id": "valley_rim",
+          "name": "The Rim",
+          "exit": true,
+          "adjacentTo": [
+            "valley_refuge",
+            "valley_stone"
+          ],
+          "description": "From the rim of the valley the last road falls away in switchbacks toward a ring of standing stones in the mist."
+        },
+        {
+          "id": "valley_refuge",
+          "name": "The False Refuge",
+          "adjacentTo": [
+            "valley_rim"
+          ],
+          "description": "A sheltered hollow with a fire-ring and a dry overhang, more welcoming than any place this far down the road has a right to be."
+        },
+        {
+          "id": "valley_stone",
+          "name": "The Stone Circle",
+          "adjacentTo": [
+            "valley_rim"
+          ],
+          "description": "A ring of weathered standing stones around one pale, upright road-stone, the air inside it utterly still."
+        }
+      ],
+      "startZoneId": "valley_rim"
     }
   ],
   "npcs": [
@@ -949,7 +1127,8 @@
         "Can identify forged travel records or suspicious strangers"
       ],
       "ifSkipped": "Move her key information to a stablehand, the caravan ledger, a frightened traveler, or road signs on the first journey.",
-      "gmNotes": "Do not make Mara helpless. She is not a combatant, but she is competent, respected, and emotionally grounded."
+      "gmNotes": "Do not make Mara helpless. She is not a combatant, but she is competent, respected, and emotionally grounded.",
+      "zoneId": "inn_common_room"
     },
     {
       "id": "npc_tovin_bell",
@@ -979,7 +1158,8 @@
         "Can trigger a rescue complication if he runs off to prove himself"
       ],
       "ifSkipped": "His facts can be discovered by inspecting the horses, wagon wheels, bell, and driver's bench.",
-      "gmNotes": "If intimidated, Tovin gives useful information but hides the silver button unless later reassured."
+      "gmNotes": "If intimidated, Tovin gives useful information but hides the silver button unless later reassured.",
+      "zoneId": "inn_yard"
     },
     {
       "id": "npc_osric_hale",
@@ -1010,7 +1190,8 @@
         "Can become an ally if persuaded rather than humiliated"
       ],
       "ifSkipped": "Osric's choices still affect the world: roads close, supplies run low, or settlement guards arrive late and angry.",
-      "gmNotes": "Osric is not a villain. He is the campaign's mundane version of the Cinder Scribe's temptation: safety through control."
+      "gmNotes": "Osric is not a villain. He is the campaign's mundane version of the Cinder Scribe's temptation: safety through control.",
+      "zoneId": "inn_yard"
     },
     {
       "id": "npc_brokk_stonehand",
@@ -1040,7 +1221,8 @@
         "Can prepare a destruction, renewal, or concealment method for the final stone"
       ],
       "ifSkipped": "Stone lore can be recovered from Serenil, Radan's map, the memorial wall, or the final road-stone itself.",
-      "gmNotes": "If angered, Brokk refuses to travel but leaves a charcoal rubbing that still helps the party."
+      "gmNotes": "If angered, Brokk refuses to travel but leaves a charcoal rubbing that still helps the party.",
+      "zoneId": "yard_open"
     },
     {
       "id": "npc_radan_greycloak",
@@ -1071,7 +1253,8 @@
         "Can point to the ridge path around the cairns"
       ],
       "ifSkipped": "His warning can appear through enemy tracks, a dead scout's map, a shepherd's testimony, or a road sign pointing two directions at once.",
-      "gmNotes": "Radan should help without replacing the players. If they rely on him too much, call him away to protect another settlement."
+      "gmNotes": "Radan should help without replacing the players. If they rely on him too much, call him away to protect another settlement.",
+      "zoneId": "road_crown"
     },
     {
       "id": "npc_serenil_westward_song",
@@ -1102,7 +1285,8 @@
         "Can help cleanse the final ward"
       ],
       "ifSkipped": "The song can be carved into a waystation beam, remembered by an old shepherd, heard from the spirits, or revealed by the final road-stone.",
-      "gmNotes": "Serenil should not become a walking encyclopedia. Let her answer with memory, image, and warning."
+      "gmNotes": "Serenil should not become a walking encyclopedia. Let her answer with memory, image, and warning.",
+      "zoneId": "ws_hall"
     },
     {
       "id": "npc_veyra_ashcap",
@@ -1133,7 +1317,8 @@
         "Can sabotage the binding ledger in the finale if redeemed"
       ],
       "ifSkipped": "Her information can be recovered from ash-coded notes, a captured scout, a marked road sign, or a prisoner in the final valley.",
-      "gmNotes": "If threatened or humiliated, Veyra may betray the party. If protected, she can reveal a safer route into the final valley."
+      "gmNotes": "If threatened or humiliated, Veyra may betray the party. If protected, she can reveal a safer route into the final valley.",
+      "zoneId": "road_verge"
     },
     {
       "id": "npc_caelorn_erased",
@@ -2818,7 +3003,8 @@
             }
           ]
         }
-      }
+      },
+      "zoneId": "inn_yard"
     },
     {
       "id": "enc_pale_lantern_detour",
@@ -2855,7 +3041,8 @@
       "enemyGroups": [
         {
           "enemyId": "enemy_pale_lanterns",
-          "count": 2
+          "count": 2,
+          "startBand": "far"
         },
         {
           "enemyId": "enemy_wardbound_beasts",
@@ -2873,7 +3060,8 @@
       "rewards": {
         "xp": 150,
         "gp": 20
-      }
+      },
+      "zoneId": "road_crown"
     },
     {
       "id": "enc_waystation_ambush",
@@ -3001,7 +3189,8 @@
             }
           ]
         }
-      }
+      },
+      "zoneId": "ws_court"
     },
     {
       "id": "enc_roadwarden_judgment",
@@ -3164,7 +3353,8 @@
       "enemyGroups": [
         {
           "enemyId": "enemy_hollow_marshal",
-          "count": 1
+          "count": 1,
+          "startBand": "far"
         },
         {
           "enemyId": "enemy_name_eaten_roadwardens",
@@ -3182,7 +3372,8 @@
       "rewards": {
         "xp": 700,
         "gp": 80
-      }
+      },
+      "zoneId": "road_crown"
     },
     {
       "id": "enc_final_binding",
@@ -3222,7 +3413,8 @@
       "enemyGroups": [
         {
           "enemyId": "enemy_cinder_scribe",
-          "count": 1
+          "count": 1,
+          "startBand": "far"
         },
         {
           "enemyId": "enemy_ashmarked_cutthroats",
@@ -3323,7 +3515,8 @@
           ],
           "text": "The nameless dead stand aside. They will not fight for him."
         }
-      ]
+      ],
+      "zoneId": "valley_stone"
     }
   ],
   "segments": [
@@ -4339,6 +4532,74 @@
           "quantity": 1
         }
       ]
+    }
+  ],
+  "tieLines": [
+    {
+      "id": "tie_ledger_name",
+      "kind": "seeking",
+      "at": {
+        "objectId": "inn_caravan_ledger",
+        "action": "inspect"
+      },
+      "text": "One name on the last page is not quite gone. Under the black stroke you can still read it: {name}."
+    },
+    {
+      "id": "tie_memorial_name",
+      "kind": "seeking",
+      "at": {
+        "objectId": "ws_memorial_wall",
+        "action": "inspect"
+      },
+      "text": "Among the fresh chisel-scars one name has been cut away twice, as if once was not enough: {name}."
+    },
+    {
+      "id": "tie_scribe_binding",
+      "kind": "seeking",
+      "at": {
+        "encounterId": "enc_final_binding"
+      },
+      "text": "\"You came for {name},\" the Scribe says, without looking up. \"Everyone comes for someone. That is what makes the binding hold.\""
+    },
+    {
+      "id": "tie_burden_first_rest",
+      "kind": "burden",
+      "at": {
+        "longRest": true
+      },
+      "text": "Sleep does not come at once. You turn it over again in the dark: {burden}"
+    },
+    {
+      "id": "tie_ending_road_remembers",
+      "kind": "seeking",
+      "at": {
+        "ending": "ward_renewed"
+      },
+      "text": "{name} is among those who walk out of the valley at dawn: thinner, blinking, alive."
+    },
+    {
+      "id": "tie_ending_only_a_road",
+      "kind": "seeking",
+      "at": {
+        "ending": "ward_broken"
+      },
+      "text": "{name} walks out with the others, and does not remember the road at all. Perhaps that is a mercy."
+    },
+    {
+      "id": "tie_ending_no_map",
+      "kind": "seeking",
+      "at": {
+        "ending": "ward_hidden"
+      },
+      "text": "Of {name} there is no sign — only a milestone that bears the name now, freshly cut, where there was none before."
+    },
+    {
+      "id": "tie_ending_warden_of_the_west",
+      "kind": "seeking",
+      "at": {
+        "ending": "ward_claimed"
+      },
+      "text": "{name} kneels with the rest as you pass. You tell yourself that is not why you did it."
     }
   ]
 }

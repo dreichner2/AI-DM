@@ -191,6 +191,14 @@ describe('StoryComposer', () => {
     }
   })
 
+  it('says why the table refused an action instead of dropping it in silence', () => {
+    const refusal = 'Arden Vale has the spotlight. Your action was not sent; your draft is kept.'
+    const { container } = renderComposer({ composer: { turnRejectionMessage: refusal } })
+
+    expect(statusLine(container)).toBe(refusal)
+    expect(container.querySelector('.story-dock-status')).toHaveAttribute('role', 'alert')
+  })
+
   it('wires the recovery, connection and operational-error lines to their actions', () => {
     const { props } = renderComposer({
       board: { operationalError: 'Lost sync' },

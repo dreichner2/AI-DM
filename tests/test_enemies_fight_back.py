@@ -68,7 +68,7 @@ def test_with_the_move_spent_an_attack_out_of_reach_is_not_offered():
     attack = _action(_bundle(state), 'combat.attack.blade')
 
     assert (attack['available'], attack.get('requiresMove')) == (False, None)
-    assert attack['targets'][0]['reason'] == 'Target is at near range.'
+    assert attack['targets'][0]['reason'] == 'The enemy 1 is a move away. Advance first, or use something with range.'
 
 
 def test_an_attack_in_reach_needs_no_move():

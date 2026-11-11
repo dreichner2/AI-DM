@@ -166,6 +166,16 @@ function snapshot() {
 }
 
 describe('gameplayControlsFromSnapshot', () => {
+  it('offers Take heart while the hero holds Inspiration and has not yet taken heart', () => {
+    const state = snapshot()
+    const actor = state.playerCharacters[0] as Record<string, unknown>
+    expect(gameplayControlsFromSnapshot(state, 30).takeHeart).toBeUndefined()
+    actor.inspiration = true
+    expect(gameplayControlsFromSnapshot(state, 30).takeHeart).toBe(true)
+    actor.activeEffects = [{ id: 'inspired', sourceName: 'Inspiration' }]
+    expect(gameplayControlsFromSnapshot(state, 30).takeHeart).toBeUndefined()
+  })
+
   it('uses bonus-action economy and lists the available upcast levels', () => {
     const state = snapshot()
     const actor = state.playerCharacters[0] as Record<string, unknown>

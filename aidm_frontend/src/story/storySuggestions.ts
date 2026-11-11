@@ -3,13 +3,15 @@ import type {
   WorldMerchantSummary,
   WorldSceneItemSummary,
   WorldStatePanel,
+  WorldZoneSummary,
 } from '../gameSelectors'
 import type {
   GameplayControlState,
   GameplayInteractableControl,
   GameplayObjectAction,
 } from '../gameplayControlState'
-import { objectActionLabel } from './actionIntents'
+import { TAKE_HEART_LABEL, objectActionLabel } from './actionIntents'
+import { markedLabel, zoneOfPerson, zoneReach } from './zones'
 
 /** Chips shown before the `More…` chip. */
 export const STORY_SUGGESTION_LIMIT = 6
@@ -21,13 +23,14 @@ export const TAKE_ALL_LABEL = 'Take everything here'
 const OBJECT_LIMIT = 3
 const TALK_LIMIT = 2
 const TRADE_LIMIT = 1
+const ZONE_LIMIT = 2
 const TRAVEL_LIMIT = 2
 
 /**
  * One thing the player could do next. `talk` fills the composer so the player
  * can finish the sentence; `say` sends its label as the player's own words;
- * `take`, `object` and `travel` submit typed intents; `trade` opens the
- * merchant's wares; `more` opens the action tray.
+ * `take`, `object`, `zone_move`, `travel` and `take_heart` submit typed intents;
+ * `trade` opens the merchant's wares; `more` opens the action tray.
  */
 export type StorySuggestion =
   | { kind: 'take'; key: string; label: string; item: WorldSceneItemSummary }
@@ -42,7 +45,9 @@ export type StorySuggestion =
   | { kind: 'talk'; key: string; label: string; text: string }
   | { kind: 'say'; key: string; label: string }
   | { kind: 'trade'; key: string; label: string; merchant: WorldMerchantSummary }
+  | { kind: 'zone_move'; key: string; label: string; zone: WorldZoneSummary }
   | { kind: 'travel'; key: string; label: string; exit: WorldLocationSummary }
+  | { kind: 'take_heart'; key: string; label: string }
   | { kind: 'more'; key: string; label: string }
 
 type ObjectSuggestion = Extract<StorySuggestion, { kind: 'object' }>
@@ -73,8 +78,13 @@ function inActionOrder(actions: GameplayObjectAction[]) {
   return [...actions].sort((left, right) => ACTION_ORDER.indexOf(left.id) - ACTION_ORDER.indexOf(right.id))
 }
 
-function objectChip(object: GameplayInteractableControl, action: GameplayObjectAction): ObjectSuggestion {
-  return { kind: 'object', key: `object:${object.id}:${action.id}`, label: objectActionLabel(action), object, action }
+function objectChip(
+  object: GameplayInteractableControl,
+  action: GameplayObjectAction,
+  zones?: WorldZoneSummary[],
+): ObjectSuggestion {
+  const label = markedLabel(objectActionLabel(action), zones, object.zoneId)
+  return { kind: 'object', key: `object:${object.id}:${action.id}`, label, object, action }
 }
 
 /**
@@ -82,10 +92,10 @@ function objectChip(object: GameplayInteractableControl, action: GameplayObjectA
  * its own chip: objects in scene order, each object's in the contract's
  * action order, at most four.
  */
-function choiceSuggestions(objects: GameplayInteractableControl[]): ObjectSuggestion[] {
+function choiceSuggestions(objects: GameplayInteractableControl[], zones?: WorldZoneSummary[]): ObjectSuggestion[] {
   return objects
     .flatMap((object) =>
-      inActionOrder(objectChoices(object).filter((action) => action.choice)).map((action) => objectChip(object, action)),
+      inActionOrder(objectChoices(object).filter((action) => action.choice)).map((action) => objectChip(object, action, zones)),
     )
     .slice(0, CHOICE_LIMIT)
 }
@@ -95,28 +105,42 @@ function choiceSuggestions(objects: GameplayInteractableControl[]): ObjectSugges
  * the contract's action order, preferring one the pack authored; null when it
  * offers nothing else.
  */
-function objectSuggestion(object: GameplayInteractableControl): ObjectSuggestion | null {
+function objectSuggestion(object: GameplayInteractableControl, zones?: WorldZoneSummary[]): ObjectSuggestion | null {
   const actions = inActionOrder(objectChoices(object).filter((action) => !action.choice))
   const action = actions.find((candidate) => candidate.authored) ?? actions[0]
-  return action ? objectChip(object, action) : null
+  return action ? objectChip(object, action, zones) : null
 }
 
-/** One chip per object: authored ones first, each group in scene order, at most three. */
-function objectSuggestions(objects: GameplayInteractableControl[]): ObjectSuggestion[] {
-  const chips = objects.map(objectSuggestion).filter((chip): chip is ObjectSuggestion => chip !== null)
-  return [
-    ...chips.filter((chip) => chip.action.authored),
-    ...chips.filter((chip) => !chip.action.authored),
-  ].slice(0, OBJECT_LIMIT)
+/**
+ * One chip per object: in a place with rooms, those in the viewer's own zone before those next door (and none
+ * further off); then authored ones first, each group in scene order; at most three.
+ */
+function objectSuggestions(objects: GameplayInteractableControl[], zones?: WorldZoneSummary[]): ObjectSuggestion[] {
+  const chips = objects
+    .filter((object) => zoneReach(zones, object.zoneId) !== 'away')
+    .map((object) => objectSuggestion(object, zones))
+    .filter((chip): chip is ObjectSuggestion => chip !== null)
+  const near = (chip: ObjectSuggestion) => zoneReach(zones, chip.object.zoneId) === 'here'
+  return [true, false]
+    .flatMap((here) => [
+      ...chips.filter((chip) => near(chip) === here && chip.action.authored),
+      ...chips.filter((chip) => near(chip) === here && !chip.action.authored),
+    ])
+    .slice(0, OBJECT_LIMIT)
 }
 
 /**
  * Contextual suggestions for the Story dock, in priority order: the choices
  * an object puts before the player, what may be said to the captives a fight
  * left (`Question the Ashmarked Cutthroat`), loose items to take, scene
- * objects, people present, an open merchant, then ways onward — at most six, then
- * `More…` when the tray holds anything left out. Combat has its own ribbon, so
- * nothing is suggested while it lasts.
+ * objects, people present, an open merchant, the rooms next door (`Go into the
+ * common room`), ways onward, then `Take heart (Inspiration)` while the hero
+ * holds Inspiration — at most six, then `More…` when the tray
+ * holds anything left out. In a place with rooms, what stands next door is
+ * offered after what stands in the viewer's own zone and marked with its zone
+ * (`Talk to Mara Reedwake · common room`), anything further off is not offered,
+ * and ways onward only from a zone the party can leave by. Combat has its own
+ * ribbon, so nothing is suggested while it lasts.
  */
 export function storySuggestions(
   worldState: WorldStatePanel,
@@ -133,10 +157,10 @@ export function storySuggestions(
       ? [{ kind: 'take_all', key: 'take:all', label: TAKE_ALL_LABEL }, ...take.slice(0, TAKE_LIMIT - 1)]
       : take
 
-  const objectCandidates = gameplayControls.interactables.reduce(
-    (count, object) => count + objectChoices(object).length,
-    0,
-  )
+  const zones = worldState.zones
+  const objectCandidates = gameplayControls.interactables
+    .filter((object) => zoneReach(zones, object.zoneId) !== 'away')
+    .reduce((count, object) => count + objectChoices(object).length, 0)
 
   const captives: StorySuggestion[] = (worldState.captives ?? []).flatMap((captive) =>
     captive.offeredActions.map((action) => ({
@@ -146,21 +170,28 @@ export function storySuggestions(
     })),
   )
 
+  const npcZone = (id: string) => zoneOfPerson(zones, id)?.id
   const talk: StorySuggestion[] = worldState.presentNpcs
     .filter((npc) => npc.name && !UNREACHABLE_NPC_STATUSES.has(npc.status.toLowerCase()))
+    .filter((npc) => zoneReach(zones, npcZone(npc.id)) !== 'away')
+    .sort((left, right) => Number(zoneReach(zones, npcZone(left.id)) === 'next') - Number(zoneReach(zones, npcZone(right.id)) === 'next'))
     .map((npc) => ({
       kind: 'talk',
       key: `talk:${npc.id || npc.name}`,
-      label: `Talk to ${npc.name}`,
+      label: markedLabel(`Talk to ${npc.name}`, zones, npcZone(npc.id)),
       text: `I talk to ${npc.name}.`,
     }))
 
   const trade: StorySuggestion[] = (worldState.merchants ?? []).map((merchant) => ({
     kind: 'trade',
     key: `trade:${merchant.id}`,
-    label: `Trade with ${merchant.name}`,
+    label: markedLabel(`Trade with ${merchant.name}`, zones, merchant.zoneId),
     merchant,
   }))
+
+  const moves: StorySuggestion[] = (zones ?? [])
+    .filter((zone) => zone.adjacent && zone.moveLabel)
+    .map((zone) => ({ kind: 'zone_move', key: `zone:${zone.id}`, label: zone.moveLabel ?? '', zone }))
 
   const travel: StorySuggestion[] = worldState.availableExits
     .filter((exit) => exit.id)
@@ -172,15 +203,22 @@ export function storySuggestions(
       exit,
     }))
 
+  // Inspiration the hero holds, last: leaving it alone is keeping it.
+  const heart: StorySuggestion[] = gameplayControls.takeHeart
+    ? [{ kind: 'take_heart', key: 'take_heart', label: TAKE_HEART_LABEL }]
+    : []
   const chips = [
-    ...choiceSuggestions(gameplayControls.interactables),
+    ...choiceSuggestions(gameplayControls.interactables, zones),
     ...captives,
     ...takeChips,
-    ...objectSuggestions(gameplayControls.interactables),
+    ...objectSuggestions(gameplayControls.interactables, zones),
     ...talk.slice(0, TALK_LIMIT),
     ...trade.slice(0, TRADE_LIMIT),
+    ...moves.slice(0, ZONE_LIMIT),
     ...travel.slice(0, TRAVEL_LIMIT),
+    ...heart,
   ].slice(0, STORY_SUGGESTION_LIMIT)
-  const candidates = captives.length + take.length + objectCandidates + talk.length + trade.length + travel.length
+  const candidates =
+    captives.length + take.length + objectCandidates + talk.length + trade.length + moves.length + travel.length + heart.length
   return candidates > chips.length ? [...chips, MORE_SUGGESTION] : chips
 }

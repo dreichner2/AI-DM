@@ -315,6 +315,78 @@ describe('CreateHero', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
+  it("offers the hero's own threads on Review, all optional, and sends what was written", async () => {
+    let draft = drafted('Fighter')
+    draft = { ...draft, name: 'Rowan Pell', backgroundId: 'soldier', skills: ['perception', 'survival'] }
+    const { onCreate } = renderCreator({ draft, step: 'review' })
+    const threads = screen.getByRole('region', { name: 'Your own threads' })
+
+    // Nothing written: the hero begins without threads.
+    expect(screen.getByRole('button', { name: 'Begin as Rowan Pell' })).toBeEnabled()
+    const wants = within(threads).getByRole('group', { name: 'What you want' })
+    expect(within(wants).getAllByRole('button').map((button) => button.textContent)).toEqual([
+      'to find someone', 'to be recognised', 'to clear a debt', 'to keep a duty', 'to learn what is forbidden', 'to prove someone wrong',
+      'in your own words',
+    ])
+    fireEvent.click(within(wants).getByRole('button', { name: 'in your own words' }))
+    expect(within(threads).getByRole('textbox', { name: 'What you want, in your own words' })).toHaveAttribute('maxLength', '80')
+    fireEvent.click(within(wants).getByRole('button', { name: 'to keep a duty' }))
+    expect(within(wants).getByRole('button', { name: 'to keep a duty' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(threads).queryByRole('textbox', { name: 'What you want, in your own words' })).not.toBeInTheDocument()
+
+    const relations = within(threads).getByRole('group', { name: 'Who they are to you' })
+    expect(within(relations).getByRole('button', { name: 'friend' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(relations).getAllByRole('button')).toHaveLength(13)
+    fireEvent.click(within(relations).getByRole('button', { name: 'sister' }))
+    const name = within(threads).getByRole('textbox', { name: 'Who or what you would not abandon' })
+    expect(name).toHaveAttribute('maxLength', '40')
+    fireEvent.click(within(threads).getByRole('button', { name: 'Suggest a name' }))
+    const suggested = (name as HTMLInputElement).value
+    expect(['Mira Holt', 'Elena Marsh', 'Sera Wren', 'Ada Thorne']).toContain(suggested)
+    fireEvent.click(within(threads).getByRole('button', { name: 'Suggest a name' }))
+    expect((name as HTMLInputElement).value).not.toBe(suggested)
+
+    fireEvent.change(name, { target: { value: 'E' } })
+    expect(screen.getByText('A name of 2 to 40 letters, or none.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Begin as Rowan Pell' })).toBeDisabled()
+    fireEvent.change(name, { target: { value: 'Edda Pell' } })
+
+    const carry = within(threads).getByRole('textbox', { name: 'What you carry' })
+    expect(carry).toHaveAttribute('maxLength', '120')
+    fireEvent.click(within(threads).getByRole('button', { name: 'Suggest what you carry' }))
+    expect(carry).toHaveValue('A discharge paper you never showed anyone.')
+    // A place, an order or a keepsake is no one to name.
+    fireEvent.click(within(relations).getByRole('button', { name: 'a keepsake' }))
+    expect(within(threads).queryByRole('button', { name: 'Suggest a name' })).not.toBeInTheDocument()
+    fireEvent.click(within(relations).getByRole('button', { name: 'sister' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Begin as Rowan Pell' }))
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1))
+    expect(onCreate.mock.calls[0][0].ties).toEqual({
+      desire: { kind: 'keep_duty' },
+      attachment: { name: 'Edda Pell', relation: 'sister' },
+      burden: 'A discharge paper you never showed anyone.',
+    })
+  })
+
+  it('never suggests the hero their own name for the one they would not abandon', () => {
+    let draft = drafted('Fighter')
+    draft = { ...draft, name: 'Mira Holt', backgroundId: 'soldier', skills: ['perception', 'survival'] }
+    renderCreator({ draft, step: 'review' })
+    const threads = screen.getByRole('region', { name: 'Your own threads' })
+    fireEvent.click(within(within(threads).getByRole('group', { name: 'Who they are to you' })).getByRole('button', { name: 'mother' }))
+    const name = within(threads).getByRole('textbox', { name: 'Who or what you would not abandon' }) as HTMLInputElement
+
+    const seen = new Set<string>()
+    for (let step = 0; step < 6; step += 1) {
+      fireEvent.click(within(threads).getByRole('button', { name: 'Suggest a name' }))
+      seen.add(name.value)
+    }
+
+    expect(seen.has('Mira Holt')).toBe(false)
+    expect(seen.size).toBeGreaterThan(1)
+  })
+
   it('shows a server refusal as one line above the Begin button and lets the player try again', async () => {
     const onCreate = vi.fn<OnCreate>(async () => {
       throw new Error('A Rogue chooses exactly 4 class skills.')

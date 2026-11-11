@@ -45,6 +45,7 @@ from aidm_server.game_state.models import display_actor_id
 from aidm_server.interactables import NOT_WHILE_FIGHTING
 from aidm_server.game_state.orchestration.combat_resolution import player_attack_target
 from aidm_server.game_state.orchestration.finishing_blow import DESCRIBE_ACTION_ID, STORY_ACTION_ID, lets_the_story_tell_it, pending_finisher
+from aidm_server.game_state.orchestration.hero_threads import TAKE_HEART_DECLARED
 from aidm_server.game_state.orchestration.story_beats import SCRIPTED_NARRATOR_PROVIDER, record_turn_story_beats
 from aidm_server.game_state.orchestration.story_rolls import record_turn_story_rolls, turn_story_rolls
 from aidm_server.game_state.orchestration.turn_flow import (
@@ -167,8 +168,9 @@ from aidm_server.turn_segments import SegmentEvaluationRequest, TurnSegmentServi
 
 logger = logging.getLogger(__name__)
 POST_TURN_PERSIST_FAILED_MESSAGE = 'The DM response could not be fully saved. Please retry.'
-COMBAT_BLOCKED_ACTION_KINDS = frozenset({'ability', 'item', 'interact', 'travel', 'rest'})
-AUTHORITATIVE_TYPED_ACTION_KINDS = frozenset({'capability', 'item', 'object', 'rest', 'shop', 'spell', 'travel'})
+# In a fight these come as fight actions (Take heart included), never as their own intents.
+COMBAT_BLOCKED_ACTION_KINDS = frozenset({'ability', 'item', 'interact', 'travel', 'rest', 'inspiration'})
+AUTHORITATIVE_TYPED_ACTION_KINDS = frozenset({'capability', 'inspiration', 'item', 'object', 'rest', 'shop', 'spell', 'travel'})
 
 
 def _coerce_player_id(value) -> int | None:
@@ -569,11 +571,9 @@ class TurnEngine:
                     if presence is not None and self.active_player_ids
                     else None
                 ),
-                # A pack adventure's flow is the engine's (free play outside a fight, initiative inside one), and an
-                # offered action says what it is: no model is asked who may act.
-                allow_helper=not command.is_opening
-                and action_kind in {'', 'message'}
-                and not has_campaign_pack(safe_json_loads(session_obj.state_snapshot, {}) or {}),
+                # An offered action says what it is: no model is asked who may act.
+                allow_helper=not command.is_opening and action_kind in {'', 'message'},
+                engine_runs_table=has_campaign_pack(safe_json_loads(session_obj.state_snapshot, {}) or {}),
             )
         )
         if changed:
@@ -1283,6 +1283,15 @@ class TurnEngine:
                 'action_type': 'actor.down',
                 'reason': str(actor_down.get('reason') or '').strip(),
             }
+        zone_refusal = pre_pipeline_result.get('zoneRefusal')
+        if isinstance(zone_refusal, dict):
+            # What the hero reaches for is in another room of the place, beyond the next one.
+            return {
+                'intent_kind': intent_kind or 'message',
+                'action_id': None,
+                'action_type': 'zone.out_of_reach',
+                'reason': str(zone_refusal.get('reason') or '').strip(),
+            }
         pre_validation = pre_pipeline_result.get('preValidation')
         pre_validation = pre_validation if isinstance(pre_validation, dict) else {}
         if intent_kind in {'', 'message'} and any(
@@ -1308,6 +1317,7 @@ class TurnEngine:
                 or (intent_kind == 'rest' and action_type == 'rest.complete')
                 or (intent_kind == 'travel' and action_type == 'world.travel')
                 or (intent_kind == 'shop' and action_type.startswith('shop.'))
+                or (intent_kind == 'inspiration' and action_type == TAKE_HEART_DECLARED)
                 or (
                     intent_kind == 'item'
                     and action_type.startswith(('currency.', 'inventory.', 'scene.item.', 'shop.'))

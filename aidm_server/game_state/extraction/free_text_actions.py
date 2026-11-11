@@ -7,10 +7,11 @@ may follow a lead-in of up to eight words ("Carefully, I open…") or sit in a
 purpose phrase ("climb into the lead wagon to search it"), and "it", "them" or
 "that" after the verb is the thing named last before it in the message, else the
 single scene object or item the previous turn acted on. The first mapped clause
-is taken: its typed intents (a pickup, an object action, travel or a rest), the
-refusal for a pickup of something that is not there, or a narration-only kind
-(looking around, talking to someone present). Every later mapped action is
-returned as a deferred action, by its offered label, and is not taken.
+is taken: its typed intents (a pickup, an object action, travel, a step into
+another room or area of the place the party knows of, or a rest), the refusal
+for a pickup of something that is not there, or a narration-only kind (looking
+around, talking to someone present). Every later mapped action is returned as a
+deferred action, by its offered label, and is not taken.
 
 A clause maps nothing when it is negated or hypothetical, its sentence is a
 question, or its verb sits inside quotation marks (speech); nor when its
@@ -51,6 +52,7 @@ from aidm_server.combat.legal_actions import IMPROVISE_ACTION_ID, MOVE_FIRST_TYP
 from aidm_server.combat.pipeline import OBJECT_TARGET_WORDS
 from aidm_server.combat.state import participant_is_targetable
 from aidm_server.interactables import available_actions_for_target, interactable_actor_context, take_label
+from aidm_server.game_state.zones import known_zone_ids, move_label, place_zones, zone_phrase
 from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
 
 ARTICLES = frozenset({'the', 'a', 'an', 'some', 'my', 'your', 'our'})
@@ -138,10 +140,11 @@ OBJECT_VERBS: tuple[tuple[str, str], ...] = (
 OBJECT_PREPOSITIONS = frozenset({'through', 'in', 'into', 'inside', 'under', 'beneath', 'at', 'on', 'over', 'around'})
 TRAVEL_VERBS = (
     'make my way', 'leave for', 'make for', 'set out', 'set off', 'go back', 'travel', 'return', 'follow', 'march',
-    'start', 'head', 'walk', 'ride', 'hike', 'take', 'go',
+    'start', 'head', 'walk', 'ride', 'hike', 'take', 'step', 'enter', 'go',
 )
 TRAVEL_PREPOSITIONS = (
-    'out along', 'out on', 'back to', 'towards', 'toward', 'through', 'along', 'onto', 'into', 'down', 'for', 'to', 'up',
+    'out along', 'out on', 'out to', 'out into', 'back to', 'back into', 'over to', 'towards', 'toward', 'through',
+    'along', 'onto', 'into', 'down', 'for', 'to', 'up',
 )
 TRAVEL = re.compile(rf"^(?:{'|'.join(TRAVEL_VERBS)})(?:\s+(?:{'|'.join(TRAVEL_PREPOSITIONS)}))?\s+(?P<phrase>.+)$")
 TALK = re.compile(r'^(?:(?:talk|speak)\s+(?:to|with)|ask|question|interrogate)\s+(?P<phrase>.+)$')
@@ -253,6 +256,8 @@ class _Scene:
     destinations: list[dict[str, Any]]
     npcs: list[dict[str, Any]]
     captives: list[dict[str, Any]] = field(default_factory=list)
+    # The rooms and areas of the place the party knows (a place without zones has none).
+    zones: list[dict[str, Any]] = field(default_factory=list)
     previous: tuple[str, dict[str, Any]] | None = None
     spans: list[tuple[int, int, tuple[str, Any]]] = field(default_factory=list)
 
@@ -500,7 +505,9 @@ def _scene(state: Mapping[str, Any], *, actor_id: str, player_id: int | None, pr
         for captive in (state.get('currentScene') or {}).get('captives') or []
         if isinstance(captive, Mapping) and _text(captive.get('name'))
     ]
-    scene = _Scene(objects, items, ways_onward(state), _present_npcs(state), captives)
+    known = set(known_zone_ids(state))
+    zones = [zone for zone in place_zones(state) if zone['id'] in known]
+    scene = _Scene(objects, items, ways_onward(state), _present_npcs(state), captives, zones)
     if previous_target:
         kind, target_id = previous_target
         pool = [entry for entry, _offers in objects] if kind == 'object' else items
@@ -602,10 +609,28 @@ def _by_label(words: list[str], scene: _Scene, message: str) -> _Mapped | None:
     return _Mapped(FreeTextAction(kind='object', intents=(_object_intent(entry, offer, message),)), _object_labels(entry, offer))
 
 
+def _zone_move(phrase: str, scene: _Scene, message: str) -> _Mapped | None:
+    """Going into another room or area of the place: ``go into the common room``, ``step out to the yard``."""
+
+    zone, _matched = _match(phrase, scene.zones, lambda zone: zone['name'])
+    if zone is None:
+        return None
+    return _Mapped(
+        FreeTextAction(
+            kind='zone_move',
+            intents=({'kind': 'zone_move', 'source': 'free_text', 'text': message, 'zone': {'id': zone['id'], 'name': zone['name']}},),
+        ),
+        ({'kind': 'zone_move', 'label': move_label(zone), 'target': zone_phrase(zone), 'verb': 'go to'},),
+    )
+
+
 def _travel(text: str, scene: _Scene, message: str) -> _Mapped | None:
     travel = TRAVEL.match(text)
     if not travel:
         return None
+    moved = _zone_move(travel.group('phrase'), scene, message)
+    if moved is not None:
+        return moved
     location, _matched = _match(travel.group('phrase'), scene.destinations, lambda location: location.get('name'))
     if location is None:
         return None
@@ -915,7 +940,8 @@ def _attack_action(actions: list[dict[str, Any]], verb: str, target: dict[str, A
     if RANGED_ATTACK_VERBS.match(verb):
         attacks.sort(key=lambda action: (action.get('range') or {}).get('classification') != 'ranged')
     elif MELEE_ATTACK_VERBS.match(verb):
-        attacks.sort(key=lambda action: (action.get('range') or {}).get('classification') == 'ranged')
+        # A stab or a cut is a hand weapon's, whatever else would reach.
+        attacks = [action for action in attacks if (action.get('range') or {}).get('classification') != 'ranged'] or attacks
     if target is not None:
         reaching = [
             action

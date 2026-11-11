@@ -38,7 +38,17 @@ looks over a fight is told where everyone stands. The finishing blow: the foe a
 hero fells that way is not told dying, and the reply ends on the one closing
 question (``finishingBlow``); the hero's words that end it are followed by its
 fall, or by its sparing (``finisher``); a moment let pass opens the turn with
-``{Enemy} falls.`` (``finisherLapsed``).
+``{Enemy} falls.`` (``finisherLapsed``). A tie line told for a hero (``threads``)
+is its own paragraph after the hero's results and a fight's setup; taking heart
+(``takeHeart``) is one line.
+
+In a place with rooms the people present are those in the hero's own zone
+(``present``). A step into another zone opens the reply (``zoneMove``): ``You
+step into the common room.``, the zone's description the first time, then who
+is there; a person next door called to answers in one line (``callOut``). A
+fight that starts says where its enemies stand in reach words and who came
+running from another zone, and an enemy coming in is told in distance words
+(``The wardbound beast crosses about thirty feet to you.``).
 
 Only one case ever asks for a roll: a turn whose rules hint requires a roll that
 has not been made yet. Every other sentence is kept free of roll-request
@@ -541,6 +551,8 @@ BARK_VERBS = ('says', 'spits', 'hisses', 'calls')
 FINISHER_FALLS = '{enemy} falls, and does not rise.'
 FINISHER_SPARED = {False: 'You turn the blow. {enemy} lives, and is yours.', True: '{actor} turns the blow. {enemy} lives, and is theirs.'}
 FINISHER_LAPSED = '{enemy} falls.'
+# Take heart: the hero spends their Inspiration.
+TAKE_HEART = {False: 'You take a breath and remember why you came.', True: '{hero} takes a breath and remembers why they came.'}
 # A look over the fight: where someone stands from the hero.
 POSITION_WORDS = {'on': 'is on {hero}', 'close': 'is in close', 'near': 'is a few strides off', 'far': 'hangs back', 'distant': 'is far off'}
 
@@ -584,7 +596,11 @@ class NarrationInput:
 
     @property
     def present_npcs(self) -> list[dict]:
-        return [npc for npc in _dicts(self.live_state.get('activeNpcs')) if _text(npc.get('name'))]
+        """The people present; in a place with rooms only those in the hero's own zone (the packet's ``present``)."""
+
+        people = [npc for npc in _dicts(self.live_state.get('activeNpcs')) if _text(npc.get('name'))]
+        here = self.facts.get('present')
+        return [npc for npc in people if _text(npc.get('name')) in here] if isinstance(here, list) else people
 
     @property
     def previous_narration(self) -> str:
@@ -692,10 +708,17 @@ def narrate(
     arrival = _text(turn.facts.get('arrival'))
     blocks: list[list[str]] = [_captives_left_lines(turn)]
     blocks.extend(_arrival_blocks(turn, {'locationName': _the(arrival)}) if arrival else [])
+    moved = _zone_move_blocks(turn)
+    blocks.extend(moved)
+    if moved and _dict(turn.facts.get('talk')):
+        # Stepped next door to talk: the talk follows the arrival in the same reply.
+        blocks.append([_talk_line(turn, _dict(turn.facts['talk']))])
     own_blocks, aftermath = _change_blocks(turn)
-    blocks.append([*_spell_lines(turn), *_capability_lines(turn)])
+    blocks.append([*_take_heart_lines(turn), *_spell_lines(turn), *_capability_lines(turn)])
     blocks.extend(own_blocks)
     blocks.extend(_fight_start_blocks(turn))
+    # A hero's own thread, each its own paragraph: after what was found, or with a fight's setup.
+    blocks.extend([_text(thread.get('text'))] for thread in _dicts(turn.facts.get('threads')) if _text(thread.get('text')))
     if isinstance(turn.facts.get('positions'), list):
         # A look over the fight: where everyone stands.
         blocks.append([_positions_line(turn)])
@@ -713,6 +736,9 @@ def narrate(
     talk = _dict(turn.facts.get('talk'))
     if talk:
         return _compose(turn, [[_talk_line(turn, talk)]])
+    called = _dict(turn.facts.get('callOut'))
+    if called:
+        return _compose(turn, [[_call_out_line(turn, called)]])
     npc = _addressed_npc(turn)
     if npc:
         return _compose(turn, [[_npc_talk_line(turn, npc)]])
@@ -778,6 +804,13 @@ def _talk_line(turn: NarrationInput, talk: dict) -> str:
         return f'{name or "They"} has nothing more to add.'
     first = _first_name(name) or name
     return turn.pick('npc_knows', fact=_speech(fact), first=first)
+
+
+def _take_heart_lines(turn: NarrationInput) -> list[str]:
+    taken = _dict(turn.facts.get('takeHeart'))
+    if not taken:
+        return []
+    return [TAKE_HEART[turn.party_play].format(hero=_text(taken.get('hero')) or turn.actor)]
 
 
 def _captives_left_lines(turn: NarrationInput) -> list[str]:
@@ -847,6 +880,12 @@ def _fight_start_blocks(turn: NarrationInput) -> list[list[str]]:
     started = _dict(turn.facts.get('fightStart'))
     blocks = [_safe_sentences(_split_sentences(_text(started.get('setup'))))]
     blocks.extend(_safe_sentences([_sentence(line)]) for line in _string_items(started.get('adjustments')))
+    running = [
+        _sentence(f"{_text(hero.get('name')) if turn.party_play else 'You'} {'comes' if turn.party_play else 'come'} running from {_text(hero.get('from'))}")
+        for hero in _dicts(started.get('cameRunning'))
+        if _text(hero.get('from'))
+    ]
+    blocks.append(_safe_sentences([*([_sentence(_text(started['positions']))] if _text(started.get('positions')) else []), *running]))
     blocks.append(_bark_lines(turn, 'start'))
     return [block for block in blocks if block]
 
@@ -917,6 +956,8 @@ def _combat_lines(turn: NarrationInput) -> list[str]:
             line = _bark_line(turn, taunt)
         else:
             line = _enemy_action_line(turn, action, routed=routed)
+            if line and action.get('moveOnly') is not True and (moving := _enemy_movement_line(turn, action)):
+                lines.append(moving)
         if line:
             lines.append(line)
         lines.extend(_bark_line(turn, bark) for bark in barks if bark is not taunt)
@@ -951,15 +992,18 @@ def _closed_on(turn: NarrationInput, action: dict) -> str:
 
 
 def _tactical_line(turn: NarrationInput, action: dict) -> str:
-    """The hero's move or tactic; closing into melee is told in the same voice as the attack after it."""
+    """The hero's move or tactic; closing into melee, or moving out toward an enemy standing off, is told in the
+    same voice as the attack after it."""
 
-    if _closes_in(action):
+    toward = bool(_dict(action.get('movement')).get('towardId'))
+    if _closes_in(action) or toward:
         actor = _text(action.get('actorName'))
+        verb = 'move' if toward else 'close'
         if not actor or turn.is_speaker(actor):
-            who = f'{turn.actor} closes' if turn.party_play else 'You close'
+            who = f'{turn.actor} {verb}s' if turn.party_play else f'You {verb}'
         else:
-            who = f'{actor} closes'
-        return _sentence(f"{who} in on {_target_ref(turn, action.get('targetName'))}")
+            who = f'{actor} {verb}s'
+        return _sentence(f"{who} {'out toward' if toward else 'in on'} {_target_ref(turn, action.get('targetName'))}")
     return _sentence(_text(action.get('outcome')))
 
 
@@ -1141,6 +1185,21 @@ def _fled(action: dict) -> bool:
     )
 
 
+def _enemy_movement_line(turn: NarrationInput, action: dict) -> str:
+    """An enemy coming in, in distance words (a band is about thirty feet): ``The wardbound beast crosses about
+    thirty feet to you.``; ``The hollow marshal comes about thirty feet closer.``; '' when it did not come in."""
+
+    steps = _dicts(action.get('movement'))
+    if not steps or _key(action.get('intentType')) in FLEEING_INTENTS:
+        return ''
+    enemy = _capitalized(turn.creature(action.get('enemyName')) or 'the enemy')
+    feet = ('thirty', 'sixty', 'ninety')[min(len(steps), 3) - 1]
+    last = steps[-1]
+    if _key(last.get('toRangeBand')) == 'melee' and last.get('engageWith'):
+        return f"{enemy} crosses about {feet} feet to {_person(turn, action.get('targetName'))['target_object']}."
+    return f'{enemy} comes about {feet} feet closer.'
+
+
 def _unrolled_enemy_line(turn: NarrationInput, action: dict, enemy: str, *, routed: bool) -> str:
     """What an enemy turn that rolled nothing did, in the world's words."""
 
@@ -1154,7 +1213,7 @@ def _unrolled_enemy_line(turn: NarrationInput, action: dict, enemy: str, *, rout
         words = turn.pronoun(action.get('enemyName'))
         return _sentence(f'{enemy} falls where {words["subject"]} stand{words["s"]}')
     if action.get('moveOnly') is True:
-        return _sentence(f'{enemy} closes in')
+        return _enemy_movement_line(turn, action) or _sentence(f'{enemy} closes in')
     if intent in FLEEING_INTENTS:
         return _sentence(f'{enemy} breaks and runs' if routed else f'{enemy} gives ground')
     template = ENEMY_TURN_LINES.get(intent, '{enemy} waits.')
@@ -1452,6 +1511,29 @@ def _change_blocks(turn: NarrationInput) -> tuple[list[list[str]], list[str]]:
         elif change_type == 'spell.cast' and not change.get('spellResolution') and change.get('spellName'):
             lines.append(turn.pick('spell_cast', spell=_text(change.get('spellName'))))
     return [_safe_sentences(block) for block in blocks], _safe_sentences(lines)
+
+
+def _zone_move_blocks(turn: NarrationInput) -> list[list[str]]:
+    """A step into another room or area of the place: ``You step into the common room.``, the zone's description the
+    first time, then who is there (``Mara Reedwake is here.``)."""
+
+    moved = _dict(turn.facts.get('zoneMove'))
+    if not moved:
+        return []
+    present = _string_items(moved.get('present'))
+    lines = [
+        _hero_does(turn, f"step into {_text(moved.get('phrase')) or 'the next room'}"),
+        *_split_sentences(_text(moved.get('description'))),
+        *([f"{_join_words(present)} {'is' if len(present) == 1 else 'are'} here."] if present else []),
+    ]
+    return [_safe_sentences(lines)]
+
+
+def _call_out_line(turn: NarrationInput, called: dict) -> str:
+    """The one line a person next door calls back, no more: ``"Come through if there is more to say," Mara
+    Reedwake calls from the common room.``"""
+
+    return f'"Come through if there is more to say," {_text(called.get("name"))} calls from {_text(called.get("zone"))}.'
 
 
 def _arrival_blocks(turn: NarrationInput, change: dict) -> list[list[str]]:

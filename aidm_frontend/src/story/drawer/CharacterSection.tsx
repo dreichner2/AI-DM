@@ -4,6 +4,7 @@ import type { InspectorPanelProps } from '../../InspectorPanel'
 import type { SessionBoardProps } from '../../SessionBoard'
 import { profileIconSrcForCharacter } from '../../profileIcons'
 import type { ActivePlayer } from '../../types'
+import { heroTiesFromSheet, type HeroTies } from '../heroTies'
 import { StoryVitality } from '../StoryVitality'
 import { heroVitalityOf, partyHeroVitality, VITALITY_CONDITIONS } from '../vitalityLabels'
 import { TraitList } from './TraitList'
@@ -64,6 +65,15 @@ function uniqueConditions(...lists: string[][]) {
     seen.add(key)
     return true
   })
+}
+
+/** The hero's own threads as the sheet reads them: `Wants`, `Would not abandon`, `Carries`. */
+function tieFacts(ties: HeroTies): Array<[string, string]> {
+  return [
+    ['Wants', ties.desire?.words ?? ''],
+    ['Would not abandon', ties.attachment ? `${ties.attachment.name}, ${ties.attachment.relation}` : ''],
+    ['Carries', ties.burden ?? ''],
+  ]
 }
 
 function playerAvatar(player: ActivePlayer) {
@@ -132,6 +142,7 @@ export function CharacterSection({ board, inspector, withTraits }: CharacterSect
     ['Tools', (statBlock.toolProficiencies ?? []).map(mechanicLabel).join(', ')],
     ['Languages', (statBlock.languages ?? []).join(', ')],
     ['Background', statBlock.background ?? ''],
+    ...tieFacts(heroTiesFromSheet(inspector.characterSheet)),
   ]
   const vitals: Array<[string, string]> = [
     ['HP', hpLabel(statBlock.hp, viewer)],

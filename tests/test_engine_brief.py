@@ -13,6 +13,10 @@ BENCH_TEXT = (
     "The lead wagon's box seat, its boards worn pale by years of drivers. In the dark space beneath it sits a knot "
     'of waxed cloth. Unwrapped, the cloth holds a flat iron key on a greasy thong, its bow stamped with a wagon wheel.'
 )
+# Mara's counter stands in the common room, next door: not here.
+YARD_WHERE = 'Where: Arden Vale is in the yard with Tovin Bell and Osric Hale. Next door, in the common room: Mara Reedwake.'
+# Arden Vale's own threads open every brief of his turns.
+HERO = 'Hero: Arden Vale wants to keep a duty and would not abandon Edda Vale (sister).\n'
 INN_OBJECTS = (
     "objects Caravan Ledger: Read the caravan ledger | Driver's Bench: Look over the driver's bench | "
     'Lead Wagon: Search the lead wagon | Wagon Bell: Ring the wagon bell'
@@ -41,25 +45,27 @@ def test_the_brief_for_the_leads_three_sentences(table):
 
     # The search takes what it finds.
     assert bench == (
-        f'Did: Search under the driver\'s bench (Investigation check: 15 — success): done. What it shows: "{BENCH_TEXT}" '
+        f'{HERO}Did: Search under the driver\'s bench (Investigation check: 15 — success): done. What it shows: "{BENCH_TEXT}" '
         'Found and taken by the hero: a Caravan Strongbox Key.\n'
         'Not done: nothing\n'
         f"Here (only the engine decides these): {INN_OBJECTS}; loose items none; "
-        "ways onward The Old North Road; shops Mara's Counter\n"
-        'The party is at The Lantern Post Inn.'
+        "ways onward The Old North Road; shops none\n"
+        'The party is at The Lantern Post Inn.\n'
+        f'{YARD_WHERE}'
     )
-    assert wagon.startswith('Did: Search the lead wagon: done.')
+    assert wagon.startswith(f'{HERO}Did: Search the lead wagon: done.')
     assert wagon.endswith(
         'Uncovered: Wagon Strongbox. Clue — Ash Marks on the Road.\n'
         'Not done: nothing\n'
         "Here (only the engine decides these): objects Caravan Ledger: Read the caravan ledger | Driver's Bench: Look over the "
         "driver's bench | Lead Wagon: nothing offered | Wagon Strongbox: Search the strongbox, Open the strongbox, Unlock the "
         "strongbox, Break the strongbox open | Wagon Bell: Ring the wagon bell; loose items none; ways onward The Old North Road; "
-        "shops Mara's Counter\n"
-        'The party is at The Lantern Post Inn.'
+        "shops none\n"
+        'The party is at The Lantern Post Inn.\n'
+        f'{YARD_WHERE}'
     )
     assert road.startswith(
-        'Did: Arrived at The Old North Road. A fight begins against Pale Lantern. '
+        f'{HERO}Did: Arrived at The Old North Road. A fight begins against Pale Lantern. '
         'Bark: The pale lantern sings one thin, high note, like a wet finger on glass. (Pale Lantern; use this line, word for word if it is speech) '
         'Pale Lantern uses Lantern-Lure'
     )
@@ -69,7 +75,9 @@ def test_the_brief_for_the_leads_three_sentences(table):
         'Not done: nothing\n'
         'Here (only the engine decides these): objects Leaning Milestone: nothing offered | Abandoned Handcart: nothing offered; '
         'loose items none; ways onward The Lantern Post Inn, Waystation of Scratched Names, Ridge and Culvert Paths; shops none\n'
-        'The party is at The Old North Road.'
+        'The party is at The Old North Road.\n'
+        'Where: Arden Vale is in the road with Radan Greycloak. Next door, in the ditch and verge: Veyra Ashcap.\n'
+        'Positions: Pale Lantern: out of reach this turn · 60 ft or more'
     )
 
 

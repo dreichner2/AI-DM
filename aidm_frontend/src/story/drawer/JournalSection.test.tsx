@@ -122,4 +122,23 @@ describe('JournalSection', () => {
     ])
     expect(people).not.toHaveTextContent(/cautious|unknown/)
   })
+
+  it("lists the threads the story told of the viewer's own hero under Your threads", () => {
+    const thread = {
+      id: 'tie_ledger_name',
+      title: 'A thread of your own — Edda Vale',
+      text: 'One name on the last page is not quite gone. Under the black stroke you can still read it: Edda Vale.',
+    }
+    const { rerender } = render(<JournalSection board={withSnapshot({ journal: { ...journal, threads: [thread] } })} inspector={testInspector()} />)
+
+    const threads = screen.getByRole('heading', { name: 'Your threads' }).parentElement as HTMLElement
+    expect(within(threads).getByRole('listitem')).toHaveTextContent(`${thread.title}${thread.text}`)
+    // Before the clues, after the quest.
+    const headings = screen.getAllByRole('heading').map((heading) => heading.textContent)
+    expect(headings.indexOf('Your threads')).toBe(headings.indexOf('Quests') + 1)
+
+    rerender(<JournalSection board={withSnapshot({ journal: { ...journal, threads: [] } })} inspector={testInspector()} />)
+    expect(screen.queryByRole('heading', { name: 'Your threads' })).not.toBeInTheDocument()
+  })
 })
+

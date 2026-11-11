@@ -404,7 +404,7 @@ def _declared_action_has_required_fields(action: dict[str, Any]) -> bool:
         return bool(str(action.get('weaponName') or '').strip())
     if action_type == 'generic.intent':
         return bool(str(action.get('summary') or action.get('sourceText') or '').strip())
-    return False
+    return action_type == 'inspiration.take_heart'
 
 
 def normalize_pre_extraction(raw_payload: dict[str, Any] | None, *, fallback_actor_id: str) -> dict[str, Any]:

@@ -5,15 +5,16 @@ Who tells a turn (:func:`telling`). The narrator (a model, when one is set up) t
 every fight turn that holds an attack, a spell, a manoeuvre, an improvised action, words the hero said or a look, a
 finishing blow, an enemy phase, a fight starting or ending, or a roll. Any other fight action resolves with nothing to
 tell beyond its own result (End turn, Dodge, Disengage, Advance, Fall back, Dash, Help, Hide, Stabilize, a class
-feature, a potion): the scripted narrator's sentences tell it and no model is called (``scripted``). When those
-sentences are only the engine's turn line (an End turn with a hero next and nobody acting between), the turn has no
-narration at all (``turn_line``): no reply is streamed and the log gains the turn line alone.
+feature, a potion, Take heart): the scripted narrator's sentences tell it and no model is called (``scripted``), as
+they tell Take heart out of a fight. When those sentences are only the engine's turn line (an End turn with a hero
+next and nobody acting between), the turn has no narration at all (``turn_line``): no reply is streamed and the log
+gains the turn line alone. A step into another room of a place (``zone_move``) is told by the scripted narrator too.
 
 The turn ends itself (:func:`turn_ends_itself`). A hero whose ``End my turn for me`` is on (``auto_end_turn`` sent
 with the action) has their turn ended in the same turn when the action they took leaves them only moving (Advance,
-Fall back) or ending the turn: no attack, bonus action, free action or bonus-action spell is still legal. Healing that
-nobody needs is no choice to wait on (a potion, or Healing Word, with every friend unhurt), as Second Wind at full
-health is not offered at all. A roll the player has yet to press keeps the turn open until it resolves.
+Fall back), ending the turn or taking heart: no attack, bonus action, other free action or bonus-action spell is still
+legal. Healing that nobody needs is no choice to wait on (a potion, or Healing Word, with every friend unhurt), as
+Second Wind at full health is not offered at all. A roll the player has yet to press keeps the turn open until it resolves.
 
 Timings (:func:`turn_timings`). Each finished turn records ``timings`` in its metadata: ``engine_ms`` (submit to the
 engine's results sent), ``narration_ms`` (first to last narration chunk; 0 when no model was called),
@@ -34,6 +35,7 @@ from aidm_server.combat.maneuvers import IMPROVISE_TYPE, MANEUVER_TYPES
 from aidm_server.combat.positioning import participant_by_id
 from aidm_server.combat.state import combat_turn_economy, default_turn_economy
 from aidm_server.game_state.models import find_actor
+from aidm_server.game_state.orchestration.zone_turns import zone_move_only
 from aidm_server.item_effects import ITEM_EFFECTS
 from aidm_server.models import Player, safe_json_loads
 from aidm_server.prompt_templates import prompt_rules_hint
@@ -54,8 +56,9 @@ AUTO_END_TURN_REQUEST_KEY = 'auto_end_turn'
 AUTO_END_TURN_KEY = 'autoEndTurn'
 # The fight actions a model narrates; every other fight action is told by its own result.
 NARRATED_FIGHT_ACTIONS = frozenset({'attack', *MANEUVER_TYPES, IMPROVISE_TYPE})
-# What a hero may still do and have their turn end anyway: move, end it, or tell a finishing blow (free, any time).
-LEAVES_ONLY = frozenset({'advance', 'reposition', 'end_turn', 'finisher'})
+# What a hero may still do and have their turn end anyway: move, end it, tell a finishing blow (free, any time) or
+# take heart (free: holding Inspiration never keeps a turn open).
+LEAVES_ONLY = frozenset({'advance', 'reposition', 'end_turn', 'finisher', 'take_heart'})
 # The intents that spend a hero's turn in a fight (and so may leave nothing but moving).
 TURN_SPENDING_KINDS = frozenset({'combat', 'spell', 'capability', 'object', 'roll'})
 ENGINE_ACTION_KINDS = frozenset({'object', 'travel', 'item', 'rest', 'shop', 'spell', 'capability', 'roll'})
@@ -88,8 +91,13 @@ def _combat_action(action_intent: dict[str, Any] | None) -> dict[str, Any] | Non
 
 
 def _told_quietly(rules_hint: dict[str, Any], action_intent: dict[str, Any] | None) -> bool:
-    """A fight action whose turn holds nothing a model tells (see the module docstring)."""
+    """A fight action whose turn holds nothing a model tells, or Take heart out of a fight (see the module docstring)."""
 
+    if _text(_dict(action_intent).get('kind')) == 'inspiration':
+        return True
+    if zone_move_only(rules_hint.get('state_pipeline')):
+        # Stepping into another room: its description and arrival line are the engine's own words.
+        return True
     combat_action = _combat_action(action_intent)
     if combat_action is None or _text(combat_action.get('action_type')) in NARRATED_FIGHT_ACTIONS:
         return False

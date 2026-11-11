@@ -59,6 +59,8 @@ import {
   selectedHealingAmount,
   sellSubmission,
   spellCastSubmission,
+  TAKE_HEART_LABEL,
+  takeHeartSubmission,
   travelSubmission,
   type ActionSubmission,
 } from './actionIntents'
@@ -68,6 +70,7 @@ import { objectChoices, TAKE_ALL_LABEL } from './storySuggestions'
 import { coinLabel, copperValue, sellOffer, tradeLineKey, tradeRefusals, type Coins as CoinAmounts } from './trade'
 import { travelBlockedReason } from './travelBlock'
 import { useEdgeFades } from './useEdgeFades'
+import { zoneMark, zoneReach } from './zones'
 
 export type TraySection =
   | 'speak'
@@ -1099,6 +1102,11 @@ export function StoryActionTray({
     // Every way onward the server offers, as the Map tab lists them; a fight has none.
     const exits = board.worldState.combat.active ? [] : board.worldState.availableExits.filter((exit) => exit.id)
     const travelReason = travelBlockedReason(board)
+    const zones = board.worldState.zones
+    // An object in the room next door is marked with it; taking its action steps in first.
+    const nextDoor = (zoneId: string | undefined) =>
+      zoneReach(zones, zoneId) === 'next' ? zoneMark(zones?.find((zone) => zone.id === zoneId)?.name ?? '') : ''
+
     return (
       <>
         {loose.length ? (
@@ -1124,7 +1132,11 @@ export function StoryActionTray({
           <div key={object.id} className="story-tray-object">
             <div className="story-tray-object-heading">
               <span className="story-tray-row-name">{object.name}</span>
-              {object.states.length ? <span className="story-tray-row-meta">{object.states.join(' · ')}</span> : null}
+              {object.states.length || nextDoor(object.zoneId) ? (
+                <span className="story-tray-row-meta">
+                  {[...object.states, nextDoor(object.zoneId)].filter(Boolean).join(' · ')}
+                </span>
+              ) : null}
             </div>
             <div className="story-tray-offers" role="group" aria-label={`${object.name} actions`}>
               {offers.map((action) =>
@@ -1146,6 +1158,16 @@ export function StoryActionTray({
             <div className="story-tray-offers">
               {exits.map((exit) =>
                 renderOffer(`travel-${exit.id}`, `Go to ${exit.name}`, travelReason, () => submitTyped(travelSubmission(exit))),
+              )}
+            </div>
+          </div>
+        ) : null}
+        {controls.takeHeart && !board.worldState.combat.active ? (
+          <div className="story-tray-object" role="group" aria-label="Inspiration">
+            <span className="story-label" aria-hidden="true">Inspiration</span>
+            <div className="story-tray-offers">
+              {renderOffer('take-heart', TAKE_HEART_LABEL, worldActionReason, () =>
+                submitTyped(takeHeartSubmission(controls.actorName)),
               )}
             </div>
           </div>

@@ -3,6 +3,7 @@ import { apiFetch } from './api'
 import { backgroundFromValue } from './backgroundCatalog'
 import type { PlayableRace } from './raceCatalog'
 import type { CreateHeroPayload } from './story/create/createHeroModel'
+import type { HeroTies, HeroTiesDraft } from './story/heroTies'
 import type { CharacterRaceSelection, Player, PlayerDetail } from './types'
 
 type ValueUpdater<T> = T | ((current: T) => T)
@@ -16,6 +17,10 @@ export type PlayerEditDialogState = {
   charClass: string
   backgroundId: string
   level: string
+  /** The selected hero's character sheet as it was when the editor opened (its ties are shown from it). */
+  sheet: unknown
+  /** The hero's own threads once edited: what is saved, and why it cannot be yet. Untouched, nothing is sent. */
+  ties: { draft: HeroTiesDraft; payload: HeroTies; problem: string } | null
   error: string
   pending: boolean
 } | null
@@ -30,6 +35,8 @@ type UsePlayerProfileActionsOptions = {
   auth: string
   baseUrl: string
   selectedPlayer: Player | null
+  /** The selected hero's character sheet, when its detail has loaded (it holds their ties). */
+  selectedPlayerSheet: unknown
   selectedCampaignId: number | null
   rememberDialogTrigger: () => void
   refreshCampaignWorkspace: (campaignId: number) => Promise<void>
@@ -40,7 +47,7 @@ type UsePlayerProfileActionsOptions = {
   pushError: (category: 'persistence', message: string) => void
 }
 
-function playerDialogStateFromPlayer(player: Player): NonNullable<PlayerEditDialogState> {
+function playerDialogStateFromPlayer(player: Player, sheet: unknown): NonNullable<PlayerEditDialogState> {
   const background = backgroundFromValue(player.background?.id ?? player.background?.name)
   return {
     player,
@@ -51,6 +58,8 @@ function playerDialogStateFromPlayer(player: Player): NonNullable<PlayerEditDial
     charClass: player.char_class || player.class_ || '',
     backgroundId: background?.id ?? '',
     level: String(player.level ?? 1),
+    sheet,
+    ties: null,
     error: '',
     pending: false,
   }
@@ -60,6 +69,7 @@ export function usePlayerProfileActions({
   auth,
   baseUrl,
   selectedPlayer,
+  selectedPlayerSheet,
   selectedCampaignId,
   rememberDialogTrigger,
   refreshCampaignWorkspace,
@@ -76,8 +86,8 @@ export function usePlayerProfileActions({
     if (!selectedPlayer) return
     rememberDialogTrigger()
     setProfileSettingsOpen(false)
-    setPlayerEditDialog(playerDialogStateFromPlayer(selectedPlayer))
-  }, [rememberDialogTrigger, selectedPlayer, setProfileSettingsOpen])
+    setPlayerEditDialog(playerDialogStateFromPlayer(selectedPlayer, selectedPlayerSheet))
+  }, [rememberDialogTrigger, selectedPlayer, selectedPlayerSheet, setProfileSettingsOpen])
 
   const closePlayerEditDialog = useCallback(() => {
     if (playerEditDialog?.pending) return
@@ -123,6 +133,11 @@ export function usePlayerProfileActions({
       )
       return
     }
+    const tiesError = playerEditDialog.ties?.problem
+    if (tiesError) {
+      setPlayerEditDialog((current) => (current ? { ...current, error: tiesError } : current))
+      return
+    }
     let playableRace: PlayableRace | null
     try {
       const { playableRaceFromValue } = await import('./raceCatalog')
@@ -160,6 +175,9 @@ export function usePlayerProfileActions({
         sex: playerEditDialog.sex === 'female' ? 'female' : 'male',
         char_class: playerEditDialog.charClass.trim(),
         level,
+      }
+      if (playerEditDialog.ties) {
+        payload.ties = playerEditDialog.ties.payload
       }
       if (playerEditDialog.backgroundId) {
         payload.background = playerEditDialog.backgroundId

@@ -24,9 +24,25 @@ export function rangeBand(participant: CombatParticipantSummary) {
   return participant.rangeBand && RANGE_BANDS.has(participant.rangeBand) ? participant.rangeBand : ''
 }
 
-/** Beneath an enemy in the initiative strip: "near · Wounded", with "· 7/11" only when the server sends HP. */
+/** The strip's short form of each reach: the server's own label runs to a sentence, and the strip has a few words. */
+const STRIP_REACH: Record<string, string> = {
+  in_reach: 'in reach',
+  one_move: 'a move away · 30 ft',
+  out_of_reach: 'out of reach · 60 ft+',
+  far_off: 'far off',
+}
+
+/** How far a participant is from the viewing hero ("a move away · 30 ft"); its band when the server does not say. */
+export function distance(participant: CombatParticipantSummary) {
+  return (participant.reach && STRIP_REACH[participant.reach]) || participant.reachLabel || rangeBand(participant)
+}
+
+/**
+ * Beneath an enemy in the initiative strip: "a move away · 30 ft · Wounded", with "· 7/11" only when the
+ * server sends HP.
+ */
 export function enemyDetail(participant: CombatParticipantSummary) {
-  return [rangeBand(participant), healthWord(participant), exactHp(participant)].filter(Boolean).join(' · ')
+  return [distance(participant), healthWord(participant), exactHp(participant)].filter(Boolean).join(' · ')
 }
 
 export function combatParticipant(combat: CombatStatePanel, id: string) {

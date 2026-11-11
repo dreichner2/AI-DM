@@ -130,6 +130,8 @@ HTTP_ENDPOINT_CAPABILITIES: dict[tuple[str, str], Capability] = {
     # Player-owned character and custom-race operations.
     ('players.handle_players', 'GET'): 'player_read',
     ('players.handle_players', 'POST'): 'player_action',
+    ('players.get_joinable_heroes', 'GET'): 'player_action',
+    ('players.bring_player', 'POST'): 'player_action',
     ('players.get_player_by_id', 'GET'): 'player_read',
     ('players.repair_player_starting_loadout', 'POST'): 'player_action',
     ('players.update_player', 'PATCH'): 'player_action',

@@ -52,6 +52,7 @@ from aidm_server.game_state.orchestration.combat_resolution import (
 )
 from aidm_server.game_state.orchestration.engine_brief import engine_brief
 from aidm_server.game_state.orchestration.finishing_blow import finishing_blow, hold_spared_captive
+from aidm_server.game_state.orchestration.hero_threads import hero_turn_changes, hero_turn_facts
 from aidm_server.game_state.orchestration.narration_facts import (
     PICKUP_SOURCE,
     captives_left_behind,
@@ -66,6 +67,7 @@ from aidm_server.game_state.orchestration.narration_facts import (
 from aidm_server.game_state.orchestration.search_take import TAKEN_BY_SEARCH, search_take_actions, taken_by_search
 from aidm_server.game_state.orchestration.story_beats import BEAT_BASIS_KEY, beat_basis
 from aidm_server.game_state.orchestration.story_rolls import SETTLED_ACTIONS_KEY, STORY_ROLLS_KEY, numbered, story_rolls_before_narration
+from aidm_server.game_state.orchestration.zone_turns import ZonePlan, without_zone_moves, zone_move_facts, zone_move_only, zone_plan
 from aidm_server.game_state.orchestration.turn_flow import (
     AUTO_END_TURN_KEY,
     AUTO_END_TURN_REQUEST_KEY,
@@ -83,6 +85,7 @@ from aidm_server.game_state.models import (
     stable_change_id,
     state_snapshot_for_session,
 )
+from aidm_server.game_state.zones import names_here, zone_move_change
 from aidm_server.game_state.validation.validator import (
     validate_declared_actions,
     validate_state_changes,
@@ -119,6 +122,7 @@ AUTHORITATIVE_PRE_NARRATION_CHANGE_TYPES = {
     'item.use',
     'shop.buy',
     'shop.sell',
+    'hero.inspiration',
 }
 CONFIRMATION_DENIAL_PATTERN = re.compile(
     r"\b(?:do not|don't|does not|doesn't|did not|cannot|can't|fail|fails|failed|before you can|instead)\b",
@@ -1661,16 +1665,20 @@ def _spoken(text: Any) -> str:
     return ' '.join(re.sub(r'[\'"“”‘’.,;:!?]', ' ', str(text or '').lower()).split())
 
 
-def _present_npc_named(state: dict[str, Any], message: str) -> dict[str, Any] | None:
-    """The one present NPC the message names by full or first name."""
+def _present_npc_named(state: dict[str, Any], message: str, *, actor_id: str) -> dict[str, Any] | None:
+    """The one present NPC the message names by full or first name; in a place with rooms, only those in the
+    hero's own zone (the rest can only be called to, :mod:`aidm_server.game_state.orchestration.zone_turns`)."""
 
     scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
     present = {str(value) for value in scene.get('activeNpcIds') or []}
+    here = names_here(state, actor_id)
     words = name_words(message)
     named = []
     for key in ('knownNpcs', 'partyNpcs'):
         for npc in state.get(key) or []:
             if not isinstance(npc, dict) or str(npc.get('id') or '') not in present:
+                continue
+            if here is not None and str(npc.get('name') or '').strip() not in here:
                 continue
             name = name_words(npc.get('name'))
             candidates = [name, name[:1]] if name and len(name[0]) >= 3 else [name]
@@ -1681,6 +1689,29 @@ def _present_npc_named(state: dict[str, Any], message: str) -> dict[str, Any] | 
             ):
                 named.append(npc)
     return named[0] if len(named) == 1 else None
+
+
+def _zone_facts(
+    state: dict[str, Any],
+    applied_changes: list[dict[str, Any]],
+    plan: ZonePlan,
+    *,
+    actor_id: str,
+    only_move: bool,
+) -> dict[str, Any]:
+    """The narration facts of a place with rooms: who is in the hero's zone (``present``), the hero's move this turn
+    (``zoneMove``) and a call to someone next door (``callOut``)."""
+
+    facts: dict[str, Any] = {}
+    here = names_here(state, actor_id)
+    if here is not None:
+        facts['present'] = here
+    moved = zone_move_facts(state, applied_changes, actor_id=actor_id, only=only_move)
+    if moved:
+        facts['zoneMove'] = moved
+    if plan.call_out:
+        facts['callOut'] = dict(plan.call_out)
+    return facts
 
 
 def _talk_facts(*, session_obj: Session, turn: DmTurn, state: dict[str, Any], npc: dict[str, Any]) -> dict[str, Any]:
@@ -1785,7 +1816,7 @@ def _narration_packet(
             None,
         )
     if free and free_text is None and not declared_actions:
-        talk_npc = _present_npc_named(state_before, player_message)
+        talk_npc = _present_npc_named(state_before, player_message, actor_id=actor_id)
     if talk_npc:
         packet['talk'] = _talk_facts(session_obj=session_obj, turn=turn, state=state_before, npc=talk_npc)
     if free_text is not None:
@@ -1883,6 +1914,37 @@ def _with_finishing_blow(
     return state, [*applied_combat, *applied_changes], facts
 
 
+def _with_hero_threads(
+    *,
+    turn: DmTurn,
+    state_before: dict[str, Any],
+    state: dict[str, Any],
+    actor_id: str,
+    action_intent: dict[str, Any] | None,
+    applied_immediate: list[dict[str, Any]],
+    applied_combat: list[dict[str, Any]],
+    finisher: dict[str, Any] | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """The state and applied combat changes once the turn's tie lines are told and the Inspiration it earned is
+    granted (``hero_threads``), and their narration facts."""
+
+    applied_before = [*applied_immediate, *applied_combat]
+    changes = hero_turn_changes(
+        state_before=state_before,
+        state=state,
+        applied=applied_before,
+        actor_id=actor_id,
+        turn_id=turn.turn_id,
+        action_intent=action_intent,
+        finisher=finisher,
+    )
+    if changes:
+        applied = apply_state_changes(state, validated_changes_for_application(validate_state_changes(state=state, changes=changes)))
+        state = applied['nextState']
+        applied_combat = [*applied_combat, *applied['appliedChanges']]
+    return state, applied_combat, hero_turn_facts(state, [*applied_immediate, *applied_combat])
+
+
 def _conditions_shaken_off(state: dict[str, Any], *, turn_id: Any) -> list[dict[str, Any]]:
     """The enemy abilities whose conditions end as the acting hero's turn ends: ``[{"name", "source"}]``."""
 
@@ -1930,13 +1992,16 @@ def _downed_actor_result(
     actor_id: str,
     players_by_id: dict[int, Player],
     refusal: str,
+    refused_as: str = 'actorDown',
 ) -> dict[str, Any]:
-    """A turn refused before narration because its hero is down: nothing is extracted or applied."""
+    """A turn refused before narration because its hero is down (``actorDown``), or because what it aims at is out
+    of their reach in a place with rooms (``zoneRefusal``): nothing is extracted or applied."""
 
-    pre_extraction = {'declaredActions': [], 'notes': ['actor_down']}
+    action_type = 'actor.down' if refused_as == 'actorDown' else 'zone.out_of_reach'
+    pre_extraction = {'declaredActions': [], 'notes': ['actor_down' if refused_as == 'actorDown' else 'zone_out_of_reach']}
     pre_validation = {
         'validatedActions': [
-            {'status': 'invalid', 'reason': refusal, 'originalAction': {'type': 'actor.down', 'actorId': actor_id}}
+            {'status': 'invalid', 'reason': refusal, 'originalAction': {'type': action_type, 'actorId': actor_id}}
         ],
         'pendingRolls': [],
         'immediateChanges': [],
@@ -1945,7 +2010,7 @@ def _downed_actor_result(
     empty_validation: dict[str, Any] = {'accepted': [], 'modified': [], 'rejected': []}
     dm_context = _dm_context_packet(state=state, player_message='', pre_validation=pre_validation, applied_changes=[])
     state_log = build_state_log(turn_id=turn.turn_id, pre_validation=pre_validation, immediate_validation=empty_validation)
-    actor_down = {'reason': refusal}
+    refused = {'reason': refusal}
     metadata = _metadata(turn)
     metadata[STATE_PIPELINE_METADATA_KEY] = {
         'version': STATE_PIPELINE_VERSION,
@@ -1964,7 +2029,7 @@ def _downed_actor_result(
         'combatDebug': {},
         'dmContextPacket': dm_context,
         'openingEnemyTurns': False,
-        'actorDown': actor_down,
+        refused_as: refused,
         'stateLog': state_log,
         'managedDomains': MANAGED_STATE_DOMAINS,
     }
@@ -1984,10 +2049,28 @@ def _downed_actor_result(
         'combatDebug': {},
         'dmContextPacket': dm_context,
         'openingEnemyTurns': False,
-        'actorDown': actor_down,
+        refused_as: refused,
         'stateLog': state_log,
         'clarificationRequests': [],
     }
+
+
+def _with_zone_move(
+    state: dict[str, Any],
+    plan: ZonePlan,
+    *,
+    actor_id: str,
+    turn_id: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """The state once the hero has stepped into the zone the plan moves them to, the applied changes and their
+    validation (:mod:`aidm_server.game_state.orchestration.zone_turns`)."""
+
+    if not plan.move_to:
+        return state, [], {'accepted': [], 'modified': [], 'rejected': []}
+    move = zone_move_change(state, actor_id=actor_id, zone_id=plan.move_to, turn_id=turn_id)
+    validation = validate_state_changes(state=state, changes=[move], expected_actor_id=actor_id)
+    applied = apply_state_changes(state, validated_changes_for_application(validation))
+    return applied['nextState'], applied['appliedChanges'], validation
 
 
 def _with_search_takes(
@@ -2068,6 +2151,19 @@ def pre_dm_pipeline(
     )
     if down_refusal:
         return _downed_actor_result(turn=turn, state=state, actor_id=actor_id, players_by_id=players_by_id, refusal=down_refusal)
+    # In a place with rooms the action may first need the hero to step next door, or be out of their reach.
+    plan = (
+        ZonePlan()
+        if declared_actions_override or finishing(action_intent)
+        else zone_plan(state, actor_id=actor_id, action_intent=action_intent, free_text=free_text, player_message=player_message)
+    )
+    if plan.refusal:
+        return _downed_actor_result(
+            turn=turn, state=state, actor_id=actor_id, players_by_id=players_by_id, refusal=plan.refusal, refused_as='zoneRefusal'
+        )
+    state, moved, moved_validation = _with_zone_move(state, plan, actor_id=actor_id, turn_id=turn.turn_id)
+    # A move that starts something (more than the move itself) is all the turn does.
+    only_move = bool(moved) and (plan.only_move or len(moved) > 1)
 
     if declared_actions_override:
         pre_extraction = {
@@ -2077,6 +2173,9 @@ def pre_dm_pipeline(
     elif finishing(action_intent):
         # The finishing blow is the hero's own words: no action, no roll, no cost.
         pre_extraction = {'declaredActions': [], 'notes': ['finisher']}
+    elif only_move:
+        # Stepping into another room is the engine's alone: no model reads it for anything.
+        pre_extraction = {'declaredActions': [], 'notes': ['zone_move']}
     else:
         helper_session_released = False
 
@@ -2092,7 +2191,7 @@ def pre_dm_pipeline(
             recent_timeline=recent_timeline,
             actor_id=actor_id,
             action_intent=action_intent,
-            free_text_intents=list(free_text.intents) if free_text is not None else None,
+            free_text_intents=without_zone_moves(free_text.intents) if free_text is not None else None,
             force_helper=_turn_awaits_player_roll(turn),
             before_provider_call=_before_provider_call if before_helper_call else None,
         )
@@ -2137,8 +2236,8 @@ def pre_dm_pipeline(
     apply_result = apply_state_changes(state, immediate_changes)
     state_after_immediate, applied_immediate, immediate_validation = _with_search_takes(
         state=apply_result['nextState'],
-        applied_immediate=apply_result['appliedChanges'],
-        immediate_validation=immediate_validation,
+        applied_immediate=[*moved, *apply_result['appliedChanges']],
+        immediate_validation=_merge_validation_results(moved_validation, immediate_validation),
         actor_id=actor_id,
         turn_id=turn.turn_id,
     )
@@ -2296,6 +2395,16 @@ def pre_dm_pipeline(
         applied_immediate=applied_immediate,
         applied_combat=applied_combat,
     )
+    state_before_dm, applied_combat, hero_facts = _with_hero_threads(
+        turn=turn,
+        state_before=state,
+        state=state_before_dm,
+        actor_id=actor_id,
+        action_intent=action_intent,
+        applied_immediate=applied_immediate,
+        applied_combat=applied_combat,
+        finisher=finisher_facts.get('finisher'),
+    )
     finalize_combat_prepare(
         session_obj=session_obj,
         campaign=campaign,
@@ -2375,6 +2484,8 @@ def pre_dm_pipeline(
         turn_ends=opening_enemy_turns or enemy_deferred_reason is None,
     )
     dm_context['narration'].update(finisher_facts)
+    dm_context['narration'].update(hero_facts)
+    dm_context['narration'].update(_zone_facts(state_before_dm, [*applied_immediate, *applied_combat], plan, actor_id=actor_id, only_move=only_move))
     barks = enemy_barks(
         state_before=state,
         state_after=state_before_dm,
@@ -2752,6 +2863,9 @@ def post_dm_pipeline(
         elif finishing(metadata.get('action_intent') if isinstance(metadata.get('action_intent'), dict) else None):
             # The finishing blow's telling changes only what the engine already made of it.
             post_extraction = _skipped_post_extraction('finisher')
+        elif zone_move_only(pipeline.get('dmContextPacket')):
+            # Stepping into another room is the engine's from start to end: its words are scripted.
+            post_extraction = _skipped_post_extraction('zone_move')
         elif told(metadata) != TOLD_BY_NARRATOR:
             # The engine's own sentences told the turn (or its turn line alone): there is no narration to read.
             post_extraction = _skipped_post_extraction('engine_told')
