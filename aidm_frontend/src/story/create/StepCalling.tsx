@@ -1,11 +1,12 @@
 import type { RefObject } from 'react'
 import { hitDieForClass } from '../../characterStats'
 import {
-  CORE_CLASSES,
   FIGHTING_STYLES,
   NARRATED_CLASS_NOTE,
   callingName,
-  coreClassFor,
+  coreClasses,
+  countWord,
+  heroClass,
   heroFightingStyle,
   savesLabel,
   withCalling,
@@ -24,9 +25,21 @@ function listPhrase(items: readonly string[]) {
   return items.length > 1 ? `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}` : items.join('')
 }
 
+function counted(count: number, noun: string) {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`
+}
+
+/** `6 cantrips and 13 spells`, leaving out an empty list. */
+function spellCounts(entry: CoreClass) {
+  return [
+    entry.cantrips.length ? counted(entry.cantrips.length, 'cantrip') : '',
+    entry.spells.length ? counted(entry.spells.length, 'spell') : '',
+  ].filter(Boolean).join(' and ')
+}
+
 function ClassDetail({ entry, draft, onChange }: { entry: CoreClass; draft: HeroDraft; onChange: StepCallingProps['onChange'] }) {
   const style = heroFightingStyle(draft)
-  const spells = entry.spellcasting
+  const magic = entry.spellcasting
   return (
     <>
       <h3 className="story-create-detail-name">{entry.name}</h3>
@@ -39,10 +52,10 @@ function ClassDetail({ entry, draft, onChange }: { entry: CoreClass; draft: Hero
             <strong>{feature.name}</strong> {feature.text}
           </li>
         ))}
-        {spells ? (
+        {magic ? (
           <li className="story-create-feature-magic">
             <strong>Spells</strong>
-            {` ${spells.cantrips.length} cantrips and ${spells.spells.length} spells, such as ${listPhrase(spells.examples)}.`}
+            {` ${spellCounts(entry)}, such as ${listPhrase(magic.examples)}.`}
           </li>
         ) : null}
       </ul>
@@ -69,28 +82,32 @@ function ClassDetail({ entry, draft, onChange }: { entry: CoreClass; draft: Hero
           ))}
         </fieldset>
       ) : null}
-      {entry.id === 'rogue' ? (
-        <p className="story-create-note">You mark two of your skills for Expertise in the next step.</p>
+      {entry.expertise ? (
+        <p className="story-create-note">{`You mark ${countWord(entry.expertise)} of your skills for Expertise in the next step.`}</p>
       ) : null}
 
-      <h4 className="story-label">Later</h4>
-      <ol className="story-create-later">
-        {entry.later.map((feature) => (
-          <li key={`${feature.level}-${feature.name}`}>
-            <span className="story-create-later-level">{`Level ${feature.level}`}</span>
-            <span>
-              <strong>{feature.name}</strong> {feature.text}
-            </span>
-          </li>
-        ))}
-      </ol>
+      {entry.later.length ? (
+        <>
+          <h4 className="story-label">Later</h4>
+          <ol className="story-create-later">
+            {entry.later.map((feature) => (
+              <li key={`${feature.level}-${feature.name}`}>
+                <span className="story-create-later-level">{`Level ${feature.level}`}</span>
+                <span>
+                  <strong>{feature.name}</strong> {feature.text}
+                </span>
+              </li>
+            ))}
+          </ol>
+        </>
+      ) : null}
     </>
   )
 }
 
 /** Step 2: the twelve core callings, what each does from the start and later, and its choices. */
 export function StepCalling({ draft, headingRef, onChange, onMoreCallings }: StepCallingProps) {
-  const entry = coreClassFor(draft.calling)
+  const entry = heroClass(draft)
   const narrated = draft.calling && !entry ? draft.calling : null
 
   return (
@@ -101,7 +118,7 @@ export function StepCalling({ draft, headingRef, onChange, onMoreCallings }: Ste
       <fieldset className="story-create-callings story-create-rise">
         <legend className="story-label">Calling</legend>
         <div className="story-create-calling-grid">
-          {CORE_CLASSES.map((option) => (
+          {coreClasses(draft.rules).map((option) => (
             <label key={option.id} className="story-create-choice">
               <input
                 type="radio"

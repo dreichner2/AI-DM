@@ -5,7 +5,6 @@ import '../../App.css'
 import { SaveImportDialog } from '../../ArchiveDialogs'
 import { CampaignActionDialog, StartChapterDialog } from '../../CampaignSessionActionDialogs'
 import { CampaignPackImportDialog } from '../../CampaignPackImportDialog'
-import { DEFAULT_POINT_BUY_SCORES } from '../../characterStats'
 import DiceRollDialog from '../../DiceRollDialog'
 import { PlayerEditDialog } from '../../PlayerEditDialog'
 import { ModalShell } from '../../ModalShell'
@@ -234,10 +233,8 @@ function AccountAccessPreview({ dialogRef }: { dialogRef: RefObject<HTMLElement 
   return (
     <StoryAccountSheet
       access={access}
-      account={null}
       dialogRef={dialogRef}
       onClose={noop}
-      onConnectionSettings={noop}
       onLogOut={noop}
       onSwitchTable={noop}
       view="access"
@@ -271,8 +268,6 @@ function NewAdventurePreview({ dialogRef, step2 }: { dialogRef: RefObject<HTMLEl
 
 function EditCharacterPreview({ dialogRef }: { dialogRef: RefObject<HTMLElement | null> }) {
   const [dialog, setDialog] = useState<PlayerEditDialogState>({
-    mode: 'edit',
-    campaignId: 37,
     player: PLAYERS[0],
     characterName: 'Arden Vale',
     race: 'Human',
@@ -281,7 +276,6 @@ function EditCharacterPreview({ dialogRef }: { dialogRef: RefObject<HTMLElement 
     charClass: 'Fighter',
     backgroundId: '',
     level: '3',
-    abilityScores: DEFAULT_POINT_BUY_SCORES,
     error: '',
     pending: false,
   })
@@ -363,7 +357,6 @@ function PreviewSheetView({ sheet }: { sheet: PreviewSheet }): ReactNode {
           account={{ name: 'Danny Reichner', table: 'the Lantern Table', role: 'player' }}
           dialogRef={dialogRef}
           onClose={noop}
-          onConnectionSettings={noop}
           onLogOut={noop}
           onSwitchTable={noop}
           view="summary"

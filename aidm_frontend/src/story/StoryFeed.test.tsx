@@ -129,6 +129,33 @@ describe('StoryFeed', () => {
     expect(screen.queryByText(/Canon applied/)).toBeNull()
   })
 
+  it('shows Bardic Inspiration after the roll breakdown in the gold tone', () => {
+    const { container } = render(
+      <StoryFeed
+        board={board({
+          turnRows: [
+            entry('log-1', 'player', 'Wren', 'I roll a d20+3 for stealth: 9 + Bardic Inspiration d6 (4) = 16', {
+              turn_id: 2,
+              authoritative_roll: {
+                die: 'd20', mode: 'normal', rolls: [9], kept: 9, modifier: 3, total: 16, task_dc: 15,
+                inspiration: { die: 'd6', roll: 4 },
+              },
+            }),
+          ],
+        })}
+        textSize="default"
+        onExitToTitle={vi.fn()}
+      />,
+    )
+    const breakdown = container.querySelector('.story-roll-breakdown')
+    const inspiration = container.querySelector('.story-roll-inspiration')
+    expect(breakdown).toHaveTextContent('d20 9 + 3')
+    expect(inspiration).toHaveTextContent('+ d6 4 inspiration')
+    expect(breakdown?.nextElementSibling).toBe(inspiration)
+    expect(screen.getByText('16')).toBeInTheDocument()
+    expect(screen.getByText('success')).toBeInTheDocument()
+  })
+
   it('shows pending and failed actions and removes a failed one', () => {
     const dismissTimelineEntry = vi.fn()
     render(

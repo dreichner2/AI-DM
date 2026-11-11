@@ -322,8 +322,10 @@ describe('StoryActionTray', () => {
           currency: { gp: 60, sp: 3 },
           tradeGoods: [
             { id: 'dagger_1', name: 'Dagger', quantity: 2, price: { gp: 2 } },
-            { id: 'lantern_1', name: 'Lantern', quantity: 1, price: null },
+            { id: 'lantern_1', name: 'Lantern', quantity: 1, price: { gp: 5, sp: 5 } },
             { id: 'trinket_1', name: 'Odd trinket', quantity: 1, price: null },
+            // Mara stocks rope, but only the item's own price makes an offer.
+            { id: 'rope_1', name: 'Rope', quantity: 1, price: null },
           ],
         }),
       })

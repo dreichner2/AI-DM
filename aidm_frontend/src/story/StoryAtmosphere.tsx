@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useStoryPreferences } from './sheets/storyPreferences'
 import type { StoryMood } from './storyMood'
 
 type StoryAtmosphereProps = {
@@ -68,9 +69,11 @@ function hueOf(color: string) {
 
 /**
  * The living background: mood light rising from below, a vignette, film grain
- * and a slow drift of embers. Purely decorative.
+ * and a slow drift of embers. Purely decorative. With reduce motion on (the
+ * player's setting, else the system's) it holds still: no embers, no flash.
  */
 export function StoryAtmosphere({ mood, viewerHp }: StoryAtmosphereProps) {
+  const { reduceMotion } = useStoryPreferences()
   const rootRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const moodRef = useRef(mood)
@@ -89,8 +92,7 @@ export function StoryAtmosphere({ mood, viewerHp }: StoryAtmosphereProps) {
   useEffect(() => {
     const canvas = canvasRef.current
     const root = rootRef.current
-    if (!canvas || !root || typeof window.matchMedia !== 'function') return
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    if (!canvas || !root || reduceMotion || typeof window.matchMedia !== 'function') return
     const context = canvas.getContext('2d')
     if (!context) return
 
@@ -169,18 +171,19 @@ export function StoryAtmosphere({ mood, viewerHp }: StoryAtmosphereProps) {
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
       stop()
+      context.clearRect(0, 0, width, height)
       window.removeEventListener('resize', resize)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [])
+  }, [reduceMotion])
 
   return (
-    <div ref={rootRef} className="story-atmosphere" aria-hidden="true">
+    <div ref={rootRef} className="story-atmosphere" data-still={reduceMotion ? '' : undefined} aria-hidden="true">
       <div className="story-atmosphere-glow" />
       <div className="story-atmosphere-vignette" />
       <div className="story-atmosphere-grain" />
       <canvas ref={canvasRef} className="story-atmosphere-motes" />
-      {hurtCount ? <div key={hurtCount} className="story-hurt-flash" /> : null}
+      {hurtCount && !reduceMotion ? <div key={hurtCount} className="story-hurt-flash" /> : null}
     </div>
   )
 }

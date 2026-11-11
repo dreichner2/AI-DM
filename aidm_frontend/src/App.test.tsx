@@ -18,6 +18,7 @@ import {
   lightThemeColors,
   lightThemeContrastBackgrounds,
   lightThemeContrastForegrounds,
+  loadConsoleChunks,
   renderLoadedApp,
   sessionSummaryFixture,
   setupAppTest,
@@ -139,7 +140,7 @@ describe('App user workflow regressions', () => {
     ).toBeInTheDocument()
     expect(screen.getByLabelText(/Your Action/i)).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-  }, 10_000)
+  })
 
   it('reloads recovery state for the active room when another operator resolves the gate', async () => {
     await renderLoadedApp()
@@ -1143,6 +1144,7 @@ describe('App user workflow regressions', () => {
   })
 
   it('opens Play Now once after hydration even when the socket joins before the refresh chain ends', async () => {
+    await loadConsoleChunks()
     localStorage.removeItem('aidm:selectedCampaignId')
     localStorage.removeItem('aidm:selectedSessionId')
     localStorage.removeItem('aidm:selectedPlayerId')
@@ -2337,6 +2339,7 @@ describe('App user workflow regressions', () => {
   })
 
   it('requires explicit origin confirmation before a share-link backend receives any request', async () => {
+    await loadConsoleChunks()
     sessionStorage.setItem('aidm:authToken', 'legacy-account-token')
     sessionStorage.setItem('aidm:workspaceToken', 'legacy-workspace-token')
     window.history.replaceState(

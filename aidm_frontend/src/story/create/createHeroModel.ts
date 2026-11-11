@@ -1,4 +1,4 @@
-import { backgroundFromValue } from '../../backgroundCatalog'
+import { PLAYABLE_BACKGROUNDS, backgroundFromValue, type PlayableBackground } from '../../backgroundCatalog'
 import {
   POINT_BUY_ABILITIES,
   POINT_BUY_BUDGET,
@@ -10,16 +10,23 @@ import {
 } from '../../characterStats'
 import { profileIconSrcForCharacter, type SexKey } from '../../profileIcons'
 import type { CharacterRaceSelection } from '../../types'
+import {
+  FALLBACK_RULES,
+  SKILL_IDS,
+  type ClassRules,
+  type CreationRules,
+  type FightingStyleId,
+  type SkillId,
+} from './creationRules'
 
 /*
- * The rules behind the four-step hero creator: what each ancestry and core class
- * gives a level-1 character in this game's rules engine, the recommended ability
- * spread, the live derived numbers and the creation payload. Everything here is
- * pure so it can be tested without rendering.
+ * The four-step hero creator: the recommended ancestries, how each core class is
+ * presented, the recommended ability spread, the live derived numbers and the
+ * creation payload. Everything here is pure so it can be tested without rendering.
  *
- * The class data mirrors the server: features from aidm_server/class_features.py,
- * class skills from character_state.CLASS_SKILL_CHOICES, spell lists from
- * spellbook.class_spells_for_level and starting kits from starting_inventory.py.
+ * The rules themselves (class skills, saves, kits, spells, features, background
+ * skills) are the server's and travel with the draft (`HeroDraft.rules`); see
+ * creationRules.ts.
  */
 
 export const CREATE_STEPS = ['who', 'calling', 'shape', 'review'] as const
@@ -36,42 +43,12 @@ export const ABILITY_LABELS = Object.fromEntries(
   POINT_BUY_ABILITIES.map((ability) => [ability.key, ability.label]),
 ) as Record<AbilityKey, string>
 
-// ---- skills ----------------------------------------------------------------
-
-const SKILLS = {
-  acrobatics: { name: 'Acrobatics', ability: 'dexterity' },
-  animal_handling: { name: 'Animal Handling', ability: 'wisdom' },
-  arcana: { name: 'Arcana', ability: 'intelligence' },
-  athletics: { name: 'Athletics', ability: 'strength' },
-  deception: { name: 'Deception', ability: 'charisma' },
-  history: { name: 'History', ability: 'intelligence' },
-  insight: { name: 'Insight', ability: 'wisdom' },
-  intimidation: { name: 'Intimidation', ability: 'charisma' },
-  investigation: { name: 'Investigation', ability: 'intelligence' },
-  medicine: { name: 'Medicine', ability: 'wisdom' },
-  nature: { name: 'Nature', ability: 'intelligence' },
-  perception: { name: 'Perception', ability: 'wisdom' },
-  performance: { name: 'Performance', ability: 'charisma' },
-  persuasion: { name: 'Persuasion', ability: 'charisma' },
-  religion: { name: 'Religion', ability: 'intelligence' },
-  sleight_of_hand: { name: 'Sleight of Hand', ability: 'dexterity' },
-  stealth: { name: 'Stealth', ability: 'dexterity' },
-  survival: { name: 'Survival', ability: 'wisdom' },
-} as const satisfies Record<string, { name: string; ability: AbilityKey }>
-
-export type SkillId = keyof typeof SKILLS
-const SKILL_IDS = Object.keys(SKILLS) as SkillId[]
-
-export function skillName(skill: string) {
-  return skill in SKILLS ? SKILLS[skill as SkillId].name : skill.replace(/_/g, ' ')
-}
-
 // ---- ancestries ------------------------------------------------------------
 
 export type Ancestry = {
   id: string
   name: string
-  /** The race the server stores (`race_selection`); Half-Elf and Half-Orc use the catalog's elf and orc. */
+  /** The race the server stores (`race_selection`): the catalog entry of the same id. */
   selection: CharacterRaceSelection
   summary: string
   /** Traits the rules engine applies to play (at most three). */
@@ -106,7 +83,11 @@ function ancestry(entry: Omit<Ancestry, 'portraits' | 'traits'> & { traits?: str
   }
 }
 
-/** The nine recommended ancestries, in the order the portrait row shows them. */
+/**
+ * The nine recommended ancestries, in the order the portrait row shows them.
+ * Each is its own entry in the race catalog; Goliath and Harengon come from the
+ * catalog's beginner-friendly list.
+ */
 export const ANCESTRIES: Ancestry[] = [
   ancestry({
     id: 'human',
@@ -163,30 +144,31 @@ export const ANCESTRIES: Ancestry[] = [
     },
   }),
   ancestry({
-    id: 'half-elf',
-    name: 'Half-Elf',
-    selection: curated('elf', 'Elf'),
+    id: 'goliath',
+    name: 'Goliath',
+    selection: curated('goliath', 'Goliath'),
     summary:
-      'Half-elves walk between two peoples and belong fully to neither. At the table they play with elven senses.',
-    traits: ['Keen Senses: proficient in Perception'],
-    skills: ['perception'],
-    languages: ['Common', 'Elvish'],
+      'Goliaths are mountain-born giantkin who prize endurance and a fair contest. They measure themselves by the trials they meet.',
+    traits: ['Mountain Born: proficient in Athletics'],
+    skills: ['athletics'],
+    languages: ['Common', 'Giant'],
     names: {
-      male: ['Kael Ashgrove', 'Rowan Hale', 'Theren Marsh', 'Lucan Brightmoor'],
-      female: ['Isolde Reed', 'Elowen Vale', 'Seren Ashdown', 'Maren Lightfoot'],
+      male: ['Aukan Stonehand', 'Gauthak Highcrag', 'Keothi Windrunner', 'Thotham Ridgeborn'],
+      female: ['Kuori Skywatcher', 'Nalla Frostpeak', 'Vaunea Steadfall', 'Orilo Longstride'],
     },
   }),
   ancestry({
-    id: 'half-orc',
-    name: 'Half-Orc',
-    selection: curated('orc', 'Orc'),
+    id: 'harengon',
+    name: 'Harengon',
+    selection: curated('harengon', 'Harengon'),
     summary:
-      'Half-orcs carry orcish strength and a hard-won place among humans. They refuse to stay down.',
-    skills: [],
-    languages: ['Common', 'Orc'],
+      'Harengon are quick rabbitfolk with springing legs and restless luck. They hear trouble long before it arrives.',
+    traits: ['Keen Hearing: proficient in Perception'],
+    skills: ['perception'],
+    languages: ['Common', 'Sylvan'],
     names: {
-      male: ['Thokk Ironjaw', 'Grumbar Ashborn', 'Dench Holgarr', 'Krusk Redmane'],
-      female: ['Shautha Redtusk', 'Ovak Stonefist', 'Baggi Emberhide', 'Yevelda Grimm'],
+      male: ['Bramble Quickfoot', 'Thistle Longear', 'Hob Fernhop', 'Clover Swiftwhisker'],
+      female: ['Hazel Brightleap', 'Wren Dewfoot', 'Poppy Thornhop', 'Sorrel Softpaw'],
     },
   }),
   ancestry({
@@ -283,8 +265,6 @@ export function portraitSrc(ancestryEntry: Ancestry | null, sex: SexKey) {
 
 // ---- classes ---------------------------------------------------------------
 
-export type FightingStyleId = 'archery' | 'defense' | 'dueling' | 'great_weapon'
-
 export const FIGHTING_STYLES: Record<FightingStyleId, { name: string; effect: string }> = {
   archery: { name: 'Archery', effect: '+2 to ranged weapon attack rolls.' },
   defense: { name: 'Defense', effect: '+1 AC while you wear armour.' },
@@ -295,427 +275,157 @@ export const FIGHTING_STYLES: Record<FightingStyleId, { name: string; effect: st
   },
 }
 
-type Feature = { name: string; text: string }
-type LaterFeature = Feature & { level: number }
 type WeaponGrip = 'strength' | 'finesse' | 'ranged'
 
-type Spellcasting = {
-  ability: AbilityKey
-  cantrips: string[]
-  spells: string[]
-  examples: [string, string, string]
+type ClassGear = {
+  armor: 'none' | 'leather' | 'scale' | 'chain'
+  shield: boolean
+  weapon: { name: string; grip: WeaponGrip }
 }
 
-export type CoreClass = {
-  id: string
-  name: string
+/** How the creator presents a core class; its rules come from `CreationRules`. */
+type ClassPresentation = {
   feel: string
-  hitDie: number
-  saves: [AbilityKey, AbilityKey]
   /** Abilities from most to least important; the recommended spread follows it. */
   priority: AbilityKey[]
-  skillCount: number
-  skills: SkillId[]
-  start: Feature[]
-  later: LaterFeature[]
-  note?: string
-  spellcasting?: Spellcasting
-  fightingStyle?: { options: FightingStyleId[]; fromLevel: number; default: FightingStyleId }
   suggestedBackground: string
-  kit: {
-    items: string[]
-    armor: 'none' | 'leather' | 'scale' | 'chain'
-    shield: boolean
-    weapon: { name: string; grip: WeaponGrip }
-  }
+  note?: string
+  /** The fighting style in effect until the player picks one. */
+  defaultStyle?: FightingStyleId
+  /** The spellcasting ability and the spells to name first. */
+  magic?: { ability: AbilityKey; examples: string[] }
+  /** The starting kit's armour, shield and main weapon, for AC and the attack bonus. */
+  gear: ClassGear
 }
 
-const ALL_SKILLS = SKILL_IDS
-
-export const CORE_CLASSES: CoreClass[] = [
-  {
-    id: 'barbarian',
-    name: 'Barbarian',
+const CLASS_PRESENTATION: Record<string, ClassPresentation> = {
+  barbarian: {
     feel: 'Wade in, rage, and shrug off blows that would fell anyone else.',
-    hitDie: 12,
-    saves: ['strength', 'constitution'],
     priority: ['strength', 'constitution', 'dexterity', 'wisdom', 'charisma', 'intelligence'],
-    skillCount: 2,
-    skills: ['animal_handling', 'athletics', 'intimidation', 'nature', 'perception', 'survival'],
-    start: [
-      {
-        name: 'Rage',
-        text: 'Twice per long rest, as a bonus action: +2 damage on Strength melee attacks, resistance to bludgeoning, piercing and slashing, advantage on Strength checks and saves.',
-      },
-      { name: 'Unarmored Defense', text: 'Without armour your AC is 10 + Dexterity + Constitution.' },
-    ],
-    later: [
-      { level: 2, name: 'Reckless Attack', text: 'Advantage on your Strength attacks; foes gain it against you.' },
-      { level: 2, name: 'Danger Sense', text: 'Advantage on Dexterity saves against what you can see.' },
-      { level: 3, name: 'More Rage', text: 'Rage three times per long rest.' },
-      { level: 5, name: 'Extra Attack', text: 'Two attacks with every Attack action.' },
-    ],
     suggestedBackground: 'folk_hero',
-    kit: {
-      items: ['Greataxe', '2 Handaxes', '4 Javelins', "Explorer's Pack", '5 Rations', 'Potion of Healing'],
-      armor: 'none',
-      shield: false,
-      weapon: { name: 'Greataxe', grip: 'strength' },
-    },
+    gear: { armor: 'none', shield: false, weapon: { name: 'Greataxe', grip: 'strength' } },
   },
-  {
-    id: 'fighter',
-    name: 'Fighter',
+  fighter: {
     feel: 'Steady steel and good armour. You win the fight in front of you.',
-    hitDie: 10,
-    saves: ['strength', 'constitution'],
     priority: ['strength', 'constitution', 'dexterity', 'wisdom', 'charisma', 'intelligence'],
-    skillCount: 2,
-    skills: ['acrobatics', 'animal_handling', 'athletics', 'history', 'insight', 'intimidation', 'perception', 'survival'],
-    start: [
-      { name: 'Fighting Style', text: 'A trained way of fighting, chosen below, that the rules apply in every fight.' },
-      { name: 'Second Wind', text: 'Once per short rest, as a bonus action, regain 1d10 + your level in hit points.' },
-    ],
-    later: [
-      { level: 2, name: 'Action Surge', text: 'Once per short rest, take one more action on your turn.' },
-      { level: 3, name: 'Improved Critical', text: 'As a Champion, you score critical hits on 19 and 20.' },
-      { level: 5, name: 'Extra Attack', text: 'Two attacks with every Attack action.' },
-    ],
-    fightingStyle: { options: ['defense', 'dueling', 'great_weapon', 'archery'], fromLevel: 1, default: 'dueling' },
     suggestedBackground: 'soldier',
-    kit: {
-      items: ['Longsword', 'Shield', 'Chain Mail', "Explorer's Pack", '5 Rations', '5 Torches', 'Potion of Healing'],
-      armor: 'chain',
-      shield: true,
-      weapon: { name: 'Longsword', grip: 'strength' },
-    },
+    defaultStyle: 'dueling',
+    gear: { armor: 'chain', shield: true, weapon: { name: 'Longsword', grip: 'strength' } },
   },
-  {
-    id: 'monk',
-    name: 'Monk',
+  monk: {
     feel: 'Quick hands and quicker feet. Your body is the weapon.',
-    hitDie: 8,
-    saves: ['strength', 'dexterity'],
     priority: ['dexterity', 'wisdom', 'constitution', 'strength', 'intelligence', 'charisma'],
-    skillCount: 2,
-    skills: ['acrobatics', 'athletics', 'history', 'insight', 'religion', 'stealth'],
-    start: [
-      {
-        name: 'Martial Arts',
-        text: 'Unarmed strikes and monk weapons use Dexterity when it is higher, and after the Attack action you strike again as a bonus action.',
-      },
-      { name: 'Unarmored Defense', text: 'Without armour or a shield your AC is 10 + Dexterity + Wisdom.' },
-    ],
-    later: [
-      { level: 2, name: 'Ki', text: 'Flurry of Blows, Patient Defense and Step of the Wind, refreshed on a short rest.' },
-      { level: 5, name: 'Stunning Strike', text: 'Spend ki on a hit to stun the target until your next turn ends.' },
-      { level: 5, name: 'Extra Attack', text: 'Two attacks with every Attack action.' },
-    ],
     suggestedBackground: 'acolyte',
-    kit: {
-      items: ['Quarterstaff', '10 Darts', "Explorer's Pack", '5 Rations', 'Potion of Healing'],
-      armor: 'none',
-      shield: false,
-      weapon: { name: 'Quarterstaff', grip: 'finesse' },
-    },
+    gear: { armor: 'none', shield: false, weapon: { name: 'Quarterstaff', grip: 'finesse' } },
   },
-  {
-    id: 'paladin',
-    name: 'Paladin',
+  paladin: {
     feel: 'A sworn knight who heals with a touch and holds the line.',
-    hitDie: 10,
-    saves: ['wisdom', 'charisma'],
     priority: ['strength', 'charisma', 'constitution', 'wisdom', 'dexterity', 'intelligence'],
-    skillCount: 2,
-    skills: ['athletics', 'insight', 'intimidation', 'medicine', 'persuasion', 'religion'],
-    start: [
-      { name: 'Lay on Hands', text: 'A pool of 5 hit points per level to heal by touch, or 5 points to cure poison.' },
-    ],
-    later: [
-      { level: 2, name: 'Divine Smite', text: 'Spend a spell slot on a hit for 2d8 radiant damage or more.' },
-      { level: 2, name: 'Fighting Style', text: 'The style you choose now starts to apply.' },
-      { level: 2, name: 'Spellcasting', text: 'Bless, Cure Wounds, Shield of Faith and other oaths in prayer.' },
-      { level: 5, name: 'Extra Attack', text: 'Two attacks with every Attack action.' },
-    ],
-    fightingStyle: { options: ['defense', 'dueling', 'great_weapon'], fromLevel: 2, default: 'dueling' },
     suggestedBackground: 'soldier',
-    kit: {
-      items: ['Longsword', 'Shield', 'Chain Mail', 'Holy Symbol', "Priest's Pack", 'Potion of Healing'],
-      armor: 'chain',
-      shield: true,
-      weapon: { name: 'Longsword', grip: 'strength' },
-    },
+    defaultStyle: 'dueling',
+    magic: { ability: 'charisma', examples: [] },
+    gear: { armor: 'chain', shield: true, weapon: { name: 'Longsword', grip: 'strength' } },
   },
-  {
-    id: 'ranger',
-    name: 'Ranger',
+  ranger: {
     feel: 'A watchful hunter of the wild places, deadly at a distance.',
-    hitDie: 10,
-    saves: ['strength', 'dexterity'],
     priority: ['dexterity', 'wisdom', 'constitution', 'strength', 'intelligence', 'charisma'],
-    skillCount: 3,
-    skills: ['animal_handling', 'athletics', 'insight', 'investigation', 'nature', 'perception', 'stealth', 'survival'],
-    start: [
-      { name: 'Wilderness training', text: 'Three class skills instead of two, and martial weapons from the start.' },
-    ],
-    later: [
-      { level: 2, name: 'Fighting Style', text: 'The style you choose now starts to apply.' },
-      { level: 2, name: 'Spellcasting', text: "Hunter's Mark, Cure Wounds, Entangle and other wild magic." },
-      { level: 3, name: 'Colossus Slayer', text: 'As a Hunter, once per turn +1d8 damage to a wounded foe.' },
-      { level: 5, name: 'Extra Attack', text: 'Two attacks with every Attack action.' },
-    ],
+    suggestedBackground: 'folk_hero',
     note: 'Favored Enemy and Natural Explorer are narrated by the Dungeon Master.',
-    fightingStyle: { options: ['archery', 'defense', 'dueling'], fromLevel: 2, default: 'archery' },
-    suggestedBackground: 'folk_hero',
-    kit: {
-      items: ['Longbow', 'Shortsword', 'Leather Armor', '20 Arrows', "Explorer's Pack", 'Potion of Healing'],
-      armor: 'leather',
-      shield: false,
-      weapon: { name: 'Longbow', grip: 'ranged' },
-    },
+    defaultStyle: 'archery',
+    magic: { ability: 'wisdom', examples: [] },
+    gear: { armor: 'leather', shield: false, weapon: { name: 'Longbow', grip: 'ranged' } },
   },
-  {
-    id: 'rogue',
-    name: 'Rogue',
+  rogue: {
     feel: 'Strike from the shadows, pick the lock, talk your way out.',
-    hitDie: 8,
-    saves: ['dexterity', 'intelligence'],
     priority: ['dexterity', 'constitution', 'wisdom', 'charisma', 'intelligence', 'strength'],
-    skillCount: 4,
-    skills: [
-      'acrobatics', 'athletics', 'deception', 'insight', 'intimidation', 'investigation', 'perception',
-      'performance', 'persuasion', 'sleight_of_hand', 'stealth',
-    ],
-    start: [
-      {
-        name: 'Sneak Attack',
-        text: 'Once per turn, +1d6 damage with a finesse or ranged weapon when you have advantage or an ally is beside your target.',
-      },
-      { name: 'Expertise', text: 'Double proficiency in two skills you choose.' },
-    ],
-    later: [
-      { level: 2, name: 'Cunning Action', text: 'Dash, Disengage or Hide as a bonus action.' },
-      { level: 3, name: 'Sneak Attack 2d6', text: 'Your hidden strikes grow deadlier.' },
-      { level: 5, name: 'Uncanny Dodge', text: 'Your reaction halves the damage of an attack that hits you.' },
-    ],
     suggestedBackground: 'criminal',
-    kit: {
-      items: ['Rapier', 'Dagger', 'Leather Armor', "Thieves' Tools", "Burglar's Pack", 'Potion of Healing'],
-      armor: 'leather',
-      shield: false,
-      weapon: { name: 'Rapier', grip: 'finesse' },
-    },
+    gear: { armor: 'leather', shield: false, weapon: { name: 'Rapier', grip: 'finesse' } },
   },
-  {
-    id: 'bard',
-    name: 'Bard',
+  bard: {
     feel: 'Words, music and a little magic that make everyone better.',
-    hitDie: 8,
-    saves: ['dexterity', 'charisma'],
     priority: ['charisma', 'dexterity', 'constitution', 'wisdom', 'intelligence', 'strength'],
-    skillCount: 3,
-    skills: ALL_SKILLS,
-    start: [
-      {
-        name: 'Bardic Inspiration',
-        text: 'As a bonus action, give an ally a d6 for a roll that would fail; Charisma-many uses per long rest.',
-      },
-    ],
-    later: [
-      { level: 2, name: 'Jack of All Trades', text: 'Half your proficiency bonus on checks you are untrained in.' },
-      { level: 3, name: '2nd-level spells', text: 'Invisibility, Hold Person, Shatter and more.' },
-      { level: 5, name: 'Font of Inspiration', text: 'Inspiration becomes a d8 and returns on a short rest.' },
-    ],
-    spellcasting: {
-      ability: 'charisma',
-      cantrips: ['Dancing Lights', 'Light', 'Mage Hand', 'Message', 'Minor Illusion', 'Vicious Mockery'],
-      spells: [
-        'Bane', 'Charm Person', 'Cure Wounds', 'Dissonant Whispers', 'Faerie Fire', 'Healing Word', 'Heroism',
-        'Sleep', "Tasha's Hideous Laughter", 'Thunderwave', 'Silver Charm', 'Frostlace Veil', 'Ivory Lens',
-      ],
-      examples: ['Vicious Mockery', 'Healing Word', 'Dissonant Whispers'],
-    },
     suggestedBackground: 'guild_artisan',
-    kit: {
-      items: ['Rapier', 'Dagger', 'Leather Armor', 'Lute', "Diplomat's Pack", 'Potion of Healing'],
-      armor: 'leather',
-      shield: false,
-      weapon: { name: 'Rapier', grip: 'finesse' },
-    },
+    magic: { ability: 'charisma', examples: ['Vicious Mockery', 'Healing Word', 'Dissonant Whispers'] },
+    gear: { armor: 'leather', shield: false, weapon: { name: 'Rapier', grip: 'finesse' } },
   },
-  {
-    id: 'cleric',
-    name: 'Cleric',
+  cleric: {
     feel: "A god's chosen hand: heal friends, smite the dark, stand fast.",
-    hitDie: 8,
-    saves: ['wisdom', 'charisma'],
     priority: ['wisdom', 'constitution', 'strength', 'dexterity', 'charisma', 'intelligence'],
-    skillCount: 2,
-    skills: ['history', 'insight', 'medicine', 'persuasion', 'religion'],
-    start: [{ name: 'Spellcasting', text: 'Divine magic prepared each day from your god.' }],
-    later: [
-      { level: 2, name: 'Turn Undead', text: 'Once per short rest, undead that fail a Wisdom save flee from you.' },
-      { level: 3, name: '2nd-level spells', text: 'Spiritual Weapon, Aid, Lesser Restoration and more.' },
-      { level: 5, name: 'Destroy Undead', text: 'Weak undead you turn are destroyed outright.' },
-    ],
-    spellcasting: {
-      ability: 'wisdom',
-      cantrips: [
-        'Guidance', 'Light', 'Sacred Flame', 'Spare the Dying', 'Thaumaturgy', 'Toll the Dead', 'Ravenous Knot',
-        'Saffron Spark', 'Scarab Mote',
-      ],
-      spells: [
-        'Bane', 'Bless', 'Command', 'Cure Wounds', 'Detect Magic', 'Guiding Bolt', 'Healing Word', 'Inflict Wounds',
-        'Shield of Faith',
-      ],
-      examples: ['Sacred Flame', 'Guiding Bolt', 'Cure Wounds'],
-    },
     suggestedBackground: 'acolyte',
-    kit: {
-      items: ['Mace', 'Shield', 'Scale Mail', 'Holy Symbol', "Priest's Pack", 'Potion of Healing', "Healer's Kit"],
-      armor: 'scale',
-      shield: true,
-      weapon: { name: 'Mace', grip: 'strength' },
-    },
+    magic: { ability: 'wisdom', examples: ['Sacred Flame', 'Guiding Bolt', 'Cure Wounds'] },
+    gear: { armor: 'scale', shield: true, weapon: { name: 'Mace', grip: 'strength' } },
   },
-  {
-    id: 'druid',
-    name: 'Druid',
+  druid: {
     feel: "Old nature magic: grasping vines, healing herbs, the beasts' trust.",
-    hitDie: 8,
-    saves: ['intelligence', 'wisdom'],
     priority: ['wisdom', 'dexterity', 'constitution', 'intelligence', 'charisma', 'strength'],
-    skillCount: 2,
-    skills: ['animal_handling', 'arcana', 'insight', 'medicine', 'nature', 'perception', 'religion', 'survival'],
-    start: [{ name: 'Spellcasting', text: 'Primal magic prepared each day from the living world.' }],
-    later: [
-      { level: 2, name: 'Wild Shape', text: 'Take the shape of a beast you have seen.' },
-      { level: 3, name: '2nd-level spells', text: 'Moonbeam, Barkskin, Pass without Trace and more.' },
-      { level: 5, name: '3rd-level spells', text: 'Call Lightning and Dispel Magic.' },
-    ],
-    note: 'Wild Shape is narrated by the Dungeon Master.',
-    spellcasting: {
-      ability: 'wisdom',
-      cantrips: ['Druidcraft', 'Guidance', 'Poison Spray', 'Produce Flame', 'Thorn Whip', 'Mire Knot', 'Mire Palm', 'Quartz Mote'],
-      spells: [
-        'Cure Wounds', 'Entangle', 'Faerie Fire', 'Goodberry', 'Healing Word', 'Primal Shift', 'Speak with Animals',
-        'Thunderwave',
-      ],
-      examples: ['Produce Flame', 'Entangle', 'Healing Word'],
-    },
     suggestedBackground: 'folk_hero',
-    kit: {
-      items: ['Scimitar', 'Wooden Shield', 'Leather Armor', 'Druidic Focus', "Explorer's Pack", 'Potion of Healing', "Healer's Kit"],
-      armor: 'leather',
-      shield: true,
-      weapon: { name: 'Scimitar', grip: 'finesse' },
-    },
+    note: 'Wild Shape is narrated by the Dungeon Master.',
+    magic: { ability: 'wisdom', examples: ['Produce Flame', 'Entangle', 'Healing Word'] },
+    gear: { armor: 'leather', shield: true, weapon: { name: 'Scimitar', grip: 'finesse' } },
   },
-  {
-    id: 'sorcerer',
-    name: 'Sorcerer',
+  sorcerer: {
     feel: 'Magic born in your blood, raw and bright, bent to your will.',
-    hitDie: 6,
-    saves: ['constitution', 'charisma'],
     priority: ['charisma', 'constitution', 'dexterity', 'wisdom', 'intelligence', 'strength'],
-    skillCount: 2,
-    skills: ['arcana', 'deception', 'insight', 'intimidation', 'persuasion', 'religion'],
-    start: [{ name: 'Spellcasting', text: 'Innate magic you always know, cast on instinct.' }],
-    later: [
-      { level: 2, name: 'Sorcery Points', text: 'Turn spell slots into points and points back into slots.' },
-      { level: 3, name: 'Metamagic', text: 'Quicken a spell to a bonus action, or twin it onto a second target.' },
-      { level: 5, name: '3rd-level spells', text: 'Fireball, Lightning Bolt, Haste and more.' },
-    ],
-    spellcasting: {
-      ability: 'charisma',
-      cantrips: [
-        'Chill Touch', 'Dancing Lights', 'Fire Bolt', 'Light', 'Mage Hand', 'Message', 'Minor Illusion',
-        'Poison Spray', 'Ray of Frost', 'Shocking Grasp', 'Brine Glimmer',
-      ],
-      spells: [
-        'Burning Hands', 'Chaos Bolt', 'Chromatic Orb', 'False Life', 'Mage Armor', 'Magic Missile', 'Shield', 'Sleep',
-        'Thunderwave', 'Crow Ward', 'Candle Ward',
-      ],
-      examples: ['Fire Bolt', 'Chaos Bolt', 'Shield'],
-    },
     suggestedBackground: 'sage',
-    kit: {
-      items: ['Dagger', 'Light Crossbow', 'Arcane Focus', "Explorer's Pack", 'Potion of Healing'],
-      armor: 'none',
-      shield: false,
-      weapon: { name: 'Dagger', grip: 'finesse' },
-    },
+    magic: { ability: 'charisma', examples: ['Fire Bolt', 'Chaos Bolt', 'Shield'] },
+    gear: { armor: 'none', shield: false, weapon: { name: 'Dagger', grip: 'finesse' } },
   },
-  {
-    id: 'warlock',
-    name: 'Warlock',
+  warlock: {
     feel: 'A pact with something vast: eldritch blasts and dangerous favours.',
-    hitDie: 8,
-    saves: ['wisdom', 'charisma'],
     priority: ['charisma', 'constitution', 'dexterity', 'wisdom', 'intelligence', 'strength'],
-    skillCount: 2,
-    skills: ['arcana', 'deception', 'history', 'intimidation', 'investigation', 'nature', 'religion'],
-    start: [{ name: 'Pact Magic', text: 'A few spells, cast from slots that return on a short rest.' }],
-    later: [
-      { level: 2, name: 'Agonizing Blast', text: 'Add your Charisma to every Eldritch Blast beam.' },
-      { level: 3, name: '2nd-level spells', text: 'Misty Step, Mirror Image, Hold Person and more.' },
-      { level: 5, name: '3rd-level spells', text: 'Counterspell, Fly, Hypnotic Pattern and more.' },
-    ],
-    spellcasting: {
-      ability: 'charisma',
-      cantrips: ['Chill Touch', 'Eldritch Blast', 'Mage Hand', 'Minor Illusion', 'Poison Spray', 'Scarab Glimmer', 'Moon Palm'],
-      spells: ['Armor of Agathys', 'Charm Person', 'Hellish Rebuke', 'Hex', 'Lilac Step'],
-      examples: ['Eldritch Blast', 'Hex', 'Hellish Rebuke'],
-    },
     suggestedBackground: 'sage',
-    kit: {
-      items: ['Dagger', 'Light Crossbow', 'Leather Armor', 'Arcane Focus', "Scholar's Pack", 'Potion of Healing'],
-      armor: 'leather',
-      shield: false,
-      weapon: { name: 'Dagger', grip: 'finesse' },
-    },
+    magic: { ability: 'charisma', examples: ['Eldritch Blast', 'Hex', 'Hellish Rebuke'] },
+    gear: { armor: 'leather', shield: false, weapon: { name: 'Dagger', grip: 'finesse' } },
   },
-  {
-    id: 'wizard',
-    name: 'Wizard',
+  wizard: {
     feel: 'Learned magic from a spellbook: the right spell for every problem.',
-    hitDie: 6,
-    saves: ['intelligence', 'wisdom'],
     priority: ['intelligence', 'constitution', 'dexterity', 'wisdom', 'charisma', 'strength'],
-    skillCount: 2,
-    skills: ['arcana', 'history', 'insight', 'investigation', 'medicine', 'religion'],
-    start: [
-      { name: 'Spellcasting', text: 'Arcane magic prepared each day from your spellbook.' },
-      {
-        name: 'Arcane Recovery',
-        text: 'Once per long rest, after a short rest, recover spent spell slots.',
-      },
-    ],
-    later: [
-      { level: 3, name: '2nd-level spells', text: 'Misty Step, Scorching Ray, Web and more.' },
-      { level: 5, name: '3rd-level spells', text: 'Fireball, Counterspell, Fly and more.' },
-    ],
-    spellcasting: {
-      ability: 'intelligence',
-      cantrips: [
-        'Chill Touch', 'Dancing Lights', 'Fire Bolt', 'Light', 'Mage Hand', 'Message', 'Prestidigitation',
-        'Ray of Frost', 'Shocking Grasp', 'Frostlace Palm',
-      ],
-      spells: [
-        'Burning Hands', 'Chromatic Orb', 'Detect Magic', 'False Life', 'Mage Armor', 'Magic Missile', 'Shield',
-        'Sleep', 'Thunderwave', 'Copper Charm', 'Verdigris Brand',
-      ],
-      examples: ['Fire Bolt', 'Magic Missile', 'Shield'],
-    },
     suggestedBackground: 'sage',
-    kit: {
-      items: ['Quarterstaff', 'Dagger', 'Spellbook', 'Component Pouch', "Scholar's Pack", 'Potion of Healing'],
-      armor: 'none',
-      shield: false,
-      weapon: { name: 'Quarterstaff', grip: 'strength' },
-    },
+    magic: { ability: 'intelligence', examples: ['Fire Bolt', 'Magic Missile', 'Shield'] },
+    gear: { armor: 'none', shield: false, weapon: { name: 'Quarterstaff', grip: 'strength' } },
   },
-]
+}
+
+/** A core class as the creator shows it: the server's rules with the client's presentation. */
+export type CoreClass = Omit<ClassRules, 'fightingStyle'> & {
+  feel: string
+  priority: AbilityKey[]
+  suggestedBackground: string
+  note?: string
+  gear: ClassGear
+  fightingStyle?: { fromLevel: number; options: FightingStyleId[]; default: FightingStyleId }
+  /** Present when the class starts with spells: the ability and up to three spells to name. */
+  spellcasting?: { ability: AbilityKey; examples: string[] }
+}
+
+function presentedClass(rules: ClassRules): CoreClass | null {
+  if (!Object.hasOwn(CLASS_PRESENTATION, rules.id)) return null
+  const { defaultStyle, magic, ...presentation } = CLASS_PRESENTATION[rules.id]
+  const { fightingStyle, ...classRules } = rules
+  const entry: CoreClass = { ...classRules, ...presentation }
+  if (fightingStyle) {
+    const fallbackStyle = defaultStyle && fightingStyle.options.includes(defaultStyle) ? defaultStyle : fightingStyle.options[0]
+    entry.fightingStyle = { ...fightingStyle, default: fallbackStyle }
+  }
+  const known = [...rules.cantrips, ...rules.spells]
+  if (magic && known.length) {
+    const named = magic.examples.filter((spell) => known.includes(spell))
+    entry.spellcasting = { ability: magic.ability, examples: named.length ? named : known.slice(0, 3) }
+  }
+  return entry
+}
+
+const PRESENTED = new WeakMap<CreationRules, CoreClass[]>()
+
+/** The core classes of a rule set, in the Calling step's order. */
+export function coreClasses(rules: CreationRules): CoreClass[] {
+  let classes = PRESENTED.get(rules)
+  if (!classes) {
+    classes = rules.classes.map(presentedClass).filter((entry): entry is CoreClass => entry !== null)
+    PRESENTED.set(rules, classes)
+  }
+  return classes
+}
 
 export const NARRATED_CLASS_NOTE = 'Narrated class — the Dungeon Master adjudicates its features.'
 
@@ -724,14 +434,19 @@ function baseClassKey(label: string) {
 }
 
 /** The core class behind a calling label such as `Fighter` or `Fighter - Champion`; null for narrated classes. */
-export function coreClassFor(label: string | null | undefined) {
+export function coreClassFor(rules: CreationRules, label: string | null | undefined) {
   if (!label) return null
   const key = baseClassKey(label)
-  return CORE_CLASSES.find((entry) => entry.id === key) ?? null
+  return coreClasses(rules).find((entry) => entry.id === key) ?? null
+}
+
+/** The core class of the draft's calling under the draft's rules. */
+export function heroClass(draft: HeroDraft) {
+  return coreClassFor(draft.rules, draft.calling)
 }
 
 export function isCoreClassName(name: string) {
-  return CORE_CLASSES.some((entry) => entry.name === name)
+  return Object.hasOwn(CLASS_PRESENTATION, name.trim().toLowerCase())
 }
 
 /** How a calling reads in prose: `Fighter`, or `Fighter (Champion)` for a subclass. */
@@ -744,6 +459,30 @@ export function savesLabel(entry: CoreClass) {
   return entry.saves.map((ability) => ABILITY_LABELS[ability]).join(', ')
 }
 
+const COUNT_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six']
+
+/** `two` for 2; digits past the words. */
+export function countWord(count: number) {
+  return COUNT_WORDS[count] ?? String(count)
+}
+
+/** `one skill`, `two skills`. */
+export function skillCountPhrase(count: number) {
+  return `${countWord(count)} ${count === 1 ? 'skill' : 'skills'}`
+}
+
+// ---- backgrounds -----------------------------------------------------------
+
+function withGrantedSkills(rules: CreationRules, background: PlayableBackground): PlayableBackground {
+  const granted = rules.backgrounds.find((entry) => entry.id === background.id)
+  return granted ? { ...background, skillProficiencies: granted.skills } : background
+}
+
+/** The six catalog backgrounds with the skills the rules grant. */
+export function backgroundOptions(rules: CreationRules): PlayableBackground[] {
+  return PLAYABLE_BACKGROUNDS.map((background) => withGrantedSkills(rules, background))
+}
+
 // ---- abilities -------------------------------------------------------------
 
 export const STANDARD_ARRAY = [15, 14, 13, 12, 10, 8] as const
@@ -752,7 +491,8 @@ const NARRATED_PRIORITY: AbilityKey[] = ['constitution', 'dexterity', 'wisdom', 
 /** The standard array laid out by the calling's priority order. */
 export function recommendedScores(label: string | null): PointBuyScores {
   const scores = {} as PointBuyScores
-  const priority = coreClassFor(label)?.priority ?? NARRATED_PRIORITY
+  const key = label ? baseClassKey(label) : ''
+  const priority = Object.hasOwn(CLASS_PRESENTATION, key) ? CLASS_PRESENTATION[key].priority : NARRATED_PRIORITY
   priority.forEach((ability, index) => {
     scores[ability] = STANDARD_ARRAY[index]
   })
@@ -797,9 +537,11 @@ export type HeroDraft = {
   backgroundId: string | null
   skills: SkillId[]
   expertise: SkillId[]
+  /** The rules the hero is made under: the built-in tables until the server's arrive. */
+  rules: CreationRules
 }
 
-export function emptyDraft(): HeroDraft {
+export function emptyDraft(rules: CreationRules = FALLBACK_RULES): HeroDraft {
   return {
     name: '',
     ancestry: null,
@@ -811,6 +553,7 @@ export function emptyDraft(): HeroDraft {
     backgroundId: null,
     skills: [],
     expertise: [],
+    rules,
   }
 }
 
@@ -820,18 +563,19 @@ export function heroScores(draft: HeroDraft): PointBuyScores {
 
 /** The background in effect: the player's choice, else the one that suits the calling. */
 export function heroBackground(draft: HeroDraft) {
-  return backgroundFromValue(draft.backgroundId ?? coreClassFor(draft.calling)?.suggestedBackground ?? 'folk_hero')
+  const background = backgroundFromValue(draft.backgroundId ?? heroClass(draft)?.suggestedBackground ?? 'folk_hero')
+  return background ? withGrantedSkills(draft.rules, background) : null
 }
 
 export function heroFightingStyle(draft: HeroDraft): FightingStyleId | null {
-  const options = coreClassFor(draft.calling)?.fightingStyle
+  const options = heroClass(draft)?.fightingStyle
   if (!options) return null
   return draft.fightingStyle && options.options.includes(draft.fightingStyle) ? draft.fightingStyle : options.default
 }
 
 /** Class skills the player may choose: the class list minus what the background already grants. */
 export function classSkillOptions(draft: HeroDraft): SkillId[] {
-  const entry = coreClassFor(draft.calling)
+  const entry = heroClass(draft)
   if (!entry) return []
   const granted = new Set(heroBackground(draft)?.skillProficiencies ?? [])
   return entry.skills.filter((skill) => !granted.has(skill))
@@ -846,23 +590,33 @@ export function proficientSkills(draft: HeroDraft): SkillId[] {
   return SKILL_IDS.filter((skill) => owned.has(skill))
 }
 
-export function needsExpertise(draft: HeroDraft) {
-  return coreClassFor(draft.calling)?.id === 'rogue'
+/** How many skills the calling marks for expertise at level 1 (0 for none). */
+export function expertiseCount(draft: HeroDraft) {
+  return heroClass(draft)?.expertise ?? 0
 }
 
-export const EXPERTISE_COUNT = 2
+export function needsExpertise(draft: HeroDraft) {
+  return expertiseCount(draft) > 0
+}
 
 function withoutLostChoices(draft: HeroDraft): HeroDraft {
   const options = new Set(classSkillOptions(draft))
-  const skills = draft.skills.filter((skill) => options.has(skill))
+  const skills = draft.skills.filter((skill) => options.has(skill)).slice(0, heroClass(draft)?.skillCount ?? 0)
   const next = { ...draft, skills }
   const proficient = new Set(proficientSkills(next))
-  return { ...next, expertise: needsExpertise(next) ? draft.expertise.filter((skill) => proficient.has(skill)) : [] }
+  const expertise = draft.expertise.filter((skill) => proficient.has(skill)).slice(0, expertiseCount(next))
+  return { ...next, expertise }
+}
+
+/** The draft under another rule set (the server's, once they arrive); choices the new rules forbid are dropped. */
+export function withRules(draft: HeroDraft, rules: CreationRules): HeroDraft {
+  return draft.rules === rules ? draft : withoutLostChoices({ ...draft, rules })
 }
 
 export function withCalling(draft: HeroDraft, calling: string): HeroDraft {
   if (draft.calling === calling) return draft
-  const sameClass = coreClassFor(draft.calling) === coreClassFor(calling) && coreClassFor(calling) !== null
+  const previous = heroClass(draft)
+  const sameClass = previous !== null && previous.id === coreClassFor(draft.rules, calling)?.id
   return withoutLostChoices({
     ...draft,
     calling,
@@ -882,7 +636,7 @@ export function withAncestry(draft: HeroDraft, ancestryEntry: Ancestry): HeroDra
 
 export function toggleSkill(draft: HeroDraft, skill: SkillId): HeroDraft {
   const chosen = draft.skills.includes(skill)
-  const count = coreClassFor(draft.calling)?.skillCount ?? 0
+  const count = heroClass(draft)?.skillCount ?? 0
   if (!chosen && (draft.skills.length >= count || !classSkillOptions(draft).includes(skill))) return draft
   const skills = chosen ? draft.skills.filter((entry) => entry !== skill) : [...draft.skills, skill]
   return withoutLostChoices({ ...draft, skills })
@@ -890,7 +644,7 @@ export function toggleSkill(draft: HeroDraft, skill: SkillId): HeroDraft {
 
 export function toggleExpertise(draft: HeroDraft, skill: SkillId): HeroDraft {
   const chosen = draft.expertise.includes(skill)
-  if (!chosen && (draft.expertise.length >= EXPERTISE_COUNT || !proficientSkills(draft).includes(skill))) return draft
+  if (!chosen && (draft.expertise.length >= expertiseCount(draft) || !proficientSkills(draft).includes(skill))) return draft
   return { ...draft, expertise: chosen ? draft.expertise.filter((entry) => entry !== skill) : [...draft.expertise, skill] }
 }
 
@@ -919,7 +673,7 @@ const PROFICIENCY_BONUS = 2
 
 function armorClass(entry: CoreClass, scores: PointBuyScores, style: FightingStyleId | null, styleActive: boolean) {
   const dex = modifier(scores.dexterity)
-  const { armor, shield } = entry.kit
+  const { armor, shield } = entry.gear
   let base: number
   if (armor === 'chain') base = 16
   else if (armor === 'scale') base = 14 + Math.min(dex, 2)
@@ -934,7 +688,7 @@ function armorClass(entry: CoreClass, scores: PointBuyScores, style: FightingSty
 function attackBonus(entry: CoreClass, scores: PointBuyScores, style: FightingStyleId | null, styleActive: boolean) {
   const strength = modifier(scores.strength)
   const dexterity = modifier(scores.dexterity)
-  const { grip } = entry.kit.weapon
+  const { grip } = entry.gear.weapon
   const ability = grip === 'ranged' ? dexterity : grip === 'finesse' ? Math.max(strength, dexterity) : strength
   const archery = styleActive && style === 'archery' && grip === 'ranged' ? 2 : 0
   return ability + PROFICIENCY_BONUS + archery
@@ -943,7 +697,7 @@ function attackBonus(entry: CoreClass, scores: PointBuyScores, style: FightingSt
 /** HP, AC with the starting kit, attack with the main weapon and spell save DC at level 1. */
 export function heroNumbers(draft: HeroDraft): HeroNumbers {
   const scores = heroScores(draft)
-  const entry = coreClassFor(draft.calling)
+  const entry = heroClass(draft)
   const hitDie = entry?.hitDie ?? hitDieForClass(draft.calling ?? '')
   const hp = Math.max(1, hitDie + modifier(scores.constitution))
   if (!entry) return { hp, armorClass: null, attack: null, spellSaveDc: null, proficiencyBonus: PROFICIENCY_BONUS }
@@ -952,7 +706,7 @@ export function heroNumbers(draft: HeroDraft): HeroNumbers {
   return {
     hp,
     armorClass: armorClass(entry, scores, style, styleActive),
-    attack: { weapon: entry.kit.weapon.name, bonus: attackBonus(entry, scores, style, styleActive) },
+    attack: { weapon: entry.gear.weapon.name, bonus: attackBonus(entry, scores, style, styleActive) },
     spellSaveDc: entry.spellcasting ? 8 + PROFICIENCY_BONUS + modifier(scores[entry.spellcasting.ability]) : null,
     proficiencyBonus: PROFICIENCY_BONUS,
   }
@@ -999,12 +753,12 @@ export function stepComplete(draft: HeroDraft, step: CreateStep): boolean {
   if (step === 'who') return Boolean(draft.name.trim() && draft.ancestry)
   if (step === 'calling') return Boolean(draft.calling)
   if (step === 'shape') {
-    const entry = coreClassFor(draft.calling)
+    const entry = heroClass(draft)
     return (
       pointBuyValid(heroScores(draft)) &&
       Boolean(heroBackground(draft)) &&
       (!entry || draft.skills.length === entry.skillCount) &&
-      (!needsExpertise(draft) || draft.expertise.length === EXPERTISE_COUNT)
+      draft.expertise.length === expertiseCount(draft)
     )
   }
   return CREATE_STEPS.slice(0, -1).every((earlier) => stepComplete(draft, earlier))
@@ -1016,12 +770,12 @@ export function stepHint(draft: HeroDraft, step: CreateStep): string {
   if (step === 'who') return draft.ancestry ? 'Name your hero to continue.' : 'Choose an ancestry to continue.'
   if (step === 'calling') return 'Choose a calling to continue.'
   if (step === 'shape') {
-    const entry = coreClassFor(draft.calling)
+    const entry = heroClass(draft)
     if (!pointBuyValid(heroScores(draft))) return 'Spend no more than 27 points to continue.'
     if (entry && draft.skills.length !== entry.skillCount) {
       return `Choose ${entry.skillCount} class skills to continue.`
     }
-    return 'Mark two skills for expertise to continue.'
+    return `Mark ${skillCountPhrase(expertiseCount(draft))} for expertise to continue.`
   }
   return 'Finish the earlier steps to begin.'
 }
@@ -1045,7 +799,7 @@ export function createPayload(draft: HeroDraft): CreateHeroPayload {
   if (!stepComplete(draft, 'review') || !draft.ancestry || !draft.calling || !background) {
     throw new Error('The hero is not finished yet.')
   }
-  const entry = coreClassFor(draft.calling)
+  const entry = heroClass(draft)
   const style = heroFightingStyle(draft)
   const payload: CreateHeroPayload = {
     character_name: draft.name.trim(),

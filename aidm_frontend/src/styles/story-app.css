@@ -81,27 +81,7 @@
   .story-shell[data-drawer-open] .story-party { display: none; }
 }
 
-/* ---- chapter controls (shared dialogs and the console) ---- */
-
-.chapter-start-dialog .chapter-start-copy {
-  margin: 0;
-  color: var(--text);
-  font-size: 0.86rem;
-  line-height: 1.45;
-}
-.chapter-start-dialog .chapter-start-option {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.chapter-start-dialog .chapter-start-option input {
-  flex: none;
-  width: 18px;
-  height: 18px;
-  margin: 0;
-  padding: 0;
-  accent-color: var(--orange);
-}
+/* ---- chapter controls (the console) ---- */
 
 .ended-chapter-block .start-adventure-button {
   justify-self: start;

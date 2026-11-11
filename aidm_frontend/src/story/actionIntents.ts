@@ -24,28 +24,6 @@ export type ActionSubmission = {
   intent: ActionIntent
 }
 
-/**
- * Intent fields the server validates (aidm_server/action_intent.py) that the
- * shared ActionIntent type does not declare: shop trades, the hit dice of a
- * short rest and the target of an item use.
- */
-type ServerIntentFields = Omit<ActionIntent, 'kind' | 'item'> & {
-  kind: ActionIntent['kind'] | 'shop'
-  item?: NonNullable<ActionIntent['item']> & { target_id?: string }
-  hit_dice?: number
-  shop?: {
-    action: 'buy' | 'sell'
-    merchant_id: string
-    stock_id?: string
-    item_id?: string
-    quantity: number
-  }
-}
-
-function serverIntent(intent: ServerIntentFields) {
-  return intent as ActionIntent
-}
-
 function combatClientMessageId() {
   const randomId = globalThis.crypto?.randomUUID?.()
   return `combat-hud-${randomId ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`}`
@@ -218,14 +196,14 @@ export function restSubmission(
   const message = `${actorName} completes a ${label}.`
   return {
     message,
-    intent: serverIntent({
+    intent: {
       kind: 'rest',
       source: 'scene_panel',
       text: message,
       client_message_id: createClientMessageId(),
       rest_type: restType,
       ...(restType === 'short_rest' && hitDice !== undefined ? { hit_dice: hitDice } : {}),
-    }),
+    },
   }
 }
 
@@ -254,14 +232,14 @@ export function itemUseSubmission(
   }
   return {
     message,
-    intent: serverIntent({
+    intent: {
       kind: 'item',
       source: 'scene_panel',
       text: message,
       client_message_id: createClientMessageId(),
       inventory_action: 'use',
       item: { id: item.id, name: item.name, quantity: 1, target_id: target.id },
-    }),
+    },
   }
 }
 
@@ -274,13 +252,13 @@ export function buySubmission(
   const message = `${actorName} buys ${entry.name} from ${merchant.name}.`
   return {
     message,
-    intent: serverIntent({
+    intent: {
       kind: 'shop',
       source: 'scene_panel',
       text: message,
       client_message_id: createClientMessageId(),
       shop: { action: 'buy', merchant_id: merchant.id, stock_id: entry.stockId, quantity: 1 },
-    }),
+    },
   }
 }
 
@@ -293,12 +271,12 @@ export function sellSubmission(
   const message = `${actorName} sells ${good.name} to ${merchant.name}.`
   return {
     message,
-    intent: serverIntent({
+    intent: {
       kind: 'shop',
       source: 'scene_panel',
       text: message,
       client_message_id: createClientMessageId(),
       shop: { action: 'sell', merchant_id: merchant.id, item_id: good.id, quantity: 1 },
-    }),
+    },
   }
 }

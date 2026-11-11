@@ -176,6 +176,18 @@ describe('authoritative socket payload validation', () => {
     expect(normalized).not.toHaveProperty('modifier_breakdown')
   })
 
+  it('accepts Bardic Inspiration that turned the roll, counted in the total', () => {
+    const inspired = { ...resolvedRoll, total: 27, inspiration: { die: 'd6', roll: 4 } }
+
+    expect(normalizeRollResolvedPayload(inspired)).toMatchObject({
+      total: 27,
+      inspiration: { die: 'd6', roll: 4 },
+    })
+    expect(normalizeRollResolvedPayload({ ...inspired, total: 23 })).toBeNull()
+    expect(normalizeRollResolvedPayload({ ...inspired, inspiration: { die: 'd6', roll: 9 } })).toBeNull()
+    expect(normalizeRollResolvedPayload(resolvedRoll)).not.toHaveProperty('inspiration')
+  })
+
   it('rejects client-like, unauthoritative, or internally inconsistent results', () => {
     expect(normalizeRollResolvedPayload({ ...resolvedRoll, authoritative: false })).toBeNull()
     expect(normalizeRollResolvedPayload({ ...resolvedRoll, total: 999 })).toBeNull()

@@ -1,14 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo } from 'react'
 import { partyVitalityFromSnapshot } from '../gameSelectors'
+import { setStoryTextSize, useStoryPreferences } from './sheets/storyPreferences'
 import { StoryAtmosphere } from './StoryAtmosphere'
-import { StoryFeed, type StoryTextSize } from './StoryFeed'
+import { StoryFeed } from './StoryFeed'
 import { storyMood } from './storyMood'
 import { StoryPartyHud } from './StoryPartyHud'
 import { StoryTopBar } from './StoryTopBar'
 import type { StoryDrawerTab, StoryViewProps } from './types'
-
-/** Shared with the classic console's reading controls. */
-const CHAT_TEXT_SETTINGS_STORAGE_KEY = 'aidm:chatTextSettings'
 
 const DRAWER_HOTKEYS: Record<string, StoryDrawerTab> = {
   c: 'character',
@@ -16,36 +14,6 @@ const DRAWER_HOTKEYS: Record<string, StoryDrawerTab> = {
   g: 'magic',
   j: 'journal',
   m: 'map',
-}
-
-function isTextSize(value: unknown): value is StoryTextSize {
-  return value === 'default' || value === 'large' || value === 'extra'
-}
-
-function readTextSettings(): Record<string, unknown> {
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(CHAT_TEXT_SETTINGS_STORAGE_KEY) ?? 'null')
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {}
-  } catch {
-    return {}
-  }
-}
-
-function loadTextSize(): StoryTextSize {
-  const { size } = readTextSettings()
-  return isTextSize(size) ? size : 'default'
-}
-
-function saveTextSize(size: StoryTextSize) {
-  try {
-    const current = readTextSettings()
-    localStorage.setItem(
-      CHAT_TEXT_SETTINGS_STORAGE_KEY,
-      JSON.stringify({ font: 'default', ...current, size }),
-    )
-  } catch {
-    // The choice still applies to this page when storage is unavailable.
-  }
 }
 
 function typingInField(target: EventTarget | null) {
@@ -73,7 +41,8 @@ export function StoryView({
   drawerTab,
   onDrawerOpenChange,
 }: StoryViewProps) {
-  const [textSize, setTextSize] = useState<StoryTextSize>(loadTextSize)
+  // Reading and motion settings apply the moment they change, from the Settings sheet or another tab.
+  const { textSize, typeface, reduceMotion } = useStoryPreferences()
   const mood = storyMood(board.worldState, board.sceneState, board.combatState)
   const viewerPlayerId = board.selectedPlayer?.player_id ?? board.playerId ?? inspector.selectedPlayerId
   const viewer = board.activePlayers.find((player) => player.id === viewerPlayerId)
@@ -100,17 +69,14 @@ export function StoryView({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [drawerOpen, drawerTab, onDrawerOpenChange])
 
-  const changeTextSize = (size: StoryTextSize) => {
-    setTextSize(size)
-    saveTextSize(size)
-  }
-
   return (
     <div
       className="story-shell"
       data-mood={mood}
       data-phase={board.worldState.clock?.phase}
       data-drawer-open={drawerOpen ? '' : undefined}
+      data-typeface={typeface}
+      data-reduce-motion={reduceMotion ? '' : undefined}
     >
       <StoryAtmosphere mood={mood} viewerHp={viewer?.health?.currentHp ?? null} />
       <h1 className="story-sr-only">{board.activeSessionTitle}</h1>
@@ -122,7 +88,7 @@ export function StoryView({
           drawerTab={drawerTab}
           onDrawerOpenChange={onDrawerOpenChange}
           textSize={textSize}
-          onTextSizeChange={changeTextSize}
+          onTextSizeChange={setStoryTextSize}
         />
         <main className="story-main" aria-label="Story">
           <StoryFeed board={board} textSize={textSize} onExitToTitle={chrome.onExitToTitle} />

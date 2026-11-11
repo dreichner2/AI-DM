@@ -1,13 +1,6 @@
 import { useCallback, useState, type Dispatch, type FormEvent, type SetStateAction } from 'react'
 import { apiFetch } from './api'
 import { backgroundFromValue } from './backgroundCatalog'
-import {
-  DEFAULT_POINT_BUY_SCORES,
-  POINT_BUY_BUDGET,
-  pointBuySpent,
-  pointBuyStatsPayload,
-  type PointBuyScores,
-} from './characterStats'
 import type { PlayableRace } from './raceCatalog'
 import type { CreateHeroPayload } from './story/create/createHeroModel'
 import type { CharacterRaceSelection, Player, PlayerDetail } from './types'
@@ -15,9 +8,7 @@ import type { CharacterRaceSelection, Player, PlayerDetail } from './types'
 type ValueUpdater<T> = T | ((current: T) => T)
 
 export type PlayerEditDialogState = {
-  mode: 'create' | 'edit'
-  campaignId: number | null
-  player: Player | null
+  player: Player
   characterName: string
   race: string
   raceSelection: CharacterRaceSelection | null
@@ -25,7 +16,6 @@ export type PlayerEditDialogState = {
   charClass: string
   backgroundId: string
   level: string
-  abilityScores: PointBuyScores
   error: string
   pending: boolean
 } | null
@@ -53,8 +43,6 @@ type UsePlayerProfileActionsOptions = {
 function playerDialogStateFromPlayer(player: Player): NonNullable<PlayerEditDialogState> {
   const background = backgroundFromValue(player.background?.id ?? player.background?.name)
   return {
-    mode: 'edit',
-    campaignId: player.campaign_id,
     player,
     characterName: player.character_name ?? '',
     race: player.race ?? '',
@@ -63,7 +51,6 @@ function playerDialogStateFromPlayer(player: Player): NonNullable<PlayerEditDial
     charClass: player.char_class || player.class_ || '',
     backgroundId: background?.id ?? '',
     level: String(player.level ?? 1),
-    abilityScores: { ...DEFAULT_POINT_BUY_SCORES },
     error: '',
     pending: false,
   }
@@ -91,27 +78,6 @@ export function usePlayerProfileActions({
     setProfileSettingsOpen(false)
     setPlayerEditDialog(playerDialogStateFromPlayer(selectedPlayer))
   }, [rememberDialogTrigger, selectedPlayer, setProfileSettingsOpen])
-
-  const openCreatePlayerDialog = useCallback((campaignId: number | null) => {
-    if (!campaignId) return
-    rememberDialogTrigger()
-    setProfileSettingsOpen(false)
-    setPlayerEditDialog({
-      mode: 'create',
-      campaignId,
-      player: null,
-      characterName: '',
-      race: '',
-      raceSelection: null,
-      sex: 'male',
-      charClass: '',
-      backgroundId: 'folk_hero',
-      level: '1',
-      abilityScores: { ...DEFAULT_POINT_BUY_SCORES },
-      error: '',
-      pending: false,
-    })
-  }, [rememberDialogTrigger, setProfileSettingsOpen])
 
   const closePlayerEditDialog = useCallback(() => {
     if (playerEditDialog?.pending) return
@@ -157,12 +123,6 @@ export function usePlayerProfileActions({
       )
       return
     }
-    if (playerEditDialog.mode === 'create' && !backgroundFromValue(playerEditDialog.backgroundId)) {
-      setPlayerEditDialog((current) =>
-        current ? { ...current, error: 'Choose a background.' } : current,
-      )
-      return
-    }
     let playableRace: PlayableRace | null
     try {
       const { playableRaceFromValue } = await import('./raceCatalog')
@@ -189,20 +149,10 @@ export function usePlayerProfileActions({
       )
       return
     }
-    const pointBuyTotal = pointBuySpent(playerEditDialog.abilityScores)
-    if (playerEditDialog.mode === 'create' && pointBuyTotal > POINT_BUY_BUDGET) {
-      setPlayerEditDialog((current) =>
-        current ? { ...current, error: `Ability scores exceed ${POINT_BUY_BUDGET} point buy points.` } : current,
-      )
-      return
-    }
 
-    const dialogMode = playerEditDialog.mode
-    const campaignId = playerEditDialog.campaignId
-    const playerId = playerEditDialog.player?.player_id ?? null
+    const playerId = playerEditDialog.player.player_id
     setPlayerEditDialog((current) => (current ? { ...current, pending: true, error: '' } : current))
     try {
-      let updated: PlayerDetail
       const payload: Record<string, unknown> = {
         character_name: characterName,
         race: raceSelection.raceName,
@@ -214,33 +164,10 @@ export function usePlayerProfileActions({
       if (playerEditDialog.backgroundId) {
         payload.background = playerEditDialog.backgroundId
       }
-      if (dialogMode === 'create') {
-        payload.stats = pointBuyStatsPayload(
-          playerEditDialog.abilityScores,
-          level,
-          playerEditDialog.charClass,
-        )
-      }
-      const body = JSON.stringify(payload)
-      if (dialogMode === 'create') {
-        if (!campaignId) throw new Error('Choose a campaign before creating a character.')
-        const created = await apiFetch<{ player_id: number }>(
-          baseUrl,
-          `/api/players/campaigns/${campaignId}/players`,
-          auth,
-          {
-            method: 'POST',
-            body,
-          },
-        )
-        updated = await apiFetch<PlayerDetail>(baseUrl, `/api/players/${created.player_id}`, auth)
-      } else {
-        if (!playerId) throw new Error('Choose a character before editing.')
-        updated = await apiFetch<PlayerDetail>(baseUrl, `/api/players/${playerId}`, auth, {
-          method: 'PATCH',
-          body,
-        })
-      }
+      const updated = await apiFetch<PlayerDetail>(baseUrl, `/api/players/${playerId}`, auth, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      })
       playerUpserted(updated)
       setPlayerDetail(updated)
       setSelectedPlayerId(updated.player_id)
@@ -248,7 +175,7 @@ export function usePlayerProfileActions({
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setPlayerEditDialog((current) => (current ? { ...current, pending: false, error: message } : current))
-      pushError('persistence', `Could not ${playerEditDialog.mode === 'create' ? 'create' : 'update'} player: ${message}`)
+      pushError('persistence', `Could not update player: ${message}`)
     }
   }
 
@@ -298,7 +225,6 @@ export function usePlayerProfileActions({
     closePlayerDeleteDialog,
     closePlayerEditDialog,
     createHeroCharacter,
-    openCreatePlayerDialog,
     openPlayerDeleteDialog,
     openPlayerEditDialog,
     playerDeleteDialog,

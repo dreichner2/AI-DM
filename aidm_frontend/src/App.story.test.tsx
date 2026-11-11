@@ -9,6 +9,7 @@ import {
   appTestState,
   fixedNow,
   jsonResponse,
+  loadConsoleChunks,
   renderLoadedApp,
   renderStoryApp,
   setupAppTest,
@@ -152,6 +153,7 @@ describe('Story mode in the app', () => {
   })
 
   it('switches to the console and back without leaving the session', async () => {
+    await loadConsoleChunks()
     await renderStoryApp()
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Adventure menu' })[0]!)

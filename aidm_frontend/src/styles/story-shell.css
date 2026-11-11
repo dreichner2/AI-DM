@@ -52,6 +52,7 @@
     radial-gradient(120% 62% at 50% 112%, var(--mood-glow), transparent 62%);
   transition: opacity 1.2s var(--story-ease);
 }
+.story-shell .story-atmosphere[data-still] .story-atmosphere-glow { transition: none; }
 /* The day clock: evening warms the light a little; night lowers it by a third and cools it. */
 .story-shell[data-phase='evening'] .story-atmosphere-glow {
   background:

@@ -179,6 +179,20 @@ describe('game selector helpers', () => {
     ])
     expect(proficient.savingThrows?.[0]).toEqual({ ability: 'STR', modifier: '—', proficient: false })
     expect(proficient.hitDice).toBeNull()
+
+    // The server's derived list (class saves plus the sheet's) wins over the stored stats.
+    const derived = normalizeStats(
+      { dexterity: 14, wisdom: 12, saving_throw_proficiencies: ['strength'] },
+      {},
+      1,
+      { savingThrowProficiencies: ['dexterity', 'wisdom'] },
+    )
+    expect(derived.savingThrows?.filter((save) => save.proficient).map((save) => [save.ability, save.modifier])).toEqual([
+      ['DEX', '+4'],
+      ['WIS', '+3'],
+    ])
+    const noneProficient = normalizeStats({ dexterity: 14, saving_throw_proficiencies: ['dexterity'] }, {}, 1, { savingThrowProficiencies: [] })
+    expect(noneProficient.savingThrows?.some((save) => save.proficient)).toBe(false)
   })
 
   it('reads each downed party member from combat first, then from the viewer’s own sheet', () => {
@@ -884,7 +898,8 @@ describe('game selector helpers', () => {
             { id: 'names', description: 'Learn why the names were erased', status: 'open' },
             { id: 'cairns', title: 'Pass the cairns', status: 'blocked' },
             { id: 'ward', description: 'Spare the wardens', status: 'failed' },
-            { id: 'shrine', description: 'Light the roadside shrine', status: 'optional' },
+            { id: 'shrine', description: 'Light the roadside shrine', status: 'open', optional: true },
+            { id: 'toll', description: 'Pay the ferry toll', status: 'optional' },
             { id: 'empty', status: 'open' },
           ],
         },
@@ -901,10 +916,12 @@ describe('game selector helpers', () => {
       lore: [{ id: 'lore_oath', title: 'The Roadward Oath', summary: 'Protect travellers without price.' }],
       campaignPack: {
         title: 'The Road',
+        activeCheckpointId: 'cp_07',
         checkpoints: [
-          { id: 'cp_06', title: 'The Last Road-Stone', status: 'completed' },
-          { id: 'cp_07', title: 'The Road Remembers', summary: 'The names return to the road.', status: 'active', terminal: true },
+          { id: 'cp_06', title: 'The Last Road-Stone', status: 'completed', terminal: false },
+          { id: 'cp_07', title: 'The Road Remembers', summary: 'The names return to the road.', status: 'reached', terminal: true },
         ],
+        ending: { checkpointId: 'cp_07', title: 'The Road Remembers', summary: 'The names return to the road.' },
       },
     })
 
@@ -916,6 +933,7 @@ describe('game selector helpers', () => {
       { id: 'cairns', description: 'Pass the cairns', status: 'blocked', optional: false },
       { id: 'ward', description: 'Spare the wardens', status: 'failed', optional: false },
       { id: 'shrine', description: 'Light the roadside shrine', status: 'open', optional: true },
+      { id: 'toll', description: 'Pay the ferry toll', status: 'open', optional: false },
     ])
     expect(panel.finishedQuests?.map((quest) => [quest.id, quest.status])).toEqual([
       ['bell', 'completed'],
@@ -932,13 +950,20 @@ describe('game selector helpers', () => {
     expect(panel.ending).toEqual({ title: 'The Road Remembers', summary: 'The names return to the road.' })
   })
 
-  it('has no ending until a terminal checkpoint is active or completed', () => {
+  it('has no ending until the party reaches a terminal checkpoint', () => {
     const pack = (status: string, extra: Record<string, unknown> = {}) => ({
-      campaignPack: { title: 'The Road', checkpoints: [{ id: 'cp_end', status, ...extra }] },
+      campaignPack: { title: 'The Road', checkpoints: [{ id: 'cp_end', title: 'Journey’s End', status, ...extra }] },
     })
+    // Active is the goal the party is still working towards, not the ending.
     expect(worldStateFromSnapshot(pack('open', { terminal: true })).ending).toBeNull()
-    expect(worldStateFromSnapshot(pack('completed')).ending).toBeNull()
-    expect(worldStateFromSnapshot(pack('completed', { type: 'finale' })).ending).toEqual({ title: 'The Road', summary: '' })
+    expect(worldStateFromSnapshot(pack('active', { terminal: true })).ending).toBeNull()
+    expect(worldStateFromSnapshot(pack('completed', { terminal: false })).ending).toBeNull()
+    expect(worldStateFromSnapshot(pack('completed', { type: 'finale' })).ending).toBeNull()
+    expect(worldStateFromSnapshot(pack('reached', { terminal: true })).ending).toEqual({ title: 'Journey’s End', summary: '' })
+    expect(worldStateFromSnapshot(pack('completed', { terminal: true })).ending).toEqual({ title: 'Journey’s End', summary: '' })
+    expect(
+      worldStateFromSnapshot({ campaignPack: { title: 'The Road', ending: { checkpointId: 'cp_end', summary: 'Home at last.' } } }).ending,
+    ).toEqual({ title: 'The Road', summary: 'Home at last.' })
   })
 
   it('reads the day clock and the merchants open in the scene', () => {
@@ -1088,6 +1113,15 @@ describe('game selector helpers', () => {
             position: { rangeBand: 'melee', engagedWith: ['player_30'] },
           },
           { id: 'enemy_archer_1', name: 'Archer', team: 'enemy', hp: { current: 5, max: 5 }, position: { rangeBand: 'far' } },
+          // Another player's character: the server shows its position to every player.
+          {
+            id: 'player_31',
+            playerId: 31,
+            name: 'Brannoc',
+            team: 'player',
+            conditions: [],
+            position: { rangeBand: 'near', engagedWith: [] },
+          },
         ],
         turnOrder: [
           { id: 'player_30', name: 'Ember', team: 'player', isCurrent: true },
@@ -1120,8 +1154,9 @@ describe('game selector helpers', () => {
       },
     })
 
-    const [ember, goblin, archer] = [...panel.combat.allies, ...panel.combat.enemies]
+    const [ember, brannoc, goblin, archer] = [...panel.combat.allies, ...panel.combat.enemies]
     expect(ember).toMatchObject({ rangeBand: 'melee', engagedWith: ['enemy_goblin_1'], deathSaves: { successes: 1, failures: 3 } })
+    expect(brannoc).toMatchObject({ name: 'Brannoc', rangeBand: 'near', engagedWith: [], position: 'near' })
     expect(goblin).toMatchObject({ rangeBand: 'melee', engagedWith: ['player_30'], deathSaves: null })
     expect(archer).toMatchObject({ rangeBand: 'far', engagedWith: [] })
     const bundle = panel.combat.legalActionBundles[0]

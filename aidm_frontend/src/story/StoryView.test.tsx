@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { SessionBoardProps } from '../SessionBoard'
 import { makeBoardFixture, makeInspectorFixture } from './preview/fixtures'
+import { setStoryReduceMotion, setStoryTextSize, setStoryTypeface } from './sheets/storyPreferences'
 import type { StoryChromeProps, StoryDrawerTab } from './types'
 import { StoryView } from './StoryView'
 
@@ -173,5 +174,33 @@ describe('StoryView', () => {
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'Extra' }))
     expect(screen.getByRole('log')).toHaveAttribute('data-text-size', 'extra')
     expect(JSON.parse(localStorage.getItem('aidm:chatTextSettings') ?? '{}')).toEqual({ size: 'extra', font: 'mono' })
+  })
+
+  it('applies text size, typeface and reduce motion from Settings the moment they change', () => {
+    const board = makeBoardFixture('combat')
+    const { container, rerenderBoard } = renderView({ board })
+    const shell = container.querySelector('.story-shell')
+    expect(shell).toHaveAttribute('data-typeface', 'default')
+    expect(shell).not.toHaveAttribute('data-reduce-motion')
+
+    act(() => setStoryTextSize('large'))
+    expect(screen.getByRole('log')).toHaveAttribute('data-text-size', 'large')
+    act(() => setStoryTypeface('sans'))
+    expect(shell).toHaveAttribute('data-typeface', 'sans')
+    act(() => setStoryReduceMotion(true))
+    expect(shell).toHaveAttribute('data-reduce-motion')
+    expect(container.querySelector('.story-atmosphere')).toHaveAttribute('data-still')
+
+    // Held still: losing HP no longer flashes the screen edge.
+    rerenderBoard({
+      ...board,
+      activePlayers: board.activePlayers.map((player) =>
+        player.id === board.playerId && player.health ? { ...player, health: { ...player.health, currentHp: 5 } } : player,
+      ),
+    })
+    expect(container.querySelector('.story-hurt-flash')).toBeNull()
+
+    act(() => setStoryReduceMotion(false))
+    expect(shell).not.toHaveAttribute('data-reduce-motion')
   })
 })

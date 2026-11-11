@@ -9,13 +9,14 @@ import {
 } from './musicLibrary'
 import { subscribeToMediaQueryChange } from './mediaQuery'
 import type { SceneDisplayState } from './sceneState'
+import { MUSIC_PREFERENCES_STORAGE_KEY, setMusicVolume, useStoryPreferences } from './story/sheets/storyPreferences'
 
 type MusicFilter = SceneMusicTag | 'all'
 
+/** The track choice; the volume in the same record belongs to the shared preferences (storyPreferences). */
 type StoredMusicPreferences = {
   selectedTag?: MusicFilter
   trackId?: string
-  volume?: number
 }
 
 type MusicPlayerLayout = {
@@ -75,7 +76,6 @@ type SceneMusicPlayerProps = {
   onMusicControl?: (payload: SceneMusicControlPayload) => void
 }
 
-const MUSIC_PREFS_STORAGE_KEY = 'aidm:sceneMusicPreferences'
 const MUSIC_LAYOUT_STORAGE_KEY = 'aidm:sceneMusicLayout'
 const COMPACT_MUSIC_LAYOUT_QUERY = '(max-width: 1100px)'
 const SHORT_MUSIC_LAYOUT_QUERY = '(max-height: 700px) and (min-width: 1101px)'
@@ -98,32 +98,27 @@ function isMusicFilter(value: unknown): value is MusicFilter {
   return value === 'all' || SCENE_MUSIC_TAGS.some((tag) => tag.id === value)
 }
 
-function clampVolume(value: unknown) {
-  const numericValue = typeof value === 'number' ? value : Number(value)
-  if (!Number.isFinite(numericValue)) return 0.7
-  return Math.min(1, Math.max(0, numericValue))
-}
-
-function loadMusicPreferences(): StoredMusicPreferences {
+function readStoredMusicRecord(): Record<string, unknown> {
   try {
-    const rawValue = localStorage.getItem(MUSIC_PREFS_STORAGE_KEY)
-    if (!rawValue) return {}
-    const parsed = JSON.parse(rawValue) as StoredMusicPreferences
-    return {
-      selectedTag: isMusicFilter(parsed.selectedTag) ? parsed.selectedTag : 'all',
-      trackId: SCENE_MUSIC_TRACKS.some((track) => track.id === parsed.trackId)
-        ? parsed.trackId
-        : undefined,
-      volume: clampVolume(parsed.volume),
-    }
+    const parsed: unknown = JSON.parse(localStorage.getItem(MUSIC_PREFERENCES_STORAGE_KEY) ?? 'null')
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {}
   } catch {
     return {}
   }
 }
 
+function loadMusicPreferences(): StoredMusicPreferences {
+  const stored = readStoredMusicRecord()
+  return {
+    selectedTag: isMusicFilter(stored.selectedTag) ? stored.selectedTag : 'all',
+    trackId: SCENE_MUSIC_TRACKS.some((track) => track.id === stored.trackId) ? (stored.trackId as string) : undefined,
+  }
+}
+
+/** Saves the track choice, keeping the volume and anything else already in the record. */
 function saveMusicPreferences(preferences: StoredMusicPreferences) {
   try {
-    localStorage.setItem(MUSIC_PREFS_STORAGE_KEY, JSON.stringify(preferences))
+    localStorage.setItem(MUSIC_PREFERENCES_STORAGE_KEY, JSON.stringify({ ...readStoredMusicRecord(), ...preferences }))
   } catch {
     // Music controls still work for the current page when storage is unavailable.
   }
@@ -293,11 +288,7 @@ function initialMusicState() {
     storedPreferences.trackId && filteredTracks.some((track) => track.id === storedPreferences.trackId)
       ? storedPreferences.trackId
       : filteredTracks[0]?.id ?? SCENE_MUSIC_TRACKS[0].id
-  return {
-    selectedTag,
-    trackId,
-    volume: storedPreferences.volume ?? 0.7,
-  }
+  return { selectedTag, trackId }
 }
 
 export function SceneMusicPlayer({
@@ -330,7 +321,8 @@ export function SceneMusicPlayer({
   const [playbackError, setPlaybackError] = useState('')
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
-  const [volume, setVolume] = useState(storedPreferences.volume)
+  // The volume is the shared setting, so a change in Settings reaches the playing track at once.
+  const { musicVolume: volume } = useStoryPreferences()
   const effectiveVolume = duckForNarration ? Math.min(volume, TTS_MUSIC_DUCK_VOLUME) : volume
 
   const filteredTracks = useMemo(() => tracksForFilter(selectedTag), [selectedTag])
@@ -350,8 +342,8 @@ export function SceneMusicPlayer({
   }, [currentSceneLocationKey])
 
   useEffect(() => {
-    saveMusicPreferences({ selectedTag, trackId: currentTrackId, volume })
-  }, [currentTrackId, selectedTag, volume])
+    saveMusicPreferences({ selectedTag, trackId: currentTrackId })
+  }, [currentTrackId, selectedTag])
 
   const defaultDockedLayout = !hasCustomPanelLayout
   const inlineStaticLayout = defaultDockedLayout || mobileStaticLayout || shortStaticLayout
@@ -767,10 +759,6 @@ export function SceneMusicPlayer({
     broadcastMusicControl(currentTrack.id, isPlaying ? 'playing' : 'paused', nextTime)
   }
 
-  const updateVolume = (value: string) => {
-    setVolume(clampVolume(Number(value)))
-  }
-
   const currentTagLabel = selectedTag === 'all'
     ? 'All scenes'
     : SCENE_MUSIC_TAGS.find((tag) => tag.id === selectedTag)?.label ?? selectedTag
@@ -918,7 +906,7 @@ export function SceneMusicPlayer({
               max="1"
               step="0.05"
               value={String(volume)}
-              onChange={(event) => updateVolume(event.target.value)}
+              onChange={(event) => setMusicVolume(Number(event.target.value))}
             />
           </label>
           <div className="scene-music-tags" aria-label={`Scene music filters: ${currentTagLabel}`}>

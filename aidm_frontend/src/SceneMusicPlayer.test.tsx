@@ -3,6 +3,7 @@ import '@testing-library/jest-dom/vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SceneMusicPlayer } from './SceneMusicPlayer'
+import { setMusicVolume } from './story/sheets/storyPreferences'
 
 const RESTORED_TRACK_ID = 'dnd-calm-fantasy-adventure-exploration'
 const RESTORED_TRACK_TITLE = 'DnD Calm Fantasy Music for Adventure and Exploration'
@@ -317,6 +318,26 @@ describe('SceneMusicPlayer', () => {
     rerender(<SceneMusicPlayer duckForNarration={false} />)
 
     await waitFor(() => expect(audio.volume).toBeCloseTo(0.8))
+  })
+
+  it('follows the Settings music volume while a track plays and keeps it when the track changes', async () => {
+    const { container } = render(<SceneMusicPlayer />)
+    const audio = container.querySelector('audio')
+    expect(audio).not.toBeNull()
+    if (!audio) return
+
+    act(() => setMusicVolume(0.3))
+    await waitFor(() => expect(audio.volume).toBeCloseTo(0.3))
+    expect(screen.getByLabelText('Music volume')).toHaveValue('0.3')
+
+    fireEvent.change(screen.getByLabelText('Music volume'), { target: { value: '0.55' } })
+    await waitFor(() => expect(audio.volume).toBeCloseTo(0.55))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next music track' }))
+    await waitFor(() =>
+      expect(JSON.parse(localStorage.getItem('aidm:sceneMusicPreferences') ?? '{}')).toMatchObject({ volume: 0.55 }),
+    )
+    expect(JSON.parse(localStorage.getItem('aidm:sceneMusicPreferences') ?? '{}').trackId).toBeTruthy()
   })
 
   it('collapses controls based on the resized player size', () => {

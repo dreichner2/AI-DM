@@ -119,6 +119,28 @@ describe('buildStoryBeats', () => {
     expect(rollFromEntry(entry('log-4', 'player', 'Wren', 'I roll the barrel down the hill.'))).toBeNull()
   })
 
+  it('reads Bardic Inspiration from the roll record and from the canonical sentence', () => {
+    const inspired = rollFromEntry(
+      entry('log-1', 'player', 'Wren', 'I roll a d20+3 for stealth: 9 + Bardic Inspiration d6 (4) = 16', {
+        turn_id: 5,
+        action_intent: {
+          kind: 'roll',
+          roll: { die: 'd20', mode: 'normal', rolls: [9], kept: 9, modifier: 3, total: 16, task_dc: 15, inspiration: { die: 'd6', roll: 4 } },
+        },
+      }),
+    )
+    expect(inspired).toMatchObject({ kept: 9, total: 16, inspiration: { die: 'd6', roll: 4 }, outcome: 'success' })
+
+    const fromText = rollFromEntry(
+      entry('log-2', 'player', 'Wren', 'I roll a d20+3 for stealth: 9 (advantage; rolls 9, 2) 1d4 (2) + Bardic Inspiration d8 (5) = 19'),
+    )
+    expect(fromText).toMatchObject({ faces: [9, 2], kept: 9, mode: 'advantage', total: 19, inspiration: { die: 'd8', roll: 5 } })
+
+    expect(rollFromEntry(entry('log-3', 'player', 'Wren', 'I roll a d20+3 for stealth: 9 = 12'))).toMatchObject({
+      inspiration: null,
+    })
+  })
+
   it('keeps a system roll without a matching player line as its own beat', () => {
     const beats = buildStoryBeats([
       entry('log-1', 'system', 'System', 'Check Resolved: turn 2 resolved with roll 12.', { turn_id: 3 }),

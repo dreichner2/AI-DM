@@ -33,6 +33,12 @@ export type StoryChange = {
 
 export type StoryRollMode = 'normal' | 'advantage' | 'disadvantage'
 
+/** A Bardic Inspiration die the server added to a roll that would have failed. */
+export type StoryInspiration = {
+  die: string
+  roll: number
+}
+
 export type StoryRoll = {
   name: string
   checkLabel: string
@@ -46,6 +52,8 @@ export type StoryRoll = {
   /** An attack or spell attack: the outcome reads hit/miss against AC. */
   attack: boolean
   mode: StoryRollMode
+  /** Already included in `total`. */
+  inspiration: StoryInspiration | null
   outcome: 'success' | 'failure' | null
   natural: 'twenty' | 'one' | null
 }
@@ -89,8 +97,10 @@ const CHAPTER_TEXT_RE = /^\**\s*(welcome|chapter)\b/i
 const CHAPTER_NUMBER_RE = /^\**\s*chapter\s+([0-9]+|[ivxlc]+|[a-z]+)\b/i
 const BOOKKEEPING_RE =
   /^\**\s*(?:state (?:updated|applied)|canon (?:applied|pending|updated|saved)|segment triggered|turn (?:saved|persisted)|saved\b|persist|autosave)/i
+// "I roll a d20+3 for Stealth: 9 (advantage; rolls 9, 4) 1d4 (3) + Bardic Inspiration d6 (4) = 19":
+// kept die, optional mode detail, bonus dice, an optional inspiration die, total.
 const CANONICAL_ROLL_RE =
-  /\broll(?:s|ed)?\s+(?:a\s+|an\s+)?(d\d+)\s*(?:([+\-−])\s*(\d+))?(?:\s+for\s+([^:\n]+?))?\s*:\s*(\d+)(?:\s*\(([^)]*)\))?\s*=\s*(-?\d+)/i
+  /\broll(?:s|ed)?\s+(?:a\s+|an\s+)?(d\d+)\s*(?:([+\-−])\s*(\d+))?(?:\s+for\s+([^:\n]+?))?\s*:\s*(\d+)(?:\s*\(([^)]*)\))?(?:\s+[+\-−]?\d*d\d+\s*\(-?\d+\))*(?:\s*\+\s*Bardic Inspiration\s+(d\d+)\s*\((\d+)\))?\s*=\s*(-?\d+)/i
 const RESOLVED_ROLL_RE = /^\**\s*(?:check|roll) resolved\**\s*:.*?\b(?:with roll|result)\s+(-?\d+)/i
 const DC_RE = /(?:dc\s*)?(\d{1,2})/i
 const CONDITION_RE =
@@ -135,6 +145,13 @@ function dcValue(...values: unknown[]): number | null {
     if (match) return Number(match[1])
   }
   return null
+}
+
+function inspirationValue(value: unknown): StoryInspiration | null {
+  if (!isRecord(value)) return null
+  const die = stringValue(value.die).toLowerCase()
+  const roll = numberValue(value.roll)
+  return /^d\d+$/.test(die) && roll !== null && roll > 0 ? { die, roll } : null
 }
 
 function rollMode(value: unknown): StoryRollMode {
@@ -197,6 +214,7 @@ function rollFromRecord(record: JsonRecord, entry: TimelineEntry, name: string):
       dc: dcValue(record.task_dc, record.dc, metadata.task_dc, metadata.dc, metadata.dc_hint),
       attack: isAttackRule(ruleType),
       mode: rollMode(record.mode),
+      inspiration: inspirationValue(record.inspiration),
     },
     explicitOutcome(record, metadata),
   )
@@ -207,7 +225,7 @@ function rollFromText(text: string, entry: TimelineEntry, name: string): StoryRo
   const attack = isAttackRule(stringValue(metadata.rule_type ?? metadata.roll_type))
   const canonical = CANONICAL_ROLL_RE.exec(text)
   if (canonical) {
-    const [, die, sign, modifierText, reason, keptText, detail, totalText] = canonical
+    const [, die, sign, modifierText, reason, keptText, detail, inspirationDie, inspirationRoll, totalText] = canonical
     const kept = Number(keptText)
     const modifier = modifierText ? (sign === '+' ? 1 : -1) * Number(modifierText) : 0
     const detailFaces = detail ? numberList(detail.match(/\d+/g)?.map(Number) ?? []) : []
@@ -223,6 +241,7 @@ function rollFromText(text: string, entry: TimelineEntry, name: string): StoryRo
         dc: dcValue(metadata.task_dc, metadata.dc, metadata.dc_hint),
         attack,
         mode: rollMode(detail?.split(';')[0]),
+        inspiration: inspirationDie ? { die: inspirationDie.toLowerCase(), roll: Number(inspirationRoll) } : null,
       },
       explicitOutcome(metadata),
     )
@@ -241,6 +260,7 @@ function rollFromText(text: string, entry: TimelineEntry, name: string): StoryRo
         dc: dcValue(metadata.task_dc, metadata.dc, metadata.dc_hint),
         attack,
         mode: 'normal',
+        inspiration: null,
       },
       explicitOutcome(metadata),
     )
@@ -337,6 +357,7 @@ export function deathSaveRolls(entry: TimelineEntry): StoryRoll[] {
       dc: null,
       attack: false,
       mode: 'normal',
+      inspiration: null,
       outcome: /success/i.test(result) ? 'success' : 'failure',
       natural: roll === 20 ? 'twenty' : roll === 1 ? 'one' : null,
     }]
@@ -485,6 +506,7 @@ export function buildStoryBeats(
               kept: roll.kept ?? merged.kept,
               modifier: roll.modifier ?? merged.modifier,
               total: roll.total ?? merged.total,
+              inspiration: roll.inspiration ?? merged.inspiration,
             },
             roll.outcome ?? merged.outcome,
           )

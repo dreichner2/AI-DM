@@ -33,19 +33,14 @@ function coinsForCopper(amount: number): Coins {
   return coins
 }
 
-function nameKey(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
-}
-
 /**
- * What the merchant pays for one of the item: the item's listed price (or, when
- * the server sends none, the merchant's own price for the same goods) times the
- * merchant's buy rate, rounded down to the copper. Null when nothing prices it.
+ * What the merchant pays for one of the item: the item's listed price (the
+ * server's `price`) times the merchant's buy rate, rounded down to the copper.
+ * Null for an item the price list does not know.
  */
 export function sellOffer(good: GameplayTradeGood, merchant: WorldMerchantSummary): Coins | null {
-  const listed = good.price ?? merchant.stock.find((entry) => nameKey(entry.name) === nameKey(good.name))?.price ?? null
-  if (!listed) return null
-  return coinsForCopper(copperValue(listed) * merchant.buyRate)
+  if (!good.price) return null
+  return coinsForCopper(copperValue(good.price) * merchant.buyRate)
 }
 
 export function tradeLineKey(action: 'buy' | 'sell', merchantId: string, reference: string) {

@@ -23,15 +23,6 @@ export const POINT_BUY_ABILITIES = [
 export type PointBuyAbilityKey = (typeof POINT_BUY_ABILITIES)[number]['key']
 export type PointBuyScores = Record<PointBuyAbilityKey, number>
 
-export const DEFAULT_POINT_BUY_SCORES: PointBuyScores = {
-  strength: 8,
-  dexterity: 8,
-  constitution: 8,
-  intelligence: 8,
-  wisdom: 8,
-  charisma: 8,
-}
-
 const D12_CLASSES = new Set(['barbarian'])
 const D10_CLASSES = new Set([
   'fighter',
@@ -97,11 +88,6 @@ export function pointBuySpent(scores: PointBuyScores) {
     const score = clampPointBuyScore(scores[ability.key])
     return total + (POINT_BUY_COSTS[score] ?? POINT_BUY_BUDGET + 1)
   }, 0)
-}
-
-export function abilityModifier(score: number) {
-  const modifier = Math.floor((score - 10) / 2)
-  return modifier >= 0 ? `+${modifier}` : String(modifier)
 }
 
 export function maxHpForScores(scores: PointBuyScores, level: number, className = '') {

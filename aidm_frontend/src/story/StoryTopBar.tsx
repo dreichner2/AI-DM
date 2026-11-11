@@ -29,7 +29,7 @@ import {
 } from 'lucide-react'
 import type { SessionBoardProps } from '../SessionBoard'
 import { EmberMark } from './glyphs'
-import type { StoryTextSize } from './StoryFeed'
+import type { StoryTextSize } from './sheets/storyPreferences'
 import type { StoryChromeProps, StoryDrawerTab } from './types'
 
 const SceneMusicPlayer = lazy(() =>
@@ -206,7 +206,9 @@ export function StoryTopBar({
       onSelect: chrome.onToggleFullscreen,
     },
     { kind: 'item', id: 'settings', label: 'Settings', icon: Settings, onSelect: chrome.onOpenSettings },
-    { kind: 'item', id: 'account', label: 'Account', icon: UserRound, onSelect: chrome.onOpenAccount },
+    ...(chrome.onOpenAccount
+      ? [{ kind: 'item', id: 'account', label: 'Account', icon: UserRound, onSelect: chrome.onOpenAccount } as const]
+      : []),
     { kind: 'separator', id: 'sep-3' },
     {
       kind: 'item',

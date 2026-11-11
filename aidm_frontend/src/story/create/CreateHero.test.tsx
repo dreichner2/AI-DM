@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
-import { cleanup, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { CreateHero } from './CreateHero'
+import recorded from './creationOptions.fixture.json'
+import { CREATION_OPTIONS_PATH } from './creationRules'
 import {
   ancestryById,
   emptyDraft,
@@ -54,14 +56,20 @@ beforeAll(async () => {
   await Promise.all([import('../../RaceSelector'), import('../../ClassSelector'), import('../../raceCatalog')])
 })
 
+let fetchMock: Mock<typeof fetch>
+
 beforeEach(() => {
   // JSDOM has no canvas; the ember motes are decorative.
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
+  // Offline unless a test answers: the creator plays by its built-in tables.
+  fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new TypeError('Failed to fetch'))
+  vi.stubGlobal('fetch', fetchMock)
 })
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('CreateHero', () => {
@@ -109,6 +117,35 @@ describe('CreateHero', () => {
       background: 'sage',
       skill_choices: ['medicine', 'insight'],
     })
+  })
+
+  it('asks the server for the creation rules once and plays by its answer', async () => {
+    const answer = structuredClone(recorded)
+    const wizard = answer.classes.find((entry) => entry.id === 'wizard')!
+    wizard.skillChoices.count = 3
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(answer), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    )
+    renderCreator({ draft: drafted('Wizard'), step: 'calling' })
+    const details = screen.getByRole('region', { name: 'Calling details' })
+
+    expect(await within(details).findByText(/recover spell slots totalling up to half your wizard level/)).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(`http://localhost:5050${CREATION_OPTIONS_PATH}`)
+    fireEvent.click(continueButton())
+    expect(screen.getByRole('group', { name: /Class skills/ })).toHaveTextContent('Choose 3')
+  })
+
+  it('creates offline from the built-in tables when the rules cannot be fetched', async () => {
+    renderCreator({ draft: drafted('Wizard'), step: 'calling' })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      await fetchMock.mock.results[0]?.value.catch(() => undefined)
+    })
+    const details = screen.getByRole('region', { name: 'Calling details' })
+    expect(details).toHaveTextContent('Arcane Recovery Once per long rest, after a short rest, recover spent spell slots.')
+    fireEvent.click(continueButton())
+    expect(screen.getByRole('group', { name: /Class skills/ })).toHaveTextContent('Choose 2')
   })
 
   it('uses real radio groups and checkboxes so the keyboard works as everywhere else', () => {
@@ -171,6 +208,9 @@ describe('CreateHero', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Calling' }))
     fireEvent.click(screen.getByRole('radio', { name: /^Paladin/ }))
     expect(screen.getByRole('group', { name: 'Fighting style' })).toHaveTextContent('Applies from level 2.')
+    expect(screen.getByRole('region', { name: 'Calling details' })).toHaveTextContent(
+      'Spells 1 cantrip and 2 spells, such as Amber Knot, Obsidian Lash and Silver Charm.',
+    )
     fireEvent.click(screen.getByRole('radio', { name: /^Druid/ }))
     expect(screen.queryByRole('group', { name: 'Fighting style' })).not.toBeInTheDocument()
     expect(screen.getByText('Wild Shape is narrated by the Dungeon Master.')).toBeInTheDocument()

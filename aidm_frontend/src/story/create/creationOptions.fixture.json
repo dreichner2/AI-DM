@@ -1,0 +1,916 @@
+{
+  "classes": [
+    {
+      "id": "barbarian",
+      "name": "Barbarian",
+      "hitDie": 12,
+      "savingThrows": [
+        "strength",
+        "constitution"
+      ],
+      "skillChoices": {
+        "count": 2,
+        "options": [
+          "animal_handling",
+          "athletics",
+          "intimidation",
+          "nature",
+          "perception",
+          "survival"
+        ]
+      },
+      "startingKit": [
+        "Greataxe",
+        "Handaxe",
+        "Javelin",
+        "Explorer's Pack",
+        "Ration",
+        "Potion of Healing"
+      ],
+      "cantrips": [],
+      "spells": [],
+      "levelOneFeatures": [
+        {
+          "name": "Rage",
+          "summary": "For 10 rounds: +2 damage on Strength melee attacks, resistance to bludgeoning, piercing and slashing damage, advantage on Strength checks and saves; you cannot cast or concentrate on spells."
+        },
+        {
+          "name": "Unarmored Defense",
+          "summary": "Without armour your AC is 10 + Dexterity + Constitution."
+        }
+      ],
+      "laterFeatures": [
+        {
+          "level": 2,
+          "name": "Reckless Attack",
+          "summary": "Before your first attack this turn: your melee Strength attacks have advantage this turn, and attacks against you have advantage until your next turn."
+        },
+        {
+          "level": 2,
+          "name": "Danger Sense",
+          "summary": "Advantage on Dexterity saves against what you can see."
+        },
+        {
+          "level": 5,
+          "name": "Extra Attack",
+          "summary": "Two attacks with every Attack action."
+        }
+      ]
+    },
+    {
+      "id": "bard",
+      "name": "Bard",
+      "hitDie": 8,
+      "savingThrows": [
+        "dexterity",
+        "charisma"
+      ],
+      "skillChoices": {
+        "count": 3,
+        "options": [
+          "acrobatics",
+          "animal_handling",
+          "arcana",
+          "athletics",
+          "deception",
+          "history",
+          "insight",
+          "intimidation",
+          "investigation",
+          "medicine",
+          "nature",
+          "perception",
+          "performance",
+          "persuasion",
+          "religion",
+          "sleight_of_hand",
+          "stealth",
+          "survival"
+        ]
+      },
+      "startingKit": [
+        "Rapier",
+        "Dagger",
+        "Leather Armor",
+        "Lute",
+        "Diplomat's Pack",
+        "Potion of Healing"
+      ],
+      "cantrips": [
+        "Dancing Lights",
+        "Light",
+        "Mage Hand",
+        "Message",
+        "Minor Illusion",
+        "Vicious Mockery"
+      ],
+      "spells": [
+        "Bane",
+        "Charm Person",
+        "Cure Wounds",
+        "Dissonant Whispers",
+        "Faerie Fire",
+        "Healing Word",
+        "Heroism",
+        "Sleep",
+        "Tasha's Hideous Laughter",
+        "Thunderwave",
+        "Silver Charm",
+        "Frostlace Veil",
+        "Ivory Lens"
+      ],
+      "levelOneFeatures": [
+        {
+          "name": "Bardic Inspiration",
+          "summary": "Give an ally a d6 (d8 from level 5), added to their next attack roll, ability check or saving throw that would otherwise fail, within 100 rounds."
+        },
+        {
+          "name": "Spellcasting",
+          "summary": "Magic cast from spell slots that return on a long rest."
+        }
+      ],
+      "laterFeatures": [
+        {
+          "level": 2,
+          "name": "Jack of All Trades",
+          "summary": "Half your proficiency bonus on checks you are untrained in."
+        },
+        {
+          "level": 3,
+          "name": "2nd-level spells",
+          "summary": "Blindness/Deafness, Hold Person, Invisibility, Lesser Restoration, Shatter."
+        },
+        {
+          "level": 5,
+          "name": "3rd-level spells",
+          "summary": "Dispel Magic, Fear, Hypnotic Pattern, Mass Healing Word."
+        }
+      ]
+    },
+    {
+      "id": "cleric",
+      "name": "Cleric",
+      "hitDie": 8,
+      "savingThrows": [
+        "wisdom",
+        "charisma"
+      ],
+      "skillChoices": {
+        "count": 2,
+        "options": [
+          "history",
+          "insight",
+          "medicine",
+          "persuasion",
+          "religion"
+        ]
+      },
+      "startingKit": [
+        "Mace",
+        "Shield",
+        "Scale Mail",
+        "Holy Symbol",
+        "Priest's Pack",
+        "Potion of Healing",
+        "Healer's Kit"
+      ],
+      "cantrips": [
+        "Guidance",
+        "Light",
+        "Sacred Flame",
+        "Spare the Dying",
+        "Thaumaturgy",
+        "Toll the Dead",
+        "Ravenous Knot",
+        "Saffron Spark",
+        "Scarab Mote"
+      ],
+      "spells": [
+        "Bane",
+        "Bless",
+        "Command",
+        "Cure Wounds",
+        "Detect Magic",
+        "Guiding Bolt",
+        "Healing Word",
+        "Inflict Wounds",
+        "Shield of Faith"
+      ],
+      "levelOneFeatures": [
+        {
+          "name": "Spellcasting",
+          "summary": "Magic cast from spell slots that return on a long rest."
+        }
+      ],
+      "laterFeatures": [
+        {
+          "level": 2,
+          "name": "Turn Undead",
+          "summary": "Each undead enemy at melee, near or far range makes a Wisdom save against your spell DC or is turned for 10 rounds. From level 5, turned undead of challenge 1/2 or lower are destroyed."
+        },
+        {
+          "level": 3,
+          "name": "2nd-level spells",
+          "summary": "Aid, Blindness/Deafness, Hold Person, Lesser Restoration, Prayer of Healing, Spiritual Weapon."
+        },
+        {
+          "level": 5,
+          "name": "3rd-level spells",
+          "summary": "Dispel Magic, Mass Healing Word, Revivify, Spirit Guardians."
+        }
+      ]
+    },
+    {
+      "id": "druid",
+      "name": "Druid",
+      "hitDie": 8,
+      "savingThrows": [
+        "intelligence",
+        "wisdom"
+      ],
+      "skillChoices": {
+        "count": 2,
+        "options": [
+          "animal_handling",
+          "arcana",
+          "insight",
+          "medicine",
+          "nature",
+          "perception",
+          "religion",
+          "survival"
+        ]
+      },
+      "startingKit": [
+        "Scimitar",
+        "Wooden Shield",
+        "Leather Armor",
+        "Druidic Focus",
+        "Explorer's Pack",
+        "Potion of Healing",
+        "Healer's Kit"
+      ],
+      "cantrips": [
+        "Druidcraft",
+        "Guidance",
+        "Poison Spray",
+        "Produce Flame",
+        "Thorn Whip",
+        "Mire Knot",
+        "Mire Palm",
+        "Quartz Mote"
+      ],
+      "spells": [
+        "Cure Wounds",
+        "Entangle",
+        "Faerie Fire",
+        "Goodberry",
+        "Healing Word",
+        "Primal Shift",
+        "Speak with Animals",
+        "Thunderwave"
+      ],
+      "levelOneFeatures": [
+        {
+          "name": "Spellcasting",
+          "summary": "Magic cast from spell slots that return on a long rest."
+        }
+      ],
+      "laterFeatures": [
+        {
+          "level": 3,
+          "name": "2nd-level spells",
+          "summary": "Barkskin, Flaming Sphere, Hold Person, Lesser Restoration, Moonbeam, Pass without Trace."
+        },
+        {
+          "level": 5,
+          "name": "3rd-level spells",
+          "summary": "Call Lightning, Dispel Magic."
+        }
+      ]
+    },
+    {
+      "id": "fighter",
+      "name": "Fighter",
+      "hitDie": 10,
+      "savingThrows": [
+        "strength",
+        "constitution"
+      ],
+      "skillChoices": {
+        "count": 2,
+        "options": [
+          "acrobatics",
+          "animal_handling",
+          "athletics",
+          "history",
+          "insight",
+          "intimidation",
+          "perception",
+          "survival"
+        ]
+      },
+      "startingKit": [
+        "Longsword",
+        "Shield",
+        "Chain Mail",
+        "Explorer's Pack",
+        "Ration",
+        "Torch",
+        "Potion of Healing"
+      ],
+      "cantrips": [],
+      "spells": [],
+      "levelOneFeatures": [
+        {
+          "name": "Second Wind",
+          "summary": "Recover 1d10 + fighter level hit points as a bonus action."
+        },
+        {
+          "name": "Fighting Style",
+          "summary": "A trained way of fighting that the rules apply in every fight."
+        }
+      ],
+      "laterFeatures": [
+        {
+          "level": 2,
+          "name": "Action Surge",
+          "summary": "Regain the action for the current combat turn."
+        },
+        {
+          "level": 3,
+          "name": "Improved Critical",
+          "summary": "As a Champion, you score critical hits on 19 and 20."
+        },
+        {
+          "level": 5,
+          "name": "Extra Attack",
+          "summary": "Two attacks with every Attack action."
+        }
+      ],
+      "fightingStyles": {
+        "level": 1,
+        "options": [
+          "defense",
+          "dueling",
+          "great_weapon",
+          "archery"
+        ]
+      }
+    },
+    {
+      "id": "monk",
+      "name": "Monk",
+      "hitDie": 8,
+      "savingThrows": [
+        "strength",
+        "dexterity"
+      ],
+      "skillChoices": {
+        "count": 2,
+        "options": [
+          "acrobatics",
+          "athletics",
+          "history",
+          "insight",
+          "religion",
+          "stealth"
+        ]
+      },
+      "startingKit": [
+        "Quarterstaff",
+        "Dart",
+        "Explorer's Pack",
+        "Ration",
+        "Potion of Healing"
+      ],
+      "cantrips": [],
+      "spells": [],
+      "levelOneFeatures": [
+        {
+          "name": "Martial Arts Strike",
+          "summary": "After you take the Attack action, make one unarmed strike as a bonus action."
+        },
+        {
+          "name": "Unarmored Defense",
+          "summary": "Without armour or a shield your AC is 10 + Dexterity + Wisdom."
+        }
+      ],
+      "laterFeatures": [
+        {
+          "level": 2,
+          "name": "Flurry of Blows",
+          "summary": "After you take the Attack action, spend 1 ki to make two unarmed strikes as a bonus action."
+        },
+        {
+          "level": 2,
+          "name": "Patient Defense",
+          "summary": "Spend 1 ki to take the Dodge action as a bonus action."
+        },
+        {
+          "level": 2,
+          "name": "Step of the Wind",
+          "summary": "Spend 1 ki to Dash or Disengage as a bonus action."
+        },
+        {
+          "level": 5,
+          "name": "Stunning Strike",
+          "summary": "Declared with a melee weapon attack; on a hit spend 1 ki: the target makes a Constitution save or is stunned until the end of your next turn."
+        },
+        {
+          "level": 5,
+          "name": "Extra Attack",
+          "summary": "Two attacks with every Attack action."
+        }
+      ]
+    },
+    {
+      "id": "paladin",
+      "name": "Paladin",
+      "hitDie": 10,
+      "savingThrows": [
+        "wisdom",
+        "charisma"
+      ],
+      "skillChoices": {
+        "count": 2,
+        "options": [
+          "athletics",
+          "insight",
+          "intimidation",
+          "medicine",
+          "persuasion",
+          "religion"
+        ]
+      },
+      "startingKit": [
+        "Longsword",
+        "Shield",
+        "Chain Mail",
+        "Holy Symbol",
+        "Priest's Pack",
+        "Potion of Healing"
+      ],
+      "cantrips": [
+        "Amber Knot"
+      ],
+      "spells": [
+        "Obsidian Lash",
+        "Silver Charm"
+      ],
+      "levelOneFeatures": [
+        {
+          "name": "Lay on Hands",
+          "summary": "Spend points from a 5-per-level pool to restore hit points, or 5 points to cure poison."
+        }
+      ],
+      "laterFeatures": [
+        {
+          "level": 2,
+          "name": "Divine Smite",
+          "summary": "Declared with a melee weapon attack; on a hit spend a spell slot for +2d8 radiant damage, +1d8 per slot level above 1st (at most 5d8), +1d8 against undead or fiends."
+        },
+        {
+          "level": 2,
+          "name": "Fighting Style",
+          "summary": "A trained way of fighting that the rules apply in every fight."
+        },
+        {
+          "level": 2,
+          "name": "Spellcasting",
+          "summary": "Magic cast from spell slots that return on a long rest."
+        },
+        {
+          "level": 5,
+          "name": "Extra Attack",
+          "summary": "Two attacks with every Attack action."
+        },
+        {
+          "level": 5,
+          "name": "2nd-level spells",
+          "summary": "Aid, Lesser Restoration."
+        }
+      ],
+      "fightingStyles": {
+        "level": 2,
+        "options": [
+          "defense",
+          "dueling",
+          "great_weapon"
+        ]
+      }
+    },
+    {
+      "id": "ranger",
+      "name": "Ranger",
+      "hitDie": 10,
+      "savingThrows": [
+        "strength",
+        "dexterity"
+      ],
+      "skillChoices": {
+        "count": 3,
+        "options": [
+          "animal_handling",
+          "athletics",
+          "insight",
+          "investigation",
+          "nature",
+          "perception",
+          "stealth",
+          "survival"
+        ]
+      },
+      "startingKit": [
+        "Longbow",
+        "Shortsword",
+        "Leather Armor",
+        "Arrow",
+        "Explorer's Pack",
+        "Potion of Healing"
+      ],
+      "cantrips": [
+        "Crystal Mote",
+        "Marble Whisper"
+      ],
+      "spells": [
+        "Sapphire Lash"
+      ],
+      "levelOneFeatures": [],
+      "laterFeatures": [
+        {
+          "level": 2,
+          "name": "Fighting Style",
+          "summary": "A trained way of fighting that the rules apply in every fight."
+        },
+        {
+          "level": 2,
+          "name": "Spellcasting",
+          "summary": "Magic cast from spell slots that return on a long rest."
+        },
+        {
+          "level": 3,
+          "name": "Colossus Slayer",
+          "summary": "As a Hunter, once per turn +1d8 damage to a wounded foe."
+        },
+        {
+          "level": 5,
+          "name": "Extra Attack",
+          "summary": "Two attacks with every Attack action."
+        },
+        {
+          "level": 5,
+          "name": "2nd-level spells",
+          "summary": "Barkskin, Lesser Restoration, Pass without Trace."
+        }
+      ],
+      "fightingStyles": {
+        "level": 2,
+        "options": [
+          "archery",
+          "defense",
+          "dueling"
+        ]
+      }
+    },
+    {
+      "id": "rogue",
+      "name": "Rogue",
+      "hitDie": 8,
+      "savingThrows": [
+        "dexterity",
+        "intelligence"
+      ],
+      "skillChoices": {
+        "count": 4,
+        "options": [
+          "acrobatics",
+          "athletics",
+          "deception",
+          "insight",
+          "intimidation",
+          "investigation",
+          "perception",
+          "performance",
+          "persuasion",
+          "sleight_of_hand",
+          "stealth"
+        ]
+      },
+      "startingKit": [
+        "Rapier",
+        "Dagger",
+        "Leather Armor",
+        "Thieves' Tools",
+        "Burglar's Pack",
+        "Potion of Healing"
+      ],
+      "cantrips": [],
+      "spells": [],
+      "levelOneFeatures": [
+        {
+          "name": "Sneak Attack",
+          "summary": "Once per turn, +1d6 damage with a finesse or ranged weapon when you have advantage or an ally is beside your target."
+        },
+        {
+          "name": "Expertise",
+          "summary": "Double proficiency in 2 skills you choose."
+        }
+      ],
+      "laterFeatures": [
+        {
+          "level": 2,
+          "name": "Cunning Action",
+          "summary": "Dash, Disengage or Hide as a bonus action."
+        },
+        {
+          "level": 5,
+          "name": "Uncanny Dodge",
+          "summary": "When an attack hits you, your reaction halves its damage (automatic unless reactions are off)."
+        }
+      ],
+      "expertise": {
+        "count": 2
+      }
+    },
+    {
+      "id": "sorcerer",
+      "name": "Sorcerer",
+      "hitDie": 6,
+      "savingThrows": [
+        "constitution",
+        "charisma"
+      ],
+      "skillChoices": {
+        "count": 2,
+        "options": [
+          "arcana",
+          "deception",
+          "insight",
+          "intimidation",
+          "persuasion",
+          "religion"
+        ]
+      },
+      "startingKit": [
+        "Dagger",
+        "Light Crossbow",
+        "Arcane Focus",
+        "Explorer's Pack",
+        "Potion of Healing"
+      ],
+      "cantrips": [
+        "Chill Touch",
+        "Dancing Lights",
+        "Fire Bolt",
+        "Light",
+        "Mage Hand",
+        "Message",
+        "Minor Illusion",
+        "Poison Spray",
+        "Ray of Frost",
+        "Shocking Grasp",
+        "Brine Glimmer"
+      ],
+      "spells": [
+        "Burning Hands",
+        "Chaos Bolt",
+        "Chromatic Orb",
+        "False Life",
+        "Mage Armor",
+        "Magic Missile",
+        "Shield",
+        "Sleep",
+        "Thunderwave",
+        "Crow Ward",
+        "Candle Ward"
+      ],
+      "levelOneFeatures": [
+        {
+          "name": "Spellcasting",
+          "summary": "Magic cast from spell slots that return on a long rest."
+        }
+      ],
+      "laterFeatures": [
+        {
+          "level": 2,
+          "name": "Flexible Casting",
+          "summary": "Turn a spell slot into sorcery points equal to its level, or 2/3/5 points into a missing 1st/2nd/3rd-level slot."
+        },
+        {
+          "level": 3,
+          "name": "Quickened Spell",
+          "summary": "Spend 2 sorcery points: the next spell you cast this turn that costs an action costs a bonus action."
+        },
+        {
+          "level": 3,
+          "name": "Twinned Spell",
+          "summary": "Spend sorcery points equal to the spell level (1 for a cantrip): the next single-target spell of that level you cast this turn also affects a second legal target, with its own rolls."
+        },
+        {
+          "level": 3,
+          "name": "2nd-level spells",
+          "summary": "Blindness/Deafness, Hold Person, Invisibility, Misty Step, Scorching Ray, Shatter, Web."
+        },
+        {
+          "level": 5,
+          "name": "3rd-level spells",
+          "summary": "Dispel Magic, Fireball, Fly, Haste, Hypnotic Pattern, Lightning Bolt."
+        }
+      ]
+    },
+    {
+      "id": "warlock",
+      "name": "Warlock",
+      "hitDie": 8,
+      "savingThrows": [
+        "wisdom",
+        "charisma"
+      ],
+      "skillChoices": {
+        "count": 2,
+        "options": [
+          "arcana",
+          "deception",
+          "history",
+          "intimidation",
+          "investigation",
+          "nature",
+          "religion"
+        ]
+      },
+      "startingKit": [
+        "Dagger",
+        "Light Crossbow",
+        "Leather Armor",
+        "Arcane Focus",
+        "Scholar's Pack",
+        "Potion of Healing"
+      ],
+      "cantrips": [
+        "Chill Touch",
+        "Eldritch Blast",
+        "Mage Hand",
+        "Minor Illusion",
+        "Poison Spray",
+        "Scarab Glimmer",
+        "Moon Palm"
+      ],
+      "spells": [
+        "Armor of Agathys",
+        "Charm Person",
+        "Hellish Rebuke",
+        "Hex",
+        "Lilac Step"
+      ],
+      "levelOneFeatures": [
+        {
+          "name": "Pact Magic",
+          "summary": "A few spells, cast from slots that return on a short rest."
+        }
+      ],
+      "laterFeatures": [
+        {
+          "level": 2,
+          "name": "Agonizing Blast",
+          "summary": "Add your Charisma to every Eldritch Blast beam."
+        },
+        {
+          "level": 3,
+          "name": "2nd-level spells",
+          "summary": "Hold Person, Invisibility, Mirror Image, Misty Step, Shatter."
+        },
+        {
+          "level": 5,
+          "name": "3rd-level spells",
+          "summary": "Counterspell, Dispel Magic, Fear, Fly, Hypnotic Pattern."
+        }
+      ]
+    },
+    {
+      "id": "wizard",
+      "name": "Wizard",
+      "hitDie": 6,
+      "savingThrows": [
+        "intelligence",
+        "wisdom"
+      ],
+      "skillChoices": {
+        "count": 2,
+        "options": [
+          "arcana",
+          "history",
+          "insight",
+          "investigation",
+          "medicine",
+          "religion"
+        ]
+      },
+      "startingKit": [
+        "Quarterstaff",
+        "Dagger",
+        "Spellbook",
+        "Component Pouch",
+        "Scholar's Pack",
+        "Potion of Healing"
+      ],
+      "cantrips": [
+        "Chill Touch",
+        "Dancing Lights",
+        "Fire Bolt",
+        "Light",
+        "Mage Hand",
+        "Message",
+        "Prestidigitation",
+        "Ray of Frost",
+        "Shocking Grasp",
+        "Frostlace Palm"
+      ],
+      "spells": [
+        "Burning Hands",
+        "Chromatic Orb",
+        "Detect Magic",
+        "False Life",
+        "Mage Armor",
+        "Magic Missile",
+        "Shield",
+        "Sleep",
+        "Thunderwave",
+        "Copper Charm",
+        "Verdigris Brand"
+      ],
+      "levelOneFeatures": [
+        {
+          "name": "Arcane Recovery",
+          "summary": "Once per long rest, after a short rest: recover spell slots totalling up to half your wizard level (rounded up), none above 3rd level. Lowest missing slots first unless you choose."
+        },
+        {
+          "name": "Spellcasting",
+          "summary": "Magic cast from spell slots that return on a long rest."
+        }
+      ],
+      "laterFeatures": [
+        {
+          "level": 3,
+          "name": "2nd-level spells",
+          "summary": "Blindness/Deafness, Flaming Sphere, Hold Person, Invisibility, Misty Step, Scorching Ray, Shatter, Web."
+        },
+        {
+          "level": 5,
+          "name": "3rd-level spells",
+          "summary": "Counterspell, Dispel Magic, Fireball, Fly, Hypnotic Pattern, Lightning Bolt."
+        }
+      ]
+    }
+  ],
+  "backgrounds": [
+    {
+      "id": "acolyte",
+      "name": "Acolyte",
+      "skills": [
+        "insight",
+        "religion"
+      ]
+    },
+    {
+      "id": "criminal",
+      "name": "Criminal",
+      "skills": [
+        "deception",
+        "stealth"
+      ]
+    },
+    {
+      "id": "folk_hero",
+      "name": "Folk Hero",
+      "skills": [
+        "animal_handling",
+        "survival"
+      ]
+    },
+    {
+      "id": "guild_artisan",
+      "name": "Guild Artisan",
+      "skills": [
+        "insight",
+        "persuasion"
+      ]
+    },
+    {
+      "id": "sage",
+      "name": "Sage",
+      "skills": [
+        "arcana",
+        "history"
+      ]
+    },
+    {
+      "id": "soldier",
+      "name": "Soldier",
+      "skills": [
+        "athletics",
+        "intimidation"
+      ]
+    }
+  ]
+}

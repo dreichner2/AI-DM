@@ -22,10 +22,12 @@ import {
   stepHint,
   withAncestry,
   withCalling,
+  withRules,
   type CreateHeroPayload,
   type CreateStep,
   type HeroDraft,
 } from './createHeroModel'
+import { loadCreationRules } from './creationRules'
 import { StepCalling } from './StepCalling'
 import { StepReview } from './StepReview'
 import { StepShape } from './StepShape'
@@ -93,6 +95,17 @@ export function CreateHero({
     CREATE_STEPS.slice(0, CREATE_STEPS.indexOf(target)).every((earlier) => stepComplete(draft, earlier))
   const complete = stepComplete(draft, step)
   const hint = stepHint(draft, step)
+
+  useEffect(() => {
+    // The server's rules replace the built-in tables when they arrive; offline the tables stay.
+    let cancelled = false
+    void loadCreationRules(baseUrl, auth).then((rules) => {
+      if (!cancelled && rules) setDraft((current) => withRules(current, rules))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [baseUrl, auth])
 
   useEffect(() => {
     // Moving between steps puts keyboard focus on the new step's heading.

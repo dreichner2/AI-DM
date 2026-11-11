@@ -14,6 +14,7 @@ import { NarrativeProse } from '../NarrativeProse'
 import type { SessionBoardProps, TurnQualityScores } from '../SessionBoard'
 import type { TimelineEntry } from '../types'
 import { D20Glyph, Ornament } from './glyphs'
+import type { StoryTextSize } from './sheets/storyPreferences'
 import {
   buildStoryBeats,
   isEmptyStory,
@@ -25,8 +26,6 @@ import {
   type StoryBeat,
   type StoryChangeGlyph,
 } from './storyBeats'
-
-export type StoryTextSize = 'default' | 'large' | 'extra'
 
 type StoryFeedProps = {
   board: SessionBoardProps
@@ -522,6 +521,11 @@ function RollBeatView({ beat }: { beat: RollBeat }) {
           <span className="story-roll-breakdown">
             {breakdown}
             {roll.mode !== 'normal' ? ` · ${roll.mode}` : ''}
+          </span>
+        ) : null}
+        {roll.inspiration ? (
+          <span className="story-roll-inspiration">
+            + {roll.inspiration.die} {roll.inspiration.roll} inspiration
           </span>
         ) : null}
         {roll.outcome ? (

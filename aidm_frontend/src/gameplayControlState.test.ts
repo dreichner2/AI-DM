@@ -658,12 +658,12 @@ describe('gameplayControlsFromSnapshot class capabilities', () => {
     actor.classFeatures = [
       {
         id: 'flurry_of_blows', baseId: 'flurry_of_blows', name: 'Flurry of Blows', actionEconomy: 'bonus_action',
-        targetPolicy: 'self', pool: 'ki', cost: { pool: 'ki', amount: 1 }, combatOnly: true, role: 'panel',
+        targetPolicy: 'self', pool: 'ki', poolName: 'Ki', cost: { pool: 'ki', amount: 1 }, combatOnly: true, role: 'panel',
         effect: { type: 'grant_action' },
       },
       {
         id: 'step_of_the_wind:dash', baseId: 'step_of_the_wind', name: 'Step of the Wind: Dash', actionEconomy: 'bonus_action',
-        targetPolicy: 'self', pool: 'ki', cost: { pool: 'ki', amount: 1 }, combatOnly: true, role: 'panel',
+        targetPolicy: 'self', pool: 'ki', poolName: 'Ki', cost: { pool: 'ki', amount: 1 }, combatOnly: true, role: 'panel',
         effect: { type: 'grant_action' },
       },
       {
@@ -703,17 +703,24 @@ describe('gameplayControlsFromSnapshot class capabilities', () => {
     })
   })
 
-  it('names the pool each capability spends and what one use costs', () => {
+  it('names the pool each capability spends by the server pool name, and what one use costs', () => {
     const state = snapshot()
     const actor = monk(state)
     ;(actor.classFeatures as Array<Record<string, unknown>>).push(
       {
         id: 'lay_on_hands', baseId: 'lay_on_hands', name: 'Lay on Hands', actionEconomy: 'action', targetPolicy: 'self_or_ally',
-        pool: 'lay_on_hands', cost: { pool: 'lay_on_hands', amount: 'requested' }, role: 'panel', effect: { type: 'healing_pool' },
+        pool: 'lay_on_hands', poolName: 'Lay on Hands', cost: { pool: 'lay_on_hands', amount: 'requested' }, role: 'panel',
+        effect: { type: 'healing_pool' },
       },
       {
         id: 'rage', baseId: 'rage', name: 'Rage', actionEconomy: 'bonus_action', targetPolicy: 'self', pool: 'rage',
-        poolName: 'Battle Fury', cost: { pool: 'rage', amount: 1 }, role: 'panel', effect: { type: 'apply_modifier' },
+        poolName: 'Rage', cost: { pool: 'rage', amount: 1 }, role: 'panel', effect: { type: 'apply_modifier' },
+      },
+      {
+        // Without the server's display name the pool is not named from its id.
+        id: 'flexible_casting', baseId: 'flexible_casting', name: 'Flexible Casting', actionEconomy: 'bonus_action',
+        targetPolicy: 'self', pool: 'sorcery_points', cost: { pool: 'sorcery_points', amount: 'by_option' }, role: 'panel',
+        effect: { type: 'convert_resource' },
       },
     )
     const capabilities = gameplayControlsFromSnapshot(state, 30).capabilities
@@ -724,7 +731,8 @@ describe('gameplayControlsFromSnapshot class capabilities', () => {
       ['step_of_the_wind:dash', 'ki', 'Ki', 1],
       ['martial_arts_strike', '', '', null],
       ['lay_on_hands', 'lay_on_hands', 'Lay on Hands', null],
-      ['rage', 'rage', 'Battle Fury', 1],
+      ['rage', 'rage', 'Rage', 1],
+      ['flexible_casting', 'sorcery_points', '', null],
     ])
   })
 

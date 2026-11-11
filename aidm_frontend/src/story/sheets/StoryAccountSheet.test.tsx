@@ -4,7 +4,7 @@ import { createRef, type ComponentProps } from 'react'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LEGACY_PASSWORD_SETUP_MESSAGE } from '../../useRuntimeSettings'
-import { StoryAccountSheet, type AccountAccessProps } from './StoryAccountSheet'
+import { StoryAccountSheet, type AccountAccessProps, type AccountSheetView } from './StoryAccountSheet'
 
 type AccountSheetProps = ComponentProps<typeof StoryAccountSheet>
 
@@ -66,17 +66,18 @@ function accessProps(overrides: Partial<AccountAccessProps> = {}): AccountAccess
   }
 }
 
-function sheetProps(overrides: Partial<AccountSheetProps> = {}): AccountSheetProps {
+function sheetProps(
+  overrides: Partial<Omit<AccountSheetProps, 'view' | 'account'>> = {},
+  view: AccountSheetView = { view: 'summary', account: { name: 'Ember Vale', table: 'Ember Table', role: 'owner' } },
+): AccountSheetProps {
   return {
     access: accessProps(),
-    account: { name: 'Ember Vale', table: 'Ember Table', role: 'owner' },
     dialogRef: createRef<HTMLElement>(),
     onClose: vi.fn(),
-    onConnectionSettings: vi.fn(),
     onLogOut: vi.fn(),
     onSwitchTable: vi.fn(),
-    view: 'summary',
     ...overrides,
+    ...view,
   }
 }
 
@@ -99,20 +100,9 @@ describe('StoryAccountSheet', () => {
     expect(props.onClose).toHaveBeenCalledOnce()
   })
 
-  it('needs no account at a local table and points at the connection settings', () => {
-    const props = sheetProps({ account: null })
-    render(<StoryAccountSheet {...props} />)
-
-    const dialog = screen.getByRole('dialog', { name: 'Account' })
-    expect(within(dialog).getByText('Playing on this computer')).toBeInTheDocument()
-    expect(within(dialog).queryByRole('button', { name: 'Log out' })).not.toBeInTheDocument()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Connection settings' }))
-    expect(props.onConnectionSettings).toHaveBeenCalledOnce()
-  })
-
   it('offers log in and create account in plain words when signed out', () => {
     const access = accessProps()
-    render(<StoryAccountSheet {...sheetProps({ access, view: 'access' })} />)
+    render(<StoryAccountSheet {...sheetProps({ access}, { view: 'access' })} />)
 
     const dialog = screen.getByRole('dialog', { name: 'Account' })
     expect(dialog).toHaveAccessibleDescription('Log in with your username. Use your password if one is set.')
@@ -137,7 +127,7 @@ describe('StoryAccountSheet', () => {
       legacyPasswordSetupRequired: true,
       runtimeAuthIntent: 'signup',
     })
-    render(<StoryAccountSheet {...sheetProps({ access, view: 'access' })} />)
+    render(<StoryAccountSheet {...sheetProps({ access}, { view: 'access' })} />)
 
     const dialog = screen.getByRole('dialog', { name: 'Account' })
     expect(within(dialog).getAllByText(LEGACY_PASSWORD_SETUP_MESSAGE)).not.toHaveLength(0)
@@ -168,7 +158,7 @@ describe('StoryAccountSheet', () => {
       runtimeAuthStep: 'workspace',
       workspaceId: adminWorkspace.workspace_id,
     })
-    const { rerender } = render(<StoryAccountSheet {...sheetProps({ access, view: 'access' })} />)
+    const { rerender } = render(<StoryAccountSheet {...sheetProps({ access}, { view: 'access' })} />)
 
     const dialog = screen.getByRole('dialog', { name: 'Account' })
     const tables = within(dialog).getByRole('group', { name: 'Saved tables' })
@@ -193,7 +183,7 @@ describe('StoryAccountSheet', () => {
 
     rerender(
       <StoryAccountSheet
-        {...sheetProps({ access: { ...access, runtimeWorkspaceAction: 'create', runtimeWorkspaceCreateAccessMode: 'token' }, view: 'access' })}
+        {...sheetProps({ access: { ...access, runtimeWorkspaceAction: 'create', runtimeWorkspaceCreateAccessMode: 'token' }}, { view: 'access' })}
       />,
     )
     expect(within(dialog).getByLabelText('Table Name')).toBeInTheDocument()
@@ -203,7 +193,7 @@ describe('StoryAccountSheet', () => {
     expect(within(dialog).getByRole('button', { name: 'Create table' })).toBeInTheDocument()
 
     rerender(
-      <StoryAccountSheet {...sheetProps({ access: { ...access, runtimeCreatedWorkspaceToken: 'generated-secret' }, view: 'access' })} />,
+      <StoryAccountSheet {...sheetProps({ access: { ...access, runtimeCreatedWorkspaceToken: 'generated-secret' }}, { view: 'access' })} />,
     )
     expect(within(dialog).getByLabelText('Generated table code')).toHaveValue('generated-secret')
     expect(within(dialog).getByRole('button', { name: 'Done' })).toBeInTheDocument()

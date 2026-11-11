@@ -95,7 +95,7 @@ import { StoryClarification } from './story/StoryClarification'
 import { StoryComposer } from './story/StoryComposer'
 import { StoryDrawer } from './story/StoryDrawer'
 import { StoryNotices, type StoryNotice } from './story/StoryNotices'
-import { StoryAccountSheet, type AccountSummary } from './story/sheets/StoryAccountSheet'
+import { StoryAccountSheet, type AccountSheetView } from './story/sheets/StoryAccountSheet'
 import { StorySettingsSheet, type NarrationSetting } from './story/sheets/StorySettingsSheet'
 import { useStoryPreferences } from './story/sheets/storyPreferences'
 import { StoryView } from './story/StoryView'
@@ -162,10 +162,6 @@ import {
 } from './WorkspaceDialogs'
 import { savedWorkspaceDisplayName } from './workspaceLabels'
 import {
-  WorldDeleteDialog,
-  WorldManagerDialog,
-} from './WorldDialogs'
-import {
   emptyWorldForm,
   type WorldDeleteDialogState,
   type WorldFormState,
@@ -224,6 +220,12 @@ const SessionArchiveDialog = lazy(() =>
 )
 const SaveImportDialog = lazy(() =>
   import('./ArchiveDialogs').then((module) => ({ default: module.SaveImportDialog })),
+)
+const WorldManagerDialog = lazy(() =>
+  import('./WorldDialogs').then((module) => ({ default: module.WorldManagerDialog })),
+)
+const WorldDeleteDialog = lazy(() =>
+  import('./WorldDialogs').then((module) => ({ default: module.WorldDeleteDialog })),
 )
 function preloadDiceRollDialog() {
   if (import.meta.env.MODE === 'test') return
@@ -2399,11 +2401,11 @@ function AIDMApp() {
     setProfileSettingsOpen(false)
   }, [])
 
-  // Account shows who you are and where; signed out of a hosted table it is the log-in form.
+  // Account shows who you are and where; signed out of a table that needs sign-in it is the log-in form.
   const openAccountSheet = () => {
     rememberDialogTrigger()
     setAccountMenuOpen(false)
-    if (runtimeAccount || health?.auth_required === false) {
+    if (runtimeAccount) {
       setAccountSheetOpen(true)
       return
     }
@@ -2752,7 +2754,7 @@ function AIDMApp() {
                           : playerDeleteDialog
                             ? 'player-delete'
                             : playerEditDialog
-                              ? `player-edit-${playerEditDialog.mode}`
+                              ? 'player-edit'
                               : savedWorkspaceDeleteDialog
                                 ? 'saved-workspace-delete'
                                 : runtimeSettingsOpen
@@ -4013,14 +4015,20 @@ function AIDMApp() {
     onSwitchAdventure: openCampaignChooserDialog,
     onExitToTitle: returnToTitle,
     onOpenSettings: openProfileSettingsDialog,
-    onOpenAccount: openAccountSheet,
+    // Local play without sign-in has no account to show.
+    onOpenAccount: runtimeAccount || health?.auth_required === true ? openAccountSheet : undefined,
     onStartNextChapter: canUseOperatorTools ? openStartChapterDialog : undefined,
     endedChapter,
   }
   const localTable = health?.auth_required === false
-  const accountSummary: AccountSummary = runtimeAccount
-    ? { name: runtimeAccount.displayName, table: tableDisplayName, role: runtimeAccount.workspaceRole }
-    : null
+  const accountSheetView: AccountSheetView | null = runtimeSettingsOpen && runtimeSettingsMode === 'auth'
+    ? { view: 'access' }
+    : accountSheetOpen && runtimeAccount
+      ? {
+          view: 'summary',
+          account: { name: runtimeAccount.displayName, table: tableDisplayName, role: runtimeAccount.workspaceRole },
+        }
+      : null
   const narrationSetting: NarrationSetting = ttsConfig?.configured
     ? {
         enabled: ttsEnabled,
@@ -4578,8 +4586,9 @@ function AIDMApp() {
         open={runtimeSettingsOpen && runtimeSettingsMode === 'settings'}
       />
 
-      {accountSheetOpen || (runtimeSettingsOpen && runtimeSettingsMode === 'auth') ? (
+      {accountSheetView ? (
         <StoryAccountSheet
+          {...accountSheetView}
           access={{
             error: runtimeSettingsError,
             form: runtimeSettingsForm,
@@ -4604,13 +4613,8 @@ function AIDMApp() {
             runtimeWorkspaceJoinMethod,
             workspaceId,
           }}
-          account={accountSummary}
           dialogRef={modalDialogRef}
           onClose={runtimeSettingsOpen ? closeRuntimeSettingsDialog : closeAccountSheet}
-          onConnectionSettings={() => {
-            setAccountSheetOpen(false)
-            openRuntimeSettingsDialog()
-          }}
           onLogOut={() => {
             setAccountSheetOpen(false)
             clearAuthToken()
@@ -4619,7 +4623,6 @@ function AIDMApp() {
             setAccountSheetOpen(false)
             openWorkspaceAuthDialog()
           }}
-          view={runtimeSettingsOpen && runtimeSettingsMode === 'auth' ? 'access' : 'summary'}
         />
       ) : null}
 
@@ -4866,28 +4869,32 @@ function AIDMApp() {
       ) : null}
 
       {worldManagerOpen ? (
-        <WorldManagerDialog
-          deleteDialogOpen={worldDeleteDialog !== null}
-          dialogRef={modalDialogRef}
-          form={worldForm}
-          onClose={closeWorldManagerDialog}
-          onEditWorld={editWorld}
-          onOpenDelete={openWorldDeleteDialog}
-          onResetForm={resetWorldForm}
-          onSubmit={(event) => void submitWorldForm(event)}
-          setForm={setWorldForm}
-          worlds={worldSelectOptions}
-        />
+        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening worlds…" />}>
+          <WorldManagerDialog
+            deleteDialogOpen={worldDeleteDialog !== null}
+            dialogRef={modalDialogRef}
+            form={worldForm}
+            onClose={closeWorldManagerDialog}
+            onEditWorld={editWorld}
+            onOpenDelete={openWorldDeleteDialog}
+            onResetForm={resetWorldForm}
+            onSubmit={(event) => void submitWorldForm(event)}
+            setForm={setWorldForm}
+            worlds={worldSelectOptions}
+          />
+        </Suspense>
       ) : null}
 
       {worldDeleteDialog ? (
-        <WorldDeleteDialog
-          dialog={worldDeleteDialog}
-          dialogRef={modalDialogRef}
-          onClose={closeWorldDeleteDialog}
-          onDelete={() => void submitWorldDeleteDialog()}
-          onForceDelete={() => void submitWorldDeleteDialog(true)}
-        />
+        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening worlds…" />}>
+          <WorldDeleteDialog
+            dialog={worldDeleteDialog}
+            dialogRef={modalDialogRef}
+            onClose={closeWorldDeleteDialog}
+            onDelete={() => void submitWorldDeleteDialog()}
+            onForceDelete={() => void submitWorldDeleteDialog(true)}
+          />
+        </Suspense>
       ) : null}
 
       {createCampaignOpen ? (

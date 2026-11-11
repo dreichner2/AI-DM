@@ -769,14 +769,6 @@
     grid-template-columns: 1fr;
   }
 
-  .point-buy-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .dice-roll-backdrop {
-    padding: 12px;
-  }
-
   .dice-stage,
   .dice-canvas {
     min-height: 276px;
@@ -843,55 +835,9 @@
     grid-row: 2 / -1;
   }
 
-  .title-screen-stage {
-    min-height: 0;
-    grid-template-columns: 1fr;
-    align-content: center;
-    gap: 10px;
-  }
-
-  .title-screen-copy {
-    gap: 16px;
-    padding: 20px;
-  }
-
-  .title-mark svg {
-    width: 27px;
-    height: 27px;
-  }
-
   .title-screen h1 {
     font-size: 2.4rem;
     line-height: 1;
-  }
-
-  .title-screen-copy p,
-  .title-screen-table p {
-    font-size: 0.86rem;
-    line-height: 1.42;
-  }
-
-  .title-screen-actions {
-    display: grid;
-    grid-template-columns: 1fr;
-  }
-
-  .title-action {
-    width: 100%;
-    min-height: 44px;
-  }
-
-  .title-screen-table {
-    gap: 10px;
-    padding: 16px;
-  }
-
-  .title-screen-table strong {
-    font-size: 1.22rem;
-  }
-
-  .title-screen-table dl {
-    grid-template-columns: 1fr;
   }
 
   .beta-runtime-notices {
@@ -1956,35 +1902,6 @@
     padding: 8px 12px 14px;
   }
 
-  .session-board-theater .turn-card.dm-theater-card {
-    grid-template-columns: minmax(0, 1fr) auto;
-    padding: 0;
-  }
-
-  .session-board-theater .turn-card.dm-theater-card .turn-speaker {
-    grid-column: 1;
-    grid-row: 1;
-    padding-top: 9px;
-  }
-
-  .session-board-theater .turn-card.dm-theater-card .turn-status-label {
-    grid-column: 1;
-    grid-row: 3;
-    margin-top: 0;
-  }
-
-  .session-board-theater .turn-card.dm-theater-card time {
-    grid-column: 2;
-    grid-row: 1;
-    align-self: start;
-    margin: 9px 10px 0 6px;
-  }
-
-  .session-board-theater .turn-card.dm-theater-card .turn-actions {
-    grid-column: 2;
-    grid-row: 3;
-  }
-
   /* Pending rolls remain available but no longer pin a large card over the
      already-small phone timeline. */
   .roll-wait-banner {
@@ -2154,21 +2071,8 @@
     background: #0b1415;
   }
 
-  .modal-backdrop,
   .race-details-backdrop {
     padding: 12px;
-  }
-
-  .campaign-pack-forge-fields,
-  .campaign-pack-preview-grid,
-  .campaign-pack-counts,
-  .campaign-pack-authoring-report-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .campaign-pack-visible,
-  .campaign-pack-lint-list div {
-    grid-template-columns: 1fr;
   }
 
   .race-card-grid {

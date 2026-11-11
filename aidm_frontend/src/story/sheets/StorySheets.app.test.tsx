@@ -3,7 +3,7 @@
 import '@testing-library/jest-dom/vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { App, appTestState, renderStoryApp, setupAppTest, teardownAppTest } from '../../App.testHarness'
+import { App, appTestState, loadConsoleChunks, renderStoryApp, setupAppTest, teardownAppTest } from '../../App.testHarness'
 
 beforeAll(() => {
   Element.prototype.scrollTo = () => {}
@@ -19,6 +19,7 @@ describe('Sheets opened from the Story menu', () => {
   afterEach(teardownAppTest)
 
   it('opens Settings, where turning music off removes the scene music and the view can change', async () => {
+    await loadConsoleChunks()
     await renderStoryApp()
     expect(screen.getByRole('button', { name: 'Scene music' })).toBeInTheDocument()
 
@@ -47,13 +48,13 @@ describe('Sheets opened from the Story menu', () => {
     expect(screen.queryByRole('dialog', { name: 'Settings' })).not.toBeInTheDocument()
   })
 
-  it('needs no sign-in at a local table', async () => {
+  it('has no Account item at a local table nobody signs in to', async () => {
     await renderStoryApp()
 
-    openMenuItem('Account')
-    const account = await screen.findByRole('dialog', { name: 'Account' })
-    expect(within(account).getByText('Playing on this computer')).toBeInTheDocument()
-    expect(within(account).queryByLabelText('Username')).not.toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole('button', { name: 'Adventure menu' })[0]!)
+    const menu = screen.getByRole('menu', { name: 'Adventure menu' })
+    expect(within(menu).getByRole('menuitem', { name: 'Settings' })).toBeInTheDocument()
+    expect(within(menu).queryByRole('menuitem', { name: 'Account' })).not.toBeInTheDocument()
   })
 
   it('shows a signed-in player who and where they are, and Switch table opens the table list', async () => {

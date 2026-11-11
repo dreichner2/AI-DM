@@ -146,7 +146,7 @@ export type WorldRecordSummary = {
   text?: string
 }
 
-/** The adventure's ending, once a terminal checkpoint is active or completed. */
+/** The adventure's ending, once the party has reached a terminal checkpoint. */
 export type WorldEnding = {
   title: string
   summary: string
@@ -1635,8 +1635,9 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
 
 const FINISHED_QUEST_STATUSES = new Set(['complete', 'completed', 'failed'])
 const UNDISCOVERED_RECORD_STATUSES = new Set(['hidden', 'undiscovered', 'unknown'])
-const TERMINAL_CHECKPOINT_KINDS = new Set(['terminal', 'end', 'finale'])
-const ENDING_CHECKPOINT_STATUSES = new Set(['active', 'completed'])
+// A reached terminal checkpoint stays active with status `reached`; saves from
+// before that rule completed it instead.
+const ENDING_CHECKPOINT_STATUSES = new Set(['reached', 'completed'])
 
 function objectiveStatus(objective: JsonRecord): QuestObjectiveStatus {
   const status = stringValue(objective.status).toLowerCase()
@@ -1652,7 +1653,7 @@ function questSummary(quest: JsonRecord): WorldQuestSummary {
       id: stringValue(objective.id, `objective-${index + 1}`),
       description: stringValue(objective.description) || stringValue(objective.title) || stringValue(objective.name),
       status: objectiveStatus(objective),
-      optional: objective.optional === true || stringValue(objective.status).toLowerCase() === 'optional',
+      optional: objective.optional === true,
     }))
     .filter((objective) => Boolean(objective.description))
   return {
@@ -1681,23 +1682,22 @@ function discoveredRecords(value: unknown): WorldRecordSummary[] {
   })
 }
 
-function isTerminalCheckpoint(checkpoint: JsonRecord) {
-  if (checkpoint.terminal === true || checkpoint.isTerminal === true || checkpoint.end === true) return true
-  const kind = stringValue(checkpoint.type ?? checkpoint.kind ?? checkpoint.checkpointType).toLowerCase()
-  return TERMINAL_CHECKPOINT_KINDS.has(kind)
-}
-
-/** The ending the party has reached: a terminal checkpoint of the campaign pack that is active or completed. */
+/**
+ * The ending the party has reached: the campaign pack's `ending`, else a
+ * `terminal` checkpoint that is reached (or, in older saves, completed).
+ */
 function endingFromSnapshot(root: JsonRecord): WorldEnding | null {
   const pack = isRecord(root.campaignPack) ? root.campaignPack : {}
-  const checkpoint = recordArray(pack.checkpoints).find(
-    (candidate) =>
-      isTerminalCheckpoint(candidate) && ENDING_CHECKPOINT_STATUSES.has(stringValue(candidate.status).toLowerCase()),
-  )
-  if (!checkpoint) return null
+  const ending =
+    (isRecord(pack.ending) ? pack.ending : null) ??
+    recordArray(pack.checkpoints).find(
+      (checkpoint) =>
+        checkpoint.terminal === true && ENDING_CHECKPOINT_STATUSES.has(stringValue(checkpoint.status).toLowerCase()),
+    )
+  if (!ending) return null
   return {
-    title: stringValue(checkpoint.title) || stringValue(pack.title, 'The end'),
-    summary: stringValue(checkpoint.summary),
+    title: stringValue(ending.title) || stringValue(pack.title, 'The end'),
+    summary: stringValue(ending.summary),
   }
 }
 

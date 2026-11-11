@@ -130,11 +130,19 @@ export type RollResolvedPayload = {
     wound_penalty: number
     total: number
   }
+  /** Bardic Inspiration that turned a failed roll; its roll is part of `total`. */
+  inspiration?: { die: string; roll: number }
   authoritative: true
 }
 
+/** A merchant trade: buy one of the merchant's stock lines, or sell an inventory item. */
+export type ShopIntent = {
+  merchant_id: string
+  quantity: number
+} & ({ action: 'buy'; stock_id: string } | { action: 'sell'; item_id: string })
+
 export type ActionIntent = {
-  kind: ComposerMode | 'message' | 'capability' | 'object' | 'travel' | 'rest' | 'combat'
+  kind: ComposerMode | 'message' | 'capability' | 'object' | 'travel' | 'rest' | 'shop' | 'combat'
   source: 'composer' | 'dice_roller' | 'combat_hud' | 'scene_panel'
   text: string
   client_message_id: string
@@ -154,12 +162,16 @@ export type ActionIntent = {
     id?: string
     name: string
     quantity: number
+    /** The exact target of a consumable used on someone. */
+    target_id?: string
   }
   spell?: {
     name: string
     effect: string
     resource_pool?: SpellResourcePool
     cast_level?: number
+    /** One of the spell's damage type choices (Chromatic Orb). */
+    damage_type?: string
     concentration?: boolean
     target_ids?: string[]
   }
@@ -191,6 +203,9 @@ export type ActionIntent = {
     name: string
   }
   rest_type?: 'short_rest' | 'long_rest'
+  /** Hit dice a short rest spends; without it the server spends as many as reach full HP. */
+  hit_dice?: number
+  shop?: ShopIntent
   combat?: {
     action_id: string
     target_id?: string
@@ -295,18 +310,9 @@ export function interactionTargetId(target: InteractionTarget) {
   return `player:${target.player_id ?? target.character_name}`
 }
 
-export function inventoryActionLabel(type: InventoryAction) {
-  return INVENTORY_ACTION_OPTIONS.find((option) => option.value === type)?.label ?? 'Use'
-}
-
 export function normalizeDie(die: string) {
   const normalized = die.trim().toLowerCase()
   return DICE_OPTIONS.includes(normalized as (typeof DICE_OPTIONS)[number]) ? normalized : 'd20'
-}
-
-export function dieSides(die: string) {
-  const parsed = Number(normalizeDie(die).replace(/^d/i, ''))
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : 20
 }
 
 export function formatModifier(value: number) {

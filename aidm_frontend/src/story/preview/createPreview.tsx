@@ -15,8 +15,8 @@ import {
   type CreateHeroPayload,
   type CreateStep,
   type HeroDraft,
-  type SkillId,
 } from '../create/createHeroModel'
+import type { SkillId } from '../create/creationRules'
 
 /**
  * Development-only harness for hero creation (story-create-preview.html).

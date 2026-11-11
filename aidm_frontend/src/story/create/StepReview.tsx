@@ -1,14 +1,14 @@
 import type { RefObject } from 'react'
+import { skillName } from './creationRules'
 import {
   FIGHTING_STYLES,
-  coreClassFor,
+  heroClass,
   heroDescriptor,
   heroFightingStyle,
   heroLanguages,
   heroSentence,
   portraitSrc,
   proficientSkills,
-  skillName,
   type HeroDraft,
 } from './createHeroModel'
 import { HeroNumbersRow } from './StepShape'
@@ -20,13 +20,12 @@ type StepReviewProps = {
 
 /** Step 4: the finished hero, read back before they join the campaign. */
 export function StepReview({ draft, headingRef }: StepReviewProps) {
-  const entry = coreClassFor(draft.calling)
+  const entry = heroClass(draft)
   const style = heroFightingStyle(draft)
   const expertise = new Set(draft.expertise)
   const skills = proficientSkills(draft).map((skill) =>
     expertise.has(skill) ? `${skillName(skill)} (expertise)` : skillName(skill),
   )
-  const spells = entry?.spellcasting
 
   return (
     <div className="story-create-step story-create-review">
@@ -64,17 +63,21 @@ export function StepReview({ draft, headingRef }: StepReviewProps) {
         ) : null}
         <div>
           <dt className="story-label">Starting kit</dt>
-          <dd>{entry ? entry.kit.items.join(', ') : 'Set for your calling when you begin.'}</dd>
+          <dd>{entry ? entry.kit.join(', ') : 'Set for your calling when you begin.'}</dd>
         </div>
-        {spells ? (
+        {entry?.cantrips.length || entry?.spells.length ? (
           <div className="story-create-sheet-spells">
             <dt className="story-label">Spells</dt>
-            <dd>
-              <span className="story-create-spell-level">Cantrips</span> {spells.cantrips.join(', ')}
-            </dd>
-            <dd>
-              <span className="story-create-spell-level">1st level</span> {spells.spells.join(', ')}
-            </dd>
+            {entry.cantrips.length ? (
+              <dd>
+                <span className="story-create-spell-level">Cantrips</span> {entry.cantrips.join(', ')}
+              </dd>
+            ) : null}
+            {entry.spells.length ? (
+              <dd>
+                <span className="story-create-spell-level">1st level</span> {entry.spells.join(', ')}
+              </dd>
+            ) : null}
           </div>
         ) : null}
       </dl>

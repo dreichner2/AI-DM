@@ -692,6 +692,9 @@
 }
 .story-dialog .story-dialog-footer .story-link:disabled,
 .story-dialog .story-dialog-links .story-link:disabled { color: var(--story-faint); cursor: default; background-size: 0 1px; }
+.story-dialog .story-link-danger,
+.story-dialog .story-link-danger:hover,
+.story-dialog .story-link-danger:focus-visible { color: var(--story-fail); }
 .story-dialog .story-dialog-footer .story-link-danger { font-weight: 560; color: var(--story-fail); }
 .story-dialog .story-dialog-footer .story-link-danger:disabled { color: color-mix(in srgb, var(--story-fail) 45%, var(--story-faint)); }
 .story-dialog .story-dialog-footer .story-primary { min-height: 46px; }
@@ -1114,29 +1117,18 @@
 .story-shell.story-dialog .custom-race-library,
 .story-shell.story-dialog .custom-race-metadata,
 .story-shell.story-dialog .gender-portrait-picker,
-.story-shell.story-dialog .race-lore-panel,
-.story-shell.story-dialog .point-buy-panel {
+.story-shell.story-dialog .race-lore-panel {
   padding: 0;
   border: 0;
   border-radius: 0;
   background: none;
 }
 .story-shell.story-dialog .background-selector,
-.story-shell.story-dialog .character-level-grid,
-.story-shell.story-dialog .point-buy-panel {
+.story-shell.story-dialog .character-level-grid {
   padding-top: 22px;
   border-top: 1px solid var(--story-hairline);
 }
 .story-shell.story-dialog .character-level-grid input { max-width: 120px; }
-.story-shell.story-dialog .point-buy-summary strong {
-  font-size: var(--story-label-size);
-  font-weight: 560;
-  letter-spacing: var(--story-label-tracking);
-  text-transform: uppercase;
-  color: var(--story-muted);
-}
-.story-shell.story-dialog .point-buy-summary span { color: var(--story-ink-soft); }
-.story-shell.story-dialog .point-buy-summary span.over-budget { color: var(--story-fail); }
 
 /* ---- phones: sheets come up from the bottom edge ---- */
 
@@ -1185,10 +1177,10 @@
 /* ---- motion ---- */
 
 /* The player's choice (Settings › Reduce motion); the system preference is handled in story-tokens.css. */
+.story-shell[data-reduce-motion],
 .story-shell[data-reduce-motion] *,
 .story-shell[data-reduce-motion] *::before,
-.story-shell[data-reduce-motion] *::after,
-.story-shell.story-dialog[data-reduce-motion] {
+.story-shell[data-reduce-motion] *::after {
   animation-duration: 0.001ms !important;
   animation-iteration-count: 1 !important;
   transition-duration: 0.001ms !important;

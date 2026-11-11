@@ -270,6 +270,37 @@ async function expectNoDeliveryUncertainty(page) {
   await expect(page.getByText('We could not confirm that reached the table.')).toHaveCount(0)
 }
 
+// The Story top bar has two "Adventure menu" buttons (the mark and the menu icon); both open the same menu.
+async function openStoryMenuItem(page, name) {
+  await page.getByRole('button', { name: 'Adventure menu' }).first().click()
+  await page.getByRole('menu', { name: 'Adventure menu' }).getByRole('menuitem', { name }).click()
+}
+
+// The hero creator's radios and checkboxes are visually hidden inside their labels, so click the label as a player does.
+async function choose(scope, role, name) {
+  const control = scope.getByRole(role, { name, exact: true })
+  await control.locator('..').click()
+  await expect(control).toBeChecked()
+}
+
+// The guided hero creation flow: Who, Calling, Shape (class skills), Review, then Begin.
+async function createHero(page, heroName) {
+  const creator = page.getByRole('dialog', { name: /^A new hero/ })
+  await expect(creator).toBeVisible({ timeout: 15_000 })
+  const continueButton = creator.getByRole('button', { name: 'Continue', exact: true })
+  await creator.getByRole('textbox', { name: 'Hero name' }).fill(heroName)
+  await choose(creator.getByRole('group', { name: 'Ancestry' }), 'radio', 'Human')
+  await continueButton.click()
+  await choose(creator.getByRole('group', { name: 'Calling' }), 'radio', /^Wizard\b/)
+  await continueButton.click()
+  const classSkills = creator.getByRole('group', { name: /^Class skills/ })
+  await choose(classSkills, 'checkbox', 'Insight')
+  await choose(classSkills, 'checkbox', 'Medicine')
+  await continueButton.click()
+  await creator.getByRole('button', { name: `Begin as ${heroName}` }).click()
+  await expect(creator).toBeHidden({ timeout: 15_000 })
+}
+
 // Story mode is the default play screen: Play Now, the opening, then one action.
 async function runStoryFlow(browser, frontendUrl, backendUrl, consoleErrors) {
   const storyPage = await browser.newPage({ viewport: { width: 1440, height: 900 } })
@@ -299,6 +330,18 @@ async function runStoryFlow(browser, frontendUrl, backendUrl, consoleErrors) {
     ),
   )
   await expectNoDeliveryUncertainty(storyPage)
+
+  await openStoryMenuItem(storyPage, 'Settings')
+  const settingsSheet = storyPage.getByRole('dialog', { name: 'Settings' })
+  await expect(settingsSheet.getByRole('group', { name: 'Text size' })).toBeVisible()
+  await settingsSheet.getByRole('button', { name: 'Close settings' }).click()
+  await expect(settingsSheet).toBeHidden()
+
+  await openStoryMenuItem(storyPage, 'Switch adventure')
+  const adventuresSheet = storyPage.getByRole('dialog', { name: 'Your adventures' })
+  await expect(adventuresSheet.getByText('Here now')).toBeVisible({ timeout: 15_000 })
+  await adventuresSheet.getByRole('button', { name: 'Close your adventures' }).click()
+  await expect(adventuresSheet).toBeHidden()
   await storyPage.close()
 }
 
@@ -350,48 +393,21 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
     await runStoryFlow(browser, frontendUrl, backendUrl, consoleErrors)
 
     await page.getByRole('button', { name: /^(Create your own adventure|New adventure)$/ }).click()
-    const createCampaignDialog = page.getByRole('dialog', { name: 'Create New Campaign' })
-    await expect(createCampaignDialog).toBeVisible()
-    await createCampaignDialog.getByLabel('Campaign Name').fill('Browser Smoke Campaign')
-    await createCampaignDialog.getByLabel('Description').fill('Created through the browser smoke UI.')
-    await createCampaignDialog.getByLabel('New World Name').fill('Browser Smoke World')
-    await createCampaignDialog.getByRole('button', { name: 'Create Campaign', exact: true }).click()
-    await expect(createCampaignDialog).toBeHidden({ timeout: 15_000 })
+    const newAdventureSheet = page.getByRole('dialog', { name: 'New adventure' })
+    await expect(newAdventureSheet).toBeVisible({ timeout: 15_000 })
+    await newAdventureSheet.getByRole('button', { name: 'Begin with a blank page' }).click()
+    await newAdventureSheet.getByRole('textbox', { name: 'Name', exact: true }).fill('Browser Smoke Campaign')
+    await newAdventureSheet.getByRole('textbox', { name: 'What is it about?' }).fill('Created through the browser smoke UI.')
+    await newAdventureSheet.getByRole('button', { name: 'Begin the adventure' }).click()
+    await expect(newAdventureSheet).toBeHidden({ timeout: 15_000 })
     await expect(page.locator('.session-header').getByText('Browser Smoke Campaign')).toBeVisible()
 
-  const joinCampaignDialog = page.locator('.character-join-dialog')
-  const joinCampaignDialogVisible = await joinCampaignDialog
-    .waitFor({ state: 'visible', timeout: 10_000 })
-    .then(() => true)
-    .catch(() => false)
-  if (joinCampaignDialogVisible) {
-    await joinCampaignDialog.getByRole('button', { name: 'Create Character' }).click()
-  }
-
-  const createCharacterDialog = page.locator('.player-edit-dialog')
-  const createCharacterDialogVisible = await createCharacterDialog
-    .waitFor({ state: 'visible', timeout: 10_000 })
-    .then(() => true)
-    .catch(() => false)
-  if (createCharacterDialogVisible) {
-    await createCharacterDialog.getByLabel('Character Name').fill('Browser Smoke Hero')
-    const raceSelector = createCharacterDialog.locator('.race-selector')
-    await raceSelector.getByLabel('Search races').fill('Human')
-    await raceSelector.getByRole('button', { name: 'View Human details' }).click()
-    const humanDetailsDialog = page.getByRole('dialog', { name: 'Human' })
-    await expect(humanDetailsDialog).toBeVisible()
-    await humanDetailsDialog.getByRole('button', { name: 'Select Human' }).click()
-    await createCharacterDialog.getByRole('button', { name: 'Preview Wizard class' }).click()
-    const wizardDetailsDialog = page.getByRole('dialog', { name: 'Wizard' })
-    await expect(wizardDetailsDialog).toBeVisible()
-    await wizardDetailsDialog.getByRole('button', { name: 'Select Wizard - Evoker' }).click()
-    await createCharacterDialog.getByRole('button', { name: 'Create Character' }).click()
-    await expect(createCharacterDialog).toBeHidden({ timeout: 15_000 })
-    await expect(page.locator('.right-inspector').getByRole('heading', { name: 'Browser Smoke Hero' })).toBeVisible({ timeout: 15_000 })
-  } else {
-    await page.getByRole('button', { name: 'Create player' }).click()
-    await expect(page.locator('.right-inspector').getByText('New Adventurer')).toBeVisible({ timeout: 15_000 })
-  }
+  // A new adventure without characters asks who you are playing; Create Character opens the hero creator.
+  const characterChooser = page.getByRole('dialog', { name: 'Choose your character' })
+  await expect(characterChooser).toBeVisible({ timeout: 15_000 })
+  await characterChooser.getByRole('button', { name: 'Create Character' }).click()
+  await createHero(page, 'Browser Smoke Hero')
+  await expect(page.locator('.right-inspector').getByRole('heading', { name: 'Browser Smoke Hero' })).toBeVisible({ timeout: 15_000 })
 
   await page.locator('.empty-action-card').getByRole('button', { name: 'Start next chapter' }).click()
   const startChapterDialog = page.getByRole('dialog', { name: 'Start the next chapter' })
@@ -407,7 +423,7 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
   await page.locator('.composer-tools').getByRole('button', { name: /Roll/i }).click()
   await expect(page.getByLabel('Roll options')).toBeVisible()
   await page.getByLabel('Roll options').getByRole('button', { name: 'Roll dice' }).click()
-  const diceDialog = page.getByRole('dialog', { name: /Rolling dice|Landed|Sending roll/i })
+  const diceDialog = page.getByRole('dialog', { name: /Requesting roll|Rolling dice|Landed/i })
   await expect(diceDialog).toBeVisible({ timeout: 15_000 })
   await expect(diceDialog).toContainText('D20')
   await diceDialog.getByRole('button', { name: 'Close dice roller' }).click()
@@ -716,7 +732,7 @@ async function main() {
 
   await stopAllManaged()
   cleanupTempDir()
-  log('passed: Story Play Now -> opening narration -> one action -> create campaign -> create player -> start chapter -> manage map/segments -> verify control-local TTS unavailable state -> observe incremental DM streaming -> receive final DM response -> delete session -> import session -> delete imported session')
+  log('passed: Story Play Now -> opening narration -> one action -> Settings -> Your adventures -> New adventure -> Choose your character -> guided hero creation -> start chapter -> manage map/segments -> verify control-local TTS unavailable state -> observe incremental DM streaming -> receive final DM response -> delete session -> import session -> delete imported session')
 }
 
 if (require.main === module) {

@@ -200,7 +200,20 @@ export function normalizeRollResolvedPayload(payload: unknown): RollResolvedPayl
   if (!['normal', 'advantage', 'disadvantage'].includes(mode)) return null
   if (!rolls.length || rolls.some((roll) => !Number.isInteger(roll) || roll < 1 || roll > sides)) return null
   if (kept === null || modifier === null || total === null || !Number.isInteger(kept) || !rolls.includes(kept)) return null
-  if (total !== kept + modifier || !['hidden_until_landed', 'visible'].includes(resultVisibility)) return null
+  let inspiration: RollResolvedPayload['inspiration']
+  if (value.inspiration !== undefined) {
+    const inspirationValue = recordValue(value.inspiration)
+    const inspirationDie = stringValue(inspirationValue?.die).toLowerCase()
+    const inspirationRoll = finiteNumber(inspirationValue?.roll)
+    const inspirationSides = Number(inspirationDie.replace(/^d/, ''))
+    if (
+      !/^d\d+$/.test(inspirationDie) || inspirationRoll === null || !Number.isInteger(inspirationRoll) ||
+      inspirationRoll < 1 || inspirationRoll > inspirationSides
+    ) return null
+    inspiration = { die: inspirationDie, roll: inspirationRoll }
+  }
+  if (total !== kept + modifier + (inspiration?.roll ?? 0)) return null
+  if (!['hidden_until_landed', 'visible'].includes(resultVisibility)) return null
   if (value.client_message_id !== null && !clientMessageId) return null
   if (value.pending_turn_id !== null && value.pending_turn_id !== undefined && !pendingTurnId) return null
 
@@ -274,6 +287,7 @@ export function normalizeRollResolvedPayload(payload: unknown): RollResolvedPayl
     ...(ability !== undefined ? { ability } : {}),
     ...(proficiency ? { proficiency } : {}),
     ...(modifierBreakdown ? { modifier_breakdown: modifierBreakdown } : {}),
+    ...(inspiration ? { inspiration } : {}),
     authoritative: true,
   }
 }

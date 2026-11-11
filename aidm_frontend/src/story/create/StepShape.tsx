@@ -1,14 +1,16 @@
 import { Minus, Plus } from 'lucide-react'
 import type { RefObject } from 'react'
-import { PLAYABLE_BACKGROUNDS } from '../../backgroundCatalog'
 import { POINT_BUY_ABILITIES, POINT_BUY_BUDGET } from '../../characterStats'
+import { skillName } from './creationRules'
 import {
-  EXPERTISE_COUNT,
   MAX_SCORE,
   MIN_SCORE,
+  backgroundOptions,
   classSkillOptions,
-  coreClassFor,
+  countWord,
+  expertiseCount,
   heroBackground,
+  heroClass,
   heroNumbers,
   heroScores,
   modifier,
@@ -16,7 +18,7 @@ import {
   pointsRemaining,
   proficientSkills,
   signed,
-  skillName,
+  skillCountPhrase,
   stepScore,
   toggleExpertise,
   toggleSkill,
@@ -30,8 +32,6 @@ type StepShapeProps = {
   headingRef: RefObject<HTMLHeadingElement | null>
   onChange: (change: (current: HeroDraft) => HeroDraft) => void
 }
-
-const COUNT_WORDS = ['no', 'one', 'two', 'three', 'four']
 
 /** The live level-1 numbers for the current choices. */
 export function HeroNumbersRow({ draft }: { draft: HeroDraft }) {
@@ -66,7 +66,7 @@ export function HeroNumbersRow({ draft }: { draft: HeroDraft }) {
 
 /** Step 3: ability scores with live numbers, background, class skills and Rogue expertise. */
 export function StepShape({ draft, headingRef, onChange }: StepShapeProps) {
-  const entry = coreClassFor(draft.calling)
+  const entry = heroClass(draft)
   const adjusting = draft.abilityMode === 'adjust'
   const scores = heroScores(draft)
   const remaining = pointsRemaining(scores)
@@ -75,6 +75,7 @@ export function StepShape({ draft, headingRef, onChange }: StepShapeProps) {
   const owned = new Set(background?.skillProficiencies ?? [])
   const skillsFull = entry ? draft.skills.length >= entry.skillCount : true
   const expertiseOptions = needsExpertise(draft) ? proficientSkills(draft) : []
+  const expertiseLimit = expertiseCount(draft)
 
   return (
     <div className="story-create-step story-create-shape">
@@ -166,7 +167,7 @@ export function StepShape({ draft, headingRef, onChange }: StepShapeProps) {
         <fieldset className="story-create-backgrounds">
           <legend className="story-label">Background</legend>
           <div className="story-create-background-grid">
-            {PLAYABLE_BACKGROUNDS.map((option) => (
+            {backgroundOptions(draft.rules).map((option) => (
               <label key={option.id} className="story-create-choice">
                 <input
                   type="radio"
@@ -220,7 +221,7 @@ export function StepShape({ draft, headingRef, onChange }: StepShapeProps) {
           <fieldset className="story-create-skills story-create-expertise">
             <legend className="story-label">
               Expertise{' '}
-              <span className="story-create-count">{`Mark ${COUNT_WORDS[EXPERTISE_COUNT]}`}</span>
+              <span className="story-create-count">{`Mark ${countWord(expertiseLimit)}`}</span>
             </legend>
             <div className="story-create-check-grid">
               {expertiseOptions.map((skill) => {
@@ -231,7 +232,7 @@ export function StepShape({ draft, headingRef, onChange }: StepShapeProps) {
                       type="checkbox"
                       className="story-create-radio"
                       checked={checked}
-                      disabled={!checked && draft.expertise.length >= EXPERTISE_COUNT}
+                      disabled={!checked && draft.expertise.length >= expertiseLimit}
                       onChange={() => onChange((current) => toggleExpertise(current, skill))}
                     />
                     <span>{skillName(skill)}</span>
@@ -239,7 +240,7 @@ export function StepShape({ draft, headingRef, onChange }: StepShapeProps) {
                 )
               })}
             </div>
-            <p className="story-create-quiet">Double proficiency in two skills you already have.</p>
+            <p className="story-create-quiet">{`Double proficiency in ${skillCountPhrase(expertiseLimit)} you already have.`}</p>
           </fieldset>
         ) : null}
       </div>

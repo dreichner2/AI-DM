@@ -170,7 +170,6 @@
 .prototype-shell.theme-light :where(
   .turn-card,
   .dm-response-card,
-  .system-state-card,
   .previously-on-card,
   .session-at-a-glance,
   .current-situation,
@@ -182,8 +181,6 @@
   .composer-frame,
   .composer-frame textarea,
   .mode-buttons,
-  .flow-status,
-  .narration-status,
   .view-settings-menu,
   .operator-drawer-body,
   .account-menu,
@@ -275,9 +272,7 @@
   .inventory-table > div,
   .scene-state-grid > div,
   .world-state-list > div,
-  .map-segment,
-  .campaign-pack-card,
-  .campaign-pack-checkpoint
+  .map-segment
 ) {
   background-color: rgba(255, 255, 255, 0.5);
   background-image: none;
@@ -286,10 +281,6 @@
 .prototype-shell.theme-light .portrait,
 .prototype-shell.theme-light .active-player-avatar-wrap {
   background: var(--surface-sunken);
-}
-
-.prototype-shell.theme-light .modal-backdrop {
-  background: rgba(45, 56, 51, 0.44);
 }
 
 .prototype-shell.theme-light .campaign-dialog {
@@ -307,7 +298,6 @@
   color: var(--text-success);
 }
 
-.prototype-shell.theme-light .title-action.primary,
 .prototype-shell.theme-light .campaign-dialog footer button:not(.secondary) {
   color: var(--on-accent);
   background: linear-gradient(180deg, #b94a1c, #8f3210);

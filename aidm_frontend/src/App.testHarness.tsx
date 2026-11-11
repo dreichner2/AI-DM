@@ -1803,9 +1803,17 @@ function installFetchMock() {
   )
 }
 
-async function renderLoadedApp() {
-  // Resolve the console's lazy chunks first so the first paint does not race them.
+/**
+ * Loads the classic console's lazy chunks. A test that will show the console
+ * awaits this first, so the console's lazy boundary resolves at once instead of
+ * racing the first load of its modules on a busy machine.
+ */
+async function loadConsoleChunks() {
   await Promise.all([import('./CampaignRail'), import('./SessionBoard'), import('./InspectorPanel')])
+}
+
+async function renderLoadedApp() {
+  await loadConsoleChunks()
   const rendered = render(<App />)
   await screen.findByRole('heading', { name: /Session Alpha/i })
   await waitFor(() => expect(screen.getAllByText('Ember').length).toBeGreaterThan(0))
@@ -1997,6 +2005,7 @@ export {
   lightThemeColors,
   lightThemeContrastBackgrounds,
   lightThemeContrastForegrounds,
+  loadConsoleChunks,
   renderLoadedApp,
   renderStoryApp,
   socketHandler,

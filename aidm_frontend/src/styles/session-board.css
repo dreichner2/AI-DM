@@ -1958,33 +1958,6 @@
   -webkit-line-clamp: unset;
 }
 
-.session-board-theater .turn-card.dm-theater-card {
-  grid-template-columns: 128px minmax(0, 1fr) auto 42px;
-  align-items: start;
-  min-height: 92px;
-  padding: 0 10px 0 0;
-}
-
-.session-board-theater .turn-card.dm-theater-card .turn-speaker {
-  padding-top: 14px;
-}
-
-.session-board-theater .turn-card.dm-theater-card .turn-status-label {
-  grid-column: 3;
-  margin-top: 14px;
-}
-
-.session-board-theater .turn-card.dm-theater-card time {
-  grid-column: 3;
-  grid-row: 1;
-  align-self: end;
-  margin-bottom: 14px;
-}
-
-.session-board-theater .turn-card.dm-theater-card .turn-actions {
-  grid-column: 4;
-}
-
 .turn-actions {
   grid-column: 5;
   grid-row: 1;

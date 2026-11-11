@@ -44,22 +44,21 @@ export type AccountAccessProps = {
   workspaceId: string
 }
 
-/** Who is playing and where. `null` is local play, where nobody signs in. */
+/** Who is playing and where. */
 export type AccountSummary = {
   name: string
   table: string
   role: string | null
-} | null
+}
 
-type StoryAccountSheetProps = {
+/** `summary`: who you are and where (only with an account); `access`: the log-in and table forms. */
+export type AccountSheetView = { view: 'summary'; account: AccountSummary } | { view: 'access' }
+
+type StoryAccountSheetProps = AccountSheetView & {
   dialogRef: RefObject<HTMLElement | null>
   onClose: () => void
-  /** `summary`: who you are and where; `access`: the log-in and table forms. */
-  view: 'summary' | 'access'
-  account: AccountSummary
   onSwitchTable: () => void
   onLogOut: () => void
-  onConnectionSettings: () => void
   access: AccountAccessProps
 }
 
@@ -378,61 +377,37 @@ function AccountForms({ access, onClose }: { access: AccountAccessProps; onClose
 }
 
 /** Account: who you are and which table you are at, or the forms to get there. */
-export function StoryAccountSheet({
-  access,
-  account,
-  dialogRef,
-  onClose,
-  onConnectionSettings,
-  onLogOut,
-  onSwitchTable,
-  view,
-}: StoryAccountSheetProps) {
+export function StoryAccountSheet(props: StoryAccountSheetProps) {
+  const { access, dialogRef, onClose, onLogOut, onSwitchTable } = props
   return (
     <ModalShell
       size="narrow"
-      closeLabel={view === 'access' ? 'Close account prompt' : 'Close account'}
-      description={view === 'access' ? accessHelp(access) : undefined}
+      closeLabel={props.view === 'access' ? 'Close account prompt' : 'Close account'}
+      description={props.view === 'access' ? accessHelp(access) : undefined}
       dialogRef={dialogRef}
       labelledBy="story-account-title"
       onClose={onClose}
       title="Account"
     >
-      {view === 'access' ? (
+      {props.view === 'access' ? (
         <AccountForms access={access} onClose={onClose} />
       ) : (
         <div className="story-dialog-body">
-          {account ? (
-            <>
-              <div className="story-dialog-identity">
-                <p className="story-dialog-subject">{account.name}</p>
-                <p className="story-dialog-row-meta">
-                  At {account.table}
-                  {account.role ? ` · ${account.role}` : ''}
-                </p>
-              </div>
-              <div className="story-dialog-links">
-                <button type="button" className="story-link" data-autofocus onClick={onSwitchTable}>
-                  Switch table
-                </button>
-                <button type="button" className="story-link" onClick={onLogOut}>
-                  Log out
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="story-dialog-identity">
-                <p className="story-dialog-subject">Playing on this computer</p>
-                <p className="story-dialog-row-meta">A local table needs no account.</p>
-              </div>
-              <div className="story-dialog-links">
-                <button type="button" className="story-link" onClick={onConnectionSettings}>
-                  Connection settings
-                </button>
-              </div>
-            </>
-          )}
+          <div className="story-dialog-identity">
+            <p className="story-dialog-subject">{props.account.name}</p>
+            <p className="story-dialog-row-meta">
+              At {props.account.table}
+              {props.account.role ? ` · ${props.account.role}` : ''}
+            </p>
+          </div>
+          <div className="story-dialog-links">
+            <button type="button" className="story-link" data-autofocus onClick={onSwitchTable}>
+              Switch table
+            </button>
+            <button type="button" className="story-link" onClick={onLogOut}>
+              Log out
+            </button>
+          </div>
         </div>
       )}
     </ModalShell>

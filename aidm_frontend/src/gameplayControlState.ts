@@ -765,24 +765,11 @@ function capabilityControls(
         reason,
         targets,
         poolId: spentPool,
-        poolName: spentPool ? stringValue(feature.poolName) || poolLabel(spentPool) : '',
+        poolName: spentPool ? stringValue(feature.poolName) : '',
         poolCost: stringValue(cost.pool) && typeof cost.amount === 'number' ? cost.amount : null,
       }
     })
     .filter((feature): feature is GameplayCapabilityControl => feature !== null)
-}
-
-const POOL_LABEL_SMALL_WORDS = new Set(['of', 'on', 'the'])
-
-/** "lay_on_hands" reads "Lay on Hands" when the server sends no pool name. */
-function poolLabel(poolId: string) {
-  return poolId
-    .split('_')
-    .filter(Boolean)
-    .map((word, index) =>
-      index > 0 && POOL_LABEL_SMALL_WORDS.has(word) ? word : `${word.charAt(0).toUpperCase()}${word.slice(1)}`,
-    )
-    .join(' ')
 }
 
 function objectStates(entry: JsonRecord) {

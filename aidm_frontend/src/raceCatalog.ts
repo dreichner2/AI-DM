@@ -1408,10 +1408,6 @@ export function playableRaceFromValue(value?: string | null) {
   return null
 }
 
-export function playableRaceLabel(value?: string | null) {
-  return playableRaceFromValue(value)?.name ?? ''
-}
-
 export function raceSelectionFromPlayableRace(raceEntry: PlayableRace): CharacterRaceSelection {
   return {
     raceId: raceEntry.key,

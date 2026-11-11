@@ -103,6 +103,19 @@ describe('StoryTopBar', () => {
     ])
   })
 
+  it('shows Account only when there is an account to open', () => {
+    const onOpenAccount = vi.fn()
+    renderTopBar({ chromeProps: { onOpenAccount } })
+    fireEvent.click(within(openMenu()).getByRole('menuitem', { name: 'Account' }))
+    expect(onOpenAccount).toHaveBeenCalledOnce()
+    cleanup()
+
+    renderTopBar({ chromeProps: { onOpenAccount: undefined } })
+    const menu = openMenu()
+    expect(within(menu).queryByRole('menuitem', { name: 'Account' })).toBeNull()
+    expect(itemNames(menu)).toContain('Settings')
+  })
+
   it('gates chapter items and names the console for operators', () => {
     const onContinue = vi.fn()
     renderTopBar({

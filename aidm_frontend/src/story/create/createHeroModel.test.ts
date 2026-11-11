@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest'
+import { PLAYABLE_RACES, playableRaceFromValue } from '../../raceCatalog'
+import { FALLBACK_RULES, type CreationRules, type SkillId } from './creationRules'
 import {
   ANCESTRIES,
-  CORE_CLASSES,
   STANDARD_ARRAY,
   ancestryById,
   ancestryFromSelection,
+  backgroundOptions,
   classSkillOptions,
+  coreClasses,
   createPayload,
   emptyDraft,
   heroBackground,
+  heroClass,
   heroNumbers,
   heroSentence,
   pointBuyValid,
@@ -25,9 +29,11 @@ import {
   withAncestry,
   withBackground,
   withCalling,
+  withRules,
   type HeroDraft,
-  type SkillId,
 } from './createHeroModel'
+
+const CORE_CLASSES = coreClasses(FALLBACK_RULES)
 
 function hero(calling: string, ancestry = 'human', name = 'Test Hero'): HeroDraft {
   return withCalling(withAncestry({ ...emptyDraft(), name }, ancestryById(ancestry)!), calling)
@@ -40,16 +46,35 @@ function withSkills(draft: HeroDraft, skills: SkillId[]) {
 describe('createHeroModel', () => {
   it('offers the nine recommended ancestries with catalog ids and at most three rules-backed traits', () => {
     expect(ANCESTRIES.map((entry) => entry.name)).toEqual([
-      'Human', 'Elf', 'Dwarf', 'Halfling', 'Half-Elf', 'Half-Orc', 'Gnome', 'Dragonborn', 'Tiefling',
+      'Human', 'Elf', 'Dwarf', 'Halfling', 'Goliath', 'Harengon', 'Gnome', 'Dragonborn', 'Tiefling',
     ])
-    expect(ancestryById('half-elf')?.selection).toEqual({ raceId: 'elf', raceName: 'Elf', source: 'curated', selectedOptions: {} })
-    expect(ancestryById('half-orc')?.selection.raceId).toBe('orc')
+    expect(ancestryById('goliath')?.selection).toEqual({ raceId: 'goliath', raceName: 'Goliath', source: 'curated', selectedOptions: {} })
     expect(ancestryById('gnome')?.skills).toEqual(['arcana', 'investigation'])
     expect(ANCESTRIES.every((entry) => entry.traits.length >= 1 && entry.traits.length <= 3)).toBe(true)
     expect(ancestryById('dwarf')?.portraits).toEqual({
       male: '/profile-icons/dwarf_male.png',
       female: '/profile-icons/dwarf_female.png',
     })
+  })
+
+  it('offers only ancestries that are their own catalog entries, filled from the beginner-friendly list', () => {
+    // Half-Elf and Half-Orc are only aliases of Elf and Orc in the catalog, so they are not offered.
+    expect(playableRaceFromValue('half-elf')?.key).toBe('elf')
+    expect(playableRaceFromValue('half-orc')?.key).toBe('orc')
+    for (const entry of ANCESTRIES) {
+      const race = playableRaceFromValue(entry.selection.raceId)
+      expect([race?.key, race?.name]).toEqual([entry.selection.raceId, entry.selection.raceName])
+      expect(entry.portraits).not.toBeNull()
+    }
+    expect(new Set(ANCESTRIES.map((entry) => entry.selection.raceId)).size).toBe(9)
+
+    const classic = ['human', 'elf', 'dwarf', 'halfling', 'gnome', 'dragonborn', 'tiefling']
+    const offered = new Set(ANCESTRIES.map((entry) => entry.id))
+    const fill = PLAYABLE_RACES.filter((race) => race.categories.includes('Beginner Friendly') && !classic.includes(race.key))
+      .slice(0, 9 - classic.length)
+      .map((race) => race.key)
+    expect(ANCESTRIES.filter((entry) => !classic.includes(entry.id)).map((entry) => entry.id)).toEqual(fill)
+    expect(classic.every((id) => offered.has(id))).toBe(true)
   })
 
   it('maps a full-selector pick back to a recommended ancestry or builds one from the catalog', () => {
@@ -175,13 +200,13 @@ describe('createHeroModel', () => {
   })
 
   it('builds the creation payload and the review sentence from the choices', () => {
-    let draft = withSkills(withBackground(hero('Fighter', 'half-orc', '  Grosh  '), 'soldier'), ['perception', 'survival'])
+    let draft = withSkills(withBackground(hero('Fighter', 'goliath', '  Grosh  '), 'soldier'), ['perception', 'survival'])
     draft = { ...draft, sex: 'female', fightingStyle: 'great_weapon' }
 
     expect(createPayload(draft)).toEqual({
       character_name: 'Grosh',
-      race: 'Orc',
-      race_selection: { raceId: 'orc', raceName: 'Orc', source: 'curated', selectedOptions: {} },
+      race: 'Goliath',
+      race_selection: { raceId: 'goliath', raceName: 'Goliath', source: 'curated', selectedOptions: {} },
       sex: 'female',
       char_class: 'Fighter',
       level: 1,
@@ -194,7 +219,7 @@ describe('createHeroModel', () => {
       fighting_style: 'great_weapon',
     })
     expect(heroSentence(draft)).toBe(
-      'A soldier half-orc fighter who marched with an army and still wakes at the sound of distant drums.',
+      'A soldier goliath fighter who marched with an army and still wakes at the sound of distant drums.',
     )
 
     const acolyte = withBackground(hero('Cleric', 'dwarf'), 'acolyte')
@@ -208,6 +233,34 @@ describe('createHeroModel', () => {
     expect(heroSentence(narrated)).toMatch(/^A sage elf dream knight \(mirror oath\) who/)
 
     expect(() => createPayload(hero('Rogue'))).toThrow('The hero is not finished yet.')
+  })
+
+  it('plays by the server rules once they arrive and drops choices they no longer allow', () => {
+    const server: CreationRules = {
+      classes: FALLBACK_RULES.classes.map((entry) =>
+        entry.id === 'rogue'
+          ? { ...entry, skillCount: 2, skills: ['acrobatics', 'perception', 'stealth'], expertise: 1, kit: ['Rapier'] }
+          : entry,
+      ),
+      backgrounds: FALLBACK_RULES.backgrounds.map((entry) =>
+        entry.id === 'criminal' ? { ...entry, skills: ['deception', 'investigation'] } : entry,
+      ),
+    }
+    let rogue = withSkills(hero('Rogue'), ['acrobatics', 'insight', 'perception', 'sleight_of_hand'])
+    rogue = ['perception', 'insight'].reduce((draft, skill) => toggleExpertise(draft, skill as SkillId), rogue)
+    expect(withRules(rogue, rogue.rules)).toBe(rogue)
+
+    const online = withRules(rogue, server)
+    expect(heroClass(online)).toMatchObject({ skillCount: 2, expertise: 1, kit: ['Rapier'], feel: heroClass(rogue)?.feel })
+    expect(online.skills).toEqual(['acrobatics', 'perception'])
+    expect(online.expertise).toEqual(['perception'])
+    expect(heroBackground(online)?.skillProficiencies).toEqual(['deception', 'investigation'])
+    expect(backgroundOptions(server).find((entry) => entry.id === 'criminal')?.skillProficiencies).toEqual([
+      'deception', 'investigation',
+    ])
+    expect(stepComplete(online, 'shape')).toBe(true)
+    expect(createPayload({ ...online, name: 'Wren' })).toMatchObject({ skill_choices: ['acrobatics', 'perception'], expertise: ['perception'] })
+    expect(stepHint(toggleExpertise(online, 'perception'), 'shape')).toBe('Mark one skill for expertise to continue.')
   })
 
   it('completes each step only when its choices are made', () => {

@@ -138,28 +138,6 @@ export type TtsRuntimeConfig = {
   model: string
 }
 
-export type CampaignCanon = {
-  campaign_id: number
-  entities: JsonRecord[]
-  facts: JsonRecord[]
-  threads: JsonRecord[]
-  updates: JsonRecord[]
-  limit?: number
-  has_more?: {
-    entities?: boolean
-    facts?: boolean
-    threads?: boolean
-    updates?: boolean
-  }
-  next_cursor?: {
-    entities?: number | null
-    facts?: number | null
-    threads?: number | null
-    updates?: number | null
-  }
-  summary: JsonRecord
-}
-
 export type BetaSummary = {
   turn_latency_ms_avg: number | null
   ai_failure_rate: number

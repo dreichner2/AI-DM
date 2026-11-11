@@ -26,6 +26,9 @@
 }
 .story-shell .story-feed[data-text-size='large'] { --story-feed-scale: 1.1; }
 .story-shell .story-feed[data-text-size='extra'] { --story-feed-scale: 1.22; }
+/* Settings › Typeface: the story's reading face (mono is the classic console's choice, kept here too). */
+.story-shell[data-typeface='sans'] .story-feed { --story-prose: var(--story-ui); }
+.story-shell[data-typeface='mono'] .story-feed { --story-prose: var(--mono); }
 
 .story-shell .story-feed-column {
   flex: 1 0 auto;
@@ -344,6 +347,12 @@
   font-size: 0.8rem;
   font-variant-numeric: tabular-nums lining-nums;
   color: var(--story-muted);
+  word-spacing: 0.08em;
+}
+.story-shell .story-roll-inspiration {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums lining-nums;
+  color: var(--story-gold);
   word-spacing: 0.08em;
 }
 .story-shell .story-roll-outcome {

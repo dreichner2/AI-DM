@@ -33,9 +33,10 @@ export type StoryChromeProps = {
   onSwitchAdventure: () => void
   /** Returns to the title screen. */
   onExitToTitle: () => void
-  /** Opens the existing settings / account dialogs. */
+  /** Opens the Settings sheet. */
   onOpenSettings: () => void
-  onOpenAccount: () => void
+  /** Opens the Account sheet. Absent at a local table nobody signs in to, which has no Account item. */
+  onOpenAccount?: () => void
   /** Starts the next chapter of this adventure. Absent when the viewer may not start sessions. */
   onStartNextChapter?: () => void
   /**

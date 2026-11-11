@@ -7,6 +7,7 @@ import {
   App,
   appTestState,
   installMatchMediaMock,
+  loadConsoleChunks,
   renderLoadedApp,
   setupAppTest,
   teardownAppTest,
@@ -26,7 +27,7 @@ describe('App runtime and workspace access', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Account' })
     expect(within(dialog).getByRole('button', { name: 'Log in' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.queryByRole('button', { name: 'Open table settings' })).toBeInTheDocument()
-  }, 10_000)
+  })
 
   it('does not show the mobile table settings gear on desktop', async () => {
     await renderLoadedApp()
@@ -50,6 +51,7 @@ describe('App runtime and workspace access', () => {
   })
 
   it('opens campaign selection for an authenticated cookie session without a bearer token', async () => {
+    await loadConsoleChunks()
     appTestState.health.auth_required = true
     localStorage.removeItem('aidm:selectedCampaignId')
     localStorage.removeItem('aidm:selectedSessionId')
@@ -97,6 +99,7 @@ describe('App runtime and workspace access', () => {
   })
 
   it('prompts for an account when the public app requires a table token', async () => {
+    await loadConsoleChunks()
     appTestState.health.auth_required = true
     appTestState.requiredAuthToken = 'shared-token'
     localStorage.setItem('aidm:selectedPlayerId', '30')
@@ -154,6 +157,7 @@ describe('App runtime and workspace access', () => {
   })
 
   it('starts hosted Play Now as a guest without opening account access', async () => {
+    await loadConsoleChunks()
     appTestState.health.auth_required = true
     appTestState.requiredAuthToken = 'guest-token'
     localStorage.removeItem('aidm:selectedCampaignId')
@@ -232,6 +236,7 @@ describe('App runtime and workspace access', () => {
   })
 
   it('shows the complete authoring shell to operators', async () => {
+    await loadConsoleChunks()
     appTestState.health.auth_required = true
     appTestState.requiredAuthToken = 'account-token'
     sessionStorage.setItem('aidm:authToken', 'account-token')
@@ -267,7 +272,24 @@ describe('App runtime and workspace access', () => {
     expect(screen.getByRole('button', { name: 'Admin mode' })).toBeInTheDocument()
   })
 
+  it('loads the world manager on demand for operators', async () => {
+    await loadConsoleChunks()
+    appTestState.health.auth_required = true
+    appTestState.requiredAuthToken = 'account-token'
+    sessionStorage.setItem('aidm:authToken', 'account-token')
+    localStorage.setItem('aidm:workspaceId', 'owner')
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue Smoke Campaign' }))
+    await screen.findByRole('heading', { name: /Session Alpha/i })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Manage worlds' }))
+    const worlds = await screen.findByRole('dialog', { name: 'Manage Worlds' })
+    expect(within(worlds).getByText('Smoke World')).toBeInTheDocument()
+  })
+
   it('hides Bestiary and Ops inspector surfaces from non-operator players', async () => {
+    await loadConsoleChunks()
     appTestState.health.auth_required = true
     appTestState.requiredAuthToken = 'player-token'
     appTestState.mapsByCampaign = {
@@ -480,7 +502,8 @@ describe('App runtime and workspace access', () => {
     await renderLoadedApp()
 
     expect(screen.queryByLabelText('Beta runtime notices')).not.toBeInTheDocument()
-    expect(screen.getByText('Process-local · restart workers')).toHaveAttribute(
+    // The runtime notice follows the provider settings, which load independently of the session.
+    expect(await screen.findByText('Process-local · restart workers')).toHaveAttribute(
       'title',
       'Provider changes apply to this backend process; restart the other workers to synchronize them.',
     )
