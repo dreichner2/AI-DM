@@ -17,10 +17,10 @@ import {
   installLegacyMatchMediaMock,
   installMatchMediaMock,
   jsonResponse,
-  lightThemeColors,
-  lightThemeContrastBackgrounds,
-  lightThemeContrastForegrounds,
   loadConsoleChunks,
+  paletteColors,
+  paletteContrastBackgrounds,
+  paletteContrastForegrounds,
   renderLoadedApp,
   sessionSummaryFixture,
   setupAppTest,
@@ -1612,7 +1612,7 @@ describe('App user workflow regressions', () => {
     expect(campaignRail).not.toHaveAttribute('role', 'dialog')
     expect(campaignRail).not.toHaveAttribute('aria-modal')
 
-    const closeButton = within(dialog).getByRole('button', { name: 'Close create campaign' })
+    const closeButton = within(dialog).getByRole('button', { name: 'Close new adventure' })
     const blankPageButton = within(dialog).getByRole('button', { name: 'Begin with a blank page' })
     blankPageButton.focus()
     fireEvent.keyDown(document, { key: 'Tab' })
@@ -2260,14 +2260,14 @@ describe('App user workflow regressions', () => {
     deleteButton.focus()
     fireEvent.click(deleteButton)
 
-    const dialog = await screen.findByRole('dialog', { name: 'Delete Character' })
+    const dialog = await screen.findByRole('dialog', { name: 'Delete this character' })
     expect(dialog).toHaveAccessibleDescription(/This permanently removes the character/)
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus())
 
     fireEvent.keyDown(document, { key: 'Escape' })
 
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Delete Character' })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('dialog', { name: 'Delete this character' })).not.toBeInTheDocument(),
     )
     expect(appTestState.fetchCalls.some((call) => call.method === 'DELETE' && call.path === '/api/players/30')).toBe(false)
     expect(deleteButton).toHaveFocus()
@@ -2307,20 +2307,20 @@ describe('App user workflow regressions', () => {
     const characterActions = screen.getByLabelText('Character actions')
     fireEvent.click(within(characterActions).getByRole('button', { name: 'Delete' }))
 
-    const dialog = await screen.findByRole('dialog', { name: 'Delete Character' })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete Character' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete this character' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete this character' }))
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Deleting...' })).toBeDisabled())
 
     fireEvent.keyDown(document, { key: 'Escape' })
 
-    expect(screen.getByRole('dialog', { name: 'Delete Character' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Delete this character' })).toBeInTheDocument()
     expect(appTestState.fetchCalls.filter((call) => call.method === 'DELETE' && call.path === '/api/players/30')).toHaveLength(1)
 
     await act(async () => {
       resolveDelete(jsonResponse({ deleted: true }))
     })
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Delete Character' })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('dialog', { name: 'Delete this character' })).not.toBeInTheDocument(),
     )
   })
 
@@ -2332,8 +2332,8 @@ describe('App user workflow regressions', () => {
     shareButton.focus()
     fireEvent.click(shareButton)
 
-    const dialog = await screen.findByRole('dialog', { name: 'Share Session' })
-    const shareInput = within(dialog).getByLabelText('Session share link')
+    const dialog = await screen.findByRole('dialog', { name: 'Share the adventure' })
+    const shareInput = within(dialog).getByLabelText('Adventure share link')
     expect(dialog).toHaveAccessibleDescription(
       'Send this link to a friend. It opens this table, where they choose or create their own character.',
     )
@@ -2344,8 +2344,8 @@ describe('App user workflow regressions', () => {
     expect(shareValue).toContain('campaign=10')
     expect(shareValue).toContain('session=20')
 
-    const closeIconButton = within(dialog).getByLabelText('Close share session')
-    const copyButton = within(dialog).getByRole('button', { name: 'Copy Link' })
+    const closeIconButton = within(dialog).getByLabelText('Close share')
+    const copyButton = within(dialog).getByRole('button', { name: 'Copy link' })
     copyButton.focus()
     fireEvent.keyDown(document, { key: 'Tab' })
     expect(closeIconButton).toHaveFocus()
@@ -2355,7 +2355,7 @@ describe('App user workflow regressions', () => {
 
     fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Share Session' })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('dialog', { name: 'Share the adventure' })).not.toBeInTheDocument(),
     )
     expect(shareButton).toHaveFocus()
   })
@@ -2372,7 +2372,7 @@ describe('App user workflow regressions', () => {
 
     render(<App />)
 
-    const dialog = await screen.findByRole('dialog', { name: 'Connect to Shared Backend' })
+    const dialog = await screen.findByRole('dialog', { name: 'Connect to a shared game server' })
     expect(dialog).toHaveAccessibleDescription(
       'Only continue if you know and trust this game server. Nothing is sent to it until you confirm.',
     )
@@ -2387,7 +2387,7 @@ describe('App user workflow regressions', () => {
       '?campaign=10&session=20&backend=https%3A%2F%2Fbackend-tunnel.ngrok-free.app',
     )
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Trust and Connect' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Trust and connect' }))
 
     await screen.findByRole('heading', { name: /Session Alpha/i })
     await waitFor(() =>
@@ -2443,7 +2443,7 @@ describe('App user workflow regressions', () => {
 
     await renderLoadedApp()
 
-    expect(screen.queryByRole('dialog', { name: 'Connect to Shared Backend' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Connect to a shared game server' })).not.toBeInTheDocument()
     expect(appTestState.fetchCalls).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -2780,7 +2780,7 @@ describe('App user workflow regressions', () => {
     await renderLoadedApp()
 
     const chooser = await screen.findByRole('dialog', { name: 'Choose your character' })
-    fireEvent.click(within(chooser).getByRole('button', { name: 'Create Character' }))
+    fireEvent.click(within(chooser).getByRole('button', { name: 'New character' }))
 
     // New characters are made in the four-step hero creation flow.
     const creator = await screen.findByRole('dialog', { name: /^A new hero/ })
@@ -2919,11 +2919,11 @@ describe('App user workflow regressions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Session menu' }))
     const sessionMenu = await screen.findByRole('group', { name: 'Session menu' })
     fireEvent.click(within(sessionMenu).getByRole('button', { name: 'Rename session' }))
-    const renameDialog = await screen.findByRole('dialog', { name: 'Rename Session' })
-    fireEvent.change(within(renameDialog).getByLabelText('Session Name'), {
+    const renameDialog = await screen.findByRole('dialog', { name: 'Rename the chapter' })
+    fireEvent.change(within(renameDialog).getByLabelText('Chapter name'), {
       target: { value: 'Session Beta' },
     })
-    fireEvent.click(within(renameDialog).getByRole('button', { name: 'Rename Session' }))
+    fireEvent.click(within(renameDialog).getByRole('button', { name: 'Save' }))
 
     await screen.findByRole('heading', { name: /Session Beta/i })
     expect(appTestState.fetchCalls).toEqual(
@@ -2935,10 +2935,10 @@ describe('App user workflow regressions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Session menu' }))
     const reopenedSessionMenu = await screen.findByRole('group', { name: 'Session menu' })
     fireEvent.click(within(reopenedSessionMenu).getByRole('button', { name: 'Delete session' }))
-    const deleteDialog = await screen.findByRole('dialog', { name: 'Delete Session' })
-    fireEvent.click(within(deleteDialog).getByRole('button', { name: 'Delete Session' }))
+    const deleteDialog = await screen.findByRole('dialog', { name: 'Delete this chapter' })
+    fireEvent.click(within(deleteDialog).getByRole('button', { name: 'Delete this chapter' }))
 
-    await screen.findByText('No sessions yet.')
+    await screen.findByText('No chapters yet.')
     expect(appTestState.fetchCalls).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ method: 'DELETE', path: '/api/sessions/20' }),
@@ -3479,8 +3479,13 @@ describe('App user workflow regressions', () => {
     expect(workspaceSurfaces).not.toHaveAttribute('aria-hidden')
   })
 
-  it('keeps icon-only controls named and light theme contrast readable', async () => {
+  it('keeps icon-only controls named and the one dark palette readable, ignoring a stored light theme', async () => {
+    localStorage.setItem('aidm:theme', 'light')
     const { container } = await renderLoadedApp()
+
+    expect(container.querySelector('.prototype-shell')).not.toHaveClass('theme-light')
+    expect(screen.queryByRole('button', { name: 'Toggle theme' })).not.toBeInTheDocument()
+    expect(container.querySelector('.ops-brand')).toHaveTextContent('Table tools')
 
     const iconOnlyButtons = [...container.querySelectorAll<HTMLButtonElement>('button')].filter((button) => {
       const visibleText = button.textContent?.trim() ?? ''
@@ -3491,9 +3496,9 @@ describe('App user workflow regressions', () => {
       expect(button.getAttribute('aria-label') || button.getAttribute('title')).toBeTruthy()
     })
 
-    const colors = lightThemeColors()
-    for (const foreground of lightThemeContrastForegrounds) {
-      for (const background of lightThemeContrastBackgrounds) {
+    const colors = paletteColors()
+    for (const foreground of paletteContrastForegrounds) {
+      for (const background of paletteContrastBackgrounds) {
         expect(colors[foreground]).toMatch(/^#[0-9a-fA-F]{6}$/)
         expect(colors[background]).toMatch(/^#[0-9a-fA-F]{6}$/)
         expect(contrastRatio(colors[foreground], colors[background])).toBeGreaterThanOrEqual(4.5)
@@ -3511,7 +3516,7 @@ describe('App user workflow regressions', () => {
     const dialog = await screen.findByRole('dialog', { name: 'New adventure' })
     await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement))
 
-    const closeButton = within(dialog).getByRole('button', { name: 'Close create campaign' })
+    const closeButton = within(dialog).getByRole('button', { name: 'Close new adventure' })
     const blankPageButton = within(dialog).getByRole('button', { name: 'Begin with a blank page' })
     closeButton.focus()
     fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })

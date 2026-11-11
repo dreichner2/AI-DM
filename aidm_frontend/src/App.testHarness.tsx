@@ -259,8 +259,9 @@ const previousLongDmText =
 const latestLongDmText =
   'The chamber beyond is much larger than the hallway promised. Brass walkways cross a black-water reservoir, lanterns bloom in glass cages, and a silent mechanism turns somewhere under the floor with the patience of a clock that has never stopped. Full narrator ending remains visible.'
 
-const lightThemeContrastForegrounds = ['--heading', '--text', '--muted']
-const lightThemeContrastBackgrounds = ['--bg', '--surface', '--surface-2', '--panel', '--paper', '--field', '--button']
+// Every view uses the Story palette: text tones that must stay readable on its surfaces.
+const paletteContrastForegrounds = ['--story-ink', '--story-ink-soft', '--story-muted']
+const paletteContrastBackgrounds = ['--story-bg', '--story-bg-raised']
 
 function createStorageMock(): Storage {
   const store = new Map<string, string>()
@@ -521,12 +522,12 @@ function readCssWithImports(filePath: string, seen = new Set<string>()): string 
   )
 }
 
-function lightThemeColors() {
+function paletteColors() {
   const css = readCssWithImports(`${process.cwd()}/src/App.css`)
-  const themeBlock = css.match(/\.prototype-shell\.theme-light\s*{(?<body>[\s\S]*?)}/)?.groups?.body
-  if (!themeBlock) throw new Error('Missing light theme CSS block')
+  const tokenBlock = css.match(/:root,\s*\.story-shell\s*{(?<body>[\s\S]*?)}/)?.groups?.body
+  if (!tokenBlock) throw new Error('Missing Story token CSS block')
   return Object.fromEntries(
-    [...themeBlock.matchAll(/(?<name>--[\w-]+):\s*(?<value>#[0-9a-fA-F]{6})\s*;/g)].map((match) => [
+    [...tokenBlock.matchAll(/(?<name>--[\w-]+):\s*(?<value>#[0-9a-fA-F]{6})\s*;/g)].map((match) => [
       match.groups?.name ?? '',
       match.groups?.value ?? '',
     ]),
@@ -2004,9 +2005,9 @@ export {
   installLegacyMatchMediaMock,
   installMatchMediaMock,
   jsonResponse,
-  lightThemeColors,
-  lightThemeContrastBackgrounds,
-  lightThemeContrastForegrounds,
+  paletteColors,
+  paletteContrastBackgrounds,
+  paletteContrastForegrounds,
   loadConsoleChunks,
   renderLoadedApp,
   renderStoryApp,

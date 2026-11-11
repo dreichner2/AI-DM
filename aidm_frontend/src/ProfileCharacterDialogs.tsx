@@ -80,7 +80,7 @@ export function CharacterJoinDialog({
             Cancel
           </button>
           <button type="button" className="story-primary" onClick={onCreateCharacter}>
-            Create Character
+            New character
           </button>
         </footer>
       </div>

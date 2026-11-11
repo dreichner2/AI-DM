@@ -1,4 +1,4 @@
-import type { JsonRecord } from './apiContract.generated'
+import type { JsonRecord, TtsConfigResponse } from './apiContract.generated'
 
 export type {
   Account,
@@ -72,6 +72,7 @@ export type {
   SessionRecapState,
   SessionState,
   SessionSummary,
+  TtsChoice,
   TurnEventPayload,
   TurnFeedbackReport,
   World,
@@ -132,11 +133,8 @@ export type LlmRuntimeConfig = {
   worker_count?: number
 }
 
-export type TtsRuntimeConfig = {
-  provider: 'deepgram'
-  configured: boolean
-  model: string
-}
+/** The narrator voice; only the first three fields decide whether narration is available. */
+export type TtsRuntimeConfig = Pick<TtsConfigResponse, 'provider' | 'configured' | 'model'> & Partial<TtsConfigResponse>
 
 export type BetaSummary = {
   turn_latency_ms_avg: number | null

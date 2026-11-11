@@ -28,7 +28,7 @@ export function BackendTrustDialog({
       dialogRef={dialogRef}
       labelledBy="backend-trust-title"
       onClose={onReject}
-      title="Connect to Shared Backend"
+      title="Connect to a shared game server"
     >
       <div className="story-dialog-body">
         <p className="story-dialog-subject">{backend.origin}</p>
@@ -43,7 +43,7 @@ export function BackendTrustDialog({
             Cancel
           </button>
           <button type="button" className="story-primary" onClick={onConfirm}>
-            Trust and Connect
+            Trust and connect
           </button>
         </footer>
       </div>

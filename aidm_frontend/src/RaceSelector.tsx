@@ -1,10 +1,19 @@
 import { AlertTriangle, Check, Search, Sparkles, X } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
-import { apiFetch } from './api'
+import { useMemo, useState } from 'react'
+import {
+  customRaceBalance,
+  customRacePortraitKey,
+  customRaceTraits,
+  customRaceWarnings,
+  isRecord,
+  raceVisual,
+  useCustomRaces,
+} from './customRaces'
 import {
   PLAYABLE_RACES,
   RACE_FILTERS,
   filterPlayableRaces,
+  isRecommendedRace,
   playableRaceFromValue,
   raceSelectionFromPlayableRace,
   profileIconSrcForRace,
@@ -12,15 +21,7 @@ import {
   type RaceCategory,
 } from './raceCatalog'
 import { profileIconSrcForCharacter, type SexKey } from './profileIcons'
-import type {
-  CharacterRaceSelection,
-  CustomRaceGenerateResponse,
-  RaceListResponse,
-  CustomRaceSaveResponse,
-  JsonRecord,
-  RaceDefinition,
-  RaceSummary,
-} from './types'
+import type { CharacterRaceSelection, RaceDefinition, RaceSummary } from './types'
 
 type RaceSelectorProps = {
   auth: string
@@ -36,50 +37,21 @@ type RaceSelectorProps = {
 
 const ALL_FILTER = 'All' as const
 type RaceViewMode = 'recommended' | 'all' | 'custom'
-type CustomRaceGenerationMode = 'canon' | 'balanced'
 const sexOptions: { key: SexKey; label: string }[] = [
   { key: 'male', label: 'Male' },
   { key: 'female', label: 'Female' },
 ]
-const recommendedRaceNames = new Set(['Human', 'Elf', 'Dwarf', 'Halfling', 'Gnome', 'Dragonborn', 'Orc', 'Tabaxi'])
 
 function sexValue(value: string): SexKey {
   return value === 'female' ? 'female' : 'male'
 }
 
-function isRecord(value: unknown): value is JsonRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function raceVisual(race: RaceDefinition | undefined): JsonRecord {
-  return isRecord(race?.visual) ? race.visual : {}
-}
-
 function customPortraitSrc(race: RaceDefinition | undefined, sex: SexKey) {
-  const visual = raceVisual(race)
-  const portraitKey = typeof visual.portraitKey === 'string' ? visual.portraitKey : race?.name
-  return profileIconSrcForCharacter({ race: portraitKey, sex }) ?? '/profile-icons/human_male.png'
+  return profileIconSrcForCharacter({ race: customRacePortraitKey(race), sex }) ?? '/profile-icons/human_male.png'
 }
 
 function raceTraitNames(race: RaceDefinition | undefined) {
-  const traits = Array.isArray(race?.traits) ? race.traits : []
-  return traits
-    .map((trait) => (isRecord(trait) && typeof trait.name === 'string' ? trait.name : ''))
-    .filter(Boolean)
-}
-
-function raceWarnings(race: RaceDefinition | undefined) {
-  const balance: JsonRecord = isRecord(race?.balance) ? race.balance : {}
-  const warnings = balance['warnings']
-  return Array.isArray(warnings) ? warnings.filter((item): item is string => typeof item === 'string') : []
-}
-
-function balanceSummary(race: RaceDefinition | RaceSummary | undefined) {
-  const balance: JsonRecord = isRecord(race?.balance) ? race.balance : {}
-  const spent = typeof balance['spent'] === 'number' ? balance['spent'] : 0
-  const budget = typeof balance['budget'] === 'number' ? balance['budget'] : 5
-  const tier = typeof balance['tier'] === 'string' ? balance['tier'] : 'standard'
-  return { spent, budget, tier }
+  return customRaceTraits(race).map((trait) => trait.name)
 }
 
 function customRaceCreatorLabel(race: RaceDefinition | RaceSummary) {
@@ -222,7 +194,7 @@ function CustomRaceMetadataPreview({ race }: { race: RaceDefinition }) {
 }
 
 function BalanceMeter({ race }: { race: RaceDefinition | RaceSummary | undefined }) {
-  const { spent, budget, tier } = balanceSummary(race)
+  const { spent, budget, tier } = customRaceBalance(race)
   return (
     <div className={`race-balance-meter ${tier}`}>
       <span>Balance</span>
@@ -377,13 +349,6 @@ export function RaceSelector({
   const [selectedFilter, setSelectedFilter] = useState<RaceCategory | typeof ALL_FILTER>(ALL_FILTER)
   const [detailsRace, setDetailsRace] = useState<PlayableRace | null>(null)
   const [viewMode, setViewMode] = useState<RaceViewMode>('recommended')
-  const [customPrompt, setCustomPrompt] = useState('')
-  const [customDraft, setCustomDraft] = useState<RaceDefinition | null>(null)
-  const [customPending, setCustomPending] = useState(false)
-  const [customError, setCustomError] = useState('')
-  const [customCatalog, setCustomCatalog] = useState<RaceSummary[]>([])
-  const [customCatalogLoading, setCustomCatalogLoading] = useState(false)
-  const [customCatalogError, setCustomCatalogError] = useState('')
   const selectedRaceEntry = playableRaceFromValue(selectedRaceSelection?.raceId ?? selectedRaceSelection?.raceName ?? selectedRace)
   const selectedCustomRace =
     selectedRaceSelection?.source === 'custom' ? selectedRaceSelection.customRaceDefinition : null
@@ -392,145 +357,41 @@ export function RaceSelector({
   const visibleRaces = useMemo(
     () => {
       const filtered = filterPlayableRaces({ query, category: selectedFilter })
-      if (viewMode === 'recommended') {
-        return filtered.filter(
-          (race) => recommendedRaceNames.has(race.name) || race.categories.includes('Beginner Friendly'),
-        )
-      }
+      if (viewMode === 'recommended') return filtered.filter(isRecommendedRace)
       if (viewMode === 'custom') return []
       return filtered
     },
     [query, selectedFilter, viewMode],
   )
+  const {
+    prompt: customPrompt,
+    setPrompt: setCustomPrompt,
+    draft: customDraft,
+    setDraft: setCustomDraft,
+    pending: customPending,
+    error: customError,
+    saved: customCatalog,
+    savedLoading: customCatalogLoading,
+    savedError: customCatalogError,
+    generate: generateCustomRace,
+    accept: acceptCustomRace,
+    chooseSaved: selectExistingCustomRace,
+  } = useCustomRaces({
+    auth,
+    baseUrl,
+    listing: viewMode === 'custom',
+    onChosen: (selection) => {
+      onRaceSelectionChange?.(selection)
+      onRaceChange(selection.raceName)
+      onSexChange(selectedSexKey)
+    },
+  })
 
   const chooseRace = (race: PlayableRace) => {
     onRaceSelectionChange?.(raceSelectionFromPlayableRace(race))
     onRaceChange(race.name)
     onSexChange(selectedSexKey)
     setDetailsRace(null)
-  }
-
-  useEffect(() => {
-    if (viewMode !== 'custom') return
-    let cancelled = false
-    void Promise.resolve().then(() => {
-      if (cancelled) return
-      setCustomCatalogLoading(true)
-      setCustomCatalogError('')
-    })
-    apiFetch<RaceListResponse>(baseUrl, '/api/races?source=custom', auth)
-      .then((response) => {
-        if (!cancelled) setCustomCatalog(response.races)
-      })
-      .catch((error) => {
-        if (!cancelled) setCustomCatalogError(error instanceof Error ? error.message : String(error))
-      })
-      .finally(() => {
-        if (!cancelled) setCustomCatalogLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [auth, baseUrl, viewMode])
-
-  const generateCustomRace = async (generationMode: CustomRaceGenerationMode = 'canon') => {
-    const prompt = customPrompt.trim()
-    if (!prompt) {
-      setCustomError('Describe the custom race first.')
-      return
-    }
-    setCustomPending(true)
-    setCustomError('')
-    try {
-      const response = await apiFetch<CustomRaceGenerateResponse>(
-        baseUrl,
-        '/api/custom-races/generate',
-        auth,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            prompt,
-            strictness: 'standard',
-            generationMode,
-            ...(generationMode === 'balanced' && customDraft ? { currentDraft: customDraft } : {}),
-          }),
-        },
-      )
-      setCustomDraft(response.draftRace)
-    } catch (error) {
-      setCustomError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setCustomPending(false)
-    }
-  }
-
-  const acceptCustomRace = async () => {
-    if (!customDraft) return
-    setCustomPending(true)
-    setCustomError('')
-    try {
-      const response = await apiFetch<CustomRaceSaveResponse>(
-        baseUrl,
-        '/api/custom-races',
-        auth,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            raceDefinition: customDraft,
-            approvalStatus:
-              customDraft.approvalStatus === 'overpowered_unreviewed' ? 'overpowered_unreviewed' : 'approved_by_user',
-          }),
-        },
-      )
-      const savedRace = response.race
-      const selection: CharacterRaceSelection = {
-        raceId: savedRace.id,
-        raceName: savedRace.name,
-        source: 'custom',
-        customRaceDefinition: savedRace,
-        selectedOptions: {},
-      }
-      onRaceSelectionChange?.(selection)
-      onRaceChange(savedRace.name)
-      onSexChange(selectedSexKey)
-      setCustomDraft(savedRace)
-      setCustomCatalog((current) => {
-        const summary: RaceSummary = response.summary
-        return [summary, ...current.filter((race) => race.id !== summary.id)]
-      })
-    } catch (error) {
-      setCustomError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setCustomPending(false)
-    }
-  }
-
-  const selectExistingCustomRace = async (race: RaceSummary) => {
-    setCustomPending(true)
-    setCustomError('')
-    try {
-      const workspaceQuery = race.workspaceId ? `?workspaceId=${encodeURIComponent(race.workspaceId)}` : ''
-      const fullRace = await apiFetch<RaceDefinition>(
-        baseUrl,
-        `/api/races/${encodeURIComponent(race.id)}${workspaceQuery}`,
-        auth,
-      )
-      const selection: CharacterRaceSelection = {
-        raceId: fullRace.id,
-        raceName: fullRace.name,
-        source: 'custom',
-        customRaceDefinition: fullRace,
-        selectedOptions: {},
-      }
-      onRaceSelectionChange?.(selection)
-      onRaceChange(fullRace.name)
-      onSexChange(selectedSexKey)
-      setCustomDraft(fullRace)
-    } catch (error) {
-      setCustomError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setCustomPending(false)
-    }
   }
 
   return (
@@ -733,10 +594,10 @@ export function RaceSelector({
                   <span key={trait}>{trait}</span>
                 ))}
               </div>
-              {raceWarnings(customDraft).length ? (
+              {customRaceWarnings(customDraft).length ? (
                 <div className="custom-race-warnings">
                   <AlertTriangle size={15} />
-                  <span>{raceWarnings(customDraft).join(' ')}</span>
+                  <span>{customRaceWarnings(customDraft).join(' ')}</span>
                 </div>
               ) : null}
               <CustomRaceMetadataPreview race={customDraft} />

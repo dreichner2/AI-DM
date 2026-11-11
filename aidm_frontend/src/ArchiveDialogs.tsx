@@ -93,18 +93,18 @@ export function CampaignArchiveDialog({
   return (
     <ModalShell
       closeDisabled={dialog.pendingId !== null}
-      closeLabel="Close campaign archive"
+      closeLabel="Close archived adventures"
       description="Archived adventures stay saved here, out of your list, until you restore them."
       dialogRef={dialogRef}
       labelledBy="campaign-archive-title"
       onClose={onClose}
-      title="Campaign Archive"
+      title="Archived adventures"
     >
       <div className="story-dialog-body">
         {dialog.loading ? (
-          <ArchiveLoading label="Loading campaign archive" />
+          <ArchiveLoading label="Loading archived adventures" />
         ) : dialog.items.length ? (
-          <ul className="story-dialog-list" aria-label="Archived campaigns">
+          <ul className="story-dialog-list" aria-label="Archived adventures">
             {dialog.items.map((item) => {
               const worldLabel = worldNameById.get(item.world_id) ?? `World ${item.world_id}`
               const pending = dialog.pendingId === item.campaign_id
@@ -141,7 +141,7 @@ export function CampaignArchiveDialog({
             onClick={onArchiveSelected}
             disabled={!campaign || dialog.pendingId !== null}
           >
-            {dialog.pendingId === campaign?.campaign_id ? 'Archiving...' : 'Archive Selected Campaign'}
+            {dialog.pendingId === campaign?.campaign_id ? 'Archiving...' : 'Archive this adventure'}
           </button>
           <button
             type="button"
@@ -169,18 +169,18 @@ export function SessionArchiveDialog({
   return (
     <ModalShell
       closeDisabled={dialog.pendingId !== null}
-      closeLabel="Close session archive"
+      closeLabel="Close archived chapters"
       description={`Archived chapters of ${campaign?.title ?? 'this adventure'} stay saved here, out of the chapter list.`}
       dialogRef={dialogRef}
       labelledBy="session-archive-title"
       onClose={onClose}
-      title="Session Archive"
+      title="Archived chapters"
     >
       <div className="story-dialog-body">
         {dialog.loading ? (
-          <ArchiveLoading label="Loading session archive" />
+          <ArchiveLoading label="Loading archived chapters" />
         ) : dialog.items.length ? (
-          <ul className="story-dialog-list" aria-label="Archived sessions">
+          <ul className="story-dialog-list" aria-label="Archived chapters">
             {dialog.items.map((item) => {
               const pending = dialog.pendingId === item.session_id
               return (
@@ -217,7 +217,7 @@ export function SessionArchiveDialog({
             onClick={onArchiveSelected}
             disabled={!activeSession || dialog.pendingId !== null}
           >
-            {dialog.pendingId === activeSession?.session_id ? 'Archiving...' : 'Archive Selected Session'}
+            {dialog.pendingId === activeSession?.session_id ? 'Archiving...' : 'Archive this chapter'}
           </button>
           <button
             type="button"

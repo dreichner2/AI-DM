@@ -408,6 +408,20 @@ describe('SceneMusicPlayer', () => {
     expect(screen.getByRole('button', { name: 'Float full music controls' })).toBeInTheDocument()
   })
 
+  it('offers the floating controls as a text link and fills the sliders up to their value', async () => {
+    render(<SceneMusicPlayer />)
+
+    const fullControls = screen.getByRole('button', { name: 'Float full music controls' })
+    expect(fullControls).toHaveTextContent('Full controls')
+    expect(fullControls.querySelector('svg')).toBeNull()
+
+    fireEvent.click(fullControls)
+
+    const volume = await screen.findByRole('slider', { name: 'Music volume' })
+    expect(volume.style.getPropertyValue('--range-fill')).toBe(`${Math.round(Number(volume.getAttribute('value')) * 100)}%`)
+    expect(screen.getByRole('slider', { name: 'Music position' }).style.getPropertyValue('--range-fill')).toBe('0%')
+  })
+
   it('docks the full transport at short desktop heights instead of obscuring the turn feed', () => {
     installMatchMediaByQuery((query) => query.includes('max-height: 700px'))
     storeMusicLayout(560, 178)

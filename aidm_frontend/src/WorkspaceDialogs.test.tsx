@@ -31,10 +31,10 @@ describe('WorkspaceDialogs', () => {
     }
     const { rerender } = render(<SavedWorkspaceDeleteDialog {...props} />)
 
-    const dialog = screen.getByRole('dialog', { name: 'Delete Table' })
+    const dialog = screen.getByRole('dialog', { name: 'Delete this table' })
     expect(within(dialog).getByText('Ember Table')).toBeInTheDocument()
     expect(within(dialog).getByText('Deletion failed.')).toBeInTheDocument()
-    const deleteButton = within(dialog).getByRole('button', { name: 'Delete Table' })
+    const deleteButton = within(dialog).getByRole('button', { name: 'Delete this table' })
     expect(deleteButton).toHaveClass('story-link-danger')
     fireEvent.click(deleteButton)
     expect(onConfirm).toHaveBeenCalledTimes(1)
@@ -47,7 +47,7 @@ describe('WorkspaceDialogs', () => {
         dialog={{ workspace, error: '', pending: true }}
       />,
     )
-    const pendingDialog = screen.getByRole('dialog', { name: 'Delete Table' })
+    const pendingDialog = screen.getByRole('dialog', { name: 'Delete this table' })
     expect(within(pendingDialog).getByRole('button', { name: 'Deleting...' })).toBeDisabled()
     fireEvent.mouseDown(pendingDialog.parentElement as HTMLElement)
     expect(onClose).toHaveBeenCalledTimes(1)
@@ -71,7 +71,7 @@ describe('WorkspaceDialogs', () => {
         onConfirm={onConfirm}
       />,
     )
-    const removeDialog = screen.getByRole('dialog', { name: 'Remove Saved Table' })
+    const removeDialog = screen.getByRole('dialog', { name: 'Remove this saved table' })
     expect(within(removeDialog).getByRole('button', { name: 'Remove' })).not.toHaveClass('story-link-danger')
     expect(within(removeDialog).getByText(/saved tables only/i)).toBeInTheDocument()
 
@@ -82,10 +82,10 @@ describe('WorkspaceDialogs', () => {
       url: 'https://table.example.test/?session=42',
     }
     rerender(<ShareSessionDialog {...shareProps} />)
-    const shareDialog = screen.getByRole('dialog', { name: 'Share Session' })
+    const shareDialog = screen.getByRole('dialog', { name: 'Share the adventure' })
     expect(shareDialog).toHaveAccessibleDescription(/Send this link to a friend/)
-    expect(within(shareDialog).getByLabelText('Session share link')).toHaveValue(shareProps.url)
-    fireEvent.click(within(shareDialog).getByRole('button', { name: 'Copy Link' }))
+    expect(within(shareDialog).getByLabelText('Adventure share link')).toHaveValue(shareProps.url)
+    fireEvent.click(within(shareDialog).getByRole('button', { name: 'Copy link' }))
     expect(shareProps.onCopy).toHaveBeenCalledTimes(1)
     fireEvent.mouseDown(shareDialog.parentElement as HTMLElement)
     expect(onClose).toHaveBeenCalledTimes(1)

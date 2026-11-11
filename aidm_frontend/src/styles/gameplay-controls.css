@@ -3,7 +3,6 @@
   gap: 0.8rem;
   margin-top: 0.85rem;
   padding-top: 0.8rem;
-  border-top: 1px solid var(--line);
 }
 
 .gameplay-controls-heading,
@@ -39,9 +38,7 @@
 .gameplay-control-status,
 .gameplay-object-states span {
   padding: 0.18rem 0.42rem;
-  border: 1px solid var(--line);
   border-radius: 999px;
-  background: var(--surface-raised);
   color: var(--muted);
   font-size: 0.68rem;
   white-space: nowrap;
@@ -53,9 +50,7 @@
   min-width: 0;
   margin: 0;
   padding: 0.7rem;
-  border: 1px solid var(--line);
   border-radius: 0.65rem;
-  background: color-mix(in srgb, var(--surface-raised) 72%, transparent);
 }
 
 .gameplay-control-group legend,
@@ -76,9 +71,7 @@
 .gameplay-control-field input {
   min-width: 0;
   padding: 0.42rem 0.5rem;
-  border: 1px solid var(--line-strong);
   border-radius: 0.45rem;
-  background: var(--surface);
   color: var(--text);
 }
 
@@ -112,7 +105,6 @@
   align-items: center;
   gap: 0.4rem;
   padding: 0.4rem 0.5rem;
-  border: 1px solid var(--line);
   border-radius: 0.45rem;
   color: var(--text);
   font-size: 0.75rem;
@@ -132,9 +124,7 @@
   display: grid;
   gap: 0.45rem;
   padding: 0.6rem;
-  border: 1px solid var(--line);
   border-radius: 0.5rem;
-  background: var(--surface);
 }
 
 .gameplay-capability-heading span,
@@ -155,25 +145,14 @@
   width: fit-content;
   min-height: 2rem;
   padding: 0.35rem 0.65rem;
-  border: 1px solid var(--line-strong);
   border-radius: 0.45rem;
-  background: var(--surface-raised);
   color: var(--text);
   cursor: pointer;
 }
 
-.gameplay-control-group button:not(:disabled):hover {
-  border-color: var(--accent);
-}
-
-.gameplay-control-group .gameplay-primary-action {
-  background: var(--accent);
-  color: var(--on-accent);
-}
-
 .gameplay-control-warning {
   margin: 0;
-  color: var(--text-warning);
+  color: var(--text);
   font-size: 0.72rem;
 }
 

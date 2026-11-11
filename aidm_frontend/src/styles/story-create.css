@@ -7,28 +7,6 @@
  */
 
 .story-shell.story-create {
-  /* The full selectors in the overlays use console tokens: keep them dark in either console theme. */
-  --bg: #081010;
-  --surface: #0d1718;
-  --surface-2: #111b1c;
-  --surface-raised: #142021;
-  --surface-sunken: #091112;
-  --panel: #101819;
-  --paper: #101819;
-  --field: #0b1314;
-  --button: #141c1d;
-  --line: rgba(144, 164, 159, 0.16);
-  --line-strong: rgba(144, 164, 159, 0.26);
-  --heading: #fbf5e8;
-  --text: #c9d0cc;
-  --muted: #8a9793;
-  --faint: #63706d;
-  --orange: #ff6b2c;
-  --accent: #ff6b2c;
-  --accent-2: #ffb067;
-  --focus-ring: #ffb067;
-  --on-accent: #fff8ee;
-
   --create-inset: max(var(--story-gutter), min(12vw, 172px), env(safe-area-inset-left, 0px));
   --create-width: 1120px;
   --create-ring: 76px;
@@ -68,8 +46,8 @@
 .story-create h4 { margin: 0; }
 .story-create p { margin: 0; }
 
-/* The radio or checkbox stays focusable; its label shows the state. */
-.story-create .story-create-radio {
+/* The radio or checkbox stays focusable; its label shows the state (also in the character editor). */
+.story-shell .story-create-radio {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -733,7 +711,19 @@
   color: var(--story-arcane);
 }
 
-/* ---- the "More…" overlays ---- */
+/* ---- the "More…" overlays (also the character editor's, over the whole window) ---- */
+
+.story-shell.story-create-overlay-window {
+  --create-inset: max(var(--story-gutter), min(12vw, 172px), env(safe-area-inset-left, 0px));
+  --create-width: 1120px;
+
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: none;
+}
+.story-shell .story-create-overlay button:disabled { opacity: 1; cursor: default; }
+.story-create-overlay-head :where(p) { margin: 0; }
 
 .story-shell .story-create-overlay {
   position: absolute;
@@ -774,71 +764,6 @@
   scrollbar-color: var(--story-hairline-strong) transparent;
 }
 .story-shell .story-create-overlay-body > * { max-width: var(--create-width); }
-
-/* The embedded selectors, quieted to the Story language: no outer box, hairline cards, text tabs. */
-.story-shell .story-create-overlay .race-selector {
-  gap: var(--story-gap-4);
-  padding: 0;
-  border: 0;
-  background: none;
-}
-.story-shell .story-create-overlay .race-selector-heading { display: none; }
-.story-shell .story-create-overlay .race-mode-tabs {
-  display: flex;
-  gap: var(--story-gap-5);
-}
-.story-shell .story-create-overlay .race-mode-tabs button,
-.story-shell .story-create-overlay .race-filter-row button {
-  min-height: 0;
-  padding: 2px 0;
-  border: 0;
-  border-radius: 0;
-  background: none;
-  font-weight: 500;
-  color: var(--story-ink-soft);
-}
-.story-shell .story-create-overlay .race-mode-tabs button { font-size: 0.92rem; }
-.story-shell .story-create-overlay .race-mode-tabs button.selected,
-.story-shell .story-create-overlay .race-filter-row button.selected {
-  color: var(--story-ember-soft);
-  box-shadow: inset 0 -1px 0 currentColor;
-}
-.story-shell .story-create-overlay .race-filter-row {
-  gap: 4px var(--story-gap-4);
-  max-height: none;
-}
-.story-shell .story-create-overlay .race-filter-row button { font-size: 0.8rem; }
-.story-shell .story-create-overlay .race-search-field > span { display: none; }
-.story-shell .story-create-overlay .race-search-field > div {
-  max-width: 28rem;
-  border: 0;
-  border-radius: 0;
-  background: linear-gradient(90deg, var(--story-hairline-strong), transparent) bottom left / 100% 1px no-repeat;
-}
-.story-shell .story-create-overlay .race-search-field input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  outline: none;
-  background: transparent;
-  font: inherit;
-  font-size: 0.95rem;
-  color: var(--story-ink);
-}
-.story-shell .story-create-overlay .race-card-grid,
-.story-shell .story-create-overlay .class-card-grid { max-height: none; }
-.story-shell .story-create-overlay .race-card,
-.story-shell .story-create-overlay .class-card {
-  border-color: var(--story-hairline);
-  background: rgba(0, 0, 0, 0.18);
-}
-.story-shell .story-create-overlay .class-quick-grid,
-.story-shell .story-create-overlay .class-browse-toggle { display: none; }
-.story-shell .story-create-overlay .class-note {
-  color: var(--story-gold);
-  font-style: italic;
-}
-.story-shell .story-create-overlay .race-count { color: var(--story-faint); }
 
 /* ---- discard ---- */
 
@@ -991,4 +916,5 @@
   .story-shell .story-create-error { flex: 1; }
   .story-shell .story-create-overlay-head { padding-inline: var(--story-gutter); }
   .story-shell .story-create-overlay-body { padding-inline: var(--story-gutter); }
+  .story-shell.story-create-overlay-window { --create-inset: max(var(--story-gutter), env(safe-area-inset-left, 0px)); }
 }

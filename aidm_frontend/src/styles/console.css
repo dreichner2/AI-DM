@@ -1,0 +1,872 @@
+/*
+ * Table tools in the Story language (story-tokens.css). The stylesheets before this one
+ * lay the console out; this one gives it the Story look:
+ *   - No boxes. Columns are split by one hairline, sections by a small-caps label and a
+ *     hairline, rows by hairlines; the selected row carries the 2px ember rule at its left edge.
+ *   - Ember marks only the selection, the one filled primary (Send) and focus. Status
+ *     colour is a small dot beside plain text; badges are quiet label text.
+ *   - Titles, names and narration in the Story serif; labels in the Story label style.
+ *   - Icon buttons are borderless, text actions are Story links, fields are one hairline.
+ * Menus and floating panels take the Story glass surface. The Party tab's character block
+ * shares the Story drawer's rules (story-drawer.css).
+ */
+
+:where(.ops-bar, .beta-runtime-notices, .workspace-surfaces) button {
+  background: none;
+  color: inherit;
+}
+
+:where(.ops-bar, .beta-runtime-notices, .workspace-surfaces) :is(input, textarea, select) {
+  color: var(--story-ink);
+  background: transparent;
+}
+
+/* ---- columns ---- */
+
+.ops-bar {
+  border-bottom: 1px solid var(--story-hairline);
+}
+
+.campaign-rail,
+.right-inspector {
+  background: var(--story-bg);
+}
+
+.mobile-inspector-open .right-inspector {
+  border-left: 1px solid var(--story-hairline);
+}
+
+.campaign-rail,
+.session-board {
+  border-right: 1px solid var(--story-hairline);
+}
+
+/* ---- type ---- */
+
+/* Field labels and column headings: the Story label. */
+:is(
+  .rail-heading > span,
+  .ops-segment strong,
+  .box-title h3,
+  .current-situation-label,
+  .current-situation-facts dt,
+  .previously-on-card > div > span,
+  .turn-speaker strong,
+  .turn-consequence > strong,
+  .action-composer label,
+  .roll-tray-label,
+  .scene-music-now span,
+  .scene-music-select span,
+  .scene-music-tags > span,
+  .director-commentary-heading span,
+  .director-memory-strip > span,
+  .director-pack-grid section > span,
+  .director-record-groups strong,
+  .director-commentary-list dt,
+  .vital-grid span,
+  .ability-grid span,
+  .level-stack span,
+  .character-mechanics-grid dt,
+  .scene-state-grid span,
+  .map-segment dt,
+  .gameplay-control-legend,
+  .view-settings-heading strong,
+  .operator-drawer dt,
+  .beta-runtime-notice strong
+) {
+  font-family: var(--story-ui);
+  font-size: var(--story-label-size);
+  font-weight: 560;
+  letter-spacing: var(--story-label-tracking);
+  text-transform: uppercase;
+  color: var(--story-muted);
+}
+
+/* Badges (Active, Current, Canon Applied, Live, You…): quiet label text, no pill. */
+:is(
+  .session-header h1 span,
+  .turn-status-label,
+  .presence-badge,
+  .typing-badge,
+  .mobile-typing-badge,
+  .box-title > span,
+  .current-situation-combat,
+  .roll-wait-meta:not(.roll-wait-action),
+  .turn-recovery-badge,
+  .spellbook-list .spell-level,
+  .trait-list .trait-type,
+  .gameplay-control-status,
+  .gameplay-object-states span
+) {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font-family: var(--story-ui);
+  font-size: 0.64rem;
+  font-weight: 560;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--story-muted);
+}
+
+/* Tags and identifiers: plain muted words. */
+:is(
+  .creature-tags span,
+  .creature-ability-list span,
+  .campaign-pack-tags span,
+  .incident-meta span,
+  .combat-debug-strip span,
+  .combat-debug-events div span
+) {
+  padding: 0;
+  border-radius: 0;
+  font-size: 0.74rem;
+  text-transform: none;
+  color: var(--story-muted);
+}
+
+/* Dense grids keep the label style a little tighter. */
+:is(.scene-state-grid span, .map-segment dt) {
+  letter-spacing: 0.1em;
+}
+
+.world-state-list strong {
+  font-size: var(--story-label-size);
+  font-weight: 560;
+  letter-spacing: var(--story-label-tracking);
+  text-transform: uppercase;
+  color: var(--story-muted);
+}
+
+/* Titles, names and narration: the Story serif. */
+:is(
+  .session-header h1,
+  .session-header p,
+  .campaign-card strong,
+  .session-card strong,
+  .active-player-copy strong,
+  .mobile-presence-copy strong,
+  .previously-on-card p,
+  .previously-on-card .narrative-prose,
+  .current-situation-location,
+  .current-situation-details > p,
+  .director-commentary-heading h2,
+  .director-commentary-list strong,
+  .director-memory-strip p,
+  .scene-music-now strong,
+  .spellbook-list strong,
+  .trait-list strong,
+  .inventory-table strong,
+  .canon-list span,
+  .map-segment h4,
+  .segment-list strong,
+  .clarification-panel strong,
+  .combatant-row strong,
+  .combat-hud-heading h2,
+  .gameplay-controls-heading h2,
+  .gameplay-object-heading strong,
+  .gameplay-capability-heading strong,
+  .creature-debug-card h3,
+  .bestiary-list strong
+) {
+  font-family: var(--story-prose);
+  font-weight: 500;
+  letter-spacing: 0.005em;
+  color: var(--story-ink);
+}
+
+.session-header h1 {
+  font-size: 1.36rem;
+}
+
+.session-header p {
+  font-size: 0.98rem;
+  color: var(--story-ink-soft);
+}
+
+.campaign-card strong,
+.session-card strong,
+.active-player-copy strong,
+.spellbook-list strong,
+.trait-list strong,
+.inventory-table strong {
+  font-size: 1.04rem;
+}
+
+/* ---- controls ---- */
+
+/* Icon buttons: the .story-icon-button look. */
+:is(
+  .top-icon,
+  .rail-heading button,
+  .backend-segment > button,
+  .rail-sync-button,
+  .drawer-close-button,
+  .toolbar-button,
+  .turn-expand,
+  .turn-dismiss,
+  .turn-report,
+  .previously-on-card button,
+  .director-commentary-heading button,
+  .scene-music-controls button,
+  .scene-music-drag-handle,
+  .scene-music-resize-handle,
+  .mode-buttons button,
+  .beta-runtime-notes-panel button,
+  .box-title button,
+  .icon-action
+) {
+  border: 0;
+  border-radius: 50%;
+  color: var(--story-ink-soft);
+  background: transparent;
+  box-shadow: none;
+  transition: color var(--story-fast) var(--story-ease), background-color var(--story-fast) var(--story-ease);
+}
+
+:is(
+  .top-icon,
+  .rail-heading button,
+  .backend-segment > button,
+  .rail-sync-button,
+  .drawer-close-button,
+  .toolbar-button,
+  .turn-expand,
+  .turn-dismiss,
+  .turn-report,
+  .previously-on-card button,
+  .director-commentary-heading button,
+  .scene-music-controls button,
+  .mode-buttons button,
+  .beta-runtime-notes-panel button,
+  .box-title button,
+  .icon-action
+):is(:hover, :focus-visible):not(:disabled) {
+  color: var(--story-ink);
+  background: rgba(236, 229, 211, 0.06);
+}
+
+:is(.top-icon, .toolbar-button, .mode-buttons button):is(.selected, [aria-pressed='true'], [aria-expanded='true']) {
+  color: var(--story-ember-soft);
+}
+
+.toolbar-button {
+  border-radius: 999px;
+}
+
+:is(.top-icon, .rail-heading button, .toolbar-button, .turn-report, .box-title button):disabled {
+  color: var(--story-faint);
+  opacity: 1;
+}
+
+/* Text actions: Story links (an underline arrives on hover; the chosen one is ember). */
+:is(
+  .character-actions button,
+  .view-link,
+  .load-history-button,
+  .empty-action-card button,
+  .empty-inline-action button,
+  .start-adventure-button,
+  .operational-error-alert button,
+  .turn-recovery-submit-row button,
+  .roll-wait-action,
+  .equipment-toggle,
+  .management-form button,
+  .segment-actions button,
+  .campaign-pack-actions button,
+  .campaign-pack-override button,
+  .incident-bundle-button,
+  .scene-music-tags button,
+  .scene-music-error button,
+  .scene-music-full-controls,
+  .tts-status-strip button,
+  .queued-action-strip button,
+  .turn-control-actions button,
+  .clarification-options button,
+  .operator-rating-toggle button,
+  .operator-tone-toggle button,
+  .view-mode-toggle button,
+  .turn-quality-score-group button,
+  .turn-quality-prompt > button,
+  .gameplay-control-group button,
+  .composer-tools button,
+  .dice-chip-grid button,
+  .ability-chip-grid button,
+  .roll-mode-toggle button,
+  .roll-primary-button,
+  .bestiary-seed-row button,
+  .runtime-notice-details summary,
+  .operator-drawer summary,
+  .rail-error-history summary
+) {
+  border: 0;
+  border-radius: 0;
+  color: var(--story-ink-soft);
+  background: none;
+  box-shadow: none;
+  text-decoration: underline 1px transparent;
+  text-underline-offset: 0.32em;
+  transition: color var(--story-fast) var(--story-ease), text-decoration-color var(--story-base) var(--story-ease);
+}
+
+:is(
+  .character-actions button,
+  .view-link,
+  .load-history-button,
+  .empty-action-card button,
+  .empty-inline-action button,
+  .start-adventure-button,
+  .operational-error-alert button,
+  .turn-recovery-submit-row button,
+  .roll-wait-action,
+  .equipment-toggle,
+  .management-form button,
+  .segment-actions button,
+  .campaign-pack-actions button,
+  .campaign-pack-override button,
+  .incident-bundle-button,
+  .scene-music-tags button,
+  .scene-music-error button,
+  .scene-music-full-controls,
+  .tts-status-strip button,
+  .queued-action-strip button,
+  .turn-control-actions button,
+  .clarification-options button,
+  .operator-rating-toggle button,
+  .operator-tone-toggle button,
+  .view-mode-toggle button,
+  .turn-quality-score-group button,
+  .turn-quality-prompt > button,
+  .gameplay-control-group button,
+  .composer-tools button,
+  .dice-chip-grid button,
+  .ability-chip-grid button,
+  .roll-mode-toggle button,
+  .roll-primary-button,
+  .bestiary-seed-row button,
+  .runtime-notice-details summary,
+  .operator-drawer summary,
+  .rail-error-history summary
+):is(:hover, :focus-visible):not(:disabled) {
+  color: var(--story-ink);
+  background: none;
+  text-decoration-color: currentColor;
+}
+
+:is(
+  .scene-music-tags button,
+  .turn-control-actions button,
+  .operator-rating-toggle button,
+  .operator-tone-toggle button,
+  .view-mode-toggle button,
+  .turn-quality-score-group button,
+  .composer-tools button,
+  .dice-chip-grid button,
+  .ability-chip-grid button,
+  .roll-mode-toggle button
+):is(.selected, [aria-pressed='true']),
+.operator-drawer[open] summary,
+button.roll-primary-button,
+button.gameplay-primary-action,
+button.start-adventure-button {
+  color: var(--story-ember-soft);
+  text-decoration-color: currentColor;
+}
+
+:is(
+  .character-actions button,
+  .composer-tools button,
+  .gameplay-control-group button,
+  .start-adventure-button,
+  .roll-primary-button,
+  .dice-chip-grid button,
+  .ability-chip-grid button,
+  .roll-mode-toggle button,
+  .management-form button,
+  .equipment-toggle
+):disabled {
+  color: var(--story-faint);
+  opacity: 1;
+  text-decoration-color: transparent;
+}
+
+/* The one filled primary: Send. */
+.send-button {
+  border: 0;
+  border-radius: 999px;
+  color: #1a0d05;
+  background: linear-gradient(180deg, #ffb067, #ff6b2c);
+  box-shadow: 0 0 0 1px rgba(255, 176, 103, 0.35), 0 10px 40px -8px rgba(255, 107, 44, 0.55);
+  font-weight: 600;
+}
+
+.send-button:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ffb067, #ff6b2c);
+  box-shadow: 0 0 0 1px rgba(255, 196, 133, 0.6), 0 14px 54px -8px rgba(255, 107, 44, 0.75);
+}
+
+.send-button:disabled {
+  color: var(--story-faint);
+  background: rgba(236, 229, 211, 0.06);
+  box-shadow: none;
+  opacity: 1;
+}
+
+/* Fields: one hairline that turns ember on focus. */
+:is(
+  .search-field,
+  .composer-frame,
+  .bestiary-search,
+  .view-settings-menu select,
+  .scene-music-select select,
+  .management-form input,
+  .management-form select,
+  .management-form textarea,
+  .bestiary-toolbar select,
+  .bestiary-seed-row input,
+  .turn-recovery-note textarea,
+  .action-intent-panel select,
+  .action-intent-panel input,
+  .gameplay-control-field select,
+  .gameplay-control-field input,
+  .roll-reason-field input,
+  .roll-pending-field select,
+  .turn-control-actions select,
+  .campaign-pack-override select
+) {
+  border: 0;
+  border-bottom: 1px solid var(--story-hairline-strong);
+  border-radius: 0;
+  color: var(--story-ink);
+  background-color: transparent;
+  box-shadow: none;
+  transition: border-color var(--story-fast) var(--story-ease);
+}
+
+:is(
+  .search-field,
+  .composer-frame,
+  .bestiary-search
+):focus-within,
+:is(
+  .view-settings-menu select,
+  .scene-music-select select,
+  .management-form input,
+  .management-form select,
+  .management-form textarea,
+  .bestiary-toolbar select,
+  .bestiary-seed-row input,
+  .turn-recovery-note textarea,
+  .action-intent-panel select,
+  .action-intent-panel input,
+  .gameplay-control-field select,
+  .gameplay-control-field input,
+  .roll-reason-field input,
+  .roll-pending-field select,
+  .turn-control-actions select,
+  .campaign-pack-override select
+):focus {
+  border-bottom-color: var(--story-ember);
+  outline: none;
+}
+
+:is(
+  .view-settings-menu select,
+  .scene-music-select select,
+  .management-form select,
+  .bestiary-toolbar select,
+  .action-intent-panel select,
+  .gameplay-control-field select,
+  .roll-pending-field select,
+  .turn-control-actions select,
+  .campaign-pack-override select
+) {
+  appearance: none;
+  padding-right: 22px;
+  background: no-repeat right 2px center / 12px
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2386908c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+}
+
+:where(.ops-bar, .workspace-surfaces) select option {
+  color: var(--story-ink);
+  background: var(--story-bg-raised);
+}
+
+:where(.ops-bar, .workspace-surfaces) :is(input, textarea)::placeholder {
+  font-style: italic;
+  color: var(--story-faint);
+}
+
+/* Menus and floating panels: the Story glass. */
+:is(
+  .account-menu,
+  .session-menu,
+  .view-settings-menu,
+  .operator-drawer-body,
+  .director-commentary-panel,
+  .runtime-notice-full,
+  .beta-runtime-notes-panel,
+  .scene-music-player:not(.is-inline-static, .is-mobile-static),
+  .jump-latest-button
+) {
+  border: 1px solid var(--story-glass-edge);
+  border-radius: 14px;
+  background: var(--story-glass);
+  -webkit-backdrop-filter: blur(var(--story-glass-blur)) saturate(1.2);
+  backdrop-filter: blur(var(--story-glass-blur)) saturate(1.2);
+  box-shadow: 0 28px 64px -24px rgba(0, 0, 0, 0.55);
+}
+
+.jump-latest-button {
+  border-radius: 999px;
+}
+
+.account-menu,
+.session-menu {
+  padding: 6px;
+}
+
+.account-menu button,
+.session-menu button {
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: 9px;
+  color: var(--story-ink-soft);
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.account-menu button:is(:hover, :focus-visible),
+.session-menu button:is(:hover, :focus-visible) {
+  color: var(--story-ink);
+  background: rgba(236, 229, 211, 0.06);
+}
+
+.session-menu button.danger {
+  color: var(--story-fail);
+}
+
+/* Banners that stay on top of the scrolling feed keep the page behind them. */
+.roll-wait-banner,
+.turn-recovery-banner,
+.panel-loading-strip,
+.session-at-a-glance {
+  background: var(--story-bg);
+}
+
+.roll-wait-banner,
+.turn-recovery-banner {
+  border-bottom: 1px solid var(--story-hairline);
+}
+
+.turn-recovery-banner,
+.roll-wait-banner.current-player,
+.turn-recovery-success,
+.turn-recovery-failure {
+  padding-left: 14px;
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--story-ember) 70%, transparent);
+}
+
+/* ---- Safe Mode line ---- */
+
+.beta-runtime-notices {
+  border-bottom: 1px solid var(--story-hairline);
+  color: var(--story-muted);
+}
+
+.beta-runtime-notice {
+  padding: 0;
+}
+
+.beta-runtime-notice strong::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 8px 1px 0;
+  border-radius: 50%;
+  background: var(--story-gold);
+}
+
+.beta-runtime-notice.info strong::before {
+  background: var(--story-faint);
+}
+
+.beta-runtime-notice span {
+  color: var(--story-muted);
+}
+
+.runtime-notice-details summary {
+  padding: 0;
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+/* ---- rail ---- */
+
+.rail-section + .rail-section,
+.rail-nav,
+.rail-footer {
+  border-top: 1px solid var(--story-hairline);
+}
+
+.rail-section + .rail-section {
+  margin-top: 16px;
+}
+
+.rail-nav {
+  padding-top: 12px;
+}
+
+.campaign-list,
+.session-list {
+  gap: 0;
+}
+
+:is(.campaign-list, .session-list) > * + * {
+  border-top: 1px solid var(--story-hairline);
+}
+
+.campaign-card,
+.session-card,
+.nav-item {
+  border-radius: 0;
+  transition: color var(--story-fast) var(--story-ease), box-shadow var(--story-base) var(--story-ease);
+}
+
+:is(.campaign-card, .session-card, .nav-item):hover:not(:disabled) {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--story-ember) 40%, transparent);
+}
+
+:is(.campaign-card, .session-card, .nav-item).active {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--story-ember) 85%, transparent);
+}
+
+.nav-item.active {
+  color: var(--story-ember-soft);
+}
+
+.nav-item:hover {
+  color: var(--story-ink);
+}
+
+.thumb {
+  border-radius: 8px;
+}
+
+.empty-rail {
+  font-family: var(--story-prose);
+  font-size: 0.98rem;
+  font-style: italic;
+  color: var(--story-muted);
+}
+
+.rail-skeleton-list span {
+  border-radius: 0;
+  background-color: transparent;
+}
+
+/* ---- session board ---- */
+
+.session-header {
+  border-bottom: 1px solid var(--story-hairline);
+}
+
+.scene-state-header {
+  color: var(--story-ink-soft);
+}
+
+.scene-state-header::before {
+  width: 6px;
+  height: 6px;
+}
+
+.current-situation,
+.previously-on-card {
+  border-bottom: 1px solid var(--story-hairline);
+  border-radius: 0;
+}
+
+.current-situation-next {
+  color: var(--story-ink-soft);
+}
+
+.previously-on-card {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* Timeline: no entry boxes; one hairline between entries, the latest on the ember rule. */
+.turn-number {
+  font-family: var(--story-prose);
+  font-size: 1rem;
+  color: var(--story-faint);
+}
+
+.turn-row.current .turn-number {
+  color: var(--story-ink-soft);
+}
+
+.turn-card,
+.dm-response-card {
+  border-radius: 0;
+  border-bottom: 1px solid var(--story-hairline);
+}
+
+.turn-row.current > :is(.turn-card, .dm-response-card) {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--story-ember) 85%, transparent);
+}
+
+.turn-card p,
+.response-copy p,
+.turn-card .narrative-prose,
+.dm-response-card .narrative-prose {
+  color: var(--story-ink);
+}
+
+.turn-speaker span,
+.turn-card time {
+  font-size: 0.74rem;
+  color: var(--story-muted);
+}
+
+.turn-actions button {
+  border-radius: 50%;
+}
+
+.stream-state {
+  color: var(--story-muted);
+}
+
+/* ---- composer ---- */
+
+.action-composer {
+  border-top: 1px solid var(--story-hairline);
+}
+
+.action-composer label span {
+  color: var(--story-faint);
+}
+
+:is(.turn-control-strip, .queued-action-strip, .tts-status-strip) {
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+.composer-frame textarea {
+  font-family: var(--story-prose);
+  font-size: 1.08rem;
+  color: var(--story-ink);
+}
+
+.action-intent-panel,
+.roll-tray,
+.clarification-panel,
+.combat-hud {
+  border-top: 1px solid var(--story-hairline);
+  border-radius: 0;
+}
+
+/* ---- inspector ---- */
+
+.inspector-tabs {
+  border-bottom: 1px solid var(--story-hairline);
+}
+
+.inspector-tabs button:hover {
+  color: var(--story-ink);
+}
+
+.inspector-tabs button.active::after {
+  right: 10px;
+  bottom: 0;
+  left: 10px;
+  height: 1px;
+  background: var(--story-ember);
+}
+
+.inspector-box {
+  margin-top: 18px;
+  padding: 16px 2px 0;
+  border-top: 1px solid var(--story-hairline);
+  border-radius: 0;
+}
+
+.character-panel {
+  padding: 18px 2px 0;
+}
+
+:is(
+  .active-player-list,
+  .spellbook-list,
+  .trait-list,
+  .inventory-table,
+  .canon-list,
+  .segment-list,
+  .combatant-list,
+  .bestiary-list,
+  .incident-list
+) > * + * {
+  border-top: 1px solid var(--story-hairline);
+}
+
+.active-player-list li,
+.spellbook-list > div,
+.trait-list > div,
+.inventory-table > div,
+.segment-list article,
+.combatant-row,
+.bestiary-list button {
+  border-radius: 0;
+}
+
+.active-player-list li.selected,
+.bestiary-list button.selected {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--story-ember) 85%, transparent);
+}
+
+.inventory-table small {
+  color: var(--story-muted);
+}
+
+.inspiration-toggle {
+  width: 10px;
+  height: 10px;
+  box-shadow: inset 0 0 0 1px var(--story-hairline-strong);
+}
+
+.inspiration-toggle.filled {
+  background: var(--story-success);
+  box-shadow: none;
+}
+
+.inspiration-row {
+  color: var(--story-ink-soft);
+}
+
+.character-panel .character-mechanics-grid {
+  margin-top: 18px;
+  padding-top: 20px;
+  border-top: 1px solid var(--story-hairline);
+}
+
+.inspiration-row > span:first-child,
+.inspiration-row > span:nth-of-type(3) {
+  font-size: var(--story-label-size);
+  font-weight: 560;
+  letter-spacing: var(--story-label-tracking);
+  text-transform: uppercase;
+  color: var(--story-muted);
+}
+
+.inspiration-row strong {
+  font-family: var(--story-prose);
+  font-size: 1.1rem;
+  font-weight: 500;
+}
+
+.mini-map {
+  border-radius: 12px;
+}

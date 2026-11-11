@@ -90,7 +90,7 @@ export function NewAdventureSheet({
   return (
     <ModalShell
       closeDisabled={pending}
-      closeLabel="Close create campaign"
+      closeLabel="Close new adventure"
       dialogRef={dialogRef}
       labelledBy="new-adventure-title"
       onClose={onClose}

@@ -14,28 +14,28 @@ type CampaignActionDialogProps = {
 
 const CAMPAIGN_ACTION_LABELS = {
   rename: {
-    title: 'Rename Campaign',
+    title: 'Rename the adventure',
     pending: 'Saving...',
-    submit: 'Save Campaign',
+    submit: 'Save',
     consequence: '',
   },
   archive: {
-    title: 'Archive Campaign',
+    title: 'Archive this adventure',
     pending: 'Archiving...',
-    submit: 'Archive Campaign',
+    submit: 'Archive this adventure',
     consequence:
       'Archiving hides this adventure and its chapters from your list. Nothing is lost; you can restore it later.',
   },
   restore: {
-    title: 'Restore Campaign',
+    title: 'Restore this adventure',
     pending: 'Restoring...',
-    submit: 'Restore Campaign',
+    submit: 'Restore this adventure',
     consequence: 'Restoring brings this adventure, and the chapters archived with it, back into play.',
   },
   delete: {
-    title: 'Delete Campaign',
+    title: 'Delete this adventure',
     pending: 'Deleting...',
-    submit: 'Delete Campaign',
+    submit: 'Delete this adventure',
     consequence:
       'This permanently deletes the adventure with its chapters, maps and notes. Characters stay at this table but leave the adventure.',
   },
@@ -55,7 +55,7 @@ export function CampaignActionDialog({
     <ModalShell
       size={dialog.mode === 'rename' ? 'standard' : 'narrow'}
       closeDisabled={dialog.pending}
-      closeLabel="Close campaign action"
+      closeLabel="Close adventure action"
       dialogRef={dialogRef}
       labelledBy="campaign-action-title"
       onClose={onClose}
@@ -65,7 +65,7 @@ export function CampaignActionDialog({
         {dialog.mode === 'rename' ? (
           <>
             <label className="story-dialog-field">
-              <span className="story-label">Campaign Name</span>
+              <span className="story-label">Adventure name</span>
               <input
                 autoFocus
                 data-autofocus
@@ -127,16 +127,16 @@ export function SessionActionDialog({
     <ModalShell
       size={rename ? 'standard' : 'narrow'}
       closeDisabled={dialog.pending}
-      closeLabel="Close session action"
+      closeLabel="Close chapter action"
       dialogRef={dialogRef}
       labelledBy="session-action-title"
       onClose={onClose}
-      title={rename ? 'Rename Session' : 'Delete Session'}
+      title={rename ? 'Rename the chapter' : 'Delete this chapter'}
     >
       <form className="story-dialog-body" onSubmit={onSubmit}>
         {rename ? (
           <label className="story-dialog-field">
-            <span className="story-label">Session Name</span>
+            <span className="story-label">Chapter name</span>
             <input
               autoFocus
               data-autofocus
@@ -169,8 +169,8 @@ export function SessionActionDialog({
                 ? 'Renaming...'
                 : 'Deleting...'
               : rename
-                ? 'Rename Session'
-                : 'Delete Session'}
+                ? 'Save'
+                : 'Delete this chapter'}
           </button>
         </footer>
       </form>

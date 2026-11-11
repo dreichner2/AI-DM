@@ -105,7 +105,8 @@
   font-style: italic;
   color: var(--story-muted);
 }
-.story-shell .story-sheet-actions {
+.story-shell .story-sheet-actions,
+.character-panel .character-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 20px;
@@ -118,14 +119,17 @@
 .story-shell .story-sheet .story-link-danger:focus-visible { color: var(--story-fail); }
 
 /* ---- character ---- */
+/* Table tools' Party tab (InspectorPanel) shares these rules for its character block. */
 
-.story-shell .story-sheet .story-character-head {
+.story-shell .story-sheet .story-character-head,
+.character-panel .character-card {
   display: grid;
   grid-template-columns: 112px minmax(0, 1fr);
   align-items: center;
   gap: 20px;
 }
-.story-shell .story-sheet .story-character-portrait {
+.story-shell .story-sheet .story-character-portrait,
+.character-panel .portrait {
   position: relative;
   width: 112px;
   height: 112px;
@@ -133,15 +137,18 @@
   border-radius: 16px;
   background: var(--story-bg-raised);
 }
-.story-shell .story-sheet .story-character-portrait img { display: block; width: 100%; height: 100%; object-fit: cover; }
-.story-shell .story-sheet .story-character-portrait::after {
+.story-shell .story-sheet .story-character-portrait img,
+.character-panel .portrait img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.story-shell .story-sheet .story-character-portrait::after,
+.character-panel .portrait::after {
   content: '';
   position: absolute;
   inset: 0;
   border-radius: inherit;
   background: radial-gradient(circle at 50% 38%, transparent 52%, color-mix(in srgb, var(--story-bg) 72%, transparent) 100%);
 }
-.story-shell .story-sheet .story-character-name {
+.story-shell .story-sheet .story-character-name,
+.character-panel .character-main h2 {
   margin: 0;
   font-family: var(--story-prose);
   font-size: 1.7rem;
@@ -149,10 +156,14 @@
   line-height: 1.1;
   color: var(--story-ink);
 }
-.story-shell .story-sheet .story-character-line { margin: 6px 0 12px; font-size: 0.86rem; color: var(--story-ink-soft); }
-.story-shell .story-sheet .story-xp { height: 2px; overflow: hidden; border-radius: 2px; background: var(--story-hairline-strong); }
-.story-shell .story-sheet .story-xp span { display: block; height: 100%; background: var(--story-gold); }
-.story-shell .story-sheet .story-xp-label {
+.story-shell .story-sheet .story-character-line,
+.character-panel .character-main p { margin: 6px 0 12px; font-size: 0.86rem; color: var(--story-ink-soft); }
+.story-shell .story-sheet .story-xp,
+.character-panel .xp-track { height: 2px; overflow: hidden; border-radius: 2px; background: var(--story-hairline-strong); }
+.story-shell .story-sheet .story-xp span,
+.character-panel .xp-track span { display: block; height: 100%; background: var(--story-gold); }
+.story-shell .story-sheet .story-xp-label,
+.character-panel .xp-label {
   margin: 6px 0 0;
   font-size: 0.74rem;
   font-variant-numeric: tabular-nums;
@@ -160,22 +171,30 @@
 }
 
 .story-shell .story-sheet .story-vitals,
-.story-shell .story-sheet .story-abilities {
+.story-shell .story-sheet .story-abilities,
+.character-panel .vital-grid,
+.character-panel .ability-grid {
   display: grid;
   margin: var(--story-gap-5) 0 0;
 }
-.story-shell .story-sheet .story-vitals { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.story-shell .story-sheet .story-abilities { grid-template-columns: repeat(6, minmax(0, 1fr)); margin-top: var(--story-gap-5); }
+.story-shell .story-sheet .story-vitals,
+.character-panel .vital-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.story-shell .story-sheet .story-abilities,
+.character-panel .ability-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); margin-top: var(--story-gap-5); }
 .story-shell .story-sheet .story-vitals > div,
-.story-shell .story-sheet .story-abilities > div {
+.story-shell .story-sheet .story-abilities > div,
+.character-panel .vital-grid > div,
+.character-panel .ability-grid > div {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 4px;
   min-width: 0;
 }
-.story-shell .story-sheet .story-vitals dt { order: 2; }
-.story-shell .story-sheet .story-vitals dd {
+.story-shell .story-sheet .story-vitals dt,
+.character-panel .vital-grid span { order: 2; }
+.story-shell .story-sheet .story-vitals dd,
+.character-panel .vital-grid strong {
   order: 1;
   margin: 0;
   font-family: var(--story-prose);
@@ -186,7 +205,8 @@
   color: var(--story-ink);
 }
 .story-shell .story-sheet .story-vitals dd[data-health] { color: var(--ring, var(--story-ink)); }
-.story-shell .story-sheet .story-ability-modifier {
+.story-shell .story-sheet .story-ability-modifier,
+.character-panel .ability-grid small {
   order: 1;
   margin: 0;
   font-family: var(--story-prose);
@@ -195,14 +215,16 @@
   font-variant-numeric: lining-nums;
   color: var(--story-ink);
 }
-.story-shell .story-sheet .story-ability-score {
+.story-shell .story-sheet .story-ability-score,
+.character-panel .ability-grid strong {
   order: 2;
   margin: 0;
   font-size: 0.74rem;
   font-variant-numeric: tabular-nums;
   color: var(--story-muted);
 }
-.story-shell .story-sheet .story-abilities dt { order: 3; margin-top: 3px; }
+.story-shell .story-sheet .story-abilities dt,
+.character-panel .ability-grid span { order: 3; margin-top: 3px; }
 .story-shell .story-sheet-conditions { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: var(--story-gap-4); }
 .story-shell .story-sheet-conditions .story-chip { text-transform: capitalize; }
 .story-shell .story-sheet-vitality { display: flex; justify-content: center; margin: var(--story-gap-4) 0 0; }
@@ -221,8 +243,10 @@
 .story-shell .story-sheet .story-saves-dot { margin: 0 0.36em; color: var(--story-faint); }
 .story-shell .story-sheet .story-hit-dice { color: var(--story-ink); }
 
-.story-shell .story-sheet .story-facts { display: flex; flex-direction: column; gap: 14px; margin: 0; }
-.story-shell .story-sheet .story-facts dd {
+.story-shell .story-sheet .story-facts,
+.character-panel .character-mechanics-grid { display: flex; flex-direction: column; gap: 14px; margin: 0; }
+.story-shell .story-sheet .story-facts dd,
+.character-panel .character-mechanics-grid dd {
   margin: 4px 0 0;
   font-family: var(--story-prose);
   font-size: 1.04rem;
@@ -399,8 +423,12 @@
   .story-shell .story-drawer-tabs .story-link { min-height: 40px; }
   .story-shell .story-sheet-actions .story-link,
   .story-shell .story-sheet .story-pack-equip { min-height: 40px; }
-  .story-shell .story-sheet .story-character-head { grid-template-columns: 88px minmax(0, 1fr); gap: 16px; }
-  .story-shell .story-sheet .story-character-portrait { width: 88px; height: 88px; border-radius: 14px; }
-  .story-shell .story-sheet .story-vitals dd { font-size: 1.42rem; }
-  .story-shell .story-sheet .story-ability-modifier { font-size: 1.24rem; }
+  .story-shell .story-sheet .story-character-head,
+  .character-panel .character-card { grid-template-columns: 88px minmax(0, 1fr); gap: 16px; }
+  .story-shell .story-sheet .story-character-portrait,
+  .character-panel .portrait { width: 88px; height: 88px; border-radius: 14px; }
+  .story-shell .story-sheet .story-vitals dd,
+  .character-panel .vital-grid strong { font-size: 1.42rem; }
+  .story-shell .story-sheet .story-ability-modifier,
+  .character-panel .ability-grid small { font-size: 1.24rem; }
 }

@@ -18,8 +18,12 @@ const STORY_DRAWER_CSS = readFileSync(resolve(__dirname, '../../styles/story-dra
 const DRAWER_TABS: StoryDrawerTab[] = ['character', 'pack', 'magic', 'journal', 'map']
 const DIALOG_CLASS = '[class*="story-dialog"]'
 const DRAWER_CLASS = '[class*="story-sheet"], [class*="story-drawer"]'
-// The one deliberate exception: the player's Reduce motion choice applies to the whole Story shell.
+// The player's Reduce motion choice applies to the whole Story shell.
 const REDUCE_MOTION_PREFIX = '.story-shell[data-reduce-motion]'
+// Shared on purpose with Table tools: the scene music player uses the Settings slider, and the
+// Party tab's character block uses the drawer's character rules.
+const SHARED_SLIDER_PREFIX = '.scene-music-player '
+const SHARED_CHARACTER_PREFIX = '.character-panel '
 
 /** Every selector in a stylesheet, with @-rule preludes and keyframe steps left out. */
 function selectors(css: string) {
@@ -55,7 +59,10 @@ describe('dialog styles stay inside dialogs', () => {
     const all = selectors(STORY_DIALOG_CSS)
     expect(all.length).toBeGreaterThan(100)
     const unscoped = all.filter(
-      (selector) => !selector.includes('.story-dialog') && !selector.startsWith(REDUCE_MOTION_PREFIX),
+      (selector) =>
+        !selector.includes('.story-dialog') &&
+        !selector.startsWith(REDUCE_MOTION_PREFIX) &&
+        !selector.startsWith(SHARED_SLIDER_PREFIX),
     )
     expect(unscoped).toEqual([])
     expect(STORY_DIALOG_CSS).not.toMatch(/\.story-sheet\b(?!s)/)
@@ -64,7 +71,9 @@ describe('dialog styles stay inside dialogs', () => {
   it('scopes every rule in story-drawer.css to the drawer root', () => {
     const all = selectors(STORY_DRAWER_CSS)
     expect(all.length).toBeGreaterThan(100)
-    const unscoped = all.filter((selector) => !/\.story-(sheet|drawer)\b/.test(selector))
+    const unscoped = all.filter(
+      (selector) => !/\.story-(sheet|drawer)\b/.test(selector) && !selector.startsWith(SHARED_CHARACTER_PREFIX),
+    )
     expect(unscoped).toEqual([])
     expect(STORY_DRAWER_CSS).not.toMatch(/\.story-dialog/)
   })

@@ -169,6 +169,7 @@ export function CampaignPackImportDialog({
   pushError,
 }: CampaignPackImportDialogProps) {
   const [fileName, setFileName] = useState('')
+  const [chosenFileName, setChosenFileName] = useState('')
   const [packText, setPackText] = useState('')
   const [packPayload, setPackPayload] = useState<unknown>(null)
   const [preview, setPreview] = useState<CampaignPackImportResponse | null>(null)
@@ -199,7 +200,7 @@ export function CampaignPackImportDialog({
     async (text: string, nextFileName = fileName) => {
       const trimmed = text.trim()
       if (!trimmed) {
-        setError('Choose a campaign pack JSON file.')
+        setError('Choose an adventure pack file.')
         setPreview(null)
         setLintResult(null)
         setPackPayload(null)
@@ -210,7 +211,7 @@ export function CampaignPackImportDialog({
       try {
         parsed = JSON.parse(trimmed)
       } catch {
-        setError('Campaign pack JSON could not be parsed.')
+        setError('The adventure pack file could not be read as JSON.')
         setPreview(null)
         setLintResult(null)
         setPackPayload(null)
@@ -239,7 +240,7 @@ export function CampaignPackImportDialog({
         setError(message)
         setPreview(null)
         setLintResult(null)
-        pushError('validation', `Campaign pack preview failed: ${message}`)
+        pushError('validation', `Adventure pack check failed: ${message}`)
       } finally {
         setPreviewPending(false)
       }
@@ -251,6 +252,7 @@ export function CampaignPackImportDialog({
     async (event: ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0]
       if (!file) return
+      setChosenFileName(file.name)
       const text = await file.text()
       setPackText(text)
       await previewPack(text, file.name)
@@ -298,7 +300,7 @@ export function CampaignPackImportDialog({
       setPreview(null)
       setLintResult(null)
       setPackPayload(null)
-      pushError('validation', `Campaign pack forge failed: ${message}`)
+      pushError('validation', `Adventure pack writing failed: ${message}`)
     } finally {
       setForgePending(false)
     }
@@ -314,7 +316,7 @@ export function CampaignPackImportDialog({
 
   const importPack = useCallback(async () => {
     if (!packPayload) {
-      setError('Preview a valid campaign pack before importing.')
+      setError('Check a valid adventure pack before creating the adventure.')
       return
     }
     setImportPending(true)
@@ -330,13 +332,13 @@ export function CampaignPackImportDialog({
         },
       )
       if (!response.campaign_id || !response.session_id) {
-        throw new Error('Campaign pack import did not return a campaign and session.')
+        throw new Error('The adventure pack import did not return an adventure and its first chapter.')
       }
       await onImported(response.campaign_id, response.session_id)
     } catch (requestError) {
       const message = errorMessage(requestError)
       setError(message)
-      pushError('persistence', `Campaign pack import failed: ${message}`)
+      pushError('persistence', `Adventure pack import failed: ${message}`)
     } finally {
       setImportPending(false)
     }
@@ -347,11 +349,11 @@ export function CampaignPackImportDialog({
       <section className="story-dialog-section" aria-labelledby="campaign-pack-forge-title">
         <h3 id="campaign-pack-forge-title" className="story-label">
           <Sparkles size={13} aria-hidden="true" />
-          Pack Forge
+          Write one from a premise
         </h3>
         <div className="story-dialog-field-pair">
           <label className="story-dialog-field">
-            <span className="story-label">Pack Title</span>
+            <span className="story-label">Pack title</span>
             <input
               type="text"
               value={forgeTitle}
@@ -380,24 +382,34 @@ export function CampaignPackImportDialog({
             onClick={() => void forgePack()}
             disabled={pending || !forgeTitle.trim()}
           >
-            {forgePending ? 'Forging...' : 'Forge Pack'}
+            {forgePending ? 'Writing...' : 'Write the pack'}
           </button>
         </div>
       </section>
 
       <hr className="story-rule" />
-      <label className="story-dialog-field story-dialog-file">
-        <span className="story-label">Campaign Pack JSON</span>
-        <input
-          data-autofocus
-          type="file"
-          accept="application/json,.json"
-          onChange={(event) => void loadFile(event)}
-          disabled={pending}
-        />
-      </label>
+      <div className="story-dialog-field story-dialog-file">
+        <span id="campaign-pack-file-label" className="story-label">Pack file</span>
+        <span className="story-dialog-file-row">
+          <label className="story-dialog-file-choose">
+            <input
+              data-autofocus
+              type="file"
+              accept="application/json,.json"
+              aria-labelledby="campaign-pack-file-label"
+              aria-describedby="campaign-pack-file-name"
+              onChange={(event) => void loadFile(event)}
+              disabled={pending}
+            />
+            <span className="story-link">Choose a file</span>
+          </label>
+          <span id="campaign-pack-file-name" className="story-dialog-file-name">
+            {chosenFileName || 'No file chosen'}
+          </span>
+        </span>
+      </div>
       <label className="story-dialog-field">
-        <span className="story-label">JSON Preview</span>
+        <span className="story-label">Contents</span>
         <textarea
           className="story-dialog-code"
           value={packText}
@@ -486,10 +498,10 @@ export function CampaignPackImportDialog({
             </p>
           ) : null}
           {authoringReport ? (
-            <div aria-label="Campaign pack authoring report">
+            <div aria-label="Adventure pack authoring report">
               <dl className="story-dialog-facts">
                 <div>
-                  <dt className="story-label">Checkpoint Spine</dt>
+                  <dt className="story-label">Checkpoint spine</dt>
                   <dd>
                     {checkpointReport?.reachable ?? 0} / {checkpointReport?.total ?? 0} reachable
                   </dd>
@@ -506,7 +518,7 @@ export function CampaignPackImportDialog({
                   <dd className="story-dialog-row-meta">{formatVisibleIds(encounterReport?.unlinkedIds)}</dd>
                 </div>
                 <div>
-                  <dt className="story-label">Authored Records</dt>
+                  <dt className="story-label">Authored records</dt>
                   <dd>{reportCollectionRows.reduce((total, row) => total + (row.count ?? 0), 0)}</dd>
                   <dd className="story-dialog-row-meta">{reportCollectionRows.length} populated groups</dd>
                 </div>
@@ -544,11 +556,11 @@ export function CampaignPackImportDialog({
         </button>
         <button type="submit" className="story-link" disabled={previewPending || importPending}>
           <FileJson size={15} aria-hidden="true" />
-          {previewPending ? 'Checking...' : fileName ? 'Check Again' : 'Check Pack'}
+          {previewPending ? 'Checking...' : fileName ? 'Check again' : 'Check the pack'}
         </button>
         <button type="button" className="story-primary" onClick={() => void importPack()} disabled={!canImport}>
           <Upload size={15} aria-hidden="true" />
-          {importPending ? 'Importing...' : 'Create Campaign from Pack'}
+          {importPending ? 'Importing...' : 'Create the adventure'}
         </button>
       </footer>
     </form>

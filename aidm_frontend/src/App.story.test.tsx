@@ -117,14 +117,14 @@ describe('Story mode in the app', () => {
     expect(consoleModuleLoads).toEqual([])
   })
 
-  it('treats an unknown stored view as Story and stays dark under the light console theme', async () => {
+  it('treats an unknown stored view as Story and ignores a stored light theme', async () => {
     localStorage.setItem('aidm:theme', 'light')
     localStorage.setItem('aidm:playView', 'theater')
     const { container } = render(<App />)
 
     await screen.findByRole('log', { name: 'Session timeline' })
     const shell = container.querySelector('.prototype-shell')
-    expect(shell).toHaveClass('theme-dark', 'story-view-active')
+    expect(shell).toHaveClass('story-view-active')
     expect(shell).not.toHaveClass('theme-light')
   })
 

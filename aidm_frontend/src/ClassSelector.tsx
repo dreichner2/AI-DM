@@ -6,6 +6,7 @@ import {
   STARTER_CLASS_NAMES,
   classChoiceLabel,
   classSelectionFromValue,
+  customClassChoice,
   filterPlayableClasses,
   type ClassCategory,
   type PlayableClass,
@@ -179,9 +180,9 @@ export function ClassSelector({
   }
 
   const useCustomClass = () => {
-    const trimmed = customClass.trim()
-    if (!trimmed) return
-    onClassChange(trimmed)
+    const choice = customClassChoice(customClass)
+    if (!choice) return
+    onClassChange(choice)
     setExpanded(false)
   }
 
@@ -324,7 +325,7 @@ export function ClassSelector({
                   disabled={pending}
                 />
               </label>
-              <button type="button" onClick={useCustomClass} disabled={pending || !customClass.trim()}>
+              <button type="button" onClick={useCustomClass} disabled={pending || !customClassChoice(customClass)}>
                 Use Custom Class
               </button>
             </div>

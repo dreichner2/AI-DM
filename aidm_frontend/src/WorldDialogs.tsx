@@ -50,7 +50,7 @@ export function WorldManagerDialog({
       dialogRef={dialogRef}
       labelledBy="world-manager-title"
       onClose={onClose}
-      title="Manage Worlds"
+      title="Manage worlds"
     >
       <div className="story-dialog-body">
         {worlds.length ? (
@@ -96,7 +96,7 @@ export function WorldManagerDialog({
       <hr className="story-rule" />
       <form className="story-dialog-body" onSubmit={onSubmit}>
         <div className="story-dialog-section-head">
-          <h3 className="story-label">{form.mode === 'edit' ? 'Edit World' : 'Create World'}</h3>
+          <h3 className="story-label">{form.mode === 'edit' ? 'Edit the world' : 'A new world'}</h3>
           {form.mode === 'edit' ? (
             <button type="button" className="story-link" onClick={onResetForm} disabled={form.pending}>
               New World
@@ -104,7 +104,7 @@ export function WorldManagerDialog({
           ) : null}
         </div>
         <label className="story-dialog-field">
-          <span className="story-label">World Name</span>
+          <span className="story-label">World name</span>
           <input
             data-autofocus
             value={form.name}
@@ -146,8 +146,8 @@ export function WorldManagerDialog({
                 ? 'Saving...'
                 : 'Creating...'
               : form.mode === 'edit'
-                ? 'Save World'
-                : 'Create World'}
+                ? 'Save'
+                : 'Create the world'}
           </button>
         </footer>
       </form>
@@ -171,7 +171,7 @@ export function WorldDeleteDialog({
       labelledBy="world-delete-title"
       describedBy="world-delete-description"
       onClose={onClose}
-      title="Delete World"
+      title="Delete this world"
     >
       <div className="story-dialog-body">
         <p className="story-dialog-subject">{dialog.world.name}</p>
@@ -191,7 +191,7 @@ export function WorldDeleteDialog({
             onClick={onDelete}
             disabled={dialog.pending}
           >
-            {dialog.pending ? 'Deleting...' : 'Delete World'}
+            {dialog.pending ? 'Deleting...' : 'Delete this world'}
           </button>
           {dialog.canForce ? (
             <button
@@ -200,7 +200,7 @@ export function WorldDeleteDialog({
               onClick={onForceDelete}
               disabled={dialog.pending}
             >
-              {dialog.pending ? 'Deleting...' : 'Delete World and Campaigns'}
+              {dialog.pending ? 'Deleting...' : 'Delete the world and its adventures'}
             </button>
           ) : null}
         </footer>

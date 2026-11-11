@@ -37,12 +37,11 @@ function spellCounts(entry: CoreClass) {
   ].filter(Boolean).join(' and ')
 }
 
-function ClassDetail({ entry, draft, onChange }: { entry: CoreClass; draft: HeroDraft; onChange: StepCallingProps['onChange'] }) {
-  const style = heroFightingStyle(draft)
+/** A core calling's hit die and saves, and what it can do from the start (also shown in the calling catalog). */
+export function CallingStart({ entry }: { entry: CoreClass }) {
   const magic = entry.spellcasting
   return (
     <>
-      <h3 className="story-create-detail-name">{entry.name}</h3>
       <p className="story-create-meta">{`Hit die d${entry.hitDie} · Saves ${savesLabel(entry)}`}</p>
 
       <h4 className="story-label">What you can do from the start</h4>
@@ -59,6 +58,16 @@ function ClassDetail({ entry, draft, onChange }: { entry: CoreClass; draft: Hero
           </li>
         ) : null}
       </ul>
+    </>
+  )
+}
+
+function ClassDetail({ entry, draft, onChange }: { entry: CoreClass; draft: HeroDraft; onChange: StepCallingProps['onChange'] }) {
+  const style = heroFightingStyle(draft)
+  return (
+    <>
+      <h3 className="story-create-detail-name">{entry.name}</h3>
+      <CallingStart entry={entry} />
       {entry.note ? <p className="story-create-note">{entry.note}</p> : null}
 
       {entry.fightingStyle ? (

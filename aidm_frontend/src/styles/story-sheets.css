@@ -285,22 +285,43 @@
 }
 .story-dialog textarea.story-dialog-code { min-height: 140px; }
 
-.story-dialog input[type='file'] {
-  width: 100%;
-  padding: 10px 0;
+/* A file field: a "Choose a file" link over the invisible native input, then the file's name. */
+.story-dialog .story-dialog-file-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+  padding: 8px 0 9px;
   border-bottom: 1px solid var(--story-hairline-strong);
-  font: inherit;
-  font-size: 0.88rem;
-  color: var(--story-muted);
+  font-size: 0.92rem;
 }
-.story-dialog input[type='file']::file-selector-button {
-  margin-right: 14px;
-  padding: 0;
-  border: 0;
-  font: inherit;
-  color: var(--story-ember-soft);
-  background: none;
+.story-dialog .story-dialog-file-choose { position: relative; cursor: pointer; }
+.story-dialog .story-dialog-file-choose input[type='file'] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
   cursor: pointer;
+}
+.story-dialog .story-dialog-file-choose:hover .story-link,
+.story-dialog .story-dialog-file-choose:has(input:focus-visible) .story-link {
+  color: var(--story-ink);
+  background-size: 100% 1px;
+}
+.story-dialog .story-dialog-file-choose:has(input:focus-visible) .story-link {
+  outline: 2px solid var(--story-ember-soft);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+.story-dialog .story-dialog-file-choose:has(input:disabled) { cursor: default; }
+.story-dialog .story-dialog-file-choose:has(input:disabled) .story-link { color: var(--story-faint); background-size: 0 1px; }
+.story-dialog .story-dialog-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--story-muted);
 }
 
 /* ---- choices: text options, the chosen one in ember with a check ---- */
@@ -383,7 +404,7 @@
   color: var(--story-gold);
 }
 
-/* Volume: a hairline with an ember fill and a glowing bead. */
+/* Volume: a hairline with an ember fill and a glowing bead (the scene music player's sliders too). */
 .story-dialog .story-dialog-range {
   display: inline-flex;
   align-items: center;
@@ -396,23 +417,28 @@
   text-align: right;
   color: var(--story-muted);
 }
-.story-dialog input[type='range'] {
+.story-dialog input[type='range'],
+.scene-music-player input[type='range'] {
   --range-fill: 70%;
-  width: clamp(120px, 34vw, 220px);
   height: 28px;
   margin: 0;
   background: transparent;
   cursor: pointer;
   appearance: none;
 }
-.story-dialog input[type='range']::-webkit-slider-runnable-track {
+.story-dialog input[type='range'] { width: clamp(120px, 34vw, 220px); }
+.story-dialog input[type='range']::-webkit-slider-runnable-track,
+.scene-music-player input[type='range']::-webkit-slider-runnable-track {
   height: 2px;
   border-radius: 2px;
   background: linear-gradient(90deg, var(--story-ember) var(--range-fill), var(--story-hairline-strong) var(--range-fill));
 }
-.story-dialog input[type='range']::-moz-range-track { height: 2px; border-radius: 2px; background: var(--story-hairline-strong); }
-.story-dialog input[type='range']::-moz-range-progress { height: 2px; border-radius: 2px; background: var(--story-ember); }
-.story-dialog input[type='range']::-webkit-slider-thumb {
+.story-dialog input[type='range']::-moz-range-track,
+.scene-music-player input[type='range']::-moz-range-track { height: 2px; border-radius: 2px; background: var(--story-hairline-strong); }
+.story-dialog input[type='range']::-moz-range-progress,
+.scene-music-player input[type='range']::-moz-range-progress { height: 2px; border-radius: 2px; background: var(--story-ember); }
+.story-dialog input[type='range']::-webkit-slider-thumb,
+.scene-music-player input[type='range']::-webkit-slider-thumb {
   width: 14px;
   height: 14px;
   margin-top: -6px;
@@ -422,7 +448,8 @@
   box-shadow: 0 0 0 4px rgba(255, 107, 44, 0.16), 0 0 14px rgba(255, 107, 44, 0.55);
   appearance: none;
 }
-.story-dialog input[type='range']::-moz-range-thumb {
+.story-dialog input[type='range']::-moz-range-thumb,
+.scene-music-player input[type='range']::-moz-range-thumb {
   width: 14px;
   height: 14px;
   border: 0;
@@ -430,8 +457,10 @@
   background: var(--story-ember-soft);
   box-shadow: 0 0 0 4px rgba(255, 107, 44, 0.16), 0 0 14px rgba(255, 107, 44, 0.55);
 }
-.story-dialog input[type='range']:disabled { cursor: default; opacity: 0.4; }
-.story-dialog input[type='range']:focus-visible { outline-offset: 4px; border-radius: 999px; }
+.story-dialog input[type='range']:disabled,
+.scene-music-player input[type='range']:disabled { cursor: default; opacity: 0.4; }
+.story-dialog input[type='range']:focus-visible,
+.scene-music-player input[type='range']:focus-visible { outline-offset: 4px; border-radius: 999px; }
 
 /* A checkbox: a small hairline square that fills with ember. */
 .story-dialog .story-dialog-check {

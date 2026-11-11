@@ -1,6 +1,7 @@
 import { Minus, Plus } from 'lucide-react'
 import type { RefObject } from 'react'
 import { POINT_BUY_ABILITIES, POINT_BUY_BUDGET } from '../../characterStats'
+import { BackgroundChoices } from './BackgroundChoices'
 import { skillName } from './creationRules'
 import {
   MAX_SCORE,
@@ -164,26 +165,12 @@ export function StepShape({ draft, headingRef, onChange }: StepShapeProps) {
       </div>
 
       <div className="story-create-shape-side story-create-rise">
-        <fieldset className="story-create-backgrounds">
-          <legend className="story-label">Background</legend>
-          <div className="story-create-background-grid">
-            {backgroundOptions(draft.rules).map((option) => (
-              <label key={option.id} className="story-create-choice">
-                <input
-                  type="radio"
-                  name="story-create-background"
-                  className="story-create-radio"
-                  checked={background?.id === option.id}
-                  onChange={() => onChange((current) => withBackground(current, option.id))}
-                />
-                <span className="story-create-choice-name">{option.name}</span>
-                <span className="story-create-choice-meta">
-                  {option.skillProficiencies.map(skillName).join(', ')}
-                </span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
+        <BackgroundChoices
+          options={backgroundOptions(draft.rules)}
+          chosenId={background?.id}
+          name="story-create-background"
+          onChoose={(backgroundId) => onChange((current) => withBackground(current, backgroundId))}
+        />
 
         {entry ? (
           <fieldset className="story-create-skills">

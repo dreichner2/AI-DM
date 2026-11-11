@@ -32,7 +32,7 @@ export function SavedWorkspaceDeleteDialog({
       dialogRef={dialogRef}
       labelledBy="saved-workspace-delete-title"
       onClose={onClose}
-      title={deletesTable ? 'Delete Table' : 'Remove Saved Table'}
+      title={deletesTable ? 'Delete this table' : 'Remove this saved table'}
     >
       <div className="story-dialog-body">
         <p className="story-dialog-subject">{savedWorkspaceDisplayName(dialog.workspace)}</p>
@@ -57,7 +57,7 @@ export function SavedWorkspaceDeleteDialog({
                 ? 'Deleting...'
                 : 'Removing...'
               : deletesTable
-                ? 'Delete Table'
+                ? 'Delete this table'
                 : 'Remove'}
           </button>
         </footer>
@@ -82,13 +82,13 @@ export function ShareSessionDialog({
   return (
     <ModalShell
       size="narrow"
-      closeLabel="Close share session"
+      closeLabel="Close share"
       describedBy="share-session-description"
       description="Send this link to a friend. It opens this table, where they choose or create their own character."
       dialogRef={dialogRef}
       labelledBy="share-session-title"
       onClose={onClose}
-      title="Share Session"
+      title="Share the adventure"
     >
       <div className="story-dialog-body">
         <label className="story-dialog-field">
@@ -96,7 +96,7 @@ export function ShareSessionDialog({
           <input
             data-autofocus
             readOnly
-            aria-label="Session share link"
+            aria-label="Adventure share link"
             className="story-dialog-link-field"
             value={url}
             onFocus={(event) => event.currentTarget.select()}
@@ -107,7 +107,7 @@ export function ShareSessionDialog({
             Close
           </button>
           <button type="button" className="story-primary" onClick={onCopy}>
-            Copy Link
+            Copy link
           </button>
         </footer>
       </div>

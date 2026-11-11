@@ -1,5 +1,5 @@
 import { Grip, Maximize2, Minimize2, Music, Pause, Play, Rewind, SkipBack, SkipForward, Tags, Volume1 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import {
   SCENE_MUSIC_TAGS,
   SCENE_MUSIC_TRACKS,
@@ -249,6 +249,11 @@ function clearMusicLayout() {
   } catch {
     // The player still docks for the current page when storage is unavailable.
   }
+}
+
+/** The Story slider (story-sheets.css) fills its track up to --range-fill. */
+function rangeFill(fraction: number): CSSProperties {
+  return { '--range-fill': `${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%` } as CSSProperties
 }
 
 function formatSeconds(value: number) {
@@ -849,11 +854,12 @@ export function SceneMusicPlayer({
         {defaultDockedLayout && !mobileStaticLayout && !shortStaticLayout ? (
           <button
             type="button"
+            className="scene-music-full-controls"
             aria-label="Float full music controls"
             title="Float full music controls"
             onClick={floatFullMusicControls}
           >
-            <Maximize2 size={16} />
+            Full controls
           </button>
         ) : null}
         {!inlineStaticLayout && effectivePanelMode === 'full' ? (
@@ -879,6 +885,7 @@ export function SceneMusicPlayer({
               step="1"
               value={String(trackProgress)}
               disabled={!progressMax}
+              style={rangeFill(progressMax ? trackProgress / progressMax : 0)}
               onChange={(event) => seekTrack(event.target.value)}
             />
             <span>{formatSeconds(progressMax)}</span>
@@ -906,6 +913,7 @@ export function SceneMusicPlayer({
               max="1"
               step="0.05"
               value={String(volume)}
+              style={rangeFill(volume)}
               onChange={(event) => setMusicVolume(Number(event.target.value))}
             />
           </label>

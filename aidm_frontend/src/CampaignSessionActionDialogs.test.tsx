@@ -66,14 +66,14 @@ describe('CampaignSessionActionDialogs', () => {
     }
     render(<CampaignActionDialog {...props} />)
 
-    const dialog = screen.getByRole('dialog', { name: 'Rename Campaign' })
-    fireEvent.change(within(dialog).getByLabelText('Campaign Name'), {
+    const dialog = screen.getByRole('dialog', { name: 'Rename the adventure' })
+    fireEvent.change(within(dialog).getByLabelText('Adventure name'), {
       target: { value: 'Ember Reborn' },
     })
     fireEvent.change(within(dialog).getByLabelText('Description'), {
       target: { value: 'New description' },
     })
-    const saveButton = within(dialog).getByRole('button', { name: 'Save Campaign' })
+    const saveButton = within(dialog).getByRole('button', { name: 'Save' })
     expect(saveButton).toHaveClass('story-primary')
     fireEvent.click(saveButton)
     expect(props.onTitleChange).toHaveBeenCalledWith('Ember Reborn')
@@ -101,7 +101,7 @@ describe('CampaignSessionActionDialogs', () => {
       />,
     )
 
-    const dialog = screen.getByRole('dialog', { name: 'Delete Campaign' })
+    const dialog = screen.getByRole('dialog', { name: 'Delete this adventure' })
     expect(within(dialog).getByText(/permanently deletes the adventure/i)).toBeInTheDocument()
     expect(within(dialog).getByText('Cannot delete.')).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Deleting...' })).toHaveClass('story-link-danger')
@@ -126,11 +126,11 @@ describe('CampaignSessionActionDialogs', () => {
       onSubmit,
     }
     const { rerender } = render(<SessionActionDialog {...props} />)
-    const renameDialog = screen.getByRole('dialog', { name: 'Rename Session' })
-    fireEvent.change(within(renameDialog).getByLabelText('Session Name'), {
+    const renameDialog = screen.getByRole('dialog', { name: 'Rename the chapter' })
+    fireEvent.change(within(renameDialog).getByLabelText('Chapter name'), {
       target: { value: 'A New Door' },
     })
-    fireEvent.click(within(renameDialog).getByRole('button', { name: 'Rename Session' }))
+    fireEvent.click(within(renameDialog).getByRole('button', { name: 'Save' }))
     expect(onNameChange).toHaveBeenCalledWith('A New Door')
     expect(onSubmit).toHaveBeenCalledTimes(1)
 
@@ -140,9 +140,9 @@ describe('CampaignSessionActionDialogs', () => {
         dialog={{ ...props.dialog, mode: 'delete', error: 'Delete failed.' }}
       />,
     )
-    const deleteDialog = screen.getByRole('dialog', { name: 'Delete Session' })
+    const deleteDialog = screen.getByRole('dialog', { name: 'Delete this chapter' })
     expect(within(deleteDialog).getByText(/deletes this chapter and everything said in it/i)).toBeInTheDocument()
     expect(within(deleteDialog).getByText('Delete failed.')).toBeInTheDocument()
-    expect(within(deleteDialog).getByRole('button', { name: 'Delete Session' })).toHaveClass('story-link-danger')
+    expect(within(deleteDialog).getByRole('button', { name: 'Delete this chapter' })).toHaveClass('story-link-danger')
   })
 })

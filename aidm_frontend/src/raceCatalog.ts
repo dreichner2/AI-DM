@@ -1452,6 +1452,13 @@ export function raceMatchesSearch(raceEntry: PlayableRace, query: string) {
   })
 }
 
+const RECOMMENDED_RACE_NAMES = new Set(['Human', 'Elf', 'Dwarf', 'Halfling', 'Gnome', 'Dragonborn', 'Orc', 'Tabaxi'])
+
+/** The selectors' Recommended view: the familiar ancestries and every beginner-friendly one. */
+export function isRecommendedRace(raceEntry: PlayableRace) {
+  return RECOMMENDED_RACE_NAMES.has(raceEntry.name) || raceEntry.categories.includes('Beginner Friendly')
+}
+
 export function filterPlayableRaces({
   query,
   category,

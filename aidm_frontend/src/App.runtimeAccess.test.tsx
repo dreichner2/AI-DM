@@ -284,7 +284,7 @@ describe('App runtime and workspace access', () => {
     await screen.findByRole('heading', { name: /Session Alpha/i })
 
     fireEvent.click(screen.getByRole('button', { name: 'Manage worlds' }))
-    const worlds = await screen.findByRole('dialog', { name: 'Manage Worlds' })
+    const worlds = await screen.findByRole('dialog', { name: 'Manage worlds' })
     expect(within(worlds).getByText('Smoke World')).toBeInTheDocument()
   })
 
@@ -434,16 +434,13 @@ describe('App runtime and workspace access', () => {
 
     expect(screen.queryByLabelText('Beta runtime notices')).not.toBeInTheDocument()
     const narrationControl = screen.getByRole('button', {
-      name: 'Narration unavailable; Deepgram is not configured',
+      name: 'No narrator voice is set up on this server.',
     })
     expect(narrationControl).toHaveAttribute('aria-pressed', 'false')
     expect(narrationControl).toHaveAttribute('data-tts-configuration', 'unavailable')
-    expect(narrationControl).toHaveAttribute(
-      'title',
-      'Unavailable: Deepgram narration is unavailable because the backend is not configured',
-    )
+    expect(narrationControl).toHaveAttribute('title', 'Unavailable: No narrator voice is set up on this server.')
     fireEvent.click(narrationControl)
-    expect(screen.getAllByText('Deepgram TTS is not configured on the backend.').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('No narrator voice is set up on this server.').length).toBeGreaterThan(0)
   })
 
   it('distinguishes a failed TTS configuration check from loading and credential absence', async () => {
@@ -459,7 +456,7 @@ describe('App runtime and workspace access', () => {
     expect(narrationControl).toHaveAttribute('data-tts-configuration', 'error')
     expect(narrationControl).toHaveAttribute(
       'title',
-      'Status unavailable: Could not check Deepgram narration configuration; refresh to retry',
+      'Status unavailable: Could not check narration configuration; refresh to retry',
     )
     fireEvent.click(narrationControl)
     expect(
@@ -619,7 +616,7 @@ describe('App runtime and workspace access', () => {
     expect(within(dialog).getByLabelText('Table code')).toHaveValue('old-workspace')
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove Friend Table' }))
-    let confirmDialog = await screen.findByRole('dialog', { name: 'Remove Saved Table' })
+    let confirmDialog = await screen.findByRole('dialog', { name: 'Remove this saved table' })
     expect(within(confirmDialog).getByText('Friend Table')).toBeInTheDocument()
     expect(within(confirmDialog).getByText('This removes the table from your saved tables only.')).toBeInTheDocument()
     fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Remove' }))
@@ -633,15 +630,15 @@ describe('App runtime and workspace access', () => {
         ]),
       ),
     )
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove Saved Table' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove this saved table' })).not.toBeInTheDocument())
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete Test' }))
-    confirmDialog = await screen.findByRole('dialog', { name: 'Delete Table' })
+    confirmDialog = await screen.findByRole('dialog', { name: 'Delete this table' })
     expect(within(confirmDialog).getByText('Test')).toBeInTheDocument()
     expect(
       within(confirmDialog).getByText('This permanently deletes the table for everyone. This cannot be undone.'),
     ).toBeInTheDocument()
-    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Delete Table' }))
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Delete this table' }))
     await waitFor(() =>
       expect(appTestState.fetchCalls).toEqual(
         expect.arrayContaining([
@@ -652,7 +649,7 @@ describe('App runtime and workspace access', () => {
         ]),
       ),
     )
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete Table' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete this table' })).not.toBeInTheDocument())
   })
 
   it('creates a token table and warns that the generated token is only shown once', async () => {
@@ -723,7 +720,7 @@ describe('App runtime and workspace access', () => {
     fireEvent.change(await within(dialog).findByLabelText('Table code'), { target: { value: 'aidan_test' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Join table' }))
 
-    await screen.findByText('No campaigns yet.')
+    await screen.findByText('No adventures yet.')
     await waitFor(() => {
       expect(screen.queryByText(/Workspace load failed:/)).not.toBeInTheDocument()
       expect(screen.queryByText(/Session refresh failed:/)).not.toBeInTheDocument()

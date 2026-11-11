@@ -417,16 +417,16 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
     await expect(newAdventureSheet).toBeVisible({ timeout: 15_000 })
     await expect(newAdventureSheet.getByText('Needs an AI narrator — choose one in Settings')).toBeVisible()
     await expect(newAdventureSheet.getByRole('button', { name: 'Begin with a blank page' })).toBeDisabled()
-    await newAdventureSheet.getByRole('button', { name: 'Close create campaign' }).click()
+    await newAdventureSheet.getByRole('button', { name: 'Close new adventure' }).click()
     await expect(newAdventureSheet).toBeHidden()
     const campaign = await createBlankCampaign(backendUrl, 'Browser Smoke Campaign', 'Created through the browser smoke API.')
     await page.goto(`${frontendUrl}/?campaign=${campaign.campaign_id}`, { waitUntil: 'domcontentloaded' })
     await expect(page.locator('.session-header').getByText('Browser Smoke Campaign')).toBeVisible({ timeout: 15_000 })
 
-  // A new adventure without characters asks who you are playing; Create Character opens the hero creator.
+  // A new adventure without characters asks who you are playing; New character opens the hero creator.
   const characterChooser = page.getByRole('dialog', { name: 'Choose your character' })
   await expect(characterChooser).toBeVisible({ timeout: 15_000 })
-  await characterChooser.getByRole('button', { name: 'Create Character' }).click()
+  await characterChooser.getByRole('button', { name: 'New character' }).click()
   await createHero(page, 'Browser Smoke Hero')
   await expect(page.locator('.right-inspector').getByRole('heading', { name: 'Browser Smoke Hero' })).toBeVisible({ timeout: 15_000 })
 
@@ -467,13 +467,13 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
   await expect(page.locator('.map-meta-column').getByText(/Smoke Gate/)).toBeVisible()
 
   const unavailableTtsControl = page.getByRole('button', {
-    name: 'Narration unavailable; Deepgram is not configured',
+    name: 'No narrator voice is set up on this server.',
   })
   await expect(unavailableTtsControl).toBeVisible()
   await expect(unavailableTtsControl).toHaveAttribute('data-tts-configuration', 'unavailable')
   await expect(unavailableTtsControl).toHaveAttribute(
     'title',
-    'Unavailable: Deepgram narration is unavailable because the backend is not configured',
+    'Unavailable: No narrator voice is set up on this server.',
   )
 
   const actionInput = page.getByLabel(/Your Action/i)
@@ -553,8 +553,8 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
 
   await page.getByRole('button', { name: 'Session menu' }).click()
   await page.getByRole('button', { name: 'Delete session' }).click()
-  await expect(page.getByRole('dialog', { name: 'Delete Session' })).toBeVisible()
-  await page.getByRole('button', { name: 'Delete Session' }).click()
+  await expect(page.getByRole('dialog', { name: 'Delete this chapter' })).toBeVisible()
+  await page.getByRole('button', { name: 'Delete this chapter' }).click()
   await expect(page.getByRole('heading', { name: /No session selected/i })).toBeVisible({ timeout: 15_000 })
 
   const importPath = path.join(smokeTempDir, 'browser-smoke-session-import.json')
@@ -612,8 +612,8 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
 
   await page.getByRole('button', { name: 'Session menu' }).click()
   await page.getByRole('button', { name: 'Delete session' }).click()
-  await expect(page.getByRole('dialog', { name: 'Delete Session' })).toBeVisible()
-  await page.getByRole('button', { name: 'Delete Session' }).click()
+  await expect(page.getByRole('dialog', { name: 'Delete this chapter' })).toBeVisible()
+  await page.getByRole('button', { name: 'Delete this chapter' }).click()
   await expect(page.getByRole('heading', { name: /No session selected/i })).toBeVisible({ timeout: 15_000 })
 
     if (consoleErrors.length) {
@@ -693,6 +693,9 @@ async function main() {
     AIDM_BUFFERED_STREAM_CHUNK_DELAY_MS: '100',
     AIDM_DEEPGRAM_API_KEY: '',
     DEEPGRAM_API_KEY: '',
+    AIDM_TTS_PROVIDER: '',
+    AIDM_OPENAI_API_KEY: '',
+    OPENAI_API_KEY: '',
     AIDM_AUTH_REQUIRED: 'false',
     AIDM_TELEMETRY_ENABLED: 'false',
     AIDM_SECURITY_HEADERS_ENABLED: 'true',

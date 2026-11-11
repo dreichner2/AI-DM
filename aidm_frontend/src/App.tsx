@@ -22,7 +22,6 @@ import {
   PanelRightOpen,
   Radio,
   Settings,
-  Sun,
   UserCircle,
   Volume2,
   VolumeX,
@@ -81,7 +80,6 @@ import {
   pendingRollNoticeFromTimeline,
   pendingRollOptionsFromTimeline,
   stringValue,
-  truncateText,
   turnStatusAllowsNextSend,
   worldStateFromSnapshot,
 } from './gameSelectors'
@@ -98,7 +96,7 @@ import { StoryDrawer } from './story/StoryDrawer'
 import { StoryNotices } from './story/StoryNotices'
 import { StoryNoticeContext, useStoryNoticeLine, type StoryNotice } from './story/storyNoticeLine'
 import { StoryAccountSheet, type AccountSheetView } from './story/sheets/StoryAccountSheet'
-import { StorySettingsSheet, type NarrationSetting, type NarratorSetting } from './story/sheets/StorySettingsSheet'
+import { StorySettingsSheet, type NarratorSetting } from './story/sheets/StorySettingsSheet'
 import { useStoryPreferences } from './story/sheets/storyPreferences'
 import { StoryView } from './story/StoryView'
 import type { StoryChromeProps, StoryConnection, StoryDrawerTab } from './story/types'
@@ -200,6 +198,9 @@ const loadDiceRollDialog = () => import('./DiceRollDialog')
 const DiceRollDialog = lazy(loadDiceRollDialog)
 const PlayerEditDialog = lazy(() =>
   import('./PlayerEditDialog').then((module) => ({ default: module.PlayerEditDialog })),
+)
+const EditCharacterSheet = lazy(() =>
+  import('./story/sheets/EditCharacterSheet').then((module) => ({ default: module.EditCharacterSheet })),
 )
 const CreateHero = lazy(() =>
   import('./story/create/CreateHero').then((module) => ({ default: module.CreateHero })),
@@ -352,8 +353,6 @@ function isCompactLayoutViewport() {
     window.matchMedia(COMPACT_LAYOUT_MEDIA_QUERY).matches
   )
 }
-
-type ThemeMode = 'dark' | 'light'
 
 function isEditableShortcutTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false
@@ -752,9 +751,6 @@ function AIDMApp() {
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [fullscreenFallback, setFullscreenFallback] = useState(false)
-  const [theme, setTheme] = useState<ThemeMode>(() =>
-    localStorage.getItem('aidm:theme') === 'light' ? 'light' : 'dark',
-  )
   const [worlds, setWorlds] = useState<World[]>([])
   const [worldManagerOpen, setWorldManagerOpen] = useState(false)
   const [worldForm, setWorldForm] = useState<WorldFormState>(emptyWorldForm)
@@ -1385,6 +1381,7 @@ function AIDMApp() {
   )
 
   const {
+    narrationSetting,
     ttsEnabled,
     ttsSpeaking,
     effectiveTtsStatus,
@@ -2623,10 +2620,6 @@ function AIDMApp() {
   }, [refreshRoot])
 
   useEffect(() => {
-    localStorage.setItem('aidm:theme', theme)
-  }, [theme])
-
-  useEffect(() => {
     localStorage.setItem(PLAY_VIEW_STORAGE_KEY, playView)
   }, [playView])
 
@@ -3705,20 +3698,21 @@ function AIDMApp() {
     : ttsConfig === null
       ? 'checking'
       : ttsConfig.configured ? 'configured' : 'unavailable'
+  const ttsProviderName = ttsConfig?.provider === 'openai' ? 'OpenAI' : 'Deepgram'
   const ttsControlLabel = ttsConfigLoadFailed
     ? 'Narration status unavailable; configuration check failed'
     : ttsConfig === null
       ? 'Narration availability is still being checked'
       : ttsConfig.configured
-        ? `${ttsEnabled ? 'Turn TTS off' : 'Turn TTS on'}; Deepgram is configured`
-        : 'Narration unavailable; Deepgram is not configured'
+        ? `${ttsEnabled ? 'Turn TTS off' : 'Turn TTS on'}; ${ttsProviderName} is configured`
+        : 'No narrator voice is set up on this server.'
   const ttsControlTitle = ttsConfigLoadFailed
-    ? 'Could not check Deepgram narration configuration; refresh to retry'
+    ? 'Could not check narration configuration; refresh to retry'
     : ttsConfig === null
-      ? 'Checking Deepgram narration availability'
+      ? 'Checking narration availability'
       : ttsConfig.configured
-        ? `Deepgram narration configured: ${ttsConfig.model} (${ttsStatusLabel})`
-        : 'Deepgram narration is unavailable because the backend is not configured'
+        ? `${ttsProviderName} narration configured: ${ttsConfig.model} (${ttsStatusLabel})`
+        : 'No narrator voice is set up on this server.'
   const betaRuntimeNotices: Array<{
     id: string
     title: string
@@ -3836,12 +3830,12 @@ function AIDMApp() {
   // Story view is always dark and has none of the console's grid rows.
   const shellClassName = (storyView
     ? [
-        'prototype-shell theme-dark story-view-active',
+        'prototype-shell story-view-active',
         fullscreenActive ? 'fullscreen-active' : '',
         showTitleScreen ? 'title-screen-active' : '',
       ]
     : [
-        `prototype-shell theme-${theme}`,
+        'prototype-shell',
         railCollapsed ? 'rail-collapsed' : '',
         fullscreenActive ? 'fullscreen-active' : '',
         safeModeActive ? 'safe-mode-active' : '',
@@ -4109,14 +4103,6 @@ function AIDMApp() {
           account: { name: runtimeAccount.displayName, table: tableDisplayName, role: runtimeAccount.workspaceRole },
         }
       : null
-  const narrationSetting: NarrationSetting = ttsConfig?.configured
-    ? {
-        enabled: ttsEnabled,
-        problem: effectiveTtsStatus === 'failed' ? 'The narration voice could not be played just now.' : '',
-      }
-    : ttsConfigLoadFailed
-      ? { enabled: false, problem: 'Could not check whether narration is available. Refresh to try again.' }
-      : null
   const narratorSetting: NarratorSetting = runtime
     ? {
         current: { provider: configuredProvider, model: configuredModel },
@@ -4175,7 +4161,7 @@ function AIDMApp() {
           >
             <div className="ops-brand">
               <Flame size={25} fill="currentColor" />
-              <strong>AI-DM</strong>
+              <strong>Table tools</strong>
             </div>
             <button
               ref={campaignRailToggleRef}
@@ -4350,15 +4336,6 @@ function AIDMApp() {
                 onClick={() => void toggleFullscreen()}
               >
                 {fullscreenActive ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
-              </button>
-              <button
-                type="button"
-                className="top-icon mobile-optional"
-                aria-label="Toggle theme"
-                aria-pressed={theme === 'light'}
-                onClick={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
-              >
-                <Sun size={18} />
               </button>
               <div className="account-menu-wrap" ref={accountMenuRef}>
                 <button
@@ -4538,7 +4515,6 @@ function AIDMApp() {
                 modal={compactViewport && mobileRailOpen && !showTitleScreen && !modalOpen}
                 onRequestClose={closeMobilePanelsAndRestoreFocus}
                 backendStatus={health?.status ?? null}
-                campaignTitle={campaign?.title ? truncateText(campaign.title, 12) : null}
                 campaignCards={campaignCards}
                 sessionCards={sessionCards}
                 campaignFilter={campaignFilter}
@@ -4779,7 +4755,7 @@ function AIDMApp() {
       />
 
       {campaignArchiveDialog ? (
-        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening campaign archive…" />}>
+        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening archived adventures…" />}>
           <CampaignArchiveDialog
             campaign={campaign}
             dialog={campaignArchiveDialog}
@@ -4793,7 +4769,7 @@ function AIDMApp() {
       ) : null}
 
       {sessionArchiveDialog ? (
-        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening session archive…" />}>
+        <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening archived chapters…" />}>
           <SessionArchiveDialog
             activeSession={activeSession}
             campaign={campaign}
@@ -4809,12 +4785,12 @@ function AIDMApp() {
       {campaignPackImportOpen ? (
         <ModalShell
           size="wide"
-          closeLabel="Close campaign pack import"
-          description="Check an adventure pack file, or forge one from a premise, then create the adventure."
+          closeLabel="Close adventure pack import"
+          description="Check an adventure pack file, or write one from a premise, then create the adventure."
           dialogRef={modalDialogRef}
           labelledBy="campaign-pack-import-title"
           onClose={closeCampaignPackImportDialog}
-          title="Import Campaign Pack"
+          title="Import an adventure pack"
         >
           <Suspense
             fallback={
@@ -4871,15 +4847,27 @@ function AIDMApp() {
 
       {playerEditDialog ? (
         <Suspense fallback={<ModalLoading dialogRef={modalDialogRef} label="Opening character editor…" />}>
-          <PlayerEditDialog
-            auth={auth}
-            baseUrl={baseUrl}
-            dialog={playerEditDialog}
-            dialogRef={modalDialogRef}
-            onClose={closePlayerEditDialog}
-            onSubmit={(event) => void submitPlayerEditDialog(event)}
-            setDialog={setPlayerEditDialog}
-          />
+          {storyView ? (
+            <EditCharacterSheet
+              auth={auth}
+              baseUrl={baseUrl}
+              dialog={playerEditDialog}
+              dialogRef={modalDialogRef}
+              onClose={closePlayerEditDialog}
+              onSubmit={(event) => void submitPlayerEditDialog(event)}
+              setDialog={setPlayerEditDialog}
+            />
+          ) : (
+            <PlayerEditDialog
+              auth={auth}
+              baseUrl={baseUrl}
+              dialog={playerEditDialog}
+              dialogRef={modalDialogRef}
+              onClose={closePlayerEditDialog}
+              onSubmit={(event) => void submitPlayerEditDialog(event)}
+              setDialog={setPlayerEditDialog}
+            />
+          )}
         </Suspense>
       ) : null}
 

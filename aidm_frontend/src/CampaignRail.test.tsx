@@ -12,7 +12,6 @@ function railProps(
 ): ComponentProps<typeof CampaignRail> {
   return {
     backendStatus: 'ok',
-    campaignTitle: 'Ember Road',
     campaignCards: [],
     sessionCards: [],
     campaignFilter: '',
@@ -90,16 +89,25 @@ describe('CampaignRail', () => {
     expect(setInspectorTab).toHaveBeenCalledWith('party')
   })
 
-  it('distinguishes an empty campaign list from an empty search result', () => {
+  it('distinguishes an empty adventure list from an empty search result', () => {
     const { rerender } = render(<CampaignRail {...railProps()} />)
 
-    expect(screen.getByText('No campaigns yet.')).toBeInTheDocument()
-    expect(screen.queryByText('No campaigns match your search.')).not.toBeInTheDocument()
+    expect(screen.getByText('No adventures yet.')).toBeInTheDocument()
+    expect(screen.queryByText('No adventures match your search.')).not.toBeInTheDocument()
 
     rerender(<CampaignRail {...railProps({ campaignFilter: 'ember' })} />)
 
-    expect(screen.getByText('No campaigns match your search.')).toBeInTheDocument()
-    expect(screen.queryByText('No campaigns yet.')).not.toBeInTheDocument()
+    expect(screen.getByText('No adventures match your search.')).toBeInTheDocument()
+    expect(screen.queryByText('No adventures yet.')).not.toBeInTheDocument()
+  })
+
+  it('heads its lists Adventures and Chapters', () => {
+    render(<CampaignRail {...railProps()} />)
+
+    expect(screen.getByText('Adventures')).toBeInTheDocument()
+    expect(screen.getByText('Chapters')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Search campaigns' })).toHaveAttribute('placeholder', 'Search adventures…')
+    expect(screen.getByText('No chapters yet.')).toBeInTheDocument()
   })
 
   it('shows the playability line and last saved time instead of a blanket system status', () => {

@@ -104,10 +104,10 @@ describe('CampaignPackImportDialog', () => {
       />,
     )
 
-    fireEvent.change(screen.getByLabelText('JSON Preview'), {
+    fireEvent.change(screen.getByLabelText('Contents'), {
       target: { value: JSON.stringify({ packId: 'author_pack' }) },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Check Pack' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Check the pack' }))
 
     await waitFor(() =>
       expect(apiFetchMock).toHaveBeenCalledWith(
@@ -118,7 +118,7 @@ describe('CampaignPackImportDialog', () => {
       ),
     )
 
-    const report = await screen.findByLabelText('Campaign pack authoring report')
+    const report = await screen.findByLabelText('Adventure pack authoring report')
     expect(within(report).getByText('2 / 3 reachable')).toBeInTheDocument()
     expect(within(report).getByText('1 / 2 linked')).toBeInTheDocument()
     expect(within(report).getByText('locations: 1 / 1 visible')).toBeInTheDocument()
@@ -216,13 +216,13 @@ describe('CampaignPackImportDialog', () => {
       />,
     )
 
-    fireEvent.change(screen.getByLabelText('Pack Title'), {
+    fireEvent.change(screen.getByLabelText('Pack title'), {
       target: { value: 'Lanterns Under Blackwater' },
     })
     fireEvent.change(screen.getByLabelText('Premise'), {
       target: { value: 'Harbor intrigue and a drowned archive.' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Forge Pack' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Write the pack' }))
 
     await waitFor(() =>
       expect(apiFetchMock).toHaveBeenCalledWith(
@@ -238,8 +238,41 @@ describe('CampaignPackImportDialog', () => {
         }),
       ),
     )
-    expect((screen.getByLabelText('JSON Preview') as HTMLTextAreaElement).value).toContain('"packId": "forge_lanterns"')
+    expect((screen.getByLabelText('Contents') as HTMLTextAreaElement).value).toContain('"packId": "forge_lanterns"')
     expect(screen.getByText('Lanterns Under Blackwater')).toBeInTheDocument()
     expect(screen.getByText('4 / 4 reachable')).toBeInTheDocument()
+  })
+
+  it('names its sections in Story words and offers the pack file as a link', async () => {
+    apiFetchMock.mockResolvedValue({ ok: true, issues: [] })
+    render(
+      <CampaignPackImportDialog
+        auth="token"
+        baseUrl="http://127.0.0.1:5050"
+        onClose={vi.fn()}
+        onImported={vi.fn()}
+        pushError={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('heading', { name: 'Write one from a premise' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create the adventure' })).toBeDisabled()
+    const fileInput = screen.getByLabelText('Pack file')
+    expect(fileInput).toHaveAttribute('type', 'file')
+    expect(fileInput.closest('label')).toHaveTextContent('Choose a file')
+    expect(fileInput).toHaveAccessibleDescription('No file chosen')
+
+    const file = new File(['{"pack": {}}'], 'lanterns.json', { type: 'application/json' })
+    fireEvent.change(fileInput, { target: { files: [file] } })
+
+    await waitFor(() => expect(fileInput).toHaveAccessibleDescription('lanterns.json'))
+    await waitFor(() =>
+      expect(apiFetchMock).toHaveBeenCalledWith(
+        'http://127.0.0.1:5050',
+        '/api/campaigns/pack-tools/lint',
+        'token',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ pack: {} }) }),
+      ),
+    )
   })
 })

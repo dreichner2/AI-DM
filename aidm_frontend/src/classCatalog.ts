@@ -1627,6 +1627,11 @@ export function classMatchesSearch(classEntry: PlayableClass, query: string) {
   })
 }
 
+/** A class the player names themselves: the trimmed name, or null when there is none. */
+export function customClassChoice(value: string) {
+  return value.trim() || null
+}
+
 export function filterPlayableClasses({
   query,
   category,

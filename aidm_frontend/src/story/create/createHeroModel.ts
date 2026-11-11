@@ -225,7 +225,7 @@ type CatalogRace = {
   languages: string[]
 }
 
-/** An ancestry picked from the full race selector: one of the nine when it is one, else built from the catalog. */
+/** An ancestry picked from the ancestry catalog: one of the nine when it is one, else built from the race catalog. */
 export function ancestryFromSelection(selection: CharacterRaceSelection, catalogRace: CatalogRace | null): Ancestry {
   const recommended = ANCESTRIES.find(
     (entry) => selection.source !== 'custom' && entry.selection.raceId === selection.raceId && entry.name === selection.raceName,

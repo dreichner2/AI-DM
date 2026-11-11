@@ -41,7 +41,6 @@ type CampaignRailProps = {
   modal?: boolean
   onRequestClose?: () => void
   backendStatus: string | null
-  campaignTitle: string | null
   campaignCards: CampaignCard[]
   sessionCards: SessionCard[]
   campaignFilter: string
@@ -94,7 +93,6 @@ export function CampaignRail({
   modal = false,
   onRequestClose,
   backendStatus,
-  campaignTitle,
   campaignCards,
   sessionCards,
   campaignFilter,
@@ -157,13 +155,13 @@ export function CampaignRail({
       ) : null}
       <section className="rail-section">
         <div className="rail-heading campaign-heading">
-          <span>Campaigns</span>
+          <span>Adventures</span>
           {canUseOperatorTools ? (
             <div className="rail-heading-actions">
               <button
                 type="button"
                 aria-label="Rename selected campaign"
-                title="Rename campaign"
+                title="Rename adventure"
                 onClick={onRenameCampaign}
                 disabled={!canManageCampaign}
               >
@@ -172,7 +170,7 @@ export function CampaignRail({
               <button
                 type="button"
                 aria-label="Open campaign archive"
-                title="Archive and restore campaigns"
+                title="Archived adventures"
                 onClick={onArchiveCampaign}
                 disabled={!canOpenCampaignArchive}
               >
@@ -181,7 +179,7 @@ export function CampaignRail({
               <button
                 type="button"
                 aria-label="Delete selected campaign"
-                title="Delete campaign"
+                title="Delete adventure"
                 onClick={onDeleteCampaign}
                 disabled={!canManageCampaign}
               >
@@ -193,12 +191,12 @@ export function CampaignRail({
               <button
                 type="button"
                 aria-label="Import campaign pack"
-                title="Import campaign pack"
+                title="Import an adventure pack"
                 onClick={onImportCampaignPack}
               >
                 <Upload size={15} />
               </button>
-              <button type="button" aria-label="Add campaign" title="Add campaign" onClick={onCreateCampaign}>
+              <button type="button" aria-label="Add campaign" title="New adventure" onClick={onCreateCampaign}>
                 <Plus size={16} />
               </button>
             </div>
@@ -209,7 +207,7 @@ export function CampaignRail({
           <input
             value={campaignFilter}
             onChange={(event) => setCampaignFilter(event.target.value)}
-            placeholder="Search campaigns..."
+            placeholder="Search adventures…"
             aria-label="Search campaigns"
           />
         </div>
@@ -248,7 +246,7 @@ export function CampaignRail({
             </div>
           ) : (
             <div className="empty-rail">
-              {campaignFilter.trim() ? 'No campaigns match your search.' : 'No campaigns yet.'}
+              {campaignFilter.trim() ? 'No adventures match your search.' : 'No adventures yet.'}
             </div>
           )}
         </div>
@@ -256,14 +254,14 @@ export function CampaignRail({
 
       <section className="rail-section session-section">
         <div className="rail-heading">
-          <span>Sessions ({campaignTitle ?? 'None'})</span>
+          <span>Chapters</span>
           {canUseOperatorTools ? (
             <div className="rail-heading-actions">
               <button
                 type="button"
                 onClick={onRenameSession}
                 aria-label="Rename selected session"
-                title="Rename session"
+                title="Rename chapter"
                 disabled={!canManageSession}
               >
                 <Pencil size={14} />
@@ -272,7 +270,7 @@ export function CampaignRail({
                 type="button"
                 onClick={onArchiveSession}
                 aria-label="Open session archive"
-                title="Archive and restore sessions"
+                title="Archived chapters"
                 disabled={!canOpenSessionArchive}
               >
                 <Archive size={14} />
@@ -281,7 +279,7 @@ export function CampaignRail({
                 type="button"
                 onClick={onDeleteSession}
                 aria-label="Delete selected session"
-                title="Delete session permanently"
+                title="Delete chapter"
                 disabled={!canManageSession}
               >
                 <Trash2 size={14} />
@@ -319,7 +317,7 @@ export function CampaignRail({
             </div>
           ) : (
             <div className="empty-rail empty-action-card">
-              <span>No sessions yet.</span>
+              <span>No chapters yet.</span>
               {canUseOperatorTools ? (
                 <button type="button" onClick={onStartSession} disabled={!selectedCampaignId}>
                   Start next chapter

@@ -17,6 +17,7 @@ import type { PlayerEditDialogState } from '../../usePlayerProfileActions'
 import type { RuntimeSettingsForm } from '../../useRuntimeSettings'
 import { ShareSessionDialog } from '../../WorkspaceDialogs'
 import { AdventuresSheet } from '../sheets/AdventuresSheet'
+import { EditCharacterSheet } from '../sheets/EditCharacterSheet'
 import { NewAdventureSheet } from '../sheets/NewAdventureSheet'
 import { StoryAccountSheet, type AccountAccessProps } from '../sheets/StoryAccountSheet'
 import { StorySettingsSheet, type NarratorSetting } from '../sheets/StorySettingsSheet'
@@ -30,7 +31,8 @@ import { makeBoardFixture, makeInspectorFixture } from './fixtures'
  * each over the Story stage: `?sheet=settings|settings-no-narrator|settings-scripted|
  * account|account-signed-out|adventures|new-adventure|new-adventure-scripted|
  * new-adventure-step2|connection|share|next-chapter|confirm-delete|edit-character|
- * choose-character|import-save|dice|pack-import`. `&notice=status|alert` shows the
+ * edit-character-story|choose-character|import-save|dice|pack-import`; `edit-character`
+ * is Table tools' editor, `edit-character-story` the Story view's. `&notice=status|alert` shows the
  * app's notice line at the sheet's foot.
  */
 
@@ -49,6 +51,7 @@ const SHEETS = [
   'next-chapter',
   'confirm-delete',
   'edit-character',
+  'edit-character-story',
   'choose-character',
   'import-save',
   'dice',
@@ -335,7 +338,7 @@ function ConnectionPreview({ dialogRef }: { dialogRef: RefObject<HTMLElement | n
   )
 }
 
-function EditCharacterPreview({ dialogRef }: { dialogRef: RefObject<HTMLElement | null> }) {
+function EditCharacterPreview({ dialogRef, story }: { dialogRef: RefObject<HTMLElement | null>; story: boolean }) {
   const [dialog, setDialog] = useState<PlayerEditDialogState>({
     player: PLAYERS[0],
     characterName: 'Arden Vale',
@@ -343,14 +346,15 @@ function EditCharacterPreview({ dialogRef }: { dialogRef: RefObject<HTMLElement 
     raceSelection: null,
     sex: 'male',
     charClass: 'Fighter',
-    backgroundId: '',
+    backgroundId: story ? 'soldier' : '',
     level: '3',
     error: '',
     pending: false,
   })
   if (!dialog) return null
+  const Editor = story ? EditCharacterSheet : PlayerEditDialog
   return (
-    <PlayerEditDialog
+    <Editor
       auth=""
       baseUrl=""
       dialog={dialog}
@@ -505,7 +509,8 @@ function PreviewSheetView({ sheet }: { sheet: PreviewSheet }): ReactNode {
         />
       )
     case 'edit-character':
-      return <EditCharacterPreview dialogRef={dialogRef} />
+    case 'edit-character-story':
+      return <EditCharacterPreview dialogRef={dialogRef} story={previewSheet === 'edit-character-story'} />
     case 'choose-character':
       return (
         <CharacterJoinDialog
@@ -525,12 +530,12 @@ function PreviewSheetView({ sheet }: { sheet: PreviewSheet }): ReactNode {
       return (
         <ModalShell
           size="wide"
-          closeLabel="Close campaign pack import"
-          description="Check an adventure pack file, or forge one from a premise, then create the adventure."
+          closeLabel="Close adventure pack import"
+          description="Check an adventure pack file, or write one from a premise, then create the adventure."
           dialogRef={dialogRef}
           labelledBy="campaign-pack-import-title"
           onClose={noop}
-          title="Import Campaign Pack"
+          title="Import an adventure pack"
         >
           <CampaignPackImportDialog auth="" baseUrl="" onClose={noop} onImported={async () => {}} pushError={noop} />
         </ModalShell>

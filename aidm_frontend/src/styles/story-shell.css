@@ -424,12 +424,21 @@
   background-size: 100% 1px;
 }
 
+/* Scene music: a quiet sheet-surface popover (the player inside has no boxes of its own). */
 .story-shell .story-music-popover {
   top: calc(100% - 2px);
   right: 96px;
-  width: min(360px, calc(100vw - 24px));
-  padding: 12px;
+  width: min(400px, calc(100vw - 24px));
+  padding: 14px 16px 14px 20px;
+  border-radius: 18px;
+  background:
+    radial-gradient(ellipse 90% 140px at 12% 0%, rgba(255, 140, 70, 0.075), transparent 100%),
+    rgb(10 15 16 / 0.9);
+  box-shadow:
+    0 1px 0 rgba(255, 220, 180, 0.04) inset,
+    0 48px 120px -36px rgba(0, 0, 0, 0.85);
 }
+.story-shell .story-music-popover .scene-music-now > svg { display: none; }
 
 /* ---- party HUD ---- */
 

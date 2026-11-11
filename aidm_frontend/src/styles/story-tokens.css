@@ -9,10 +9,12 @@
  *   - Colour means something: ember = you can act, gold = dice and rewards,
  *     arcane = magic, green/red = outcome. Everything else is ink on dark.
  *   - Information appears when it is relevant and leaves when it is not.
- *   - Story mode is always dark, whatever the console theme is.
- * All selectors are scoped under .story-shell so the classic console is untouched.
+ *   - Every view is dark.
+ * The tokens are global: Table tools (tokens.css) aliases its colour names to them.
+ * The primitives below are scoped under .story-shell.
  */
 
+:root,
 .story-shell {
   /* ink */
   --story-bg: #070b0c;

@@ -4,8 +4,8 @@
 @import './styles/session-board.css';
 @import './styles/dice-roll-panel.css';
 @import './styles/inspector.css';
+@import './styles/console.css';
 @import './styles/responsive.css';
-@import './styles/themes.css';
 @import './styles/story-tokens.css';
 @import './styles/story-shell.css';
 @import './styles/story-feed.css';

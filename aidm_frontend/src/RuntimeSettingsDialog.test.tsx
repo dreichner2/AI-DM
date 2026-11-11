@@ -97,12 +97,12 @@ describe('RuntimeSettingsDialog', () => {
       />,
     )
 
-    const dialog = screen.getByRole('dialog', { name: 'Connect to Shared Backend' })
+    const dialog = screen.getByRole('dialog', { name: 'Connect to a shared game server' })
     expect(within(dialog).getByText('https://friend.example.test')).toBeInTheDocument()
     expect(within(dialog).getByText('Server address: https://friend.example.test/api')).toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(onReject).toHaveBeenCalledOnce()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Trust and Connect' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Trust and connect' }))
     expect(onConfirm).toHaveBeenCalledOnce()
   })
 })

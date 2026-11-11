@@ -363,12 +363,12 @@
   }
 
   .scene-state-grid {
-    grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.9fr) 48px;
-    gap: 5px;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.9fr) auto;
+    gap: 5px 12px;
   }
 
   .scene-state-grid div {
-    padding: 5px 6px;
+    padding: 4px 0;
   }
 
   .scene-state-grid strong,
@@ -423,9 +423,7 @@
     grid-column: 1 / -1;
     min-height: 42px;
     padding: 8px 10px;
-    border: 1px solid var(--line);
     border-radius: 4px;
-    background: rgba(255, 255, 255, 0.018);
   }
 
   .ops-segment.mini-stat {
@@ -466,7 +464,6 @@
     min-height: min(100svh, 760px);
     grid-template-rows: auto auto minmax(0, 1fr) auto;
     overflow: hidden;
-    border-top: 1px solid var(--line);
     border-right: 0;
   }
 
@@ -523,12 +520,9 @@
     height: 44px;
     margin: 0 0 4px auto;
     padding: 0;
-    border: 1px solid var(--line-strong);
     border-radius: var(--radius-sm);
     color: var(--heading);
-    background: var(--surface-overlay);
     place-items: center;
-    box-shadow: var(--panel-shadow);
   }
 
   .roll-wait-banner {
@@ -644,14 +638,7 @@
   .turn-dismiss,
   .turn-report {
     min-height: 44px;
-    border-top: 1px solid var(--line-strong);
     border-left: 0;
-  }
-
-  .turn-actions.has-dismiss .turn-expand,
-  .turn-actions.has-report .turn-expand,
-  .turn-actions.has-dismiss.has-report .turn-dismiss {
-    border-left: 1px solid var(--line-strong);
   }
 
   .turn-card .narrative-prose {
@@ -662,6 +649,7 @@
     grid-column: 2;
     grid-row: 1;
     justify-self: end;
+    padding-top: 0;
     padding-right: 6px;
   }
 
@@ -691,8 +679,14 @@
 
   .turn-quality-prompt,
   .turn-quality-prompt.submitted {
-    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: stretch;
     margin: 0 16px 14px;
+  }
+
+  .turn-quality-prompt > strong,
+  .turn-quality-prompt > button {
+    align-self: flex-start;
   }
 
   .turn-quality-score-group {
@@ -887,8 +881,6 @@
     justify-self: start;
     width: 44px;
     height: 44px;
-    border-color: var(--line-strong);
-    background: linear-gradient(180deg, #172021, #0d1314);
   }
 
   .ops-segment {
@@ -930,7 +922,6 @@
     width: 100%;
     border: 0;
     background: rgba(3, 8, 9, 0.56);
-    backdrop-filter: blur(2px);
   }
 
   .prototype-shell.safe-mode-active .mobile-panel-scrim,
@@ -976,9 +967,7 @@
     left: 0;
     width: min(88vw, 340px);
     min-width: 0;
-    border-right: 1px solid var(--line);
     transform: translateX(calc(-100% - 20px));
-    box-shadow: 24px 0 44px rgba(0, 0, 0, 0.42);
   }
 
   .prototype-shell.mobile-rail-open .campaign-rail {
@@ -991,9 +980,7 @@
     right: 0;
     width: min(92vw, 390px);
     padding: 8px;
-    border-left: 1px solid var(--line);
     transform: translateX(calc(100% + 20px));
-    box-shadow: -24px 0 44px rgba(0, 0, 0, 0.42);
   }
 
   .right-inspector .inspector-tabs {
@@ -1019,6 +1006,11 @@
     transform: translateX(0);
   }
 
+  /* A sheet opened from a drawer covers the drawer and the top bar, not the other way round. */
+  .prototype-shell:has(> .story-dialog) :is(.ops-bar, .campaign-rail, .right-inspector) {
+    z-index: 40;
+  }
+
   .session-board {
     --composer-row-height: 260px;
     grid-column: 1;
@@ -1028,7 +1020,6 @@
     min-height: 0;
     grid-template-rows: 56px 44px minmax(0, 1fr) auto;
     overflow: hidden;
-    border-top: 1px solid var(--line);
   }
 
   .prototype-shell.safe-mode-active .session-board,
@@ -1091,7 +1082,6 @@
     z-index: 2;
     order: 0;
     padding-block: 0;
-    background: #0b1415;
   }
 
   .combat-hud-note {
@@ -1208,13 +1198,12 @@
     display: none;
   }
 
-  .session-actions .operator-drawer-body {
-    top: 50px;
-  }
-
+  /* The toolbar scrolls sideways, which would clip its menus: they open fixed, just under their button. */
+  .session-actions .operator-drawer-body,
   .session-menu {
-    top: 40px;
-    right: 0;
+    position: fixed;
+    top: auto;
+    right: 8px;
   }
 
   .mobile-presence-strip {
@@ -1225,10 +1214,6 @@
     min-height: 44px;
     overflow: hidden;
     padding: 3px 8px;
-    border-bottom: 1px solid var(--line);
-    background:
-      linear-gradient(90deg, rgba(115, 215, 155, 0.06), transparent 58%),
-      rgba(255, 255, 255, 0.018);
   }
 
   .mobile-presence-summary {
@@ -1238,19 +1223,7 @@
     gap: 1px;
     padding: 3px 8px;
     overflow: hidden;
-    border: 1px solid rgba(144, 164, 159, 0.2);
     border-radius: 4px;
-    background: rgba(8, 16, 16, 0.34);
-  }
-
-  .mobile-presence-summary.open {
-    border-color: rgba(115, 215, 155, 0.34);
-    background: rgba(115, 215, 155, 0.07);
-  }
-
-  .mobile-presence-summary.locked {
-    border-color: rgba(255, 176, 103, 0.28);
-    background: rgba(255, 107, 44, 0.07);
   }
 
   .mobile-presence-summary span,
@@ -1301,19 +1274,7 @@
     min-height: 28px;
     padding: 2px 7px 2px 3px;
     overflow: hidden;
-    border: 1px solid rgba(144, 164, 159, 0.18);
     border-radius: 4px;
-    background: rgba(255, 255, 255, 0.025);
-  }
-
-  .mobile-presence-list li.selected {
-    border-color: rgba(115, 215, 155, 0.34);
-    background: rgba(115, 215, 155, 0.08);
-  }
-
-  .mobile-presence-list li.typing {
-    border-color: rgba(255, 210, 122, 0.34);
-    background: rgba(255, 210, 122, 0.07);
   }
 
   .mobile-presence-avatar {
@@ -1324,7 +1285,6 @@
     height: 24px;
     place-items: center;
     overflow: hidden;
-    border: 1px solid rgba(233, 239, 232, 0.14);
     border-radius: 4px;
     color: var(--heading);
     background: #0f1516;
@@ -1352,30 +1312,24 @@
     z-index: 2;
     width: 7px;
     height: 7px;
-    border: 1px solid #0f1516;
     border-radius: 999px;
     background: #90a49f;
-    box-shadow: 0 0 8px rgba(144, 164, 159, 0.42);
   }
 
   .mobile-health-dot-uninjured {
-    background: #73d79b;
-    box-shadow: 0 0 8px rgba(115, 215, 155, 0.46);
+    background: var(--story-success);
   }
 
   .mobile-health-dot-wounded {
-    background: #ffd27a;
-    box-shadow: 0 0 8px rgba(255, 210, 122, 0.44);
+    background: var(--story-gold);
   }
 
   .mobile-health-dot-badly-wounded {
-    background: #ff8b5d;
-    box-shadow: 0 0 8px rgba(255, 139, 93, 0.46);
+    background: var(--story-fail);
   }
 
   .mobile-health-dot-dead {
-    background: #ff6161;
-    box-shadow: 0 0 8px rgba(255, 97, 97, 0.44);
+    background: var(--story-danger);
   }
 
   .mobile-presence-copy {
@@ -1408,7 +1362,7 @@
     flex: 0 0 auto;
     max-width: 74px;
     overflow: hidden;
-    color: #dce7df;
+    color: var(--text);
     font-size: 0.6rem;
     font-weight: 700;
     line-height: 1;
@@ -1419,10 +1373,8 @@
   .mobile-typing-badge {
     flex: 0 0 auto;
     padding: 2px 5px;
-    border: 1px solid rgba(255, 210, 122, 0.32);
     border-radius: 999px;
-    color: #ffd27a;
-    background: rgba(255, 210, 122, 0.08);
+    color: var(--text);
     font-size: 0.61rem;
     font-weight: 700;
     white-space: nowrap;
@@ -1452,13 +1404,7 @@
     overflow: hidden;
     padding: 4px 8px;
     border: 0;
-    border-bottom: 1px solid var(--line);
     border-radius: 0;
-    background:
-      linear-gradient(90deg, rgba(255, 176, 103, 0.07), transparent 58%),
-      rgba(255, 255, 255, 0.018);
-    box-shadow: none;
-    backdrop-filter: none;
   }
 
   .scene-music-player.is-mobile-static .scene-music-progress,
@@ -1518,15 +1464,9 @@
     gap: 5px;
   }
 
-  .turn-row:not(:last-child)::before {
-    left: 12px;
-    top: 25px;
-  }
-
   .turn-number {
     width: 24px;
     height: 24px;
-    box-shadow: 0 0 0 2px rgba(8, 16, 16, 0.95);
     font-size: 0.68rem;
   }
 
@@ -2068,8 +2008,6 @@
     right: 10px;
     z-index: 4;
     min-height: 28px;
-    border-color: var(--line-strong);
-    background: #0b1415;
   }
 
   .race-details-backdrop {

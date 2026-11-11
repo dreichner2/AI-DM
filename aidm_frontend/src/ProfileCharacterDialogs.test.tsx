@@ -49,7 +49,7 @@ describe('ProfileCharacterDialogs', () => {
     expect(row).toHaveTextContent('Level 2 Wizard · Danny')
     fireEvent.click(within(row).getByRole('button', { name: 'Join as Ember' }))
     expect(onJoinPlayer).toHaveBeenCalledWith(player)
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create Character' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'New character' }))
     expect(onCreateCharacter).toHaveBeenCalledTimes(1)
 
     rerender(<CharacterJoinDialog {...props} players={[]} />)

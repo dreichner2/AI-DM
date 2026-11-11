@@ -25,7 +25,7 @@ const PORTRAITS: { sex: SexKey; label: string }[] = [
 /** Step 1: the hero's name, ancestry and portrait. */
 export function StepWho({ draft, headingRef, onChange, onContinue, onMoreAncestries }: StepWhoProps) {
   const chosen = draft.ancestry
-  // An ancestry picked from the full selector joins the row so the choice stays visible.
+  // An ancestry picked from the catalog joins the row so the choice stays visible.
   const row: Ancestry[] = chosen && !ANCESTRIES.includes(chosen) ? [...ANCESTRIES, chosen] : ANCESTRIES
 
   return (

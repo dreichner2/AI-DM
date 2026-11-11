@@ -17,7 +17,7 @@ import {
 
 type OnCreate = (payload: CreateHeroPayload) => Promise<void>
 
-// The full selectors are lazy chunks; on a busy machine their first load can outlast the defaults.
+// The catalogs are lazy chunks; on a busy machine their first load can outlast the defaults.
 configure({ asyncUtilTimeout: 5000 })
 vi.setConfig({ testTimeout: 20000 })
 
@@ -53,7 +53,9 @@ function drafted(calling: string, ancestry = 'human') {
 const continueButton = () => screen.getByRole('button', { name: 'Continue' })
 
 beforeAll(async () => {
-  await Promise.all([import('../../RaceSelector'), import('../../ClassSelector'), import('../../raceCatalog')])
+  // JSDOM has no layout; picking a catalog item scrolls its details into view.
+  Element.prototype.scrollIntoView = () => {}
+  await Promise.all([import('./AncestryCatalog'), import('./CallingCatalog'), import('../../raceCatalog')])
 })
 
 let fetchMock: Mock<typeof fetch>
@@ -216,15 +218,17 @@ describe('CreateHero', () => {
     expect(screen.getByText('Wild Shape is narrated by the Dungeon Master.')).toBeInTheDocument()
   })
 
-  it('opens the full class catalog in a glass overlay with narrated classes labelled', async () => {
+  it('opens the calling catalog in a glass overlay with narrated callings labelled', async () => {
     renderCreator({ draft: drafted('Wizard'), step: 'calling' })
     const more = screen.getByRole('button', { name: 'More callings' })
     fireEvent.click(more)
 
     const overlay = await screen.findByRole('dialog', { name: 'More callings' })
-    const gunslinger = await within(overlay).findByRole('button', { name: 'View Gunslinger details' })
-    expect(gunslinger).toHaveTextContent('Narrated class — the Dungeon Master adjudicates its features.')
-    expect(within(overlay).getByRole('button', { name: 'View Fighter details' })).not.toHaveTextContent('Narrated class')
+    await waitFor(() => expect(within(overlay).getByRole('searchbox', { name: 'Search callings' })).toHaveFocus())
+    expect(within(within(overlay).getByRole('list', { name: 'Callings' })).getAllByRole('button')).toHaveLength(12)
+    fireEvent.click(within(overlay).getByRole('tab', { name: 'All' }))
+    expect(within(overlay).getByRole('button', { name: /^Gunslinger/ })).toHaveTextContent('Narrated')
+    expect(within(overlay).getByRole('button', { name: /^Fighter/ })).not.toHaveTextContent('Narrated')
 
     fireEvent.keyDown(overlay, { key: 'Escape' })
     expect(screen.queryByRole('dialog', { name: 'More callings' })).not.toBeInTheDocument()
@@ -232,29 +236,54 @@ describe('CreateHero', () => {
     expect(more).toHaveFocus()
 
     fireEvent.click(more)
-    fireEvent.click(await screen.findByRole('button', { name: 'View Gunslinger details' }))
-    const details = await screen.findByRole('dialog', { name: 'Gunslinger' })
-    expect(details).toHaveTextContent('Narrated class — the Dungeon Master adjudicates its features.')
-    fireEvent.click(within(details).getByRole('button', { name: 'Select Gunslinger - Sniper' }))
+    const reopened = await screen.findByRole('dialog', { name: 'More callings' })
+    fireEvent.click(within(reopened).getByRole('tab', { name: 'All' }))
+    fireEvent.click(within(reopened).getByRole('button', { name: /^Gunslinger/ }))
+    const details = within(reopened).getByRole('region', { name: 'Calling details' })
+    expect(details).toHaveTextContent('Narrated — the Dungeon Master decides how its features play.')
+    fireEvent.click(within(details).getByRole('button', { name: 'Choose Gunslinger' }))
 
     expect(screen.queryByRole('dialog', { name: 'More callings' })).not.toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: /^Gunslinger \(Sniper\)/ })).toBeChecked()
+    expect(more).toHaveFocus()
+    expect(screen.getByRole('radio', { name: /^Gunslinger/ })).toBeChecked()
     expect(screen.getByRole('region', { name: 'Calling details' })).toHaveTextContent('Narrated class')
     fireEvent.click(continueButton())
     expect(screen.getByText(/A narrated calling has no class skill list/)).toBeInTheDocument()
   })
 
-  it('opens the full race selector in a glass overlay and adds the pick to the portrait row', async () => {
+  it('opens the ancestry catalog in a glass overlay and adds the pick to the portrait row', async () => {
     renderCreator({ draft: drafted('Wizard'), step: 'who' })
     fireEvent.click(screen.getByRole('button', { name: 'More ancestries' }))
 
     const overlay = await screen.findByRole('dialog', { name: 'More ancestries' })
-    fireEvent.click(await within(overlay).findByRole('button', { name: 'View Tabaxi details' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Select Tabaxi' }))
+    await waitFor(() => expect(within(overlay).getByRole('searchbox', { name: 'Search ancestries' })).toHaveFocus())
+    fireEvent.click(within(overlay).getByRole('button', { name: 'Tabaxi' }))
+    fireEvent.click(within(overlay).getByRole('button', { name: 'Female' }))
+    fireEvent.click(within(overlay).getByRole('button', { name: 'Choose Tabaxi' }))
 
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'More ancestries' })).not.toBeInTheDocument())
     expect(screen.getByRole('radio', { name: 'Tabaxi' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Female Tabaxi' })).toBeChecked()
     expect(screen.getByRole('heading', { name: 'Tabaxi' })).toBeInTheDocument()
+  })
+
+  it('can open straight into a catalog view, as the preview does', async () => {
+    render(
+      <CreateHero
+        auth=""
+        baseUrl="http://localhost:5050"
+        initialDraft={drafted('Wizard')}
+        initialStep="calling"
+        initialOverlay="callings"
+        initialOverlayView="own"
+        onCreate={vi.fn<OnCreate>(async () => {})}
+        onClose={vi.fn()}
+      />,
+    )
+    const overlay = screen.getByRole('dialog', { name: 'More callings' })
+    expect(await within(overlay).findByRole('tab', { name: 'Your own' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(overlay, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'More callings' })).not.toBeInTheDocument()
   })
 
   it('asks before discarding on Escape and keeps the hero when told to', () => {

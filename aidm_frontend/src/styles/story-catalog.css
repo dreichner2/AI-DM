@@ -1,0 +1,394 @@
+/*
+ * The Story catalogs ("More ancestries", "More callings") and the Male · Female
+ * portrait toggle. Loaded with the catalogs, not with the app. No boxes, pills or
+ * panels: type, space, thin rules, and ember for the current choice.
+ */
+
+.story-shell .story-catalog {
+  display: grid;
+  gap: var(--story-gap-4);
+  padding-top: var(--story-gap-2);
+}
+/* Resets at no specificity, so the shared creation styles (story-create.css) still apply. */
+:where(.story-shell .story-catalog) :where(p, h3, h4, ul, ol) { margin: 0; padding: 0; }
+:where(.story-shell .story-catalog) :where(ul, ol) { list-style: none; }
+.story-shell .story-catalog .story-label { display: block; }
+.story-shell .story-catalog button:disabled { opacity: 1; cursor: default; }
+
+/* ---- controls: text tabs left, the search right ---- */
+
+.story-shell .story-catalog-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--story-gap-3) var(--story-gap-6);
+}
+.story-shell .story-catalog-tabs {
+  display: flex;
+  gap: var(--story-gap-5);
+  font-size: 0.95rem;
+}
+.story-shell .story-catalog-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 280px;
+  max-width: 100%;
+  padding-bottom: 7px;
+  color: var(--story-muted);
+  background: linear-gradient(var(--story-hairline-strong), var(--story-hairline-strong)) bottom left / 100% 1px no-repeat;
+  transition: color var(--story-fast) var(--story-ease);
+}
+.story-shell .story-catalog-search:focus-within {
+  color: var(--story-ember-soft);
+  background-image: linear-gradient(90deg, var(--story-ember-soft), rgba(255, 176, 103, 0.4));
+}
+.story-shell .story-catalog-search svg { flex: none; }
+.story-shell .story-catalog-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: none;
+  font: inherit;
+  font-size: 0.95rem;
+  color: var(--story-ink);
+  caret-color: var(--story-ember);
+}
+.story-shell .story-catalog-search input::placeholder { color: var(--story-faint); }
+.story-shell .story-catalog-search input:focus-visible { outline: none; }
+.story-shell .story-catalog-search input::-webkit-search-cancel-button { display: none; }
+
+/* ---- filter: one link; opened, the tags flow on one wrapping line ---- */
+
+.story-shell .story-catalog-filter {
+  display: flex;
+  align-items: baseline;
+  gap: var(--story-gap-5);
+  font-size: 0.86rem;
+}
+.story-shell .story-catalog-filter-toggle { flex: none; color: var(--story-muted); }
+.story-shell .story-catalog-tags {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 4px var(--story-gap-4);
+  min-width: 0;
+  animation: story-rise var(--story-base) var(--story-ease) both;
+}
+.story-shell .story-catalog-clear { color: var(--story-muted); }
+.story-shell .story-catalog-clear:disabled { color: var(--story-faint); background-size: 0 1px; }
+
+/* ---- body: the list beside a sticky detail pane ---- */
+
+.story-shell .story-catalog-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  align-items: start;
+  gap: 48px;
+  margin-top: var(--story-gap-2);
+}
+.story-shell .story-catalog-list { min-width: 0; }
+.story-shell .story-catalog-detail {
+  position: sticky;
+  top: 4px;
+  min-width: 0;
+  padding-bottom: var(--story-gap-4);
+}
+.story-shell .story-catalog-detail > .story-label,
+.story-shell .story-catalog-detail .story-portrait-toggle .story-label { margin: 18px 0 6px; }
+.story-shell .story-catalog-detail .story-create-meta { margin-top: var(--story-gap-3); }
+.story-shell .story-catalog-detail .story-create-features { font-size: 0.9rem; }
+.story-shell .story-catalog-choose { margin-top: 22px; }
+
+.story-shell .story-catalog-empty,
+.story-shell .story-catalog-empty-detail {
+  font-family: var(--story-prose);
+  font-size: 1.1rem;
+  font-style: italic;
+  line-height: 1.5;
+  color: var(--story-muted);
+}
+.story-shell .story-catalog-empty .story-link {
+  margin-left: 6px;
+  font-family: var(--story-ui);
+  font-size: 0.88rem;
+  font-style: normal;
+}
+.story-shell .story-catalog-empty-detail { padding-top: var(--story-gap-2); }
+
+.story-shell .story-catalog-line,
+.story-shell .story-catalog-lines {
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: var(--story-ink-soft);
+}
+.story-shell .story-catalog-lines { display: grid; gap: 4px; }
+.story-shell .story-catalog-narrated-note {
+  margin-top: var(--story-gap-4);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--story-ink-soft);
+}
+
+/* The detail portrait: 3:4 with the painted frame cropped away. */
+.story-shell .story-catalog-portrait {
+  display: block;
+  width: min(100%, 320px, 24dvh);
+  aspect-ratio: 3 / 4;
+  margin-bottom: var(--story-gap-4);
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--story-bg-raised);
+  box-shadow: 0 0 0 1px var(--story-hairline), 0 30px 60px -30px rgba(0, 0, 0, 0.9);
+}
+.story-shell .story-catalog-portrait img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scale(1.1);
+  animation: story-catalog-fade var(--story-base) var(--story-ease) both;
+}
+@keyframes story-catalog-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ---- ancestry medallions ---- */
+
+.story-shell .story-catalog-medallions {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: var(--story-gap-5) 0;
+}
+.story-shell .story-catalog-medallion {
+  appearance: none;
+  display: grid;
+  justify-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 4px 2px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.story-shell .story-catalog-medallion:focus-visible { outline: none; }
+.story-shell .story-catalog-ring {
+  display: grid;
+  place-items: center;
+  width: 84px;
+  height: 84px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--story-bg-raised);
+  box-shadow: 0 0 0 1px var(--story-hairline-strong);
+  transition: box-shadow var(--story-base) var(--story-ease), transform var(--story-base) var(--story-ease);
+}
+.story-shell .story-catalog-ring img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scale(1.16);
+  filter: saturate(0.6) brightness(0.72);
+  transition: filter var(--story-base) var(--story-ease);
+}
+.story-shell .story-catalog-initial {
+  font-family: var(--story-prose);
+  font-size: 2rem;
+  line-height: 1;
+  color: var(--story-ink-soft);
+}
+.story-shell .story-catalog-medallion-name {
+  max-width: 100%;
+  font-family: var(--story-prose);
+  font-size: 15px;
+  line-height: 1.2;
+  text-align: center;
+  text-wrap: balance;
+  color: var(--story-ink-soft);
+  transition: color var(--story-fast) var(--story-ease);
+}
+.story-shell .story-catalog-medallion:hover .story-catalog-ring { transform: translateY(-2px); }
+.story-shell .story-catalog-medallion:hover img { filter: saturate(0.8) brightness(0.86); }
+.story-shell .story-catalog-medallion:hover .story-catalog-medallion-name { color: var(--story-ink); }
+.story-shell .story-catalog-medallion:focus-visible .story-catalog-ring {
+  outline: 2px solid var(--story-ember-soft);
+  outline-offset: 5px;
+}
+.story-shell .story-catalog-medallion[aria-pressed='true'] .story-catalog-ring {
+  box-shadow:
+    0 0 0 2px var(--story-ember),
+    0 0 0 6px rgba(255, 107, 44, 0.14),
+    0 0 30px 2px rgba(255, 107, 44, 0.38);
+}
+.story-shell .story-catalog-medallion[aria-pressed='true'] img { filter: none; }
+.story-shell .story-catalog-medallion[aria-pressed='true'] .story-catalog-medallion-name { color: var(--story-ember-soft); }
+
+/* ---- calling rows ---- */
+
+.story-shell .story-catalog-rows > li + li { border-top: 1px solid var(--story-hairline); }
+.story-shell .story-catalog-row {
+  appearance: none;
+  position: relative;
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 13px 0 14px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+/* The chosen row's ember rule at its left edge, as in the New adventure sheet. */
+.story-shell .story-catalog-row::before {
+  content: '';
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: -14px;
+  width: 2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--story-ember) 70%, transparent);
+  box-shadow: 0 0 12px rgba(255, 107, 44, 0.5);
+  opacity: 0;
+  transition: opacity var(--story-base) var(--story-ease);
+}
+.story-shell .story-catalog-row:hover::before { opacity: 0.45; }
+.story-shell .story-catalog-row[aria-pressed='true']::before { opacity: 0.95; }
+.story-shell .story-catalog-row:focus-visible { outline-offset: 0; }
+.story-shell .story-catalog-row-name {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-family: var(--story-prose);
+  font-size: 19px;
+  line-height: 1.2;
+  color: var(--story-ink);
+}
+.story-shell .story-catalog-row[aria-pressed='true'] .story-catalog-row-name { color: var(--story-ember-soft); }
+.story-shell .story-catalog-narrated {
+  font-family: var(--story-ui);
+  font-size: 0.64rem;
+  font-weight: 560;
+  letter-spacing: var(--story-label-tracking);
+  text-transform: uppercase;
+  color: var(--story-ink-soft);
+}
+.story-shell .story-catalog-row-text {
+  overflow: hidden;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--story-ink-soft);
+}
+.story-shell .story-catalog-row-meta {
+  font-size: 0.66rem;
+  font-weight: 560;
+  letter-spacing: var(--story-label-tracking);
+  text-transform: uppercase;
+  color: var(--story-muted);
+}
+
+/* ---- your own: Story fields ---- */
+
+.story-shell .story-catalog-own { display: grid; gap: var(--story-gap-2); }
+.story-shell .story-catalog-own .story-rule { width: 100%; margin: var(--story-gap-5) 0; }
+.story-shell .story-catalog-form {
+  display: grid;
+  gap: var(--story-gap-4);
+  max-width: 36rem;
+}
+.story-shell .story-catalog-field { display: grid; gap: 6px; }
+.story-shell .story-catalog-field :is(input, textarea) {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 6px 0 9px;
+  border: 0;
+  border-bottom: 1px solid var(--story-hairline-strong);
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  font-family: var(--story-prose);
+  font-size: 1.14rem;
+  line-height: 1.45;
+  color: var(--story-ink);
+  caret-color: var(--story-ember);
+  transition: border-color var(--story-fast) var(--story-ease), box-shadow var(--story-base) var(--story-ease);
+}
+.story-shell .story-catalog-field textarea {
+  min-height: 3.2em;
+  resize: none;
+  field-sizing: content;
+}
+.story-shell .story-catalog-field :is(input, textarea):hover { border-bottom-color: color-mix(in srgb, var(--story-ink) 34%, transparent); }
+.story-shell .story-catalog-field :is(input, textarea):focus {
+  border-bottom-color: var(--story-ember);
+  box-shadow: 0 1px 0 var(--story-ember), 0 10px 18px -16px rgba(255, 107, 44, 0.9);
+}
+.story-shell .story-catalog-field :is(input, textarea):disabled { color: var(--story-muted); }
+.story-shell .story-catalog-field :is(input, textarea)::placeholder { font-style: italic; color: var(--story-faint); opacity: 1; }
+.story-shell .story-catalog-field :is(input, textarea):focus-visible { outline: none; }
+.story-shell .story-catalog-help,
+.story-shell .story-catalog-quiet {
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: var(--story-muted);
+}
+.story-shell .story-catalog-error {
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: var(--story-fail);
+}
+.story-shell .story-catalog-form .story-label { margin-top: var(--story-gap-2); }
+.story-shell .story-catalog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--story-gap-3) var(--story-gap-5);
+  margin-top: var(--story-gap-2);
+  font-size: 0.92rem;
+}
+.story-shell .story-catalog-actions .story-link:disabled { color: var(--story-faint); background-size: 0 1px; }
+.story-shell .story-catalog-actions .story-primary[aria-busy='true'] { color: #1a0d05; }
+
+/* ---- Male · Female ---- */
+
+.story-shell .story-portrait-toggle [role='group'] {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 0.92rem;
+}
+.story-shell .story-portrait-toggle [role='group'] > span { color: var(--story-faint); }
+.story-shell .story-portrait-toggle .story-link:disabled { color: var(--story-faint); }
+
+/* ---- narrow: one column, the detail first and not sticky ---- */
+
+@media (max-width: 999px) {
+  .story-shell .story-catalog-body { grid-template-columns: minmax(0, 1fr); gap: var(--story-gap-5); }
+  .story-shell .story-catalog-detail {
+    position: static;
+    order: -1;
+    padding-bottom: var(--story-gap-5);
+    border-bottom: 1px solid var(--story-hairline);
+  }
+  .story-shell .story-catalog-portrait { width: min(100%, 200px); }
+}
+
+@media (max-width: 700px) {
+  .story-shell .story-catalog-controls { flex-direction: column; align-items: stretch; }
+  .story-shell .story-catalog-search { width: 100%; }
+  .story-shell .story-catalog-medallions { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); }
+  .story-shell .story-catalog-ring { width: 72px; height: 72px; }
+  .story-shell .story-catalog-portrait { width: 132px; }
+}

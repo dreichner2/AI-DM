@@ -32,11 +32,6 @@ const VIEWPORTS = [
   { name: 'mobile-landscape', width: 844, height: 390, fullPage: false },
 ]
 
-const LIGHT_THEME_VIEWPORTS = [
-  { name: 'desktop-light', width: 1440, height: 900, fullPage: false },
-  { name: 'mobile-light', width: 390, height: 844, fullPage: false },
-]
-
 const STORY_VIEWPORTS = [
   { name: 'desktop', width: 1440, height: 900 },
   { name: 'mobile', width: 390, height: 844 },
@@ -725,21 +720,6 @@ async function runVisualFlow(frontendUrl, backendUrl, ids, artifactDir) {
     await page.screenshot({ path: filePath, fullPage: viewport.fullPage })
     screenshots.push(filePath)
   }
-
-  await page.evaluate(() => localStorage.setItem('aidm:theme', 'light'))
-  await page.reload({ waitUntil: 'domcontentloaded' })
-  await expect(page.locator('.prototype-shell')).toHaveClass(/theme-light/)
-  for (const viewport of LIGHT_THEME_VIEWPORTS) {
-    await page.setViewportSize({ width: viewport.width, height: viewport.height })
-    await assertLayoutHealth(page, viewport)
-    const fileName = `${viewport.name}.png`
-    const filePath = path.join(artifactDir, fileName)
-    await page.screenshot({ path: filePath, fullPage: viewport.fullPage })
-    screenshots.push(filePath)
-  }
-  await page.evaluate(() => localStorage.setItem('aidm:theme', 'dark'))
-  await page.reload({ waitUntil: 'domcontentloaded' })
-  await expect(page.locator('.prototype-shell')).toHaveClass(/theme-dark/)
 
   const combatSession = await postJson(backendUrl, '/api/sessions/start', {
     campaign_id: ids.campaign.campaign_id,

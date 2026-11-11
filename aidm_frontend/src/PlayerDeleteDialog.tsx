@@ -24,7 +24,7 @@ export function PlayerDeleteDialog({
       labelledBy="player-delete-title"
       describedBy="player-delete-description"
       onClose={onClose}
-      title="Delete Character"
+      title="Delete this character"
     >
       <div className="story-dialog-body">
         <p className="story-dialog-subject">{dialog.player.character_name || dialog.player.name}</p>
@@ -49,7 +49,7 @@ export function PlayerDeleteDialog({
             onClick={onConfirm}
             disabled={dialog.pending}
           >
-            {dialog.pending ? 'Deleting...' : 'Delete Character'}
+            {dialog.pending ? 'Deleting...' : 'Delete this character'}
           </button>
         </footer>
       </div>
