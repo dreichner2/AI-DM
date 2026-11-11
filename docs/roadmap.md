@@ -78,6 +78,10 @@ Archived review material lives in:
   in Safe Mode, and helper calls only where they can matter.
 - Tooling: the toolchain check accepts current Python, Node.js and npm releases;
   `scripts/solo_balance.py`; the Play Now release smoke.
+- Performance: the Account and Settings sheets, the chapter dialogs, the Story
+  drawer and the narration queue load on demand, fetched ahead when the player
+  reaches for them, so the start-up entry chunk fell from 199.9 to 187.3 KiB gzip
+  and its initial-JS budget from 199.9 to 193.3 KiB.
 
 ### Earlier beta hardening
 

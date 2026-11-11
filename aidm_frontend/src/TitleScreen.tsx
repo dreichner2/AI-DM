@@ -1,6 +1,7 @@
 import { useCallback, useId, useState, type CSSProperties } from 'react'
 import { EmberMark } from './story/glyphs'
 import { StoryAtmosphere } from './story/StoryAtmosphere'
+import { accountSheetChunk } from './story/storyChunks'
 import { TitleHeroes, type TitleHero, type TitleHeroesStatus } from './story/TitleHeroes'
 
 /** The most recently played adventure, for the "Continue your adventure" block. */
@@ -241,7 +242,11 @@ export function TitleScreen({
                     </button>
                   )}
                   {accountReady ? null : (
-                    <span className="story-title-link-group">
+                    <span
+                      className="story-title-link-group"
+                      onPointerEnter={accountSheetChunk.preload}
+                      onFocus={accountSheetChunk.preload}
+                    >
                       <button type="button" className="story-link" disabled={pending} onClick={onLogIn}>
                         Log in
                       </button>

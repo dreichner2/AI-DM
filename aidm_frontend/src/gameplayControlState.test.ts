@@ -411,9 +411,6 @@ describe('gameplayControlsFromSnapshot', () => {
     const cure = controls.spells.find((spell) => spell.name === 'Cure Wounds')
     expect(cure?.targets.find((target) => target.id === 'player_31')).toMatchObject({ available: true, reason: '' })
     expect(cure).toMatchObject({ available: true })
-    expect(
-      controls.spells.find((spell) => spell.name === 'Fire Bolt')?.targets.find((target) => target.id === 'enemy_goblin'),
-    ).toMatchObject({ available: false, reason: 'Already defeated.' })
     const layOnHands = controls.capabilities.find((feature) => feature.id === 'lay_on_hands')
     expect(layOnHands?.targets.find((target) => target.id === 'player_31')).toMatchObject({ available: true })
 
@@ -425,6 +422,41 @@ describe('gameplayControlsFromSnapshot', () => {
     expect(
       afterDeath.capabilities.find((feature) => feature.id === 'lay_on_hands')?.targets.find((target) => target.id === 'player_31'),
     ).toMatchObject({ available: false, reason: 'Healing cannot restore the dead.' })
+  })
+
+  it('treats a hero out of the fight like the dead: no spell can raise them', () => {
+    const state = snapshot()
+    const actor = state.playerCharacters[0] as Record<string, unknown>
+    actor.spellbook = { ...(actor.spellbook as Record<string, unknown>), preparedSpells: ['Cure Wounds'] }
+    Object.assign(state.combat.participants[1] as Record<string, unknown>, {
+      kind: 'player_character',
+      hp: { current: 0, max: 10 },
+      conditions: ['unconscious', 'stable', 'out_of_fight'],
+      isAlive: true,
+      isConscious: false,
+      position: { rangeBand: 'melee', zoneId: 'crypt' },
+    })
+
+    const cure = gameplayControlsFromSnapshot(state, 30).spells.find((spell) => spell.name === 'Cure Wounds')
+    expect(cure?.targets.find((target) => target.id === 'player_31')).toMatchObject({
+      available: false,
+      reason: 'They are out of this fight.',
+    })
+  })
+
+  it('leaves a defeated enemy out of the targets, unless the spell may reach the defeated', () => {
+    const state = snapshot()
+    Object.assign(state.combat.participants[2] as Record<string, unknown>, { hp: { current: 0, max: 8 }, isAlive: false })
+
+    const fireBolt = () => gameplayControlsFromSnapshot(state, 30).spells.find((spell) => spell.name === 'Fire Bolt')
+    expect(fireBolt()?.targets.map((target) => target.id)).toEqual(['player_30', 'player_31', 'enemy_archer'])
+
+    const spellbook = (state.playerCharacters[0] as Record<string, unknown>).spellbook as { knownSpells: Array<Record<string, unknown>> }
+    spellbook.knownSpells[0] = {
+      ...spellbook.knownSpells[0],
+      target: { ...(spellbook.knownSpells[0].target as Record<string, unknown>), allowDefeated: true },
+    }
+    expect(fireBolt()?.targets.find((target) => target.id === 'enemy_goblin')).toMatchObject({ available: true })
   })
 
   it('offers Spare the Dying only for a dying ally', () => {

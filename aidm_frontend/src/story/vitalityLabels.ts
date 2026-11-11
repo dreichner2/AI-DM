@@ -1,6 +1,5 @@
 import {
   characterVitality,
-  isRecord,
   partyVitalityFromSnapshot,
   stringValue,
   type CharacterVitality,
@@ -31,29 +30,21 @@ export function outOfFight(conditions: unknown) {
   return Array.isArray(conditions) && conditions.some((condition) => OUT_CONDITIONS.has(stringValue(condition).toLowerCase()))
 }
 
-function heroVitality(vitality: CharacterVitality, out: boolean): HeroVitality {
-  return { ...vitality, state: out || vitality.state === 'dead' ? 'out' : vitality.state }
+/** An old save's `dead` hero reads as out of the fight. */
+function heroVitality(vitality: CharacterVitality): HeroVitality {
+  return { ...vitality, state: vitality.state === 'dead' ? 'out' : vitality.state }
 }
 
 /** A downed hero's vitality from their conditions (see characterVitality); null for anyone standing. */
 export function heroVitalityOf(conditions: readonly string[], deathSaves?: CombatDeathSaves | null) {
   const vitality = characterVitality(conditions, deathSaves)
-  return vitality && heroVitality(vitality, outOfFight(conditions))
+  return vitality && heroVitality(vitality)
 }
 
-/**
- * Each downed hero's vitality by player id (see partyVitalityFromSnapshot).
- * Only a fight puts a hero out of it, so their fight record (`player_<id>` or `player-<id>`) says whether they are.
- */
+/** Each downed hero's vitality by player id (see partyVitalityFromSnapshot). */
 export function partyHeroVitality(snapshot: unknown): Record<number, HeroVitality> {
-  const combat = isRecord(snapshot) && isRecord(snapshot.combat) ? snapshot.combat : {}
-  const out = new Set(
-    (Array.isArray(combat.participants) ? combat.participants.filter(isRecord) : [])
-      .filter((participant) => outOfFight(participant.conditions))
-      .map((participant) => stringValue(participant.id).replace('-', '_')),
-  )
   return Object.fromEntries(
-    Object.entries(partyVitalityFromSnapshot(snapshot)).map(([id, vitality]) => [id, heroVitality(vitality, out.has(`player_${id}`))]),
+    Object.entries(partyVitalityFromSnapshot(snapshot)).map(([id, vitality]) => [id, heroVitality(vitality)]),
   )
 }
 

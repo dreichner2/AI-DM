@@ -5,12 +5,13 @@ import { subscribeToMediaQueryChange } from '../mediaQuery'
 import { useModalFocusTrap } from '../useModalFocusTrap'
 import { travelSubmission } from './actionIntents'
 import { heroHasSpells } from './heroSpells'
-import { CharacterSection } from './drawer/CharacterSection'
-import { JournalSection } from './drawer/JournalSection'
-import { MagicSection } from './drawer/MagicSection'
-import { PackSection } from './drawer/PackSection'
+import { drawerSectionChunks } from './storyChunks'
 import type { StoryDrawerProps, StoryDrawerTab } from './types'
 
+const CharacterSection = drawerSectionChunks.character.component((module) => module.CharacterSection)
+const PackSection = drawerSectionChunks.pack.component((module) => module.PackSection)
+const MagicSection = drawerSectionChunks.magic.component((module) => module.MagicSection)
+const JournalSection = drawerSectionChunks.journal.component((module) => module.JournalSection)
 const MapSection = lazy(() => import('./drawer/MapSection').then(({ MapSection: Component }) => ({ default: Component })))
 
 /** Below this width the drawer overlays the story instead of sitting beside it. */
@@ -178,10 +179,12 @@ export function StoryDrawer({ board, inspector, open, tab, onTabChange, onClose 
           aria-labelledby={drawerTabId(shownTab)}
           tabIndex={0}
         >
-          {shownTab === 'character' ? <CharacterSection board={board} inspector={inspector} withTraits={!hasSpells} /> : null}
-          {shownTab === 'pack' ? <PackSection inspector={inspector} /> : null}
-          {shownTab === 'magic' ? <MagicSection board={board} inspector={inspector} /> : null}
-          {shownTab === 'journal' ? <JournalSection board={board} inspector={inspector} /> : null}
+          <Suspense fallback={null}>
+            {shownTab === 'character' ? <CharacterSection board={board} inspector={inspector} withTraits={!hasSpells} /> : null}
+            {shownTab === 'pack' ? <PackSection inspector={inspector} /> : null}
+            {shownTab === 'magic' ? <MagicSection board={board} inspector={inspector} /> : null}
+            {shownTab === 'journal' ? <JournalSection board={board} inspector={inspector} /> : null}
+          </Suspense>
           {shownTab === 'map' ? (
             <Suspense fallback={<p className="story-sheet-meta">Loading map…</p>}>
               <MapSection inspector={inspector} worldMap={worldMap} travelBlockedReason={travelBlockedReason} onTravel={travel} />

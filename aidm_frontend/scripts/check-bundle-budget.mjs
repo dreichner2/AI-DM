@@ -22,12 +22,17 @@ const budgets = {
   // (rail, board, inspector), the creation flow, the map, the dice and the
   // rarely used dialogs are lazy chunks. Measured at the same point: initial JS
   // 192.2, async JS 292.8, CSS 50.9, initial assets 243.1 and total assets
-  // 536.7 KiB gzip; each limit is plus 4%.
-  initialJsGzip: 199.9 * 1024,
-  asyncJsGzip: 304.5 * 1024,
+  // 536.7 KiB gzip; each limit is plus 4%. The Account and Settings sheets,
+  // the chapter dialogs, the Story drawer and the narration queue then left the
+  // entry chunk (199.9 to 187.3 KiB gzip); initial JS is that plus 6 KiB. What
+  // left the entry chunk landed in on-demand chunks (async 322.7, total assets
+  // 562.9 KiB gzip), so those two limits moved with it, plus 1%; they come
+  // down again when the three.js dice dialog is removed.
+  initialJsGzip: 193.3 * 1024,
+  asyncJsGzip: 326.0 * 1024,
   cssGzip: 52.9 * 1024,
   initialAssetGzip: 252.8 * 1024,
-  totalAssetGzip: 558.2 * 1024,
+  totalAssetGzip: 568.5 * 1024,
   distRaw: 190 * mebibyte,
   staticRaw: 188 * mebibyte,
   largestStaticRaw: 175 * mebibyte,

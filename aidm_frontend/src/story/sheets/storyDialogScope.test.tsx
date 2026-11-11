@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createRef } from 'react'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BackgroundSelector } from '../../BackgroundSelector'
 import { ModalShell } from '../../ModalShell'
@@ -78,7 +78,7 @@ describe('dialog styles stay inside dialogs', () => {
     expect(STORY_DRAWER_CSS).not.toMatch(/\.story-dialog/)
   })
 
-  it('renders the drawer and a dialog side by side, neither carrying the other’s classes', () => {
+  it('renders the drawer and a dialog side by side, neither carrying the other’s classes', async () => {
     vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }))
     const { container: drawer } = render(
       <StoryDrawer board={testBoard()} inspector={testInspector()} open tab="journal" onTabChange={vi.fn()} onClose={vi.fn()} />,
@@ -103,7 +103,8 @@ describe('dialog styles stay inside dialogs', () => {
     )
     const settings = screen.getByRole('dialog', { name: 'Settings' })
 
-    expect(drawer.querySelector('.story-sheet')).not.toBeNull()
+    // The journal section arrives as its own chunk.
+    await waitFor(() => expect(drawer.querySelector('.story-sheet')).not.toBeNull())
     expect(drawer.querySelector(DIALOG_CLASS)).toBeNull()
     expect(settings.closest('.story-dialog')).not.toBeNull()
     expect(settings.closest(DRAWER_CLASS)).toBeNull()
@@ -134,7 +135,7 @@ describe('dialog styles stay inside dialogs', () => {
     }
   })
 
-  it('leaves the character drawer free of dialog classes', () => {
+  it('leaves the character drawer free of dialog classes', async () => {
     vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }))
     for (const tab of DRAWER_TABS) {
       const { container, unmount } = render(
@@ -147,6 +148,7 @@ describe('dialog styles stay inside dialogs', () => {
           onClose={vi.fn()}
         />,
       )
+      await waitFor(() => expect(screen.getByRole('tabpanel').childElementCount).toBeGreaterThan(0))
       expect(container.querySelector('[class*="story-dialog"]')).toBeNull()
       unmount()
     }

@@ -338,6 +338,8 @@ async function runStoryFlow(browser, frontendUrl, backendUrl, consoleErrors) {
   const actionInput = storyPage.getByLabel('Your Action')
   await expect(actionInput).toBeEnabled({ timeout: 15_000 })
   await actionInput.fill('I look for whoever scratched the names out of the ledger.')
+  // The box unlocks when the engine has finished the opening turn, a moment after its narration.
+  await expect(storyPage.getByRole('button', { name: 'Send', exact: true })).toBeEnabled({ timeout: 15_000 })
   await actionInput.press('Enter')
   await waitForStoryNarrations(storyPage, 2)
   await waitForSessionLog(backendUrl, storyIds.sessionId, (entries) =>

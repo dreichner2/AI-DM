@@ -9,6 +9,7 @@ import { UNRECORDED_SCENE_NAME } from '../gameSelectors'
 import type { SessionBoardProps } from '../SessionBoard'
 import type { ActivePlayer } from '../types'
 import { makeBoardFixture } from './preview/fixtures'
+import { accountSheetChunk, drawerChunk, sessionDialogsChunk, settingsSheetChunk } from './storyChunks'
 import { StoryTopBar } from './StoryTopBar'
 import type { StoryChromeProps, StoryDrawerTab } from './types'
 
@@ -76,6 +77,7 @@ function itemNames(menu: HTMLElement) {
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
 })
 
 describe('StoryTopBar', () => {
@@ -310,6 +312,43 @@ describe('StoryTopBar', () => {
     unmount()
     renderTopBar()
     expect(screen.queryByText('Scripted narrator')).toBeNull()
+  })
+
+  it('starts fetching what a button opens as soon as the pointer enters it or focus reaches it', async () => {
+    const preload = {
+      settings: vi.spyOn(settingsSheetChunk, 'preload'),
+      account: vi.spyOn(accountSheetChunk, 'preload'),
+      dialogs: vi.spyOn(sessionDialogsChunk, 'preload'),
+      drawer: vi.spyOn(drawerChunk, 'preload'),
+    }
+    const { unmount } = renderTopBar({
+      chromeProps: { onStartNextChapter: vi.fn() },
+      hero: { id: 7, character_name: 'Ysolde Marrow', name: 'Danny', health: { tone: 'wounded', label: 'Wounded', currentHp: 12, maxHp: 24 } },
+    })
+
+    fireEvent.pointerEnter(screen.getAllByRole('button', { name: 'Adventure menu' })[1])
+    expect(preload.settings).toHaveBeenCalledOnce()
+    expect(preload.account).toHaveBeenCalledOnce()
+    expect(preload.dialogs).toHaveBeenCalledOnce()
+    expect(preload.drawer).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(settingsSheetChunk.isLoaded()).toBe(true))
+    fireEvent.focus(screen.getAllByRole('button', { name: 'Adventure menu' })[0])
+    expect(preload.settings).toHaveBeenCalledTimes(2)
+
+    fireEvent.pointerEnter(screen.getByRole('button', { name: 'Open character panel' }))
+    expect(preload.drawer).toHaveBeenCalledOnce()
+    fireEvent.focus(screen.getByRole('button', { name: 'HP 12 / 24' }))
+    expect(preload.drawer).toHaveBeenCalledTimes(2)
+    await vi.waitFor(() => expect(drawerChunk.isLoaded()).toBe(true))
+    unmount()
+
+    // A player with no account and no chapter to start has neither fetched.
+    vi.clearAllMocks()
+    renderTopBar({ chromeProps: { onOpenAccount: undefined } })
+    fireEvent.pointerEnter(screen.getAllByRole('button', { name: 'Adventure menu' })[1])
+    expect(preload.settings).toHaveBeenCalledOnce()
+    expect(preload.account).not.toHaveBeenCalled()
+    expect(preload.dialogs).not.toHaveBeenCalled()
   })
 
   it('opens and closes the character panel', () => {

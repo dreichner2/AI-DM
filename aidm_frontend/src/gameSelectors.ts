@@ -236,9 +236,9 @@ export type CombatDeathSaves = {
   failures: number
 }
 
-export type CharacterVitalityState = 'dying' | 'stable' | 'dead'
+export type CharacterVitalityState = 'dying' | 'stable' | 'out' | 'dead'
 
-/** A player character at 0 HP: dying (with its death-save tally), stable or dead. */
+/** A player character at 0 HP: dying (with its death-save tally), stable, out of the fight or dead. */
 export type CharacterVitality = CombatDeathSaves & {
   state: CharacterVitalityState
 }
@@ -572,7 +572,10 @@ function deathSavesValue(value: unknown): CombatDeathSaves | null {
   }
 }
 
-/** Dying, stable or dead from a character's conditions; null for anyone still on their feet. */
+/**
+ * Dying, stable, out of the fight (`out_of_fight`: down until the fight ends) or dead from a
+ * character's conditions; null for anyone still on their feet.
+ */
 export function characterVitality(
   conditions: readonly string[],
   deathSaves: CombatDeathSaves | null | undefined,
@@ -580,11 +583,13 @@ export function characterVitality(
   const keys = new Set(conditions.map((condition) => condition.trim().toLowerCase()))
   const state: CharacterVitalityState | null = keys.has('dead')
     ? 'dead'
-    : keys.has('dying')
-      ? 'dying'
-      : keys.has('stable')
-        ? 'stable'
-        : null
+    : keys.has('out_of_fight')
+      ? 'out'
+      : keys.has('dying')
+        ? 'dying'
+        : keys.has('stable')
+          ? 'stable'
+          : null
   if (!state) return null
   return {
     state,

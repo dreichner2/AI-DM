@@ -26,11 +26,6 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react'
-import {
-  CampaignActionDialog,
-  SessionActionDialog,
-  StartChapterDialog,
-} from './CampaignSessionActionDialogs'
 import type {
   CampaignArchiveDialogState,
   SessionArchiveDialogState,
@@ -85,6 +80,7 @@ import {
 } from './gameSelectors'
 import { diceRollMessage } from './gameActions'
 import { gameplayControlsFromSnapshot } from './gameplayControlState'
+import { whenIdle } from './lazyModule'
 import { subscribeToMediaQueryChange } from './mediaQuery'
 import { profileIconSrcForCharacter } from './profileIcons'
 import { BackendTrustDialog, RuntimeSettingsDialog } from './RuntimeSettingsDialog'
@@ -92,11 +88,16 @@ import type { SceneDisplayState } from './sceneState'
 import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusicPlayer'
 import { StoryClarification } from './story/StoryClarification'
 import { StoryComposer } from './story/StoryComposer'
-import { StoryDrawer } from './story/StoryDrawer'
+import {
+  accountSheetChunk,
+  drawerChunk,
+  sessionDialogsChunk,
+  settingsSheetChunk,
+} from './story/storyChunks'
 import { StoryNotices } from './story/StoryNotices'
 import { StoryNoticeContext, useStoryNoticeLine, type StoryNotice } from './story/storyNoticeLine'
-import { StoryAccountSheet, type AccountSheetView } from './story/sheets/StoryAccountSheet'
-import { StorySettingsSheet, type NarratorSetting } from './story/sheets/StorySettingsSheet'
+import type { AccountSheetView } from './story/sheets/StoryAccountSheet'
+import type { NarratorSetting } from './story/sheets/StorySettingsSheet'
 import { useStoryPreferences } from './story/sheets/storyPreferences'
 import { StoryView } from './story/StoryView'
 import type { StoryChromeProps, StoryConnection, StoryDrawerTab } from './story/types'
@@ -229,6 +230,13 @@ const WorldManagerDialog = lazy(() =>
 const WorldDeleteDialog = lazy(() =>
   import('./WorldDialogs').then((module) => ({ default: module.WorldDeleteDialog })),
 )
+// These appear with no loading state: each is fetched ahead when the player reaches for it.
+const StoryAccountSheet = accountSheetChunk.component((module) => module.StoryAccountSheet)
+const StorySettingsSheet = settingsSheetChunk.component((module) => module.StorySettingsSheet)
+const CampaignActionDialog = sessionDialogsChunk.component((module) => module.CampaignActionDialog)
+const SessionActionDialog = sessionDialogsChunk.component((module) => module.SessionActionDialog)
+const StartChapterDialog = sessionDialogsChunk.component((module) => module.StartChapterDialog)
+const StoryDrawer = drawerChunk.component((module) => module.StoryDrawer)
 function preloadDiceRollDialog() {
   if (import.meta.env.MODE === 'test') return
   void loadDiceRollDialog()
@@ -3827,6 +3835,17 @@ function AIDMApp() {
     && !showTitleScreen
     && (mobileRailOpen || mobileInspectorOpen)
   const storyView = playView === 'story'
+  const consoleShown = !storyView && !showTitleScreen
+  // Table tools opens the chapter dialogs and the Settings and Account sheets from its rail, board and
+  // top bar alike, so their code is fetched once the console shows rather than control by control.
+  useEffect(() => {
+    if (!consoleShown) return undefined
+    return whenIdle(() => {
+      sessionDialogsChunk.preload()
+      settingsSheetChunk.preload()
+      accountSheetChunk.preload()
+    })
+  }, [consoleShown])
   // Story view is always dark and has none of the console's grid rows.
   const shellClassName = (storyView
     ? [
@@ -4479,14 +4498,19 @@ function AIDMApp() {
               </>
             }
             drawer={
-              <StoryDrawer
-                board={sessionBoardProps}
-                inspector={inspectorPanelProps}
-                open={storyDrawer.open}
-                tab={storyDrawer.tab}
-                onTabChange={(tab) => changeStoryDrawer(true, tab)}
-                onClose={() => changeStoryDrawer(false)}
-              />
+              // Closed, the drawer shows nothing: its code is not asked for until it opens or has arrived.
+              storyDrawer.open || drawerChunk.isLoaded() ? (
+                <Suspense fallback={null}>
+                  <StoryDrawer
+                    board={sessionBoardProps}
+                    inspector={inspectorPanelProps}
+                    open={storyDrawer.open}
+                    tab={storyDrawer.tab}
+                    onTabChange={(tab) => changeStoryDrawer(true, tab)}
+                    onClose={() => changeStoryDrawer(false)}
+                  />
+                </Suspense>
+              ) : null
             }
             drawerOpen={storyDrawer.open}
             drawerTab={storyDrawer.tab}
@@ -4656,43 +4680,45 @@ function AIDMApp() {
       />
 
       {accountSheetView ? (
-        <StoryAccountSheet
-          {...accountSheetView}
-          access={{
-            error: runtimeSettingsError,
-            form: runtimeSettingsForm,
-            legacyPasswordSetupRequired,
-            onAuthIntentChange: setRuntimeAuthIntent,
-            onAuthStepChange: setRuntimeAuthStep,
-            onErrorChange: setRuntimeSettingsError,
-            onFormChange: setRuntimeSettingsForm,
-            onLegacyPasswordSetupRequiredChange: setLegacyPasswordSetupRequired,
-            onOpenSavedWorkspaceDelete: openSavedWorkspaceDeleteDialog,
-            onSelectSavedWorkspace: selectSavedWorkspace,
-            onSubmit: submitRuntimeSettings,
-            onWorkspaceActionChange: setRuntimeWorkspaceAction,
-            onWorkspaceCreateAccessModeChange: setRuntimeWorkspaceCreateAccessMode,
-            onWorkspaceJoinMethodChange: setRuntimeWorkspaceJoinMethod,
-            runtimeAccount,
-            runtimeAuthIntent,
-            runtimeAuthStep,
-            runtimeCreatedWorkspaceToken,
-            runtimeWorkspaceAction,
-            runtimeWorkspaceCreateAccessMode,
-            runtimeWorkspaceJoinMethod,
-            workspaceId,
-          }}
-          dialogRef={modalDialogRef}
-          onClose={runtimeSettingsOpen ? closeRuntimeSettingsDialog : closeAccountSheet}
-          onLogOut={() => {
-            setAccountSheetOpen(false)
-            clearAuthToken()
-          }}
-          onSwitchTable={() => {
-            setAccountSheetOpen(false)
-            openWorkspaceAuthDialog()
-          }}
-        />
+        <Suspense fallback={null}>
+          <StoryAccountSheet
+            {...accountSheetView}
+            access={{
+              error: runtimeSettingsError,
+              form: runtimeSettingsForm,
+              legacyPasswordSetupRequired,
+              onAuthIntentChange: setRuntimeAuthIntent,
+              onAuthStepChange: setRuntimeAuthStep,
+              onErrorChange: setRuntimeSettingsError,
+              onFormChange: setRuntimeSettingsForm,
+              onLegacyPasswordSetupRequiredChange: setLegacyPasswordSetupRequired,
+              onOpenSavedWorkspaceDelete: openSavedWorkspaceDeleteDialog,
+              onSelectSavedWorkspace: selectSavedWorkspace,
+              onSubmit: submitRuntimeSettings,
+              onWorkspaceActionChange: setRuntimeWorkspaceAction,
+              onWorkspaceCreateAccessModeChange: setRuntimeWorkspaceCreateAccessMode,
+              onWorkspaceJoinMethodChange: setRuntimeWorkspaceJoinMethod,
+              runtimeAccount,
+              runtimeAuthIntent,
+              runtimeAuthStep,
+              runtimeCreatedWorkspaceToken,
+              runtimeWorkspaceAction,
+              runtimeWorkspaceCreateAccessMode,
+              runtimeWorkspaceJoinMethod,
+              workspaceId,
+            }}
+            dialogRef={modalDialogRef}
+            onClose={runtimeSettingsOpen ? closeRuntimeSettingsDialog : closeAccountSheet}
+            onLogOut={() => {
+              setAccountSheetOpen(false)
+              clearAuthToken()
+            }}
+            onSwitchTable={() => {
+              setAccountSheetOpen(false)
+              openWorkspaceAuthDialog()
+            }}
+          />
+        </Suspense>
       ) : null}
 
       {savedWorkspaceDeleteDialog ? (
@@ -4715,32 +4741,34 @@ function AIDMApp() {
       ) : null}
 
       {profileSettingsOpen ? (
-        <StorySettingsSheet
-          diagnostics={settingsDiagnostics}
-          dialogRef={modalDialogRef}
-          fullscreen={fullscreenActive}
-          narration={narrationSetting}
-          narrator={narratorSetting}
-          onClose={closeProfileSettingsDialog}
-          onConnectionSettings={() => {
-            setProfileSettingsOpen(false)
-            openRuntimeSettingsDialog()
-          }}
-          onFullscreenChange={(fullscreen) => {
-            if (fullscreen !== fullscreenActive) void toggleFullscreen()
-          }}
-          onNarrationChange={(enabled) => {
-            if (enabled !== ttsEnabled) toggleTts()
-          }}
-          onNarratorChange={(provider, model) => void switchRuntime(provider, model)}
-          onReconnect={() => {
-            setSocketReconnectKey((current) => current + 1)
-            closeProfileSettingsDialog()
-          }}
-          onRefresh={() => void refreshCurrentWorkspace()}
-          onViewChange={(view) => (view === 'story' ? openStoryView() : openConsoleView())}
-          view={storyView ? 'story' : 'console'}
-        />
+        <Suspense fallback={null}>
+          <StorySettingsSheet
+            diagnostics={settingsDiagnostics}
+            dialogRef={modalDialogRef}
+            fullscreen={fullscreenActive}
+            narration={narrationSetting}
+            narrator={narratorSetting}
+            onClose={closeProfileSettingsDialog}
+            onConnectionSettings={() => {
+              setProfileSettingsOpen(false)
+              openRuntimeSettingsDialog()
+            }}
+            onFullscreenChange={(fullscreen) => {
+              if (fullscreen !== fullscreenActive) void toggleFullscreen()
+            }}
+            onNarrationChange={(enabled) => {
+              if (enabled !== ttsEnabled) toggleTts()
+            }}
+            onNarratorChange={(provider, model) => void switchRuntime(provider, model)}
+            onReconnect={() => {
+              setSocketReconnectKey((current) => current + 1)
+              closeProfileSettingsDialog()
+            }}
+            onRefresh={() => void refreshCurrentWorkspace()}
+            onViewChange={(view) => (view === 'story' ? openStoryView() : openConsoleView())}
+            view={storyView ? 'story' : 'console'}
+          />
+        </Suspense>
       ) : null}
 
       <CharacterJoinDialog
@@ -4894,36 +4922,40 @@ function AIDMApp() {
       ) : null}
 
       {campaignActionDialog ? (
-        <CampaignActionDialog
-          dialog={campaignActionDialog}
-          dialogRef={modalDialogRef}
-          onClose={closeCampaignActionDialog}
-          onDescriptionChange={(description) =>
-            setCampaignActionDialog((current) =>
-              current ? { ...current, description, error: '' } : current,
-            )
-          }
-          onSubmit={(event) => void submitCampaignActionDialog(event)}
-          onTitleChange={(title) =>
-            setCampaignActionDialog((current) =>
-              current ? { ...current, title, error: '' } : current,
-            )
-          }
-        />
+        <Suspense fallback={null}>
+          <CampaignActionDialog
+            dialog={campaignActionDialog}
+            dialogRef={modalDialogRef}
+            onClose={closeCampaignActionDialog}
+            onDescriptionChange={(description) =>
+              setCampaignActionDialog((current) =>
+                current ? { ...current, description, error: '' } : current,
+              )
+            }
+            onSubmit={(event) => void submitCampaignActionDialog(event)}
+            onTitleChange={(title) =>
+              setCampaignActionDialog((current) =>
+                current ? { ...current, title, error: '' } : current,
+              )
+            }
+          />
+        </Suspense>
       ) : null}
 
       {sessionActionDialog ? (
-        <SessionActionDialog
-          dialog={sessionActionDialog}
-          dialogRef={modalDialogRef}
-          onClose={closeSessionActionDialog}
-          onNameChange={(name) =>
-            setSessionActionDialog((current) =>
-              current ? { ...current, name, error: '' } : current,
-            )
-          }
-          onSubmit={(event) => void submitSessionActionDialog(event)}
-        />
+        <Suspense fallback={null}>
+          <SessionActionDialog
+            dialog={sessionActionDialog}
+            dialogRef={modalDialogRef}
+            onClose={closeSessionActionDialog}
+            onNameChange={(name) =>
+              setSessionActionDialog((current) =>
+                current ? { ...current, name, error: '' } : current,
+              )
+            }
+            onSubmit={(event) => void submitSessionActionDialog(event)}
+          />
+        </Suspense>
       ) : null}
 
       {saveImportDialog ? (
@@ -4940,15 +4972,17 @@ function AIDMApp() {
       ) : null}
 
       {startChapterDialog ? (
-        <StartChapterDialog
-          canForce={canUseOperatorTools}
-          dialog={startChapterDialog}
-          dialogRef={modalDialogRef}
-          onClose={closeStartChapterDialog}
-          onForceChange={(force) => updateStartChapterDialog({ force })}
-          onFreshChange={(fresh) => updateStartChapterDialog({ fresh })}
-          onSubmit={(event) => void submitStartChapterDialog(event)}
-        />
+        <Suspense fallback={null}>
+          <StartChapterDialog
+            canForce={canUseOperatorTools}
+            dialog={startChapterDialog}
+            dialogRef={modalDialogRef}
+            onClose={closeStartChapterDialog}
+            onForceChange={(force) => updateStartChapterDialog({ force })}
+            onFreshChange={(fresh) => updateStartChapterDialog({ fresh })}
+            onSubmit={(event) => void submitStartChapterDialog(event)}
+          />
+        </Suspense>
       ) : null}
 
       {worldManagerOpen ? (

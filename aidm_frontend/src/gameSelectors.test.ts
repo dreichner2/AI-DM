@@ -3,6 +3,7 @@ import {
   abilityOptionsFromStatBlock,
   buildMapMeta,
   buildTimeline,
+  characterVitality,
   recentMemoryFromSnippets,
   UNRECORDED_SCENE_NAME,
   inventoryCapacity,
@@ -224,6 +225,20 @@ describe('game selector helpers', () => {
         playerCharacters: [{ playerId: 30, health: { conditions: ['unconscious', 'stable'] } }],
       }),
     ).toEqual({ 30: { state: 'stable', successes: 0, failures: 0 } })
+  })
+
+  it('reads a hero out of the fight as out, whichever record says so', () => {
+    expect(characterVitality(['unconscious', 'stable', 'out_of_fight'], { successes: 2, failures: 1 }))
+      .toEqual({ state: 'out', successes: 0, failures: 0 })
+    expect(
+      partyVitalityFromSnapshot({
+        combat: { status: 'active', participants: [{ id: 'player-30', team: 'player', conditions: ['unconscious', 'stable', 'out_of_fight'] }] },
+        playerCharacters: [{ playerId: 31, health: { conditions: ['unconscious', 'stable', 'out_of_fight'] } }],
+      }),
+    ).toEqual({
+      30: { state: 'out', successes: 0, failures: 0 },
+      31: { state: 'out', successes: 0, failures: 0 },
+    })
   })
 
   it('normalizes spellbooks from character sheets and dedupes known spells', () => {

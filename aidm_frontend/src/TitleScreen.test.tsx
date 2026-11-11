@@ -3,6 +3,7 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { accountSheetChunk } from './story/storyChunks'
 import type { TitleHero } from './story/TitleHeroes'
 import { TitleScreen, type TitleResume, type TitleScreenProps } from './TitleScreen'
 
@@ -240,6 +241,17 @@ describe('TitleScreen', () => {
     expect(props.onCreateAccount).toHaveBeenCalledOnce()
     expect(props.onPlayNow).toHaveBeenCalledOnce()
     expect(screen.getByRole('button', { name: 'Create your own adventure' })).toBeInTheDocument()
+  })
+
+  it('starts fetching the account sheet when the pointer or focus reaches Log in or Create account', () => {
+    const preload = vi.spyOn(accountSheetChunk, 'preload').mockImplementation(() => undefined)
+    renderTitleScreen({ accountReady: false })
+
+    fireEvent.pointerEnter(screen.getByRole('button', { name: 'Log in' }))
+    expect(preload).toHaveBeenCalledOnce()
+    fireEvent.focus(screen.getByRole('button', { name: 'Create account' }))
+    expect(preload).toHaveBeenCalledTimes(2)
+    preload.mockRestore()
   })
 
   it('falls back to the default hero without a picker when the heroes cannot be loaded', () => {

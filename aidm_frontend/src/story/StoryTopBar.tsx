@@ -33,6 +33,7 @@ import type { SessionBoardProps } from '../SessionBoard'
 import type { ActivePlayer } from '../types'
 import { EmberMark } from './glyphs'
 import type { StoryTextSize } from './sheets/storyPreferences'
+import { accountSheetChunk, preloadStoryDrawer, sessionDialogsChunk, settingsSheetChunk } from './storyChunks'
 import type { StoryChromeProps, StoryDrawerTab } from './types'
 
 const SceneMusicPlayer = lazy(() =>
@@ -98,6 +99,7 @@ function IconButton({
   label,
   title = label,
   onClick,
+  onIntent,
   pressed,
   expanded,
   className = '',
@@ -106,6 +108,8 @@ function IconButton({
   label: string
   title?: string
   onClick: () => void
+  /** The pointer is over the button or focus has reached it: fetch what it opens. */
+  onIntent?: () => void
   pressed?: boolean
   expanded?: boolean
   className?: string
@@ -120,6 +124,8 @@ function IconButton({
       aria-pressed={pressed}
       aria-expanded={expanded}
       onClick={onClick}
+      onPointerEnter={onIntent}
+      onFocus={onIntent}
     >
       {children}
     </button>
@@ -144,6 +150,8 @@ function HeroHp({ hero, down, onOpen }: { hero: ActivePlayer; down: boolean; onO
       aria-label={`HP ${reading}`}
       title="Open character panel"
       onClick={onOpen}
+      onPointerEnter={preloadStoryDrawer}
+      onFocus={preloadStoryDrawer}
     >
       <Heart size={14} strokeWidth={1.6} aria-hidden="true" />
       {reading}
@@ -205,6 +213,13 @@ export function StoryTopBar({
     menuTriggerRef.current = trigger
     setMusicOpen(false)
     setMenuOpen((open) => !open)
+  }
+
+  // The sheets and dialogs the adventure menu opens.
+  const preloadMenuScreens = () => {
+    settingsSheetChunk.preload()
+    if (chrome.onOpenAccount) accountSheetChunk.preload()
+    if (chrome.onStartNextChapter) sessionDialogsChunk.preload()
   }
 
   const closeMenu = (returnFocus: boolean) => {
@@ -303,6 +318,8 @@ export function StoryTopBar({
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           onClick={(event) => toggleMenu(event.currentTarget)}
+          onPointerEnter={preloadMenuScreens}
+          onFocus={preloadMenuScreens}
         >
           <EmberMark size={24} />
         </button>
@@ -361,6 +378,7 @@ export function StoryTopBar({
           label={characterOpen ? 'Close character panel' : 'Open character panel'}
           expanded={characterOpen}
           onClick={() => onDrawerOpenChange(!characterOpen, 'character')}
+          onIntent={preloadStoryDrawer}
         >
           <UserRound size={19} strokeWidth={1.6} />
         </IconButton>
@@ -372,6 +390,8 @@ export function StoryTopBar({
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           onClick={(event) => toggleMenu(event.currentTarget)}
+          onPointerEnter={preloadMenuScreens}
+          onFocus={preloadMenuScreens}
         >
           <Menu size={19} strokeWidth={1.6} />
         </button>

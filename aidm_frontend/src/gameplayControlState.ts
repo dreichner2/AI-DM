@@ -309,7 +309,12 @@ function targetForSpell(
 ): GameplayTarget | null {
   const summary = recordTarget(target, normalized(target.team) || 'player')
   if (!summary) return null
-  const dead = summary.conditions.includes('dead')
+  const allowDefeated = (spellTarget.allowDefeated ?? spellTarget.allow_defeated) === true
+  // A defeated enemy is no longer a choice at all.
+  if (summary.team === 'enemy' && !allowDefeated && !participantAlive(target)) return null
+  // Nothing raises a hero out of the fight until it ends, as nothing raises the dead.
+  const outOfFight = summary.conditions.includes('out_of_fight')
+  const dead = outOfFight || summary.conditions.includes('dead')
   const reachesDowned = restoresDowned && playerCharacter(target) && !dead
   const casterId = stringValue(caster.id)
   const relation = normalized(spellTarget.relation ?? spellTarget.team) || 'enemy'
@@ -317,7 +322,6 @@ function targetForSpell(
   const allowSelf = allowSelfValue === undefined
     ? ['ally', 'self', 'any'].includes(relation)
     : allowSelfValue === true
-  const allowDefeated = (spellTarget.allowDefeated ?? spellTarget.allow_defeated) === true
   const requiresPresent = (spellTarget.requiresPresent ?? spellTarget.requires_present) !== false
   const requiresLineOfSight = (spellTarget.requiresLineOfSight ?? spellTarget.requires_line_of_sight) !== false
   const requiresSameZone = (spellTarget.requiresSameZone ?? spellTarget.requires_same_zone) === true
@@ -337,7 +341,9 @@ function targetForSpell(
   } else if ((spellTarget.requiresDying ?? spellTarget.requires_dying) === true && (!summary.conditions.includes('dying') || dead)) {
     reason = 'Must be dying.'
   } else if (!allowDefeated && !participantAlive(target) && !reachesDowned) {
-    reason = restoresDowned && dead ? 'Healing cannot restore the dead.' : 'Already defeated.'
+    reason = restoresDowned && outOfFight
+      ? 'They are out of this fight.'
+      : restoresDowned && dead ? 'Healing cannot restore the dead.' : 'Already defeated.'
   } else if (relation === 'self' && summary.id !== casterId) {
     reason = 'Requires the caster.'
   } else if (relation === 'ally' && !friendly(caster, target)) {

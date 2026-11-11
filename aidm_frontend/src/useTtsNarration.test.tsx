@@ -306,6 +306,31 @@ describe('useTtsNarration streaming', () => {
     await waitFor(() => expect(audioInstances).toHaveLength(2))
   })
 
+  it('holds narration said before its playback code arrives, then speaks it in order unless playback was stopped', async () => {
+    installAudioMock()
+    const stopped = renderTtsHarness()
+    stopped.stream(83, 'A sentence said in the moment narration is switched on, before its code is here.')
+    // As when the next response begins: what was waiting belongs to the old one.
+    act(() => stopped.result.current.stopTtsAudio({ suppressQueue: false }))
+    await new Promise((resolve) => window.setTimeout(resolve, 20))
+    expect(fetchHandler).not.toHaveBeenCalled()
+    stopped.unmount()
+    // A fresh hook, as on a later visit: the harness switches narration on again.
+    localStorage.removeItem('aidm:ttsEnabled')
+
+    const { stream } = renderTtsHarness()
+    stream(
+      84,
+      'First sentence carries enough detail to cross the playback threshold. ' +
+        'Second sentence follows with another complete narration beat for prefetch.',
+    )
+    await waitFor(() => expect(fetchHandler).toHaveBeenCalledTimes(2))
+    expect(fetchBodies).toEqual([
+      { text: 'First sentence carries enough detail to cross the playback threshold.' },
+      { text: 'Second sentence follows with another complete narration beat for prefetch.' },
+    ])
+  })
+
   it('retries one hard request failure, disables TTS, and avoids later fan-out', async () => {
     installAudioMock()
     fetchHandler.mockImplementation(async () => {

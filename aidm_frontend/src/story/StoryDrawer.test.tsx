@@ -18,7 +18,7 @@ function mockViewportWidth(width: number) {
   }))
 }
 
-function renderDrawer({
+async function renderDrawer({
   tab = 'character',
   board = testBoard(),
   inspector = testInspector(),
@@ -50,6 +50,8 @@ function renderDrawer({
     )
   }
   render(<Harness />)
+  // Each section arrives as its own chunk.
+  await waitFor(() => expect(screen.getByRole('tabpanel')).not.toBeEmptyDOMElement())
   return { board, inspector, onTabChange, onClose }
 }
 
@@ -65,9 +67,9 @@ afterEach(() => {
 })
 
 describe('StoryDrawer', () => {
-  it('moves between the five tabs with the arrow, Home and End keys', () => {
+  it('moves between the five tabs with the arrow, Home and End keys', async () => {
     mockViewportWidth(1440)
-    const { onTabChange } = renderDrawer()
+    const { onTabChange } = await renderDrawer()
     const tablist = screen.getByRole('tablist', { name: 'Character panel sections' })
     const tabs = within(tablist).getAllByRole('tab')
 
@@ -90,7 +92,7 @@ describe('StoryDrawer', () => {
     expect(onTabChange).toHaveBeenLastCalledWith('character')
   })
 
-  it('has no Magic tab for a hero without spells, and shows their abilities and traits on Character instead', () => {
+  it('has no Magic tab for a hero without spells, and shows their abilities and traits on Character instead', async () => {
     mockViewportWidth(1440)
     const base = testInspector()
     const inspector = testInspector({
@@ -108,7 +110,7 @@ describe('StoryDrawer', () => {
       }],
     })
     const board = testBoard({ gameplayControls: { ...testBoard().gameplayControls, spells: [], narratedSpells: [] } })
-    const { onTabChange } = renderDrawer({ tab: 'magic', board, inspector })
+    const { onTabChange } = await renderDrawer({ tab: 'magic', board, inspector })
 
     const tabs = within(screen.getByRole('tablist', { name: 'Character panel sections' })).getAllByRole('tab')
     expect(tabs.map((tab) => tab.textContent)).toEqual(['Character', 'Pack', 'Journal', 'Map'])
@@ -121,14 +123,14 @@ describe('StoryDrawer', () => {
     cleanup()
 
     // A spellcaster keeps the Magic tab, and the traits stay there.
-    renderDrawer({ inspector: testInspector({ characterTraits: inspector.characterTraits }) })
+    await renderDrawer({ inspector: testInspector({ characterTraits: inspector.characterTraits }) })
     expect(screen.getByRole('tab', { name: 'Magic' })).toBeInTheDocument()
     expect(screen.getByRole('tabpanel')).not.toHaveTextContent('Second Wind')
   })
 
-  it('sits beside the story on wide screens and closes with Escape or the close button', () => {
+  it('sits beside the story on wide screens and closes with Escape or the close button', async () => {
     mockViewportWidth(1440)
-    const { onClose } = renderDrawer()
+    const { onClose } = await renderDrawer()
 
     const sheet = screen.getByRole('complementary', { name: 'Character panel' })
     expect(sheet).not.toHaveAttribute('aria-modal')
@@ -139,7 +141,7 @@ describe('StoryDrawer', () => {
 
   it('traps focus as a modal overlay on narrower screens', async () => {
     mockViewportWidth(1024)
-    const { onClose } = renderDrawer({ tab: 'journal' })
+    const { onClose } = await renderDrawer({ tab: 'journal' })
 
     const dialog = screen.getByRole('dialog', { name: 'Character panel' })
     expect(dialog).toHaveAttribute('aria-modal', 'true')
@@ -157,9 +159,9 @@ describe('StoryDrawer', () => {
     expect(onClose).toHaveBeenCalled()
   })
 
-  it('shows the character at a glance and wires the character actions', () => {
+  it('shows the character at a glance and wires the character actions', async () => {
     mockViewportWidth(1440)
-    const { inspector } = renderDrawer()
+    const { inspector } = await renderDrawer()
 
     expect(screen.getByRole('heading', { name: 'Ysolde Marrow' })).toBeInTheDocument()
     expect(screen.getByText('Level 3 Elf Ranger')).toBeInTheDocument()
@@ -183,12 +185,12 @@ describe('StoryDrawer', () => {
     expect(within(table).getByText('typing…')).toBeInTheDocument()
   })
 
-  it('signs the proficiency bonus and initiative and shows HP against its maximum when one is known', () => {
+  it('signs the proficiency bonus and initiative and shows HP against its maximum when one is known', async () => {
     mockViewportWidth(1440)
     const vital = (label: string) => screen.getByText(label, { selector: 'dt' }).nextElementSibling
     const base = testInspector()
     const [viewer, other] = base.activePlayers
-    renderDrawer({
+    await renderDrawer({
       inspector: testInspector({
         statBlock: { ...base.statBlock, hp: '14', init: '1', proficiency: '2' },
         activePlayers: [{ ...viewer, health: { tone: 'uninjured', label: 'Uninjured', currentHp: 14, maxHp: 14 } }, other],
@@ -200,29 +202,29 @@ describe('StoryDrawer', () => {
     cleanup()
 
     const unknownHealth = [{ ...viewer, health: null }, other]
-    renderDrawer({ inspector: testInspector({ statBlock: { ...base.statBlock, hp: '7 / 12', init: '-1', proficiency: '+3' }, activePlayers: unknownHealth }) })
+    await renderDrawer({ inspector: testInspector({ statBlock: { ...base.statBlock, hp: '7 / 12', init: '-1', proficiency: '+3' }, activePlayers: unknownHealth }) })
     expect(vital('HP')).toHaveTextContent(/^7\/12$/)
     expect(vital('Initiative')).toHaveTextContent(/^-1$/)
     expect(vital('Proficiency bonus')).toHaveTextContent(/^\+3$/)
     cleanup()
 
-    renderDrawer({ inspector: testInspector({ statBlock: { ...base.statBlock, hp: '12', init: '0' }, activePlayers: unknownHealth }) })
+    await renderDrawer({ inspector: testInspector({ statBlock: { ...base.statBlock, hp: '12', init: '0' }, activePlayers: unknownHealth }) })
     expect(vital('HP')).toHaveTextContent(/^12$/)
     expect(vital('Initiative')).toHaveTextContent(/^\+0$/)
   })
 
-  it('shows conditions from combat on the character', () => {
+  it('shows conditions from combat on the character', async () => {
     mockViewportWidth(1440)
     const combat = testCombat()
     combat.allies[0] = { ...combat.allies[0], conditions: ['poisoned'] }
-    renderDrawer({ board: testBoard({ worldState: testWorld({ combat }) }) })
+    await renderDrawer({ board: testBoard({ worldState: testWorld({ combat }) }) })
     expect(within(screen.getByLabelText('Conditions')).getByText('poisoned')).toBeInTheDocument()
   })
 
-  it('shows saving throws on one line with the proficient ones first, hit dice, and conditions outside combat', () => {
+  it('shows saving throws on one line with the proficient ones first, hit dice, and conditions outside combat', async () => {
     mockViewportWidth(1440)
     const base = testInspector()
-    renderDrawer({
+    await renderDrawer({
       inspector: testInspector({
         statBlock: {
           ...base.statBlock,
@@ -245,12 +247,12 @@ describe('StoryDrawer', () => {
     expect(within(screen.getByLabelText('Conditions')).getByText('poisoned')).toBeInTheDocument()
   })
 
-  it('shows a dying character’s death saves on the sheet and at the table', () => {
+  it('shows a dying character’s death saves on the sheet and at the table', async () => {
     mockViewportWidth(1440)
     const board = testBoard()
     const sessionState = board.sessionState
     if (!sessionState) throw new Error('fixture has a session state')
-    renderDrawer({
+    await renderDrawer({
       board: {
         ...board,
         sessionState: {
@@ -274,13 +276,13 @@ describe('StoryDrawer', () => {
     expect(within(screen.getByLabelText('Conditions')).getAllByText(/./).map((chip) => chip.textContent)).toEqual(['poisoned'])
   })
 
-  it('names a hero out of the fight so on the sheet and at the table, never as a condition', () => {
+  it('names a hero out of the fight so on the sheet and at the table, never as a condition', async () => {
     mockViewportWidth(1440)
     const board = testBoard()
     const sessionState = board.sessionState
     if (!sessionState) throw new Error('fixture has a session state')
     const out = ['unconscious', 'stable', 'out_of_fight']
-    renderDrawer({
+    await renderDrawer({
       board: {
         ...board,
         sessionState: {
@@ -295,9 +297,9 @@ describe('StoryDrawer', () => {
     expect(within(screen.getByLabelText('Conditions')).getAllByText(/./).map((chip) => chip.textContent)).toEqual(['poisoned'])
   })
 
-  it('toggles equipment from the pack and shows progress while it saves', () => {
+  it('toggles equipment from the pack and shows progress while it saves', async () => {
     mockViewportWidth(1440)
-    const { inspector } = renderDrawer({ tab: 'pack' })
+    const { inspector } = await renderDrawer({ tab: 'pack' })
 
     expect(screen.getByText('43 gp · 19.9 / 180 lb')).toBeInTheDocument()
     const equip = screen.getByRole('button', { name: 'Equip Longbow' })
@@ -307,13 +309,13 @@ describe('StoryDrawer', () => {
     expect(screen.getByText('×2')).toBeInTheDocument()
     cleanup()
 
-    renderDrawer({ tab: 'pack', inspector: testInspector({ equipmentPendingItemKey: 'longbow' }) })
+    await renderDrawer({ tab: 'pack', inspector: testInspector({ equipmentPendingItemKey: 'longbow' }) })
     expect(screen.getByRole('button', { name: 'Updating Longbow' })).toBeDisabled()
   })
 
   it('travels from the map with the classic travel intent, but not during combat', async () => {
     mockViewportWidth(1440)
-    const { board } = renderDrawer({ tab: 'map' })
+    const { board } = await renderDrawer({ tab: 'map' })
     fireEvent.click(await screen.findByRole('button', { name: 'Go to North causeway' }))
     expect(board.actionComposerProps.submitAction).toHaveBeenCalledWith('The party travels to North causeway.', {
       kind: 'travel',
@@ -326,7 +328,7 @@ describe('StoryDrawer', () => {
     cleanup()
 
     const combatBoard = testBoard({ worldState: testWorld({ combat: testCombat() }) })
-    renderDrawer({ tab: 'map', board: combatBoard })
+    await renderDrawer({ tab: 'map', board: combatBoard })
     const travel = screen.getByRole('button', { name: 'Go to North causeway' })
     expect(travel).toHaveAttribute('aria-disabled', 'true')
     expect(travel).toHaveAccessibleDescription('Not while combat is underway.')
@@ -334,9 +336,9 @@ describe('StoryDrawer', () => {
     expect(combatBoard.actionComposerProps.submitAction).not.toHaveBeenCalled()
   })
 
-  it('marks the spells the rules engine resolves', () => {
+  it('marks the spells the rules engine resolves', async () => {
     mockViewportWidth(1440)
-    renderDrawer({
+    await renderDrawer({
       tab: 'magic',
       board: testBoard({
         gameplayControls: { ...testBoard().gameplayControls, spells: [{ ...testBoard().gameplayControls.spells[0], id: 'hunters-mark', name: "Hunter's Mark" }] },
@@ -351,9 +353,9 @@ describe('StoryDrawer', () => {
     expect(screen.getByText('Favored Foe')).toBeInTheDocument()
   })
 
-  it('shows every objective with its state, the finished quests, clues and papers', () => {
+  it('shows every objective with its state, the finished quests, clues and papers', async () => {
     mockViewportWidth(1440)
-    renderDrawer({
+    await renderDrawer({
       tab: 'journal',
       inspector: testInspector({
         worldStatePanel: testWorld({
@@ -407,9 +409,9 @@ describe('StoryDrawer', () => {
     expect(screen.getByText('Protect travellers without price.')).toBeInTheDocument()
   })
 
-  it('lists quests, people, places and memory, and downloads the chronicle', () => {
+  it('lists quests, people, places and memory, and downloads the chronicle', async () => {
     mockViewportWidth(1440)
-    const { board } = renderDrawer({ tab: 'journal' })
+    const { board } = await renderDrawer({ tab: 'journal' })
     expect(screen.getByText('The Grey Caravan')).toBeInTheDocument()
     expect(screen.getByText('Follow the lanterns')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'People' })).toBeInTheDocument()

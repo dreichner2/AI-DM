@@ -6,6 +6,7 @@ import type { InspectorPanelProps } from '../InspectorPanel'
 import type { SessionBoardProps } from '../SessionBoard'
 import { makeBoardFixture, makeInspectorFixture } from './preview/fixtures'
 import { setStoryReduceMotion, setStoryTextSize, setStoryTypeface } from './sheets/storyPreferences'
+import { drawerChunk, drawerSectionChunks } from './storyChunks'
 import type { StoryChromeProps, StoryDrawerTab } from './types'
 import { StoryView } from './StoryView'
 
@@ -61,6 +62,8 @@ beforeAll(() => {
 afterEach(() => {
   cleanup()
   localStorage.clear()
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('StoryView', () => {
@@ -111,6 +114,26 @@ describe('StoryView', () => {
     })
     fireEvent.keyDown(document.body, { key: 'g' })
     expect(noMagic).not.toHaveBeenCalled()
+  })
+
+  it('fetches the drawer once the browser is idle after the story first shows, or at the first drawer key', () => {
+    const idle: Array<() => void> = []
+    vi.stubGlobal('requestIdleCallback', vi.fn((callback: () => void) => idle.push(callback)))
+    vi.stubGlobal('cancelIdleCallback', vi.fn())
+    const preloads = [drawerChunk, ...Object.values(drawerSectionChunks)].map((chunk) =>
+      vi.spyOn(chunk, 'preload').mockImplementation(() => undefined),
+    )
+    const { rerenderBoard } = renderView()
+    rerenderBoard(makeBoardFixture('combat'))
+    expect(idle).toHaveLength(1)
+    preloads.forEach((preload) => expect(preload).not.toHaveBeenCalled())
+    act(() => idle[0]())
+    preloads.forEach((preload) => expect(preload).toHaveBeenCalledOnce())
+
+    fireEvent.keyDown(document.body, { key: 'j' })
+    preloads.forEach((preload) => expect(preload).toHaveBeenCalledTimes(2))
+    fireEvent.keyDown(document.body, { key: 'x' })
+    preloads.forEach((preload) => expect(preload).toHaveBeenCalledTimes(2))
   })
 
   it('ignores hotkeys while typing or while a modal dialog is open', () => {

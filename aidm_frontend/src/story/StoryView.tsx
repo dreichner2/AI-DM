@@ -1,7 +1,9 @@
 import { useEffect, useMemo } from 'react'
+import { whenIdle } from '../lazyModule'
 import { heroHasSpells } from './heroSpells'
 import { setStoryTextSize, useStoryPreferences } from './sheets/storyPreferences'
 import { StoryAtmosphere } from './StoryAtmosphere'
+import { preloadStoryDrawer } from './storyChunks'
 import { StoryFeed } from './StoryFeed'
 import { storyMood } from './storyMood'
 import { StoryPartyHud } from './StoryPartyHud'
@@ -56,6 +58,9 @@ export function StoryView({
     viewerPlayerId !== null && (Boolean(vitality[viewerPlayerId]) || (viewer?.health ? viewer.health.currentHp <= 0 : false))
   const hasSpells = heroHasSpells(board, inspector)
 
+  // The drawer's code arrives once the first story has painted, before anyone reaches for it.
+  useEffect(() => whenIdle(preloadStoryDrawer), [])
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return
@@ -71,6 +76,7 @@ export function StoryView({
       // A hero without spells has no Magic tab.
       if (!tab || event.shiftKey || (tab === 'magic' && !hasSpells)) return
       event.preventDefault()
+      preloadStoryDrawer()
       onDrawerOpenChange(!(drawerOpen && drawerTab === tab), tab)
     }
     window.addEventListener('keydown', onKeyDown)

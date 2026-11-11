@@ -1,4 +1,5 @@
 import type { ActivePlayer, ActivePlayerHealth } from '../types'
+import { preloadStoryDrawer } from './storyChunks'
 import { StoryVitality } from './StoryVitality'
 import type { StoryDrawerTab } from './types'
 import { healthWord, vitalityLabel, type HeroVitality } from './vitalityLabels'
@@ -59,6 +60,8 @@ function Portrait({
       data-vitality={vitality?.state}
       data-typing={player.is_typing ? '' : undefined}
       onClick={onOpen}
+      onPointerEnter={preloadStoryDrawer}
+      onFocus={preloadStoryDrawer}
     >
       {player.profile_image ? (
         <img className="story-portrait-image" src={player.profile_image} alt="" draggable={false} />

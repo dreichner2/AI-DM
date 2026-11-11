@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ActivePlayer } from '../types'
+import { drawerChunk } from './storyChunks'
 import { StoryPartyHud } from './StoryPartyHud'
 
 const down = { tone: 'dead' as const, label: 'Dead', currentHp: 0, maxHp: 14 }
@@ -15,7 +16,10 @@ function party(): ActivePlayer[] {
   ]
 }
 
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 
 describe('StoryPartyHud', () => {
   it('names a downed hero by their state: Dying, Down — stable, Out of the fight, or Down without one', () => {
@@ -62,5 +66,16 @@ describe('StoryPartyHud', () => {
     const portrait = within(screen.getByRole('group', { name: 'Party' })).getByRole('button')
     expect(portrait).toHaveAttribute('aria-label', `Arden Vale: ${word}`)
     expect(portrait).toHaveAttribute('title', `Arden Vale: ${word}`)
+  })
+
+  it('starts fetching the character panel when the pointer or focus reaches a portrait', () => {
+    const preload = vi.spyOn(drawerChunk, 'preload').mockImplementation(() => undefined)
+    render(<StoryPartyHud activePlayers={party()} viewerPlayerId={30} vitality={{}} onDrawerOpenChange={vi.fn()} />)
+    const [viewer, other] = within(screen.getByRole('group', { name: 'Party' })).getAllByRole('button')
+
+    fireEvent.pointerEnter(viewer)
+    expect(preload).toHaveBeenCalledOnce()
+    fireEvent.focus(other)
+    expect(preload).toHaveBeenCalledTimes(2)
   })
 })
