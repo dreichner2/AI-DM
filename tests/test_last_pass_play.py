@@ -209,3 +209,20 @@ def test_a_fate_needing_a_tool_the_hero_lacks_says_so_plainly(table):  # noqa: F
     assert table.refused('valley_last_road_stone', 'break', 'The Last Road-Stone') == [
         'You have nothing that will break the Last Road-Stone.'
     ]
+
+
+def test_losing_the_last_fight_is_not_an_ending():
+    """The pack no longer lets a lost final fight claim the ward and finish the story."""
+
+    import json
+    from pathlib import Path
+
+    pack = json.loads(Path('docs/examples/the_road_of_unremembered_kings_campaign.json').read_text())
+    final = next(encounter for encounter in pack['encounters'] if encounter['id'] == 'enc_final_binding')
+    fate_flags = {'ward_renewed', 'ward_broken', 'ward_hidden', 'ward_claimed', 'quest_road_complete'}
+
+    for encounter in pack['encounters']:
+        for outcome, payload in (encounter.get('outcomes') or {}).items():
+            for consequence in payload.get('consequences') or []:
+                assert consequence.get('flagKey') not in fate_flags, (encounter['id'], outcome)
+    assert 'defeat' not in final['outcomes']

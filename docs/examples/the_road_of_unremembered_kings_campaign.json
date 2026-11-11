@@ -3246,15 +3246,6 @@
             }
           ]
         },
-        "defeat": {
-          "consequences": [
-            {
-              "type": "flag.set",
-              "flagKey": "ward_claimed",
-              "flagValue": true
-            }
-          ]
-        },
         "surrender": {
           "consequences": [
             {
