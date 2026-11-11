@@ -550,6 +550,19 @@ describe('gameplayControlsFromSnapshot offered actions', () => {
       { id: 'search', label: 'Search the strongbox', available: true, reason: '', phrase: true, authored: false, done: false, retry: true },
     ])
   })
+
+  it('marks the entries the server offers as one of the object’s choices', () => {
+    const [stone] = gameplayControlsFromSnapshot(offeredSnapshot('none', [
+      { action: 'use', label: 'Renew the ward', legal: true, done: false, authored: true, choice: true },
+      { action: 'break', label: 'Break the ward', legal: false, done: false, authored: true, choice: true, reason: 'The fragment is spent.' },
+      { action: 'inspect', label: 'Approach the stone', legal: true, done: false, authored: true },
+    ]), 30).interactables
+    expect(stone.actions.map(({ id, choice, available, reason }) => ({ id, choice, available, reason }))).toEqual([
+      { id: 'use', choice: true, available: true, reason: '' },
+      { id: 'break', choice: true, available: false, reason: 'The fragment is spent.' },
+      { id: 'inspect', choice: undefined, available: true, reason: '' },
+    ])
+  })
 })
 
 function itemSnapshot(): Record<string, unknown> {

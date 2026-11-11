@@ -171,10 +171,10 @@ describe('StoryView', () => {
     const party = screen.getByRole('group', { name: 'Party' })
     const portraits = within(party).getAllByRole('button')
     expect(portraits.map((portrait) => portrait.getAttribute('aria-label'))).toEqual([
-      'Ysolde Marrow: Unhurt',
-      'Brannoc Deepvale: Unhurt',
-      'Wren Tallowmere: Wounded',
-      'Corin Ashby: Unhurt',
+      'Ysolde Marrow: Uninjured',
+      'Brannoc Deepvale: Uninjured',
+      'Wren Tallowmere: Lightly hurt',
+      'Corin Ashby: Uninjured',
     ])
     expect(within(party).getByText('HP 24 / 24')).toBeInTheDocument()
     expect(within(party).getByText('1 more in the party')).toBeInTheDocument()

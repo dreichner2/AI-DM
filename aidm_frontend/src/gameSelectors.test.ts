@@ -986,6 +986,18 @@ describe('game selector helpers', () => {
     ).toEqual({ title: 'The Road', summary: 'Home at last.' })
   })
 
+  it('shows the ending the party’s choice selected, in the title and words the server sends', () => {
+    const ending = (fields: Record<string, unknown>) =>
+      worldStateFromSnapshot({ campaignPack: { title: 'The Road', ending: { checkpointId: 'cp_07', ...fields } } }).ending
+    expect(ending({
+      title: 'Only a Road',
+      text: 'No ward keeps the western roads now.',
+      summary: 'The road is decided.',
+    })).toEqual({ title: 'Only a Road', summary: 'No ward keeps the western roads now.' })
+    expect(ending({ title: 'After the Last Stone', summary: 'The road is decided.' }))
+      .toEqual({ title: 'After the Last Stone', summary: 'The road is decided.' })
+  })
+
   it('reads the day clock and the merchants open in the scene', () => {
     const panel = worldStateFromSnapshot({
       clock: { day: 3, phase: 'evening', shortRestsSinceLong: 1, label: 'Day 3 · Evening' },

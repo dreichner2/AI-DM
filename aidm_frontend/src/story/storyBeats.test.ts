@@ -428,6 +428,25 @@ describe('server story beats', () => {
     ])
   })
 
+  it('shows a condition taking hold in the arcane tone and one wearing off in the quiet tone', () => {
+    const [, turn] = buildStoryBeats([
+      entry('log-1', 'dm', 'DM', 'You shake off the Lantern-Lure.', {
+        turn_id: 14,
+        storyBeats: [
+          { kind: 'condition', text: 'You are charmed' },
+          { kind: 'condition', text: 'No longer charmed' },
+          { kind: 'condition', text: 'Wren is no longer prone' },
+        ],
+      }),
+    ])
+    if (turn.kind !== 'turnBeats') throw new Error('expected the turn beats')
+    expect(turn.beats.map(({ text, look, glyph, tone }) => ({ text, look, glyph, tone }))).toEqual([
+      { text: 'You are charmed', look: 'chip', glyph: 'spark', tone: 'arcane' },
+      { text: 'No longer charmed', look: 'chip', glyph: 'spark', tone: 'default' },
+      { text: 'Wren is no longer prone', look: 'chip', glyph: 'spark', tone: 'default' },
+    ])
+  })
+
   it('reads a hint in sentence case', () => {
     const [, turn] = buildStoryBeats([
       entry('log-1', 'dm', 'DM', 'The road waits.', {

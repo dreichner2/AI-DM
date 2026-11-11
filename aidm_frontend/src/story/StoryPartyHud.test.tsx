@@ -40,4 +40,27 @@ describe('StoryPartyHud', () => {
     ])
     expect(screen.getByRole('img', { name: 'Down — stable' })).toBeInTheDocument()
   })
+
+  it.each([
+    [28, 28, 'Uninjured'],
+    [26, 28, 'Lightly hurt'],
+    [14, 20, 'Lightly hurt'],
+    [13, 20, 'Wounded'],
+    [8, 20, 'Wounded'],
+    [7, 20, 'Badly wounded'],
+    [3, 20, 'Badly wounded'],
+    [2, 20, 'Near death'],
+  ])('names a standing hero at %i of %i HP %s', (currentHp, maxHp, word) => {
+    render(
+      <StoryPartyHud
+        activePlayers={[{ id: 30, character_name: 'Arden Vale', name: 'Danny', health: { tone: 'wounded', label: 'Wounded', currentHp, maxHp } }]}
+        viewerPlayerId={30}
+        vitality={{}}
+        onDrawerOpenChange={vi.fn()}
+      />,
+    )
+    const portrait = within(screen.getByRole('group', { name: 'Party' })).getByRole('button')
+    expect(portrait).toHaveAttribute('aria-label', `Arden Vale: ${word}`)
+    expect(portrait).toHaveAttribute('title', `Arden Vale: ${word}`)
+  })
 })

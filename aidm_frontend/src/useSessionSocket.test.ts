@@ -324,6 +324,26 @@ describe('useSessionSocket connection lifetime', () => {
     expect(socketFactory.io).toHaveBeenCalledTimes(3)
   })
 
+  it('opening another adventure leaves and closes the first socket before it opens one for the second', () => {
+    const { rerender } = renderHook((options: SocketHookOptions) => useSessionSocket(options), {
+      initialProps: hookOptions(),
+    })
+    const first = latestSocket()
+    act(() => first.fire('connect'))
+    const disconnect = vi.spyOn(first, 'disconnect')
+
+    rerender(hookOptions({ selectedCampaignId: 11, selectedSessionId: 40, selectedPlayerId: 50 }))
+
+    expect(socketFactory.io).toHaveBeenCalledTimes(2)
+    expect(disconnect).toHaveBeenCalledTimes(1)
+    const leaveCall = first.emit.mock.calls.findIndex(([event]) => event === 'leave_session')
+    expect(first.emit.mock.calls[leaveCall]).toEqual(['leave_session', { session_id: 20, player_id: 30 }])
+    expect(first.emit.mock.invocationCallOrder[leaveCall]).toBeLessThan(disconnect.mock.invocationCallOrder[0])
+    expect(disconnect.mock.invocationCallOrder[0]).toBeLessThan(socketFactory.io.mock.invocationCallOrder[1])
+    act(() => latestSocket().fire('connect'))
+    expect(latestSocket().emit).toHaveBeenCalledWith('join_session', { session_id: 40, player_id: 50 })
+  })
+
   it('does not run the disconnect handler for its own teardown', () => {
     const options = hookOptions()
     const { rerender, unmount } = renderHook((value: SocketHookOptions) => useSessionSocket(value), {

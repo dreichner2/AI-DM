@@ -1,8 +1,8 @@
 import type { CharacterVitality } from '../gameSelectors'
-import type { ActivePlayer } from '../types'
+import type { ActivePlayer, ActivePlayerHealth } from '../types'
 import { StoryVitality } from './StoryVitality'
 import type { StoryDrawerTab } from './types'
-import { vitalityLabel } from './vitalityLabels'
+import { healthWord, vitalityLabel } from './vitalityLabels'
 
 type StoryPartyHudProps = {
   activePlayers: ActivePlayer[]
@@ -17,6 +17,18 @@ const RING_STROKE = 2
 
 function displayName(player: ActivePlayer) {
   return player.character_name || player.name || 'Adventurer'
+}
+
+/**
+ * How a portrait names a hero's health. A downed hero reads by their state (a
+ * stable hero is not dead), never by hit points alone; a standing one by how
+ * hurt they are.
+ */
+function healthState(health: ActivePlayerHealth | null, vitality: CharacterVitality | null) {
+  if (vitality) return vitalityLabel(vitality.state)
+  if (!health) return null
+  if (health.currentHp <= 0) return 'Down'
+  return health.maxHp > 0 ? healthWord(health.currentHp, health.maxHp) : health.label
 }
 
 function Portrait({
@@ -35,8 +47,7 @@ function Portrait({
   const ratio = health && health.maxHp > 0 ? Math.max(0, Math.min(1, health.currentHp / health.maxHp)) : 1
   const radius = size / 2 - RING_STROKE
   const circumference = 2 * Math.PI * radius
-  // A downed hero reads by their state (a stable hero is not dead), never by hit points alone.
-  const state = vitality ? vitalityLabel(vitality.state) : health && health.currentHp <= 0 ? 'Down' : health?.label
+  const state = healthState(health, vitality)
   const label = state ? `${name}: ${state}` : name
   return (
     <button

@@ -101,6 +101,8 @@ export type GameplayObjectAction = {
   done?: boolean
   /** A failed check that may be tried again by taking time over it (sent with `take_time`). */
   retry?: boolean
+  /** One of the object's choices (the pack's `choiceActions`): the choices are offered together. */
+  choice?: boolean
   check?: GameplayObjectCheck
 }
 
@@ -895,6 +897,7 @@ function offeredObjectActions(entry: JsonRecord): GameplayObjectAction[] | null 
       authored: offer.authored === true,
       done,
       ...(offer.retry === true ? { retry: true } : {}),
+      ...(offer.choice === true ? { choice: true } : {}),
       ...(check ? { check } : {}),
     }]
   })

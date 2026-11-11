@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ActionComposerProps } from '../ActionComposer'
 import type { SessionBoardProps } from '../SessionBoard'
 import { testBoard, testCombat, testControls, testRollNotice, testWorld, VIEWER_ID } from './dockTestFixtures'
 import { StoryComposer } from './StoryComposer'
+import { dismissEnding } from './storyEnding'
 import type { StoryComposerProps } from './types'
 
 function renderComposer({
@@ -428,6 +429,18 @@ describe('StoryComposer', () => {
 
     renderComposer({ board: { pendingRollNotice: testRollNotice({ isWaitingOnSelectedPlayer: false }) } })
     expect(screen.queryByRole('group', { name: 'Suggestions' })).not.toBeInTheDocument()
+  })
+
+  it('suggests nothing once the story has ended, until the reader chooses Keep playing', () => {
+    window.sessionStorage.clear()
+    const ending = { title: 'The Road Remembers', summary: 'The lanterns burn steady along the western roads.' }
+    const { props } = renderComposer({ board: { worldState: testWorld({ ending }) } })
+    expect(screen.queryByRole('group', { name: 'Suggestions' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Your Action')).toBeEnabled()
+
+    act(() => dismissEnding(props.board.sessionId))
+    expect(within(screen.getByRole('group', { name: 'Suggestions' })).getByRole('button', { name: 'Talk to Marta Vell' }))
+      .toBeInTheDocument()
   })
 
   it('replaces suggestions with the combat ribbon, and everything below the status with the roll prompt', () => {

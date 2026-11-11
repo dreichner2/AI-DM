@@ -28,6 +28,7 @@ import {
   type StoryTurnBeatTarget,
   type TurnBeatsBeat,
 } from './storyBeats'
+import { dismissEnding, useEndingDismissed } from './storyEnding'
 
 type StoryFeedProps = {
   board: SessionBoardProps
@@ -36,29 +37,6 @@ type StoryFeedProps = {
   onExitToTitle: () => void
   /** Opens where a story beat leads: the drawer's Journal or Map, or the Settings sheet. */
   onOpenBeatTarget: (target: StoryTurnBeatTarget) => void
-}
-
-/** Session storage key under which a dismissed epilogue is remembered for one session. */
-const ENDING_DISMISSED_KEY = 'aidm:storyEndingDismissed'
-
-function endingDismissedKey(sessionId: number | null) {
-  return `${ENDING_DISMISSED_KEY}:${sessionId ?? 'none'}`
-}
-
-function readEndingDismissed(sessionId: number | null) {
-  try {
-    return window.sessionStorage.getItem(endingDismissedKey(sessionId)) === '1'
-  } catch {
-    return false
-  }
-}
-
-function writeEndingDismissed(sessionId: number | null) {
-  try {
-    window.sessionStorage.setItem(endingDismissedKey(sessionId), '1')
-  } catch {
-    // Without storage the epilogue stays dismissed until the page reloads.
-  }
 }
 
 /** Where a new narration's anchor (the action that triggered it) settles, below the feed's top edge. */
@@ -767,7 +745,7 @@ function LoadingStory() {
 
 export function StoryFeed({ board, textSize, onExitToTitle, onOpenBeatTarget }: StoryFeedProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
-  const [dismissedEndings, setDismissedEndings] = useState<ReadonlySet<number | null>>(() => new Set())
+  const endingDismissed = useEndingDismissed(board.sessionId)
   const { turnRows, currentResponseEntry, sessionLogHasMore } = board
   const selectedPlayerName = board.selectedPlayer?.character_name ?? null
   const entries = useMemo(
@@ -790,13 +768,7 @@ export function StoryFeed({ board, textSize, onExitToTitle, onOpenBeatTarget }: 
       (beat): beat is NarrationBeat => beat.kind === 'narration' && !beat.streaming && beat.turnId !== null,
     )?.key ?? null
   const ending = board.worldState.ending ?? null
-  const showEnding =
-    Boolean(ending) && !loading && !empty &&
-    !dismissedEndings.has(board.sessionId) && !readEndingDismissed(board.sessionId)
-  const keepPlaying = () => {
-    writeEndingDismissed(board.sessionId)
-    setDismissedEndings((current) => new Set(current).add(board.sessionId))
-  }
+  const showEnding = Boolean(ending) && !loading && !empty && !endingDismissed
   const announcement =
     board.sendPending || board.streamingTurnActive
       ? 'Dungeon Master response in progress.'
@@ -860,7 +832,7 @@ export function StoryFeed({ board, textSize, onExitToTitle, onOpenBeatTarget }: 
               ending={ending}
               onDownloadChronicle={() => void board.downloadSessionChronicle()}
               onExitToTitle={onExitToTitle}
-              onKeepPlaying={keepPlaying}
+              onKeepPlaying={() => dismissEnding(board.sessionId)}
             />
           ) : null}
         </div>

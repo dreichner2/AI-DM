@@ -7,7 +7,9 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionBoardProps } from '../SessionBoard'
 import type { JsonRecord, TimelineEntry } from '../types'
+import { testBoard, testWorld } from './dockTestFixtures'
 import { makeBoardFixture } from './preview/fixtures'
+import { StoryComposer } from './StoryComposer'
 import { StoryFeed } from './StoryFeed'
 
 function entry(
@@ -347,6 +349,31 @@ describe('StoryFeed', () => {
     cleanup()
     render(<StoryFeed board={ended} textSize="default" onExitToTitle={onExitToTitle} onOpenBeatTarget={vi.fn()} />)
     expect(screen.queryByRole('region', { name: 'The Road Remembers' })).not.toBeInTheDocument()
+  })
+
+  it('shows the ending the server names, and gives the dock its suggestions back once the reader keeps playing', () => {
+    window.sessionStorage.clear()
+    const ended = testBoard({
+      worldState: testWorld({
+        ending: {
+          title: 'The Warden of the West',
+          summary: 'Every road in the west knows your name now, and asks what you will do with it.',
+        },
+      }),
+    })
+    render(
+      <>
+        <StoryFeed board={ended} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />
+        <StoryComposer board={ended} chrome={{ connection: 'ready', canUseOperatorTools: false, endedChapter: null }} onOpenDrawer={vi.fn()} />
+      </>,
+    )
+    const epilogue = screen.getByRole('region', { name: 'The Warden of the West' })
+    expect(epilogue).toHaveTextContent('Every road in the west knows your name now, and asks what you will do with it.')
+    expect(screen.queryByRole('group', { name: 'Suggestions' })).not.toBeInTheDocument()
+
+    fireEvent.click(within(epilogue).getByRole('button', { name: 'Keep playing' }))
+    expect(screen.queryByRole('region', { name: 'The Warden of the West' })).not.toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Suggestions' })).toBeInTheDocument()
   })
 
   it('has no epilogue before the ending', () => {

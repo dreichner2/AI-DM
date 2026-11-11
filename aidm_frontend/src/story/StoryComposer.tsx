@@ -22,6 +22,7 @@ import { StoryActionTray, type TraySection } from './StoryActionTray'
 import { StoryCombatRibbon } from './StoryCombatRibbon'
 import { recentSpellNames } from './recentSpells'
 import { StoryRollPrompt } from './StoryRollPrompt'
+import { useEndingDismissed } from './storyEnding'
 import { MORE_SUGGESTION, storySuggestions, type StorySuggestion } from './storySuggestions'
 import type { StoryComposerProps } from './types'
 import { useChipsThatFit } from './useChipsThatFit'
@@ -151,6 +152,7 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
   const [sentCount, setSentCount] = useState(readSentCount)
   const [tradeMerchantId, setTradeMerchantId] = useState('')
   const stage = useStagedComposerAction(composer)
+  const endingDismissed = useEndingDismissed(board.sessionId)
   const snapshot = board.sessionState?.state_snapshot
   const vitality = useMemo(() => partyVitalityFromSnapshot(snapshot), [snapshot])
 
@@ -185,7 +187,9 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
     !deliveryUncertain &&
     !board.turnRecoveryGate &&
     !board.clarificationRequest
-  const suggestions = quietMoment && !ribbonActive
+  // The story has ended: nothing is suggested until the reader chooses Keep playing.
+  const storyEnded = Boolean(board.worldState.ending) && !endingDismissed
+  const suggestions = quietMoment && !ribbonActive && !storyEnded
     ? storySuggestions(board.worldState, board.gameplayControls)
     : []
   const { turnRows, currentResponseEntry } = board

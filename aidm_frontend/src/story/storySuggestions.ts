@@ -14,6 +14,7 @@ import { objectActionLabel } from './actionIntents'
 /** Chips shown before the `More…` chip. */
 export const STORY_SUGGESTION_LIMIT = 6
 
+const CHOICE_LIMIT = 4
 const TAKE_LIMIT = 2
 const OBJECT_LIMIT = 3
 const TALK_LIMIT = 2
@@ -63,18 +64,36 @@ export function objectChoices(object: GameplayInteractableControl): GameplayObje
   return [{ id: 'inspect', label: `Examine ${object.name}`, available: true, reason: '', phrase: true }]
 }
 
+function inActionOrder(actions: GameplayObjectAction[]) {
+  return [...actions].sort((left, right) => ACTION_ORDER.indexOf(left.id) - ACTION_ORDER.indexOf(right.id))
+}
+
+function objectChip(object: GameplayInteractableControl, action: GameplayObjectAction): ObjectSuggestion {
+  return { kind: 'object', key: `object:${object.id}:${action.id}`, label: objectActionLabel(action), object, action }
+}
+
 /**
- * An object's one chip: its first choice in the contract's action order,
- * preferring one the pack authored; null when it offers nothing.
+ * The objects' choices the player may make now (offered with `choice`), each
+ * its own chip: objects in scene order, each object's in the contract's
+ * action order, at most four.
+ */
+function choiceSuggestions(objects: GameplayInteractableControl[]): ObjectSuggestion[] {
+  return objects
+    .flatMap((object) =>
+      inActionOrder(objectChoices(object).filter((action) => action.choice)).map((action) => objectChip(object, action)),
+    )
+    .slice(0, CHOICE_LIMIT)
+}
+
+/**
+ * An object's one chip among its actions that are not choices: the first in
+ * the contract's action order, preferring one the pack authored; null when it
+ * offers nothing else.
  */
 function objectSuggestion(object: GameplayInteractableControl): ObjectSuggestion | null {
-  const choices = [...objectChoices(object)].sort(
-    (left, right) => ACTION_ORDER.indexOf(left.id) - ACTION_ORDER.indexOf(right.id),
-  )
-  const action = choices.find((choice) => choice.authored) ?? choices[0]
-  return action
-    ? { kind: 'object', key: `object:${object.id}:${action.id}`, label: objectActionLabel(action), object, action }
-    : null
+  const actions = inActionOrder(objectChoices(object).filter((action) => !action.choice))
+  const action = actions.find((candidate) => candidate.authored) ?? actions[0]
+  return action ? objectChip(object, action) : null
 }
 
 /** One chip per object: authored ones first, each group in scene order, at most three. */
@@ -87,10 +106,11 @@ function objectSuggestions(objects: GameplayInteractableControl[]): ObjectSugges
 }
 
 /**
- * Contextual suggestions for the Story dock, in priority order: loose items to
- * take, scene objects, people present, an open merchant, then ways onward —
- * at most six, then `More…` when the tray holds anything left out. Combat has
- * its own ribbon, so nothing is suggested while it lasts.
+ * Contextual suggestions for the Story dock, in priority order: the choices
+ * an object puts before the player, loose items to take, scene objects,
+ * people present, an open merchant, then ways onward — at most six, then
+ * `More…` when the tray holds anything left out. Combat has its own ribbon, so
+ * nothing is suggested while it lasts.
  */
 export function storySuggestions(
   worldState: WorldStatePanel,
@@ -134,6 +154,7 @@ export function storySuggestions(
     }))
 
   const chips = [
+    ...choiceSuggestions(gameplayControls.interactables),
     ...take.slice(0, TAKE_LIMIT),
     ...objectSuggestions(gameplayControls.interactables),
     ...talk.slice(0, TALK_LIMIT),

@@ -106,6 +106,14 @@ const openBench = object('bench', "Driver's Bench", [
 ])
 const bell = object('bell', 'Wagon Bell', [offer('use', 'Ring the wagon bell', { authored: true })])
 const wagon = object('wagon', 'Lead Wagon', [offer('search', 'Search the lead wagon', { authored: true })])
+// The Last Road-Stone's four fates are choices, sent in the contract's order; Approach is its one other entry.
+const roadStone = object('road-stone', 'The Last Road-Stone', [
+  offer('use', 'Renew the ward', { authored: true, choice: true }),
+  offer('trigger', 'Claim the ward', { authored: true, choice: true }),
+  offer('inspect', 'Approach the Last Road-Stone', { authored: true }),
+  offer('lock', 'Hide the road-stone', { authored: true, choice: true }),
+  offer('break', 'Break the ward', { authored: true, choice: true }),
+])
 const key = { id: 'key', name: 'Caravan Strongbox Key', quantity: 1, type: 'key', takeLabel: 'Take the Caravan Strongbox Key' }
 const coins = { id: 'coins', name: 'gp', quantity: 15, type: 'currency', takeLabel: 'Take 15 gp' }
 const pebble = { id: 'pebble', name: 'Pebble', quantity: 1, type: 'object', takeLabel: 'Take the Pebble' }
@@ -129,6 +137,44 @@ const CASES: Case[] = [
     world: {},
     objects: [strongbox, openBench],
     labels: ["Search under the driver's bench", 'Examine Wagon Strongbox', 'More…'],
+  },
+  {
+    name: 'an object’s choices are shown together, then one chip for its other entries',
+    world: {},
+    objects: [roadStone],
+    labels: ['Renew the ward', 'Claim the ward', 'Hide the road-stone', 'Break the ward', 'Approach the Last Road-Stone'],
+  },
+  {
+    name: 'choices come before every other suggestion',
+    world: { sceneItems: [key], availableExits: [place('Ridge and Culvert')] },
+    objects: [ledger, roadStone],
+    labels: [
+      'Renew the ward',
+      'Claim the ward',
+      'Hide the road-stone',
+      'Break the ward',
+      'Take the Caravan Strongbox Key',
+      'Read the caravan ledger',
+      'More…',
+    ],
+  },
+  {
+    name: 'at most four choices, only legal ones not yet taken; the rest wait in the tray',
+    world: {},
+    objects: [
+      object('road-stone', 'The Last Road-Stone', [
+        offer('use', 'Renew the ward', { authored: true, choice: true }),
+        offer('trigger', 'Claim the ward', { authored: true, choice: true, available: false, reason: 'The ward is already renewed.' }),
+        offer('lock', 'Hide the road-stone', { authored: true, choice: true, available: false, done: true }),
+        offer('break', 'Break the ward', { authored: true, choice: true }),
+      ]),
+      object('altar', 'Cinder Altar', [
+        offer('use', 'Light the altar', { choice: true }),
+        offer('trigger', 'Wake the altar', { choice: true }),
+        offer('break', 'Topple the altar', { choice: true }),
+      ]),
+    ],
+    labels: ['Renew the ward', 'Break the ward', 'Light the altar', 'Wake the altar', 'More…'],
   },
   {
     name: 'a failed check that may be retried says it takes time',

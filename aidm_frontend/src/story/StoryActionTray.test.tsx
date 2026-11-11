@@ -482,6 +482,33 @@ describe('StoryActionTray', () => {
     expect(withoutClientId(storySubmit.mock.calls[0][1])).toEqual(withoutClientId(classicSubmit.mock.calls[0][1]))
   })
 
+  it('keeps an object’s choices in the Scene list, one that cannot be made dimmed with its reason', () => {
+    const board = testBoard({
+      gameplayControls: testControls({
+        interactables: [{
+          ...testControls().interactables[0],
+          id: 'road-stone',
+          name: 'The Last Road-Stone',
+          states: [],
+          offered: true,
+          actions: [
+            { id: 'use', label: 'Renew the ward', available: true, reason: '', phrase: true, authored: true, choice: true },
+            { id: 'break', label: 'Break the ward', available: false, reason: 'The ward holds.', phrase: true, authored: true, choice: true },
+          ],
+        }],
+      }),
+    })
+    renderDock(board)
+    const suggestions = screen.getByRole('group', { name: 'Suggestions' })
+    expect(within(suggestions).getByRole('button', { name: 'Renew the ward' })).toBeInTheDocument()
+    expect(within(suggestions).queryByRole('button', { name: 'Break the ward' })).not.toBeInTheDocument()
+
+    const actions = within(openSection('Scene')).getByRole('group', { name: 'The Last Road-Stone actions' })
+    const breakWard = within(actions).getByRole('button', { name: 'Break the ward' })
+    expect(breakWard).toHaveAttribute('aria-disabled', 'true')
+    expect(breakWard.closest('.story-tray-offer')).toHaveTextContent('Break the wardThe ward holds.')
+  })
+
   it('offers a failed check again as taking your time, which costs time and is sent with take_time', () => {
     const board = testBoard({
       gameplayControls: testControls({

@@ -172,6 +172,8 @@ export function hasRawChangeType(text: string) {
 function turnBeatTone(kind: string, text: string, fallback: StoryChangeTone): StoryChangeTone {
   if (kind === 'hp') return /^took\b/i.test(text) ? 'fail' : /^healed\b/i.test(text) ? 'success' : fallback
   if (kind === 'coins' && /^[−-]/.test(text)) return 'default'
+  // A condition wearing off ("No longer charmed", "Wren is no longer prone") is quiet news.
+  if (kind === 'condition' && /\bno longer\b/i.test(text)) return 'default'
   if (kind === 'combat_end' && /^victory\b/i.test(text)) return 'success'
   return fallback
 }

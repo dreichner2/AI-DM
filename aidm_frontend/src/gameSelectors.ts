@@ -174,6 +174,7 @@ export type WorldRecordSummary = {
 /** The adventure's ending, once the party has reached a terminal checkpoint. */
 export type WorldEnding = {
   title: string
+  /** The ending's words: the server's `text` (the variant the party's choice selected) when sent, else its `summary`. */
   summary: string
 }
 
@@ -1760,7 +1761,7 @@ function endingFromSnapshot(root: JsonRecord): WorldEnding | null {
   if (!ending) return null
   return {
     title: stringValue(ending.title) || stringValue(pack.title, 'The end'),
-    summary: stringValue(ending.summary),
+    summary: stringValue(ending.text) || stringValue(ending.summary),
   }
 }
 
