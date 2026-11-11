@@ -300,6 +300,12 @@ class TurnNarrationService:
                 request.model_user_input,
                 request.player_label,
             )
+            # In a fight the engine, not the model, says whose turn it is.
+            turn_line = scripted_narrator.engine_turn_line(request.rules_hint_payload) if cleaned.text else ''
+            if turn_line:
+                turn_chunk = f'\n\n{turn_line}'
+                emit_chunk(turn_chunk)
+                dm_response_text += turn_chunk
 
         if not engine_rolls_removed and self._roll_prompt_is_required(request, dm_response_text):
             injected_prompt = dependencies.build_roll_prompt(

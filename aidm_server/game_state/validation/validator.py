@@ -203,6 +203,13 @@ PACK_CONTENT_CHANGE_CONFIG = {
 }
 
 
+def supported_scene_type(value: Any) -> str:
+    """``value`` when it is a supported scene type; a place without one, or with another, is entered as exploration."""
+
+    scene_type = str(value or '').strip()
+    return scene_type if scene_type in SCENE_TYPES else 'exploration'
+
+
 def _action_value(action: dict[str, Any], camel_key: str, snake_key: str | None = None, default=None):
     if camel_key in action:
         return action.get(camel_key)
@@ -1103,7 +1110,7 @@ def _validate_world_travel(action: dict[str, Any], state: dict[str, Any], *, cur
         'actorId': actor.get('id'),
         'locationId': destination_id,
         'name': destination.get('name') or destination_id,
-        'sceneType': destination.get('sceneType') or destination.get('type') or 'exploration',
+        'sceneType': supported_scene_type(destination.get('sceneType')),
         'reason': f"The party traveled from {current.get('name') or current_id} to {destination.get('name') or destination_id}.",
         'visible': False,
     }
@@ -3438,8 +3445,8 @@ def _normalize_world_change(change: dict[str, Any], state: dict[str, Any]) -> tu
         if not location_id:
             return 'rejected', 'Scene movement requires a location id or name.', None
         normalized['locationId'] = location_id
-        if normalized.get('sceneType') and _text(normalized.get('sceneType')) not in SCENE_TYPES:
-            return 'rejected', f"Unsupported scene type '{normalized.get('sceneType')}'.", None
+        if normalized.get('sceneType'):
+            normalized['sceneType'] = supported_scene_type(normalized.get('sceneType'))
         if normalized.get('mood') and _text(normalized.get('mood')) not in SCENE_MOODS:
             return 'rejected', f"Unsupported scene mood '{normalized.get('mood')}'.", None
         if normalized.get('combatState') and _text(normalized.get('combatState')) not in COMBAT_STATES:

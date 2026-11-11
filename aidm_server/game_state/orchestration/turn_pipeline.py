@@ -52,6 +52,7 @@ from aidm_server.game_state.orchestration.combat_resolution import (
 from aidm_server.game_state.orchestration.engine_brief import engine_brief
 from aidm_server.game_state.orchestration.narration_facts import (
     PICKUP_SOURCE,
+    captives_left_behind,
     enemy_names,
     fight_start,
     next_actor_line,
@@ -78,6 +79,7 @@ from aidm_server.models import Campaign, DmTurn, Player, Session, safe_json_dump
 from aidm_server.price_list import catalog_item, normalize_price
 from aidm_server.telemetry import telemetry_metric
 from aidm_server.turn_events import record_turn_event
+from aidm_server.turn_rules import fight_speech
 
 
 STATE_UPDATE_EVENT = 'state_update'
@@ -1630,10 +1632,12 @@ def _present_npc_named(state: dict[str, Any], message: str) -> dict[str, Any] | 
 
 
 def _talk_facts(*, session_obj: Session, turn: DmTurn, state: dict[str, Any], npc: dict[str, Any]) -> dict[str, Any]:
-    """The person talked to and the next thing they know that has not been told in this session."""
+    """The person talked to and the next thing they know that has not been told in this session; a captive
+    tells the next line of its enemy record's ``captiveKnows``."""
 
-    record = catalog_record(state, 'npcs', npc.get('id')) or npc
-    knows = [str(fact).strip() for fact in record.get('knows') or [] if str(fact or '').strip()]
+    captive = npc.get('captive') is True
+    record = (catalog_record(state, 'enemies', npc.get('enemyId')) if captive else catalog_record(state, 'npcs', npc.get('id'))) or npc
+    knows = [str(fact).strip() for fact in record.get('captiveKnows' if captive else 'knows') or [] if str(fact or '').strip()]
     told = ' '.join(
         _spoken(text)
         for (text,) in DmTurn.query.with_entities(DmTurn.dm_output).filter(
@@ -1645,6 +1649,7 @@ def _talk_facts(*, session_obj: Session, turn: DmTurn, state: dict[str, Any], np
         'npcId': str(npc.get('id') or ''),
         'name': str(npc.get('name') or record.get('name') or '').strip(),
         'fact': next((fact for fact in knows if _spoken(fact) not in told), None),
+        **({'captive': True} if captive else {}),
     }
 
 
@@ -1733,8 +1738,13 @@ def _narration_packet(
         packet['talk'] = _talk_facts(session_obj=session_obj, turn=turn, state=state_before, npc=talk_npc)
     if free_text is not None:
         packet['freeText'] = {'kind': free_text.kind, 'more': free_text.more, 'deferred': deepcopy(list(free_text.deferred))}
+    elif fight_speech(action_intent):
+        packet['freeText'] = {'kind': 'speech', 'more': False}
     elif free and not declared_actions and not talk_npc and not turn.requires_roll:
         packet['freeText'] = {'kind': None, 'unmatched': True, 'more': False}
+    left = captives_left_behind(state_before, applied_changes, actor_id=actor_id)
+    if left:
+        packet['captivesLeft'] = left
     started = fight_start(state_after, applied_changes)
     if started:
         packet['fightStart'] = started
@@ -1904,7 +1914,7 @@ def pre_dm_pipeline(
             message=player_message,
             previous_target=_previous_target(turn),
         )
-        if not declared_actions_override and _is_free_text(action_intent, player_message)
+        if not declared_actions_override and _is_free_text(action_intent, player_message) and not fight_speech(action_intent)
         else None
     )
     down_refusal = _actor_down_refusal(
@@ -2111,6 +2121,19 @@ def pre_dm_pipeline(
                     trusted_player_changes = [*trusted_player_changes, *engine_end_apply['appliedChanges']]
                     combat_context_for_dm = combat_summary_for_dm(state_before_dm['combat'])
                 combat_validation = _merge_validation_results(combat_validation, engine_end_validation)
+    resolved_fight_action = (combat_prepare.get('debug') or {}).get('combatActionResolution')
+    action_end_reason = check_combat_end(state_before_dm['combat']) if resolved_fight_action and _combat_is_running(state_before_dm) else None
+    if action_end_reason:
+        # A fight action decides the fight on its own when the last enemy is bound or yields.
+        action_end_change = combat_end_change(turn.turn_id, action_end_reason)
+        action_end_validation = validate_state_changes(state=state_before_dm, changes=[action_end_change])
+        action_end_apply = apply_state_changes(state_before_dm, validated_changes_for_application(action_end_validation))
+        if action_end_apply['appliedChanges']:
+            state_before_dm = action_end_apply['nextState']
+            applied_combat = [*applied_combat, *action_end_apply['appliedChanges']]
+            combat_changes = [*combat_changes, action_end_change]
+            combat_context_for_dm = {**combat_summary_for_dm(state_before_dm['combat']), 'playerResolvedCombatAction': resolved_fight_action}
+        combat_validation = _merge_validation_results(combat_validation, action_end_validation)
     defeat_recovery = party_defeat_recovery(state_before_dm, turn_id=turn.turn_id)
     applied_combat = [*([wake] if wake else []), *applied_combat, *([defeat_recovery] if defeat_recovery else [])]
     finalize_combat_prepare(
@@ -2169,6 +2192,10 @@ def pre_dm_pipeline(
         declared_actions=pre_extraction.get('declaredActions') or [],
         turn_ends=opening_enemy_turns or enemy_deferred_reason is None,
     )
+    if fight_speech(action_intent):
+        dm_context['dmInstructions'].append(
+            'The hero speaks in the fight: it costs nothing and changes nothing. Answer in the scene in at most three sentences.'
+        )
     if free_text is not None and free_text.refusal:
         # Words that name nothing here change nothing; only the narrator says so.
         dm_context['invalidActions'].append(
@@ -2521,6 +2548,9 @@ def post_dm_pipeline(
         if engine_resolved:
             # The narration only describes what the engine already did: no model reads it for state or a fight.
             post_extraction = _skipped_post_extraction('engine_resolved')
+        elif fight_speech(metadata.get('action_intent') if isinstance(metadata.get('action_intent'), dict) else None):
+            # Words said in a fight change nothing, whatever the narration makes of them.
+            post_extraction = _skipped_post_extraction('fight_speech')
         else:
             helper_session_released = False
 
@@ -2683,9 +2713,13 @@ def post_dm_pipeline(
             trusted_damage_changes,
             dm_context_packet=dm_context_packet,
         )
+        # The hero's attack or fight action was resolved by the engine: narration never changes its target.
         has_engine_player_resolution = bool(
             isinstance(dm_context_packet.get('combatState'), dict)
-            and isinstance(dm_context_packet['combatState'].get('playerResolvedAction'), dict)
+            and (
+                isinstance(dm_context_packet['combatState'].get('playerResolvedAction'), dict)
+                or isinstance(dm_context_packet['combatState'].get('playerResolvedCombatAction'), dict)
+            )
         )
         if trusted_damage_changes or has_engine_player_resolution:
             post_extraction = deepcopy(post_extraction)

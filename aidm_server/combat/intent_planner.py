@@ -11,6 +11,10 @@ HP or less, whatever else holds. Forbidden
 candidates are removed before selection, and a helper's forbidden choice is
 replaced by the best damaging candidate. Each enemy's last turns are tracked
 on the combat state (``ENEMY_TURN_HISTORY_FLAG``).
+
+An enemy a hero holds (a grapple, :mod:`aidm_server.combat.maneuvers`) is
+planned outside the candidates: it yields (``surrender``) at a quarter of its
+HP or less or with no morale left, otherwise it tries to ``break_free``.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from aidm_server.combat.enemy_brain import plan_freeform_enemy_tactic, plan_sent
 from aidm_server.combat.morale import actionable_participants, living_participants, recalculate_morale
 from aidm_server.canon_text import int_or_default
 from aidm_server.combat.attacks import ability_reach_profile
+from aidm_server.combat.maneuvers import at_most_quarter, grapple_holds
 from aidm_server.combat.modifiers import condition_keys
 from aidm_server.combat.positioning import enemy_approach, targeting_block_reason
 from aidm_server.combat.state import (
@@ -1371,6 +1376,25 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
         selected = deepcopy(turned[0]['intent'])
         selected.update({'selectionScore': 100, 'selectionMethod': 'turned'})
         return selected, [_candidate_debug_view(item) for item in turned]
+    if grapple_holds(enemy, combat):
+        # Held: it never moves or flees. Beaten (a quarter of its hit points or less, or no morale left) it
+        # yields; otherwise it spends its action trying to break free.
+        beaten = at_most_quarter(enemy) or _morale_after_context(enemy, combat) <= 0
+        held = [
+            _candidate(
+                _intent(
+                    enemy,
+                    'surrender' if beaten else 'break_free',
+                    reason=f"{enemy.get('name')} is held and {'beaten' if beaten else 'fights the hold'}.",
+                    confidence=1.0,
+                ),
+                100,
+            )
+        ]
+        _attach_candidate_contracts(held, enemy=enemy, combat=combat)
+        selected = deepcopy(held[0]['intent'])
+        selected.update({'selectionScore': 100, 'selectionMethod': 'grappled'})
+        return selected, [_candidate_debug_view(item) for item in held]
     behavior = enemy.get('behavior') if isinstance(enemy.get('behavior'), dict) else {}
     intelligence = str(behavior.get('intelligenceProfile') or 'average')
     players = _living_participants(combat, 'player')

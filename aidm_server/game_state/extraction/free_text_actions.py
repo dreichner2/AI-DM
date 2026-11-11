@@ -23,6 +23,20 @@ word of three or more letters) that matches exactly one visible candidate of
 that kind. Two or more candidates, or none, map nothing. ``mentions`` applies
 the same rule to every noun phrase of a text: the words after an article,
 determiner or preposition.
+
+A captive the party holds (``currentScene.captives``) is questioned like a
+person present: "question", "interrogate", "ask" or "talk to" it.
+
+In a fight, :func:`fight_words` decides instead (the hero's legal-action bundle
+says whose turn it is): speech is free on any turn; off turn, anything else is
+refused (``It is {Name}'s turn.``); on the hero's turn the first clause that
+names a fight action by its verb (:data:`FIGHT_VERBS`, any tense) or its label
+takes it ("close in and tackle him" is the grapple that closes in first), an
+action that is not legal is refused with its reason, and words that name
+nothing are an improvised action. The target is the enemy named; with "him",
+"her", "it", "them" or "the last one", the only one there is; else the hero's
+last target, else the only enemy standing. A blow aimed at a thing ("I cut the
+rope") names no fight action.
 """
 
 from __future__ import annotations
@@ -31,6 +45,9 @@ from dataclasses import dataclass, field
 import re
 from typing import Any, Callable, Iterable, Mapping
 
+from aidm_server.combat.legal_actions import IMPROVISE_ACTION_ID, MOVE_FIRST_TYPES
+from aidm_server.combat.pipeline import OBJECT_TARGET_WORDS
+from aidm_server.combat.state import participant_is_targetable
 from aidm_server.interactables import available_actions_for_target, interactable_actor_context, take_label
 from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
 
@@ -125,8 +142,38 @@ TRAVEL_PREPOSITIONS = (
     'out along', 'out on', 'back to', 'towards', 'toward', 'through', 'along', 'onto', 'into', 'down', 'for', 'to', 'up',
 )
 TRAVEL = re.compile(rf"^(?:{'|'.join(TRAVEL_VERBS)})(?:\s+(?:{'|'.join(TRAVEL_PREPOSITIONS)}))?\s+(?P<phrase>.+)$")
-TALK = re.compile(r'^(?:(?:talk|speak)\s+(?:to|with)|ask)\s+(?P<phrase>.+)$')
+TALK = re.compile(r'^(?:(?:talk|speak)\s+(?:to|with)|ask|question|interrogate)\s+(?P<phrase>.+)$')
 PRONOUNS = frozenset({'it', 'them'})
+# Fight actions by the verbs that name them, any tense; a particle may follow an object ("hold him down").
+_OBJECT = r"(?: [a-z']+){0,3}"
+FIGHT_VERBS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (action_type, re.compile(rf'^(?:{pattern})\b'))
+    for action_type, pattern in (
+        ('end_turn', r"end(?:s|ed|ing)?(?: (?:my|the|our|his|her|their))? turn"),
+        ('advance', r"close(?:s|d)? in|closing in|advanc(?:e|es|ed|ing)"),
+        ('reposition', r"f(?:a|e)ll(?:s|ing)? back|fallen back"),
+        ('subdue', rf"knock(?:s|ed|ing)?{_OBJECT} out|(?:take|takes|took|taking){_OBJECT} alive|bind(?:s|ing)?|bound|tie(?:s|d)?|tying|truss(?:es|ed|ing)?|cuff(?:s|ed|ing)?|subdu(?:e|es|ed|ing)|captur(?:e|es|ed|ing)"),
+        ('shove', rf"knock(?:s|ed|ing)?{_OBJECT} (?:down|over)|(?:throw|throws|threw|thrown|throwing){_OBJECT} down|shov(?:e|es|ed|ing)|push(?:es|ed|ing)?|trip(?:s|ped|ping)?|sweep(?:s|ing)?|swept"),
+        ('grapple', rf"(?:hold|holds|held|holding){_OBJECT} down|jump(?:s|ed|ing)? on|grab(?:s|bed|bing)?|grappl(?:e|es|ed|ing)|tackl(?:e|es|ed|ing)|wrestl(?:e|es|ed|ing)|pin(?:s|ned|ning)?|seiz(?:e|es|ed|ing)|restrain(?:s|ed|ing)?"),
+        ('demand_surrender', r"surrender(?:s|ed|ing)?|yield(?:s|ed|ing)?|(?:give|gives|gave|giving) up|(?:stand|stands|stood|standing) down|drop(?:s|ped)? it|(?:lay|lays|laid|laying) down"),
+        ('attack', r"attack(?:s|ed|ing)?|hit(?:s|ting)?|strike(?:s)?|struck|striking|stab(?:s|bed|bing)?|slash(?:es|ed|ing)?|shoot(?:s|ing)?|shot|(?:fire|fires|fired|firing) at|(?:swing|swings|swung|swinging) at|cut(?:s|ting)?"),
+        ('disengage', r"disengag(?:e|es|ed|ing)"),
+        ('dodge', r"dodg(?:e|es|ed|ing)"),
+        ('dash', r"dash(?:es|ed|ing)?"),
+        ('hide', r"hid(?:e|es|ing|den)"),
+        ('stabilize', r"stabili[sz](?:e|es|ed|ing)"),
+        ('help', r"help(?:s|ed|ing)?"),
+    )
+)
+RANGED_ATTACK_VERBS = re.compile(r'^(?:shoot|shoots|shooting|shot|fire|fires|fired|firing)\b')
+MELEE_ATTACK_VERBS = re.compile(r'^(?:stab|stabs|stabbed|stabbing|slash|slashes|slashed|slashing|cut|cuts|cutting|swing|swings|swung|swinging)\b')
+SPEECH_VERBS = frozenset(
+    f'{stem}{ending}'
+    for stem in ('say', 'ask', 'tell', 'shout', 'yell', 'call', 'whisper', 'taunt')
+    for ending in ('', 's', 'ed', 'ing')
+) | {'said', 'told'}
+SPEECH_LEADS = frozenset({'i', 'we', 'then', 'and', 'so', 'now'})
+TARGET_PRONOUNS = frozenset({'him', 'her', 'it', 'them'})
 
 
 @dataclass(frozen=True)
@@ -172,6 +219,7 @@ class _Scene:
     items: list[dict[str, Any]]
     destinations: list[dict[str, Any]]
     npcs: list[dict[str, Any]]
+    captives: list[dict[str, Any]] = field(default_factory=list)
     previous: tuple[str, dict[str, Any]] | None = None
     spans: list[tuple[int, int, tuple[str, Any]]] = field(default_factory=list)
 
@@ -414,7 +462,12 @@ def _scene(state: Mapping[str, Any], *, actor_id: str, player_id: int | None, pr
         if isinstance(entry, dict) and (offers := _offered(state, hero, entry))
     ]
     items = [item for item in visible.get('items') or [] if isinstance(item, dict) and _text(item.get('id'))]
-    scene = _Scene(objects, items, ways_onward(state), _present_npcs(state))
+    captives = [
+        {**captive, 'captive': True}
+        for captive in (state.get('currentScene') or {}).get('captives') or []
+        if isinstance(captive, Mapping) and _text(captive.get('name'))
+    ]
+    scene = _Scene(objects, items, ways_onward(state), _present_npcs(state), captives)
     if previous_target:
         kind, target_id = previous_target
         pool = [entry for entry, _offers in objects] if kind == 'object' else items
@@ -597,10 +650,12 @@ def _talk(text: str, scene: _Scene) -> _Mapped | None:
     talk = TALK.match(text)
     if not talk:
         return None
-    npc, _matched = _match(talk.group('phrase'), scene.npcs, lambda npc: npc.get('name'))
+    npc, _matched = _match(talk.group('phrase'), [*scene.npcs, *scene.captives], lambda npc: npc.get('name'))
     if npc is None:
         return None
     name = _text(npc.get('name'))
+    if npc.get('captive') is True:
+        return _Mapped(FreeTextAction(kind='talk', npc=npc), ({'kind': 'talk', 'label': f'Question {name}', 'target': name, 'verb': 'question'},))
     return _Mapped(FreeTextAction(kind='talk', npc=npc), ({'kind': 'talk', 'label': f'Talk to {name}', 'target': name, 'verb': 'talk to'},))
 
 
@@ -694,3 +749,169 @@ def free_text_action(
         npc=first_action.npc,
         deferred=tuple(deferred),
     )
+
+
+@dataclass(frozen=True)
+class FightWords:
+    """How typed words are taken on a fight turn.
+
+    ``kind`` is ``speech`` (free: nothing is spent and the turn goes on), ``action`` (``action_id`` and
+    ``target_id`` of a listed fight action), ``improvised`` (``action_id`` is the improvised action,
+    ``target_id`` the enemy named or the only one) or ``refused`` (with ``refusal``).
+    """
+
+    kind: str
+    action_id: str | None = None
+    target_id: str | None = None
+    refusal: str | None = None
+
+
+def _unquoted_words(message: str) -> list[str]:
+    return WORD.findall(QUOTED.sub(' ', _text(message).lower().replace('’', "'")))
+
+
+def is_speech(message: str, *, hero_name: str = '') -> bool:
+    """Words the hero says: they begin with a quotation mark, end with "?", or their first verb is a
+    speech verb (say, ask, tell, shout, yell, call, whisper, taunt)."""
+
+    text = _text(message)
+    if not text:
+        return False
+    if text[0] in '"“\'‘' or text.rstrip('"”\'’ ').endswith('?'):
+        return True
+    leads = SPEECH_LEADS | set(name_words(hero_name))
+    words = [word for word in _unquoted_words(text)]
+    while words and (words[0] in leads or words[0].endswith('ly')):
+        words = words[1:]
+    return bool(words) and words[0] in SPEECH_VERBS
+
+
+def _fight_clauses(message: str) -> list[tuple[str, list[str], str]]:
+    """``(action_type, words after the verb, the verb as typed)`` for each clause naming a fight action."""
+
+    mapped = []
+    for clause in _clauses(message):
+        if clause.sentence >= MAX_SENTENCES or clause.guarded:
+            continue
+        for index in range(min(MAX_LEAD_IN + 1, len(clause.words))):
+            if any(word in OTHERS_ACT for word in clause.words[:index]):
+                break
+            text = ' '.join(clause.words[index:])
+            found = next(((action_type, match) for action_type, pattern in FIGHT_VERBS if (match := pattern.match(text))), None)
+            if found:
+                action_type, match = found
+                mapped.append((action_type, text[match.end():].split(), match.group(0)))
+                break
+    return mapped
+
+
+def _named_target(words: list[str], targets: list[dict[str, Any]]) -> dict[str, Any] | None:
+    named, _matched = _match(' '.join(words), targets, lambda target: target.get('name'))
+    return named
+
+
+def _target_for(
+    words: list[str],
+    targets: list[dict[str, Any]],
+    *,
+    standing: list[dict[str, Any]],
+    last_target_id: str,
+) -> dict[str, Any] | None:
+    """The enemy the words name; with a pronoun or "the last one", the only one there is; else the hero's
+    last target; else the only enemy standing."""
+
+    named = _named_target(words, targets)
+    if named is not None:
+        return named
+    rest = [word for word in words if word not in DETERMINERS]
+    pointed = bool(rest) and (rest[0] in TARGET_PRONOUNS or rest[:2] == ['last', 'one'])
+    if pointed and len(targets) == 1:
+        return targets[0]
+    last = next((target for target in targets if _text(target.get('id')) == last_target_id), None)
+    if last is not None:
+        return last
+    in_targets = [target for target in targets if _text(target.get('id')) in {_text(enemy.get('id')) for enemy in standing}]
+    return in_targets[0] if len(standing) == 1 and in_targets else None
+
+
+def _aims_at_a_thing(words: list[str], targets: list[dict[str, Any]]) -> bool:
+    """The words after the verb name an object, not anyone in the fight ("the rope")."""
+
+    if _named_target(words, targets) is not None:
+        return False
+    rest = [word for word in words if word not in DETERMINERS]
+    return bool(rest) and rest[0] in OBJECT_TARGET_WORDS
+
+
+def _attack_action(actions: list[dict[str, Any]], verb: str, target: dict[str, Any] | None) -> dict[str, Any] | None:
+    attacks = [action for action in actions if _text(action.get('type')) == 'attack' and action.get('offhand') is not True]
+    if RANGED_ATTACK_VERBS.match(verb):
+        attacks.sort(key=lambda action: (action.get('range') or {}).get('classification') != 'ranged')
+    elif MELEE_ATTACK_VERBS.match(verb):
+        attacks.sort(key=lambda action: (action.get('range') or {}).get('classification') == 'ranged')
+    if target is not None:
+        reaching = [
+            action
+            for action in attacks
+            if any(option.get('id') == target.get('id') and option.get('available') for option in action.get('targets') or [])
+        ]
+        attacks = reaching or attacks
+    return attacks[0] if attacks else None
+
+
+def fight_words(
+    state: Mapping[str, Any],
+    bundle: Mapping[str, Any],
+    *,
+    message: str,
+    last_target_id: str = '',
+) -> FightWords:
+    """How a typed message is taken on a fight turn (rules in the module docstring); ``bundle`` is the
+    hero's legal-action bundle."""
+
+    hero_name = _text(bundle.get('actorName'))
+    if not bundle.get('isCurrentActor'):
+        if is_speech(message, hero_name=hero_name):
+            return FightWords('speech')
+        current = _text(bundle.get('currentActorName'))
+        return FightWords('refused', refusal=f"It is {current}'s turn." if current else 'It is not your turn.')
+    if is_speech(message, hero_name=hero_name):
+        return FightWords('speech')
+    actions = [action for action in bundle.get('actions') or [] if isinstance(action, Mapping)]
+    combat = state.get('combat') if isinstance(state.get('combat'), Mapping) else {}
+    standing = [
+        participant
+        for participant in combat.get('participants') or []
+        if isinstance(participant, dict) and _text(participant.get('team')).lower() == 'enemy' and participant_is_targetable(participant)
+    ]
+    mapped = _fight_clauses(message)
+    if mapped and mapped[0][0] == 'advance':
+        # "Close in and tackle him": the maneuver or attack that closes in first.
+        joined = next((entry for entry in mapped[1:] if entry[0] in MOVE_FIRST_TYPES), None)
+        if joined is not None:
+            mapped = [(joined[0], joined[1] or mapped[0][1], joined[2])]
+    for action_type, words, verb in mapped:
+        if action_type == 'attack':
+            enemies = [{'id': _text(enemy.get('id')), 'name': _text(enemy.get('name'))} for enemy in standing]
+            if _aims_at_a_thing(words, enemies):
+                continue
+            target = _target_for(words, enemies, standing=standing, last_target_id=last_target_id)
+            action = _attack_action(actions, verb, target)
+        else:
+            action = next((candidate for candidate in actions if _text(candidate.get('type')) == action_type), None)
+            target = None
+            if action is not None and action.get('requiresTarget'):
+                target = _target_for(words, list(action.get('targets') or []), standing=standing, last_target_id=last_target_id)
+        if action is None:
+            return FightWords('refused', refusal='That is not something you can do in this fight.')
+        if action.get('requiresTarget') and target is not None:
+            option = next((option for option in action.get('targets') or [] if option.get('id') == target.get('id')), None)
+            if option is None or not option.get('available'):
+                return FightWords('refused', refusal=_text((option or {}).get('reason')) or _text(action.get('reason')) or 'That target is not available.')
+        if not action.get('available'):
+            return FightWords('refused', refusal=_text(action.get('reason')) or 'That is not available now.')
+        return FightWords('action', action_id=_text(action.get('id')), target_id=_text((target or {}).get('id')) or None)
+    enemies = [{'id': _text(enemy.get('id')), 'name': _text(enemy.get('name'))} for enemy in standing]
+    named = mentions(message, enemies, lambda enemy: enemy['name'])
+    target = named[0] if len(named) == 1 else enemies[0] if len(enemies) == 1 else None
+    return FightWords('improvised', action_id=IMPROVISE_ACTION_ID, target_id=(target or {}).get('id'))

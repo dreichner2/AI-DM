@@ -26,6 +26,11 @@ Key``, ``Seren Ashgrove reached level 2``); a coin or XP gain every hero receive
 alike is one beat, ``+10 gp each``. Beats about the party or the world read the
 same either way. A hero put out of the fight has the one beat ``… is out of the
 fight``; a hero who wakes, ``… comes round``.
+
+A fight maneuver or improvised action the hero took has its check beat
+(``Athletics check: 17 — success (DC 12)``), and an enemy that is newly held,
+captured or yielding has its own: ``Grappled — Ashmarked Cutthroat``,
+``Captured — Ashmarked Cutthroat``, ``Ashmarked Cutthroat yields``.
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ from typing import Any
 
 from aidm_server.character_state import ABILITY_KEYS, SKILL_ABILITY
 from aidm_server.combat.defeat import WAKE_CHANGE_TYPES
+from aidm_server.combat.maneuvers import IMPROVISE_TYPE, MANEUVER_TYPES, YIELD_CONDITIONS
 from aidm_server.combat.vitality import OUT_OF_FIGHT, VITALITY_CONDITIONS
 from aidm_server.database import db
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY
@@ -135,8 +141,17 @@ def beat_basis(state: dict[str, Any], *, actor_id: str) -> dict[str, Any]:
     clues = journal.get('clues') if isinstance(journal.get('clues'), list) else _dicts(projected.get('clues'))
     pack = projected.get('campaignPack') if isinstance(projected.get('campaignPack'), dict) else {}
     ending = pack.get('ending') if isinstance(pack.get('ending'), dict) else {}
+    enemies = {
+        _text(participant.get('id')): {
+            'name': _text(participant.get('name')),
+            'conditions': sorted({_text(condition).lower() for condition in participant.get('conditions') or [] if _text(condition)}),
+        }
+        for participant in _dicts(combat.get('participants'))
+        if _text(participant.get('team')).lower() == 'enemy' and _text(participant.get('id'))
+    }
     return {
         'heroes': heroes,
+        'enemies': enemies,
         'sceneItems': sorted({_text(item.get('name')) for item in _dicts(scene.get('items')) if _text(item.get('name'))}),
         'clues': {_text(clue.get('id')): _text(clue.get('title') or clue.get('name')) for clue in _dicts(clues) if _text(clue.get('id'))},
         'objectives': {
@@ -226,6 +241,37 @@ def _roll_beat(roll: dict[str, Any]) -> dict[str, Any] | None:
     )
 
 
+def _fight_check_beat(combat_action: dict[str, Any]) -> dict[str, Any] | None:
+    """``Athletics check: 17 — success (DC 12)`` for a maneuver or improvised action that rolled."""
+
+    check = combat_action.get('check') if isinstance(combat_action.get('check'), dict) else {}
+    if _text(combat_action.get('actionType')) not in {*MANEUVER_TYPES, IMPROVISE_TYPE} or not check:
+        return None
+    return _check_beat(
+        {'total': check.get('total'), 'outcome': 'success' if check.get('success') is True else 'failure', 'dc': check.get('dc')},
+        show_dc=True,
+        label=_check_label(check.get('skill'), check.get('ability')),
+    )
+
+
+def _enemy_beats(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, Any]]:
+    """``Grappled — Ashmarked Cutthroat``, ``Captured — …`` and ``… yields`` for what an enemy newly became."""
+
+    beats = []
+    for enemy_id, new in after.items():
+        old = before.get(enemy_id)
+        if not old:
+            continue
+        gained = set(new['conditions']) - set(old['conditions'])
+        if 'grappled' in gained:
+            beats.append({'kind': 'condition', 'text': f"Grappled — {new['name']}"})
+        if 'captured' in gained:
+            beats.append({'kind': 'condition', 'text': f"Captured — {new['name']}"})
+        elif gained & YIELD_CONDITIONS and not set(old['conditions']) & YIELD_CONDITIONS:
+            beats.append({'kind': 'condition', 'text': f"{new['name']} yields"})
+    return beats
+
+
 def _you(hero: dict[str, Any], *, party: bool) -> tuple[str, str]:
     """Subject and verb form: ``("You", "are")`` alone, ``("Mara Fen", "is")`` in party play."""
 
@@ -278,8 +324,10 @@ def story_beats(
     state_before: dict[str, Any],
     applied_changes: list[dict[str, Any]],
     authoritative_roll: dict[str, Any] | None = None,
+    combat_action: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """The turn's beats, in contract order, from the before/after bases and its check results."""
+    """The turn's beats, in contract order, from the before/after bases and its check results
+    (``combat_action``: the engine-resolved fight action of the turn)."""
 
     heroes_before = before.get('heroes') or {}
     heroes_after = after.get('heroes') or {}
@@ -288,6 +336,8 @@ def story_beats(
     beats: list[dict[str, Any]] = []
     checks = [text for change in applied_changes if (text := object_check_text(change, state_before))]
     if isinstance(authoritative_roll, dict) and (beat := _roll_beat(authoritative_roll)):
+        checks.append(beat['text'])
+    if isinstance(combat_action, dict) and (beat := _fight_check_beat(combat_action)):
         checks.append(beat['text'])
     beats.extend({'kind': 'check', 'text': f'{acting_name} — {text}' if party else text} for text in checks)
 
@@ -324,6 +374,7 @@ def story_beats(
         for condition in lost:
             text = f'{subject} is no longer {_humanize(condition)}' if party else f'No longer {_humanize(condition)}'
             beats.append({'kind': 'condition', 'text': text})
+    beats.extend(_enemy_beats(before.get('enemies') or {}, after.get('enemies') or {}))
     for change in applied_changes:
         if change.get('type') == 'combat.death_save' and isinstance(change.get('roll'), int):
             name = _text(change.get('participantName'))
@@ -372,6 +423,12 @@ def story_beats(
     for place_id, name in (after.get('places') or {}).items():
         if place_id not in (before.get('places') or {}):
             beats.append({'kind': 'place', 'text': f'New place on the map — {name}', 'refId': place_id})
+    # One beat per person the turn's changes met (``metNpcIds``), by the pack catalog's name.
+    pack = state_before.get('campaignPack') if isinstance(state_before.get('campaignPack'), dict) else {}
+    catalog = pack.get('catalog') if isinstance(pack.get('catalog'), dict) else {}
+    people = {_text(npc.get('id')): _text(npc.get('name')) for npc in _dicts(catalog.get('npcs'))}
+    met = dict.fromkeys(_text(npc_id) for change in applied_changes for npc_id in change.get('metNpcIds') or [])
+    beats.extend({'kind': 'met', 'text': f'Met — {people[npc_id]}', 'refId': npc_id} for npc_id in met if people.get(npc_id))
     xp = {hero_id: max(0, new['xp'] - old['xp']) for hero_id, old, new in heroes_told}
     beats.extend(_shared_gains('xp', xp, heroes_after, lambda amount: f'+{amount} XP', party=party))
     for _hero_id, old, new in heroes_told:
@@ -422,6 +479,7 @@ def record_turn_story_beats(turn: DmTurn, session_obj: Session) -> list[dict[str
         state_before=pipeline.get('stateBeforeDm') if isinstance(pipeline.get('stateBeforeDm'), dict) else {},
         applied_changes=applied,
         authoritative_roll=metadata.get('authoritative_roll') if isinstance(metadata.get('authoritative_roll'), dict) else None,
+        combat_action=(pipeline.get('combatDebug') or {}).get('combatActionResolution') if isinstance(pipeline.get('combatDebug'), dict) else None,
     )
     narration = (pipeline.get('dmContextPacket') or {}).get('narration') if isinstance(pipeline.get('dmContextPacket'), dict) else {}
     unmatched = isinstance(narration, dict) and (narration.get('freeText') or {}).get('unmatched') is True

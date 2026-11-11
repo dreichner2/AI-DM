@@ -3,7 +3,7 @@
     "packId": "middle_earth.shadow_over_the_greenway",
     "title": "Shadow over the Greenway",
     "version": "1.0.1",
-    "description": "An original Middle-earth campaign pack. The company begins in the quiet lands near Bree, where old roads, broken watchtowers, and forgotten barrows conceal signs of a returning shadow. The adventure emphasizes travel, secrecy, courage, ancient lore, and choices that can avoid unnecessary bloodshed, with authored shortcuts for groups that follow tracks directly instead of visiting every social hub.",
+    "description": "A driverless wagon stands at Bree's west gate at dusk. A courier from the north is missing, the old road-stones on the Greenway have been scraped clean, and something out in the Lone-lands is listening for an oath no one alive remembers.",
     "world": {
         "name": "Middle-earth",
         "description": "A vast ancient world of free peoples, fading kingdoms, deep forests, ruined strongholds, and lingering evil. The Third Age wanes, and though great powers move far away, small deeds on lonely roads may decide whether darkness spreads unnoticed."
@@ -41,8 +41,8 @@
         "currentScene": {
             "locationId": "loc_bree_west_gate",
             "title": "A Cold Wind at Bree",
-            "summary": "The players arrive near Bree as evening mist gathers over the road. A frightened gatewarden and a wandering ranger both suspect that something has come down from the north.",
-            "description": "The players arrive near Bree as evening mist gathers over the road. A frightened gatewarden and a wandering ranger both suspect that something has come down from the north.",
+            "summary": "Evening mist gathers over the road outside Bree. A frightened gatewarden and a wandering ranger both suspect that something has come down from the north.",
+            "description": "Evening mist gathers over the road outside Bree. A frightened gatewarden and a wandering ranger both suspect that something has come down from the north.",
             "activeNpcIds": [
                 "npc_tomas_gatewarden",
                 "npc_calenhir_ranger"
@@ -58,10 +58,7 @@
         },
         "knownNpcIds": [
             "npc_tomas_gatewarden",
-            "npc_calenhir_ranger",
-            "npc_marla_underhill",
-            "npc_borin_ironhand",
-            "npc_elenwen_lorekeeper"
+            "npc_calenhir_ranger"
         ],
         "knownLocationIds": [
             "loc_bree_west_gate",
@@ -90,7 +87,6 @@
             ],
             "playerDescription": "Bree's gate creaks in the wind. Beyond it, warm windows glow, but outside the hedge the road lies dim and uneasy.",
             "gmNotes": "Use this location to establish grounded stakes: frightened locals, ordinary people, and subtle signs of danger rather than immediate epic spectacle.",
-            "sceneType": "exploration",
             "connectedLocationIds": [
                 "loc_prancing_pony_common_room",
                 "loc_midgewater_causeway"
@@ -214,10 +210,14 @@
             ],
             "playerDescription": "The common room is warm and loud, yet several tables fall quiet whenever the northern road is mentioned.",
             "gmNotes": "This is the best place for rumors, soft roleplay, clue gathering, and non-combat problem solving.",
-            "sceneType": "social",
             "connectedLocationIds": [
                 "loc_bree_west_gate",
                 "loc_fornost_watch_ruin"
+            ],
+            "npcIds": [
+                "npc_marla_underhill",
+                "npc_borin_ironhand",
+                "npc_elenwen_lorekeeper"
             ],
             "mapPosition": {
                 "x": 27,
@@ -335,10 +335,12 @@
             ],
             "playerDescription": "Cold water sucks at the stones of the causeway. Reeds hiss in the wind, and distant splashes sound too deliberate for fish.",
             "gmNotes": "The wounded courier hid near this route. The marsh encounter should allow stealth, rescue, negotiation with frightened locals, or combat.",
-            "sceneType": "travel",
             "connectedLocationIds": [
                 "loc_bree_west_gate",
                 "loc_fornost_watch_ruin"
+            ],
+            "npcIds": [
+                "npc_hadrin_courier"
             ],
             "mapPosition": {
                 "x": 50,
@@ -358,7 +360,7 @@
                         "search": "Search the reed hide"
                     },
                     "open": true,
-                    "description": "A blind of bent reeds where Hadrin Vale lay hidden from the scouts, and under it, wrapped in oilcloth, the broken seal of the North and his torn message. The message reads: \"They called the one who leads them the Ash-Mouthed. The seal is broken, but it still turns cold toward the Weather Hills. I was to carry it to the Rangers. Let no servant of ash speak over the old stone.\"",
+                    "description": "A blind of bent reeds where Hadrin Vale lay hidden from the scouts. Under it lies an oilcloth bundle holding the broken seal of the North and his torn message.",
                     "playerDescription": "A hide of bent and woven reeds at the causeway's edge, half sunk in black water.",
                     "requirements": {
                         "search": {
@@ -438,7 +440,6 @@
             ],
             "playerDescription": "The tower leans against the grey sky like a tired sentinel. Old carvings still show a crown beneath seven stars.",
             "gmNotes": "This ruin contains the first strong proof that the enemy seeks an old oath-stone connected to forgotten northern defenses.",
-            "sceneType": "mystery",
             "connectedLocationIds": [
                 "loc_prancing_pony_common_room",
                 "loc_midgewater_causeway",
@@ -600,7 +601,6 @@
             ],
             "playerDescription": "The hills rise like sleeping backs beneath the mist. No birds sing here, and every footstep feels too loud.",
             "gmNotes": "Do not overuse direct undead attacks. The horror should come from memory, cold, disorientation, and temptation.",
-            "sceneType": "mystery",
             "connectedLocationIds": [
                 "loc_fornost_watch_ruin",
                 "loc_amon_sul_shadow_camp"
@@ -704,10 +704,12 @@
             ],
             "playerDescription": "Beyond the ridge, a low red fire burns without smoke. Shapes move around it, and something black is wrapped in iron chains at the camp's center.",
             "gmNotes": "The final scene can end through battle, sabotage, rescue, bargaining with a fearful underling, or interrupting the ritual before the dark emissary completes it.",
-            "sceneType": "exploration",
             "connectedLocationIds": [
                 "loc_barrow_downs_outer_ring",
                 "loc_fornost_watch_ruin"
+            ],
+            "npcIds": [
+                "npc_saereth_ash_mouthed"
             ],
             "mapPosition": {
                 "x": 87,
@@ -897,7 +899,7 @@
             "role": "Hobbit innkeeper's niece",
             "locationId": "loc_prancing_pony_common_room",
             "description": "A sharp-eyed hobbit who notices everything from spilled ale to strangers hiding mud on their boots.",
-            "visibleAtStart": true,
+            "visibleAtStart": false,
             "questIds": [
                 "quest_shadow_over_greenway"
             ],
@@ -916,7 +918,7 @@
             "role": "Dwarven road-mason",
             "locationId": "loc_prancing_pony_common_room",
             "description": "A broad-shouldered dwarf with stone dust in his beard and a professional hatred of neglected roads.",
-            "visibleAtStart": true,
+            "visibleAtStart": false,
             "questIds": [
                 "quest_shadow_over_greenway"
             ],
@@ -934,7 +936,7 @@
             "role": "Elven lorekeeper passing westward",
             "locationId": "loc_prancing_pony_common_room",
             "description": "A quiet elf traveler whose songs carry memories of northern kingdoms long fallen.",
-            "visibleAtStart": true,
+            "visibleAtStart": false,
             "questIds": [
                 "quest_shadow_over_greenway"
             ],
@@ -953,11 +955,20 @@
             "locationId": "loc_midgewater_causeway",
             "description": "A young messenger from the north, exhausted, feverish, and determined not to let his burden fall into enemy hands.",
             "visibleAtStart": false,
+            "hiddenUntil": {
+                "flagKey": "hadrin_saved",
+                "equals": true
+            },
             "questIds": [
                 "quest_shadow_over_greenway"
             ],
             "disposition": "desperate_trusting_if_aided",
             "playerSummary": "Hadrin carried a broken seal from the north before he was hunted into the marsh.",
+            "knows": [
+                "They called the one who leads them the Ash-Mouthed.",
+                "The seal is broken, but it still turns cold toward the Weather Hills.",
+                "I was to carry it to the Rangers. Let no servant of ash speak over the old stone."
+            ],
             "gmNotes": "Hadrin possesses clue_broken_seal. He knows the enemy leader was called the Ash-Mouthed."
         },
         {
@@ -967,6 +978,7 @@
             "locationId": "loc_amon_sul_shadow_camp",
             "description": "A pale emissary with a burned voice, iron-black robes, and a will bent toward awakening old malice.",
             "visibleAtStart": false,
+            "hidden": true,
             "hiddenToPlayers": true,
             "questIds": [
                 "quest_shadow_over_greenway"

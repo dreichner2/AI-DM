@@ -19,7 +19,14 @@ Alone, the hero is "you". In party play (the packet's ``party``: more than one
 hero in the session) one story is read by every player, so no sentence says
 "you": the acting or affected hero is named, then "they" (``PARTY_TEMPLATES``).
 When a hero's turn ends with nothing else to tell, the narration is only the
-line saying who acts next.
+line saying who acts next (:func:`engine_turn_line`, which the AI narrator's
+replies end with as well).
+
+Fight maneuvers, the improvised action, an enemy breaking free of a hold or
+yielding in it, and opportunity attacks on an enemy that breaks away are told in
+their own words (an enemy is "it" unless its record gives a pronoun); a
+captive answers questions with its record's ``captiveKnows``, and is left
+behind when the party travels on.
 
 Only one case ever asks for a roll: a turn whose rules hint requires a roll that
 has not been made yet. Every other sentence is kept free of roll-request
@@ -34,6 +41,7 @@ import re
 from typing import Any
 
 from aidm_server.character_state import ROLL_TYPE_BASE_DC, SKILL_ABILITY
+from aidm_server.combat.maneuvers import IMPROVISE_TYPE, MANEUVER_TYPES, pronoun
 from aidm_server.game_state.orchestration.narration_facts import TAKE_TIME_LINE
 from aidm_server.turn_roll_policy import TurnRollPolicy
 from aidm_server.turn_rules import response_mentions_roll_request
@@ -73,6 +81,7 @@ ENEMY_TURN_LINES = {
     'call_reinforcements': '{enemy} shouts for help.',
 }
 FLEEING_INTENTS = frozenset({'retreat', 'flee'})
+CAPTIVE_SILENT = {False: '{captive} glares and says nothing more you can use.', True: '{captive} glares and says nothing more the party can use.'}
 SAVE_ABILITY_NAMES = {
     'str': 'Strength',
     'dex': 'Dexterity',
@@ -534,6 +543,13 @@ class NarrationInput:
             return f'the {text.lower()}'
         return text
 
+    def pronoun(self, name: Any) -> dict[str, str]:
+        """The enemy's pronoun forms (``it``, ``its``) as the narration packet gives them."""
+
+        text = _text(name).casefold()
+        enemy = next((enemy for enemy in _dicts(self.facts.get('enemies')) if _text(enemy.get('name')).casefold() == text), {})
+        return pronoun(enemy.get('pronoun'))
+
     def is_proper(self, name: Any) -> bool:
         """The enemy has a proper name (``The Cinder Scribe``), so it is a someone: ``their``, not ``its``."""
 
@@ -562,7 +578,8 @@ def narrate(
         return _compose(turn, [_refusals(invalid_actions)])
     # The place first, then the hero's own result, then the fight, then what it brought.
     arrival = _text(turn.facts.get('arrival'))
-    blocks: list[list[str]] = _arrival_blocks(turn, {'locationName': _the(arrival)}) if arrival else []
+    blocks: list[list[str]] = [_captives_left_lines(turn)]
+    blocks.extend(_arrival_blocks(turn, {'locationName': _the(arrival)}) if arrival else [])
     own_blocks, aftermath = _change_blocks(turn)
     blocks.append([*_spell_lines(turn), *_capability_lines(turn)])
     blocks.extend(own_blocks)
@@ -637,10 +654,20 @@ def _narrate_roll_request(turn: NarrationInput) -> str:
 def _talk_line(turn: NarrationInput, talk: dict) -> str:
     name = _text(talk.get('name'))
     fact = _text(talk.get('fact'))
+    if talk.get('captive') is True:
+        captive = turn.creature(name) if turn.creature(name) != name else f'the {name.lower()}'
+        if not fact:
+            return CAPTIVE_SILENT[turn.party_play].format(captive=_capitalized(captive))
+        return turn.pick('npc_knows', fact=_speech(fact), first=captive)
     if not fact:
         return f'{name or "They"} has nothing more to add.'
     first = _first_name(name) or name
     return turn.pick('npc_knows', fact=_speech(fact), first=first)
+
+
+def _captives_left_lines(turn: NarrationInput) -> list[str]:
+    line = _text(turn.facts.get('captivesLeft'))
+    return [line] if line else []
 
 
 def _npc_talk_line(turn: NarrationInput, npc: dict) -> str:
@@ -686,8 +713,9 @@ def _combat_lines(turn: NarrationInput) -> list[str]:
     lines = [turn.pick('combat_start') for change in turn.applied_changes if _text(change.get('type')) == 'combat.start'][:1]
     targets: list[str] = []
     tactical_action = _dict(combat_state.get('playerResolvedCombatAction'))
-    tactical = _tactical_line(turn, tactical_action)
-    if tactical:
+    if _key(tactical_action.get('actionType')) in {*MANEUVER_TYPES, IMPROVISE_TYPE}:
+        lines.extend(_maneuver_lines(turn, tactical_action))
+    elif tactical := _tactical_line(turn, tactical_action):
         lines.append(tactical)
     player_action = _dict(combat_state.get('playerResolvedAction'))
     attacks = [player_action] if player_action else []
@@ -711,6 +739,7 @@ def _combat_lines(turn: NarrationInput) -> list[str]:
     fleeing = [action for action in enemy_actions if _fled(action)]
     routed = _key(turn.facts.get('fightEnds')) == 'enemies_fled'
     for action in enemy_actions:
+        lines.extend(_breaking_away_lines(turn, action))
         if routed and len(fleeing) > 1 and _fled(action):
             # The last of several enemies breaking at once is told once.
             line = 'The last of them break and run.' if action is fleeing[0] else None
@@ -799,6 +828,112 @@ def _modifier_clause(turn: NarrationInput, modifiers: Any) -> str:
     return _join_words(parts)
 
 
+def _hero_says(turn: NarrationInput, *phrases: str, pronoun: bool = False) -> str:
+    """The acting hero doing each phrase in turn: ``You grab for it, but …`` alone; in party play by name,
+    or ``They …`` right after the sentence that named them."""
+
+    if not turn.party_play:
+        return f"You {' '.join(phrases)}"
+    if pronoun:
+        return f"They {' '.join(phrases)}"
+    first, *rest = phrases
+    return ' '.join([turn.actor, _third_person(first), *(_and_third_person(phrase) for phrase in rest)])
+
+
+def _and_third_person(phrase: str) -> str:
+    """``and bear it down`` -> ``and bears it down``."""
+
+    lead, _space, rest = phrase.partition(' ')
+    return f'{lead} {_third_person(rest)}' if lead in {'and', 'but'} and rest else phrase
+
+
+def _skill_label(check: dict) -> str:
+    return ' '.join(word if word == 'of' else word.capitalize() for word in _key(check.get('skill')).split('_')) or 'Check'
+
+
+def _maneuver_lines(turn: NarrationInput, action: dict) -> list[str]:
+    """A fight maneuver or improvised action in the hero's voice, after closing in when it did."""
+
+    lines = []
+    closed = _closes_in({**action, 'actionType': 'advance'})
+    if closed:
+        lines.append(_sentence(f"{turn.actor if turn.party_play else 'You'} {'closes' if turn.party_play else 'close'} in on {_target_ref(turn, action.get('targetName'))}"))
+    check = _dict(action.get('check'))
+    roll = f"{_skill_label(check)} {_number(check.get('total'))} against DC {_number(check.get('dc'))}" if check else ''
+    target = _target_ref(turn, action.get('targetName'))
+    words = turn.pronoun(action.get('targetName'))
+    it, its, them, s = words['subject'], words['possessive'], words['object'], words['s']
+    success = action.get('success') is True
+    yours = 'theirs' if turn.party_play else 'yours'
+    hero_poss = 'their' if turn.party_play else 'your'
+    kind = _key(action.get('actionType'))
+    if kind == 'grapple' and success:
+        lines.append(f"{_hero_says(turn, f'get an arm around {target}', f'and bear {them} down', pronoun=closed)}: {roll}. {it.capitalize()} {words['is']} going nowhere.")
+    elif kind == 'grapple':
+        lines.append(f"{_hero_says(turn, f'grab for {target},', f'but {it} twist{s} free', pronoun=closed)}: {roll}.")
+    elif kind == 'shove' and success:
+        goes = 'goes' if s else 'go'
+        lines.append(f"{_hero_says(turn, f'put {hero_poss} shoulder into {target}', f'and {it} {goes} down hard', pronoun=closed)}: {roll}.")
+    elif kind == 'shove':
+        lines.append(f"{_hero_says(turn, f'put {hero_poss} shoulder into {target},', f'but {it} keep{s} {its} feet', pronoun=closed)}: {roll}.")
+    elif kind == 'subdue' and success:
+        tied = _hero_says(turn, f'wrench {its} arms back', 'and tie them', pronoun=closed)
+        lines.append(f"{tied}{': ' + roll if roll else ''}. {_capitalized(target)} is {yours}.")
+    elif kind == 'subdue':
+        lines.append(f"{_hero_says(turn, f'try to bind {target},', f'but {it} fight{s} free of the rope', pronoun=closed)}: {roll}.")
+    elif kind == 'demand_surrender':
+        speaker = ('they' if closed else turn.actor) if turn.party_play else 'you'
+        tells = 'tell' if speaker in {'you', 'they'} else 'tells'
+        weapon = _text(action.get('targetWeapon'))
+        ending = (f'The {weapon} drops.' if weapon else f'{it.capitalize()} give{s} up.') if success else f'{it.capitalize()} fight{s} on.'
+        lines.append(f'"Enough," {speaker} {tells} {them}. Intimidation {_number(check.get("total"))} against DC {_number(check.get("dc"))}. {ending}')
+    else:
+        attempt = _attempt_phrase(turn, _text(action.get('attempt')))
+        tried = _hero_says(turn, attempt, pronoun=closed) if attempt else _hero_says(turn, 'try something', pronoun=closed)
+        if success and _text(action.get('targetName')):
+            lines.append(f'{tried}: {roll}. {_capitalized(target)} is off balance.')
+        elif success:
+            lines.append(f'{tried}: {roll}, and it works.')
+        else:
+            lines.append(f'{tried}, but it does not come off: {roll}.')
+    return lines
+
+
+def _attempt_phrase(turn: NarrationInput, attempt: str) -> str:
+    """The typed words of an improvised action as the hero's verb phrase: "I kick the lantern at it" ->
+    ``kick the lantern at it``, with "my" as "your" (``their`` in party play)."""
+
+    words = attempt.strip().rstrip('.!').split()
+    if words and words[0].lower() == 'i':
+        words = words[1:]
+    if not words:
+        return ''
+    owner = 'their' if turn.party_play else 'your'
+    words = [owner if word.lower() == 'my' else 'you' if word.lower() == 'me' and not turn.party_play else 'them' if word.lower() == 'me' else word for word in words]
+    return ' '.join([words[0].lower(), *words[1:]])
+
+
+def _breaking_away_lines(turn: NarrationInput, action: dict) -> list[str]:
+    """Opportunity attacks on an enemy that breaks away from melee; a hold that ended without a fight."""
+
+    enemy = turn.creature(action.get('enemyName')) or 'the enemy'
+    them = turn.pronoun(action.get('enemyName'))['object']
+    lines = [_sentence(f'{enemy} is free of the hold')] if action.get('grappleEnded') is True else []
+    for reaction in _dicts(action.get('reactions')):
+        attack = _dict(reaction.get('attack'))
+        if _key(reaction.get('kind')) != 'opportunity_attack' or attack.get('attackTotal') is None:
+            continue
+        attacker = _text(attack.get('attackerName') or reaction.get('reactorName'))
+        weapon = (_text(attack.get('weaponName')) or 'weapon').lower()
+        owner = 'your' if turn.is_speaker(attacker) and not turn.party_play else _possessive(attacker)
+        roll = f"{_number(attack.get('attackTotal'))} against AC {_number(attack.get('targetArmorClass'))}"
+        if attack.get('hit') is True:
+            lines.append(f"As {enemy} breaks away, {owner} {weapon} catches {them}: {roll}, {_number(attack.get('damageTotal'))} damage.")
+        else:
+            lines.append(f'As {enemy} breaks away, {owner} {weapon} swings after {them} and misses: {roll}.')
+    return lines
+
+
 def _fled(action: dict) -> bool:
     return (
         action.get('resolvedWithoutRoll') is True
@@ -814,6 +949,12 @@ def _unrolled_enemy_line(turn: NarrationInput, action: dict, enemy: str, *, rout
     intent = _key(action.get('intentType'))
     if action.get('turnLost') is True:
         return _sentence(f'{enemy} cannot act')
+    if action.get('held') is True and intent == 'surrender':
+        words = turn.pronoun(action.get('enemyName'))
+        return f'{_capitalized(enemy)} goes slack. "Enough," {words["subject"]} say{words["s"]}.'
+    if action.get('droppedByReaction') is True:
+        words = turn.pronoun(action.get('enemyName'))
+        return _sentence(f'{enemy} falls where {words["subject"]} stand{words["s"]}')
     if action.get('moveOnly') is True:
         return _sentence(f'{enemy} closes in')
     if intent in FLEEING_INTENTS:
@@ -827,6 +968,14 @@ def _enemy_action_line(turn: NarrationInput, action: dict, *, routed: bool = Fal
     enemy = turn.creature(action.get('enemyName')) or 'The enemy'
     target = _target_ref(turn, action.get('targetName'))
     ability = _text(action.get('abilityName')) or 'an attack'
+    escape = _dict(action.get('breakFree'))
+    if escape:
+        grappler = _text(action.get('grapplerName'))
+        holder = 'you' if turn.is_speaker(grappler) and not turn.party_play else grappler
+        if escape.get('success') is True:
+            return f"{_capitalized(enemy)} tears loose of {holder}: {_number(escape.get('total'))} against DC {_number(escape.get('dc'))}."
+        hold = 'your hold' if holder == 'you' else f"{_possessive(holder)} hold"
+        return f"{_capitalized(enemy)} strains against {hold} and cannot break it: {_number(escape.get('total'))} against DC {_number(escape.get('dc'))}."
     if action.get('resolvedWithoutRoll') is True:
         return _unrolled_enemy_line(turn, action, enemy, routed=routed)
     damage = _number(action.get('damageTotal'))
@@ -1356,6 +1505,17 @@ def _third_person(phrase: str) -> str:
 
 def _possessive(name: str) -> str:
     return f"{name}'s"
+
+
+def _capitalized(text: str) -> str:
+    return f'{text[:1].upper()}{text[1:]}'
+
+
+def engine_turn_line(rules_hint: dict[str, Any]) -> str:
+    """The line the engine ends a fight turn with (``It is still Thalion's turn.`` / ``Corin Ashby is up
+    next.``); '' when the fight ends this turn or the party is beaten."""
+
+    return _next_actor_line(NarrationInput(context={}, rules_hint=_dict(rules_hint), player_input='', speaker=None, opening_brief=None))
 
 
 # Composition --------------------------------------------------------------------------------------------------------

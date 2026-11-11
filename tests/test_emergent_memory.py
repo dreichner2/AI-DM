@@ -376,7 +376,7 @@ def test_inventory_validation_rejects_abstract_or_directional_phrases(app):
         ]
         assert len(rejections) == 2
         assert {rejection['item_name'] for rejection in rejections} == {
-            'path deeper into ruins',
+            'path deeper into the ruins',
             'warning',
         }
 

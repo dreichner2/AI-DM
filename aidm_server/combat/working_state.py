@@ -13,6 +13,7 @@ from typing import Any, Mapping
 
 from aidm_server.canon_text import int_or_default
 from aidm_server.combat import vitality
+from aidm_server.combat.maneuvers import GRAPPLE_SOURCE
 from aidm_server.combat.modifiers import ability_key, condition_key, consume_modifiers, normalize_active_effect
 from aidm_server.combat.positioning import move_participant, participant_by_id
 
@@ -83,6 +84,9 @@ def add_active_effect(participant: dict[str, Any], raw_effect: Any) -> dict[str,
         conditions = [condition_key(value) for value in participant.get('conditions') or [] if _text(value)]
         if effect['condition'] not in conditions:
             participant['conditions'] = [*conditions, effect['condition']]
+    if effect['sourceId'] == GRAPPLE_SOURCE:
+        # Removing the grapple's effect drops the condition and this with it.
+        participant['grappledBy'] = effect['casterId']
     return effect
 
 

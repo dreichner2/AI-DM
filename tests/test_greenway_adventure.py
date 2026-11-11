@@ -26,6 +26,7 @@ from aidm_server.services.campaign_pack_visibility import filter_session_snapsho
 from aidm_server.services.pregen_characters import PREGENERATED_CHARACTER_PRESETS
 from scripts import solo_balance
 from tests import test_flagship_adventure as flagship
+from tests import test_meeting_people as meeting
 from tests import test_play_now_release_smoke as smoke
 
 PACK_PATH = Path(__file__).resolve().parents[1] / 'docs' / 'examples' / 'shadow_over_the_greenway_campaign_pack.json'
@@ -42,6 +43,9 @@ FINAL_CHECKPOINT = next(checkpoint for checkpoint in PACK['checkpoints'] if chec
 ENDING_VARIANTS = {variant['when']['flagKey']: variant for variant in FINAL_CHECKPOINT['endingVariants']}
 SAERETH = 'enemy_saereth_shadow_emissary'
 SCOUT = 'enemy_black_feather_orc_scout'
+SAERETH_IN_PERSON = 'npc_saereth_ash_mouthed'
+KNOWS = {npc['name']: npc.get('knows', []) for npc in PACK['npcs']}
+INN_PEOPLE = ['Marla Underhill', 'Borin Ironhand', 'Elenwen']
 
 GATE = ('loc_bree_west_gate', 'Bree West Gate')
 INN = ('loc_prancing_pony_common_room', 'The Prancing Pony Common Room')
@@ -74,8 +78,6 @@ def _dm_only_texts() -> list[str]:
         texts.extend(record.get('actionText', {}).values())
     for npc in PACK['npcs']:
         texts.extend(npc.get('knows', []))
-        if not npc.get('visibleAtStart'):
-            texts.extend([npc['description'], npc['playerSummary']])
     for encounter in PACK['encounters']:
         texts.extend(encounter[key] for key in ('setup', 'stakes') if encounter.get(key))
         texts.extend(adjustment['text'] for adjustment in encounter.get('adjustments', []))
@@ -142,6 +144,9 @@ def _assert_player_view_is_clean(snapshot: dict) -> None:
     view = flagship._story_view(snapshot)
     rendered = json.dumps(view, ensure_ascii=False)
     assert [text for text in DM_ONLY_TEXTS if text in rendered] == []
+    met = {npc['id'] for npc in snapshot['knownNpcs']}
+    unmet = [text for npc in PACK['npcs'] if npc['id'] not in met for text in (npc['description'], npc['playerSummary'])]
+    assert [text for text in unmet if text in rendered] == []
     objects = {entry['id']: entry for entry in view['currentScene']['interactables']}
     if snapshot['flags'].get('watchtower_decoded') is not True:
         assert 'tower_rangers_cache' not in objects
@@ -312,6 +317,9 @@ def _short_route_to_the_freed_stone(table: GreenwayTable) -> None:
     assert goat_path == [('hidden', True)]
 
     camp = table.travel(*CAMP)
+    # Saereth is held back as a person: arriving at his camp meets nobody.
+    assert meeting._met_by(table, 'scene.move_location') is None
+    assert SAERETH_IN_PERSON not in {npc['id'] for npc in camp.snapshot['knownNpcs']}
     assert (camp.encounter, camp.snapshot['currentScene']['restPolicy']) == (None, 'none')
     rite = table.act(OATH_STONE['id'], 'inspect', OATH_STONE['name'])
     assert rite.encounter == RITE['id']
@@ -402,30 +410,52 @@ def test_the_opening_offers_only_authored_actions_in_the_evening_at_a_safe_gate(
     ]
 
 
-def test_the_people_of_bree_tell_what_they_know_one_thing_per_talk(table):
-    knows = {npc['name']: npc.get('knows', []) for npc in PACK['npcs']}
+def _told_in_turn(table: GreenwayTable, name: str, first: str) -> None:
+    """Each talk tells the person's next line, in order, and then that they have nothing more to add."""
 
-    def told(name: str, first: str) -> None:
-        for fact in knows[name]:
-            assert fact.rstrip('.') in table.talk(first), (name, fact)
-        assert table.talk(first) == f'DM: {name} has nothing more to add.'
+    for fact in KNOWS[name]:
+        assert fact.rstrip('.') in table.talk(first), (name, fact)
+    assert table.talk(first) == f'DM: {name} has nothing more to add.'
 
-    told('Tomas Reedbank', 'Tomas')
-    told('Calenhir', 'Calenhir')
+
+def test_the_people_of_bree_are_met_where_they_are_and_tell_what_they_know(table):
+    start = table.last
+    rendered = json.dumps(meeting._view(start), ensure_ascii=False)
+    assert [name for name in INN_PEOPLE if name.split()[0] in rendered] == []
+    assert meeting._people(start) == ['Tomas Reedbank', 'Calenhir']
+    assert meeting._talk_offers(start) == ['Talk to Tomas Reedbank', 'Talk to Calenhir']
+    _told_in_turn(table, 'Tomas Reedbank', 'Tomas')
+    _told_in_turn(table, 'Calenhir', 'Calenhir')
+
+    inn = table.travel(*INN)
+
+    assert [beat['text'] for beat in table.pipeline_beats() if beat['kind'] == 'met'] == [f'Met — {name}' for name in INN_PEOPLE]
+    assert meeting._talk_offers(inn.snapshot) == [f'Talk to {name}' for name in INN_PEOPLE]
+    assert meeting._people(inn.snapshot) == ['Tomas Reedbank', 'Calenhir', *INN_PEOPLE]
+    _told_in_turn(table, 'Marla Underhill', 'Marla')
+    _told_in_turn(table, 'Borin Ironhand', 'Borin')
+    _told_in_turn(table, 'Elenwen', 'Elenwen')
+    # Coming back meets nobody again.
+    table.travel(*GATE)
     table.travel(*INN)
-    told('Marla Underhill', 'Marla')
-    told('Borin Ironhand', 'Borin')
-    told('Elenwen', 'Elenwen')
-    # Hadrin is never met; what he knew is in his torn message, read in the reed hide.
-    assert knows['Hadrin Vale'] == []
-    assert 'npc_hadrin_courier' not in {npc['id'] for npc in table.last['knownNpcs']}
-    hide = SCENE_OBJECTS['marsh_reed_hide']['description']
-    for fact in (
-        'They called the one who leads them the Ash-Mouthed.',
-        'The seal is broken, but it still turns cold toward the Weather Hills.',
-        'I was to carry it to the Rangers. Let no servant of ash speak over the old stone.',
-    ):
-        assert fact in hide
+    assert meeting._met_beats(table) == [f'Met — {name}' for name in INN_PEOPLE]
+    table.reads_cleanly()
+
+
+def test_hadrin_is_met_in_the_marsh_once_the_scouts_are_driven_off(table):
+    table.act('gate_road_tracks', 'inspect', 'Tracks in the Road Mud')
+
+    marsh = table.travel(*MARSH)
+
+    assert marsh.encounter == 'enc_marsh_black_feathers'
+    assert 'npc_hadrin_courier' not in {npc['id'] for npc in marsh.snapshot['knownNpcs']}
+    assert meeting._met_beats(table) == []
+    scouts = table.fight()
+    # The scouts' defeat sets hadrin_saved while the party stands there: he is met then.
+    assert scouts.flags == {'hadrin_saved': True}
+    assert meeting._met_beats(table) == ['Met — Hadrin Vale']
+    assert meeting._talk_offers(scouts.snapshot) == ['Talk to Hadrin Vale']
+    _told_in_turn(table, 'Hadrin Vale', 'Hadrin')
     table.reads_cleanly()
 
 
@@ -493,7 +523,7 @@ def test_the_careful_route_restores_the_oath_stone(table):
     assert (hide.flags, hide.clues) == ({'seal_recovered': True}, {'clue_broken_seal'})
     assert hide.objectives == {'obj_recover_broken_seal': 'completed'}
     assert flagship._scene_items(hide) == ['broken_seal_of_the_north', 'hadrins_torn_message']
-    assert 'They called the one who leads them the Ash-Mouthed.' in table.narration()
+    assert 'npc_hadrin_courier' in {npc['id'] for npc in hide.snapshot['knownNpcs']}
     table.take('broken_seal_of_the_north', 'Broken Seal of the North')
     table.take('hadrins_torn_message', "Hadrin's Torn Message")
     assert {'broken_seal_of_the_north', 'hadrins_torn_message'} <= _item_ids(table.last)
@@ -530,6 +560,9 @@ def test_the_careful_route_restores_the_oath_stone(table):
     assert flagship._active_checkpoint(oath.snapshot) == 'cp_shadow_camp_finale'
 
     camp = table.travel(*CAMP)
+    # Saereth is held back as a person: arriving at his camp meets nobody.
+    assert meeting._met_by(table, 'scene.move_location') is None
+    assert SAERETH_IN_PERSON not in {npc['id'] for npc in camp.snapshot['knownNpcs']}
     assert flagship._hero(camp.snapshot)['xp']['current'] == dict(ROUTE_XP)['enc_shadow_rite_amon_sul']
     assert (camp.encounter, camp.snapshot['currentScene']['restPolicy']) == (None, 'none')
     assert table.offers(OATH_STONE['id']) == {'inspect': True, 'use': False, 'lock': False, 'break': False, 'trigger': False}
@@ -586,6 +619,7 @@ def test_the_careful_route_restores_the_oath_stone(table):
     ]
     end = table.snapshot()
     assert flagship._hero(end)['xp']['current'] == 1500
+    assert SAERETH_IN_PERSON not in {npc['id'] for npc in end['knownNpcs']}
     assert {clue['id'] for clue in end['clues']} == {clue['id'] for clue in PACK['clues']}
     assert flagship._places(end) == {location['id']: 'visited' for location in PACK['locations']}
     assert set(_objectives(end).values()) == {'completed'}

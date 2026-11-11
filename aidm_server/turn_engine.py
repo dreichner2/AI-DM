@@ -26,8 +26,10 @@ from aidm_server.character_state import (
 from aidm_server.canon_inventory import OWNED_ITEM_ACTIONS
 from aidm_server.combat.legal_actions import (
     combat_snapshot_from_session,
+    legal_combat_actions_for_player,
     resolve_combat_legal_action,
 )
+from aidm_server.combat.modifiers import can_act
 from aidm_server.combat.pipeline import hostile_action_targets_creature
 from aidm_server.database import commit_with_retry, db, release_clean_scoped_session, run_with_commit_retry
 from aidm_server.emergent_memory import apply_immediate_state_changes
@@ -38,6 +40,7 @@ from aidm_server.game_state.change_types import (
     SNAPSHOT_REFRESH_CHANGE_TYPES,
     WORLD_STATE_CHANGE_TYPES,
 )
+from aidm_server.game_state.extraction.free_text_actions import fight_words
 from aidm_server.game_state.models import display_actor_id
 from aidm_server.interactables import NOT_WHILE_FIGHTING
 from aidm_server.game_state.orchestration.combat_resolution import player_attack_target
@@ -123,6 +126,9 @@ from aidm_server.turn_narration import (
     TurnNarrationService,
 )
 from aidm_server.turn_rules import (
+    FIGHT_WORDS_SOURCE,
+    fight_words_rule_hint,
+    typed_in_fight,
     apply_pending_resolution_hint as default_apply_pending_resolution_hint,
     build_roll_prompt as default_build_roll_prompt,
     dc_hint_from_turn as default_dc_hint_from_turn,
@@ -824,6 +830,85 @@ class TurnEngine:
         target['player_name'] = target_player.name
         return True
 
+    @staticmethod
+    def _last_combat_target(session_id: int, player_id: int) -> str:
+        """The enemy the player's most recent fight action was aimed at."""
+
+        turns = (
+            DmTurn.query.filter(DmTurn.session_id == session_id, DmTurn.player_id == player_id, DmTurn.metadata_json.contains('"target_id"'))
+            .order_by(DmTurn.turn_id.desc())
+            .limit(20)
+        )
+        for turn in turns:
+            intent = safe_json_loads(turn.metadata_json, {}).get('action_intent')
+            combat = intent.get('combat') if isinstance(intent, dict) and isinstance(intent.get('combat'), dict) else {}
+            if str(combat.get('target_id') or '').strip():
+                return str(combat['target_id']).strip()
+        return ''
+
+    def _route_fight_words(self, command: TurnCommand, player: Player, session_obj: Session) -> bool:
+        """Typed words of a hero who can act in a fight: free speech, a listed fight action or an improvised
+        one (each then takes the path of the button that would send it), or refused before narration."""
+
+        action_intent = command.action_intent if isinstance(command.action_intent, dict) else {}
+        message = str(command.user_input or '').strip()
+        if (
+            str(action_intent.get('kind') or '').strip().lower() not in {'', 'message'}
+            or not message
+            or command.is_opening
+            or player_message_reports_roll_result(message)
+            or find_legacy_roll_claim(message) is not None
+        ):
+            return True
+        snapshot = combat_snapshot_from_session(session_obj.state_snapshot)
+        bundle = legal_combat_actions_for_player(snapshot, player)
+        combat = snapshot.get('combat') if isinstance(snapshot.get('combat'), dict) else {}
+        actor = next(
+            (
+                participant
+                for participant in combat.get('participants') or []
+                if isinstance(participant, dict) and bundle and str(participant.get('id') or '') == bundle['actorId']
+            ),
+            None,
+        )
+        if bundle is None or not can_act(actor):
+            # A hero who is down is answered by the pipeline's own refusal.
+            return True
+        words = fight_words(
+            snapshot,
+            bundle,
+            message=message,
+            last_target_id=self._last_combat_target(command.session_id, command.player_id),
+        )
+        if words.kind == 'refused':
+            self.emit(
+                'error',
+                socket_error(
+                    'combat_action_unavailable',
+                    words.refusal,
+                    {'session_id': command.session_id, 'player_id': command.player_id},
+                ),
+            )
+            telemetry_event(
+                'socket.send_message.fight_words_refused',
+                payload={'sid': command.sid, 'session_id': command.session_id, 'player_id': command.player_id},
+                severity='warning',
+            )
+            return False
+        routed = {
+            'source': FIGHT_WORDS_SOURCE,
+            'text': message,
+            **({'client_message_id': action_intent['client_message_id']} if action_intent.get('client_message_id') else {}),
+        }
+        if words.kind == 'speech':
+            command.action_intent = {**routed, 'kind': 'message'}
+            return True
+        combat_request = {'action_id': words.action_id, **({'target_id': words.target_id} if words.target_id else {})}
+        if words.kind == 'improvised':
+            combat_request['attempt'] = message
+        command.action_intent = {**routed, 'kind': 'combat', 'combat': combat_request}
+        return True
+
     def _prepare_combat_action(self, command: TurnCommand, player: Player, session_obj: Session) -> bool:
         action_intent = command.action_intent
         snapshot = combat_snapshot_from_session(session_obj.state_snapshot)
@@ -865,6 +950,7 @@ class TurnEngine:
             player,
             action_id=requested.get('action_id'),
             target_id=requested.get('target_id'),
+            attempt=requested.get('attempt'),
         )
         if resolved is None:
             self.emit(
@@ -892,8 +978,10 @@ class TurnEngine:
             )
             return False
         action_intent['combat'] = resolved
-        action_intent['text'] = resolved['message']
-        command.user_input = resolved['message']
+        if not typed_in_fight(action_intent):
+            # Typed words keep what the player wrote; a button's turn reads as its action.
+            action_intent['text'] = resolved['message']
+            command.user_input = resolved['message']
         return True
 
     def _validate_character_limits(self, command: TurnCommand, player: Player) -> bool:
@@ -1961,6 +2049,8 @@ class TurnEngine:
                 self._emit_recovery_required(command, recovery_gate)
                 return
 
+        if not self._route_fight_words(command, player, session_obj):
+            return
         if not self._prepare_combat_action(command, player, session_obj):
             return
         if not self._conduct_turn_submission(command, session_obj):
@@ -2018,7 +2108,9 @@ class TurnEngine:
             action_kind = 'roll'
         rules_engine_enabled = bool(current_app.config.get('AIDM_RULES_ENGINE_ENABLED', True))
         rule_hint: RuleHint = (
-            classify_player_action(command.user_input)
+            fight_words_rule_hint()
+            if typed_in_fight(command.action_intent)
+            else classify_player_action(command.user_input)
             if rules_engine_enabled
             else RuleHint(
                 requires_roll=False,

@@ -20,6 +20,14 @@ Deterministic, from the turn's rules hint and its engine brief
    for sneaking or for dealing with people never are. ``engine_rolls_removed``
    tells the caller, which then asks for no roll and opens no roll gate. Roll
    requests for improvised actions the engine does not own stay.
+5. In a fight, a sentence that says whose turn it is or that a turn is over
+   ("Corin Ashby, it is your turn.", "Thalion is up next.", "Your turn is
+   spent.", "… weighs the next move.") is dropped, unless it is spoken (has a
+   quotation mark); the narration service ends the reply with the engine's own
+   turn line instead (:func:`aidm_server.scripted_narrator.engine_turn_line`).
+6. In and out of a fight, a final sentence that is only the label of an action
+   offered this turn ("Search the strongbox.") is dropped, compared without case
+   or final punctuation.
 
 A line nothing is taken from is kept exactly as the model wrote it.
 """
@@ -84,6 +92,13 @@ PEOPLE_ROLL_TYPES = frozenset(
 # The source of the pending roll that only mirrors a roll the turn's wording suggested.
 TURN_RULES_ROLL_SOURCE = 'turn_rules'
 PURCHASE = re.compile(r'\b(?:buy|buying|purchase|purchasing|haggle|haggling|bargain|bargaining|price|discount)\b', re.IGNORECASE)
+# The model calling a turn: whose it is, or that one is over.
+TURN_CALL = re.compile(
+    r"\bit(?:'s|’s| is)(?: (?:still|now))? (?:your|[\w-]+(?: [\w-]+)?['’]s) turn\b"
+    r"|\byour turn\b|\bis up next\b|\bturn is (?:spent|over|done)\b|\bthe next move\b",
+    re.IGNORECASE,
+)
+QUOTE_MARKS = frozenset('"“”')
 
 
 @dataclass(frozen=True)
@@ -208,6 +223,7 @@ def clean_ai_narration(text: str, rules_hint: dict[str, Any]) -> CleanNarration:
         line = _without_markdown(raw_line)
         lines.append({'raw': raw_line, 'changed': line != raw_line, 'sentences': [match.group(0) for match in SENTENCE.finditer(line)]})
 
+    in_fight = isinstance(state_pipeline.get('combatState'), dict) and bool(state_pipeline['combatState'])
     removed_rolls = False
     previous = ''
     for line in lines:
@@ -219,6 +235,9 @@ def clean_ai_narration(text: str, rules_hint: dict[str, Any]) -> CleanNarration:
             if not engine_waits_on_roll and _requests_roll(sentence) and _engine_owns_roll(sentence, previous, brief):
                 line['changed'] = removed_rolls = True
                 continue
+            if in_fight and TURN_CALL.search(sentence) and not QUOTE_MARKS & set(sentence):
+                line['changed'] = True
+                continue
             kept.append(sentence)
             previous = sentence
         line['sentences'] = kept
@@ -228,6 +247,15 @@ def clean_ai_narration(text: str, rules_hint: dict[str, Any]) -> CleanNarration:
         if last is not None and (PROMPT_TO_ACT.match(last['sentences'][-1]) or PLAYER_QUESTION.match(last['sentences'][-1].strip())):
             last['sentences'] = last['sentences'][:-1]
             last['changed'] = True
+        last = next((line for line in reversed(lines) if line['sentences']), None)
+        offered = {_label_key(label) for label in brief.get('offered') or [] if _text(label)}
+        if last is not None and _label_key(last['sentences'][-1]) in offered:
+            last['sentences'] = last['sentences'][:-1]
+            last['changed'] = True
 
     rendered = '\n'.join(' '.join(line['sentences']) if line['changed'] else line['raw'] for line in lines)
     return CleanNarration(text=re.sub(r'\n{3,}', '\n\n', rendered).strip(), engine_rolls_removed=removed_rolls)
+
+
+def _label_key(text: Any) -> str:
+    return ' '.join(_text(text).rstrip('.!?…').casefold().split())

@@ -791,6 +791,17 @@ def _scene_for_viewer(
     ]
     for key in ('playerPositions', 'playerZones', 'characterPositions', 'characterZones'):
         payload[key] = _position_map_for_viewer(scene.get(key), visible_actor_refs)
+    # Enemies a fight left captured or yielded; questioning one is a talk action.
+    captives = [
+        {
+            **{key: _text(captive.get(key)) for key in ('id', 'name', 'enemyId')},
+            'offeredActions': [{'kind': 'talk', 'label': f"Question {_text(captive.get('name'))}"}],
+        }
+        for captive in scene.get('captives') or []
+        if isinstance(captive, dict) and _text(captive.get('name'))
+    ]
+    if captives:
+        payload['captives'] = captives
     return payload
 
 

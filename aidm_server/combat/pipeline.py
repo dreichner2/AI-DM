@@ -11,7 +11,9 @@ from aidm_server.combat.attacks import resolve_save
 from aidm_server.combat.difficulty import normalize_combat_difficulty_ai
 from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
 from aidm_server.combat.intent_planner import attach_intents_to_combat, plan_enemy_intents
+from aidm_server.combat.maneuvers import held_prone
 from aidm_server.combat.modifiers import (
+    REMOVED_CONDITIONS,
     active_effects,
     apply_damage_multiplier,
     attacks_per_action,
@@ -821,7 +823,7 @@ def turn_boundaries(combat: dict[str, Any], turn_context: dict[str, Any]) -> lis
         participant for participant in combat.get('participants') or []
         if isinstance(participant, dict) and participant.get('id')
         and participant.get('isPresent', participant.get('present', True)) is not False
-        and not condition_keys(participant).intersection({'dead', 'fled', 'escaped', 'retreated', 'withdrawn', 'surrendered', 'yielded', 'absent'})
+        and not condition_keys(participant).intersection(REMOVED_CONDITIONS)
     ]
     participants.sort(key=lambda participant: (initiative.get(str(participant['id']), 9999), str(participant['id'])))
     full_order = [str(participant['id']) for participant in participants]
@@ -863,8 +865,8 @@ def turn_boundaries(combat: dict[str, Any], turn_context: dict[str, Any]) -> lis
 
 
 def participant_at_turn_start(participant: dict[str, Any]) -> dict[str, Any]:
-    """A copy of an actor as it begins its turn: standing up if it can, no longer
-    dodging, its reaction back.
+    """A copy of an actor as it begins its turn: standing up if it can (not when a shove holds it
+    down to the end of this turn), no longer dodging, its reaction back.
 
     Enemy blocks resolve before the advance that records their turn boundaries,
     so their own rolls read this view.
@@ -872,7 +874,7 @@ def participant_at_turn_start(participant: dict[str, Any]) -> dict[str, Any]:
 
     view = deepcopy(participant)
     keys = condition_keys(view)
-    ended = {'dodging'} | ({'prone'} if can_act(view) else set())
+    ended = {'dodging'} | ({'prone'} if can_act(view) and not held_prone(view) else set())
     view['conditions'] = [value for value in view.get('conditions') or [] if str(value).strip().lower() not in (keys & ended)]
     view['reactionRemaining'] = 1
     return view
@@ -949,7 +951,7 @@ def _start_turn(combat: dict[str, Any], participant: dict[str, Any], *, turn_id:
         result['effectsEnded'] = [effect['id'] for effect in lapsed]
     keys = condition_keys(participant)
     removed = {'dodging'} & keys
-    if 'prone' in keys and can_act(participant):
+    if 'prone' in keys and can_act(participant) and not held_prone(participant):
         removed.add('prone')
         economy = (combat.get('flags') or {}).get('turnEconomy')
         if isinstance(economy, dict) and str(economy.get('actorId') or '') == actor_id:
@@ -1077,9 +1079,9 @@ def apply_turn_boundaries(
     ticks ``caster_turn_start`` effects, restores the actor's reaction, grants
     ``tempHpPerTurn``, deals ongoing damage, runs the turn-start hooks (spell
     repeat saves and auras), ends effects whose ``endsWhen`` lapsed, ends
-    ``dodging``, stands a prone actor that can act (spending its movement) and
-    rolls recharge for abilities marked ``needsRecharge`` (5-6 on the
-    deterministic d6 recharges).
+    ``dodging``, stands a prone actor that can act and no shove holds down
+    (spending its movement) and rolls recharge for abilities marked
+    ``needsRecharge`` (5-6 on the deterministic d6 recharges).
 
     The enemy turns of an advance are resolved before it is applied, so an
     effect that landed during one of them (``appliedDuringTurnOf``) is not

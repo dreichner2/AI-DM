@@ -83,12 +83,12 @@ def _print_authoring_report(result: dict[str, Any]) -> None:
     _print_issues(result)
 
 
-def _load_result(args) -> dict[str, Any]:
-    return _with_app_context(lambda: lint_campaign_pack_file(args.path, workspace_id=args.workspace_id))
+def _load_result(args, *, strict: bool = False) -> dict[str, Any]:
+    return _with_app_context(lambda: lint_campaign_pack_file(args.path, workspace_id=args.workspace_id, strict=strict))
 
 
 def cmd_lint(args) -> int:
-    result = _load_result(args)
+    result = _load_result(args, strict=args.strict)
     if args.json:
         _dump(result)
     else:
@@ -148,7 +148,11 @@ def build_parser() -> argparse.ArgumentParser:
     lint_parser = subparsers.add_parser('lint', help='Validate and lint a campaign pack JSON file.')
     lint_parser.add_argument('path', type=Path)
     lint_parser.add_argument('--json', action='store_true', help='Print the full lint payload as JSON.')
-    lint_parser.add_argument('--strict', action='store_true', help='Also exit non-zero when there are warnings.')
+    lint_parser.add_argument(
+        '--strict',
+        action='store_true',
+        help='Also exit non-zero when there are warnings; story flags the pack also sets become errors.',
+    )
     lint_parser.set_defaults(func=cmd_lint)
 
     preview_parser = subparsers.add_parser('preview', help='Print the import dry-run preview JSON.')

@@ -655,7 +655,7 @@
               "$ref": "#/$defs/idList"
             },
             "npcIds": {
-              "description": "Merged into the scene's active NPCs on arrival.",
+              "description": "The people here. Arrival meets each one not yet known (they join the known people and the scene's present cast) unless their hidden or hiddenUntil keeps them away.",
               "$ref": "#/$defs/idList"
             },
             "questIds": {
@@ -790,6 +790,24 @@
             },
             "visibleAtStart": {
               "type": "boolean"
+            },
+            "hidden": {
+              "description": "Never met by arriving at a place that lists this person in its npcIds; only an operator or an explicit change reveals them.",
+              "type": "boolean"
+            },
+            "hiddenUntil": {
+              "description": "Met by arriving at a place that lists this person (or while the party is there) only once this flag holds; equals defaults to true.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["flagKey"],
+              "properties": {
+                "flagKey": {
+                  "$ref": "#/$defs/id"
+                },
+                "equals": {
+                  "type": ["string", "number", "boolean"]
+                }
+              }
             }
           }
         }
@@ -904,6 +922,21 @@
           "description": "\"boss\" makes the enemy stand its ground: it never yields or retreats above a quarter of its hit points.",
           "type": "string",
           "maxLength": 80
+        },
+        "pronoun": {
+          "description": "How the narration refers to one of this enemy; \"it\" when absent (\"they\" for a proper name).",
+          "type": "string",
+          "enum": ["he", "she", "they", "it"]
+        },
+        "captiveKnows": {
+          "description": "What one of this enemy tells, a line each time it is questioned, once the party holds it captive (bound or yielded after a fight).",
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          }
         },
         "abilities": {
           "type": "array",

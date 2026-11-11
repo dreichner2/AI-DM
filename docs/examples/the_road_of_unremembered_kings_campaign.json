@@ -1133,6 +1133,7 @@
     },
     {
       "id": "npc_caelorn_erased",
+      "hidden": true,
       "name": "Caelorn the Erased",
       "role": "spirit_captain_of_the_roadwardens",
       "locationId": "loc_cairns_roadwardens",
@@ -1164,6 +1165,7 @@
     },
     {
       "id": "npc_cinder_scribe",
+      "hidden": true,
       "name": "The Cinder Scribe",
       "trueName": "Maedran Voss",
       "role": "main_villain_oath_corruptor",
@@ -1492,6 +1494,11 @@
         }
       },
       "xpReward": 90,
+      "captiveKnows": [
+        "The road. Lately it don't take you where you're going. It takes you where it wants.",
+        "We were paid in ash-marked coin to bring names, ledgers and stone. I never saw who paid.",
+        "There's a man they call the Scribe. He don't want the road dead. He wants it to answer to him."
+      ],
       "aiNarrationHints": [
         "Make the fight about theft, rain, cover, panic, and the ashmark's eerie permission through the ward.",
         "Let them fold into interrogation, bribery, or surrender as soon as the party shows control."
@@ -4230,18 +4237,6 @@
     {
       "key": "serenil_song_heard",
       "when": "Serenil teaches the party the Westward Song and the names it keeps."
-    },
-    {
-      "key": "oath_learned",
-      "when": "The party learns the words of the original road oath from Serenil, Caelorn, Brokk or the old stones."
-    },
-    {
-      "key": "ward_choices_known",
-      "when": "The party learns that the last road-stone can be renewed, broken, hidden or claimed."
-    },
-    {
-      "key": "roadwardens_appeased",
-      "when": "The party honors the Roadwardens with the oath, a restored name or plain respect, and the dead let them pass."
     }
   ],
   "merchants": [

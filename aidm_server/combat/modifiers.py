@@ -84,7 +84,7 @@ ENDS_WITHOUT_ATTACK_OR_DAMAGE = 'no_attack_or_damage_since_last_turn'
 
 # Participants with these conditions have left the fight: no turns, no targeting.
 REMOVED_CONDITIONS = frozenset(
-    {'dead', 'fled', 'escaped', 'retreated', 'withdrawn', 'surrendered', 'yielded', 'absent'}
+    {'dead', 'fled', 'escaped', 'retreated', 'withdrawn', 'surrendered', 'yielded', 'captured', 'absent'}
 )
 INCAPACITATING_CONDITIONS = frozenset(
     {'incapacitated', 'paralyzed', 'petrified', 'stunned', 'unconscious'}

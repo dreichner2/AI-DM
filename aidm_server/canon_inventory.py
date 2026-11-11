@@ -239,15 +239,29 @@ PROVIDER_INVENTORY_LOSS_FACT_PATTERN = re.compile(
 )
 
 
+LEADING_ITEM_DETERMINERS = r'(?:the|a|an|some|your|their|his|her)'
+
+
 def clean_inventory_item_name(item_name: str | None) -> str | None:
+    """The item's name without a leading article or possessive: ``The Lantern`` is ``Lantern``,
+    ``Broken Seal of the North`` keeps its ``the``."""
+
     candidate = str(item_name or '').strip(" \t\r\n'\"`")
     if not candidate:
         return None
-    candidate = re.sub(r'\b(?:the|a|an|some|your|their|his|her)\b\s+', '', candidate, flags=re.IGNORECASE).strip()
+    candidate = re.sub(rf'^(?:{LEADING_ITEM_DETERMINERS}\s+)+', '', candidate, flags=re.IGNORECASE).strip()
     candidate = re.sub(r'\s+', ' ', candidate).strip(' -')
     if not candidate:
         return None
     return candidate[:80]
+
+
+def legacy_item_name_key(item_name: str | None) -> str:
+    """The name as items saved before leading-only cleaning were stored, with these words dropped
+    anywhere (``Seal of the North`` and ``Seal of North`` share one key)."""
+
+    stripped = re.sub(rf'\b{LEADING_ITEM_DETERMINERS}\b\s+', '', str(item_name or ''), flags=re.IGNORECASE)
+    return normalized_name(stripped)
 
 
 def looks_like_inventory_item(item_name: str | None) -> bool:
@@ -815,9 +829,25 @@ def _inventory_contains_item_name(held_key: str, change_key: str) -> bool:
     )
 
 
-def _resolve_inventory_loss_item(index: dict[str, dict], item_name: str) -> tuple[str, dict | None]:
+def _held_item(index: dict[str, dict], item_name: str) -> tuple[str, dict | None]:
+    """The held entry named ``item_name``; a name saved before leading-only cleaning matches by its old key."""
+
     key = normalized_name(item_name)
-    item_entry = index.get(key)
+    if key in index:
+        return key, index[key]
+    legacy_key = legacy_item_name_key(item_name)
+    return next(
+        (
+            (held_key, held_item)
+            for held_key, held_item in index.items()
+            if legacy_key and legacy_item_name_key(held_item.get('name')) == legacy_key
+        ),
+        (key, None),
+    )
+
+
+def _resolve_inventory_loss_item(index: dict[str, dict], item_name: str) -> tuple[str, dict | None]:
+    key, item_entry = _held_item(index, item_name)
     if item_entry:
         return key, item_entry
 
@@ -849,8 +879,7 @@ def apply_inventory_changes(turn: DmTurn, changes: list[dict]) -> list[dict]:
         action = change['action']
         item_name = change['item_name']
         quantity = positive_int(change.get('quantity', 1))
-        key = normalized_name(item_name)
-        item_entry = index.get(key)
+        key, item_entry = _held_item(index, item_name)
 
         if action == 'acquire':
             if item_entry:

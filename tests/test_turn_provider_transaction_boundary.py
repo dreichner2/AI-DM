@@ -148,7 +148,8 @@ def test_all_foreground_provider_waits_release_database_connection_and_persist_s
         with app.app_context():
             turn = DmTurn.query.filter_by(session_id=ids['session_id']).one()
             assert turn.status == 'completed'
-            assert turn.dm_output == 'The sentry lowers its blade and answers.'
+            # The attack started a fight: the engine ends the narration with whose turn it is.
+            assert turn.dm_output == 'The sentry lowers its blade and answers.\n\nI Attack, Then Stop is up next.'
             assert 'post_turn_error' not in safe_json_loads(turn.metadata_json, {})
         assert observed == ['turn_conductor', 'pre_helper', 'narration', 'post_helper']
     finally:

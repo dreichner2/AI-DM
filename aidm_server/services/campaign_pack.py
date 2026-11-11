@@ -151,13 +151,7 @@ def import_campaign_pack(
         fallback_prefix='location',
         required_name=False,
     )
-    npcs = _pack_records(
-        _first(pack, 'npcs', 'knownNpcs', 'known_npcs'),
-        field='npcs',
-        pack_id=pack_id,
-        fallback_prefix='npc',
-        required_name=True,
-    )
+    npcs = _npc_records(_first(pack, 'npcs', 'knownNpcs', 'known_npcs'), pack_id=pack_id)
     quests = _pack_records(
         _first(pack, 'quests'),
         field='quests',
@@ -849,6 +843,18 @@ def _pack_records(
         item['source'] = 'campaign_pack'
         item['packId'] = pack_id
         records.append(item)
+    return records
+
+
+def _npc_records(value: Any, *, pack_id: str) -> list[dict[str, Any]]:
+    """The pack's people. ``hidden`` (arrival never meets them) is kept as authored; ``hiddenUntil``
+    (arrival meets them once the flag holds) is stored as ``{"flagKey", "equals"}``, ``equals`` true by default."""
+
+    records = _pack_records(value, field='npcs', pack_id=pack_id, fallback_prefix='npc', required_name=True)
+    for record in records:
+        hidden_until = record.get('hiddenUntil')
+        if isinstance(hidden_until, dict):
+            record['hiddenUntil'] = {'flagKey': hidden_until.get('flagKey'), 'equals': hidden_until.get('equals', True)}
     return records
 
 

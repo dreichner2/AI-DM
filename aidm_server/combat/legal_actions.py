@@ -6,11 +6,15 @@ state, equipment, targeting, and the active actor's remaining turn economy.
 Weapon attacks (and the off-hand attack of two-weapon fighting) come from the
 player's inventory; the universal actions every character has — advance, fall
 back, dash, disengage, dodge, help, hide, stabilize — come from the built-in
-action provider; class features add more providers.  End turn is always last.
+action provider, and the maneuvers — grapple, shove down, bind, demand
+surrender (:mod:`aidm_server.combat.maneuvers`) — from the next; class features
+add more providers.  End turn is always last.  The improvised action typed
+words become (``combat.improvise``) is resolved here but never offered.
 
-A melee attack on a target out of reach is still offered (``requiresMove``)
-while the hero's move is unspent and closing on that target would bring it into
-reach: taking it spends the move and the action, advancing first.
+A melee attack or maneuver on a target out of reach is still offered
+(``requiresMove``; a maneuver's label then reads ``Close in and …``) while the
+hero's move is unspent and closing on that target would bring it into reach:
+taking it spends the move and the action, advancing first.
 """
 
 from __future__ import annotations
@@ -22,6 +26,17 @@ from typing import Any, Callable, Iterable
 from aidm_server.canon_inventory import inventory_payload
 from aidm_server.canon_text import normalized_name
 from aidm_server.character_state import character_roll_spec, server_attack_roll_context
+from aidm_server.combat.maneuvers import (
+    ESCAPE_DC_BASE,
+    MANEUVER_TYPES,
+    YIELD_CONDITIONS,
+    at_most_half,
+    at_most_quarter,
+    grapple_holds,
+    is_boss,
+    pronoun,
+    pronoun_key,
+)
 from aidm_server.combat.modifiers import (
     attack_context,
     can_act,
@@ -67,7 +82,19 @@ ActionResolver = Callable[
 
 LEGAL_ACTIONS_SCHEMA_VERSION = 1
 ACTIVE_COMBAT_STATUSES = {'starting', 'active'}
-CHECK_ACTIONS = {'hide': 'stealth', 'stabilize': 'medicine'}
+# The skills an engine-rolled check may use; the hero rolls whichever gives the higher modifier.
+CHECK_ACTIONS = {
+    'hide': ('stealth',),
+    'stabilize': ('medicine',),
+    'grapple': ('athletics',),
+    'shove': ('athletics',),
+    'subdue': ('athletics', 'sleight_of_hand'),
+    'demand_surrender': ('intimidation',),
+    'improvise': ('athletics', 'acrobatics'),
+}
+# Typed words that name no listed action become this action; it is never offered as a button.
+IMPROVISE_ACTION_ID = 'combat.improvise'
+MOVE_FIRST_TYPES = frozenset({'attack', *MANEUVER_TYPES})
 LIGHT_WEAPON_MARKERS = ('dagger', 'handaxe', 'light hammer', 'scimitar', 'shortsword', 'sickle', 'club')
 _ACTION_PROVIDERS: list[ActionProvider] = []
 _ACTION_RESOLVERS: dict[str, ActionResolver] = {}
@@ -668,6 +695,111 @@ def universal_combat_actions(_snapshot: dict[str, Any], actor: dict[str, Any], c
     return [advance, fall_back, dash, disengage, dodge, help_action, hide, stabilize]
 
 
+# ``(id, type, label template, description)``; ``{enemy}`` is the enemy's name.
+MANEUVERS = (
+    (
+        'combat.grapple',
+        'grapple',
+        'Grapple {enemy}',
+        'Strength (Athletics) against the enemy: on a success it is held and cannot move or flee until it breaks free.',
+    ),
+    (
+        'combat.shove',
+        'shove',
+        'Shove {enemy} down',
+        'Strength (Athletics) against the enemy: on a success it is prone until the end of its next turn.',
+    ),
+    (
+        'combat.subdue',
+        'subdue',
+        'Bind {enemy}',
+        'Bind an enemy that is held, down, yielding or badly hurt: it is captured, out of the fight and alive.',
+    ),
+    (
+        'combat.demand_surrender',
+        'demand_surrender',
+        "Demand {enemy}'s surrender",
+        'Charisma (Intimidation) against a beaten, held or fallen enemy: on a success it yields.',
+    ),
+)
+
+
+def _maneuver_reason(action_type: str, enemy: dict[str, Any], combat: dict[str, Any], snapshot: dict[str, Any]) -> str:
+    """Why this enemy is not a target of the maneuver ('' when it is)."""
+
+    words = pronoun(pronoun_key(snapshot, enemy))
+    subject = words['subject'].capitalize()
+    keys = condition_keys(enemy)
+    held = grapple_holds(enemy, combat)
+    if action_type == 'grapple' and held:
+        return f"{subject} {words['is']} already held."
+    if action_type == 'shove' and 'prone' in keys:
+        return f"{subject} {words['is']} already down."
+    if action_type == 'subdue' and not (keys & YIELD_CONDITIONS or held or 'prone' in keys or at_most_quarter(enemy)):
+        return f"{subject} {words['is']} still on {words['possessive']} feet and fighting."
+    if action_type == 'demand_surrender':
+        if is_boss(enemy) and not at_most_quarter(enemy):
+            return f"{subject} will not yield while {words['subject']} can still fight."
+        if not (at_most_half(enemy) or held or 'prone' in keys):
+            return f"{subject} {words['is']} not beaten enough to yield."
+    return ''
+
+
+def _maneuver_targets(
+    action_type: str,
+    *,
+    snapshot: dict[str, Any],
+    actor: dict[str, Any],
+    combat: dict[str, Any],
+    can_move: bool,
+) -> list[dict[str, Any]]:
+    """Every enemy still in the fight (and, to bind, every one that yielded), with its reason and ``requiresMove``."""
+
+    targets = []
+    for enemy in combat.get('participants') or []:
+        if not isinstance(enemy, dict) or _text(enemy.get('team')).lower() != 'enemy':
+            continue
+        yielded = bool(condition_keys(enemy) & YIELD_CONDITIONS) and 'captured' not in condition_keys(enemy)
+        if not participant_is_targetable(enemy) and not (action_type == 'subdue' and yielded and enemy.get('isAlive') is not False):
+            continue
+        out_of_reach = reach_block_reason(actor, enemy, melee=True)
+        requires_move = bool(out_of_reach) and can_move and not close_block_reason(actor, enemy, combat)
+        reason = (
+            ('' if yielded else targeting_block_reason(actor, enemy, combat))
+            or _maneuver_reason(action_type, enemy, combat, snapshot)
+            or ('' if requires_move else out_of_reach)
+        )
+        option = _target(enemy, reason)
+        if requires_move:
+            option['requiresMove'] = True
+        targets.append(option)
+    return targets
+
+
+def maneuver_actions(snapshot: dict[str, Any], actor: dict[str, Any], combat: dict[str, Any]) -> list[dict[str, Any]]:
+    """Grapple, shove down, bind and demand surrender: each costs the action and needs the enemy in melee
+    reach; with the move unspent, an enemy it can close on is offered as ``Close in and …``."""
+
+    economy = combat_turn_economy(combat, actor_id=actor.get('id')) or default_turn_economy(actor.get('id'), combat.get('round'))
+    can_move = int(economy.get('movementRemaining') or 0) > 0 and not speed_zero_reasons(actor)
+    actions = []
+    for action_id, action_type, label, description in MANEUVERS:
+        targets = _maneuver_targets(action_type, snapshot=snapshot, actor=actor, combat=combat, can_move=can_move)
+        available = [target for target in targets if target['available']]
+        names = list(dict.fromkeys(target['name'] for target in (available or targets)))
+        text = label.format(enemy=names[0] if len(names) == 1 else 'an enemy')
+        moves_first = bool(available) and all(target.get('requiresMove') for target in available)
+        if moves_first:
+            text = f'Close in and {text[:1].lower()}{text[1:]}'
+        action = _base_action(action_id, action_type, text, description, '', available=True, reason='', economy=_economy(action=1, movement='optional'))
+        empty_reason = next((target['reason'] for target in targets if target['reason']), 'No enemy is close enough.')
+        _targeted(action, targets, empty_reason=empty_reason)
+        if moves_first:
+            action['requiresMove'] = True
+        actions.append(action)
+    return actions
+
+
 def legal_combat_actions_for_player(snapshot: Any, player: Player) -> dict[str, Any] | None:
     """Return the server-issued combat HUD bundle for one persisted player."""
 
@@ -840,26 +972,91 @@ def with_combat_legal_actions(snapshot: Any, players: Iterable[Player]) -> Any:
 
 
 def _check_payload(player: Player, action_type: str) -> dict[str, Any]:
-    skill = CHECK_ACTIONS[action_type]
-    spec = character_roll_spec(player, roll_type=skill)
-    return {
-        'skill': skill,
-        'ability': (spec.get('ability') or {}).get('key'),
-        'modifier': int(spec.get('modifier') or 0),
-        'modifierBreakdown': deepcopy(spec.get('modifier_breakdown') or {}),
-    }
+    """The hero's check for this action, with the better of its skills."""
+
+    checks = []
+    for skill in CHECK_ACTIONS[action_type]:
+        spec = character_roll_spec(player, roll_type=skill)
+        checks.append(
+            {
+                'skill': skill,
+                'ability': (spec.get('ability') or {}).get('key'),
+                'modifier': int(spec.get('modifier') or 0),
+                'modifierBreakdown': deepcopy(spec.get('modifier_breakdown') or {}),
+            }
+        )
+    return max(checks, key=lambda check: check['modifier'])
 
 
-def _targeted_message(player: Player, action: dict[str, Any], target_name: str) -> str:
+def grapple_escape_dc(player: Player) -> int:
+    """8 + the hero's Strength modifier + their proficiency bonus when proficient in Athletics."""
+
+    breakdown = character_roll_spec(player, roll_type='athletics').get('modifier_breakdown') or {}
+    multiplier = int(breakdown.get('proficiency_multiplier') or 0)
+    proficiency = int(breakdown.get('proficiency_bonus') or 0) // multiplier if multiplier else 0
+    return ESCAPE_DC_BASE + int(breakdown.get('ability_modifier') or 0) + proficiency
+
+
+TARGETED_MESSAGES = {
+    'advance': '{name} closes in on {target}.',
+    'help': '{name} helps {target}.',
+    'stabilize': '{name} tries to stabilize {target}.',
+    'grapple': '{name} grapples {target}.',
+    'shove': '{name} shoves {target} down.',
+    'subdue': '{name} binds {target}.',
+    'demand_surrender': "{name} demands {target}'s surrender.",
+}
+
+
+def _targeted_message(player: Player, action: dict[str, Any], target_name: str, *, moves_first: bool = False) -> str:
     name = _text(player.character_name) or 'The character'
-    action_type = _text(action.get('type'))
-    if action_type == 'advance':
-        return f'{name} closes in on {target_name}.'
-    if action_type == 'help':
-        return f'{name} helps {target_name}.'
-    if action_type == 'stabilize':
-        return f'{name} tries to stabilize {target_name}.'
-    return _text(action.get('message')) or f'{name} acts toward {target_name}.'
+    template = TARGETED_MESSAGES.get(_text(action.get('type')))
+    if template is None:
+        return _text(action.get('message')) or f'{name} acts toward {target_name}.'
+    message = template.format(name=name, target=target_name)
+    return message.replace(f'{name} ', f'{name} closes in and ', 1) if moves_first else message
+
+
+def _improvised_action(
+    bundle: dict[str, Any],
+    player: Player,
+    snapshot: dict[str, Any],
+    *,
+    target_id: str,
+    attempt: str,
+) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    """Typed words that name no listed action: they cost the action and roll an Athletics or Acrobatics
+    check; a named enemy is the target."""
+
+    end_turn = next((action for action in bundle['actions'] if action['id'] == 'combat.end_turn'), {})
+    if not end_turn.get('available'):
+        return None, 'combat_action_unavailable', _text(end_turn.get('reason')) or 'That combat action is not available now.'
+    if not bundle['economy']['actionAvailable']:
+        return None, 'combat_action_unavailable', "This turn's action is already spent."
+    combat = normalize_combat_state(snapshot.get('combat'), snapshot.get('currentScene'))
+    target = next(
+        (
+            participant
+            for participant in combat.get('participants') or []
+            if isinstance(participant, dict) and target_id and _text(participant.get('id')) == target_id
+        ),
+        None,
+    )
+    if target_id and (target is None or _text(target.get('team')).lower() != 'enemy' or not participant_is_targetable(target)):
+        return None, 'combat_target_invalid', 'Choose a current combat target for that action.'
+    economy = _economy(action=1)
+    canonical = {
+        'action_id': IMPROVISE_ACTION_ID,
+        'action_type': 'improvise',
+        'economy': economy,
+        'authoritative': True,
+        'attempt': attempt,
+        'check': _check_payload(player, 'improvise'),
+        'message': attempt or f'{_text(player.character_name)} tries something.',
+    }
+    if target is not None:
+        canonical.update({'target_id': _text(target.get('id')), 'target_name': _text(target.get('name'))})
+    return canonical, None, None
 
 
 def resolve_combat_legal_action(
@@ -868,13 +1065,19 @@ def resolve_combat_legal_action(
     *,
     action_id: Any,
     target_id: Any = None,
+    attempt: Any = None,
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    """Resolve and canonicalize a client-selected action against current state."""
+    """Resolve and canonicalize a client-selected action against current state.
+
+    ``combat.improvise`` (typed words that name no listed action, ``attempt``) is never in the bundle.
+    """
 
     bundle = legal_combat_actions_for_player(snapshot, player)
     if bundle is None:
         return None, 'combat_not_active', 'No active combat action is available for this character.'
     normalized_action_id = _text(action_id)
+    if normalized_action_id == IMPROVISE_ACTION_ID:
+        return _improvised_action(bundle, player, snapshot, target_id=_text(target_id), attempt=_text(attempt))
     action = next(
         (candidate for candidate in bundle['actions'] if candidate.get('id') == normalized_action_id),
         None,
@@ -936,11 +1139,18 @@ def resolve_combat_legal_action(
             message = f'{player.character_name} attacks {target_name} with {weapon_name}.'
     elif selected_target is not None:
         canonical.update({'target_id': selected_target['id'], 'target_name': target_name})
-        message = _targeted_message(player, action, target_name)
+        moves_first = action['type'] in MOVE_FIRST_TYPES and selected_target.get('requiresMove') is True
+        if moves_first:
+            # Recorded as the advance followed by the maneuver: the move and the action are both spent.
+            canonical['move_first'] = True
+            canonical['economy'] = {**canonical['economy'], 'movement': 'used', 'movementCost': 1}
+        message = _targeted_message(player, action, target_name, moves_first=moves_first)
     else:
         message = _text(action.get('message'))
     if action['type'] in CHECK_ACTIONS:
         canonical['check'] = _check_payload(player, action['type'])
+    if action['type'] == 'grapple':
+        canonical['escape_dc'] = grapple_escape_dc(player)
     canonical['message'] = message
     return canonical, None, None
 
@@ -953,3 +1163,4 @@ def combat_snapshot_from_session(raw_snapshot: Any) -> dict[str, Any]:
 
 
 register_action_provider(universal_combat_actions)
+register_action_provider(maneuver_actions)

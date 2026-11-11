@@ -22,6 +22,15 @@ from aidm_server.combat.attacks import (
 )
 from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
 from aidm_server.combat.intent_planner import ENEMY_TURN_HISTORY_FLAG, QUIET_TURN_WINDOW, attach_intents_to_combat, intent_is_quiet
+from aidm_server.combat.maneuvers import (
+    GRAPPLE_SOURCE,
+    ability_mod,
+    at_most_quarter,
+    escape_dc,
+    grapple_effect,
+    grapple_holds,
+    grappler_id,
+)
 from aidm_server.combat.modifiers import (
     MODIFIER_ENGINE_SOURCE,
     attack_context,
@@ -29,6 +38,7 @@ from aidm_server.combat.modifiers import (
     condition_keys,
     engaged_with,
     range_band,
+    remove_active_effects,
     speed_is_zero,
     temp_hp_per_turn,
     tick_turn_boundary,
@@ -418,6 +428,29 @@ def _retreat(
     return outcome
 
 
+def _held_turn(enemy: dict[str, Any], combat: dict[str, Any], roll: Callable[[int], int]) -> dict[str, Any]:
+    """The turn of an enemy a hero holds, whatever it planned: beaten (a quarter of its hit points or
+    less, or no morale) it yields; otherwise it spends its action trying to break free, d20 + its better
+    Strength or Dexterity modifier against the grapple's DC."""
+
+    grappler = participant_by_id(combat, grappler_id(enemy))
+    held = {'held': True, 'grapplerId': grappler_id(enemy), 'grapplerName': _participant_name(grappler, 'its captor')}
+    # The morale the planner recalculated for this turn, as it was stored.
+    if at_most_quarter(enemy) or int_or_default(enemy.get('morale'), default=50) <= 0:
+        return {**held, 'intentType': 'surrender', 'resolvedWithoutRoll': True}
+    natural = bounded_int(roll(20), default=1, minimum=1, maximum=20)
+    modifier = max(ability_mod(enemy, 'strength'), ability_mod(enemy, 'dexterity'))
+    dc = escape_dc(enemy)
+    success = natural + modifier >= dc
+    if success:
+        remove_active_effects(enemy, lambda effect: effect['sourceId'] == GRAPPLE_SOURCE)
+    return {
+        **held,
+        'intentType': 'break_free',
+        'breakFree': {'roll': natural, 'modifier': modifier, 'total': natural + modifier, 'dc': dc, 'success': success},
+    }
+
+
 def _resolve_enemy_required_actions(
     *,
     state: dict[str, Any],
@@ -429,7 +462,9 @@ def _resolve_enemy_required_actions(
 
     Each enemy begins its turn (reaction back, standing up), closes on a melee
     target or retreats, then rolls; moves, reactions and healing it causes are
-    seen by the enemies after it.
+    seen by the enemies after it. An enemy a hero holds only yields or tries to
+    break free (:func:`_held_turn`); one whose grappler went down or away is
+    let go (``grappleEnded``) and acts as planned.
     """
 
     if not isinstance(combat_context, dict):
@@ -522,6 +557,14 @@ def _resolve_enemy_required_actions(
             **turn_start,
         }
         event_id = f'enemy_turn:{turn_id}:{index}:{enemy_id}'
+        if grapple_effect(enemy) is not None:
+            if grapple_holds(enemy, combat):
+                _begin_enemy_turn(enemy)
+                entry.update(_held_turn(enemy, combat, roll))
+                resolved.append(entry)
+                continue
+            entry['grappleEnded'] = True
+            remove_active_effects(enemy, lambda effect: effect['sourceId'] == GRAPPLE_SOURCE)
 
         if intent_type in {'attack', 'use_ability'}:
             if not isinstance(ability, dict) or not combat_ability_is_available(ability, round_number=combat.get('round')):
@@ -735,6 +778,10 @@ def _trusted_enemy_resolved_damage_changes(
             or not participant_can_take_turn(enemy)
         ):
             continue
+        if action.get('grappleEnded') or (action.get('breakFree') or {}).get('success') is True:
+            append(_grapple_released_change(enemy, turn_id=turn_id, index=index))
+        if intent_type == 'break_free':
+            continue
         for change in _enemy_movement_changes(action, enemy, turn_id=turn_id, index=index):
             append(change)
         for change in reaction_changes(action.get('reactions')):
@@ -900,6 +947,19 @@ def _trusted_enemy_resolved_damage_changes(
         changes.append(change)
         already_ids.add(str(change['id']))
     return changes
+
+
+def _grapple_released_change(enemy: dict[str, Any], *, turn_id: int | None, index: int) -> dict[str, Any]:
+    enemy_id = str(enemy.get('id') or '')
+    return {
+        'id': stable_change_id('trusted_enemy_grapple_released', turn_id, index, enemy_id),
+        'turnId': turn_id,
+        'type': 'combat.effect.consume',
+        'consume': [{'participantId': enemy_id, 'effectId': (grapple_effect(enemy) or {}).get('id')}],
+        'source': MODIFIER_ENGINE_SOURCE,
+        'reason': f'{_participant_name(enemy, enemy_id)} is no longer held.',
+        'visible': True,
+    }
 
 
 def _enemy_turn_history_changes(
@@ -1446,8 +1506,10 @@ def without_trusted_damage_overlaps(
         else {}
     )
     protected_target_ids = {
-        str(resolved_player_action.get('targetId') or '').strip()
-    } if resolved_player_action.get('authoritative') is True else set()
+        str(resolved.get('targetId') or '').strip()
+        for resolved in (resolved_player_action, combat_state.get('playerResolvedCombatAction'))
+        if isinstance(resolved, dict) and resolved.get('authoritative') is True
+    }
     for source in (
         combat_state.get('enemyResolvedActions'),
         combat_state.get('trustedDamageEvents'),

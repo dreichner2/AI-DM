@@ -18,12 +18,15 @@ OPENING_PLAYER_INPUT = '(The adventure begins.)'
 ENGINE_BRIEF_KEY = 'engineBrief'
 ENGINE_BRIEF_RULES = """RULES FOR THIS TURN (they override style)
 1. Narrate each "Did" result faithfully. Add no result that is not listed.
-2. For anything under "Not done", and for anything under "Here" that the player's words touch without a "Did" result: at most one sentence of the hero starting toward it, then stop before any outcome. Never say what is found, opened, unlocked, taken, bought, reached or seen beyond this place, never say it is empty or gone. Close with one plain sentence naming the action still open, in the words of its label.
+2. For anything under "Not done", and for anything under "Here" that the player's words touch without a "Did" result: at most one sentence of the hero starting toward it, then stop before any outcome. Never say what is found, opened, unlocked, taken, bought, reached or seen beyond this place, never say it is empty or gone.
 3. The party stays at the place named above unless "Did" says it arrived somewhere.
 4. Never ask for a roll for anything under "Here"; the engine rolls those itself.
 5. Found is not taken: revealed items stay where they are until "Did" says taken. Never write that coins, XP or items were gained unless "Did" says so, and then in one natural clause, not a list.
 6. Speak to the acting hero as "you". No closing question (the opening may end on one). No markdown.
-7. People in the scene speak from what they know; they neither reveal nor deny hidden things."""
+7. People in the scene speak from what they know; they neither reveal nor deny hidden things.
+8. Resolve what the hero attempted this turn from the "Did" results. Never leave it "still to be done", never hand the decision back, and never end by naming an available action.
+9. Do not say whose turn it is or that a turn is over; the engine adds that.
+10. Enemies do only what "Did" says they did this turn. Otherwise they hold, watch or brace: they never attack, spring, close in, move off, flee, take or drop anything."""
 # With more than one hero the story is shared by every player, so rule 6 names the heroes instead.
 PARTY_ENGINE_BRIEF_RULES = ENGINE_BRIEF_RULES.replace(
     '6. Speak to the acting hero as "you".',
@@ -377,6 +380,13 @@ def render_engine_brief(rules_hint: dict) -> str | None:
     heroes = [str(name) for name in brief.get('heroes') or [] if str(name or '').strip()]
     party = len(heroes) > 1
     header = [f"Acting hero: {brief.get('actingHero') or heroes[0]}. The party: {', '.join(heroes)}."] if party else []
+    captives = [
+        f"{captive.get('name')}{': ' + str(captive['description']) if captive.get('description') else ''}"
+        f"{' Speaks: ' + str(captive['speech']) if captive.get('speech') else ''}"
+        f" Tells, one line each time it is questioned: {' | '.join(captive.get('knows') or []) or 'nothing more'}"
+        for captive in here.get('captives') or []
+        if isinstance(captive, dict)
+    ]
     return '\n'.join(
         [
             'ENGINE THIS TURN',
@@ -388,6 +398,7 @@ def render_engine_brief(rules_hint: dict) -> str | None:
             f"loose items {listed(here.get('items') or [])}; "
             f"ways onward {listed(here.get('waysOnward') or [])}; "
             f"shops {listed(here.get('shops') or [])}",
+            *([f"Captives held here (people present, bound or yielded): {' || '.join(captives)}"] if captives else []),
             f"The party is at {brief.get('place') or 'an unnamed place'}.",
             '',
             PARTY_ENGINE_BRIEF_RULES if party else ENGINE_BRIEF_RULES,

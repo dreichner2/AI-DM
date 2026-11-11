@@ -3,7 +3,7 @@
     "packId": "middle_earth.shadow_under_eryn_luin",
     "title": "Shadow Under Eryn Luin",
     "version": "1.0.1",
-    "description": "An original Lord of the Rings-inspired campaign in Middle-earth. The company is drawn into a quiet borderland crisis where old Dwarf-roads beneath the Blue Mountains have awakened, a forgotten oath is being exploited, and a remnant servant of the Shadow seeks a buried seeing-stone shard before the Free Peoples can seal it away.",
+    "description": "Caravans are vanishing on the old Dwarf-road under the Blue Mountains. A wounded courier has reached Graymere Watch with half a stone token in his fist, and blue light has been seen under the hills.",
     "metadata": {
         "lengthEstimate": {
             "label": "Medium campaign",
@@ -61,6 +61,7 @@
         },
         "currentScene": {
             "locationId": "loc_graymere_watch",
+            "name": "The Alarm at Graymere",
             "summary": "The company arrives at Graymere Watch as rain begins to fall. A wounded courier has reached the hall with a broken Dwarf-token clenched in his hand.",
             "description": "The company arrives at Graymere Watch as rain begins to fall. A wounded courier has reached the hall with a broken Dwarf-token clenched in his hand.",
             "activeNpcIds": [
@@ -81,7 +82,6 @@
             "description": "A timber-and-stone watch hall overlooking a reed-choked lake west of the Blue Mountains. Rangers, Dwarves, and local folk use it as a neutral meeting place.",
             "playerSummary": "A safe border hall where the first clues are gathered.",
             "gmNotes": "Graymere Watch is not truly safe once the company accepts the Dwarf-token. Spies of the Pale Hand watch the road from the surrounding pines.",
-            "sceneType": "social",
             "connectedLocationIds": [
                 "loc_moonwell_crossing",
                 "loc_hollow_of_black_pines"
@@ -188,7 +188,6 @@
             "description": "A broken stone bridge and old well at the meeting of three forgotten roads. Moonlight gathers strangely in the well even under cloud.",
             "playerSummary": "An abandoned crossing on the road toward the mountains.",
             "gmNotes": "The well reflects not the sky, but the nearest opened deep gate. A careful character may see torchlight moving beneath the earth.",
-            "sceneType": "travel",
             "connectedLocationIds": [
                 "loc_graymere_watch",
                 "loc_hollow_of_black_pines",
@@ -289,7 +288,6 @@
             "description": "A windless hollow of dense pines where old arrowheads, cracked shields, and cairn-stones lie under moss.",
             "playerSummary": "A grim forest hollow haunted by signs of an old battle.",
             "gmNotes": "The oath-bound dead are strongest here. They can be fought, appeased, or released by naming the betrayed captain of their company.",
-            "sceneType": "mystery",
             "connectedLocationIds": [
                 "loc_graymere_watch",
                 "loc_moonwell_crossing",
@@ -297,7 +295,8 @@
                 "loc_silvervein_deeps"
             ],
             "npcIds": [
-                "npc_calanor_ranger"
+                "npc_calanor_ranger",
+                "npc_thalara_oathbound"
             ],
             "mapPosition": {
                 "x": 46,
@@ -425,7 +424,6 @@
             "description": "A sealed Dwarf gate of blue-veined stone half-buried in a mountain tarn. Runes around the lintel have been deliberately marred.",
             "playerSummary": "The hidden entrance to an old Dwarf-road beneath the Blue Mountains.",
             "gmNotes": "The gate opens to the true name of the caravan master's Dwarf-token, not to strength or lockpicks. If forced, it awakens sentry-stones below.",
-            "sceneType": "mystery",
             "connectedLocationIds": [
                 "loc_moonwell_crossing",
                 "loc_hollow_of_black_pines",
@@ -525,11 +523,13 @@
             "description": "A cold underground road of Dwarf-masonry, bright with seams of pale ore and dark water channels. Echoes travel farther than they should.",
             "playerSummary": "An abandoned Dwarf-road where the missing caravan may have been taken.",
             "gmNotes": "The Pale Hand Orcs have made a temporary camp here, but they fear the deeper chamber and are willing to bargain if cornered.",
-            "sceneType": "dungeon",
             "connectedLocationIds": [
                 "loc_khazad_tarn_gate",
                 "loc_hollow_of_black_pines",
                 "loc_chamber_of_the_star_shard"
+            ],
+            "npcIds": [
+                "npc_grishnak_palehand"
             ],
             "mapPosition": {
                 "x": 78,
@@ -727,7 +727,6 @@
             "description": "A high, domed vault beneath the mountain, its ceiling set with silvered stone like a night sky. At its center stands a cracked plinth of black glass.",
             "playerSummary": "The hidden vault at the heart of the old road.",
             "gmNotes": "The Star-Shard is not a full palantir, but a broken remnant capable of carrying fear, dreams, and commands. The Wight-Marshal cannot touch it directly and needs living hands.",
-            "sceneType": "dungeon",
             "connectedLocationIds": [
                 "loc_silvervein_deeps"
             ],
@@ -904,6 +903,7 @@
             "name": "Elenwen of Lindon",
             "role": "elf_emissary",
             "locationId": "loc_moonwell_crossing",
+            "visibleAtStart": false,
             "description": "A grave Elf traveler from Lindon, bearing a lantern of clear glass and a cloak the color of mist.",
             "motivation": "Find the source of the unnatural dreams spreading westward.",
             "knows": [
@@ -922,6 +922,7 @@
             "name": "Matho Burrows",
             "role": "hobbit_teamster",
             "locationId": "loc_moonwell_crossing",
+            "visibleAtStart": false,
             "description": "A nervous but observant Hobbit teamster who escaped the caravan ambush by hiding inside a flour wagon.",
             "motivation": "Survive, recover his ponies, and make sure nobody calls him a coward.",
             "knows": [
@@ -940,6 +941,7 @@
             "name": "Calanor the Green-cloaked",
             "role": "ranger_scout",
             "locationId": "loc_hollow_of_black_pines",
+            "visibleAtStart": false,
             "description": "A weathered Ranger who moves quietly, speaks rarely, and keeps old maps wrapped in oilskin.",
             "motivation": "Track the Pale Hand Orcs and keep the company from taking the most obvious road into an ambush.",
             "knows": [
@@ -958,6 +960,7 @@
             "name": "Grishnak of the Pale Hand",
             "role": "orc_captain",
             "locationId": "loc_silvervein_deeps",
+            "hidden": true,
             "description": "A hard-eyed Orc captain with a white handprint burned across his helm.",
             "motivation": "Take the Star-Shard for his unseen master, but avoid being claimed by the dead below.",
             "questIds": [
@@ -971,12 +974,19 @@
             "name": "Thalara the Oathbound",
             "role": "restless_spirit",
             "locationId": "loc_hollow_of_black_pines",
+            "hiddenUntil": {
+                "flagKey": "dead_released",
+                "equals": true
+            },
             "description": "A pale captain-spirit in a broken mail shirt, still gripping a banner-staff without a banner.",
             "motivation": "Be released from a false oath twisted by the Wight-Marshal.",
+            "knows": [
+                "We held the pines so the last of the wagons could reach the tarn. No one came to tell us they had.",
+                "The thing in the vault wore a marshal's mail once. It was never one of mine."
+            ],
             "questIds": [
                 "quest_shard_beneath_blue_mountains"
             ],
-            "hiddenToPlayers": true,
             "gmNotes": "Thalara is not evil. If the company restores her banner-name, she can hold back the lesser dead during the final confrontation."
         }
     ],

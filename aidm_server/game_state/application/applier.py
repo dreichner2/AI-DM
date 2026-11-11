@@ -15,6 +15,7 @@ from aidm_server.character_resources import (
     restore_spell_resources,
 )
 from aidm_server.combat import vitality
+from aidm_server.combat.maneuvers import captives_from_combat
 from aidm_server.combat.modifiers import consume_modifiers
 from aidm_server.combat.pipeline import apply_turn_boundaries
 from aidm_server.combat.positioning import move_participant
@@ -40,6 +41,7 @@ from aidm_server.game_state.campaign_pack_encounters import (
     REST_POLICIES,
     campaign_pack_followup_changes,
     catalog_record,
+    flag_condition_holds,
     materialize_campaign_pack_combat_start,
     materialize_catalog_consequence,
 )
@@ -60,9 +62,11 @@ from aidm_server.game_state.models import (
 )
 from aidm_server.game_state.leveling import sync_actor_level_for_xp, sync_stats_for_level
 from aidm_server.game_state.quest_engine import derive_quest_changes
+from aidm_server.game_state.validation.validator import supported_scene_type
 from aidm_server.interactables import interactable_followup_changes
 from aidm_server.item_effects import ITEM_EFFECTS, uses_remaining
 from aidm_server.models import Player, Session, safe_json_dumps, safe_json_loads
+from aidm_server.services.campaign_pack_graph import hidden_to_players
 from aidm_server.spellbook import (
     authoritative_spell_effect,
     character_sheet_record,
@@ -1522,6 +1526,66 @@ def _merge_location(state: dict[str, Any], payload: dict[str, Any]) -> dict[str,
     return record
 
 
+def _known_npc_ids(state: dict[str, Any]) -> set[str]:
+    return {
+        _text(npc.get('id'))
+        for key in ('knownNpcs', 'partyNpcs')
+        for npc in (state.get(key) if isinstance(state.get(key), list) else [])
+        if isinstance(npc, dict) and _text(npc.get('id'))
+    }
+
+
+def _meeting_withheld(npc: dict[str, Any], flags: dict[str, Any]) -> bool:
+    """Whether arriving where the pack lists this person leaves them unmet: ``hidden``, a
+    ``hiddenUntil`` whose flag does not hold yet, or a record hidden from players."""
+
+    hidden_until = npc.get('hiddenUntil')
+    return (
+        npc.get('hidden') is True
+        or (isinstance(hidden_until, dict) and not flag_condition_holds(flags, hidden_until))
+        or hidden_to_players(npc)
+    )
+
+
+def _kept_from_meeting(state: dict[str, Any], npc_id: Any) -> bool:
+    if _text(npc_id) in _known_npc_ids(state):
+        return False
+    record = catalog_record(state, 'npcs', npc_id)
+    flags = state.get('flags') if isinstance(state.get('flags'), dict) else {}
+    return bool(record) and _meeting_withheld(record, flags)
+
+
+def _meet_people_here(state: dict[str, Any]) -> list[str]:
+    """Meet the people the pack catalog lists at the party's place who are not yet known.
+
+    Each one nothing withholds joins ``knownNpcs`` as a ``visibleAtStart`` person is seeded (an
+    authored status kept, else ``met``) and the present cast. Returns their ids in the place's order.
+    """
+
+    scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
+    location_id = _text(scene.get('locationId'))
+    listed = _string_list(catalog_record(state, 'locations', location_id).get('npcIds')) if location_id else []
+    if not listed:
+        return []
+    known = _known_npc_ids(state)
+    flags = state.get('flags') if isinstance(state.get('flags'), dict) else {}
+    met: list[str] = []
+    for npc_id in listed:
+        record = catalog_record(state, 'npcs', npc_id)
+        person_id = _text(record.get('id'))
+        if not person_id or person_id in known or person_id in met or _meeting_withheld(record, flags):
+            continue
+        person = deepcopy(record)
+        person['status'] = _text(person.get('status')) or 'met'
+        if not _text(person.get('locationId')):
+            person['locationId'] = location_id
+        _ensure_list(state, 'knownNpcs').append(person)
+        met.append(person_id)
+    if met:
+        scene['activeNpcIds'] = _merge_unique(scene.get('activeNpcIds'), met)
+    return met
+
+
 def _apply_scene_move(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
     scene = _ensure_scene(state)
     previous_location_id = _text(scene.get('locationId'))
@@ -1570,8 +1634,10 @@ def _apply_scene_move(state: dict[str, Any], change: dict[str, Any]) -> dict[str
             'combatState': 'none',
         },
     )
-    if scene.get('sceneType') == 'combat':
-        scene['sceneType'] = 'exploration'
+    scene_type = supported_scene_type(scene.get('sceneType'))
+    scene['sceneType'] = 'exploration' if scene_type == 'combat' else scene_type
+    # A person the place lists stays out of the present cast until they are met.
+    scene['activeNpcIds'] = [npc_id for npc_id in _string_list(scene.get('activeNpcIds')) if not _kept_from_meeting(state, npc_id)]
 
     for npc in _ensure_list(state, 'partyNpcs'):
         if not isinstance(npc, dict) or not _text(npc.get('id')):
@@ -2905,6 +2971,21 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             applied_change['combatStatus'] = combat.get('status')
             if stabilized:
                 applied_change['stabilizedParticipantIds'] = stabilized
+            # Enemies captured or yielded stay in the scene as captives until the party moves on.
+            captives = captives_from_combat(
+                combat,
+                has_captive_lines=lambda enemy_id: bool(
+                    enemy_id and catalog_record(next_state, 'enemies', enemy_id).get('captiveKnows')
+                ),
+            )
+            if captives:
+                scene = _ensure_scene(next_state)
+                held_ids = {_text(captive.get('id')) for captive in scene.get('captives') or [] if isinstance(captive, dict)}
+                scene['captives'] = [
+                    *(captive for captive in scene.get('captives') or [] if isinstance(captive, dict)),
+                    *(captive for captive in captives if captive['id'] not in held_ids),
+                ]
+                applied_change['captives'] = captives
         elif change_type == ENCOUNTER_RESOLVE_CHANGE:
             # An object action settled the encounter without a fight.
             encounter_id = _text(change.get('encounterId'))
@@ -3191,6 +3272,11 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             skipped.append({'change': change, 'reason': 'Unsupported change or actor missing during application.'})
             continue
 
+        # Arrival meets the place's people; so does a flag that lets one be met, and any change
+        # at a place an older save reached before people were met on arrival.
+        met_npc_ids = _meet_people_here(next_state)
+        if met_npc_ids:
+            applied_change['metNpcIds'] = met_npc_ids
         applied.append(applied_change)
         if change_id:
             seen_ids.add(change_id)

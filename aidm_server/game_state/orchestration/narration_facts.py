@@ -5,10 +5,11 @@ them, and sent in the narration packet as ``narration``: the objects acted on
 (their label, authored text, description when it has not been told yet, what a
 search turned up, the unlock/open steps taken on the way), whom the hero talked
 to and the next thing that person knows, how the free-text message mapped,
-the enemies' names in prose, the authored setup and adjustments of a fight that
-starts, the enemy abilities whose conditions the hero shakes off as their turn
-ends, who acts next in a fight, and how a fight ends when the engine-resolved
-enemy turns end it (a party defeat among them).
+the enemies' names in prose (with the pronoun each takes), the authored setup
+and adjustments of a fight that starts, the enemy abilities whose conditions the
+hero shakes off as their turn ends, who acts next in a fight, how a fight ends
+when the engine-resolved enemy turns end it (a party defeat among them), and the
+captives the party leaves behind when it travels on.
 
 In party play (more than one hero in the session) the packet's ``party`` names
 the acting hero and the heroes, and every line written here names the hero
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from aidm_server.combat.maneuvers import enemy_record, pronoun_key
 from aidm_server.combat.state import combat_turn_context, normalize_combat_state
 from aidm_server.game_state.campaign_pack_encounters import catalog_record
 from aidm_server.price_list import normalize_price
@@ -42,6 +44,7 @@ TAKE_TIME_LINE = 'You take your time over it; the light has changed by the time 
 PARTY_TAKE_TIME_LINE = '{name} takes their time over it; the light has changed by the time they are done.'
 # The validator's source for the changes of a typed pickup.
 PICKUP_SOURCE = 'pre_dm_world_action'
+CAPTIVES_LEFT = {False: 'You leave {captives} bound for the reeve.', True: 'The party leaves {captives} bound for the reeve.'}
 
 
 def _text(value: Any) -> str:
@@ -270,9 +273,37 @@ def enemy_names(state: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         record = catalog_record(state, 'enemies', participant.get('campaignPackEnemyId')) if participant.get('campaignPackEnemyId') else {}
         names.append(
-            {'name': _text(participant.get('name')), 'proper': participant.get('proper') is True or record.get('proper') is True}
+            {
+                'name': _text(participant.get('name')),
+                'proper': participant.get('proper') is True or record.get('proper') is True,
+                'pronoun': pronoun_key(state, participant),
+            }
         )
     return names
+
+
+def captive_phrase(state: dict[str, Any], captive: dict[str, Any]) -> str:
+    """``the cutthroat`` for an "Ashmarked Cutthroat"; a proper name as it is (``the Cinder Scribe``)."""
+
+    name = _text(captive.get('name'))
+    if enemy_record(state, {'campaignPackEnemyId': captive.get('enemyId')}).get('proper') is True:
+        return f'the {name[4:]}' if name.lower().startswith('the ') else name
+    words = name.split()
+    return f'the {words[-1].lower()}' if words else 'the captive'
+
+
+def captives_left_behind(state_before: dict[str, Any], applied_changes: Iterable[dict[str, Any]], *, actor_id: str) -> str | None:
+    """``You leave the cutthroat bound for the reeve.`` (``The party leaves …`` in party play) when the party
+    travels on from captives it held; None otherwise."""
+
+    if not any(isinstance(change, dict) and change.get('type') == 'scene.move_location' for change in applied_changes):
+        return None
+    scene = state_before.get('currentScene') if isinstance(state_before.get('currentScene'), dict) else {}
+    captives = [captive_phrase(state_before, captive) for captive in scene.get('captives') or [] if isinstance(captive, dict)]
+    if not captives:
+        return None
+    listed = captives[0] if len(captives) == 1 else f"{', '.join(captives[:-1])} and {captives[-1]}"
+    return CAPTIVES_LEFT[party(state_before, actor_id=actor_id) is not None].format(captives=listed)
 
 
 def next_actor_line(state: dict[str, Any], *, actor_id: str, turn_ends: bool) -> str | None:

@@ -222,7 +222,7 @@ consumer.
 | scene object | `allowedActions`, `usableInCombat`, `resolvesEncounter`, `choiceActions` (see Scene Object Fields) | mechanical, player |
 | scene object | `actionLabels`, `proper` | player |
 | scene object | `actionText` | mechanical, prompt (told when the action succeeds; never in the player snapshot) |
-| npc | `id`, `name`, `locationId`, `status`, `disposition`, visibility flags | mechanical |
+| npc | `id`, `name`, `locationId`, `status`, `disposition`, visibility flags, `hidden`, `hiddenUntil` (see Meeting People) | mechanical |
 | npc | `role`, `race`, `questIds` | prompt, player |
 | npc | `playerSummary`, `description`/`playerDescription`, `aliases`, `tags` | player |
 | npc | `personality`, `motivation`, `knows`, `secret`, `useInPlay`, `ifSkipped`, `gmNotes`, `trueName` | stored |
@@ -237,7 +237,8 @@ consumer.
 | encounter | `stakes`, `gmNotes`, `difficulty`, `tags` | stored |
 | enemy | creature fields (`stats`, `abilities`, `behavior`, ...), `xpReward` | mechanical |
 | enemy | `challengeTier: "boss"` (never yields or retreats above a quarter of its HP) | mechanical |
-| enemy | `singularName`, `proper` (how one of them is named in narration) | mechanical |
+| enemy | `singularName`, `proper`, `pronoun` (how one of them is named and referred to in narration) | mechanical |
+| enemy | `captiveKnows` (a line told each time a captive one is questioned) | mechanical, prompt |
 | enemy ability | `durationRounds` (1–10 of the target's turns its `conditionsApplied` last; default 1, the end of its next turn; a save is repeated at the end of each; the linter errors outside 1–10) | mechanical |
 | enemy | `descriptionShort`, `challengeTier`, `creatureType`, `tags` | prompt |
 | checkpoint | `id`, graph fields, `completeWhen`, `failWhen`, `branchWhen`, `prerequisite*`, `optional`, `terminal`, `canCompleteOutOfOrder`, `rejoinTargetCheckpointId`, `directorRules` | mechanical |
@@ -475,8 +476,13 @@ The linter uses the same import dry-run validator as the API, then adds authorin
 | warning | `prose_in_complete_when` | checkpoint `completeWhen.anyOf` holds prose instead of encounter outcome labels |
 | warning | `unread_checkpoint_condition_key` | checkpoint `completeWhen`/`failWhen` has a key progress does not read (for example `summary`) |
 | warning | `starting_campaign_flags_alias` | `startingState.campaignFlags` is used (prefer `flags`) |
+| warning (error under `--strict`) | `story_flag_set_by_pack` | a `storyFlags` key that an object's `setsFlags`, an encounter (outcome, reward or hook), a quest (objective or `onComplete`/`onFail` consequence) or a location's `onEnter` also sets; the message names the first one. Narration may set any declared flag, so talk can set it before that does |
+| warning | `npc_listed_nowhere` | a person with `knows` lines is neither `visibleAtStart` (nor a starting `knownNpcIds`/`activeNpcIds` entry) nor in any location's `npcIds`, so the party can never talk to them |
+| warning | `unsupported_scene_type` | a location's (or its `sceneState`'s) `sceneType` is not a supported scene type; the place is entered as `exploration` |
+| warning | `location_description_addresses_players` | a location `description` or `playerDescription` contains "the players" (any case); it is printed on arrival |
 
-`lint` exits non-zero on errors only; `lint --strict` also fails on warnings.
+`lint` exits non-zero on errors only; `lint --strict` also fails on warnings
+and reports `story_flag_set_by_pack` as an error.
 
 The `report` command prints an author-facing validation summary for starting references, populated authored collections, visible-at-start records, hidden player records, checkpoint reachability, optional/terminal checkpoints, encounter checkpoint linkage, and loose encounters. Add `--json` when release evidence or external authoring tools need the structured report.
 
@@ -710,7 +716,66 @@ save repeats it at the end of each of those turns. From the Play Now pack:
 {"id": "enemy_cinder_scribe", "name": "The Cinder Scribe", "proper": true, "challengeTier": "boss"}
 ```
 
+Narration refers to one of an enemy as "it" unless the record gives a
+`pronoun` (`he`, `she`, `they` or `it`; a `proper` name without one is
+"they"): `You get an arm around the ashmarked cutthroat and bear it down.`
+
+### Captives
+
+An enemy the heroes bind (captured) or that yields stays in the scene as a
+captive when the fight ends, until the party travels on. `captiveKnows` (optional,
+up to 20 lines) is what one tells under questioning, a line per question in
+order; once they run out, or without the field, it `glares and says nothing more
+you can use.` An AI narrator is given the enemy record and these lines as a
+person present. From the Play Now pack:
+
+```json
+{"id": "enemy_ashmarked_cutthroats", "name": "Ashmarked Cutthroats", "singularName": "Ashmarked Cutthroat",
+ "captiveKnows": [
+   "The road. Lately it don't take you where you're going. It takes you where it wants.",
+   "We were paid in ash-marked coin to bring names, ledgers and stone. I never saw who paid.",
+   "There's a man they call the Scribe. He don't want the road dead. He wants it to answer to him."]}
+```
+
+## Meeting People
+
+Arriving at a place (any applied `scene.move_location`) meets every person its
+`npcIds` lists who is not yet known: they join `knownNpcs` as a
+`visibleAtStart` person is seeded at the start (status `met` unless the record
+has one) and the scene's present cast, so the Story view offers `Talk to …` and
+typed talk reaches them. The arrival's applied change records `metNpcIds` in the
+place's order, and the turn gets one beat per person, `Met — Radan Greycloak`.
+A `visibleAtStart` person is unchanged, and a person in no place's `npcIds` is
+never met by arrival.
+
+Two NPC fields hold a listed person back:
+
+- `"hidden": true`: never met by arrival; only an operator or an explicit
+  change reveals them.
+- `"hiddenUntil": {"flagKey": "...", "equals": true}` (`equals` defaults to
+  `true`): met by arrival only once the flag holds. When a flag change makes it
+  hold while the party is at their place, they are met then (that change
+  records `metNpcIds`) and join the present cast.
+
+A person hidden from players (`hiddenToPlayers`) is not met by arrival either.
+Until a held-back person is met they stay out of the present cast, and nothing
+about them (name, `knows`, `secret`) reaches a player. A session that is at a
+place whose listed people are not yet known (the starting place, or a save from
+before arrival met people) meets them with the next change applied there.
+
+```json
+{"locations": [{"id": "loc_old_mill", "npcIds": ["npc_miller", "npc_drowned_girl", "npc_smuggler"]}],
+ "npcs": [{"id": "npc_miller", "name": "Hesk the Miller", "knows": ["The wheel stopped the night the river ran red."]},
+          {"id": "npc_drowned_girl", "name": "The Drowned Girl", "hiddenUntil": {"flagKey": "mill_wheel_turned", "equals": true}},
+          {"id": "npc_smuggler", "name": "Corran Vey", "hidden": true}]}
+```
+
 ## Arrival, Objects, and Discoveries
+
+A place is entered with its `sceneType` when that is one of `social`,
+`exploration`, `travel`, `dungeon`, `rest`, `mystery`, `shopping` or `dialogue`
+(`combat` is entered as `exploration`); without one, or with any other value,
+it is entered as `exploration`, and the linter warns about the other value.
 
 A location's `onEnter` list holds trusted consequences applied once, on the
 party's first arrival (recorded in `flags.locationEnteredIds`; the starting
@@ -1009,7 +1074,10 @@ is accepted only for a declared key and one of its values; every other narrated
 flag change is rejected. The DM context lists the flags with their `when` text
 and current value under `campaign_pack_director.storyFlags`, and the
 post-narration extraction may propose them. Players never see `storyFlags`. A
-`branchWhen` on a story flag does not raise `branch_flag_never_set`.
+`branchWhen` on a story flag does not raise `branch_flag_never_set`. Declare
+only flags that talk alone decides: a declared key that an object, encounter,
+quest or arrival also sets raises `story_flag_set_by_pack`, because narration
+can set it from a line of talk before the object or fight does.
 
 ## Hidden Information
 

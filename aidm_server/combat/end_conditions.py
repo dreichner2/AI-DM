@@ -37,7 +37,9 @@ def has_fled(participant: dict[str, Any]) -> bool:
 
 
 def has_surrendered(participant: dict[str, Any]) -> bool:
-    return bool(_conditions(participant) & {'surrendered', 'yielded'})
+    """Yielded, or captured: out of the fight and alive."""
+
+    return bool(_conditions(participant) & {'surrendered', 'yielded', 'captured'})
 
 
 def negotiated(participant: dict[str, Any]) -> bool:

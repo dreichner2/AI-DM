@@ -16,6 +16,7 @@ from aidm_server.game_state.campaign_pack_encounters import (
 )
 from aidm_server.game_state.models import stable_slug
 from aidm_server.game_state.quest_engine import CONSEQUENCE_CHANGE_TYPES, objective_is_mechanical
+from aidm_server.game_state.validation.validator import SCENE_TYPES
 from aidm_server.interactables import INTERACTABLE_ACTIONS, supported_actions, validate_interactable_catalog
 from aidm_server.segment_triggers import KEYWORD_TRIGGER_TYPES, LOCATION_TRIGGER_TYPE, SUPPORTED_TRIGGER_TYPES
 from aidm_server.services.campaign_pack import (
@@ -245,7 +246,9 @@ def load_campaign_pack_file(path: str | Path) -> dict[str, Any]:
     return payload
 
 
-def lint_campaign_pack_manifest(pack: dict[str, Any], *, workspace_id: str = 'lint') -> dict[str, Any]:
+def lint_campaign_pack_manifest(pack: dict[str, Any], *, workspace_id: str = 'lint', strict: bool = False) -> dict[str, Any]:
+    """Validate and lint a pack; ``strict`` makes the rules that are errors under ``lint --strict`` errors."""
+
     issues: list[CampaignPackLintIssue] = []
     preview: dict[str, Any] | None = None
     try:
@@ -273,7 +276,7 @@ def lint_campaign_pack_manifest(pack: dict[str, Any], *, workspace_id: str = 'li
         )
 
     manifest = pack.get('pack') if isinstance(pack.get('pack'), dict) else pack
-    issues.extend(_static_lint_issues(manifest if isinstance(manifest, dict) else {}))
+    issues.extend(_static_lint_issues(manifest if isinstance(manifest, dict) else {}, strict=strict))
     graph = _checkpoint_graph(manifest if isinstance(manifest, dict) else {})
     summary = _lint_summary(manifest if isinstance(manifest, dict) else {})
     authoring_report = _authoring_report(manifest if isinstance(manifest, dict) else {}, graph=graph)
@@ -287,11 +290,11 @@ def lint_campaign_pack_manifest(pack: dict[str, Any], *, workspace_id: str = 'li
     }
 
 
-def lint_campaign_pack_file(path: str | Path, *, workspace_id: str = 'lint') -> dict[str, Any]:
-    return lint_campaign_pack_manifest(load_campaign_pack_file(path), workspace_id=workspace_id)
+def lint_campaign_pack_file(path: str | Path, *, workspace_id: str = 'lint', strict: bool = False) -> dict[str, Any]:
+    return lint_campaign_pack_manifest(load_campaign_pack_file(path), workspace_id=workspace_id, strict=strict)
 
 
-def _static_lint_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+def _static_lint_issues(pack: dict[str, Any], *, strict: bool) -> list[CampaignPackLintIssue]:
     issues: list[CampaignPackLintIssue] = []
     checkpoints = _records(pack.get('checkpoints'))
     checkpoint_ids = [_record_id(checkpoint) for checkpoint in checkpoints if _record_id(checkpoint)]
@@ -358,11 +361,11 @@ def _static_lint_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
                 message='Checkpoint graph has no reachable starting checkpoint.',
             )
         )
-    issues.extend(_engine_contract_issues(pack))
+    issues.extend(_engine_contract_issues(pack, strict=strict))
     return issues
 
 
-def _engine_contract_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+def _engine_contract_issues(pack: dict[str, Any], *, strict: bool) -> list[CampaignPackLintIssue]:
     """Authoring the engine would reject, ignore, or never act on."""
 
     ids = _pack_id_sets(pack)
@@ -389,6 +392,10 @@ def _engine_contract_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]
     issues.extend(_world_consequence_issues(pack, ids))
     issues.extend(_merchant_issues(pack, ids))
     issues.extend(_story_flag_issues(pack))
+    issues.extend(_story_flag_set_by_pack_issues(pack, strict=strict))
+    issues.extend(_npc_listed_nowhere_issues(pack))
+    issues.extend(_scene_type_issues(pack))
+    issues.extend(_location_text_issues(pack))
     issues.extend(_route_issues(pack, ids))
     starting_state = _dict(_first(pack, 'startingState', 'starting_state'))
     if 'campaignFlags' in starting_state or 'campaign_flags' in starting_state:
@@ -1041,6 +1048,95 @@ def _story_flag_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
     ]
 
 
+def _story_flag_set_by_pack_issues(pack: dict[str, Any], *, strict: bool) -> list[CampaignPackLintIssue]:
+    """A story flag the pack also sets: narration may set any declared flag, so talk can set it first."""
+
+    first_setter: dict[str, str] = {}
+    for key, path in _flag_setters(pack):
+        first_setter.setdefault(key, path)
+    issues = []
+    for index, story_flag in enumerate(_records(_first(pack, 'storyFlags', 'story_flags'))):
+        key = _text(story_flag.get('key'))
+        setter = first_setter.get(stable_slug(key)) if key else None
+        if setter:
+            issues.append(
+                CampaignPackLintIssue(
+                    severity='error' if strict else 'warning',
+                    code='story_flag_set_by_pack',
+                    path=f'storyFlags[{index}].key',
+                    message=(
+                        f'Story flag "{key}" is also set by {setter}; narration may set a declared flag, '
+                        'so talk can set it before that does.'
+                    ),
+                )
+            )
+    return issues
+
+
+def _npc_listed_nowhere_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    """A person with ``knows`` lines whom the party never meets: not visible at start and in no place's ``npcIds``."""
+
+    listed = {
+        npc_id
+        for location in _records(pack.get('locations'))
+        for npc_id in _string_list(_first(location, 'npcIds', 'npc_ids'))
+    }
+    starting_state = _dict(_first(pack, 'startingState', 'starting_state'))
+    known_at_start = {
+        npc_id
+        for source in (starting_state, _dict(_first(starting_state, 'currentScene', 'current_scene')))
+        for field in ('knownNpcIds', 'activeNpcIds')
+        for npc_id in _string_list(_first(source, field, _snake_alias(field)))
+    }
+    return [
+        _warning(
+            'npc_listed_nowhere',
+            f'npcs[{index}]',
+            f'"{_text(npc.get("name")) or _record_id(npc)}" has knows lines but is neither visibleAtStart nor in any '
+            "location's npcIds, so the party can never talk to them.",
+        )
+        for index, npc in enumerate(_records(pack.get('npcs')))
+        if _string_list(npc.get('knows'))
+        # ``hidden: true`` says on purpose that the party never meets them by arriving.
+        and npc.get('hidden') is not True
+        and not _visible_at_start(npc)
+        and _record_id(npc) not in known_at_start | listed
+    ]
+
+
+def _scene_type_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    """A location ``sceneType`` outside the supported set: the place is entered as exploration."""
+
+    issues = []
+    for index, location in enumerate(_records(pack.get('locations'))):
+        for source, path in ((location, f'locations[{index}]'), (_dict(location.get('sceneState')), f'locations[{index}].sceneState')):
+            scene_type = _text(source.get('sceneType'))
+            if 'sceneType' in source and scene_type not in SCENE_TYPES:
+                issues.append(
+                    _warning(
+                        'unsupported_scene_type',
+                        f'{path}.sceneType',
+                        f'"{scene_type}" is not one of: {", ".join(sorted(SCENE_TYPES))}; the place is entered as exploration.',
+                    )
+                )
+    return issues
+
+
+def _location_text_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    """A location text that speaks of "the players": it is read to them on arrival."""
+
+    return [
+        _warning(
+            'location_description_addresses_players',
+            f'locations[{index}].{field}',
+            f'Location "{_record_id(location)}" {field} mentions "the players", and it is read aloud on arrival.',
+        )
+        for index, location in enumerate(_records(pack.get('locations')))
+        for field in ('description', 'playerDescription')
+        if 'the players' in _text(location.get(field)).lower()
+    ]
+
+
 def _route_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[CampaignPackLintIssue]:
     issues: list[CampaignPackLintIssue] = []
     for index, route in enumerate(_records(pack.get('routes'))):
@@ -1048,23 +1144,61 @@ def _route_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[Campai
     return issues
 
 
-def _walk_dicts(value: Any) -> Iterator[dict[str, Any]]:
+def _walk_dicts(value: Any, path: str = '') -> Iterator[tuple[str, dict[str, Any]]]:
+    """Every object inside ``value`` with its JSON path under ``path``."""
+
     if isinstance(value, dict):
-        yield value
-        for item in value.values():
-            yield from _walk_dicts(item)
+        yield path, value
+        for key, item in value.items():
+            yield from _walk_dicts(item, f'{path}.{key}' if path else key)
     elif isinstance(value, list):
-        for item in value:
-            yield from _walk_dicts(item)
+        for index, item in enumerate(value):
+            yield from _walk_dicts(item, f'{path}[{index}]')
 
 
-def _reward_containers(record: dict[str, Any]) -> list[dict[str, Any]]:
-    containers = [_dict(record.get('rewards')), _dict(record.get('reward'))]
+def _reward_containers(record: dict[str, Any], path: str = '') -> list[tuple[str, dict[str, Any]]]:
+    containers = [(f'{path}.rewards', _dict(record.get('rewards'))), (f'{path}.reward', _dict(record.get('reward')))]
     for key in ('outcomeRewards', 'outcome_rewards', 'outcomes'):
-        for outcome in _dict(record.get(key)).values():
-            outcome_spec = _dict(outcome)
-            containers.extend([outcome_spec, _dict(outcome_spec.get('rewards')), _dict(outcome_spec.get('reward'))])
-    return [container for container in containers if container]
+        for outcome, value in _dict(record.get(key)).items():
+            outcome_spec, outcome_path = _dict(value), f'{path}.{key}.{outcome}'
+            containers.extend(
+                [
+                    (outcome_path, outcome_spec),
+                    (f'{outcome_path}.rewards', _dict(outcome_spec.get('rewards'))),
+                    (f'{outcome_path}.reward', _dict(outcome_spec.get('reward'))),
+                ]
+            )
+    return [(container_path, container) for container_path, container in containers if container]
+
+
+def _flag_setters(pack: dict[str, Any]) -> list[tuple[str, str]]:
+    """``(slugged flag key, path)`` for every flag set by an object, an encounter, a quest or an arrival, in that order."""
+
+    setters: list[tuple[str, str]] = []
+    for path, interactable in _pack_interactables(pack):
+        for action, flags in _dict(interactable.get('setsFlags')).items():
+            setters.extend((stable_slug(key), f'{path}.setsFlags.{action}') for key in _dict(flags))
+    records = [
+        *((f'encounters[{index}]', encounter) for index, encounter in enumerate(_records(pack.get('encounters')))),
+        *((f'quests[{index}]', quest) for index, quest in enumerate(_records(pack.get('quests')))),
+        *(
+            (f'locations[{index}]', {'onEnter': location.get('onEnter')})
+            for index, location in enumerate(_records(pack.get('locations')))
+        ),
+    ]
+    for path, record in records:
+        for node_path, node in _walk_dicts(record, path):
+            if _text(node.get('type')) in {'flag.set', 'flag'} and _text(node.get('flagKey') or node.get('key')):
+                setters.append((stable_slug(node.get('flagKey') or node.get('key')), node_path))
+        for container_path, container in _reward_containers(record, path):
+            flags = container.get('flags')
+            if isinstance(flags, dict) and not _text(flags.get('flagKey') or flags.get('key')):
+                setters.extend((stable_slug(key), f'{container_path}.flags') for key in flags)
+                continue
+            for flag in _records(flags if isinstance(flags, list) else [flags]):
+                if _text(flag.get('flagKey') or flag.get('key')):
+                    setters.append((stable_slug(flag.get('flagKey') or flag.get('key')), f'{container_path}.flags'))
+    return setters
 
 
 def _flag_keys_set_by_pack(pack: dict[str, Any]) -> set[str]:
@@ -1076,37 +1210,19 @@ def _flag_keys_set_by_pack(pack: dict[str, Any]) -> set[str]:
         for key in _dict(starting_state.get(source))
     }
     keys.update(_text(story_flag.get('key')) for story_flag in _records(_first(pack, 'storyFlags', 'story_flags')))
-    for _path, interactable in _pack_interactables(pack):
-        for flags in _dict(interactable.get('setsFlags')).values():
-            keys.update(stable_slug(key) for key in _dict(flags))
-    for record in [
-        *_records(pack.get('quests')),
-        *_records(pack.get('encounters')),
-        *(_dict({'onEnter': location.get('onEnter')}) for location in _records(pack.get('locations'))),
-    ]:
-        for node in _walk_dicts(record):
-            if _text(node.get('type')) in {'flag.set', 'flag'} and _text(node.get('flagKey') or node.get('key')):
-                keys.add(stable_slug(node.get('flagKey') or node.get('key')))
-        for container in _reward_containers(record):
-            flags = container.get('flags')
-            if isinstance(flags, dict) and not _text(flags.get('flagKey') or flags.get('key')):
-                keys.update(stable_slug(key) for key in flags)
-                continue
-            for flag in _records(flags if isinstance(flags, list) else [flags]):
-                if _text(flag.get('flagKey') or flag.get('key')):
-                    keys.add(stable_slug(flag.get('flagKey') or flag.get('key')))
+    keys.update(key for key, _path in _flag_setters(pack))
     return keys
 
 
 def _encounter_reward_item_ids(pack: dict[str, Any]) -> set[str]:
     item_ids: set[str] = set()
     for encounter in _records(pack.get('encounters')):
-        for container in _reward_containers(encounter):
+        for _path, container in _reward_containers(encounter):
             items = container.get('items')
             for item in _records(items if isinstance(items, list) else [items]):
                 if _text(item.get('id')):
                     item_ids.add(_text(item.get('id')))
-        for node in _walk_dicts([encounter.get('rewards'), encounter.get('reward')]):
+        for _path, node in _walk_dicts([encounter.get('rewards'), encounter.get('reward')]):
             if _text(node.get('type')) == 'item' and _text(_dict(node.get('item')).get('id')):
                 item_ids.add(_text(_dict(node.get('item')).get('id')))
     return item_ids
@@ -1261,6 +1377,13 @@ def _completion_outcomes(completion: dict[str, Any]) -> list[str]:
     return outcomes
 
 
+# Advisory sizes. Records carry the play content the engine reads directly (objects, topics,
+# barks, zones, pressure events), so a rich place or person is expected to be a few thousand
+# characters; the warnings are for records that have outgrown even that.
+PACK_RECORD_CHAR_BUDGET = 12_000
+PACK_COLLECTION_CHAR_BUDGET = 240_000
+
+
 def _pack_budget_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
     issues: list[CampaignPackLintIssue] = []
     for collection_name in (
@@ -1281,7 +1404,7 @@ def _pack_budget_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
         for index, record in enumerate(_records(pack.get(collection_name))):
             encoded = json.dumps(record, sort_keys=True, ensure_ascii=True)
             total_chars += len(encoded)
-            if len(encoded) > 6_000:
+            if len(encoded) > PACK_RECORD_CHAR_BUDGET:
                 issues.append(
                     CampaignPackLintIssue(
                         severity='warning',
@@ -1290,7 +1413,7 @@ def _pack_budget_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
                         message='Large authored records should be summarized or split before import.',
                     )
                 )
-        if total_chars > 120_000:
+        if total_chars > PACK_COLLECTION_CHAR_BUDGET:
             issues.append(
                 CampaignPackLintIssue(
                     severity='warning',

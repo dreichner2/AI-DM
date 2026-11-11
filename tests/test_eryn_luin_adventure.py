@@ -29,6 +29,7 @@ from aidm_server.services.campaign_pack_visibility import filter_session_snapsho
 from aidm_server.services.pregen_characters import PREGENERATED_CHARACTER_PRESETS
 from scripts import solo_balance
 from tests import test_flagship_adventure as flagship
+from tests.test_meeting_people import _met_by, _talk_offers
 from tests.test_play_now_release_smoke import _assert_reads_cleanly, _recording
 
 
@@ -225,6 +226,10 @@ def _authored_marshal_hp() -> int:
     return instantiate_creature(marshal, instance_id='marshal', team='enemy')['hp']['max']
 
 
+def _known_people(snapshot: dict) -> set[str]:
+    return {npc['id'] for npc in snapshot.get('knownNpcs') or []}
+
+
 def _arrive(table: Table, location_id: str, name: str, encounter_id: str) -> flagship.Change:
     """Travel on, checking the hero holds the XP the balance table assumes for the fight met there."""
 
@@ -287,6 +292,7 @@ def test_the_careful_route_seals_the_star_shard(table):
     assert start['currentScene']['restPolicy'] == 'safe'
     view = flagship._story_view(start)
     assert view['clock']['label'] == 'Day 1 · Evening'
+    assert view['currentScene']['name'] == 'The Alarm at Graymere'
     world_map = view['worldMap']
     assert (world_map['title'], world_map['terrain'], world_map['seed']) == ('Graymere Vale and the Blue Mountains', 'mountain', 3117)
     # The hollow both known places border is only a rumour: nameless, and no road yet.
@@ -379,6 +385,9 @@ def test_the_careful_route_seals_the_star_shard(table):
     deeps = _arrive(table, 'loc_silvervein_deeps', 'Silvervein Deeps', 'enc_silvervein_watch_post')
     assert (deeps.encounter, deeps.snapshot['combat']['status'] in {'none', 'ended'}) == (None, True)
     assert _visible_objects(deeps.snapshot) == ['deeps_watch_post', 'deeps_orc_captain', 'deeps_prisoners_cage', 'deeps_dark_channel']
+    # Grishnak is listed at the deeps but never met by arriving there.
+    assert _met_by(table, 'scene.move_location') is None
+    assert 'npc_grishnak_palehand' not in _known_people(deeps.snapshot) | set(deeps.snapshot['currentScene']['activeNpcIds'])
     table.act('deeps_orc_captain', 'inspect', 'The Orc Captain')
     assert SCENE_OBJECTS['deeps_orc_captain']['description'] in table.narration()
     # The captain takes the way out before any blow is struck: the watch-post is settled without a fight.
@@ -462,7 +471,8 @@ def test_the_careful_route_seals_the_star_shard(table):
     nodes = {node['id']: node['state'] for node in flagship._story_view(again.snapshot)['worldMap']['nodes']}
     assert nodes == {**{location['id']: 'visited' for location in PACK['locations']}, 'loc_chamber_of_the_star_shard': 'current'}
     assert set(_objectives(again.snapshot).values()) == {'completed'}
-    assert {'npc_grishnak_palehand', 'npc_thalara_oathbound'}.isdisjoint(person['id'] for person in story['journal']['people'])
+    met = {person['id'] for person in story['journal']['people']}
+    assert ('npc_thalara_oathbound' in met, 'npc_grishnak_palehand' in met) == (True, False)
     _assert_player_view_hides_dm_text(again.snapshot)
     _assert_reads_cleanly(table, events)
 
@@ -593,6 +603,7 @@ def test_the_low_road_takes_the_shard_without_opening_the_gate(table, monkeypatc
     assert flagship._ending(taken.snapshot) == _ending_for('shard_taken')
     _assert_no_ending_before_the_fate(table)
     assert (taken.snapshot['flags']['gate_open'], taken.snapshot['flags']['prisoners_freed']) == (False, False)
+    assert {'npc_thalara_oathbound', 'npc_grishnak_palehand'}.isdisjoint(_known_people(taken.snapshot))
     assert {key: _objectives(taken.snapshot)[key] for key in ('obj_trace_caravan', 'obj_open_khazad_tarn', 'obj_free_prisoners')} == {
         'obj_trace_caravan': 'open',
         'obj_open_khazad_tarn': 'open',
@@ -653,22 +664,51 @@ def test_brennas_stores_sell_at_the_watch(table):
     ]
 
 
-def test_the_people_at_the_watch_tell_what_they_know_in_order(table):
+def test_the_people_of_the_vale_are_met_where_they_live_and_tell_what_they_know(table):
     events = _recording(table.socket)
     knows = {npc['id']: npc['knows'] for npc in PACK['npcs'] if 'knows' in npc}
-    assert set(knows) == {'npc_brenna_graymere', 'npc_torin_stoneharp', 'npc_elenwen_of_lindon', 'npc_matho_burrows', 'npc_calanor_ranger'}
-    assert all(len(facts) == 3 for facts in knows.values())
-    # Each person is met where they live; Grishnak and Thalara stay unmet.
-    present = {npc_id for location in PACK['locations'] for npc_id in location.get('npcIds', [])}
-    assert present == set(knows)
+    assert {location['id']: location['npcIds'] for location in PACK['locations'] if 'npcIds' in location} == {
+        'loc_graymere_watch': ['npc_brenna_graymere', 'npc_torin_stoneharp'],
+        'loc_moonwell_crossing': ['npc_elenwen_of_lindon', 'npc_matho_burrows'],
+        'loc_hollow_of_black_pines': ['npc_calanor_ranger', 'npc_thalara_oathbound'],
+        'loc_silvervein_deeps': ['npc_grishnak_palehand'],
+    }
 
-    for name, npc_id in (('Brenna', 'npc_brenna_graymere'), ('Torin', 'npc_torin_stoneharp')):
+    def told(name: str, npc_id: str) -> None:
         for fact in knows[npc_id]:
             # The fact's last full stop becomes the comma before "<name> tells you".
             assert fact[:-1] in table.talk(f'Arden Vale asks {name} what they know.')
         assert 'has nothing more to add' in table.talk(f'Arden Vale asks {name} what else they know.')
+
+    told('Brenna', 'npc_brenna_graymere')
+    told('Torin', 'npc_torin_stoneharp')
     # Talk changes nothing: "Half a key opens nothing" opens no gate, and Brenna's marks are not read.
     assert _flags(table.snapshot()) == {key: False for key in PACK_FLAGS}
+
+    table.travel('loc_moonwell_crossing', 'Moonwell Crossing')
+    assert _met_by(table, 'scene.move_location') == ['npc_elenwen_of_lindon', 'npc_matho_burrows']
+    assert [beat['text'] for beat in table.pipeline_beats() if beat['kind'] == 'met'] == [
+        'Met — Elenwen of Lindon',
+        'Met — Matho Burrows',
+    ]
+    assert _talk_offers(table.fight().snapshot) == ['Talk to Elenwen of Lindon', 'Talk to Matho Burrows']
+    told('Elenwen', 'npc_elenwen_of_lindon')
+    told('Matho', 'npc_matho_burrows')
+
+    table.act('moonwell_broken_wagon', 'search', 'Broken Caravan Wagon')
+    pines = table.travel('loc_hollow_of_black_pines', 'Hollow of Black Pines')
+    # Calanor is met on arrival; Thalara waits until her dead are released.
+    assert _met_by(table, 'scene.move_location') == ['npc_calanor_ranger']
+    assert 'npc_thalara_oathbound' not in _known_people(pines.snapshot) | set(pines.snapshot['currentScene']['activeNpcIds'])
+    table.act('pines_cairn_stones', 'search', 'Cairn-Stones')
+    table._hud('Arden Vale ends the turn.', 'combat.end_turn')
+    released = table.act('pines_fallen_banner', 'use', 'Fallen War-Banner')
+    assert {'kind': 'met', 'text': 'Met — Thalara the Oathbound', 'refId': 'npc_thalara_oathbound'} in table.pipeline_beats()
+    assert 'npc_thalara_oathbound' in _known_people(released.snapshot)
+    # With the fight in the hollow over, both can be talked to.
+    assert _talk_offers(released.snapshot) == ['Talk to Calanor the Green-cloaked', 'Talk to Thalara the Oathbound']
+    told('Calanor', 'npc_calanor_ranger')
+    told('Thalara', 'npc_thalara_oathbound')
     _assert_player_view_hides_dm_text(table.snapshot())
     _assert_reads_cleanly(table, events)
 

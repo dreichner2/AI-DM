@@ -8,6 +8,26 @@ from aidm_server.models import DmTurn, safe_json_loads
 from aidm_server.rules import RuleHint
 
 
+# The source of the intent typed words in a fight become (``free_text_actions.fight_words``): a fight action
+# (kind ``combat``) or free speech (kind ``message``). Such words are never read for a roll by the
+# phrase list of ``rules.classify_player_action``.
+FIGHT_WORDS_SOURCE = 'fight_words'
+
+
+def typed_in_fight(action_intent: dict | None) -> bool:
+    return isinstance(action_intent, dict) and action_intent.get('source') == FIGHT_WORDS_SOURCE
+
+
+def fight_speech(action_intent: dict | None) -> bool:
+    """Words said in a fight: free, they spend nothing and change nothing."""
+
+    return typed_in_fight(action_intent) and action_intent.get('kind') == 'message'
+
+
+def fight_words_rule_hint() -> RuleHint:
+    return RuleHint(False, None, None, 'Typed words in a fight: the engine decides', confidence=1.0)
+
+
 ROLL_TYPE_LABELS = {
     'attack': 'an Attack roll',
     'initiative': 'initiative',

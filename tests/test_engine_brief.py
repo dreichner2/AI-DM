@@ -56,7 +56,8 @@ def test_the_brief_for_the_leads_three_sentences(table):
     )
     assert road.startswith('Did: Arrived at The Old North Road. A fight begins against Pale Lantern. Pale Lantern uses Lantern-Lure')
     assert road.endswith(
-        'New place on the map — Waystation of Scratched Names. New place on the map — Ridge and Culvert Paths.\n'
+        'New place on the map — Waystation of Scratched Names. New place on the map — Ridge and Culvert Paths. '
+        'Met — Radan Greycloak. Met — Veyra Ashcap.\n'
         'Not done: nothing\n'
         'Here (only the engine decides these): objects Leaning Milestone: nothing offered | Abandoned Handcart: nothing offered; '
         'loose items none; ways onward The Lantern Post Inn, Waystation of Scratched Names, Ridge and Culvert Paths; shops none\n'

@@ -160,7 +160,46 @@ turn takes exactly the path that action's button takes:
   there to search.`; an AI narrator sees them under "Not done" in the engine
   brief;
 - with the scripted narrator, words that map to nothing get a one-time hint
-  beat pointing to the suggestions and to Settings.
+  beat pointing to the suggestions and to Settings;
+- a captive the party holds (see "Captives") is questioned like a person
+  present: `question`, `interrogate`, `ask` or `talk to` it.
+
+### Typed words in a fight
+
+In a fight, typed words that are not a roll are decided by the fight's own
+rules (`free_text_actions.fight_words`) before anything is spent; the phrase
+list that reads a message for a roll is not consulted:
+
+- **Speech is free** on any turn: a message that begins with a quotation mark,
+  ends with `?`, or whose first verb is say, ask, tell, shout, yell, call,
+  whisper or taunt costs nothing, changes no state (the narration is not read
+  for state changes) and does not end the turn; an AI narrator answers in the
+  scene in at most three sentences, and the Safe Mode reply is the turn line.
+- **Not the hero's turn**: anything but speech is refused before narration,
+  `It is Thalion's turn.`, and nothing is spent.
+- **On the hero's turn** a clause (split and read as above, lead-in, negation
+  and quotation rules included) that names a fight action by its verb, any
+  tense, takes exactly that action's button path: **attack** — attack, hit,
+  strike, stab, slash, shoot, fire at, swing at, cut; **grapple** — grab,
+  grapple, tackle, wrestle, pin, hold down, seize, restrain, jump on; **shove
+  down** — shove, push, trip, knock down, knock over, throw down, sweep;
+  **bind** — bind, tie (up), truss, cuff, subdue, capture, take alive, knock
+  out; **demand surrender** — surrender, yield, give up, stand down, drop it,
+  lay down; and the other actions by their labels (close in, advance, fall
+  back, dodge, hide, help, disengage, dash, stabilize, end turn). `Close in and
+  tackle him` is the grapple that closes in first. A blow aimed at a thing
+  (`I cut the rope`) names no attack.
+- The target is the enemy named; with `him`, `her`, `it`, `them` or `the last
+  one`, the only one there is; else the hero's last target; else the only enemy
+  standing. An action that is not legal is refused with its reason and no
+  narration (`Bind` on an unhurt enemy: `It is still on its feet and
+  fighting.`).
+- **Anything else** typed on the hero's turn is an **improvised action**: it
+  costs the action and rolls the better of Strength (Athletics) or Dexterity
+  (Acrobatics) against DC 12; on a success against a named (or the only) enemy
+  that enemy is `off_balance` until the end of its next turn (its next attack
+  has disadvantage). Its result is in the turn's "Did" and a check beat, and the
+  narration tells what the hero tried from that result.
 
 ### A roll with no check pending
 
@@ -185,13 +224,20 @@ items received, clues and places, refused actions, the roll this turn
 resolves); `Not done:` the deferred actions and each engine-owned thing the
 player's words name (same naming rule) that has no result, by its labels;
 `Here:` the visible objects with their available labels, loose items, ways
-onward and shops; and the place the party is at. Seven rules follow it: tell
-each result faithfully and add none; for anything not done, at most one
-sentence of the hero starting toward it and a closing sentence naming the
-action still open; the party stays put unless it arrived; no rolls for anything
-the engine owns; found is not taken, and gains only when "Did" says so; speak
-to the hero as "you", no closing question, no markdown; people speak from what
-they know.
+onward and shops, and any captives held there (their enemy record and
+`captiveKnows`, as people present); and the place the party is at. In a fight
+"Did" carries the hero's resolved action with its check or attack numbers and
+outcome, each enemy's resolved turn, and any yield, capture, breaking free or
+opportunity attack, or else `No enemy has acted since the last narration.` Ten
+rules follow it: tell each result faithfully and add none; for anything not
+done, at most one sentence of the hero starting toward it; the party stays put
+unless it arrived; no rolls for anything the engine owns; found is not taken,
+and gains only when "Did" says so; speak to the hero as "you", no closing
+question, no markdown; people speak from what they know; resolve what the hero
+attempted from "Did", never leaving it "still to be done", handing the decision
+back or ending on an available action; never say whose turn it is (the engine
+adds that); enemies do only what "Did" says, otherwise they hold, watch or
+brace.
 
 Scene objects reach the model's context with their player description, state
 and available labels only; an object's authored description, contents and
@@ -207,7 +253,13 @@ sentence about coins or items the results do not contain (`You gain 15 gp.`
 before they are taken); and a roll request for a scene object, loose item,
 travel, a purchase, an attack or a spell is dropped with no roll gate opened,
 unless the engine itself waits on that roll. Roll requests for improvised
-actions stay. The scripted narrator is not touched by either.
+actions stay. In a fight, a sentence that says whose turn it is or that a turn
+is over (`Corin Ashby, … it is your turn.`, `… is up next.`, `Your turn is
+spent.`, `the next move`) is dropped unless it is spoken, and the reply ends
+with the engine's own turn line, the one the scripted narrator prints (`It is
+still Thalion's turn.` / `Corin Ashby is up next.`). In and out of a fight, a
+final sentence that is only the label of an action offered this turn (`Search
+the strongbox.`) is dropped. The scripted narrator is not touched by either.
 
 ### Offered actions and refusal sentences
 
@@ -254,9 +306,9 @@ this order:
 
 | Kind | Text |
 | --- | --- |
-| `check` | `Investigation check: 14 — success`, naming the skill or ability once, `Check: 14 — success` when neither is known (` (DC 10)` only when the DC is shown; ` (taking your time)` after a retry); a roll made with no check pending is not a check: `d20: 10`, or `Strength: 13 (d20 10 + 3)` with the ability picked |
+| `check` | `Investigation check: 14 — success`, naming the skill or ability once, `Check: 14 — success` when neither is known (` (DC 10)` only when the DC is shown; ` (taking your time)` after a retry); a fight maneuver or improvised action always shows its DC: `Athletics check: 17 — success (DC 12)`; a roll made with no check pending is not a check: `d20: 10`, or `Strength: 13 (d20 10 + 3)` with the ability picked |
 | `hp` | `Took 7 damage` / `Healed 5` |
-| `condition` | `You are prone` / `No longer prone` (only when a condition starts or ends); `You are out of the fight`; `You come round` for a hero who wakes |
+| `condition` | `You are prone` / `No longer prone` (only when a condition starts or ends); `You are out of the fight`; `You come round` for a hero who wakes; for an enemy newly held, captured or yielding: `Grappled — Ashmarked Cutthroat`, `Captured — Ashmarked Cutthroat`, `Ashmarked Cutthroat yields` |
 | `death_save` | `Death save: 12 — success` |
 | `combat_end` | `Victory`, `The fight ends — they yield`, `The fight ends — they flee`, `You got away` |
 | `item_gained` / `item_lost` | `Taken — {item}` / `Received — {item}` (`×N` when more than one); `Used`, `Given`, `Sold — {item}` |
@@ -468,6 +520,24 @@ spell's duration and repeat saves (see the spell table).
   Perception of the conscious enemies) and Stabilize (action; a dying ally in the
   same or an adjacent band; Wisdom (Medicine) DC 10). Class features that grant
   Dash, Disengage or Hide at another cost reuse these actions.
+- Four maneuvers (`combat/maneuvers.py`), each costing the action and needing
+  the enemy in melee reach (offered as `Close in and …` with the move unspent,
+  as an attack is), rolled by the engine like Hide and reported by a check beat:
+  Grapple (`combat.grapple`, `Grapple {enemy}`; Strength (Athletics) against DC
+  10 + the higher of the enemy's Strength or Dexterity modifier; the enemy is
+  `grappled`, `grappledBy` the hero, and cannot advance, fall back, retreat or
+  flee until the grappler goes down or leaves melee or it breaks free), Shove
+  down (`combat.shove`, `Shove {enemy} down`; the same check; `prone` until the
+  end of its next turn, standing up automatically then), Bind (`combat.subdue`,
+  `Bind {enemy}`; only an enemy that is grappled, prone, yielded or at a quarter
+  of its HP or less; the better of Athletics or Dexterity (Sleight of Hand)
+  against DC 10, no roll against a yielded enemy; it is `captured`, out of the
+  fight and alive) and Demand surrender (`combat.demand_surrender`, `Demand
+  {enemy}'s surrender`; an enemy at half its HP or less, grappled or prone, and
+  never a boss above a quarter; Charisma (Intimidation) against DC 12, DC 8 at a
+  quarter or less or grappled; it yields). When every enemy left is captured or
+  has yielded the fight ends `enemies_surrendered`, with the pack's surrender
+  outcome and full rewards.
 - Player weapon attacks use server-owned attack and damage rolls. A HUD weapon
   attack's roll carries `target_ac`, the target's armour class with effects and
   cover; the engine compares the attack against that same number, so the roll
@@ -507,10 +577,12 @@ its own turn; a participant that cannot act or has `cannotReact` takes none.
 Reaction providers answer the `attack_hit`, `leaves_melee` and `damage_taken`
 events, at most one reaction per reactor per event. The built-in provider makes
 opportunity attacks: leaving melee while engaged, unless disengaged this turn,
-draws one melee attack from each engaged enemy that can react (a player
-character's main-hand melee weapon, automatically unless its sheet sets
-`autoReactions: false`). Shield and Uncanny Dodge are automatic reactions too
-(see below).
+draws one melee attack from each engaged participant of the other side that can
+react (a player character's main-hand melee weapon, automatically unless its
+sheet sets `autoReactions: false`). An enemy that retreats or flees out of
+melee provokes the heroes engaged with it the same way, before it leaves; one
+that drops is defeated where it stands. Shield and Uncanny Dodge are automatic
+reactions too (see below).
 
 ### Enemy turns
 
@@ -531,6 +603,11 @@ character's main-hand melee weapon, automatically unless its sheet sets
   `allowParley: true` lifts this.
 - Bosses hold: an enemy with `challengeTier: "boss"` never yields or retreats
   above a quarter of its HP.
+- A held (grappled) enemy never moves, retreats or flees: on its turn it yields
+  at a quarter of its HP or less or with no morale left, and otherwise spends
+  its action trying to break free (d20 + the higher of its Strength or Dexterity
+  modifier against 8 + the grappler's Strength modifier + proficiency bonus when
+  they are proficient in Athletics). A captured or yielded enemy takes no turns.
 - Engine-selected retreat, surrender and negotiation apply authoritative
   conditions and end the fight through the same end-condition engine as defeat;
   narration cannot substitute a different ending. The scripted narrator tells
@@ -579,6 +656,18 @@ model is given the same lines as ones it must convey.
 - Narration never creates damage once the engine resolved the turn, and narrated
   damage lands only on a player character the sentence names; a damage claim
   whose target cannot be resolved is dropped and logged.
+
+### Captives
+
+An enemy that ends a fight captured or yielded stays in the scene as a captive
+(`currentScene.captives`: `id`, `name`, `enemyId`; in the player view with the
+offered talk action `Question {name}`), after the beat `Captured — Ashmarked
+Cutthroat` or `Ashmarked Cutthroat yields`. Each question tells the next line of
+the enemy record's `captiveKnows`, then `The ashmarked cutthroat glares and says
+nothing more you can use.`; an AI narrator has the record and its lines in the
+engine brief as a person present. Travelling on leaves captives behind: they
+are removed, with `You leave the cutthroat bound for the reeve.` (`The party
+leaves …` in party play).
 
 ## Spells
 
