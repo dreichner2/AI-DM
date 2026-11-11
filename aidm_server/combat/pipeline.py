@@ -1049,46 +1049,25 @@ def death_saves_due(combat: Any, *, turn_id: Any) -> list[dict[str, Any]]:
     return results
 
 
-def combat_turn_advance_change(
-    *,
-    state: dict[str, Any],
-    turn: DmTurn,
-    actor_id: str | None = None,
-    opening_enemy_turns: bool = False,
-) -> dict[str, Any] | None:
-    """The roster advance after a resolved turn.
-
-    ``opening_enemy_turns`` marks the turn in which a triggered fight started
-    with enemies first: their opening block was resolved with the narration,
-    so initiative passes to the first player character.
-    """
+def combat_turn_advance_change(*, state: dict[str, Any], turn: DmTurn, actor_id: str | None = None) -> dict[str, Any] | None:
+    """The roster advance after the active player character's turn-ending action."""
 
     combat = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
     if not _combat_is_active(combat):
         return None
+    combat_action = _turn_combat_action(turn)
+    # Only a server-issued action belonging to the eligible active actor may
+    # hand initiative to the enemy block.  Chat, item/interact intents, and
+    # other narration-bearing turns must never implicitly end combat turns.
+    if combat_action is None:
+        return None
+    action_economy = combat_action.get('economy') if isinstance(combat_action.get('economy'), dict) else {}
+    if action_economy.get('endsTurn') is not True:
+        return None
     flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
-    active_actor_id = str(flags.get('activeActorId') or '').strip()
-    if opening_enemy_turns:
-        if (combat_turn_context(combat).get('currentActor') or {}).get('team') != 'enemy':
-            return None
-    else:
-        combat_action = _turn_combat_action(turn)
-        # Only a server-issued action belonging to the eligible active actor may
-        # hand initiative to the enemy block.  Chat, item/interact intents, and
-        # other narration-bearing turns must never implicitly end combat turns.
-        if combat_action is None:
-            return None
-        action_economy = combat_action.get('economy') if isinstance(combat_action.get('economy'), dict) else {}
-        if action_economy.get('endsTurn') is not True:
-            return None
     submitted_actor_id = str(flags.get('submittedActorId') or actor_id or display_actor_id(turn.player_id)).strip()
-    if (
-        not opening_enemy_turns
-        and flags.get('offTurnSubmission')
-        and submitted_actor_id
-        and active_actor_id
-        and submitted_actor_id != active_actor_id
-    ):
+    active_actor_id = str(flags.get('activeActorId') or '').strip()
+    if flags.get('offTurnSubmission') and submitted_actor_id and active_actor_id and submitted_actor_id != active_actor_id:
         names = _actor_name_by_id(combat)
         return {
             'id': stable_change_id(turn.turn_id, 'combat.turn.off_turn', submitted_actor_id, active_actor_id),
@@ -1105,7 +1084,37 @@ def combat_turn_advance_change(
             'reason': 'Off-turn combat submission did not advance the combat roster.',
             'visible': False,
         }
+    return _roster_advance_change(combat, turn_id=turn.turn_id)
 
+
+def engine_controlled_turn_is_up(combat: dict[str, Any]) -> bool:
+    """An active combat waits on a participant the engine plays (an enemy or a
+    non-player ally) while a player character can still take a turn."""
+
+    normalized = normalize_combat_state(combat)
+    if not _combat_is_active(normalized):
+        return False
+    turn_context = combat_turn_context(normalized)
+    current_actor = turn_context.get('currentActor')
+    return (
+        isinstance(current_actor, dict)
+        and current_actor.get('team') != 'player'
+        and any(entry.get('team') == 'player' for entry in turn_context.get('turnOrder') or [])
+    )
+
+
+def engine_turn_advance_change(state: dict[str, Any], *, turn_id: Any) -> dict[str, Any] | None:
+    """The roster advance past the engine-controlled participants whose turns were just resolved."""
+
+    combat = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
+    if not engine_controlled_turn_is_up(combat):
+        return None
+    return _roster_advance_change(combat, turn_id=turn_id)
+
+
+def _roster_advance_change(combat: dict[str, Any], *, turn_id: Any) -> dict[str, Any] | None:
+    flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+    active_actor_id = str(flags.get('activeActorId') or '').strip()
     current_context = combat_turn_context(combat)
     next_index = current_context.get('nextTurnIndex')
     if next_index is None:
@@ -1117,13 +1126,13 @@ def combat_turn_advance_change(
     next_economy = default_turn_economy(handoff_actor.get('id'), next_round)
     return {
         'id': stable_change_id(
-            turn.turn_id,
+            turn_id,
             'combat.turn.advance',
             active_actor_id,
             handoff_actor.get('id'),
             next_round,
         ),
-        'turnId': turn.turn_id,
+        'turnId': turn_id,
         'type': 'combat.update',
         'round': next_round,
         'turnIndex': int(next_index) % max(1, len(order)),

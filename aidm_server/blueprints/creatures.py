@@ -39,6 +39,7 @@ from aidm_server.game_state.campaign_pack_encounters import (
     MAX_CAMPAIGN_PACK_ENEMY_PARTICIPANTS,
 )
 from aidm_server.game_state.models import state_snapshot_for_session, stable_change_id
+from aidm_server.game_state.orchestration.combat_resolution import settle_engine_controlled_turns
 from aidm_server.models import (
     Campaign,
     CombatDebugEvent,
@@ -53,6 +54,7 @@ from aidm_server.services.campaign_pack_progress import update_campaign_pack_pro
 from aidm_server.services.session_lifecycle import session_playability_error
 from aidm_server.services.session_state_mutation import (
     SessionStateBeforePersistContext,
+    SessionStateFollowUp,
     SessionStateMutationPlan,
     expected_state_revision_from_payload,
     mutate_session_state,
@@ -783,6 +785,7 @@ def start_session_combat(session_id: int):
             payload={
                 'resolution': result.metadata.get('encounterResolution'),
                 'intentPlan': result.metadata.get('intentPlan'),
+                'openingTurns': result.metadata.get('openingTurns') or [],
                 'stateRevision': result.state_revision,
             },
         )
@@ -978,6 +981,20 @@ def start_session_combat(session_id: int):
                 metadata={'encounterResolution': encounter_resolution, 'intentPlan': intent_plan},
             )
 
+        def resolve_opening_turns(started_state: dict[str, Any]) -> SessionStateFollowUp:
+            # Enemies first in initiative act now, up to the first player character.
+            settled = settle_engine_controlled_turns(
+                started_state,
+                turn_id=combat['flags']['initiativeSeed'],
+                already_applied_changes=[],
+            )
+            return SessionStateFollowUp(
+                state=settled.state,
+                validation=settled.validation,
+                applied_changes=settled.applied_changes,
+                metadata={'openingTurns': settled.resolved_actions} if settled.resolved_actions else {},
+            )
+
         def persist_accepted_resolution(
             context: SessionStateBeforePersistContext,
         ) -> None:
@@ -998,6 +1015,7 @@ def start_session_combat(session_id: int):
             source='api.combat.start',
             expected_revision=captured_revision,
             sync_combat=True,
+            follow_up=resolve_opening_turns,
             before_persist=persist_accepted_resolution,
             after_persist=record_start_debug,
         )

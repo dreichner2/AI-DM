@@ -6,6 +6,8 @@ import pytest
 
 import aidm_server.game_state.orchestration.turn_pipeline as turn_pipeline_module
 from aidm_server.combat.pipeline import prepare_combat_for_turn
+from aidm_server.combat.state import instantiate_creature, player_combat_participant
+from aidm_server.creatures.core_bestiary import core_creature
 from aidm_server.database import db
 from aidm_server.game_state.application.applier import apply_state_changes
 from aidm_server.game_state.campaign_pack_encounters import (
@@ -13,12 +15,13 @@ from aidm_server.game_state.campaign_pack_encounters import (
     due_encounter,
     materialize_campaign_pack_combat_start,
 )
+from aidm_server.game_state.orchestration.combat_resolution import settle_engine_controlled_turns
 from aidm_server.game_state.validation.validator import (
     validate_declared_actions,
     validate_state_changes,
     validated_changes_for_application,
 )
-from aidm_server.models import Campaign, DmTurn, Player, Session, safe_json_dumps, safe_json_loads
+from aidm_server.models import Campaign, CombatDebugEvent, DmTurn, Player, Session, safe_json_dumps, safe_json_loads
 from aidm_server.services.campaign_pack_linter import lint_campaign_pack_manifest
 from tests.helpers import seed_world_campaign_player_session
 
@@ -455,3 +458,249 @@ def test_a_fight_narration_sets_off_still_ends_the_turn_with_the_hero(client, ap
     assert applied_types[:2] == ['scene.move_location', 'combat.start']
     assert 'combat.ability.mark_used' in applied_types or 'combat.move' in applied_types
     assert (combat['status'], combat['flags']['activeActorId'], combat['round']) == ('active', f'player_{player.player_id}', 1)
+
+
+def _enemies_go_first(monkeypatch, roll=lambda _sides: 1) -> None:
+    """Every non-player wins initiative; every engine roll is ``roll(sides)`` (a 1 misses)."""
+
+    monkeypatch.setattr(
+        'aidm_server.combat.state._deterministic_initiative_roll',
+        lambda _seed, actor_id: 1 if actor_id.startswith('player_') else 20,
+    )
+    monkeypatch.setattr('aidm_server.game_state.orchestration.combat_resolution._random_roll', roll)
+
+
+def _engine_results(changes: list[dict]) -> list[dict]:
+    return [change for change in changes if change.get('source') == 'enemy_resolved_action']
+
+
+def _camp_pack(*, bandits: int = 1) -> dict:
+    """A party at camp whose checkpoint holds a bandit raid that nothing triggers on its own."""
+
+    pack = _travel_pack()
+    pack['startingState']['checkpointId'] = 'cp_camp'
+    pack['checkpoints'] = [{'id': 'cp_camp', 'title': 'Camp', 'locationIds': ['camp'], 'encounterIds': ['enc_camp_raid']}]
+    pack['encounters'] = [
+        {'id': 'enc_camp_raid', 'title': 'Camp Raid', 'checkpointIds': ['cp_camp'], 'scaling': False,
+         'enemyGroups': [{'enemyId': 'bandit', 'count': bandits}]},
+    ]
+    return pack
+
+
+@pytest.fixture()
+def camp(client, app, monkeypatch):
+    """``camp(pack, **stats)`` imports the pack, seats one hero with those stats and returns the ids."""
+
+    monkeypatch.setattr(turn_pipeline_module, 'recent_timeline_for_session', lambda *_args, **_kwargs: [])
+    # Narration's own outcomes are out of scope here: only the engine changes state.
+    monkeypatch.setattr(
+        turn_pipeline_module,
+        'extract_post_dm_outcomes',
+        lambda **_kwargs: {'proposedChanges': [], 'uncertainChanges': [], 'notes': [], 'debug': {}},
+    )
+
+    def hero(pack: dict, **stats) -> dict:
+        response = client.post('/api/campaigns/import-pack', json={'pack': pack})
+        assert response.status_code == 201, response.get_json()
+        ids = {key: response.get_json()[key] for key in ('campaign_id', 'session_id')}
+        with app.app_context():
+            campaign = db.session.get(Campaign, ids['campaign_id'])
+            player = Player(workspace_id=campaign.workspace_id, campaign_id=campaign.campaign_id, name='Alice',
+                            character_name='Seraphina', class_='Fighter', level=1,
+                            stats=safe_json_dumps({'ability_scores': {'strength': 15, 'dexterity': 12, 'constitution': 14},
+                                                   **stats}, {}))
+            db.session.add(player)
+            db.session.commit()
+            ids['player_id'] = player.player_id
+        ids['hero_id'] = f"player_{ids['player_id']}"
+        return ids
+
+    return hero
+
+
+def _play_turn(app, ids: dict, message: str, narration: str, *, narration_asks_for_a_roll: bool = False) -> tuple[dict, dict]:
+    """Both halves of the state pipeline for one turn; returns its pipeline record and the saved state."""
+
+    with app.app_context():
+        session_obj = db.session.get(Session, ids['session_id'])
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        player = db.session.get(Player, ids['player_id'])
+        turn = DmTurn(session_id=session_obj.session_id, campaign_id=campaign.campaign_id, player_id=player.player_id,
+                      player_input=message, dm_output=narration)
+        db.session.add(turn)
+        db.session.flush()
+        turn_pipeline_module.pre_dm_pipeline(
+            turn=turn, session_obj=session_obj, campaign=campaign, player=player, player_message=message,
+        )
+        if narration_asks_for_a_roll:
+            # The turn engine's roll gate after "Roll initiative!".
+            turn.requires_roll, turn.outcome_status = True, 'deferred'
+        turn_pipeline_module.post_dm_pipeline(
+            turn=turn, session_obj=session_obj, campaign=campaign, player=player, dm_response_text=narration,
+        )
+        db.session.commit()
+        return safe_json_loads(turn.metadata_json, {})['state_pipeline'], safe_json_loads(session_obj.state_snapshot, {})
+
+
+def test_a_hostile_action_that_starts_a_fight_lets_the_enemies_open_it(play_now_table, monkeypatch):
+    table = play_now_table
+    _enemies_go_first(monkeypatch)
+    hero_id = f"player_{table.ids['player_id']}"
+
+    fight = table.send('Arden Vale attacks the nearest cutthroat.', {'kind': 'message', 'source': 'composer'})
+    combat = fight.snapshot['combat']
+    enemy_ids = [participant['id'] for participant in combat['participants'] if participant['team'] == 'enemy']
+    with table.app.app_context():
+        turn = DmTurn.query.filter_by(session_id=table.ids['session_id']).order_by(DmTurn.turn_id.desc()).first()
+        metadata = safe_json_loads(turn.metadata_json, {})
+        attack_roll_pending = turn.requires_roll
+    pipeline = metadata['state_pipeline']
+    engine_results = _engine_results(pipeline['postAppliedChanges'])
+
+    assert combat['flags']['combatStartedBy'] == 'player_hostile_action'
+    assert combat['initiative'][-1]['participantId'] == hero_id
+    assert (combat['status'], combat['flags']['activeActorId'], combat['round']) == ('active', hero_id, 1)
+    # The enemies' opening turns were resolved before narration and recorded as trusted results.
+    assert [action['enemyId'] for action in pipeline['dmContextPacket']['combatState']['enemyResolvedActions']] == enemy_ids
+    visible_results = {change['id'] for change in engine_results if change.get('visible')}
+    assert visible_results and visible_results <= {line['changeId'] for line in pipeline['stateLog']['lines']}
+    # The attack that started the fight waits for the hero's own turn: no roll, no damage.
+    assert (attack_roll_pending, metadata['roll_requirement_cleared']['source']) == (False, 'combat_opening')
+    assert all(participant['hp']['current'] == participant['hp']['max']
+               for participant in combat['participants'] if participant['team'] == 'enemy')
+    assert table._hud_action('combat.end_turn') is not None
+
+
+def test_two_enemies_ahead_of_the_hero_both_act_before_the_heros_first_turn(app, camp, monkeypatch):
+    ids = camp(_camp_pack(bandits=2))
+    _enemies_go_first(monkeypatch)
+
+    pipeline, state = _play_turn(app, ids, 'I attack the bandit.', 'Steel rings out across the camp.')
+    combat = state['combat']
+    bandit_ids = [participant['id'] for participant in combat['participants'] if participant['team'] == 'enemy']
+
+    assert len(bandit_ids) == 2
+    assert [entry['participantId'] for entry in combat['initiative']] == [*bandit_ids, ids['hero_id']]
+    assert sorted(action['enemyId'] for action in pipeline['dmContextPacket']['combatState']['enemyResolvedActions']) == sorted(bandit_ids)
+    assert {change['sourceEnemyId'] for change in _engine_results(pipeline['postAppliedChanges'])} == set(bandit_ids)
+    assert (combat['status'], combat['flags']['activeActorId'], combat['round']) == ('active', ids['hero_id'], 1)
+    assert sorted(combat['flags']['lastEnemyTurnBlock']) == sorted(bandit_ids)
+
+
+def test_narrated_opening_turns_land_even_when_the_narration_calls_for_initiative(app, camp, monkeypatch):
+    ids = camp(_camp_pack())
+    # The bandit's narrated strike hits (19, then 4 damage); any later roll is a 1 and would miss.
+    rolls = iter([19, 4])
+    _enemies_go_first(monkeypatch, roll=lambda _sides: next(rolls, 1))
+
+    pipeline, state = _play_turn(
+        app, ids, 'I attack the bandit.', 'The bandit is quicker. Roll initiative!', narration_asks_for_a_roll=True,
+    )
+    narrated = pipeline['dmContextPacket']['combatState']['enemyResolvedActions'][0]
+    health = state['playerCharacters'][0]['health']
+
+    assert (narrated['hit'], narrated['damageTotal']) == (True, 4)
+    assert health['currentHp'] == health['maxHp'] - 4
+    assert (state['combat']['flags']['activeActorId'], state['combat']['round']) == (ids['hero_id'], 1)
+
+
+def test_a_fight_narration_starts_ends_the_turn_with_the_hero(app, camp, monkeypatch):
+    ids = camp(_camp_pack())
+    _enemies_go_first(monkeypatch)
+
+    pipeline, state = _play_turn(app, ids, 'We rest by the fire.', 'A bandit bursts from the trees and attacks you!')
+    combat = state['combat']
+    engine_results = _engine_results(pipeline['postAppliedChanges'])
+
+    assert combat['flags']['combatStartedBy'] == 'post_dm_adjudicator'
+    assert (combat['status'], combat['flags']['activeActorId'], combat['round']) == ('active', ids['hero_id'], 1)
+    visible_results = {change['id'] for change in engine_results if change.get('visible')}
+    assert visible_results and visible_results <= {line['changeId'] for line in pipeline['stateLog']['lines']}
+    assert 'engine_controlled_turns_resolved' in pipeline['postDmExtraction']['notes']
+
+
+def test_opening_turns_that_down_the_only_hero_end_the_fight(app, camp, monkeypatch):
+    ids = camp(_camp_pack(), current_hp=1, hp_current=1, max_hp=12, hp_max=12)
+    # Every engine die rolls its highest: the bandit's strike is a critical hit.
+    _enemies_go_first(monkeypatch, roll=lambda sides: sides)
+
+    _pipeline, state = _play_turn(app, ids, 'I attack the bandit.', 'The bandit strikes first.')
+
+    assert (state['combat']['status'], state['combat']['flags']['endReason']) == ('ended', 'objective_failed')
+    assert state['playerCharacters'][0]['health']['currentHp'] == 0
+
+
+def test_an_operator_started_fight_resolves_the_enemies_opening_turns(client, app, monkeypatch):
+    ids = seed_world_campaign_player_session(app)
+    hero_id = f"player_{ids['player_id']}"
+    _enemies_go_first(monkeypatch)
+    with app.app_context():
+        db.session.get(Player, ids['player_id']).stats = safe_json_dumps({'current_hp': 20, 'max_hp': 20}, {})
+        db.session.commit()
+
+    response = client.post(
+        f"/api/sessions/{ids['session_id']}/combat/start",
+        json={'creature': core_creature('wolf'), 'enemyCount': 1},
+    )
+
+    assert response.status_code == 200, response.get_json()
+    combat = response.get_json()['combat']
+    wolf_id = next(participant['id'] for participant in combat['participants'] if participant['team'] == 'enemy')
+    assert combat['initiative'][0]['participantId'] == wolf_id
+    assert (combat['status'], combat['flags']['activeActorId'], combat['round']) == ('active', hero_id, 1)
+    assert combat['flags']['lastEnemyTurnBlock'] == [wolf_id]
+    with app.app_context():
+        ledger = safe_json_loads(db.session.get(Session, ids['session_id']).state_snapshot, {})['stateChangeLedger']
+        event = CombatDebugEvent.query.filter_by(session_id=ids['session_id'], event_type='api_combat_start').one()
+        opening_turns = safe_json_loads(event.payload_json, {})['openingTurns']
+    assert [action['enemyId'] for action in opening_turns] == [wolf_id]
+    assert _engine_results(ledger)
+
+
+def test_a_turn_never_ends_waiting_on_an_enemy(app, camp, monkeypatch):
+    ids = camp(_camp_pack())
+    _enemies_go_first(monkeypatch)
+    with app.app_context():
+        session_obj = db.session.get(Session, ids['session_id'])
+        state = safe_json_loads(session_obj.state_snapshot, {})
+        hero = {'id': ids['hero_id'], 'name': 'Seraphina', 'health': {'currentHp': 12, 'maxHp': 12}}
+        # A fight left on "Bandit is acting now" before this rule existed.
+        state['combat'] = {
+            'status': 'active', 'round': 1, 'turnIndex': 0,
+            'participants': [instantiate_creature(BANDIT, instance_id='enemy_bandit_1'), player_combat_participant(hero)],
+            'initiative': [{'participantId': 'enemy_bandit_1', 'order': 0}, {'participantId': ids['hero_id'], 'order': 1}],
+            'flags': {'activeActorId': 'enemy_bandit_1'},
+        }
+        session_obj.state_snapshot = safe_json_dumps(state, {})
+        db.session.commit()
+
+    pipeline, state = _play_turn(app, ids, 'I keep my guard up.', 'The bandit circles you.')
+
+    assert [change['sourceEnemyId'] for change in _engine_results(pipeline['postAppliedChanges'])][:1] == ['enemy_bandit_1']
+    assert (state['combat']['flags']['activeActorId'], state['combat']['round']) == (ids['hero_id'], 1)
+
+
+def test_the_engine_plays_every_non_player_turn_ahead_of_the_hero(monkeypatch):
+    _enemies_go_first(monkeypatch)
+    state = _state([])
+    hero = player_combat_participant(state['playerCharacters'][0])
+    wolf = instantiate_creature(core_creature('wolf'), instance_id='enemy_wolf_1')
+    hound = instantiate_creature({**core_creature('wolf'), 'name': 'Loyal Hound'}, instance_id='ally_hound', team='ally')
+    state['combat'] = {
+        'status': 'active', 'round': 1, 'turnIndex': 0, 'participants': [hero, wolf, hound],
+        'initiative': [{'participantId': 'enemy_wolf_1', 'order': 0}, {'participantId': 'ally_hound', 'order': 1},
+                       {'participantId': 'player_1', 'order': 2}],
+        'flags': {'activeActorId': 'enemy_wolf_1'},
+    }
+
+    settled = settle_engine_controlled_turns(state, turn_id=9, already_applied_changes=[])
+
+    combat = settled.state['combat']
+    assert [action['enemyId'] for action in settled.resolved_actions] == ['enemy_wolf_1']
+    assert [change['flags']['lastResolvedActorId'] for change in settled.applied_changes if change['type'] == 'combat.update'] == [
+        'enemy_wolf_1',
+        'ally_hound',
+    ]
+    assert (combat['status'], combat['flags']['activeActorId'], combat['round']) == ('active', 'player_1', 1)
+    assert settled.validation['rejected'] == []
+

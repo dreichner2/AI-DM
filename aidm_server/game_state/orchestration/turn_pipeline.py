@@ -8,10 +8,10 @@ from aidm_server.canon_inventory import append_drop_all_inventory_changes_from_t
 from aidm_server.canon_text import int_or_default
 from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
 from aidm_server.combat.modifiers import MODIFIER_ENGINE_SOURCE
-from aidm_server.combat.intent_planner import attach_intents_to_combat
 from aidm_server.combat.pipeline import (
     combat_turn_advance_change,
-    deterministic_enemy_intent_plan,
+    engine_controlled_turn_is_up,
+    engine_turn_advance_change,
     finalize_combat_prepare,
     prepare_combat_for_turn,
     prepare_combat_from_dm_response,
@@ -41,6 +41,7 @@ from aidm_server.game_state.orchestration.combat_resolution import (
     combat_participant_update_signature,
     derive_trusted_damage_changes,
     resolve_authoritative_player_attack,
+    settle_engine_controlled_turns,
     without_trusted_damage_overlaps,
 )
 from aidm_server.game_state.models import (
@@ -609,49 +610,53 @@ def _turn_combat_action(turn: DmTurn) -> dict[str, Any] | None:
 
 
 def _opens_with_enemy_turns(state: dict[str, Any], applied_changes: list[dict[str, Any]]) -> bool:
-    """A fight an authored trigger started this turn whose first turns belong to enemies.
+    """A fight started this turn, however it started, whose first turns belong to
+    participants the engine plays (enemies, or a non-player ally).
 
-    Those enemies act in this same turn, up to the first player character, so
-    no player is left waiting on "X is acting now".
+    They act in this same turn, up to the first player character, so no player
+    is left waiting on "X is acting now".
     """
 
-    if not any(
-        isinstance(change, dict) and change.get('type') == 'combat.start' and isinstance(change.get('campaignPackTrigger'), dict)
-        for change in applied_changes
-    ):
+    if not any(isinstance(change, dict) and change.get('type') == 'combat.start' for change in applied_changes):
         return False
-    combat = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
-    if str(combat.get('status') or '') != 'active':
-        return False
-    current_actor = combat_turn_context(combat).get('currentActor')
-    return isinstance(current_actor, dict) and current_actor.get('team') == 'enemy'
+    return engine_controlled_turn_is_up(state.get('combat') if isinstance(state.get('combat'), dict) else {})
 
 
-def _opening_enemy_turn_changes(
-    state: dict[str, Any],
+def _settle_engine_turns(
     *,
-    turn_id: int,
-    actor_id: str,
+    turn: DmTurn,
+    state: dict[str, Any],
     already_applied: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """The engine's resolution of an enemy opening block that narration never saw."""
+    applied_post: list[dict[str, Any]],
+    post_validation: dict[str, Any],
+    post_extraction: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """Turn processing never ends with initiative on a participant the engine plays.
 
-    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
-    combat_context = combat_summary_for_dm(attach_intents_to_combat(combat, deterministic_enemy_intent_plan(combat)))
-    resolved_context = build_dm_combat_context(
-        state=state,
-        combat_context=combat_context,
-        pending_rolls=[],
-        resolved_player_roll=False,
-        turn_id=turn_id,
+    A fight narration started, or one left waiting on an enemy or a non-player
+    ally, has those turns resolved now as trusted changes, until a player
+    character can act or the combat ends.
+    """
+
+    settled = settle_engine_controlled_turns(
+        state,
+        turn_id=turn.turn_id,
+        already_applied_changes=[*already_applied, *applied_post],
     )
-    return derive_trusted_damage_changes(
-        state=state,
-        dm_context_packet={'combatState': resolved_context},
-        actor_id=actor_id,
-        turn_id=turn_id,
-        already_applied_changes=already_applied,
-    ).all_changes
+    if not settled.changes:
+        return state, applied_post, post_validation, post_extraction
+    post_extraction = deepcopy(post_extraction)
+    post_extraction['proposedChanges'] = [*(post_extraction.get('proposedChanges') or []), *settled.changes]
+    notes = list(post_extraction.get('notes') or [])
+    if 'engine_controlled_turns_resolved' not in notes:
+        notes.append('engine_controlled_turns_resolved')
+    post_extraction['notes'] = notes
+    return (
+        settled.state,
+        [*applied_post, *settled.applied_changes],
+        _merge_validation_results(post_validation, settled.validation),
+        post_extraction,
+    )
 
 
 def _combat_enemy_deferred_reason(turn: DmTurn) -> str | None:
@@ -1274,6 +1279,7 @@ def _dm_context_packet(
     resolved_player_roll: bool = False,
     player_resolved_action: dict[str, Any] | None = None,
     enemy_deferred_reason: str | None = None,
+    opening_enemy_turns: bool = False,
     enemy_roller: Callable[[int], int] | None = None,
     turn_id: int | None = None,
 ) -> dict[str, Any]:
@@ -1357,6 +1363,15 @@ def _dm_context_packet(
                 'Do not make fleeing, surrendering, or negotiating enemies fight to the death unless blocked or forced.',
                 'Use enemy morale, survival instincts, and objectives when describing choices.',
                 'Do not directly mutate game state; narrate concrete outcomes clearly for extraction and validation.',
+            ]
+        )
+    if opening_enemy_turns:
+        instructions.extend(
+            [
+                'Combat has just begun and those ahead of the player characters in initiative acted first: '
+                'narrate combatState.enemyResolvedActions as the opening of the fight.',
+                'The action that started the fight is not resolved as an attack now and needs no roll; '
+                'each player character attacks on their own turn.',
             ]
         )
     if isinstance(dm_combat, dict) and dm_combat.get('deathSaves'):
@@ -1678,23 +1693,25 @@ def pre_dm_pipeline(
 
     opening_enemy_turns = _opens_with_enemy_turns(state_before_dm, [*applied_immediate, *applied_combat])
     enemy_deferred_reason = None if opening_enemy_turns else _combat_enemy_deferred_reason(turn)
+    if opening_enemy_turns:
+        # The action that started the fight is not resolved out of initiative
+        # order, so no roll of this turn holds back the opening turns.
+        dm_pre_validation = {**pre_validation, 'pendingRolls': []}
+    elif _turn_awaits_player_roll(turn) and not (pre_validation.get('pendingRolls') or []):
+        dm_pre_validation = {**pre_validation, 'pendingRolls': [_turn_level_pending_roll(turn, actor_id=actor_id)]}
+    else:
+        dm_pre_validation = pre_validation
     dm_context = _dm_context_packet(
         state=state_before_dm,
         player_message=player_message,
-        pre_validation=(
-            {
-                **pre_validation,
-                'pendingRolls': [_turn_level_pending_roll(turn, actor_id=actor_id)],
-            }
-            if _turn_awaits_player_roll(turn) and not (pre_validation.get('pendingRolls') or [])
-            else pre_validation
-        ),
+        pre_validation=dm_pre_validation,
         applied_changes=[*applied_immediate, *applied_combat],
         combat_context=combat_context_for_dm,
         resolved_player_roll=not opening_enemy_turns
         and (_turn_awaits_player_roll(turn) or _resolved_player_roll_should_defer_enemy(turn)),
         player_resolved_action=player_resolved_action,
         enemy_deferred_reason=enemy_deferred_reason,
+        opening_enemy_turns=opening_enemy_turns,
         turn_id=turn.turn_id,
     )
     if trusted_player_changes:
@@ -1741,6 +1758,7 @@ def pre_dm_pipeline(
         'combatAppliedChanges': applied_combat,
         'combatDebug': combat_prepare.get('debug') if isinstance(combat_prepare.get('debug'), dict) else {},
         'dmContextPacket': dm_context,
+        'openingEnemyTurns': opening_enemy_turns,
         'stateLog': state_log,
         'clarificationRequests': pre_validation.get('clarificationRequests') or [],
     }
@@ -1873,7 +1891,12 @@ def post_dm_pipeline(
         if isinstance(change, dict)
     ]
     post_combat_prepare: dict[str, Any] = {'debug': {}}
-    skip_post_extraction = bool(turn.requires_roll and turn.roll_value is None and str(turn.outcome_status or '').lower() == 'deferred')
+    opening_enemy_turns = pipeline.get('openingEnemyTurns') is True
+    # Narrated opening turns land even when the narration asked for a roll
+    # ("Roll initiative!"); otherwise a pending roll defers the outcome.
+    skip_post_extraction = not opening_enemy_turns and bool(
+        turn.requires_roll and turn.roll_value is None and str(turn.outcome_status or '').lower() == 'deferred'
+    )
     if skip_post_extraction:
         post_extraction = {
             'proposedChanges': [],
@@ -1897,9 +1920,23 @@ def post_dm_pipeline(
         players = _lock_campaign_players(campaign, player)
         players_by_id = {player_obj.player_id: player_obj for player_obj in players}
         state_before_dm = _with_fresh_player_characters(state_before_dm, players, session_obj)
-        final_state = deepcopy(state_before_dm)
-        applied_post: list[dict[str, Any]] = []
-        session_obj.state_snapshot = safe_json_dumps(final_state, {})
+        final_state, applied_post, post_validation, post_extraction = _settle_engine_turns(
+            turn=turn,
+            state=deepcopy(state_before_dm),
+            already_applied=already_applied,
+            applied_post=[],
+            post_validation=post_validation,
+            post_extraction=post_extraction,
+        )
+        if applied_post:
+            persist_state_to_database(session_obj=session_obj, state=final_state, players_by_id=players_by_id)
+            sync_combat_encounter_record(
+                session_obj=session_obj,
+                campaign=campaign,
+                combat=final_state.get('combat') if isinstance(final_state.get('combat'), dict) else {},
+            )
+        else:
+            session_obj.state_snapshot = safe_json_dumps(final_state, {})
     else:
         helper_session_released = False
 
@@ -2116,23 +2153,6 @@ def post_dm_pipeline(
         post_apply = apply_state_changes(state_before_dm, post_changes)
         final_state = post_apply['nextState']
         applied_post = post_apply['appliedChanges']
-        opening_enemy_turns = pipeline.get('openingEnemyTurns') is True
-        if not opening_enemy_turns and _opens_with_enemy_turns(final_state, applied_post):
-            # Narration set off the trigger: the enemies' opening turns resolve
-            # now, without narration, so the turn still ends with a player.
-            opening_changes = _opening_enemy_turn_changes(
-                final_state,
-                turn_id=turn.turn_id,
-                actor_id=actor_id,
-                already_applied=[*already_applied, *applied_post],
-            )
-            opening_validation = validate_state_changes(state=final_state, changes=opening_changes)
-            opening_apply = apply_state_changes(final_state, validated_changes_for_application(opening_validation))
-            final_state = opening_apply['nextState']
-            applied_post = [*applied_post, *opening_apply['appliedChanges']]
-            post_validation = _merge_validation_results(post_validation, opening_validation)
-            trusted_damage_changes = [*trusted_damage_changes, *opening_changes]
-            opening_enemy_turns = True
         final_combat = final_state.get('combat') if isinstance(final_state.get('combat'), dict) else {}
         engine_end_reason = (
             check_combat_end(final_combat)
@@ -2159,11 +2179,12 @@ def post_dm_pipeline(
                 if 'engine_combat_end' not in notes:
                     notes.append('engine_combat_end')
                 post_extraction['notes'] = notes
-        turn_advance_change = combat_turn_advance_change(
-            state=final_state,
-            turn=turn,
-            actor_id=actor_id,
-            opening_enemy_turns=opening_enemy_turns,
+        # The opening block narration was given ends with initiative handed on;
+        # otherwise only the active player's turn-ending action advances it.
+        turn_advance_change = (
+            engine_turn_advance_change(final_state, turn_id=turn.turn_id)
+            if opening_enemy_turns
+            else combat_turn_advance_change(state=final_state, turn=turn, actor_id=actor_id)
         )
         if turn_advance_change:
             advance_validation = validate_state_changes(state=final_state, changes=[turn_advance_change], expected_actor_id=actor_id)
@@ -2199,6 +2220,14 @@ def post_dm_pipeline(
                     post_extraction['proposedChanges'].append(advance_end_change)
                     if 'engine_combat_end' not in post_extraction['notes']:
                         post_extraction['notes'].append('engine_combat_end')
+        final_state, applied_post, post_validation, post_extraction = _settle_engine_turns(
+            turn=turn,
+            state=final_state,
+            already_applied=already_applied,
+            applied_post=applied_post,
+            post_validation=post_validation,
+            post_extraction=post_extraction,
+        )
         finalized_encounter = finalize_combat_prepare(
             session_obj=session_obj,
             campaign=campaign,

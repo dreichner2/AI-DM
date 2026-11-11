@@ -18,8 +18,18 @@ from aidm_server.combat.attacks import (
     resolve_enemy_ability,
     resolve_enemy_healing,
 )
+from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
+from aidm_server.combat.intent_planner import attach_intents_to_combat
 from aidm_server.combat.modifiers import MODIFIER_ENGINE_SOURCE, can_act, condition_keys, engaged_with, range_band, speed_is_zero, temp_hp_per_turn, tick_turn_boundary
-from aidm_server.combat.pipeline import apply_start_turn_damage, death_saves_due, participant_at_turn_start, turn_boundaries
+from aidm_server.combat.pipeline import (
+    apply_start_turn_damage,
+    death_saves_due,
+    deterministic_enemy_intent_plan,
+    engine_controlled_turn_is_up,
+    engine_turn_advance_change,
+    participant_at_turn_start,
+    turn_boundaries,
+)
 from aidm_server.combat.positioning import band_outward, enemy_approach, move_participant, participant_by_id
 from aidm_server.combat.reactions import collect_reactions, reaction_changes
 from aidm_server.combat.turn_start import run_turn_start_hooks
@@ -27,21 +37,26 @@ from aidm_server.combat.vitality import DEATH_SAVE_SOURCE, death_save_change_id
 from aidm_server.combat.state import (
     combat_ability_is_available,
     combat_ability_resolution_mode,
+    combat_summary_for_dm,
     combat_turn_context,
     participant_can_take_turn,
     participant_is_targetable,
 )
 from aidm_server.damage_dice import deterministic_roller, normalize_damage_dice_expression
+from aidm_server.game_state.application.applier import apply_state_changes
 from aidm_server.game_state.models import normalize_item_name, stable_change_id
+from aidm_server.game_state.validation.validator import validate_state_changes, validated_changes_for_application
 
 
 __all__ = [
     'TEXT_DAMAGE_PATTERN',
+    'EngineTurnSettlement',
     'TrustedDamageChanges',
     'build_dm_combat_context',
     'combat_participant_update_signature',
     'derive_trusted_damage_changes',
     'resolve_authoritative_player_attack',
+    'settle_engine_controlled_turns',
     'without_trusted_damage_overlaps',
 ]
 
@@ -66,6 +81,17 @@ class TrustedDamageChanges:
     @property
     def all_changes(self) -> list[dict[str, Any]]:
         return [*self.enemy, *self.resolved, *self.death_saves]
+
+
+@dataclass(frozen=True)
+class EngineTurnSettlement:
+    """Engine-controlled turns resolved so that initiative rests on a player character."""
+
+    state: dict[str, Any]
+    changes: list[dict[str, Any]]
+    validation: dict[str, Any]
+    applied_changes: list[dict[str, Any]]
+    resolved_actions: list[dict[str, Any]]
 
 
 def _signature_value(value: Any) -> Any:
@@ -1099,6 +1125,81 @@ def derive_trusted_damage_changes(
             turn_id=turn_id,
             already_applied_changes=already_applied_changes,
         ),
+    )
+
+
+def settle_engine_controlled_turns(
+    state: dict[str, Any],
+    *,
+    turn_id: Any,
+    already_applied_changes: list[dict[str, Any]],
+) -> EngineTurnSettlement:
+    """Play the turns of engine-controlled participants until a player character can act.
+
+    Each waiting block (enemies, or a non-player ally) is planned by the
+    deterministic intent planner and resolved like the enemy block after a
+    player's turn; its results are trusted changes.  The combat ends when they
+    decide it; otherwise initiative is handed on.  ``turn_id`` scopes the change
+    ids and the engine's seeded rolls.
+    """
+
+    changes: list[dict[str, Any]] = []
+    applied: list[dict[str, Any]] = []
+    resolved_actions: list[dict[str, Any]] = []
+    validation: dict[str, list[dict[str, Any]]] = {'accepted': [], 'modified': [], 'rejected': []}
+
+    def apply(step_changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        nonlocal state
+        step_validation = validate_state_changes(state=state, changes=step_changes)
+        result = apply_state_changes(state, validated_changes_for_application(step_validation))
+        state = result['nextState']
+        changes.extend(step_changes)
+        applied.extend(result['appliedChanges'])
+        for key, entries in validation.items():
+            entries.extend(entry for entry in step_validation.get(key) or [] if isinstance(entry, dict))
+        return result['appliedChanges']
+
+    def end_if_decided() -> bool:
+        reason = check_combat_end(state.get('combat') if isinstance(state.get('combat'), dict) else {})
+        if reason:
+            apply([combat_end_change(turn_id, reason)])
+        return bool(reason)
+
+    # Every block hands initiative at least one slot on, so a player character
+    # is reached within one block per participant.
+    for _block in range(len((state.get('combat') or {}).get('participants') or [])):
+        combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+        if not engine_controlled_turn_is_up(combat):
+            break
+        block = build_dm_combat_context(
+            state=state,
+            combat_context=combat_summary_for_dm(attach_intents_to_combat(combat, deterministic_enemy_intent_plan(combat))),
+            pending_rolls=[],
+            resolved_player_roll=False,
+            turn_id=turn_id,
+        ) or {}
+        resolved_actions.extend(block.get('enemyResolvedActions') or [])
+        apply(
+            derive_trusted_damage_changes(
+                state=state,
+                dm_context_packet={'combatState': block},
+                actor_id='',
+                turn_id=turn_id,
+                already_applied_changes=[*already_applied_changes, *applied],
+            ).all_changes
+        )
+        if end_if_decided():
+            break
+        advance = engine_turn_advance_change(state, turn_id=turn_id)
+        # Turn-start effects of the advance can decide the fight as well.
+        if advance is None or not apply([advance]) or end_if_decided():
+            break
+    return EngineTurnSettlement(
+        state=state,
+        changes=changes,
+        validation=validation,
+        applied_changes=applied,
+        resolved_actions=resolved_actions,
     )
 
 

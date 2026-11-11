@@ -149,6 +149,15 @@ their own journal hooks; they cannot reactivate or complete mechanical quests.
   `dodging` ends, a prone creature that can act stands (spending its movement),
   and `recharge_5_6` abilities used earlier roll a deterministic d6 (5-6
   recharges; unavailable until then).
+- Initiative never rests on a participant the engine plays. However a fight
+  starts (a pack trigger, a player's hostile action, narration, or the operator
+  API), enemies or non-player allies first in initiative take their opening
+  turns in that same turn: before narration when the start is decided before
+  narration, otherwise right after it (or inside the operator's start
+  request). The action that started the fight is not resolved out of order and
+  its roll is cleared; the character attacks on their own turn. Every turn ends
+  by playing any engine-controlled turns still waiting until a player character
+  can act or the combat ends. All of these are trusted changes in the turn log.
 - Range bands and engagement (`combat/positioning.py`): every participant
   stands in `melee`, `near`, `far` or `distant`. The melee band is the press of
   close combat; a participant in it is engaged with the enemies it closed on or

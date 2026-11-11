@@ -64,6 +64,17 @@ class SessionSnapshotMetadataMutationResult:
 
 
 @dataclass(frozen=True)
+class SessionStateFollowUp:
+    """What the engine did in response to a mutation's applied changes, already
+    validated and applied onto the state it was given."""
+
+    state: dict[str, Any]
+    validation: dict[str, Any]
+    applied_changes: list[dict[str, Any]]
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class SessionStateBeforePersistContext:
     """Validated mutation state available immediately before database writes."""
 
@@ -80,6 +91,7 @@ MutationBuilder = Callable[[Session, dict[str, Any]], SessionStateMutationPlan |
 SnapshotMetadataMutator = Callable[[Session, dict[str, Any]], dict[str, Any] | None]
 AfterPersistHook = Callable[[SessionStateMutationResult], None]
 BeforePersistHook = Callable[[SessionStateBeforePersistContext], None]
+FollowUpHook = Callable[[dict[str, Any]], SessionStateFollowUp]
 ProgressRefresher = Callable[[Session], dict[str, Any] | None]
 
 
@@ -509,10 +521,16 @@ def mutate_session_state(
     actor: str | None = None,
     sync_combat: bool = False,
     refresh_progress: ProgressRefresher | None = None,
+    follow_up: FollowUpHook | None = None,
     before_persist: BeforePersistHook | None = None,
     after_persist: AfterPersistHook | None = None,
     reject_on_validation_error: bool = False,
 ) -> SessionStateMutationResult:
+    """Validate, apply, persist and audit one serialized session state mutation.
+
+    ``follow_up`` runs on the applied state when the mutation applied anything;
+    its changes join the same revision, audit and result.
+    """
     with serialized_campaign_turn(
         session_id,
         include_shared_progress=refresh_progress is not None,
@@ -566,6 +584,16 @@ def mutate_session_state(
         apply_result = apply_state_changes(state, applied)
         next_state = apply_result['nextState']
         applied_changes = apply_result['appliedChanges']
+        metadata = dict(plan.metadata)
+        if follow_up is not None and applied_changes:
+            followed = follow_up(next_state)
+            next_state = followed.state
+            applied_changes = [*applied_changes, *followed.applied_changes]
+            validation = {
+                key: [*(validation.get(key) or []), *(followed.validation.get(key) or [])]
+                for key in ('accepted', 'modified', 'rejected')
+            }
+            metadata.update(followed.metadata)
         rejected_count = len(validation.get('rejected') or [])
         next_revision = current_revision + 1 if applied_changes else current_revision
         actor_label = actor or _mutation_actor()
@@ -580,7 +608,6 @@ def mutate_session_state(
             rejected_count=rejected_count,
             wait_ms=wait_ms,
         )
-        metadata = dict(plan.metadata)
         if before_persist:
             try:
                 before_persist(

@@ -1027,6 +1027,34 @@ class TurnEngine:
         }
 
     @staticmethod
+    def _combat_opening_roll_veto(pre_pipeline_result: dict, rules_hint_payload: dict) -> dict | None:
+        """Clear the roll of an action that started a fight others open.
+
+        When enemies (or a non-player ally) come first in initiative, their
+        opening turns resolve this turn and the action that started the fight
+        is not resolved out of initiative order: the character attacks on
+        their own turn.
+        """
+        if pre_pipeline_result.get('openingEnemyTurns') is not True:
+            return None
+        if not rules_hint_payload.get('requires_roll') or rules_hint_payload.get('roll_value') is not None:
+            return None
+        if rules_hint_payload.get('resolved_turn_id') is not None:
+            return None
+        if rules_hint_payload.get('target_pending_turn_id') is not None:
+            return None
+        return {
+            'source': 'combat_opening',
+            'reason': 'Combat began with others ahead in initiative; the character acts on their own turn.',
+            'instruction': (
+                'Combat has begun and others act first in initiative: do not request a roll; '
+                'the character acts on their own turn.'
+            ),
+            'original_rule_type': rules_hint_payload.get('roll_type'),
+            'original_reason': rules_hint_payload.get('reason'),
+        }
+
+    @staticmethod
     def _no_opponent_roll_veto(pre_pipeline_result: dict, rules_hint_payload: dict, player_message: str) -> dict | None:
         """Clear a classifier attack roll when nobody is there to fight.
 
@@ -1195,6 +1223,7 @@ class TurnEngine:
             'combatAppliedChanges': pipeline.get('combatAppliedChanges') or [],
             'combatDebug': pipeline.get('combatDebug') or {},
             'dmContextPacket': pipeline.get('dmContextPacket') or {},
+            'openingEnemyTurns': pipeline.get('openingEnemyTurns') is True,
             'stateLog': pipeline.get('stateLog') or {},
             'clarificationRequests': pre_validation.get('clarificationRequests') or [],
         }
@@ -1584,6 +1613,16 @@ class TurnEngine:
                     start_time=start_time,
                 )
                 return
+            combat_opening_veto = self._combat_opening_roll_veto(pre_pipeline_result, rules_hint_payload)
+            if combat_opening_veto:
+                self._clear_turn_roll_requirement_from_pre_dm_veto(
+                    turn=turn,
+                    rules_hint_payload=rules_hint_payload,
+                    veto=combat_opening_veto,
+                    pre_pipeline_result=pre_pipeline_result,
+                    reason=combat_opening_veto['reason'],
+                )
+                rules_hint_payload['instruction'] = combat_opening_veto['instruction']
             pre_dm_roll_veto = self._pre_dm_roll_veto(
                 pre_pipeline_result,
                 rules_hint_payload,
