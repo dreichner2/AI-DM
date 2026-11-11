@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from aidm_server.combat.state import normalize_battlefield, normalize_position
+from aidm_server.combat.state import combat_turn_order, normalize_battlefield, normalize_position
 from aidm_server.commerce import open_merchant_projections
 from aidm_server.game_clock import public_clock, scene_rest_policy
 from aidm_server.interactables import offered_scene_actions, project_scene_interactables, take_label
@@ -916,24 +916,10 @@ def _visible_reference_ids(values: Any, visible_ids: set[str]) -> list[Any]:
     ]
 
 
-def _combat_participant_can_take_turn(record: dict) -> bool:
-    hp = record.get('hp') if isinstance(record.get('hp'), dict) else {}
-    current_hp = _positive_int(_first(hp, 'current', 'currentHp', 'current_hp'))
-    return (
-        record.get('isAlive') is not False
-        and record.get('isConscious') is not False
-        and (current_hp is None or current_hp > 0)
-        and _text(record.get('team')).lower() in {'player', 'ally', 'enemy'}
-    )
+def _combat_turn_order_ids(combat: dict) -> list[str]:
+    """Who takes turns, in the engine's own initiative order (the order ``turnIndex`` counts in)."""
 
-
-def _combat_turn_order_ids(participants: list[dict]) -> list[str]:
-    eligible = [record for record in participants if _record_id(record) and _combat_participant_can_take_turn(record)]
-    ordered = [
-        *[record for record in eligible if _text(record.get('team')).lower() in {'player', 'ally'}],
-        *[record for record in eligible if _text(record.get('team')).lower() == 'enemy'],
-    ]
-    return [_record_id(record) for record in ordered]
+    return [_id_key(entry.get('id')) for entry in combat_turn_order(combat) if _id_key(entry.get('id'))]
 
 
 def _current_combat_actor_id(combat: dict, turn_order_ids: list[str]) -> str:
@@ -1109,8 +1095,8 @@ def _filter_combat_for_player(
         for record in (combat.get('participants') or [])
         if isinstance(record, dict)
     ]
-    original_turn_order_ids = _combat_turn_order_ids(original_participants)
-    current_actor_id = _current_combat_actor_id(combat, original_turn_order_ids)
+    turn_order_ids = _combat_turn_order_ids(combat)
+    current_actor_id = _current_combat_actor_id(combat, turn_order_ids)
 
     participants = [
         _combat_participant_for_viewer(record, private_player_ids)
@@ -1144,7 +1130,9 @@ def _filter_combat_for_player(
     flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
     payload['flags'] = _filter_combat_flags(flags, participants_by_id)
 
-    visible_turn_order_ids = _combat_turn_order_ids(participants)
+    # The same order less the participants players cannot see, so an index in
+    # it is the full view's whenever nobody is hidden.
+    visible_turn_order_ids = [participant_id for participant_id in turn_order_ids if participant_id in visible_ids]
     if current_actor_id and current_actor_id in visible_turn_order_ids:
         payload['turnIndex'] = visible_turn_order_ids.index(current_actor_id)
     elif 'turnIndex' in payload:

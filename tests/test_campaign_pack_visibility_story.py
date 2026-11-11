@@ -230,3 +230,52 @@ def test_a_session_without_a_campaign_pack_has_no_journal():
     snapshot.pop('campaignPack')
 
     assert 'journal' not in filter_session_snapshot_for_player(snapshot)
+
+
+def _initiative_snapshot(**combat) -> dict:
+    """A beast that won initiative, then the hero, then a lantern; it is the hero's turn."""
+
+    return {
+        'playerCharacters': [_hero(2)],
+        'activePlayerIds': [2],
+        'combat': {
+            'status': 'active',
+            'round': 1,
+            'turnIndex': 1,
+            'participants': [
+                {'id': 'enemy_beast', 'name': 'Wardbound Beast', 'team': 'enemy', 'hp': {'current': 9, 'max': 9}},
+                {'id': 'player_2', 'playerId': 2, 'name': 'Hero 2', 'team': 'player', 'hp': {'current': 10, 'max': 10}},
+                {'id': 'enemy_lantern', 'name': 'Pale Lantern', 'team': 'enemy', 'hp': {'current': 4, 'max': 4}},
+            ],
+            'initiative': [
+                {'participantId': 'enemy_beast', 'total': 16, 'order': 0},
+                {'participantId': 'player_2', 'total': 12, 'order': 1},
+                {'participantId': 'enemy_lantern', 'total': 6, 'order': 2},
+            ],
+            'flags': {'activeActorId': 'player_2'},
+            **combat,
+        },
+    }
+
+
+def test_the_turn_index_counts_in_initiative_order_as_the_full_view_does():
+    combat = filter_session_snapshot_for_player(_initiative_snapshot(), private_player_ids={2})['combat']
+
+    assert combat['turnIndex'] == 1
+    assert [entry['participantId'] for entry in combat['initiative']][combat['turnIndex']] == 'player_2'
+
+
+def test_a_hidden_participant_ahead_of_the_actor_shifts_the_turn_index_past_it():
+    snapshot = _initiative_snapshot()
+    snapshot['combat']['participants'][0]['hiddenToPlayers'] = True
+
+    combat = filter_session_snapshot_for_player(snapshot, private_player_ids={2})['combat']
+
+    assert [entry['participantId'] for entry in combat['initiative']] == ['player_2', 'enemy_lantern']
+    assert combat['turnIndex'] == 0
+
+
+def test_without_an_active_actor_the_stored_index_still_counts_in_initiative_order():
+    combat = filter_session_snapshot_for_player(_initiative_snapshot(turnIndex=2, flags={}))['combat']
+
+    assert combat['turnIndex'] == 2
