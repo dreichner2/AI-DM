@@ -19,10 +19,41 @@
         "description": "A grounded heroic-fantasy campaign set along the western marches of Eriador, between the Blue Mountains, Lindon, and the old roads that lead back toward the Shire. The War of the Ring has passed into song, but not every shadow was destroyed. The tone favors travel, suspicion, hard choices, old songs, ruins, oaths, and small acts of courage."
     },
     "hiddenSceneNotes": "Opening secret: the courier was not attacked by ordinary bandits. He fled from oath-bound dead stirred by the Wight-Marshal. The broken Dwarf-token came from a hidden gate-key carried by the missing caravan master.",
+    "gmNotes": "Tone: hope against shadow, ancient ruins, moral choices, travel weariness, small courage. Keep the campaign focused on the Star-Shard, the missing caravan, the oath-bound dead, and the old Dwarf-road. Improvised scenes should point back to the next reachable checkpoint. Combat is allowed but should not be the only route through major scenes. Reward negotiation, mercy, stealth, lore, and sacrifice. Keep the Wight-Marshal's dependence on living hands, the nature of the Star-Shard, and Thalara's potential alliance hidden until discovered in play.",
     "startingState": {
         "locationId": "loc_graymere_watch",
         "questId": "quest_shard_beneath_blue_mountains",
         "checkpointId": "cp_01_graymere_alarm",
+        "clock": {
+            "day": 1,
+            "phase": "evening"
+        },
+        "flags": {
+            "survivors_questioned": false,
+            "token_studied": false,
+            "ranger_marks_read": false,
+            "gate_song_learned": false,
+            "ambush_resolved": false,
+            "caravan_traced": false,
+            "reflection_seen": false,
+            "banner_name_known": false,
+            "dead_released": false,
+            "dead_passed": false,
+            "channel_known": false,
+            "gate_opened_by_song": false,
+            "gate_forced": false,
+            "gate_open": false,
+            "watch_post_cleared": false,
+            "grishnak_turned": false,
+            "cage_key_found": false,
+            "prisoners_freed": false,
+            "marshal_resolved": false,
+            "shard_sealed": false,
+            "shard_shattered": false,
+            "shard_returned": false,
+            "shard_taken": false,
+            "quest_shard_complete": false
+        },
         "partyStatus": {
             "knownThreat": "Caravans have vanished near the old Dwarf-road into the Blue Mountains.",
             "startingRumor": "Travelers speak of blue witch-light under the hills and birds refusing to fly over Graymere Vale.",
@@ -49,7 +80,105 @@
             "visibleAtStart": true,
             "description": "A timber-and-stone watch hall overlooking a reed-choked lake west of the Blue Mountains. Rangers, Dwarves, and local folk use it as a neutral meeting place.",
             "playerSummary": "A safe border hall where the first clues are gathered.",
-            "gmNotes": "Graymere Watch is not truly safe once the company accepts the Dwarf-token. Spies of the Pale Hand watch the road from the surrounding pines."
+            "gmNotes": "Graymere Watch is not truly safe once the company accepts the Dwarf-token. Spies of the Pale Hand watch the road from the surrounding pines.",
+            "sceneType": "social",
+            "connectedLocationIds": [
+                "loc_moonwell_crossing",
+                "loc_hollow_of_black_pines"
+            ],
+            "npcIds": [
+                "npc_brenna_graymere",
+                "npc_torin_stoneharp"
+            ],
+            "mapPosition": {
+                "x": 14,
+                "y": 72
+            },
+            "mapIcon": "tower",
+            "restPolicy": "safe",
+            "interactables": [
+                {
+                    "id": "watch_couriers_cot",
+                    "name": "The Courier's Cot",
+                    "kind": "container",
+                    "allowedActions": [
+                        "inspect",
+                        "search"
+                    ],
+                    "actionLabels": {
+                        "inspect": "Look in on the wounded courier",
+                        "search": "Take up the token the courier carried"
+                    },
+                    "open": true,
+                    "description": "The courier is fevered, and he says the same words over and over: \"blue light under the stone.\" Grey tarn-clay is drying on his boots. Clenched in his fist is half of a blue-stone token.",
+                    "playerDescription": "A wounded courier lies on a narrow cot, one fist clenched tight against his chest.",
+                    "contents": [
+                        {
+                            "id": "broken_dwarf_token",
+                            "name": "Broken Dwarf-token",
+                            "type": "quest",
+                            "quantity": 1
+                        }
+                    ],
+                    "setsFlags": {
+                        "inspect": {
+                            "survivors_questioned": true
+                        },
+                        "search": {
+                            "token_studied": true
+                        }
+                    },
+                    "discoversClueIds": {
+                        "search": [
+                            "clue_broken_dwarf_token"
+                        ]
+                    }
+                },
+                {
+                    "id": "watch_ledger",
+                    "name": "Watch Ledger",
+                    "kind": "object",
+                    "allowedActions": [
+                        "inspect"
+                    ],
+                    "actionLabels": {
+                        "inspect": "Read the watch ledger"
+                    },
+                    "description": "The last pages of the ledger record three caravans lost on the road. The final entry is in Calanor's hand, and it describes the marks he has cut along the pine road.",
+                    "playerDescription": "The watch ledger lies open on a table by the door, its last pages crowded with entries.",
+                    "setsFlags": {
+                        "inspect": {
+                            "ranger_marks_read": true
+                        }
+                    },
+                    "discoversLocationIds": {
+                        "inspect": [
+                            "loc_hollow_of_black_pines"
+                        ]
+                    }
+                },
+                {
+                    "id": "watch_torins_harp",
+                    "name": "Torin's Harp",
+                    "kind": "object",
+                    "allowedActions": [
+                        "use"
+                    ],
+                    "actionLabels": {
+                        "use": "Ask Torin to play the gate-song"
+                    },
+                    "usable": true,
+                    "playerDescription": "A small wire-strung harp rests against Torin Stoneharp's chair.",
+                    "setsFlags": {
+                        "use": {
+                            "gate_song_learned": true
+                        }
+                    },
+                    "actionText": {
+                        "use": "Torin sets the little harp on his knee and plays eleven notes, slowly, twice. \"That is how Khazad-tarn knows its friends,\" he says. \"The last note is held. The fools who marred the runes never knew that.\" You have it by the second playing."
+                    }
+                }
+            ]
         },
         {
             "id": "loc_moonwell_crossing",
@@ -58,7 +187,100 @@
             "visibleAtStart": true,
             "description": "A broken stone bridge and old well at the meeting of three forgotten roads. Moonlight gathers strangely in the well even under cloud.",
             "playerSummary": "An abandoned crossing on the road toward the mountains.",
-            "gmNotes": "The well reflects not the sky, but the nearest opened deep gate. A careful character may see torchlight moving beneath the earth."
+            "gmNotes": "The well reflects not the sky, but the nearest opened deep gate. A careful character may see torchlight moving beneath the earth.",
+            "sceneType": "travel",
+            "connectedLocationIds": [
+                "loc_graymere_watch",
+                "loc_hollow_of_black_pines",
+                "loc_khazad_tarn_gate"
+            ],
+            "npcIds": [
+                "npc_elenwen_of_lindon",
+                "npc_matho_burrows"
+            ],
+            "mapPosition": {
+                "x": 32,
+                "y": 60
+            },
+            "mapIcon": "bridge",
+            "restPolicy": "risky",
+            "interactables": [
+                {
+                    "id": "moonwell_the_well",
+                    "name": "The Moonwell",
+                    "kind": "object",
+                    "allowedActions": [
+                        "inspect"
+                    ],
+                    "actionLabels": {
+                        "inspect": "Look into the Moonwell"
+                    },
+                    "description": "The water in the Moonwell does not show the sky. It shows torchlight under stone, and a gate of blue-veined rock half-drowned in a mountain tarn.",
+                    "playerDescription": "An old stone well stands beside the broken bridge, moonlight pooled in it even under cloud.",
+                    "setsFlags": {
+                        "inspect": {
+                            "reflection_seen": true
+                        }
+                    },
+                    "discoversClueIds": {
+                        "inspect": [
+                            "clue_moonwell_reflection"
+                        ]
+                    },
+                    "discoversLocationIds": {
+                        "inspect": [
+                            "loc_khazad_tarn_gate"
+                        ]
+                    }
+                },
+                {
+                    "id": "moonwell_broken_wagon",
+                    "name": "Broken Caravan Wagon",
+                    "kind": "container",
+                    "allowedActions": [
+                        "search"
+                    ],
+                    "actionLabels": {
+                        "search": "Search the broken caravan wagon"
+                    },
+                    "open": true,
+                    "description": "Net-weights of bone lie trodden into the mud around the wagon. Drag marks lead away from it toward the black pines.",
+                    "playerDescription": "A caravan wagon lies broken at the end of the bridge, its canvas torn.",
+                    "requirements": {
+                        "search": {
+                            "check": {
+                                "id": "search_broken_wagon",
+                                "dc": 10,
+                                "ability": "intelligence",
+                                "skill": "investigation"
+                            }
+                        }
+                    },
+                    "contents": [
+                        {
+                            "id": "moonwell_broken_wagon_potion_of_healing",
+                            "name": "Potion of Healing",
+                            "type": "potion",
+                            "quantity": 1
+                        },
+                        {
+                            "currency": {
+                                "gp": 8
+                            }
+                        }
+                    ],
+                    "setsFlags": {
+                        "search": {
+                            "caravan_traced": true
+                        }
+                    },
+                    "discoversLocationIds": {
+                        "search": [
+                            "loc_hollow_of_black_pines"
+                        ]
+                    }
+                }
+            ]
         },
         {
             "id": "loc_hollow_of_black_pines",
@@ -66,7 +288,135 @@
             "type": "forest_hollow",
             "description": "A windless hollow of dense pines where old arrowheads, cracked shields, and cairn-stones lie under moss.",
             "playerSummary": "A grim forest hollow haunted by signs of an old battle.",
-            "gmNotes": "The oath-bound dead are strongest here. They can be fought, appeased, or released by naming the betrayed captain of their company."
+            "gmNotes": "The oath-bound dead are strongest here. They can be fought, appeased, or released by naming the betrayed captain of their company.",
+            "sceneType": "mystery",
+            "connectedLocationIds": [
+                "loc_graymere_watch",
+                "loc_moonwell_crossing",
+                "loc_khazad_tarn_gate",
+                "loc_silvervein_deeps"
+            ],
+            "npcIds": [
+                "npc_calanor_ranger"
+            ],
+            "mapPosition": {
+                "x": 46,
+                "y": 40
+            },
+            "mapIcon": "forest",
+            "restPolicy": "none",
+            "interactables": [
+                {
+                    "id": "pines_cairn_stones",
+                    "name": "Cairn-Stones",
+                    "kind": "object",
+                    "allowedActions": [
+                        "search"
+                    ],
+                    "actionLabels": {
+                        "search": "Search the cairn-stones for a name"
+                    },
+                    "searchable": true,
+                    "playerDescription": "Low cairn-stones lie in a ragged line between the pines, half buried in moss.",
+                    "requirements": {
+                        "search": {
+                            "check": {
+                                "id": "find_cairn_name",
+                                "dc": 11,
+                                "ability": "intelligence",
+                                "skill": "history"
+                            }
+                        }
+                    },
+                    "usableInCombat": [
+                        "search"
+                    ],
+                    "setsFlags": {
+                        "search": {
+                            "banner_name_known": true
+                        }
+                    },
+                    "discoversClueIds": {
+                        "search": [
+                            "clue_thalara_banner_name"
+                        ]
+                    }
+                },
+                {
+                    "id": "pines_fallen_banner",
+                    "name": "Fallen War-Banner",
+                    "kind": "object",
+                    "allowedActions": [
+                        "use"
+                    ],
+                    "actionLabels": {
+                        "use": "Raise the banner and speak the captain's name"
+                    },
+                    "usable": true,
+                    "playerDescription": "A rotted war-banner lies fallen in the moss, its colours long gone.",
+                    "requirements": {
+                        "use": {
+                            "flags": {
+                                "banner_name_known": true
+                            }
+                        }
+                    },
+                    "usableInCombat": [
+                        "use"
+                    ],
+                    "resolvesEncounter": {
+                        "use": {
+                            "encounterId": "enc_black_pines_oath",
+                            "outcome": "negotiation"
+                        }
+                    },
+                    "setsFlags": {
+                        "use": {
+                            "dead_released": true
+                        }
+                    },
+                    "discoversLocationIds": {
+                        "use": [
+                            "loc_khazad_tarn_gate"
+                        ]
+                    },
+                    "actionText": {
+                        "use": "You lift the rotted banner out of the moss and say her name: Thalara, captain of the north company. The shield-wall wavers. One of the dead lowers its spear, then all of them, and a woman's voice says, very tired, \"Then we are relieved.\" The hollow is only a wood again."
+                    }
+                },
+                {
+                    "id": "pines_mossed_culvert",
+                    "name": "Mossed Culvert",
+                    "kind": "object",
+                    "allowedActions": [
+                        "inspect"
+                    ],
+                    "actionLabels": {
+                        "inspect": "Follow the water under the cairns"
+                    },
+                    "playerDescription": "A mossed stone culvert carries a thread of water away under the cairns.",
+                    "requirements": {
+                        "inspect": {
+                            "check": {
+                                "id": "follow_cairn_water",
+                                "dc": 13,
+                                "ability": "wisdom",
+                                "skill": "survival"
+                            }
+                        }
+                    },
+                    "setsFlags": {
+                        "inspect": {
+                            "channel_known": true
+                        }
+                    },
+                    "discoversLocationIds": {
+                        "inspect": [
+                            "loc_silvervein_deeps"
+                        ]
+                    }
+                }
+            ]
         },
         {
             "id": "loc_khazad_tarn_gate",
@@ -74,7 +424,99 @@
             "type": "dwarf_ruin",
             "description": "A sealed Dwarf gate of blue-veined stone half-buried in a mountain tarn. Runes around the lintel have been deliberately marred.",
             "playerSummary": "The hidden entrance to an old Dwarf-road beneath the Blue Mountains.",
-            "gmNotes": "The gate opens to the true name of the caravan master's Dwarf-token, not to strength or lockpicks. If forced, it awakens sentry-stones below."
+            "gmNotes": "The gate opens to the true name of the caravan master's Dwarf-token, not to strength or lockpicks. If forced, it awakens sentry-stones below.",
+            "sceneType": "mystery",
+            "connectedLocationIds": [
+                "loc_moonwell_crossing",
+                "loc_hollow_of_black_pines",
+                "loc_silvervein_deeps"
+            ],
+            "mapPosition": {
+                "x": 64,
+                "y": 34
+            },
+            "mapIcon": "gate",
+            "restPolicy": "risky",
+            "interactables": [
+                {
+                    "id": "gate_rune_lintel",
+                    "name": "The Rune Lintel",
+                    "kind": "object",
+                    "allowedActions": [
+                        "inspect",
+                        "use",
+                        "break"
+                    ],
+                    "actionLabels": {
+                        "inspect": "Study the marred runes",
+                        "use": "Sing the gate-song",
+                        "break": "Force the gate"
+                    },
+                    "usable": true,
+                    "breakable": true,
+                    "repeatableInspect": true,
+                    "description": "The runes cut around the lintel are a naming-song. Someone has scored through them on purpose, line by line. Marred as it is, the gate still listens.",
+                    "playerDescription": "A lintel of blue-veined stone spans the sealed gate, its runes scored and marred.",
+                    "requirements": {
+                        "use": {
+                            "flags": {
+                                "gate_song_learned": true,
+                                "gate_open": false
+                            }
+                        },
+                        "break": {
+                            "flags": {
+                                "gate_open": false
+                            }
+                        }
+                    },
+                    "setsFlags": {
+                        "use": {
+                            "gate_opened_by_song": true,
+                            "gate_open": true
+                        }
+                    },
+                    "discoversLocationIds": {
+                        "use": [
+                            "loc_silvervein_deeps"
+                        ]
+                    },
+                    "actionText": {
+                        "use": "You sing the eleven notes and hold the last. The scored runes fill with a slow blue light, the sentry stones settle back into the rock, and the gate of Khazad-tarn swings inward without a sound."
+                    }
+                },
+                {
+                    "id": "gate_tarn_shallows",
+                    "name": "Tarn Shallows",
+                    "kind": "container",
+                    "allowedActions": [
+                        "search"
+                    ],
+                    "actionLabels": {
+                        "search": "Search the tarn shallows"
+                    },
+                    "open": true,
+                    "description": "Orc boot-prints are pressed into the silt of the shallows, every one of them going in at the gate. None come back out.",
+                    "playerDescription": "Cold shallows lap at the foot of the gate over a bed of grey silt.",
+                    "requirements": {
+                        "search": {
+                            "check": {
+                                "id": "search_tarn_shallows",
+                                "dc": 12,
+                                "ability": "wisdom",
+                                "skill": "perception"
+                            }
+                        }
+                    },
+                    "contents": [
+                        {
+                            "currency": {
+                                "gp": 12
+                            }
+                        }
+                    ]
+                }
+            ]
         },
         {
             "id": "loc_silvervein_deeps",
@@ -82,7 +524,201 @@
             "type": "underground_road",
             "description": "A cold underground road of Dwarf-masonry, bright with seams of pale ore and dark water channels. Echoes travel farther than they should.",
             "playerSummary": "An abandoned Dwarf-road where the missing caravan may have been taken.",
-            "gmNotes": "The Pale Hand Orcs have made a temporary camp here, but they fear the deeper chamber and are willing to bargain if cornered."
+            "gmNotes": "The Pale Hand Orcs have made a temporary camp here, but they fear the deeper chamber and are willing to bargain if cornered.",
+            "sceneType": "dungeon",
+            "connectedLocationIds": [
+                "loc_khazad_tarn_gate",
+                "loc_hollow_of_black_pines",
+                "loc_chamber_of_the_star_shard"
+            ],
+            "mapPosition": {
+                "x": 78,
+                "y": 50
+            },
+            "mapIcon": "cave",
+            "restPolicy": "none",
+            "interactables": [
+                {
+                    "id": "deeps_watch_post",
+                    "name": "Orc Watch-Post",
+                    "kind": "container",
+                    "allowedActions": [
+                        "search"
+                    ],
+                    "actionLabels": {
+                        "search": "Search the orc watch-post"
+                    },
+                    "open": true,
+                    "playerDescription": "A rough Orc watch-post of piled stone and hides sits beside the road.",
+                    "contents": [
+                        {
+                            "id": "iron_cage_key",
+                            "name": "Iron Cage Key",
+                            "type": "quest",
+                            "quantity": 1
+                        },
+                        {
+                            "currency": {
+                                "gp": 15
+                            }
+                        }
+                    ],
+                    "setsFlags": {
+                        "search": {
+                            "cage_key_found": true
+                        }
+                    }
+                },
+                {
+                    "id": "deeps_orc_captain",
+                    "name": "The Orc Captain",
+                    "kind": "object",
+                    "allowedActions": [
+                        "inspect",
+                        "use"
+                    ],
+                    "actionLabels": {
+                        "inspect": "Watch the Orc captain",
+                        "use": "Offer the captain a way out"
+                    },
+                    "usable": true,
+                    "description": "One of the captain's hands is bleached white. He keeps looking down the lower road, not toward the gate. Behind him his Orcs mutter about \"the dead thing\" and what it pays them.",
+                    "playerDescription": "A big Orc with one hand bleached white watches the lower road more than the gate.",
+                    "requirements": {
+                        "use": {
+                            "check": {
+                                "id": "offer_captain_way_out",
+                                "dc": 13,
+                                "ability": "charisma",
+                                "skill": "persuasion"
+                            },
+                            "flags": {
+                                "grishnak_turned": false
+                            }
+                        }
+                    },
+                    "usableInCombat": [
+                        "use"
+                    ],
+                    "resolvesEncounter": {
+                        "use": {
+                            "encounterId": "enc_silvervein_watch_post",
+                            "outcome": "negotiation"
+                        }
+                    },
+                    "setsFlags": {
+                        "use": {
+                            "grishnak_turned": true,
+                            "watch_post_cleared": true
+                        }
+                    },
+                    "actionText": {
+                        "use": "You lower your weapon and tell him what he already knows: the dead thing in the vault will not share. The captain spits, looks down the lower road for a long moment, and waves his Orcs back. \"Then it can keep its bargain,\" he says. \"We were never here.\""
+                    }
+                },
+                {
+                    "id": "deeps_prisoners_cage",
+                    "name": "The Prisoners' Cage",
+                    "kind": "object",
+                    "allowedActions": [
+                        "inspect",
+                        "use",
+                        "break"
+                    ],
+                    "actionLabels": {
+                        "use": "Unlock the cage and free the prisoners",
+                        "break": "Break the cage lock"
+                    },
+                    "usable": true,
+                    "breakable": true,
+                    "playerDescription": "A crude iron cage of Orc make stands against the tunnel wall.",
+                    "requirements": {
+                        "use": {
+                            "anyItemIds": [
+                                "iron_cage_key"
+                            ],
+                            "flags": {
+                                "prisoners_freed": false
+                            }
+                        },
+                        "break": {
+                            "check": {
+                                "id": "break_cage_lock",
+                                "dc": 14,
+                                "ability": "strength",
+                                "skill": "athletics"
+                            },
+                            "flags": {
+                                "prisoners_freed": false
+                            }
+                        }
+                    },
+                    "setsFlags": {
+                        "use": {
+                            "prisoners_freed": true
+                        },
+                        "break": {
+                            "prisoners_freed": true
+                        }
+                    },
+                    "reveals": {
+                        "use": [
+                            "deeps_caravan_strongbox"
+                        ],
+                        "break": [
+                            "deeps_caravan_strongbox"
+                        ]
+                    },
+                    "actionText": {
+                        "use": "The lock gives. Nine people come out of the dark blinking: teamsters, a Dwarf smith, two children. The smith points down the lower road. \"It goes to the vault,\" she says. \"Whatever you mean to do there, do it before that thing finishes waking the stone.\"",
+                        "break": "The lock gives. Nine people come out of the dark blinking: teamsters, a Dwarf smith, two children. The smith points down the lower road. \"It goes to the vault,\" she says. \"Whatever you mean to do there, do it before that thing finishes waking the stone.\""
+                    }
+                },
+                {
+                    "id": "deeps_caravan_strongbox",
+                    "name": "Caravan Strongbox",
+                    "kind": "container",
+                    "allowedActions": [
+                        "search"
+                    ],
+                    "actionLabels": {
+                        "search": "Open the caravan strongbox"
+                    },
+                    "hidden": true,
+                    "open": true,
+                    "playerDescription": "A dented caravan strongbox has been pushed to the back of the cage.",
+                    "contents": [
+                        {
+                            "id": "deeps_caravan_strongbox_potion_of_healing",
+                            "name": "Potion of Healing",
+                            "type": "potion",
+                            "quantity": 1
+                        },
+                        {
+                            "currency": {
+                                "gp": 30
+                            }
+                        }
+                    ]
+                },
+                {
+                    "id": "deeps_dark_channel",
+                    "name": "Dark Water Channel",
+                    "kind": "object",
+                    "allowedActions": [
+                        "inspect"
+                    ],
+                    "actionLabels": {
+                        "inspect": "Follow the dark water channel"
+                    },
+                    "playerDescription": "A channel of black water runs beside the road and down into the dark.",
+                    "discoversLocationIds": {
+                        "inspect": [
+                            "loc_chamber_of_the_star_shard"
+                        ]
+                    }
+                }
+            ]
         },
         {
             "id": "loc_chamber_of_the_star_shard",
@@ -90,7 +726,138 @@
             "type": "ancient_vault",
             "description": "A high, domed vault beneath the mountain, its ceiling set with silvered stone like a night sky. At its center stands a cracked plinth of black glass.",
             "playerSummary": "The hidden vault at the heart of the old road.",
-            "gmNotes": "The Star-Shard is not a full palantir, but a broken remnant capable of carrying fear, dreams, and commands. The Wight-Marshal cannot touch it directly and needs living hands."
+            "gmNotes": "The Star-Shard is not a full palantir, but a broken remnant capable of carrying fear, dreams, and commands. The Wight-Marshal cannot touch it directly and needs living hands.",
+            "sceneType": "dungeon",
+            "connectedLocationIds": [
+                "loc_silvervein_deeps"
+            ],
+            "mapPosition": {
+                "x": 90,
+                "y": 30
+            },
+            "mapIcon": "ruin",
+            "restPolicy": "none",
+            "interactables": [
+                {
+                    "id": "chamber_star_shard",
+                    "name": "The Star-Shard",
+                    "kind": "object",
+                    "allowedActions": [
+                        "inspect",
+                        "use",
+                        "break",
+                        "lock",
+                        "trigger"
+                    ],
+                    "actionLabels": {
+                        "inspect": "Approach the Star-Shard",
+                        "use": "Seal the Star-Shard",
+                        "break": "Shatter the Star-Shard",
+                        "lock": "Carry the shard west to Lindon",
+                        "trigger": "Take the Star-Shard for yourself"
+                    },
+                    "choiceActions": [
+                        "use",
+                        "break",
+                        "lock",
+                        "trigger"
+                    ],
+                    "usable": true,
+                    "breakable": true,
+                    "broken": false,
+                    "locked": false,
+                    "triggerable": true,
+                    "repeatableInspect": true,
+                    "playerDescription": "On a cracked plinth of black glass lies a splinter of cold light.",
+                    "requirements": {
+                        "use": {
+                            "flags": {
+                                "marshal_resolved": true,
+                                "quest_shard_complete": false,
+                                "gate_song_learned": true
+                            },
+                            "anyItemIds": [
+                                "broken_dwarf_token"
+                            ]
+                        },
+                        "break": {
+                            "flags": {
+                                "marshal_resolved": true,
+                                "quest_shard_complete": false
+                            }
+                        },
+                        "lock": {
+                            "flags": {
+                                "marshal_resolved": true,
+                                "quest_shard_complete": false
+                            }
+                        },
+                        "trigger": {
+                            "flags": {
+                                "marshal_resolved": true,
+                                "quest_shard_complete": false
+                            }
+                        }
+                    },
+                    "setsFlags": {
+                        "use": {
+                            "shard_sealed": true,
+                            "quest_shard_complete": true
+                        },
+                        "break": {
+                            "shard_shattered": true,
+                            "quest_shard_complete": true
+                        },
+                        "lock": {
+                            "shard_returned": true,
+                            "quest_shard_complete": true
+                        },
+                        "trigger": {
+                            "shard_taken": true,
+                            "quest_shard_complete": true
+                        }
+                    },
+                    "actionText": {
+                        "use": "You set the half-token in the plinth and sing the gate-song to the end. Stone folds over the shard like a closing hand. The silver stars in the vault roof go dark one by one, and what is left is a quiet room under a mountain.",
+                        "break": "It breaks like ice on a pond. For an instant every seam of ore in the vault burns white, and then there is only bright dust settling on the plinth and a crack across the starred ceiling that was not there before.",
+                        "lock": "You wrap the shard in three folds of cloth and do not look at it again. It is heavier than it should be, and colder, and it will be many days' road to the Havens with that weight against your ribs.",
+                        "trigger": "You close your hand on it. Far away and very clearly you see a road, a tower, a face turning toward you. Then only the vault. The shard is warm now, and it fits your palm as though it had been waiting."
+                    }
+                },
+                {
+                    "id": "chamber_dwarf_coffer",
+                    "name": "Dwarf Coffer",
+                    "kind": "container",
+                    "allowedActions": [
+                        "search"
+                    ],
+                    "actionLabels": {
+                        "search": "Search the Dwarf coffer"
+                    },
+                    "open": true,
+                    "playerDescription": "A squat Dwarf coffer bound in tarnished silver sits at the foot of the plinth.",
+                    "requirements": {
+                        "search": {
+                            "flags": {
+                                "marshal_resolved": true
+                            }
+                        }
+                    },
+                    "contents": [
+                        {
+                            "id": "chamber_dwarf_coffer_potion_of_healing",
+                            "name": "Potion of Healing",
+                            "type": "potion",
+                            "quantity": 1
+                        },
+                        {
+                            "currency": {
+                                "gp": 60
+                            }
+                        }
+                    ]
+                }
+            ]
         }
     ],
     "npcs": [
@@ -102,6 +869,11 @@
             "visibleAtStart": true,
             "description": "A practical border warden with a scarred cheek, a quiet voice, and little patience for panic.",
             "motivation": "Protect the scattered settlements before winter closes the roads.",
+            "knows": [
+                "Three caravans gone in a month, all between the Moonwell and the mountain.",
+                "The courier came in at dusk with half a Dwarf-token in his fist and would not let it go.",
+                "Calanor cut ranger marks on the pine road. If you can read them, you can skip the crossing."
+            ],
             "questIds": [
                 "quest_shard_beneath_blue_mountains"
             ],
@@ -116,6 +888,11 @@
             "visibleAtStart": true,
             "description": "An elderly Dwarf scholar and singer with silver beard-rings and a harp strung with wire.",
             "motivation": "Recover the lost name of Khazad-tarn Gate and prevent outsiders from profaning the old road.",
+            "knows": [
+                "That token is a gate-key of Khazad-tarn. Half a key opens nothing.",
+                "The gate answers to its naming-song. Someone has scored the runes so it hears the song wrong.",
+                "Force that door and the sentry stones will take you for thieves. Sing to it and they sleep."
+            ],
             "questIds": [
                 "quest_shard_beneath_blue_mountains"
             ],
@@ -129,6 +906,11 @@
             "locationId": "loc_moonwell_crossing",
             "description": "A grave Elf traveler from Lindon, bearing a lantern of clear glass and a cloak the color of mist.",
             "motivation": "Find the source of the unnatural dreams spreading westward.",
+            "knows": [
+                "The Moonwell shows what lies under stone to those who look without fear.",
+                "What sleeps in that vault is a shard of a seeing-stone. It was never meant to be woken.",
+                "Seal it, break it, or bring it west to Lindon. Do not let anything dead look through it."
+            ],
             "questIds": [
                 "quest_shard_beneath_blue_mountains"
             ],
@@ -142,6 +924,11 @@
             "locationId": "loc_moonwell_crossing",
             "description": "A nervous but observant Hobbit teamster who escaped the caravan ambush by hiding inside a flour wagon.",
             "motivation": "Survive, recover his ponies, and make sure nobody calls him a coward.",
+            "knows": [
+                "They used nets. They wanted us alive, every one.",
+                "I hid under the wagon. They dragged the rest toward the black pines.",
+                "The big one with the pale hand kept looking over his shoulder. He's afraid of whoever pays him."
+            ],
             "questIds": [
                 "quest_shard_beneath_blue_mountains"
             ],
@@ -155,6 +942,11 @@
             "locationId": "loc_hollow_of_black_pines",
             "description": "A weathered Ranger who moves quietly, speaks rarely, and keeps old maps wrapped in oilskin.",
             "motivation": "Track the Pale Hand Orcs and keep the company from taking the most obvious road into an ambush.",
+            "knows": [
+                "The dead in the hollow are not our enemies. They are still holding a line nobody relieved.",
+                "Their captain's name is on the cairn-stones, if you can find it under the moss.",
+                "Water runs under the cairns, down toward the mountain. I have never followed it."
+            ],
             "questIds": [
                 "quest_shard_beneath_blue_mountains"
             ],
@@ -200,29 +992,112 @@
                 {
                     "id": "obj_question_survivors",
                     "title": "Question the survivors at Graymere Watch",
-                    "description": "Learn what happened to the road caravan and examine the broken Dwarf-token."
+                    "description": "Learn what happened to the road caravan and examine the broken Dwarf-token.",
+                    "completeWhen": {
+                        "anyOf": [
+                            {
+                                "flagKey": "survivors_questioned",
+                                "equals": true
+                            },
+                            {
+                                "flagKey": "token_studied",
+                                "equals": true
+                            }
+                        ]
+                    }
                 },
                 {
                     "id": "obj_trace_caravan",
                     "title": "Trace the caravan route",
-                    "description": "Follow tracks, rumors, and signs from Moonwell Crossing toward the Black Pines."
+                    "description": "Follow tracks, rumors, and signs from Moonwell Crossing toward the Black Pines.",
+                    "optional": true,
+                    "completeWhen": {
+                        "anyOf": [
+                            {
+                                "flagKey": "caravan_traced",
+                                "equals": true
+                            },
+                            {
+                                "flagKey": "reflection_seen",
+                                "equals": true
+                            }
+                        ]
+                    }
                 },
                 {
                     "id": "obj_release_or_bypass_dead",
                     "title": "Confront the oath-bound dead",
-                    "description": "Fight, evade, appease, or release the spirits blocking the road to Khazad-tarn Gate."
+                    "description": "Fight, evade, appease, or release the spirits blocking the road to Khazad-tarn Gate.",
+                    "optional": true,
+                    "completeWhen": {
+                        "anyOf": [
+                            {
+                                "flagKey": "dead_released",
+                                "equals": true
+                            },
+                            {
+                                "flagKey": "dead_passed",
+                                "equals": true
+                            }
+                        ]
+                    }
                 },
                 {
                     "id": "obj_open_khazad_tarn",
                     "title": "Open Khazad-tarn Gate",
-                    "description": "Use the recovered gate-name or another earned method to enter the Silvervein Deeps."
+                    "description": "Use the recovered gate-name or another earned method to enter the Silvervein Deeps.",
+                    "optional": true,
+                    "completeWhen": {
+                        "flagKey": "gate_open",
+                        "equals": true
+                    }
+                },
+                {
+                    "id": "obj_free_prisoners",
+                    "title": "Free the caravan prisoners",
+                    "description": "Find the caravan prisoners the Pale Hand took below the mountain and set them free.",
+                    "optional": true,
+                    "completeWhen": {
+                        "flagKey": "prisoners_freed",
+                        "equals": true
+                    }
                 },
                 {
                     "id": "obj_secure_star_shard",
                     "title": "Secure the Star-Shard",
-                    "description": "Prevent the Wight-Marshal or the Pale Hand Orcs from taking the Star-Shard."
+                    "description": "Prevent the Wight-Marshal or the Pale Hand Orcs from taking the Star-Shard.",
+                    "completeWhen": {
+                        "anyOf": [
+                            {
+                                "flagKey": "shard_sealed",
+                                "equals": true
+                            },
+                            {
+                                "flagKey": "shard_shattered",
+                                "equals": true
+                            },
+                            {
+                                "flagKey": "shard_returned",
+                                "equals": true
+                            },
+                            {
+                                "flagKey": "shard_taken",
+                                "equals": true
+                            }
+                        ]
+                    }
                 }
             ],
+            "rewards": {
+                "xp": 600,
+                "gp": 50,
+                "items": [
+                    {
+                        "id": "graymere_wardens_brooch",
+                        "name": "Graymere Warden's Brooch"
+                    }
+                ]
+            },
             "gmNotes": "The main quest should remain focused on investigation, travel, and moral choice. The company should never need to kill every enemy to succeed."
         }
     ],
@@ -230,6 +1105,7 @@
         {
             "id": "enemy_palehand_orcs",
             "name": "Pale Hand Orcs",
+            "singularName": "Pale Hand Orc",
             "type": "orc_raiders",
             "creatureType": "humanoid",
             "creatureTypeName": "Orc raider band",
@@ -387,6 +1263,7 @@
         {
             "id": "enemy_oathbound_dead",
             "name": "Oath-bound Dead",
+            "singularName": "Oath-bound Soldier",
             "type": "restless_spirits",
             "creatureType": "undead",
             "creatureTypeName": "Restless oath-spirit",
@@ -546,10 +1423,11 @@
         {
             "id": "enemy_wight_marshal",
             "name": "The Wight-Marshal of Silvervein",
+            "proper": true,
             "type": "greater_wight",
             "creatureType": "undead",
             "creatureTypeName": "Wight marshal",
-            "challengeTier": "hard",
+            "challengeTier": "boss",
             "level": 2,
             "size": "medium",
             "description": "A crowned corpse-shadow in tarnished mail, once a servant of a forgotten northern tyrant, now seeking the Star-Shard to command dreams and weak wills.",
@@ -733,6 +1611,7 @@
         {
             "id": "enemy_khazad_tarn_sentry_stones",
             "name": "Khazad-tarn Sentry Stones",
+            "singularName": "Khazad-tarn Sentry Stone",
             "type": "runic_construct",
             "creatureType": "construct",
             "creatureTypeName": "Dwarf runestone sentry",
@@ -936,7 +1815,44 @@
                     "success"
                 ]
             },
-            "gmNotes": "The ambush should reveal that the Orcs fear something worse below the mountains."
+            "gmNotes": "The ambush should reveal that the Orcs fear something worse below the mountains.",
+            "trigger": {
+                "type": "on_enter",
+                "locationId": "loc_moonwell_crossing"
+            },
+            "setup": "A horn sounds once from the broken bridge. Shapes rise out of the reeds on both sides of the road, and a weighted net opens against the sky.",
+            "outcomes": {
+                "victory": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "ambush_resolved",
+                            "flagValue": true
+                        }
+                    ]
+                },
+                "negotiation": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "ambush_resolved",
+                            "flagValue": true
+                        }
+                    ]
+                },
+                "surrender": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "ambush_resolved",
+                            "flagValue": true
+                        }
+                    ]
+                }
+            },
+            "rewards": {
+                "xp": 100
+            }
         },
         {
             "id": "enc_black_pines_oath",
@@ -973,7 +1889,43 @@
                     "success"
                 ]
             },
-            "gmNotes": "Thalara can become an ally here if the players treat the dead as people rather than monsters."
+            "gmNotes": "Thalara can become an ally here if the players treat the dead as people rather than monsters.",
+            "trigger": {
+                "type": "on_enter",
+                "locationId": "loc_hollow_of_black_pines"
+            },
+            "setup": "The pines stand without a breath of wind. Between them a line of pale shields locks together, and a voice like a cracked bell says: None pass. The line holds.",
+            "outcomes": {
+                "victory": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "dead_passed",
+                            "flagValue": true
+                        },
+                        {
+                            "type": "location.discover",
+                            "locationId": "loc_khazad_tarn_gate"
+                        }
+                    ]
+                },
+                "surrender": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "dead_passed",
+                            "flagValue": true
+                        },
+                        {
+                            "type": "location.discover",
+                            "locationId": "loc_khazad_tarn_gate"
+                        }
+                    ]
+                }
+            },
+            "rewards": {
+                "xp": 200
+            }
         },
         {
             "id": "enc_khazad_tarn_sentries",
@@ -1017,7 +1969,123 @@
                 ],
                 "objective": "Open or bypass Khazad-tarn Gate while preserving enough of the gate-song to prevent a full alarm."
             },
-            "gmNotes": "Do not force a fight if the party earns the passphrase, repairs the rune, or uses the token respectfully. This encounter exists to make forced entry, water-channel shortcuts, and failed rune work concrete."
+            "gmNotes": "Do not force a fight if the party earns the passphrase, repairs the rune, or uses the token respectfully. This encounter exists to make forced entry, water-channel shortcuts, and failed rune work concrete.",
+            "trigger": {
+                "type": "on_interactable",
+                "targetId": "gate_rune_lintel",
+                "action": "break"
+            },
+            "setup": "The lintel groans. Two shapes of blue-veined stone step out of the gateposts, runes guttering on their brows, and turn their blind faces toward you.",
+            "outcomes": {
+                "victory": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "gate_forced",
+                            "flagValue": true
+                        },
+                        {
+                            "type": "flag.set",
+                            "flagKey": "gate_open",
+                            "flagValue": true
+                        },
+                        {
+                            "type": "location.discover",
+                            "locationId": "loc_silvervein_deeps"
+                        }
+                    ]
+                },
+                "surrender": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "gate_forced",
+                            "flagValue": true
+                        },
+                        {
+                            "type": "flag.set",
+                            "flagKey": "gate_open",
+                            "flagValue": true
+                        },
+                        {
+                            "type": "location.discover",
+                            "locationId": "loc_silvervein_deeps"
+                        }
+                    ]
+                }
+            },
+            "rewards": {
+                "xp": 200
+            }
+        },
+        {
+            "id": "enc_silvervein_watch_post",
+            "title": "The Pale Hand's Watch",
+            "locationIds": [
+                "loc_silvervein_deeps"
+            ],
+            "questIds": [
+                "quest_shard_beneath_blue_mountains"
+            ],
+            "checkpointIds": [
+                "cp_05_silvervein_deeps"
+            ],
+            "enemyIds": [
+                "enemy_palehand_orcs"
+            ],
+            "enemyGroups": [
+                {
+                    "enemyId": "enemy_palehand_orcs",
+                    "count": 2
+                }
+            ],
+            "trigger": {
+                "type": "on_enter",
+                "locationId": "loc_silvervein_deeps"
+            },
+            "unless": {
+                "flagKey": "gate_opened_by_song",
+                "equals": true
+            },
+            "allowParley": true,
+            "setup": "Torchlight ahead, and harsh voices. The Orcs at the watch-post have heard you coming, but they keep glancing down the lower road, not at you.",
+            "outcomes": {
+                "victory": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "watch_post_cleared",
+                            "flagValue": true
+                        }
+                    ]
+                },
+                "surrender": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "watch_post_cleared",
+                            "flagValue": true
+                        }
+                    ]
+                },
+                "negotiation": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "watch_post_cleared",
+                            "flagValue": true
+                        },
+                        {
+                            "type": "flag.set",
+                            "flagKey": "grishnak_turned",
+                            "flagValue": true
+                        }
+                    ]
+                }
+            },
+            "rewards": {
+                "xp": 150
+            }
         },
         {
             "id": "enc_star_shard_confrontation",
@@ -1061,7 +2129,67 @@
                     "success"
                 ]
             },
-            "gmNotes": "The final encounter should respond to earlier choices. Releasing Thalara, bargaining with Grishnak, or preserving the gate-song should all matter."
+            "gmNotes": "The final encounter should respond to earlier choices. Releasing Thalara, bargaining with Grishnak, or preserving the gate-song should all matter.",
+            "trigger": {
+                "type": "on_interactable",
+                "targetId": "chamber_star_shard",
+                "action": "inspect"
+            },
+            "setup": "Under the silver stars a tall shape in corroded mail stands over the plinth, one hand spread above a splinter of cold light. It does not turn. 'Kneel,' it says, 'or be commanded.'",
+            "outcomes": {
+                "victory": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "marshal_resolved",
+                            "flagValue": true
+                        }
+                    ]
+                },
+                "negotiation": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "marshal_resolved",
+                            "flagValue": true
+                        }
+                    ]
+                },
+                "surrender": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "marshal_resolved",
+                            "flagValue": true
+                        }
+                    ]
+                }
+            },
+            "rewards": {
+                "xp": 600,
+                "gp": 60
+            },
+            "adjustments": [
+                {
+                    "when": {
+                        "flagKey": "dead_released",
+                        "equals": true
+                    },
+                    "enemyId": "enemy_wight_marshal",
+                    "hpMultiplier": 0.75,
+                    "text": "Thalara's company is at your back, faint as breath on glass, and the Marshal's commands fall dead in the air between you."
+                },
+                {
+                    "when": {
+                        "flagKey": "grishnak_turned",
+                        "equals": true
+                    },
+                    "removeEnemyIds": [
+                        "enemy_palehand_orcs"
+                    ],
+                    "text": "No Orc stands with the Marshal. The Pale Hand have taken their captain's word and gone."
+                }
+            ]
         }
     ],
     "segments": [
@@ -1139,17 +2267,13 @@
             ],
             "encounterIds": [],
             "completeWhen": {
-                "locationIds": [
-                    "loc_moonwell_crossing",
-                    "loc_hollow_of_black_pines"
-                ],
                 "objectiveIds": [
                     "obj_question_survivors"
                 ],
-                "segmentIds": [
-                    "seg_graymere_council"
-                ],
-                "summary": "The company accepts the charge, studies the broken token, and chooses either the normal Moonwell road or the ranger shortcut toward the Black Pines."
+                "locationIds": [
+                    "loc_moonwell_crossing",
+                    "loc_hollow_of_black_pines"
+                ]
             },
             "nextCheckpointIds": [
                 "cp_02_moonwell_crossing"
@@ -1189,18 +2313,14 @@
                 "enc_moonwell_ambush"
             ],
             "completeWhen": {
+                "objectiveIds": [
+                    "obj_trace_caravan"
+                ],
                 "locationIds": [
                     "loc_hollow_of_black_pines",
                     "loc_khazad_tarn_gate",
                     "loc_silvervein_deeps"
-                ],
-                "objectiveIds": [
-                    "obj_trace_caravan"
-                ],
-                "encounterIds": [
-                    "enc_moonwell_ambush"
-                ],
-                "summary": "The company learns where the caravan was taken and either keeps, recovers, or reconstructs enough of the token's meaning to choose the haunted road, the gate shortcut, or a risky captive trail into the deeps."
+                ]
             },
             "nextCheckpointIds": [
                 "cp_03_black_pines"
@@ -1241,17 +2361,13 @@
                 "enc_black_pines_oath"
             ],
             "completeWhen": {
-                "locationIds": [
-                    "loc_khazad_tarn_gate",
-                    "loc_silvervein_deeps"
-                ],
                 "objectiveIds": [
                     "obj_release_or_bypass_dead"
                 ],
-                "encounterIds": [
-                    "enc_black_pines_oath"
-                ],
-                "summary": "The company resolves passage through the hollow by release, negotiation, stealth, flight, or battle."
+                "locationIds": [
+                    "loc_khazad_tarn_gate",
+                    "loc_silvervein_deeps"
+                ]
             },
             "nextCheckpointIds": [
                 "cp_04_khazad_tarn_gate"
@@ -1291,20 +2407,13 @@
                 "enc_khazad_tarn_sentries"
             ],
             "completeWhen": {
-                "locationIds": [
-                    "loc_silvervein_deeps",
-                    "loc_chamber_of_the_star_shard"
-                ],
                 "objectiveIds": [
                     "obj_open_khazad_tarn"
                 ],
-                "encounterIds": [
-                    "enc_khazad_tarn_sentries"
-                ],
-                "segmentIds": [
-                    "seg_gate_song"
-                ],
-                "summary": "The gate is opened quietly, forced open at a cost, or bypassed through a dangerous water-channel."
+                "locationIds": [
+                    "loc_silvervein_deeps",
+                    "loc_chamber_of_the_star_shard"
+                ]
             },
             "nextCheckpointIds": [
                 "cp_05_silvervein_deeps"
@@ -1335,23 +2444,19 @@
                 "quest_shard_beneath_blue_mountains"
             ],
             "objectiveIds": [
-                "obj_secure_star_shard"
+                "obj_secure_star_shard",
+                "obj_free_prisoners"
             ],
             "segmentIds": [
                 "seg_deeps_negotiation"
             ],
-            "encounterIds": [],
+            "encounterIds": [
+                "enc_silvervein_watch_post"
+            ],
             "completeWhen": {
-                "locationIds": [
-                    "loc_chamber_of_the_star_shard"
-                ],
                 "objectiveIds": [
                     "obj_secure_star_shard"
-                ],
-                "segmentIds": [
-                    "seg_deeps_negotiation"
-                ],
-                "summary": "The company reaches the lower road with knowledge of the Star-Shard's chamber and determines the fate of the prisoners."
+                ]
             },
             "nextCheckpointIds": [
                 "cp_06_star_shard"
@@ -1392,21 +2497,52 @@
                 "enc_star_shard_confrontation"
             ],
             "completeWhen": {
-                "locationIds": [
-                    "loc_chamber_of_the_star_shard"
-                ],
                 "objectiveIds": [
                     "obj_secure_star_shard"
-                ],
-                "encounterIds": [
-                    "enc_star_shard_confrontation"
-                ],
-                "summary": "The Star-Shard is sealed, destroyed, entrusted, or otherwise placed beyond the Wight-Marshal's command."
+                ]
             },
             "nextCheckpointIds": [],
             "alternateCheckpointIds": [],
             "failureCheckpointIds": [],
             "terminal": true,
+            "prerequisiteCheckpointIds": [
+                "cp_05_silvervein_deeps"
+            ],
+            "prerequisitePolicy": "completed_or_skipped_or_failed",
+            "endingVariants": [
+                {
+                    "when": {
+                        "flagKey": "shard_sealed",
+                        "equals": true
+                    },
+                    "title": "The Mountain Sleeps",
+                    "text": "The vault is sealed and the gate sung shut behind you. Caravans cross Graymere Vale again before the first snow, and Torin teaches the gate-song to no one, which is how he says thank you."
+                },
+                {
+                    "when": {
+                        "flagKey": "shard_shattered",
+                        "equals": true
+                    },
+                    "title": "Bright Dust",
+                    "text": "Nothing will ever look through the Star-Shard again. The vault of Khazad-tarn is cracked and dark, the Dwarves will mourn it, and the winter roads are safe."
+                },
+                {
+                    "when": {
+                        "flagKey": "shard_returned",
+                        "equals": true
+                    },
+                    "title": "What Was Owed",
+                    "text": "Elenwen takes the wrapped shard at the Moonwell without unwrapping it. \"This was lent, long ago,\" she says. \"It is good to see a debt come home.\" The road west is long, and for once it is quiet."
+                },
+                {
+                    "when": {
+                        "flagKey": "shard_taken",
+                        "equals": true
+                    },
+                    "title": "A Light You Carry",
+                    "text": "The vale is safe. The caravans run. And some nights, when the fire is low, you take out the shard and look, only for a moment, to see whether anything is looking back."
+                }
+            ],
             "rejoinTargetCheckpointId": "cp_06_star_shard",
             "gmNotes": "Possible endings include a clean sealing, a costly destruction that scars the vault, a guarded journey to Lindon, or a compromised victory where one character carries troubling dreams afterward."
         }
@@ -1515,16 +2651,82 @@
         "newNpcs": "allowed_as_minor_or_temporary",
         "newLocations": "allowed_as_local_detail",
         "offTrackPolicy": "improvise_and_reconnect",
-        "checkpointStyle": "soft",
-        "tone": [
-            "hope_against_shadow",
-            "ancient_ruins",
-            "moral_choices",
-            "travel_weariness",
-            "small_courage"
-        ],
-        "continuityGuidance": "Keep the campaign focused on the Star-Shard, the missing caravan, the oath-bound dead, and the old Dwarf-road. Improvised scenes should point back to the next reachable checkpoint.",
-        "combatGuidance": "Combat is allowed but should not be the only route through major scenes. Reward negotiation, mercy, stealth, lore, and sacrifice.",
-        "spoilerGuidance": "Keep the Wight-Marshal's dependence on living hands, the nature of the Star-Shard, and Thalara's potential alliance hidden until discovered in play."
-    }
+        "checkpointStyle": "soft"
+    },
+    "map": {
+        "title": "Graymere Vale and the Blue Mountains",
+        "terrain": "mountain",
+        "seed": 3117
+    },
+    "routes": [
+        {
+            "from": "loc_graymere_watch",
+            "to": "loc_moonwell_crossing",
+            "style": "road"
+        },
+        {
+            "from": "loc_graymere_watch",
+            "to": "loc_hollow_of_black_pines",
+            "style": "trail"
+        },
+        {
+            "from": "loc_moonwell_crossing",
+            "to": "loc_hollow_of_black_pines",
+            "style": "trail"
+        },
+        {
+            "from": "loc_moonwell_crossing",
+            "to": "loc_khazad_tarn_gate",
+            "style": "trail"
+        },
+        {
+            "from": "loc_hollow_of_black_pines",
+            "to": "loc_khazad_tarn_gate",
+            "style": "road"
+        },
+        {
+            "from": "loc_khazad_tarn_gate",
+            "to": "loc_silvervein_deeps",
+            "style": "road"
+        },
+        {
+            "from": "loc_hollow_of_black_pines",
+            "to": "loc_silvervein_deeps",
+            "style": "hidden"
+        },
+        {
+            "from": "loc_silvervein_deeps",
+            "to": "loc_chamber_of_the_star_shard",
+            "style": "hidden"
+        }
+    ],
+    "merchants": [
+        {
+            "id": "merchant_brennas_stores",
+            "name": "Brenna's Stores",
+            "npcId": "npc_brenna_graymere",
+            "locationId": "loc_graymere_watch",
+            "buyRate": 0.5,
+            "restock": "long_rest",
+            "stock": [
+                {
+                    "catalog": "potion_healing",
+                    "quantity": 2
+                },
+                {
+                    "catalog": "healers_kit",
+                    "quantity": 1
+                },
+                {
+                    "catalog": "ration"
+                },
+                {
+                    "catalog": "torch"
+                },
+                {
+                    "catalog": "rope"
+                }
+            ]
+        }
+    ]
 }

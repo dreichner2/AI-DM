@@ -3,7 +3,7 @@
     "packId": "middle_earth.shadow_over_the_greenway",
     "title": "Shadow over the Greenway",
     "version": "1.0.1",
-    "description": "An original Middle-earth campaign pack for AIDM. The company begins in the quiet lands near Bree, where old roads, broken watchtowers, and forgotten barrows conceal signs of a returning shadow. The adventure emphasizes travel, secrecy, courage, ancient lore, and choices that can avoid unnecessary bloodshed, with authored shortcuts for groups that follow tracks directly instead of visiting every social hub.",
+    "description": "An original Middle-earth campaign pack. The company begins in the quiet lands near Bree, where old roads, broken watchtowers, and forgotten barrows conceal signs of a returning shadow. The adventure emphasizes travel, secrecy, courage, ancient lore, and choices that can avoid unnecessary bloodshed, with authored shortcuts for groups that follow tracks directly instead of visiting every social hub.",
     "world": {
         "name": "Middle-earth",
         "description": "A vast ancient world of free peoples, fading kingdoms, deep forests, ruined strongholds, and lingering evil. The Third Age wanes, and though great powers move far away, small deeds on lonely roads may decide whether darkness spreads unnoticed."
@@ -13,6 +13,31 @@
         "locationId": "loc_bree_west_gate",
         "questId": "quest_shadow_over_greenway",
         "checkpointId": "cp_bree_warning",
+        "clock": {
+            "day": 1,
+            "phase": "evening"
+        },
+        "flags": {
+            "wagon_inspected": false,
+            "courier_trail_found": false,
+            "inn_rumors_heard": false,
+            "stone_marks_seen": false,
+            "oath_lore_heard": false,
+            "hadrin_saved": false,
+            "seal_recovered": false,
+            "watchtower_decoded": false,
+            "goat_path_known": false,
+            "true_name_known": false,
+            "barrow_robbed": false,
+            "barrow_blessing": false,
+            "barrow_passed": false,
+            "saereth_resolved": false,
+            "stone_restored": false,
+            "stone_hidden": false,
+            "stone_broken": false,
+            "stone_claimed": false,
+            "quest_greenway_complete": false
+        },
         "currentScene": {
             "locationId": "loc_bree_west_gate",
             "title": "A Cold Wind at Bree",
@@ -33,7 +58,10 @@
         },
         "knownNpcIds": [
             "npc_tomas_gatewarden",
-            "npc_calenhir_ranger"
+            "npc_calenhir_ranger",
+            "npc_marla_underhill",
+            "npc_borin_ironhand",
+            "npc_elenwen_lorekeeper"
         ],
         "knownLocationIds": [
             "loc_bree_west_gate",
@@ -61,7 +89,116 @@
                 "investigation"
             ],
             "playerDescription": "Bree's gate creaks in the wind. Beyond it, warm windows glow, but outside the hedge the road lies dim and uneasy.",
-            "gmNotes": "Use this location to establish grounded stakes: frightened locals, ordinary people, and subtle signs of danger rather than immediate epic spectacle."
+            "gmNotes": "Use this location to establish grounded stakes: frightened locals, ordinary people, and subtle signs of danger rather than immediate epic spectacle.",
+            "sceneType": "exploration",
+            "connectedLocationIds": [
+                "loc_prancing_pony_common_room",
+                "loc_midgewater_causeway"
+            ],
+            "mapPosition": {
+                "x": 20,
+                "y": 72
+            },
+            "mapIcon": "gate",
+            "restPolicy": "safe",
+            "interactables": [
+                {
+                    "id": "gate_abandoned_wagon",
+                    "name": "Abandoned Wagon",
+                    "kind": "container",
+                    "allowedActions": [
+                        "inspect",
+                        "search"
+                    ],
+                    "actionLabels": {
+                        "inspect": "Look over the abandoned wagon",
+                        "search": "Search the wagon bed"
+                    },
+                    "open": true,
+                    "description": "A carter's wagon left standing just beyond the gate, its cargo of sacks and casks still roped down and untouched. The reins are knotted to the brake. One black-feathered arrow is sunk deep in the tailboard.",
+                    "playerDescription": "A carter's wagon stands abandoned just beyond the gate, its load still roped down.",
+                    "requirements": {
+                        "search": {
+                            "check": {
+                                "id": "search_abandoned_wagon",
+                                "dc": 10,
+                                "ability": "intelligence",
+                                "skill": "investigation"
+                            }
+                        }
+                    },
+                    "contents": [
+                        {
+                            "id": "black_feather_arrow",
+                            "name": "Black-Feathered Arrow",
+                            "type": "quest",
+                            "quantity": 1,
+                            "description": "A crude but carefully made arrow, fletched with black feathers and marked with a small ash-grey notch."
+                        },
+                        {
+                            "currency": {
+                                "gp": 6
+                            }
+                        }
+                    ],
+                    "setsFlags": {
+                        "inspect": {
+                            "wagon_inspected": true
+                        }
+                    },
+                    "discoversClueIds": {
+                        "search": [
+                            "clue_black_feather_arrow"
+                        ]
+                    }
+                },
+                {
+                    "id": "gate_road_tracks",
+                    "name": "Tracks in the Road Mud",
+                    "kind": "object",
+                    "allowedActions": [
+                        "inspect"
+                    ],
+                    "actionLabels": {
+                        "inspect": "Read the tracks in the mud"
+                    },
+                    "description": "One man's prints, long and running, leave the road and strike out eastward. Several heavier prints follow close behind his.",
+                    "playerDescription": "The road mud beyond the gate is trampled with bootprints, some of them heavy.",
+                    "requirements": {
+                        "inspect": {
+                            "check": {
+                                "id": "read_road_tracks",
+                                "dc": 11,
+                                "ability": "wisdom",
+                                "skill": "survival"
+                            }
+                        }
+                    },
+                    "setsFlags": {
+                        "inspect": {
+                            "courier_trail_found": true
+                        }
+                    },
+                    "discoversLocationIds": {
+                        "inspect": [
+                            "loc_midgewater_causeway"
+                        ]
+                    }
+                },
+                {
+                    "id": "gate_wardens_tally",
+                    "name": "Gatewarden's Tally",
+                    "kind": "object",
+                    "allowedActions": [
+                        "inspect"
+                    ],
+                    "actionLabels": {
+                        "inspect": "Read the gatewarden's tally"
+                    },
+                    "description": "The gatewarden's tally-board, chalked in a careful hand. Its last entry records the wagon coming in at dusk, with two words beside it: \"no driver\". Higher up, a courier from the north is entered as expected, and by the tally he is now three days overdue.",
+                    "playerDescription": "A chalked tally-board hangs inside the gate, listing who has come and gone."
+                }
+            ]
         },
         {
             "id": "loc_prancing_pony_common_room",
@@ -76,7 +213,113 @@
                 "safe_haven"
             ],
             "playerDescription": "The common room is warm and loud, yet several tables fall quiet whenever the northern road is mentioned.",
-            "gmNotes": "This is the best place for rumors, soft roleplay, clue gathering, and non-combat problem solving."
+            "gmNotes": "This is the best place for rumors, soft roleplay, clue gathering, and non-combat problem solving.",
+            "sceneType": "social",
+            "connectedLocationIds": [
+                "loc_bree_west_gate",
+                "loc_fornost_watch_ruin"
+            ],
+            "mapPosition": {
+                "x": 27,
+                "y": 62
+            },
+            "mapIcon": "inn",
+            "restPolicy": "safe",
+            "interactables": [
+                {
+                    "id": "pony_corner_table",
+                    "name": "Corner Table",
+                    "kind": "container",
+                    "allowedActions": [
+                        "search"
+                    ],
+                    "actionLabels": {
+                        "search": "Search the strangers' corner table"
+                    },
+                    "open": true,
+                    "description": "A corner table in the common room, well away from the fire. Dried marsh mud lies caked under its bench, and tucked beneath it is a charcoal sketch of the east road with the causeway marked.",
+                    "playerDescription": "A shadowed corner table, well away from the fire.",
+                    "requirements": {
+                        "search": {
+                            "check": {
+                                "id": "search_corner_table",
+                                "dc": 11,
+                                "ability": "intelligence",
+                                "skill": "investigation"
+                            }
+                        }
+                    },
+                    "contents": [
+                        {
+                            "id": "muddy_road_sketch",
+                            "name": "Muddy Road-Sketch",
+                            "type": "quest",
+                            "quantity": 1,
+                            "description": "A charcoal sketch of the east road on a mud-stained scrap of paper, with the causeway marked."
+                        }
+                    ],
+                    "setsFlags": {
+                        "search": {
+                            "inn_rumors_heard": true
+                        }
+                    },
+                    "discoversLocationIds": {
+                        "search": [
+                            "loc_midgewater_causeway"
+                        ]
+                    }
+                },
+                {
+                    "id": "pony_road_stone_rubbing",
+                    "name": "Borin's Road-Stone Rubbing",
+                    "kind": "object",
+                    "allowedActions": [
+                        "inspect"
+                    ],
+                    "actionLabels": {
+                        "inspect": "Study Borin's rubbing of the road-stone"
+                    },
+                    "description": "A charcoal rubbing Borin took from a Greenway road-stone, pinned flat on his table. The northern marks on it were freshly cleaned, their cuts still sharp. Read the old way, they point up the Fornost road to a watchtower.",
+                    "playerDescription": "A charcoal rubbing of old stone-marks lies pinned flat on the dwarf's table.",
+                    "setsFlags": {
+                        "inspect": {
+                            "stone_marks_seen": true
+                        }
+                    },
+                    "discoversClueIds": {
+                        "inspect": [
+                            "clue_greenway_stone_marks"
+                        ]
+                    },
+                    "discoversLocationIds": {
+                        "inspect": [
+                            "loc_fornost_watch_ruin"
+                        ]
+                    }
+                },
+                {
+                    "id": "pony_hearthside",
+                    "name": "The Hearthside",
+                    "kind": "object",
+                    "allowedActions": [
+                        "use"
+                    ],
+                    "actionLabels": {
+                        "use": "Listen to Elenwen's song by the hearth"
+                    },
+                    "usable": true,
+                    "description": "The common room's wide hearth, its fire burning low. Elenwen sits nearest it, a little apart from the crowd.",
+                    "playerDescription": "The wide hearth of the common room, where an elf sits a little apart from the crowd.",
+                    "setsFlags": {
+                        "use": {
+                            "oath_lore_heard": true
+                        }
+                    },
+                    "actionText": {
+                        "use": "Elenwen sings low, in a tongue the room half remembers. It is a road-song of the North: that the way shall be kept for the weary and the hunted, and that the dead who kept it shall be named. When it ends the fire seems quieter, and you find you have the words by heart."
+                    }
+                }
+            ]
         },
         {
             "id": "loc_midgewater_causeway",
@@ -91,7 +334,95 @@
                 "ambush"
             ],
             "playerDescription": "Cold water sucks at the stones of the causeway. Reeds hiss in the wind, and distant splashes sound too deliberate for fish.",
-            "gmNotes": "The wounded courier hid near this route. The marsh encounter should allow stealth, rescue, negotiation with frightened locals, or combat."
+            "gmNotes": "The wounded courier hid near this route. The marsh encounter should allow stealth, rescue, negotiation with frightened locals, or combat.",
+            "sceneType": "travel",
+            "connectedLocationIds": [
+                "loc_bree_west_gate",
+                "loc_fornost_watch_ruin"
+            ],
+            "mapPosition": {
+                "x": 50,
+                "y": 57
+            },
+            "mapIcon": "marsh",
+            "restPolicy": "risky",
+            "interactables": [
+                {
+                    "id": "marsh_reed_hide",
+                    "name": "Reed Hide",
+                    "kind": "container",
+                    "allowedActions": [
+                        "search"
+                    ],
+                    "actionLabels": {
+                        "search": "Search the reed hide"
+                    },
+                    "open": true,
+                    "description": "A blind of bent reeds where Hadrin Vale lay hidden from the scouts, and under it, wrapped in oilcloth, the broken seal of the North and his torn message. The message reads: \"They called the one who leads them the Ash-Mouthed. The seal is broken, but it still turns cold toward the Weather Hills. I was to carry it to the Rangers. Let no servant of ash speak over the old stone.\"",
+                    "playerDescription": "A hide of bent and woven reeds at the causeway's edge, half sunk in black water.",
+                    "requirements": {
+                        "search": {
+                            "flags": {
+                                "hadrin_saved": true
+                            }
+                        }
+                    },
+                    "contents": [
+                        {
+                            "id": "broken_seal_of_the_north",
+                            "name": "Broken Seal of the North",
+                            "type": "quest",
+                            "quantity": 1,
+                            "description": "A split metal seal bearing a worn crown and seven stars, cold to the touch when pointed toward the Weather Hills."
+                        },
+                        {
+                            "id": "hadrins_torn_message",
+                            "name": "Hadrin's Torn Message",
+                            "type": "quest",
+                            "quantity": 1,
+                            "description": "A rain-spotted scrap of paper torn across, written in a hurried hand."
+                        }
+                    ],
+                    "setsFlags": {
+                        "search": {
+                            "seal_recovered": true
+                        }
+                    },
+                    "discoversClueIds": {
+                        "search": [
+                            "clue_broken_seal"
+                        ]
+                    },
+                    "discoversLocationIds": {
+                        "search": [
+                            "loc_fornost_watch_ruin"
+                        ]
+                    }
+                },
+                {
+                    "id": "marsh_sunken_marker",
+                    "name": "Sunken Way-Marker",
+                    "kind": "object",
+                    "allowedActions": [
+                        "inspect"
+                    ],
+                    "actionLabels": {
+                        "inspect": "Read the sunken way-marker"
+                    },
+                    "description": "A way-marker of old northern stone, leaning half under the black water beside the causeway. Its marks have been scraped freshly clean, and they point north to a watchtower on the Fornost road.",
+                    "playerDescription": "A carved way-marker leans half sunk in the water beside the causeway.",
+                    "discoversClueIds": {
+                        "inspect": [
+                            "clue_greenway_stone_marks"
+                        ]
+                    },
+                    "discoversLocationIds": {
+                        "inspect": [
+                            "loc_fornost_watch_ruin"
+                        ]
+                    }
+                }
+            ]
         },
         {
             "id": "loc_fornost_watch_ruin",
@@ -106,7 +437,154 @@
                 "danger"
             ],
             "playerDescription": "The tower leans against the grey sky like a tired sentinel. Old carvings still show a crown beneath seven stars.",
-            "gmNotes": "This ruin contains the first strong proof that the enemy seeks an old oath-stone connected to forgotten northern defenses."
+            "gmNotes": "This ruin contains the first strong proof that the enemy seeks an old oath-stone connected to forgotten northern defenses.",
+            "sceneType": "mystery",
+            "connectedLocationIds": [
+                "loc_prancing_pony_common_room",
+                "loc_midgewater_causeway",
+                "loc_barrow_downs_outer_ring",
+                "loc_amon_sul_shadow_camp"
+            ],
+            "mapPosition": {
+                "x": 43,
+                "y": 27
+            },
+            "mapIcon": "tower",
+            "restPolicy": "risky",
+            "interactables": [
+                {
+                    "id": "tower_carved_lintel",
+                    "name": "Carved Lintel",
+                    "kind": "object",
+                    "allowedActions": [
+                        "inspect"
+                    ],
+                    "actionLabels": {
+                        "inspect": "Read the marks on the lintel"
+                    },
+                    "description": "Under the crown and seven stars, the lintel over the tower door carries a weathered pattern of carved lines. Read as a map, they run from this tower across the Barrow-downs to a hidden place below Amon Sûl where the oath-stone lies. A loose stone beneath the lintel hides a Rangers' cache.",
+                    "playerDescription": "A stone lintel over the tower door, carved with a crown, seven stars and lines of old northern marks.",
+                    "requirements": {
+                        "inspect": {
+                            "check": {
+                                "id": "read_carved_lintel",
+                                "dc": 12,
+                                "ability": "intelligence",
+                                "skill": "history"
+                            }
+                        }
+                    },
+                    "reveals": {
+                        "inspect": [
+                            "tower_rangers_cache"
+                        ]
+                    },
+                    "setsFlags": {
+                        "inspect": {
+                            "watchtower_decoded": true
+                        }
+                    },
+                    "discoversClueIds": {
+                        "inspect": [
+                            "clue_oath_stone_map"
+                        ]
+                    },
+                    "discoversLocationIds": {
+                        "inspect": [
+                            "loc_barrow_downs_outer_ring"
+                        ]
+                    }
+                },
+                {
+                    "id": "tower_rangers_cache",
+                    "name": "Rangers' Cache",
+                    "kind": "container",
+                    "allowedActions": [
+                        "search"
+                    ],
+                    "actionLabels": {
+                        "search": "Search the Rangers' cache"
+                    },
+                    "hidden": true,
+                    "open": true,
+                    "description": "A hollow behind a loose doorstone, where Rangers once left supplies for one another. Inside lie a stoppered healing draught and ten gold pieces wrapped in oiled cloth.",
+                    "playerDescription": "A hollow behind a loose stone in the tower doorway.",
+                    "contents": [
+                        {
+                            "id": "tower_rangers_cache_potion_of_healing",
+                            "name": "Potion of Healing",
+                            "type": "potion",
+                            "quantity": 1,
+                            "description": "A stoppered clay vial of red draught, wrapped in oiled cloth."
+                        },
+                        {
+                            "currency": {
+                                "gp": 10
+                            }
+                        }
+                    ]
+                },
+                {
+                    "id": "tower_name_stone",
+                    "name": "Cracked Name-Stone",
+                    "kind": "object",
+                    "allowedActions": [
+                        "inspect"
+                    ],
+                    "actionLabels": {
+                        "inspect": "Read the cracked name-stone"
+                    },
+                    "description": "A memorial stone cracked across its face, listing the oath-speakers who kept this tower. One name is struck through: Saereth, a faithless oath-speaker whose burned voice served the Shadow.",
+                    "playerDescription": "A cracked memorial stone stands inside the tower, carved with a column of names.",
+                    "setsFlags": {
+                        "inspect": {
+                            "true_name_known": true
+                        }
+                    },
+                    "discoversClueIds": {
+                        "inspect": [
+                            "clue_saereth_true_name_fragment"
+                        ]
+                    }
+                },
+                {
+                    "id": "tower_fallen_stair",
+                    "name": "Fallen Stair",
+                    "kind": "object",
+                    "allowedActions": [
+                        "use"
+                    ],
+                    "actionLabels": {
+                        "use": "Climb the fallen stair"
+                    },
+                    "usable": true,
+                    "description": "The tower's inner stair is broken and choked with fallen stone. A sure climber can still reach the top of the wall.",
+                    "playerDescription": "A broken stair climbs the inside of the tower wall, choked with fallen stone.",
+                    "requirements": {
+                        "use": {
+                            "check": {
+                                "id": "climb_fallen_stair",
+                                "dc": 13,
+                                "ability": "strength",
+                                "skill": "athletics"
+                            }
+                        }
+                    },
+                    "setsFlags": {
+                        "use": {
+                            "goat_path_known": true
+                        }
+                    },
+                    "discoversLocationIds": {
+                        "use": [
+                            "loc_amon_sul_shadow_camp"
+                        ]
+                    },
+                    "actionText": {
+                        "use": "From the broken top of the tower the land lies open eastward. A thread of smokeless red light shows under the far hills, and a goat-path runs toward it along the ridge, well clear of the downs."
+                    }
+                }
+            ]
         },
         {
             "id": "loc_barrow_downs_outer_ring",
@@ -121,7 +599,96 @@
                 "high_risk"
             ],
             "playerDescription": "The hills rise like sleeping backs beneath the mist. No birds sing here, and every footstep feels too loud.",
-            "gmNotes": "Do not overuse direct undead attacks. The horror should come from memory, cold, disorientation, and temptation."
+            "gmNotes": "Do not overuse direct undead attacks. The horror should come from memory, cold, disorientation, and temptation.",
+            "sceneType": "mystery",
+            "connectedLocationIds": [
+                "loc_fornost_watch_ruin",
+                "loc_amon_sul_shadow_camp"
+            ],
+            "mapPosition": {
+                "x": 68,
+                "y": 42
+            },
+            "mapIcon": "cairn",
+            "restPolicy": "none",
+            "interactables": [
+                {
+                    "id": "barrow_standing_stone",
+                    "name": "Standing Stone",
+                    "kind": "object",
+                    "allowedActions": [
+                        "use"
+                    ],
+                    "actionLabels": {
+                        "use": "Speak the road-oath at the standing stone"
+                    },
+                    "usable": true,
+                    "description": "A tall standing stone at the edge of the first ring of mounds, its foot carved with words in the northern tongue. They are the words of the old road-song: a promise to keep the way for the weary and the hunted, and to name the dead who kept it.",
+                    "playerDescription": "A tall standing stone at the edge of the mounds, weathered letters circling its foot.",
+                    "requirements": {
+                        "use": {
+                            "flags": {
+                                "oath_lore_heard": true,
+                                "barrow_robbed": false
+                            }
+                        }
+                    },
+                    "setsFlags": {
+                        "use": {
+                            "barrow_blessing": true
+                        }
+                    },
+                    "discoversClueIds": {
+                        "use": [
+                            "clue_barrow_blessing"
+                        ]
+                    },
+                    "discoversLocationIds": {
+                        "use": [
+                            "loc_amon_sul_shadow_camp"
+                        ]
+                    },
+                    "usableInCombat": [
+                        "use"
+                    ],
+                    "resolvesEncounter": {
+                        "use": {
+                            "encounterId": "enc_barrow_cold_memory",
+                            "outcome": "negotiation"
+                        }
+                    },
+                    "actionText": {
+                        "use": "You speak the road-song as Elenwen gave it, naming the dead who kept the way. The mist draws back from the stones. Something vast and cold regards you a moment longer, and then it is only a hill, and the way east lies open."
+                    }
+                },
+                {
+                    "id": "barrow_open_mound",
+                    "name": "Open Barrow",
+                    "kind": "container",
+                    "allowedActions": [
+                        "search"
+                    ],
+                    "actionLabels": {
+                        "search": "Take the grave-gold from the open barrow"
+                    },
+                    "open": true,
+                    "description": "A mound whose stone door has fallen in, open to the sky. Grave-gold lies scattered among the old bones inside, forty pieces of it.",
+                    "playerDescription": "A barrow mound whose stone door has fallen in; something glints in the dark within.",
+                    "contents": [
+                        {
+                            "currency": {
+                                "gp": 40
+                            }
+                        }
+                    ],
+                    "setsFlags": {
+                        "search": {
+                            "barrow_robbed": true,
+                            "barrow_blessing": false
+                        }
+                    }
+                }
+            ]
         },
         {
             "id": "loc_amon_sul_shadow_camp",
@@ -136,7 +703,153 @@
                 "ritual"
             ],
             "playerDescription": "Beyond the ridge, a low red fire burns without smoke. Shapes move around it, and something black is wrapped in iron chains at the camp's center.",
-            "gmNotes": "The final scene can end through battle, sabotage, rescue, bargaining with a fearful underling, or interrupting the ritual before the dark emissary completes it."
+            "gmNotes": "The final scene can end through battle, sabotage, rescue, bargaining with a fearful underling, or interrupting the ritual before the dark emissary completes it.",
+            "sceneType": "exploration",
+            "connectedLocationIds": [
+                "loc_barrow_downs_outer_ring",
+                "loc_fornost_watch_ruin"
+            ],
+            "mapPosition": {
+                "x": 87,
+                "y": 25
+            },
+            "mapIcon": "camp",
+            "restPolicy": "none",
+            "interactables": [
+                {
+                    "id": "camp_oath_stone",
+                    "name": "The Oath-Stone",
+                    "kind": "object",
+                    "allowedActions": [
+                        "inspect",
+                        "use",
+                        "lock",
+                        "break",
+                        "trigger"
+                    ],
+                    "actionLabels": {
+                        "inspect": "Approach the chained oath-stone",
+                        "use": "Restore the oath-stone",
+                        "lock": "Hide the oath-stone",
+                        "break": "Break the oath-stone",
+                        "trigger": "Claim the oath-stone"
+                    },
+                    "choiceActions": [
+                        "use",
+                        "lock",
+                        "break",
+                        "trigger"
+                    ],
+                    "usable": true,
+                    "breakable": true,
+                    "broken": false,
+                    "locked": false,
+                    "triggerable": true,
+                    "repeatableInspect": true,
+                    "description": "A black stone bound in iron chains at the heart of the camp, carved with an old promise of watch and ward. While Saereth's rite holds, nothing can be done with it. Once the rite is broken, it can be restored with the broken seal by one who knows its promise, hidden in the old cellars of the hill, broken, or claimed by whoever lays a hand on it.",
+                    "playerDescription": "A black stone wrapped in iron chains pulses beside a smokeless red fire.",
+                    "requirements": {
+                        "use": {
+                            "flags": {
+                                "saereth_resolved": true,
+                                "quest_greenway_complete": false
+                            },
+                            "anyItemIds": [
+                                "broken_seal_of_the_north"
+                            ],
+                            "anyOf": [
+                                {
+                                    "flags": {
+                                        "oath_lore_heard": true
+                                    }
+                                },
+                                {
+                                    "flags": {
+                                        "watchtower_decoded": true
+                                    }
+                                }
+                            ]
+                        },
+                        "lock": {
+                            "flags": {
+                                "saereth_resolved": true,
+                                "quest_greenway_complete": false
+                            }
+                        },
+                        "break": {
+                            "flags": {
+                                "saereth_resolved": true,
+                                "quest_greenway_complete": false
+                            }
+                        },
+                        "trigger": {
+                            "flags": {
+                                "saereth_resolved": true,
+                                "quest_greenway_complete": false
+                            }
+                        }
+                    },
+                    "setsFlags": {
+                        "use": {
+                            "stone_restored": true,
+                            "quest_greenway_complete": true
+                        },
+                        "lock": {
+                            "stone_hidden": true,
+                            "quest_greenway_complete": true
+                        },
+                        "break": {
+                            "stone_broken": true,
+                            "quest_greenway_complete": true
+                        },
+                        "trigger": {
+                            "stone_claimed": true,
+                            "quest_greenway_complete": true
+                        }
+                    },
+                    "actionText": {
+                        "use": "You set the broken seal against the stone and speak the promise whole. The chains fall away link by link, and the cold that comes off the stone is the clean cold of a winter road with someone keeping watch on it.",
+                        "lock": "You wrap the stone in Saereth's own black cloth and carry it down into the dark of the hill, where the old kings cut cellars no map remembers. When you come up again you are careful not to count your steps.",
+                        "break": "The stone cracks across its carved words. For a breath the whole hillside seems to listen, and then there is only wind, and a broken rock, and nothing left for anyone to twist.",
+                        "trigger": "You lay your hand where a king once laid his. The stone is very cold, and then it is not, and far away along the Greenway every old road-mark turns, very slightly, toward you."
+                    }
+                },
+                {
+                    "id": "camp_stolen_relics",
+                    "name": "Stolen Relics",
+                    "kind": "container",
+                    "allowedActions": [
+                        "search"
+                    ],
+                    "actionLabels": {
+                        "search": "Search the stolen relics"
+                    },
+                    "open": true,
+                    "description": "A heap of relics the scouts carried here from barrows and ruins along the old road. Among them are a stoppered healing draught and sixty gold pieces in a torn purse.",
+                    "playerDescription": "A heap of stolen relics lies under an oiled cloth at the edge of the firelight.",
+                    "requirements": {
+                        "search": {
+                            "flags": {
+                                "saereth_resolved": true
+                            }
+                        }
+                    },
+                    "contents": [
+                        {
+                            "id": "camp_stolen_relics_potion_of_healing",
+                            "name": "Potion of Healing",
+                            "type": "potion",
+                            "quantity": 1,
+                            "description": "A stoppered clay vial of red draught, taken from some traveler on the road."
+                        },
+                        {
+                            "currency": {
+                                "gp": 60
+                            }
+                        }
+                    ]
+                }
+            ]
         }
     ],
     "npcs": [
@@ -152,6 +865,11 @@
             ],
             "disposition": "anxious_helpful",
             "playerSummary": "Tomas saw the abandoned wagon arrive without its driver and wants the matter handled before panic spreads.",
+            "knows": [
+                "The wagon came in at dusk with no driver, the reins knotted to the brake.",
+                "I heard harsh speech out in the fog. Not Bree-talk, nor any tongue I know.",
+                "One of them wore a torn black cloak. I saw that much before the mist closed."
+            ],
             "gmNotes": "Tomas did not see the attackers clearly. He heard harsh speech from the fog and saw one figure wearing a torn black cloak."
         },
         {
@@ -166,6 +884,11 @@
             ],
             "disposition": "guarded_allied",
             "playerSummary": "Calenhir believes the signs point to organized servants of darkness moving along the old road.",
+            "knows": [
+                "These were no common thieves. They left the cargo and took the man.",
+                "A courier from the north was due through Bree this week.",
+                "The old road has wards on it older than Bree. Someone is prying at them."
+            ],
             "gmNotes": "Calenhir knows more than he says at first. He suspects the relic is tied to old wards of Arthedain, but he wants to test the party's judgment before revealing this."
         },
         {
@@ -174,12 +897,17 @@
             "role": "Hobbit innkeeper's niece",
             "locationId": "loc_prancing_pony_common_room",
             "description": "A sharp-eyed hobbit who notices everything from spilled ale to strangers hiding mud on their boots.",
-            "visibleAtStart": false,
+            "visibleAtStart": true,
             "questIds": [
                 "quest_shadow_over_greenway"
             ],
             "disposition": "curious_practical",
             "playerSummary": "Marla heard suspicious travelers asking about old roads, old stones, and whether rangers still watch the north.",
+            "knows": [
+                "Two travelers asked about old roads and old stones, and whether Rangers still watch the north.",
+                "One was a Dunland man. He kept the mud on his boots hidden under the table.",
+                "They left by the east road at first light, in a hurry."
+            ],
             "gmNotes": "Marla can identify one suspect as a Dunlending agent if treated respectfully. She dislikes being patronized."
         },
         {
@@ -188,12 +916,16 @@
             "role": "Dwarven road-mason",
             "locationId": "loc_prancing_pony_common_room",
             "description": "A broad-shouldered dwarf with stone dust in his beard and a professional hatred of neglected roads.",
-            "visibleAtStart": false,
+            "visibleAtStart": true,
             "questIds": [
                 "quest_shadow_over_greenway"
             ],
             "disposition": "blunt_helpful",
             "playerSummary": "Borin recently repaired stones near the Greenway and found old marks newly uncovered.",
+            "knows": [
+                "I reset three stones on the Greenway this month. Somebody had dug the old marks clean.",
+                "The marks point to a buried way-sign, and that points to the old watchtower on the Fornost road."
+            ],
             "gmNotes": "Borin can explain that the marks point toward a buried way-sign leading to the ruined watchtower."
         },
         {
@@ -202,12 +934,16 @@
             "role": "Elven lorekeeper passing westward",
             "locationId": "loc_prancing_pony_common_room",
             "description": "A quiet elf traveler whose songs carry memories of northern kingdoms long fallen.",
-            "visibleAtStart": false,
+            "visibleAtStart": true,
             "questIds": [
                 "quest_shadow_over_greenway"
             ],
             "disposition": "distant_benevolent",
             "playerSummary": "Elenwen knows old names and older griefs, and can interpret fragments of Arnorian script.",
+            "knows": [
+                "Some relics of the north protect by remembering oaths, not by any power of their own.",
+                "An oath-stone answers to those who speak its promise truly, and to those who twist it."
+            ],
             "gmNotes": "Elenwen should feel ancient but not omniscient. She can warn that some relics protect by remembering oaths, not by raw power."
         },
         {
@@ -252,34 +988,96 @@
                 {
                     "id": "obj_question_bree_witnesses",
                     "title": "Question witnesses in Bree",
-                    "description": "Speak with Tomas, Calenhir, and locals at the Prancing Pony to learn what happened to the abandoned wagon."
+                    "description": "Speak with Tomas, Calenhir, and locals at the Prancing Pony to learn what happened to the abandoned wagon.",
+                    "optional": true,
+                    "completeWhen": {
+                        "anyOf": [
+                            {
+                                "flagKey": "wagon_inspected",
+                                "equals": true
+                            },
+                            {
+                                "flagKey": "inn_rumors_heard",
+                                "equals": true
+                            }
+                        ]
+                    }
                 },
                 {
                     "id": "obj_track_missing_courier",
                     "title": "Track the missing courier",
-                    "description": "Follow the signs from the west gate toward the Midgewater Marshes and determine whether the courier survived."
+                    "description": "Follow the signs from the west gate toward the Midgewater Marshes and determine whether the courier survived.",
+                    "optional": true,
+                    "completeWhen": {
+                        "flagKey": "hadrin_saved",
+                        "equals": true
+                    }
                 },
                 {
                     "id": "obj_recover_broken_seal",
                     "title": "Recover the broken northern seal",
-                    "description": "Find Hadrin Vale or his hidden satchel and secure the broken Arnorian seal before enemy scouts do."
+                    "description": "Find Hadrin Vale or his hidden satchel and secure the broken Arnorian seal before enemy scouts do.",
+                    "optional": true,
+                    "completeWhen": {
+                        "flagKey": "seal_recovered",
+                        "equals": true
+                    }
                 },
                 {
                     "id": "obj_decode_watchtower_marks",
                     "title": "Decode the watchtower marks",
-                    "description": "Use lore, craft, or careful investigation at the ruined watchtower to learn where the oath-stone lies."
+                    "description": "Use lore, craft, or careful investigation at the ruined watchtower to learn where the oath-stone lies.",
+                    "optional": true,
+                    "completeWhen": {
+                        "flagKey": "watchtower_decoded",
+                        "equals": true
+                    }
                 },
                 {
                     "id": "obj_interrupt_shadow_rite",
                     "title": "Interrupt the shadow rite",
-                    "description": "Reach the hidden camp below Amon Sûl and stop Saereth from corrupting the oath-stone."
+                    "description": "Reach the hidden camp below Amon Sûl and stop Saereth from corrupting the oath-stone.",
+                    "completeWhen": {
+                        "flagKey": "saereth_resolved",
+                        "equals": true
+                    }
                 },
                 {
                     "id": "obj_restore_oath_stone",
                     "title": "Restore or conceal the oath-stone",
-                    "description": "Decide whether to renew the old ward, hide the stone, or entrust it to a worthy guardian."
+                    "description": "Decide whether to renew the old ward, hide the stone, or entrust it to a worthy guardian.",
+                    "completeWhen": {
+                        "anyOf": [
+                            {
+                                "flagKey": "stone_restored",
+                                "equals": true
+                            },
+                            {
+                                "flagKey": "stone_hidden",
+                                "equals": true
+                            },
+                            {
+                                "flagKey": "stone_broken",
+                                "equals": true
+                            },
+                            {
+                                "flagKey": "stone_claimed",
+                                "equals": true
+                            }
+                        ]
+                    }
                 }
             ],
+            "rewards": {
+                "xp": 600,
+                "gp": 50,
+                "items": [
+                    {
+                        "id": "rangers_star_token",
+                        "name": "Ranger's Star-Token"
+                    }
+                ]
+            },
             "gmNotes": "This main quest should remain pack-driven. The DM may add local complications, but the campaign should keep reconnecting to the road investigation, the ancient seal, the watchtower, and the final rite."
         }
     ],
@@ -287,6 +1085,7 @@
         {
             "id": "enemy_black_feather_orc_scout",
             "name": "Black-Feather Orc Scout",
+            "singularName": "Black-Feather Orc Scout",
             "type": "orc",
             "role": "skirmisher",
             "creatureType": "humanoid",
@@ -442,6 +1241,7 @@
         {
             "id": "enemy_barrow_cold_wight",
             "name": "Barrow-cold Wight",
+            "singularName": "Barrow-cold Wight",
             "type": "undead",
             "role": "haunting_controller",
             "creatureType": "undead",
@@ -604,12 +1404,13 @@
         },
         {
             "id": "enemy_saereth_shadow_emissary",
-            "name": "Saereth's Shadow Emissary Form",
+            "name": "Saereth the Ash-Mouthed",
+            "proper": true,
             "type": "fallen_sorcerer",
             "role": "ritualist",
             "creatureType": "humanoid",
             "creatureTypeName": "Shadow emissary",
-            "challengeTier": "hard",
+            "challengeTier": "boss",
             "level": 2,
             "size": "medium",
             "description": "Saereth revealed in battle or confrontation, wielding fear, ash, and old broken promises.",
@@ -811,7 +1612,55 @@
                 ],
                 "objective": "Protect or locate Hadrin and secure clue_broken_seal."
             },
-            "gmNotes": "The scouts value the seal more than killing the party. A chase, misdirection, or intimidation scene is valid."
+            "gmNotes": "The scouts value the seal more than killing the party. A chase, misdirection, or intimidation scene is valid.",
+            "trigger": {
+                "type": "on_enter",
+                "locationId": "loc_midgewater_causeway"
+            },
+            "rewards": {
+                "xp": 100
+            },
+            "outcomes": {
+                "victory": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "hadrin_saved",
+                            "flagValue": true
+                        },
+                        {
+                            "type": "clue.discover",
+                            "clueId": "clue_name_ash_mouthed"
+                        }
+                    ]
+                },
+                "negotiation": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "hadrin_saved",
+                            "flagValue": true
+                        },
+                        {
+                            "type": "clue.discover",
+                            "clueId": "clue_name_ash_mouthed"
+                        }
+                    ]
+                },
+                "surrender": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "hadrin_saved",
+                            "flagValue": true
+                        },
+                        {
+                            "type": "clue.discover",
+                            "clueId": "clue_name_ash_mouthed"
+                        }
+                    ]
+                }
+            }
         },
         {
             "id": "enc_barrow_cold_memory",
@@ -841,7 +1690,106 @@
                 ],
                 "objective": "Pass through the Barrow-downs without surrendering the seal or abandoning the quest."
             },
-            "gmNotes": "Allow creative answers: songs, memories, oaths, holy symbols, fire, lore, or respectful retreat."
+            "gmNotes": "Allow creative answers: songs, memories, oaths, holy symbols, fire, lore, or respectful retreat.",
+            "trigger": {
+                "type": "on_enter",
+                "locationId": "loc_barrow_downs_outer_ring"
+            },
+            "unless": {
+                "flagKey": "oath_lore_heard",
+                "equals": true
+            },
+            "rewards": {
+                "xp": 200
+            },
+            "outcomes": {
+                "victory": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "barrow_passed",
+                            "flagValue": true
+                        },
+                        {
+                            "type": "location.discover",
+                            "locationId": "loc_amon_sul_shadow_camp"
+                        }
+                    ]
+                },
+                "surrender": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "barrow_passed",
+                            "flagValue": true
+                        },
+                        {
+                            "type": "location.discover",
+                            "locationId": "loc_amon_sul_shadow_camp"
+                        }
+                    ]
+                }
+            }
+        },
+        {
+            "id": "enc_barrow_wight_roused",
+            "title": "The Robbed Barrow",
+            "locationIds": [
+                "loc_barrow_downs_outer_ring"
+            ],
+            "questIds": [
+                "quest_shadow_over_greenway"
+            ],
+            "checkpointIds": [
+                "cp_barrow_crossing"
+            ],
+            "enemyGroups": [
+                {
+                    "enemyId": "enemy_barrow_cold_wight",
+                    "count": 1
+                }
+            ],
+            "setup": "The gold is cold enough to burn. Behind you the mist stands up in the shape of a man, and the hill breathes out.",
+            "trigger": {
+                "type": "on_interactable",
+                "targetId": "barrow_open_mound",
+                "action": "search"
+            },
+            "unless": {
+                "flagKey": "barrow_passed",
+                "equals": true
+            },
+            "rewards": {
+                "xp": 200
+            },
+            "outcomes": {
+                "victory": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "barrow_passed",
+                            "flagValue": true
+                        },
+                        {
+                            "type": "location.discover",
+                            "locationId": "loc_amon_sul_shadow_camp"
+                        }
+                    ]
+                },
+                "surrender": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "barrow_passed",
+                            "flagValue": true
+                        },
+                        {
+                            "type": "location.discover",
+                            "locationId": "loc_amon_sul_shadow_camp"
+                        }
+                    ]
+                }
+            }
         },
         {
             "id": "enc_shadow_rite_amon_sul",
@@ -857,8 +1805,20 @@
                 "cp_shadow_camp_finale"
             ],
             "enemyIds": [
-                "enemy_black_feather_orc_scout",
-                "enemy_saereth_shadow_emissary"
+                "enemy_saereth_shadow_emissary",
+                "enemy_black_feather_orc_scout"
+            ],
+            "enemyGroups": [
+                {
+                    "enemyId": "enemy_saereth_shadow_emissary",
+                    "count": 1,
+                    "role": "the ash-mouthed ritualist"
+                },
+                {
+                    "enemyId": "enemy_black_feather_orc_scout",
+                    "count": 2,
+                    "role": "scouts guarding the rite"
+                }
             ],
             "setup": "A chain-bound stone pulses beside a smokeless red fire. Saereth speaks in a burned whisper as the old road seems to darken behind him.",
             "stakes": "If the rite completes, the old northern ward fails and servants of darkness gain a safer road into Bree-land.",
@@ -874,7 +1834,66 @@
                 ],
                 "objective": "Stop the rite by defeating Saereth, breaking his focus, stealing the oath-stone, cleansing the stone, or forcing his retreat."
             },
-            "gmNotes": "Combat is one option. Stealth, sabotage, a rescue gambit, or using Saereth's true name should also work."
+            "gmNotes": "Combat is one option. Stealth, sabotage, a rescue gambit, or using Saereth's true name should also work.",
+            "trigger": {
+                "type": "on_interactable",
+                "targetId": "camp_oath_stone",
+                "action": "inspect"
+            },
+            "rewards": {
+                "xp": 600,
+                "gp": 60
+            },
+            "outcomes": {
+                "victory": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "saereth_resolved",
+                            "flagValue": true
+                        }
+                    ]
+                },
+                "negotiation": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "saereth_resolved",
+                            "flagValue": true
+                        }
+                    ]
+                },
+                "surrender": {
+                    "consequences": [
+                        {
+                            "type": "flag.set",
+                            "flagKey": "saereth_resolved",
+                            "flagValue": true
+                        }
+                    ]
+                }
+            },
+            "adjustments": [
+                {
+                    "when": {
+                        "flagKey": "true_name_known",
+                        "equals": true
+                    },
+                    "enemyId": "enemy_saereth_shadow_emissary",
+                    "hpMultiplier": 0.75,
+                    "text": "You name him as the cracked stone named him, and the burned voice falters on its own rite."
+                },
+                {
+                    "when": {
+                        "flagKey": "barrow_blessing",
+                        "equals": true
+                    },
+                    "removeEnemyIds": [
+                        "enemy_black_feather_orc_scout"
+                    ],
+                    "text": "The scouts will not close with you. Something old and cold walks at your shoulder, and they can see it."
+                }
+            ]
         }
     ],
     "segments": [
@@ -976,10 +1995,13 @@
                 "objectiveIds": [
                     "obj_question_bree_witnesses"
                 ],
-                "segmentIds": [
-                    "seg_arrival_at_bree"
-                ],
-                "summary": "The party inspects the wagon, speaks with Tomas or Calenhir, then either seeks more testimony at the inn or follows Hadrin's trail directly toward Midgewater."
+                "locationIds": [
+                    "loc_prancing_pony_common_room",
+                    "loc_midgewater_causeway",
+                    "loc_fornost_watch_ruin",
+                    "loc_barrow_downs_outer_ring",
+                    "loc_amon_sul_shadow_camp"
+                ]
             },
             "nextCheckpointIds": [
                 "cp_prancing_pony_clues"
@@ -1029,10 +2051,12 @@
                 "objectiveIds": [
                     "obj_track_missing_courier"
                 ],
-                "segmentIds": [
-                    "seg_inn_rumors"
-                ],
-                "summary": "The party identifies Midgewater as the courier's likely refuge and learns that old northern road-marks are involved."
+                "locationIds": [
+                    "loc_midgewater_causeway",
+                    "loc_fornost_watch_ruin",
+                    "loc_barrow_downs_outer_ring",
+                    "loc_amon_sul_shadow_camp"
+                ]
             },
             "nextCheckpointIds": [
                 "cp_midgewater_courier"
@@ -1082,13 +2106,13 @@
             ],
             "completeWhen": {
                 "objectiveIds": [
-                    "obj_track_missing_courier",
                     "obj_recover_broken_seal"
                 ],
-                "encounterIds": [
-                    "enc_marsh_black_feathers"
-                ],
-                "summary": "The party secures the broken seal or learns who took it, and gains a clear lead toward the ruined watchtower."
+                "locationIds": [
+                    "loc_fornost_watch_ruin",
+                    "loc_barrow_downs_outer_ring",
+                    "loc_amon_sul_shadow_camp"
+                ]
             },
             "nextCheckpointIds": [
                 "cp_watchtower_marks"
@@ -1103,8 +2127,7 @@
                 ],
                 "encounterIds": [
                     "enc_marsh_black_feathers"
-                ],
-                "summary": "The scouts seize or keep the broken seal, Hadrin dies before passing on the clue, or the party flees before learning the watchtower lead."
+                ]
             },
             "rejoinTargetCheckpointId": "cp_watchtower_marks",
             "gmNotes": "If Hadrin dies or is not found, the satchel can still be recovered. If the scouts escape with the seal, place it at the final camp and make the watchtower clue harder but not impossible."
@@ -1145,10 +2168,10 @@
                 "objectiveIds": [
                     "obj_decode_watchtower_marks"
                 ],
-                "segmentIds": [
-                    "seg_watchtower_revelation"
-                ],
-                "summary": "The party learns that the oath-stone lies below Amon Sul and that the safest route crosses the outer Barrow-downs."
+                "locationIds": [
+                    "loc_barrow_downs_outer_ring",
+                    "loc_amon_sul_shadow_camp"
+                ]
             },
             "nextCheckpointIds": [
                 "cp_barrow_crossing"
@@ -1162,8 +2185,7 @@
             "failWhen": {
                 "objectiveIds": [
                     "obj_decode_watchtower_marks"
-                ],
-                "summary": "The party leaves the watchtower without decoding the marks or spends too much time, forcing them to follow enemy movement toward the final camp with poorer information."
+                ]
             },
             "rejoinTargetCheckpointId": "cp_barrow_crossing",
             "gmNotes": "Allow the party to bypass the Barrow-downs with a harder travel route. If they do, skip to the finale but remove the chance to gain the barrow blessing."
@@ -1202,10 +2224,15 @@
                 "clue_barrow_blessing"
             ],
             "completeWhen": {
+                "objectiveIds": [
+                    "obj_interrupt_shadow_rite"
+                ],
                 "encounterIds": [
                     "enc_barrow_cold_memory"
                 ],
-                "summary": "The party passes the Barrow-downs with the seal, the oath-stone's location, or enough resolve to confront Saereth."
+                "locationIds": [
+                    "loc_amon_sul_shadow_camp"
+                ]
             },
             "nextCheckpointIds": [
                 "cp_shadow_camp_finale"
@@ -1217,8 +2244,7 @@
             "failWhen": {
                 "encounterIds": [
                     "enc_barrow_cold_memory"
-                ],
-                "summary": "The party flees the barrow trial, violates the dead, or leaves without the blessing; move to the finale with fear, delay, or lost advantage."
+                ]
             },
             "rejoinTargetCheckpointId": "cp_shadow_camp_finale",
             "gmNotes": "Failure should impose cost, fear, delay, or loss of advantage, not campaign collapse."
@@ -1256,29 +2282,14 @@
             ],
             "completeWhen": {
                 "objectiveIds": [
-                    "obj_interrupt_shadow_rite"
-                ],
-                "encounterIds": [
-                    "enc_shadow_rite_amon_sul"
-                ],
-                "summary": "The party stops the rite through combat, stealth, sabotage, negotiation, use of lore, or another credible solution."
+                    "obj_restore_oath_stone"
+                ]
             },
             "nextCheckpointIds": [
                 "cp_oath_stone_resolution"
             ],
             "alternateCheckpointIds": [],
-            "failureCheckpointIds": [
-                "cp_oath_stone_resolution"
-            ],
-            "failWhen": {
-                "objectiveIds": [
-                    "obj_interrupt_shadow_rite"
-                ],
-                "encounterIds": [
-                    "enc_shadow_rite_amon_sul"
-                ],
-                "summary": "The rite partially succeeds, Saereth escapes with leverage, or the party withdraws; move to resolution with visible consequences rather than stalling the campaign."
-            },
+            "failureCheckpointIds": [],
             "rejoinTargetCheckpointId": "cp_oath_stone_resolution",
             "gmNotes": "If the party fails to fully stop the rite, move to the resolution with consequences: the ward is weakened, Saereth escapes, or Bree-land faces future danger."
         },
@@ -1318,13 +2329,50 @@
                 ],
                 "questIds": [
                     "quest_shadow_over_greenway"
-                ],
-                "summary": "The party chooses the oath-stone's fate and receives the consequences of their choices."
+                ]
             },
             "nextCheckpointIds": [],
             "alternateCheckpointIds": [],
             "failureCheckpointIds": [],
             "terminal": true,
+            "endingVariants": [
+                {
+                    "when": {
+                        "flagKey": "stone_restored",
+                        "equals": true
+                    },
+                    "title": "The Road Remembers",
+                    "text": "The chains fall from the oath-stone and its promise is spoken whole again. Along the Greenway the old marks hold, the fog thins over the fields, and in Bree the gate lanterns burn a little steadier though no one there could tell you why."
+                },
+                {
+                    "when": {
+                        "flagKey": "stone_hidden",
+                        "equals": true
+                    },
+                    "title": "A Secret Kept",
+                    "text": "You bury the stone where no map will find it. The road is no safer than it was and no worse, and somewhere in the north a few grey-cloaked watchers now carry one more thing they will never speak of."
+                },
+                {
+                    "when": {
+                        "flagKey": "stone_broken",
+                        "equals": true
+                    },
+                    "title": "Only Stones",
+                    "text": "The oath-stone splits and the cold goes out of it. Whatever it guarded, it guards no longer; whatever might have been twisted through it cannot be. Bree will have to keep its own watch now."
+                },
+                {
+                    "when": {
+                        "flagKey": "stone_claimed",
+                        "equals": true
+                    },
+                    "title": "The Keeper of the Oath",
+                    "text": "The stone takes your hand as it once took a king's. The road answers to you now: its watch, its debts and its dead. Calenhir says nothing for a long time, and then only: \"See that you deserve it.\""
+                }
+            ],
+            "prerequisiteCheckpointIds": [
+                "cp_shadow_camp_finale"
+            ],
+            "prerequisitePolicy": "completed_or_skipped_or_failed",
             "rejoinTargetCheckpointId": "cp_oath_stone_resolution",
             "gmNotes": "Possible endings: ward renewed, stone hidden, stone entrusted to rangers, Saereth slain, Saereth escaped, Bree warned, or the party marked by the Shadow's attention."
         }
@@ -1470,30 +2518,88 @@
             "gmNotes": "This is secret until the watchtower, barrow, or final confrontation reveals it."
         }
     ],
+    "gmNotes": "Grounded and mythic, with quiet dread: favour courage, mercy, lore, travel hardship and temptation over spectacle, and never let canon heroes solve what the party must. Combat is one route among stealth, bargaining, endurance, song and lore. The broken seal, the watchtower marks, the Barrow-downs and Saereth's rite are the spine: if a scene is skipped, move its clues later and let the cost show in the finale instead of blocking the way. Failed checks change cost, danger or information and never halt the story. If Hadrin dies, his satchel and torn message carry the quest; if Saereth escapes, the ending can be a partial victory. Keep Saereth's nature hidden until it is found.",
     "directorRules": {
         "mainQuestGeneration": "pack_only",
         "sideQuestGeneration": "allowed_tagged",
         "newNpcs": "allowed_as_minor_or_temporary",
         "newLocations": "allowed_as_local_detail",
         "offTrackPolicy": "improvise_and_reconnect",
-        "checkpointStyle": "soft",
-        "toneGuidance": [
-            "Keep narration immersive, grounded, and mythic without turning every scene into spectacle.",
-            "Favor courage, mercy, lore, travel hardship, temptation, and quiet dread.",
-            "Do not use major canon heroes as problem-solvers. The party must matter.",
-            "Do not force combat when stealth, bargaining, endurance, song, lore, or sacrifice would credibly solve the scene.",
-            "Keep secret villain information in gmNotes or hidden records until discovered."
-        ],
-        "playerAgency": [
-            "Let the party choose routes, methods, and the oath-stone's final fate.",
-            "If players go off-track, improvise local detail and reconnect through road signs, ranger warnings, enemy movement, or consequences.",
-            "Failed checks should change cost, time, danger, or information quality rather than halt the campaign."
-        ],
-        "continuityRules": [
-            "The broken seal, the watchtower marks, the Barrow-downs, and Saereth's rite are the main spine of the campaign.",
-            "If the party loses the broken seal, move it to Saereth's camp and make recovering or countering it part of the finale.",
-            "If Hadrin dies, preserve the quest through his satchel, torn message, or Calenhir's deductions.",
-            "If Saereth escapes, the campaign can end with a partial victory and a future threat."
-        ]
-    }
+        "checkpointStyle": "soft"
+    },
+    "map": {
+        "title": "Bree-land and the Lone-lands",
+        "terrain": "plains",
+        "seed": 2041
+    },
+    "routes": [
+        {
+            "from": "loc_bree_west_gate",
+            "to": "loc_prancing_pony_common_room",
+            "style": "road"
+        },
+        {
+            "from": "loc_bree_west_gate",
+            "to": "loc_midgewater_causeway",
+            "style": "trail"
+        },
+        {
+            "from": "loc_prancing_pony_common_room",
+            "to": "loc_fornost_watch_ruin",
+            "style": "road"
+        },
+        {
+            "from": "loc_midgewater_causeway",
+            "to": "loc_fornost_watch_ruin",
+            "style": "trail"
+        },
+        {
+            "from": "loc_fornost_watch_ruin",
+            "to": "loc_barrow_downs_outer_ring",
+            "style": "road"
+        },
+        {
+            "from": "loc_barrow_downs_outer_ring",
+            "to": "loc_amon_sul_shadow_camp",
+            "style": "hidden"
+        },
+        {
+            "from": "loc_fornost_watch_ruin",
+            "to": "loc_amon_sul_shadow_camp",
+            "style": "hidden"
+        }
+    ],
+    "merchants": [
+        {
+            "id": "merchant_pony_counter",
+            "name": "The Pony's Counter",
+            "npcId": "npc_marla_underhill",
+            "locationId": "loc_prancing_pony_common_room",
+            "buyRate": 0.5,
+            "restock": "long_rest",
+            "stock": [
+                {
+                    "catalog": "potion_healing",
+                    "quantity": 2
+                },
+                {
+                    "catalog": "healers_kit",
+                    "quantity": 1
+                },
+                {
+                    "catalog": "antitoxin",
+                    "quantity": 1
+                },
+                {
+                    "catalog": "ration"
+                },
+                {
+                    "catalog": "torch"
+                },
+                {
+                    "catalog": "rope"
+                }
+            ]
+        }
+    ]
 }
