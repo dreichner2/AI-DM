@@ -62,7 +62,7 @@ export function combatActionSubmission(
   }
 }
 
-/** An authoritative spell cast at exact target IDs. */
+/** An authoritative spell cast at exact target IDs; a spell only on its caster is cast `on themself`. */
 export function spellCastSubmission(
   actorName: string,
   spell: GameplaySpellControl,
@@ -72,7 +72,7 @@ export function spellCastSubmission(
   const names = spell.targets
     .filter((target) => targetIds.includes(target.id))
     .map((target) => target.name)
-  const targetText = names.length ? ` at ${names.join(', ')}` : ''
+  const targetText = names.join() === actorName ? ' on themself' : names.length ? ` at ${names.join(', ')}` : ''
   const message = `${actorName} casts ${spell.name}${targetText}.`
   return {
     message,

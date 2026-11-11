@@ -1,5 +1,4 @@
 import { useEffect, useMemo } from 'react'
-import { partyVitalityFromSnapshot } from '../gameSelectors'
 import { heroHasSpells } from './heroSpells'
 import { setStoryTextSize, useStoryPreferences } from './sheets/storyPreferences'
 import { StoryAtmosphere } from './StoryAtmosphere'
@@ -9,6 +8,7 @@ import { StoryPartyHud } from './StoryPartyHud'
 import { StoryTopBar } from './StoryTopBar'
 import type { StoryDrawerTab, StoryViewProps } from './types'
 import { partyWithViewer, viewerHero } from './viewerHero'
+import { partyHeroVitality } from './vitalityLabels'
 
 const DRAWER_HOTKEYS: Record<string, StoryDrawerTab> = {
   c: 'character',
@@ -50,8 +50,8 @@ export function StoryView({
   const viewer = viewerHero(board, inspector, viewerPlayerId)
   const party = partyWithViewer(board.activePlayers, viewer)
   const snapshot = board.sessionState?.state_snapshot
-  const vitality = useMemo(() => partyVitalityFromSnapshot(snapshot), [snapshot])
-  // Dying, stable, unconscious or dead: the hero is down whatever their hit points say.
+  const vitality = useMemo(() => partyHeroVitality(snapshot), [snapshot])
+  // Dying, stable, unconscious or out of the fight: the hero is down whatever their hit points say.
   const viewerDown =
     viewerPlayerId !== null && (Boolean(vitality[viewerPlayerId]) || (viewer?.health ? viewer.health.currentHp <= 0 : false))
   const hasSpells = heroHasSpells(board, inspector)

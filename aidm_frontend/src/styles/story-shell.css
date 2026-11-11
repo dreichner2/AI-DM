@@ -526,7 +526,7 @@
   50% { opacity: 0.35; }
 }
 .story-shell .story-portrait[data-health='dead'] .story-portrait-image { filter: grayscale(1) brightness(0.6); }
-/* Down (dying, stable or dead): the colour drains out and the ring goes faint. */
+/* Down (dying, stable or out of the fight): the colour drains out and the ring goes faint. */
 .story-shell .story-portrait[data-vitality] { --ring: var(--story-faint); }
 .story-shell .story-portrait[data-vitality] .story-portrait-image,
 .story-shell .story-portrait[data-vitality] .story-portrait-initial { filter: grayscale(1) brightness(0.62); }

@@ -78,6 +78,7 @@ from aidm_server.combat.state import (
     default_turn_economy,
     participant_is_targetable,
 )
+from aidm_server.combat.vitality import OUT_OF_FIGHT, OUT_OF_FIGHT_REFUSAL
 from aidm_server.combat.working_state import add_active_effect
 from aidm_server.game_state.models import actor_items, find_actor, stable_change_id
 from aidm_server.weapon_proficiency import weapon_properties
@@ -433,6 +434,8 @@ def resolve_capability_use(
         level_bonus = level if effect.get('levelBonus') else 0
         result.update({'effectType': 'heal', 'amount': sum(rolls) + level_bonus, 'rolls': rolls})
     elif effect_type == 'healing_pool' and option == 'cure_poison':
+        if OUT_OF_FIGHT in _conditions(target_participant or resolved_target):
+            return _fail(OUT_OF_FIGHT_REFUSAL)
         if _is_dead(resolved_target):
             return _fail('Lay on Hands cannot restore the dead.')
         if 'poisoned' not in _conditions(target_participant or resolved_target):
@@ -440,6 +443,8 @@ def resolve_capability_use(
         result.update({'effectType': 'remove_condition', 'removesConditions': ['poisoned'], 'resourceCost': 5})
     elif effect_type == 'healing_pool':
         current_hp, maximum_hp = _health(resolved_target)
+        if OUT_OF_FIGHT in _conditions(target_participant or resolved_target):
+            return _fail(OUT_OF_FIGHT_REFUSAL)
         if _is_dead(resolved_target):
             return _fail('Lay on Hands cannot restore the dead.')
         if maximum_hp <= 0:

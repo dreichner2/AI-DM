@@ -1,9 +1,14 @@
 """Going down, death saving throws and recovery for player characters.
 
 Player characters reduced to 0 HP fall ``unconscious`` and ``dying`` (in
-combat) or ``stable`` (out of combat) instead of leaving the game; only the
-``dead`` condition makes one not alive.  Enemies and NPC allies keep the
-simpler rule that 0 HP means defeated.
+combat) or ``stable`` (out of combat) instead of leaving the game.  A hero is
+never killed: the three ways to die (a third failed death save, a failure
+added by damage at 0 HP, massive damage) put them ``out_of_fight`` instead
+(``unconscious`` and ``stable`` too, death saves reset, still alive).
+Nothing raises them while the fight is on; they wake with 1 HP when it ends
+(:mod:`aidm_server.combat.defeat`).  An old save's ``dead`` hero reads as out
+of the fight (:func:`normalize_vitality_conditions`).  Enemies and NPC allies
+keep the simpler rule that 0 HP means defeated.
 
 Every function accepts either a combat participant (``hp``, ``conditions``,
 ``deathSaves``, ``isAlive``, ``isConscious``) or a state actor (``health`` with
@@ -21,7 +26,10 @@ from aidm_server.damage_dice import deterministic_roller
 from aidm_server.game_state.models import stable_change_id
 
 
-VITALITY_CONDITIONS = ('unconscious', 'dying', 'stable', 'dead')
+OUT_OF_FIGHT = 'out_of_fight'
+VITALITY_CONDITIONS = ('unconscious', 'dying', 'stable', OUT_OF_FIGHT, 'dead')
+OUT_OF_FIGHT_CONDITIONS = ('unconscious', 'stable', OUT_OF_FIGHT)
+OUT_OF_FIGHT_REFUSAL = 'They are out of this fight.'
 DEATH_SAVE_DC = 10
 DEATH_SAVE_LIMIT = 3
 DEATH_SAVE_SOURCE = 'engine_death_save'
@@ -41,6 +49,15 @@ def _conditions(record: Mapping[str, Any]) -> list[str]:
     source = record['health'] if _is_actor(record) else record
     values = source.get('conditions') if isinstance(source.get('conditions'), list) else []
     return list(dict.fromkeys(condition_key(value) for value in values if condition_key(value)))
+
+
+def normalize_vitality_conditions(conditions: list[str]) -> list[str]:
+    """A player character's conditions, with an old save's ``dead`` read as out of the fight."""
+
+    if 'dead' not in {condition_key(condition) for condition in conditions}:
+        return list(conditions)
+    replaced = {'dead', 'dying', *OUT_OF_FIGHT_CONDITIONS}
+    return [*(condition for condition in conditions if condition_key(condition) not in replaced), *OUT_OF_FIGHT_CONDITIONS]
 
 
 def normalize_death_saves(value: Any) -> dict[str, int]:
@@ -110,6 +127,16 @@ def is_dead(record: Mapping[str, Any]) -> bool:
     return 'dead' in _conditions(record)
 
 
+def is_out_of_fight(record: Mapping[str, Any]) -> bool:
+    return OUT_OF_FIGHT in _conditions(record)
+
+
+def cannot_be_raised(record: Mapping[str, Any]) -> bool:
+    """Dead, or out of the fight: healing and stabilising restore nothing."""
+
+    return is_dead(record) or is_out_of_fight(record)
+
+
 def is_dying(record: Mapping[str, Any]) -> bool:
     return 'dying' in _conditions(record) and not is_dead(record)
 
@@ -126,11 +153,13 @@ def _zero_saves() -> dict[str, int]:
     return {'successes': 0, 'failures': 0}
 
 
-def _die(record: dict[str, Any], saves: dict[str, int]) -> None:
+def _leave_fight(record: dict[str, Any]) -> None:
+    """Where a creature would die, a player character is out of the fight instead."""
+
     _write(
         record,
-        conditions=_with(_conditions(record), 'dead', without=('dying', 'stable', 'unconscious')),
-        saves=saves,
+        conditions=_with(_conditions(record), *OUT_OF_FIGHT_CONDITIONS, without=('dying', 'dead')),
+        saves=_zero_saves(),
     )
 
 
@@ -146,7 +175,7 @@ def take_damage(
     hp = hit_points(record)
     amount = max(0, int(amount))
     result = {'amount': 0, 'tempHpDamage': 0, 'hpDamage': 0, 'overflow': 0, 'vitality': None}
-    if is_dead(record) or amount <= 0:
+    if is_dead(record) or is_out_of_fight(record) or amount <= 0:
         return result
     temp_damage = min(hp['temp'], amount)
     remaining = amount - temp_damage
@@ -161,8 +190,8 @@ def take_damage(
 
     saves = death_saves(record)
     if hp['max'] > 0 and overflow >= hp['max']:
-        _die(record, saves)
-        result['vitality'] = 'dead_massive_damage'
+        _leave_fight(record)
+        result['vitality'] = OUT_OF_FIGHT
         return result
     conditions = _conditions(record)
     if not was_at_zero:
@@ -176,8 +205,8 @@ def take_damage(
 
     saves['failures'] = min(DEATH_SAVE_LIMIT, saves['failures'] + (2 if critical else 1))
     if saves['failures'] >= DEATH_SAVE_LIMIT:
-        _die(record, saves)
-        result['vitality'] = 'dead'
+        _leave_fight(record)
+        result['vitality'] = OUT_OF_FIGHT
         return result
     if in_combat:
         conditions = _with(conditions, 'unconscious', 'dying', without=('stable',))
@@ -189,6 +218,8 @@ def take_damage(
 def set_hit_points(record: dict[str, Any], current: int, *, in_combat: bool) -> None:
     """Set HP from an explicit state update, then go down or wake up accordingly."""
 
+    if is_out_of_fight(record):
+        return
     hp = hit_points(record)
     current = max(0, min(int(current), hp['max']) if hp['max'] else int(current))
     _write(record, hp={**hp, 'current': current})
@@ -207,9 +238,9 @@ def set_hit_points(record: dict[str, Any], current: int, *, in_combat: bool) -> 
 
 
 def heal(record: dict[str, Any], amount: int) -> int:
-    """Restore HP; a player character at 0 HP that is not dead wakes and stops dying."""
+    """Restore HP; a player character at 0 HP that is not dead or out of the fight wakes and stops dying."""
 
-    if is_dead(record) or heals_nothing(record if not _is_actor(record) else {}):
+    if cannot_be_raised(record) or heals_nothing(record if not _is_actor(record) else {}):
         return 0
     hp = hit_points(record)
     applied = min(max(0, int(amount)), max(0, hp['max'] - hp['current'])) if hp['max'] else max(0, int(amount))
@@ -263,8 +294,8 @@ def apply_death_save(record: dict[str, Any], roll: int) -> dict[str, Any]:
         result = 'failure'
         saves['failures'] = min(DEATH_SAVE_LIMIT, saves['failures'] + 1)
     if saves['failures'] >= DEATH_SAVE_LIMIT:
-        _die(record, saves)
-        outcome = 'dead'
+        _leave_fight(record)
+        outcome = OUT_OF_FIGHT
     elif saves['successes'] >= DEATH_SAVE_LIMIT:
         stabilize(record)
         outcome = 'stable'
@@ -288,7 +319,7 @@ def stabilize(record: dict[str, Any]) -> bool:
 
 
 def revive(record: dict[str, Any], hp: int = 1) -> None:
-    """Return a dead (or downed) character to life with ``hp`` hit points."""
+    """Wake a downed (or out of the fight, or dead) character with ``hp`` hit points."""
 
     current = hit_points(record)
     restored = max(1, min(int(hp), current['max'] or int(hp)))

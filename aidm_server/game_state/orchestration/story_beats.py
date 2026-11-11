@@ -17,6 +17,15 @@ A check beat names the skill or ability once (``Investigation check: 14 —
 success``), or reads ``Check: 14 — success`` when neither is known. A roll the
 player made on their own, with no check pending, is not a check: it reads
 ``d20: 10``, or ``Strength: 13 (d20 10 + 3)`` with the ability they picked.
+
+Alone, the hero's beats speak to them (``Took 7 damage``, ``You are dying``,
+``+10 gp``). In party play (more than one hero in the session) every beat about
+a hero names them (``Seren Ashgrove took 7 damage``, ``Seren Ashgrove —
+Investigation check: 15 — success``, ``Arden Vale took the Caravan Strongbox
+Key``, ``Seren Ashgrove reached level 2``); a coin or XP gain every hero received
+alike is one beat, ``+10 gp each``. Beats about the party or the world read the
+same either way. A hero put out of the fight has the one beat ``… is out of the
+fight``; a hero who wakes, ``… comes round``.
 """
 
 from __future__ import annotations
@@ -25,6 +34,8 @@ from collections import Counter
 from typing import Any
 
 from aidm_server.character_state import ABILITY_KEYS, SKILL_ABILITY
+from aidm_server.combat.defeat import WAKE_CHANGE_TYPES
+from aidm_server.combat.vitality import OUT_OF_FIGHT, VITALITY_CONDITIONS
 from aidm_server.database import db
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY
 from aidm_server.game_state.models import parse_actor_player_id
@@ -49,6 +60,10 @@ COIN_ORDER = ('pp', 'gp', 'ep', 'sp', 'cp')
 ACTIVE_COMBAT_STATUSES = frozenset({'starting', 'active'})
 # Names that say only "a check", never which one.
 GENERIC_CHECK_NAMES = frozenset({'check', 'ability'})
+# Conditions a hero who wakes leaves behind; their one beat is "… comes round".
+WAKING_CONDITIONS = frozenset({*VITALITY_CONDITIONS, 'prone'})
+# How an item came or went, alone (``Taken — …``) and in party play (``Arden Vale took …``).
+ITEM_VERBS = {'Taken': 'took', 'Received': 'received', 'Sold': 'sold', 'Given': 'gave', 'Used': 'used'}
 
 
 def _text(value: Any) -> str:
@@ -71,10 +86,14 @@ def _humanize(value: Any) -> str:
 
 
 def beat_basis(state: dict[str, Any], *, actor_id: str) -> dict[str, Any]:
-    """The parts of the player projection of ``state`` that story beats compare."""
+    """The parts of the player projection of ``state`` that story beats compare.
 
-    player_id = parse_actor_player_id(actor_id)
-    projected = filter_session_snapshot_for_player(state, private_player_ids=frozenset({player_id} if player_id else ()))
+    Every hero's own record is read, the acting hero's and, in party play, each companion's: the shared
+    story tells what each of them gained.
+    """
+
+    player_ids = {parse_actor_player_id(actor_id), *(parse_actor_player_id(hero.get('id')) for hero in _dicts(state.get('playerCharacters')))}
+    projected = filter_session_snapshot_for_player(state, private_player_ids=frozenset(player_id for player_id in player_ids if player_id))
     projected = projected if isinstance(projected, dict) else {}
     combat = projected.get('combat') if isinstance(projected.get('combat'), dict) else {}
     # In a fight a hero's conditions live on their combat participant; the hero record
@@ -207,14 +226,48 @@ def _roll_beat(roll: dict[str, Any]) -> dict[str, Any] | None:
     )
 
 
-def _you(hero: dict[str, Any], *, acting: bool) -> tuple[str, str]:
-    """Subject and verb form: ``("You", "are")`` for the acting hero, ``("Mara", "is")`` for others."""
+def _you(hero: dict[str, Any], *, party: bool) -> tuple[str, str]:
+    """Subject and verb form: ``("You", "are")`` alone, ``("Mara Fen", "is")`` in party play."""
 
-    return ('You', 'are') if acting else (hero.get('name') or 'Someone', 'is')
+    return (hero.get('name') or 'Someone', 'is') if party else ('You', 'are')
 
 
 def _coins(code: str, amount: int) -> str:
     return f'+{amount} {code}' if amount > 0 else f'{MINUS}{abs(amount)} {code}'
+
+
+def _the(name: str) -> str:
+    return name if name.lower().startswith('the ') else f'the {name}'
+
+
+def _item_beat(kind: str, verb: str, name: str, count: int, hero: dict[str, Any], *, party: bool) -> dict[str, Any]:
+    """``Taken — Torch ×2``; in party play ``Arden Vale took the Torch`` (``… took Torch ×2``)."""
+
+    if not party:
+        return {'kind': kind, 'text': f"{verb} — {name}{f' ×{count}' if count > 1 else ''}"}
+    thing = f'{name} ×{count}' if count > 1 else _the(name)
+    return {'kind': kind, 'text': f"{hero.get('name') or 'Someone'} {ITEM_VERBS[verb]} {thing}"}
+
+
+def _shared_gains(
+    kind: str,
+    deltas: dict[str, int],
+    heroes: dict[str, dict[str, Any]],
+    text: Any,
+    *,
+    party: bool,
+) -> list[dict[str, Any]]:
+    """One beat per hero's gain (``+10 gp``, ``Arden Vale +6 gp``), or ``+10 gp each`` when every hero gained alike."""
+
+    gained = {hero_id: delta for hero_id, delta in deltas.items() if delta}
+    if not gained:
+        return []
+    if party and len(deltas) > 1 and len(gained) == len(deltas) and len(set(gained.values())) == 1:
+        return [{'kind': kind, 'text': f'{text(next(iter(gained.values())))} each'}]
+    return [
+        {'kind': kind, 'text': f"{heroes[hero_id].get('name') or 'Someone'} {text(delta)}" if party else text(delta)}
+        for hero_id, delta in gained.items()
+    ]
 
 
 def story_beats(
@@ -228,46 +281,54 @@ def story_beats(
 ) -> list[dict[str, Any]]:
     """The turn's beats, in contract order, from the before/after bases and its check results."""
 
-    beats: list[dict[str, Any]] = []
-    for change in applied_changes:
-        text = object_check_text(change, state_before)
-        if text:
-            beats.append({'kind': 'check', 'text': text})
-    if isinstance(authoritative_roll, dict):
-        beat = _roll_beat(authoritative_roll)
-        if beat:
-            beats.append(beat)
-
     heroes_before = before.get('heroes') or {}
     heroes_after = after.get('heroes') or {}
+    party = len(heroes_after) > 1
+    acting_name = (heroes_after.get(actor_id) or {}).get('name') or 'Someone'
+    beats: list[dict[str, Any]] = []
+    checks = [text for change in applied_changes if (text := object_check_text(change, state_before))]
+    if isinstance(authoritative_roll, dict) and (beat := _roll_beat(authoritative_roll)):
+        checks.append(beat['text'])
+    beats.extend({'kind': 'check', 'text': f'{acting_name} — {text}' if party else text} for text in checks)
+
     ordered = [actor_id, *sorted(hero_id for hero_id in heroes_after if hero_id != actor_id)]
-    for hero_id in ordered:
-        old, new = heroes_before.get(hero_id), heroes_after.get(hero_id)
-        if not old or not new:
-            continue
-        acting = hero_id == actor_id
-        subject, _verb = _you(new, acting=acting)
+    pairs = [
+        (hero_id, heroes_before[hero_id], heroes_after[hero_id])
+        for hero_id in ordered
+        if heroes_before.get(hero_id) and heroes_after.get(hero_id)
+    ]
+    woken = {
+        str(hero_id)
+        for change in applied_changes
+        if change.get('type') in WAKE_CHANGE_TYPES
+        for hero_id in change.get('wokenActorIds') or []
+    }
+    for hero_id, old, new in pairs:
         delta = new['hp'] - old['hp']
-        if delta:
+        # Waking from 0 HP is the hero coming round, not healing.
+        if delta and not (hero_id in woken and old['hp'] <= 0):
             text = f'Took {-delta} damage' if delta < 0 else f'Healed {delta}'
-            beats.append({'kind': 'hp', 'text': text if acting else f"{subject} {text[0].lower()}{text[1:]}"})
-    for hero_id in ordered:
-        old, new = heroes_before.get(hero_id), heroes_after.get(hero_id)
-        if not old or not new:
-            continue
-        subject, verb = _you(new, acting=hero_id == actor_id)
-        for condition in new['conditions']:
-            if condition not in old['conditions']:
-                beats.append({'kind': 'condition', 'text': f'{subject} {verb} {_humanize(condition)}'})
-        for condition in old['conditions']:
-            if condition not in new['conditions']:
-                text = f'No longer {_humanize(condition)}' if hero_id == actor_id else f'{subject} is no longer {_humanize(condition)}'
-                beats.append({'kind': 'condition', 'text': text})
+            beats.append({'kind': 'hp', 'text': f"{new['name'] or 'Someone'} {text[0].lower()}{text[1:]}" if party else text})
+    for hero_id, old, new in pairs:
+        subject, verb = _you(new, party=party)
+        gained = [condition for condition in new['conditions'] if condition not in old['conditions']]
+        lost = [condition for condition in old['conditions'] if condition not in new['conditions']]
+        if hero_id in woken:
+            beats.append({'kind': 'condition', 'text': f"{subject} {'comes' if party else 'come'} round"})
+            gained, lost = ([condition for condition in group if condition not in WAKING_CONDITIONS] for group in (gained, lost))
+        elif OUT_OF_FIGHT in gained:
+            beats.append({'kind': 'condition', 'text': f'{subject} {verb} out of the fight'})
+            gained, lost = ([condition for condition in group if condition not in VITALITY_CONDITIONS] for group in (gained, lost))
+        for condition in gained:
+            beats.append({'kind': 'condition', 'text': f'{subject} {verb} {_humanize(condition)}'})
+        for condition in lost:
+            text = f'{subject} is no longer {_humanize(condition)}' if party else f'No longer {_humanize(condition)}'
+            beats.append({'kind': 'condition', 'text': text})
     for change in applied_changes:
         if change.get('type') == 'combat.death_save' and isinstance(change.get('roll'), int):
             name = _text(change.get('participantName'))
             result = _humanize(change.get('result')) or 'rolled'
-            who = 'Death save' if _text(change.get('participantId')) == actor_id or not name else f'{name}: death save'
+            who = f'{name}: death save' if party and name else 'Death save'
             beats.append({'kind': 'death_save', 'text': f"{who}: {change['roll']} — {result}"})
     end_reason = next(
         (_text(change.get('endReason')).lower() for change in applied_changes if change.get('type') == 'combat.end'),
@@ -276,25 +337,27 @@ def story_beats(
     if end_reason in COMBAT_END_TEXT:
         beats.append({'kind': 'combat_end', 'text': COMBAT_END_TEXT[end_reason]})
 
-    old_hero, new_hero = heroes_before.get(actor_id) or {}, heroes_after.get(actor_id) or {}
-    if old_hero and new_hero:
-        old_items, new_items = Counter(old_hero['items']), Counter(new_hero['items'])
-        picked_up = set(before.get('sceneItems') or []) - set(after.get('sceneItems') or [])
-        dropped = set(after.get('sceneItems') or []) - set(before.get('sceneItems') or [])
-        sold = {_text(change.get('itemName')) for change in applied_changes if change.get('type') == 'shop.sell'}
-        given = {_text(change.get('itemName')) for change in applied_changes if change.get('type') == 'inventory.transfer'}
+    picked_up = set(before.get('sceneItems') or []) - set(after.get('sceneItems') or [])
+    dropped = set(after.get('sceneItems') or []) - set(before.get('sceneItems') or [])
+    sold = {_text(change.get('itemName')) for change in applied_changes if change.get('type') == 'shop.sell'}
+    given = {_text(change.get('itemName')) for change in applied_changes if change.get('type') == 'inventory.transfer'}
+    # Alone, only the acting hero's things are told; in party play every hero's.
+    heroes_told = pairs if party else [pair for pair in pairs if pair[0] == actor_id]
+    for hero_id, old, new in heroes_told:
+        old_items, new_items = Counter(old['items']), Counter(new['items'])
         for name, count in (new_items - old_items).items():
-            verb = 'Taken' if name in picked_up else 'Received'
-            beats.append({'kind': 'item_gained', 'text': f"{verb} — {name}{f' ×{count}' if count > 1 else ''}"})
+            verb = 'Taken' if hero_id == actor_id and name in picked_up else 'Received'
+            beats.append(_item_beat('item_gained', verb, name, count, new, party=party))
         for name, count in (old_items - new_items).items():
             if name in dropped:
                 continue
             verb = 'Sold' if name in sold else 'Given' if name in given else 'Used'
-            beats.append({'kind': 'item_lost', 'text': f"{verb} — {name}{f' ×{count}' if count > 1 else ''}"})
-        for code in COIN_ORDER:
-            delta = _int(new_hero['currency'].get(code)) - _int(old_hero['currency'].get(code))
-            if delta:
-                beats.append({'kind': 'coins', 'text': _coins(code, delta)})
+            beats.append(_item_beat('item_lost', verb, name, count, new, party=party))
+    for code in COIN_ORDER:
+        deltas = {
+            hero_id: _int(new['currency'].get(code)) - _int(old['currency'].get(code)) for hero_id, old, new in heroes_told
+        }
+        beats.extend(_shared_gains('coins', deltas, heroes_after, lambda amount, code=code: _coins(code, amount), party=party))
 
     for clue_id, title in (after.get('clues') or {}).items():
         if clue_id not in (before.get('clues') or {}):
@@ -309,11 +372,12 @@ def story_beats(
     for place_id, name in (after.get('places') or {}).items():
         if place_id not in (before.get('places') or {}):
             beats.append({'kind': 'place', 'text': f'New place on the map — {name}', 'refId': place_id})
-    if old_hero and new_hero:
-        if new_hero['xp'] > old_hero['xp']:
-            beats.append({'kind': 'xp', 'text': f"+{new_hero['xp'] - old_hero['xp']} XP"})
-        if new_hero['level'] > old_hero['level']:
-            beats.append({'kind': 'level', 'text': f"Level {new_hero['level']} reached"})
+    xp = {hero_id: max(0, new['xp'] - old['xp']) for hero_id, old, new in heroes_told}
+    beats.extend(_shared_gains('xp', xp, heroes_after, lambda amount: f'+{amount} XP', party=party))
+    for _hero_id, old, new in heroes_told:
+        if new['level'] > old['level']:
+            text = f"{new['name'] or 'Someone'} reached level {new['level']}" if party else f"Level {new['level']} reached"
+            beats.append({'kind': 'level', 'text': text})
     if any(change.get('type') == 'combat.defeat_recovery' for change in applied_changes):
         beats.append({'kind': 'defeat', 'text': 'Defeated — you wake later with 1 HP'})
     elif any(change.get('type') == 'party.wake' for change in applied_changes):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 
 import pytest
 import requests
@@ -11,14 +12,21 @@ from aidm_server.game_state.orchestration.story_beats import HINT_TEXT, story_be
 
 
 ACTOR = 'player_1'
+ARDEN = {'name': 'Arden Vale', 'hp': 12, 'conditions': [], 'items': {'Torch': 5}, 'currency': {'gp': 25}, 'xp': 250, 'level': 1}
+MARA = {'name': 'Mara Fen', 'hp': 9, 'conditions': [], 'items': {}, 'currency': {}, 'xp': 0, 'level': 1}
+
+
+def _party_basis(**overrides) -> dict:
+    """Two heroes in the session: party play."""
+
+    return _basis(heroes={ACTOR: deepcopy(ARDEN), 'player_2': deepcopy(MARA)}, **overrides)
 
 
 def _basis(**overrides) -> dict:
+    """The acting hero alone."""
+
     basis = {
-        'heroes': {
-            ACTOR: {'name': 'Arden Vale', 'hp': 12, 'conditions': [], 'items': {'Torch': 5}, 'currency': {'gp': 25}, 'xp': 250, 'level': 1},
-            'player_2': {'name': 'Mara Fen', 'hp': 9, 'conditions': [], 'items': {}, 'currency': {}, 'xp': 0, 'level': 1},
-        },
+        'heroes': {ACTOR: deepcopy(ARDEN)},
         'sceneItems': ['Caravan Strongbox Key'],
         'clues': {},
         'objectives': {'obj_one': {'title': 'Investigate the empty caravan', 'status': 'active'}},
@@ -33,13 +41,14 @@ def _texts(beats: list[dict]) -> list[tuple[str, str]]:
     return [(beat['kind'], beat['text']) for beat in beats]
 
 
-def test_every_kind_of_change_is_one_beat_in_contract_order():
-    before = _basis()
+def _every_kind_of_change(before: dict) -> tuple[dict, list[dict]]:
     after = deepcopy(before)
-    arden, mara = after['heroes'][ACTOR], after['heroes']['player_2']
-    arden.update(hp=5, conditions=['prone'], items={'Torch': 4, 'Caravan Strongbox Key': 1, 'Ash-Marked Token': 2},
-                 currency={'gp': 40}, xp=350, level=2)
-    mara.update(hp=11, conditions=['frightened'])
+    after['heroes'][ACTOR].update(hp=5, conditions=['prone'], items={'Torch': 4, 'Caravan Strongbox Key': 1, 'Ash-Marked Token': 2},
+                                  currency={'gp': 40}, xp=350, level=2)
+    # Alone, the hero's own death save; in party play, Mara's.
+    saver = 'player_2' if 'player_2' in after['heroes'] else ACTOR
+    if saver == 'player_2':
+        after['heroes']['player_2'].update(hp=11, conditions=['frightened'])
     after['sceneItems'] = []
     after['clues'] = {'clue_ash_marks': 'Ash Marks on the Road'}
     after['objectives'] = {
@@ -51,20 +60,24 @@ def test_every_kind_of_change_is_one_beat_in_contract_order():
     applied = [
         {'type': 'scene.interactable.action', 'targetId': 'inn_drivers_bench', 'objectAction': 'search',
          'event': {'check': {'skill': 'investigation', 'ability': 'intelligence', 'total': 14, 'dc': 10, 'outcome': 'success'}}},
-        {'type': 'combat.death_save', 'participantId': 'player_2', 'participantName': 'Mara Fen', 'roll': 12, 'result': 'success'},
+        {'type': 'combat.death_save', 'participantId': saver, 'participantName': after['heroes'][saver]['name'], 'roll': 12, 'result': 'success'},
         {'type': 'combat.end', 'endReason': 'all_enemies_defeated'},
         {'type': 'combat.defeat_recovery'},
     ]
+    return after, applied
+
+
+def test_every_kind_of_change_is_one_beat_in_contract_order():
+    before = _basis()
+    after, applied = _every_kind_of_change(before)
 
     beats = story_beats(before, after, actor_id=ACTOR, state_before={}, applied_changes=applied)
 
     assert _texts(beats) == [
         ('check', 'Investigation check: 14 — success'),
         ('hp', 'Took 7 damage'),
-        ('hp', 'Mara Fen healed 2'),
         ('condition', 'You are prone'),
-        ('condition', 'Mara Fen is frightened'),
-        ('death_save', 'Mara Fen: death save: 12 — success'),
+        ('death_save', 'Death save: 12 — success'),
         ('combat_end', 'Victory'),
         ('item_gained', 'Taken — Caravan Strongbox Key'),
         ('item_gained', 'Received — Ash-Marked Token ×2'),
@@ -80,6 +93,83 @@ def test_every_kind_of_change_is_one_beat_in_contract_order():
         ('ending', 'The story ends — The Road Remembers'),
     ]
     assert {beat['refId'] for beat in beats if 'refId' in beat} == {'clue_ash_marks', 'obj_one', 'obj_two', 'loc_road'}
+
+
+def test_in_party_play_every_beat_about_a_hero_names_them():
+    before = _party_basis()
+    after, applied = _every_kind_of_change(before)
+
+    beats = story_beats(before, after, actor_id=ACTOR, state_before={}, applied_changes=applied)
+
+    assert _texts(beats) == [
+        ('check', 'Arden Vale — Investigation check: 14 — success'),
+        ('hp', 'Arden Vale took 7 damage'),
+        ('hp', 'Mara Fen healed 2'),
+        ('condition', 'Arden Vale is prone'),
+        ('condition', 'Mara Fen is frightened'),
+        ('death_save', 'Mara Fen: death save: 12 — success'),
+        ('combat_end', 'Victory'),
+        ('item_gained', 'Arden Vale took the Caravan Strongbox Key'),
+        ('item_gained', 'Arden Vale received Ash-Marked Token ×2'),
+        ('item_lost', 'Arden Vale used the Torch'),
+        ('coins', 'Arden Vale +15 gp'),
+        ('clue', 'Clue — Ash Marks on the Road'),
+        ('objective_complete', 'Objective complete — Investigate the empty caravan'),
+        ('objective_new', 'New objective — Follow the changing road'),
+        ('place', 'New place on the map — The Old North Road'),
+        ('xp', 'Arden Vale +100 XP'),
+        ('level', 'Arden Vale reached level 2'),
+        ('defeat', 'Defeated — you wake later with 1 HP'),
+        ('ending', 'The story ends — The Road Remembers'),
+    ]
+    assert not [text for _kind, text in _texts(beats) if re.search(r'\byou(?:r|rself)?\b', text, re.IGNORECASE) and _kind != 'defeat']
+
+
+def test_in_party_play_a_gain_every_hero_shares_is_one_beat_each():
+    before = _party_basis()
+    after = deepcopy(before)
+    after['heroes'][ACTOR].update(currency={'gp': 35, 'sp': 4}, xp=325)
+    after['heroes']['player_2'].update(currency={'gp': 10}, xp=75)
+
+    beats = story_beats(before, after, actor_id=ACTOR, state_before={}, applied_changes=[])
+
+    assert _texts(beats) == [('coins', '+10 gp each'), ('coins', 'Arden Vale +4 sp'), ('xp', '+75 XP each')]
+
+
+def test_a_hero_out_of_the_fight_and_a_hero_coming_round_are_one_beat_each():
+    before = _party_basis()
+    before['heroes']['player_2'].update(hp=0, conditions=['dying', 'unconscious'])
+    out = deepcopy(before)
+    out['heroes']['player_2'].update(conditions=['out_of_fight', 'stable', 'unconscious'])
+
+    assert _texts(story_beats(before, out, actor_id=ACTOR, state_before={}, applied_changes=[])) == [
+        ('condition', 'Mara Fen is out of the fight'),
+    ]
+
+    woken = deepcopy(out)
+    woken['heroes']['player_2'].update(hp=1, conditions=[])
+    come_round = [{'type': 'party.come_round', 'wokenActorIds': ['player_2']}]
+    assert _texts(story_beats(out, woken, actor_id=ACTOR, state_before={}, applied_changes=come_round)) == [
+        ('condition', 'Mara Fen comes round'),
+    ]
+
+
+def test_alone_the_hero_is_out_of_the_fight_and_comes_round_in_the_second_person():
+    before = _basis()
+    before['heroes'][ACTOR].update(hp=0, conditions=['dying', 'unconscious'])
+    out = deepcopy(before)
+    out['heroes'][ACTOR].update(conditions=['out_of_fight', 'stable', 'unconscious'])
+    woken = deepcopy(out)
+    woken['heroes'][ACTOR].update(hp=1, conditions=[])
+    recovery = [{'type': 'combat.defeat_recovery', 'wokenActorIds': [ACTOR]}]
+
+    assert _texts(story_beats(before, out, actor_id=ACTOR, state_before={}, applied_changes=[])) == [
+        ('condition', 'You are out of the fight'),
+    ]
+    assert _texts(story_beats(out, woken, actor_id=ACTOR, state_before={}, applied_changes=recovery)) == [
+        ('condition', 'You come round'),
+        ('defeat', 'Defeated — you wake later with 1 HP'),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -143,14 +233,20 @@ def test_a_check_shows_its_dc_only_when_the_pack_shows_it():
     ]
 
 
-def test_conditions_the_acting_hero_loses_read_in_the_second_person():
-    before = _basis()
-    before['heroes'][ACTOR]['conditions'] = ['prone']
-    before['heroes']['player_2']['conditions'] = ['prone']
+def test_conditions_the_hero_loses_read_in_the_second_person_alone_and_by_name_in_party_play():
+    alone = _basis()
+    alone['heroes'][ACTOR]['conditions'] = ['prone']
+    party = _party_basis()
+    for hero in party['heroes'].values():
+        hero['conditions'] = ['prone']
 
-    beats = story_beats(before, _basis(), actor_id=ACTOR, state_before={}, applied_changes=[])
-
-    assert _texts(beats) == [('condition', 'No longer prone'), ('condition', 'Mara Fen is no longer prone')]
+    assert _texts(story_beats(alone, _basis(), actor_id=ACTOR, state_before={}, applied_changes=[])) == [
+        ('condition', 'No longer prone'),
+    ]
+    assert _texts(story_beats(party, _party_basis(), actor_id=ACTOR, state_before={}, applied_changes=[])) == [
+        ('condition', 'Arden Vale is no longer prone'),
+        ('condition', 'Mara Fen is no longer prone'),
+    ]
 
 
 def test_nothing_changed_is_an_empty_list():

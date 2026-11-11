@@ -7,7 +7,7 @@ from typing import Any
 from aidm_server.armor_class import actor_armor_class_details
 from aidm_server.canon_text import int_or_default
 from aidm_server.combat.modifiers import TARGET_EXCLUDING_CONDITIONS, can_act, condition_keys
-from aidm_server.combat.vitality import normalize_death_saves
+from aidm_server.combat.vitality import normalize_death_saves, normalize_vitality_conditions
 from aidm_server.creatures.schemas import DAMAGE_TYPES, normalize_creature_definition
 from aidm_server.damage_dice import normalize_damage_dice_expression
 from aidm_server.game_state.models import stable_slug
@@ -223,7 +223,7 @@ def player_combat_participant(player_actor: dict[str, Any]) -> dict[str, Any]:
     ac_details = actor_armor_class_details(player_actor)
     stats['armorClass'] = ac_details['armorClass']
     stats['armor_class'] = ac_details['armorClass']
-    conditions = _string_list(health.get('conditions'))
+    conditions = normalize_vitality_conditions(_string_list(health.get('conditions')))
     participant = {
         'id': _text(player_actor.get('id')) or f"player_{player_actor.get('playerId') or 'unknown'}",
         'name': _text(player_actor.get('name') or player_actor.get('characterName'), 'Player'),
@@ -248,8 +248,8 @@ def player_combat_participant(player_actor: dict[str, Any]) -> dict[str, Any]:
         'position': normalize_position({'rangeBand': 'near'}),
         'abilities': [],
         'morale': 100,
-        'isAlive': 'dead' not in conditions,
-        'isConscious': int_or_default(health.get('currentHp'), default=1) > 0 and 'dead' not in conditions,
+        'isAlive': True,
+        'isConscious': int_or_default(health.get('currentHp'), default=1) > 0,
     }
     # Class-feature providers (Extra Attack, Rage, fighting styles) read these from the participant.
     if _text(player_actor.get('class')):
@@ -338,9 +338,14 @@ def normalize_participant(value: Any) -> dict[str, Any] | None:
         'isConscious': bool(value.get('isConscious', current_hp > 0)) and current_hp > 0,
     }
     if participant['team'] == 'player' or participant['kind'] == 'player_character':
-        # A player character at 0 HP is down, not gone: only ``dead`` ends its life.
-        participant['isAlive'] = 'dead' not in condition_keys(participant)
-        participant['deathSaves'] = normalize_death_saves(value.get('deathSaves'))
+        # A player character at 0 HP is down, not gone; an old save's dead one is out of the fight.
+        participant['conditions'] = normalize_vitality_conditions(conditions)
+        participant['isAlive'] = True
+        participant['deathSaves'] = (
+            normalize_death_saves(value.get('deathSaves'))
+            if participant['conditions'] == conditions
+            else normalize_death_saves(None)
+        )
     return participant
 
 
@@ -950,8 +955,10 @@ def combat_summary_for_dm(combat: dict[str, Any]) -> dict[str, Any]:
                 telegraphs.append(str(intent.get('visibleTelegraph')))
         elif participant.get('team') == 'player':
             keys = condition_keys(participant)
-            status = next((condition for condition in ('dead', 'dying', 'stable') if condition in keys), '')
-            if status == 'dying':
+            status = next((condition for condition in ('out_of_fight', 'dying', 'stable') if condition in keys), '')
+            if status == 'out_of_fight':
+                status = 'out of the fight'
+            elif status == 'dying':
                 saves = normalize_death_saves(participant.get('deathSaves'))
                 status = f"dying, death saves {saves['successes']} success / {saves['failures']} failure"
             suffix = f' ({status})' if status else ''

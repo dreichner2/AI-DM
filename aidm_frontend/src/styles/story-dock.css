@@ -272,14 +272,6 @@
 .story-shell .story-combatant[data-vitality] .story-combatant-disc { --ring: var(--story-faint); }
 .story-shell .story-combatant[data-vitality] .story-combatant-disc img,
 .story-shell .story-combatant[data-vitality] .story-combatant-initial { filter: grayscale(1) brightness(0.62); }
-.story-shell .story-combatant-vitality {
-  flex-direction: column;
-  gap: 4px;
-  margin-top: -3px;
-}
-.story-shell .story-combatant-vitality .story-vitality-label { font-size: 0.56rem; letter-spacing: 0.1em; }
-.story-shell .story-combatant-vitality .story-vitality-saves { gap: 5px; }
-.story-shell .story-combatant-vitality .story-vitality-pips i { width: 5px; height: 5px; }
 
 /* Engagement: a thin ember arc from the viewer to each foe locked in melee with them. */
 .story-shell .story-engagements-slot {

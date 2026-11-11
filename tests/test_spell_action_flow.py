@@ -806,12 +806,13 @@ def test_chromatic_orb_resolves_and_replays_the_chosen_damage_type(monkeypatch) 
     assert resolution['targets'][0]['effects'][0]['damageType'] == 'lightning'
 
 
-def test_revivify_needs_a_dead_ally_and_300_gp_of_components() -> None:
+def test_revivify_needs_300_gp_of_components_and_finds_no_dead_hero_to_raise() -> None:
     state = _party_state('Cleric', 5, 'Revivify')
     state['playerCharacters'][0]['spellResources'] = normalize_spell_resources(None, class_name='Cleric', level=5)
     living, _, _ = _cast(state, 'Revivify', ['player_2'], turn_id=43)
     assert living['validatedActions'][0]['status'] == 'invalid'
 
+    # A hero is never killed: an old save's dead hero is out of the fight and comes round when it ends.
     fallen = state['playerCharacters'][1]['health']
     fallen.update({'currentHp': 0, 'conditions': ['dead'], 'deathSaves': {'successes': 0, 'failures': 3}})
     state['playerCharacters'][0]['inventory']['currency'] = {'gp': 120}
@@ -820,12 +821,11 @@ def test_revivify_needs_a_dead_ally_and_300_gp_of_components() -> None:
     assert '300 gp' in poor['validatedActions'][0]['reason']
 
     state['playerCharacters'][0]['inventory']['currency'] = {'gp': 350}
-    declared, validation, applied = _cast(state, 'Revivify', ['player_2'], turn_id=45)
-    assert declared['validatedActions'][0]['status'] == 'valid' and validation['rejected'] == []
-    caster, revived = applied['nextState']['playerCharacters']
-    assert caster['inventory']['currency']['gp'] == 50
-    assert caster['spellResources']['slots']['3']['current'] == 1
-    assert (revived['health']['currentHp'], revived['health']['conditions']) == (1, [])
+    declared, _validation, applied = _cast(state, 'Revivify', ['player_2'], turn_id=45)
+    assert (declared['validatedActions'][0]['status'], declared['validatedActions'][0]['reason']) == ('invalid', 'They are out of this fight.')
+    caster, fallen_hero = applied['nextState']['playerCharacters']
+    assert caster['inventory']['currency']['gp'] == 350
+    assert fallen_hero['health']['currentHp'] == 0
 
 
 def test_aid_raises_maximum_hp_until_a_long_rest() -> None:

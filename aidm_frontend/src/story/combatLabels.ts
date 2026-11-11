@@ -1,4 +1,5 @@
 import type { CombatLegalAction, CombatParticipantSummary, CombatStatePanel } from '../gameSelectors'
+import { outOfFight } from './vitalityLabels'
 
 const RANGE_BANDS = new Set(['melee', 'near', 'far', 'distant'])
 
@@ -30,6 +31,14 @@ export function enemyDetail(participant: CombatParticipantSummary) {
 
 export function combatParticipant(combat: CombatStatePanel, id: string) {
   return [...combat.allies, ...combat.enemies].find((participant) => participant.id === id) ?? null
+}
+
+/** The targets a picker lists: never a defeated enemy, nor a hero out of the fight. */
+export function offeredTargets<Target extends { id: string }>(combat: CombatStatePanel, targets: Target[]) {
+  return targets.filter((target) => {
+    const participant = combatParticipant(combat, target.id)
+    return participant?.team === 'enemy' ? participant.healthTone !== 'down' : !outOfFight(participant?.conditions)
+  })
 }
 
 /** A target choice: "Goblin · 7/11" with HP numbers, else "Goblin · Wounded", else the range band. */

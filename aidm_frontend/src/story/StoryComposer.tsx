@@ -16,7 +16,6 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import type { ComposerMode } from '../gameActions'
-import { partyVitalityFromSnapshot } from '../gameSelectors'
 import { objectActionSubmission, pickupSubmission, travelSubmission, type ActionSubmission } from './actionIntents'
 import { StoryActionTray, type TraySection } from './StoryActionTray'
 import { StoryCombatRibbon } from './StoryCombatRibbon'
@@ -27,6 +26,7 @@ import { MORE_SUGGESTION, storySuggestions, type StorySuggestion } from './story
 import type { StoryComposerProps } from './types'
 import { useChipsThatFit } from './useChipsThatFit'
 import { useStagedComposerAction } from './useStagedComposerAction'
+import { partyHeroVitality } from './vitalityLabels'
 
 const HINTS_SEEN_KEY = 'aidm:storyHintsSeen'
 const HINT_SEND_LIMIT = 3
@@ -61,6 +61,8 @@ const SUGGESTION_ICONS: Partial<Record<StorySuggestion['kind'], LucideIcon>> = {
 
 const DOWN_STATUS = 'You are down. Your companions can still reach you.'
 const DOWN_PLACEHOLDER = 'You are down.'
+const OUT_STATUS = 'You are out of this fight. You will come round when it ends.'
+const OUT_PLACEHOLDER = 'You are out of this fight.'
 
 const CONNECTION_LABELS = {
   connecting: 'Connecting…',
@@ -68,10 +70,11 @@ const CONNECTION_LABELS = {
   offline: 'Offline',
 } as const
 
-function placeholderFor(mode: ComposerMode, hasCharacter: boolean, down: boolean) {
+/** `down` is the downed hero's placeholder, or '' for a hero who can act. */
+function placeholderFor(mode: ComposerMode, hasCharacter: boolean, down: string) {
   if (!hasCharacter) return 'Choose a character first'
   if (mode === 'ooc') return 'Say it out of character…'
-  if (down) return DOWN_PLACEHOLDER
+  if (down) return down
   if (mode === 'item') return 'Describe what you do with it…'
   if (mode === 'emote') return 'Describe the gesture…'
   return 'What do you do?'
@@ -154,16 +157,16 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
   const stage = useStagedComposerAction(composer)
   const endingDismissed = useEndingDismissed(board.sessionId)
   const snapshot = board.sessionState?.state_snapshot
-  const vitality = useMemo(() => partyVitalityFromSnapshot(snapshot), [snapshot])
+  const vitality = useMemo(() => partyHeroVitality(snapshot), [snapshot])
 
   const notice = board.pendingRollNotice
   const rollPromptActive = Boolean(notice?.isWaitingOnSelectedPlayer)
   const hasCharacter = Boolean(composer.selectedPlayerId)
   const viewerHealth = board.activePlayers.find((player) => player.id === composer.selectedPlayerId)?.health
-  // Dying, stable, unconscious or dead: a hero at 0 HP cannot act.
-  const viewerDown =
-    composer.selectedPlayerId !== null &&
-    (Boolean(vitality[composer.selectedPlayerId]) || (viewerHealth ? viewerHealth.currentHp <= 0 : false))
+  const viewerVitality = composer.selectedPlayerId !== null ? vitality[composer.selectedPlayerId] : undefined
+  const viewerOut = viewerVitality?.state === 'out'
+  // Dying, stable, unconscious or out of the fight: a hero at 0 HP cannot act.
+  const viewerDown = Boolean(viewerVitality) || (viewerHealth ? viewerHealth.currentHp <= 0 : false)
   const othersConnected = board.activePlayers.some((player) => player.id !== composer.selectedPlayerId)
   const speakingOutOfCharacter = viewerDown && othersConnected && composerMode === 'ooc'
   const dmWorking = board.sendPending || board.streamingTurnActive
@@ -172,7 +175,7 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
   const combatBundle = board.combatState.active
     ? board.combatState.legalActionBundles.find((bundle) => bundle.playerId === board.playerId)
     : undefined
-  const ribbonActive = !rollPromptActive && !viewerDown && Boolean(combatBundle)
+  const ribbonActive = !rollPromptActive && Boolean(combatBundle)
   const inputDisabled =
     !hasCharacter || Boolean(board.turnRecoveryGate) || (viewerDown && !speakingOutOfCharacter)
   const sendBlocked =
@@ -369,7 +372,7 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
     if (viewerDown) {
       return (
         <p className="story-dock-status" data-tone="down" role="status">
-          <span>{DOWN_STATUS}</span>
+          <span>{viewerOut ? OUT_STATUS : DOWN_STATUS}</span>
           {othersConnected && composerMode !== 'ooc' ? (
             <button
               type="button"
@@ -425,6 +428,7 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
               activePlayers={board.activePlayers}
               controls={board.gameplayControls}
               recentSpellNames={recentSpells}
+              down={viewerDown}
               onOpenTray={openTray}
               disabled={
                 dmWorking ||
@@ -467,7 +471,7 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
               className="story-input"
               rows={1}
               value={actionText}
-              placeholder={placeholderFor(composerMode, hasCharacter, viewerDown)}
+              placeholder={placeholderFor(composerMode, hasCharacter, viewerDown ? (viewerOut ? OUT_PLACEHOLDER : DOWN_PLACEHOLDER) : '')}
               disabled={inputDisabled}
               onChange={(event) => composer.updateActionText(event.target.value)}
               onKeyDown={handleKeyDown}

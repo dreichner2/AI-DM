@@ -52,7 +52,6 @@ from aidm_server.game_state.orchestration.combat_resolution import (
 from aidm_server.game_state.orchestration.engine_brief import engine_brief
 from aidm_server.game_state.orchestration.narration_facts import (
     PICKUP_SOURCE,
-    TAKE_TIME_LINE,
     enemy_names,
     fight_start,
     next_actor_line,
@@ -1501,6 +1500,7 @@ def _dm_context_packet(
         'stateChangesAlreadyApplied': [
             {
                 'type': change.get('type'),
+                'actorId': change.get('actorId'),
                 'locationId': change.get('locationId'),
                 'locationName': change.get('locationName') or change.get('name'),
                 'questId': change.get('questId'),
@@ -2181,8 +2181,9 @@ def pre_dm_pipeline(
         )
     for line in started.get('adjustments') or []:
         dm_context['dmInstructions'].append(f'This line must appear in the narration before the first blows: "{line}"')
-    if any(fact.get('takeTime') is True for fact in dm_context['narration'].get('objects') or []):
-        dm_context['dmInstructions'].append(f'Before telling the result of the check, say exactly: "{TAKE_TIME_LINE}"')
+    take_time = next((fact['takeTimeLine'] for fact in dm_context['narration'].get('objects') or [] if fact.get('takeTime') is True), None)
+    if take_time:
+        dm_context['dmInstructions'].append(f'Before telling the result of the check, say exactly: "{take_time}"')
     foreseen_end, foreseen_defeat = (None, None) if defeat_recovery else _foreseen_fight_end(
         state=state_before_dm,
         dm_context=dm_context,

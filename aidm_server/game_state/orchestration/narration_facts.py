@@ -9,6 +9,10 @@ the enemies' names in prose, the authored setup and adjustments of a fight that
 starts, the enemy abilities whose conditions the hero shakes off as their turn
 ends, who acts next in a fight, and how a fight ends when the engine-resolved
 enemy turns end it (a party defeat among them).
+
+In party play (more than one hero in the session) the packet's ``party`` names
+the acting hero and the heroes, and every line written here names the hero
+instead of saying "you".
 """
 
 from __future__ import annotations
@@ -33,14 +37,41 @@ DEFAULT_LABEL_VERBS = {
     'reset': 'Reset',
 }
 COIN_ORDER = ('pp', 'gp', 'ep', 'sp', 'cp')
-# Said before the result of a failed check taken again slowly.
+# Said before the result of a failed check taken again slowly; the party-play form names the hero.
 TAKE_TIME_LINE = 'You take your time over it; the light has changed by the time you are done.'
+PARTY_TAKE_TIME_LINE = '{name} takes their time over it; the light has changed by the time they are done.'
 # The validator's source for the changes of a typed pickup.
 PICKUP_SOURCE = 'pre_dm_world_action'
 
 
 def _text(value: Any) -> str:
     return str(value or '').strip()
+
+
+def _heroes(state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [hero for hero in state.get('playerCharacters') or [] if isinstance(hero, dict)]
+
+
+def _hero_name(state: dict[str, Any], actor_id: str) -> str:
+    return next((_text(hero.get('name')) for hero in _heroes(state) if _text(hero.get('id')) == actor_id), '') or 'The hero'
+
+
+def party(state: dict[str, Any], *, actor_id: str) -> dict[str, Any] | None:
+    """``{"actor", "heroes": [{"id", "name"}]}`` when the session holds more than one hero; None alone."""
+
+    heroes = _heroes(state)
+    if len(heroes) < 2:
+        return None
+    return {
+        'actor': _hero_name(state, actor_id),
+        'heroes': [{'id': _text(hero.get('id')), 'name': _text(hero.get('name'))} for hero in heroes],
+    }
+
+
+def take_time_line(state: dict[str, Any], *, actor_id: str) -> str:
+    """The line said before a check taken again slowly, naming the hero in party play."""
+
+    return PARTY_TAKE_TIME_LINE.format(name=_hero_name(state, actor_id)) if party(state, actor_id=actor_id) else TAKE_TIME_LINE
 
 
 def _scene_object(state: dict[str, Any], target_id: Any) -> dict[str, Any]:
@@ -126,6 +157,7 @@ def object_facts(
         }
         if event.get('takeTime') is True:
             fact['takeTime'] = True
+            fact['takeTimeLine'] = take_time_line(state_before, actor_id=actor_id)
         if _text(action_text.get(action)):
             fact['actionText'] = _text(action_text.get(action))
         if not failed and action in {'inspect', 'search'}:
@@ -170,9 +202,13 @@ def _taken_phrase(item: dict[str, Any]) -> str:
 
 
 def plain_results(state_after: dict[str, Any], applied_changes: Iterable[dict[str, Any]], *, actor_id: str) -> dict[str, Any]:
-    """Results the narration packet's change list leaves out: arrival, things picked up, a rest."""
+    """Results the narration packet's change list leaves out: arrival, things picked up, a rest; and in
+    party play who the party is (:func:`party`)."""
 
     results: dict[str, Any] = {}
+    heroes = party(state_after, actor_id=actor_id)
+    if heroes:
+        results['party'] = heroes
     taken = []
     for change in applied_changes:
         if not isinstance(change, dict):
@@ -240,7 +276,8 @@ def enemy_names(state: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def next_actor_line(state: dict[str, Any], *, actor_id: str, turn_ends: bool) -> str | None:
-    """``It is your turn.`` or ``{Name} is up next.`` for a fight still going after this turn."""
+    """``It is your turn.`` (``It is still {Name}'s turn.`` in party play) or ``{Name} is up next.`` for a
+    fight still going after this turn."""
 
     combat = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
     if _text(combat.get('status')).lower() not in {'starting', 'active'}:
@@ -252,5 +289,5 @@ def next_actor_line(state: dict[str, Any], *, actor_id: str, turn_ends: bool) ->
     if not next_actor:
         return None
     if _text(next_actor.get('id')) == actor_id:
-        return 'It is your turn.'
+        return f"It is still {_hero_name(state, actor_id)}'s turn." if party(state, actor_id=actor_id) else 'It is your turn.'
     return f"{_text(next_actor.get('name')) or 'Someone else'} is up next."

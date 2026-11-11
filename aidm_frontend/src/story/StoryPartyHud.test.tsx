@@ -18,7 +18,7 @@ function party(): ActivePlayer[] {
 afterEach(() => cleanup())
 
 describe('StoryPartyHud', () => {
-  it('names a downed hero by their state: Dying, Down — stable, Dead, or Down without one', () => {
+  it('names a downed hero by their state: Dying, Down — stable, Out of the fight, or Down without one', () => {
     render(
       <StoryPartyHud
         activePlayers={[...party(), { id: 33, character_name: 'Pell', name: 'Kit', health: down }]}
@@ -26,7 +26,7 @@ describe('StoryPartyHud', () => {
         vitality={{
           30: { state: 'stable', successes: 0, failures: 0 },
           31: { state: 'dying', successes: 1, failures: 0 },
-          32: { state: 'dead', successes: 0, failures: 0 },
+          32: { state: 'out', successes: 0, failures: 0 },
         }}
         onDrawerOpenChange={vi.fn()}
       />,
@@ -35,7 +35,7 @@ describe('StoryPartyHud', () => {
     expect(portraits.map((portrait) => portrait.getAttribute('aria-label'))).toEqual([
       'Liora Quill: Down — stable',
       'Brannoc: Dying',
-      'Wren: Dead',
+      'Wren: Out of the fight',
       'Pell: Down',
     ])
     expect(screen.getByRole('img', { name: 'Down — stable' })).toBeInTheDocument()

@@ -39,7 +39,7 @@ from aidm_server.race_system import (
 )
 from aidm_server.spellbook import ensure_character_sheet_spellbook
 from aidm_server.character_resources import ensure_character_sheet_spell_resources
-from aidm_server.starting_inventory import starting_inventory_for_class
+from aidm_server.starting_inventory import starting_inventory_for_class, with_starting_purse
 from aidm_server.services.session_state_mutation import (
     expected_state_revision_from_payload,
     mutate_session_state,
@@ -361,6 +361,9 @@ def add_player(campaign_id):
             if raw_inventory is not None
             else starting_inventory_for_class(class_name)
         )
+        if raw_inventory is None:
+            # A hero given the starting kit also starts with the starting purse.
+            stats_payload = safe_json_dumps(with_starting_purse(safe_json_loads(stats_payload, {})), {})
         new_player = Player(
             workspace_id=current_workspace_id(),
             account_id=current_account_id(),

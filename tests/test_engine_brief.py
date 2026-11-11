@@ -112,3 +112,24 @@ def test_words_that_name_an_engine_thing_without_a_result_are_not_done(table):
 
     assert "Not done: Search under the driver's bench or Look over the driver's bench; Go to The Old North Road" in table.brief()
     assert 'Did: nothing' in table.brief()
+
+
+@pytest.mark.parametrize(
+    ('text', 'kind', 'taken', 'line'),
+    [
+        ('+15 gp', 'coins', {}, 'Gained 15 gp.'),
+        ('+15 gp', 'coins', {'gp': 15}, None),
+        ('−50 gp', 'coins', {}, 'Lost 50 gp.'),
+        ('+10 gp each', 'coins', {}, 'Each hero gained 10 gp.'),
+        ('Arden Vale +21 gp', 'coins', {'gp': 15}, 'Arden Vale gained 6 gp.'),
+        ('Seren Ashgrove −5 gp', 'coins', {'gp': 15}, 'Seren Ashgrove lost 5 gp.'),
+        ('+100 XP', 'xp', {}, 'Gained 100 XP.'),
+        ('+75 XP each', 'xp', {}, 'Each hero gained 75 XP.'),
+        ('Arden Vale took the Caravan Strongbox Key', 'item_gained', {}, None),
+        ('Seren Ashgrove received the Rope', 'item_gained', {}, 'Seren Ashgrove received the Rope.'),
+    ],
+)
+def test_a_beat_becomes_a_did_line_naming_the_hero_in_party_play(text, kind, taken, line):
+    from aidm_server.game_state.orchestration.engine_brief import _beat_line
+
+    assert _beat_line({'kind': kind, 'text': text}, taken, acting_hero='Arden Vale') == line

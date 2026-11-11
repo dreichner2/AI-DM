@@ -471,7 +471,7 @@ describe('StoryComposer', () => {
     expect(props.board.actionComposerProps.toggleAdminTools).toHaveBeenCalledTimes(1)
   })
 
-  it('closes everything but out-of-character speech to a hero who is down: dying, stable or at 0 HP', () => {
+  it('closes everything but out-of-character speech and the turn order to a hero who is down: dying, stable or at 0 HP', () => {
     const fixture = testBoard()
     const sessionState = fixture.sessionState
     if (!sessionState) throw new Error('fixture has a session state')
@@ -490,7 +490,8 @@ describe('StoryComposer', () => {
     })
 
     expect(statusLine(container)).toBe('You are down. Your companions can still reach you.Speak out of character')
-    expect(screen.queryByRole('region', { name: 'Combat, round 2' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Combat, round 2' })).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Combat actions' })).not.toBeInTheDocument()
     expect(screen.queryByRole('group', { name: 'Suggestions' })).not.toBeInTheDocument()
     const input = screen.getByLabelText('Your Action')
     expect(input).toBeDisabled()
@@ -517,6 +518,29 @@ describe('StoryComposer', () => {
     const { container: aloneDock } = renderComposer({ board: { activePlayers: alone }, composer: { composerMode: 'ooc' } })
     expect(statusLine(aloneDock)).toBe('You are down. Your companions can still reach you.')
     expect(screen.getByLabelText('Your Action')).toBeDisabled()
+  })
+
+  it('tells a hero out of the fight they come round when it ends, and keeps the turn order in view', () => {
+    const fixture = testBoard()
+    const sessionState = fixture.sessionState
+    if (!sessionState) throw new Error('fixture has a session state')
+    const out = {
+      ...sessionState,
+      state_snapshot: {
+        combat: {
+          status: 'active',
+          participants: [{ id: 'player_30', team: 'player', conditions: ['unconscious', 'stable', 'out_of_fight'] }],
+        },
+      },
+    }
+    const { container, props } = renderComposer({ board: { sessionState: out, worldState: testWorld({ combat: testCombat() }) } })
+
+    expect(statusLine(container)).toBe('You are out of this fight. You will come round when it ends.Speak out of character')
+    expect(screen.getByLabelText('Your Action')).toHaveAttribute('placeholder', 'You are out of this fight.')
+    expect(screen.getByLabelText('Your Action')).toBeDisabled()
+    expect(screen.getByRole('region', { name: 'Combat, round 2' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Speak out of character' }))
+    expect(props.board.actionComposerProps.applyComposerMode).toHaveBeenCalledWith('ooc')
   })
 
   it('shows the keyboard hint until three actions have been sent from this browser', () => {

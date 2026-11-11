@@ -5,7 +5,9 @@ from copy import deepcopy
 from typing import Any
 
 from aidm_server.canon_inventory import inventory_payload
+from aidm_server.canon_text import int_or_default
 from aidm_server.game_state.equipment import occupied_slots
+from aidm_server.game_state.models import CURRENCY_STAT_KEYS
 
 
 STARTER_KITS: dict[str, list[dict[str, Any]]] = {
@@ -518,6 +520,8 @@ KEYWORD_KITS: tuple[tuple[tuple[str, ...], str], ...] = (
     (('entertainer', 'skald'), 'entertainer'),
 )
 HEALERS_KIT_CLASSES = frozenset({'cleric', 'druid'})
+# A newly created hero's purse, in stats keys; the ready-made heroes carry their own.
+STARTING_PURSE = {'gold': 15}
 
 
 def _normalize_text(value: str | None) -> str:
@@ -826,3 +830,11 @@ def starting_inventory_for_class(class_name: str | None) -> list[dict[str, Any]]
     items = [*deepcopy(STARTER_KITS[kit_key]), *_consumable_starter_items(kit_key)]
     items = _apply_subclass_items(items, _subclass_starting_items(kit_key, class_name))
     return inventory_payload(items)
+
+
+def with_starting_purse(stats: dict[str, Any]) -> dict[str, Any]:
+    """A newly created hero's ``stats`` with the starting purse, unless they already hold coins."""
+
+    if any(int_or_default(stats.get(key), default=0) > 0 for key in CURRENCY_STAT_KEYS.values()):
+        return stats
+    return {**stats, **STARTING_PURSE}

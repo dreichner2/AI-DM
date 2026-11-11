@@ -819,3 +819,116 @@ def test_the_heros_move_in_a_fight_is_told():
         'nextActorLine': 'It is your turn.'})), 'I close in.', SPEAKER)
 
     assert text == 'Arden Vale closes into melee and engages Wardbound Beast.\n\nIt is your turn.'
+
+
+# Party play: one story for every player names the hero, never "you" ----------------------------------------------
+
+
+SEREN = 'Seren Ashgrove'
+PARTY = {'actor': SEREN, 'heroes': [{'id': 'player_1', 'name': SPEAKER}, {'id': 'player_2', 'name': SEREN}]}
+YOU = re.compile(r'\byou(?:r|rself)?\b', re.IGNORECASE)
+
+
+def _party_hint(narration: dict | None = None, **pipeline):
+    return _hint(state_pipeline=_pipeline(narration={'party': PARTY, **(narration or {})}, **pipeline))
+
+
+def _healing(caster_target: str, amount: int = 4) -> dict:
+    return {
+        'type': 'spell.cast',
+        'spellName': 'Healing Word',
+        'spellResolution': {
+            'spellName': 'Healing Word',
+            'targets': [
+                {'targetName': caster_target, 'delivery': {'type': 'automatic'}, 'effects': [{'kind': 'healing', 'applied': True, 'amountApplied': amount}]},
+            ],
+        },
+    }
+
+
+def _shield() -> dict:
+    return {
+        'type': 'spell.cast',
+        'spellName': 'Shield of Faith',
+        'spellResolution': {
+            'spellName': 'Shield of Faith',
+            'targets': [{'targetName': SEREN, 'delivery': {'type': 'automatic'}, 'effects': []}],
+        },
+    }
+
+
+def test_a_healing_spell_returns_hit_points_and_a_spell_on_oneself_is_on_themself_or_yourself():
+    healed_self = narrate(_context(), _party_hint(stateChangesAlreadyApplied=[_healing(SEREN)]), 'heal', SEREN)
+    healed_other = narrate(_context(), _party_hint(stateChangesAlreadyApplied=[_healing(SPEAKER)]), 'heal', SEREN)
+    alone = narrate(_context(), _hint(state_pipeline=_pipeline(stateChangesAlreadyApplied=[_healing(SEREN)])), 'heal', SEREN)
+    warded = narrate(_context(), _party_hint(stateChangesAlreadyApplied=[_shield()]), 'ward', SEREN)
+    warded_alone = narrate(_context(), _hint(state_pipeline=_pipeline(stateChangesAlreadyApplied=[_shield()])), 'ward', SEREN)
+
+    assert healed_self == 'Seren Ashgrove speaks Healing Word. 4 hit points return to them.'
+    assert healed_other == 'Seren Ashgrove speaks Healing Word. 4 hit points return to Arden Vale.'
+    assert alone == 'You speak Healing Word. 4 hit points return to you.'
+    assert warded == 'Seren Ashgrove casts Shield of Faith on themself.'
+    assert warded_alone == 'You cast Shield of Faith on yourself.'
+
+
+def test_a_turn_that_ends_with_nothing_to_tell_is_only_who_acts_next():
+    for number in range(6):
+        ended = narrate(_context(), {**_party_hint({'nextActorLine': 'Arden Vale is up next.'}), 'turn_number': number}, 'I end my turn.', SEREN)
+        mine_again = narrate(_context(), {**_hint(state_pipeline=_pipeline(narration={'nextActorLine': 'It is your turn.'})), 'turn_number': number}, 'wait', SPEAKER)
+
+        assert ended == 'Arden Vale is up next.'
+        assert mine_again == 'It is your turn.'
+
+
+def test_in_party_play_object_actions_pickups_and_travel_name_the_hero():
+    search = narrate(
+        _context(),
+        _party_hint(
+            {'objects': [_fact('search', name="Driver's Bench", label="Search under the driver's bench", labelAuthored=True,
+                               description='A knot of waxed cloth sits beneath it.', found=['a Caravan Strongbox Key'])]},
+            stateChangesAlreadyApplied=[{'type': 'scene.interactable.action', 'targetId': 'inn_caravan_ledger', 'objectAction': 'search'}],
+        ),
+        'search',
+        SEREN,
+    )
+    failed = narrate(
+        _context(),
+        _party_hint(
+            {'objects': [_fact('search', name="Driver's Bench", label="Search under the driver's bench", labelAuthored=True, failed=True,
+                               takeTime=True, takeTimeLine='Seren Ashgrove takes their time over it; the light has changed by the time they are done.')]},
+            stateChangesAlreadyApplied=[{'type': 'scene.interactable.action', 'targetId': 'inn_caravan_ledger', 'objectAction': 'search'}],
+        ),
+        'search',
+        SEREN,
+    )
+    taken = narrate(_context(), _party_hint({'taken': ['the Caravan Strongbox Key'], 'party': {**PARTY, 'actor': SPEAKER}}), 'take', SPEAKER)
+    arrival = narrate(_context(), _party_hint({'arrival': 'The Old North Road'}), 'go', SEREN)
+
+    assert search.split('\n\n') == [
+        "Seren Ashgrove searches under the driver's bench.",
+        'A knot of waxed cloth sits beneath it.',
+        'Seren Ashgrove finds a Caravan Strongbox Key.',
+    ]
+    assert failed == (
+        'Seren Ashgrove takes their time over it; the light has changed by the time they are done. '
+        "Seren Ashgrove searches under the driver's bench. Seren Ashgrove comes up empty."
+    )
+    assert taken == 'Arden Vale takes the Caravan Strongbox Key.'
+    assert arrival.startswith('The party arrives at the Old North Road.')
+
+
+def test_in_party_play_a_beaten_party_wakes_as_the_party():
+    text = narrate(_context(), _party_hint({'partyDefeat': {'enemies': 'the wardbound beast', 'plural': False}}), 'I attack.', SEREN)
+
+    assert text == 'Darkness takes the party. When they come to, the light has changed and the wardbound beast is gone. They are alive — barely.'
+
+
+@pytest.mark.parametrize('template_key', sorted(scripted_narrator.PARTY_TEMPLATES))
+def test_no_party_template_says_you_or_reads_as_a_roll_request(template_key):
+    assert template_key in TEMPLATES
+    for template in scripted_narrator.PARTY_TEMPLATES[template_key]:
+        text = template.format_map(_SampleValues())
+        assert not YOU.search(text), text
+        assert response_mentions_roll_request(text) is False, text
+        assert TurnRollPolicy.response_requests_group_roll(text) is False, text
+        assert not {field for _, field, _, _ in string.Formatter().parse(template) if field} & {'action', 'input', 'player_input', 'words'}

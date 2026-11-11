@@ -2,8 +2,6 @@ import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useSt
 import { ChevronLeft } from 'lucide-react'
 import type { ActionIntent } from '../gameActions'
 import {
-  characterVitality,
-  type CharacterVitality,
   type CombatActionCost,
   type CombatLegalAction,
   type CombatLegalActionBundle,
@@ -19,15 +17,13 @@ import type {
 } from '../gameplayControlState'
 import type { ActivePlayer } from '../types'
 import { combatActionSubmission, objectActionSubmission, spellCastSubmission } from './actionIntents'
-import { combatActionLabel, combatTargetLabel, enemyDetail, rangeBand } from './combatLabels'
-import { StoryVitality } from './StoryVitality'
+import { combatActionLabel, combatTargetLabel, enemyDetail, offeredTargets, rangeBand } from './combatLabels'
 import { useEdgeFades } from './useEdgeFades'
+import { heroVitalityOf, VITALITY_CONDITIONS, type HeroVitality } from './vitalityLabels'
 
 const RESOLVING_REASON = 'Actions are unavailable while the current turn resolves.'
 const MAX_TELEGRAPHS = 2
 const MAX_CONDITION_DOTS = 2
-/** Shown by the vitality mark, so not repeated as condition dots. */
-const VITALITY_CONDITIONS = new Set(['dying', 'stable', 'dead', 'unconscious'])
 /** How high an engagement arc rises above the discs it links. */
 const ARC_RISE = 11
 const MAX_ATTACKS = 2
@@ -50,6 +46,8 @@ type StoryCombatRibbonProps = {
   /** Names of the spells the hero cast in this fight, most recent first. */
   recentSpellNames: string[]
   disabled: boolean
+  /** The viewer's hero is down or out of the fight: the roster shows, never their choices. */
+  down?: boolean
   submitAction: (overrideMessage?: string, overrideIntent?: ActionIntent) => boolean
   onOpenTray: (section: RibbonTraySection, spellId?: string) => void
 }
@@ -134,13 +132,13 @@ function Combatant({
   current: boolean
   /** The viewer's own marker: no range under it (a hero is never at a range from themselves). */
   own: boolean
-  vitality: CharacterVitality | null
+  vitality: HeroVitality | null
 }) {
   const ally = participant.team !== 'enemy'
   const dots = vitality
     ? participant.conditions.filter((condition) => !VITALITY_CONDITIONS.has(condition.toLowerCase()))
     : participant.conditions
-  const detail = own ? '' : ally ? rangeBand(participant) : enemyDetail(participant)
+  const detail = vitality ? (vitality.state === 'out' ? 'out' : 'down') : own ? '' : ally ? rangeBand(participant) : enemyDetail(participant)
   return (
     <li
       className="story-combatant"
@@ -168,11 +166,7 @@ function Combatant({
         ) : null}
       </span>
       <span className="story-combatant-name" aria-hidden="true">{participant.name}</span>
-      {vitality ? (
-        <StoryVitality vitality={vitality} className="story-combatant-vitality" />
-      ) : detail ? (
-        <span className="story-combatant-range" aria-hidden="true">{detail}</span>
-      ) : null}
+      {detail ? <span className="story-combatant-range" aria-hidden="true">{detail}</span> : null}
     </li>
   )
 }
@@ -289,6 +283,7 @@ export function StoryCombatRibbon({
   controls,
   recentSpellNames: recentSpells,
   disabled,
+  down = false,
   submitAction,
   onOpenTray,
 }: StoryCombatRibbonProps) {
@@ -322,7 +317,7 @@ export function StoryCombatRibbon({
     (actingId === bundle.currentActorId ? bundle.currentActorName : '')
   const endTurn = bundle.actions.find(isEndTurn) ?? null
   // The viewer's choices show on their turn, or whenever the server offers them anything legal.
-  const viewersTurn = actingId === bundle.actorId || bundle.actions.some((action) => action.available)
+  const viewersTurn = !down && (actingId === bundle.actorId || bundle.actions.some((action) => action.available))
   const legal = bundle.actions.filter((action) => action.available && !isEndTurn(action))
   const firstOfType = (type: string) => legal.filter((action) => action.type === type).slice(0, 1)
   const castable = controls.spells.filter((spell) => spell.available)
@@ -411,12 +406,12 @@ export function StoryCombatRibbon({
       const { message, intent } = objectActionSubmission(controls.actorName, choice.object, choice.action)
       finish(message, intent)
     } else if (choice.kind === 'spell') {
-      const only = onlyLegalTarget(choice.spell.targets)
+      const only = onlyLegalTarget(offeredTargets(combat, choice.spell.targets))
       if (!aimsInRibbon(choice.spell)) onOpenTray('magic', choice.spell.id)
       else if (only) castAt(choice.spell, only.id)
       else setTargeting({ kind: 'spell', spell: choice.spell })
     } else if (choice.action.requiresTarget) {
-      const only = onlyLegalTarget(choice.action.targets)
+      const only = onlyLegalTarget(offeredTargets(combat, choice.action.targets))
       if (only) act(choice.action, only)
       else setTargeting({ kind: 'action', action: choice.action })
     } else {
@@ -449,14 +444,14 @@ export function StoryCombatRibbon({
   const targetChoices = () => {
     if (!targeting) return []
     if (targeting.kind === 'action') {
-      return targeting.action.targets.map((target) => ({
+      return offeredTargets(combat, targeting.action.targets).map((target) => ({
         id: target.id,
         label: combatTargetLabel(combat, target),
         reason: target.available ? '' : target.reason || 'This target is not currently legal.',
         submit: () => act(targeting.action, target),
       }))
     }
-    return targeting.spell.targets.map((target) => ({
+    return offeredTargets(combat, targeting.spell.targets).map((target) => ({
       id: target.id,
       label: combatTargetLabel(combat, target),
       reason: target.available ? '' : target.reason || 'This target is not currently legal.',
@@ -482,7 +477,7 @@ export function StoryCombatRibbon({
                 portrait={participant.team === 'enemy' ? '' : portraitFor(participant)}
                 current={participant.id === actingId}
                 own={participant.id === bundle.actorId}
-                vitality={participant.team === 'enemy' ? null : characterVitality(participant.conditions, participant.deathSaves)}
+                vitality={participant.team === 'enemy' ? null : heroVitalityOf(participant.conditions, participant.deathSaves)}
               />
             </Fragment>
           ))}

@@ -245,7 +245,7 @@
 }
 .story-shell .story-vitality .story-vitality-label { font-size: 0.64rem; letter-spacing: 0.14em; }
 .story-shell .story-vitality[data-state='dying'] .story-vitality-label { color: var(--story-fail); }
-.story-shell .story-vitality[data-state='dead'] .story-vitality-label { color: var(--story-faint); }
+.story-shell .story-vitality[data-state='out'] .story-vitality-label { color: var(--story-faint); }
 .story-shell .story-vitality-saves { display: inline-flex; gap: 7px; }
 .story-shell .story-vitality-pips { --pip: var(--story-success); display: inline-flex; gap: 3px; }
 .story-shell .story-vitality-pips[data-outcome='failure'] { --pip: var(--story-fail); }

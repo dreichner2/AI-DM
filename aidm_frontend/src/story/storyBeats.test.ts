@@ -411,6 +411,22 @@ describe('server story beats', () => {
     ])
   })
 
+  it('tones a beat that names its hero the same as one that does not', () => {
+    const [, turn] = buildStoryBeats([
+      entry('log-1', 'dm', 'DM', 'The beast lunges at Seren Ashgrove.', {
+        turn_id: 13,
+        storyBeats: [
+          { kind: 'hp', text: 'Seren Ashgrove took 7 damage' },
+          { kind: 'hp', text: 'Arden Vale healed 4' },
+          { kind: 'coins', text: 'Arden Vale −6 gp' },
+          { kind: 'coins', text: '+10 gp each' },
+        ],
+      }),
+    ])
+    if (turn.kind !== 'turnBeats') throw new Error('expected the turn beats')
+    expect(turn.beats.map(({ tone }) => tone)).toEqual(['fail', 'success', 'default', 'gold'])
+  })
+
   it('shows how a fight ended as a chip, a victory in the success tone', () => {
     const [, turn] = buildStoryBeats([
       entry('log-1', 'dm', 'DM', 'The last cutthroat falls.', {

@@ -20,7 +20,8 @@ function renderRibbon(
     controls = testControls({ inCombat: true, spells: [], interactables: [] }),
     recent = [] as string[],
     health = null,
-  }: { disabled?: boolean; controls?: GameplayControlState; recent?: string[]; health?: ActivePlayerHealth | null } = {},
+    down = false,
+  }: { disabled?: boolean; controls?: GameplayControlState; recent?: string[]; health?: ActivePlayerHealth | null; down?: boolean } = {},
 ) {
   const submitAction = vi.fn<Submit>(() => true)
   const onOpenTray = vi.fn<(section: RibbonTraySection, spellId?: string) => void>()
@@ -32,6 +33,7 @@ function renderRibbon(
       controls={controls}
       recentSpellNames={recent}
       disabled={disabled}
+      down={down}
       submitAction={submitAction}
       onOpenTray={onOpenTray}
     />,
@@ -533,24 +535,77 @@ describe('StoryCombatRibbon', () => {
     expect([...document.querySelectorAll('.story-engagements path')].map((path) => path.getAttribute('data-target'))).toEqual(['goblin_1'])
   })
 
-  it('shows a dying ally without colour, with its death-save pips and the word Dying', () => {
+  it('shows a downed ally without colour, reading down, and a hero out of the fight reading out', () => {
     const combat = testCombat()
-    combat.allies.push({
-      ...combat.allies[0],
-      id: 'player_31',
-      name: 'Brannoc',
-      health: 'Down',
-      healthTone: 'down',
-      conditions: ['unconscious', 'dying'],
-      deathSaves: { successes: 1, failures: 2 },
-    })
+    const downed = { ...combat.allies[0], health: 'Down', healthTone: 'down' as const, deathSaves: { successes: 1, failures: 2 } }
+    combat.allies.push(
+      { ...downed, id: 'player_31', name: 'Brannoc', conditions: ['unconscious', 'dying'] },
+      { ...downed, id: 'player_32', name: 'Arden Vale', conditions: ['unconscious', 'stable', 'out_of_fight'] },
+    )
     renderRibbon(combat)
-    const brannoc = within(screen.getByRole('list', { name: 'Combatants' })).getAllByRole('listitem')[1]
+    const [, brannoc, arden] = within(screen.getByRole('list', { name: 'Combatants' })).getAllByRole('listitem')
     expect(brannoc).toHaveAttribute('data-vitality', 'dying')
-    expect(within(brannoc).getByRole('img', { name: 'Dying: 1 success, 2 failures' })).toBeInTheDocument()
-    expect(brannoc.querySelectorAll('.story-vitality-pips[data-outcome="success"] i[data-filled]')).toHaveLength(1)
-    expect(brannoc.querySelectorAll('.story-vitality-pips[data-outcome="failure"] i[data-filled]')).toHaveLength(2)
+    expect(arden).toHaveAttribute('data-vitality', 'out')
+    expect([brannoc, arden].map((item) => item.querySelector('.story-combatant-range')?.textContent)).toEqual(['down', 'out'])
     expect(brannoc.querySelector('.story-combatant-conditions')).toBeNull()
+    expect(arden.querySelector('.story-combatant-conditions')).toBeNull()
+  })
+
+  it('stays for a viewer whose hero is down or out: their entry reads so, with no choices even on their turn', () => {
+    const combat = testCombat()
+    combat.allies[0] = { ...combat.allies[0], health: 'Down', healthTone: 'down', conditions: ['unconscious', 'stable', 'out_of_fight'] }
+    renderRibbon(combat, { down: true })
+
+    const viewer = within(screen.getByRole('list', { name: 'Combatants' })).getAllByRole('listitem')[0]
+    expect(viewer.querySelector('.story-combatant-range')).toHaveTextContent('out')
+    expect(screen.queryByRole('group', { name: 'Combat actions' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'End turn' })).not.toBeInTheDocument()
+    expect(screen.getByText('Ysolde Marrow is acting')).toBeInTheDocument()
+  })
+
+  it('never lists a defeated enemy or a hero out of the fight as a target, and takes the one legal target left at once', () => {
+    const combat = twoTargetCombat()
+    combat.enemies.push({ ...combat.enemies[0], id: 'goblin_2', name: 'Goblin Scout', health: 'Down', healthTone: 'down', conditions: [] })
+    combat.allies.push({ ...combat.allies[0], id: 'player_31', name: 'Brannoc', health: 'Down', healthTone: 'down', conditions: ['unconscious', 'stable', 'out_of_fight'] })
+    const enemy = (id: string, name: string) => ({ id, name, team: 'enemy', rangeBand: 'near', currentHp: null, maxHp: null, conditions: [], available: true, reason: '' })
+    const ally = (id: string, name: string, conditions: string[]) => ({ ...enemy(id, name), team: 'player', conditions })
+    const fireBolt = spell({
+      id: 'spell_fire_bolt',
+      name: 'Fire Bolt',
+      level: 0,
+      castLevels: [],
+      minTargets: 1,
+      maxTargets: 1,
+      targets: [enemy('goblin_1', 'Goblin Sentry'), enemy('goblin_2', 'Goblin Scout'), enemy('archer_1', 'Distant Archer')],
+    })
+    const healingWord = spell({
+      id: 'spell_healing_word',
+      name: 'Healing Word',
+      level: 1,
+      castLevels: [1],
+      minTargets: 1,
+      maxTargets: 1,
+      targets: [ally('player_30', 'Ysolde Marrow', []), ally('player_31', 'Brannoc', ['unconscious', 'stable', 'out_of_fight'])],
+    })
+    const { submitAction } = renderRibbon(combat, {
+      controls: testControls({ inCombat: true, spells: [fireBolt, healingWord], interactables: [] }),
+      recent: ['Fire Bolt', 'Healing Word'],
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fire Bolt' }))
+    expect(within(screen.getByRole('group', { name: 'Targets for Fire Bolt' })).getAllByRole('button').map((button) => button.textContent))
+      .toEqual(['Goblin Sentry · Wounded', 'Distant Archer · Unhurt', 'Back'])
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+
+    // Without the fallen Goblin Scout the longsword has one legal target, and Healing Word one besides Brannoc.
+    fireEvent.click(screen.getByRole('button', { name: 'Attack with Longsword' }))
+    expect(submitAction).toHaveBeenLastCalledWith('Ysolde Marrow attacks Goblin Sentry with Longsword.', expect.objectContaining({
+      combat: { action_id: 'combat.attack.longsword', target_id: 'goblin_1' },
+    }))
+    fireEvent.click(screen.getByRole('button', { name: 'Healing Word' }))
+    expect(submitAction).toHaveBeenLastCalledWith('Ysolde casts Healing Word at Ysolde Marrow.', expect.objectContaining({
+      spell: expect.objectContaining({ target_ids: ['player_30'] }),
+    }))
   })
 
   it('renders nothing without a bundle for the viewer', () => {

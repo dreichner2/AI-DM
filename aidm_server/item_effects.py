@@ -334,6 +334,8 @@ def _economy_reason(economy: Mapping[str, Any], cost: str | None) -> str:
 
 
 def _ally_reason(rule: str, actor: Mapping[str, Any], target: Mapping[str, Any], *, in_combat: bool) -> str:
+    if rule in {'self_or_ally', 'dying_ally'} and vitality.is_out_of_fight(target):
+        return vitality.OUT_OF_FIGHT_REFUSAL
     if rule == 'self_or_ally' and vitality.is_dead(target):
         return 'Healing cannot restore the dead.'
     if rule == 'dying_ally' and not vitality.is_dying(target):

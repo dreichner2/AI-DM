@@ -274,6 +274,27 @@ describe('StoryDrawer', () => {
     expect(within(screen.getByLabelText('Conditions')).getAllByText(/./).map((chip) => chip.textContent)).toEqual(['poisoned'])
   })
 
+  it('names a hero out of the fight so on the sheet and at the table, never as a condition', () => {
+    mockViewportWidth(1440)
+    const board = testBoard()
+    const sessionState = board.sessionState
+    if (!sessionState) throw new Error('fixture has a session state')
+    const out = ['unconscious', 'stable', 'out_of_fight']
+    renderDrawer({
+      board: {
+        ...board,
+        sessionState: {
+          ...sessionState,
+          state_snapshot: { combat: { status: 'active', participants: [{ id: 'player_30', team: 'player', conditions: out }] } },
+        },
+      },
+      inspector: testInspector({ statBlock: { ...testInspector().statBlock, conditions: [...out, 'poisoned'] } }),
+    })
+
+    expect(screen.getAllByRole('img', { name: 'Out of the fight' })).toHaveLength(2)
+    expect(within(screen.getByLabelText('Conditions')).getAllByText(/./).map((chip) => chip.textContent)).toEqual(['poisoned'])
+  })
+
   it('toggles equipment from the pack and shows progress while it saves', () => {
     mockViewportWidth(1440)
     const { inspector } = renderDrawer({ tab: 'pack' })

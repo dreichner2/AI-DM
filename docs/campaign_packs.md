@@ -683,7 +683,9 @@ is given it as a line it must convey. From the Play Now finale:
   below half HP, their side has lost a member, or it is round 4 or later and
   they have been hurt. `"allowParley": true` lifts that from the first round
   (for an encounter meant to be talked down; the Play Now pack sets none).
-- When every hero is down the party is beaten, never killed: at the end of the
+- A hero is never killed: where they would die they are out of the fight, and
+  when the fight ends with any hero standing every downed hero comes round with
+  1 HP at once. When every hero is down the party is beaten, never killed: at the end of the
   fight it wakes later with 1 HP (the clock moves on one phase), the encounter
   re-arms, and no checkpoint fails. `"lethalDefeat": true` only makes the defeat
   decisive: it fails the checkpoint that names the encounter in `failWhen`, so

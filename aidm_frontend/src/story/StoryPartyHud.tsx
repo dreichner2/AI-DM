@@ -1,14 +1,13 @@
-import type { CharacterVitality } from '../gameSelectors'
 import type { ActivePlayer, ActivePlayerHealth } from '../types'
 import { StoryVitality } from './StoryVitality'
 import type { StoryDrawerTab } from './types'
-import { healthWord, vitalityLabel } from './vitalityLabels'
+import { healthWord, vitalityLabel, type HeroVitality } from './vitalityLabels'
 
 type StoryPartyHudProps = {
   activePlayers: ActivePlayer[]
   viewerPlayerId: number | null
   /** Downed party members by player id. */
-  vitality: Record<number, CharacterVitality>
+  vitality: Record<number, HeroVitality>
   onDrawerOpenChange: (open: boolean, tab?: StoryDrawerTab) => void
 }
 
@@ -20,11 +19,11 @@ function displayName(player: ActivePlayer) {
 }
 
 /**
- * How a portrait names a hero's health. A downed hero reads by their state (a
- * stable hero is not dead), never by hit points alone; a standing one by how
- * hurt they are.
+ * How a portrait names a hero's health. A downed hero reads by their state
+ * (dying, stable or out of the fight), never by hit points alone; a standing
+ * one by how hurt they are.
  */
-function healthState(health: ActivePlayerHealth | null, vitality: CharacterVitality | null) {
+function healthState(health: ActivePlayerHealth | null, vitality: HeroVitality | null) {
   if (vitality) return vitalityLabel(vitality.state)
   if (!health) return null
   if (health.currentHp <= 0) return 'Down'
@@ -39,7 +38,7 @@ function Portrait({
 }: {
   player: ActivePlayer
   size: number
-  vitality: CharacterVitality | null
+  vitality: HeroVitality | null
   onOpen: () => void
 }) {
   const name = displayName(player)

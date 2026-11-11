@@ -152,6 +152,24 @@ describe('StoryView', () => {
     expect(within(party).queryByText(/^HP /)).not.toBeInTheDocument()
   })
 
+  it('names a party member out of the fight beside the portrait', () => {
+    const board = makeBoardFixture('dying')
+    const sessionState = board.sessionState
+    if (!sessionState) throw new Error('fixture has a session state')
+    renderView({
+      board: {
+        ...board,
+        sessionState: {
+          ...sessionState,
+          state_snapshot: { combat: { status: 'active', participants: [{ id: 'player-30', team: 'player', conditions: ['unconscious', 'stable', 'out_of_fight'] }] } },
+        },
+      },
+    })
+    const party = screen.getByRole('group', { name: 'Party' })
+    expect(within(party).getAllByRole('button')[0]).toHaveAttribute('aria-label', 'Ysolde Marrow: Out of the fight')
+    expect(within(party).getByRole('img', { name: 'Out of the fight' })).toBeInTheDocument()
+  })
+
   it('flashes the screen edge when the viewer loses HP', () => {
     const board = makeBoardFixture('combat')
     const { container, rerenderBoard } = renderView({ board })

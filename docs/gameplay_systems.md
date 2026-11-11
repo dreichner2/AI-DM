@@ -255,8 +255,8 @@ this order:
 | Kind | Text |
 | --- | --- |
 | `check` | `Investigation check: 14 — success`, naming the skill or ability once, `Check: 14 — success` when neither is known (` (DC 10)` only when the DC is shown; ` (taking your time)` after a retry); a roll made with no check pending is not a check: `d20: 10`, or `Strength: 13 (d20 10 + 3)` with the ability picked |
-| `hp` | `Took 7 damage` / `Healed 5` (`Mara took 7 damage` for another hero) |
-| `condition` | `You are prone` / `No longer prone` (only when a condition starts or ends) |
+| `hp` | `Took 7 damage` / `Healed 5` |
+| `condition` | `You are prone` / `No longer prone` (only when a condition starts or ends); `You are out of the fight`; `You come round` for a hero who wakes |
 | `death_save` | `Death save: 12 — success` |
 | `combat_end` | `Victory`, `The fight ends — they yield`, `The fight ends — they flee`, `You got away` |
 | `item_gained` / `item_lost` | `Taken — {item}` / `Received — {item}` (`×N` when more than one); `Used`, `Given`, `Sold — {item}` |
@@ -266,13 +266,28 @@ this order:
 | `defeat` | `Defeated — you wake later with 1 HP` / `You come to — 1 HP` |
 | `ending` | `The story ends — {ending title}` |
 
+In party play (more than one hero in the session) one story is shown to every
+player, so each beat about a hero names them: `Seren Ashgrove took 7 damage`,
+`Arden Vale is out of the fight`, `Arden Vale comes round`, `Seren Ashgrove —
+Investigation check: 15 — success`, `Mara Fen: death save: 12 — success`,
+`Arden Vale took the Caravan Strongbox Key`, `Arden Vale +6 gp`, `Seren Ashgrove
+reached level 2`; a coin or XP gain every hero received alike is one beat,
+`+10 gp each` / `+75 XP each`. Beats about the party or the world read the same.
+The narration does the same: the scripted narrator names the acting hero
+(`Seren Ashgrove closes in on the wardbound beast. Their mace lands …`,
+`It is still Seren Ashgrove's turn.`), and the AI narrator's rule 6 tells it to
+name every hero and never write "you" for one. When a hero's turn ends with
+nothing else to tell, the narration is only the line saying who acts next.
+
 ## Character Foundations
 
 - New characters are made through guided creation (who, calling, class skills,
   review) and require a nonblank class and all six ability scores in a legal
   point-buy allocation. Classless, incomplete, out-of-range, and over-budget
   profiles fail closed. Creation asks for the class's skill choices, a rogue's
-  two Expertise skills, and a fighting style where the class has one.
+  two Expertise skills, and a fighting style where the class has one. A created
+  hero starts with their class's kit and 15 gp; the ready-made heroes carry
+  their own.
 - Curated backgrounds are authoritative packages of skill, tool, and language
   proficiencies. Unknown new background IDs fail closed; legacy free text remains
   display-only.
@@ -296,38 +311,52 @@ this order:
   persisted roll, and the scripted narrator names it (`— your wounds cost you
   2`) on the hero's first attack it changes.
 
-## Dying, Death Saves, Stable and Dead
+## Dying, Death Saves, Stable and Out of the Fight
 
+- A hero is beaten, never killed: where a creature would die (a third failed
+  death save, a failure added by damage at 0 HP, or massive damage) a player
+  character is instead out of the fight until it ends, and then wakes with 1 HP.
+  While the fight is on nothing raises them, and they take no turns and are never
+  targeted.
 - Player characters at 0 HP fall `unconscious` and `dying` (out of combat:
-  `stable`) instead of leaving the game; only the `dead` condition makes one not
-  alive. Damage left over at 0 HP that reaches the maximum HP kills at once;
-  other damage at 0 HP adds a death-save failure (two on a critical).
+  `stable`) instead of leaving the game. Damage left over at 0 HP that reaches
+  the maximum HP puts them out of the fight at once; other damage at 0 HP adds a
+  death-save failure (two on a critical). Out of the fight is the conditions
+  `unconscious`, `stable` and `out_of_fight`, death saves reset to 0/0, still
+  alive; an old save's `dead` hero is read as out of the fight.
 - When an ending turn passes a dying character's initiative slot, the engine
   rolls its d20 death save (10+ success, natural 1 two failures, natural 20 back
-  at 1 HP; three successes `stable`, three failures `dead`) and records it as a
-  visible `combat.death_save` change. Vitality conditions and death-save tallies
-  persist on the Player row. Enemies and NPC allies are simply defeated at 0 HP.
-- Healing a downed character who is not dead (spells, Lay on Hands, potions,
-  narrated healing) wakes it; the dead cannot be healed. Stabilize (an action,
-  Wisdom (Medicine) DC 10), Spare the Dying and a Healer's Kit make a dying ally
-  `stable`; Revivify returns the dead.
-- A hero who is down (dying, stable, unconscious or dead) cannot act: anything
+  at 1 HP; three successes `stable`, three failures out of the fight) and
+  records it as a visible `combat.death_save` change. Vitality conditions and
+  death-save tallies persist on the Player row. Enemies and NPC allies are
+  simply defeated at 0 HP.
+- Healing a downed character (spells, Lay on Hands, potions, narrated healing)
+  wakes it, unless it is out of the fight: healing and stabilising restore
+  nothing to them, they are not offered as a target, and a typed attempt is
+  refused with `They are out of this fight.` Stabilize (an action, Wisdom
+  (Medicine) DC 10), Spare the Dying and a Healer's Kit make a dying ally
+  `stable`.
+- A hero who is down (dying, stable, unconscious or out of the fight) cannot act: anything
   other than an out-of-character message, or a rest for a stable hero outside a
   fight, is refused before narration with `You are down and cannot act.`
 
 ### Defeat and waking
 
-- When every present player character is down, combat ends with
+- When a fight ends for any reason with at least one hero standing, every hero
+  who is down (dying, stable or out of the fight) comes round with 1 HP at once,
+  no longer prone, with no time passing; the turn carries `… comes round` for
+  each of them.
+- When every present player character is down (dying, stable and out of the
+  fight all count), combat ends with
   `objective_failed` and the party is beaten, never killed, whether or not the
   fight is lethal. At the end of the fight the clock advances one phase, every
-  hero who is not dead wakes with 1 HP (no longer dying, stable, unconscious or
+  hero wakes with 1 HP (no longer dying, stable, out of the fight, unconscious or
   prone; death saves reset), the enemies leave the scene, and the encounter
   records the outcome `defeat`, pays nothing, and is re-armed so its trigger
   can fire again. The turn carries the beat
   `Defeated — you wake later with 1 HP`. When the enemies' opening turns end
   the fight inside an operator's combat start, the party wakes before that
-  request returns, in the same state revision and audit record. Any other
-  combat end stabilizes the dying.
+  request returns, in the same state revision and audit record.
 - A lost or fled fight never ends the story. A beaten party's defeat fails no
   checkpoint. `lethalDefeat: true` on the combat or its encounter only means
   the defeat is decisive: it fails the checkpoint that names the encounter in
@@ -338,9 +367,9 @@ this order:
   checkpoint before it completes; in the Play Now adventure, by choosing the
   road-stone's fate.
 - Outside a fight the same waking applies at once, whatever caused it: when no
-  combat is active and every present hero is down, each one who is not dead
-  comes to with 1 HP a phase later, before their next action is judged; the turn
-  carries `You come to — 1 HP`.
+  combat is active and every present hero is down, each one comes to with 1 HP
+  a phase later, before their next action is judged; the turn carries
+  `You come to — 1 HP`.
 
 ## Conditions
 

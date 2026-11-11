@@ -313,14 +313,21 @@ def _health_from_player(player: Player, stats: dict[str, Any]) -> dict[str, Any]
     hp = state.get('hp') if isinstance(state.get('hp'), dict) else {}
     max_hp = max(0, int_or_default(hp.get('max'), default=0))
     current_hp = max(0, int_or_default(hp.get('current'), default=max_hp))
+    # Deferred import: the vitality module imports this one.
+    from aidm_server.combat.vitality import normalize_vitality_conditions
+
+    conditions = stats.get('conditions') if isinstance(stats.get('conditions'), list) else []
     health = {
         'currentHp': min(current_hp, max_hp) if max_hp else current_hp,
         'maxHp': max_hp,
         'tempHp': max(0, int_or_default(stats.get('temp_hp', stats.get('tempHp')), default=0)),
-        'conditions': stats.get('conditions') if isinstance(stats.get('conditions'), list) else [],
+        'conditions': normalize_vitality_conditions(conditions),
     }
     death_saves = stats.get('death_saves')
-    if isinstance(death_saves, dict):
+    if health['conditions'] != conditions:
+        # An old save's dead hero is out of the fight: no death saves left to make.
+        health['deathSaves'] = {'successes': 0, 'failures': 0}
+    elif isinstance(death_saves, dict):
         health['deathSaves'] = {
             key: max(0, min(3, int_or_default(death_saves.get(key), default=0)))
             for key in ('successes', 'failures')

@@ -2423,6 +2423,8 @@ def _validate_health_change(state: dict[str, Any], change: dict[str, Any]) -> tu
         return 'rejected', 'Health change amount must be positive.', None
     if change.get('type') == 'health.heal':
         health = actor.get('health') if isinstance(actor.get('health'), dict) else {}
+        if vitality.is_out_of_fight(actor):
+            return 'rejected', vitality.OUT_OF_FIGHT_REFUSAL, None
         if 'dead' in {_text(value).lower() for value in health.get('conditions') or []}:
             return 'rejected', 'Healing cannot restore the dead.', None
         current_hp = max(0, int_or_default(health.get('currentHp'), default=0))

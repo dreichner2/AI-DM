@@ -1,8 +1,8 @@
-"""A party that is beaten wakes later instead of dying, whether or not the fight is lethal.
+"""Heroes are beaten, never killed: whoever is down wakes once the fight is over.
 
 When a combat ends with every present player character down (``objective_failed``),
-the clock advances one phase, every hero who is not dead wakes with 1 HP (no
-longer dying, stable, unconscious or prone; death saves reset), the enemies
+the clock advances one phase, every hero wakes with 1 HP (no longer dying,
+stable, out of the fight, unconscious or prone; death saves reset), the enemies
 leave the scene, and the pack encounter is re-armed so its trigger can fire
 again. The encounter's ``defeat`` outcome is recorded (and pays nothing) by the
 ordinary combat-end reward transaction, which does not use up the encounter's
@@ -11,9 +11,12 @@ changes none of this: it only lets the defeat fail the checkpoint that names
 the encounter, so the story takes that checkpoint's failure route
 (``campaign_pack_progress``).
 
-Outside a fight the same waking applies at once, whatever put the heroes down:
-when no combat is active and every present hero is down, each one who is not
-dead comes to with 1 HP a phase later (:func:`party_wake`).
+Outside a fight (:func:`party_wake`): when a fight has ended, for any reason,
+with at least one hero standing, every hero who is down (dying, stable or out
+of the fight) comes round with 1 HP at once, with no time passing; this is
+settled once per fight end. A hero still out of the fight with no fight on (an
+old save) comes round the same way. When every present hero is down, whatever
+put them down, each one comes to with 1 HP a phase later.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from copy import deepcopy
 from typing import Any
 
 from aidm_server.combat.state import participant_is_present
-from aidm_server.combat.vitality import hit_points, is_dead, is_down, is_player_character, revive
+from aidm_server.combat.vitality import hit_points, is_down, is_out_of_fight, is_player_character, revive
 from aidm_server.game_clock import advance_state_clock
 from aidm_server.game_state.campaign_pack_encounters import TRIGGERED_ENCOUNTERS_FLAG, catalog_record
 from aidm_server.game_state.models import append_change_ledger, stable_change_id
@@ -31,7 +34,12 @@ DEFEAT_RECOVERY_CHANGE = 'combat.defeat_recovery'
 DEFEAT_RECOVERY_SOURCE = 'engine_defeat_recovery'
 DEFEAT_END_REASON = 'objective_failed'
 PARTY_WAKE_CHANGE = 'party.wake'
+PARTY_COME_ROUND_CHANGE = 'party.come_round'
+# Set on an ended combat once its downed heroes have been woken (or found standing).
+COME_ROUND_FLAG = 'comeRound'
 ACTIVE_COMBAT_STATUSES = frozenset({'starting', 'active'})
+ENDED_COMBAT_STATUSES = frozenset({'ended', 'resolved'})
+WAKE_CHANGE_TYPES = frozenset({DEFEAT_RECOVERY_CHANGE, PARTY_WAKE_CHANGE, PARTY_COME_ROUND_CHANGE})
 
 
 def _text(value: Any) -> str:
@@ -58,7 +66,7 @@ def party_is_beaten(state: dict[str, Any]) -> bool:
     flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
     heroes = _present_heroes(combat)
     return (
-        _text(combat.get('status')).lower() in {'ended', 'resolved'}
+        _text(combat.get('status')).lower() in ENDED_COMBAT_STATUSES
         and _text(flags.get('endReason')).lower() == DEFEAT_END_REASON
         and not isinstance(flags.get('defeatRecovery'), dict)
         and bool(heroes)
@@ -94,6 +102,26 @@ def _named(name: str, *, proper: bool) -> str:
     return name if proper else f'the {name.lower()}'
 
 
+def _participant(combat: dict[str, Any], hero_id: Any) -> dict[str, Any] | None:
+    return next(
+        (
+            candidate
+            for candidate in combat.get('participants') or []
+            if isinstance(candidate, dict) and _text(candidate.get('id')) == _text(hero_id)
+        ),
+        None,
+    )
+
+
+def _wake(*records: dict[str, Any] | None) -> None:
+    """One hero, as its state actor and its combat participant: 1 HP, no longer down or prone."""
+
+    for record in records:
+        if record is not None:
+            revive(record, 1)
+            _without_prone(record)
+
+
 def party_defeat_recovery(state: dict[str, Any], *, turn_id: Any) -> dict[str, Any] | None:
     """Wake a beaten party in ``state`` (mutated) and return the applied change, or None."""
 
@@ -113,12 +141,7 @@ def party_defeat_recovery(state: dict[str, Any], *, turn_id: Any) -> dict[str, A
             ),
             None,
         )
-        if is_dead(hero) or (actor is not None and is_dead(actor)):
-            continue
-        for record in (hero, actor):
-            if record is not None:
-                revive(record, 1)
-                _without_prone(record)
+        _wake(hero, actor)
         woken.append(_text(hero.get('id')))
     enemy_ids = {
         _text(participant.get('id'))
@@ -163,35 +186,65 @@ def _present_actors(state: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _come_round(state: dict[str, Any], combat: dict[str, Any], *, turn_id: Any) -> dict[str, Any] | None:
+    """After a fight that ended with a hero standing, every downed hero comes round with 1 HP; None otherwise."""
+
+    flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+    heroes = [actor for actor in state.get('playerCharacters') or [] if isinstance(actor, dict)]
+    fight_ended = (
+        _text(combat.get('status')).lower() in ENDED_COMBAT_STATUSES
+        and bool(_present_heroes(combat))
+        and not isinstance(flags.get(COME_ROUND_FLAG), dict)
+    )
+    if not fight_ended and not any(is_out_of_fight(hero) for hero in heroes):
+        return None
+    if fight_ended:
+        combat.setdefault('flags', {})[COME_ROUND_FLAG] = {'turnId': turn_id}
+    pairs = [(hero, _participant(combat, hero.get('id'))) for hero in heroes if hit_points(hero)['max'] > 0]
+    down = [(hero, participant) for hero, participant in pairs if is_down(hero) or (participant is not None and is_down(participant))]
+    if not down or len(down) == len(pairs):
+        return None
+    for hero, participant in down:
+        _wake(hero, participant)
+    woken = [_text(hero.get('id')) for hero, _record in down]
+    if fight_ended:
+        combat['flags'][COME_ROUND_FLAG]['wokenActorIds'] = woken
+    change = {
+        'id': stable_change_id(turn_id, PARTY_COME_ROUND_CHANGE, *woken),
+        'turnId': turn_id,
+        'type': PARTY_COME_ROUND_CHANGE,
+        'source': DEFEAT_RECOVERY_SOURCE,
+        'wokenActorIds': woken,
+        'reason': 'The fight is over and a hero is still standing; every downed hero comes round with 1 HP.',
+        'visible': True,
+    }
+    append_change_ledger(state, change)
+    return change
+
+
 def party_wake(state: dict[str, Any], *, turn_id: Any) -> dict[str, Any] | None:
-    """Out of a fight, wake a party whose every present hero is down (``state`` is mutated); None otherwise."""
+    """Out of a fight, wake the heroes who are down (``state`` is mutated); None when nobody wakes.
+
+    After a fight that ended with a hero standing, the downed come round at once; when every present
+    hero is down, they all come to a phase later.
+    """
 
     combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    if _text(combat.get('status')).lower() in ACTIVE_COMBAT_STATUSES:
+        return None
+    come_round = _come_round(state, combat, turn_id=turn_id)
+    if come_round:
+        return come_round
     heroes = _present_actors(state)
     if (
-        _text(combat.get('status')).lower() in ACTIVE_COMBAT_STATUSES
-        or not heroes
+        not heroes
         # A hero without hit points on record is not known to be down.
         or not all(is_down(hero) and hit_points(hero)['max'] > 0 for hero in heroes)
-        or all(is_dead(hero) for hero in heroes)
     ):
         return None
     woken: list[str] = []
     for hero in heroes:
-        if is_dead(hero):
-            continue
-        participant = next(
-            (
-                candidate
-                for candidate in combat.get('participants') or []
-                if isinstance(candidate, dict) and _text(candidate.get('id')) == _text(hero.get('id'))
-            ),
-            None,
-        )
-        for record in (hero, participant):
-            if record is not None:
-                revive(record, 1)
-                _without_prone(record)
+        _wake(hero, _participant(combat, hero.get('id')))
         woken.append(_text(hero.get('id')))
     clock = deepcopy(advance_state_clock(state, 1))
     change = {

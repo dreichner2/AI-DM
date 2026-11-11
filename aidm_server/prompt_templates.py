@@ -24,6 +24,11 @@ ENGINE_BRIEF_RULES = """RULES FOR THIS TURN (they override style)
 5. Found is not taken: revealed items stay where they are until "Did" says taken. Never write that coins, XP or items were gained unless "Did" says so, and then in one natural clause, not a list.
 6. Speak to the acting hero as "you". No closing question (the opening may end on one). No markdown.
 7. People in the scene speak from what they know; they neither reveal nor deny hidden things."""
+# With more than one hero the story is shared by every player, so rule 6 names the heroes instead.
+PARTY_ENGINE_BRIEF_RULES = ENGINE_BRIEF_RULES.replace(
+    '6. Speak to the acting hero as "you".',
+    '6. Name the acting hero and every other hero by name; never write "you" for a hero.',
+)
 
 # Change this one line to switch the live DM narration prompt.
 ACTIVE_DM_SYSTEM_PROMPT_VERSION = 'v3'
@@ -344,7 +349,11 @@ def _roll_result_line(rules_hint: dict) -> str | None:
 
 
 def render_engine_brief(rules_hint: dict) -> str | None:
-    """The ``ENGINE THIS TURN`` block and its rules, from the turn's engine brief; None without one."""
+    """The ``ENGINE THIS TURN`` block and its rules, from the turn's engine brief; None without one.
+
+    With more than one hero, the block opens with who acts and who the party is, and rule 6 is the
+    party form (:data:`PARTY_ENGINE_BRIEF_RULES`).
+    """
 
     state_pipeline = rules_hint.get('state_pipeline') if isinstance(rules_hint.get('state_pipeline'), dict) else {}
     brief = state_pipeline.get(ENGINE_BRIEF_KEY)
@@ -365,9 +374,13 @@ def render_engine_brief(rules_hint: dict) -> str | None:
     def listed(values: list[str]) -> str:
         return ', '.join(values) if values else 'none'
 
+    heroes = [str(name) for name in brief.get('heroes') or [] if str(name or '').strip()]
+    party = len(heroes) > 1
+    header = [f"Acting hero: {brief.get('actingHero') or heroes[0]}. The party: {', '.join(heroes)}."] if party else []
     return '\n'.join(
         [
             'ENGINE THIS TURN',
+            *header,
             f"Did: {' '.join(did) if did else 'nothing'}",
             f"Not done: {'; '.join(not_done) if not_done else 'nothing'}",
             'Here (only the engine decides these): '
@@ -377,7 +390,7 @@ def render_engine_brief(rules_hint: dict) -> str | None:
             f"shops {listed(here.get('shops') or [])}",
             f"The party is at {brief.get('place') or 'an unnamed place'}.",
             '',
-            ENGINE_BRIEF_RULES,
+            PARTY_ENGINE_BRIEF_RULES if party else ENGINE_BRIEF_RULES,
         ]
     )
 

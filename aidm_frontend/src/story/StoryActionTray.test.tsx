@@ -8,9 +8,10 @@ import type { ActionIntent, ComposerMode, InventoryAction } from '../gameActions
 import { itemOptionSelectionKey } from '../gameActions'
 import { GameplayControls } from '../GameplayControls'
 import { SessionBoard, type SessionBoardProps } from '../SessionBoard'
-import type { GameplayItemControl } from '../gameplayControlState'
+import type { GameplayItemControl, GameplayNarratedSpell } from '../gameplayControlState'
 import type { WorldMerchantSummary } from '../gameSelectors'
 import type { JsonRecord, TimelineEntry } from '../types'
+import { spellCastSubmission } from './actionIntents'
 import { testBoard, testCombat, testComposer, testControls, testWorld, VIEWER_ID } from './dockTestFixtures'
 import { StoryComposer } from './StoryComposer'
 
@@ -77,6 +78,12 @@ describe('StoryActionTray', () => {
     expect(storyIntent?.spell?.target_ids).toEqual(['goblin_1', 'goblin_2'])
   })
 
+  it('words a spell cast only on its caster as cast on themself, never at their own name', () => {
+    const [spell] = testControls().spells
+    expect(spellCastSubmission('Ysolde', spell, ['player_30']).message).toBe('Ysolde casts Magic Missile on themself.')
+    expect(spellCastSubmission('Ysolde', spell, ['player_30', 'goblin_1']).message).toBe('Ysolde casts Magic Missile at Goblin, Ysolde.')
+  })
+
   it('picks a cast level before casting and sends it with the request', () => {
     const [missile] = testControls().spells
     const board = testBoard({
@@ -141,6 +148,87 @@ describe('StoryActionTray', () => {
     expect(board.actionComposerProps.applyComposerMode).toHaveBeenCalledWith('spell')
     expect(board.actionComposerProps.updateSpellName).toHaveBeenCalledWith('Detect Magic')
     expect(within(tray).getByText('The Dungeon Master will adjudicate this one.')).toBeInTheDocument()
+  })
+
+  it('keeps narrated magic behind one line in a fight, opened on request', () => {
+    const detectMagic: GameplayNarratedSpell = {
+      id: 'spell_detect_magic',
+      name: 'Detect Magic',
+      level: 1,
+      castingTime: 'action',
+      effectSummary: 'Sense magic within 30 feet.',
+      concentration: true,
+      rulesBacked: false,
+      resourceLabel: 'Level 1 slot · 2 left',
+      available: true,
+      reason: '',
+    }
+    const board = testBoard({
+      worldState: testWorld({ combat: testCombat() }),
+      gameplayControls: testControls({ inCombat: true, narratedSpells: [detectMagic, { ...detectMagic, id: 'spell_light', name: 'Light' }] }),
+    })
+    renderDock(board)
+    const tray = openSection('Magic')
+
+    expect(within(tray).getByRole('list', { name: 'Spells' })).toHaveTextContent('Magic Missile')
+    expect(within(tray).queryByRole('group', { name: 'Narrated magic' })).not.toBeInTheDocument()
+    expect(within(tray).queryByText('Detect Magic')).not.toBeInTheDocument()
+    fireEvent.click(within(tray).getByRole('button', { name: 'Narrated magic (2)' }))
+    const narrated = within(tray).getByRole('group', { name: 'Narrated magic' })
+    expect(within(narrated).getAllByRole('listitem').map((item) => item.querySelector('.story-tray-row-name')?.textContent))
+      .toEqual(['Detect Magic', 'Light'])
+    expect(within(tray).queryByRole('button', { name: 'Narrated magic (2)' })).not.toBeInTheDocument()
+  })
+
+  it('never offers a defeated enemy or a hero out of the fight in a target row', () => {
+    const combat = testCombat()
+    combat.enemies.push({ ...combat.enemies[1], id: 'goblin_2', name: 'Goblin archer', health: 'Down', healthTone: 'down' })
+    combat.allies.push({ ...combat.allies[0], id: 'player_31', name: 'Brannoc', health: 'Down', healthTone: 'down', conditions: ['unconscious', 'stable', 'out_of_fight'] })
+    const [missile] = testControls().spells
+    const [layOnHands] = testControls().capabilities
+    const brannoc = { ...layOnHands.targets[1], currentHp: 0, conditions: ['unconscious', 'stable', 'out_of_fight'] }
+    const potion: GameplayItemControl = {
+      id: 'potion',
+      name: 'Potion of Healing',
+      quantity: 2,
+      effectSummary: 'Restores 2d4+2 hit points.',
+      cost: 'bonus action; action for an ally',
+      available: true,
+      reason: '',
+      targets: [layOnHands.targets[0], brannoc],
+    }
+    const board = testBoard({
+      worldState: testWorld({ combat }),
+      gameplayControls: testControls({
+        inCombat: true,
+        spells: [{
+          ...missile,
+          targets: [...missile.targets.slice(0, 2), { ...missile.targets[0], id: 'archer_1', name: 'Distant Archer' }, missile.targets[2]],
+        }],
+        capabilities: [{ ...layOnHands, targets: [layOnHands.targets[0], brannoc] }],
+        items: [potion],
+      }),
+    })
+    renderDock(board)
+
+    const magic = openSection('Magic')
+    expect(within(within(magic).getByRole('group', { name: 'Magic Missile targets' })).getAllByRole('button').map((button) => button.textContent))
+      .toEqual(['Goblin · 10/10', 'Distant Archer · 10/10', 'Ysolde · 10/10'])
+
+    // Brannoc is out of the fight: Lay on Hands and the potion have only Ysolde, so neither asks.
+    fireEvent.click(within(magic).getByRole('button', { name: 'Abilities' }))
+    expect(within(magic).queryByRole('group', { name: 'Lay on Hands target' })).not.toBeInTheDocument()
+    fireEvent.click(within(magic).getByRole('button', { name: 'Use Lay on Hands' }))
+    expect(board.actionComposerProps.submitAction).toHaveBeenLastCalledWith(
+      'Ysolde uses Lay on Hands on Ysolde for up to 1 hit points.',
+      expect.anything(),
+    )
+
+    const items = openSection('Items')
+    fireEvent.click(within(items).getByRole('button', { name: /^Potion of Healing/ }))
+    expect(within(items).queryByRole('group', { name: 'Potion of Healing target' })).not.toBeInTheDocument()
+    fireEvent.click(within(items).getByRole('button', { name: 'Use Potion of Healing' }))
+    expect(board.actionComposerProps.submitAction).toHaveBeenLastCalledWith('Ysolde uses Potion of Healing.', expect.anything())
   })
 
   it('switches to free-form casting for spells the rules engine does not resolve', () => {

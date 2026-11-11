@@ -15,6 +15,12 @@ world, never by the planner's name for it. Phrasing varies by turn without
 randomness: each template has a few variants chosen by
 ``sha1(f"{turn_number}:{template_key}")``.
 
+Alone, the hero is "you". In party play (the packet's ``party``: more than one
+hero in the session) one story is read by every player, so no sentence says
+"you": the acting or affected hero is named, then "they" (``PARTY_TEMPLATES``).
+When a hero's turn ends with nothing else to tell, the narration is only the
+line saying who acts next.
+
 Only one case ever asks for a roll: a turn whose rules hint requires a roll that
 has not been made yet. Every other sentence is kept free of roll-request
 phrasing so the server never builds a roll gate from it.
@@ -41,9 +47,16 @@ ONE_THING_AT_A_TIME = 'One thing at a time — {target} is still there to {verb}
 DEFEAT_PARAGRAPH = (
     'Darkness takes you. When you come to, the light has changed and {enemies} {be} gone. You are alive — barely.'
 )
+PARTY_DEFEAT_PARAGRAPH = (
+    'Darkness takes the party. When they come to, the light has changed and {enemies} {be} gone. They are alive — barely.'
+)
 COIN_CODES = frozenset({'pp', 'gp', 'ep', 'sp', 'cp'})
-# After a failed check for an object action, said after the action's sentence.
-FAILED_CHECK_LINES = {'search': 'You come up empty.', 'inspect': 'You come up empty.'}
+# After a failed check for an object action, what the hero does, said after the action's sentence.
+FAILED_CHECK_LINES = {'search': 'come up empty', 'inspect': 'come up empty'}
+# Verbs whose third person is not the plain ``-s``/``-es``/``-ies`` form.
+IRREGULAR_THIRD_PERSON = {'be': 'is', 'have': 'has', 'do': 'does', 'go': 'goes'}
+# Verb slots of ``_person``: the base form for "you" and "they", the third person for a name.
+PERSON_VERBS = ('take', 'recover', 'gain', 'resist', 'fight', 'cling', 'manage', 'shake', 'drop')
 # An enemy turn that rolls nothing, by intent; ``{enemy}`` is its name in prose, ``{ally}`` the ally it shields,
 # ``{its}`` its possessive (``their`` for a proper name: "The Cinder Scribe turns back to their work.").
 ENEMY_TURN_LINES = {
@@ -157,11 +170,6 @@ TEMPLATES: dict[str, tuple[str, ...]] = {
         '{target} {take} {amount} {damage_type} damage.',
         'It costs {target_object} {amount} {damage_type} damage.',
         '{amount} {damage_type} damage tears into {target_object}.',
-    ),
-    'spell_healing': (
-        '{target} {recover} {amount} hit points.',
-        'Warmth floods back: {target_lower} {recover} {amount} hit points.',
-        '{amount} hit points return to {target_object}.',
     ),
     'spell_temp_hp': (
         '{target} {gain} {amount} temporary hit points.',
@@ -298,6 +306,139 @@ TEMPLATES: dict[str, tuple[str, ...]] = {
     'nothing_happens': ('Nothing comes of it yet.', 'The moment holds, and nothing changes.', 'No answer comes.'),
     'scene_present': ('{npcs} {verb} here.', 'Close at hand {verb} {npcs}.', 'Within earshot {verb} {npcs}.'),
 }
+# Party play: the same lines naming the hero (``{actor}``, ``{actor_s}`` for the possessive) instead of "you".
+PARTY_TEMPLATES: dict[str, tuple[str, ...]] = {
+    'opening_npcs': (
+        '{npcs} {verb} here with the party.',
+        'Close at hand {verb} {npcs}.',
+        'Within earshot {verb} {npcs}.',
+    ),
+    'spell_cast': ('{actor} casts {spell}.', '{actor} looses {spell}.', '{actor} shapes {spell} and lets it go.'),
+    'concentration': (
+        'They hold their concentration on {spell}.',
+        'They keep {spell} steady in their mind.',
+        'They hold {spell} with steady focus.',
+    ),
+    'capability_heal': (
+        '{actor} uses {name}, restoring {amount} hit points{to_target}.',
+        '{actor} calls on {name} and restores {amount} hit points{to_target}.',
+        '{name} answers {actor}, restoring {amount} hit points{to_target}.',
+    ),
+    'capability_effect': ('{actor} uses {name}: {effect}.', '{actor} calls on {name}: {effect}.', '{name} answers {actor}: {effect}.'),
+    'capability_plain': ('{actor} uses {name}.', '{actor} calls on {name}.', '{name} answers when {actor} reaches for it.'),
+    'travel': ('The party arrives at {place}.', 'The way opens onto {place}.', 'The party reaches {place}.'),
+    'travel_present': ('{npcs} {verb} here.', 'Waiting here {verb} {npcs}.', 'The party finds {npcs} here.'),
+    'item_gain_one': ('{actor} now carries {item}.', '{item} goes into {actor_s} pack.', '{actor} takes {item}.'),
+    'item_gain_many': ('{actor} now carries {amount} {item}.', '{amount} {item} go into {actor_s} pack.', '{actor} takes {amount} {item}.'),
+    'item_lose': ('{actor} no longer carries {item}.', '{item} leaves {actor_s} hands.', '{actor} parts with {item}.'),
+    'item_use': ('{actor} uses {item}.', '{actor} puts {item} to use.', '{actor} makes use of {item}.'),
+    'item_equip': ('{actor} readies {item}.', '{actor} takes up {item}.', '{actor} fits {item} into place.'),
+    'item_unequip': ('{actor} stows {item}.', '{actor} puts {item} away.', '{actor} sets {item} aside.'),
+    'rest_hp': (
+        '{actor} rests and recovers {amount} hit points.',
+        'Rest does its work: {actor} recovers {amount} hit points.',
+        '{actor} comes back from their rest {amount} hit points stronger.',
+    ),
+    'rest_plain': ('{actor} finishes their rest.', '{actor_s} rest ends, and their strength is their own again.', '{actor} rises from their rest.'),
+    'currency_gain': ('{actor} gains {amount} {currency}.', '{amount} {currency} goes into {actor_s} purse.', '{actor} pockets {amount} {currency}.'),
+    'currency_spend': ('{actor} spends {amount} {currency}.', '{amount} {currency} leaves {actor_s} purse.', '{actor} pays {amount} {currency}.'),
+    'roll_success_investigation': (
+        '{actor} finds what the others missed.',
+        'Something gives itself away.',
+        '{actor_s} attention catches on one thing.',
+    ),
+    'roll_failure_investigation': (
+        '{actor} looks again, but nothing new reveals itself.',
+        'Whatever is here stays hidden from {actor} for now.',
+        '{actor} comes away with nothing they did not already know.',
+    ),
+    'roll_success_stealth_npc': (
+        '{actor} slips out of sight, and {npc} never looks their way.',
+        '{actor} moves like a shadow; {npc} does not notice a thing.',
+        '{npc} glances right past {actor}, none the wiser.',
+    ),
+    'roll_success_stealth': (
+        '{actor} slips out of sight and stays there, unseen.',
+        '{actor} moves like a shadow and nobody marks them.',
+        '{actor} folds into the dark, and no alarm follows.',
+    ),
+    'roll_failure_stealth_npc': (
+        '{npc} turns sharply toward {actor}; they have been noticed.',
+        'A scuff gives {actor} away, and {npc} looks straight at them.',
+        '{npc} stiffens and stares right at where {actor} is hiding.',
+    ),
+    'roll_failure_stealth': (
+        'A loose stone skitters under {actor_s} feet, and they know they have been noticed.',
+        'A scuff gives {actor} away; heads turn toward them.',
+        '{actor} misjudges the cover and is seen.',
+    ),
+    'roll_success_physical_npc': (
+        '{actor} makes it cleanly, and {npc} sees exactly how easily they managed it.',
+        '{actor} pulls it off in one smooth motion while {npc} watches.',
+        '{actor} lands it, and {npc} has to look twice.',
+    ),
+    'roll_success_physical': (
+        '{actor} makes it cleanly and lands on their feet.',
+        '{actor} pulls it off in one smooth motion.',
+        'Muscle and timing hold; {actor} makes it.',
+    ),
+    'roll_failure_physical_npc': (
+        '{actor_s} footing goes and the attempt falls short, in full view of {npc}.',
+        '{actor} comes up short and stumbles, and {npc} sees all of it.',
+        'It gets away from {actor}, with {npc} watching.',
+    ),
+    'roll_failure_physical': (
+        '{actor_s} footing goes and the attempt falls short.',
+        '{actor} comes up short and stumbles.',
+        'It gets away from {actor} halfway through.',
+    ),
+    'roll_success_social_npc': (
+        '{npc} hesitates, then gives way.',
+        '{actor_s} words land; {npc} comes around.',
+        '{npc} weighs {actor} for a long moment and yields.',
+    ),
+    'roll_success_social': (
+        '{actor_s} words land, and the resistance in front of them softens.',
+        '{actor} finds the right words at the right moment.',
+        'They come around to {actor_s} way of seeing it.',
+    ),
+    'roll_failure_social_npc': (
+        '{npc} is unmoved and makes that plain.',
+        '{actor_s} words slide off {npc} without leaving a mark.',
+        '{npc} shakes their head; {actor} has not convinced anyone.',
+    ),
+    'roll_failure_social': (
+        '{actor_s} words fall flat.',
+        'Nobody is moved by what {actor} says.',
+        'It comes out wrong, and {actor} can see it land wrong.',
+    ),
+    'roll_success_generic': (
+        'It works, and the moment turns {actor_s} way.',
+        '{actor} carries it off.',
+        'It goes the way {actor} meant it to.',
+    ),
+    'roll_failure_generic': (
+        'It does not go {actor_s} way, and the moment slips past.',
+        'It falls apart in {actor_s} hands.',
+        'Despite {actor_s} effort, it does not come off.',
+    ),
+    'roll_ack': (
+        '{actor} commits to the attempt, and everything around them narrows to this one moment, the next breath deciding how cleanly they carry it off.',
+        '{actor} sets themself and goes for it, with no way to take it back once they start and the outcome hanging on nerve and timing.',
+        '{actor} draws a slow breath and makes their move, knowing the next few heartbeats will show whether they judged this right.',
+    ),
+    'no_target': ('There is no one here to fight.', '{actor_s} blade finds only air; no enemy stands before them.'),
+    'npc_knows': (
+        '"{fact}" {first} tells {actor}.',
+        '"{fact}" {first} says, voice low.',
+        '"{fact}" {first} says after a moment.',
+    ),
+}
+# Party play: the hero's attack right after the sentence that named them closing in.
+PARTY_FOLLOW_UP_ATTACK = {
+    True: 'Their {weapon} lands with {total} against AC {ac}, a hit for {damage} {damage_type} damage.',
+    False: 'Their {weapon} swings with {total} against AC {ac} and misses.',
+}
 
 
 @dataclass(frozen=True)
@@ -346,13 +487,40 @@ class NarrationInput:
         turns = _dicts(self.context.get('recent_turns'))
         return _text(turns[-1].get('dm_output')) if turns else ''
 
+    @property
+    def party(self) -> dict:
+        """``{"actor", "heroes": [{"id", "name"}]}`` when more than one hero is in the session; empty alone."""
+
+        return _dict(self.facts.get('party'))
+
+    @property
+    def party_play(self) -> bool:
+        return bool(self.party)
+
+    @property
+    def actor(self) -> str:
+        """The acting hero's name, as party play tells it."""
+
+        return _text(self.party.get('actor')) or _text(self.speaker) or 'The hero'
+
+    def hero_name(self, actor_id: Any) -> str:
+        """The name of the hero with this actor id; the acting hero when it is not known."""
+
+        hero = next((hero for hero in _dicts(self.party.get('heroes')) if _text(hero.get('id')) == _text(actor_id)), {})
+        return _text(hero.get('name')) or self.actor
+
     def pick(self, key: str, **values: Any) -> str:
-        options = TEMPLATES[key]
+        party = self.party_play and key in PARTY_TEMPLATES
+        options = PARTY_TEMPLATES[key] if party else TEMPLATES[key]
+        if party:
+            actor = values.pop('actor', self.actor)
+            values = {'actor': actor, 'actor_s': _possessive(actor), **values}
         digest = hashlib.sha1(f'{self.turn_number}:{key}'.encode('utf-8')).hexdigest()
         return options[int(digest, 16) % len(options)].format(**values)
 
     def is_speaker(self, name: Any) -> bool:
-        return bool(self.speaker) and _text(name).casefold() == _text(self.speaker).casefold()
+        speaker = self.actor if self.party_play else _text(self.speaker)
+        return bool(speaker) and _text(name).casefold() == speaker.casefold()
 
     def creature(self, name: Any) -> str:
         """An enemy's name in prose: ``the wardbound beast``; a proper name keeps its capitals."""
@@ -418,6 +586,9 @@ def narrate(
         return _compose(turn, [[_npc_talk_line(turn, npc)]])
     if _dict(turn.facts.get('freeText')).get('kind') == 'look':
         return _compose(turn, _scene_paragraphs(turn))
+    if _next_actor_line(turn):
+        # A turn that ends with nothing to tell hands straight on to whoever acts next.
+        return _compose(turn, [])
     return _compose(turn, [[turn.pick('nothing_happens')]])
 
 
@@ -514,7 +685,8 @@ def _combat_lines(turn: NarrationInput) -> list[str]:
     combat_state = _dict(turn.pipeline.get('combatState'))
     lines = [turn.pick('combat_start') for change in turn.applied_changes if _text(change.get('type')) == 'combat.start'][:1]
     targets: list[str] = []
-    tactical = _tactical_line(turn, _dict(combat_state.get('playerResolvedCombatAction')))
+    tactical_action = _dict(combat_state.get('playerResolvedCombatAction'))
+    tactical = _tactical_line(turn, tactical_action)
     if tactical:
         lines.append(tactical)
     player_action = _dict(combat_state.get('playerResolvedAction'))
@@ -523,9 +695,11 @@ def _combat_lines(turn: NarrationInput) -> list[str]:
         if event not in attacks:
             attacks.append(event)
     # A rule that moved the hero's roll is named once, on the attack it first changed.
-    modifier_clause = _modifier_clause(turn.facts.get('attackModifiers')) if player_action else ''
+    modifier_clause = _modifier_clause(turn, turn.facts.get('attackModifiers')) if player_action else ''
+    closed_on = _closed_on(turn, tactical_action)
     for attack in attacks:
-        line = _player_attack_line(turn, attack)
+        follows_up = bool(closed_on) and attack is player_action and _text(attack.get('targetName')).casefold() == closed_on
+        line = _player_attack_line(turn, attack, follows_up=follows_up)
         if modifier_clause and attack is player_action:
             line = f'{line[:-1]} — {modifier_clause}.'
         lines.append(line)
@@ -560,37 +734,58 @@ def _combat_lines(turn: NarrationInput) -> list[str]:
     return lines
 
 
+def _closes_in(action: dict) -> bool:
+    movement = _dict(action.get('movement'))
+    return _key(action.get('actionType')) == 'advance' and _key(movement.get('toRangeBand')) == 'melee' and bool(movement.get('engagedWith'))
+
+
+def _closed_on(turn: NarrationInput, action: dict) -> str:
+    """In party play, the (casefolded) target the acting hero's sentence just named them closing in on."""
+
+    actor = _text(action.get('actorName'))
+    if not turn.party_play or not _closes_in(action) or (actor and not turn.is_speaker(actor)):
+        return ''
+    return _text(action.get('targetName')).casefold()
+
+
 def _tactical_line(turn: NarrationInput, action: dict) -> str:
     """The hero's move or tactic; closing into melee is told in the same voice as the attack after it."""
 
-    movement = _dict(action.get('movement'))
-    if _key(action.get('actionType')) == 'advance' and _key(movement.get('toRangeBand')) == 'melee' and movement.get('engagedWith'):
+    if _closes_in(action):
         actor = _text(action.get('actorName'))
-        who = 'You close' if not actor or turn.is_speaker(actor) else f'{actor} closes'
+        if not actor or turn.is_speaker(actor):
+            who = f'{turn.actor} closes' if turn.party_play else 'You close'
+        else:
+            who = f'{actor} closes'
         return _sentence(f"{who} in on {_target_ref(turn, action.get('targetName'))}")
     return _sentence(_text(action.get('outcome')))
 
 
-def _player_attack_line(turn: NarrationInput, attack: dict) -> str:
-    actor_name = _text(attack.get('sourceActorName'))
-    is_you = not actor_name or turn.is_speaker(actor_name)
+def _player_attack_line(turn: NarrationInput, attack: dict, *, follows_up: bool = False) -> str:
+    """The hero's attack; in party play right after they were named closing in, ``Their mace lands …``."""
+
+    actor_name = _text(attack.get('sourceActorName')) or (turn.actor if turn.party_play else '')
+    is_you = not turn.party_play and (not actor_name or turn.is_speaker(actor_name))
     weapon = _text(attack.get('weaponName')) or 'weapon'
     values = {
         'actor': 'Your' if is_you else f'{actor_name}\'s',
         'actor_object': 'your' if is_you else f"{actor_name}'s",
-        'weapon': weapon,
+        'weapon': weapon.lower() if turn.party_play else weapon,
         'target': _target_ref(turn, attack.get('targetName')),
         'total': _number(attack.get('attackTotal')),
         'ac': _number(attack.get('targetArmorClass')),
         'damage': _number(attack.get('damageTotal')),
         'damage_type': _text(attack.get('damageType')) or 'weapon',
     }
+    if follows_up:
+        return _sentence(PARTY_FOLLOW_UP_ATTACK[attack.get('hit') is True].format(**values))
     key = 'player_attack_hit' if attack.get('hit') is True else 'player_attack_miss'
     return _sentence(turn.pick(key, **values))
 
 
-def _modifier_clause(modifiers: Any) -> str:
-    """``your wounds cost you 2`` for the hero's roll modifiers (``[{"label", "value"}]``)."""
+def _modifier_clause(turn: NarrationInput, modifiers: Any) -> str:
+    """``your wounds cost you 2`` (``their wounds cost them 2`` in party play) for the hero's roll modifiers
+    (``[{"label", "value"}]``)."""
 
     parts = []
     for modifier in _dicts(modifiers):
@@ -598,7 +793,7 @@ def _modifier_clause(modifiers: Any) -> str:
         if not label or not value:
             continue
         if label == 'Wounded' and value < 0:
-            parts.append(f'your wounds cost you {-value}')
+            parts.append(f'their wounds cost them {-value}' if turn.party_play else f'your wounds cost you {-value}')
         else:
             parts.append(f'{label.lower()} {"+" if value > 0 else "−"}{abs(value)}')
     return _join_words(parts)
@@ -711,6 +906,9 @@ def _death_save_line(turn: NarrationInput, change: dict) -> str:
 
 
 def _spell_lines(turn: NarrationInput) -> list[str]:
+    """Each spell cast: ``You speak Healing Word.`` for healing, ``You cast Shield on yourself.`` for a spell
+    only on its caster, else a cast line; then what it did to each target."""
+
     lines: list[str] = []
     for change in turn.applied_changes:
         if _text(change.get('type')) != 'spell.cast':
@@ -719,16 +917,27 @@ def _spell_lines(turn: NarrationInput) -> list[str]:
         if not resolution:
             continue
         spell = _text(resolution.get('spellName') or change.get('spellName')) or 'the spell'
-        lines.append(turn.pick('spell_cast', spell=spell))
-        for target in _dicts(resolution.get('targets')):
-            lines.extend(_spell_target_lines(turn, spell, target))
+        targets = _dicts(resolution.get('targets'))
+        healing = any(_key(effect.get('kind')) == 'healing' for target in targets for effect in _dicts(target.get('effects')))
+        on_self = bool(targets) and all(turn.is_speaker(target.get('targetName')) for target in targets)
+        if healing:
+            lines.append(_hero_does(turn, f'speak {spell}'))
+        elif on_self:
+            lines.append(_hero_does(turn, f"cast {spell} on {'themself' if turn.party_play else 'yourself'}"))
+        else:
+            lines.append(turn.pick('spell_cast', spell=spell))
+        for target in targets:
+            lines.extend(_spell_target_lines(turn, spell, target, announced=healing or on_self))
         if _dict(resolution.get('concentration')).get('started') is True:
             lines.append(turn.pick('concentration', spell=spell))
     return lines
 
 
-def _spell_target_lines(turn: NarrationInput, spell: str, target: dict) -> list[str]:
-    person = _person(turn, target.get('targetName'))
+def _spell_target_lines(turn: NarrationInput, spell: str, target: dict, *, announced: bool) -> list[str]:
+    """What the spell did to one target; the caster, named in the cast line, is "you" or "they" here.
+    An ``announced`` spell's cast line already says whom it reached."""
+
+    person = _person(turn, target.get('targetName'), pronoun=True)
     delivery = _dict(target.get('delivery'))
     delivery_type = _key(delivery.get('type'))
     lines = []
@@ -755,7 +964,7 @@ def _spell_target_lines(turn: NarrationInput, spell: str, target: dict) -> list[
                 outcome='a success' if delivery.get('saveSucceeded') is True else 'a failure',
             )
         )
-    else:
+    elif not announced:
         lines.append(turn.pick('spell_automatic', **person, spell=spell))
     for effect in _dicts(target.get('effects')):
         line = _spell_effect_line(turn, effect, person)
@@ -772,7 +981,7 @@ def _spell_effect_line(turn: NarrationInput, effect: dict, person: dict[str, str
     if kind == 'damage':
         return turn.pick('spell_damage', **person, amount=amount, damage_type=_text(effect.get('damageType')) or 'magical')
     if kind == 'healing':
-        return turn.pick('spell_healing', **person, amount=amount)
+        return f"{amount} hit points return to {person['target_object']}."
     if kind == 'temporary_hp':
         return turn.pick('spell_temp_hp', **person, amount=amount)
     if kind == 'condition':
@@ -786,7 +995,7 @@ def _capability_lines(turn: NarrationInput) -> list[str]:
     for change in turn.applied_changes:
         if _text(change.get('type')) != 'class_feature.use':
             continue
-        name = _text(change.get('capabilityName')) or 'your training'
+        name = _text(change.get('capabilityName')) or ('their training' if turn.party_play else 'your training')
         effect = _humanize(change.get('effectType'))
         amount = change.get('amount')
         target = _text(change.get('targetName'))
@@ -808,7 +1017,7 @@ def _change_blocks(turn: NarrationInput) -> tuple[list[list[str]], list[str]]:
     lines: list[str] = []
     taken = [_text(phrase) for phrase in facts.get('taken') or [] if _text(phrase)]
     if taken:
-        blocks.append([f'You take {_join_words(taken)}.'])
+        blocks.append([_hero_does(turn, f'take {_join_words(taken)}')])
     rest = _dict(facts.get('rest'))
     if rest:
         blocks.append([turn.pick('rest_hp', amount=rest['hp']) if isinstance(rest.get('hp'), int) and rest['hp'] > 0 else turn.pick('rest_plain')])
@@ -818,6 +1027,8 @@ def _change_blocks(turn: NarrationInput) -> tuple[list[list[str]], list[str]]:
         item = _text(change.get('itemName'))
         amount = change.get('amount')
         quest = _text(change.get('questTitle'))
+        # In party play a change to a hero's own things names that hero.
+        hero = {'actor': turn.hero_name(change.get('actorId'))} if turn.party_play else {}
         if change_type == 'scene.move_location':
             if not _text(facts.get('arrival')):
                 blocks.extend(_arrival_blocks(turn, change))
@@ -826,20 +1037,20 @@ def _change_blocks(turn: NarrationInput) -> tuple[list[list[str]], list[str]]:
                 (fact for fact in object_facts if _text(fact.get('targetId')) == _text(change.get('targetId'))),
                 None,
             )
-            blocks.extend(_object_blocks(fact) if fact else [[_object_sentence(change)]])
+            blocks.extend(_object_blocks(turn, fact) if fact else [[_object_sentence(turn, change)]])
         elif change_type == 'inventory.add' and item:
             if isinstance(amount, int) and amount > 1:
-                lines.append(turn.pick('item_gain_many', amount=amount, item=item))
+                lines.append(turn.pick('item_gain_many', amount=amount, item=item, **hero))
             else:
-                lines.append(_sentence(turn.pick('item_gain_one', item=item)))
+                lines.append(_sentence(turn.pick('item_gain_one', item=item, **hero)))
         elif change_type == 'inventory.remove' and item:
-            lines.append(_sentence(turn.pick('item_lose', item=item)))
+            lines.append(_sentence(turn.pick('item_lose', item=item, **hero)))
         elif change_type == 'inventory.mark_used' and item:
-            lines.append(turn.pick('item_use', item=item))
+            lines.append(turn.pick('item_use', item=item, **hero))
         elif change_type == 'inventory.equip' and item:
-            lines.append(turn.pick('item_equip', item=item))
+            lines.append(turn.pick('item_equip', item=item, **hero))
         elif change_type == 'inventory.unequip' and item:
-            lines.append(turn.pick('item_unequip', item=item))
+            lines.append(turn.pick('item_unequip', item=item, **hero))
         elif change_type == 'scene.item.add' and item:
             lines.append(_sentence(turn.pick('scene_item', item=item)))
         elif change_type == 'rest.complete' and not rest:
@@ -854,7 +1065,7 @@ def _change_blocks(turn: NarrationInput) -> tuple[list[list[str]], list[str]]:
         elif change_type in {'currency.add', 'currency.remove'} and isinstance(amount, int) and amount > 0:
             currency = CURRENCY_NAMES.get(_key(change.get('currency')), _text(change.get('currency')) or 'coin')
             key = 'currency_gain' if change_type == 'currency.add' else 'currency_spend'
-            lines.append(turn.pick(key, amount=amount, currency=currency))
+            lines.append(turn.pick(key, amount=amount, currency=currency, **hero))
         elif change_type == 'spell.cast' and not change.get('spellResolution') and change.get('spellName'):
             lines.append(turn.pick('spell_cast', spell=_text(change.get('spellName'))))
     return [_safe_sentences(block) for block in blocks], _safe_sentences(lines)
@@ -871,56 +1082,57 @@ def _arrival_blocks(turn: NarrationInput, change: dict) -> list[list[str]]:
     return [lines]
 
 
-def _object_blocks(fact: dict) -> list[list[str]]:
+def _object_blocks(turn: NarrationInput, fact: dict) -> list[list[str]]:
     """What one object action did: its steps, its sentence, the description told once, what a search found."""
 
     name = _text(fact.get('name'))
     action = _key(fact.get('action'))
-    opening = [TAKE_TIME_LINE] if fact.get('takeTime') is True else []
+    opening = [_text(fact.get('takeTimeLine')) or TAKE_TIME_LINE] if fact.get('takeTime') is True else []
     steps = _dicts(fact.get('steps'))
     if steps:
-        opening.append(_steps_sentence(steps, _text(fact.get('keyName'))))
+        opening.append(_steps_sentence(turn, steps, _text(fact.get('keyName'))))
     failed = fact.get('failed') is True
-    label_sentence = _label_sentence(_text(fact.get('label')), fact.get('labelAuthored') is True, action, name)
+    label_sentence = _label_sentence(turn, _text(fact.get('label')), fact.get('labelAuthored') is True, action, name)
     # Authored action text tells what the action achieved, so a failed attempt never prints it.
     opening.append(label_sentence if failed else _text(fact.get('actionText')) or label_sentence)
     if failed:
-        return [_safe_sentences([*(_sentence(line) for line in opening), FAILED_CHECK_LINES.get(action, 'It will not give.')])]
+        failed_line = _hero_does(turn, FAILED_CHECK_LINES[action]) if action in FAILED_CHECK_LINES else 'It will not give.'
+        return [_safe_sentences([*(_sentence(line) for line in opening), failed_line])]
     blocks = [_safe_sentences([_sentence(line) for line in opening])]
     description = _text(fact.get('description'))
     if description:
         blocks.append(_split_sentences(description))
     if action == 'search':
-        blocks.append(_found_sentences(fact.get('found'), fact.get('uncovered'), discovered=fact.get('discovered') is True))
+        blocks.append(_found_sentences(turn, fact.get('found'), fact.get('uncovered'), discovered=fact.get('discovered') is True))
     elif fact.get('nothingNew') is True:
-        blocks.append([f'You find nothing new on {_the(name)}.'])
+        blocks.append([_hero_does(turn, f'find nothing new on {_the(name)}')])
     return blocks
 
 
-def _label_sentence(label: str, authored: bool, action: str, name: str) -> str:
+def _label_sentence(turn: NarrationInput, label: str, authored: bool, action: str, name: str) -> str:
     """``Ring the wagon bell`` -> ``You ring the wagon bell.``; a default label names the object with an article."""
 
     if authored and label:
-        return _sentence(f'You {label[:1].lower()}{label[1:]}')
+        return _hero_does(turn, f'{label[:1].lower()}{label[1:]}')
     verb = label.split(' ', 1)[0].lower() if label else action
-    return _sentence(f'You {verb} {_the(name)}')
+    return _hero_does(turn, f'{verb} {_the(name)}')
 
 
-def _steps_sentence(steps: list[dict], key_name: str) -> str:
+def _steps_sentence(turn: NarrationInput, steps: list[dict], key_name: str) -> str:
     """``You unlock the strongbox with the Caravan Strongbox Key and lift the lid.``"""
 
     first = steps[0]
     action = _key(first.get('action'))
     label = _text(first.get('label'))
-    sentence = f'You {label[:1].lower()}{label[1:]}' if label else f'You {action} it'
+    phrase = f'{label[:1].lower()}{label[1:]}' if label else f'{action} it'
     if action == 'unlock' and key_name:
-        sentence += f' with {_the(key_name)}'
+        phrase += f' with {_the(key_name)}'
     if action == 'unlock' and any(_key(step.get('action')) == 'open' for step in steps[1:]):
-        sentence += ' and lift the lid'
-    return _sentence(sentence)
+        phrase += ' and lifts the lid' if turn.party_play else ' and lift the lid'
+    return _hero_does(turn, phrase)
 
 
-def _found_sentences(found: Any, uncovered: Any, *, discovered: bool = False) -> list[str]:
+def _found_sentences(turn: NarrationInput, found: Any, uncovered: Any, *, discovered: bool = False) -> list[str]:
     """What a search turned up: the items found, the hidden objects uncovered, or nothing more
     (unless it ``discovered`` a clue, a place or a story flag, which the search's own words tell)."""
 
@@ -929,18 +1141,18 @@ def _found_sentences(found: Any, uncovered: Any, *, discovered: bool = False) ->
     sentences = []
     if items:
         coins = [item for item in items if item.split()[-1].lower() in COIN_CODES]
-        sentences.append(f'You find {_join_words([*coins, *(item for item in items if item not in coins)])}.')
+        sentences.append(_hero_does(turn, f'find {_join_words([*coins, *(item for item in items if item not in coins)])}'))
     if objects:
-        sentences.append(f'You uncover {_join_words([_the(name) for name in objects])}.')
-    return sentences or ([] if discovered else ['You find nothing more.'])
+        sentences.append(_hero_does(turn, f'uncover {_join_words([_the(name) for name in objects])}'))
+    return sentences or ([] if discovered else [_hero_does(turn, 'find nothing more')])
 
 
-def _object_sentence(change: dict) -> str:
+def _object_sentence(turn: NarrationInput, change: dict) -> str:
     """Without the pipeline's object record: one plain sentence about the action."""
 
     name = _text(change.get('targetName')) or _humanize(change.get('targetId')) or 'it'
     action = _key(change.get('objectAction')) or 'work at'
-    return _sentence(f'You {_humanize(action)} {_the(name)}')
+    return _hero_does(turn, f'{_humanize(action)} {_the(name)}')
 
 
 def _the(name: str) -> str:
@@ -962,7 +1174,7 @@ def _free_roll_paragraphs(turn: NarrationInput) -> list[str]:
         return []
     article = 'an' if str(total).startswith('8') or total in (11, 18) else 'a'
     ability = _humanize(_dict(roll.get('ability')).get('key')).title()
-    return [f"You roll {article} {total}{f' for {ability}' if ability else ''}."]
+    return [_hero_does(turn, f"roll {article} {total}{f' for {ability}' if ability else ''}")]
 
 
 def _resolved_roll_paragraphs(turn: NarrationInput) -> list[str]:
@@ -1097,33 +1309,53 @@ def _original_action(turn: NarrationInput) -> str:
 
 
 def _target_ref(turn: NarrationInput, name: Any) -> str:
-    if turn.is_speaker(name):
+    if turn.is_speaker(name) and not turn.party_play:
         return 'you'
     return turn.creature(name) or 'the target'
 
 
-def _person(turn: NarrationInput, name: Any) -> dict[str, str]:
-    """Subject, object and verb forms for a named participant, in second person for the speaker."""
-    if turn.is_speaker(name):
-        forms = dict(target='You', target_lower='you', target_object='you', be='are')
-        verbs = ('take', 'recover', 'gain', 'resist', 'fight', 'cling', 'manage', 'shake', 'drop')
-        return {**forms, **{verb: verb for verb in verbs}}
+def _person(turn: NarrationInput, name: Any, *, pronoun: bool = False) -> dict[str, str]:
+    """Subject, object and verb forms for a named participant: second person for the speaker alone; in
+    party play the hero's name, or ``they`` with ``pronoun`` (the sentence before named them)."""
+
+    if turn.is_speaker(name) and (pronoun or not turn.party_play):
+        subject, object_form = ('They', 'them') if turn.party_play else ('You', 'you')
+        forms = dict(target=subject, target_lower=subject.lower(), target_object=object_form, be='are')
+        return {**forms, **{verb: verb for verb in PERSON_VERBS}}
     display = turn.creature(name) or 'the target'
     return {
         'target': display[:1].upper() + display[1:],
         'target_lower': display,
         'target_object': display,
         'be': 'is',
-        'take': 'takes',
-        'recover': 'recovers',
-        'gain': 'gains',
-        'resist': 'resists',
-        'fight': 'fights',
-        'cling': 'clings',
-        'manage': 'manages',
-        'shake': 'shakes',
-        'drop': 'drops',
+        **{verb: _third_person(verb) for verb in PERSON_VERBS},
     }
+
+
+def _hero_does(turn: NarrationInput, phrase: str) -> str:
+    """``You find a key.`` alone; ``Seren Ashgrove finds a key.`` in party play."""
+
+    return _sentence(f'{turn.actor} {_third_person(phrase)}' if turn.party_play else f'You {phrase}')
+
+
+def _third_person(phrase: str) -> str:
+    """``search under the bench`` -> ``searches under the bench``: the first word in the third person."""
+
+    verb, space, rest = phrase.partition(' ')
+    lower = verb.lower()
+    if lower in IRREGULAR_THIRD_PERSON:
+        verb = IRREGULAR_THIRD_PERSON[lower]
+    elif re.search(r'(?:s|sh|ch|x|z|o)$', lower):
+        verb = f'{verb}es'
+    elif re.search(r'[^aeiou]y$', lower):
+        verb = f'{verb[:-1]}ies'
+    else:
+        verb = f'{verb}s'
+    return f'{verb}{space}{rest}'
+
+
+def _possessive(name: str) -> str:
+    return f"{name}'s"
 
 
 # Composition --------------------------------------------------------------------------------------------------------
@@ -1137,13 +1369,22 @@ def _compose(turn: NarrationInput, blocks: list[list[str]]) -> str:
     defeat = _dict(facts.get('partyDefeat'))
     if defeat:
         enemies = _text(defeat.get('enemies')) or 'the enemies'
-        paragraphs.append([DEFEAT_PARAGRAPH.format(enemies=enemies, be='are' if defeat.get('plural') is not False else 'is')])
-    elif _text(facts.get('nextActorLine')) and not _fight_ended(turn):
-        paragraphs.append([_text(facts.get('nextActorLine'))])
+        paragraph = PARTY_DEFEAT_PARAGRAPH if turn.party_play else DEFEAT_PARAGRAPH
+        paragraphs.append([paragraph.format(enemies=enemies, be='are' if defeat.get('plural') is not False else 'is')])
+    elif _next_actor_line(turn):
+        paragraphs.append([_next_actor_line(turn)])
     deferred = _dicts(_dict(facts.get('freeText')).get('deferred'))
     if deferred:
         paragraphs.append([ONE_THING_AT_A_TIME.format(target=_text(deferred[0].get('target')), verb=_text(deferred[0].get('verb')))])
     return '\n\n'.join(' '.join(paragraph) for paragraph in paragraphs)
+
+
+def _next_actor_line(turn: NarrationInput) -> str:
+    """Who acts next in a fight still going after this turn; '' when none or after a party defeat."""
+
+    if _dict(turn.facts.get('partyDefeat')) or _fight_ended(turn):
+        return ''
+    return _text(turn.facts.get('nextActorLine'))
 
 
 def _fight_ended(turn: NarrationInput) -> bool:

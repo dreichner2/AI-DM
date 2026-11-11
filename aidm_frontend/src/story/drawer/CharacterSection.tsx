@@ -1,14 +1,12 @@
 import { Fragment, useMemo, useState } from 'react'
-import { characterVitality, partyVitalityFromSnapshot, type SavingThrowSummary } from '../../gameSelectors'
+import type { SavingThrowSummary } from '../../gameSelectors'
 import type { InspectorPanelProps } from '../../InspectorPanel'
 import type { SessionBoardProps } from '../../SessionBoard'
 import { profileIconSrcForCharacter } from '../../profileIcons'
 import type { ActivePlayer } from '../../types'
 import { StoryVitality } from '../StoryVitality'
+import { heroVitalityOf, partyHeroVitality, VITALITY_CONDITIONS } from '../vitalityLabels'
 import { TraitList } from './TraitList'
-
-/** Conditions the vitality mark already shows. */
-const VITALITY_CONDITIONS = new Set(['dying', 'stable', 'dead', 'unconscious'])
 
 const ABILITY_NAMES: Record<string, string> = {
   STR: 'Strength',
@@ -88,13 +86,13 @@ export function CharacterSection({ board, inspector, withTraits }: CharacterSect
   const { displayCharacter, statBlock, xpProgress } = inspector
   const viewer = inspector.activePlayers.find((player) => player.id === inspector.selectedPlayerId)
   const snapshot = board.sessionState?.state_snapshot
-  const partyVitality = useMemo(() => partyVitalityFromSnapshot(snapshot), [snapshot])
+  const partyVitality = useMemo(() => partyHeroVitality(snapshot), [snapshot])
   const combatConditions =
     board.combatState.allies.find((ally) => ally.name === displayCharacter.name)?.conditions ?? []
   const allConditions = uniqueConditions(statBlock.conditions ?? [], combatConditions)
   const vitality =
     (inspector.selectedPlayerId !== null ? partyVitality[inspector.selectedPlayerId] : undefined) ??
-    characterVitality(allConditions, statBlock.deathSaves)
+    heroVitalityOf(allConditions, statBlock.deathSaves)
   const conditions = vitality
     ? allConditions.filter((condition) => !VITALITY_CONDITIONS.has(condition.trim().toLowerCase()))
     : allConditions

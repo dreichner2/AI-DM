@@ -61,7 +61,7 @@ import {
   spellCastSubmission,
   type ActionSubmission,
 } from './actionIntents'
-import { combatActionLabel, combatTargetLabel } from './combatLabels'
+import { combatActionLabel, combatTargetLabel, offeredTargets } from './combatLabels'
 import { CoinGlyph } from './glyphs'
 import { objectChoices } from './storySuggestions'
 import { coinLabel, copperValue, sellOffer, tradeLineKey, tradeRefusals, type Coins as CoinAmounts } from './trade'
@@ -247,6 +247,7 @@ export function StoryActionTray({
   const [spellTargets, setSpellTargets] = useState<string[]>([])
   const [castLevels, setCastLevels] = useState<Record<string, number>>({})
   const [freeformSpell, setFreeformSpell] = useState(false)
+  const [narratedOpen, setNarratedOpen] = useState(false)
   const freeformInputRef = useRef<HTMLInputElement | null>(null)
   const [capabilityId, setCapabilityId] = useState(
     () => (controls.capabilities.find((capability) => capability.available) ?? controls.capabilities[0])?.id ?? '',
@@ -480,7 +481,8 @@ export function StoryActionTray({
       20,
       spell.maxTargets + Math.max(0, (castLevel ?? spell.level) - spell.level) * (spell.upcastTargetsPerLevel ?? 0),
     )
-    const eligible = new Set(spell.targets.filter((target) => target.available).map((target) => target.id))
+    const targets = offeredTargets(board.combatState, spell.targets)
+    const eligible = new Set(targets.filter((target) => target.available).map((target) => target.id))
     // With one legal target there is nothing to pick: the spell goes to it.
     const [onlyTarget] = eligible.size === 1 && maxTargets > 0 ? [...eligible] : []
     const chosen = onlyTarget ? [onlyTarget] : spellTargets.filter((id) => eligible.has(id)).slice(0, maxTargets)
@@ -505,7 +507,7 @@ export function StoryActionTray({
               {maxTargets > 1 ? `Targets · ${chosen.length} of ${maxTargets}` : 'Target'}
             </span>
             <div className="story-chip-row">
-              {spell.targets.map((target) => {
+              {targets.map((target) => {
                 const reason = target.available ? '' : target.reason || 'Not a legal target.'
                 const key = `spell-target-${target.id}`
                 return (
@@ -639,7 +641,12 @@ export function StoryActionTray({
             {controls.inCombat ? 'No spells the rules engine resolves are ready.' : 'No spells the rules engine resolves can be cast here.'}
           </p>
         )}
-        {narratedSpells.length ? (
+        {narratedSpells.length && controls.inCombat && !narratedOpen ? (
+          // In a fight the rules-backed spells come first; narrated magic waits behind one line.
+          <button type="button" className="story-link story-tray-aside" onClick={() => setNarratedOpen(true)}>
+            Narrated magic ({narratedSpells.length})
+          </button>
+        ) : narratedSpells.length ? (
           <div className="story-tray-group story-narrated-magic" role="group" aria-label="Narrated magic">
             <span className="story-label" aria-hidden="true">Narrated magic</span>
             <p className="story-tray-note">The Dungeon Master adjudicates these.</p>
@@ -681,18 +688,19 @@ export function StoryActionTray({
 
   /* ---- Abilities ---- */
   const renderCapabilityDetail = (capability: GameplayCapabilityControl) => {
-    const target = capabilityTarget(capability, capabilityTargets[capability.id])
+    const targets = offeredTargets(board.combatState, capability.targets)
+    const target = capabilityTarget({ ...capability, targets }, capabilityTargets[capability.id])
     const healing = capability.effectType === 'healing_pool'
       ? selectedHealingAmount(capability, target, capabilityAmount)
       : null
     const useReason = mechanicsBusyReason || capability.reason || (target ? '' : 'No legal target is available.')
     return (
       <div className="story-tray-detail">
-        {capability.targetPolicy !== 'self' && legalTargetCount(capability.targets) > 1 ? (
+        {capability.targetPolicy !== 'self' && legalTargetCount(targets) > 1 ? (
           <div className="story-tray-group" role="group" aria-label={`${capability.name} target`}>
             <span className="story-label" aria-hidden="true">Target</span>
             <div className="story-chip-row">
-              {capability.targets.map((candidate) => {
+              {targets.map((candidate) => {
                 const reason = candidate.available ? '' : candidate.reason || 'Not a legal target.'
                 const key = `capability-target-${capability.id}-${candidate.id}`
                 return (
@@ -836,8 +844,9 @@ export function StoryActionTray({
 
   const renderConsumable = (item: GameplayItemControl) => {
     const selected = item.id === consumableId
-    const chosen = item.targets.find((target) => target.id === consumableTargets[item.id] && target.available)
-    const target = chosen ?? item.targets.find((candidate) => candidate.available) ?? null
+    const targets = offeredTargets(board.combatState, item.targets)
+    const chosen = targets.find((target) => target.id === consumableTargets[item.id] && target.available)
+    const target = chosen ?? targets.find((candidate) => candidate.available) ?? null
     const useReason = mechanicsBusyReason || item.reason || (target ? '' : 'No legal target is available.')
     return (
       <li key={item.id} data-selected={selected || undefined}>
@@ -858,9 +867,9 @@ export function StoryActionTray({
         </button>
         {selected ? (
           <div className="story-tray-detail">
-            {legalTargetCount(item.targets) > 1 ? (
+            {legalTargetCount(targets) > 1 ? (
               <TrayGroup label={`${item.name} target`} heading="Target">
-                {item.targets.map((candidate) => {
+                {targets.map((candidate) => {
                   const reason = candidate.available ? '' : candidate.reason || 'Not a legal target.'
                   return (
                     <button
@@ -1144,7 +1153,7 @@ export function StoryActionTray({
       <ul className="story-tray-list" aria-label="Combat actions">
         {choices.map((action) => {
           const selected = action.id === combatTargetingId
-          const legalTargets = action.targets.filter((target) => target.available)
+          const legalTargets = offeredTargets(board.combatState, action.targets.filter((target) => target.available))
           // One legal target is taken at once; the picker is for two or more.
           const picks = action.requiresTarget && legalTargets.length !== 1
           const label = combatActionLabel(action)

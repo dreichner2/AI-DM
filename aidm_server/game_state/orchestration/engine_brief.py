@@ -10,23 +10,28 @@ renders it above the player's words as ``ENGINE THIS TURN`` (see
 Fields: ``did`` (each executed result in plain words), ``notDone`` (the
 message's deferred actions, then each engine-owned thing the player's words
 name with no result this turn, by its labels), ``here`` (objects with their
-available labels, loose items, ways onward, shops), ``place``, ``heroes``,
-``gains`` (``xp``, ``coins`` by code and ``items`` the story beats report so
-far) and ``engineOwned`` (every name above, and the things acted on).
+available labels, loose items, ways onward, shops), ``place``, ``actingHero``,
+``heroes``, ``gains`` (the acting hero's ``xp``, ``coins`` by code and
+``items`` gained so far) and ``engineOwned`` (every name above, and the things
+acted on).
 """
 
 from __future__ import annotations
 
+from collections import Counter
+import re
 from typing import Any, Iterable
 
 from aidm_server.game_state.extraction.free_text_actions import FreeTextAction, mentions, ways_onward
 from aidm_server.game_state.orchestration.narration_facts import PICKUP_SOURCE
-from aidm_server.game_state.orchestration.story_beats import beat_basis, object_check_text, story_beats
+from aidm_server.game_state.orchestration.story_beats import COIN_ORDER, beat_basis, object_check_text, story_beats
 from aidm_server.price_list import normalize_price
 from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
 
 # Beats the brief leaves to its own lines: checks sit with their object, a pickup with "Took".
 OWN_LINE_BEATS = frozenset({'check', 'hint'})
+# A coin or XP beat: ``+15 gp``, ``Arden Vale −6 gp``, ``+75 XP each``.
+GAIN_BEAT = re.compile(r'^(?:(?P<hero>.+) )?(?P<sign>[+−-])(?P<amount>\d+) (?P<unit>\S+)(?P<each> each)?$')
 
 
 def _text(value: Any) -> str:
@@ -154,35 +159,43 @@ def _taken_coins(applied_changes: list[dict[str, Any]]) -> dict[str, int]:
     return coins
 
 
-def _beat_line(beat: dict[str, Any], taken_coins: dict[str, int]) -> str | None:
+def _beat_line(beat: dict[str, Any], taken_coins: dict[str, int], *, acting_hero: str) -> str | None:
     kind, text = _text(beat.get('kind')), _text(beat.get('text'))
-    if kind in OWN_LINE_BEATS or (kind == 'item_gained' and text.startswith('Taken')):
+    picked_up = text.startswith(('Taken', f'{acting_hero} took '))
+    if kind in OWN_LINE_BEATS or (kind == 'item_gained' and picked_up):
         return None
-    if kind == 'coins':
-        amount_text, _space, code = text.partition(' ')
-        amount = int(amount_text.lstrip('+−-') or 0) * (-1 if amount_text.startswith(('−', '-')) else 1)
-        amount -= taken_coins.get(code, 0)
-        if not amount:
-            return None
-        return f'Gained {amount} {code}.' if amount > 0 else f'Lost {-amount} {code}.'
-    if kind == 'xp':
-        return f"Gained {text.lstrip('+')}."
-    return f'{text}.'
+    gain = GAIN_BEAT.match(text) if kind in {'coins', 'xp'} else None
+    if not gain:
+        return f'{text}.'
+    amount = int(gain['amount']) * (1 if gain['sign'] == '+' else -1)
+    hero = gain['hero'] or ''
+    if kind == 'coins' and not gain['each'] and hero in {'', acting_hero}:
+        # Coins picked up have their own "Took" line.
+        amount -= taken_coins.get(gain['unit'], 0)
+    if not amount:
+        return None
+    verb = 'gained' if amount > 0 else 'lost'
+    who = f'Each hero {verb}' if gain['each'] else f'{hero} {verb}' if hero else verb.capitalize()
+    return f"{who} {abs(amount)} {gain['unit']}."
 
 
-def _gains(beats: list[dict[str, Any]]) -> dict[str, Any]:
-    gains: dict[str, Any] = {'xp': 0, 'coins': {}, 'items': []}
-    for beat in beats:
-        kind, text = _text(beat.get('kind')), _text(beat.get('text'))
-        if kind == 'xp':
-            gains['xp'] += int(text.lstrip('+').split()[0])
-        elif kind == 'coins' and text.startswith('+'):
-            amount, _space, code = text[1:].partition(' ')
-            gains['coins'][code] = gains['coins'].get(code, 0) + int(amount)
-        elif kind == 'item_gained':
-            name = text.split(' — ', 1)[-1].rsplit(' ×', 1)[0]
-            gains['items'].append(name)
-    return gains
+def _gains(before: dict[str, Any], after: dict[str, Any], *, actor_id: str) -> dict[str, Any]:
+    """What the acting hero gained this turn: ``xp``, ``coins`` by code and the names of ``items``."""
+
+    old = (before.get('heroes') or {}).get(actor_id) or {}
+    new = (after.get('heroes') or {}).get(actor_id) or {}
+    if not old or not new:
+        return {'xp': 0, 'coins': {}, 'items': []}
+    coins = {
+        code: delta
+        for code in COIN_ORDER
+        if (delta := int(new['currency'].get(code) or 0) - int(old['currency'].get(code) or 0)) > 0
+    }
+    return {
+        'xp': max(0, new['xp'] - old['xp']),
+        'coins': coins,
+        'items': list((Counter(new['items']) - Counter(old['items'])).keys()),
+    }
 
 
 def _available_labels(entry: dict[str, Any]) -> list[str]:
@@ -254,13 +267,10 @@ def engine_brief(
 
     changes = [change for change in applied_changes if isinstance(change, dict)]
     narration = dm_context.get('narration') if isinstance(dm_context.get('narration'), dict) else {}
-    beats = story_beats(
-        beat_basis(state_before, actor_id=actor_id),
-        beat_basis(state_after, actor_id=actor_id),
-        actor_id=actor_id,
-        state_before=state_before,
-        applied_changes=changes,
-    )
+    basis_before = beat_basis(state_before, actor_id=actor_id)
+    basis_after = beat_basis(state_after, actor_id=actor_id)
+    beats = story_beats(basis_before, basis_after, actor_id=actor_id, state_before=state_before, applied_changes=changes)
+    acting_hero = _text(((basis_after.get('heroes') or {}).get(actor_id) or {}).get('name'))
     checks = {
         _text(change.get('targetId')): text
         for change in changes
@@ -282,7 +292,7 @@ def engine_brief(
     combat_state = dm_context.get('combatState') if isinstance(dm_context.get('combatState'), dict) else {}
     enemies = [_text(enemy.get('name')) for enemy in _dicts(narration.get('enemies')) if _text(enemy.get('name'))]
     did.extend(_combat_lines(combat_state, changes, enemies))
-    did.extend(line for beat in beats if (line := _beat_line(beat, taken_coins)))
+    did.extend(line for beat in beats if (line := _beat_line(beat, taken_coins, acting_hero=acting_hero)))
     did.extend(
         f"Refused: {_text(action.get('reason'))}"
         for action in _dicts(dm_context.get('invalidActions'))
@@ -308,7 +318,7 @@ def engine_brief(
     if _text(narration.get('arrival')):
         acted.update(_text(change.get('locationId')) for change in changes if change.get('type') == 'scene.move_location')
     acted_names = [_text(fact.get('name')) for fact in _dicts(narration.get('objects'))]
-    gains = _gains(beats)
+    gains = _gains(basis_before, basis_after, actor_id=actor_id)
     here = {
         'objects': [{'name': _text(entry.get('name')), 'labels': _available_labels(entry)} for entry in objects if _text(entry.get('name'))],
         'items': [_text(item.get('name')) for item in items],
@@ -328,6 +338,7 @@ def engine_brief(
         ),
         'here': here,
         'place': _place(state_after),
+        'actingHero': acting_hero,
         'heroes': [_text(hero.get('name')) for hero in _dicts(state_after.get('playerCharacters')) if _text(hero.get('name'))],
         'gains': gains,
         'engineOwned': list(

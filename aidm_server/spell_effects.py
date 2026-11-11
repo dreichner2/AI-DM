@@ -243,12 +243,12 @@ def _twinnable(spell: Mapping[str, Any], caster: Mapping[str, Any], cast_level: 
 
 
 def _restores_downed_player(spell: Mapping[str, Any], target: Mapping[str, Any]) -> bool:
-    """Healing or ally spells may reach a player character at 0 HP who is not dead."""
+    """Healing or ally spells may reach a player character at 0 HP who is not dead or out of the fight."""
 
     helpful = spell['target']['relation'] == 'ally' or any(
         effect['kind'] == 'healing' for effect in spell['effects']
     )
-    return helpful and vitality.is_player_character(target) and not vitality.is_dead(target)
+    return helpful and vitality.is_player_character(target) and not vitality.cannot_be_raised(target)
 
 
 def _harmful(spell: Mapping[str, Any]) -> bool:
@@ -733,6 +733,9 @@ def spell_target_legality(
         elif target_spec['requiresPresent'] and not _is_present(target):
             code = 'spell_target_absent'
             reason = 'The selected target is not physically present.'
+        elif vitality.is_player_character(target) and vitality.is_out_of_fight(target):
+            code = 'spell_target_out_of_fight'
+            reason = vitality.OUT_OF_FIGHT_REFUSAL
         elif target_spec['requiresDying'] and not vitality.is_dying(target):
             code = 'spell_target_not_dying'
             reason = 'This spell requires a dying target.'
