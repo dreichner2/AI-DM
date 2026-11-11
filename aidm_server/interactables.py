@@ -176,9 +176,10 @@ REFUSALS = {
     "already_reset": "{The} is already set.",
     "no_key": "It is locked, and you carry no key that fits.",
     "missing_item": "You don't have what {the} needs.",
-    "missing_tool": "You don't have the tools {the} needs.",
+    "missing_tool": "You have nothing that will {verb} {the}.",
     "missing_capability": "You don't know how to do that with {the}.",
     "missing_flag": "You don't know enough to do that yet.",
+    "flag_already_set": "That can no longer be done.",
     "object_state": "Something else has to change first.",
     "check_required": "That takes a roll.",
     "check_mismatch": "That roll doesn't match what {the} needs.",
@@ -282,6 +283,7 @@ _NEVER_PUBLIC_FIELDS = frozenset(
         "setsFlags",
         "actionLabels",
         "actionText",
+        "choiceActions",
         "usableInCombat",
         "resolvesEncounter",
         FAILED_CHECK_ACTORS_KEY,
@@ -699,13 +701,16 @@ def _target_is_visible(target: dict[str, Any], actor: dict[str, Any]) -> bool:
 
 
 def _name_phrase(target: Mapping[str, Any]) -> str:
-    """``the Wagon Strongbox``; a proper name, or one that already starts with "The", stands alone."""
+    """``the Wagon Strongbox``; a proper name stands alone, and a name that starts with "The"
+    keeps its article in lower case (``the Last Road-Stone``) until a sentence capitalises it."""
 
     name = _text(target.get("name")) or _text(target.get("id")).replace("_", " ")
     if not name:
         return "it"
-    if target.get("proper") is True or name.lower().startswith("the "):
+    if target.get("proper") is True:
         return name
+    if name.lower().startswith("the "):
+        return f"the {name[4:]}"
     return f"the {name}"
 
 
@@ -713,9 +718,9 @@ def _capitalized(text: str) -> str:
     return text[:1].upper() + text[1:]
 
 
-def _object_sentence(template: str, target: Mapping[str, Any]) -> str:
+def _object_sentence(template: str, target: Mapping[str, Any], *, action: str = "") -> str:
     the = _name_phrase(target)
-    return template.format(the=the, The=_capitalized(the))
+    return template.format(the=the, The=_capitalized(the), verb=action)
 
 
 def _refusal(code: str, refusal: str, target: Mapping[str, Any], **details: Any) -> dict[str, Any]:
@@ -744,7 +749,7 @@ def _requirement_refusal(failure: Mapping[str, Any], action: str) -> str:
         if prerequisite in {"allCapabilities", "anyCapabilities"}:
             return "missing_capability"
         if prerequisite == "flags":
-            return "missing_flag"
+            return "flag_already_set" if (failure.get("details") or {}).get("expected") is False else "missing_flag"
         return "object_state"
     return {
         "check_already_attempted": "repeat_check",
@@ -849,8 +854,9 @@ def _evaluate_requirement(
         if not isinstance(required_flags, Mapping):
             return _unmet("malformed_interactable")
         for key, expected in required_flags.items():
-            if actor["flags"].get(str(key)) != expected:
-                return _unmet("prerequisite_missing", prerequisite="flags", flag=str(key))
+            # A flag nothing has set yet counts as false.
+            if actor["flags"].get(str(key), False if expected is False else None) != expected:
+                return _unmet("prerequisite_missing", prerequisite="flags", flag=str(key), expected=expected)
 
     object_states = requirement.get("objectStates")
     if object_states is not None:
@@ -1164,7 +1170,7 @@ def _action_legality(
     )
     if result["ok"]:
         return result
-    return {**result, "message": _object_sentence(REFUSALS[_requirement_refusal(result, action)], target)}
+    return {**result, "message": _object_sentence(REFUSALS[_requirement_refusal(result, action)], target, action=action)}
 
 
 def _prerequisite_steps(
@@ -2314,7 +2320,10 @@ def _action_done(target: Mapping[str, Any], collection: str, action: str) -> boo
     if action == "unlock":
         return target.get("locked") is not True and target.get("broken") is not True
     if action == "break":
-        return target.get("broken") is True
+        # Breaking open a container that already stands open gains nothing.
+        return target.get("broken") is True or (
+            _entry_kind(dict(target), collection) == "container" and target.get("open") is True
+        )
     if action == "use":
         remaining = target.get("usesRemaining")
         return (
@@ -2361,6 +2370,9 @@ def _offered_action(
         entry["authored"] = True
     entry["legal"] = legal
     entry["done"] = _action_done(target, collection, action)
+    if action in _string_set(target.get("choiceActions")):
+        # One of the object's choices, shown together with the others.
+        entry["choice"] = True
     if legal and option.get("retry"):
         entry["retry"] = True
     if option.get("requiresCheck"):
@@ -2394,7 +2406,8 @@ def offered_scene_actions(
 
     Entries follow ``OFFERED_ACTION_ORDER``; ``legal`` counts an action that
     asks for a roll (``check``), first takes its unlock/open steps, or retries a
-    failed check slowly (``retry``). During a fight only ``usableInCombat``
+    failed check slowly (``retry``); an action the object lists in
+    ``choiceActions`` is marked ``choice``. During a fight only ``usableInCombat``
     actions are legal, and (with ``turn_economy``) only on the hero's turn while
     their action is unspent.
     """

@@ -86,6 +86,9 @@ SPELLCASTING_ABILITY_BY_ARCHETYPE = {
     'wizard': 'intelligence',
 }
 GENERIC_EXTRACTED_REASON = 'Extracted from DM response.'
+# Who may give a combat condition a duration (enemy turns, reactions), and the fields that carry it.
+ENEMY_CONDITION_SOURCES = frozenset({'enemy_resolved_action', REACTION_SOURCE})
+ENEMY_CONDITION_DURATION_FIELDS = ('durationRounds', 'castId', 'endSave', 'appliedDuringTurnOf')
 TRANSFER_STATE_CHANGE_TYPES = {'inventory.transfer', 'currency.transfer'}
 PLAYER_OWNED_STATE_CHANGE_TYPES = PHASE_1_STATE_CHANGE_TYPES - TRANSFER_STATE_CHANGE_TYPES
 PLAYER_COMBAT_PARTICIPANT_CHANGE_TYPES = {
@@ -4036,6 +4039,10 @@ def _normalize_combat_change(change: dict[str, Any], state: dict[str, Any]) -> t
         if not condition:
             return 'rejected', 'Combat condition change requires condition.', None
         normalized['condition'] = condition
+        if _text(normalized.get('source')) not in ENEMY_CONDITION_SOURCES:
+            # Only the engine's enemy turns and reactions say how long a condition lasts.
+            for key in ENEMY_CONDITION_DURATION_FIELDS:
+                normalized.pop(key, None)
         return 'accepted', 'Combat condition change is valid.', normalized
 
     if change_type == 'combat.ability.mark_used':

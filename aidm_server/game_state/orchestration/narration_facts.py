@@ -6,7 +6,8 @@ them, and sent in the narration packet as ``narration``: the objects acted on
 search turned up, the unlock/open steps taken on the way), whom the hero talked
 to and the next thing that person knows, how the free-text message mapped,
 the enemies' names in prose, the authored setup and adjustments of a fight that
-starts, who acts next in a fight, and how a fight ends when the engine-resolved
+starts, the enemy abilities whose conditions the hero shakes off as their turn
+ends, who acts next in a fight, and how a fight ends when the engine-resolved
 enemy turns end it (a party defeat among them).
 """
 
@@ -137,6 +138,8 @@ def object_facts(
                 for revealed_id in event.get('revealedTargetIds') or []
                 if (name := _text(_scene_object(state_after, revealed_id).get('name')))
             ]
+            if _search_discovers(entry, event):
+                fact['discovered'] = True
         steps = [_text(step).lower() for step in event.get('steps') or [] if _text(step)]
         if steps:
             fact['steps'] = [{'action': step, 'label': object_label(entry, step)[0]} for step in steps]
@@ -144,6 +147,17 @@ def object_facts(
                 fact['keyName'] = _key_name(state_before, entry, actor_id)
         facts.append(fact)
     return facts
+
+
+def _search_discovers(entry: dict[str, Any], event: dict[str, Any]) -> bool:
+    """The search (or a step taken on the way) turns up a clue, a place or a story flag."""
+
+    actions = ['search', *(_text(step).lower() for step in event.get('steps') or [] if _text(step))]
+    return any(
+        isinstance(entry.get(field), dict) and entry[field].get(action)
+        for field in ('discoversClueIds', 'discoversLocationIds', 'setsFlags')
+        for action in actions
+    )
 
 
 def _taken_phrase(item: dict[str, Any]) -> str:

@@ -24,6 +24,7 @@ from aidm_server.services.campaign_pack import (
     campaign_pack_bound_violations,
     import_campaign_pack,
 )
+from aidm_server.services.campaign_pack_graph import is_terminal_checkpoint
 from aidm_server.services.campaign_pack_progress import COMBAT_COMPLETE_REASONS
 
 
@@ -373,6 +374,9 @@ def _engine_contract_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]
     issues.extend(_reference_issues(pack, ids))
     issues.extend(_interactable_catalog_issues(pack))
     issues.extend(_action_wording_issues(pack))
+    issues.extend(_choice_action_issues(pack))
+    issues.extend(_condition_duration_issues(pack))
+    issues.extend(_ending_variant_issues(pack))
     issues.extend(_segment_trigger_issues(pack))
     issues.extend(_quest_issues(pack, ids))
     issues.extend(_checkpoint_condition_issues(pack))
@@ -581,6 +585,83 @@ def _action_wording_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
                             f'{name} does not support "{action}", so this {wording} is never used.',
                         )
                     )
+    return issues
+
+
+def _choice_action_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    """Every action an object lists in ``choiceActions`` is one it supports."""
+
+    issues: list[CampaignPackLintIssue] = []
+    for path, record in _pack_interactables(pack):
+        if 'choiceActions' not in record:
+            continue
+        choices = record.get('choiceActions')
+        if not isinstance(choices, list):
+            issues.append(_error('invalid_choice_actions', f'{path}.choiceActions', 'choiceActions must be a list of actions.'))
+            continue
+        supported = supported_actions(record, 'hazards' if '.hazards[' in path else 'interactables')
+        name = _text(record.get('name')) or _record_id(record) or 'This object'
+        for index, action in enumerate(choices):
+            if _text(action) not in supported:
+                issues.append(
+                    _error(
+                        'choice_action_unsupported',
+                        f'{path}.choiceActions[{index}]',
+                        f'{name} does not support "{_text(action)}", so it can never be offered as a choice.',
+                    )
+                )
+    return issues
+
+
+def _condition_duration_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    """An ability's ``durationRounds`` is a whole number of turns from 1 to 10, on an ability that applies a condition."""
+
+    issues: list[CampaignPackLintIssue] = []
+    for enemy_index, enemy in enumerate(_records(pack.get('enemies'))):
+        for ability_index, ability in enumerate(_records(enemy.get('abilities'))):
+            if 'durationRounds' not in ability:
+                continue
+            path = f'enemies[{enemy_index}].abilities[{ability_index}].durationRounds'
+            rounds = ability.get('durationRounds')
+            if isinstance(rounds, bool) or not isinstance(rounds, int) or not 1 <= rounds <= 10:
+                issues.append(_error('invalid_condition_duration', path, 'durationRounds must be a whole number from 1 to 10.'))
+            elif not _string_list(ability.get('conditionsApplied')):
+                issues.append(
+                    _warning('condition_duration_without_conditions', path, 'The ability applies no condition, so durationRounds is never used.')
+                )
+    return issues
+
+
+def _ending_variant_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    """Ending variants sit on a terminal checkpoint and each names a flag the pack sets, a title and a text."""
+
+    issues: list[CampaignPackLintIssue] = []
+    set_flags = _flag_keys_set_by_pack(pack)
+    for index, checkpoint in enumerate(_records(pack.get('checkpoints'))):
+        if 'endingVariants' not in checkpoint:
+            continue
+        path = f'checkpoints[{index}].endingVariants'
+        variants = checkpoint.get('endingVariants')
+        if not isinstance(variants, list):
+            issues.append(_error('invalid_ending_variant', path, 'endingVariants must be a list.'))
+            continue
+        if not is_terminal_checkpoint(checkpoint):
+            issues.append(_warning('ending_variants_not_terminal', path, 'Only a terminal checkpoint is an ending, so these variants are never shown.'))
+        for variant_index, variant in enumerate(variants):
+            variant_path = f'{path}[{variant_index}]'
+            when = _dict(_dict(variant).get('when'))
+            if not (_text(_dict(variant).get('title')) and _text(_dict(variant).get('text')) and _text(when.get('flagKey')) and 'equals' in when):
+                issues.append(
+                    _error('invalid_ending_variant', variant_path, 'An ending variant needs when {flagKey, equals}, a title and a text.')
+                )
+            elif _text(when.get('flagKey')) not in set_flags and stable_slug(when.get('flagKey')) not in set_flags:
+                issues.append(
+                    _warning(
+                        'ending_variant_flag_never_set',
+                        f'{variant_path}.when.flagKey',
+                        f'Nothing in the pack sets flag "{_text(when.get("flagKey"))}", so this ending is never told.',
+                    )
+                )
     return issues
 
 

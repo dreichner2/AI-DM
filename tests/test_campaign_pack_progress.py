@@ -1365,6 +1365,8 @@ def test_a_terminal_checkpoint_once_reached_stays_active_as_the_ending(app):
         'checkpointId': 'cp_dawn',
         'title': 'Dawn over Bleakmoor',
         'summary': 'The lanterns gutter out and the moor is quiet.',
+        # Without an ending variant, the ending's text is the checkpoint's own summary.
+        'text': 'The lanterns gutter out and the moor is quiet.',
     }
     assert (first.active_checkpoint_id, first.completed_checkpoint_ids) == ('cp_dawn', ['cp_watchtower'])
     assert (second.changed, second.active_checkpoint_id, second.completed_checkpoint_ids) == (False, 'cp_dawn', ['cp_watchtower'])

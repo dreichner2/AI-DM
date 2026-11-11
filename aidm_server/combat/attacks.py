@@ -34,7 +34,7 @@ from aidm_server.combat.positioning import ability_reach, in_melee_reach
 from aidm_server.combat.reactions import REACTION_SOURCE, collect_reactions
 from aidm_server.combat.state import combat_ability_is_available, combat_ability_resolution_mode
 from aidm_server.combat.vitality import is_player_character
-from aidm_server.combat.working_state import apply_working_changes
+from aidm_server.combat.working_state import CONDITION_DURATION_RANGE, apply_working_changes
 from aidm_server.damage_dice import (
     deterministic_roller,
     normalize_damage_dice_expression,
@@ -253,6 +253,28 @@ def ability_conditions(ability: Mapping[str, Any] | None) -> list[str]:
         if condition and condition not in conditions:
             conditions.append(condition)
     return conditions
+
+
+def condition_duration_fields(ability: Mapping[str, Any], *, cast_id: str, applied_during_turn_of: str) -> dict[str, Any]:
+    """What a ``combat.condition.add`` from an enemy ability carries so the condition wears off.
+
+    It lasts to the end of its bearer's next turn, or for the ability's
+    ``durationRounds`` (1–10) of them; an ability with a save repeats it at the
+    end of each of those turns (see :func:`aidm_server.combat.working_state.enemy_condition_effect`).
+    """
+
+    rounds = ability.get('durationRounds')
+    low, high = CONDITION_DURATION_RANGE
+    fields: dict[str, Any] = {
+        'durationRounds': rounds if isinstance(rounds, int) and not isinstance(rounds, bool) and low <= rounds <= high else 1,
+        'castId': cast_id,
+        'sourceAbilityName': _text(ability.get('name')) or None,
+        'appliedDuringTurnOf': applied_during_turn_of,
+    }
+    if isinstance(ability.get('save'), Mapping):
+        save = ability_save(ability)
+        fields['endSave'] = {'ability': save['ability'], 'dc': save['dc']}
+    return fields
 
 
 def saving_throw_modifier(target: Mapping[str, Any] | None, ability_name: Any) -> int:
@@ -831,6 +853,7 @@ def resolve_opportunity_attack(
         result['abilityId'] = _text(ability.get('id'))
         result['abilityName'] = _text(ability.get('name')) or None
     else:
+        ability = None
         actor = _actor(state, reactor_id)
         weapon = pc_main_hand_melee_weapon(actor)
         if weapon is None:
@@ -877,6 +900,13 @@ def resolve_opportunity_attack(
                 'condition': condition,
                 'source': REACTION_SOURCE,
                 'sourceEnemyId': reactor_id,
+                'sourceAbilityId': _text(ability.get('id')) if ability else None,
+                # Struck on its own turn, the mover carries it to the end of its next one.
+                **condition_duration_fields(
+                    ability or {},
+                    cast_id=stable_change_id('opportunity_attack_conditions', turn_id, event_id),
+                    applied_during_turn_of=_text(mover.get('id')),
+                ),
                 'reason': f"Opportunity attack applied {condition}.",
                 'visible': True,
             }

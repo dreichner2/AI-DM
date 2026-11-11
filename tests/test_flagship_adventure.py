@@ -41,11 +41,20 @@ OPTIONAL_OBJECTIVES = {
 }
 ENGINE_DIRECTOR_RULES = {'mainQuestGeneration', 'sideQuestGeneration', 'newNpcs', 'newLocations', 'offTrackPolicy', 'checkpointStyle'}
 FINAL_CHECKPOINT = next(checkpoint for checkpoint in PACK['checkpoints'] if checkpoint.get('terminal'))
-ENDING = {
-    'checkpointId': FINAL_CHECKPOINT['id'],
-    'title': FINAL_CHECKPOINT['playerTitle'],
-    'summary': FINAL_CHECKPOINT['playerSummary'],
-}
+ENDING_VARIANTS = {variant['when']['flagKey']: variant for variant in FINAL_CHECKPOINT['endingVariants']}
+FATES = ['use', 'break', 'lock', 'trigger']
+
+
+def _ending_for(flag_key: str) -> dict:
+    """The ending as the player view reports it once the fate behind ``flag_key`` was chosen."""
+
+    variant = ENDING_VARIANTS[flag_key]
+    return {
+        'checkpointId': FINAL_CHECKPOINT['id'],
+        'title': variant['title'],
+        'summary': FINAL_CHECKPOINT['playerSummary'],
+        'text': variant['text'],
+    }
 FINAL_BINDING = next(encounter for encounter in PACK['encounters'] if encounter['id'] == 'enc_final_binding')
 SCENE_OBJECTS = {record['id']: record for location in PACK['locations'] for record in location.get('interactables', [])}
 ROAD_STONE = SCENE_OBJECTS['valley_last_road_stone']
@@ -268,6 +277,13 @@ class Table:
         )
         return {entry['action']: entry['legal'] for entry in offered['actions']}
 
+    def pipeline_beats(self) -> list[dict]:
+        """The last turn's story beats."""
+
+        with self.app.app_context():
+            turn = DmTurn.query.filter_by(session_id=self.ids['session_id']).order_by(DmTurn.turn_id.desc()).first()
+            return safe_json_loads(turn.metadata_json, {}).get('storyBeats') or []
+
     def last_check(self) -> tuple[str, int, str]:
         with self.app.app_context():
             turn = DmTurn.query.filter_by(session_id=self.ids['session_id']).order_by(DmTurn.turn_id.desc()).first()
@@ -413,7 +429,12 @@ def test_the_careful_route_renews_the_ward(table):
     assert wagon.clues == {'clue_ash_marks'}
     assert 'inn_wagon_strongbox' in _visible_objects(wagon.snapshot)
     table.act('inn_wagon_strongbox', 'unlock', 'Wagon Strongbox')
-    assert table.act('inn_wagon_strongbox', 'open', 'Wagon Strongbox').snapshot['currentScene']['items'] == []
+    opened = table.act('inn_wagon_strongbox', 'open', 'Wagon Strongbox')
+    assert opened.snapshot['currentScene']['items'] == []
+    # Breaking open a strongbox that already stands open gains nothing.
+    assert ('break', 'Break the strongbox open', True) in [
+        (action, label, done) for action, label, _legal, done in _offered(_story_view(opened.snapshot), 'inn_wagon_strongbox')
+    ]
 
     strongbox = table.act('inn_wagon_strongbox', 'search', 'Wagon Strongbox')
     assert strongbox.flags == {'stone_fragment_recovered': True}
@@ -457,8 +478,10 @@ def test_the_careful_route_renews_the_ward(table):
         'loc_ridge_and_culvert_paths': 'discovered',
     }
     assert road.snapshot['currentScene']['restPolicy'] == 'risky'
-    # The lantern's lure charms the hero for good under these seeded rolls, so the operator ends this fight.
-    lanterns = table.end_combat('all_enemies_defeated')
+    # The lantern's lure wears off after two of the hero's turns; then the hero cuts the lantern down.
+    lanterns = table.fight()
+    assert lanterns.snapshot['combat']['status'] == 'ended'
+    assert ('enc_pale_lantern_detour', 'victory') in _rewards(lanterns.snapshot)
     assert (lanterns.gp, lanterns.xp) == (20, 150)
     assert table.end_combat('all_enemies_defeated').gp == 0
     cart = table.act('road_abandoned_cart', 'search', 'Abandoned Handcart')
@@ -476,6 +499,8 @@ def test_the_careful_route_renews_the_ward(table):
 
     wall = table.act('ws_memorial_wall', 'search', 'Memorial Wall')
     assert table.last_check() == ('investigation', 12, 'success')
+    # Copying the names is the find: the search does not also say it found nothing.
+    assert 'You find nothing more.' not in table.narration()
     assert wall.flags == {'memorial_names_copied': True}
     assert wall.clues == {'clue_scratched_memorial_names'}
     assert wall.objectives == {'obj_recover_erased_names': 'completed'}
@@ -565,6 +590,11 @@ def test_the_careful_route_renews_the_ward(table):
     assert table.offers('valley_last_road_stone') == {
         'break': True, 'inspect': True, 'lock': True, 'trigger': True, 'use': True,
     }
+    stone = _story_entry(table, 'valley_last_road_stone')
+    # The four fates are choices, shown together.
+    assert [(entry['action'], entry.get('choice'), entry['legal']) for entry in stone['offeredActions']] == [
+        ('use', True, True), ('trigger', True, True), ('inspect', None, True), ('lock', True, True), ('break', True, True),
+    ]
 
     renewal = table.act('valley_last_road_stone', 'use', 'The Last Road-Stone')
     assert ROAD_STONE['actionText']['use'] in table.narration()
@@ -574,7 +604,24 @@ def test_the_careful_route_renews_the_ward(table):
     assert (renewal.gp, renewal.xp, renewal.items["Roadwarden's Token"]) == (60, 900, 1)
     assert _completed_checkpoints(renewal.snapshot)[-1] == 'cp_06_final_valley'
     assert _active_checkpoint(renewal.snapshot) == FINAL_CHECKPOINT['id']
-    assert _ending(renewal.snapshot) == ENDING
+    # The ending is the one the party chose, wherever it is reported.
+    renewed = _ending_for('ward_renewed')
+    assert _ending(renewal.snapshot) == renewed
+    story = _story_state(table)
+    assert story['campaignPack']['ending'] == renewed
+    assert (story['journal']['quest']['stageTitle'], story['journal']['quest']['stageSummary']) == (renewed['title'], renewed['text'])
+    assert {'kind': 'ending', 'text': f"The story ends — {renewed['title']}"} in table.pipeline_beats()
+    # One fate: once it is chosen no other is offered.
+    assert table.offers('valley_last_road_stone') == {
+        'break': False, 'inspect': True, 'lock': False, 'trigger': False, 'use': False,
+    }
+    after = {entry['action']: entry for entry in _story_entry(table, 'valley_last_road_stone')['offeredActions']}
+    assert {action: (after[action]['legal'], after[action].get('reason')) for action in FATES} == {
+        'use': (False, 'That can no longer be done.'),
+        'break': (False, 'That can no longer be done.'),
+        'lock': (False, 'That can no longer be done.'),
+        'trigger': (False, 'That can no longer be done.'),
+    }
     assert _rewards(renewal.snapshot) == [
         ('enc_empty_caravan_pressure', 'victory'),
         ('enc_final_binding', 'victory'),
@@ -698,7 +745,7 @@ def test_the_shortcut_reaches_the_valley_by_the_culvert(table):
     assert (claim.gp, claim.xp, claim.items["Roadwarden's Token"]) == (60, 900, 1)
     assert _quest_status(claim.snapshot) == 'completed'
     assert {key: _objectives(claim.snapshot)[key] for key in OPTIONAL_OBJECTIVES} == {key: 'open' for key in OPTIONAL_OBJECTIVES}
-    assert _ending(claim.snapshot) == ENDING
+    assert _ending(claim.snapshot) == _ending_for('ward_claimed')
     assert table.offers('valley_last_road_stone') == {
         'break': False, 'inspect': True, 'lock': False, 'trigger': False, 'use': False,
     }
@@ -706,6 +753,19 @@ def test_the_shortcut_reaches_the_valley_by_the_culvert(table):
 
 def _story_view(snapshot: dict) -> dict:
     return filter_session_snapshot_for_player(snapshot, private_player_ids={_hero(snapshot)['playerId']})
+
+
+def _story_state(table: Table) -> dict:
+    """The state the Story view reads: the player view, told from the hero."""
+
+    hero = _hero(table.snapshot())
+    response = table.client.get(f"/api/sessions/{table.ids['session_id']}/state?view=player&player_id={hero['playerId']}")
+    assert response.status_code == 200, response.get_json()
+    return response.get_json()['state_snapshot']
+
+
+def _story_entry(table: Table, object_id: str) -> dict:
+    return next(entry for entry in _story_state(table)['currentScene']['interactables'] if entry['id'] == object_id)
 
 
 def _offered(view: dict, object_id: str) -> list[tuple[str, str, bool, bool]]:

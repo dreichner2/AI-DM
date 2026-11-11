@@ -27,6 +27,8 @@ PUBLIC_ROLL_KEYS = (
     'result_visibility',
     'pending_turn_id',
     'inspiration',
+    # The rules that moved ``modifier`` ([{"label": "Wounded", "value": -2}]), never ability or proficiency.
+    'modifiers',
 )
 
 PUBLIC_ROLL_SPEC_KEYS = (

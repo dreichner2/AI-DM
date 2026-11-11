@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any
 
 from aidm_server.combat.state import combat_turn_order, normalize_battlefield, normalize_position
+from aidm_server.game_state.campaign_pack_encounters import flag_condition_holds
 from aidm_server.commerce import open_merchant_projections
 from aidm_server.game_clock import public_clock, scene_rest_policy
 from aidm_server.interactables import offered_scene_actions, project_scene_interactables, take_label
@@ -1200,7 +1201,11 @@ def _player_pack_snapshot(pack: dict, flags: dict) -> dict:
         'failedCheckpointIds': visible_failed_ids,
         'checkpointStatuses': visible_statuses,
         'checkpoints': visible_checkpoints,
-        'ending': player_ending(visible_checkpoints),
+        'ending': player_ending(
+            visible_checkpoints,
+            [checkpoint for checkpoint in (pack.get('checkpoints') or []) if isinstance(checkpoint, dict)],
+            flags,
+        ),
     }
     return {key: value for key, value in result.items() if value not in ('', None)}
 
@@ -1256,16 +1261,37 @@ def player_visible_checkpoint_payloads(value: Any, checkpoint_statuses: dict[str
     return visible
 
 
-def player_ending(visible_checkpoints: list[dict]) -> dict | None:
-    """The reached terminal checkpoint as the story's ending, in its player-safe words."""
+def ending_variant(checkpoint: dict, flags: dict) -> dict | None:
+    """The first of a terminal checkpoint's ``endingVariants`` whose ``when`` holds: what the party chose."""
+
+    for variant in checkpoint.get('endingVariants') if isinstance(checkpoint.get('endingVariants'), list) else []:
+        if (
+            isinstance(variant, dict)
+            and _text(variant.get('title'))
+            and _text(variant.get('text'))
+            and flag_condition_holds(flags, variant.get('when'))
+        ):
+            return {'title': _text(variant['title']), 'text': _text(variant['text'])}
+    return None
+
+
+def player_ending(visible_checkpoints: list[dict], checkpoints: list[dict], flags: dict) -> dict | None:
+    """The reached terminal checkpoint as the story's ending, in its player-safe words.
+
+    ``title`` and ``text`` are the matching ending variant's (else the
+    checkpoint's own title and summary); ``summary`` stays the checkpoint's.
+    """
 
     reached = next((checkpoint for checkpoint in visible_checkpoints if checkpoint.get('status') == 'reached'), None)
     if reached is None:
         return None
+    record = next((checkpoint for checkpoint in checkpoints if isinstance(checkpoint, dict) and _checkpoint_id(checkpoint) == reached['id']), {})
+    variant = ending_variant(record, flags) or {}
     return {
         'checkpointId': reached['id'],
-        'title': reached.get('title') or '',
+        'title': variant.get('title') or reached.get('title') or '',
         'summary': reached.get('summary') or '',
+        'text': variant.get('text') or reached.get('summary') or '',
     }
 
 
@@ -1306,6 +1332,13 @@ def _journal(snapshot: dict, filtered: dict) -> dict:
     stage_title = _text(_first(active, 'playerTitle', 'player_title')) or (
         '' if hidden_stage else _text(_first(active, 'title', 'name'))
     )
+    stage_summary = _public_alias_text(active, 'playerSummary', 'player_summary')
+    # The story's end is told as the party chose it, as the ending itself is.
+    variant = ending_variant(active, snapshot.get('flags') if isinstance(snapshot.get('flags'), dict) else {}) if (
+        active and is_terminal_checkpoint(active)
+    ) else None
+    if variant:
+        stage_title, stage_summary = variant['title'], variant['text']
     stage_objective_ids = {_id_key(value) for value in _ids_from(active, 'objectiveIds', 'objective_ids')}
     completed: list[dict] = []
     open_now: list[dict] = []
@@ -1326,7 +1359,7 @@ def _journal(snapshot: dict, filtered: dict) -> dict:
                 'summary': _public_alias_text(quest, 'playerSummary', 'player_summary'),
                 'status': _text(quest.get('status')) or 'active',
                 'stageTitle': stage_title,
-                'stageSummary': _public_alias_text(active, 'playerSummary', 'player_summary'),
+                'stageSummary': stage_summary,
             }
             if quest is not None
             else None

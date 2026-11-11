@@ -151,6 +151,27 @@ their own journal hooks; they cannot reactivate or complete mechanical quests.
   healing, and temporary HP per turn, with round durations, concentration, and
   `consumeOn` effects that are spent the first time they apply. Providers can
   register further modifier and extra-damage sources.
+- A condition an enemy ability applies wears off. It lasts until the end of the
+  target's next turn, or for the ability's `durationRounds` (1–10) of the
+  target's turns; it is an active effect (`origin: "enemy_ability"`) ticked by
+  the modifier engine at the end of each of the target's turns. When the
+  ability has a save, the target repeats it (the ability's save, with the
+  party-scaled DC) at the end of each of those turns, and success ends every
+  condition of that use at once. Enemy turns are resolved before the turn
+  advance is applied, so a condition landing in them is not counted by the
+  turn end that came before them (`appliedDuringTurnOf`). The scripted
+  narrator says `You shake off {ability}.` (`{Name} shakes off …` for another
+  hero) as the turn ends, and the beat is `No longer charmed`.
+- Condition beats appear only when a condition starts or ends: in a fight a
+  hero's conditions are read from their combat participant, so they are not
+  told again each turn while they last.
+- A hero below three quarters of their HP rolls d20s at −1 (half or less −2, a
+  quarter or less −4): the wound penalty. Every d20 roll it moves carries
+  `modifiers: [{"label": "Wounded", "value": -2}]` on its roll event and its
+  persisted roll (shown to every viewer; ability and proficiency are never
+  listed there), and the scripted narrator's attack sentence names it
+  (`— your wounds cost you 2`) on the hero's first attack it changes, not
+  again while it stays the same.
 - Player characters at 0 HP fall `unconscious` and `dying` (out of combat:
   `stable`) instead of leaving the game; only the `dead` condition makes one not
   alive. Damage left over at 0 HP that reaches the maximum HP kills at once;
@@ -266,7 +287,9 @@ their own journal hooks; they cannot reactivate or complete mechanical quests.
   `combat.flags.enemyTurnHistory`. An enemy may negotiate, surrender, yield or
   retreat only when its HP is at or below half, its side has lost a member in
   this fight, or it is round 4 or later and it has been hurt (an encounter's
-  `allowParley: true` lifts this). Forbidden candidates are removed before
+  `allowParley: true` lifts this). A boss (`challengeTier: "boss"`) stands its
+  ground: it never yields or retreats above a quarter of its HP, whatever else
+  holds. Forbidden candidates are removed before
   selection; an LLM-assisted planner's forbidden choice is replaced by the best
   damaging candidate. Enemy targeting, in planning and at resolution, applies the same
   range-band, engagement, cover and hidden rules as the player HUD, using each
@@ -574,6 +597,22 @@ and registers the combat actions and Uncanny Dodge.
   objectives and beats); its combat, if active, ends at once with that outcome,
   and its trigger never fires afterwards. Taking the action again settles
   nothing more.
+- A flag requirement of `false` holds while the flag is unset or false, so an
+  action can be offered only until something happens; once it has, the
+  refusal reads `That can no longer be done.`
+- An object's `choiceActions` are alternatives (the fates of a ward): each
+  offered entry for a listed action carries `choice: true`, so the Story view
+  can show them together.
+- Offered entries and refusals write an object named "The …" as `the …` inside
+  a sentence (`You have already examined the Last Road-Stone.`); an action
+  that needs a tool the hero lacks is refused with `You have nothing that will
+  {action} the {object}.`, and `break` on a container that already stands open
+  is `done`.
+- A search that turns up no items but discovers a clue, a place or a story flag
+  is not told as `You find nothing more.`; closing into melee is told in the
+  hero's own voice (`You close in on the ashmarked cutthroat.`) before the
+  attack, and a proper-named enemy is someone, not something (`The Cinder
+  Scribe turns back to their work.`).
 
 ## AI Context
 

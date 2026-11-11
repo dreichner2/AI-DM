@@ -185,6 +185,8 @@ def roll_resolved_payload(
         payload['inspiration'] = projected_roll['inspiration']
     if isinstance(projected_roll.get('target_ac'), int):
         payload['target_ac'] = projected_roll['target_ac']
+    if projected_roll.get('modifiers'):
+        payload['modifiers'] = list(projected_roll['modifiers'])
     if include_private_provenance:
         payload.update(
             {

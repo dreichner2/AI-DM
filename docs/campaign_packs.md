@@ -230,10 +230,13 @@ consumer.
 | encounter | `title`, `summary`/`description`, `locationIds`, `checkpointIds` | prompt |
 | encounter | `setup`, `stakes`, `gmNotes`, `difficulty`, `tags` | stored |
 | enemy | creature fields (`stats`, `abilities`, `behavior`, ...), `xpReward` | mechanical |
+| enemy | `challengeTier: "boss"` (never yields or retreats above a quarter of its HP) | mechanical |
+| enemy ability | `durationRounds` (1–10 of the target's turns its `conditionsApplied` last; default 1, the end of its next turn; a save is repeated at the end of each; the linter errors outside 1–10) | mechanical |
 | enemy | `descriptionShort`, `challengeTier`, `creatureType`, `tags` | prompt |
 | checkpoint | `id`, graph fields, `completeWhen`, `failWhen`, `branchWhen`, `prerequisite*`, `optional`, `terminal`, `canCompleteOutOfOrder`, `rejoinTargetCheckpointId`, `directorRules` | mechanical |
 | checkpoint | `title`, `summary`, `chapter`, `act`, `priority`, `gate`, related ids, `clueIds` | prompt |
 | checkpoint | `playerTitle`, `playerSummary` | player |
+| checkpoint | `endingVariants` (terminal checkpoints; see Checkpoint Controls) | mechanical, player |
 | checkpoint | `gmNotes` | stored |
 | segment | `id`, `title`, `trigger`, `locationId` (location trigger), `tags` | mechanical |
 | segment | `description` (or `summary`) | prompt |
@@ -539,9 +542,16 @@ Checkpoint graph fields:
 - `failureCheckpointIds`: fallback beats used when a checkpoint fails.
 - `terminal`: marks an end/finale checkpoint. Once reached it stays the active
   checkpoint with status `reached` (it never completes itself away), and the
-  player projection carries `ending: {checkpointId, title, summary}` from its
-  player-safe title and summary. Player checkpoint payloads include
+  player projection carries `ending: {checkpointId, title, summary, text}` from
+  its player-safe title and summary. Player checkpoint payloads include
   `terminal: true|false`.
+- `endingVariants`: on a terminal checkpoint, `[{"when": {"flagKey", "equals"},
+  "title", "text"}]`. The first variant whose flag holds names the ending
+  (`ending.title`, the journal's `stageTitle`, the `The story ends — {title}`
+  beat) and tells it (`ending.text`, the journal's `stageSummary`); with no
+  match the checkpoint's own player title and summary do. The linter errors on
+  a variant without a flag predicate, title and text, and warns about a flag
+  the pack never sets or variants on a checkpoint that is not terminal.
 - `chapter` and `act`: group checkpoints for authored graph views.
 - `priority`: authoring metadata for director and graph views. Runtime branch
   selection currently uses the authored `nextCheckpointIds` order.
@@ -640,6 +650,13 @@ Objects resolve themselves on the server:
   coin. Narration of a reveal never takes what was revealed.
 - `trigger` is offered on hazards and on any object marked `"triggerable": true`;
   a non-hazard can be triggered once unless it is `repeatable`.
+- A requirement's `flags` may expect `false`: it holds while the flag is unset
+  or false (`{"quest_road_complete": false}` offers a fate only until the quest
+  is done); afterwards the action is refused with `That can no longer be done.`
+- `choiceActions: [<action>, ...]` marks actions that are alternatives to one
+  another (the Last Road-Stone's four fates): each offered entry for a listed
+  action carries `choice: true` and the Story view shows them together. The
+  linter errors on a listed action the object does not support.
 - In combat, object actions are offered with the combat actions: `inspect` is
   free, every other action costs the actor's action.
 

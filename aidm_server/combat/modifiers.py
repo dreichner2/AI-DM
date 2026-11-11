@@ -18,7 +18,12 @@ An effect may also maintain a condition (``condition``) and carry ``castId`` and
 ``damage_taken``, ``unconscious`` (its bearer falls unconscious) and
 ``no_attack_or_damage_since_last_turn`` (checked as its bearer starts a turn;
 :func:`note_attack_or_damage` keeps it going).  A Bardic Inspiration effect
-carries ``inspirationDie``.  Records written before this shape
+carries ``inspirationDie``.  A condition an enemy ability applied is an effect
+with ``origin: "enemy_ability"`` maintaining it for ``target_turn_end`` rounds;
+its ``endSave`` (``{"ability", "dc"}``) is repeated at the end of each of its
+bearer's turns, and ``appliedDuringTurnOf`` (the participant whose turn it
+landed in) keeps the turn boundaries passed before that turn from counting it
+(see :func:`aidm_server.combat.pipeline.apply_turn_boundaries`).  Records written before this shape
 (``sourceActorId``/``sourceSpellId``/``duration.remaining``/``tick``) are read
 through :func:`normalize_active_effect`.
 
@@ -898,9 +903,17 @@ def consume_modifiers(combat: dict[str, Any], consumed: Iterable[Mapping[str, An
     return removed
 
 
-def tick_effects(combat: dict[str, Any], *, actor_id: Any, tick_on: str, steps: int = 1) -> list[dict[str, Any]]:
+def tick_effects(
+    combat: dict[str, Any],
+    *,
+    actor_id: Any,
+    tick_on: str,
+    steps: int = 1,
+    dormant: frozenset[str] = frozenset(),
+) -> list[dict[str, Any]]:
     """Advance durations for one boundary; target ticks affect effects on the actor,
-    the caster ticks tick effects the actor cast.  Returns the expired effects."""
+    the caster ticks tick effects the actor cast; ``dormant`` effect ids do not tick.
+    Returns the expired effects."""
 
     actor = _text(actor_id)
     tick = LEGACY_EFFECT_TICKS.get(tick_on, tick_on)
@@ -914,7 +927,7 @@ def tick_effects(combat: dict[str, Any], *, actor_id: Any, tick_on: str, steps: 
         expiring: set[str] = set()
         for effect in effects:
             duration = effect.get('duration')
-            if not duration or duration['tickOn'] != tick:
+            if not duration or duration['tickOn'] != tick or effect['id'] in dormant:
                 continue
             owner = bearer if tick in {'target_turn_start', 'target_turn_end'} else effect['casterId']
             if owner != actor:
@@ -930,13 +943,15 @@ def tick_effects(combat: dict[str, Any], *, actor_id: Any, tick_on: str, steps: 
     return expired
 
 
-def tick_turn_boundary(combat: dict[str, Any], *, actor_id: Any, phase: str) -> list[dict[str, Any]]:
+def tick_turn_boundary(
+    combat: dict[str, Any], *, actor_id: Any, phase: str, dormant: frozenset[str] = frozenset()
+) -> list[dict[str, Any]]:
     if phase == 'start':
         return [
-            *tick_effects(combat, actor_id=actor_id, tick_on='target_turn_start'),
-            *tick_effects(combat, actor_id=actor_id, tick_on='caster_turn_start'),
+            *tick_effects(combat, actor_id=actor_id, tick_on='target_turn_start', dormant=dormant),
+            *tick_effects(combat, actor_id=actor_id, tick_on='caster_turn_start', dormant=dormant),
         ]
     return [
-        *tick_effects(combat, actor_id=actor_id, tick_on='target_turn_end'),
-        *tick_effects(combat, actor_id=actor_id, tick_on='caster_turn_end'),
+        *tick_effects(combat, actor_id=actor_id, tick_on='target_turn_end', dormant=dormant),
+        *tick_effects(combat, actor_id=actor_id, tick_on='caster_turn_end', dormant=dormant),
     ]

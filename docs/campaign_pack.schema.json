@@ -408,6 +408,15 @@
           "description": "The name is a proper noun, so refusals read \"Excalibur is locked.\" rather than \"The Excalibur is locked.\". A name that starts with \"The\" is never given another article.",
           "type": "boolean"
         },
+        "choiceActions": {
+          "description": "Actions that are alternatives to one another, such as the fates of a ward. The Story screen shows each of them that can be taken as its own suggestion, together, before the others. The linter errors on an action the object does not support.",
+          "type": "array",
+          "maxItems": 11,
+          "items": {
+            "$ref": "#/$defs/objectAction"
+          },
+          "uniqueItems": true
+        },
         "usableInCombat": {
           "description": "The actions a hero can take on this object during a fight, on their own turn while their action is unspent; taking one spends the action. Every other action is refused in a fight with \"Not while the fight is on.\".",
           "type": "array",
@@ -886,8 +895,24 @@
           "maxLength": 80
         },
         "challengeTier": {
+          "description": "\"boss\" makes the enemy stand its ground: it never yields or retreats above a quarter of its hit points.",
           "type": "string",
           "maxLength": 80
+        },
+        "abilities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "durationRounds": {
+                "description": "How many of the target's turns the ability's conditionsApplied last, each ending at the end of the target's turn (default 1: until the end of its next turn). An ability with a save repeats it at the end of each of those turns; success ends the conditions.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10
+              }
+            }
+          }
         },
         "locationIds": {
           "$ref": "#/$defs/idList"
@@ -1217,6 +1242,31 @@
         "terminal": {
           "type": "boolean",
           "default": false
+        },
+        "endingVariants": {
+          "description": "On a terminal checkpoint: the first variant whose flag holds names the ending and tells it, everywhere the ending is shown; with none, the checkpoint's own title and summary do.",
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["when", "title", "text"],
+            "properties": {
+              "when": {
+                "$ref": "#/$defs/flagPredicate"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            }
+          }
         },
         "chapter": {
           "type": "string",

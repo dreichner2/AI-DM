@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from aidm_server.canon_text import int_or_default
 from aidm_server.combat.actions import resolve_combat_action
+from aidm_server.combat.attacks import resolve_save
 from aidm_server.combat.difficulty import normalize_combat_difficulty_ai
 from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
 from aidm_server.combat.intent_planner import attach_intents_to_combat, plan_enemy_intents
@@ -15,15 +16,19 @@ from aidm_server.combat.modifiers import (
     apply_damage_multiplier,
     attacks_per_action,
     can_act,
+    condition_key,
     condition_keys,
+    consume_modifiers,
     damage_defense,
     end_effects_at_turn_start,
     note_attack_or_damage,
+    remove_active_effects,
     temp_hp_per_turn,
     tick_turn_boundary,
 )
 from aidm_server.combat.turn_start import run_turn_start_hooks
 from aidm_server.combat.vitality import apply_death_save, death_save_roll, is_dying, is_player_character, take_damage
+from aidm_server.combat.working_state import ENEMY_CONDITION_ORIGIN
 from aidm_server.combat.state import (
     MAX_MOVEMENT_PER_TURN,
     combat_summary_for_dm,
@@ -967,38 +972,164 @@ def _start_turn(combat: dict[str, Any], participant: dict[str, Any], *, turn_id:
     return result
 
 
-def apply_turn_boundaries(combat: dict[str, Any], boundaries: list[dict[str, Any]], *, turn_id: Any) -> list[dict[str, Any]]:
+def _waking_boundaries(combat: dict[str, Any], boundaries: list[dict[str, Any]]) -> dict[str, int]:
+    """Effect id -> index of the boundary from which an effect applied during a later turn of
+    this list counts: the start of the turn it landed in (``appliedDuringTurnOf``)."""
+
+    starts: dict[str, int] = {}
+    for index, boundary in enumerate(boundaries):
+        if isinstance(boundary, dict) and boundary.get('phase') == 'start':
+            starts.setdefault(str(boundary.get('actorId') or '').strip(), index)
+    waking: dict[str, int] = {}
+    for participant in combat.get('participants') or []:
+        for effect in active_effects(participant if isinstance(participant, dict) else {}):
+            landed_in = str(effect.get('appliedDuringTurnOf') or '').strip()
+            if landed_in in starts:
+                waking[effect['id']] = starts[landed_in]
+    return waking
+
+
+def _settle_landed_effects(combat: dict[str, Any]) -> None:
+    """Every effect has now passed the turn it landed in: boundaries count it from here on."""
+
+    for participant in combat.get('participants') or []:
+        if not isinstance(participant, dict):
+            continue
+        effects = active_effects(participant)
+        if any('appliedDuringTurnOf' in effect for effect in effects):
+            for effect in effects:
+                effect.pop('appliedDuringTurnOf', None)
+            participant['activeEffects'] = effects
+
+
+def _without_conditions_of(participant: dict[str, Any], effect_ids: set[str]) -> dict[str, Any]:
+    """The participant as it stood before the effects in ``effect_ids`` landed."""
+
+    later = {effect.get('condition') for effect in active_effects(participant) if effect['id'] in effect_ids}
+    kept = {effect.get('condition') for effect in active_effects(participant) if effect['id'] not in effect_ids}
+    view = deepcopy(participant)
+    view['conditions'] = [value for value in view.get('conditions') or [] if condition_key(value) not in later - kept]
+    return view
+
+
+def _end_turn_condition_saves(
+    combat: dict[str, Any],
+    participant: dict[str, Any],
+    *,
+    turn_id: Any,
+    round_number: int,
+    dormant: frozenset[str],
+) -> list[dict[str, Any]]:
+    """Each enemy ability's conditions on the actor (one use at a time) repeat their save; success ends them."""
+
+    actor_id = str(participant.get('id') or '')
+    results: list[dict[str, Any]] = []
+    casts: dict[str, dict[str, Any]] = {}
+    for effect in active_effects(participant):
+        if effect['id'] not in dormant and isinstance(effect.get('endSave'), dict) and effect.get('castId'):
+            casts.setdefault(str(effect['castId']), effect)
+    for cast_id, effect in casts.items():
+        save = {'ability': effect['endSave'].get('ability'), 'dc': int_or_default(effect['endSave'].get('dc'), default=10)}
+        rolled = resolve_save(
+            _without_conditions_of(participant, set(dormant)),
+            save,
+            combat,
+            deterministic_roller(f'condition_save:{turn_id}:{round_number}:{actor_id}:{cast_id}'),
+        )
+        consume_modifiers(combat, rolled.pop('consume'))
+        ended = remove_active_effects(participant, lambda candidate, cast_id=cast_id: str(candidate.get('castId') or '') == cast_id) if rolled['saveSucceeded'] else []
+        results.append({'castId': cast_id, 'sourceName': effect['sourceName'], 'save': rolled, 'ended': ended})
+    return results
+
+
+def _shaken_off(participant_id: str, ended: list[dict[str, Any]], save: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Enemy-ability conditions that ended at a turn's end, one entry per use of the ability."""
+
+    entries: dict[str, dict[str, Any]] = {}
+    for effect in ended:
+        if effect.get('origin') != ENEMY_CONDITION_ORIGIN:
+            continue
+        entry = entries.setdefault(
+            str(effect.get('castId') or effect.get('id')),
+            {'participantId': participant_id, 'sourceName': effect.get('sourceName') or '', 'conditions': []},
+        )
+        if effect.get('condition'):
+            entry['conditions'].append(effect['condition'])
+        if save is not None:
+            entry['save'] = {key: save[key] for key in ('saveAbility', 'saveDC', 'saveRoll', 'saveTotal', 'saveSucceeded') if key in save}
+    return list(entries.values())
+
+
+def apply_turn_boundaries(
+    combat: dict[str, Any],
+    boundaries: list[dict[str, Any]],
+    *,
+    turn_id: Any,
+    through: int | None = None,
+) -> list[dict[str, Any]]:
     """Run turn-start and turn-end processing for each boundary, mutating ``combat``.
 
     Turn end ticks effects held by (``target_turn_end``) or cast by
-    (``caster_turn_end``) the actor and, when the boundary records that the
-    actor ``attacked``, keeps its attack-sustained effects going.  Turn start
+    (``caster_turn_end``) the actor, repeats the save of each enemy ability's
+    conditions on the actor (success ends them) and records the enemy-ability
+    conditions that ended in ``shakenOff``; when the boundary records that the
+    actor ``attacked``, it keeps its attack-sustained effects going.  Turn start
     ticks ``caster_turn_start`` effects, restores the actor's reaction, grants
     ``tempHpPerTurn``, deals ongoing damage, runs the turn-start hooks (spell
     repeat saves and auras), ends effects whose ``endsWhen`` lapsed, ends
     ``dodging``, stands a prone actor that can act (spending its movement) and
     rolls recharge for abilities marked ``needsRecharge`` (5-6 on the
     deterministic d6 recharges).
+
+    The enemy turns of an advance are resolved before it is applied, so an
+    effect that landed during one of them (``appliedDuringTurnOf``) is not
+    counted by the boundaries before that turn's start.  ``through`` stops
+    after that many boundaries (a preview of the first ones).
     """
 
+    waking = _waking_boundaries(combat, boundaries)
     events: list[dict[str, Any]] = []
-    for boundary in boundaries:
+    for index, boundary in enumerate(boundaries[:through]):
         if not isinstance(boundary, dict):
             continue
         actor_id = str(boundary.get('actorId') or '').strip()
         phase = 'start' if boundary.get('phase') == 'start' else 'end'
         round_number = max(1, int_or_default(boundary.get('round'), default=1))
+        dormant = frozenset(effect_id for effect_id, wakes_at in waking.items() if index < wakes_at)
         event: dict[str, Any] = {'actorId': actor_id, 'phase': phase, 'round': round_number}
-        expired = tick_turn_boundary(combat, actor_id=actor_id, phase=phase)
+        expired = tick_turn_boundary(combat, actor_id=actor_id, phase=phase, dormant=dormant)
         if expired:
             event['expiredEffects'] = [effect.get('id') for effect in expired]
         participant = _participant_index(combat).get(actor_id)
         if phase == 'start' and participant is not None:
             event.update(_start_turn(combat, participant, turn_id=turn_id, round_number=round_number))
-        elif participant is not None and boundary.get('attacked') is True:
-            note_attack_or_damage(participant)
+        elif participant is not None:
+            shaken = _shaken_off(actor_id, [effect for effect in expired if effect.get('targetId') == actor_id])
+            for result in _end_turn_condition_saves(combat, participant, turn_id=turn_id, round_number=round_number, dormant=dormant):
+                event.setdefault('conditionSaves', []).append({key: result[key] for key in ('castId', 'sourceName', 'save')})
+                shaken.extend(_shaken_off(actor_id, result['ended'], result['save']))
+            if shaken:
+                event['shakenOff'] = shaken
+            if boundary.get('attacked') is True:
+                note_attack_or_damage(participant)
         events.append(event)
+    if through is None:
+        _settle_landed_effects(combat)
     return events
+
+
+def turn_end_preview(state: dict[str, Any], *, turn_id: Any) -> list[dict[str, Any]]:
+    """What ending the acting hero's turn ends for them (``shakenOff``), computed on a copy
+    exactly as the turn's advance will do it once its enemy turns are applied."""
+
+    combat = normalize_combat_state(deepcopy(state.get('combat')), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
+    if not _combat_is_active(combat):
+        return []
+    boundaries = turn_boundaries(combat, combat_turn_context(combat))
+    if not boundaries or boundaries[0].get('phase') != 'end':
+        return []
+    events = apply_turn_boundaries(combat, boundaries, turn_id=turn_id, through=1)
+    return (events[0].get('shakenOff') or []) if events else []
 
 
 def death_saves_due(combat: Any, *, turn_id: Any) -> list[dict[str, Any]]:

@@ -15,6 +15,7 @@ from aidm_server.combat.attacks import (
     attack_armor_class,
     attack_weapon_descriptor,
     bounded_int,
+    condition_duration_fields,
     resolve_attack,
     resolve_enemy_ability,
     resolve_enemy_healing,
@@ -851,6 +852,11 @@ def _trusted_enemy_resolved_damage_changes(
                 'source': 'enemy_resolved_action',
                 'sourceEnemyId': enemy_id,
                 'sourceAbilityId': ability_id or None,
+                **condition_duration_fields(
+                    ability if isinstance(ability, dict) else {},
+                    cast_id=stable_change_id('trusted_enemy_resolved_conditions', turn_id, index, enemy_id, target_id, ability_id),
+                    applied_during_turn_of=enemy_id,
+                ),
                 'reason': f"Engine-resolved enemy action: {enemy_name} applied {normalized_condition} to {target_name}.",
                 'visible': True,
             }

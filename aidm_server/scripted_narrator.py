@@ -7,7 +7,9 @@ with the scene paragraph only in the opening, on arrival and when the hero
 looks around, and the closing question only in the opening. The pipeline's
 ``narration`` packet (``RULES_HINT.state_pipeline.narration``) names the
 objects acted on, the person talked to, how typed words mapped, the authored
-setup and adjustments of a fight that starts, who acts next in a fight, how a
+setup and adjustments of a fight that starts, the enemy abilities whose
+conditions the hero shakes off as their turn ends, a rule that newly moved the
+hero's attack roll (``attackModifiers``), who acts next in a fight, how a
 fight ends and a party defeat. An enemy turn is told as what it does in the
 world, never by the planner's name for it. Phrasing varies by turn without
 randomness: each template has a few variants chosen by
@@ -42,15 +44,16 @@ DEFEAT_PARAGRAPH = (
 COIN_CODES = frozenset({'pp', 'gp', 'ep', 'sp', 'cp'})
 # After a failed check for an object action, said after the action's sentence.
 FAILED_CHECK_LINES = {'search': 'You come up empty.', 'inspect': 'You come up empty.'}
-# An enemy turn that rolls nothing, by intent; ``{enemy}`` is its name in prose, ``{ally}`` the ally it shields.
+# An enemy turn that rolls nothing, by intent; ``{enemy}`` is its name in prose, ``{ally}`` the ally it shields,
+# ``{its}`` its possessive (``their`` for a proper name: "The Cinder Scribe turns back to their work.").
 ENEMY_TURN_LINES = {
     'delay': '{enemy} hangs back, watching.',
     'protect_ally': '{enemy} moves to shield {ally}.',
-    'complete_objective': '{enemy} turns back to its work.',
+    'complete_objective': '{enemy} turns back to {its} work.',
     'use_environment': '{enemy} looks for an advantage in the ground.',
-    'negotiate': '{enemy} throws down its weapon and yields.',
-    'surrender': '{enemy} throws down its weapon and yields.',
-    'yield': '{enemy} throws down its weapon and yields.',
+    'negotiate': '{enemy} throws down {its} weapon and yields.',
+    'surrender': '{enemy} throws down {its} weapon and yields.',
+    'yield': '{enemy} throws down {its} weapon and yields.',
     'reposition': '{enemy} moves for a better angle.',
     'defend': '{enemy} takes cover.',
     'hide': '{enemy} takes cover.',
@@ -363,6 +366,12 @@ class NarrationInput:
             return f'the {text.lower()}'
         return text
 
+    def is_proper(self, name: Any) -> bool:
+        """The enemy has a proper name (``The Cinder Scribe``), so it is a someone: ``their``, not ``its``."""
+
+        text = _text(name).casefold()
+        return any(_text(enemy.get('name')).casefold() == text and enemy.get('proper') is True for enemy in _dicts(self.facts.get('enemies')))
+
 
 def narrate(
     context: dict[str, Any],
@@ -505,17 +514,25 @@ def _combat_lines(turn: NarrationInput) -> list[str]:
     combat_state = _dict(turn.pipeline.get('combatState'))
     lines = [turn.pick('combat_start') for change in turn.applied_changes if _text(change.get('type')) == 'combat.start'][:1]
     targets: list[str] = []
-    tactical = _text(_dict(combat_state.get('playerResolvedCombatAction')).get('outcome'))
+    tactical = _tactical_line(turn, _dict(combat_state.get('playerResolvedCombatAction')))
     if tactical:
-        lines.append(_sentence(tactical))
+        lines.append(tactical)
     player_action = _dict(combat_state.get('playerResolvedAction'))
     attacks = [player_action] if player_action else []
     for event in _dicts(combat_state.get('trustedDamageEvents')):
         if event not in attacks:
             attacks.append(event)
+    # A rule that moved the hero's roll is named once, on the attack it first changed.
+    modifier_clause = _modifier_clause(turn.facts.get('attackModifiers')) if player_action else ''
     for attack in attacks:
-        lines.append(_player_attack_line(turn, attack))
+        line = _player_attack_line(turn, attack)
+        if modifier_clause and attack is player_action:
+            line = f'{line[:-1]} — {modifier_clause}.'
+        lines.append(line)
         targets.append(_text(attack.get('targetName')))
+    for entry in _dicts(turn.facts.get('shakenOff')):
+        person = _person(turn, entry.get('name'))
+        lines.append(_sentence(f"{person['target']} {person['shake']} off {_text(entry.get('source'))}"))
     enemy_actions = _dicts(combat_state.get('enemyResolvedActions'))
     fleeing = [action for action in enemy_actions if _fled(action)]
     routed = _key(turn.facts.get('fightEnds')) == 'enemies_fled'
@@ -543,6 +560,17 @@ def _combat_lines(turn: NarrationInput) -> list[str]:
     return lines
 
 
+def _tactical_line(turn: NarrationInput, action: dict) -> str:
+    """The hero's move or tactic; closing into melee is told in the same voice as the attack after it."""
+
+    movement = _dict(action.get('movement'))
+    if _key(action.get('actionType')) == 'advance' and _key(movement.get('toRangeBand')) == 'melee' and movement.get('engagedWith'):
+        actor = _text(action.get('actorName'))
+        who = 'You close' if not actor or turn.is_speaker(actor) else f'{actor} closes'
+        return _sentence(f"{who} in on {_target_ref(turn, action.get('targetName'))}")
+    return _sentence(_text(action.get('outcome')))
+
+
 def _player_attack_line(turn: NarrationInput, attack: dict) -> str:
     actor_name = _text(attack.get('sourceActorName'))
     is_you = not actor_name or turn.is_speaker(actor_name)
@@ -559,6 +587,21 @@ def _player_attack_line(turn: NarrationInput, attack: dict) -> str:
     }
     key = 'player_attack_hit' if attack.get('hit') is True else 'player_attack_miss'
     return _sentence(turn.pick(key, **values))
+
+
+def _modifier_clause(modifiers: Any) -> str:
+    """``your wounds cost you 2`` for the hero's roll modifiers (``[{"label", "value"}]``)."""
+
+    parts = []
+    for modifier in _dicts(modifiers):
+        label, value = _text(modifier.get('label')), _int_or_none(modifier.get('value'))
+        if not label or not value:
+            continue
+        if label == 'Wounded' and value < 0:
+            parts.append(f'your wounds cost you {-value}')
+        else:
+            parts.append(f'{label.lower()} {"+" if value > 0 else "−"}{abs(value)}')
+    return _join_words(parts)
 
 
 def _fled(action: dict) -> bool:
@@ -581,7 +624,8 @@ def _unrolled_enemy_line(turn: NarrationInput, action: dict, enemy: str, *, rout
     if intent in FLEEING_INTENTS:
         return _sentence(f'{enemy} breaks and runs' if routed else f'{enemy} gives ground')
     template = ENEMY_TURN_LINES.get(intent, '{enemy} waits.')
-    return _sentence(template.format(enemy=enemy, ally=turn.creature(action.get('targetName')) or 'an ally'))
+    its = 'their' if turn.is_proper(action.get('enemyName')) else 'its'
+    return _sentence(template.format(enemy=enemy, ally=turn.creature(action.get('targetName')) or 'an ally', its=its))
 
 
 def _enemy_action_line(turn: NarrationInput, action: dict, *, routed: bool = False) -> str | None:
@@ -849,7 +893,7 @@ def _object_blocks(fact: dict) -> list[list[str]]:
     if description:
         blocks.append(_split_sentences(description))
     if action == 'search':
-        blocks.append(_found_sentences(fact.get('found'), fact.get('uncovered')))
+        blocks.append(_found_sentences(fact.get('found'), fact.get('uncovered'), discovered=fact.get('discovered') is True))
     elif fact.get('nothingNew') is True:
         blocks.append([f'You find nothing new on {_the(name)}.'])
     return blocks
@@ -878,8 +922,9 @@ def _steps_sentence(steps: list[dict], key_name: str) -> str:
     return _sentence(sentence)
 
 
-def _found_sentences(found: Any, uncovered: Any) -> list[str]:
-    """What a search turned up: the items found, the hidden objects uncovered, or nothing more."""
+def _found_sentences(found: Any, uncovered: Any, *, discovered: bool = False) -> list[str]:
+    """What a search turned up: the items found, the hidden objects uncovered, or nothing more
+    (unless it ``discovered`` a clue, a place or a story flag, which the search's own words tell)."""
 
     items = [_text(item) for item in (found if isinstance(found, list) else []) if _text(item)]
     objects = [_text(name) for name in (uncovered if isinstance(uncovered, list) else []) if _text(name)]
@@ -889,7 +934,7 @@ def _found_sentences(found: Any, uncovered: Any) -> list[str]:
         sentences.append(f'You find {_join_words([*coins, *(item for item in items if item not in coins)])}.')
     if objects:
         sentences.append(f'You uncover {_join_words([_the(name) for name in objects])}.')
-    return sentences or ['You find nothing more.']
+    return sentences or ([] if discovered else ['You find nothing more.'])
 
 
 def _object_sentence(change: dict) -> str:

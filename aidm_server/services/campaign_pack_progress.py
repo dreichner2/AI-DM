@@ -470,7 +470,11 @@ def campaign_pack_progress_payload(*, session_id: int, include_hidden: bool = Tr
         'failedCheckpointIds': visible_failed_ids,
         'checkpointStatuses': visible_statuses,
         'checkpoints': visible_checkpoints,
-        **({'ending': ending} if not include_hidden and (ending := player_ending(visible_checkpoints)) else {}),
+        **(
+            {'ending': ending}
+            if not include_hidden and (ending := player_ending(visible_checkpoints, checkpoints, flags))
+            else {}
+        ),
         'directorRules': director_rules,
         'activeDirectorRules': active_rules,
         'flags': visible_flags,

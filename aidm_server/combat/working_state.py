@@ -13,12 +13,50 @@ from typing import Any, Mapping
 
 from aidm_server.canon_text import int_or_default
 from aidm_server.combat import vitality
-from aidm_server.combat.modifiers import condition_key, consume_modifiers, normalize_active_effect
+from aidm_server.combat.modifiers import ability_key, condition_key, consume_modifiers, normalize_active_effect
 from aidm_server.combat.positioning import move_participant, participant_by_id
+
+
+ENEMY_CONDITION_ORIGIN = 'enemy_ability'
+CONDITION_DURATION_RANGE = (1, 10)
 
 
 def _text(value: Any) -> str:
     return str(value or '').strip()
+
+
+def enemy_condition_effect(change: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The active effect that makes a condition an enemy ability applied wear off.
+
+    The ``combat.condition.add`` carries ``durationRounds`` (ends of its
+    bearer's turns), ``castId`` (shared by every condition of one use),
+    ``sourceAbilityId``/``sourceAbilityName``, ``sourceEnemyId``,
+    ``appliedDuringTurnOf`` and, when the ability has a save, ``endSave``.
+    """
+
+    rounds = change.get('durationRounds')
+    condition = condition_key(change.get('condition'))
+    cast_id = _text(change.get('castId'))
+    low, high = CONDITION_DURATION_RANGE
+    if isinstance(rounds, bool) or not isinstance(rounds, int) or not low <= rounds <= high or not condition or not cast_id:
+        return None
+    effect: dict[str, Any] = {
+        'id': f'enemy_condition:{cast_id}:{condition}',
+        'origin': ENEMY_CONDITION_ORIGIN,
+        'castId': cast_id,
+        'sourceId': _text(change.get('sourceAbilityId')),
+        'sourceName': _text(change.get('sourceAbilityName')),
+        'casterId': _text(change.get('sourceEnemyId')),
+        'modifiers': {},
+        'duration': {'rounds': rounds, 'tickOn': 'target_turn_end'},
+        'condition': condition,
+    }
+    if _text(change.get('appliedDuringTurnOf')):
+        effect['appliedDuringTurnOf'] = _text(change.get('appliedDuringTurnOf'))
+    save = change.get('endSave')
+    if isinstance(save, Mapping) and _text(save.get('ability')) and isinstance(save.get('dc'), int) and not isinstance(save.get('dc'), bool):
+        effect['endSave'] = {'ability': ability_key(save['ability']), 'dc': save['dc']}
+    return effect
 
 
 def spend_reaction(combat: Mapping[str, Any], participant: dict[str, Any]) -> None:
@@ -100,6 +138,8 @@ def apply_working_changes(combat: dict[str, Any], changes: list[Mapping[str, Any
             add_active_effect(participant, change.get('effect'))
         elif change_type in {'combat.condition.add', 'combat.condition.remove'}:
             _set_condition(participant, condition_key(change.get('condition')), add=change_type.endswith('.add'))
+            if change_type.endswith('.add') and (effect := enemy_condition_effect(change)):
+                add_active_effect(participant, effect)
         elif change_type == 'combat.stabilize':
             vitality.stabilize(participant)
         elif change_type == 'health.damage':

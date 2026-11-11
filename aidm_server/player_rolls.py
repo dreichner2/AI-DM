@@ -306,6 +306,8 @@ def resolve_authoritative_player_roll(
         'attack': deepcopy(spec.get('attack')) if isinstance(spec.get('attack'), dict) else None,
         'authoritative': True,
     }
+    if spec.get('modifiers'):
+        result['modifiers'] = deepcopy(spec['modifiers'])
     if inspiration:
         result['inspiration'] = inspiration
     if consume and combat is not None:
@@ -438,6 +440,8 @@ def canonicalize_roll_action_intent(
     }
     if isinstance(roll.get('inspiration'), dict):
         canonical_roll['inspiration'] = deepcopy(roll['inspiration'])
+    if roll.get('modifiers'):
+        canonical_roll['modifiers'] = deepcopy(roll['modifiers'])
     if pending_turn_id:
         canonical_roll['target_pending_turn_id'] = pending_turn_id
     intent['roll'] = canonical_roll

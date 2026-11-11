@@ -311,6 +311,10 @@ def normalize_ability(value: Any, *, creature_id: str, index: int) -> dict[str, 
     conditions = _string_list(value.get('conditionsApplied', value.get('conditions_applied')), limit=8)
     if conditions:
         ability['conditionsApplied'] = conditions
+    duration = value.get('durationRounds', value.get('duration_rounds'))
+    if conditions and isinstance(duration, int) and not isinstance(duration, bool):
+        # Ends of the target's turns the conditions last (default one: the end of its next turn).
+        ability['durationRounds'] = _bounded_int(duration, default=1, minimum=1, maximum=10)
     uses_remaining = value.get('usesRemaining', value.get('uses_remaining'))
     if uses_remaining is not None:
         ability['usesRemaining'] = _bounded_int(uses_remaining, default=1, minimum=0, maximum=10)

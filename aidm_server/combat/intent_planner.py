@@ -5,7 +5,9 @@ does nothing mechanically (``QUIET_INTENTS``) may be taken by an enemy at most
 once in any three of its turns and never on two turns in a row; and an enemy
 may parley or give ground (``PARLEY_INTENTS``) only when it is at half HP or
 less, its side has lost a member in this fight, or it is round 4 or later and
-it has been hurt (an encounter's ``allowParley`` lifts this). Forbidden
+it has been hurt (an encounter's ``allowParley`` lifts this). A boss
+(``challengeTier: "boss"``) stands its ground until it is at a quarter of its
+HP or less, whatever else holds. Forbidden
 candidates are removed before selection, and a helper's forbidden choice is
 replaced by the best damaging candidate. Each enemy's last turns are tracked
 on the combat state (``ENEMY_TURN_HISTORY_FLAG``).
@@ -1298,7 +1300,10 @@ def _lost_a_member(enemy: dict[str, Any], combat: dict[str, Any]) -> bool:
 def _parley_allowed(enemy: dict[str, Any], combat: dict[str, Any]) -> bool:
     flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
     hp = enemy.get('hp') if isinstance(enemy.get('hp'), dict) else {}
-    hurt = int_or_default(hp.get('current'), default=0) < int_or_default(hp.get('max'), default=0)
+    current = int_or_default(hp.get('current'), default=0)
+    if str(enemy.get('challengeTier') or '').strip().lower() == 'boss':
+        return current * 4 <= int_or_default(hp.get('max'), default=0)
+    hurt = current < int_or_default(hp.get('max'), default=0)
     return (
         flags.get('allowParley') is True
         or _hp_percent(enemy) <= 50

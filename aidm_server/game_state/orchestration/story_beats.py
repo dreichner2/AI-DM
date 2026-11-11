@@ -40,6 +40,7 @@ COMBAT_END_TEXT = {
     'players_fled': 'You got away',
 }
 COIN_ORDER = ('pp', 'gp', 'ep', 'sp', 'cp')
+ACTIVE_COMBAT_STATUSES = frozenset({'starting', 'active'})
 
 
 def _text(value: Any) -> str:
@@ -67,9 +68,18 @@ def beat_basis(state: dict[str, Any], *, actor_id: str) -> dict[str, Any]:
     player_id = parse_actor_player_id(actor_id)
     projected = filter_session_snapshot_for_player(state, private_player_ids=frozenset({player_id} if player_id else ()))
     projected = projected if isinstance(projected, dict) else {}
+    combat = projected.get('combat') if isinstance(projected.get('combat'), dict) else {}
+    # In a fight a hero's conditions live on their combat participant; the hero record
+    # is rebuilt from the character row at each turn's start and only catches up later.
+    fighting = (
+        {_text(participant.get('id')): participant.get('conditions') or [] for participant in _dicts(combat.get('participants'))}
+        if _text(combat.get('status')).lower() in ACTIVE_COMBAT_STATUSES
+        else {}
+    )
     heroes = {}
     for hero in _dicts(projected.get('playerCharacters')):
         health = hero.get('health') if isinstance(hero.get('health'), dict) else {}
+        conditions = fighting.get(_text(hero.get('id')), health.get('conditions') or [])
         inventory = hero.get('inventory') if isinstance(hero.get('inventory'), dict) else {}
         items: Counter = Counter()
         for item in _dicts(inventory.get('items')):
@@ -79,7 +89,7 @@ def beat_basis(state: dict[str, Any], *, actor_id: str) -> dict[str, Any]:
         heroes[_text(hero.get('id'))] = {
             'name': _text(hero.get('name')),
             'hp': _int(health.get('currentHp')),
-            'conditions': sorted({_text(condition).lower() for condition in health.get('conditions') or [] if _text(condition)}),
+            'conditions': sorted({_text(condition).lower() for condition in conditions if _text(condition)}),
             'items': dict(items),
             'currency': {code: _int(amount) for code, amount in (inventory.get('currency') or {}).items()}
             if isinstance(inventory.get('currency'), dict)

@@ -18,6 +18,7 @@ from aidm_server.combat.pipeline import (
     record_combat_debug_from_outcome,
     record_combat_debug_from_prepare,
     sync_combat_encounter_record,
+    turn_end_preview,
 )
 from aidm_server.combat.defeat import enemies_phrase, party_defeat_recovery, party_is_beaten, party_wake
 from aidm_server.combat.state import (
@@ -121,6 +122,8 @@ CURRENCY_TRANSFER_CONFIRMATION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 DOWNED_ACTOR_REFUSAL = 'You are down and cannot act.'
+# How many of the hero's earlier rolled turns are searched for their previous attack roll.
+PREVIOUS_ATTACK_LOOKBACK = 40
 
 
 def _sentences(text: str) -> list[str]:
@@ -1709,6 +1712,9 @@ def _narration_packet(
     started = fight_start(state_after, applied_changes)
     if started:
         packet['fightStart'] = started
+    shaken_off = _conditions_shaken_off(state_after, turn_id=turn.turn_id) if turn_ends else []
+    if shaken_off:
+        packet['shakenOff'] = shaken_off
     line = next_actor_line(state_after, actor_id=actor_id, turn_ends=turn_ends)
     if line:
         packet['nextActorLine'] = line
@@ -1718,7 +1724,50 @@ def _narration_packet(
     )
     if recovery:
         packet['partyDefeat'] = {'enemies': recovery.get('departedEnemies'), 'plural': recovery.get('departedEnemiesPlural') is True}
+    modifiers = _attack_modifiers_to_tell(turn)
+    if modifiers:
+        packet['attackModifiers'] = modifiers
     return packet
+
+
+def _conditions_shaken_off(state: dict[str, Any], *, turn_id: Any) -> list[dict[str, Any]]:
+    """The enemy abilities whose conditions end as the acting hero's turn ends: ``[{"name", "source"}]``."""
+
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    names = {
+        str(participant.get('id') or ''): str(participant.get('name') or '').strip()
+        for participant in combat.get('participants') or []
+        if isinstance(participant, dict)
+    }
+    return [
+        {'name': names.get(str(entry.get('participantId') or '')) or '', 'source': str(entry['sourceName']).strip()}
+        for entry in turn_end_preview(state, turn_id=turn_id)
+        if str(entry.get('sourceName') or '').strip()
+    ]
+
+
+def _attack_modifiers_to_tell(turn: DmTurn) -> list[dict[str, Any]]:
+    """The rules moving this turn's attack roll (``Wounded −2``) when the hero's previous attack roll
+    had others, so the narration names a change once instead of on every swing."""
+
+    roll = _metadata(turn).get('authoritative_roll')
+    if not isinstance(roll, dict) or roll.get('rule_type') != 'attack' or not roll.get('modifiers'):
+        return []
+    earlier = (
+        DmTurn.query.filter(
+            DmTurn.session_id == turn.session_id,
+            DmTurn.player_id == turn.player_id,
+            DmTurn.turn_id < turn.turn_id,
+            DmTurn.metadata_json.contains('authoritative_roll'),
+        )
+        .order_by(DmTurn.turn_id.desc())
+        .limit(PREVIOUS_ATTACK_LOOKBACK)
+    )
+    for earlier_turn in earlier:
+        previous = _metadata(earlier_turn).get('authoritative_roll')
+        if isinstance(previous, dict) and previous.get('rule_type') == 'attack':
+            return [] if previous.get('modifiers') == roll['modifiers'] else deepcopy(roll['modifiers'])
+    return deepcopy(roll['modifiers'])
 
 
 def _downed_actor_result(
@@ -2115,9 +2164,10 @@ def pre_dm_pipeline(
         already_applied=[*applied_immediate, *applied_combat],
     )
     if foreseen_end:
-        # A fight that ends this turn hands no turn on.
+        # A fight that ends this turn hands no turn on, so no turn ends lift a condition either.
         dm_context['narration']['fightEnds'] = foreseen_end
         dm_context['narration'].pop('nextActorLine', None)
+        dm_context['narration'].pop('shakenOff', None)
     if foreseen_defeat:
         dm_context['narration']['partyDefeat'] = foreseen_defeat
         dm_context['narration'].pop('nextActorLine', None)

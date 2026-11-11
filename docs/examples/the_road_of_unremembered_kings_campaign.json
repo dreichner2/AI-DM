@@ -812,6 +812,12 @@
             "lock": "Hide the road-stone",
             "trigger": "Claim the ward"
           },
+          "choiceActions": [
+            "use",
+            "break",
+            "lock",
+            "trigger"
+          ],
           "usable": true,
           "breakable": true,
           "broken": false,
@@ -822,7 +828,8 @@
           "requirements": {
             "use": {
               "flags": {
-                "cinder_scribe_resolved": true
+                "cinder_scribe_resolved": true,
+                "quest_road_complete": false
               },
               "anyItemIds": [
                 "road_stone_fragment"
@@ -842,7 +849,8 @@
             },
             "break": {
               "flags": {
-                "cinder_scribe_resolved": true
+                "cinder_scribe_resolved": true,
+                "quest_road_complete": false
               },
               "anyToolIds": [
                 "masons_hammer"
@@ -851,12 +859,14 @@
             "lock": {
               "flags": {
                 "cinder_scribe_resolved": true,
-                "oath_learned": true
+                "oath_learned": true,
+                "quest_road_complete": false
               }
             },
             "trigger": {
               "flags": {
-                "cinder_scribe_resolved": true
+                "cinder_scribe_resolved": true,
+                "quest_road_complete": false
               }
             }
           },
@@ -1590,6 +1600,7 @@
             "charmed",
             "drawn_aside"
           ],
+          "durationRounds": 2,
           "aiUseWhen": [
             "target is tired or afraid",
             "party is split",
@@ -3751,6 +3762,40 @@
           "id": "ending_corrupted_victory",
           "title": "Corrupted Victory",
           "summary": "The Cinder Scribe is stopped, but the ward remains damaged. Some travelers return, some names remain lost, and pale lanterns still appear in the fog."
+        }
+      ],
+      "endingVariants": [
+        {
+          "when": {
+            "flagKey": "ward_renewed",
+            "equals": true
+          },
+          "title": "The Road Remembers",
+          "text": "The lanterns burn steady along the western roads, and the names on the last stone no longer fade. At the Lantern Post the missing walk in out of the fog one at a time, and Mara Reedwake sets a place for each of them."
+        },
+        {
+          "when": {
+            "flagKey": "ward_broken",
+            "equals": true
+          },
+          "title": "Only a Road",
+          "text": "No ward keeps the western roads now. The missing come home blinking and thin, and travelers go armed and in company, the way they do everywhere else. Some nights the wagon bell at the Lantern Post rings for no reason at all, and no light answers."
+        },
+        {
+          "when": {
+            "flagKey": "ward_hidden",
+            "equals": true
+          },
+          "title": "The Valley No Map Will Hold",
+          "text": "The old roads close over the valley like water over a stone. The disappearances stop. So do the returns. At the Lantern Post, Mara keeps one lamp lit in the west window, and does not say for whom."
+        },
+        {
+          "when": {
+            "flagKey": "ward_claimed",
+            "equals": true
+          },
+          "title": "The Warden of the West",
+          "text": "Every road in the west knows your name now, and asks what you will do with it. The fog lets the missing go because you tell it to. Whether the next traveler it takes will be a threat, or only inconvenient, is yours to decide."
         }
       ],
       "gmNotes": "Resolve through people, not just lore. Show Mara's reaction, Tovin's guilt or courage, Osric's relief or shame, Radan's brother if relevant, and whether the missing travelers return.",

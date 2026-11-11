@@ -1274,6 +1274,9 @@ def character_roll_spec(
             for key, value in attack_context.items()
             if value is not None
         }
+    if hp_penalty:
+        # The rule adjustments in ``modifier``, named for the roll card; ability and proficiency are not listed.
+        result['modifiers'] = [{'label': 'Wounded', 'value': -hp_penalty}]
     return result
 
 

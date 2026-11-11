@@ -23,7 +23,7 @@ from aidm_server.combat.rewards import (
     derive_combat_outcome_rewards,
     derive_encounter_resolution_rewards,
 )
-from aidm_server.combat.working_state import add_active_effect, spend_reaction
+from aidm_server.combat.working_state import add_active_effect, enemy_condition_effect, spend_reaction
 from aidm_server.combat.state import (
     consume_combat_turn_economy,
     ensure_combat_state,
@@ -2367,6 +2367,9 @@ def _apply_combat_condition(state: dict[str, Any], change: dict[str, Any], *, ad
             participant.pop(f'{condition}By', None)
     if condition == 'hidden' and isinstance(participant.get('position'), dict):
         participant['position']['isHidden'] = add
+    if add and (effect := enemy_condition_effect(change)):
+        # An enemy ability's condition wears off at the end of its bearer's turns.
+        add_active_effect(participant, effect)
     if vitality.is_player_character(participant):
         participant['isAlive'] = not vitality.is_dead(participant)
         if not participant['isAlive']:
